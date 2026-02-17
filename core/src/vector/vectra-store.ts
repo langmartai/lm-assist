@@ -1,21 +1,23 @@
 /**
- * Vectra Store
+ * Vector Store (LanceDB)
  *
  * Vector database for semantic search over session and milestone data.
- * Uses Vectra (pure Node.js, JSON file-based persistence) with local
- * embeddings from transformers.js.
+ * Uses LanceDB (embedded Rust engine via NAPI) with local embeddings
+ * from transformers.js.
+ *
+ * All heavy operations (indexing, search, I/O) run in native Rust threads
+ * and do NOT block the Node.js event loop.
  *
  * Two vector types stored:
  * - 'session': embeddings from user prompts, results, tasks, file paths
  * - 'milestone': embeddings from milestone titles, facts, user prompts
  *
- * Persists to ~/.lm-assist/vector-store/
+ * Persists to ~/.lm-assist/lance-store/
  */
 
 import * as path from 'path';
 import * as fs from 'fs';
-import * as fsPromises from 'fs/promises';
-import { LocalIndex } from 'vectra';
+import * as crypto from 'crypto';
 import { getEmbedder, VECTOR_DIM } from './embedder';
 import { getDataDir } from '../utils/path-utils';
 
@@ -55,34 +57,111 @@ export interface VectorSearchResult {
   phase?: number;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────
+// ─── LanceDB row schema ─────────────────────────────────────
+// LanceDB cannot infer types from null, so optional fields use sentinel values:
+//   string fields → '' means absent
+//   number fields → -1 means absent
 
-const yieldToEventLoop = () => new Promise<void>(r => setImmediate(r));
+interface LanceRow {
+  id: string;
+  vector: number[];
+  type: string;
+  sessionId: string;
+  milestoneIndex: number;
+  knowledgeId: string;
+  partId: string;
+  contentType: string;
+  text: string;
+  timestamp: string;
+  projectPath: string;
+  phase: number;
+}
 
-// ─── Vectra Store ──────────────────────────────────────────────────
+function metadataToRow(vector: number[], meta: VectorMetadata): LanceRow {
+  return {
+    id: crypto.randomUUID(),
+    vector,
+    type: meta.type,
+    sessionId: meta.sessionId,
+    milestoneIndex: meta.milestoneIndex ?? -1,
+    knowledgeId: meta.knowledgeId || '',
+    partId: meta.partId || '',
+    contentType: meta.contentType,
+    text: meta.text.length > 500 ? meta.text.slice(0, 500) : meta.text,
+    timestamp: meta.timestamp || '',
+    projectPath: meta.projectPath || '',
+    phase: meta.phase ?? -1,
+  };
+}
 
-const STORE_DIR = path.join(getDataDir(), 'vector-store');
+function rowToResult(row: any, score: number): VectorSearchResult {
+  return {
+    type: row.type,
+    sessionId: row.sessionId,
+    milestoneIndex: row.milestoneIndex === -1 ? undefined : row.milestoneIndex,
+    knowledgeId: row.knowledgeId || undefined,
+    partId: row.partId || undefined,
+    contentType: row.contentType,
+    text: row.text,
+    score,
+    timestamp: row.timestamp || undefined,
+    projectPath: row.projectPath || undefined,
+    phase: row.phase === -1 ? undefined : row.phase,
+  };
+}
+
+function rowToMetadata(row: any): VectorMetadata {
+  return {
+    type: row.type,
+    sessionId: row.sessionId,
+    milestoneIndex: row.milestoneIndex === -1 ? undefined : row.milestoneIndex,
+    knowledgeId: row.knowledgeId || undefined,
+    partId: row.partId || undefined,
+    contentType: row.contentType,
+    text: row.text,
+    timestamp: row.timestamp || undefined,
+    projectPath: row.projectPath || undefined,
+    phase: row.phase === -1 ? undefined : row.phase,
+  };
+}
+
+// ─── Where clause builder ───────────────────────────────────
+
+function buildWhere(filter: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(filter)) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === 'string') {
+      // Escape single quotes in values
+      parts.push(`${key} = '${value.replace(/'/g, "''")}'`);
+    } else if (typeof value === 'number') {
+      parts.push(`${key} = ${value}`);
+    }
+  }
+  return parts.join(' AND ');
+}
+
+// ─── Vector Store ──────────────────────────────────────────────────
+
+const STORE_DIR = path.join(getDataDir(), 'lance-store');
+const TABLE_NAME = 'vectors';
 
 export class VectraStore {
-  private index: LocalIndex;
+  private db: any = null;
+  private table: any = null;
   private storeDir: string;
   private initialized = false;
   private initializing: Promise<void> | null = null;
-  // Serialize all write operations to prevent concurrent file corruption
-  private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(storeDir?: string) {
     this.storeDir = storeDir || STORE_DIR;
     if (!fs.existsSync(this.storeDir)) {
       fs.mkdirSync(this.storeDir, { recursive: true });
     }
-    this.index = new LocalIndex(this.storeDir);
   }
 
   /**
-   * Initialize the index (create if needed).
-   * Validates the index file first — if it's corrupt (truncated mid-write),
-   * auto-repairs by truncating to the last complete item.
+   * Initialize the LanceDB connection and table.
    */
   async init(): Promise<void> {
     if (this.initialized) return;
@@ -92,210 +171,42 @@ export class VectraStore {
     }
 
     this.initializing = (async () => {
-      // Validate and repair corrupt index before Vectra tries to read it
-      this.validateAndRepairIndex();
+      const lancedb = require('@lancedb/lancedb');
+      this.db = await lancedb.connect(this.storeDir);
 
-      const exists = await this.index.isIndexCreated();
-      if (!exists) {
-        console.log('[VectraStore] Creating new vector index');
-        await this.index.createIndex();
+      // Open existing table or create with seed row
+      const tableNames = await this.db.tableNames();
+      if (tableNames.includes(TABLE_NAME)) {
+        this.table = await this.db.openTable(TABLE_NAME);
+      } else {
+        console.log('[VectorStore] Creating new LanceDB table');
+        // Seed with a dummy row so LanceDB can infer schema, then delete it
+        const seedId = '__seed__';
+        this.table = await this.db.createTable(TABLE_NAME, [{
+          id: seedId,
+          vector: new Array(VECTOR_DIM).fill(0),
+          type: '_seed',
+          sessionId: '',
+          milestoneIndex: -1,
+          knowledgeId: '',
+          partId: '',
+          contentType: '',
+          text: '',
+          timestamp: '',
+          projectPath: '',
+          phase: -1,
+        }]);
+        try { await this.table.delete(`id = '${seedId}'`); } catch { /* best effort */ }
       }
 
-      // Patch Vectra's endUpdate to use atomic writes (write-to-temp-then-rename)
-      // Vectra's default fs.writeFile can leave truncated files if the process crashes mid-write.
-      // fs.rename is atomic on Linux (same filesystem), preventing corruption.
-      this.patchAtomicWrites();
-
       this.initialized = true;
-      console.log('[VectraStore] Index initialized');
+      console.log('[VectorStore] LanceDB initialized');
 
-      // Bootstrap BM25 from existing Vectra data (async, non-blocking)
+      // Bootstrap BM25 from existing data (async, non-blocking)
       this.bootstrapBM25().catch(() => {});
     })();
 
     await this.initializing;
-  }
-
-  /**
-   * Check if the Vectra index.json is valid JSON. If truncated (e.g. from a
-   * process crash mid-write), repair by truncating to the last complete item
-   * and re-closing the JSON structure.
-   */
-  private validateAndRepairIndex(): void {
-    const indexFile = path.join(this.storeDir, 'index.json');
-    if (!fs.existsSync(indexFile)) return;
-
-    const raw = fs.readFileSync(indexFile, 'utf-8');
-    if (raw.length === 0) return;
-
-    try {
-      JSON.parse(raw);
-      // Valid JSON — no repair needed
-      return;
-    } catch {
-      // Corrupt — attempt repair
-    }
-
-    console.error(`[VectraStore] Index file is corrupt (${raw.length} bytes), attempting repair...`);
-
-    // Find the last complete item boundary: },{
-    const lastItemSep = raw.lastIndexOf('},{');
-    if (lastItemSep < 0) {
-      // Can't find any complete items — back up the corrupt file and let Vectra create fresh
-      const backupPath = indexFile + '.corrupt';
-      try { fs.renameSync(indexFile, backupPath); } catch { /* best effort */ }
-      console.error('[VectraStore] Could not repair — backed up corrupt file and will create fresh index');
-      return;
-    }
-
-    // Keep everything up to and including the "}" at lastItemSep, then close array + object
-    const repaired = raw.slice(0, lastItemSep + 1) + ']}';
-
-    // Validate the repair
-    try {
-      const parsed = JSON.parse(repaired);
-      const itemCount = Array.isArray(parsed.items) ? parsed.items.length : 0;
-
-      // Back up corrupt file, write repaired
-      const backupPath = indexFile + '.corrupt';
-      try { fs.unlinkSync(backupPath); } catch { /* no previous backup */ }
-      fs.renameSync(indexFile, backupPath);
-      fs.writeFileSync(indexFile, repaired);
-
-      // Re-create the LocalIndex to pick up the repaired file
-      this.index = new LocalIndex(this.storeDir);
-
-      console.error(`[VectraStore] Index repaired: ${itemCount} items recovered, ${raw.length - repaired.length} bytes trimmed`);
-    } catch {
-      // Repair also invalid — back up and start fresh
-      const backupPath = indexFile + '.corrupt';
-      try { fs.renameSync(indexFile, backupPath); } catch { /* best effort */ }
-      console.error('[VectraStore] Repair failed — backed up corrupt file and will create fresh index');
-    }
-  }
-
-  /**
-   * Monkey-patch Vectra's LocalIndex for crash-safe and cross-process-safe writes.
-   *
-   * Two patches:
-   * 1. endUpdate() — atomic write via write-to-temp-then-rename. Prevents
-   *    truncated files from process crashes. Uses PID+counter in temp name
-   *    to avoid cross-process temp file clobbering.
-   *
-   * 2. beginUpdate() — forces a re-read from disk before cloning into _update.
-   *    Vectra caches _data in memory and never re-reads, so without this a
-   *    process would overwrite another process's changes (lost update).
-   */
-  private patchAtomicWrites(): void {
-    const idx = this.index as any;
-    const indexPath = path.join(this.storeDir, idx._indexName || 'index.json');
-    let writeCounter = 0;
-
-    // Patch beginUpdate: force re-read from disk so we always start from the latest state
-    const origBeginUpdate = idx.beginUpdate.bind(idx);
-    idx.beginUpdate = async function (this: any): Promise<void> {
-      // Clear cached _data to force loadIndexData() to re-read from disk
-      this._data = undefined;
-      await origBeginUpdate();
-    };
-
-    // Patch endUpdate: atomic write via temp-then-rename
-    idx.endUpdate = async function (this: any): Promise<void> {
-      if (!this._update) {
-        throw new Error('No update in progress');
-      }
-      // Unique temp file per process+write to prevent cross-process clobbering
-      const tmpPath = `${indexPath}.tmp.${process.pid}.${writeCounter++}`;
-      try {
-        const json = JSON.stringify(this._update);
-        await fsPromises.writeFile(tmpPath, json);
-        await fsPromises.rename(tmpPath, indexPath);
-        this._data = this._update;
-        this._update = undefined;
-      } catch (err: any) {
-        try { await fsPromises.unlink(tmpPath); } catch { /* best effort */ }
-        throw new Error(`Error saving index: ${err.toString()}`);
-      }
-    };
-  }
-
-  // ─── Cross-process file lock ─────────────────────────────────────
-  //
-  // Uses O_CREAT|O_EXCL (exclusive create) for a lockfile. This is atomic
-  // on all Linux filesystems — only one process can create the file.
-  // Stale lock detection: if the lockfile is older than LOCK_STALE_MS,
-  // the owning process likely crashed — we steal the lock.
-
-  private lockPath = '';
-  private static readonly LOCK_STALE_MS = 30_000; // 30s
-  private static readonly LOCK_RETRY_MS = 50;     // poll interval
-  private static readonly LOCK_TIMEOUT_MS = 10_000; // 10s max wait
-
-  private async acquireLock(): Promise<void> {
-    if (!this.lockPath) {
-      this.lockPath = path.join(this.storeDir, 'index.json.lock');
-    }
-    const deadline = Date.now() + VectraStore.LOCK_TIMEOUT_MS;
-
-    while (true) {
-      try {
-        // O_CREAT|O_EXCL: fails if file already exists
-        const fd = fs.openSync(this.lockPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
-        // Write our PID for debugging and stale detection
-        fs.writeSync(fd, String(process.pid));
-        fs.closeSync(fd);
-        return; // Lock acquired
-      } catch (err: any) {
-        if (err.code !== 'EEXIST') throw err;
-
-        // Lock exists — check if stale
-        try {
-          const stat = fs.statSync(this.lockPath);
-          if (Date.now() - stat.mtimeMs > VectraStore.LOCK_STALE_MS) {
-            // Stale lock from a crashed process — remove and retry
-            try { fs.unlinkSync(this.lockPath); } catch { /* another process beat us */ }
-            continue;
-          }
-        } catch {
-          // Lock disappeared between EEXIST and stat — retry
-          continue;
-        }
-
-        // Lock is held by another process — wait
-        if (Date.now() >= deadline) {
-          throw new Error(`[VectraStore] Lock timeout after ${VectraStore.LOCK_TIMEOUT_MS}ms`);
-        }
-        await new Promise(r => setTimeout(r, VectraStore.LOCK_RETRY_MS));
-      }
-    }
-  }
-
-  private releaseLock(): void {
-    try { fs.unlinkSync(this.lockPath); } catch { /* best effort */ }
-  }
-
-  /**
-   * Serialize a write operation through the write queue (intra-process),
-   * then wrap with a cross-process file lock. This guarantees:
-   * - Within one process: promise-chain serialization (fast, no polling)
-   * - Across processes: exclusive lockfile (O_CREAT|O_EXCL)
-   *
-   * The lock wraps the full read-modify-write cycle (beginUpdate → endUpdate)
-   * so no other process can read stale data between our read and write.
-   */
-  private serializeWrite<T>(fn: () => Promise<T>): Promise<T> {
-    const lockedFn = async (): Promise<T> => {
-      await this.acquireLock();
-      try {
-        return await fn();
-      } finally {
-        this.releaseLock();
-      }
-    };
-    const result = this.writeQueue.then(lockedFn, lockedFn);
-    // Update the queue to wait for this operation (swallow errors to not block future writes)
-    this.writeQueue = result.then(() => {}, () => {});
-    return result;
   }
 
   /**
@@ -305,30 +216,17 @@ export class VectraStore {
     await this.init();
     const embedder = getEmbedder();
     const vector = await embedder.embed(text);
-
-    await this.serializeWrite(async () => {
-      await this.index.insertItem({
-        vector,
-        metadata: {
-          ...metadata,
-          text: metadata.text.length > 500 ? metadata.text.slice(0, 500) : metadata.text,
-        },
-      });
-    });
+    await this.table.add([metadataToRow(vector, metadata)]);
   }
 
   /**
    * Add multiple vectors in batch (more efficient).
-   * Embedding is done outside the write lock for parallelism;
-   * only the index mutation is serialized.
    * Also mirrors items to the BM25 index for hybrid search.
    */
   async addVectors(items: Array<{ text: string; metadata: VectorMetadata }>): Promise<number> {
     if (items.length === 0) return 0;
     await this.init();
 
-    // Process in chunks: embed + write per chunk to bound memory usage.
-    // Each chunk embeds up to WRITE_CHUNK vectors then flushes to the index.
     const WRITE_CHUNK = 200;
     const embedder = getEmbedder();
     let totalAdded = 0;
@@ -338,26 +236,8 @@ export class VectraStore {
       const texts = chunk.map(i => i.text);
       const vectors = await embedder.embedBatch(texts);
 
-      await this.serializeWrite(async () => {
-        await this.index.beginUpdate();
-        try {
-          for (let i = 0; i < chunk.length; i++) {
-            await this.index.insertItem({
-              vector: vectors[i],
-              metadata: {
-                ...chunk[i].metadata,
-                text: chunk[i].metadata.text.length > 500
-                  ? chunk[i].metadata.text.slice(0, 500)
-                  : chunk[i].metadata.text,
-              },
-            });
-          }
-          await this.index.endUpdate();
-        } catch (e) {
-          await this.index.cancelUpdate();
-          throw e;
-        }
-      });
+      const rows = chunk.map((item, i) => metadataToRow(vectors[i], item.metadata));
+      await this.table.add(rows);
 
       totalAdded += chunk.length;
     }
@@ -370,7 +250,7 @@ export class VectraStore {
 
   /**
    * Search for similar vectors.
-   * @param filter Optional metadata filter passed to Vectra's queryItems (e.g. { type: 'knowledge' })
+   * @param filter Optional metadata filter (e.g. { type: 'knowledge' })
    */
   async search(query: string, limit: number = 20, filter?: Record<string, unknown>): Promise<VectorSearchResult[]> {
     await this.init();
@@ -378,23 +258,20 @@ export class VectraStore {
     const embedder = getEmbedder();
     const queryVector = await embedder.embed(query);
 
-    const results = await this.index.queryItems(queryVector, '', limit, filter);
+    let q = this.table.search(queryVector).limit(limit);
+    if (filter) {
+      const where = buildWhere(filter);
+      if (where) q = q.where(where);
+    }
 
-    return results.map(r => {
-      const meta = r.item.metadata as unknown as VectorMetadata;
-      return {
-        type: meta.type,
-        sessionId: meta.sessionId,
-        milestoneIndex: meta.milestoneIndex,
-        knowledgeId: meta.knowledgeId,
-        partId: meta.partId,
-        contentType: meta.contentType,
-        text: meta.text,
-        score: r.score,
-        timestamp: meta.timestamp,
-        projectPath: meta.projectPath,
-        phase: meta.phase,
-      };
+    const results = await q.toArray();
+
+    // LanceDB returns _distance (L2 or cosine distance). Convert to similarity score.
+    // Cosine distance ∈ [0, 2]; similarity = 1 - distance/2 maps to [0, 1].
+    return results.map((r: any) => {
+      const distance = r._distance ?? 0;
+      const score = Math.max(0, 1 - distance / 2);
+      return rowToResult(r, score);
     });
   }
 
@@ -404,31 +281,18 @@ export class VectraStore {
   async deleteSession(sessionId: string): Promise<number> {
     await this.init();
 
-    // Read item IDs outside the lock (stale list is fine — extra deletes are no-ops)
-    const items = await this.index.listItemsByMetadata({ sessionId });
-    if (items.length === 0) return 0;
+    const count = await this.countWhere(`sessionId = '${sessionId.replace(/'/g, "''")}'`);
+    if (count === 0) return 0;
 
-    await this.serializeWrite(async () => {
-      await this.index.beginUpdate();
-      try {
-        for (const item of items) {
-          // deleteItem with _update active just splices in memory — no disk I/O
-          await this.index.deleteItem(item.id);
-        }
-        await this.index.endUpdate();
-      } catch (e) {
-        await this.index.cancelUpdate();
-        throw e;
-      }
-    });
+    await this.table.delete(`sessionId = '${sessionId.replace(/'/g, "''")}'`);
 
-    // Mirror delete to BM25 (session ID is prefix for milestones "sessionId:N")
+    // Mirror delete to BM25
     try {
       const { getBM25Scorer } = await import('../search/bm25-scorer');
       getBM25Scorer().removeDocumentsByPrefix(sessionId);
     } catch { /* non-fatal */ }
 
-    return items.length;
+    return count;
   }
 
   /**
@@ -437,25 +301,11 @@ export class VectraStore {
   async deleteMilestone(sessionId: string, milestoneIndex: number): Promise<number> {
     await this.init();
 
-    const items = await this.index.listItemsByMetadata({
-      sessionId,
-      milestoneIndex,
-      type: 'milestone',
-    });
-    if (items.length === 0) return 0;
+    const where = `sessionId = '${sessionId.replace(/'/g, "''")}' AND milestoneIndex = ${milestoneIndex} AND type = 'milestone'`;
+    const count = await this.countWhere(where);
+    if (count === 0) return 0;
 
-    await this.serializeWrite(async () => {
-      await this.index.beginUpdate();
-      try {
-        for (const item of items) {
-          await this.index.deleteItem(item.id);
-        }
-        await this.index.endUpdate();
-      } catch (e) {
-        await this.index.cancelUpdate();
-        throw e;
-      }
-    });
+    await this.table.delete(where);
 
     // Mirror delete to BM25
     try {
@@ -463,7 +313,7 @@ export class VectraStore {
       getBM25Scorer().removeDocument(`${sessionId}:${milestoneIndex}`);
     } catch { /* non-fatal */ }
 
-    return items.length;
+    return count;
   }
 
   /**
@@ -472,68 +322,58 @@ export class VectraStore {
   async deleteKnowledge(knowledgeId: string): Promise<number> {
     await this.init();
 
-    const items = await this.index.listItemsByMetadata({
-      knowledgeId,
-      type: 'knowledge',
-    });
-    if (items.length === 0) return 0;
+    const where = `knowledgeId = '${knowledgeId.replace(/'/g, "''")}' AND type = 'knowledge'`;
+    const count = await this.countWhere(where);
+    if (count === 0) return 0;
 
-    await this.serializeWrite(async () => {
-      await this.index.beginUpdate();
-      try {
-        for (const item of items) {
-          await this.index.deleteItem(item.id);
-        }
-        await this.index.endUpdate();
-      } catch (e) {
-        await this.index.cancelUpdate();
-        throw e;
-      }
-    });
+    await this.table.delete(where);
 
-    // Mirror delete to BM25 (prefix matches "K001", "K001.2", etc.)
+    // Mirror delete to BM25
     try {
       const { getBM25Scorer } = await import('../search/bm25-scorer');
       getBM25Scorer().removeDocumentsByPrefix(knowledgeId);
     } catch { /* non-fatal */ }
 
-    return items.length;
+    return count;
   }
 
   /**
-   * Delete all vectors of a given type (e.g., 'knowledge', 'session', 'milestone').
-   * Much faster than deleting per-document — single scan, single update.
+   * Delete all vectors of a given type.
    */
   async deleteAllByType(type: 'session' | 'milestone' | 'knowledge'): Promise<number> {
     await this.init();
 
-    const items = await this.index.listItemsByMetadata({ type });
-    if (items.length === 0) return 0;
-
-    await this.serializeWrite(async () => {
-      await this.index.beginUpdate();
+    // For BM25 mirror, we need the knowledge IDs before deleting
+    let knowledgeIds: string[] = [];
+    if (type === 'knowledge') {
       try {
-        for (const item of items) {
-          await this.index.deleteItem(item.id);
+        const rows = await this.table.query()
+          .where(`type = 'knowledge'`)
+          .select(['knowledgeId'])
+          .toArray();
+        const ids = new Set<string>();
+        for (const r of rows) {
+          if (r.knowledgeId) ids.add(r.knowledgeId);
         }
-        await this.index.endUpdate();
-      } catch (e) {
-        await this.index.cancelUpdate();
-        throw e;
-      }
-    });
+        knowledgeIds = Array.from(ids);
+      } catch { /* non-fatal */ }
+    }
+
+    const count = await this.countWhere(`type = '${type}'`);
+    if (count === 0) return 0;
+
+    await this.table.delete(`type = '${type}'`);
 
     // Mirror delete to BM25
     try {
       const { getBM25Scorer } = await import('../search/bm25-scorer');
       const bm25 = getBM25Scorer();
-      for (const item of items) {
-        const meta = item.metadata as unknown as VectorMetadata;
-        if (meta.knowledgeId) bm25.removeDocumentsByPrefix(meta.knowledgeId);
+      for (const kid of knowledgeIds) {
+        bm25.removeDocumentsByPrefix(kid);
       }
     } catch { /* non-fatal */ }
 
-    return items.length;
+    return count;
   }
 
   // ─── BM25 Mirroring ─────────────────────────────────────────────
@@ -542,11 +382,9 @@ export class VectraStore {
    * Mirror a batch of items to the BM25 index.
    * Groups items by logical doc ID and concatenates texts before adding,
    * so a milestone with title + facts vectors becomes a single BM25 doc.
-   * Yields to the event loop every 50 docs to avoid blocking.
    */
   private async mirrorToBM25(items: Array<{ text: string; metadata: VectorMetadata }>): Promise<void> {
     try {
-      // Lazy require to avoid circular dependency at module load time
       const { getBM25Scorer } = require('../search/bm25-scorer');
       const bm25 = getBM25Scorer();
 
@@ -573,8 +411,6 @@ export class VectraStore {
         }
       }
 
-      const YIELD_EVERY = 50;
-      let count = 0;
       for (const [id, { texts, meta }] of grouped) {
         bm25.addDocument(id, texts.join(' '), {
           type: meta.type,
@@ -585,18 +421,16 @@ export class VectraStore {
           projectPath: meta.projectPath,
           phase: meta.phase,
         });
-        if (++count % YIELD_EVERY === 0) {
-          await yieldToEventLoop();
-        }
       }
     } catch (err) {
-      console.error('[VectraStore] BM25 mirror failed:', err);
+      console.error('[VectorStore] BM25 mirror failed:', err);
     }
   }
 
   /**
-   * Bootstrap BM25 index from existing Vectra vectors.
-   * Called during init() when the BM25 index is empty but Vectra has data.
+   * Bootstrap BM25 index from existing LanceDB vectors.
+   * Called during init() when the BM25 index is empty but LanceDB has data.
+   * All LanceDB reads run in native Rust threads — no event loop blocking.
    */
   async bootstrapBM25(): Promise<number> {
     try {
@@ -606,24 +440,22 @@ export class VectraStore {
 
       if (stats.documentCount > 0) return 0; // Already populated
 
-      const vectraStats = await this.getStats();
-      if (vectraStats.totalVectors === 0) return 0;
+      const totalRows = await this.table.countRows();
+      if (totalRows === 0) return 0;
 
-      console.log('[VectraStore] Bootstrapping BM25 from Vectra vectors...');
+      console.log(`[VectorStore] Bootstrapping BM25 from ${totalRows} LanceDB vectors...`);
 
-      // Single scan of all items (avoids 3× listItemsByMetadata calls,
-      // each of which re-filters the full 42MB+ index)
-      const allItems = await this.index.listItems();
-      await yieldToEventLoop();
+      // Fetch all rows (native Rust I/O, does not block event loop)
+      const allRows = await this.table.query()
+        .where("type IN ('session', 'milestone', 'knowledge')")
+        .select(['type', 'sessionId', 'milestoneIndex', 'knowledgeId', 'partId', 'text', 'timestamp', 'projectPath', 'phase'])
+        .toArray();
 
-      // Group by logical doc ID, yielding periodically for large indices
+      // Group by logical doc ID
       const grouped = new Map<string, { texts: string[]; meta: VectorMetadata }>();
-      const GROUPING_YIELD = 500;
 
-      for (let i = 0; i < allItems.length; i++) {
-        const meta = allItems[i].metadata as unknown as VectorMetadata;
-        if (meta.type !== 'session' && meta.type !== 'milestone' && meta.type !== 'knowledge') continue;
-
+      for (const row of allRows) {
+        const meta = rowToMetadata(row);
         let id: string;
         if (meta.type === 'knowledge') {
           id = meta.partId || meta.knowledgeId || '';
@@ -640,16 +472,9 @@ export class VectraStore {
         } else {
           grouped.set(id, { texts: [meta.text || ''], meta });
         }
-
-        if ((i + 1) % GROUPING_YIELD === 0) {
-          await yieldToEventLoop();
-        }
       }
 
-      // Add docs to BM25 in chunks, yielding to the event loop between chunks
-      // to avoid blocking the server for seconds on large indices
-      const YIELD_EVERY = 50;
-      let count = 0;
+      // Add docs to BM25 (LMDB writes are fast sync ops)
       for (const [id, { texts, meta }] of grouped) {
         bm25.addDocument(id, texts.join(' '), {
           type: meta.type,
@@ -660,15 +485,12 @@ export class VectraStore {
           projectPath: meta.projectPath,
           phase: meta.phase,
         });
-        if (++count % YIELD_EVERY === 0) {
-          await yieldToEventLoop();
-        }
       }
 
-      console.log(`[VectraStore] BM25 bootstrap complete: ${grouped.size} docs from ${allItems.length} vectors`);
+      console.log(`[VectorStore] BM25 bootstrap complete: ${grouped.size} docs from ${allRows.length} vectors`);
       return grouped.size;
     } catch (err) {
-      console.error('[VectraStore] BM25 bootstrap failed:', err);
+      console.error('[VectorStore] BM25 bootstrap failed:', err);
       return 0;
     }
   }
@@ -678,11 +500,10 @@ export class VectraStore {
    */
   async hasKnowledge(knowledgeId: string): Promise<boolean> {
     await this.init();
-    const items = await this.index.listItemsByMetadata({
-      knowledgeId,
-      type: 'knowledge',
-    });
-    return items.length > 0;
+    const count = await this.countWhere(
+      `knowledgeId = '${knowledgeId.replace(/'/g, "''")}' AND type = 'knowledge'`
+    );
+    return count > 0;
   }
 
   /**
@@ -690,11 +511,13 @@ export class VectraStore {
    */
   async getIndexedKnowledgeIds(): Promise<string[]> {
     await this.init();
-    const items = await this.index.listItemsByMetadata({ type: 'knowledge' });
+    const rows = await this.table.query()
+      .where("type = 'knowledge'")
+      .select(['knowledgeId'])
+      .toArray();
     const ids = new Set<string>();
-    for (const item of items) {
-      const meta = item.metadata as unknown as VectorMetadata;
-      if (meta.knowledgeId) ids.add(meta.knowledgeId);
+    for (const row of rows) {
+      if (row.knowledgeId) ids.add(row.knowledgeId);
     }
     return Array.from(ids);
   }
@@ -704,11 +527,10 @@ export class VectraStore {
    */
   async hasSession(sessionId: string): Promise<boolean> {
     await this.init();
-    const items = await this.index.listItemsByMetadata({
-      sessionId,
-      type: 'session',
-    });
-    return items.length > 0;
+    const count = await this.countWhere(
+      `sessionId = '${sessionId.replace(/'/g, "''")}' AND type = 'session'`
+    );
+    return count > 0;
   }
 
   /**
@@ -722,15 +544,15 @@ export class VectraStore {
       return { totalVectors: 0, isInitialized: false };
     }
 
-    const stats = await this.index.getIndexStats();
+    const total = await this.table.countRows();
     return {
-      totalVectors: stats.items,
+      totalVectors: total,
       isInitialized: true,
     };
   }
 
   /**
-   * Get vector counts broken down by type (session vs milestone)
+   * Get vector counts broken down by type
    */
   async getStatsByType(): Promise<{
     totalVectors: number;
@@ -743,17 +565,26 @@ export class VectraStore {
       return { totalVectors: 0, sessionVectors: 0, milestoneVectors: 0, knowledgeVectors: 0, isInitialized: false };
     }
 
-    const sessionItems = await this.index.listItemsByMetadata({ type: 'session' });
-    const milestoneItems = await this.index.listItemsByMetadata({ type: 'milestone' });
-    const knowledgeItems = await this.index.listItemsByMetadata({ type: 'knowledge' });
+    const [sessions, milestones, knowledge] = await Promise.all([
+      this.countWhere("type = 'session'"),
+      this.countWhere("type = 'milestone'"),
+      this.countWhere("type = 'knowledge'"),
+    ]);
 
     return {
-      totalVectors: sessionItems.length + milestoneItems.length + knowledgeItems.length,
-      sessionVectors: sessionItems.length,
-      milestoneVectors: milestoneItems.length,
-      knowledgeVectors: knowledgeItems.length,
+      totalVectors: sessions + milestones + knowledge,
+      sessionVectors: sessions,
+      milestoneVectors: milestones,
+      knowledgeVectors: knowledge,
       isInitialized: true,
     };
+  }
+
+  // ─── Helpers ──────────────────────────────────────────────────
+
+  private async countWhere(where: string): Promise<number> {
+    const rows = await this.table.query().where(where).select(['id']).toArray();
+    return rows.length;
   }
 }
 

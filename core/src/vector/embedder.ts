@@ -2,123 +2,132 @@
  * Embedder Module
  *
  * Local text embedding using transformers.js (all-MiniLM-L6-v2).
- * Generates 384-dimensional vectors for semantic search via Vectra.
+ * Generates 384-dimensional vectors for semantic search.
+ *
+ * ONNX inference runs on a dedicated worker thread so it never blocks
+ * the main Node.js event loop — even during heavy batch operations.
  *
  * Loads model lazily on first use (~2-3s). Subsequent calls are fast (~5ms).
  */
 
 import * as path from 'path';
+import { Worker } from 'worker_threads';
 import { getDataDir } from '../utils/path-utils';
 
-// Dynamic import for ESM-only transformers.js
-let pipelineModule: any = null;
-
-async function getTransformers(): Promise<any> {
-  if (!pipelineModule) {
-    const mod = await import('@huggingface/transformers');
-    // Configure cache directory
-    mod.env.cacheDir = path.join(getDataDir(), 'models');
-    mod.env.allowRemoteModels = true;
-    mod.env.useFSCache = true;
-    pipelineModule = mod;
-  }
-  return pipelineModule;
-}
-
-const MODEL_NAME = 'Xenova/all-MiniLM-L6-v2';
 const VECTOR_DIM = 384;
 
-const yieldToEventLoop = () => new Promise<void>(r => setImmediate(r));
-
 export class Embedder {
-  private extractor: any = null;
-  private loading: Promise<void> | null = null;
+  private worker: Worker | null = null;
+  private ready = false;
+  private readyPromise: Promise<void> | null = null;
+  private requestId = 0;
+  private pending = new Map<number, {
+    resolve: (embeddings: number[][]) => void;
+    reject: (err: Error) => void;
+  }>();
 
   /**
-   * Load the embedding model (lazy, called on first embed)
+   * Start the worker thread and wait for model load.
    */
   async load(): Promise<void> {
-    if (this.extractor) return;
-    if (this.loading) {
-      await this.loading;
+    if (this.ready) return;
+    if (this.readyPromise) {
+      await this.readyPromise;
       return;
     }
 
-    this.loading = (async () => {
+    this.readyPromise = new Promise<void>((resolve, reject) => {
       const startTime = Date.now();
-      console.log('[Embedder] Loading model:', MODEL_NAME);
-      const { pipeline } = await getTransformers();
-      this.extractor = await pipeline('feature-extraction', MODEL_NAME, {
-        quantized: true,
-      });
-      console.log(`[Embedder] Model loaded in ${Date.now() - startTime}ms`);
-    })();
+      console.log('[Embedder] Starting worker thread...');
 
-    await this.loading;
+      const workerPath = path.join(__dirname, 'embedder-worker.js');
+      this.worker = new Worker(workerPath, {
+        env: {
+          ...process.env,
+          LM_ASSIST_DATA_DIR: getDataDir(),
+        },
+      });
+
+      this.worker.on('message', (msg: any) => {
+        if (msg.type === 'ready') {
+          this.ready = true;
+          console.log(`[Embedder] Worker ready in ${Date.now() - startTime}ms`);
+          resolve();
+        } else if (msg.type === 'result') {
+          const p = this.pending.get(msg.id);
+          if (p) {
+            this.pending.delete(msg.id);
+            p.resolve(msg.embeddings);
+          }
+        } else if (msg.type === 'error') {
+          const p = this.pending.get(msg.id);
+          if (p) {
+            this.pending.delete(msg.id);
+            p.reject(new Error(msg.message));
+          }
+        }
+      });
+
+      this.worker.on('error', (err) => {
+        console.error('[Embedder] Worker error:', err);
+        // Reject all pending requests
+        for (const [, p] of this.pending) {
+          p.reject(err);
+        }
+        this.pending.clear();
+        reject(err);
+      });
+
+      this.worker.on('exit', (code) => {
+        if (code !== 0) {
+          console.error(`[Embedder] Worker exited with code ${code}`);
+        }
+        this.worker = null;
+        this.ready = false;
+        this.readyPromise = null;
+      });
+    });
+
+    await this.readyPromise;
+  }
+
+  /**
+   * Send texts to the worker and receive embeddings back.
+   * Fully async — does not block the main event loop.
+   */
+  private async requestEmbed(texts: string[]): Promise<number[][]> {
+    await this.load();
+    if (!this.worker) throw new Error('Embedder worker not available');
+
+    const id = this.requestId++;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.worker!.postMessage({ type: 'embed', id, texts });
+    });
   }
 
   /**
    * Embed a single text string into a 384-dim vector
    */
   async embed(text: string): Promise<number[]> {
-    await this.load();
-
-    // Truncate very long texts to avoid OOM (model max ~512 tokens)
-    const truncated = text.length > 2000 ? text.slice(0, 2000) : text;
-
-    const output = await this.extractor(truncated, {
-      pooling: 'mean',
-      normalize: true,
-    });
-
-    // output.data is a TypedArray, convert to regular array
-    return Array.from(output.data as Float32Array).slice(0, VECTOR_DIM);
+    const [result] = await this.requestEmbed([text]);
+    return result;
   }
 
   /**
-   * Embed multiple texts in batch
+   * Embed multiple texts in batch.
+   * Runs entirely on the worker thread — zero main-thread blocking.
    */
   async embedBatch(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
-
-    await this.load();
-
-    const results: number[][] = [];
-    // Process in batches — MiniLM is small enough for larger batches
-    const BATCH_SIZE = 64;
-
-    for (let i = 0; i < texts.length; i += BATCH_SIZE) {
-      const batch = texts.slice(i, i + BATCH_SIZE).map(t =>
-        t.length > 2000 ? t.slice(0, 2000) : t
-      );
-
-      const outputs = await this.extractor(batch, {
-        pooling: 'mean',
-        normalize: true,
-      });
-
-      // outputs.data is a flat Float32Array of shape [batch_size * VECTOR_DIM]
-      // This relies on mean pooling producing one VECTOR_DIM vector per input.
-      const data = Array.from(outputs.data as Float32Array);
-      for (let j = 0; j < batch.length; j++) {
-        const start = j * VECTOR_DIM;
-        results.push(data.slice(start, start + VECTOR_DIM));
-      }
-
-      // Yield to event loop between batches to avoid blocking the server
-      if (i + BATCH_SIZE < texts.length) {
-        await yieldToEventLoop();
-      }
-    }
-
-    return results;
+    return this.requestEmbed(texts);
   }
 
   /**
    * Check if model is loaded
    */
   isLoaded(): boolean {
-    return this.extractor !== null;
+    return this.ready;
   }
 
   /**
