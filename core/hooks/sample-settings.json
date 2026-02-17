@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/tier-agent/tier-agent-core/hooks/task-enforcement.sh warn $CLAUDE_SESSION_ID"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/tier-agent/tier-agent-core/hooks/task-enforcement.sh check $CLAUDE_SESSION_ID"
+          }
+        ]
+      }
+    ]
+  }
+}

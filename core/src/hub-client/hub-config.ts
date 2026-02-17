@@ -1,0 +1,202 @@
+/**
+ * Hub Configuration
+ *
+ * Manages configuration for connecting to LangMart Hub:
+ * - Hub URL and API key from environment
+ * - Machine ID (hardware fingerprint)
+ * - Gateway ID (persisted after first registration)
+ */
+
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import * as crypto from 'crypto';
+
+export interface HubConfig {
+  /** Hub WebSocket URL */
+  hubUrl: string;
+  /** API key for authentication */
+  apiKey: string;
+  /** Machine ID (hardware fingerprint) */
+  machineId: string;
+  /** Gateway ID (assigned by hub, persisted for reconnection) */
+  gatewayId: string | null;
+  /** Hostname for display */
+  hostname: string;
+  /** Platform (linux, darwin, win32) */
+  platform: string;
+  /** tier-agent version */
+  version: string;
+}
+
+/**
+ * Get the config directory path
+ */
+function getConfigDir(): string {
+  const configDir = path.join(os.homedir(), '.tier-agent');
+  if (!fs.existsSync(configDir)) {
+    fs.mkdirSync(configDir, { recursive: true });
+  }
+  return configDir;
+}
+
+/**
+ * Generate a stable machine ID from hardware characteristics
+ */
+function generateMachineId(): string {
+  const configDir = getConfigDir();
+  const machineIdFile = path.join(configDir, 'machine-id');
+
+  // If we have a saved machine ID, use it
+  if (fs.existsSync(machineIdFile)) {
+    try {
+      const savedId = fs.readFileSync(machineIdFile, 'utf-8').trim();
+      if (savedId && savedId.length === 36) { // UUID length
+        return savedId;
+      }
+    } catch {
+      // Fall through to generate new ID
+    }
+  }
+
+  // Generate new machine ID from hardware characteristics
+  const cpus = os.cpus();
+  const networkInterfaces = os.networkInterfaces();
+
+  // Create fingerprint from:
+  // - CPU model
+  // - Number of CPUs
+  // - Total memory (rounded to nearest GB to be stable)
+  // - MAC address of first non-internal interface
+  const fingerprint = [
+    cpus[0]?.model || 'unknown-cpu',
+    cpus.length.toString(),
+    Math.round(os.totalmem() / (1024 * 1024 * 1024)).toString(),
+    os.hostname(),
+    os.platform(),
+    os.arch(),
+  ];
+
+  // Add first MAC address
+  outer: for (const interfaces of Object.values(networkInterfaces)) {
+    if (!interfaces) continue;
+    for (const iface of interfaces) {
+      if (!iface.internal && iface.mac && iface.mac !== '00:00:00:00:00:00') {
+        fingerprint.push(iface.mac);
+        break outer; // Only add one MAC address
+      }
+    }
+  }
+
+  // Hash the fingerprint to create a UUID-like ID
+  const hash = crypto.createHash('sha256').update(fingerprint.join('|')).digest('hex');
+
+  // Format as UUID v4-like (not truly random, but looks like one)
+  const machineId = [
+    hash.slice(0, 8),
+    hash.slice(8, 12),
+    '4' + hash.slice(13, 16), // Version 4
+    '8' + hash.slice(17, 20), // Variant
+    hash.slice(20, 32),
+  ].join('-');
+
+  // Save for future use
+  try {
+    fs.writeFileSync(machineIdFile, machineId);
+  } catch (err) {
+    console.warn('[HubConfig] Failed to save machine ID:', err);
+  }
+
+  return machineId;
+}
+
+/**
+ * Load gateway ID from config file
+ */
+function loadGatewayId(): string | null {
+  const configDir = getConfigDir();
+  const gatewayIdFile = path.join(configDir, 'gateway-id');
+
+  if (fs.existsSync(gatewayIdFile)) {
+    try {
+      const gatewayId = fs.readFileSync(gatewayIdFile, 'utf-8').trim();
+      if (gatewayId && gatewayId.startsWith('gw4-')) {
+        return gatewayId;
+      }
+    } catch {
+      // Return null
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Save gateway ID to config file
+ */
+export function saveGatewayId(gatewayId: string): void {
+  const configDir = getConfigDir();
+  const gatewayIdFile = path.join(configDir, 'gateway-id');
+
+  try {
+    fs.writeFileSync(gatewayIdFile, gatewayId);
+    console.log(`[HubConfig] Saved gateway ID: ${gatewayId}`);
+  } catch (err) {
+    console.warn('[HubConfig] Failed to save gateway ID:', err);
+  }
+}
+
+/**
+ * Clear gateway ID (for re-registration)
+ */
+export function clearGatewayId(): void {
+  const configDir = getConfigDir();
+  const gatewayIdFile = path.join(configDir, 'gateway-id');
+
+  try {
+    if (fs.existsSync(gatewayIdFile)) {
+      fs.unlinkSync(gatewayIdFile);
+      console.log('[HubConfig] Cleared gateway ID');
+    }
+  } catch (err) {
+    console.warn('[HubConfig] Failed to clear gateway ID:', err);
+  }
+}
+
+/**
+ * Get tier-agent version from package.json
+ */
+function getVersion(): string {
+  try {
+    const packagePath = path.join(__dirname, '../../package.json');
+    if (fs.existsSync(packagePath)) {
+      const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf-8')) as { version?: string };
+      return pkg.version || '0.0.0';
+    }
+  } catch {
+    // Silently fall back to default version if package.json is unavailable
+  }
+  return '0.0.0';
+}
+
+/**
+ * Get hub configuration from environment and config files
+ */
+export function getHubConfig(): HubConfig {
+  return {
+    hubUrl: process.env.TIER_AGENT_HUB_URL || '',
+    apiKey: process.env.TIER_AGENT_API_KEY || '',
+    machineId: generateMachineId(),
+    gatewayId: loadGatewayId(),
+    hostname: os.hostname(),
+    platform: os.platform(),
+    version: getVersion(),
+  };
+}
+
+/**
+ * Check if hub connection is configured via environment
+ */
+export function isHubConfigured(): boolean {
+  return !!process.env.TIER_AGENT_HUB_URL && !!process.env.TIER_AGENT_API_KEY;
+}

@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.next/
+tsconfig.tsbuildinfo
+
+# Environment
+.env
+.env.local
+
+# App config
+assist-config.json
+credentials/
+
+# Runtime
+*.pid
+*.log
+.tier-agent/
+.session-cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo

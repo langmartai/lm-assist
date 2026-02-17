@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0ea5e9;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#6366f1;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#7dd3fc;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#818cf8;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="60" cy="60" r="56" fill="url(#bgGrad)"/>
+
+  <!-- Outer ring -->
+  <circle cx="60" cy="60" r="52" fill="none" stroke="#7dd3fc" stroke-width="2" opacity="0.5"/>
+
+  <!-- Terminal prompt bracket >_ -->
+  <path d="M30 42 L48 58 L30 74" fill="none" stroke="white" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="52" y1="74" x2="72" y2="74" stroke="white" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- Cloud shape (top-right) representing cloud connectivity -->
+  <path d="M78 32 C74 24, 84 18, 90 24 C94 20, 102 22, 102 28 C108 28, 110 34, 106 38 L78 38 C74 38, 72 34, 78 32 Z" fill="url(#accentGrad)" stroke="white" stroke-width="1.5"/>
+
+  <!-- Uplink signal arcs from terminal to cloud -->
+  <path d="M68 52 C72 46, 74 42, 76 38" fill="none" stroke="white" stroke-width="1.5" opacity="0.7" stroke-linecap="round"/>
+  <circle cx="68" cy="54" r="2.5" fill="white" opacity="0.8"/>
+
+  <!-- Connection dots (network effect, matching LangMart style) -->
+  <circle cx="88" cy="55" r="4" fill="url(#accentGrad)" stroke="white" stroke-width="1.5"/>
+  <circle cx="95" cy="70" r="3" fill="url(#accentGrad)" stroke="white" stroke-width="1.5"/>
+  <circle cx="82" cy="78" r="3.5" fill="url(#accentGrad)" stroke="white" stroke-width="1.5"/>
+
+  <!-- Connection lines from cloud/dots -->
+  <line x1="90" y1="38" x2="88" y2="51" stroke="white" stroke-width="1.5" opacity="0.6"/>
+  <line x1="88" y1="59" x2="95" y2="67" stroke="white" stroke-width="1.5" opacity="0.5"/>
+  <line x1="88" y1="59" x2="82" y2="74" stroke="white" stroke-width="1.5" opacity="0.5"/>
+
+  <!-- Small ambient dots -->
+  <circle cx="78" cy="48" r="1.5" fill="white" opacity="0.5"/>
+  <circle cx="96" cy="62" r="1.5" fill="white" opacity="0.4"/>
+</svg>

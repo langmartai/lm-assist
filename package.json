@@ -1,0 +1,12 @@
+{
+  "name": "lm-assist",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["core", "web"],
+  "scripts": {
+    "build:core": "cd core && npm run build",
+    "build:web": "cd web && npm run build",
+    "start": "./core.sh start",
+    "stop": "./core.sh stop"
+  }
+}

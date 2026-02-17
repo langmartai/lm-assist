@@ -1,0 +1,36 @@
+{
+  "name": "lm-assist-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack -p 3848",
+    "build": "next build",
+    "start": "next start -p 3848",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@types/dompurify": "^3.0.5",
+    "clsx": "^2.1.1",
+    "dompurify": "^3.3.1",
+    "lucide-react": "^0.552.0",
+    "mermaid": "^11.12.2",
+    "next": "^16.1.1",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "^3.4.0",
+    "zustand": "^5.0.11"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "15.5.4",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
