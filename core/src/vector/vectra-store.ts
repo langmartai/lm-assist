@@ -9,15 +9,15 @@
  * - 'session': embeddings from user prompts, results, tasks, file paths
  * - 'milestone': embeddings from milestone titles, facts, user prompts
  *
- * Persists to ~/.tier-agent/vector-store/
+ * Persists to ~/.lm-assist/vector-store/
  */
 
 import * as path from 'path';
-import * as os from 'os';
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import { LocalIndex } from 'vectra';
 import { getEmbedder, VECTOR_DIM } from './embedder';
+import { getDataDir } from '../utils/path-utils';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -55,9 +55,13 @@ export interface VectorSearchResult {
   phase?: number;
 }
 
+// ─── Helpers ──────────────────────────────────────────────────
+
+const yieldToEventLoop = () => new Promise<void>(r => setImmediate(r));
+
 // ─── Vectra Store ──────────────────────────────────────────────────
 
-const STORE_DIR = path.join(os.homedir(), '.tier-agent', 'vector-store');
+const STORE_DIR = path.join(getDataDir(), 'vector-store');
 
 export class VectraStore {
   private index: LocalIndex;
@@ -323,37 +327,45 @@ export class VectraStore {
     if (items.length === 0) return 0;
     await this.init();
 
-    // Embed outside the lock — this is the expensive CPU/GPU work
+    // Process in chunks: embed + write per chunk to bound memory usage.
+    // Each chunk embeds up to WRITE_CHUNK vectors then flushes to the index.
+    const WRITE_CHUNK = 200;
     const embedder = getEmbedder();
-    const texts = items.map(i => i.text);
-    const vectors = await embedder.embedBatch(texts);
+    let totalAdded = 0;
 
-    // Serialize the index write
-    await this.serializeWrite(async () => {
-      await this.index.beginUpdate();
-      try {
-        for (let i = 0; i < items.length; i++) {
-          await this.index.insertItem({
-            vector: vectors[i],
-            metadata: {
-              ...items[i].metadata,
-              text: items[i].metadata.text.length > 500
-                ? items[i].metadata.text.slice(0, 500)
-                : items[i].metadata.text,
-            },
-          });
+    for (let offset = 0; offset < items.length; offset += WRITE_CHUNK) {
+      const chunk = items.slice(offset, offset + WRITE_CHUNK);
+      const texts = chunk.map(i => i.text);
+      const vectors = await embedder.embedBatch(texts);
+
+      await this.serializeWrite(async () => {
+        await this.index.beginUpdate();
+        try {
+          for (let i = 0; i < chunk.length; i++) {
+            await this.index.insertItem({
+              vector: vectors[i],
+              metadata: {
+                ...chunk[i].metadata,
+                text: chunk[i].metadata.text.length > 500
+                  ? chunk[i].metadata.text.slice(0, 500)
+                  : chunk[i].metadata.text,
+              },
+            });
+          }
+          await this.index.endUpdate();
+        } catch (e) {
+          await this.index.cancelUpdate();
+          throw e;
         }
-        await this.index.endUpdate();
-      } catch (e) {
-        await this.index.cancelUpdate();
-        throw e;
-      }
-    });
+      });
+
+      totalAdded += chunk.length;
+    }
 
     // Mirror to BM25 index (non-blocking, non-fatal)
     this.mirrorToBM25(items);
 
-    return items.length;
+    return totalAdded;
   }
 
   /**
@@ -488,14 +500,51 @@ export class VectraStore {
     return items.length;
   }
 
+  /**
+   * Delete all vectors of a given type (e.g., 'knowledge', 'session', 'milestone').
+   * Much faster than deleting per-document — single scan, single update.
+   */
+  async deleteAllByType(type: 'session' | 'milestone' | 'knowledge'): Promise<number> {
+    await this.init();
+
+    const items = await this.index.listItemsByMetadata({ type });
+    if (items.length === 0) return 0;
+
+    await this.serializeWrite(async () => {
+      await this.index.beginUpdate();
+      try {
+        for (const item of items) {
+          await this.index.deleteItem(item.id);
+        }
+        await this.index.endUpdate();
+      } catch (e) {
+        await this.index.cancelUpdate();
+        throw e;
+      }
+    });
+
+    // Mirror delete to BM25
+    try {
+      const { getBM25Scorer } = await import('../search/bm25-scorer');
+      const bm25 = getBM25Scorer();
+      for (const item of items) {
+        const meta = item.metadata as unknown as VectorMetadata;
+        if (meta.knowledgeId) bm25.removeDocumentsByPrefix(meta.knowledgeId);
+      }
+    } catch { /* non-fatal */ }
+
+    return items.length;
+  }
+
   // ─── BM25 Mirroring ─────────────────────────────────────────────
 
   /**
    * Mirror a batch of items to the BM25 index.
    * Groups items by logical doc ID and concatenates texts before adding,
    * so a milestone with title + facts vectors becomes a single BM25 doc.
+   * Yields to the event loop every 50 docs to avoid blocking.
    */
-  private mirrorToBM25(items: Array<{ text: string; metadata: VectorMetadata }>): void {
+  private async mirrorToBM25(items: Array<{ text: string; metadata: VectorMetadata }>): Promise<void> {
     try {
       // Lazy require to avoid circular dependency at module load time
       const { getBM25Scorer } = require('../search/bm25-scorer');
@@ -524,6 +573,8 @@ export class VectraStore {
         }
       }
 
+      const YIELD_EVERY = 50;
+      let count = 0;
       for (const [id, { texts, meta }] of grouped) {
         bm25.addDocument(id, texts.join(' '), {
           type: meta.type,
@@ -534,6 +585,9 @@ export class VectraStore {
           projectPath: meta.projectPath,
           phase: meta.phase,
         });
+        if (++count % YIELD_EVERY === 0) {
+          await yieldToEventLoop();
+        }
       }
     } catch (err) {
       console.error('[VectraStore] BM25 mirror failed:', err);
@@ -557,20 +611,19 @@ export class VectraStore {
 
       console.log('[VectraStore] Bootstrapping BM25 from Vectra vectors...');
 
-      // Fetch all items by type
-      const [sessions, milestones, knowledge] = await Promise.all([
-        this.index.listItemsByMetadata({ type: 'session' }),
-        this.index.listItemsByMetadata({ type: 'milestone' }),
-        this.index.listItemsByMetadata({ type: 'knowledge' }),
-      ]);
+      // Single scan of all items (avoids 3× listItemsByMetadata calls,
+      // each of which re-filters the full 42MB+ index)
+      const allItems = await this.index.listItems();
+      await yieldToEventLoop();
 
-      const allItems = [...sessions, ...milestones, ...knowledge];
-
-      // Group by logical doc ID
+      // Group by logical doc ID, yielding periodically for large indices
       const grouped = new Map<string, { texts: string[]; meta: VectorMetadata }>();
+      const GROUPING_YIELD = 500;
 
-      for (const item of allItems) {
-        const meta = item.metadata as unknown as VectorMetadata;
+      for (let i = 0; i < allItems.length; i++) {
+        const meta = allItems[i].metadata as unknown as VectorMetadata;
+        if (meta.type !== 'session' && meta.type !== 'milestone' && meta.type !== 'knowledge') continue;
+
         let id: string;
         if (meta.type === 'knowledge') {
           id = meta.partId || meta.knowledgeId || '';
@@ -587,8 +640,16 @@ export class VectraStore {
         } else {
           grouped.set(id, { texts: [meta.text || ''], meta });
         }
+
+        if ((i + 1) % GROUPING_YIELD === 0) {
+          await yieldToEventLoop();
+        }
       }
 
+      // Add docs to BM25 in chunks, yielding to the event loop between chunks
+      // to avoid blocking the server for seconds on large indices
+      const YIELD_EVERY = 50;
+      let count = 0;
       for (const [id, { texts, meta }] of grouped) {
         bm25.addDocument(id, texts.join(' '), {
           type: meta.type,
@@ -599,6 +660,9 @@ export class VectraStore {
           projectPath: meta.projectPath,
           phase: meta.phase,
         });
+        if (++count % YIELD_EVERY === 0) {
+          await yieldToEventLoop();
+        }
       }
 
       console.log(`[VectraStore] BM25 bootstrap complete: ${grouped.size} docs from ${allItems.length} vectors`);

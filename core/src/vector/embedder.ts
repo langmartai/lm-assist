@@ -8,7 +8,7 @@
  */
 
 import * as path from 'path';
-import * as os from 'os';
+import { getDataDir } from '../utils/path-utils';
 
 // Dynamic import for ESM-only transformers.js
 let pipelineModule: any = null;
@@ -17,7 +17,7 @@ async function getTransformers(): Promise<any> {
   if (!pipelineModule) {
     const mod = await import('@huggingface/transformers');
     // Configure cache directory
-    mod.env.cacheDir = path.join(os.homedir(), '.tier-agent', 'models');
+    mod.env.cacheDir = path.join(getDataDir(), 'models');
     mod.env.allowRemoteModels = true;
     mod.env.useFSCache = true;
     pipelineModule = mod;
@@ -27,6 +27,8 @@ async function getTransformers(): Promise<any> {
 
 const MODEL_NAME = 'Xenova/all-MiniLM-L6-v2';
 const VECTOR_DIM = 384;
+
+const yieldToEventLoop = () => new Promise<void>(r => setImmediate(r));
 
 export class Embedder {
   private extractor: any = null;
@@ -82,8 +84,8 @@ export class Embedder {
     await this.load();
 
     const results: number[][] = [];
-    // Process in small batches to avoid OOM
-    const BATCH_SIZE = 16;
+    // Process in batches — MiniLM is small enough for larger batches
+    const BATCH_SIZE = 64;
 
     for (let i = 0; i < texts.length; i += BATCH_SIZE) {
       const batch = texts.slice(i, i + BATCH_SIZE).map(t =>
@@ -101,6 +103,11 @@ export class Embedder {
       for (let j = 0; j < batch.length; j++) {
         const start = j * VECTOR_DIM;
         results.push(data.slice(start, start + VECTOR_DIM));
+      }
+
+      // Yield to event loop between batches to avoid blocking the server
+      if (i + BATCH_SIZE < texts.length) {
+        await yieldToEventLoop();
       }
     }
 
