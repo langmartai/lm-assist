@@ -206,11 +206,11 @@ check_build_status() {
 # Function to build project
 build_project() {
     echo -e "${BLUE}Building core...${NC}"
-    cd "$CORE_DIR"
 
-    # Check if node_modules exists
-    if [ ! -d "node_modules" ]; then
+    # Check if node_modules exists (workspace hoists to root)
+    if [ ! -d "$PROJECT_ROOT/node_modules" ]; then
         echo -e "${YELLOW}Installing dependencies...${NC}"
+        cd "$PROJECT_ROOT"
         npm install > "$BUILD_LOG" 2>&1
         if [ $? -ne 0 ]; then
             echo -e "${RED}npm install failed. Check $BUILD_LOG${NC}"
@@ -219,6 +219,7 @@ build_project() {
     fi
 
     # Build
+    cd "$CORE_DIR"
     echo -e "${BLUE}Compiling TypeScript...${NC}"
     npm run build >> "$BUILD_LOG" 2>&1
     if [ $? -eq 0 ]; then
@@ -233,9 +234,8 @@ build_project() {
 # Function to clean and rebuild
 clean_build() {
     echo -e "${BLUE}Cleaning build artifacts...${NC}"
-    cd "$CORE_DIR"
-    rm -rf dist/
-    rm -rf node_modules/
+    rm -rf "$CORE_DIR/dist/"
+    rm -rf "$PROJECT_ROOT/node_modules/"
     echo -e "${GREEN}Cleaned${NC}"
     build_project
 }
@@ -305,23 +305,37 @@ stop_core() {
     echo -e "${BLUE}Stopping Core API...${NC}"
 
     local pid=$(get_process_pid "$CORE_PID_FILE" "$API_PORT")
+    local stopped=false
 
-    if [ -z "$pid" ]; then
-        echo -e "${YELLOW}Core API is not running${NC}"
-        rm -f "$CORE_PID_FILE"
-        return 0
+    if [ -n "$pid" ]; then
+        kill_process_tree "$pid" TERM
+        sleep 1
+
+        # Force kill if still running
+        if kill -0 "$pid" 2>/dev/null; then
+            echo -e "${YELLOW}   Process didn't terminate gracefully, forcing...${NC}"
+            kill_process_tree "$pid" KILL
+        fi
+        stopped=true
     fi
 
-    kill "$pid" 2>/dev/null
-    sleep 1
-
-    # Force kill if still running
-    if kill -0 "$pid" 2>/dev/null; then
-        kill -9 "$pid" 2>/dev/null
-    fi
+    # Kill anything still holding the port
+    local port_pids=$(lsof -i ":$API_PORT" -t 2>/dev/null)
+    for port_pid in $port_pids; do
+        if [ -n "$port_pid" ]; then
+            echo -e "${YELLOW}   Killing process on port $API_PORT: $port_pid${NC}"
+            kill -9 "$port_pid" 2>/dev/null
+            stopped=true
+        fi
+    done
 
     rm -f "$CORE_PID_FILE"
-    echo -e "${GREEN}Core API stopped${NC}"
+
+    if [ "$stopped" = true ]; then
+        echo -e "${GREEN}Core API stopped${NC}"
+    else
+        echo -e "${YELLOW}Core API was not running${NC}"
+    fi
 }
 
 # Function to restart Core API server
@@ -354,12 +368,13 @@ restart_core() {
 
 # Function to check web dependencies
 check_web_deps() {
-    if [ ! -d "$WEB_DIR/node_modules" ]; then
-        echo -e "${YELLOW}Installing web dependencies...${NC}"
-        cd "$WEB_DIR"
+    # Workspace hoists node_modules to root; check there
+    if [ ! -d "$PROJECT_ROOT/node_modules" ]; then
+        echo -e "${YELLOW}Installing dependencies...${NC}"
+        cd "$PROJECT_ROOT"
         npm install > /dev/null 2>&1
         if [ $? -ne 0 ]; then
-            echo -e "${RED}Failed to install web dependencies${NC}"
+            echo -e "${RED}Failed to install dependencies${NC}"
             return 1
         fi
     fi
@@ -393,6 +408,16 @@ start_web() {
     check_web_deps || return 1
 
     cd "$WEB_DIR"
+
+    # Check if Next.js production build exists
+    if [ ! -d ".next" ]; then
+        echo -e "${YELLOW}No production build found. Building web...${NC}"
+        npx next build > "$WEB_LOG" 2>&1
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}Web build failed. Check $WEB_LOG${NC}"
+            return 1
+        fi
+    fi
 
     # Start the production server
     nohup npx next start -p $WEB_PORT > "$WEB_LOG" 2>&1 &
