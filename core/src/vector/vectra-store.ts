@@ -227,7 +227,7 @@ export class VectraStore {
     if (items.length === 0) return 0;
     await this.init();
 
-    const WRITE_CHUNK = 200;
+    const WRITE_CHUNK = 50;
     const embedder = getEmbedder();
     let totalAdded = 0;
 
@@ -411,6 +411,8 @@ export class VectraStore {
         }
       }
 
+      const yieldEvery = 50;
+      let count = 0;
       for (const [id, { texts, meta }] of grouped) {
         bm25.addDocument(id, texts.join(' '), {
           type: meta.type,
@@ -421,6 +423,9 @@ export class VectraStore {
           projectPath: meta.projectPath,
           phase: meta.phase,
         });
+        if (++count % yieldEvery === 0) {
+          await new Promise<void>(r => setImmediate(r));
+        }
       }
     } catch (err) {
       console.error('[VectorStore] BM25 mirror failed:', err);
@@ -474,7 +479,8 @@ export class VectraStore {
         }
       }
 
-      // Add docs to BM25 (LMDB writes are fast sync ops)
+      // Add docs to BM25, yielding every 50 to keep the event loop responsive
+      let count = 0;
       for (const [id, { texts, meta }] of grouped) {
         bm25.addDocument(id, texts.join(' '), {
           type: meta.type,
@@ -485,6 +491,9 @@ export class VectraStore {
           projectPath: meta.projectPath,
           phase: meta.phase,
         });
+        if (++count % 50 === 0) {
+          await new Promise<void>(r => setImmediate(r));
+        }
       }
 
       console.log(`[VectorStore] BM25 bootstrap complete: ${grouped.size} docs from ${allRows.length} vectors`);
