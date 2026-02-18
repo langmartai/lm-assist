@@ -1,15 +1,56 @@
 {
-  "name": "lm-assist",
+  "name": "@langmartai/lm-assist",
   "version": "0.1.0",
   "description": "LM Assistant - Web UI for managing Claude Code sessions with backend API for session management, milestones, knowledge, architecture, and hub connectivity",
   "license": "AGPL-3.0-or-later",
-  "author": "langmartai",
-  "private": true,
+  "author": {
+    "name": "langmartai",
+    "url": "https://github.com/langmartai/lm-assist"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/langmartai/lm-assist.git"
+  },
+  "bugs": {
+    "url": "https://github.com/langmartai/lm-assist/issues"
+  },
+  "homepage": "https://github.com/langmartai/lm-assist#readme",
+  "keywords": [
+    "claude-code",
+    "session-management",
+    "knowledge-base",
+    "milestones",
+    "architecture",
+    "ai-assistant"
+  ],
+  "bin": {
+    "lm-assist": "./bin/lm-assist.js"
+  },
+  "main": "./core/dist/index.js",
+  "files": [
+    "core/dist",
+    "web/.next",
+    "web/public",
+    "core.sh",
+    "bin",
+    "LICENSE",
+    "README.md",
+    ".env.example"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "workspaces": ["core", "web"],
   "scripts": {
     "build:core": "cd core && npm run build",
     "build:web": "cd web && npm run build",
+    "build": "npm run build:core && npm run build:web",
     "start": "./core.sh start",
-    "stop": "./core.sh stop"
+    "stop": "./core.sh stop",
+    "restart": "./core.sh restart",
+    "prepare": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

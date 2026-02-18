@@ -1,0 +1,55 @@
+# Development
+node_modules/
+.env
+.env.local
+.env.production
+assist-config.json
+credentials/
+
+# Build artifacts (keep dist)
+.next/
+*.tsbuildinfo
+
+# Git
+.git
+.gitignore
+.github/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime
+*.pid
+*.log
+.tier-agent/
+.session-cache/
+
+# Testing
+*.test.ts
+*.test.js
+jest.config.js
+vitest.config.ts
+
+# Source maps (dev only)
+*.map
+src/
+
+# Documentation (dev)
+CLAUDE.md
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Misc
+.npmrc
+.prettierrc
+tsconfig.json
+webpack.config.js
