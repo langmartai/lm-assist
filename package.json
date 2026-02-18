@@ -1,5 +1,5 @@
 {
-  "name": "@langmartai/lm-assist",
+  "name": "lm-assist",
   "version": "0.1.0",
   "description": "LM Assistant - Web UI for managing Claude Code sessions with backend API for session management, milestones, knowledge, architecture, and hub connectivity",
   "license": "AGPL-3.0-or-later",
@@ -51,6 +51,7 @@
     "prepare": "npm run build"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }
