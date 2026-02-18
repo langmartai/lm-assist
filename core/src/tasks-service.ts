@@ -226,11 +226,24 @@ export class TasksService {
         // Check if this list ID is a session ID
         const sessionInfo = this.getSessionInfo(entry.name);
 
-        // Get last user message from session if available
+        // Get last user message from session cache (cheap LMDB lookup)
         let lastUserMessage: string | undefined;
-        if (sessionInfo && this.sessionStore) {
+        if (sessionInfo) {
           try {
-            lastUserMessage = await this.getLastUserMessageForSession(entry.name, sessionInfo.projectPath);
+            const { getSessionCache, isRealUserPrompt } = require('./session-cache');
+            const sessionCache = getSessionCache();
+            const cacheData = sessionCache.getSessionDataFromMemory(sessionInfo.filePath)
+              || sessionCache.getSessionDataSync(sessionInfo.filePath);
+            if (cacheData && cacheData.userPrompts.length > 0) {
+              const realPrompts = cacheData.userPrompts.filter(isRealUserPrompt);
+              const lastPrompt = realPrompts[realPrompts.length - 1];
+              if (lastPrompt?.text) {
+                const words = lastPrompt.text.split(/\s+/);
+                lastUserMessage = words.length > 100
+                  ? words.slice(0, 100).join(' ') + '...'
+                  : lastPrompt.text;
+              }
+            }
           } catch {
             // Ignore errors, just don't include the message
           }
