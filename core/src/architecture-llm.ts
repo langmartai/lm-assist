@@ -698,6 +698,7 @@ export async function deltaUpdateArchitectureModel(
         model: llmModel,
         maxTurns: 1,
         permissionMode: 'bypassPermissions',
+        cwd: getDataDir(),
         disallowedTools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit'],
         settingSources: [],
       }),

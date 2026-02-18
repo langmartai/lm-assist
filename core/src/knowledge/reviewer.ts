@@ -15,6 +15,7 @@
 import { getKnowledgeStore } from './store';
 import { renderKnowledgeMd } from './parser';
 import { REVIEWER_SYSTEM_PROMPT } from './prompts';
+import { getDataDir } from '../utils/path-utils';
 
 const DEFAULT_API_BASE_URL = 'http://localhost:3100';
 const DEFAULT_TIMEOUT = 180_000;
@@ -213,6 +214,7 @@ export class KnowledgeReviewer {
           model: 'sonnet',
           maxTurns: 1,
           permissionMode: 'bypassPermissions',
+          cwd: getDataDir(),
           disallowedTools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit'],
           settingSources: [],
         }),

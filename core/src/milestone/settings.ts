@@ -13,6 +13,7 @@ export interface MilestoneSettings {
   phase2Model: Phase2Model;       // model for Phase 2 enrichment
   architectureModel: Phase2Model; // model for architecture generation (defaults to sonnet)
   excludedPaths: string[];        // project paths to exclude from milestone processing
+  phase2MinBatch: number;         // min milestones queued before auto-starting Phase 2 (default: 5)
 }
 
 // ── Constants ──────────────────────────────────────────
@@ -27,6 +28,7 @@ const DEFAULTS: MilestoneSettings = {
   phase2Model: 'haiku',
   architectureModel: 'sonnet',
   excludedPaths: [MILESTONE_DIR],
+  phase2MinBatch: 50,
 };
 
 // Legacy location for excluded projects
@@ -82,6 +84,9 @@ export function getMilestoneSettings(): MilestoneSettings {
       phase2Model: isValidModel(data.phase2Model) ? data.phase2Model : DEFAULTS.phase2Model,
       architectureModel: isValidModel(data.architectureModel) ? data.architectureModel : DEFAULTS.architectureModel,
       excludedPaths: Array.isArray(data.excludedPaths) ? data.excludedPaths : DEFAULTS.excludedPaths,
+      phase2MinBatch: typeof data.phase2MinBatch === 'number' && data.phase2MinBatch >= 1
+        ? Math.floor(data.phase2MinBatch)
+        : DEFAULTS.phase2MinBatch,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -117,6 +122,9 @@ export function saveMilestoneSettings(partial: Partial<MilestoneSettings>): Mile
       ? partial.architectureModel
       : current.architectureModel,
     excludedPaths,
+    phase2MinBatch: typeof partial.phase2MinBatch === 'number' && partial.phase2MinBatch >= 1
+      ? Math.floor(partial.phase2MinBatch)
+      : current.phase2MinBatch,
   };
 
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(merged, null, 2));

@@ -40,6 +40,7 @@ export function createMilestoneSettingsRoutes(_ctx: RouteContext): RouteHandler[
           phase2Model: body.phase2Model,
           architectureModel: body.architectureModel,
           excludedPaths: body.excludedPaths,
+          phase2MinBatch: body.phase2MinBatch,
         });
 
         return { success: true, data: updated };

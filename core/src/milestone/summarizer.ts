@@ -442,7 +442,17 @@ export class MilestoneSummarizer {
 
     if (this.processing) return; // Already running — while loop will pick up new items
 
-    // Debounce: reset timer on each call so milestones accumulate
+    // Only start/reset the debounce once we've accumulated enough milestones.
+    // This prevents ad-hoc Phase 2 calls for small session changes — milestones
+    // accumulate silently until the configured minimum batch size is reached.
+    const settings = getMilestoneSettings();
+    const minBatch = settings.phase2MinBatch;
+    if (this.queue.length < minBatch) {
+      console.error(`[Summarizer] Queued ${this.queue.length}/${minBatch} milestones — waiting for minimum batch before starting Phase 2`);
+      return;
+    }
+
+    // Debounce: reset timer on each call so milestones continue to accumulate
     if (this.enqueueDebounceTimer) {
       clearTimeout(this.enqueueDebounceTimer);
     }
@@ -1226,6 +1236,7 @@ export class MilestoneSummarizer {
           model: this.getModel(),
           maxTurns: 1,
           permissionMode: 'bypassPermissions',
+          cwd: getDataDir(),
           disallowedTools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit'],
           settingSources: [],
         }),
