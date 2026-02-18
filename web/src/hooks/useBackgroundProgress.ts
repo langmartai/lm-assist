@@ -33,6 +33,15 @@ interface KnowledgeGenerateStats {
 }
 
 interface MilestonePipelineStatus {
+  milestones?: {
+    total: number;
+    phase1: number;
+    phase2: number;
+    inRange: number;
+    inRangePhase1: number;
+    inRangePhase2: number;
+  };
+  scanRangeDays?: number | null;
   vectors: {
     total: number;
     session: number;
@@ -173,15 +182,27 @@ export function useBackgroundProgress() {
 
   const milestone = useMemo((): ProcessStatus => {
     const p = pipelineData?.pipeline;
-    if (!p) return { state: 'idle', percent: 0, label: 'Milestone', description: MILESTONE_DESC };
+    const m = pipelineData?.milestones;
+    const hasRange = pipelineData?.scanRangeDays !== null && pipelineData?.scanRangeDays !== undefined;
+    const detected = m ? (hasRange ? m.inRange : m.total) : 0;
+    const enriched = m ? (hasRange ? m.inRangePhase2 : m.phase2) : 0;
+    const enrichPct = detected > 0 ? Math.round((enriched / detected) * 100) : 0;
+    // Compact label shown directly in the topbar chip
+    const countLabel = detected > 0 ? `${detected} / ${enriched}` : 'Milestone';
+    const countDetail = detected > 0 ? `${detected} detected · ${enriched} enriched (${enrichPct}%)` : undefined;
+
+    if (!p) return { state: 'idle', percent: 0, label: countLabel, description: MILESTONE_DESC, detail: countDetail };
+
     if (p.status === 'processing') {
       const total = p.queueSize + p.processed;
       const percent = total > 0 ? Math.round((p.processed / total) * 100) : 0;
-      return { state: 'running', percent, label: 'Milestone', description: MILESTONE_DESC, detail: `${p.processed}/${total} processed, ${p.vectorsIndexed} vectors` };
+      return { state: 'running', percent, label: countLabel, description: MILESTONE_DESC, detail: `${p.processed}/${total} enriching · ${countDetail ?? ''}`.trim().replace(/·\s*$/, '') };
+    }
+    if (detected > 0) {
+      return { state: 'complete', percent: enrichPct, label: countLabel, description: MILESTONE_DESC, detail: countDetail };
     }
     if (p.processed > 0 || p.errors > 0 || p.vectorErrors > 0) {
       const totalErrors = p.errors + p.vectorErrors;
-      // Only show error state while actively processing; when idle, treat as complete with error detail
       const state: ProcessState = p.status === 'processing' && totalErrors > 0 ? 'error' : 'complete';
       const parts: string[] = [];
       if (p.processed > 0) parts.push(`${p.processed} processed`);

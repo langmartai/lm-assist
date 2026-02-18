@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Milestone, MilestoneIndex } from './types';
-import { getMilestoneSettings } from './settings';
+import { getMilestoneSettings, isSessionInScanRange } from './settings';
 import { getDataDir } from '../utils/path-utils';
 
 const MILESTONES_DIR = path.join(getDataDir(), 'milestones');
@@ -245,7 +245,13 @@ export function getMilestoneStore(): MilestoneStore {
  */
 export function handleSessionChangeForMilestones(
   sessionId: string,
-  cacheData: { numTurns: number; cwd?: string; filePath?: string },
+  cacheData: {
+    numTurns: number;
+    cwd?: string;
+    filePath?: string;
+    responses?: Array<{ turnIndex: number; text: string; isApiError?: boolean }>;
+    thinkingBlocks?: Array<{ turnIndex: number; thinking: string }>;
+  },
   logPrefix = '[Milestone]'
 ): void {
   const settings = getMilestoneSettings();
@@ -274,6 +280,29 @@ export function handleSessionChangeForMilestones(
             }
           }
           store.saveMilestones(sessionId, updated);
+
+          // Async vector indexing for NEW Phase 1 milestones only (fire-and-forget)
+          // Phase 2 vectors are handled separately by setOnPhase2Complete callback.
+          // Only index milestones with indexes not present in `existing` to prevent
+          // duplicate vectors accumulating on every session change.
+          const existingIndexes = new Set(existing.map((m: any) => m.index));
+          const newPhase1ForVectors = updated.filter(
+            (m: any) => m.phase === 1 && !existingIndexes.has(m.index)
+          );
+          if (newPhase1ForVectors.length > 0) {
+            (async () => {
+              try {
+                const { extractMilestoneVectors } = require('../vector/indexer');
+                const { getVectraStore } = require('../vector/vectra-store');
+                const vectra = getVectraStore();
+                const vectors = newPhase1ForVectors.flatMap((m: any) =>
+                  extractMilestoneVectors(m, cacheData.cwd || '', cacheData)
+                );
+                if (vectors.length > 0) await vectra.addVectors(vectors);
+              } catch { /* non-fatal — vectra may not be initialized yet */ }
+            })();
+          }
+
           const p1 = updated.filter((m: any) => m.phase === 1).length;
           const p2 = updated.filter((m: any) => m.phase === 2).length;
           const sessionPhase: 1 | 2 = p1 === 0 ? 2 : 1;
@@ -287,10 +316,13 @@ export function handleSessionChangeForMilestones(
           console.error(`${logPrefix} Re-extracted milestones for ${sessionId}: ${updated.length} total (${p1} P1, ${p2} P2)`);
 
           const newPhase1 = updated.filter((m: any) => m.phase === 1);
-          if (newPhase1.length > 0) {
-            const { getMilestoneSummarizer } = require('./summarizer');
-            const summarizer = getMilestoneSummarizer();
-            summarizer.enqueueMilestones(newPhase1, cacheData.cwd || '');
+          if (newPhase1.length > 0 && settings.autoEnrich) {
+            // Only auto-enqueue sessions within the configured scan range
+            if (latestTs === 0 || isSessionInScanRange(latestTs)) {
+              const { getMilestoneSummarizer } = require('./summarizer');
+              const summarizer = getMilestoneSummarizer();
+              summarizer.enqueueMilestones(newPhase1, cacheData.cwd || '');
+            }
           }
         } else {
           store.updateIndex(sessionId, 2, 0, 0, 0, cacheData.numTurns);

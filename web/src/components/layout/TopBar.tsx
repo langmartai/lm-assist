@@ -3,24 +3,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Search, ChevronRight, Globe, Monitor, CloudOff, Maximize2, LogOut, Info } from 'lucide-react';
+import { Search, Globe, Monitor, CloudOff, Maximize2, LogOut, Info } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { detectProxyInfo } from '@/lib/api-client';
-import { useMachineContext } from '@/contexts/MachineContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useSearch } from '@/contexts/SearchContext';
 import { MachineDropdown } from './MachineDropdown';
 import { BackgroundProgress } from './BackgroundProgress';
 
-const pageNames: Record<string, string> = {
-  '/session-dashboard': 'Session Dashboard',
-  '/machines': 'Machines',
-  '/projects': 'Projects',
-  '/sessions': 'Sessions',
-  '/tasks': 'Tasks',
-  '/search': 'Search',
-  '/settings': 'Settings',
-};
 
 /** Extract initials from a display name or email */
 function getInitials(name?: string, email?: string): string {
@@ -36,8 +26,7 @@ function getInitials(name?: string, email?: string): string {
 export function TopBar() {
   const pathname = usePathname();
   const router = useRouter();
-  const { proxy, hubUser, hubConnected, localGatewayId } = useAppMode();
-  const { selectedMachine, isSingleMachine } = useMachineContext();
+  const { proxy, hubUser, localGatewayId } = useAppMode();
   const { theme, toggleTheme } = useTheme();
   const { open: openSearch } = useSearch();
   const [mounted, setMounted] = useState(false);
@@ -48,8 +37,6 @@ export function TopBar() {
   const [lanAccessToken, setLanAccessToken] = useState<string | null>(null);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
-  const basePath = '/' + (pathname.split('/')[1] || 'session-dashboard');
-  const pageName = pageNames[basePath] || 'Session Dashboard';
 
   useEffect(() => {
     setMounted(true);
@@ -108,17 +95,6 @@ export function TopBar() {
 
   return (
     <div className="topbar">
-      <div className="topbar-breadcrumb">
-        <span>
-          {selectedMachine
-            ? selectedMachine.hostname
-            : isSingleMachine && !hubConnected
-              ? 'Local'
-              : 'All Machines'}
-        </span>
-        <ChevronRight size={12} />
-        <span className="active">{pageName}</span>
-      </div>
 
       {mounted && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

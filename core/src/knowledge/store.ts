@@ -33,7 +33,7 @@ const COMMENTS_DIR = path.join(KNOWLEDGE_DIR, 'comments');
 const INDEX_FILE = path.join(KNOWLEDGE_DIR, 'index.json');
 
 export class KnowledgeStore {
-  private cache = new Map<string, { knowledge: Knowledge; lastAccessed: number }>();
+  private cache = new Map<string, { knowledge: Knowledge; lastAccessed: number; cachedMtimeMs: number }>();
   private index: KnowledgeIndex | null = null;
   private maxCacheSize = 100;
 
@@ -136,23 +136,35 @@ export class KnowledgeStore {
   // ─── Knowledge CRUD ──────────────────────────────────────────────────
 
   getKnowledge(id: string): Knowledge | null {
-    // Check cache
+    const filePath = this.knowledgePath(id);
+
+    // Check cache — but validate against file mtime so cross-process writes are picked up
     const cached = this.cache.get(id);
     if (cached) {
-      cached.lastAccessed = Date.now();
-      return cached.knowledge;
+      try {
+        const stat = fs.statSync(filePath);
+        if (stat.mtimeMs <= cached.cachedMtimeMs) {
+          cached.lastAccessed = Date.now();
+          return cached.knowledge;
+        }
+        // File is newer than cached version — fall through to reload
+      } catch {
+        // File disappeared; evict and return null
+        this.cache.delete(id);
+        return null;
+      }
     }
 
     // Read from disk
-    const filePath = this.knowledgePath(id);
     if (!fs.existsSync(filePath)) return null;
 
     try {
+      const stat = fs.statSync(filePath);
       const md = fs.readFileSync(filePath, 'utf-8');
       const knowledge = parseKnowledgeMd(md);
       if (!knowledge) return null;
 
-      this.cache.set(id, { knowledge, lastAccessed: Date.now() });
+      this.cache.set(id, { knowledge, lastAccessed: Date.now(), cachedMtimeMs: stat.mtimeMs });
       this.evictIfNeeded();
 
       return knowledge;
@@ -388,11 +400,15 @@ export class KnowledgeStore {
   private saveKnowledge(knowledge: Knowledge): void {
     this.ensureDir();
 
+    const filePath = this.knowledgePath(knowledge.id);
     const md = renderKnowledgeMd(knowledge);
-    fs.writeFileSync(this.knowledgePath(knowledge.id), md);
+    fs.writeFileSync(filePath, md);
+
+    // Record the mtime right after writing so the cache entry is valid
+    const mtimeMs = fs.statSync(filePath).mtimeMs;
 
     // Update cache
-    this.cache.set(knowledge.id, { knowledge, lastAccessed: Date.now() });
+    this.cache.set(knowledge.id, { knowledge, lastAccessed: Date.now(), cachedMtimeMs: mtimeMs });
     this.evictIfNeeded();
 
     // Update index

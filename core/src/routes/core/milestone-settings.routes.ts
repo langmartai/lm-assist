@@ -35,6 +35,7 @@ export function createMilestoneSettingsRoutes(_ctx: RouteContext): RouteHandler[
 
         const updated = saveMilestoneSettings({
           enabled: body.enabled,
+          autoEnrich: body.autoEnrich,
           autoKnowledge: body.autoKnowledge,
           scanRangeDays: body.scanRangeDays,
           phase2Model: body.phase2Model,

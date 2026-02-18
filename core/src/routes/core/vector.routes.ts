@@ -133,8 +133,14 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
             }
 
             const { getMilestoneStore } = require('../../milestone/store');
+            const { getSessionCache } = require('../../session-cache');
             const milestoneStore = getMilestoneStore();
             const milestones = milestoneStore.getMilestones(sessionId);
+
+            // Get session cache data for richer Phase 1 assistant/thinking vectors
+            const sessionEntry = getSessionCache().getAllSessionsFromCache()
+              .find((s: any) => s.sessionId === sessionId);
+            const sessionCacheData = sessionEntry?.cacheData || null;
 
             const targetMilestones = indexes && indexes.length > 0
               ? milestones.filter((m: any) => indexes.includes(m.index))
@@ -142,7 +148,7 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
 
             const allVectors: Array<{ text: string; metadata: any }> = [];
             for (const m of targetMilestones) {
-              allVectors.push(...extractMilestoneVectors(m));
+              allVectors.push(...extractMilestoneVectors(m, undefined, sessionCacheData));
             }
 
             if (allVectors.length > 0) {
@@ -218,17 +224,25 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
           if (type === 'milestone') {
             const { getMilestoneStore } = require('../../milestone/store');
             const { extractMilestoneVectors } = require('../../vector/indexer');
+            const { getSessionCache } = require('../../session-cache');
             const milestoneStore = getMilestoneStore();
             const index = milestoneStore.getIndex();
             const sessionIds = Object.keys(index.sessions);
+
+            // Build sessionId → cacheData map for richer Phase 1 assistant/thinking vectors
+            const sessionCacheMap = new Map<string, any>();
+            for (const { sessionId: sid, cacheData: cd } of getSessionCache().getAllSessionsFromCache()) {
+              sessionCacheMap.set(sid, cd);
+            }
 
             // Collect all milestone vectors
             const allVectors: Array<{ text: string; metadata: any }> = [];
             let totalMilestones = 0;
             for (const sid of sessionIds) {
               const milestones = milestoneStore.getMilestones(sid);
+              const cacheData = sessionCacheMap.get(sid) || null;
               for (const m of milestones) {
-                allVectors.push(...extractMilestoneVectors(m));
+                allVectors.push(...extractMilestoneVectors(m, undefined, cacheData));
                 totalMilestones++;
               }
             }

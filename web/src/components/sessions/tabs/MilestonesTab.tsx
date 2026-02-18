@@ -26,6 +26,21 @@ function getTypeStyle(type: MilestoneType | null) {
   return typeColorMap[type];
 }
 
+const NOISY_LINE_RE = /^(p[12]|milestone\s*#?\d*|#\d+[\s\u2013\-]*#?\d*|\d+\s+tools?)$/i;
+
+/** Returns true if the prompt is a structural noise label (milestone boundary marker). */
+function isNoisyPrompt(prompt: string): boolean {
+  const trimmed = prompt.trim();
+  if (trimmed.length < 15) return true;
+  const lines = trimmed.split('\n').map(l => l.trim()).filter(Boolean);
+  return lines.length > 0 && lines.every(l => NOISY_LINE_RE.test(l));
+}
+
+/** Returns the first prompt that is not structural noise, or null. */
+function firstMeaningfulPrompt(prompts: string[]): string | null {
+  return prompts.find(p => !isNoisyPrompt(p)) ?? null;
+}
+
 export function MilestonesTab({ sessionId, machineId, onMilestoneCount, highlightMilestoneId }: MilestonesTabProps) {
   const { apiClient } = useAppMode();
   const [milestones, setMilestones] = useState<Milestone[]>([]);
@@ -177,6 +192,8 @@ export function MilestonesTab({ sessionId, machineId, onMilestoneCount, highligh
             const totalTools = Object.values(m.toolUseSummary).reduce((a, b) => a + b, 0);
 
             const isHighlighted = highlightedId === m.id;
+            const meaningfulPrompt = firstMeaningfulPrompt(m.userPrompts);
+            const cleanPrompts = m.userPrompts.filter(p => !isNoisyPrompt(p));
 
             return (
               <div
@@ -221,7 +238,7 @@ export function MilestonesTab({ sessionId, machineId, onMilestoneCount, highligh
                     fontWeight: hasTitle ? 600 : 400,
                     color: hasTitle ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
                   }}>
-                    {hasTitle ? m.title : (m.userPrompts[0] || `Milestone #${m.index}`)}
+                    {hasTitle ? m.title : (meaningfulPrompt || `Milestone #${m.index}`)}
                   </span>
                   <span style={{
                     fontSize: 9, fontFamily: 'var(--font-mono)',
@@ -241,25 +258,35 @@ export function MilestonesTab({ sessionId, machineId, onMilestoneCount, highligh
                     <span className="truncate" style={{ flex: 1 }}>{m.description}</span>
                   ) : (
                     <>
-                      {m.filesModified.length > 0 && (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                          <FileText size={9} /> {m.filesModified.length} files
+                      {/* For P1 milestones: show a secondary prompt preview if the title prompt is short */}
+                      {!hasTitle && meaningfulPrompt && meaningfulPrompt.length > 60 && (
+                        <span className="truncate" style={{ flex: 1, fontStyle: 'italic' }}>
+                          {meaningfulPrompt.slice(0, 120)}{meaningfulPrompt.length > 120 ? '…' : ''}
                         </span>
                       )}
-                      {totalTools > 0 && (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                          <Wrench size={9} /> {totalTools} tools
-                        </span>
-                      )}
-                      {m.taskCompletions.length > 0 && (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                          <CheckCircle2 size={9} /> {m.taskCompletions.length} tasks
-                        </span>
-                      )}
-                      {m.subagentCount > 0 && (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                          <Cpu size={9} /> {m.subagentCount} agents
-                        </span>
+                      {(hasTitle || !meaningfulPrompt || meaningfulPrompt.length <= 60) && (
+                        <>
+                          {m.filesModified.length > 0 && (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                              <FileText size={9} /> {m.filesModified.length} files
+                            </span>
+                          )}
+                          {totalTools > 0 && (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                              <Wrench size={9} /> {totalTools} tools
+                            </span>
+                          )}
+                          {m.taskCompletions.length > 0 && (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                              <CheckCircle2 size={9} /> {m.taskCompletions.length} tasks
+                            </span>
+                          )}
+                          {m.subagentCount > 0 && (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                              <Cpu size={9} /> {m.subagentCount} agents
+                            </span>
+                          )}
+                        </>
                       )}
                     </>
                   )}
@@ -324,13 +351,13 @@ export function MilestonesTab({ sessionId, machineId, onMilestoneCount, highligh
                       </div>
                     )}
 
-                    {/* User prompts */}
-                    {m.userPrompts.length > 0 && (
+                    {/* User prompts (noisy structural labels filtered out) */}
+                    {cleanPrompts.length > 0 && (
                       <div style={{ marginBottom: 4 }}>
-                        <span style={{ fontWeight: 600, color: 'var(--color-text-secondary)', fontSize: 10 }}>User prompts:</span>
-                        {m.userPrompts.map((p, i) => (
+                        <span style={{ fontWeight: 600, color: 'var(--color-text-secondary)', fontSize: 10 }}>Prompts:</span>
+                        {cleanPrompts.map((p, i) => (
                           <div key={i} style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2, paddingLeft: 8, borderLeft: '2px solid var(--color-border-subtle)' }}>
-                            {p.length > 200 ? p.slice(0, 200) + '...' : p}
+                            {p.length > 300 ? p.slice(0, 300) + '…' : p}
                           </div>
                         ))}
                       </div>

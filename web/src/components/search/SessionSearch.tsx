@@ -188,8 +188,9 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
   const [loadingRecentKnowledge, setLoadingRecentKnowledge] = useState(false);
 
   // Search config: which result types to include
-  const [searchIncludeKnowledge, setSearchIncludeKnowledge] = useState(true);
-  const [searchIncludeMilestones, setSearchIncludeMilestones] = useState(false);
+  const [searchFilter, setSearchFilter] = useState<'knowledge' | 'milestones' | 'both'>('both');
+  const searchIncludeKnowledge = searchFilter === 'knowledge' || searchFilter === 'both';
+  const searchIncludeMilestones = searchFilter === 'milestones' || searchFilter === 'both';
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -209,8 +210,12 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
       .then(r => r.ok ? r.json() : null)
       .then(json => {
         if (json?.data) {
-          if (typeof json.data.searchIncludeKnowledge === 'boolean') setSearchIncludeKnowledge(json.data.searchIncludeKnowledge);
-          if (typeof json.data.searchIncludeMilestones === 'boolean') setSearchIncludeMilestones(json.data.searchIncludeMilestones);
+          const inclK = typeof json.data.searchIncludeKnowledge === 'boolean' ? json.data.searchIncludeKnowledge : true;
+          const inclM = typeof json.data.searchIncludeMilestones === 'boolean' ? json.data.searchIncludeMilestones : true;
+          if (inclK && inclM) setSearchFilter('both');
+          else if (inclK) setSearchFilter('knowledge');
+          else if (inclM) setSearchFilter('milestones');
+          else setSearchFilter('both');
         }
       })
       .catch(() => {});
@@ -359,7 +364,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
     if (query.trim()) {
       doSearch(query, scope);
     }
-  }, [scope, directory]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scope, directory, searchFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load session preview
   useEffect(() => {
@@ -583,6 +588,30 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
             </button>
           </div>
         )}
+
+        {/* Filter toggle: Knowledge / Milestones / Both */}
+        <div style={{ display: 'flex', gap: 2, borderRight: '1px solid var(--color-border-subtle)', paddingRight: 6, marginRight: 2 }}>
+          {(['both', 'knowledge', 'milestones'] as const).map(f => (
+            <button
+              key={f}
+              onClick={() => setSearchFilter(f)}
+              style={{
+                padding: '4px 8px',
+                fontSize: 10,
+                fontWeight: 500,
+                borderRadius: 'var(--radius-sm)',
+                border: 'none',
+                cursor: 'pointer',
+                background: searchFilter === f ? 'var(--color-accent-glow)' : 'transparent',
+                color: searchFilter === f ? 'var(--color-accent)' : 'var(--color-text-tertiary)',
+                transition: 'all 100ms ease',
+                textTransform: 'capitalize',
+              }}
+            >
+              {f === 'both' ? 'Both' : f === 'knowledge' ? 'Knowledge' : 'Milestones'}
+            </button>
+          ))}
+        </div>
 
         {/* Scope selector */}
         <div style={{ display: 'flex', gap: 2 }}>

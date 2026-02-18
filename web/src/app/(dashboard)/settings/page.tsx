@@ -52,6 +52,7 @@ type SettingsTab = 'connection' | 'terminal' | 'claude-code' | 'milestones';
 
 interface MilestoneSettingsData {
   enabled: boolean;
+  autoEnrich: boolean;
   autoKnowledge: boolean;
   scanRangeDays: number | null;
   phase2Model: 'haiku' | 'sonnet' | 'opus';
@@ -2694,9 +2695,15 @@ export default function SettingsPage() {
                           const outOfRange = pipelineStatus.milestones.total - (hasRange ? pipelineStatus.milestones.inRange : pipelineStatus.milestones.total);
                           return (
                             <>
-                              <div style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
-                                {enriched} of {total} milestones enriched ({pct}%)
-                                {pending > 0 && <span style={{ color: 'var(--color-text-tertiary)' }}> · {pending} pending</span>}
+                              <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+                                <span>{total} detected</span>
+                                <span style={{ color: 'var(--color-text-tertiary)' }}>·</span>
+                                <span style={{ color: 'var(--color-status-green)' }}>{enriched} enriched</span>
+                                {total > 0 && <span style={{ color: 'var(--color-text-tertiary)' }}>({pct}%)</span>}
+                                {pending > 0 && (
+                                  <><span style={{ color: 'var(--color-text-tertiary)' }}>·</span>
+                                  <span style={{ color: 'var(--color-text-tertiary)' }}>{pending} pending</span></>
+                                )}
                               </div>
                               <div style={{
                                 height: 4, borderRadius: 2, overflow: 'hidden',
@@ -2742,15 +2749,24 @@ export default function SettingsPage() {
                           </div>
                         )}
 
-                        {/* Auto Processing Toggle */}
+                        {/* Auto Processing Toggles */}
                         <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
                           <ToggleRow
-                            label="Auto milestone processing"
-                            description="Automatically extract and enrich milestones when sessions change."
+                            label="Auto detection"
+                            description="Automatically detect milestones when sessions change."
                             checked={milestoneSettings.enabled !== false}
                             onChange={(checked) => {
                               setMilestoneSettings({ ...milestoneSettings, enabled: checked });
                               saveMilestoneSettings({ enabled: checked });
+                            }}
+                          />
+                          <ToggleRow
+                            label="Auto enrichment"
+                            description="Use AI to enrich detected milestones and add to vector search (only for sessions in scan range)."
+                            checked={milestoneSettings.autoEnrich === true}
+                            onChange={(checked) => {
+                              setMilestoneSettings({ ...milestoneSettings, autoEnrich: checked });
+                              saveMilestoneSettings({ autoEnrich: checked });
                             }}
                           />
                         </div>
@@ -2834,6 +2850,15 @@ export default function SettingsPage() {
                               </button>
                             );
                           })()}
+                          <button
+                            className="btn btn-secondary"
+                            onClick={handleExtract}
+                            disabled={isExtracting}
+                            style={{ padding: '6px 10px', fontSize: 11, gap: 4 }}
+                          >
+                            {isExtracting ? <Loader2 size={11} className="spin" /> : <Zap size={11} />}
+                            Scan
+                          </button>
                           <button
                             className="btn btn-secondary"
                             onClick={fetchPipelineStatus}

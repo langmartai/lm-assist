@@ -28,12 +28,14 @@ import { createPlansRoutes } from './plans.routes';
 import { createSessionDagRoutes } from './session-dag.routes';
 import { createContextRoutes } from './context.routes';
 import { createVectorRoutes } from './vector.routes';
+import { createAgentRoutes } from './agent.routes';
 
 /**
  * Create all core routes
  */
 export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
   return [
+    ...createAgentRoutes(ctx),
     ...createHealthRoutes(ctx),
     ...createSessionsRoutes(ctx),
     ...createSessionProjectsRoutes(ctx),

@@ -7,7 +7,8 @@ import { getDataDir } from '../utils/path-utils';
 export type Phase2Model = 'haiku' | 'sonnet' | 'opus';
 
 export interface MilestoneSettings {
-  enabled: boolean;               // enable/disable auto milestone processing (default: true)
+  enabled: boolean;               // enable/disable auto milestone detection (default: true)
+  autoEnrich: boolean;            // enable/disable auto LLM enrichment of detected milestones (default: false)
   autoKnowledge: boolean;         // enable/disable auto knowledge generation from explore agents (default: false)
   scanRangeDays: number | null;   // null = scan all sessions (default)
   phase2Model: Phase2Model;       // model for Phase 2 enrichment
@@ -22,7 +23,8 @@ const MILESTONE_DIR = path.join(getDataDir(), 'milestone');
 const SETTINGS_FILE = path.join(MILESTONE_DIR, 'settings.json');
 
 const DEFAULTS: MilestoneSettings = {
-  enabled: false,
+  enabled: true,
+  autoEnrich: false,
   autoKnowledge: true,
   scanRangeDays: 1,
   phase2Model: 'haiku',
@@ -79,6 +81,7 @@ export function getMilestoneSettings(): MilestoneSettings {
     const data = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
     const settings: MilestoneSettings = {
       enabled: typeof data.enabled === 'boolean' ? data.enabled : DEFAULTS.enabled,
+      autoEnrich: typeof data.autoEnrich === 'boolean' ? data.autoEnrich : DEFAULTS.autoEnrich,
       autoKnowledge: typeof data.autoKnowledge === 'boolean' ? data.autoKnowledge : DEFAULTS.autoKnowledge,
       scanRangeDays: data.scanRangeDays ?? DEFAULTS.scanRangeDays,
       phase2Model: isValidModel(data.phase2Model) ? data.phase2Model : DEFAULTS.phase2Model,
@@ -113,6 +116,7 @@ export function saveMilestoneSettings(partial: Partial<MilestoneSettings>): Mile
 
   const merged: MilestoneSettings = {
     enabled: typeof partial.enabled === 'boolean' ? partial.enabled : current.enabled,
+    autoEnrich: typeof partial.autoEnrich === 'boolean' ? partial.autoEnrich : current.autoEnrich,
     autoKnowledge: typeof partial.autoKnowledge === 'boolean' ? partial.autoKnowledge : current.autoKnowledge,
     scanRangeDays: partial.scanRangeDays !== undefined ? partial.scanRangeDays : current.scanRangeDays,
     phase2Model: partial.phase2Model !== undefined && isValidModel(partial.phase2Model)
