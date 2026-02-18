@@ -116,15 +116,22 @@ export class TierRestServer {
     try {
       const { getSessionCache } = require('./session-cache');
       const { handleSessionChangeForMilestones } = require('./milestone/store');
+      const { getMilestoneSettings } = require('./milestone/settings');
       const cache = getSessionCache();
 
       cache.onSessionChange((sessionId: string, cacheData: any) => {
         handleSessionChangeForMilestones(sessionId, cacheData, '[RestServer]');
       });
 
-      setImmediate(() => {
-        this.scanStaleMilestones(cache, handleSessionChangeForMilestones);
-      });
+      // Only run the staleness scan if milestone processing is enabled
+      const settings = getMilestoneSettings();
+      if (settings.enabled) {
+        setImmediate(() => {
+          this.scanStaleMilestones(cache, handleSessionChangeForMilestones);
+        });
+      } else {
+        console.log('Milestone auto-extraction disabled — skipping staleness scan');
+      }
 
       console.log('Milestone auto-extraction wired to session cache');
     } catch (err) {
