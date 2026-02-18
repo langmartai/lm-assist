@@ -1,5 +1,5 @@
 /**
- * Assist Navi Routes
+ * Assist Resources Routes
  *
  * File browser and log viewer for tier-agent-context (assist) system files.
  * Whitelist security approach — only allows reading from known assist directories.
@@ -19,7 +19,7 @@ const ALLOWED_DIRS = [
 ];
 const ALLOWED_FILES: string[] = [];
 
-// Known log filenames (for /assist-navi/log endpoint)
+// Known log filenames (for /assist-resources/log endpoint)
 const KNOWN_LOGS: Record<string, string> = {
   'context-inject-hook.log': path.join(DATA, 'logs', 'context-inject-hook.log'),
   'mcp-calls.jsonl': path.join(DATA, 'logs', 'mcp-calls.jsonl'),
@@ -131,13 +131,13 @@ function tailLines(filePath: string, limit: number): { lines: string[]; truncate
 
 // ─── Routes ───
 
-export function createAssistNaviRoutes(_ctx: RouteContext): RouteHandler[] {
+export function createAssistResourcesRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
-    // GET /assist-navi/files — Scan ~/.lm-assist/ directory tree
+    // GET /assist-resources/files — Scan ~/.lm-assist/ directory tree
     //   ?depth=2 (default 2) — how deep to recurse
     {
       method: 'GET',
-      pattern: /^\/assist-navi\/files$/,
+      pattern: /^\/assist-resources\/files$/,
       handler: async (req) => {
         const start = Date.now();
         try {
@@ -178,15 +178,45 @@ export function createAssistNaviRoutes(_ctx: RouteContext): RouteHandler[] {
             lastActivity: lastActivity || null,
           }, start);
         } catch (e) {
-          return wrapError('ASSIST_NAVI_FILES_ERROR', String(e), start);
+          return wrapError('ASSIST_RESOURCES_FILES_ERROR', String(e), start);
         }
       },
     },
 
-    // GET /assist-navi/file?path=...&limit=500 — Read a single file's content
+    // GET /assist-resources/file-stat?path=... — Lightweight file stat (mtime + size only)
     {
       method: 'GET',
-      pattern: /^\/assist-navi\/file$/,
+      pattern: /^\/assist-resources\/file-stat$/,
+      handler: async (req) => {
+        const start = Date.now();
+        try {
+          const filePath = req.query.path;
+          if (!filePath) {
+            return wrapError('ASSIST_RESOURCES_MISSING_PATH', 'path query parameter is required', start);
+          }
+          const resolved = path.resolve(filePath);
+          if (!isPathAllowed(resolved)) {
+            return wrapError('ASSIST_RESOURCES_FORBIDDEN', `Path not in allowed directories: ${filePath}`, start);
+          }
+          if (!fs.existsSync(resolved)) {
+            return wrapError('ASSIST_RESOURCES_NOT_FOUND', `File not found: ${filePath}`, start);
+          }
+          const stats = fs.statSync(resolved);
+          return wrapResponse({
+            path: resolved,
+            size: stats.size,
+            modified: stats.mtime.toISOString(),
+          }, start);
+        } catch (e) {
+          return wrapError('ASSIST_RESOURCES_STAT_ERROR', String(e), start);
+        }
+      },
+    },
+
+    // GET /assist-resources/file?path=...&limit=500 — Read a single file's content
+    {
+      method: 'GET',
+      pattern: /^\/assist-resources\/file$/,
       handler: async (req) => {
         const start = Date.now();
         try {
@@ -194,21 +224,21 @@ export function createAssistNaviRoutes(_ctx: RouteContext): RouteHandler[] {
           const limit = parseInt(req.query.limit || '500', 10);
 
           if (!filePath) {
-            return wrapError('ASSIST_NAVI_MISSING_PATH', 'path query parameter is required', start);
+            return wrapError('ASSIST_RESOURCES_MISSING_PATH', 'path query parameter is required', start);
           }
 
           const resolved = path.resolve(filePath);
           if (!isPathAllowed(resolved)) {
-            return wrapError('ASSIST_NAVI_FORBIDDEN', `Path not in allowed directories: ${filePath}`, start);
+            return wrapError('ASSIST_RESOURCES_FORBIDDEN', `Path not in allowed directories: ${filePath}`, start);
           }
 
           if (!fs.existsSync(resolved)) {
-            return wrapError('ASSIST_NAVI_NOT_FOUND', `File not found: ${filePath}`, start);
+            return wrapError('ASSIST_RESOURCES_NOT_FOUND', `File not found: ${filePath}`, start);
           }
 
           const stats = fs.statSync(resolved);
           if (stats.isDirectory()) {
-            return wrapError('ASSIST_NAVI_IS_DIR', `Path is a directory: ${filePath}`, start);
+            return wrapError('ASSIST_RESOURCES_IS_DIR', `Path is a directory: ${filePath}`, start);
           }
 
           const ext = path.extname(resolved).toLowerCase();
@@ -313,15 +343,15 @@ export function createAssistNaviRoutes(_ctx: RouteContext): RouteHandler[] {
             truncated: isTruncated,
           }, start);
         } catch (e) {
-          return wrapError('ASSIST_NAVI_FILE_ERROR', String(e), start);
+          return wrapError('ASSIST_RESOURCES_FILE_ERROR', String(e), start);
         }
       },
     },
 
-    // GET /assist-navi/log?file=...&limit=300&search=... — Specialized log tail
+    // GET /assist-resources/log?file=...&limit=300&search=... — Specialized log tail
     {
       method: 'GET',
-      pattern: /^\/assist-navi\/log$/,
+      pattern: /^\/assist-resources\/log$/,
       handler: async (req) => {
         const start = Date.now();
         try {
@@ -330,12 +360,12 @@ export function createAssistNaviRoutes(_ctx: RouteContext): RouteHandler[] {
           const search = req.query.search || '';
 
           if (!fileName) {
-            return wrapError('ASSIST_NAVI_MISSING_FILE', 'file query parameter is required', start);
+            return wrapError('ASSIST_RESOURCES_MISSING_FILE', 'file query parameter is required', start);
           }
 
           const logPath = KNOWN_LOGS[fileName];
           if (!logPath) {
-            return wrapError('ASSIST_NAVI_UNKNOWN_LOG', `Unknown log file: ${fileName}. Known: ${Object.keys(KNOWN_LOGS).join(', ')}`, start);
+            return wrapError('ASSIST_RESOURCES_UNKNOWN_LOG', `Unknown log file: ${fileName}. Known: ${Object.keys(KNOWN_LOGS).join(', ')}`, start);
           }
 
           if (!fs.existsSync(logPath)) {
@@ -398,7 +428,7 @@ export function createAssistNaviRoutes(_ctx: RouteContext): RouteHandler[] {
             matchCount,
           }, start);
         } catch (e) {
-          return wrapError('ASSIST_NAVI_LOG_ERROR', String(e), start);
+          return wrapError('ASSIST_RESOURCES_LOG_ERROR', String(e), start);
         }
       },
     },

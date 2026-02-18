@@ -28,7 +28,7 @@ const navItems = [
   { href: '/projects', icon: FolderOpen, label: 'Projects' },
   { href: '/architecture', icon: Network, label: 'Architecture' },
   { href: '/knowledge', icon: BookOpen, label: 'Knowledge' },
-  { href: '/assist-navi', icon: Compass, label: 'Assist Navi' },
+  { href: '/assist-resources', icon: Compass, label: 'Assist Resources' },
   { href: '/machines', icon: Monitor, label: 'Machines' },
 ];
 

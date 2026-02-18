@@ -16,7 +16,7 @@
  *   PUT    /knowledge/comments/:commentId     # Update comment state
  *   POST   /knowledge/review                  # Trigger batch review
  *   GET    /knowledge/review/status           # Review process status
- *   GET    /knowledge/search                  # Hybrid search (Vectra + BM25)
+ *   GET    /knowledge/search                  # Hybrid search (vector + FTS)
  */
 
 import type { RouteHandler, RouteContext } from '../index';
@@ -69,7 +69,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // GET /knowledge/search — Hybrid search (Vectra + BM25 + content-match)
+    // GET /knowledge/search — Hybrid search (vector + FTS + content-match)
     {
       method: 'GET',
       pattern: /^\/knowledge\/search$/,
@@ -82,22 +82,16 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
         const limit = parseInt(req.query.limit || '0', 10) || 0; // 0 = no limit
 
         try {
-          const { getVectraStore } = require('../../vector/vectra-store');
-          const { getBM25Scorer } = require('../../search/bm25-scorer');
-          const { reciprocalRankFusion } = require('../../search/rrf-merger');
-          const vectra = getVectraStore();
-          const bm25 = getBM25Scorer();
+          const { getVectorStore } = require('../../vector/vector-store');
+          const vectorStore = getVectorStore();
           const knowledgeStore = getKnowledgeStore();
 
-          // Hybrid search: Vectra + BM25 in parallel, RRF merge
+          // Hybrid search: vector + FTS with RRF merge
           const fetchCount = limit > 0 ? Math.max(limit * 2, 15) : 50;
-          const [vectraResults, bm25Results] = await Promise.all([
-            vectra.search(query, fetchCount, { type: 'knowledge' }),
-            Promise.resolve(bm25.search(query, fetchCount, 'knowledge')),
-          ]);
+          const hybridResults = await vectorStore.hybridSearch(query, fetchCount, { type: 'knowledge' });
 
-          // Convert Vectra results to ScoredResult for RRF
-          const vectraScored = vectraResults.map((r: any) => ({
+          // Convert to scored format
+          const merged = hybridResults.map((r: any) => ({
             type: 'knowledge' as const,
             id: r.partId || r.knowledgeId || '',
             sessionId: r.sessionId,
@@ -109,8 +103,6 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
             projectPath: r.projectPath,
             phase: r.phase as 1 | 2 | undefined,
           }));
-
-          const merged = reciprocalRankFusion(vectraScored, bm25Results);
 
           // Filter orphaned vectors (knowledge deleted but vectors remain)
           const valid: any[] = merged.filter((r: any) => {

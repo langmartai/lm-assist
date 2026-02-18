@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Milestone, MilestoneType } from './types';
 import { getMilestoneStore } from './store';
-import { getVectraStore } from '../vector/vectra-store';
+import { getVectorStore } from '../vector/vector-store';
 import { getMilestoneSettings, type Phase2Model } from './settings';
 import { getDataDir } from '../utils/path-utils';
 
@@ -984,7 +984,7 @@ export class MilestoneSummarizer {
       // Delete vectors for absorbed milestones (using original indices captured before resequence)
       for (const origIndex of absorbedOriginalIndices) {
         try {
-          const vectra = getVectraStore();
+          const vectra = getVectorStore();
           await vectra.deleteMilestone(sessionId, origIndex);
         } catch {
           // Vectra may not be initialized — non-fatal

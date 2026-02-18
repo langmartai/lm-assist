@@ -5,15 +5,18 @@
  * and managing the statusline script.
  *
  * Endpoints:
- *   GET  /claude-code/status              Check Claude Code installation and binary info
- *   GET  /claude-code/config              Read Claude Code config (~/.claude-code-config.json)
- *   PUT  /claude-code/config              Update Claude Code config (partial merge)
- *   GET  /claude-code/statusline          Check statusline script installation
- *   POST /claude-code/statusline/install  Install statusline into ~/.claude/settings.json
- *   POST /claude-code/statusline/uninstall Remove statusline from ~/.claude/settings.json
- *   GET  /claude-code/mcp                 Check MCP server installation status
- *   POST /claude-code/mcp/install         Install MCP server via claude mcp add
- *   POST /claude-code/mcp/uninstall       Remove MCP server via claude mcp remove
+ *   GET  /claude-code/status                    Check Claude Code installation and binary info
+ *   GET  /claude-code/config                    Read Claude Code config (~/.claude-code-config.json)
+ *   PUT  /claude-code/config                    Update Claude Code config (partial merge)
+ *   GET  /claude-code/statusline                Check statusline script installation
+ *   POST /claude-code/statusline/install        Install statusline into ~/.claude/settings.json
+ *   POST /claude-code/statusline/uninstall      Remove statusline from ~/.claude/settings.json
+ *   GET  /claude-code/mcp                       Check MCP server installation status
+ *   POST /claude-code/mcp/install               Install MCP server via claude mcp add
+ *   POST /claude-code/mcp/uninstall             Remove MCP server via claude mcp remove
+ *   GET  /claude-code/context-hook              Check context-inject hook installation
+ *   POST /claude-code/context-hook/install      Install context-inject hook into ~/.claude/settings.json
+ *   POST /claude-code/context-hook/uninstall    Remove context-inject hook from ~/.claude/settings.json
  */
 
 import type { RouteHandler, RouteContext } from '../index';
@@ -24,7 +27,8 @@ import * as os from 'os';
 
 const CLAUDE_CODE_CONFIG_FILE = path.join(os.homedir(), '.claude-code-config.json');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.json');
-const STATUSLINE_SCRIPT = path.resolve(__dirname, '../../hooks/statusline-worktree.sh');
+const STATUSLINE_SCRIPT = path.resolve(__dirname, '../../../hooks/statusline-worktree.sh');
+const CONTEXT_INJECT_SCRIPT = path.resolve(__dirname, '../../../hooks/context-inject-hook.sh');
 
 interface ClaudeCodeConfig {
   skipDangerPermission: boolean;
@@ -416,6 +420,89 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
             error: err.message || 'Failed to remove MCP server',
           };
         }
+      },
+    },
+
+    // GET /claude-code/context-hook - Check context-inject hook installation
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/context-hook$/,
+      handler: async () => {
+        const settings = readClaudeSettings();
+        const hooks = settings.hooks || {};
+        const userPromptHooks: any[] = hooks.UserPromptSubmit || [];
+        const installed = userPromptHooks.some((entry: any) =>
+          (entry.hooks || []).some((h: any) =>
+            typeof h.command === 'string' && h.command.includes('context-inject-hook.sh')
+          )
+        );
+        return {
+          success: true,
+          data: { installed, scriptPath: CONTEXT_INJECT_SCRIPT },
+        };
+      },
+    },
+
+    // POST /claude-code/context-hook/install - Install context-inject hook into settings.json
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/context-hook\/install$/,
+      handler: async () => {
+        const settings = readClaudeSettings();
+        if (!settings.hooks) settings.hooks = {};
+        const existingHooks: any[] = settings.hooks.UserPromptSubmit || [];
+
+        // Check if already installed to avoid duplicates
+        const alreadyInstalled = existingHooks.some((entry: any) =>
+          (entry.hooks || []).some((h: any) =>
+            typeof h.command === 'string' && h.command.includes('context-inject-hook.sh')
+          )
+        );
+
+        if (!alreadyInstalled) {
+          existingHooks.push({
+            hooks: [{ type: 'command', command: CONTEXT_INJECT_SCRIPT, timeout: 10 }],
+          });
+          settings.hooks.UserPromptSubmit = existingHooks;
+          writeClaudeSettings(settings);
+        }
+
+        return {
+          success: true,
+          data: { installed: true, scriptPath: CONTEXT_INJECT_SCRIPT },
+        };
+      },
+    },
+
+    // POST /claude-code/context-hook/uninstall - Remove context-inject hook from settings.json
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/context-hook\/uninstall$/,
+      handler: async () => {
+        const settings = readClaudeSettings();
+        if (!settings.hooks?.UserPromptSubmit) {
+          return { success: true, data: { installed: false, scriptPath: null } };
+        }
+
+        settings.hooks.UserPromptSubmit = (settings.hooks.UserPromptSubmit as any[]).map((entry: any) => ({
+          ...entry,
+          hooks: (entry.hooks || []).filter((h: any) =>
+            !(typeof h.command === 'string' && h.command.includes('context-inject-hook.sh'))
+          ),
+        })).filter((entry: any) => (entry.hooks || []).length > 0);
+
+        if (settings.hooks.UserPromptSubmit.length === 0) {
+          delete settings.hooks.UserPromptSubmit;
+        }
+        if (Object.keys(settings.hooks).length === 0) {
+          delete settings.hooks;
+        }
+
+        writeClaudeSettings(settings);
+        return {
+          success: true,
+          data: { installed: false, scriptPath: null },
+        };
       },
     },
   ];

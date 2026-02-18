@@ -73,45 +73,37 @@ async function suggestContext(
     return { context: '', tokens: 0, sources: [] };
   }
 
-  // Lazy-import to avoid startup dependency on vectra/knowledge/milestone stores
-  const { getVectraStore } = await import('../../vector/vectra-store');
+  // Lazy-import to avoid startup dependency on vector/knowledge/milestone stores
+  const { getVectorStore } = await import('../../vector/vector-store');
   const { getKnowledgeStore } = await import('../../knowledge/store');
   const { getMilestoneStore } = await import('../../milestone/store');
 
-  const vectra = getVectraStore();
+  const vectorStore = getVectorStore();
 
-  // Initialize vectra (no-op if already initialized; loads index from disk)
+  // Initialize vector store (no-op if already initialized; loads index from disk)
   try {
-    await vectra.init();
+    await vectorStore.init();
   } catch {
     return { context: '', tokens: 0, sources: [] };
   }
 
-  const stats = await vectra.getStats();
+  const stats = await vectorStore.getStats();
 
-  // If vectra has no vectors, return empty
+  // If store has no vectors, return empty
   if (stats.totalVectors === 0) {
     return { context: '', tokens: 0, sources: [] };
   }
 
-  // Lazy-import BM25 + RRF for hybrid search
-  const { getBM25Scorer } = await import('../../search/bm25-scorer');
-  const { reciprocalRankFusion } = await import('../../search/rrf-merger');
-  const bm25 = getBM25Scorer();
-
   const sections: string[] = [];
   const sources: string[] = [];
 
-  // 1. Hybrid knowledge search: Vectra + BM25, RRF merge → top N (configurable)
+  // 1. Hybrid knowledge search: vector + FTS, RRF merge → top N (configurable)
   if (includeKnowledge && knowledgeCount > 0) try {
     const kFetch = Math.max(knowledgeCount * 2, 5);
-    const [vectraKnowledge, bm25Knowledge] = await Promise.all([
-      vectra.search(prompt, kFetch, { type: 'knowledge' }),
-      Promise.resolve(bm25.search(prompt, kFetch, 'knowledge')),
-    ]);
+    const hybridResults = await vectorStore.hybridSearch(prompt, kFetch, { type: 'knowledge' });
 
-    // Convert Vectra results to ScoredResult for RRF
-    const vectraScored: ScoredResult[] = vectraKnowledge.map(r => ({
+    // Convert to ScoredResult format for downstream processing
+    const merged: ScoredResult[] = hybridResults.map(r => ({
       type: r.type as 'knowledge',
       id: r.partId || r.knowledgeId || '',
       sessionId: r.sessionId,
@@ -123,8 +115,6 @@ async function suggestContext(
       projectPath: r.projectPath,
       phase: r.phase as 1 | 2 | undefined,
     }));
-
-    const merged = reciprocalRankFusion(vectraScored, bm25Knowledge);
 
     // Filter out orphaned vectors (knowledge deleted but vectors remain)
     const knowledgeStore = getKnowledgeStore();
@@ -222,15 +212,13 @@ async function suggestContext(
     // Non-fatal — continue without knowledge
   }
 
-  // 2. Hybrid milestone search: Vectra + BM25, RRF merge → top N (configurable)
+  // 2. Hybrid milestone search: vector + FTS, RRF merge → top N (configurable)
   if (includeMilestones && milestoneCount > 0) try {
     const mFetch = Math.max(milestoneCount * 2, 5);
-    const [vectraMilestones, bm25Milestones] = await Promise.all([
-      vectra.search(prompt, mFetch, { type: 'milestone' }),
-      Promise.resolve(bm25.search(prompt, mFetch, 'milestone')),
-    ]);
+    const hybridMilestones = await vectorStore.hybridSearch(prompt, mFetch, { type: 'milestone' });
 
-    const vectraScored: ScoredResult[] = vectraMilestones.map(r => ({
+    // Convert to ScoredResult format
+    const milestoneScored: ScoredResult[] = hybridMilestones.map(r => ({
       type: r.type as 'milestone',
       id: `${r.sessionId}:${r.milestoneIndex}`,
       sessionId: r.sessionId,
@@ -241,8 +229,7 @@ async function suggestContext(
       phase: r.phase as 1 | 2 | undefined,
     }));
 
-    const merged = reciprocalRankFusion(vectraScored, bm25Milestones);
-    const topMilestones = merged.slice(0, milestoneCount);
+    const topMilestones = milestoneScored.slice(0, milestoneCount);
 
     if (topMilestones.length > 0) {
       const milestoneStore = getMilestoneStore();
@@ -254,9 +241,23 @@ async function suggestContext(
         const milestone = milestoneStore.getMilestoneById(milestoneId);
 
         if (milestone) {
-          const title = milestone.title || 'Untitled milestone';
+          const rawTitle = milestone.title?.trim() || '';
+          // For Phase 1 milestones (no LLM title), synthesize from first user prompt or files
+          const displayTitle = (rawTitle && rawTitle.toLowerCase() !== 'untitled milestone')
+            ? rawTitle
+            : (() => {
+                const firstPrompt = (milestone.userPrompts as string[] | undefined)
+                  ?.find(p => p.trim().length > 15);
+                if (firstPrompt) return firstPrompt.trim().slice(0, 80) + (firstPrompt.length > 80 ? '…' : '');
+                const files = (milestone.filesModified as string[] | undefined)?.slice(0, 3)
+                  .map((f: string) => f.split('/').pop()).filter(Boolean);
+                if (files?.length) return 'Modified: ' + files.join(', ');
+                return '';
+              })();
+          if (!displayTitle) continue;
+          const phase1Label = !rawTitle ? ' ~p1' : '';
           const timeAgo = formatTimeAgo(milestone.endTimestamp || milestone.startTimestamp);
-          milestoneLines.push(`- [${milestoneId}] ${timeAgo}: ${title}`);
+          milestoneLines.push(`- [${milestoneId}] ${timeAgo}${phase1Label}: ${displayTitle}`);
           sources.push(milestoneId);
         }
       }

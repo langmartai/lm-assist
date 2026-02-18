@@ -293,8 +293,8 @@ export function handleSessionChangeForMilestones(
             (async () => {
               try {
                 const { extractMilestoneVectors } = require('../vector/indexer');
-                const { getVectraStore } = require('../vector/vectra-store');
-                const vectra = getVectraStore();
+                const { getVectorStore } = require('../vector/vector-store');
+                const vectra = getVectorStore();
                 const vectors = newPhase1ForVectors.flatMap((m: any) =>
                   extractMilestoneVectors(m, cacheData.cwd || '', cacheData)
                 );

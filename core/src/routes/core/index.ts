@@ -22,7 +22,7 @@ import { createMilestonesRoutes } from './milestones.routes';
 import { createKnowledgeRoutes } from './knowledge.routes';
 import { createArchitectureRoutes } from './architecture.routes';
 import { createSessionSearchRoutes } from './session-search.routes';
-import { createAssistNaviRoutes } from './assist-navi.routes';
+import { createAssistResourcesRoutes } from './assist-resources.routes';
 import { createShellConfigRoutes } from './shell-config.routes';
 import { createPlansRoutes } from './plans.routes';
 import { createSessionDagRoutes } from './session-dag.routes';
@@ -51,7 +51,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createKnowledgeRoutes(ctx),
     ...createArchitectureRoutes(ctx),
     ...createSessionSearchRoutes(ctx),
-    ...createAssistNaviRoutes(ctx),
+    ...createAssistResourcesRoutes(ctx),
     ...createShellConfigRoutes(ctx),
     ...createPlansRoutes(ctx),
     ...createSessionDagRoutes(ctx),

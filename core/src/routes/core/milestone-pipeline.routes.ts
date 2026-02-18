@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { RouteContext, RouteHandler } from '../index';
 import { getMilestoneStore, isProjectExcluded } from '../../milestone/store';
-import { getVectraStore } from '../../vector/vectra-store';
+import { getVectorStore } from '../../vector/vector-store';
 import { getMilestoneSummarizer } from '../../milestone/summarizer';
 import type { Milestone } from '../../milestone/types';
 import { isSessionInScanRange, getMilestoneSettings, type Phase2Model } from '../../milestone/settings';
@@ -298,7 +298,7 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
         // Get vector stats
         let vectors = { totalVectors: 0, sessionVectors: 0, milestoneVectors: 0, knowledgeVectors: 0, isInitialized: false };
         try {
-          const vectraStore = getVectraStore();
+          const vectraStore = getVectorStore();
           vectors = await vectraStore.getStatsByType();
         } catch {
           // Vectra may not be initialized
@@ -442,10 +442,12 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
         // Set up Vectra embedding callback for after Phase 2 completes
         try {
           const { extractMilestoneVectors } = await import('../../vector/indexer');
-          const vectra = getVectraStore();
+          const vectra = getVectorStore();
           await vectra.init();
 
           summarizer.setOnPhase2Complete(async (milestone, projectPath) => {
+            // Delete stale Phase 1 vectors before inserting Phase 2 enriched vectors
+            await vectra.deleteMilestone(milestone.sessionId, milestone.index);
             const vectors = extractMilestoneVectors(milestone, projectPath);
             if (vectors.length > 0) {
               await vectra.addVectors(vectors);
@@ -484,14 +486,16 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
 
     // POST /milestone-pipeline/extract - Run Phase 1 heuristic extraction for unprocessed sessions
     // Also re-extracts already-indexed sessions that have grown (new turns since last extraction)
+    // Body: { force?: boolean }  force=true re-extracts ALL in-range sessions (resets phase1, keeps phase2)
     {
       method: 'POST',
       pattern: /^\/milestone-pipeline\/extract$/,
-      handler: async () => {
+      handler: async (req) => {
         const { extractMilestones, reextractMilestones } = await import('../../milestone/extractor');
         const { getSessionCache } = await import('../../session-cache');
         const cache = getSessionCache();
         const store = getMilestoneStore();
+        const force: boolean = req.body?.force === true;
 
         const sessions = cache.getAllSessionsFromCache();
         let extracted = 0;
@@ -514,13 +518,13 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
 
           // Skip sessions outside scan range — but always allow re-extraction
           // for indexed sessions with turn count mismatch (stale data fix)
-          if (!needsReExtract && !isSessionInScanRange(cacheData.lastTimestamp || cacheData.fileMtime || 0)) {
+          if (!force && !needsReExtract && !isSessionInScanRange(cacheData.lastTimestamp || cacheData.fileMtime || 0)) {
             skipped++;
             continue;
           }
 
-          // Skip if already indexed and no turn count change
-          if (isIndexed && !needsReExtract) {
+          // Skip if already indexed and no turn count change (unless force)
+          if (!force && isIndexed && !needsReExtract) {
             skipped++;
             continue;
           }
@@ -528,7 +532,7 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
           try {
             let milestones: Milestone[];
 
-            if (needsReExtract) {
+            if (isIndexed) {
               // Re-extract: preserve existing Phase 2 enrichment for unchanged segments
               const existing = store.getMilestones(sessionId);
               milestones = reextractMilestones(cacheData, existing);
@@ -557,7 +561,7 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
               store.updateIndex(sessionId, sessionPhase, milestones.length, p1, p2,
                 cacheData.numTurns, latestTs > 0 ? latestTs : undefined);
               totalMilestones += milestones.length;
-              if (needsReExtract) {
+              if (isIndexed) {
                 reextracted++;
               } else {
                 extracted++;
@@ -770,7 +774,7 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
 
               // Delete stale vectors for this milestone
               try {
-                const vectra = getVectraStore();
+                const vectra = getVectorStore();
                 await vectra.deleteMilestone(sessionId, m.index);
               } catch {
                 // Vectra may not be initialized
@@ -831,10 +835,12 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
           // Set up Vectra embedding callback
           try {
             const { extractMilestoneVectors } = await import('../../vector/indexer');
-            const vectra = getVectraStore();
+            const vectra = getVectorStore();
             await vectra.init();
 
             summarizer.setOnPhase2Complete(async (milestone, projectPath) => {
+              // Delete stale Phase 1 vectors before inserting Phase 2 enriched vectors
+              await vectra.deleteMilestone(milestone.sessionId, milestone.index);
               const vectors = extractMilestoneVectors(milestone, projectPath);
               if (vectors.length > 0) {
                 await vectra.addVectors(vectors);
@@ -866,6 +872,115 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
             sessionsAffected,
             indexFixed,
             phase2Reset,
+          },
+        };
+      },
+    },
+
+    // POST /milestone-pipeline/enrich-phase1 - Heuristic Phase 1 enrichment (no LLM)
+    // Derives title, description, type, facts from raw session data and saves to disk.
+    // Milestones stay at phase=1 so Phase 2 LLM enrichment can still run later.
+    // Body: { inRangeOnly?: boolean, force?: boolean }
+    //   inRangeOnly: true (default) — only in-range sessions
+    //   force: false (default) — re-enrich all phase=1 milestones, even those already enriched
+    {
+      method: 'POST',
+      pattern: /^\/milestone-pipeline\/enrich-phase1$/,
+      handler: async (req) => {
+        const { enrichPhase1, needsPhase1Enrichment } = await import('../../milestone/phase1-enricher');
+        const { extractMilestoneVectors } = await import('../../vector/indexer');
+        const store = getMilestoneStore();
+        const index = store.getIndex();
+        const settings = getMilestoneSettings();
+        const inRangeOnly: boolean = req.body?.inRangeOnly !== false; // default true
+        const force: boolean = req.body?.force === true; // default false
+
+        const vectorStore = getVectorStore();
+        let vectorsReady = false;
+        try {
+          await vectorStore.init();
+          vectorsReady = true;
+        } catch { /* vector indexing optional */ }
+
+        const sessionIds = Object.keys(index.sessions);
+        let milestonesEnriched = 0;
+        let milestonesSkipped = 0;
+        let vectorsIndexed = 0;
+        let sessionsAffected = 0;
+
+        for (const sessionId of sessionIds) {
+          if (isProjectExcluded(sessionId)) continue;
+
+          const entry = index.sessions[sessionId];
+          if (inRangeOnly && !isSessionInScanRange(entry.sessionTimestamp ?? entry.lastUpdated)) continue;
+
+          // Fast path: skip sessions with no Phase 1 milestones
+          if (entry.phase1Count === 0) continue;
+
+          const milestones = store.getMilestones(sessionId);
+          // force=true: re-enrich all phase=1 milestones (including those already heuristically enriched)
+          const toEnrich = force
+            ? milestones.filter(m => m.phase === 1)
+            : milestones.filter(needsPhase1Enrichment);
+          if (toEnrich.length === 0) {
+            milestonesSkipped += milestones.filter(m => m.phase === 1).length;
+            continue;
+          }
+
+          let sessionModified = false;
+          const newVectors: Array<{ text: string; metadata: any }> = [];
+
+          for (const m of toEnrich) {
+            const enriched = enrichPhase1(m);
+            m.title = enriched.title;
+            m.description = enriched.description;
+            m.type = enriched.type;
+            m.facts = enriched.facts;
+            // Leave phase=1, outcome=null, concepts=null, architectureRelevant=null
+            // so Phase 2 LLM enrichment can still complete these fields
+            sessionModified = true;
+            milestonesEnriched++;
+
+            if (vectorsReady) {
+              newVectors.push(...extractMilestoneVectors(m));
+            }
+          }
+
+          if (sessionModified) {
+            store.saveMilestones(sessionId, milestones);
+            sessionsAffected++;
+
+            if (vectorsReady && newVectors.length > 0) {
+              try {
+                // Delete stale vectors (summary/assistant/thinking) before inserting
+                // new enriched vectors (title/description/fact/prompt) to avoid bloat
+                for (const m of toEnrich) {
+                  await vectorStore.deleteMilestone(sessionId, m.index);
+                }
+                await vectorStore.addVectors(newVectors);
+                vectorsIndexed += newVectors.length;
+              } catch { /* non-fatal */ }
+            }
+          }
+
+          // Yield to event loop every 50 sessions
+          if (sessionsAffected % 50 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+        }
+
+        return {
+          success: true,
+          data: {
+            message: milestonesEnriched > 0
+              ? `Phase 1 enrichment complete: ${milestonesEnriched} milestones enriched across ${sessionsAffected} sessions`
+              : 'No unenriched Phase 1 milestones found',
+            milestonesEnriched,
+            milestonesSkipped,
+            sessionsAffected,
+            vectorsIndexed,
+            inRangeOnly,
+            scanRangeDays: settings.scanRangeDays,
           },
         };
       },

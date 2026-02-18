@@ -2,7 +2,7 @@
  * Vector Routes
  *
  * Unified API for vector store operations. Knowledge and milestones
- * are just different `type` values in the same Vectra store.
+ * are just different `type` values in the same vector store.
  *
  * Endpoints:
  *   GET    /vectors/status    # Store status: total vectors, breakdown by type, initialized
@@ -22,8 +22,8 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/vectors\/status$/,
       handler: async () => {
         try {
-          const { getVectraStore } = require('../../vector/vectra-store');
-          const vectra = getVectraStore();
+          const { getVectorStore } = require('../../vector/vector-store');
+          const vectra = getVectorStore();
           const stats = await vectra.getStatsByType();
 
           // Count stale knowledge vectors (indexed but source doc deleted)
@@ -76,8 +76,8 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
         const filter = type && validTypes.includes(type) ? { type } : undefined;
 
         try {
-          const { getVectraStore } = require('../../vector/vectra-store');
-          const vectra = getVectraStore();
+          const { getVectorStore } = require('../../vector/vector-store');
+          const vectra = getVectorStore();
           const results = await vectra.search(query, limit, filter);
           return { success: true, data: results };
         } catch (err: any) {
@@ -100,9 +100,9 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
         }
 
         try {
-          const { getVectraStore } = require('../../vector/vectra-store');
+          const { getVectorStore } = require('../../vector/vector-store');
           const { extractKnowledgeVectors, extractMilestoneVectors } = require('../../vector/indexer');
-          const vectra = getVectraStore();
+          const vectra = getVectorStore();
 
           if (type === 'knowledge') {
             const { getKnowledgeStore } = require('../../knowledge/store');
@@ -180,8 +180,8 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
         }
 
         try {
-          const { getVectraStore } = require('../../vector/vectra-store');
-          const vectra = getVectraStore();
+          const { getVectorStore } = require('../../vector/vector-store');
+          const vectra = getVectorStore();
 
           if (type === 'knowledge') {
             const { getKnowledgeStore } = require('../../knowledge/store');
@@ -294,8 +294,8 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
         }
 
         try {
-          const { getVectraStore } = require('../../vector/vectra-store');
-          const vectra = getVectraStore();
+          const { getVectorStore } = require('../../vector/vector-store');
+          const vectra = getVectorStore();
 
           if (type === 'knowledge') {
             const id = req.query.id;

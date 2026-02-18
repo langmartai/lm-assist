@@ -11,6 +11,7 @@ import {
   FolderOpen,
   ChevronDown,
   ChevronRight,
+  ArrowDownToLine,
 } from 'lucide-react';
 
 // ============================================================================
@@ -75,6 +76,12 @@ interface LogResponse {
   entries: any[];
   totalLines: number;
   matchCount: number;
+}
+
+interface FileStatResponse {
+  path: string;
+  size: number;
+  modified: string;
 }
 
 // ============================================================================
@@ -149,7 +156,7 @@ function matchesSearch(node: FileInfo, search: string): boolean {
 // Component
 // ============================================================================
 
-export function AssistNaviPage() {
+export function AssistResourcesPage() {
   // ── State ──
   const [rootNode, setRootNode] = useState<FileInfo | null>(null);
   const [extras, setExtras] = useState<FileInfo[]>([]);
@@ -163,21 +170,32 @@ export function AssistNaviPage() {
   const [listLoading, setListLoading] = useState(true);
   const [fileSearch, setFileSearch] = useState('');
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [fileChanged, setFileChanged] = useState(false);
 
   const contentEndRef = useRef<HTMLDivElement>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const watchIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const selectedFileRef = useRef<FileInfo | null>(null);
+  const searchTermRef = useRef<string>('');
+  const watchedModifiedRef = useRef<string | null>(null);
+  const autoScrollRef = useRef(true);
+
+  // Keep refs in sync for use inside intervals
+  useEffect(() => { selectedFileRef.current = selectedFile; }, [selectedFile]);
+  useEffect(() => { searchTermRef.current = searchTerm; }, [searchTerm]);
+  useEffect(() => { autoScrollRef.current = autoScroll; }, [autoScroll]);
 
   // ── Load file list ──
   const initialSelectionDone = useRef(false);
   const loadFiles = useCallback(async () => {
     setListLoading(true);
     try {
-      const data = await apiFetch<FilesResponse>('/assist-navi/files?depth=3');
+      const data = await apiFetch<FilesResponse>('/assist-resources/files?depth=3');
       setRootNode(data.root);
       setExtras(data.extras);
       setTotalSize(data.totalSize);
       setLastActivity(data.lastActivity);
-      // Auto-expand first level
       if (data.root?.children) {
         setExpandedDirs(new Set([data.root.path]));
       }
@@ -187,10 +205,11 @@ export function AssistNaviPage() {
         const hookLog = findInTree(data.root, f => f.name === 'context-inject-hook.log');
         if (hookLog) {
           setSelectedFile(hookLog);
+          watchedModifiedRef.current = hookLog.modified;
           try {
-            const logData = await apiFetch<LogResponse>('/assist-navi/log?file=context-inject-hook.log&limit=300');
+            const logData = await apiFetch<LogResponse>('/assist-resources/log?file=context-inject-hook.log&limit=300');
             setContent(logData);
-          } catch { /* ignore — user can click manually */ }
+          } catch { /* ignore */ }
         }
       }
     } catch (e) {
@@ -206,15 +225,17 @@ export function AssistNaviPage() {
   const loadContent = useCallback(async (file: FileInfo, search?: string) => {
     setLoading(true);
     setError(null);
+    setFileChanged(false);
     try {
       if (isLogFile(file)) {
         const logName = file.name === 'mcp-calls.jsonl' ? 'mcp-calls.jsonl' : 'context-inject-hook.log';
         const searchParam = search ? `&search=${encodeURIComponent(search)}` : '';
-        const data = await apiFetch<LogResponse>(`/assist-navi/log?file=${logName}&limit=300${searchParam}`);
+        const data = await apiFetch<LogResponse>(`/assist-resources/log?file=${logName}&limit=300${searchParam}`);
         setContent(data);
       } else {
-        const data = await apiFetch<FileContentResponse>(`/assist-navi/file?path=${encodeURIComponent(file.path)}&limit=500`);
+        const data = await apiFetch<FileContentResponse>(`/assist-resources/file?path=${encodeURIComponent(file.path)}&limit=500`);
         setContent(data);
+        watchedModifiedRef.current = data.modified;
       }
     } catch (e) {
       setError(String(e));
@@ -224,18 +245,78 @@ export function AssistNaviPage() {
     }
   }, []);
 
-  // ── Auto-scroll to bottom for logs ──
+  // ── Auto-scroll to bottom when content changes (if enabled) ──
   useEffect(() => {
-    if (content && contentEndRef.current) {
+    if (content && autoScroll && contentEndRef.current) {
       contentEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [content]);
+  }, [content, autoScroll]);
+
+  // ── OS file watching via polling (2s interval) ──
+  useEffect(() => {
+    if (watchIntervalRef.current) {
+      clearInterval(watchIntervalRef.current);
+      watchIntervalRef.current = null;
+    }
+
+    if (!selectedFile || selectedFile.isDirectory) return;
+
+    watchIntervalRef.current = setInterval(async () => {
+      const file = selectedFileRef.current;
+      if (!file || file.isDirectory) return;
+
+      try {
+        const stat = await apiFetch<FileStatResponse>(
+          `/assist-resources/file-stat?path=${encodeURIComponent(file.path)}`
+        );
+
+        const prev = watchedModifiedRef.current;
+        if (!prev) {
+          watchedModifiedRef.current = stat.modified;
+          return;
+        }
+
+        if (stat.modified !== prev) {
+          watchedModifiedRef.current = stat.modified;
+          setFileChanged(true);
+
+          // Reload content
+          if (isLogFile(file)) {
+            const logName = file.name === 'mcp-calls.jsonl' ? 'mcp-calls.jsonl' : 'context-inject-hook.log';
+            const searchParam = searchTermRef.current
+              ? `&search=${encodeURIComponent(searchTermRef.current)}`
+              : '';
+            const data = await apiFetch<LogResponse>(
+              `/assist-resources/log?file=${logName}&limit=300${searchParam}`
+            );
+            setContent(data);
+          } else {
+            const data = await apiFetch<FileContentResponse>(
+              `/assist-resources/file?path=${encodeURIComponent(file.path)}&limit=500`
+            );
+            setContent(data);
+          }
+        }
+      } catch {
+        // Silently ignore poll errors
+      }
+    }, 2000);
+
+    return () => {
+      if (watchIntervalRef.current) {
+        clearInterval(watchIntervalRef.current);
+        watchIntervalRef.current = null;
+      }
+    };
+  }, [selectedFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── File selection ──
   const handleFileSelect = useCallback((file: FileInfo) => {
     if (file.isDirectory) return;
     setSelectedFile(file);
     setSearchTerm('');
+    setFileChanged(false);
+    watchedModifiedRef.current = file.modified;
     loadContent(file);
   }, [loadContent]);
 
@@ -256,6 +337,11 @@ export function AssistNaviPage() {
       loadContent(selectedFile, searchTerm || undefined);
     }
   }, [selectedFile, searchTerm, loadContent]);
+
+  // ── Manual scroll to bottom ──
+  const handleScrollToBottom = useCallback(() => {
+    contentEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
 
   // ── Render ──
   return (
@@ -341,7 +427,6 @@ export function AssistNaviPage() {
             </div>
           ) : (
             <>
-              {/* Main tree */}
               {(rootNode.children || [])
                 .filter(child => !fileSearch || matchesSearch(child, fileSearch))
                 .map(child => (
@@ -363,7 +448,6 @@ export function AssistNaviPage() {
                   />
                 ))
               }
-              {/* Extra files (outside data dir) */}
               {extras.length > 0 && (
                 <>
                   <div style={{
@@ -417,8 +501,7 @@ export function AssistNaviPage() {
               alignItems: 'center',
               gap: 8,
             }}>
-              {/* Search (only for log files) */}
-              {isLogFile(selectedFile) && (
+              {isLogFile(selectedFile) ? (
                 <div style={{
                   flex: 1,
                   display: 'flex',
@@ -448,21 +531,13 @@ export function AssistNaviPage() {
                   {searchTerm && (
                     <button
                       onClick={() => { setSearchTerm(''); if (selectedFile) loadContent(selectedFile); }}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        cursor: 'pointer',
-                        padding: 0,
-                        display: 'flex',
-                      }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex' }}
                     >
                       <X size={13} style={{ color: 'var(--color-text-tertiary)' }} />
                     </button>
                   )}
                 </div>
-              )}
-
-              {!isLogFile(selectedFile) && (
+              ) : (
                 <div style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>
                   {selectedFile.name}
                 </div>
@@ -476,9 +551,62 @@ export function AssistNaviPage() {
               )}
               {content && 'totalLines' in content && !('matchCount' in content) && (
                 <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                  {content.totalLines} lines
+                  {(content as any).totalLines} lines
                 </span>
               )}
+
+              {/* File changed badge */}
+              {fileChanged && (
+                <span style={{
+                  fontSize: 10,
+                  color: '#f39c12',
+                  background: 'rgba(243,156,18,0.12)',
+                  borderRadius: 4,
+                  padding: '2px 6px',
+                  fontWeight: 600,
+                  whiteSpace: 'nowrap',
+                }}>
+                  updated
+                </span>
+              )}
+
+              {/* Auto-scroll checkbox */}
+              <label style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                fontSize: 11,
+                color: autoScroll ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
+                cursor: 'pointer',
+                userSelect: 'none',
+                whiteSpace: 'nowrap',
+              }}>
+                <input
+                  type="checkbox"
+                  checked={autoScroll}
+                  onChange={e => setAutoScroll(e.target.checked)}
+                  style={{ width: 12, height: 12, cursor: 'pointer', accentColor: 'var(--color-accent)' }}
+                />
+                Auto-scroll
+              </label>
+
+              {/* Scroll-to-bottom button */}
+              <button
+                onClick={handleScrollToBottom}
+                title="Scroll to bottom"
+                style={{
+                  background: 'none',
+                  border: '1px solid var(--color-border-default)',
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  padding: '4px 6px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  color: 'var(--color-text-secondary)',
+                }}
+              >
+                <ArrowDownToLine size={12} />
+              </button>
 
               {/* Refresh */}
               <button
@@ -607,7 +735,6 @@ function TreeNode({
     );
   }
 
-  // File node
   return (
     <div
       onClick={() => onSelectFile(node)}
@@ -654,7 +781,6 @@ function TreeNode({
 // ============================================================================
 
 function ContentViewer({ content, selectedFile }: { content: FileContentResponse | LogResponse; selectedFile: FileInfo }) {
-  // Log viewer mode (from /assist-navi/log)
   if ('file' in content) {
     const logContent = content as LogResponse;
 
@@ -674,7 +800,6 @@ function ContentViewer({ content, selectedFile }: { content: FileContentResponse
       );
     }
 
-    // Plain text log
     return (
       <div style={{ padding: '4px 0' }}>
         {logContent.entries.length === 0 ? (
@@ -703,10 +828,8 @@ function ContentViewer({ content, selectedFile }: { content: FileContentResponse
     );
   }
 
-  // File viewer mode (from /assist-navi/file)
   const fileContent = content as FileContentResponse;
 
-  // Binary
   if (fileContent.format === 'binary') {
     return (
       <div style={{
@@ -722,7 +845,6 @@ function ContentViewer({ content, selectedFile }: { content: FileContentResponse
     );
   }
 
-  // JSON
   if (fileContent.format === 'json') {
     return (
       <pre style={{
@@ -739,7 +861,6 @@ function ContentViewer({ content, selectedFile }: { content: FileContentResponse
     );
   }
 
-  // JSONL (from file endpoint)
   if (fileContent.format === 'jsonl' && fileContent.entries) {
     return (
       <div style={{ padding: '4px 0' }}>
@@ -763,7 +884,6 @@ function ContentViewer({ content, selectedFile }: { content: FileContentResponse
     );
   }
 
-  // Markdown or text
   return (
     <pre style={{
       padding: 14,
@@ -816,9 +936,7 @@ function McpCallCard({ entry }: { entry: any }) {
         fontSize: 12,
       }}
     >
-      {/* Header row */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        {/* Tool badge */}
         <span style={{
           fontSize: 11,
           fontWeight: 600,
@@ -827,17 +945,12 @@ function McpCallCard({ entry }: { entry: any }) {
         }}>
           {tool}
         </span>
-
-        {/* Duration */}
         {duration != null && (
           <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
             {duration}ms
           </span>
         )}
-
         <div style={{ flex: 1 }} />
-
-        {/* Timestamp */}
         {timestamp && (
           <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
             {formatRelativeTime(timestamp)}
@@ -845,7 +958,6 @@ function McpCallCard({ entry }: { entry: any }) {
         )}
       </div>
 
-      {/* Args preview (collapsed) */}
       {!expanded && entry.args && (
         <div style={{
           marginTop: 3,
@@ -860,7 +972,6 @@ function McpCallCard({ entry }: { entry: any }) {
         </div>
       )}
 
-      {/* Error message */}
       {isError && entry.error && !expanded && (
         <div style={{
           marginTop: 3,
@@ -875,7 +986,6 @@ function McpCallCard({ entry }: { entry: any }) {
         </div>
       )}
 
-      {/* Expanded detail */}
       {expanded && (
         <pre style={{
           marginTop: 6,

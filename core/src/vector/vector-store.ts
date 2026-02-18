@@ -8,9 +8,9 @@
  * All heavy operations (indexing, search, I/O) run in native Rust threads
  * and do NOT block the Node.js event loop.
  *
- * Two vector types stored:
- * - 'session': embeddings from user prompts, results, tasks, file paths
- * - 'milestone': embeddings from milestone titles, facts, user prompts
+ * Search modes:
+ *   search()       — Pure vector (cosine) similarity search
+ *   hybridSearch() — Vector + FTS (full-text) with RRF merge
  *
  * Persists to ~/.lm-assist/lance-store/
  */
@@ -110,21 +110,6 @@ function rowToResult(row: any, score: number): VectorSearchResult {
   };
 }
 
-function rowToMetadata(row: any): VectorMetadata {
-  return {
-    type: row.type,
-    sessionId: row.sessionId,
-    milestoneIndex: row.milestoneIndex === -1 ? undefined : row.milestoneIndex,
-    knowledgeId: row.knowledgeId || undefined,
-    partId: row.partId || undefined,
-    contentType: row.contentType,
-    text: row.text,
-    timestamp: row.timestamp || undefined,
-    projectPath: row.projectPath || undefined,
-    phase: row.phase === -1 ? undefined : row.phase,
-  };
-}
-
 // ─── Where clause builder ───────────────────────────────────
 
 function buildWhere(filter: Record<string, unknown>): string {
@@ -141,17 +126,35 @@ function buildWhere(filter: Record<string, unknown>): string {
   return parts.join(' AND ');
 }
 
+// ─── Entity ID helper ───────────────────────────────────────
+// Multiple vector rows map to one logical entity. This derives the entity ID.
+
+function entityId(row: any): string {
+  if (row.type === 'knowledge') {
+    return row.partId || row.knowledgeId || '';
+  } else if (row.type === 'milestone') {
+    return `${row.sessionId}:${row.milestoneIndex}`;
+  }
+  return row.sessionId;
+}
+
 // ─── Vector Store ──────────────────────────────────────────────────
 
 const STORE_DIR = path.join(getDataDir(), 'lance-store');
 const TABLE_NAME = 'vectors';
 
-export class VectraStore {
+/** Minimum cosine similarity to consider a vector result relevant.
+ *  Cosine distance ∈ [0, 2]; similarity = 1 - distance/2.
+ *  0.57 ≈ weak but non-random relationship. */
+const MIN_SIMILARITY = 0.57;
+
+export class VectorStore {
   private db: any = null;
   private table: any = null;
   private storeDir: string;
   private initialized = false;
   private initializing: Promise<void> | null = null;
+  private ftsReady = false;
 
   constructor(storeDir?: string) {
     this.storeDir = storeDir || STORE_DIR;
@@ -161,7 +164,7 @@ export class VectraStore {
   }
 
   /**
-   * Initialize the LanceDB connection and table.
+   * Initialize the LanceDB connection, table, and FTS index.
    */
   async init(): Promise<void> {
     if (this.initialized) return;
@@ -212,11 +215,29 @@ export class VectraStore {
       this.initialized = true;
       console.log('[VectorStore] LanceDB initialized');
 
-      // Bootstrap BM25 from existing data (async, non-blocking)
-      this.bootstrapBM25().catch(() => {});
+      // Create FTS index on text column (async, non-blocking)
+      this.ensureFtsIndex().catch(() => {});
     })();
 
     await this.initializing;
+  }
+
+  /**
+   * Create or recreate the FTS index on the `text` column.
+   * Called during init() and after bulk writes that add new data.
+   */
+  private async ensureFtsIndex(): Promise<void> {
+    try {
+      const lancedb = require('@lancedb/lancedb');
+      await this.table.createIndex('text', {
+        config: lancedb.Index.fts({ withPosition: true }),
+        replace: true,
+      });
+      this.ftsReady = true;
+    } catch (err: any) {
+      console.warn('[VectorStore] FTS index creation failed:', err.message);
+      this.ftsReady = false;
+    }
   }
 
   /**
@@ -231,7 +252,7 @@ export class VectraStore {
 
   /**
    * Add multiple vectors in batch (more efficient).
-   * Also mirrors items to the BM25 index for hybrid search.
+   * Rebuilds the FTS index after adding.
    */
   async addVectors(items: Array<{ text: string; metadata: VectorMetadata }>): Promise<number> {
     if (items.length === 0) return 0;
@@ -252,14 +273,14 @@ export class VectraStore {
       totalAdded += chunk.length;
     }
 
-    // Mirror to BM25 index (non-blocking, non-fatal)
-    this.mirrorToBM25(items);
+    // Rebuild FTS index to include new data (async, non-fatal)
+    this.ensureFtsIndex().catch(() => {});
 
     return totalAdded;
   }
 
   /**
-   * Search for similar vectors.
+   * Search for similar vectors (pure vector/cosine similarity).
    * @param filter Optional metadata filter (e.g. { type: 'knowledge' })
    */
   async search(query: string, limit: number = 20, filter?: Record<string, unknown>): Promise<VectorSearchResult[]> {
@@ -286,6 +307,115 @@ export class VectraStore {
   }
 
   /**
+   * Hybrid search: vector similarity + full-text search, merged via RRF.
+   *
+   * Runs both searches in parallel against the same LanceDB table, deduplicates
+   * by entity ID, and combines rankings with Reciprocal Rank Fusion.
+   *
+   * @param query  Natural language query
+   * @param limit  Max results to return
+   * @param filter Optional metadata filter (e.g. { type: 'knowledge' })
+   */
+  async hybridSearch(query: string, limit: number = 20, filter?: Record<string, unknown>): Promise<VectorSearchResult[]> {
+    await this.init();
+
+    const embedder = getEmbedder();
+    const queryVector = await embedder.embed(query);
+
+    const fetchCount = limit * 3; // Over-fetch for dedup + filtering
+    const whereClause = filter ? buildWhere(filter) : '';
+
+    // Build vector search query
+    let vecQ = this.table.search(queryVector).limit(fetchCount);
+    if (whereClause) vecQ = vecQ.where(whereClause);
+
+    // Build FTS query (only if index is ready)
+    let ftsPromise: Promise<any[]>;
+    if (this.ftsReady) {
+      let ftsQ = this.table.query()
+        .fullTextSearch(query, { columns: ['text'] })
+        .limit(fetchCount);
+      if (whereClause) ftsQ = ftsQ.where(whereClause);
+      ftsPromise = ftsQ.toArray().catch(() => []);
+    } else {
+      ftsPromise = Promise.resolve([]);
+    }
+
+    // Run both in parallel
+    const [vecResults, ftsResults] = await Promise.all([
+      vecQ.toArray(),
+      ftsPromise,
+    ]);
+
+    // ─── Deduplicate vector results by entity ID (keep highest similarity) ───
+    const vecByEntity = new Map<string, { row: any; sim: number }>();
+    for (const r of vecResults) {
+      const dist = r._distance ?? 0;
+      const sim = Math.max(0, 1 - dist / 2);
+      if (sim < MIN_SIMILARITY) continue; // Filter low-similarity noise
+
+      const eid = entityId(r);
+      const existing = vecByEntity.get(eid);
+      if (!existing || sim > existing.sim) {
+        vecByEntity.set(eid, { row: r, sim });
+      }
+    }
+
+    // ─── Deduplicate FTS results by entity ID (keep highest score) ───
+    const ftsByEntity = new Map<string, { row: any; score: number }>();
+    for (const r of ftsResults) {
+      const eid = entityId(r);
+      const score = r._score ?? 0;
+      const existing = ftsByEntity.get(eid);
+      if (!existing || score > existing.score) {
+        ftsByEntity.set(eid, { row: r, score });
+      }
+    }
+
+    // ─── RRF merge ───────────────────────────────────────────────
+    const K = 60;
+    const VEC_WEIGHT = 1.0;
+    const FTS_WEIGHT = 0.8;
+
+    // Sort by score to establish ranks
+    const vecRanked = Array.from(vecByEntity.entries())
+      .sort((a, b) => b[1].sim - a[1].sim);
+    const ftsRanked = Array.from(ftsByEntity.entries())
+      .sort((a, b) => b[1].score - a[1].score);
+
+    // Build 1-indexed rank maps
+    const vecRankMap = new Map<string, number>();
+    for (let i = 0; i < vecRanked.length; i++) {
+      vecRankMap.set(vecRanked[i][0], i + 1);
+    }
+    const ftsRankMap = new Map<string, number>();
+    for (let i = 0; i < ftsRanked.length; i++) {
+      ftsRankMap.set(ftsRanked[i][0], i + 1);
+    }
+
+    // Collect all entity IDs
+    const allEntityIds = new Set([...vecRankMap.keys(), ...ftsRankMap.keys()]);
+
+    // Merge with RRF
+    const merged: VectorSearchResult[] = [];
+    for (const eid of allEntityIds) {
+      const vRank = vecRankMap.get(eid);
+      const fRank = ftsRankMap.get(eid);
+
+      let rrfScore = 0;
+      if (vRank !== undefined) rrfScore += VEC_WEIGHT / (K + vRank);
+      if (fRank !== undefined) rrfScore += FTS_WEIGHT / (K + fRank);
+
+      // Prefer vec row (has all metadata), fall back to FTS row
+      const row = vecByEntity.get(eid)?.row ?? ftsByEntity.get(eid)?.row;
+      merged.push(rowToResult(row, rrfScore));
+    }
+
+    merged.sort((a, b) => b.score - a.score);
+    return merged.slice(0, limit);
+  }
+
+  /**
    * Delete all vectors for a session
    */
   async deleteSession(sessionId: string): Promise<number> {
@@ -295,12 +425,6 @@ export class VectraStore {
     if (count === 0) return 0;
 
     await this.table.delete(`sessionId = '${sessionId.replace(/'/g, "''")}'`);
-
-    // Mirror delete to BM25
-    try {
-      const { getBM25Scorer } = await import('../search/bm25-scorer');
-      getBM25Scorer().removeDocumentsByPrefix(sessionId);
-    } catch { /* non-fatal */ }
 
     return count;
   }
@@ -317,12 +441,6 @@ export class VectraStore {
 
     await this.table.delete(where);
 
-    // Mirror delete to BM25
-    try {
-      const { getBM25Scorer } = await import('../search/bm25-scorer');
-      getBM25Scorer().removeDocument(`${sessionId}:${milestoneIndex}`);
-    } catch { /* non-fatal */ }
-
     return count;
   }
 
@@ -338,12 +456,6 @@ export class VectraStore {
 
     await this.table.delete(where);
 
-    // Mirror delete to BM25
-    try {
-      const { getBM25Scorer } = await import('../search/bm25-scorer');
-      getBM25Scorer().removeDocumentsByPrefix(knowledgeId);
-    } catch { /* non-fatal */ }
-
     return count;
   }
 
@@ -353,165 +465,12 @@ export class VectraStore {
   async deleteAllByType(type: 'session' | 'milestone' | 'knowledge'): Promise<number> {
     await this.init();
 
-    // For BM25 mirror, we need the knowledge IDs before deleting
-    let knowledgeIds: string[] = [];
-    if (type === 'knowledge') {
-      try {
-        const rows = await this.table.query()
-          .where(`type = 'knowledge'`)
-          .select(['knowledgeId'])
-          .toArray();
-        const ids = new Set<string>();
-        for (const r of rows) {
-          if (r.knowledgeId) ids.add(r.knowledgeId);
-        }
-        knowledgeIds = Array.from(ids);
-      } catch { /* non-fatal */ }
-    }
-
     const count = await this.countWhere(`type = '${type}'`);
     if (count === 0) return 0;
 
     await this.table.delete(`type = '${type}'`);
 
-    // Mirror delete to BM25
-    try {
-      const { getBM25Scorer } = await import('../search/bm25-scorer');
-      const bm25 = getBM25Scorer();
-      for (const kid of knowledgeIds) {
-        bm25.removeDocumentsByPrefix(kid);
-      }
-    } catch { /* non-fatal */ }
-
     return count;
-  }
-
-  // ─── BM25 Mirroring ─────────────────────────────────────────────
-
-  /**
-   * Mirror a batch of items to the BM25 index.
-   * Groups items by logical doc ID and concatenates texts before adding,
-   * so a milestone with title + facts vectors becomes a single BM25 doc.
-   */
-  private async mirrorToBM25(items: Array<{ text: string; metadata: VectorMetadata }>): Promise<void> {
-    try {
-      const { getBM25Scorer } = require('../search/bm25-scorer');
-      const bm25 = getBM25Scorer();
-
-      // Group items by logical doc ID, concatenating texts
-      const grouped = new Map<string, { texts: string[]; meta: VectorMetadata }>();
-
-      for (const item of items) {
-        const meta = item.metadata;
-        let id: string;
-        if (meta.type === 'knowledge') {
-          id = meta.partId || meta.knowledgeId || '';
-        } else if (meta.type === 'milestone') {
-          id = `${meta.sessionId}:${meta.milestoneIndex}`;
-        } else {
-          id = meta.sessionId;
-        }
-        if (!id) continue;
-
-        const existing = grouped.get(id);
-        if (existing) {
-          existing.texts.push(meta.text);
-        } else {
-          grouped.set(id, { texts: [meta.text], meta });
-        }
-      }
-
-      const yieldEvery = 50;
-      let count = 0;
-      for (const [id, { texts, meta }] of grouped) {
-        bm25.addDocument(id, texts.join(' '), {
-          type: meta.type,
-          timestamp: meta.timestamp || '',
-          sessionId: meta.sessionId,
-          knowledgeId: meta.knowledgeId,
-          partId: meta.partId,
-          projectPath: meta.projectPath,
-          phase: meta.phase,
-        });
-        if (++count % yieldEvery === 0) {
-          await new Promise<void>(r => setImmediate(r));
-        }
-      }
-    } catch (err) {
-      console.error('[VectorStore] BM25 mirror failed:', err);
-    }
-  }
-
-  /**
-   * Bootstrap BM25 index from existing LanceDB vectors.
-   * Called during init() when the BM25 index is empty but LanceDB has data.
-   * All LanceDB reads run in native Rust threads — no event loop blocking.
-   */
-  async bootstrapBM25(): Promise<number> {
-    try {
-      const { getBM25Scorer } = require('../search/bm25-scorer');
-      const bm25 = getBM25Scorer();
-      const stats = bm25.getStats();
-
-      if (stats.documentCount > 0) return 0; // Already populated
-
-      const totalRows = await this.table.countRows();
-      if (totalRows === 0) return 0;
-
-      console.log(`[VectorStore] Bootstrapping BM25 from ${totalRows} LanceDB vectors...`);
-
-      // Fetch all rows (native Rust I/O, does not block event loop)
-      const allRows = await this.table.query()
-        .where("type IN ('session', 'milestone', 'knowledge')")
-        .select(['type', 'sessionId', 'milestoneIndex', 'knowledgeId', 'partId', 'text', 'timestamp', 'projectPath', 'phase'])
-        .toArray();
-
-      // Group by logical doc ID
-      const grouped = new Map<string, { texts: string[]; meta: VectorMetadata }>();
-
-      for (const row of allRows) {
-        const meta = rowToMetadata(row);
-        let id: string;
-        if (meta.type === 'knowledge') {
-          id = meta.partId || meta.knowledgeId || '';
-        } else if (meta.type === 'milestone') {
-          id = `${meta.sessionId}:${meta.milestoneIndex}`;
-        } else {
-          id = meta.sessionId;
-        }
-        if (!id) continue;
-
-        const existing = grouped.get(id);
-        if (existing) {
-          existing.texts.push(meta.text || '');
-        } else {
-          grouped.set(id, { texts: [meta.text || ''], meta });
-        }
-      }
-
-      // Add docs to BM25, yielding every 50 to keep the event loop responsive
-      let count = 0;
-      for (const [id, { texts, meta }] of grouped) {
-        bm25.addDocument(id, texts.join(' '), {
-          type: meta.type,
-          timestamp: meta.timestamp || '',
-          sessionId: meta.sessionId,
-          knowledgeId: meta.knowledgeId,
-          partId: meta.partId,
-          projectPath: meta.projectPath,
-          phase: meta.phase,
-        });
-        if (++count % 50 === 0) {
-          await new Promise<void>(r => setImmediate(r));
-        }
-      }
-
-      console.log(`[VectorStore] BM25 bootstrap complete: ${grouped.size} docs from ${allRows.length} vectors`);
-      return grouped.size;
-    } catch (err) {
-      console.error('[VectorStore] BM25 bootstrap failed:', err);
-      return 0;
-    }
   }
 
   /**
@@ -608,11 +567,15 @@ export class VectraStore {
 }
 
 // Singleton
-let instance: VectraStore | null = null;
+let vectorStore: VectorStore | null = null;
 
-export function getVectraStore(): VectraStore {
-  if (!instance) {
-    instance = new VectraStore();
+export function getVectorStore(): VectorStore {
+  if (!vectorStore) {
+    vectorStore = new VectorStore();
   }
-  return instance;
+  return vectorStore;
 }
+
+// Backward compatibility alias
+export { VectorStore as VectraStore };
+export const getVectraStore = getVectorStore;

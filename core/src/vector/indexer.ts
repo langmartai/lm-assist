@@ -2,13 +2,14 @@
  * Indexer Module
  *
  * Extracts embeddable content from Milestones and Knowledge documents,
- * chunks into vectors with metadata for storage in VectraStore.
+ * chunks into vectors with metadata for storage in VectorStore.
  *
  * Vector types (no session vectors — milestones subsume sessions):
  *
  * Milestone vectors (primary search target):
  *   Phase 2 (enriched):
  *     - title       — LLM-generated milestone title (1 per milestone)
+ *     - description — milestone description (task outcomes, files, scope)
  *     - fact        — LLM-generated facts (~3 per milestone)
  *     - prompt      — user messages in range (noise-filtered)
  *   Phase 1 only (no LLM enrichment yet):
@@ -24,7 +25,7 @@
 import * as path from 'path';
 import type { Milestone } from '../milestone/types';
 import type { Knowledge } from '../knowledge/types';
-import type { VectorMetadata } from './vectra-store';
+import type { VectorMetadata } from './vector-store';
 
 // ─── Noise Filtering ──────────────────────────────────────────────────
 
@@ -91,6 +92,17 @@ export function extractMilestoneVectors(
     items.push({
       text: milestone.title,
       metadata: { ...baseMeta, contentType: 'title', text: milestone.title },
+    });
+  }
+
+  // 1b. Milestone description (complementary to title — task outcomes, files, scope)
+  if (milestone.description) {
+    const desc = milestone.description.length > 400
+      ? milestone.description.slice(0, 400)
+      : milestone.description;
+    items.push({
+      text: desc,
+      metadata: { ...baseMeta, contentType: 'description', text: desc },
     });
   }
 

@@ -125,7 +125,7 @@ export function TopBar() {
                   style={{ textDecoration: 'none', cursor: 'pointer', opacity: 0.6 }}
                 >
                   <Globe size={11} />
-                  <span>Switch to Cloud</span>
+                  <span>Cloud</span>
                 </a>
               )}
               <div className="topbar-connection local">

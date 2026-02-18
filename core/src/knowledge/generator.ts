@@ -325,10 +325,10 @@ export class KnowledgeGenerator {
       this._vectorIndexTimer = null;
       (async () => {
         try {
-          const { getVectraStore } = require('../vector/vectra-store');
+          const { getVectorStore } = require('../vector/vector-store');
           const { extractKnowledgeVectors } = require('../vector/indexer');
           const store = getKnowledgeStore();
-          const vectra = getVectraStore();
+          const vectra = getVectorStore();
 
           const allIds = store.getAllIds();
           const allVectors: Array<{ text: string; metadata: any }> = [];

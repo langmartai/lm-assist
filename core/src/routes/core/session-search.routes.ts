@@ -13,7 +13,7 @@
 import type { RouteHandler, RouteContext } from '../index';
 import { getMilestoneStore, isProjectExcluded } from '../../milestone/store';
 import type { Milestone } from '../../milestone/types';
-import { getVectraStore } from '../../vector/vectra-store';
+import { getVectorStore } from '../../vector/vector-store';
 import { compositeScore, type ScoredResult, type CompositeScoreOptions } from '../../search/composite-scorer';
 import { getSessionCache } from '../../session-cache';
 
@@ -421,7 +421,7 @@ export function createSessionSearchRoutes(ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // POST /session-search/vector - Hybrid semantic search (Vectra + BM25)
+    // POST /session-search/vector - Hybrid semantic search (vector + FTS)
     {
       method: 'POST',
       pattern: /^\/session-search\/vector$/,
@@ -440,8 +440,8 @@ export function createSessionSearchRoutes(ctx: RouteContext): RouteHandler[] {
         const scope: Scope = body.scope && SCOPE_MS[body.scope as Scope] ? body.scope as Scope : 'all';
         const limit = body.limit || 0; // 0 = no limit
 
-        const vectra = getVectraStore();
-        const stats = await vectra.getStats();
+        const vectorStore = getVectorStore();
+        const stats = await vectorStore.getStats();
 
         if (!stats.isInitialized || stats.totalVectors === 0) {
           return {
@@ -453,55 +453,23 @@ export function createSessionSearchRoutes(ctx: RouteContext): RouteHandler[] {
           };
         }
 
-        // Hybrid search: Vectra + BM25 in parallel
-        const { getBM25Scorer } = require('../../search/bm25-scorer');
-        const { reciprocalRankFusion } = require('../../search/rrf-merger');
-        const bm25 = getBM25Scorer();
-
-        const [rawResults, bm25Raw] = await Promise.all([
-          vectra.search(query, limit * 3),
-          Promise.resolve(bm25.search(query, limit * 3, 'milestone')),
-        ]);
+        // Hybrid search: vector + FTS with RRF merge
+        const rawResults = await vectorStore.hybridSearch(query, limit * 3);
 
         // Filter by scope and excluded projects
         const excludedSessions = buildExcludedSessionIds();
-        const scopeFiltered = rawResults.filter(r =>
-          isWithinScope(r.timestamp, scope) && !excludedSessions.has(r.sessionId)
-        );
-
-        // Filter BM25 results by scope and excluded sessions
-        const bm25Filtered = bm25Raw.filter((r: any) => {
-          if (!isWithinScope(r.timestamp, scope)) return false;
-          const sessionId = r.sessionId || r.id.split(':')[0];
-          return !excludedSessions.has(sessionId);
-        });
-
-        // Deduplicate Vectra by unique milestone/session ID (keep highest score)
-        const seen = new Map<string, typeof scopeFiltered[0]>();
-        for (const r of scopeFiltered) {
-          const id = r.type === 'milestone'
-            ? `${r.sessionId}:${r.milestoneIndex}`
-            : r.sessionId;
-          const existing = seen.get(id);
-          if (!existing || r.score > existing.score) {
-            seen.set(id, r);
-          }
-        }
-
-        // Convert Vectra results to ScoredResult for RRF
-        const vectraScored: ScoredResult[] = Array.from(seen.values()).map(r => ({
-          type: r.type,
-          id: r.type === 'milestone' ? `${r.sessionId}:${r.milestoneIndex}` : r.sessionId,
-          sessionId: r.sessionId,
-          score: r.score,
-          finalScore: r.score,
-          timestamp: r.timestamp || '',
-          phase: r.phase as 1 | 2 | undefined,
-          projectPath: r.projectPath,
-        }));
-
-        // RRF merge Vectra + BM25
-        const merged = reciprocalRankFusion(vectraScored, bm25Filtered);
+        const merged: ScoredResult[] = rawResults
+          .filter(r => isWithinScope(r.timestamp, scope) && !excludedSessions.has(r.sessionId))
+          .map(r => ({
+            type: r.type,
+            id: r.type === 'milestone' ? `${r.sessionId}:${r.milestoneIndex}` : r.sessionId,
+            sessionId: r.sessionId,
+            score: r.score,
+            finalScore: r.score,
+            timestamp: r.timestamp || '',
+            phase: r.phase as 1 | 2 | undefined,
+            projectPath: r.projectPath,
+          }));
 
         const compositeOptions: CompositeScoreOptions = {};
         if (body.projectPath) {

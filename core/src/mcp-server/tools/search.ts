@@ -12,7 +12,7 @@
  *   Otherwise                  → vector semantic search + keyword fallback
  */
 
-import { getVectraStore } from '../../vector/vectra-store';
+import { getVectorStore } from '../../vector/vector-store';
 import { getSessionCache } from '../../session-cache';
 import { getMilestoneStore } from '../../milestone/store';
 import { getKnowledgeStore } from '../../knowledge/store';
@@ -20,8 +20,6 @@ import { compositeScore, type ScoredResult } from '../../search/composite-scorer
 import { tokenize, scoreSession, getProjectPathForSession } from '../../search/text-scorer';
 import { isFileQuery } from '../../search/file-matcher';
 import { getProjectArchitectureData } from './project-architecture';
-import { getBM25Scorer } from '../../search/bm25-scorer';
-import { reciprocalRankFusion } from '../../search/rrf-merger';
 
 // ─── Tool Definition ──────────────────────────────────────────────────
 
@@ -244,7 +242,7 @@ async function handleArchitectureSearch(
   return { content: [{ type: 'text', text: lines.join('\n') }] };
 }
 
-// ─── Semantic Search (Vectra + Text Fallback) ──────────────────────────────
+// ─── Semantic Search (Vector + Text Fallback) ──────────────────────────────
 
 async function handleSemanticSearch(
   query: string,
@@ -254,19 +252,19 @@ async function handleSemanticSearch(
   limit: number,
   offset: number,
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  const vectra = getVectraStore();
-  const stats = await vectra.getStats();
+  const vectorStore = getVectorStore();
+  const stats = await vectorStore.getStats();
 
   if (stats.isInitialized && stats.totalVectors > 0) {
-    return handleVectraSearch(query, scope, project, typeFilter, limit, offset);
+    return handleHybridSearch(query, scope, project, typeFilter, limit, offset);
   }
 
   return handleTextSearch(query, scope, project, limit, offset);
 }
 
-// ─── Vectra Search ──────────────────────────────────────────────────
+// ─── Hybrid Search (Vector + FTS) ──────────────────────────────────────
 
-async function handleVectraSearch(
+async function handleHybridSearch(
   query: string,
   scope: Scope,
   project: string | undefined,
@@ -274,30 +272,25 @@ async function handleVectraSearch(
   limit: number,
   offset: number,
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  const vectra = getVectraStore();
+  const vectorStore = getVectorStore();
   const milestoneStore = getMilestoneStore();
 
   // Build metadata filter for type-scoped search
   const metadataFilter = typeFilter !== 'all' ? { type: typeFilter } : undefined;
-  const bm25TypeFilter = typeFilter !== 'all' ? typeFilter : undefined;
 
   // Search with extra results for filtering and pagination
   const fetchCount = (limit + offset) * 3;
 
-  // Run Vectra (semantic) and BM25 (lexical) in parallel
-  const [rawResults, bm25Raw] = await Promise.all([
-    vectra.search(query, fetchCount, metadataFilter),
-    Promise.resolve(getBM25Scorer().search(query, fetchCount, bm25TypeFilter)),
-  ]);
+  // Hybrid search: vector + FTS with RRF merge
+  const rawResults = await vectorStore.hybridSearch(query, fetchCount, metadataFilter);
 
-  // Filter Vectra results by scope and project
-  const scoped = rawResults.filter(r => isWithinScope(r.timestamp, scope));
-  const filtered = project
-    ? scoped.filter(r => r.projectPath === project)
-    : scoped;
+  // Filter by scope and project
+  const filtered = rawResults
+    .filter(r => isWithinScope(r.timestamp, scope))
+    .filter(r => !project || r.projectPath === project);
 
-  // Build ScoredResult[] from Vectra results
-  const vectraScored: ScoredResult[] = filtered.map(r => {
+  // Build ScoredResult[]
+  const merged: ScoredResult[] = filtered.map(r => {
     let id: string;
     if (r.type === 'knowledge') {
       id = r.partId || r.knowledgeId || '';
@@ -319,24 +312,6 @@ async function handleVectraSearch(
       partId: r.partId,
     };
   });
-
-  // Deduplicate Vectra results by id (multiple vectors per entity)
-  const byId = new Map<string, ScoredResult>();
-  for (const s of vectraScored) {
-    const existing = byId.get(s.id);
-    if (!existing || s.score > existing.score) {
-      byId.set(s.id, s);
-    }
-  }
-  const dedupedVectra = Array.from(byId.values());
-
-  // Filter BM25 results by scope and project
-  const bm25Filtered = bm25Raw
-    .filter(r => isWithinScope(r.timestamp, scope))
-    .filter(r => !project || r.projectPath === project);
-
-  // Merge via Reciprocal Rank Fusion
-  const merged = reciprocalRankFusion(dedupedVectra, bm25Filtered);
 
   // Apply composite scoring (also filters out session results when milestones exist)
   const ranked = compositeScore(merged, { currentProject: project });
@@ -642,14 +617,14 @@ async function handleFileAndSemanticSearch(
   offset: number,
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   // Run file history search AND semantic search in parallel
-  const vectra = getVectraStore();
-  const stats = await vectra.getStats();
+  const vectorStore = getVectorStore();
+  const stats = await vectorStore.getStats();
   const hasVectra = stats.isInitialized && stats.totalVectors > 0;
 
   const [fileResult, semanticResult] = await Promise.all([
     handleFileSearch(query, scope, project, limit, offset),
     hasVectra
-      ? handleVectraSearch(query, scope, project, typeFilter, limit, offset)
+      ? handleHybridSearch(query, scope, project, typeFilter, limit, offset)
       : Promise.resolve(null),
   ]);
 

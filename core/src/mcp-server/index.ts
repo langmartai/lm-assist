@@ -14,7 +14,7 @@
 
 // ─── Stdout Protection ──────────────────────────────────────────────────
 // MCP uses stdio (JSON-RPC over stdout). Any console.log from dependencies
-// (session-cache, embedder, vectra-store, etc.) corrupts the protocol.
+// (session-cache, embedder, vector-store, etc.) corrupts the protocol.
 // Redirect console.log/warn/info to stderr before any imports run.
 console.log = console.error.bind(console);
 console.warn = console.error.bind(console);
@@ -28,7 +28,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import { getSessionCache } from '../session-cache';
-import { getVectraStore } from '../vector/vectra-store';
+import { getVectorStore } from '../vector/vector-store';
 import { getEmbedder } from '../vector/embedder';
 import { getMilestoneStore, isProjectExcluded } from '../milestone/store';
 import type { Milestone } from '../milestone/types';
@@ -115,9 +115,9 @@ async function startBackgroundInit(): Promise<void> {
     const embedder = getEmbedder();
     await embedder.load();
 
-    // 3. Initialize Vectra store
+    // 3. Initialize vector store
     console.error('[MCP] Initializing vector store...');
-    const vectra = getVectraStore();
+    const vectra = getVectorStore();
     await vectra.init();
 
     // 4. Initialize milestone store
@@ -153,7 +153,7 @@ async function backgroundIndex(): Promise<void> {
   const { getMilestoneSummarizer } = await import('../milestone/summarizer');
   const { getMilestoneSettings } = await import('../milestone/settings');
   const cache = getSessionCache();
-  const vectra = getVectraStore();
+  const vectra = getVectorStore();
   const milestoneStore = getMilestoneStore();
   const settings = getMilestoneSettings();
 

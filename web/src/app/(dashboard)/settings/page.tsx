@@ -152,6 +152,11 @@ interface McpStatus {
   tools?: string[];
 }
 
+interface ContextHookStatus {
+  installed: boolean;
+  scriptPath: string | null;
+}
+
 interface StatuslineStatus {
   installed: boolean;
   scriptPath: string | null;
@@ -228,6 +233,9 @@ export default function SettingsPage() {
   const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
   const [isMcpInstalling, setIsMcpInstalling] = useState(false);
   const [isMcpUninstalling, setIsMcpUninstalling] = useState(false);
+  const [contextHookStatus, setContextHookStatus] = useState<ContextHookStatus | null>(null);
+  const [isContextHookInstalling, setIsContextHookInstalling] = useState(false);
+  const [isContextHookUninstalling, setIsContextHookUninstalling] = useState(false);
   const [claudeCodeMessage, setClaudeCodeMessage] = useState<{ text: string; type: 'ok' | 'error' } | null>(null);
 
   // milestone settings state
@@ -680,11 +688,12 @@ export default function SettingsPage() {
     if (proxy.isProxied) return;
     setIsClaudeCodeLoading(true);
     try {
-      const [statusRes, configRes, slRes, mcpRes] = await Promise.all([
+      const [statusRes, configRes, slRes, mcpRes, hookRes] = await Promise.all([
         fetch(tierAgentUrl + '/claude-code/status').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/config').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/statusline').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/mcp').catch(() => null),
+        fetch(tierAgentUrl + '/claude-code/context-hook').catch(() => null),
       ]);
       if (statusRes?.ok) {
         const json = await statusRes.json();
@@ -701,6 +710,10 @@ export default function SettingsPage() {
       if (mcpRes?.ok) {
         const json = await mcpRes.json();
         setMcpStatus(json.data || null);
+      }
+      if (hookRes?.ok) {
+        const json = await hookRes.json();
+        setContextHookStatus(json.data || null);
       }
     } catch {
       // silently fail
@@ -1103,6 +1116,44 @@ export default function SettingsPage() {
       showClaudeCodeMessage('Failed to reach tier-agent', 'error');
     } finally {
       setIsMcpUninstalling(false);
+    }
+  }, [tierAgentUrl]);
+
+  const handleContextHookInstall = useCallback(async () => {
+    setIsContextHookInstalling(true);
+    setClaudeCodeMessage(null);
+    try {
+      const res = await fetch(tierAgentUrl + '/claude-code/context-hook/install', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setContextHookStatus(json.data || null);
+        showClaudeCodeMessage('Context inject hook installed', 'ok');
+      } else {
+        showClaudeCodeMessage(json.error || 'Failed to install hook', 'error');
+      }
+    } catch {
+      showClaudeCodeMessage('Failed to reach tier-agent', 'error');
+    } finally {
+      setIsContextHookInstalling(false);
+    }
+  }, [tierAgentUrl]);
+
+  const handleContextHookUninstall = useCallback(async () => {
+    setIsContextHookUninstalling(true);
+    setClaudeCodeMessage(null);
+    try {
+      const res = await fetch(tierAgentUrl + '/claude-code/context-hook/uninstall', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setContextHookStatus(json.data || null);
+        showClaudeCodeMessage('Context inject hook removed', 'ok');
+      } else {
+        showClaudeCodeMessage(json.error || 'Failed to remove hook', 'error');
+      }
+    } catch {
+      showClaudeCodeMessage('Failed to reach tier-agent', 'error');
+    } finally {
+      setIsContextHookUninstalling(false);
     }
   }, [tierAgentUrl]);
 
@@ -2443,6 +2494,76 @@ export default function SettingsPage() {
                     }}>
                       <Info size={12} style={{ flexShrink: 0, marginTop: 2 }} />
                       <span>Controls which result types appear in the title bar search and the search page.</span>
+                    </div>
+                  </div>
+                </SectionCard>
+
+                {/* Context Inject Hook Card */}
+                <SectionCard title="Context Inject Hook" icon={Zap}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    {contextHookStatus && (
+                      <>
+                        <InfoRow
+                          label="Status"
+                          value={contextHookStatus.installed ? 'Installed' : 'Not installed'}
+                          status={contextHookStatus.installed ? 'ok' : 'error'}
+                        />
+                        {contextHookStatus.installed && contextHookStatus.scriptPath && (
+                          <InfoRow label="Hook" value="UserPromptSubmit → context-inject-hook.sh" />
+                        )}
+
+                        {/* Action buttons */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          {!contextHookStatus.installed && (
+                            <button
+                              className="btn btn-sm"
+                              onClick={handleContextHookInstall}
+                              disabled={isContextHookInstalling}
+                              style={{
+                                gap: 4,
+                                background: 'rgba(74, 222, 128, 0.1)',
+                                border: '1px solid rgba(74, 222, 128, 0.3)',
+                                color: 'var(--color-status-green)',
+                              }}
+                            >
+                              {isContextHookInstalling ? <Loader2 size={12} className="spin" /> : <Download size={12} />}
+                              Install Hook
+                            </button>
+                          )}
+
+                          {contextHookStatus.installed && (
+                            <button
+                              className="btn btn-sm"
+                              onClick={handleContextHookUninstall}
+                              disabled={isContextHookUninstalling}
+                              style={{
+                                gap: 4,
+                                background: 'rgba(248, 113, 113, 0.06)',
+                                border: '1px solid rgba(248, 113, 113, 0.2)',
+                                color: 'var(--color-status-red)',
+                              }}
+                            >
+                              {isContextHookUninstalling ? <Loader2 size={12} className="spin" /> : <Trash2 size={12} />}
+                              Remove Hook
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
+
+                    <div style={{
+                      padding: '6px 10px',
+                      background: 'var(--color-bg-secondary)',
+                      borderRadius: 'var(--radius-sm)',
+                      fontSize: 11,
+                      color: 'var(--color-text-tertiary)',
+                      lineHeight: 1.6,
+                      display: 'flex',
+                      gap: 8,
+                      alignItems: 'flex-start',
+                    }}>
+                      <Info size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                      <span>Registers <code>context-inject-hook.sh</code> as a <code>UserPromptSubmit</code> hook in <code>~/.claude/settings.json</code>. Injects relevant knowledge and milestones before each Claude Code prompt.</span>
                     </div>
                   </div>
                 </SectionCard>
