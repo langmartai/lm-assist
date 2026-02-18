@@ -136,7 +136,7 @@ export class KnowledgeGenerator {
    *
    * No LLM call needed — instant extraction.
    */
-  async generateFromExplore(sessionId: string, agentId: string, project: string, skipVectorIndex = false): Promise<Knowledge> {
+  async generateFromExplore(sessionId: string, agentId: string, project: string): Promise<Knowledge> {
     this.currentStatus = { status: 'generating', currentSessionId: sessionId, currentAgentId: agentId };
 
     try {
@@ -183,19 +183,6 @@ export class KnowledgeGenerator {
         sourceAgentId: agentId,
         sourceTimestamp: agentData.completedAt,
       });
-
-      // Index vectors (best-effort) — skipped in batch mode (generateAll does it at the end)
-      if (!skipVectorIndex) {
-        try {
-          const { getVectraStore } = require('../vector/vectra-store');
-          const { extractKnowledgeVectors } = require('../vector/indexer');
-          const vectra = getVectraStore();
-          const vectors = extractKnowledgeVectors(knowledge);
-          if (vectors.length > 0) {
-            await vectra.addVectors(vectors);
-          }
-        } catch { /* vector indexing is best-effort */ }
-      }
 
       return knowledge;
     } finally {
@@ -262,18 +249,6 @@ export class KnowledgeGenerator {
         throw new Error('Failed to update knowledge document');
       }
 
-      // Re-index vectors (best-effort)
-      try {
-        const { getVectraStore } = require('../vector/vectra-store');
-        const { extractKnowledgeVectors } = require('../vector/indexer');
-        const vectra = getVectraStore();
-        await vectra.deleteKnowledge(knowledgeId);
-        const vectors = extractKnowledgeVectors(updated);
-        if (vectors.length > 0) {
-          await vectra.addVectors(vectors);
-        }
-      } catch { /* best-effort */ }
-
       return updated;
     } finally {
       this.currentStatus = { status: 'idle' };
@@ -303,7 +278,6 @@ export class KnowledgeGenerator {
     const total = candidates.length;
     let generated = 0;
     let errors = 0;
-    const generatedKnowledges: Knowledge[] = [];
 
     this.currentStatus = { status: 'generating', processed: 0, total, errors: 0 };
 
@@ -312,9 +286,7 @@ export class KnowledgeGenerator {
         if (this.stopRequested) break;
 
         try {
-          // Skip per-candidate vector indexing — batch at the end
-          const knowledge = await this.generateFromExplore(candidate.sessionId, candidate.agentId, project, true);
-          generatedKnowledges.push(knowledge);
+          await this.generateFromExplore(candidate.sessionId, candidate.agentId, project);
           generated++;
         } catch (err) {
           errors++;
@@ -322,22 +294,6 @@ export class KnowledgeGenerator {
         }
 
         this.currentStatus = { status: 'generating', processed: generated + errors, total, errors };
-      }
-
-      // Batch vector indexing — one embedding call for all generated knowledge
-      if (generatedKnowledges.length > 0) {
-        try {
-          const { getVectraStore } = require('../vector/vectra-store');
-          const { extractKnowledgeVectors } = require('../vector/indexer');
-          const vectra = getVectraStore();
-          const allVectors = generatedKnowledges.flatMap(k => extractKnowledgeVectors(k));
-          if (allVectors.length > 0) {
-            await vectra.addVectors(allVectors);
-            console.error(`[KnowledgeGenerator] Batch-indexed ${allVectors.length} vectors for ${generatedKnowledges.length} knowledge docs`);
-          }
-        } catch (err) {
-          console.error('[KnowledgeGenerator] Batch vector indexing failed:', err);
-        }
       }
     } finally {
       const stopped = this.stopRequested;

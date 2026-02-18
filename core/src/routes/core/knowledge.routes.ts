@@ -1,7 +1,8 @@
 /**
  * Knowledge Routes
  *
- * REST API for knowledge CRUD, comments, batch review, search, and reindexing.
+ * REST API for knowledge CRUD, comments, batch review, and search.
+ * Vector indexing is decoupled — use /vectors/* endpoints instead.
  *
  * Endpoints:
  *   GET    /knowledge                         # List (filters: project, type, status)
@@ -9,14 +10,13 @@
  *   GET    /knowledge/:id/parts/:partId       # Get specific part
  *   POST   /knowledge                         # Create
  *   PUT    /knowledge/:id                     # Update
- *   DELETE /knowledge/:id                     # Delete (+ remove vectors)
+ *   DELETE /knowledge/:id                     # Delete
  *   GET    /knowledge/:id/comments            # Get comments (query: includeAddressed)
  *   POST   /knowledge/:id/comments            # Add comment
  *   PUT    /knowledge/comments/:commentId     # Update comment state
  *   POST   /knowledge/review                  # Trigger batch review
  *   GET    /knowledge/review/status           # Review process status
- *   POST   /knowledge/reindex                 # Reindex all knowledge vectors
- *   GET    /knowledge/search                  # Vector search (query param)
+ *   GET    /knowledge/search                  # Hybrid search (Vectra + BM25)
  */
 
 import type { RouteHandler, RouteContext } from '../index';
@@ -194,54 +194,6 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
           const reviewer = getKnowledgeReviewer();
           const result = await reviewer.review();
           return { success: true, data: result };
-        } catch (err: any) {
-          return { success: false, error: err.message };
-        }
-      },
-    },
-
-    // POST /knowledge/reindex — Reindex all knowledge vectors
-    {
-      method: 'POST',
-      pattern: /^\/knowledge\/reindex$/,
-      handler: async () => {
-        try {
-          const store = getKnowledgeStore();
-          const { getVectraStore } = require('../../vector/vectra-store');
-          const { extractKnowledgeVectors } = require('../../vector/indexer');
-          const vectra = getVectraStore();
-
-          const ids = store.getAllIds();
-          const idSet = new Set(ids);
-          let indexed = 0;
-          let orphansRemoved = 0;
-
-          // Clean up orphaned vectors from deleted knowledge docs
-          const indexedIds = await vectra.getIndexedKnowledgeIds();
-          for (const indexedId of indexedIds) {
-            if (!idSet.has(indexedId)) {
-              await vectra.deleteKnowledge(indexedId);
-              orphansRemoved++;
-            }
-          }
-
-          // Re-index existing knowledge docs
-          for (const id of ids) {
-            const knowledge = store.getKnowledge(id);
-            if (!knowledge) continue;
-
-            // Delete existing vectors for this knowledge
-            await vectra.deleteKnowledge(id);
-
-            // Re-index
-            const vectors = extractKnowledgeVectors(knowledge);
-            if (vectors.length > 0) {
-              await vectra.addVectors(vectors);
-              indexed += vectors.length;
-            }
-          }
-
-          return { success: true, data: { documentsProcessed: ids.length, vectorsIndexed: indexed, orphansRemoved } };
         } catch (err: any) {
           return { success: false, error: err.message };
         }
@@ -498,16 +450,6 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
             return { success: false, error: 'Failed to parse markdown' };
           }
 
-          // Index vectors
-          try {
-            const { getVectraStore } = require('../../vector/vectra-store');
-            const { extractKnowledgeVectors } = require('../../vector/indexer');
-            const vectors = extractKnowledgeVectors(knowledge);
-            if (vectors.length > 0) {
-              await getVectraStore().addVectors(vectors);
-            }
-          } catch { /* vector indexing is best-effort */ }
-
           return { success: true, data: knowledge };
         }
 
@@ -530,16 +472,6 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
           parts: parts || [],
           status,
         });
-
-        // Index vectors
-        try {
-          const { getVectraStore } = require('../../vector/vectra-store');
-          const { extractKnowledgeVectors } = require('../../vector/indexer');
-          const vectors = extractKnowledgeVectors(knowledge);
-          if (vectors.length > 0) {
-            await getVectraStore().addVectors(vectors);
-          }
-        } catch { /* vector indexing is best-effort */ }
 
         return { success: true, data: knowledge };
       },
@@ -573,23 +505,11 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
           return { success: false, error: 'Not found or invalid markdown' };
         }
 
-        // Re-index vectors
-        try {
-          const { getVectraStore } = require('../../vector/vectra-store');
-          const { extractKnowledgeVectors } = require('../../vector/indexer');
-          const vectra = getVectraStore();
-          await vectra.deleteKnowledge(req.params.id);
-          const vectors = extractKnowledgeVectors(knowledge);
-          if (vectors.length > 0) {
-            await vectra.addVectors(vectors);
-          }
-        } catch { /* vector indexing is best-effort */ }
-
         return { success: true, data: knowledge };
       },
     },
 
-    // DELETE /knowledge — Delete ALL knowledge and reset vectors
+    // DELETE /knowledge — Delete ALL knowledge
     {
       method: 'DELETE',
       pattern: /^\/knowledge$/,
@@ -601,15 +521,6 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
           for (const k of all) {
             if (store.deleteKnowledge(k.id)) deleted++;
           }
-
-          // Remove knowledge vectors
-          try {
-            const { getVectraStore } = require('../../vector/vectra-store');
-            const vectra = getVectraStore();
-            for (const k of all) {
-              await vectra.deleteKnowledge(k.id);
-            }
-          } catch { /* best-effort */ }
 
           return { success: true, data: { deleted } };
         } catch (err: any) {
@@ -629,12 +540,6 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!deleted) {
           return { success: false, error: 'Not found' };
         }
-
-        // Remove vectors
-        try {
-          const { getVectraStore } = require('../../vector/vectra-store');
-          await getVectraStore().deleteKnowledge(req.params.id);
-        } catch { /* best-effort */ }
 
         return { success: true };
       },

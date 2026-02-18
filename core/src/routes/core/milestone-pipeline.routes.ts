@@ -6,7 +6,6 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import type { RouteContext, RouteHandler } from '../index';
 import { getMilestoneStore, isProjectExcluded } from '../../milestone/store';
 import { getVectraStore } from '../../vector/vectra-store';
@@ -16,8 +15,9 @@ import { isSessionInScanRange, getMilestoneSettings, type Phase2Model } from '..
 import { getSessionCache } from '../../session-cache';
 import { getProjectPathForSession } from '../../search/text-scorer';
 import { generateArchitectureModel } from '../../architecture-llm';
+import { getDataDir } from '../../utils/path-utils';
 
-const MILESTONES_DIR = path.join(os.homedir(), '.tier-agent', 'milestones');
+const MILESTONES_DIR = path.join(getDataDir(), 'milestones');
 const PIPELINE_STATUS_FILE = path.join(MILESTONES_DIR, 'pipeline-status.json');
 
 // One-time flag: recalculate all sessionTimestamp values from earliest→latest semantics
@@ -232,7 +232,7 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
         sessionTimestampMigrated = true;
         if (needsIndexWrite) {
           // Persist backfilled timestamps
-          const idxPath = path.join(os.homedir(), '.tier-agent', 'milestones', 'index.json');
+          const idxPath = path.join(getDataDir(), 'milestones', 'index.json');
           try { fs.writeFileSync(idxPath, JSON.stringify(index, null, 2)); } catch { /* non-fatal */ }
         }
 
@@ -296,7 +296,7 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
         }
 
         // Get vector stats
-        let vectors = { totalVectors: 0, sessionVectors: 0, milestoneVectors: 0, isInitialized: false };
+        let vectors = { totalVectors: 0, sessionVectors: 0, milestoneVectors: 0, knowledgeVectors: 0, isInitialized: false };
         try {
           const vectraStore = getVectraStore();
           vectors = await vectraStore.getStatsByType();
@@ -328,6 +328,15 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
           // Use defaults
         }
 
+        // When idle, clear stale counters from previous runs
+        if (pipeline.status === 'idle') {
+          pipeline.errors = 0;
+          pipeline.processed = 0;
+          pipeline.vectorErrors = 0;
+          pipeline.vectorsIndexed = 0;
+          pipeline.currentBatch = null;
+        }
+
         return {
           success: true,
           data: {
@@ -351,6 +360,7 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
               total: vectors.totalVectors,
               session: vectors.sessionVectors,
               milestone: vectors.milestoneVectors,
+              knowledge: vectors.knowledgeVectors,
               isInitialized: vectors.isInitialized,
             },
             pipeline,

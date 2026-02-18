@@ -164,19 +164,7 @@ export class KnowledgeReviewer {
     if (parsed.markdown) {
       const updated = store.updateKnowledgeFromMd(knowledgeId, parsed.markdown);
       if (updated) {
-        // Re-index vectors
-        try {
-          const { getVectraStore } = require('../vector/vectra-store');
-          const { extractKnowledgeVectors } = require('../vector/indexer');
-          const vectra = getVectraStore();
-          await vectra.deleteKnowledge(knowledgeId);
-          const vectors = extractKnowledgeVectors(updated);
-          if (vectors.length > 0) {
-            await vectra.addVectors(vectors);
-          }
-        } catch (err) {
-          console.error(`[KnowledgeReviewer] Vector re-indexing error for ${knowledgeId}:`, err);
-        }
+        // Vector re-indexing is now decoupled — use /vectors/index or /vectors/reindex
       } else {
         // Markdown update failed — don't mark comments as addressed
         markdownApplied = false;
