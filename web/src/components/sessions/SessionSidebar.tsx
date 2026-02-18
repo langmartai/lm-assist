@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
-import { Search, X, Clock, MessageSquare, Cpu, ListChecks, User, Users, ExternalLink, GitFork } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Search, X, Clock, MessageSquare, Cpu, ListChecks, User, Users, ExternalLink, GitFork, ChevronDown } from 'lucide-react';
 import { useHighlight } from '@/hooks/useHighlight';
 import { useMachineContext } from '@/contexts/MachineContext';
 import { MachineBadge } from '@/components/shared/MachineBadge';
@@ -32,6 +32,16 @@ export function SessionSidebar({
   scrollToSessionId,
 }: SessionSidebarProps) {
   const { sessions, allSessions, isLoading, filters, setFilters, projectNames } = sessionsHook;
+  const [displayLimit, setDisplayLimit] = useState(50);
+  // Reset display limit when filters change
+  const filterKey = `${filters.search}|${filters.machineId}|${filters.projectName}|${filters.timeRange}`;
+  const prevFilterKeyRef = useRef(filterKey);
+  if (filterKey !== prevFilterKeyRef.current) {
+    prevFilterKeyRef.current = filterKey;
+    setDisplayLimit(50);
+  }
+  const visibleSessions = sessions.slice(0, displayLimit);
+  const hasMore = sessions.length > displayLimit;
   // Filter dropdown to only show git root projects
   const filteredProjectNames = gitProjectNames && gitProjectNames.size > 0
     ? projectNames.filter(name => gitProjectNames.has(name))
@@ -77,13 +87,37 @@ export function SessionSidebar({
         alignItems: 'center',
         justifyContent: 'space-between',
       }}>
-        <span style={{ fontSize: 13, fontWeight: 600 }}>
-          Sessions ({sessions.length})
-        </span>
-        {sessions.length !== allSessions.length && (
-          <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-            of {allSessions.length}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>
+            Sessions ({hasMore ? `${displayLimit}/${sessions.length}` : sessions.length})
           </span>
+          {sessions.length !== allSessions.length && (
+            <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+              of {allSessions.length}
+            </span>
+          )}
+        </div>
+        {hasMore && (
+          <button
+            onClick={() => setDisplayLimit(prev => prev + 100)}
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              padding: '2px 10px',
+              cursor: 'pointer',
+              background: 'var(--color-accent-emphasis)',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 4,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <ChevronDown size={11} />
+            More +100
+          </button>
         )}
       </div>
 
@@ -175,6 +209,7 @@ export function SessionSidebar({
           <option value="week">This week</option>
           <option value="month">This month</option>
         </select>
+
       </div>
 
       {/* Session list */}
@@ -185,14 +220,14 @@ export function SessionSidebar({
               <div key={i} className="skeleton" style={{ height: 72 }} />
             ))}
           </div>
-        ) : sessions.length === 0 ? (
+        ) : visibleSessions.length === 0 ? (
           <div className="empty-state" style={{ padding: 32 }}>
             <MessageSquare size={24} className="empty-state-icon" />
             <span style={{ fontSize: 12 }}>No sessions found</span>
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column' }}>
-            {sessions.map(session => {
+            {visibleSessions.map(session => {
               const effectiveSelectedId = sidebarHighlightId || selectedSessionId;
               const isSelected = effectiveSelectedId === session.sessionId;
               return (
