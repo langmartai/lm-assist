@@ -87,8 +87,35 @@ export class TasksService {
   private tasksDir: string;
   private sessionStore: import('./agent-session-store').AgentSessionStore | null = null;
 
+  // Cache: sessionId → SessionInfo (avoids scanning 30 project dirs per lookup)
+  private _sessionInfoCache = new Map<string, SessionInfo | null>();
+
+  // Cache: listTaskLists() result, invalidated on file changes
+  private _taskListCache: TaskListSummary[] | null = null;
+  private _taskListCacheDirty = true;
+
   constructor(tasksDir?: string) {
     this.tasksDir = tasksDir || path.join(homedir(), '.claude', 'tasks');
+  }
+
+  /**
+   * Invalidate all caches. Call when task files change.
+   */
+  invalidateCache(): void {
+    this._taskListCache = null;
+    this._taskListCacheDirty = true;
+  }
+
+  /**
+   * Invalidate session info lookups (e.g., when session files are added/deleted).
+   * Only clears the sessionId→SessionInfo map; the task list cache is
+   * separately managed by the tasks-directory watcher.
+   */
+  invalidateSessionInfoCache(): void {
+    this._sessionInfoCache.clear();
+    // Don't dirty _taskListCache here — session file add/delete is rare
+    // and the task list will be rebuilt on next invalidateCache() from
+    // the tasks-directory watcher.
   }
 
   /**
@@ -118,14 +145,21 @@ export class TasksService {
   /**
    * Find a session by ID across all projects
    * Searches ~/.claude/projects/PROJECT_KEY/SESSION_ID.jsonl
+   * Results are cached in-memory to avoid repeated directory scans.
    */
   findSessionById(sessionId: string): SessionInfo | null {
     if (!this.isSessionIdFormat(sessionId)) {
       return null;
     }
 
+    // Check in-memory cache first
+    if (this._sessionInfoCache.has(sessionId)) {
+      return this._sessionInfoCache.get(sessionId) || null;
+    }
+
     const projectsDir = path.join(homedir(), '.claude', 'projects');
     if (!fs.existsSync(projectsDir)) {
+      this._sessionInfoCache.set(sessionId, null);
       return null;
     }
 
@@ -140,19 +174,22 @@ export class TasksService {
           // e.g., -home-ubuntu-project -> /home/ubuntu/project
           const projectPath = '/' + dir.name.replace(/^-/, '').replace(/-/g, '/');
 
-          return {
+          const info: SessionInfo = {
             sessionId,
             projectPath,
             projectKey: dir.name,
             filePath: sessionFile,
             exists: true,
           };
+          this._sessionInfoCache.set(sessionId, info);
+          return info;
         }
       }
     } catch {
       // Ignore errors
     }
 
+    this._sessionInfoCache.set(sessionId, null);
     return null;
   }
 
@@ -164,9 +201,15 @@ export class TasksService {
   }
 
   /**
-   * List all task lists (directories)
+   * List all task lists (directories).
+   * Results are cached and invalidated when task files change (call invalidateCache()).
    */
   async listTaskLists(): Promise<TaskListSummary[]> {
+    // Return cached result if available
+    if (!this._taskListCacheDirty && this._taskListCache) {
+      return this._taskListCache;
+    }
+
     if (!fs.existsSync(this.tasksDir)) {
       return [];
     }
@@ -207,7 +250,13 @@ export class TasksService {
     }
 
     // Sort by last modified, newest first
-    return summaries.sort((a, b) => b.lastModified.getTime() - a.lastModified.getTime());
+    const result = summaries.sort((a, b) => b.lastModified.getTime() - a.lastModified.getTime());
+
+    // Cache the result
+    this._taskListCache = result;
+    this._taskListCacheDirty = false;
+
+    return result;
   }
 
   /**

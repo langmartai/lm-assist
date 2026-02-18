@@ -123,6 +123,19 @@ export class TierRestServer {
         handleSessionChangeForMilestones(sessionId, cacheData, '[RestServer]');
       });
 
+      // Invalidate tasks session-info cache when session files are added/deleted
+      // (a new session file could resolve a previously-null lookup)
+      cache.onFileEvent((event: string) => {
+        if (event === 'add' || event === 'unlink') {
+          try {
+            const { getTasksService } = require('./tasks-service');
+            // Only clear session info lookups; don't flush the full task list cache
+            // since task file changes have their own watcher
+            getTasksService().invalidateSessionInfoCache();
+          } catch { /* ignore */ }
+        }
+      });
+
       // Only run the staleness scan if milestone processing is enabled
       const settings = getMilestoneSettings();
       if (settings.enabled) {
@@ -213,6 +226,12 @@ export class TierRestServer {
   private handleClaudeTaskFileChange(event: 'add' | 'change' | 'unlink', filePath: string): void {
     if (!filePath.endsWith('.json')) return;
 
+    // Invalidate tasks service cache on any task file change
+    try {
+      const { getTasksService } = require('./tasks-service');
+      getTasksService().invalidateCache();
+    } catch { /* ignore */ }
+
     const tasksDir = path.join(homedir(), '.claude', 'tasks');
     const relativePath = path.relative(tasksDir, filePath);
     const parts = relativePath.split(path.sep);
@@ -244,6 +263,12 @@ export class TierRestServer {
   }
 
   private handleClaudeTaskDirChange(event: 'addDir' | 'unlinkDir', dirPath: string): void {
+    // Invalidate tasks service cache on list add/remove
+    try {
+      const { getTasksService } = require('./tasks-service');
+      getTasksService().invalidateCache();
+    } catch { /* ignore */ }
+
     const tasksDir = path.join(homedir(), '.claude', 'tasks');
     const relativePath = path.relative(tasksDir, dirPath);
 
