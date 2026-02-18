@@ -85,7 +85,7 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : '�
     let hubClient = null;
     if (hubConfigured) {
       console.log('Connecting to Hub...');
-      const assistWebPort = process.env.ASSIST_WEB_PORT ? parseInt(process.env.ASSIST_WEB_PORT, 10) : undefined;
+      const assistWebPort = process.env.ASSIST_WEB_PORT ? parseInt(process.env.ASSIST_WEB_PORT, 10) : 3848;
       hubClient = getHubClient({ localApiPort: port, assistWebPort });
 
       hubClient.on('connected', () => {
