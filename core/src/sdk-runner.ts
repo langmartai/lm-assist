@@ -396,6 +396,11 @@ export class ClaudeSdkRunner extends EventEmitter {
       (sdkOptions as Record<string, unknown>).inference_geo = options.inferenceGeo;
     }
 
+    // Handle env variables for the CLI subprocess
+    if (options.env) {
+      (sdkOptions as Record<string, unknown>).env = { ...process.env, ...options.env };
+    }
+
     // Create abort controller for timeout
     const abortController = new AbortController();
     sdkOptions.abortController = abortController;
@@ -770,6 +775,11 @@ export class ClaudeSdkRunner extends EventEmitter {
     // Handle inference geo (data residency)
     if (options.inferenceGeo) {
       (sdkOptions as Record<string, unknown>).inference_geo = options.inferenceGeo;
+    }
+
+    // Handle env variables for the CLI subprocess
+    if (options.env) {
+      (sdkOptions as Record<string, unknown>).env = { ...process.env, ...options.env };
     }
 
     // Create abort controller for timeout

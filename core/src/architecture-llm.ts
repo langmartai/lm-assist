@@ -699,6 +699,7 @@ export async function deltaUpdateArchitectureModel(
         maxTurns: 1,
         permissionMode: 'bypassPermissions',
         cwd: getDataDir(),
+        env: { CLAUDE_CODE_REMOTE: 'true' },
         disallowedTools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit'],
         settingSources: [],
       }),

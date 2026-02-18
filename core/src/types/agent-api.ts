@@ -357,6 +357,13 @@ export interface AgentExecuteRequest {
    * @default 'global'
    */
   inferenceGeo?: InferenceGeo;
+
+  /**
+   * Environment variables to pass to the CLI subprocess.
+   * Merged on top of process.env. Use to set SDK behaviour flags
+   * (e.g. CLAUDE_CODE_REMOTE=true to skip warmup subagents).
+   */
+  env?: Record<string, string | undefined>;
 }
 
 /**

@@ -171,6 +171,11 @@ export function convertToSdkOptions(
     options.inferenceGeo = request.inferenceGeo;
   }
 
+  // Environment variables for the CLI subprocess
+  if (request.env) {
+    options.env = request.env;
+  }
+
   return options;
 }
 

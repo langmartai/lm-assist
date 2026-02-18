@@ -25,6 +25,8 @@ export interface ClaudeCliOptions {
   debug?: string;
   /** Model to use (e.g., 'haiku', 'sonnet', 'opus', or full model ID) */
   model?: string;
+  /** Environment variables to pass to the CLI subprocess */
+  env?: Record<string, string | undefined>;
 }
 
 export interface ClaudeCliResult {
