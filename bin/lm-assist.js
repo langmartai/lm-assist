@@ -32,7 +32,7 @@ if (!fs.existsSync(coreShPath)) {
 fs.chmodSync(coreShPath, 0o755);
 
 // Valid commands
-const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'build', 'clean', 'test', 'hub'];
+const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'build', 'clean', 'clean-data', 'test', 'hub'];
 
 if (command === 'help' || command === '--help' || command === '-h') {
   console.log(`
@@ -48,6 +48,7 @@ Commands:
   logs [core|web]    View service logs
   build              Build TypeScript (core) and Next.js (web)
   clean              Clean and rebuild everything
+  clean-data [-y]    Delete all lm-assist data (~/.lm-assist)
   test               Run API endpoint tests
   hub                Hub client commands (start, stop, status, logs)
   help               Show this help message

@@ -163,6 +163,7 @@ export function useBackgroundProgress() {
   const MILESTONE_DESC = 'Extracts milestones from sessions and indexes them';
   const KNOWLEDGE_DESC = 'Generates knowledge documents from explore sessions';
   const VECTORS_DESC = 'Semantic search index for sessions and milestones';
+  const VECTORS_LOADING_DESC = 'Initializing vector store — may take a few minutes on first startup while the index loads from disk.';
 
   const cacheStatus = useMemo((): ProcessStatus => {
     if (!cacheData) return { state: 'idle', percent: 0, label: 'Cache', description: CACHE_DESC };
@@ -233,12 +234,9 @@ export function useBackgroundProgress() {
     const v = pipelineData?.vectors;
     if (!v) return { state: 'idle', percent: 0, label: 'Vectors', description: VECTORS_DESC };
     if (!v.isInitialized) {
-      // Not initialized yet — only show "loading" if the pipeline is actively processing
-      const pipelineActive = pipelineData?.pipeline?.status === 'processing';
-      if (pipelineActive) {
-        return { state: 'running', percent: 0, label: 'Vectors', description: VECTORS_DESC, detail: 'Loading vector store...' };
-      }
-      return { state: 'idle', percent: 0, label: 'Vectors', description: VECTORS_DESC, detail: 'Not initialized' };
+      // Show as loading — vector store auto-initializes on first status poll,
+      // but LanceDB may take a minute or two to connect and load the index.
+      return { state: 'running', percent: 0, label: 'Vectors', description: VECTORS_LOADING_DESC, detail: 'Loading vector index...' };
     }
     if (v.total > 0) {
       const parts: string[] = [];

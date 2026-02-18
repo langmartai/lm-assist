@@ -209,6 +209,7 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
                   await vectra.addVectors(allVectors);
                   console.log(`[Reindex] Indexed ${allVectors.length} knowledge vectors in ${((Date.now() - embedStart) / 1000).toFixed(1)}s`);
                 }
+                await vectra.rebuildFtsIndex();
                 console.log(`[Reindex] Knowledge done: ${allVectors.length} vectors in ${((Date.now() - startMs) / 1000).toFixed(1)}s`);
               } catch (err: any) {
                 console.error('[Reindex] Knowledge error:', err.message, err.stack);
@@ -259,6 +260,7 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
                   await vectra.addVectors(allVectors);
                   console.log(`[Reindex] Indexed ${allVectors.length} milestone vectors in ${((Date.now() - embedStart) / 1000).toFixed(1)}s`);
                 }
+                await vectra.rebuildFtsIndex();
                 console.log(`[Reindex] Milestones done: ${allVectors.length} vectors in ${((Date.now() - startMs) / 1000).toFixed(1)}s`);
               } catch (err: any) {
                 console.error('[Reindex] Milestone error:', err.message, err.stack);

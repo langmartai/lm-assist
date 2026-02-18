@@ -969,6 +969,11 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
           }
         }
 
+        // Rebuild FTS index once after all batches are done
+        if (vectorsIndexed > 0) {
+          vectorStore.rebuildFtsIndex().catch(() => {});
+        }
+
         return {
           success: true,
           data: {

@@ -340,6 +340,7 @@ export class KnowledgeGenerator {
 
           if (allVectors.length > 0) {
             await vectra.addVectors(allVectors);
+            await vectra.rebuildFtsIndex();
             console.log(`[KnowledgeGenerator] Indexed ${allVectors.length} vectors from ${allIds.length} knowledge docs`);
           }
         } catch (err) {

@@ -283,6 +283,67 @@ clean_build() {
     build_project
 }
 
+# Function to clean lm-assist data directory (~/.lm-assist)
+clean_data() {
+    local auto_confirm=0
+    for arg in "$@"; do
+        if [ "$arg" = "-y" ] || [ "$arg" = "--yes" ]; then
+            auto_confirm=1
+        fi
+    done
+
+    local data_dir="$HOME/.lm-assist"
+
+    if [ ! -d "$data_dir" ]; then
+        echo -e "${YELLOW}Data directory not found: $data_dir${NC}"
+        return 0
+    fi
+
+    # Show what will be deleted
+    echo -e "${BLUE}Data directory: ${YELLOW}$data_dir${NC}"
+    echo ""
+    local total_size
+    total_size=$(du -sh "$data_dir" 2>/dev/null | cut -f1)
+    echo -e "  Total size:  ${YELLOW}${total_size}${NC}"
+    echo ""
+    echo -e "${RED}WARNING: This will permanently delete all lm-assist data including:${NC}"
+    echo "  - Vector store (LanceDB index)"
+    echo "  - Milestone cache"
+    echo "  - Knowledge documents"
+    echo "  - Configuration and logs"
+    echo ""
+
+    if [ "$auto_confirm" -eq 1 ]; then
+        echo -e "${YELLOW}Auto-confirming with -y flag${NC}"
+    else
+        # First confirmation
+        echo -n "Are you sure you want to delete $data_dir? Type 'yes' to confirm: "
+        read -r confirm1
+        if [ "$confirm1" != "yes" ]; then
+            echo -e "${YELLOW}Cancelled.${NC}"
+            return 0
+        fi
+
+        # Second confirmation
+        echo -n "Confirm again — type 'yes' to permanently delete all data: "
+        read -r confirm2
+        if [ "$confirm2" != "yes" ]; then
+            echo -e "${YELLOW}Cancelled.${NC}"
+            return 0
+        fi
+    fi
+
+    # Stop services first
+    echo ""
+    echo -e "${BLUE}Stopping services...${NC}"
+    stop_all 2>/dev/null || true
+    sleep 1
+
+    echo -e "${BLUE}Deleting $data_dir...${NC}"
+    rm -rf "$data_dir"
+    echo -e "${GREEN}Done. Data directory deleted.${NC}"
+}
+
 # ============================================================================
 # Core API Server Functions
 # ============================================================================
@@ -1183,6 +1244,9 @@ case "${1:-}" in
     clean)
         clean_build
         ;;
+    clean-data)
+        clean_data "${@:2}"
+        ;;
     test)
         test_api
         ;;
@@ -1244,6 +1308,7 @@ case "${1:-}" in
         echo "  status            Show all service status"
         echo "  build             Build Core (TypeScript)"
         echo "  clean             Clean and rebuild Core"
+        echo "  clean-data [-y]   Delete all lm-assist data (~/.lm-assist)"
         echo "  test              Test API endpoints"
         echo "  logs [service]    View service logs"
         echo "  hub [command]     Hub client management"
@@ -1265,6 +1330,8 @@ case "${1:-}" in
         echo "  $0 status              Check status of all services"
         echo "  $0 build               Build Core TypeScript"
         echo "  $0 clean               Clean and rebuild"
+        echo "  $0 clean-data          Delete all lm-assist data (double confirm)"
+        echo "  $0 clean-data -y       Delete all lm-assist data (auto-confirm)"
         echo "  $0 test                Test API endpoints"
         echo "  $0 logs core           View Core API logs"
         echo "  $0 logs web            View Web logs"

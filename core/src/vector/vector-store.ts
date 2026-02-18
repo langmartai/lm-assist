@@ -252,7 +252,8 @@ export class VectorStore {
 
   /**
    * Add multiple vectors in batch (more efficient).
-   * Rebuilds the FTS index after adding.
+   * Note: FTS index is NOT rebuilt here — call rebuildFtsIndex() explicitly
+   * after a full indexing pass to avoid creating orphaned index snapshots.
    */
   async addVectors(items: Array<{ text: string; metadata: VectorMetadata }>): Promise<number> {
     if (items.length === 0) return 0;
@@ -273,10 +274,15 @@ export class VectorStore {
       totalAdded += chunk.length;
     }
 
-    // Rebuild FTS index to include new data (async, non-fatal)
-    this.ensureFtsIndex().catch(() => {});
-
     return totalAdded;
+  }
+
+  /**
+   * Rebuild the FTS index. Call this once after a full indexing pass,
+   * not after every addVectors() batch, to prevent orphaned index snapshots.
+   */
+  async rebuildFtsIndex(): Promise<void> {
+    this.ensureFtsIndex().catch(() => {});
   }
 
   /**
@@ -539,9 +545,8 @@ export class VectorStore {
     knowledgeVectors: number;
     isInitialized: boolean;
   }> {
-    if (!this.initialized) {
-      return { totalVectors: 0, sessionVectors: 0, milestoneVectors: 0, knowledgeVectors: 0, isInitialized: false };
-    }
+    // Trigger lazy init so status polls auto-connect on server startup
+    await this.init();
 
     const [sessions, milestones, knowledge] = await Promise.all([
       this.countWhere("type = 'session'"),
