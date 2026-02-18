@@ -181,6 +181,8 @@ export function createSessionProjectsRoutes(ctx: RouteContext): RouteHandler[] {
           ? parseInt(req.query.activeThresholdMs, 10)
           : undefined;
 
+        const limit = req.query.limit ? parseInt(req.query.limit, 10) : 0;
+
         const sessions = service.getAllSessions({ active, activeThresholdMs });
 
         // Include lastModified so clients can use it for subsequent ifModifiedSince
@@ -191,9 +193,14 @@ export function createSessionProjectsRoutes(ctx: RouteContext): RouteHandler[] {
         // When ifModifiedSince is provided, only return sessions that changed.
         // The client already has unchanged sessions cached.
         const clientTime = ifModifiedSince ? new Date(ifModifiedSince).getTime() : 0;
-        const outputSessions = ifModifiedSince
+        let outputSessions = ifModifiedSince
           ? sessions.filter(s => s.lastModified.getTime() > clientTime)
           : sessions;
+
+        // Apply server-side limit (after sort, before enrichment)
+        if (limit > 0 && !ifModifiedSince && outputSessions.length > limit) {
+          outputSessions = outputSessions.slice(0, limit);
+        }
 
         // Enrich with running process status from cached store (O(1) lookups)
         const { getProcessStatusStore } = await import('../../process-status-store');

@@ -322,9 +322,14 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
     async getSessions(machineId?: string): Promise<Session[]> {
       // Single call to get all sessions across all projects
       // Uses ifModifiedSince to avoid re-fetching unchanged data
-      const qs = cachedSessionsLastModified
-        ? `?ifModifiedSince=${encodeURIComponent(cachedSessionsLastModified)}`
-        : '';
+      // On first fetch (no cache), limit to 200 to reduce payload size
+      const params = new URLSearchParams();
+      if (cachedSessionsLastModified) {
+        params.set('ifModifiedSince', cachedSessionsLastModified);
+      } else {
+        params.set('limit', '200');
+      }
+      const qs = `?${params.toString()}`;
       const result = await fetchJson<any>(api(`/projects/sessions${qs}`));
 
       // Server returns { notModified: true } when nothing changed at all

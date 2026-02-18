@@ -236,6 +236,9 @@ export class SessionCache {
   // onChange callbacks for session data updates
   private onChangeCallbacks: Array<(sessionId: string, cacheData: SessionCacheData) => void> = [];
 
+  // onFileEvent callbacks for raw file system events (add/change/unlink)
+  private onFileEventCallbacks: Array<(event: 'add' | 'change' | 'unlink', filePath: string) => void> = [];
+
   constructor(baseDir?: string) {
     const profiler = getStartupProfiler();
     profiler.start('lmdbOpen', 'LMDB Open', 'SessionCache');
@@ -250,6 +253,24 @@ export class SessionCache {
    */
   onSessionChange(cb: (sessionId: string, cacheData: SessionCacheData) => void): void {
     this.onChangeCallbacks.push(cb);
+  }
+
+  /**
+   * Register a callback for raw file system events (add/change/unlink).
+   * Fires immediately when chokidar detects a file event, before parsing.
+   */
+  onFileEvent(cb: (event: 'add' | 'change' | 'unlink', filePath: string) => void): void {
+    this.onFileEventCallbacks.push(cb);
+  }
+
+  private fireFileEvent(event: 'add' | 'change' | 'unlink', filePath: string): void {
+    for (const cb of this.onFileEventCallbacks) {
+      try {
+        cb(event, filePath);
+      } catch {
+        // Don't let callback errors affect watcher operations
+      }
+    }
   }
 
   private fireOnChange(cacheData: SessionCacheData): void {
@@ -311,13 +332,21 @@ export class SessionCache {
 
     this.watcher.on('add', (filePath) => {
       if (filePath.endsWith('.jsonl')) {
+        this.fireFileEvent('add', filePath);
         this.scheduleUpdate(filePath);
       }
     });
 
     this.watcher.on('change', (filePath) => {
       if (filePath.endsWith('.jsonl')) {
+        this.fireFileEvent('change', filePath);
         this.scheduleUpdate(filePath);
+      }
+    });
+
+    this.watcher.on('unlink', (filePath) => {
+      if (filePath.endsWith('.jsonl')) {
+        this.fireFileEvent('unlink', filePath);
       }
     });
 

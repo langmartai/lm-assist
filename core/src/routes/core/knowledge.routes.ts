@@ -24,7 +24,28 @@ import { getKnowledgeStore } from '../../knowledge/store';
 import { KNOWLEDGE_TYPES, COMMENT_TYPES } from '../../knowledge/types';
 import type { KnowledgeType, KnowledgeCommentType } from '../../knowledge/types';
 
+// File-change-invalidated cache for /knowledge/generate/stats
+let _statsCache: { candidates: number; generated: number } | null = null;
+let _statsCacheDirty = true;
+
+// Register invalidation with SessionCache (deferred to avoid import-order issues)
+let _statsWatcherRegistered = false;
+function ensureStatsWatcher(): void {
+  if (_statsWatcherRegistered) return;
+  _statsWatcherRegistered = true;
+  try {
+    const { getSessionCache } = require('../../session-cache');
+    const cache = getSessionCache();
+    cache.onFileEvent(() => {
+      _statsCacheDirty = true;
+    });
+  } catch {
+    // SessionCache not ready; cache stays dirty
+  }
+}
+
 export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
+  ensureStatsWatcher();
   return [
     // GET /knowledge — List all knowledge documents
     {
@@ -202,7 +223,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
 
     // GET /knowledge/generate/stats — Candidate + generated counts
     // With ?project=... : scans one project for candidates
-    // Without project  : scans all projects for candidates
+    // Without project  : scans all projects for candidates (cached, invalidated on file change)
     {
       method: 'GET',
       pattern: /^\/knowledge\/generate\/stats$/,
@@ -222,10 +243,19 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
             };
           }
 
+          // Return cached stats if no file changes detected
+          if (!_statsCacheDirty && _statsCache) {
+            // Re-read generatedCount (cheap) since knowledge can be generated without file changes
+            return {
+              success: true,
+              data: { candidates: _statsCache.candidates, generated: generatedCount },
+            };
+          }
+
           // Scan all projects for total candidates
           try {
-            const { createProjectsService } = require('../../projects-service');
-            const service = createProjectsService();
+            const { getProjectsService } = require('../../projects-service');
+            const service = getProjectsService();
             const projects = service.listProjects({ includeSize: false });
             let totalCandidates = 0;
             for (const p of projects) {
@@ -234,6 +264,11 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
                 totalCandidates += candidates.length;
               } catch { /* skip */ }
             }
+
+            // Cache the result
+            _statsCache = { candidates: totalCandidates, generated: generatedCount };
+            _statsCacheDirty = false;
+
             return {
               success: true,
               data: { candidates: totalCandidates, generated: generatedCount },

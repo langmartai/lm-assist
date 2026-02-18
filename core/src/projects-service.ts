@@ -158,11 +158,34 @@ export class ProjectsService {
   private tasksDir: string;
   private tasksService: TasksService;
 
+  // File-change-invalidated session list cache
+  private _sessionListCache: { result: ProjectSession[]; optionsKey: string } | null = null;
+  private _sessionListDirty = true;
+
   constructor(configDir?: string) {
     this.configDir = configDir || getClaudeConfigDir();
     this.projectsDir = getProjectsDir(this.configDir);
     this.tasksDir = path.join(this.configDir, 'tasks');
     this.tasksService = new TasksService(this.tasksDir);
+
+    // Register with SessionCache file watcher for cache invalidation
+    try {
+      const sessionCache = getSessionCache();
+      sessionCache.onFileEvent(() => {
+        this._sessionListDirty = true;
+      });
+    } catch {
+      // SessionCache may not be initialized yet; cache stays dirty by default
+    }
+  }
+
+  /**
+   * Invalidate the session list cache.
+   * Call this when external changes may have occurred.
+   */
+  invalidateSessionListCache(): void {
+    this._sessionListDirty = true;
+    this._sessionListCache = null;
   }
 
   // --------------------------------------------------------------------------
@@ -591,9 +614,18 @@ export class ProjectsService {
   }
 
   /**
-   * Get all sessions across all projects
+   * Get all sessions across all projects.
+   * Uses file-change-invalidated cache: returns cached result when no
+   * session files have been added, modified, or deleted since last scan.
    */
   getAllSessions(options: ListSessionsOptions = {}): ProjectSession[] {
+    const optionsKey = JSON.stringify(options);
+
+    // Return cached result if no file changes detected
+    if (!this._sessionListDirty && this._sessionListCache && this._sessionListCache.optionsKey === optionsKey) {
+      return this._sessionListCache.result;
+    }
+
     const allSessions: ProjectSession[] = [];
 
     if (!fs.existsSync(this.projectsDir)) {
@@ -615,6 +647,10 @@ export class ProjectsService {
     allSessions.sort(
       (a, b) => b.lastModified.getTime() - a.lastModified.getTime()
     );
+
+    // Cache the result and mark as clean
+    this._sessionListCache = { result: allSessions, optionsKey };
+    this._sessionListDirty = false;
 
     return allSessions;
   }
