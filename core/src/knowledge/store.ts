@@ -532,6 +532,20 @@ export class KnowledgeStore {
   }
 
   /**
+   * Get set of "title\0sessionId" keys for title+session dedup during candidate discovery.
+   */
+  getGeneratedTitleSessionKeys(): Set<string> {
+    const index = this.getIndex();
+    const keys = new Set<string>();
+    for (const meta of Object.values(index.knowledges)) {
+      if (meta.title && meta.sourceSessionId) {
+        keys.add(`${meta.title}\0${meta.sourceSessionId}`);
+      }
+    }
+    return keys;
+  }
+
+  /**
    * Find knowledge ID by sourceAgentId (for dedup error messages).
    */
   findByAgentId(agentId: string): string | null {

@@ -76,8 +76,9 @@ export class KnowledgeGenerator {
     // Limit scan to most recent sessions for performance
     const sessions = allSessions.slice(0, MAX_SESSIONS_TO_SCAN);
 
-    // Get already-generated agent IDs
+    // Get already-generated agent IDs and title+session keys for dedup
     const generatedIds = store.getGeneratedAgentIds();
+    const generatedTitleKeys = store.getGeneratedTitleSessionKeys();
 
     const candidates: ExploreCandidate[] = [];
 
@@ -99,8 +100,12 @@ export class KnowledgeGenerator {
           if (!agent.result || agent.result.length < MIN_RESULT_LENGTH) continue;
           if (this.isJunkResult(agent.result.trim())) continue;
 
-          // Skip if already generated
+          // Skip if already generated (by agentId)
           if (generatedIds.has(agent.agentId)) continue;
+
+          // Skip if title+session already generated (catches duplicates with different agentIds)
+          const derivedTitle = this.deriveTitle(agent.prompt, agent.description);
+          if (generatedTitleKeys.has(`${derivedTitle}\0${session.sessionId}`)) continue;
 
           candidates.push({
             sessionId: session.sessionId,
