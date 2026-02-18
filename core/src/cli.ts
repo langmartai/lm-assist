@@ -12,6 +12,7 @@
  *   --api-key        API key for authentication
  */
 
+import * as os from 'os';
 import { startServer } from './index';
 import { getHubClient, isHubConfigured } from './hub-client';
 import { getStartupProfiler } from './startup-profiler';
@@ -34,7 +35,7 @@ function getArg(names: string[], defaultValue?: string): string | undefined {
   return defaultValue;
 }
 
-const projectPath = getArg(['--project', '-d'], process.cwd())!;
+const projectPath = getArg(['--project', '-d'], os.homedir())!;
 const port = parseInt(getArg(['--port', '-p'], '3100')!);
 const host = getArg(['--host', '-h'], '0.0.0.0')!;
 

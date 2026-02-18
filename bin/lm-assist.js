@@ -70,10 +70,12 @@ if (!validCommands.includes(command)) {
 }
 
 // Execute core.sh with the command
+// Use the user's home directory as cwd so that core.sh's PROJECT_ROOT resolves
+// to the npm package location (via BASH_SOURCE), while data always goes to ~/.lm-assist
 const coreProcess = spawn('bash', [coreShPath, command, ...args], {
-  cwd: projectRoot,
+  cwd: process.env.HOME || process.env.USERPROFILE || process.cwd(),
   stdio: 'inherit',
-  shell: true
+  env: { ...process.env, LM_ASSIST_PKG_DIR: projectRoot }
 });
 
 coreProcess.on('exit', (code) => {

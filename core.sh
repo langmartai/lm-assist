@@ -320,7 +320,7 @@ start_core() {
         env_vars="$env_vars TIER_AGENT_API_KEY=$TIER_AGENT_API_KEY"
     fi
 
-    nohup env $env_vars node dist/cli.js serve --port $API_PORT > "$CORE_LOG" 2>&1 &
+    nohup env $env_vars node dist/cli.js serve --port $API_PORT --project "$HOME" > "$CORE_LOG" 2>&1 &
 
     local pid=$!
     echo "$pid" > "$CORE_PID_FILE"
