@@ -7,92 +7,26 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import type { RouteHandler, RouteContext } from '../index';
 import { wrapResponse, wrapError } from '../../api/helpers';
+import { getDataDir } from '../../utils/path-utils';
 
-const HOME = os.homedir();
+const DATA = getDataDir();
 
 // ─── Allowed Directories (whitelist) ───
 const ALLOWED_DIRS = [
-  path.join(HOME, '.tier-agent'),
-  path.join(HOME, '.session-cache'),
-  path.join(HOME, '.milestone'),
+  DATA,
 ];
-const ALLOWED_FILES = [
-  path.join(HOME, '.claude', 'hook-events.jsonl'),
-];
+const ALLOWED_FILES: string[] = [];
 
 // Known log filenames (for /assist-navi/log endpoint)
 const KNOWN_LOGS: Record<string, string> = {
-  'context-inject-hook.log': path.join(HOME, '.tier-agent', 'logs', 'context-inject-hook.log'),
-  'mcp-calls.jsonl': path.join(HOME, '.tier-agent', 'logs', 'mcp-calls.jsonl'),
+  'context-inject-hook.log': path.join(DATA, 'logs', 'context-inject-hook.log'),
+  'mcp-calls.jsonl': path.join(DATA, 'logs', 'mcp-calls.jsonl'),
 };
 
-// ─── Category definitions for file listing ───
-interface CategoryDef {
-  label: string;
-  type: string;
-  paths: Array<{ path: string; isDir: boolean }>;
-}
-
-const CATEGORIES: CategoryDef[] = [
-  {
-    label: 'MCP Logs',
-    type: 'log',
-    paths: [{ path: path.join(HOME, '.tier-agent', 'logs', 'mcp-calls.jsonl'), isDir: false }],
-  },
-  {
-    label: 'Context Inject Hook Log',
-    type: 'log',
-    paths: [{ path: path.join(HOME, '.tier-agent', 'logs', 'context-inject-hook.log'), isDir: false }],
-  },
-  {
-    label: 'Knowledge',
-    type: 'knowledge',
-    paths: [{ path: path.join(HOME, '.tier-agent', 'knowledge'), isDir: true }],
-  },
-  {
-    label: 'Milestones',
-    type: 'milestone',
-    paths: [{ path: path.join(HOME, '.tier-agent', 'milestones'), isDir: true }],
-  },
-  {
-    label: 'Vector Store',
-    type: 'store',
-    paths: [{ path: path.join(HOME, '.tier-agent', 'vector-store'), isDir: true }],
-  },
-  {
-    label: 'BM25 Index',
-    type: 'store',
-    paths: [{ path: path.join(HOME, '.tier-agent', 'bm25-lmdb'), isDir: true }],
-  },
-  {
-    label: 'ML Models',
-    type: 'store',
-    paths: [{ path: path.join(HOME, '.tier-agent', 'models'), isDir: true }],
-  },
-  {
-    label: 'Architecture',
-    type: 'architecture',
-    paths: [{ path: path.join(HOME, '.tier-agent', 'architecture'), isDir: true }],
-  },
-  {
-    label: 'Session Cache',
-    type: 'cache',
-    paths: [{ path: path.join(HOME, '.session-cache'), isDir: true }],
-  },
-  {
-    label: 'Milestone Settings',
-    type: 'config',
-    paths: [{ path: path.join(HOME, '.milestone', 'settings.json'), isDir: false }],
-  },
-  {
-    label: 'Hook Events',
-    type: 'log',
-    paths: [{ path: path.join(HOME, '.claude', 'hook-events.jsonl'), isDir: false }],
-  },
-];
+// ─── Extra allowed files outside the data dir ───
+const EXTRA_FILES: { path: string; category: string }[] = [];
 
 // ─── Helpers ───
 
@@ -112,13 +46,13 @@ interface FileInfo {
   path: string;
   size: number;
   modified: string;
-  type: string;
-  category: string;
   isDirectory: boolean;
+  category: string;
   fileCount?: number;
+  children?: FileInfo[];
 }
 
-function getFileInfo(filePath: string, type: string, category: string): FileInfo | null {
+function statFileInfo(filePath: string, category: string): FileInfo | null {
   try {
     const stats = fs.statSync(filePath);
     const info: FileInfo = {
@@ -126,19 +60,16 @@ function getFileInfo(filePath: string, type: string, category: string): FileInfo
       path: filePath,
       size: stats.size,
       modified: stats.mtime.toISOString(),
-      type,
-      category,
       isDirectory: stats.isDirectory(),
+      category,
     };
     if (stats.isDirectory()) {
       try {
-        info.fileCount = fs.readdirSync(filePath).length;
-        // Sum up sizes of immediate children
+        const children = fs.readdirSync(filePath);
+        info.fileCount = children.length;
         let totalSize = 0;
-        for (const child of fs.readdirSync(filePath)) {
-          try {
-            totalSize += fs.statSync(path.join(filePath, child)).size;
-          } catch { /* skip */ }
+        for (const child of children) {
+          try { totalSize += fs.statSync(path.join(filePath, child)).size; } catch { /* skip */ }
         }
         info.size = totalSize;
       } catch { /* empty dir */ }
@@ -149,17 +80,24 @@ function getFileInfo(filePath: string, type: string, category: string): FileInfo
   }
 }
 
-function getDirFiles(dirPath: string, type: string, category: string): FileInfo[] {
-  const results: FileInfo[] = [];
+/**
+ * Recursively scan a directory up to a given depth.
+ * depth=0 returns just the entry, depth=1 returns entry + immediate children, etc.
+ */
+function scanDir(dirPath: string, category: string, depth: number): FileInfo | null {
+  const info = statFileInfo(dirPath, category);
+  if (!info || !info.isDirectory || depth <= 0) return info;
+
   try {
-    if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) return results;
-    for (const name of fs.readdirSync(dirPath)) {
-      const fullPath = path.join(dirPath, name);
-      const info = getFileInfo(fullPath, type, category);
-      if (info) results.push(info);
+    const names = fs.readdirSync(dirPath).sort();
+    info.children = [];
+    for (const name of names) {
+      const childPath = path.join(dirPath, name);
+      const child = scanDir(childPath, category, depth - 1);
+      if (child) info.children.push(child);
     }
   } catch { /* skip */ }
-  return results;
+  return info;
 }
 
 const MAX_READ_BYTES = 1024 * 1024; // 1MB cap
@@ -195,52 +133,47 @@ function tailLines(filePath: string, limit: number): { lines: string[]; truncate
 
 export function createAssistNaviRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
-    // GET /assist-navi/files — List all assist-owned files grouped by category
+    // GET /assist-navi/files — Scan ~/.lm-assist/ directory tree
+    //   ?depth=2 (default 2) — how deep to recurse
     {
       method: 'GET',
       pattern: /^\/assist-navi\/files$/,
-      handler: async (_req) => {
+      handler: async (req) => {
         const start = Date.now();
         try {
-          const files: FileInfo[] = [];
-          let lastActivity = '';
+          const depth = Math.min(parseInt(req.query.depth || '2', 10), 5);
 
-          for (const cat of CATEGORIES) {
-            for (const p of cat.paths) {
-              if (p.isDir) {
-                // For directories that are "store" type, show the directory itself as a summary
-                if (cat.type === 'store' || cat.type === 'cache') {
-                  const info = getFileInfo(p.path, cat.type, cat.label);
-                  if (info) {
-                    files.push(info);
-                    if (info.modified > lastActivity) lastActivity = info.modified;
-                  }
-                } else {
-                  // For knowledge/milestones/architecture, list individual files
-                  const dirFiles = getDirFiles(p.path, cat.type, cat.label);
-                  for (const f of dirFiles) {
-                    files.push(f);
-                    if (f.modified > lastActivity) lastActivity = f.modified;
-                  }
-                }
-              } else {
-                const info = getFileInfo(p.path, cat.type, cat.label);
-                if (info) {
-                  files.push(info);
-                  if (info.modified > lastActivity) lastActivity = info.modified;
-                }
-              }
-            }
+          // Scan the data directory
+          const root = scanDir(DATA, 'lm-assist', depth);
+
+          // Also include extra allowed files (e.g., hook-events.jsonl)
+          const extras: FileInfo[] = [];
+          for (const extra of EXTRA_FILES) {
+            const info = statFileInfo(extra.path, extra.category);
+            if (info) extras.push(info);
           }
 
-          // Sort by modified descending
-          files.sort((a, b) => new Date(b.modified).getTime() - new Date(a.modified).getTime());
-
-          const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+          // Compute totals from top-level children
+          let totalSize = 0;
+          let totalFiles = 0;
+          let lastActivity = '';
+          if (root?.children) {
+            for (const child of root.children) {
+              totalSize += child.size;
+              totalFiles += child.isDirectory ? (child.fileCount || 0) : 1;
+              if (child.modified > lastActivity) lastActivity = child.modified;
+            }
+          }
+          for (const e of extras) {
+            totalSize += e.size;
+            totalFiles++;
+            if (e.modified > lastActivity) lastActivity = e.modified;
+          }
 
           return wrapResponse({
-            files,
-            totalFiles: files.length,
+            root: root || { name: '.lm-assist', path: DATA, size: 0, modified: '', isDirectory: true, category: 'lm-assist', children: [] },
+            extras,
+            totalFiles,
             totalSize,
             lastActivity: lastActivity || null,
           }, start);

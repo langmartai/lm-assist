@@ -1,7 +1,7 @@
 /**
  * Milestone Settings Routes
  *
- * Endpoints for managing milestone pipeline configuration stored at ~/.milestone/settings.json.
+ * Endpoints for managing milestone pipeline configuration stored at ~/.lm-assist/milestone/settings.json.
  *
  * GET  /milestone-settings               — Get current settings
  * PUT  /milestone-settings               — Update settings (partial merge)

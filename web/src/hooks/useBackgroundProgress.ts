@@ -179,11 +179,15 @@ export function useBackgroundProgress() {
       const percent = total > 0 ? Math.round((p.processed / total) * 100) : 0;
       return { state: 'running', percent, label: 'Milestone', description: MILESTONE_DESC, detail: `${p.processed}/${total} processed, ${p.vectorsIndexed} vectors` };
     }
-    if (p.errors > 0 || p.vectorErrors > 0) {
-      return { state: 'error', percent: 100, label: 'Milestone', description: MILESTONE_DESC, detail: `${p.errors + p.vectorErrors} error${p.errors + p.vectorErrors > 1 ? 's' : ''}` };
-    }
-    if (p.processed > 0) {
-      return { state: 'complete', percent: 100, label: 'Milestone', description: MILESTONE_DESC, detail: `${p.processed} processed, ${p.vectorsIndexed} vectors` };
+    if (p.processed > 0 || p.errors > 0 || p.vectorErrors > 0) {
+      const totalErrors = p.errors + p.vectorErrors;
+      // Only show error state while actively processing; when idle, treat as complete with error detail
+      const state: ProcessState = p.status === 'processing' && totalErrors > 0 ? 'error' : 'complete';
+      const parts: string[] = [];
+      if (p.processed > 0) parts.push(`${p.processed} processed`);
+      if (p.vectorsIndexed > 0) parts.push(`${p.vectorsIndexed} vectors`);
+      if (totalErrors > 0) parts.push(`${totalErrors} error${totalErrors > 1 ? 's' : ''}`);
+      return { state, percent: 100, label: 'Milestone', description: MILESTONE_DESC, detail: parts.join(', ') };
     }
     return { state: 'idle', percent: 0, label: 'Milestone', description: MILESTONE_DESC };
   }, [pipelineData]);
@@ -208,10 +212,20 @@ export function useBackgroundProgress() {
     const v = pipelineData?.vectors;
     if (!v) return { state: 'idle', percent: 0, label: 'Vectors', description: VECTORS_DESC };
     if (!v.isInitialized) {
-      return { state: 'running', percent: 0, label: 'Vectors', description: VECTORS_DESC, detail: 'Loading vector store...' };
+      // Not initialized yet — only show "loading" if the pipeline is actively processing
+      const pipelineActive = pipelineData?.pipeline?.status === 'processing';
+      if (pipelineActive) {
+        return { state: 'running', percent: 0, label: 'Vectors', description: VECTORS_DESC, detail: 'Loading vector store...' };
+      }
+      return { state: 'idle', percent: 0, label: 'Vectors', description: VECTORS_DESC, detail: 'Not initialized' };
     }
     if (v.total > 0) {
-      return { state: 'complete', percent: 100, label: 'Vectors', description: VECTORS_DESC, detail: `${v.total} vectors (${v.session} session, ${v.milestone} milestone)` };
+      const parts: string[] = [];
+      if (v.session > 0) parts.push(`${v.session} session`);
+      if (v.milestone > 0) parts.push(`${v.milestone} milestone`);
+      if ((v as any).knowledge > 0) parts.push(`${(v as any).knowledge} knowledge`);
+      const breakdown = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+      return { state: 'complete', percent: 100, label: 'Vectors', description: VECTORS_DESC, detail: `${v.total} vectors${breakdown}` };
     }
     return { state: 'idle', percent: 0, label: 'Vectors', description: VECTORS_DESC, detail: 'No vectors indexed' };
   }, [pipelineData]);

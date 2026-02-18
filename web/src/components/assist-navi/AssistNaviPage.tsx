@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Search,
   RefreshCw,
@@ -8,11 +8,9 @@ import {
   FileText,
   Database,
   BookOpen,
-  Milestone,
-  Cpu,
   FolderOpen,
-  AlertCircle,
   ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 
 // ============================================================================
@@ -45,14 +43,15 @@ interface FileInfo {
   path: string;
   size: number;
   modified: string;
-  type: string;
   category: string;
   isDirectory: boolean;
   fileCount?: number;
+  children?: FileInfo[];
 }
 
 interface FilesResponse {
-  files: FileInfo[];
+  root: FileInfo;
+  extras: FileInfo[];
   totalFiles: number;
   totalSize: number;
   lastActivity: string | null;
@@ -100,28 +99,50 @@ function formatRelativeTime(iso: string): string {
   return `${Math.floor(days / 30)}mo ago`;
 }
 
-const TYPE_COLORS: Record<string, string> = {
-  log: '#e67e22',
-  knowledge: '#3498db',
-  milestone: '#9b59b6',
-  store: '#1abc9c',
-  cache: '#1abc9c',
-  architecture: '#e74c3c',
-  config: '#95a5a6',
-};
-
-const TYPE_ICONS: Record<string, typeof FileText> = {
-  log: AlertCircle,
-  knowledge: BookOpen,
-  milestone: Milestone,
-  store: Database,
-  cache: Database,
-  architecture: Cpu,
-  config: FileText,
-};
-
 function isLogFile(file: FileInfo): boolean {
   return file.name.endsWith('.log') || file.name.endsWith('.jsonl');
+}
+
+function getFileIcon(file: FileInfo): typeof FileText {
+  if (file.isDirectory) return FolderOpen;
+  const ext = file.name.split('.').pop()?.toLowerCase();
+  if (ext === 'md') return BookOpen;
+  if (ext === 'json' || ext === 'jsonl') return FileText;
+  if (ext === 'mdb' || ext === 'lock') return Database;
+  return FileText;
+}
+
+function findInTree(node: FileInfo | null, predicate: (f: FileInfo) => boolean): FileInfo | null {
+  if (!node) return null;
+  if (predicate(node)) return node;
+  if (node.children) {
+    for (const child of node.children) {
+      const found = findInTree(child, predicate);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function countFilesInTree(node: FileInfo | null): number {
+  if (!node) return 0;
+  if (!node.isDirectory) return 1;
+  let count = 0;
+  if (node.children) {
+    for (const child of node.children) {
+      count += countFilesInTree(child);
+    }
+  }
+  return count;
+}
+
+function matchesSearch(node: FileInfo, search: string): boolean {
+  const lower = search.toLowerCase();
+  if (node.name.toLowerCase().includes(lower)) return true;
+  if (node.children) {
+    return node.children.some(c => matchesSearch(c, search));
+  }
+  return false;
 }
 
 // ============================================================================
@@ -130,7 +151,8 @@ function isLogFile(file: FileInfo): boolean {
 
 export function AssistNaviPage() {
   // ── State ──
-  const [files, setFiles] = useState<FileInfo[]>([]);
+  const [rootNode, setRootNode] = useState<FileInfo | null>(null);
+  const [extras, setExtras] = useState<FileInfo[]>([]);
   const [totalSize, setTotalSize] = useState(0);
   const [lastActivity, setLastActivity] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<FileInfo | null>(null);
@@ -139,66 +161,32 @@ export function AssistNaviPage() {
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [listLoading, setListLoading] = useState(true);
-  const [filterCategory, setFilterCategory] = useState<string>('all');
   const [fileSearch, setFileSearch] = useState('');
-  const [filterOpen, setFilterOpen] = useState(false);
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
 
   const contentEndRef = useRef<HTMLDivElement>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const filterRef = useRef<HTMLDivElement>(null);
-
-  // ── Category counts ──
-  const categoryCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const f of files) {
-      counts[f.category] = (counts[f.category] || 0) + 1;
-    }
-    return counts;
-  }, [files]);
-
-  const categories = useMemo(() => Object.keys(categoryCounts).sort(), [categoryCounts]);
-
-  // ── Filtered file list ──
-  const filteredFiles = useMemo(() => {
-    let result = files;
-    if (filterCategory !== 'all') {
-      result = result.filter(f => f.category === filterCategory);
-    }
-    if (fileSearch) {
-      const lower = fileSearch.toLowerCase();
-      result = result.filter(f => f.name.toLowerCase().includes(lower) || f.category.toLowerCase().includes(lower));
-    }
-    return result;
-  }, [files, filterCategory, fileSearch]);
-
-  // ── Close dropdown on outside click ──
-  useEffect(() => {
-    if (!filterOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (filterRef.current && !filterRef.current.contains(e.target as Node)) {
-        setFilterOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [filterOpen]);
 
   // ── Load file list ──
   const initialSelectionDone = useRef(false);
   const loadFiles = useCallback(async () => {
     setListLoading(true);
     try {
-      const data = await apiFetch<FilesResponse>('/assist-navi/files');
-      setFiles(data.files);
+      const data = await apiFetch<FilesResponse>('/assist-navi/files?depth=3');
+      setRootNode(data.root);
+      setExtras(data.extras);
       setTotalSize(data.totalSize);
       setLastActivity(data.lastActivity);
+      // Auto-expand first level
+      if (data.root?.children) {
+        setExpandedDirs(new Set([data.root.path]));
+      }
       // Auto-select context-inject-hook.log on first load
       if (!initialSelectionDone.current) {
         initialSelectionDone.current = true;
-        const hookLog = data.files.find(f => f.name === 'context-inject-hook.log');
+        const hookLog = findInTree(data.root, f => f.name === 'context-inject-hook.log');
         if (hookLog) {
           setSelectedFile(hookLog);
-          // Inline content load to avoid stale closure
           try {
             const logData = await apiFetch<LogResponse>('/assist-navi/log?file=context-inject-hook.log&limit=300');
             setContent(logData);
@@ -295,22 +283,17 @@ export function AssistNaviPage() {
           fontSize: 11,
           color: 'var(--color-text-tertiary)',
         }}>
-          <span>{filteredFiles.length}{filterCategory !== 'all' || fileSearch ? `/${files.length}` : ''} files</span>
+          <span>{rootNode ? countFilesInTree(rootNode) + extras.length : 0} files</span>
           <span>{formatSize(totalSize)}</span>
           {lastActivity && <span>Active {formatRelativeTime(lastActivity)}</span>}
         </div>
 
-        {/* Filter bar: search + category dropdown */}
+        {/* Search bar */}
         <div style={{
           padding: '6px 10px',
           borderBottom: '1px solid var(--color-border-default)',
-          display: 'flex',
-          gap: 6,
-          alignItems: 'center',
         }}>
-          {/* Quick search */}
           <div style={{
-            flex: 1,
             display: 'flex',
             alignItems: 'center',
             background: 'var(--color-bg-surface)',
@@ -344,178 +327,75 @@ export function AssistNaviPage() {
               </button>
             )}
           </div>
-
-          {/* Category dropdown */}
-          <div ref={filterRef} style={{ position: 'relative' }}>
-            <button
-              onClick={() => setFilterOpen(!filterOpen)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                background: filterCategory !== 'all' ? 'var(--color-accent)' : 'var(--color-bg-surface)',
-                color: filterCategory !== 'all' ? '#fff' : 'var(--color-text-secondary)',
-                border: `1px solid ${filterCategory !== 'all' ? 'var(--color-accent)' : 'var(--color-border-default)'}`,
-                borderRadius: 5,
-                padding: '3px 8px',
-                fontSize: 11,
-                cursor: 'pointer',
-                fontFamily: "'DM Sans', sans-serif",
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {filterCategory === 'all' ? 'All' : filterCategory}
-              <ChevronDown size={11} />
-            </button>
-
-            {filterOpen && (
-              <div style={{
-                position: 'absolute',
-                top: '100%',
-                right: 0,
-                marginTop: 4,
-                background: 'var(--color-bg-primary)',
-                border: '1px solid var(--color-border-default)',
-                borderRadius: 6,
-                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                zIndex: 100,
-                minWidth: 180,
-                overflow: 'hidden',
-              }}>
-                {/* All option */}
-                <button
-                  onClick={() => { setFilterCategory('all'); setFilterOpen(false); }}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    width: '100%',
-                    padding: '6px 10px',
-                    border: 'none',
-                    background: filterCategory === 'all' ? 'var(--color-bg-surface)' : 'transparent',
-                    cursor: 'pointer',
-                    fontSize: 11,
-                    color: 'var(--color-text-primary)',
-                    fontFamily: "'DM Sans', sans-serif",
-                    textAlign: 'left',
-                  }}
-                >
-                  <span>All</span>
-                  <span style={{
-                    fontSize: 10,
-                    color: 'var(--color-text-tertiary)',
-                    background: 'var(--color-bg-surface)',
-                    padding: '1px 6px',
-                    borderRadius: 8,
-                  }}>
-                    {files.length}
-                  </span>
-                </button>
-
-                {categories.map(cat => (
-                  <button
-                    key={cat}
-                    onClick={() => { setFilterCategory(cat); setFilterOpen(false); }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      width: '100%',
-                      padding: '6px 10px',
-                      border: 'none',
-                      background: filterCategory === cat ? 'var(--color-bg-surface)' : 'transparent',
-                      cursor: 'pointer',
-                      fontSize: 11,
-                      color: 'var(--color-text-primary)',
-                      fontFamily: "'DM Sans', sans-serif",
-                      textAlign: 'left',
-                    }}
-                  >
-                    <span>{cat}</span>
-                    <span style={{
-                      fontSize: 10,
-                      color: 'var(--color-text-tertiary)',
-                      background: 'var(--color-bg-surface)',
-                      padding: '1px 6px',
-                      borderRadius: 8,
-                    }}>
-                      {categoryCounts[cat]}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
         </div>
 
-        {/* File list */}
+        {/* File tree */}
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {listLoading ? (
             <div style={{ padding: 20, textAlign: 'center', color: 'var(--color-text-tertiary)', fontSize: 13 }}>
               Loading files...
             </div>
-          ) : filteredFiles.length === 0 ? (
+          ) : !rootNode ? (
             <div style={{ padding: 20, textAlign: 'center', color: 'var(--color-text-tertiary)', fontSize: 13 }}>
-              {files.length === 0 ? 'No assist files found' : 'No files match filter'}
+              No assist files found
             </div>
           ) : (
-            filteredFiles.map((file, i) => {
-              const isSelected = selectedFile?.path === file.path;
-              const color = TYPE_COLORS[file.type] || '#95a5a6';
-              const Icon = TYPE_ICONS[file.type] || FileText;
-              return (
-                <div
-                  key={file.path + i}
-                  onClick={() => handleFileSelect(file)}
-                  style={{
-                    padding: '8px 14px',
-                    cursor: file.isDirectory ? 'default' : 'pointer',
-                    borderLeft: isSelected ? `3px solid var(--color-accent)` : '3px solid transparent',
-                    background: isSelected ? 'var(--color-bg-surface)' : 'transparent',
-                    opacity: file.isDirectory ? 0.7 : 1,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    borderBottom: '1px solid var(--color-border-default)',
-                  }}
-                >
-                  {/* Type dot */}
-                  <Icon size={14} style={{ color, flexShrink: 0 }} />
-
-                  {/* File info */}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{
-                      fontSize: 12,
-                      fontWeight: isSelected ? 600 : 400,
-                      color: 'var(--color-text-primary)',
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}>
-                      {file.name}
-                    </div>
-                    <div style={{
-                      fontSize: 10,
-                      color: 'var(--color-text-tertiary)',
-                      marginTop: 1,
-                    }}>
-                      {file.category}
-                    </div>
-                  </div>
-
-                  {/* Size / file count badge */}
+            <>
+              {/* Main tree */}
+              {(rootNode.children || [])
+                .filter(child => !fileSearch || matchesSearch(child, fileSearch))
+                .map(child => (
+                  <TreeNode
+                    key={child.path}
+                    node={child}
+                    depth={0}
+                    selectedPath={selectedFile?.path || null}
+                    expandedDirs={expandedDirs}
+                    fileSearch={fileSearch}
+                    onToggleDir={(p) => {
+                      setExpandedDirs(prev => {
+                        const next = new Set(prev);
+                        if (next.has(p)) next.delete(p); else next.add(p);
+                        return next;
+                      });
+                    }}
+                    onSelectFile={handleFileSelect}
+                  />
+                ))
+              }
+              {/* Extra files (outside data dir) */}
+              {extras.length > 0 && (
+                <>
                   <div style={{
+                    padding: '6px 14px',
                     fontSize: 10,
+                    fontWeight: 600,
                     color: 'var(--color-text-tertiary)',
-                    whiteSpace: 'nowrap',
-                    textAlign: 'right',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    borderTop: '1px solid var(--color-border-default)',
+                    marginTop: 4,
                   }}>
-                    <div>{file.isDirectory ? `${file.fileCount ?? 0} files` : formatSize(file.size)}</div>
-                    <div style={{ marginTop: 1 }}>{formatRelativeTime(file.modified)}</div>
+                    External Files
                   </div>
-                </div>
-              );
-            })
+                  {extras
+                    .filter(f => !fileSearch || f.name.toLowerCase().includes(fileSearch.toLowerCase()))
+                    .map(file => (
+                      <TreeNode
+                        key={file.path}
+                        node={file}
+                        depth={0}
+                        selectedPath={selectedFile?.path || null}
+                        expandedDirs={expandedDirs}
+                        fileSearch={fileSearch}
+                        onToggleDir={() => {}}
+                        onSelectFile={handleFileSelect}
+                      />
+                    ))
+                  }
+                </>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -650,6 +530,120 @@ export function AssistNaviPage() {
             </div>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Tree Node Sub-component
+// ============================================================================
+
+function TreeNode({
+  node,
+  depth,
+  selectedPath,
+  expandedDirs,
+  fileSearch,
+  onToggleDir,
+  onSelectFile,
+}: {
+  node: FileInfo;
+  depth: number;
+  selectedPath: string | null;
+  expandedDirs: Set<string>;
+  fileSearch: string;
+  onToggleDir: (path: string) => void;
+  onSelectFile: (file: FileInfo) => void;
+}) {
+  const isSelected = selectedPath === node.path;
+  const isExpanded = expandedDirs.has(node.path);
+  const Icon = getFileIcon(node);
+  const indent = 14 + depth * 16;
+
+  if (node.isDirectory) {
+    const children = (node.children || []).filter(
+      child => !fileSearch || matchesSearch(child, fileSearch)
+    );
+    return (
+      <>
+        <div
+          onClick={() => onToggleDir(node.path)}
+          style={{
+            padding: '6px 14px',
+            paddingLeft: indent,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            borderBottom: '1px solid var(--color-border-default)',
+          }}
+        >
+          {isExpanded
+            ? <ChevronDown size={12} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />
+            : <ChevronRight size={12} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />
+          }
+          <FolderOpen size={13} style={{ color: 'var(--color-text-secondary)', flexShrink: 0 }} />
+          <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-text-primary)', flex: 1 }}>
+            {node.name}
+          </span>
+          <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
+            {node.fileCount ?? children.length}
+          </span>
+        </div>
+        {isExpanded && children.map(child => (
+          <TreeNode
+            key={child.path}
+            node={child}
+            depth={depth + 1}
+            selectedPath={selectedPath}
+            expandedDirs={expandedDirs}
+            fileSearch={fileSearch}
+            onToggleDir={onToggleDir}
+            onSelectFile={onSelectFile}
+          />
+        ))}
+      </>
+    );
+  }
+
+  // File node
+  return (
+    <div
+      onClick={() => onSelectFile(node)}
+      style={{
+        padding: '6px 14px',
+        paddingLeft: indent + 18,
+        cursor: 'pointer',
+        borderLeft: isSelected ? '3px solid var(--color-accent)' : '3px solid transparent',
+        background: isSelected ? 'var(--color-bg-surface)' : 'transparent',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        borderBottom: '1px solid var(--color-border-default)',
+      }}
+    >
+      <Icon size={13} style={{ color: 'var(--color-text-secondary)', flexShrink: 0 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontSize: 12,
+          fontWeight: isSelected ? 600 : 400,
+          color: 'var(--color-text-primary)',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}>
+          {node.name}
+        </div>
+      </div>
+      <div style={{
+        fontSize: 10,
+        color: 'var(--color-text-tertiary)',
+        whiteSpace: 'nowrap',
+        textAlign: 'right',
+      }}>
+        <div>{formatSize(node.size)}</div>
+        <div style={{ marginTop: 1 }}>{formatRelativeTime(node.modified)}</div>
       </div>
     </div>
   );
