@@ -5,8 +5,9 @@ const nextConfig: NextConfig = {
   typescript: { ignoreBuildErrors: true },
   async redirects() {
     return [
-      { source: '/', destination: '/terminals', permanent: false },
-      { source: '/dashboard', destination: '/terminals', permanent: false },
+      { source: '/', destination: '/sessions', permanent: false },
+      { source: '/dashboard', destination: '/session-dashboard', permanent: false },
+      { source: '/terminals', destination: '/session-dashboard', permanent: false },
       { source: '/workers', destination: '/machines', permanent: true },
       { source: '/claude-sessions', destination: '/sessions', permanent: true },
       { source: '/claude-sessions/:path*', destination: '/sessions', permanent: true },

@@ -1,12 +1,12 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useTerminals } from '@/hooks/useTerminals';
+import { useSessionDashboard } from '@/hooks/useSessionDashboard';
 import { useMultiSessionMonitor } from '@/hooks/useMultiSessionMonitor';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { useMachineContext } from '@/contexts/MachineContext';
-import { TerminalPanel, TerminalFilterBar } from '@/components/terminals';
-import type { ConvType, LayoutMode } from '@/components/terminals';
+import { TerminalPanel, TerminalFilterBar } from '@/components/session-dashboard';
+import type { ConvType, LayoutMode } from '@/components/session-dashboard';
 import { Terminal } from 'lucide-react';
 import type { Session } from '@/lib/types';
 
@@ -56,7 +56,7 @@ export default function TerminalsPage() {
   // ─── State (persisted) ──────────────────────────────────────────────────
 
   const [showTypes, setShowTypes] = useState<Record<ConvType, boolean>>(DEFAULT_SHOW_TYPES);
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>('grid');
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>('2col');
   const [showRunningOnly, setShowRunningOnly] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
 
@@ -85,14 +85,14 @@ export default function TerminalsPage() {
 
   useEffect(() => {
     setShowTypes(loadFromStorage(STORAGE_KEY_SHOW_TYPES, DEFAULT_SHOW_TYPES));
-    setLayoutMode(loadFromStorage(STORAGE_KEY_LAYOUT, 'grid'));
+    setLayoutMode(loadFromStorage(STORAGE_KEY_LAYOUT, '2col'));
     setShowRunningOnly(loadFromStorage(STORAGE_KEY_RUNNING_ONLY, false));
     setAutoScroll(loadFromStorage(STORAGE_KEY_AUTO_SCROLL, true));
   }, []);
 
   // ─── Data ───────────────────────────────────────────────────────────────
 
-  const { availableSessions, isLoading, error, refetch } = useTerminals();
+  const { availableSessions, isLoading, error, refetch } = useSessionDashboard();
 
   // ─── Running detection via ttyd processes ──────────────────────────────
 

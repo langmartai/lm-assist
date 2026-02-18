@@ -5,7 +5,7 @@ import { useAppMode } from '@/contexts/AppModeContext';
 import { useMachineContext } from '@/contexts/MachineContext';
 import type { Session } from '@/lib/types';
 
-export function useTerminals() {
+export function useSessionDashboard() {
   const { apiClient, isLocal } = useAppMode();
   const { onlineMachines, selectedMachineId } = useMachineContext();
   const [availableSessions, setAvailableSessions] = useState<Session[]>([]);

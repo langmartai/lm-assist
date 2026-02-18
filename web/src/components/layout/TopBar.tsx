@@ -13,7 +13,7 @@ import { MachineDropdown } from './MachineDropdown';
 import { BackgroundProgress } from './BackgroundProgress';
 
 const pageNames: Record<string, string> = {
-  '/terminals': 'Session Dashboard',
+  '/session-dashboard': 'Session Dashboard',
   '/machines': 'Machines',
   '/projects': 'Projects',
   '/sessions': 'Sessions',
@@ -48,7 +48,7 @@ export function TopBar() {
   const [lanAccessToken, setLanAccessToken] = useState<string | null>(null);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
-  const basePath = '/' + (pathname.split('/')[1] || 'terminals');
+  const basePath = '/' + (pathname.split('/')[1] || 'session-dashboard');
   const pageName = pageNames[basePath] || 'Session Dashboard';
 
   useEffect(() => {
@@ -98,7 +98,7 @@ export function TopBar() {
   const hubName = typeof window !== 'undefined' && window.location.hostname.includes('langmart')
     ? 'langmart.ai'
     : 'xeenhub.com';
-  const currentPage = pathname.replace(proxy.basePath, '') || '/terminals';
+  const currentPage = pathname.replace(proxy.basePath, '') || '/session-dashboard';
   const cloudUrl = gatewayId ? `https://${hubName}/w/${gatewayId}/assist${currentPage}` : null;
   const localHost = localIp && localIp !== 'localhost' ? localIp : 'localhost';
   const localBaseUrl = `http://${localHost}:3848`;

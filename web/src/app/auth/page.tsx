@@ -12,9 +12,9 @@ function AuthContent() {
 
   useEffect(() => {
     const token = searchParams.get('token');
-    const rawRedirect = searchParams.get('redirect') || '/terminals';
+    const rawRedirect = searchParams.get('redirect') || '/session-dashboard';
     // Prevent open redirect — only allow relative paths
-    const redirect = rawRedirect.startsWith('/') && !rawRedirect.startsWith('//') ? rawRedirect : '/terminals';
+    const redirect = rawRedirect.startsWith('/') && !rawRedirect.startsWith('//') ? rawRedirect : '/session-dashboard';
 
     if (!token) {
       setStatus('error');

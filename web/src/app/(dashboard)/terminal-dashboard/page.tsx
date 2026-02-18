@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useCallback, useMemo, useRef } from 'react';
-import { useTerminals } from '@/hooks/useTerminals';
+import { useSessionDashboard } from '@/hooks/useSessionDashboard';
 import { useRunningProcesses } from '@/hooks/useRunningProcesses';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { useMachineContext } from '@/contexts/MachineContext';
@@ -49,7 +49,7 @@ export default function ConsoleDashboardPage() {
 
   // ── Data queries ──────────────────────────────────────────────────────
 
-  const { availableSessions, isLoading: sessionsLoading, refetch: refetchSessions } = useTerminals();
+  const { availableSessions, isLoading: sessionsLoading, refetch: refetchSessions } = useSessionDashboard();
   const { data: processData, isLoading: processesLoading, refetch: refetchProcesses } = useRunningProcesses();
 
   // ── Derived data: running sessions → open consoles ────────────────────

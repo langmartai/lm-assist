@@ -21,7 +21,7 @@ import {
 const navItems = [
   { href: '/terminal-dashboard', icon: Terminal, label: 'Terminal Dashboard' },
   { href: '/sessions', icon: MessageSquare, label: 'Sessions' },
-  { href: '/terminals', icon: LayoutDashboard, label: 'Session Dashboard' },
+  { href: '/session-dashboard', icon: LayoutDashboard, label: 'Session Dashboard' },
   { href: '/process-dashboard', icon: Activity, label: 'Process Dashboard' },
   { href: '/search', icon: Search, label: 'Search' },
   { href: '/tasks', icon: CheckSquare, label: 'Tasks' },
