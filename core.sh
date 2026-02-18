@@ -463,7 +463,20 @@ start_web() {
     fi
 
     # Start the production server
-    nohup npx next start -p $WEB_PORT > "$WEB_LOG" 2>&1 &
+    # Prefer standalone mode (works reliably with npm global installs)
+    local standalone_server="$WEB_DIR/.next/standalone/web/server.js"
+    if [ -f "$standalone_server" ]; then
+        # Link static assets into standalone dir (standalone doesn't bundle them)
+        if [ ! -e "$WEB_DIR/.next/standalone/web/.next/static" ] && [ -d "$WEB_DIR/.next/static" ]; then
+            ln -s "$WEB_DIR/.next/static" "$WEB_DIR/.next/standalone/web/.next/static" 2>/dev/null || true
+        fi
+        if [ ! -e "$WEB_DIR/.next/standalone/web/public" ] && [ -d "$WEB_DIR/public" ]; then
+            ln -s "$WEB_DIR/public" "$WEB_DIR/.next/standalone/web/public" 2>/dev/null || true
+        fi
+        nohup env HOSTNAME="0.0.0.0" PORT=$WEB_PORT node "$standalone_server" > "$WEB_LOG" 2>&1 &
+    else
+        nohup npx next start -p $WEB_PORT > "$WEB_LOG" 2>&1 &
+    fi
 
     local pid=$!
     echo "$pid" > "$WEB_PID_FILE"
