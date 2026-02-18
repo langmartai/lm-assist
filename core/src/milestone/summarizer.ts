@@ -1,12 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { Milestone, MilestoneType } from './types';
 import { getMilestoneStore } from './store';
 import { getVectraStore } from '../vector/vectra-store';
 import { getMilestoneSettings, type Phase2Model } from './settings';
+import { getDataDir } from '../utils/path-utils';
 
-const PIPELINE_STATUS_FILE = path.join(os.homedir(), '.tier-agent', 'milestones', 'pipeline-status.json');
+const PIPELINE_STATUS_FILE = path.join(getDataDir(), 'milestones', 'pipeline-status.json');
 
 // ── Token Budget ──────────────────────────────────────────
 // 200k context = system (~500) + input + output

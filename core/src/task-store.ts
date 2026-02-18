@@ -197,8 +197,8 @@ export class TaskStore extends EventEmitter {
       persistEnabled: config.persistEnabled ?? true,
     };
 
-    // Persistence path: {projectPath}/.tier-agent/task-store.json
-    this.persistPath = path.join(config.projectPath, '.tier-agent', 'task-store.json');
+    // Persistence path: {projectPath}/.lm-assist/task-store.json
+    this.persistPath = path.join(config.projectPath, '.lm-assist', 'task-store.json');
 
     this.tasksService = new TasksService(
       path.join(this.config.claudeConfigDir, 'tasks')

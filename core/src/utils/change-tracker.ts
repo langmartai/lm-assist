@@ -107,7 +107,7 @@ const DEFAULT_EXCLUDE_PATTERNS = [
   '*.log',
   '.DS_Store',
   'coverage/**',
-  '.tier-agent/**',
+  '.lm-assist/**',
 ];
 
 /**

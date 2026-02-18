@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import WebSocket from 'ws';
+import { getDataDir } from './utils/path-utils';
 
 // ============================================================================
 // Types
@@ -633,7 +634,7 @@ function killProcessTree(pid: number): void {
 // TtydInstanceStore — persistent store for ttyd instance records
 // ============================================================================
 
-const INSTANCE_STORE_PATH = path.join(os.homedir(), '.tier-agent', 'ttyd-instances.json');
+const INSTANCE_STORE_PATH = path.join(getDataDir(), 'ttyd-instances.json');
 const MAX_STORED_RECORDS = 500;
 
 export class TtydInstanceStore {

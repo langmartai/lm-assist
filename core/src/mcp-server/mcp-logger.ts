@@ -1,7 +1,7 @@
 /**
  * MCP Tool Call Disk Logger
  *
- * Appends JSONL entries to ~/.tier-agent/logs/mcp-calls.jsonl for debugging.
+ * Appends JSONL entries to ~/.lm-assist/logs/mcp-calls.jsonl for debugging.
  * Each line: { ts, tool, args, durationMs, responseChars, error?, isError? }
  *
  * - Async, non-blocking (fire-and-forget writes)
@@ -11,9 +11,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
+import { getDataDir } from '../utils/path-utils';
 
-const LOG_DIR = path.join(os.homedir(), '.tier-agent', 'logs');
+const LOG_DIR = path.join(getDataDir(), 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'mcp-calls.jsonl');
 const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5 MB
 const MAX_ARG_LENGTH = 500;

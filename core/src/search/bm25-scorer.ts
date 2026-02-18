@@ -4,7 +4,7 @@
  * Okapi BM25 lexical search with LMDB persistence.
  * Zero startup cost (mmap'd reads, no JSON parse), crash-safe writes.
  *
- * LMDB layout (~/.tier-agent/bm25-lmdb/):
+ * LMDB layout (~/.lm-assist/bm25-lmdb/):
  *   terms sub-db:  term   → { [docId]: termFreq }
  *   docs sub-db:   docId  → BM25DocEntry (metadata + terms list)
  *   meta sub-db:   "stats" → { totalDl, docCount }
@@ -12,9 +12,9 @@
 
 import { open, type RootDatabase, type Database } from 'lmdb';
 import * as path from 'path';
-import * as os from 'os';
 import * as fs from 'fs';
 import { tokenize } from './text-scorer';
+import { getDataDir } from '../utils/path-utils';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -42,8 +42,8 @@ type PostingList = Record<string, number>;  // { docId: termFreq }
 
 // ─── Constants ──────────────────────────────────────────────────
 
-const LMDB_DIR = path.join(os.homedir(), '.tier-agent', 'bm25-lmdb');
-const OLD_JSON_PATH = path.join(os.homedir(), '.tier-agent', 'bm25-index.json');
+const LMDB_DIR = path.join(getDataDir(), 'bm25-lmdb');
+const OLD_JSON_PATH = path.join(getDataDir(), 'bm25-index.json');
 
 // ─── BM25 Scorer ──────────────────────────────────────────────────
 

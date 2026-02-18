@@ -248,7 +248,7 @@ export class EventStore {
       maxExecutions: config.maxExecutions ?? 1000,
     };
 
-    this.storageDir = path.join(config.projectPath, '.tier-agent');
+    this.storageDir = path.join(config.projectPath, '.lm-assist');
 
     // Load existing data if persistence enabled
     if (this.config.persist) {

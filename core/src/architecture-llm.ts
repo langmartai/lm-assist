@@ -8,13 +8,14 @@
  * Session-derived context (components, resources, external projects from milestone
  * data) is provided as the user prompt since it can't be discovered from source files.
  *
- * Cache: ~/.tier-agent/architecture/{project}_model.json
+ * Cache: ~/.lm-assist/architecture/{project}_model.json
  * Staleness: inputHash based on CLAUDE.md mtime + resource count + package.json mtime
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { getDataDir } from './utils/path-utils';
 import { getProjectArchitectureData } from './mcp-server/tools/project-architecture';
 import type { CachedArchitecture } from './mcp-server/tools/project-architecture';
 import { getMilestoneSettings, type Phase2Model } from './milestone/settings';
@@ -80,11 +81,7 @@ export interface CachedArchitectureModel {
 
 // ─── Constants ──────────────────────────────────────────────────
 
-const CACHE_DIR = path.join(
-  process.env.HOME || '/home/ubuntu',
-  '.tier-agent',
-  'architecture'
-);
+const CACHE_DIR = path.join(getDataDir(), 'architecture');
 const MODEL_CACHE_VERSION = 3;
 const DEFAULT_API_BASE_URL = 'http://localhost:3100';
 const DEFAULT_TIMEOUT = 180_000; // 3 min — multi-turn agent takes longer

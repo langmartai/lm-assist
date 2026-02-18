@@ -15,7 +15,7 @@
 set -uo pipefail
 
 # Log file
-LOG_FILE="${HOME}/.tier-agent/logs/context-inject-hook.log"
+LOG_FILE="${HOME}/.lm-assist/logs/context-inject-hook.log"
 mkdir -p "$(dirname "$LOG_FILE")"
 
 log() {

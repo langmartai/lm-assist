@@ -5,13 +5,14 @@
  * - API endpoints from route files (tier-agent pattern, Express/Hono/Fastify, Next.js)
  * - Database tables from SQL migrations and code references
  *
- * Results are cached at ~/.tier-agent/architecture/{project}_source_scan.json
+ * Results are cached at ~/.lm-assist/architecture/{project}_source_scan.json
  * with invalidation based on route dir mtime + package.json mtime + migration file count.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { getDataDir } from './utils/path-utils';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -39,11 +40,7 @@ export interface SourceScanResult {
 
 // ─── Constants ──────────────────────────────────────────────────
 
-const CACHE_DIR = path.join(
-  process.env.HOME || '/home/ubuntu',
-  '.tier-agent',
-  'architecture'
-);
+const CACHE_DIR = path.join(getDataDir(), 'architecture');
 
 // ─── Cache ──────────────────────────────────────────────────
 

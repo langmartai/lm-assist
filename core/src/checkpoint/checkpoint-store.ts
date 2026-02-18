@@ -58,13 +58,13 @@ export class CheckpointStore extends EventEmitter {
     this.maxCheckpoints = options.maxCheckpoints ?? DEFAULT_MAX_CHECKPOINTS;
     this.defaultTtlMs = options.defaultTtlMs ?? DEFAULT_TTL_MS;
 
-    // Store path in .tier-agent directory
-    const tierAgentDir = path.join(this.projectPath, '.tier-agent');
-    this.storePath = path.join(tierAgentDir, 'checkpoints.jsonl');
+    // Store path in .lm-assist directory
+    const lmAssistDir = path.join(this.projectPath, '.lm-assist');
+    this.storePath = path.join(lmAssistDir, 'checkpoints.jsonl');
 
     // Ensure directory exists
-    if (this.persist && !fs.existsSync(tierAgentDir)) {
-      fs.mkdirSync(tierAgentDir, { recursive: true });
+    if (this.persist && !fs.existsSync(lmAssistDir)) {
+      fs.mkdirSync(lmAssistDir, { recursive: true });
     }
   }
 

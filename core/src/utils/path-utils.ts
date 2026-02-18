@@ -148,6 +148,16 @@ function decodePathWithFilesystemCheck(encodedPath: string): string {
 }
 
 /**
+ * Get the lm-assist data directory
+ * Default: ~/.lm-assist
+ * Can be overridden with LM_ASSIST_DATA_DIR env var
+ * All lm-assist owned data lives here (knowledge, milestones, vectors, cache, etc.)
+ */
+export function getDataDir(): string {
+  return process.env.LM_ASSIST_DATA_DIR || path.join(os.homedir(), '.lm-assist');
+}
+
+/**
  * Get the Claude config directory
  * Default: ~/.claude
  * Can be overridden with CLAUDE_CONFIG_DIR env var

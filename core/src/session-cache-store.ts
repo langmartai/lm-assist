@@ -7,7 +7,7 @@
  * and auto-batched by lmdb-js.
  *
  * Storage layout:
- *   ~/.session-cache/
+ *   ~/.lm-assist/session-cache/
  *     session-cache.lmdb          # LMDB environment
  *       ├── sessions (sub-db)     # key: sessionPath → value: SessionCacheData
  *       ├── raw (sub-db)          # key: sessionPath → value: RawMessagesCache
@@ -16,11 +16,11 @@
 
 import { open, RootDatabase, Database } from 'lmdb';
 import * as path from 'path';
-import * as os from 'os';
 import * as fs from 'fs';
 import type { SessionCacheData, RawMessagesCache } from './session-cache';
+import { getDataDir } from './utils/path-utils';
 
-const DEFAULT_CACHE_DIR = path.join(os.homedir(), '.session-cache');
+const DEFAULT_CACHE_DIR = path.join(getDataDir(), 'session-cache');
 
 export class SessionCacheStore {
   private env: RootDatabase;

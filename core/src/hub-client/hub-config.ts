@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import { getDataDir } from '../utils/path-utils';
 
 export interface HubConfig {
   /** Hub WebSocket URL */
@@ -33,7 +34,7 @@ export interface HubConfig {
  * Get the config directory path
  */
 function getConfigDir(): string {
-  const configDir = path.join(os.homedir(), '.tier-agent');
+  const configDir = getDataDir();
   if (!fs.existsSync(configDir)) {
     fs.mkdirSync(configDir, { recursive: true });
   }

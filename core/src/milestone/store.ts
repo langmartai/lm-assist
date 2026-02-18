@@ -1,10 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { Milestone, MilestoneIndex } from './types';
 import { getMilestoneSettings } from './settings';
+import { getDataDir } from '../utils/path-utils';
 
-const MILESTONES_DIR = path.join(os.homedir(), '.tier-agent', 'milestones');
+const MILESTONES_DIR = path.join(getDataDir(), 'milestones');
 const INDEX_FILE = path.join(MILESTONES_DIR, 'index.json');
 
 /**
@@ -12,8 +12,7 @@ const INDEX_FILE = path.join(MILESTONES_DIR, 'index.json');
  * Sessions whose cwd or file path matches any excluded pattern are skipped
  * in Phase 1 extraction, Phase 2 enrichment, and real-time re-extraction.
  *
- * Config source: ~/.milestone/settings.json `excludedPaths` field
- * (migrated from legacy ~/.tier-agent/milestones/excluded-projects.json)
+ * Config source: ~/.lm-assist/milestone/settings.json `excludedPaths` field
  *
  * Supports exact match and trailing glob (*) for prefix matching.
  */

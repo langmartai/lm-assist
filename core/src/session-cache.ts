@@ -25,6 +25,7 @@ import * as readline from 'readline';
 import chokidar, { FSWatcher } from 'chokidar';
 import { getStartupProfiler } from './startup-profiler';
 import { SessionCacheStore } from './session-cache-store';
+import { getDataDir } from './utils/path-utils';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -238,7 +239,7 @@ export class SessionCache {
   constructor(baseDir?: string) {
     const profiler = getStartupProfiler();
     profiler.start('lmdbOpen', 'LMDB Open', 'SessionCache');
-    const cacheDir = baseDir || path.join(os.homedir(), '.session-cache');
+    const cacheDir = baseDir || path.join(getDataDir(), 'session-cache');
     this.store = new SessionCacheStore(cacheDir);
     profiler.end('lmdbOpen');
   }

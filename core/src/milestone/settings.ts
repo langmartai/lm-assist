@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
+import { getDataDir } from '../utils/path-utils';
 
 // ── Types ──────────────────────────────────────────
 
@@ -17,11 +17,11 @@ export interface MilestoneSettings {
 
 // ── Constants ──────────────────────────────────────────
 
-const MILESTONE_DIR = path.join(os.homedir(), '.milestone');
+const MILESTONE_DIR = path.join(getDataDir(), 'milestone');
 const SETTINGS_FILE = path.join(MILESTONE_DIR, 'settings.json');
 
 const DEFAULTS: MilestoneSettings = {
-  enabled: true,
+  enabled: false,
   autoKnowledge: true,
   scanRangeDays: 1,
   phase2Model: 'haiku',
@@ -30,7 +30,7 @@ const DEFAULTS: MilestoneSettings = {
 };
 
 // Legacy location for excluded projects
-const LEGACY_EXCLUDED_FILE = path.join(os.homedir(), '.tier-agent', 'milestones', 'excluded-projects.json');
+const LEGACY_EXCLUDED_FILE = path.join(getDataDir(), 'milestones', 'excluded-projects.json');
 
 // ── Mtime Cache ──────────────────────────────────────────
 
@@ -150,8 +150,8 @@ function isValidModel(model: any): model is Phase2Model {
 }
 
 /**
- * Migrate legacy ~/.tier-agent/milestones/excluded-projects.json paths
- * into the new ~/.milestone/settings.json excludedPaths field.
+ * Migrate legacy excluded-projects.json paths
+ * into the new ~/.lm-assist/milestone/settings.json excludedPaths field.
  */
 function migrateLegacyExcludedProjects(): void {
   try {

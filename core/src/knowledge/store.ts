@@ -5,7 +5,7 @@
  * Pattern: follows MilestoneStore — in-memory LRU cache, JSON index, per-document files.
  *
  * Storage layout:
- *   ~/.tier-agent/knowledge/
+ *   ~/.lm-assist/knowledge/
  *   ├── index.json           # Knowledge index (id → metadata)
  *   ├── K001.md              # Knowledge documents
  *   ├── K002.md
@@ -16,7 +16,6 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import type {
   Knowledge,
   KnowledgePart,
@@ -27,8 +26,9 @@ import type {
   KnowledgeType,
 } from './types';
 import { parseKnowledgeMd, renderKnowledgeMd } from './parser';
+import { getDataDir } from '../utils/path-utils';
 
-const KNOWLEDGE_DIR = path.join(os.homedir(), '.tier-agent', 'knowledge');
+const KNOWLEDGE_DIR = path.join(getDataDir(), 'knowledge');
 const COMMENTS_DIR = path.join(KNOWLEDGE_DIR, 'comments');
 const INDEX_FILE = path.join(KNOWLEDGE_DIR, 'index.json');
 

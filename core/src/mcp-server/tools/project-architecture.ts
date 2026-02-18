@@ -13,6 +13,7 @@ import * as path from 'path';
 import { getSessionCache } from '../../session-cache';
 import type { CachedResource } from '../../resource-extractor';
 import { getMilestoneStore } from '../../milestone/store';
+import { getDataDir } from '../../utils/path-utils';
 import { getProjectPathForSession } from '../../search/text-scorer';
 import type { Milestone } from '../../milestone/types';
 import { loadModelCache, formatArchitectureModelForMcp, computeInputHash } from '../../architecture-llm';
@@ -57,11 +58,7 @@ Start with no params to get the index, then use part or directory to drill in.`,
 
 // ─── Cache ──────────────────────────────────────────────────
 
-const CACHE_DIR = path.join(
-  process.env.HOME || '/home/ubuntu',
-  '.tier-agent',
-  'architecture'
-);
+const CACHE_DIR = path.join(getDataDir(), 'architecture');
 
 const CACHE_VERSION = 6;
 const HOME_DIR = process.env.HOME || '/home/ubuntu';
@@ -161,7 +158,7 @@ function classifyPath(filePath: string, project: string): PathClassification {
   // /nonexistent/
   if (filePath.startsWith('/nonexistent/')) return { type: 'noise' };
 
-  // Dotfile paths under home dir (e.g., ~/.claude/, ~/.tier-agent/)
+  // Dotfile paths under home dir (e.g., ~/.claude/, ~/.lm-assist/)
   if (filePath.startsWith(HOME_DIR + '/')) {
     const afterHome = filePath.slice(HOME_DIR.length + 1);
     // Check if any path segment starts with '.'

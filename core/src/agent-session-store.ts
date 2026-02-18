@@ -1813,7 +1813,7 @@ export class AgentSessionStore extends EventEmitter {
       cleanupAgeMs: config.cleanupAgeMs ?? 7 * 24 * 60 * 60 * 1000, // 7 days
     };
 
-    this.persistPath = path.join(config.projectPath, '.tier-agent', 'sessions.json');
+    this.persistPath = path.join(config.projectPath, '.lm-assist', 'sessions.json');
 
     // Load persisted sessions
     if (this.config.persist) {
