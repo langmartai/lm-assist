@@ -304,8 +304,49 @@ export class KnowledgeGenerator {
       const stopped = this.stopRequested;
       this.stopRequested = false;
       this.currentStatus = { status: 'idle' };
+
+      // Async vector indexing — always schedule after generateAll runs,
+      // even if this batch generated 0 (earlier batches may have generated docs)
+      this.indexKnowledgeVectorsAsync();
+
       return { generated, errors, stopped };
     }
+  }
+
+  private _vectorIndexTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Schedule async vector indexing of all knowledge docs.
+   * Debounced (5s) so multiple generateAll batches consolidate into one indexing pass.
+   */
+  private indexKnowledgeVectorsAsync(): void {
+    if (this._vectorIndexTimer) clearTimeout(this._vectorIndexTimer);
+    this._vectorIndexTimer = setTimeout(() => {
+      this._vectorIndexTimer = null;
+      (async () => {
+        try {
+          const { getVectraStore } = require('../vector/vectra-store');
+          const { extractKnowledgeVectors } = require('../vector/indexer');
+          const store = getKnowledgeStore();
+          const vectra = getVectraStore();
+
+          const allIds = store.getAllIds();
+          const allVectors: Array<{ text: string; metadata: any }> = [];
+          for (const id of allIds) {
+            const knowledge = store.getKnowledge(id);
+            if (!knowledge) continue;
+            allVectors.push(...extractKnowledgeVectors(knowledge));
+          }
+
+          if (allVectors.length > 0) {
+            await vectra.addVectors(allVectors);
+            console.log(`[KnowledgeGenerator] Indexed ${allVectors.length} vectors from ${allIds.length} knowledge docs`);
+          }
+        } catch (err) {
+          console.warn('[KnowledgeGenerator] Async vector indexing failed:', err);
+        }
+      })();
+    }, 5000);
   }
 
   // ─── Private Helpers ──────────────────────────────────────────────────

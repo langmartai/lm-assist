@@ -163,11 +163,12 @@ interface StatuslineStatus {
 
 /** Dev uses local WS, prod uses wss via Cloudflare */
 function getDefaultHubUrl(): string {
-  if (typeof window === 'undefined') return 'ws://localhost:8081';
+  if (typeof window === 'undefined') return 'wss://api.xeenhub.com';
   const host = window.location.hostname;
   if (host.includes('langmart')) return 'wss://api.langmart.ai';
-  // xeenhub.com or localhost → local dev
-  return 'ws://localhost:8081';
+  if (host.includes('xeenhub')) return 'wss://api.xeenhub.com';
+  // localhost → local dev
+  return 'wss://api.xeenhub.com';
 }
 
 // ============================================
@@ -258,7 +259,7 @@ export default function SettingsPage() {
 
   // LAN access state
   const [lanEnabled, setLanEnabled] = useState(false);
-  const [lanAuthEnabled, setLanAuthEnabled] = useState(false);
+  const [lanAuthEnabled, setLanAuthEnabled] = useState(true);
   const [lanLoading, setLanLoading] = useState(false);
   const [lanMessage, setLanMessage] = useState<{ text: string; type: 'ok' | 'error' } | null>(null);
   const [localIp, setLocalIp] = useState<string | null>(null);
@@ -334,7 +335,7 @@ export default function SettingsPage() {
       if (res.ok) {
         const data = await res.json();
         setLanEnabled(data.lanEnabled ?? false);
-        setLanAuthEnabled(data.lanAuthEnabled ?? false);
+        setLanAuthEnabled(data.lanAuthEnabled ?? true);
         if (data.localIp) setLocalIp(data.localIp);
       }
     } catch { /* ignore */ }
@@ -1205,6 +1206,87 @@ export default function SettingsPage() {
         {activeTab === 'connection' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
+            {/* Connect to Cloud Card (local, no API key) */}
+            {!isProxied && localStatus?.healthy && !hasApiKey && (
+              <SectionCard title="Connect to Cloud" icon={Cloud}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <p style={{ fontSize: 12, color: 'var(--color-text-secondary)', lineHeight: 1.6 }}>
+                    Enable <strong style={{ color: 'var(--color-text-primary)' }}>safe access across all your devices</strong> — over the internet,
+                    LAN, WiFi, or any network. View and manage your sessions from any browser, anywhere.
+                  </p>
+
+                  {/* Sign In button with OAuth provider icons — all on one line */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <button
+                      className="btn btn-sm"
+                      onClick={handleCloudSignIn}
+                      disabled={isCloudSigningIn}
+                      style={{
+                        gap: 8,
+                        padding: '10px 20px',
+                        background: 'rgba(96, 165, 250, 0.12)',
+                        border: '1px solid rgba(96, 165, 250, 0.35)',
+                        color: 'rgba(96, 165, 250, 1)',
+                        fontSize: 13,
+                        fontWeight: 600,
+                        flexShrink: 0,
+                      }}
+                    >
+                      {isCloudSigningIn ? <Loader2 size={14} className="spin" /> : <LogIn size={14} />}
+                      Sign In
+                    </button>
+
+                    <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>via</span>
+
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <span title="Google" style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                        <svg width="13" height="13" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+                        Google
+                      </span>
+                      <span title="GitHub" style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.43 9.8 8.21 11.39.6.11.79-.26.79-.58v-2.23c-3.34.73-4.03-1.41-4.03-1.41-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5 1 .1-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6.02 0c2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.19.69.8.58C20.57 21.8 24 17.31 24 12c0-6.63-5.37-12-12-12z"/></svg>
+                        GitHub
+                      </span>
+                      <span title="Microsoft" style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                        <svg width="13" height="13" viewBox="0 0 24 24"><rect x="1" y="1" width="10" height="10" fill="#F25022"/><rect x="13" y="1" width="10" height="10" fill="#7FBA00"/><rect x="1" y="13" width="10" height="10" fill="#00A4EF"/><rect x="13" y="13" width="10" height="10" fill="#FFB900"/></svg>
+                        Microsoft
+                      </span>
+                    </div>
+                  </div>
+
+                  {cloudSignInMessage && (
+                    <div style={{
+                      padding: '6px 10px',
+                      background: cloudSignInMessage.type === 'ok'
+                        ? 'rgba(74, 222, 128, 0.08)' : 'rgba(248, 113, 113, 0.08)',
+                      border: `1px solid ${cloudSignInMessage.type === 'ok'
+                        ? 'rgba(74, 222, 128, 0.2)' : 'rgba(248, 113, 113, 0.2)'}`,
+                      borderRadius: 'var(--radius-sm)',
+                      fontSize: 11,
+                      color: cloudSignInMessage.type === 'ok'
+                        ? 'var(--color-status-green)' : 'var(--color-status-red)',
+                      display: 'flex', alignItems: 'center', gap: 6,
+                    }}>
+                      {cloudSignInMessage.type === 'ok' ? <CheckCircle size={12} /> : <XCircle size={12} />}
+                      {cloudSignInMessage.text}
+                    </div>
+                  )}
+
+                  <div style={{ borderTop: '1px solid var(--color-border)', margin: '4px 0' }} />
+
+                  {/* Fallback: Manual key entry */}
+                  <button
+                    className="btn btn-sm btn-ghost"
+                    onClick={() => setShowApiKeyCard(true)}
+                    style={{ gap: 4, alignSelf: 'flex-start', fontSize: 11 }}
+                  >
+                    <Key size={12} />
+                    I already have a key
+                  </button>
+                </div>
+              </SectionCard>
+            )}
+
             {/* Connection Status Card */}
             <SectionCard title="Connection Status" icon={isProxied ? Globe : Monitor}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1420,23 +1502,6 @@ export default function SettingsPage() {
                         </>
                       )}
 
-                      {localStatus?.healthy && !hasApiKey && (
-                        <a
-                          href={`https://${hubName}/assist?langmart-application-scope=langmart-assist`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="btn btn-sm"
-                          style={{
-                            gap: 4, textDecoration: 'none',
-                            background: 'rgba(96, 165, 250, 0.1)',
-                            border: '1px solid rgba(96, 165, 250, 0.3)',
-                            color: 'rgba(96, 165, 250, 1)',
-                          }}
-                        >
-                          <Globe size={12} />
-                          Request Cloud API Key
-                        </a>
-                      )}
 
                       {localStatus?.healthy && hasApiKey && !isHubConnected && (
                         <button
@@ -1515,15 +1580,19 @@ export default function SettingsPage() {
                       <span style={{ color: 'var(--color-text-secondary)' }}>
                         Open{' '}
                         <a
-                          href={`http://${localIp}:3848`}
+                          href={`http://${localIp}:${typeof window !== 'undefined' ? window.location.port || '3848' : '3848'}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-primary)', background: 'rgba(255,255,255,0.06)', padding: '1px 4px', borderRadius: 3, textDecoration: 'none', borderBottom: '1px solid var(--color-text-tertiary)' }}
                         >
-                          http://{localIp}:3848
+                          http://{localIp}:{typeof window !== 'undefined' ? window.location.port || '3848' : '3848'}
                         </a>
                         {' '}from any phone, tablet, or computer on the same Wi-Fi network.
                       </span>
+                      <div style={{ marginTop: 6, color: 'var(--color-text-tertiary)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <Monitor size={10} style={{ flexShrink: 0 }} />
+                        <span>Localhost access always bypasses authentication.</span>
+                      </div>
                     </div>
                   )}
                   {!lanEnabled && (
@@ -1680,67 +1749,6 @@ export default function SettingsPage() {
               </SectionCard>
             )}
 
-            {/* Connect to Cloud Card (local, no API key) */}
-            {!isProxied && localStatus?.healthy && !hasApiKey && !showApiKeyCard && (
-              <SectionCard title="Connect to Cloud" icon={Cloud}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  <p style={{ fontSize: 12, color: 'var(--color-text-secondary)', lineHeight: 1.6 }}>
-                    Connect this machine to LangMart Cloud to access your sessions from anywhere —
-                    on any device, through a browser, without needing to be on the same network.
-                  </p>
-
-                  {/* Primary: Sign in with Cloud (auto OAuth) */}
-                  <button
-                    className="btn btn-sm"
-                    onClick={handleCloudSignIn}
-                    disabled={isCloudSigningIn}
-                    style={{
-                      gap: 8,
-                      padding: '10px 20px',
-                      background: 'rgba(96, 165, 250, 0.12)',
-                      border: '1px solid rgba(96, 165, 250, 0.35)',
-                      color: 'rgba(96, 165, 250, 1)',
-                      fontSize: 13,
-                      fontWeight: 600,
-                      alignSelf: 'flex-start',
-                    }}
-                  >
-                    {isCloudSigningIn ? <Loader2 size={14} className="spin" /> : <LogIn size={14} />}
-                    Sign in with Cloud
-                  </button>
-
-                  {cloudSignInMessage && (
-                    <div style={{
-                      padding: '6px 10px',
-                      background: cloudSignInMessage.type === 'ok'
-                        ? 'rgba(74, 222, 128, 0.08)' : 'rgba(248, 113, 113, 0.08)',
-                      border: `1px solid ${cloudSignInMessage.type === 'ok'
-                        ? 'rgba(74, 222, 128, 0.2)' : 'rgba(248, 113, 113, 0.2)'}`,
-                      borderRadius: 'var(--radius-sm)',
-                      fontSize: 11,
-                      color: cloudSignInMessage.type === 'ok'
-                        ? 'var(--color-status-green)' : 'var(--color-status-red)',
-                      display: 'flex', alignItems: 'center', gap: 6,
-                    }}>
-                      {cloudSignInMessage.type === 'ok' ? <CheckCircle size={12} /> : <XCircle size={12} />}
-                      {cloudSignInMessage.text}
-                    </div>
-                  )}
-
-                  <div style={{ borderTop: '1px solid var(--color-border)', margin: '4px 0' }} />
-
-                  {/* Fallback: Manual key entry */}
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    onClick={() => setShowApiKeyCard(true)}
-                    style={{ gap: 4, alignSelf: 'flex-start', fontSize: 11 }}
-                  >
-                    <Key size={12} />
-                    I already have a key
-                  </button>
-                </div>
-              </SectionCard>
-            )}
 
             {/* API Key Card (local mode only) */}
             {!isProxied && localStatus?.healthy && showApiKeyCard && (

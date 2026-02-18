@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { execFile } from 'child_process';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { networkInterfaces } from 'os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { homedir, networkInterfaces } from 'os';
 import { randomBytes } from 'crypto';
 import path from 'path';
 
-const CONFIG_FILE = 'assist-config.json';
+const CONFIG_DIR = path.join(homedir(), '.lm-assist');
+const CONFIG_FILE = path.join(CONFIG_DIR, 'assist-config.json');
 
 interface AssistConfig {
   lanEnabled?: boolean;
@@ -16,21 +17,22 @@ interface AssistConfig {
 /**
  * Resolve the tier-agent project root.
  *
- * Normal:    /home/ubuntu/langmart-assistant  →  /home/ubuntu/tier-agent
- * Worktree:  /home/ubuntu/langmart-assistant-wt-2  →  /home/ubuntu/tier-agent-wt-2
+ * Normal:    /home/ubuntu/lm-assist/web  →  /home/ubuntu/tier-agent
+ * Worktree:  /home/ubuntu/lm-assist-wt-2/web  →  /home/ubuntu/tier-agent-wt-2
  */
 function getTierAgentDir(): string {
-  const assistDir = process.cwd();
-  const base = path.basename(assistDir);
+  // Walk up from web/ to project root, then resolve sibling tier-agent
+  const projectRoot = path.resolve(process.cwd(), '..');
+  const base = path.basename(projectRoot);
 
-  // Worktree: langmart-assistant-wt-N → tier-agent-wt-N
-  const wtMatch = base.match(/^langmart-assistant(-wt-\d+)$/);
+  // Worktree: lm-assist-wt-N → tier-agent-wt-N
+  const wtMatch = base.match(/^lm-assist(-wt-\d+)$/);
   if (wtMatch) {
-    return path.join(path.dirname(assistDir), `tier-agent${wtMatch[1]}`);
+    return path.join(path.dirname(projectRoot), `tier-agent${wtMatch[1]}`);
   }
 
   // Normal
-  return path.join(path.dirname(assistDir), 'tier-agent');
+  return path.join(path.dirname(projectRoot), 'tier-agent');
 }
 
 /** Get the first non-internal IPv4 address */
@@ -44,13 +46,9 @@ function getLocalIp(): string {
   return 'localhost';
 }
 
-function getConfigPath(): string {
-  return path.join(process.cwd(), CONFIG_FILE);
-}
-
 function readConfig(): AssistConfig {
   try {
-    const raw = readFileSync(getConfigPath(), 'utf8');
+    const raw = readFileSync(CONFIG_FILE, 'utf8');
     return JSON.parse(raw);
   } catch {
     return {};
@@ -58,7 +56,8 @@ function readConfig(): AssistConfig {
 }
 
 function writeConfig(config: AssistConfig): void {
-  writeFileSync(getConfigPath(), JSON.stringify(config, null, 2) + '\n');
+  mkdirSync(CONFIG_DIR, { recursive: true });
+  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + '\n');
 }
 
 /**
@@ -133,7 +132,7 @@ export async function GET() {
     coreShExists: exists,
     localIp: getLocalIp(),
     lanEnabled: config.lanEnabled ?? true,
-    lanAuthEnabled: config.lanAuthEnabled ?? false,
+    lanAuthEnabled: config.lanAuthEnabled ?? true,
   });
 }
 
@@ -169,7 +168,7 @@ export async function PUT(request: NextRequest) {
     success: true,
     config: {
       lanEnabled: config.lanEnabled ?? true,
-      lanAuthEnabled: config.lanAuthEnabled ?? false,
+      lanAuthEnabled: config.lanAuthEnabled ?? true,
     },
     restartRequired,
   });

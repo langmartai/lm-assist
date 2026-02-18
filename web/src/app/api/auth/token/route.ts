@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readFileSync } from 'fs';
+import { homedir } from 'os';
 import path from 'path';
 
-const CONFIG_FILE = 'assist-config.json';
+const CONFIG_FILE = path.join(homedir(), '.lm-assist', 'assist-config.json');
 
 interface AssistConfig {
   lanEnabled?: boolean;
@@ -12,7 +13,7 @@ interface AssistConfig {
 
 function readConfig(): AssistConfig {
   try {
-    const raw = readFileSync(path.join(process.cwd(), CONFIG_FILE), 'utf8');
+    const raw = readFileSync(CONFIG_FILE, 'utf8');
     return JSON.parse(raw);
   } catch {
     return {};
@@ -43,7 +44,7 @@ export async function GET(request: NextRequest) {
   const config = readConfig();
 
   return NextResponse.json({
-    lanAuthEnabled: config.lanAuthEnabled ?? false,
-    lanAccessToken: config.lanAuthEnabled ? (config.lanAccessToken || null) : null,
+    lanAuthEnabled: config.lanAuthEnabled ?? true,
+    lanAccessToken: (config.lanAuthEnabled ?? true) ? (config.lanAccessToken || null) : null,
   });
 }

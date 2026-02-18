@@ -177,8 +177,18 @@ export class VectraStore {
       // Open existing table or create with seed row
       const tableNames = await this.db.tableNames();
       if (tableNames.includes(TABLE_NAME)) {
-        this.table = await this.db.openTable(TABLE_NAME);
-      } else {
+        try {
+          this.table = await this.db.openTable(TABLE_NAME);
+          // Validate table is readable (detects stale/corrupt data files)
+          await this.table.countRows();
+        } catch (openErr: any) {
+          console.warn(`[VectorStore] Existing table corrupt, recreating: ${openErr.message}`);
+          try { await this.db.dropTable(TABLE_NAME); } catch { /* best effort */ }
+          this.table = null;
+        }
+      }
+
+      if (!this.table) {
         console.log('[VectorStore] Creating new LanceDB table');
         // Seed with a dummy row so LanceDB can infer schema, then delete it
         const seedId = '__seed__';

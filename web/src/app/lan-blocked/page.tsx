@@ -158,7 +158,7 @@ export default function LanBlockedPage() {
           </p>
         </div>
 
-        {/* Sign in with Cloud button (when hub is configured) */}
+        {/* Sign In button (when hub is configured) */}
         {showSignIn && verifyStatus !== 'success' && (
           <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 12 }}>
             <button
@@ -190,7 +190,7 @@ export default function LanBlockedPage() {
                 ? 'Waiting for sign in...'
                 : verifyStatus === 'verifying'
                   ? 'Verifying identity...'
-                  : 'Sign in with Cloud'}
+                  : 'Sign In'}
             </button>
 
             {verifyStatus === 'waiting' && (
@@ -256,7 +256,7 @@ export default function LanBlockedPage() {
               }}
             >
               <StepRow n={1} text="Open the cloud dashboard on localhost and sign in" />
-              <StepRow n={2} text='Click "Sign in with Cloud" in Settings to bind your account' />
+              <StepRow n={2} text='Click "Sign In" in Settings to bind your account' />
               <StepRow n={3} text="Return here and sign in with the same cloud account" />
             </div>
           </div>

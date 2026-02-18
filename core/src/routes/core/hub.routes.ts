@@ -4,10 +4,8 @@
  * API endpoints for managing the hub client connection.
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
 import type { RouteContext, RouteHandler, ParsedRequest } from '../index';
-import { getHubClient, resetHubClient, reconnectHubClient, isHubConfigured, getHubConfig } from '../../hub-client';
+import { getHubClient, resetHubClient, reconnectHubClient, isHubConfigured, getHubConfig, saveHubConnectionConfig } from '../../hub-client';
 
 export function createHubRoutes(ctx: RouteContext): RouteHandler[] {
   return [
@@ -142,22 +140,22 @@ export function createHubRoutes(ctx: RouteContext): RouteHandler[] {
         }
 
         try {
-          const updates: Record<string, string> = {};
+          const configUpdates: { apiKey?: string; hubUrl?: string } = {};
 
           if (apiKey !== undefined) {
             process.env.TIER_AGENT_API_KEY = apiKey;
-            updates['TIER_AGENT_API_KEY'] = apiKey;
+            configUpdates.apiKey = apiKey;
           }
 
           // Allow explicit hubUrl override, otherwise keep existing
           if (hubUrl !== undefined && typeof hubUrl === 'string') {
             process.env.TIER_AGENT_HUB_URL = hubUrl;
-            updates['TIER_AGENT_HUB_URL'] = hubUrl;
+            configUpdates.hubUrl = hubUrl;
           }
 
-          // Persist to .env file
-          if (Object.keys(updates).length > 0) {
-            persistToEnvFile(updates);
+          // Persist to ~/.lm-assist/hub.json
+          if (Object.keys(configUpdates).length > 0) {
+            saveHubConnectionConfig(configUpdates);
           }
 
           // If API key was cleared, disconnect
@@ -205,7 +203,7 @@ export function createHubRoutes(ctx: RouteContext): RouteHandler[] {
             success: true,
             data: {
               message: 'Configuration saved',
-              updated: Object.keys(updates),
+              updated: Object.keys(configUpdates),
             },
           };
         } catch (error) {
@@ -309,51 +307,3 @@ export function createHubRoutes(ctx: RouteContext): RouteHandler[] {
   ];
 }
 
-/**
- * Persist environment variable updates to the .env file.
- * Creates the file if it doesn't exist. Updates existing keys or appends new ones.
- * If value is empty string, removes the key from .env.
- */
-function persistToEnvFile(updates: Record<string, string>): void {
-  // Walk up from tier-agent-core to find the project root .env
-  let envPath = path.resolve(process.cwd(), '.env');
-
-  // If CWD doesn't have .env, try the parent (tier-agent project root)
-  if (!fs.existsSync(envPath)) {
-    const parentEnv = path.resolve(process.cwd(), '..', '.env');
-    if (fs.existsSync(parentEnv)) {
-      envPath = parentEnv;
-    }
-  }
-
-  let lines: string[] = [];
-  if (fs.existsSync(envPath)) {
-    lines = fs.readFileSync(envPath, 'utf-8').split('\n');
-  }
-
-  for (const [key, value] of Object.entries(updates)) {
-    const idx = lines.findIndex(l => l.startsWith(`${key}=`));
-
-    if (value === '') {
-      // Remove the key entirely
-      if (idx >= 0) {
-        lines.splice(idx, 1);
-      }
-    } else {
-      const line = `${key}=${value}`;
-      if (idx >= 0) {
-        lines[idx] = line;
-      } else {
-        lines.push(line);
-      }
-    }
-  }
-
-  // Remove trailing empty lines, then ensure single trailing newline
-  while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
-    lines.pop();
-  }
-  lines.push('');
-
-  fs.writeFileSync(envPath, lines.join('\n'), 'utf-8');
-}

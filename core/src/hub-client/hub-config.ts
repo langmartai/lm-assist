@@ -181,12 +181,44 @@ function getVersion(): string {
 }
 
 /**
- * Get hub configuration from environment and config files
+ * Load persisted hub connection config from ~/.lm-assist/hub.json
+ */
+function loadHubConnectionConfig(): { apiKey?: string; hubUrl?: string } {
+  const configFile = path.join(getConfigDir(), 'hub.json');
+  try {
+    if (fs.existsSync(configFile)) {
+      return JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+    }
+  } catch {
+    // Fall through
+  }
+  return {};
+}
+
+/**
+ * Save hub connection config to ~/.lm-assist/hub.json
+ */
+export function saveHubConnectionConfig(updates: { apiKey?: string; hubUrl?: string }): void {
+  const configDir = getConfigDir();
+  const configFile = path.join(configDir, 'hub.json');
+  const existing = loadHubConnectionConfig();
+  const merged = { ...existing, ...updates };
+
+  // Remove empty values
+  if (!merged.apiKey) delete merged.apiKey;
+  if (!merged.hubUrl) delete merged.hubUrl;
+
+  fs.writeFileSync(configFile, JSON.stringify(merged, null, 2) + '\n');
+}
+
+/**
+ * Get hub configuration from config file, falling back to environment variables
  */
 export function getHubConfig(): HubConfig {
+  const saved = loadHubConnectionConfig();
   return {
-    hubUrl: process.env.TIER_AGENT_HUB_URL || '',
-    apiKey: process.env.TIER_AGENT_API_KEY || '',
+    hubUrl: saved.hubUrl || process.env.TIER_AGENT_HUB_URL || '',
+    apiKey: saved.apiKey || process.env.TIER_AGENT_API_KEY || '',
     machineId: generateMachineId(),
     gatewayId: loadGatewayId(),
     hostname: os.hostname(),
@@ -196,8 +228,11 @@ export function getHubConfig(): HubConfig {
 }
 
 /**
- * Check if hub connection is configured via environment
+ * Check if hub connection is configured (config file or environment)
  */
 export function isHubConfigured(): boolean {
-  return !!process.env.TIER_AGENT_HUB_URL && !!process.env.TIER_AGENT_API_KEY;
+  const saved = loadHubConnectionConfig();
+  const hubUrl = saved.hubUrl || process.env.TIER_AGENT_HUB_URL || '';
+  const apiKey = saved.apiKey || process.env.TIER_AGENT_API_KEY || '';
+  return !!hubUrl && !!apiKey;
 }

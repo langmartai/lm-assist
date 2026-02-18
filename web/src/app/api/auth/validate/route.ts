@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readFileSync } from 'fs';
 import { timingSafeEqual } from 'crypto';
+import { homedir } from 'os';
 import path from 'path';
 
-const CONFIG_FILE = 'assist-config.json';
+const CONFIG_FILE = path.join(homedir(), '.lm-assist', 'assist-config.json');
 
 interface AssistConfig {
   lanEnabled?: boolean;
@@ -13,7 +14,7 @@ interface AssistConfig {
 
 function readConfig(): AssistConfig {
   try {
-    const raw = readFileSync(path.join(process.cwd(), CONFIG_FILE), 'utf8');
+    const raw = readFileSync(CONFIG_FILE, 'utf8');
     return JSON.parse(raw);
   } catch {
     return {};
@@ -35,10 +36,16 @@ export async function POST(request: NextRequest) {
   }
 
   const config = readConfig();
+  const lanAuthEnabled = config.lanAuthEnabled ?? true;
 
-  if (!config.lanAuthEnabled || !config.lanAccessToken) {
-    // Auth not enabled — treat as valid (no gate)
+  if (!lanAuthEnabled) {
+    // Auth explicitly disabled — treat as valid (no gate)
     return NextResponse.json({ valid: true });
+  }
+
+  if (!config.lanAccessToken) {
+    // Auth enabled but no token configured — cannot validate
+    return NextResponse.json({ valid: false });
   }
 
   const expected = config.lanAccessToken;

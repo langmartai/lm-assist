@@ -231,6 +231,49 @@ build_project() {
     fi
 }
 
+# Function to check web build status
+check_web_build_status() {
+    if [ -d "$WEB_DIR/.next" ]; then
+        local src_time=$(find "$WEB_DIR/src" -name "*.ts" -o -name "*.tsx" -o -name "*.css" 2>/dev/null | xargs -r stat -c '%Y' 2>/dev/null | sort -rn | head -1)
+        local build_time=$(stat -c '%Y' "$WEB_DIR/.next" 2>/dev/null || echo "0")
+
+        if [ -n "$src_time" ] && [ "$src_time" -gt "$build_time" ]; then
+            echo "outdated"
+        else
+            echo "up-to-date"
+        fi
+    else
+        echo "not-built"
+    fi
+}
+
+# Function to build web (Next.js)
+build_web() {
+    echo -e "${BLUE}Building web...${NC}"
+
+    # Check if node_modules exists (workspace hoists to root)
+    if [ ! -d "$PROJECT_ROOT/node_modules" ]; then
+        echo -e "${YELLOW}Installing dependencies...${NC}"
+        cd "$PROJECT_ROOT"
+        npm install > "$BUILD_LOG" 2>&1
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}npm install failed. Check $BUILD_LOG${NC}"
+            return 1
+        fi
+    fi
+
+    cd "$WEB_DIR"
+    echo -e "${BLUE}Running next build...${NC}"
+    npx next build >> "$BUILD_LOG" 2>&1
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Web build successful${NC}"
+        return 0
+    else
+        echo -e "${RED}Web build failed. Check $BUILD_LOG${NC}"
+        return 1
+    fi
+}
+
 # Function to clean and rebuild
 clean_build() {
     echo -e "${BLUE}Cleaning build artifacts...${NC}"
@@ -409,12 +452,12 @@ start_web() {
 
     cd "$WEB_DIR"
 
-    # Check if Next.js production build exists
-    if [ ! -d ".next" ]; then
-        echo -e "${YELLOW}No production build found. Building web...${NC}"
-        npx next build > "$WEB_LOG" 2>&1
+    # Check web build status
+    local web_build_status=$(check_web_build_status)
+    if [ "$web_build_status" = "not-built" ] || [ "$web_build_status" = "outdated" ]; then
+        echo -e "${YELLOW}Web build is $web_build_status. Building first...${NC}"
+        build_web
         if [ $? -ne 0 ]; then
-            echo -e "${RED}Web build failed. Check $WEB_LOG${NC}"
             return 1
         fi
     fi

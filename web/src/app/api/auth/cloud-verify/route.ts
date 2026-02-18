@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { readFileSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { randomBytes } from 'crypto';
+import { homedir } from 'os';
 import path from 'path';
 
-const CONFIG_FILE = 'assist-config.json';
+const CONFIG_DIR = path.join(homedir(), '.lm-assist');
+const CONFIG_FILE = path.join(CONFIG_DIR, 'assist-config.json');
 
 interface AssistConfig {
   lanEnabled?: boolean;
@@ -12,11 +15,16 @@ interface AssistConfig {
 
 function readConfig(): AssistConfig {
   try {
-    const raw = readFileSync(path.join(process.cwd(), CONFIG_FILE), 'utf8');
+    const raw = readFileSync(CONFIG_FILE, 'utf8');
     return JSON.parse(raw);
   } catch {
     return {};
   }
+}
+
+function writeConfig(config: AssistConfig): void {
+  mkdirSync(CONFIG_DIR, { recursive: true });
+  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + '\n');
 }
 
 /**
@@ -43,8 +51,16 @@ export async function POST(request: NextRequest) {
 
   // Check that LAN auth is actually enabled
   const config = readConfig();
-  if (!config.lanAuthEnabled || !config.lanAccessToken) {
+  const lanAuthEnabled = config.lanAuthEnabled ?? true;
+  if (!lanAuthEnabled) {
     return NextResponse.json({ valid: false, error: 'LAN authentication is not enabled' }, { status: 400 });
+  }
+
+  // Auto-generate token if none exists
+  if (!config.lanAccessToken) {
+    config.lanAuthEnabled = true;
+    config.lanAccessToken = randomBytes(32).toString('hex');
+    writeConfig(config);
   }
 
   const gatewayUrl = process.env.GATEWAY_URL || 'http://localhost:8081';

@@ -497,7 +497,7 @@ export async function resetHubClient(): Promise<void> {
 }
 
 // Re-export types and utilities
-export { HubConfig, getHubConfig, saveGatewayId, clearGatewayId, isHubConfigured } from './hub-config';
+export { HubConfig, getHubConfig, saveGatewayId, clearGatewayId, isHubConfigured, saveHubConnectionConfig } from './hub-config';
 export { WebSocketClient, WebSocketClientOptions } from './websocket-client';
 export { ApiRelayHandler, ApiRelayHandlerOptions, ApiRelayRequest, ApiRelayResponse } from './api-relay-handler';
 export { ConsoleRelayHandler, ConsoleSession, ConsoleRelayOptions, getConsoleRelayHandler } from './console-relay-handler';
