@@ -1,6 +1,6 @@
 {
   "name": "lm-assist",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "LM Assistant - Web UI for managing Claude Code sessions with backend API for session management, milestones, knowledge, architecture, and hub connectivity",
   "license": "AGPL-3.0-or-later",
   "author": {
@@ -9,7 +9,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/langmartai/lm-assist.git"
+    "url": "git+https://github.com/langmartai/lm-assist.git"
   },
   "bugs": {
     "url": "https://github.com/langmartai/lm-assist/issues"
@@ -24,7 +24,7 @@
     "ai-assistant"
   ],
   "bin": {
-    "lm-assist": "./bin/lm-assist.js"
+    "lm-assist": "bin/lm-assist.js"
   },
   "main": "./core/dist/index.js",
   "files": [
@@ -60,7 +60,10 @@
     "uuid": "^9.0.0",
     "ws": "^8.18.0"
   },
-  "workspaces": ["core", "web"],
+  "workspaces": [
+    "core",
+    "web"
+  ],
   "scripts": {
     "build:core": "cd core && npm run build",
     "build:web": "cd web && npm run build",
