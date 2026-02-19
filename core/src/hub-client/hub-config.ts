@@ -183,7 +183,16 @@ function getVersion(): string {
 /**
  * Load persisted hub connection config from ~/.lm-assist/hub.json
  */
-function loadHubConnectionConfig(): { apiKey?: string; hubUrl?: string } {
+interface HubConnectionConfig {
+  apiKey?: string;
+  hubUrl?: string;
+  /** Persist assist web port so reconnects and tier-agent can discover it */
+  assistWebPort?: number;
+  /** Persist API port for discovery */
+  apiPort?: number;
+}
+
+function loadHubConnectionConfig(): HubConnectionConfig {
   const configFile = path.join(getConfigDir(), 'hub.json');
   try {
     if (fs.existsSync(configFile)) {
@@ -198,17 +207,29 @@ function loadHubConnectionConfig(): { apiKey?: string; hubUrl?: string } {
 /**
  * Save hub connection config to ~/.lm-assist/hub.json
  */
-export function saveHubConnectionConfig(updates: { apiKey?: string; hubUrl?: string }): void {
+export function saveHubConnectionConfig(updates: HubConnectionConfig): void {
   const configDir = getConfigDir();
   const configFile = path.join(configDir, 'hub.json');
   const existing = loadHubConnectionConfig();
   const merged = { ...existing, ...updates };
 
-  // Remove empty values
+  // Remove empty string values (but keep numeric 0 as valid)
   if (!merged.apiKey) delete merged.apiKey;
   if (!merged.hubUrl) delete merged.hubUrl;
 
   fs.writeFileSync(configFile, JSON.stringify(merged, null, 2) + '\n');
+}
+
+/**
+ * Load persisted service ports from ~/.lm-assist/hub.json
+ * Used by hub-client to discover assist web port without env vars
+ */
+export function loadServicePorts(): { assistWebPort?: number; apiPort?: number } {
+  const config = loadHubConnectionConfig();
+  return {
+    assistWebPort: config.assistWebPort,
+    apiPort: config.apiPort,
+  };
 }
 
 /**

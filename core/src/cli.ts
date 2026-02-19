@@ -15,6 +15,7 @@
 import * as os from 'os';
 import { startServer } from './index';
 import { getHubClient, isHubConfigured } from './hub-client';
+import { saveHubConnectionConfig } from './hub-client/hub-config';
 import { getStartupProfiler } from './startup-profiler';
 
 // Parse arguments
@@ -87,6 +88,11 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : '�
     if (hubConfigured) {
       console.log('Connecting to Hub...');
       const assistWebPort = process.env.ASSIST_WEB_PORT ? parseInt(process.env.ASSIST_WEB_PORT, 10) : 3848;
+
+      // Persist service ports to ~/.lm-assist/hub.json so reconnects
+      // and tier-agent (when lm-assist is an npm package) can discover them
+      saveHubConnectionConfig({ assistWebPort, apiPort: port });
+
       hubClient = getHubClient({ localApiPort: port, assistWebPort });
 
       hubClient.on('connected', () => {

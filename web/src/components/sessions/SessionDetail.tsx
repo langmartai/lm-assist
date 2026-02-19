@@ -3,6 +3,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useSessionDetail } from '@/hooks/useSessionDetail';
+import { useExperiment } from '@/hooks/useExperiment';
 import { useHighlightValue } from '@/hooks/useHighlight';
 import { useMachineContext } from '@/contexts/MachineContext';
 import { useAppMode } from '@/contexts/AppModeContext';
@@ -101,6 +102,7 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
     return 200;
   });
   const { detail, isLoading, error, refetch, applyBatchCheck, pollState } = useSessionDetail({ sessionId, machineId, externalPolling, lastN: chatLastN });
+  const { isExperiment } = useExperiment();
   const { isSingleMachine, machines } = useMachineContext();
   const { apiClient } = useAppMode();
   const searchParams = useSearchParams();
@@ -249,10 +251,10 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
     { id: 'chat', label: 'Chat', count: detail?.messages?.length },
     { id: 'tasks', label: 'Tasks', count: tasks.length || undefined },
     { id: 'plans', label: 'Plans', count: plans.length || undefined },
-    { id: 'milestones', label: 'Milestones', count: milestoneCount || undefined },
+    ...(isExperiment ? [{ id: 'milestones' as TabId, label: 'Milestones', count: milestoneCount || undefined }] : []),
     { id: 'agents', label: 'Agents', count: subagents.length || undefined },
     { id: 'team', label: 'Team', count: teamEntryCount || undefined },
-    { id: 'dag', label: 'FlowGraph' },
+    ...(isExperiment ? [{ id: 'dag' as TabId, label: 'FlowGraph' }] : []),
     { id: 'files', label: 'Files', count: fileChanges.length || undefined },
     { id: 'thinking', label: 'Thinking', count: thinkingBlocks.length || undefined },
     { id: 'git', label: 'Git', count: gitOperations.length || undefined },

@@ -10,6 +10,7 @@ import {
   ChevronsUp, Wrench, AlertTriangle, Map as MapIcon, Flag,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
+import { useExperiment } from '@/hooks/useExperiment';
 import { formatToolCallString, formatToolCall, shouldHideInSmartDisplay, smartTransformContent, parseApiError } from '@/lib/smart-display';
 import type { SessionMessage, MessageType, Milestone, MilestoneType } from '@/lib/types';
 
@@ -82,6 +83,7 @@ function isCompactMessage(content: string | unknown): boolean {
 
 export function ChatTab({ messages, isActive, sessionId, machineId, projectPath, isSubagent, agentCount: agentCountProp, onLastNChange, highlightMilestoneId }: ChatTabProps) {
   const { apiClient } = useAppMode();
+  const { isExperiment } = useExperiment();
 
   // Milestone data
   const [milestones, setMilestones] = useState<Milestone[]>([]);
@@ -516,7 +518,7 @@ export function ChatTab({ messages, isActive, sessionId, machineId, projectPath,
           ['todos', 'Todos', 'rgba(20,83,45,0.5)', '#86efac', messageCounts.todos, CheckCircle2],
           ['tasks', 'Tasks', 'rgba(49,46,129,0.5)', '#a5b4fc', messageCounts.tasks, ListChecks],
           ['plans', 'Plans', 'rgba(120,53,15,0.5)', '#fbbf24', messageCounts.plans, MapIcon],
-          ['milestones', 'Miles', 'rgba(120,53,15,0.5)', '#d97706', milestones.length, Flag],
+          ...(isExperiment ? [['milestones', 'Miles', 'rgba(120,53,15,0.5)', '#d97706', milestones.length, Flag] as [ConvType, string, string, string, number, any]] : []),
           ['agents', 'Agents', 'rgba(22,78,99,0.5)', '#67e8f9', agentCountProp ?? messageCounts.agents, Cpu],
         ] as [ConvType, string, string, string, number, any][]).map(([key, label, bg, fg, count, Icon]) => (
           <button

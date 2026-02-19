@@ -2788,7 +2788,7 @@ export default function SettingsPage() {
                     )}
                   </div>
                   <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', margin: 0, lineHeight: 1.5 }}>
-                    Controls visibility of: Architecture nav, milestone status bar, milestone search filters, and milestone/architecture settings below.
+                    Controls visibility of: Session Dashboard nav, Architecture nav, milestone status bar, milestone search filters, FlowGraph tab in session detail, and milestone/architecture settings below.
                   </p>
                 </div>
               </SectionCard>

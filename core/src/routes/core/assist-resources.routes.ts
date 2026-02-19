@@ -356,7 +356,7 @@ export function createAssistResourcesRoutes(_ctx: RouteContext): RouteHandler[] 
         const start = Date.now();
         try {
           const fileName = req.query.file;
-          const limit = parseInt(req.query.limit || '300', 10);
+          const limit = parseInt(req.query.limit || '1000', 10); // Default to 1000 lines for full visibility
           const search = req.query.search || '';
 
           if (!fileName) {

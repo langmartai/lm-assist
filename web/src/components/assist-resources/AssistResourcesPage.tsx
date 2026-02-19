@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   Search,
   RefreshCw,
@@ -221,7 +223,7 @@ export function AssistResourcesPage() {
           setExpandedDirs(new Set([...(data.root?.children ? [data.root.path] : []), ...result.ancestors]));
           watchedModifiedRef.current = result.node.modified;
           try {
-            const logData = await apiFetch<LogResponse>('/assist-resources/log?file=context-inject-hook.log&limit=300');
+            const logData = await apiFetch<LogResponse>('/assist-resources/log?file=context-inject-hook.log&limit=1000');
             setContent(logData);
           } catch { /* ignore */ }
         } else if (data.root?.children) {
@@ -248,7 +250,7 @@ export function AssistResourcesPage() {
       if (isLogFile(file)) {
         const logName = file.name === 'mcp-calls.jsonl' ? 'mcp-calls.jsonl' : 'context-inject-hook.log';
         const searchParam = search ? `&search=${encodeURIComponent(search)}` : '';
-        const data = await apiFetch<LogResponse>(`/assist-resources/log?file=${logName}&limit=300${searchParam}`);
+        const data = await apiFetch<LogResponse>(`/assist-resources/log?file=${logName}&limit=1000${searchParam}`);
         setContent(data);
       } else {
         const data = await apiFetch<FileContentResponse>(`/assist-resources/file?path=${encodeURIComponent(file.path)}&limit=500`);
@@ -305,7 +307,7 @@ export function AssistResourcesPage() {
               ? `&search=${encodeURIComponent(searchTermRef.current)}`
               : '';
             const data = await apiFetch<LogResponse>(
-              `/assist-resources/log?file=${logName}&limit=300${searchParam}`
+              `/assist-resources/log?file=${logName}&limit=1000${searchParam}`
             );
             setContent(data);
           } else {
@@ -939,90 +941,61 @@ function ContentViewer({ content, selectedFile }: { content: FileContentResponse
 // MCP Call Card (for mcp-calls.jsonl entries)
 // ============================================================================
 
+const TOOL_COLORS: Record<string, string> = {
+  search: '#3498db',
+  detail: '#9b59b6',
+  feedback: '#e67e22',
+};
+
 function McpCallCard({ entry }: { entry: any }) {
-  const [expanded, setExpanded] = useState(false);
-  const isError = entry.error || entry.status === 'error';
+  const isError = entry.isError || !!entry.error;
   const tool = entry.tool || entry.name || entry.method || 'unknown';
-  const duration = entry.durationMs || entry.duration;
-  const timestamp = entry.timestamp || entry.ts;
+  const toolColor = TOOL_COLORS[tool] || '#95a5a6';
+  const query: string = entry.args?.query || entry.args?.id || entry.args?.content || '';
+  const result: string = entry.result || entry.responsePreview || (isError ? entry.error : '') || '';
 
   return (
-    <div
-      onClick={() => setExpanded(!expanded)}
-      style={{
-        margin: '2px 8px',
-        padding: '6px 10px',
-        borderLeft: `3px solid ${isError ? '#e74c3c' : '#2ecc71'}`,
-        background: 'var(--color-bg-surface)',
-        borderRadius: '0 6px 6px 0',
-        cursor: 'pointer',
+    <div style={{
+      padding: '12px 14px',
+      borderBottom: '1px solid var(--color-border-default)',
+      borderLeft: `3px solid ${isError ? '#e74c3c' : toolColor}`,
+    }}>
+      {/* Query */}
+      <div style={{
         fontSize: 12,
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        fontWeight: 600,
+        color: 'var(--color-text-primary)',
+        marginBottom: result ? 8 : 0,
+      }}>
         <span style={{
-          fontSize: 11,
-          fontWeight: 600,
-          fontFamily: "'JetBrains Mono', monospace",
-          color: 'var(--color-text-primary)',
+          fontSize: 10,
+          fontWeight: 700,
+          color: toolColor,
+          marginRight: 6,
+          textTransform: 'uppercase',
         }}>
           {tool}
         </span>
-        {duration != null && (
-          <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
-            {duration}ms
-          </span>
-        )}
-        <div style={{ flex: 1 }} />
-        {timestamp && (
-          <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
-            {formatRelativeTime(timestamp)}
-          </span>
-        )}
+        {query || '(no input)'}
       </div>
 
-      {!expanded && entry.args && (
-        <div style={{
-          marginTop: 3,
-          fontSize: 10,
-          color: 'var(--color-text-tertiary)',
-          fontFamily: "'JetBrains Mono', monospace",
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-        }}>
-          {typeof entry.args === 'string' ? entry.args : JSON.stringify(entry.args)}
-        </div>
-      )}
-
-      {isError && entry.error && !expanded && (
-        <div style={{
-          marginTop: 3,
-          fontSize: 10,
-          color: '#e74c3c',
-          fontFamily: "'JetBrains Mono', monospace",
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-        }}>
-          {typeof entry.error === 'string' ? entry.error : JSON.stringify(entry.error)}
-        </div>
-      )}
-
-      {expanded && (
-        <pre style={{
-          marginTop: 6,
-          fontSize: 10,
-          fontFamily: "'JetBrains Mono', monospace",
-          color: 'var(--color-text-secondary)',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-all',
-          margin: '6px 0 0 0',
-          padding: 0,
-          background: 'transparent',
-        }}>
-          {JSON.stringify(entry, null, 2)}
-        </pre>
+      {/* Result — always shown, rendered as markdown */}
+      {result && (
+        isError ? (
+          <div style={{
+            fontSize: 11,
+            color: '#e74c3c',
+            fontFamily: "'JetBrains Mono', monospace",
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}>
+            {result}
+          </div>
+        ) : (
+          <div className="mcp-result-md">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{result}</ReactMarkdown>
+          </div>
+        )
       )}
     </div>
   );

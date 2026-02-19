@@ -21,7 +21,6 @@ import { useExperiment } from '@/hooks/useExperiment';
 const baseNavItems = [
   { href: '/terminal-dashboard', icon: Terminal, label: 'Terminal Dashboard' },
   { href: '/sessions', icon: MessageSquare, label: 'Sessions' },
-  { href: '/session-dashboard', icon: LayoutDashboard, label: 'Session Dashboard' },
   { href: '/process-dashboard', icon: Activity, label: 'Process Dashboard' },
   { href: '/search', icon: Search, label: 'Search' },
   { href: '/tasks', icon: CheckSquare, label: 'Tasks' },
@@ -32,6 +31,7 @@ const baseNavItems = [
 ];
 
 const experimentNavItems = [
+  { href: '/session-dashboard', icon: LayoutDashboard, label: 'Session Dashboard' },
   { href: '/architecture', icon: Network, label: 'Architecture' },
 ];
 
@@ -40,7 +40,7 @@ export function Sidebar() {
   const { isExperiment } = useExperiment();
 
   const navItems = isExperiment
-    ? [...baseNavItems.slice(0, 7), experimentNavItems[0], ...baseNavItems.slice(7)]
+    ? [...baseNavItems.slice(0, 2), ...experimentNavItems, ...baseNavItems.slice(2)]
     : baseNavItems;
 
   return (

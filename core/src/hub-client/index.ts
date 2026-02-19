@@ -14,7 +14,7 @@ import { WebSocketClient } from './websocket-client';
 import { ApiRelayHandler, ApiRelayRequest, ServiceRoute } from './api-relay-handler';
 import { ConsoleRelayHandler } from './console-relay-handler';
 import { SessionCacheSync } from './session-cache-sync';
-import { getHubConfig, HubConfig, saveGatewayId } from './hub-config';
+import { getHubConfig, HubConfig, saveGatewayId, loadServicePorts } from './hub-config';
 
 export interface HubClientOptions {
   /** Hub WebSocket URL (defaults from env TIER_AGENT_HUB_URL) */
@@ -83,12 +83,15 @@ export class HubClient extends EventEmitter {
     // Prevent unhandled 'error' event from crashing the process
     this.on('error', () => {});
     this.config = getHubConfig();
+    // Load persisted service ports from ~/.lm-assist/hub.json as fallback
+    // This ensures reconnects and npm package deployments (no env vars) still work
+    const savedPorts = loadServicePorts();
     this.options = {
       hubUrl: options.hubUrl || this.config.hubUrl || '',
       apiKey: options.apiKey || this.config.apiKey || '',
       localApiPort: options.localApiPort || 3100,
       adminWebPort: options.adminWebPort || (process.env.ADMIN_WEB_PORT ? parseInt(process.env.ADMIN_WEB_PORT, 10) : undefined),
-      assistWebPort: options.assistWebPort || (process.env.ASSIST_WEB_PORT ? parseInt(process.env.ASSIST_WEB_PORT, 10) : undefined),
+      assistWebPort: options.assistWebPort || (process.env.ASSIST_WEB_PORT ? parseInt(process.env.ASSIST_WEB_PORT, 10) : undefined) || savedPorts.assistWebPort,
       vibeCoderPort: options.vibeCoderPort || (process.env.VIBE_CODER_PORT ? parseInt(process.env.VIBE_CODER_PORT, 10) : undefined),
       autoReconnect: options.autoReconnect ?? true,
       reconnectDelay: options.reconnectDelay || 1000,
@@ -497,7 +500,7 @@ export async function resetHubClient(): Promise<void> {
 }
 
 // Re-export types and utilities
-export { HubConfig, getHubConfig, saveGatewayId, clearGatewayId, isHubConfigured, saveHubConnectionConfig } from './hub-config';
+export { HubConfig, getHubConfig, saveGatewayId, clearGatewayId, isHubConfigured, saveHubConnectionConfig, loadServicePorts } from './hub-config';
 export { WebSocketClient, WebSocketClientOptions } from './websocket-client';
 export { ApiRelayHandler, ApiRelayHandlerOptions, ApiRelayRequest, ApiRelayResponse } from './api-relay-handler';
 export { ConsoleRelayHandler, ConsoleSession, ConsoleRelayOptions, getConsoleRelayHandler } from './console-relay-handler';

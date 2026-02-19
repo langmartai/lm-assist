@@ -15,9 +15,9 @@ import { getDataDir } from '../utils/path-utils';
 
 const LOG_DIR = path.join(getDataDir(), 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'mcp-calls.jsonl');
-const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5 MB
+const MAX_LOG_SIZE = 20 * 1024 * 1024; // 20 MB — results can be large (knowledge detail)
 const MAX_ARG_LENGTH = 500;
-const MAX_RESPONSE_PREVIEW = 300;
+const MAX_RESULT_LENGTH = 20000; // Store full MCP results for readable log display
 
 let dirEnsured = false;
 
@@ -56,8 +56,7 @@ export interface McpLogEntry {
   tool: string;
   args: Record<string, unknown>;
   durationMs: number;
-  responseChars: number;
-  responsePreview?: string;
+  result?: string;
   error?: string;
   isError?: boolean;
 }
@@ -78,15 +77,14 @@ export function logToolCall(
       tool,
       args: truncateArgs(args),
       durationMs: Math.round(durationMs),
-      responseChars: text.length,
     };
 
     if (text.length > 0) {
-      entry.responsePreview = truncate(text, MAX_RESPONSE_PREVIEW);
+      entry.result = truncate(text, MAX_RESULT_LENGTH);
     }
     if (response.isError) {
       entry.isError = true;
-      entry.error = truncate(text, MAX_RESPONSE_PREVIEW);
+      entry.error = truncate(text, MAX_RESULT_LENGTH);
     }
 
     const line = JSON.stringify(entry) + '\n';
