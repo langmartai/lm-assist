@@ -25,7 +25,7 @@ import * as readline from 'readline';
 import chokidar, { FSWatcher } from 'chokidar';
 import { getStartupProfiler } from './startup-profiler';
 import { SessionCacheStore } from './session-cache-store';
-import { getDataDir } from './utils/path-utils';
+import { getDataDir, legacyEncodeProjectPath } from './utils/path-utils';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -298,7 +298,7 @@ export class SessionCache {
     if (projectPaths && projectPaths.length > 0) {
       // Watch specific projects
       for (const projectPath of projectPaths) {
-        const projectKey = projectPath.replace(/\//g, '-');
+        const projectKey = legacyEncodeProjectPath(projectPath);
         const projectDir = path.join(projectsDir, projectKey);
         if (fs.existsSync(projectDir)) {
           watchPaths.push(projectDir);
@@ -415,7 +415,7 @@ export class SessionCache {
    * Warm cache for all session files in a project
    */
   async warmProjectCache(projectPath: string): Promise<{ warmed: number; errors: number }> {
-    const projectKey = projectPath.replace(/\//g, '-');
+    const projectKey = legacyEncodeProjectPath(projectPath);
     const projectDir = path.join(os.homedir(), '.claude', 'projects', projectKey);
 
     if (!fs.existsSync(projectDir)) {
@@ -1647,7 +1647,8 @@ export class SessionCache {
   }> {
     const results: Array<{ sessionId: string; filePath: string; cacheData: SessionCacheData }> = [];
     for (const { key: filePath, value: cacheData } of this.store.allSessions()) {
-      if (filePath.includes('/subagents/')) continue;
+      const normalizedFilePath = filePath.replace(/\\/g, '/');
+      if (normalizedFilePath.includes('/subagents/')) continue;
       const sessionId = path.basename(filePath, '.jsonl');
       if (sessionId.startsWith('agent-')) continue;
       results.push({ sessionId, filePath, cacheData });
@@ -1664,7 +1665,7 @@ export class SessionCache {
     filePath: string;
     cacheData: SessionCacheData;
   }> {
-    const projectKey = projectPath.replace(/\//g, '-');
+    const projectKey = legacyEncodeProjectPath(projectPath);
     const results: Array<{
       sessionId: string;
       filePath: string;
@@ -1672,8 +1673,9 @@ export class SessionCache {
     }> = [];
 
     for (const { key: filePath, value: cacheData } of this.store.allSessions()) {
-      // Check if this session belongs to the project
-      if (filePath.includes(`/projects/${projectKey}/`) && !filePath.includes('/subagents/')) {
+      // Check if this session belongs to the project (normalize separators for cross-platform)
+      const normalizedFilePath = filePath.replace(/\\/g, '/');
+      if (normalizedFilePath.includes(`/projects/${projectKey}/`) && !normalizedFilePath.includes('/subagents/')) {
         const sessionId = path.basename(filePath, '.jsonl');
         // Skip agent files
         if (!sessionId.startsWith('agent-')) {
@@ -1689,7 +1691,7 @@ export class SessionCache {
    * Check if a project's sessions are fully cached
    */
   isProjectCached(projectPath: string): boolean {
-    const projectKey = projectPath.replace(/\//g, '-');
+    const projectKey = legacyEncodeProjectPath(projectPath);
     const projectsDir = path.join(os.homedir(), '.claude', 'projects', projectKey);
 
     if (!fs.existsSync(projectsDir)) return true;

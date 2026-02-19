@@ -23,6 +23,7 @@ import * as os from 'os';
 import * as readline from 'readline';
 import type { TierName } from './types/instruction-protocol';
 import { getSessionCache, type SessionCacheData, type CachedToolUse, isRealUserPrompt } from './session-cache';
+import { legacyEncodeProjectPath } from './utils/path-utils';
 
 // ============================================================================
 // Session Cache Converter
@@ -2357,7 +2358,7 @@ export class AgentSessionStore extends EventEmitter {
   } {
     const projectCwd = cwd || this.config.projectPath;
     // Claude Code uses format: -home-ubuntu-project (leading dash, all slashes become dashes)
-    const projectPathKey = projectCwd.replace(/\//g, '-');
+    const projectPathKey = legacyEncodeProjectPath(projectCwd);
     const projectDir = path.join(os.homedir(), '.claude', 'projects', projectPathKey);
 
     // Try regular session file first
@@ -2431,16 +2432,13 @@ export class AgentSessionStore extends EventEmitter {
         // Check for regular session file
         const sessionPath = path.join(projectDir, `${sessionId}.jsonl`);
         if (fs.existsSync(sessionPath)) {
-          // Convert project key back to path: -home-ubuntu-project -> /home/ubuntu/project
-          const projectPath = '/' + entry.name.slice(1).replace(/-/g, '/');
-          return projectPath;
+          return this.extractCwdFromSessionFile(sessionPath) || entry.name;
         }
 
         // Check for agent file at top level
         const agentPath = path.join(projectDir, `agent-${sessionId}.jsonl`);
         if (fs.existsSync(agentPath)) {
-          const projectPath = '/' + entry.name.slice(1).replace(/-/g, '/');
-          return projectPath;
+          return this.extractCwdFromSessionFile(agentPath) || entry.name;
         }
 
         // Check for agent file in nested subagents directories
@@ -2450,8 +2448,7 @@ export class AgentSessionStore extends EventEmitter {
             if (sub.isDirectory()) {
               const nestedPath = path.join(projectDir, sub.name, 'subagents', `agent-${sessionId}.jsonl`);
               if (fs.existsSync(nestedPath)) {
-                const projectPath = '/' + entry.name.slice(1).replace(/-/g, '/');
-                return projectPath;
+                return this.extractCwdFromSessionFile(nestedPath) || entry.name;
               }
             }
           }
@@ -2463,6 +2460,27 @@ export class AgentSessionStore extends EventEmitter {
       // Ignore errors reading directory
     }
 
+    return null;
+  }
+
+  /**
+   * Extract the cwd field from the first few lines of a session JSONL file.
+   */
+  private extractCwdFromSessionFile(filePath: string): string | null {
+    try {
+      const fd = fs.openSync(filePath, 'r');
+      const buffer = Buffer.alloc(8192);
+      const bytesRead = fs.readSync(fd, buffer, 0, 8192, 0);
+      fs.closeSync(fd);
+      const content = buffer.slice(0, bytesRead).toString('utf8');
+      for (const line of content.split('\n').slice(0, 20)) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (msg.cwd) return msg.cwd;
+        } catch { /* skip */ }
+      }
+    } catch { /* skip */ }
     return null;
   }
 
@@ -3465,7 +3483,7 @@ export class AgentSessionStore extends EventEmitter {
   listSessions(cwd?: string): string[] {
     const projectCwd = cwd || this.config.projectPath;
     // Claude Code uses format: -home-ubuntu-project (leading dash, all slashes become dashes)
-    const projectPathKey = projectCwd.replace(/\//g, '-');
+    const projectPathKey = legacyEncodeProjectPath(projectCwd);
     const sessionsDir = path.join(os.homedir(), '.claude', 'projects', projectPathKey);
 
     if (!fs.existsSync(sessionsDir)) {
@@ -3499,7 +3517,7 @@ export class AgentSessionStore extends EventEmitter {
 
     // Helper to count actual agent files on disk
     const countAgentFiles = (sessionId: string): number => {
-      const projectPathKey = projectCwd.replace(/\//g, '-');
+      const projectPathKey = legacyEncodeProjectPath(projectCwd);
       const subagentsDir = path.join(os.homedir(), '.claude', 'projects', projectPathKey, sessionId, 'subagents');
       if (!fs.existsSync(subagentsDir)) return 0;
       try {
@@ -3545,7 +3563,7 @@ export class AgentSessionStore extends EventEmitter {
     }
 
     // Slow path: read from disk (fallback for uncached projects)
-    const projectPathKey = projectCwd.replace(/\//g, '-');
+    const projectPathKey = legacyEncodeProjectPath(projectCwd);
     const sessionsDir = path.join(os.homedir(), '.claude', 'projects', projectPathKey);
 
     if (!fs.existsSync(sessionsDir)) {
@@ -3859,7 +3877,7 @@ export class AgentSessionStore extends EventEmitter {
     lastModified: Date;
   }> {
     const projectCwd = cwd || this.config.projectPath;
-    const projectPathKey = projectCwd.replace(/\//g, '-');
+    const projectPathKey = legacyEncodeProjectPath(projectCwd);
     const projectDir = path.join(os.homedir(), '.claude', 'projects', projectPathKey);
 
     if (!fs.existsSync(projectDir)) {
@@ -3927,7 +3945,7 @@ export class AgentSessionStore extends EventEmitter {
    */
   async readSubagentSession(agentId: string, cwd?: string): Promise<SubagentSessionData | null> {
     const projectCwd = cwd || this.config.projectPath;
-    const projectPathKey = projectCwd.replace(/\//g, '-');
+    const projectPathKey = legacyEncodeProjectPath(projectCwd);
     const projectDir = path.join(os.homedir(), '.claude', 'projects', projectPathKey);
 
     // Try to find the agent file in known locations
@@ -4180,7 +4198,7 @@ export class AgentSessionStore extends EventEmitter {
     }
 
     const projectCwd = resolvedCwd || this.config.projectPath;
-    const projectPathKey = projectCwd.replace(/\//g, '-');
+    const projectPathKey = legacyEncodeProjectPath(projectCwd);
     const projectDir = path.join(os.homedir(), '.claude', 'projects', projectPathKey);
 
     // Check agent files directly in project directory (Pattern 1)

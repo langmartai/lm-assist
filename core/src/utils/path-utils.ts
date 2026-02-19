@@ -8,6 +8,17 @@ import * as os from 'os';
 import * as fs from 'fs';
 
 /**
+ * Encode a project path using Claude Code's legacy dash-replacement method.
+ * Cross-platform: handles both / and \ separators, and removes colons.
+ * Linux:   /home/user/project    -> -home-user-project
+ * macOS:   /Users/admin/project  -> -Users-admin-project
+ * Windows: C:\home\project       -> C--home-project  (colon and backslashes become dashes)
+ */
+export function legacyEncodeProjectPath(projectPath: string): string {
+  return projectPath.replace(/[:\\/]/g, '-');
+}
+
+/**
  * Encode a path for use in Claude session storage
  * Uses URL-safe Base64 encoding to handle paths with dashes/special characters
  * Example: /home/ubuntu/my-project -> aG9tZS91YnVudHUvbXktcHJvamVjdA

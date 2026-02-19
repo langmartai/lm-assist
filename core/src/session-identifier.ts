@@ -15,6 +15,7 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { legacyEncodeProjectPath } from './utils/path-utils';
 
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
@@ -597,7 +598,7 @@ export class SessionIdentifier {
       if (screenLines.length < 3) return null;
 
       // 3. List candidate sessions
-      const projectKey = projectPath.replace(/\//g, '-');
+      const projectKey = legacyEncodeProjectPath(projectPath);
       const sessionDir = path.join(CLAUDE_PROJECTS_DIR, projectKey);
       if (!fs.existsSync(sessionDir)) return null;
 

@@ -8,6 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { homedir } from 'os';
+import { legacyEncodeProjectPath } from './utils/path-utils';
 
 // ============================================================================
 // Types
@@ -311,9 +312,8 @@ export class TasksService {
    */
   encodeProjectPath(projectPath: string): string {
     // Normalize path: remove trailing slashes
-    const normalized = projectPath.replace(/\/+$/, '');
-    // Replace leading / with - and all / with -
-    return '-' + normalized.replace(/^\//, '').replace(/\//g, '-');
+    const normalized = projectPath.replace(/[\\/]+$/, '');
+    return legacyEncodeProjectPath(normalized);
   }
 
   /**

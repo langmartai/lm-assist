@@ -8,6 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { homedir } from 'os';
+import { legacyEncodeProjectPath } from './utils/path-utils';
 // Inline types (project-spec types not included in lm-assist)
 interface SessionProgress {
   lastLineIndex: number;
@@ -35,8 +36,7 @@ export class SessionProcessingStateService {
    * Encode a project path to a project key (same as Claude Code)
    */
   private encodeProjectPath(projectPath: string): string {
-    // Remove leading slash and replace remaining slashes with dashes
-    return projectPath.replace(/^\//, '-').replace(/\//g, '-');
+    return legacyEncodeProjectPath(projectPath);
   }
 
   /**

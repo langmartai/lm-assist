@@ -53,7 +53,7 @@ export function createSessionProjectsRoutes(ctx: RouteContext): RouteHandler[] {
             if (sessionData && sessionData.userPrompts.length > 0) {
               const realPrompts = sessionData.userPrompts.filter(isRealUserPrompt);
               const lastPrompt = realPrompts[realPrompts.length - 1];
-              if (lastPrompt.text) {
+              if (lastPrompt?.text) {
                 project.lastUserMessage = lastPrompt.text.length > 200
                   ? lastPrompt.text.substring(0, 200) + '...'
                   : lastPrompt.text;

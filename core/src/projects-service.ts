@@ -412,12 +412,10 @@ export class ProjectsService {
     storageDir: string;
     encodedPath: string;
   } | null {
-    // First, check if it's already an encoded path (starts with -)
-    if (projectPath.startsWith('-')) {
-      const storageDir = path.join(this.projectsDir, projectPath);
-      if (fs.existsSync(storageDir) && fs.statSync(storageDir).isDirectory()) {
-        return { storageDir, encodedPath: projectPath };
-      }
+    // First, check if it's already an encoded directory name that exists
+    const directDir = path.join(this.projectsDir, projectPath);
+    if (fs.existsSync(directDir) && fs.statSync(directDir).isDirectory()) {
+      return { storageDir: directDir, encodedPath: projectPath };
     }
 
     // Try Base64 encoding first (new format)

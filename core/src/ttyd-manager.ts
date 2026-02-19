@@ -11,7 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import WebSocket from 'ws';
-import { getDataDir } from './utils/path-utils';
+import { getDataDir, legacyEncodeProjectPath } from './utils/path-utils';
 
 // ============================================================================
 // Types
@@ -1144,7 +1144,7 @@ export class TtydManager {
    * Get session ID for a project path from recent session files
    */
   private getProjectHash(projectPath: string): string {
-    return projectPath.replace(/\//g, '-');
+    return legacyEncodeProjectPath(projectPath);
   }
 
   /**
