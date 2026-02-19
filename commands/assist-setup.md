@@ -5,7 +5,9 @@ description: Install and configure all lm-assist components
 
 # /assist-setup — One-Command Installer
 
-Start lm-assist services and install all Claude Code integrations (MCP server, context hook, statusline).
+Start lm-assist services and ensure all Claude Code integrations are working.
+
+**Note:** If lm-assist was installed as a Claude Code plugin (`claude plugin install`), the MCP server and hooks (context injection, event logger) are already registered automatically. This command focuses on starting services, verifying the integrations, and optionally installing the statusline.
 
 ## Steps
 
@@ -45,38 +47,38 @@ for i in 1 2 3 4 5; do
 done
 ```
 
-### 3. Install MCP Server
+### 3. Verify MCP Server
 
-Check current status and install if needed:
+Check if the MCP server is reachable (it may be registered by the plugin or manually):
 ```bash
 curl -s --max-time 3 http://localhost:3100/claude-code/mcp
 ```
 
-If not installed:
+If not installed (e.g., non-plugin install), install it:
 ```bash
 curl -s -X POST http://localhost:3100/claude-code/mcp/install
 ```
 
-### 4. Install Context Hook
+### 4. Verify Context Hook
 
-Check and install:
+Check if the context-inject hook is active (registered by plugin hooks or manually):
 ```bash
 curl -s --max-time 3 http://localhost:3100/claude-code/context-hook
 ```
 
-If not installed:
+If not installed (e.g., non-plugin install), install it:
 ```bash
 curl -s -X POST http://localhost:3100/claude-code/context-hook/install
 ```
 
-### 5. Install Statusline
+### 5. Install Statusline (Optional)
 
-Check and install:
+The statusline is not installed by the plugin — it's optional. Check and offer to install:
 ```bash
 curl -s --max-time 3 http://localhost:3100/claude-code/statusline
 ```
 
-If not installed:
+If not installed, ask the user if they want it, then install:
 ```bash
 curl -s -X POST http://localhost:3100/claude-code/statusline/install
 ```
@@ -99,14 +101,14 @@ Show progress as you go:
 lm-assist Setup
 ===============
 
-[1/5] Starting services...        done
-[2/5] Installing MCP server...    done (tools: search, detail, feedback)
-[3/5] Installing context hook...  done
-[4/5] Installing statusline...    done
-[5/5] Verifying installation...   all components healthy
+[1/4] Starting services...          done
+[2/4] Verifying MCP server...       active (tools: search, detail, feedback)
+[3/4] Verifying context hook...     active
+[4/4] Verifying installation...     all components healthy
 
 Setup complete!
   Web UI: http://localhost:3848
+  Statusline: not installed (optional — run /assist-setup --statusline to add)
   Run /assist-status to check component status
   Run /assist-search <query> to search your knowledge base
 ```
@@ -115,4 +117,6 @@ If any step fails, report the specific error and continue with remaining steps. 
 
 ## Arguments
 
-`$ARGUMENTS` are ignored — this command always does a full setup.
+Parse `$ARGUMENTS` for:
+- `--statusline`: Also install the statusline (without this flag, just ask the user)
+- Everything else is ignored

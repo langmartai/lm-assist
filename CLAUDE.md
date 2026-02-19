@@ -208,11 +208,17 @@ Install hooks via: `./core/hooks/install-hook-logger.sh`
 
 ## Plugin / Slash Commands
 
-lm-assist is packaged as a Claude Code plugin. The plugin provides an MCP server and 6 slash commands for interacting with lm-assist from within Claude Code.
+lm-assist is packaged as a Claude Code plugin. On `claude plugin install .`, the plugin auto-registers:
+- **MCP server** (`lm-assist-context`) — search, detail, feedback tools
+- **Hooks** — context injection (UserPromptSubmit) and event logger (SessionStart, PreToolUse, PostToolUse, Stop)
+- **Slash commands** — 6 commands for managing lm-assist
+
+The **statusline** is optional and not auto-installed by the plugin.
 
 **Plugin structure:**
 - `.claude-plugin/plugin.json` — Plugin metadata
-- `.mcp.json` — MCP server configuration (auto-registered on plugin install)
+- `.mcp.json` — MCP server auto-registration
+- `hooks/hooks.json` — Hook auto-registration (context inject + event logger)
 - `commands/` — Slash command definitions
 
 **Slash commands:**
@@ -224,7 +230,7 @@ lm-assist is packaged as a Claude Code plugin. The plugin provides an MCP server
 | `/assist-mcp-logs` | View MCP tool call logs (`GET /assist-resources/log?file=mcp-calls.jsonl`) |
 | `/assist-search` | Search the knowledge base (`GET /knowledge/search?q=...`) |
 | `/assist-status` | Show status of all components — API, web, MCP, hooks, statusline, hub, knowledge |
-| `/assist-setup` | One-command installer — starts services, installs MCP + hooks + statusline via API |
+| `/assist-setup` | Start services and verify integrations (statusline optional via `--statusline`) |
 
 All commands call the existing REST API with `curl` on `localhost:3100`. If the API is not running, commands advise the user to start it or run `/assist-setup`.
 

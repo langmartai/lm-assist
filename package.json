@@ -37,6 +37,7 @@
     ".claude-plugin",
     ".mcp.json",
     "commands",
+    "hooks",
     "LICENSE",
     "README.md",
     ".env.example"

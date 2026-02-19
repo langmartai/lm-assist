@@ -31,13 +31,18 @@ npm run build
 claude plugin install .
 ```
 
-This registers the MCP server and slash commands with Claude Code. Then, from any Claude Code session:
+This automatically registers:
+- **MCP server** — `search`, `detail`, `feedback` tools available in Claude Code
+- **Hooks** — context injection (injects relevant knowledge into each prompt) and event logger
+- **Slash commands** — 6 commands for managing lm-assist (see below)
+
+Then start the services and verify:
 
 ```
 /assist-setup
 ```
 
-This starts the services and installs all integrations (MCP server, context hook, statusline).
+The statusline (optional) can be installed via `/assist-setup --statusline` or the web UI settings page.
 
 ### Install via npm
 
@@ -76,7 +81,7 @@ Use these from within any Claude Code session:
 |---------|-------------|
 | `/assist` | Open the web UI in your browser |
 | `/assist-status` | Show status of all components (API, web, MCP, hooks, hub, knowledge) |
-| `/assist-setup` | One-command installer — starts services, installs MCP + hooks + statusline |
+| `/assist-setup` | Start services and verify integrations (statusline optional via `--statusline`) |
 | `/assist-search <query>` | Search the knowledge base |
 | `/assist-logs` | View context-inject hook logs |
 | `/assist-mcp-logs` | View MCP tool call logs |
@@ -91,13 +96,13 @@ The MCP server (`lm-assist-context`) provides 3 tools that Claude Code can use d
 | `detail` | Progressive disclosure — expand any item by ID (e.g., `K001`, `sessionId:index`, `arch:component`) |
 | `feedback` | Flag context as outdated, wrong, irrelevant, or useful |
 
-The MCP server is installed automatically by `/assist-setup`, or manually:
+When installed as a plugin, the MCP server is registered automatically. For non-plugin installs:
 
 ```bash
-# Via the API
+# Via the API (requires services running)
 curl -X POST http://localhost:3100/claude-code/mcp/install
 
-# Or via Claude CLI
+# Or via Claude CLI directly
 claude mcp add -s user lm-assist-context -- node /path/to/lm-assist/core/dist/mcp-server/index.js
 ```
 
@@ -133,13 +138,16 @@ WEB_PORT=3848                    # Web UI port (default: 3848)
 
 ## Claude Code Integrations
 
-lm-assist installs three Claude Code integrations (all managed via `/assist-setup` or the web UI settings page):
+When installed as a plugin, the MCP server and hooks are auto-registered. The statusline is optional.
 
-| Integration | What It Does |
-|-------------|--------------|
-| **MCP Server** | Gives Claude Code the `search`, `detail`, and `feedback` tools |
-| **Context Hook** | Injects relevant knowledge/milestones on each prompt via `UserPromptSubmit` hook |
-| **Statusline** | Shows git branch, session info, context usage, and process stats in the Claude Code status bar |
+| Integration | Auto-installed | What It Does |
+|-------------|----------------|--------------|
+| **MCP Server** | Yes (plugin) | Gives Claude Code the `search`, `detail`, and `feedback` tools |
+| **Context Hook** | Yes (plugin) | Injects relevant knowledge/milestones on each prompt via `UserPromptSubmit` hook |
+| **Event Logger** | Yes (plugin) | Logs all Claude Code hook events to `~/.claude/hook-events.jsonl` |
+| **Statusline** | No (optional) | Shows git branch, session info, context %, and process stats in the status bar |
+
+Install the statusline via `/assist-setup --statusline` or the web UI settings page.
 
 ## Web UI Pages
 
@@ -166,8 +174,9 @@ lm-assist/
 │   └── hooks/               ← Claude Code hook scripts
 ├── web/                     ← Web UI (Next.js)
 ├── commands/                ← Slash command definitions
+├── hooks/                   ← Plugin hook registration (hooks.json)
 ├── .claude-plugin/          ← Claude Code plugin metadata
-├── .mcp.json                ← MCP server configuration
+├── .mcp.json                ← MCP server auto-registration
 ├── core.sh                  ← Service manager
 └── bin/lm-assist.js         ← CLI entry point
 ```
