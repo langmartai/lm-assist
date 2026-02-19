@@ -30,7 +30,7 @@ proxy.on('error', (err: Error, req: IncomingMessage, res: ServerResponse | Socke
  * Extract port from proxy path
  * Path formats:
  *   /ttyd-proxy/:port/...  — local proxy path (used by admin-web iframes)
- *   /ttyd/:port/...        — Hub relay path (used when accessed via xeenhub.com)
+ *   /ttyd/:port/...        — Hub relay path (used when accessed via langmart.ai)
  *
  * The Hub relay strips its prefix and forwards as /ttyd/:port/... which needs
  * the same proxy treatment as /ttyd-proxy/:port/... (e.g., /ttyd/7684/token
@@ -140,10 +140,10 @@ const TTYD_INJECTED_CSS = `
   }, 100);
 
   // --- Propagate auth token to all sub-requests ---
-  // When served via Hub (xeenhub.com), the page URL contains ?token=<uuid>
+  // When served via Hub (langmart.ai), the page URL contains ?token=<uuid>
   // for authentication. But subsequent requests from within the iframe
   // (like GET /token for WebSocket reconnection) don't include the token,
-  // causing xeenhub.com auth middleware to return 401.
+  // causing the hub auth middleware to return 401.
   // Fix: extract the token from the page URL and inject it into all
   // fetch(), XMLHttpRequest, and WebSocket requests.
   var pageParams = new URLSearchParams(window.location.search);

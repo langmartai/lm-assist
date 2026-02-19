@@ -19,7 +19,7 @@ interface AppModeContextValue {
   isHub: boolean;
   isHybrid: boolean;
   apiClient: ApiClient;
-  /** Proxy info -- whether the app is accessed through xeenhub web proxy */
+  /** Proxy info -- whether the app is accessed through hub web proxy */
   proxy: ProxyInfo;
   /** Hub user info -- populated when proxied OR when local + hub authenticated */
   hubUser: HubUserInfo | null;

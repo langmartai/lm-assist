@@ -518,8 +518,8 @@ export interface Milestone {
 export type AppMode = 'local' | 'hub' | 'hybrid';
 
 /**
- * Proxy info — populated when the app is accessed through the xeenhub web proxy
- * (e.g., xeenhub.com/w/:machineId/assist/) rather than directly (localhost:3848).
+ * Proxy info — populated when the app is accessed through the hub web proxy
+ * (e.g., langmart.ai/w/:machineId/assist/) rather than directly (localhost:3848).
  *
  * When proxied, some features need special handling:
  * - ttyd terminal: WebSocket URL must go through the proxy relay (not direct localhost)
@@ -527,7 +527,7 @@ export type AppMode = 'local' | 'hub' | 'hybrid';
  * - Navigation: Already handled by proxy shim script injected by hub
  */
 export interface ProxyInfo {
-  /** Whether the app is running through the xeenhub web proxy */
+  /** Whether the app is running through the hub web proxy */
   isProxied: boolean;
   /** The proxy base path (e.g., "/w/gw4-xxx/assist") — empty string if not proxied */
   basePath: string;

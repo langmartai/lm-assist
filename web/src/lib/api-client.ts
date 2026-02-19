@@ -239,10 +239,10 @@ async function fetchJsonRaw<T>(url: string, options?: RequestInit): Promise<T> {
 /**
  * Normalize console URLs returned by the hub.
  * The hub returns localhost URLs like "http://localhost:8081/api/tier-agent/machines/.../ttyd/port/?token=..."
- * which aren't accessible from the browser when accessed via xeenhub.com.
+ * which aren't accessible from the browser when accessed via langmart.ai.
  *
  * Converts to relative paths so they route through the current origin.
- * On xeenhub.com/langmart.ai, the main web app's Next.js rewrites proxy
+ * On langmart.ai, the main web app's Next.js rewrites proxy
  * /api/tier-agent/* to Gateway Type 1, keeping the iframe same-origin.
  */
 function normalizeConsoleUrl(url: string): string {
@@ -1270,7 +1270,7 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
 export interface HybridClientOptions {
   /** Base URL for local tier-agent API (e.g., http://localhost:3100) */
   localBaseUrl: string;
-  /** Base URL for hub API (e.g., http://localhost:8081 or https://api.xeenhub.com) */
+  /** Base URL for hub API (e.g., http://localhost:8081 or https://api.langmart.ai) */
   hubBaseUrl: string;
   /** Gateway ID of the local machine (from hub registration) */
   localGatewayId: string;
@@ -1589,8 +1589,8 @@ export function detectAppMode(): { mode: AppMode; baseUrl: string } {
 
   const hostname = window.location.hostname;
 
-  // Hub mode: running on langmart.ai or xeenhub.com (includes proxy mode)
-  if (hostname.includes('langmart.ai') || hostname.includes('xeenhub.com')) {
+  // Hub mode: running on langmart.ai (includes proxy mode)
+  if (hostname.includes('langmart.ai')) {
     return { mode: 'hub', baseUrl: '' }; // Same origin
   }
 
@@ -1601,7 +1601,7 @@ export function detectAppMode(): { mode: AppMode; baseUrl: string } {
 }
 
 /**
- * Detect whether the app is running through the xeenhub web proxy.
+ * Detect whether the app is running through the hub web proxy.
  *
  * Proxy mode is detected by checking the URL path for the proxy pattern:
  *   /w/:machineId/assist/...
@@ -2069,7 +2069,7 @@ function extractProjectName(projectPath: string): string {
 /**
  * Fetch the authenticated user's info from the hub's web proxy.
  *
- * When proxied through xeenhub.com or langmart.ai, the web-proxy
+ * When proxied through langmart.ai, the web-proxy
  * already authenticates the user via proxy-access-token cookie.
  * The /__hub_user__ endpoint returns user info directly from the
  * database using the authenticated userId — no API key needed.

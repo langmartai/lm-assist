@@ -2,18 +2,50 @@
 
 A web UI and knowledge engine for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Browse your sessions from any device on your network, get deep insights into every conversation, and auto-build a knowledge base that makes Claude Code smarter over time.
 
+---
+
 ## Three Core Features
 
 ### 1. Access Your Sessions From Anywhere
 
-lm-assist runs a web server on your local network. Open any browser on any device — laptop, tablet, phone — and browse all your Claude Code sessions in real time. No more being locked to the terminal where the session started.
+lm-assist runs a web server on your local network. Open any browser on any device — laptop, tablet, phone — and browse all your Claude Code sessions in real time.
 
-<!-- Screenshot: Session browser showing list of sessions -->
-> *Screenshot: Session Browser — coming soon*
+<a href="docs/screenshots/session-browser.png"><img src="docs/screenshots/preview/session-browser.png" alt="Session Browser" width="700"></a>
+
+> *Session Browser — view all your Claude Code sessions in one place*
+
+Connect a live terminal to any running session directly from the web:
+
+<a href="docs/screenshots/session-terminal.png"><img src="docs/screenshots/preview/session-terminal.png" alt="Web Terminal" width="700"></a>
+
+> *Web Terminal — connect to running Claude Code sessions from your browser*
 
 ### 2. Deep Insight Views
 
-Every Claude Code session gets a full breakdown across **15 specialized tabs**:
+Every session gets a full breakdown across **15 specialized tabs** — Chat, Thinking, Agents, Tasks, Plans, Team, DAG, Files, Git, Console, Milestones, Summary, Meta, JSON, and DB.
+
+<a href="docs/screenshots/session-detail-chat.png"><img src="docs/screenshots/preview/session-detail-chat.png" alt="Session Detail — Chat" width="700"></a>
+
+> *Chat tab — full conversation with syntax-highlighted code blocks*
+
+<a href="docs/screenshots/agent-tree.png"><img src="docs/screenshots/preview/agent-tree.png" alt="Agent Tree" width="700"></a>
+
+> *Agents tab — subagent tree showing Explore, Plan, Bash, and custom agents*
+
+<a href="docs/screenshots/plan-view.png"><img src="docs/screenshots/preview/plan-view.png" alt="Plan View" width="700"></a>
+
+> *Plans tab — plan mode entries with structured implementation steps*
+
+<a href="docs/screenshots/team-view.png"><img src="docs/screenshots/preview/team-view.png" alt="Team View" width="700"></a>
+
+> *Team tab — multi-agent coordination timeline (Opus 4.6 swarm)*
+
+<a href="docs/screenshots/task-kanban.png"><img src="docs/screenshots/preview/task-kanban.png" alt="Task Kanban" width="700"></a>
+
+> *Task Dashboard — kanban board aggregating tasks across all sessions*
+
+<details>
+<summary><strong>All 15 tabs at a glance</strong></summary>
 
 | Tab | What You See |
 |-----|-------------|
@@ -33,48 +65,35 @@ Every Claude Code session gets a full breakdown across **15 specialized tabs**:
 | **JSON** | Raw session JSONL data |
 | **DB** | Internal cache and index data |
 
-Plus dedicated dashboards for:
-- **Session Dashboard** — real-time session monitoring with terminal access
-- **Process Dashboard** — all running Claude Code processes
-- **Task Dashboard** — aggregated tasks across all sessions
-- **Search** — full-text search across all sessions and knowledge
-
-<!-- Screenshot: Session detail view showing Chat tab -->
-> *Screenshot: Session Detail — Chat tab — coming soon*
-
-<!-- Screenshot: Session detail view showing Thinking tab -->
-> *Screenshot: Session Detail — Thinking tab — coming soon*
-
-<!-- Screenshot: Session detail view showing Agents tab -->
-> *Screenshot: Session Detail — Agents tab — coming soon*
-
-<!-- Screenshot: Session detail view showing DAG tab -->
-> *Screenshot: Session Detail — DAG tab — coming soon*
-
-<!-- Screenshot: Session detail view showing Team tab -->
-> *Screenshot: Session Detail — Team tab — coming soon*
-
-<!-- Screenshot: Task dashboard -->
-> *Screenshot: Task Dashboard — coming soon*
+</details>
 
 ### 3. Auto-Built Knowledge Base
 
-lm-assist automatically generates knowledge entries from your Claude Code sessions. This knowledge is then injected back into future prompts — giving Claude Code memory of what you've worked on before.
+lm-assist automatically generates knowledge from your Claude Code sessions, then injects it back into future prompts — giving Claude Code memory of what you've worked on before.
+
+<a href="docs/screenshots/knowledge-base.png"><img src="docs/screenshots/preview/knowledge-base.png" alt="Knowledge Base" width="700"></a>
+
+> *Knowledge Base — auto-generated entries from your sessions, searchable and editable*
 
 **How it works:**
-1. **Generate** — lm-assist analyzes your sessions and extracts reusable knowledge (patterns, decisions, architecture, debugging insights)
-2. **Search** — Knowledge is indexed with BM25 + vector similarity for fast, relevant retrieval
-3. **Inject** — On every prompt, the context-injection hook finds the most relevant knowledge entries and injects them as context — Claude Code sees them before processing your prompt
-4. **MCP tools** — Claude Code can also actively search and retrieve knowledge using the `search`, `detail`, and `feedback` MCP tools
+1. **Generate** — Analyzes your sessions and extracts reusable knowledge (patterns, decisions, architecture, debugging insights)
+2. **Search** — Indexed with BM25 + vector similarity for fast retrieval
+3. **Inject** — On every prompt, the context-injection hook finds relevant knowledge and injects it as context
+4. **MCP tools** — Claude Code can also actively search and retrieve knowledge using `search`, `detail`, and `feedback` tools
 
-<!-- Screenshot: Knowledge page -->
-> *Screenshot: Knowledge Base — coming soon*
+<a href="docs/screenshots/context-hook-logs.png"><img src="docs/screenshots/preview/context-hook-logs.png" alt="Context Hook Logs" width="700"></a>
 
-<!-- Screenshot: Architecture page -->
-> *Screenshot: Architecture Model — coming soon*
+> *Context Injection — hook logs showing knowledge injected into each prompt*
 
-<!-- Screenshot: Settings page -->
-> *Screenshot: Settings — coming soon*
+<a href="docs/screenshots/mcp-tool-logs.png"><img src="docs/screenshots/preview/mcp-tool-logs.png" alt="MCP Tool Logs" width="700"></a>
+
+> *MCP Monitor — Claude Code actively searching the knowledge base*
+
+### Settings
+
+<a href="docs/screenshots/settings.png"><img src="docs/screenshots/preview/settings.png" alt="Settings" width="700"></a>
+
+> *Settings — cloud sign-in, LAN access, connection status, and more*
 
 ---
 
@@ -222,6 +241,7 @@ lm-assist/
 ├── web/                     ← Web UI (Next.js, React 19)
 ├── commands/                ← Slash command definitions
 ├── hooks/                   ← Plugin hook registration
+├── docs/screenshots/        ← Product screenshots
 ├── .claude-plugin/          ← Claude Code plugin metadata
 ├── .mcp.json                ← MCP server auto-registration
 ├── core.sh                  ← Service manager

@@ -32,7 +32,7 @@ function writeConfig(config: AssistConfig): void {
  *
  * Used by the lan-blocked page to authenticate LAN users via Cloud OAuth.
  * The flow:
- * 1. User on LAN opens OAuth popup on xeenhub.com (mode=verify)
+ * 1. User on LAN opens OAuth popup on langmart.ai (mode=verify)
  * 2. Popup sends user's API key via postMessage
  * 3. This endpoint validates the key against the gateway to get user identity
  * 4. Compares with the device-bound user (from tier-agent's hub connection)

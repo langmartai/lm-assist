@@ -3,8 +3,8 @@ import { NextRequest, NextResponse } from 'next/server';
 /**
  * Server-side proxy for hub user info.
  *
- * The assistant app runs on xeenhub.com (or langmart.ai) via proxy,
- * but the auth API is on api.xeenhub.com (or api.langmart.ai) — a different
+ * The assistant app runs on langmart.ai via proxy,
+ * but the auth API is on api.langmart.ai — a different
  * subdomain/origin. Browsers block cross-origin requests (CORS).
  *
  * This API route runs server-side, bypassing CORS restrictions.

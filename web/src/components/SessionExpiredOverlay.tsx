@@ -4,11 +4,11 @@ import { useEffect, useState, useCallback } from 'react';
 import { useAppMode } from '@/contexts/AppModeContext';
 
 const REDIRECT_DELAY_SECONDS = 5;
-const REDIRECT_URL = 'https://xeenhub.com';
+const REDIRECT_URL = 'https://langmart.ai';
 
 /**
  * Full-screen overlay shown when the proxy session cookie expires.
- * Displays a countdown timer and redirects to xeenhub.com to re-authenticate.
+ * Displays a countdown timer and redirects to langmart.ai to re-authenticate.
  */
 export function SessionExpiredOverlay() {
   const { proxySessionExpired, proxy } = useAppMode();

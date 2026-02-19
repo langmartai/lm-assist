@@ -89,9 +89,7 @@ export function TopBar() {
 
   const isCloud = proxy.isProxied;
   const gatewayId = proxy.machineId || localGatewayId;
-  const hubName = typeof window !== 'undefined' && window.location.hostname.includes('langmart')
-    ? 'langmart.ai'
-    : 'xeenhub.com';
+  const hubName = 'langmart.ai';
   const currentPage = pathname.replace(proxy.basePath, '') || '/session-dashboard';
   const cloudUrl = gatewayId ? `https://${hubName}/w/${gatewayId}/assist${currentPage}` : null;
   const localHost = localIp && localIp !== 'localhost' ? localIp : 'localhost';

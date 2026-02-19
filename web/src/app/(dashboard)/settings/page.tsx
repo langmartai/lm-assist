@@ -172,12 +172,8 @@ interface StatuslineStatus {
 
 /** Dev uses local WS, prod uses wss via Cloudflare */
 function getDefaultHubUrl(): string {
-  if (typeof window === 'undefined') return 'wss://api.xeenhub.com';
-  const host = window.location.hostname;
-  if (host.includes('langmart')) return 'wss://api.langmart.ai';
-  if (host.includes('xeenhub')) return 'wss://api.xeenhub.com';
-  // localhost → local dev
-  return 'wss://api.xeenhub.com';
+  if (typeof window === 'undefined') return 'wss://api.langmart.ai';
+  return 'wss://api.langmart.ai';
 }
 
 // ============================================
@@ -360,11 +356,10 @@ export default function SettingsPage() {
   // Listen for postMessage from Cloud OAuth popup
   useEffect(() => {
     const handler = async (event: MessageEvent) => {
-      // Validate origin: must be exactly xeenhub.com or langmart.ai (not a subdomain spoof)
+      // Validate origin: must be exactly langmart.ai (not a subdomain spoof)
       let originHost: string;
       try { originHost = new URL(event.origin).hostname; } catch { return; }
-      const isValid = originHost === 'xeenhub.com' || originHost === 'www.xeenhub.com'
-        || originHost === 'langmart.ai' || originHost === 'www.langmart.ai';
+      const isValid = originHost === 'langmart.ai' || originHost === 'www.langmart.ai';
       if (!isValid) return;
       if (event.data?.type !== 'langmart-assist-connect') return;
       const receivedKey = event.data.apiKey;
@@ -411,11 +406,9 @@ export default function SettingsPage() {
 
   // Open Cloud OAuth popup
   const handleCloudSignIn = useCallback(() => {
-    const host = window.location.hostname;
-    const hub = host.includes('langmart') ? 'langmart.ai' : 'xeenhub.com';
     const origin = encodeURIComponent(window.location.origin);
     window.open(
-      `https://${hub}/assist-connect?origin=${origin}`,
+      `https://langmart.ai/assist-connect?origin=${origin}`,
       'langmart-connect',
       'width=460,height=560,left=200,top=100',
     );
@@ -1202,9 +1195,7 @@ export default function SettingsPage() {
   if (!mounted) return null;
 
   const isProxied = proxy.isProxied;
-  const hubName = typeof window !== 'undefined' && window.location.hostname.includes('langmart')
-    ? 'langmart.ai'
-    : 'xeenhub.com';
+  const hubName = 'langmart.ai';
 
   const isHubConnected = hubStatus?.connected ?? localStatus?.hubConnected ?? false;
   const isAuthenticated = hubStatus?.authenticated ?? localStatus?.hubAuthenticated ?? false;
