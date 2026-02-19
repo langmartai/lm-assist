@@ -200,10 +200,9 @@ lm-assist runs two services:
 
 ## Configuration
 
-Copy `.env.example` to `.env` and configure:
+No API key is needed — lm-assist works entirely with your local Claude Code session data. Optionally copy `.env.example` to `.env` to customize ports:
 
 ```bash
-ANTHROPIC_API_KEY=your-key       # Required for knowledge generation
 API_PORT=3100                    # Core API port (default: 3100)
 WEB_PORT=3848                    # Web UI port (default: 3848)
 ```
@@ -233,7 +232,6 @@ lm-assist/
 
 - Node.js >= 18
 - Claude Code (for slash commands and MCP integration)
-- Anthropic API key (for knowledge generation)
 
 ## License
 
