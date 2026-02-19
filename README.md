@@ -1,18 +1,82 @@
 # lm-assist
 
-Session knowledge, milestones, and architecture context for [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+A web UI and knowledge engine for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Browse your sessions from any device on your network, get deep insights into every conversation, and auto-build a knowledge base that makes Claude Code smarter over time.
 
-lm-assist runs alongside Claude Code to build a searchable knowledge base from your coding sessions. It extracts milestones, generates architecture models, and injects relevant context back into new sessions — so Claude Code remembers what you've worked on before.
+## Three Core Features
 
-## Features
+### 1. Access Your Sessions From Anywhere
 
-- **Knowledge Base** — Automatically generated knowledge entries from your Claude Code sessions, searchable via BM25 + vector similarity
-- **Milestones** — Key achievements extracted from sessions with LLM-powered summaries
-- **Architecture Models** — Auto-generated project architecture documentation from your codebase and session history
-- **MCP Server** — 3 tools (`search`, `detail`, `feedback`) available directly inside Claude Code
-- **Context Injection** — Hook that injects relevant knowledge/milestones into each Claude Code prompt
-- **Web UI** — Dashboard for browsing sessions, knowledge, tasks, architecture, and terminal access
-- **Slash Commands** — 6 commands for managing lm-assist from within Claude Code
+lm-assist runs a web server on your local network. Open any browser on any device — laptop, tablet, phone — and browse all your Claude Code sessions in real time. No more being locked to the terminal where the session started.
+
+<!-- Screenshot: Session browser showing list of sessions -->
+> *Screenshot: Session Browser — coming soon*
+
+### 2. Deep Insight Views
+
+Every Claude Code session gets a full breakdown across **15 specialized tabs**:
+
+| Tab | What You See |
+|-----|-------------|
+| **Chat** | Full conversation with syntax-highlighted code blocks |
+| **Thinking** | Claude's extended thinking / chain-of-thought |
+| **Agents** | Subagent tree — Explore, Plan, Bash, and custom agents |
+| **Tasks** | Todo lists created during the session |
+| **Plans** | Plan mode entries with approval status |
+| **Team** | Team/swarm coordination (Opus 4.6 multi-agent) |
+| **DAG** | Message dependency graph with branch visualization |
+| **Files** | All files read, written, or edited during the session |
+| **Git** | Commits, pushes, and diffs from the session |
+| **Console** | Terminal output and process management |
+| **Milestones** | Key achievements extracted from the session |
+| **Summary** | AI-generated session summary |
+| **Meta** | Session metadata — timing, model, token usage |
+| **JSON** | Raw session JSONL data |
+| **DB** | Internal cache and index data |
+
+Plus dedicated dashboards for:
+- **Session Dashboard** — real-time session monitoring with terminal access
+- **Process Dashboard** — all running Claude Code processes
+- **Task Dashboard** — aggregated tasks across all sessions
+- **Search** — full-text search across all sessions and knowledge
+
+<!-- Screenshot: Session detail view showing Chat tab -->
+> *Screenshot: Session Detail — Chat tab — coming soon*
+
+<!-- Screenshot: Session detail view showing Thinking tab -->
+> *Screenshot: Session Detail — Thinking tab — coming soon*
+
+<!-- Screenshot: Session detail view showing Agents tab -->
+> *Screenshot: Session Detail — Agents tab — coming soon*
+
+<!-- Screenshot: Session detail view showing DAG tab -->
+> *Screenshot: Session Detail — DAG tab — coming soon*
+
+<!-- Screenshot: Session detail view showing Team tab -->
+> *Screenshot: Session Detail — Team tab — coming soon*
+
+<!-- Screenshot: Task dashboard -->
+> *Screenshot: Task Dashboard — coming soon*
+
+### 3. Auto-Built Knowledge Base
+
+lm-assist automatically generates knowledge entries from your Claude Code sessions. This knowledge is then injected back into future prompts — giving Claude Code memory of what you've worked on before.
+
+**How it works:**
+1. **Generate** — lm-assist analyzes your sessions and extracts reusable knowledge (patterns, decisions, architecture, debugging insights)
+2. **Search** — Knowledge is indexed with BM25 + vector similarity for fast, relevant retrieval
+3. **Inject** — On every prompt, the context-injection hook finds the most relevant knowledge entries and injects them as context — Claude Code sees them before processing your prompt
+4. **MCP tools** — Claude Code can also actively search and retrieve knowledge using the `search`, `detail`, and `feedback` MCP tools
+
+<!-- Screenshot: Knowledge page -->
+> *Screenshot: Knowledge Base — coming soon*
+
+<!-- Screenshot: Architecture page -->
+> *Screenshot: Architecture Model — coming soon*
+
+<!-- Screenshot: Settings page -->
+> *Screenshot: Settings — coming soon*
+
+---
 
 ## Install
 
@@ -40,8 +104,8 @@ claude plugin install lm-assist@langmartai
 
 This automatically registers:
 - **MCP server** — `search`, `detail`, `feedback` tools available in Claude Code
-- **Hooks** — context injection (injects relevant knowledge into each prompt) and event logger
-- **Slash commands** — 6 commands for managing lm-assist (see below)
+- **Context hook** — injects relevant knowledge into each prompt
+- **Slash commands** — 6 commands for managing lm-assist
 
 Then clone, build, and start the services:
 
@@ -81,12 +145,9 @@ lm-assist start
 | Component | Auto-installed by plugin | Purpose |
 |-----------|-------------------------|---------|
 | MCP server | Yes | `search`, `detail`, `feedback` tools in Claude Code |
-| Context hook | Yes | Injects relevant knowledge into each prompt (logs to `~/.lm-assist/logs/context-inject-hook.log`) |
-| Event logger | Yes | Logs Claude Code hook events to `~/.claude/hook-events.jsonl` |
+| Context hook | Yes | Injects relevant knowledge into each prompt |
 | Slash commands | Yes | 6 `/assist-*` commands |
 | Statusline | No (optional) | Git branch, context %, process stats in status bar |
-
-MCP tool calls are logged separately to `~/.lm-assist/logs/mcp-calls.jsonl`. View logs with `/assist-logs` (context hook) and `/assist-mcp-logs` (MCP calls).
 
 The statusline is optional — install via `/assist-setup --statusline` or the web UI settings page.
 
@@ -97,8 +158,8 @@ Use these from within any Claude Code session:
 | Command | Description |
 |---------|-------------|
 | `/assist` | Open the web UI in your browser |
-| `/assist-status` | Show status of all components (API, web, MCP, hooks, hub, knowledge) |
-| `/assist-setup` | Start services and verify integrations (statusline optional via `--statusline`) |
+| `/assist-status` | Show status of all components |
+| `/assist-setup` | Start services and verify integrations |
 | `/assist-search <query>` | Search the knowledge base |
 | `/assist-logs` | View context-inject hook logs |
 | `/assist-mcp-logs` | View MCP tool call logs |
@@ -110,17 +171,13 @@ The MCP server (`lm-assist-context`) provides 3 tools that Claude Code can use d
 | Tool | Description |
 |------|-------------|
 | `search` | Unified search across knowledge, milestones, architecture, and file history |
-| `detail` | Progressive disclosure — expand any item by ID (e.g., `K001`, `sessionId:index`, `arch:component`) |
+| `detail` | Progressive disclosure — expand any item by ID (e.g., `K001`, `arch:component`) |
 | `feedback` | Flag context as outdated, wrong, irrelevant, or useful |
 
 When installed as a plugin, the MCP server is registered automatically. For non-plugin installs:
 
 ```bash
-# Via the API (requires services running)
 curl -X POST http://localhost:3100/claude-code/mcp/install
-
-# Or via Claude CLI directly
-claude mcp add -s user lm-assist-context -- node /path/to/lm-assist/core/dist/mcp-server/index.js
 ```
 
 ## Services
@@ -130,9 +187,7 @@ lm-assist runs two services:
 | Service | Port | Description |
 |---------|------|-------------|
 | Core API | 3100 | REST API — sessions, knowledge, milestones, architecture, tasks |
-| Web UI | 3848 | Next.js dashboard |
-
-Manage with `./core.sh` (or `lm-assist` CLI if installed via npm):
+| Web UI | 3848 | Next.js dashboard — accessible from any device on your network |
 
 ```bash
 ./core.sh start        # Start both services
@@ -148,34 +203,10 @@ Manage with `./core.sh` (or `lm-assist` CLI if installed via npm):
 Copy `.env.example` to `.env` and configure:
 
 ```bash
-ANTHROPIC_API_KEY=your-key       # Required for knowledge generation and architecture
+ANTHROPIC_API_KEY=your-key       # Required for knowledge generation
 API_PORT=3100                    # Core API port (default: 3100)
 WEB_PORT=3848                    # Web UI port (default: 3848)
 ```
-
-## Claude Code Integrations
-
-When installed as a plugin, the MCP server and hooks are auto-registered. The statusline is optional.
-
-| Integration | Auto-installed | What It Does | Log File |
-|-------------|----------------|--------------|----------|
-| **MCP Server** | Yes (plugin) | `search`, `detail`, `feedback` tools | `~/.lm-assist/logs/mcp-calls.jsonl` |
-| **Context Hook** | Yes (plugin) | Injects knowledge/milestones on each prompt | `~/.lm-assist/logs/context-inject-hook.log` |
-| **Event Logger** | Yes (plugin) | Logs hook events (SessionStart, PreToolUse, etc.) | `~/.claude/hook-events.jsonl` |
-| **Statusline** | No (optional) | Git branch, context %, process stats in status bar | — |
-
-Install the statusline via `/assist-setup --statusline` or the web UI settings page.
-
-## Web UI Pages
-
-| Page | Description |
-|------|-------------|
-| Sessions | Browse and search Claude Code sessions with conversation view |
-| Knowledge | View, search, and generate knowledge entries |
-| Architecture | Auto-generated project architecture models |
-| Tasks | Task lists from Claude Code sessions |
-| Terminal | Web-based terminal access for session processes |
-| Settings | Manage Claude Code integrations (MCP, hooks, statusline) |
 
 ## Project Structure
 
@@ -184,14 +215,14 @@ lm-assist/
 ├── core/                    ← Backend API (TypeScript)
 │   ├── src/
 │   │   ├── mcp-server/      ← MCP server (search, detail, feedback tools)
-│   │   ├── routes/core/     ← REST API routes
+│   │   ├── routes/core/     ← REST API routes (155 endpoints)
 │   │   ├── knowledge/       ← Knowledge generation pipeline
 │   │   ├── milestone/       ← Milestone extraction pipeline
 │   │   └── vector/          ← Embeddings + vector store
 │   └── hooks/               ← Claude Code hook scripts
-├── web/                     ← Web UI (Next.js)
+├── web/                     ← Web UI (Next.js, React 19)
 ├── commands/                ← Slash command definitions
-├── hooks/                   ← Plugin hook registration (hooks.json)
+├── hooks/                   ← Plugin hook registration
 ├── .claude-plugin/          ← Claude Code plugin metadata
 ├── .mcp.json                ← MCP server auto-registration
 ├── core.sh                  ← Service manager
@@ -202,7 +233,7 @@ lm-assist/
 
 - Node.js >= 18
 - Claude Code (for slash commands and MCP integration)
-- Anthropic API key (for knowledge generation and architecture)
+- Anthropic API key (for knowledge generation)
 
 ## License
 
