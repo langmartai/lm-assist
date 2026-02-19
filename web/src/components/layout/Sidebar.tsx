@@ -2,7 +2,6 @@
 
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
-import Image from 'next/image';
 import {
   Monitor,
   FolderOpen,
@@ -48,7 +47,7 @@ export function Sidebar() {
     <nav className="sidebar">
       {/* Logo */}
       <div className="sidebar-item" style={{ marginBottom: 8 }}>
-        <Image
+        <img
           src="/langmart-assist-icon.svg"
           alt="LangMart Assist"
           width={32}
