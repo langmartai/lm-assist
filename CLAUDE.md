@@ -196,29 +196,32 @@ Connects to LangMart Hub for remote API relay, console relay, and session sync. 
 
 ## Hook Scripts (`core/hooks/`)
 
-| Script | Description |
-|--------|-------------|
-| `statusline-worktree.sh` | Claude Code status line showing git branch, session info |
-| `context-inject-hook.sh` | Injects relevant knowledge/milestones into Claude Code context |
-| `hook-event-logger.sh` | Logs all Claude Code hook events to `~/.claude/hook-events.jsonl` |
-| `hook-lib.sh` | Shared library for hook scripts |
-| `install-hook-logger.sh` | Installer for the hook event logger |
+| Script | Platform | Description |
+|--------|----------|-------------|
+| `context-inject-hook.js` | All (Node.js) | Cross-platform context injection hook (Windows, macOS, Linux) |
+| `context-inject-hook.sh` | Linux/macOS | Legacy bash context injection hook |
+| `statusline-worktree.sh` | Linux/macOS | Claude Code status line showing git branch, session info |
+| `hook-event-logger.sh` | Linux/macOS | Logs all Claude Code hook events to `~/.claude/hook-events.jsonl` |
+| `hook-lib.sh` | Linux/macOS | Shared library for bash hook scripts |
+| `install-hook-logger.sh` | Linux/macOS | Installer for the event logger (optional, not installed by plugin) |
 
-Install hooks via: `./core/hooks/install-hook-logger.sh`
+The **context-inject hook** is the primary hook. It uses Node.js for cross-platform support.
+The **event logger** is optional and can be installed manually: `./core/hooks/install-hook-logger.sh`
 
 ## Plugin / Slash Commands
 
 lm-assist is packaged as a Claude Code plugin. On `claude plugin install .`, the plugin auto-registers:
 - **MCP server** (`lm-assist-context`) — search, detail, feedback tools
-- **Hooks** — context injection (UserPromptSubmit) and event logger (SessionStart, PreToolUse, PostToolUse, Stop)
+- **Hook** — context injection (UserPromptSubmit) via cross-platform Node.js script
 - **Slash commands** — 6 commands for managing lm-assist
 
-The **statusline** is optional and not auto-installed by the plugin.
+The **statusline** and **event logger** are optional and not auto-installed by the plugin.
+Install event logger manually from the settings page or via `./core/hooks/install-hook-logger.sh`.
 
 **Plugin structure:**
 - `.claude-plugin/plugin.json` — Plugin metadata
 - `.mcp.json` — MCP server auto-registration
-- `hooks/hooks.json` — Hook auto-registration (context inject + event logger)
+- `hooks/hooks.json` — Hook auto-registration (context-inject only)
 - `commands/` — Slash command definitions
 
 **Slash commands:**

@@ -28,7 +28,12 @@ import * as os from 'os';
 const CLAUDE_CODE_CONFIG_FILE = path.join(os.homedir(), '.claude-code-config.json');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.json');
 const STATUSLINE_SCRIPT = path.resolve(__dirname, '../../../hooks/statusline-worktree.sh');
-const CONTEXT_INJECT_SCRIPT = path.resolve(__dirname, '../../../hooks/context-inject-hook.sh');
+// Cross-platform hook: Node.js script (works on Windows, macOS, Linux)
+const CONTEXT_INJECT_SCRIPT_JS = path.resolve(__dirname, '../../../hooks/context-inject-hook.js');
+// Legacy bash-only hook (kept for backward compatibility detection)
+const CONTEXT_INJECT_SCRIPT_SH = path.resolve(__dirname, '../../../hooks/context-inject-hook.sh');
+// The install command uses `node <script>` for cross-platform support
+const CONTEXT_INJECT_COMMAND = `node "${CONTEXT_INJECT_SCRIPT_JS}"`;
 
 interface ClaudeCodeConfig {
   skipDangerPermission: boolean;
@@ -442,14 +447,18 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
         const settings = readClaudeSettings();
         const hooks = settings.hooks || {};
         const userPromptHooks: any[] = hooks.UserPromptSubmit || [];
+        // Detect both legacy .sh and cross-platform .js versions
         const installed = userPromptHooks.some((entry: any) =>
           (entry.hooks || []).some((h: any) =>
-            typeof h.command === 'string' && h.command.includes('context-inject-hook.sh')
+            typeof h.command === 'string' && (
+              h.command.includes('context-inject-hook.sh') ||
+              h.command.includes('context-inject-hook.js')
+            )
           )
         );
         return {
           success: true,
-          data: { installed, scriptPath: CONTEXT_INJECT_SCRIPT },
+          data: { installed, scriptPath: CONTEXT_INJECT_SCRIPT_JS, command: CONTEXT_INJECT_COMMAND },
         };
       },
     },
@@ -461,26 +470,52 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async () => {
         const settings = readClaudeSettings();
         if (!settings.hooks) settings.hooks = {};
-        const existingHooks: any[] = settings.hooks.UserPromptSubmit || [];
+        let existingHooks: any[] = settings.hooks.UserPromptSubmit || [];
 
-        // Check if already installed to avoid duplicates
+        // Check if already installed (either .sh or .js version) to avoid duplicates
         const alreadyInstalled = existingHooks.some((entry: any) =>
           (entry.hooks || []).some((h: any) =>
-            typeof h.command === 'string' && h.command.includes('context-inject-hook.sh')
+            typeof h.command === 'string' && (
+              h.command.includes('context-inject-hook.sh') ||
+              h.command.includes('context-inject-hook.js')
+            )
           )
         );
 
         if (!alreadyInstalled) {
+          // Install cross-platform Node.js hook
           existingHooks.push({
-            hooks: [{ type: 'command', command: CONTEXT_INJECT_SCRIPT, timeout: 10 }],
+            hooks: [{ type: 'command', command: CONTEXT_INJECT_COMMAND, timeout: 10 }],
           });
           settings.hooks.UserPromptSubmit = existingHooks;
           writeClaudeSettings(settings);
+        } else {
+          // Upgrade legacy .sh to cross-platform .js if needed
+          const hasLegacySh = existingHooks.some((entry: any) =>
+            (entry.hooks || []).some((h: any) =>
+              typeof h.command === 'string' &&
+              h.command.includes('context-inject-hook.sh') &&
+              !h.command.includes('context-inject-hook.js')
+            )
+          );
+          if (hasLegacySh) {
+            existingHooks = existingHooks.map((entry: any) => ({
+              ...entry,
+              hooks: (entry.hooks || []).map((h: any) => {
+                if (typeof h.command === 'string' && h.command.includes('context-inject-hook.sh')) {
+                  return { ...h, command: CONTEXT_INJECT_COMMAND };
+                }
+                return h;
+              }),
+            }));
+            settings.hooks.UserPromptSubmit = existingHooks;
+            writeClaudeSettings(settings);
+          }
         }
 
         return {
           success: true,
-          data: { installed: true, scriptPath: CONTEXT_INJECT_SCRIPT },
+          data: { installed: true, scriptPath: CONTEXT_INJECT_SCRIPT_JS, command: CONTEXT_INJECT_COMMAND },
         };
       },
     },
@@ -495,10 +530,14 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
           return { success: true, data: { installed: false, scriptPath: null } };
         }
 
+        // Remove both legacy .sh and cross-platform .js versions
         settings.hooks.UserPromptSubmit = (settings.hooks.UserPromptSubmit as any[]).map((entry: any) => ({
           ...entry,
           hooks: (entry.hooks || []).filter((h: any) =>
-            !(typeof h.command === 'string' && h.command.includes('context-inject-hook.sh'))
+            !(typeof h.command === 'string' && (
+              h.command.includes('context-inject-hook.sh') ||
+              h.command.includes('context-inject-hook.js')
+            ))
           ),
         })).filter((entry: any) => (entry.hooks || []).length > 0);
 
