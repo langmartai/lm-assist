@@ -81,10 +81,12 @@ lm-assist start
 | Component | Auto-installed by plugin | Purpose |
 |-----------|-------------------------|---------|
 | MCP server | Yes | `search`, `detail`, `feedback` tools in Claude Code |
-| Context hook | Yes | Injects relevant knowledge into each prompt |
-| Event logger | Yes | Logs hook events to `~/.claude/hook-events.jsonl` |
+| Context hook | Yes | Injects relevant knowledge into each prompt (logs to `~/.lm-assist/logs/context-inject-hook.log`) |
+| Event logger | Yes | Logs Claude Code hook events to `~/.claude/hook-events.jsonl` |
 | Slash commands | Yes | 6 `/assist-*` commands |
 | Statusline | No (optional) | Git branch, context %, process stats in status bar |
+
+MCP tool calls are logged separately to `~/.lm-assist/logs/mcp-calls.jsonl`. View logs with `/assist-logs` (context hook) and `/assist-mcp-logs` (MCP calls).
 
 The statusline is optional — install via `/assist-setup --statusline` or the web UI settings page.
 
@@ -155,12 +157,12 @@ WEB_PORT=3848                    # Web UI port (default: 3848)
 
 When installed as a plugin, the MCP server and hooks are auto-registered. The statusline is optional.
 
-| Integration | Auto-installed | What It Does |
-|-------------|----------------|--------------|
-| **MCP Server** | Yes (plugin) | Gives Claude Code the `search`, `detail`, and `feedback` tools |
-| **Context Hook** | Yes (plugin) | Injects relevant knowledge/milestones on each prompt via `UserPromptSubmit` hook |
-| **Event Logger** | Yes (plugin) | Logs all Claude Code hook events to `~/.claude/hook-events.jsonl` |
-| **Statusline** | No (optional) | Shows git branch, session info, context %, and process stats in the status bar |
+| Integration | Auto-installed | What It Does | Log File |
+|-------------|----------------|--------------|----------|
+| **MCP Server** | Yes (plugin) | `search`, `detail`, `feedback` tools | `~/.lm-assist/logs/mcp-calls.jsonl` |
+| **Context Hook** | Yes (plugin) | Injects knowledge/milestones on each prompt | `~/.lm-assist/logs/context-inject-hook.log` |
+| **Event Logger** | Yes (plugin) | Logs hook events (SessionStart, PreToolUse, etc.) | `~/.claude/hook-events.jsonl` |
+| **Statusline** | No (optional) | Git branch, context %, process stats in status bar | — |
 
 Install the statusline via `/assist-setup --statusline` or the web UI settings page.
 
