@@ -113,12 +113,12 @@ This clones the repo, builds, adds the marketplace, and installs the plugin. The
 
 ### Plugin marketplace install
 
-```bash
-# Add the marketplace
-claude plugin marketplace add github:langmartai/lm-assist
+Start a new Claude Code session in the terminal and enter the following commands:
 
-# Install the plugin
-claude plugin install lm-assist@langmartai
+```
+/plugin marketplace add langmartai/lm-assist
+
+/plugin install lm-assist
 ```
 
 This automatically registers:
@@ -143,7 +143,8 @@ cd lm-assist
 npm install && npm run build
 
 # Install as Claude Code plugin (registers MCP, hooks, commands)
-claude plugin install .
+# In a Claude Code session, run:
+# /plugin install .
 
 # Start services
 ./core.sh start

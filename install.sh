@@ -47,7 +47,7 @@ ok "Prerequisites OK (node $(node -v), claude $(claude --version 2>/dev/null | h
 # ─── Step 1: Add marketplace ───
 
 info "Adding langmartai marketplace..."
-if claude plugin marketplace add github:langmartai/lm-assist 2>/dev/null; then
+if claude plugin marketplace add langmartai/lm-assist 2>/dev/null; then
   ok "Marketplace added"
 else
   warn "Marketplace may already be added (continuing)"
@@ -56,7 +56,7 @@ fi
 # ─── Step 2: Install plugin ───
 
 info "Installing lm-assist plugin..."
-if claude plugin install lm-assist@langmartai 2>&1; then
+if claude plugin install lm-assist 2>&1; then
   ok "Plugin installed (MCP server, hooks, slash commands)"
 else
   warn "Plugin install returned non-zero (may already be installed)"
