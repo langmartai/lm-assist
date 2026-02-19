@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "langmartai",
+  "description": "LM Assist — session knowledge, milestones, and architecture context for Claude Code",
+  "owner": {
+    "name": "langmartai"
+  },
+  "metadata": {
+    "description": "Plugins by langmartai",
+    "homepage": "https://github.com/langmartai/lm-assist"
+  },
+  "plugins": [
+    {
+      "name": "lm-assist",
+      "version": "0.1.6",
+      "source": "./",
+      "description": "Session knowledge, milestones, and architecture context for Claude Code. Auto-installs MCP server (search, detail, feedback), context-injection hook, event logger, and 6 slash commands.",
+      "category": "productivity",
+      "homepage": "https://github.com/langmartai/lm-assist"
+    }
+  ]
+}

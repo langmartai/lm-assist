@@ -38,6 +38,7 @@
     ".mcp.json",
     "commands",
     "hooks",
+    "install.sh",
     "LICENSE",
     "README.md",
     ".env.example"

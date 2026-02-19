@@ -14,21 +14,28 @@ lm-assist runs alongside Claude Code to build a searchable knowledge base from y
 - **Web UI** — Dashboard for browsing sessions, knowledge, tasks, architecture, and terminal access
 - **Slash Commands** — 6 commands for managing lm-assist from within Claude Code
 
-## Quick Start
+## Install
 
-### Install as a Claude Code Plugin
+### One-line install
 
 ```bash
-# Clone the repo
-git clone https://github.com/langmartai/lm-assist.git
-cd lm-assist
+curl -fsSL https://raw.githubusercontent.com/langmartai/lm-assist/main/install.sh | bash
+```
 
-# Install dependencies and build
-npm install
-npm run build
+This clones the repo, builds, adds the marketplace, and installs the plugin. Then in Claude Code:
 
-# Install as a Claude Code plugin
-claude plugin install .
+```
+/assist-setup
+```
+
+### Plugin marketplace install
+
+```bash
+# Add the marketplace
+claude plugin marketplace add github:langmartai/lm-assist
+
+# Install the plugin
+claude plugin install lm-assist@langmartai
 ```
 
 This automatically registers:
@@ -36,42 +43,50 @@ This automatically registers:
 - **Hooks** — context injection (injects relevant knowledge into each prompt) and event logger
 - **Slash commands** — 6 commands for managing lm-assist (see below)
 
-Then start the services and verify:
+Then clone, build, and start the services:
 
-```
-/assist-setup
+```bash
+git clone https://github.com/langmartai/lm-assist.git
+cd lm-assist
+npm install && npm run build
+./core.sh start
 ```
 
-The statusline (optional) can be installed via `/assist-setup --statusline` or the web UI settings page.
+### Install from source
+
+```bash
+git clone https://github.com/langmartai/lm-assist.git
+cd lm-assist
+npm install && npm run build
+
+# Install as Claude Code plugin (registers MCP, hooks, commands)
+claude plugin install .
+
+# Start services
+./core.sh start
+```
 
 ### Install via npm
 
 ```bash
 npm install -g lm-assist
-
-# Start the services
 lm-assist start
 
-# Then, in Claude Code, run:
+# Then in Claude Code:
 /assist-setup
 ```
 
-### Manual Setup
+### What gets installed
 
-```bash
-git clone https://github.com/langmartai/lm-assist.git
-cd lm-assist
-npm install
-npm run build
+| Component | Auto-installed by plugin | Purpose |
+|-----------|-------------------------|---------|
+| MCP server | Yes | `search`, `detail`, `feedback` tools in Claude Code |
+| Context hook | Yes | Injects relevant knowledge into each prompt |
+| Event logger | Yes | Logs hook events to `~/.claude/hook-events.jsonl` |
+| Slash commands | Yes | 6 `/assist-*` commands |
+| Statusline | No (optional) | Git branch, context %, process stats in status bar |
 
-# Start API (port 3100) + Web UI (port 3848)
-./core.sh start
-
-# Check status
-./core.sh status
-```
-
-Then open http://localhost:3848 to access the web UI.
+The statusline is optional — install via `/assist-setup --statusline` or the web UI settings page.
 
 ## Slash Commands
 
