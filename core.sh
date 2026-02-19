@@ -274,15 +274,6 @@ build_web() {
     fi
 }
 
-# Function to clean and rebuild
-clean_build() {
-    echo -e "${BLUE}Cleaning build artifacts...${NC}"
-    rm -rf "$CORE_DIR/dist/"
-    rm -rf "$PROJECT_ROOT/node_modules/"
-    echo -e "${GREEN}Cleaned${NC}"
-    build_project
-}
-
 # Function to clean lm-assist data directory (~/.lm-assist)
 clean_data() {
     local auto_confirm=0
@@ -333,11 +324,21 @@ clean_data() {
         fi
     fi
 
-    # Stop services first
+    # Check and stop services if running
     echo ""
-    echo -e "${BLUE}Stopping services...${NC}"
-    stop_all 2>/dev/null || true
-    sleep 1
+    local api_running=false
+    local web_running=false
+    check_port $API_PORT && api_running=true
+    check_port $WEB_PORT && web_running=true
+
+    if [ "$api_running" = true ] || [ "$web_running" = true ]; then
+        echo -e "${BLUE}Stopping running services...${NC}"
+        [ "$web_running" = true ] && stop_web
+        [ "$api_running" = true ] && stop_core
+        sleep 1
+    else
+        echo -e "${GREEN}Services already stopped${NC}"
+    fi
 
     echo -e "${BLUE}Deleting $data_dir...${NC}"
     rm -rf "$data_dir"
@@ -891,7 +892,7 @@ check_status() {
             echo -e "${RED}Core API not running${NC}"
         fi
     else
-        echo -e "${YELLOW}Not configured${NC} (set TIER_AGENT_API_KEY in .env)"
+        echo -e "${YELLOW}Not configured${NC} (use web ${CYAN}http://localhost:3848/settings${NC} to connect to cloud)"
     fi
 
     echo ""
@@ -1087,7 +1088,7 @@ show_menu() {
     echo ""
     echo -e "${CYAN}Build Management:${NC}"
     echo "  10) Build Core (TypeScript)"
-    echo "  11) Clean & Rebuild Core"
+    echo "  11) Clean Data (~/.lm-assist)"
     echo ""
     echo -e "${CYAN}Tools:${NC}"
     echo "  12) View Logs"
@@ -1135,7 +1136,7 @@ handle_menu() {
             build_project
             ;;
         11)
-            clean_build
+            clean_data
             ;;
         12)
             view_logs_menu
@@ -1241,10 +1242,7 @@ case "${1:-}" in
     build)
         build_project
         ;;
-    clean)
-        clean_build
-        ;;
-    clean-data)
+    cleandata)
         clean_data "${@:2}"
         ;;
     test)
@@ -1307,8 +1305,7 @@ case "${1:-}" in
         echo "  restart [service] Restart a service (default: all)"
         echo "  status            Show all service status"
         echo "  build             Build Core (TypeScript)"
-        echo "  clean             Clean and rebuild Core"
-        echo "  clean-data [-y]   Delete all lm-assist data (~/.lm-assist)"
+        echo "  cleandata [-y]    Stop services and delete all lm-assist data (~/.lm-assist)"
         echo "  test              Test API endpoints"
         echo "  logs [service]    View service logs"
         echo "  hub [command]     Hub client management"
@@ -1329,9 +1326,8 @@ case "${1:-}" in
         echo "  $0 restart core        Restart Core API"
         echo "  $0 status              Check status of all services"
         echo "  $0 build               Build Core TypeScript"
-        echo "  $0 clean               Clean and rebuild"
-        echo "  $0 clean-data          Delete all lm-assist data (double confirm)"
-        echo "  $0 clean-data -y       Delete all lm-assist data (auto-confirm)"
+        echo "  $0 cleandata           Delete all lm-assist data (double confirm)"
+        echo "  $0 cleandata -y        Delete all lm-assist data (auto-confirm)"
         echo "  $0 test                Test API endpoints"
         echo "  $0 logs core           View Core API logs"
         echo "  $0 logs web            View Web logs"

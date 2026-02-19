@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { detectAppMode } from '@/lib/api-client';
+import { useExperiment } from '@/hooks/useExperiment';
 import {
   Settings,
   Globe,
@@ -42,13 +43,15 @@ import {
   Zap,
   Wrench,
   Activity,
+  BookOpen,
+  FlaskConical,
 } from 'lucide-react';
 
 // ============================================
 // Types
 // ============================================
 
-type SettingsTab = 'connection' | 'terminal' | 'claude-code' | 'milestones';
+type SettingsTab = 'connection' | 'terminal' | 'claude-code' | 'data-loading' | 'experiment';
 
 interface MilestoneSettingsData {
   enabled: boolean;
@@ -187,10 +190,12 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('settings-active-tab');
-      if (saved === 'connection' || saved === 'terminal' || saved === 'claude-code' || saved === 'milestones') return saved;
+      if (saved === 'connection' || saved === 'terminal' || saved === 'claude-code' || saved === 'data-loading' || saved === 'experiment') return saved;
+      if (saved === 'milestones') return 'experiment'; // migrate old tab name
     }
     return 'connection';
   });
+  const { isExperiment, setExperiment: handleSetExperiment } = useExperiment();
   const handleSetActiveTab = (tab: SettingsTab) => {
     setActiveTab(tab);
     localStorage.setItem('settings-active-tab', tab);
@@ -756,7 +761,7 @@ export default function SettingsPage() {
   }, [tierAgentUrl]);
 
   useEffect(() => {
-    if (!proxy.isProxied && localStatus?.healthy && activeTab === 'milestones') {
+    if (!proxy.isProxied && localStatus?.healthy && (activeTab === 'data-loading' || activeTab === 'experiment')) {
       fetchMilestoneSettings();
     }
   }, [fetchMilestoneSettings, proxy.isProxied, localStatus?.healthy, activeTab]);
@@ -1244,10 +1249,16 @@ export default function SettingsPage() {
           label="Claude Code"
         />
         <TabButton
-          active={activeTab === 'milestones'}
-          onClick={() => handleSetActiveTab('milestones')}
-          icon={<Layers size={13} />}
-          label="Milestones"
+          active={activeTab === 'data-loading'}
+          onClick={() => handleSetActiveTab('data-loading')}
+          icon={<BookOpen size={13} />}
+          label="Data Loading"
+        />
+        <TabButton
+          active={activeTab === 'experiment'}
+          onClick={() => handleSetActiveTab('experiment')}
+          icon={<FlaskConical size={13} />}
+          label="Experiment"
         />
       </div>
 
@@ -2391,6 +2402,7 @@ export default function SettingsPage() {
                             </span>
                           </div>
                         )}
+                        {isExperiment && (<>
                         <div style={{ borderTop: '1px solid var(--color-border)', margin: '0' }} />
                         <ToggleRow
                           label="Include milestones"
@@ -2427,6 +2439,7 @@ export default function SettingsPage() {
                             </span>
                           </div>
                         )}
+                        </>)}
                       </div>
                     ) : (
                       <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
@@ -2468,6 +2481,7 @@ export default function SettingsPage() {
                           checked={claudeCodeConfig.searchIncludeKnowledge !== false}
                           onChange={(v) => handleClaudeCodeConfigChange('searchIncludeKnowledge', v)}
                         />
+                        {isExperiment && (<>
                         <div style={{ borderTop: '1px solid var(--color-border)', margin: '0' }} />
                         <ToggleRow
                           label="Include milestones"
@@ -2475,6 +2489,7 @@ export default function SettingsPage() {
                           checked={claudeCodeConfig.searchIncludeMilestones === true}
                           onChange={(v) => handleClaudeCodeConfigChange('searchIncludeMilestones', v)}
                         />
+                        </>)}
                       </div>
                     ) : (
                       <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
@@ -2728,20 +2743,67 @@ export default function SettingsPage() {
             )}
           </div>
         )}
-        {/* ═══════════════ MILESTONES TAB ═══════════════ */}
-        {activeTab === 'milestones' && (
+        {/* ═══════════════ DATA LOADING / EXPERIMENT TABS ═══════════════ */}
+        {(activeTab === 'data-loading' || activeTab === 'experiment') && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
+            {/* Experiment disclaimer + master toggle — only on experiment tab */}
+            {activeTab === 'experiment' && (
+              <SectionCard title="Experiment Features" icon={FlaskConical}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div style={{
+                    padding: '10px 14px',
+                    borderRadius: 6,
+                    background: 'rgba(251,146,60,0.08)',
+                    border: '1px solid rgba(251,146,60,0.25)',
+                    fontSize: 11,
+                    color: 'var(--color-text-secondary)',
+                    lineHeight: 1.6,
+                  }}>
+                    <div style={{ fontWeight: 600, color: 'rgba(251,146,60,0.9)', marginBottom: 4 }}>⚠ Rabbit Hole Warning</div>
+                    Trying experiment features may cost lots of token usage from your plan and may not achieve ideal results.
+                    It can also downgrade system performance due to background processing overhead.
+                    Unless you know what you are doing, do not enable this.
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input
+                      type="checkbox"
+                      id="experiment-toggle"
+                      checked={isExperiment}
+                      onChange={e => handleSetExperiment(e.target.checked)}
+                      style={{ cursor: 'pointer', width: 14, height: 14 }}
+                    />
+                    <label
+                      htmlFor="experiment-toggle"
+                      style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-text-primary)', cursor: 'pointer', userSelect: 'none' }}
+                    >
+                      Enable experiment features
+                    </label>
+                    {isExperiment && (
+                      <span style={{
+                        fontSize: 10, padding: '1px 6px', borderRadius: 4,
+                        background: 'rgba(251,146,60,0.15)', color: 'rgba(251,146,60,0.9)',
+                        border: '1px solid rgba(251,146,60,0.3)',
+                      }}>ON</span>
+                    )}
+                  </div>
+                  <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', margin: 0, lineHeight: 1.5 }}>
+                    Controls visibility of: Architecture nav, milestone status bar, milestone search filters, and milestone/architecture settings below.
+                  </p>
+                </div>
+              </SectionCard>
+            )}
+
             {isProxied ? (
-              <SectionCard title="Milestone Settings" icon={Layers}>
+              <SectionCard title="Settings" icon={Layers}>
                 <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                  Milestone settings are only available in local mode.
+                  These settings are only available in local mode.
                 </p>
               </SectionCard>
             ) : !localStatus?.healthy ? (
-              <SectionCard title="Milestone Settings" icon={Layers}>
+              <SectionCard title="Settings" icon={Layers}>
                 <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                  Cannot reach tier-agent. Start the server to configure milestones.
+                  Cannot reach tier-agent. Start the server to configure settings.
                 </p>
               </SectionCard>
             ) : isMilestoneLoading ? (
@@ -2767,6 +2829,8 @@ export default function SettingsPage() {
                   </div>
                 )}
 
+                {/* Experiment-only: Milestone Processing, Phase 2 Model, Architecture Model */}
+                {activeTab === 'experiment' && isExperiment && (<>
                 {/* Milestone Processing */}
                 <SectionCard title="Milestone Processing" icon={Activity}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -3127,7 +3191,11 @@ export default function SettingsPage() {
                   </div>
                 </SectionCard>
 
-                {/* Knowledge Processing */}
+                {/* End of experiment-only milestone sections */}
+                </>)}
+
+                {/* Data Loading tab: Knowledge Processing */}
+                {activeTab === 'data-loading' && (
                 <SectionCard title="Knowledge Processing" icon={Code2}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                     {/* Auto Processing Toggle */}
@@ -3247,6 +3315,10 @@ export default function SettingsPage() {
                   </div>
                 </SectionCard>
 
+                )}
+
+                {/* Experiment-only: Excluded Projects + Advanced */}
+                {activeTab === 'experiment' && isExperiment && (<>
                 {/* Excluded Projects */}
                 <SectionCard title="Excluded Projects" icon={Shield}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -3574,11 +3646,12 @@ export default function SettingsPage() {
                     )}
                   </div>
                 )}
+                </>)} {/* End experiment-only: Excluded Projects + Advanced */}
               </>
             ) : (
-              <SectionCard title="Milestone Settings" icon={Layers}>
+              <SectionCard title="Settings" icon={Layers}>
                 <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                  Failed to load milestone settings. Check that the API server is running.
+                  Failed to load settings. Check that the API server is running.
                 </p>
               </SectionCard>
             )}

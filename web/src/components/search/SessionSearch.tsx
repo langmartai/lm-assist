@@ -10,6 +10,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import type { Session, SessionDetail } from '@/lib/types';
+import { useExperiment } from '@/hooks/useExperiment';
 
 type Scope = 'smart' | '24h' | '3d' | '7d' | '30d' | 'all';
 
@@ -155,6 +156,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
   const { selectedMachine } = useMachineContext();
   const machineId = selectedMachine?.id;
   const router = useRouter();
+  const { isExperiment } = useExperiment();
 
   const [query, setQuery] = useState(initialQuery);
   const [directory, setDirectory] = useState(initialDirectory);
@@ -589,29 +591,31 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
           </div>
         )}
 
-        {/* Filter toggle: Knowledge / Milestones / Both */}
-        <div style={{ display: 'flex', gap: 2, borderRight: '1px solid var(--color-border-subtle)', paddingRight: 6, marginRight: 2 }}>
-          {(['both', 'knowledge', 'milestones'] as const).map(f => (
-            <button
-              key={f}
-              onClick={() => setSearchFilter(f)}
-              style={{
-                padding: '4px 8px',
-                fontSize: 10,
-                fontWeight: 500,
-                borderRadius: 'var(--radius-sm)',
-                border: 'none',
-                cursor: 'pointer',
-                background: searchFilter === f ? 'var(--color-accent-glow)' : 'transparent',
-                color: searchFilter === f ? 'var(--color-accent)' : 'var(--color-text-tertiary)',
-                transition: 'all 100ms ease',
-                textTransform: 'capitalize',
-              }}
-            >
-              {f === 'both' ? 'Both' : f === 'knowledge' ? 'Knowledge' : 'Milestones'}
-            </button>
-          ))}
-        </div>
+        {/* Filter toggle: Knowledge / Milestones / Both — only shown in experiment mode */}
+        {isExperiment && (
+          <div style={{ display: 'flex', gap: 2, borderRight: '1px solid var(--color-border-subtle)', paddingRight: 6, marginRight: 2 }}>
+            {(['both', 'knowledge', 'milestones'] as const).map(f => (
+              <button
+                key={f}
+                onClick={() => setSearchFilter(f)}
+                style={{
+                  padding: '4px 8px',
+                  fontSize: 10,
+                  fontWeight: 500,
+                  borderRadius: 'var(--radius-sm)',
+                  border: 'none',
+                  cursor: 'pointer',
+                  background: searchFilter === f ? 'var(--color-accent-glow)' : 'transparent',
+                  color: searchFilter === f ? 'var(--color-accent)' : 'var(--color-text-tertiary)',
+                  transition: 'all 100ms ease',
+                  textTransform: 'capitalize',
+                }}
+              >
+                {f === 'both' ? 'Both' : f === 'knowledge' ? 'Knowledge' : 'Milestones'}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Scope selector */}
         <div style={{ display: 'flex', gap: 2 }}>

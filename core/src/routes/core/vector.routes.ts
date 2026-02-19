@@ -198,6 +198,8 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
             }
 
             // Run delete + embed + insert in background (embedding is slow on CPU)
+            const { setReindexStatus } = require('../../vector/vector-store');
+            setReindexStatus({ type: 'knowledge', status: 'running', vectorsIndexed: 0, startedAt: new Date().toISOString(), completedAt: null });
             (async () => {
               try {
                 const startMs = Date.now();
@@ -210,8 +212,10 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
                   console.log(`[Reindex] Indexed ${allVectors.length} knowledge vectors in ${((Date.now() - embedStart) / 1000).toFixed(1)}s`);
                 }
                 await vectra.rebuildFtsIndex();
+                setReindexStatus({ status: 'done', vectorsIndexed: allVectors.length, completedAt: new Date().toISOString() });
                 console.log(`[Reindex] Knowledge done: ${allVectors.length} vectors in ${((Date.now() - startMs) / 1000).toFixed(1)}s`);
               } catch (err: any) {
+                setReindexStatus({ status: 'error', completedAt: new Date().toISOString() });
                 console.error('[Reindex] Knowledge error:', err.message, err.stack);
               }
             })();
@@ -249,6 +253,8 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
             }
 
             // Run async
+            const { setReindexStatus: setReindexStatusMilestone } = require('../../vector/vector-store');
+            setReindexStatusMilestone({ type: 'milestone', status: 'running', vectorsIndexed: 0, startedAt: new Date().toISOString(), completedAt: null });
             (async () => {
               try {
                 const startMs = Date.now();
@@ -261,8 +267,10 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
                   console.log(`[Reindex] Indexed ${allVectors.length} milestone vectors in ${((Date.now() - embedStart) / 1000).toFixed(1)}s`);
                 }
                 await vectra.rebuildFtsIndex();
+                setReindexStatusMilestone({ status: 'done', vectorsIndexed: allVectors.length, completedAt: new Date().toISOString() });
                 console.log(`[Reindex] Milestones done: ${allVectors.length} vectors in ${((Date.now() - startMs) / 1000).toFixed(1)}s`);
               } catch (err: any) {
+                setReindexStatusMilestone({ status: 'error', completedAt: new Date().toISOString() });
                 console.error('[Reindex] Milestone error:', err.message, err.stack);
               }
             })();
@@ -274,6 +282,20 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
           }
 
           return { success: false, error: `Unsupported type: ${type}. Use 'knowledge' or 'milestone'` };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
+    // GET /vectors/reindex-status — Status of the most recent reindex operation
+    {
+      method: 'GET',
+      pattern: /^\/vectors\/reindex-status$/,
+      handler: async () => {
+        try {
+          const { getReindexStatus } = require('../../vector/vector-store');
+          return { success: true, data: getReindexStatus() };
         } catch (err: any) {
           return { success: false, error: err.message };
         }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import {
   Search,
   RefreshCw,
@@ -131,6 +131,22 @@ function findInTree(node: FileInfo | null, predicate: (f: FileInfo) => boolean):
   return null;
 }
 
+function findInTreeWithAncestors(
+  node: FileInfo | null,
+  predicate: (f: FileInfo) => boolean,
+  ancestors: string[] = [],
+): { node: FileInfo; ancestors: string[] } | null {
+  if (!node) return null;
+  if (predicate(node)) return { node, ancestors };
+  if (node.children) {
+    for (const child of node.children) {
+      const found = findInTreeWithAncestors(child, predicate, [...ancestors, node.path]);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 function countFilesInTree(node: FileInfo | null): number {
   if (!node) return 0;
   if (!node.isDirectory) return 1;
@@ -196,21 +212,23 @@ export function AssistResourcesPage() {
       setExtras(data.extras);
       setTotalSize(data.totalSize);
       setLastActivity(data.lastActivity);
-      if (data.root?.children) {
-        setExpandedDirs(new Set([data.root.path]));
-      }
-      // Auto-select context-inject-hook.log on first load
+      // Auto-select context-inject-hook.log on first load, expanding its parent dirs
       if (!initialSelectionDone.current) {
         initialSelectionDone.current = true;
-        const hookLog = findInTree(data.root, f => f.name === 'context-inject-hook.log');
-        if (hookLog) {
-          setSelectedFile(hookLog);
-          watchedModifiedRef.current = hookLog.modified;
+        const result = findInTreeWithAncestors(data.root, f => f.name === 'context-inject-hook.log');
+        if (result) {
+          setSelectedFile(result.node);
+          setExpandedDirs(new Set([...(data.root?.children ? [data.root.path] : []), ...result.ancestors]));
+          watchedModifiedRef.current = result.node.modified;
           try {
             const logData = await apiFetch<LogResponse>('/assist-resources/log?file=context-inject-hook.log&limit=300');
             setContent(logData);
           } catch { /* ignore */ }
+        } else if (data.root?.children) {
+          setExpandedDirs(new Set([data.root.path]));
         }
+      } else if (data.root?.children) {
+        setExpandedDirs(new Set([data.root.path]));
       }
     } catch (e) {
       setError(String(e));
@@ -800,6 +818,11 @@ function ContentViewer({ content, selectedFile }: { content: FileContentResponse
       );
     }
 
+    // Special rich rendering for context-inject-hook.log
+    if (selectedFile.name === 'context-inject-hook.log') {
+      return <ContextInjectLogViewer entries={logContent.entries.map(String)} />;
+    }
+
     return (
       <div style={{ padding: '4px 0' }}>
         {logContent.entries.length === 0 ? (
@@ -1001,6 +1024,333 @@ function McpCallCard({ entry }: { entry: any }) {
           {JSON.stringify(entry, null, 2)}
         </pre>
       )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Context-Inject Log Viewer
+// ============================================================================
+
+const START_LOG_RE = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] START session=([a-f0-9-]+) port=(\d+) prompt="(.*)"/;
+const END_LOG_RE = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] END session=([a-f0-9-]+) (.+)/;
+
+interface HookBlock {
+  timestamp: string;
+  session: string;
+  port: string;
+  prompt: string;
+  contextLines: string[];
+  endStats?: string;
+  endTimestamp?: string;
+}
+
+function parseHookBlocks(entries: string[]): { blocks: HookBlock[]; orphans: string[] } {
+  const blocks: HookBlock[] = [];
+  const orphans: string[] = [];
+  let current: HookBlock | null = null;
+
+  for (const line of entries) {
+    const startM = line.match(START_LOG_RE);
+    if (startM) {
+      if (current) blocks.push(current);
+      current = { timestamp: startM[1], session: startM[2], port: startM[3], prompt: startM[4], contextLines: [] };
+      continue;
+    }
+    const endM = line.match(END_LOG_RE);
+    if (endM && current) {
+      current.endTimestamp = endM[1];
+      current.endStats = endM[3];
+      blocks.push(current);
+      current = null;
+      continue;
+    }
+    if (current) {
+      current.contextLines.push(line);
+    } else if (line.trim()) {
+      orphans.push(line);
+    }
+  }
+  if (current) blocks.push(current);
+  return { blocks, orphans };
+}
+
+// Render text with clickable [KXXX.X] and [session-uuid:N] links
+function renderWithLinks(text: string) {
+  const LINK_RE = /\[(K\d+(?:\.\d+)?)\]|\[([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(?::(\d+))?\]/g;
+  const matches = Array.from(text.matchAll(LINK_RE));
+  if (matches.length === 0) return <>{text}</>;
+  const parts: ReactNode[] = [];
+  let last = 0;
+
+  for (const m of matches) {
+    const idx = m.index!;
+    if (idx > last) parts.push(text.slice(last, idx));
+    if (m[1]) {
+      const kid = m[1];
+      parts.push(
+        <a
+          key={`k-${idx}`}
+          href={`/knowledge?highlight=${encodeURIComponent(kid)}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            color: '#e67e22',
+            background: 'rgba(230,126,34,0.13)',
+            padding: '0 4px',
+            borderRadius: 3,
+            textDecoration: 'none',
+            fontWeight: 700,
+            fontSize: '0.9em',
+          }}
+        >
+          [{kid}]
+        </a>
+      );
+    } else {
+      const sid = m[2];
+      const lineN = m[3];
+      parts.push(
+        <a
+          key={`s-${idx}`}
+          href={`/sessions/${sid}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            color: '#5dade2',
+            background: 'rgba(93,173,226,0.12)',
+            padding: '0 4px',
+            borderRadius: 3,
+            textDecoration: 'none',
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: '0.85em',
+          }}
+        >
+          [{sid.slice(0, 8)}&hellip;{lineN ? `:${lineN}` : ''}]
+        </a>
+      );
+    }
+    last = idx + m[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return <>{parts}</>;
+}
+
+function ContextContent({ lines }: { lines: string[] }) {
+  if (lines.length === 0) return null;
+  return (
+    <div style={{ padding: '6px 14px 10px' }}>
+      {lines.map((line, i) => {
+        // Section header: ## Relevant Context
+        if (line.startsWith('## ')) {
+          return (
+            <div key={i} style={{
+              fontWeight: 700,
+              fontSize: 10,
+              color: 'var(--color-text-tertiary)',
+              margin: '10px 0 4px',
+              paddingBottom: 3,
+              borderBottom: '1px solid var(--color-border-default)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.07em',
+            }}>
+              {line.replace(/^## /, '')}
+            </div>
+          );
+        }
+
+        // Sub-header: **Knowledge:** / **Recent work:**
+        const boldMatch = line.match(/^\*\*([^*]+)\*\*/);
+        if (boldMatch) {
+          return (
+            <div key={i} style={{
+              fontWeight: 600,
+              fontSize: 11,
+              color: 'var(--color-text-primary)',
+              margin: '7px 0 2px',
+            }}>
+              {boldMatch[1]}
+            </div>
+          );
+        }
+
+        // List items
+        if (line.startsWith('- ')) {
+          return (
+            <div key={i} style={{ display: 'flex', gap: 5, padding: '2px 0', lineHeight: 1.5 }}>
+              <span style={{ color: 'var(--color-text-tertiary)', flexShrink: 0, fontSize: 10, marginTop: 2 }}>▸</span>
+              <span style={{ fontSize: 11, color: 'var(--color-text-secondary)', flex: 1, wordBreak: 'break-word' }}>
+                {renderWithLinks(line.slice(2))}
+              </span>
+            </div>
+          );
+        }
+
+        // Blank line
+        if (line.trim() === '') return <div key={i} style={{ height: 3 }} />;
+
+        // Continuation / table rows — very dimmed
+        return (
+          <div key={i} style={{
+            fontSize: 10,
+            color: 'var(--color-text-tertiary)',
+            fontFamily: "'JetBrains Mono', monospace",
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-all',
+            paddingLeft: 12,
+            opacity: 0.65,
+          }}>
+            {renderWithLinks(line)}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function HookInvocationCard({ block, defaultExpanded }: { block: HookBlock; defaultExpanded: boolean }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+
+  const statsMatch = block.endStats?.match(/durationMs=(\d+)\s+sources=(\d+)\s+tokens=(\d+)/);
+  const duration = statsMatch?.[1];
+  const sources = statsMatch?.[2];
+  const tokens = statsMatch?.[3];
+  const nonEmptyLines = block.contextLines.filter(l => l.trim()).length;
+
+  return (
+    <div style={{
+      margin: '4px 8px',
+      border: '1px solid var(--color-border-default)',
+      borderRadius: 8,
+      overflow: 'hidden',
+    }}>
+      {/* Header — click to expand/collapse */}
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          padding: '8px 12px',
+          cursor: 'pointer',
+          background: 'var(--color-bg-surface)',
+          borderLeft: '3px solid var(--color-accent)',
+        }}
+      >
+        {/* Meta row */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: block.prompt ? 5 : 0, flexWrap: 'wrap' }}>
+          <span style={{
+            fontSize: 10,
+            color: 'var(--color-text-tertiary)',
+            fontFamily: "'JetBrains Mono', monospace",
+            flexShrink: 0,
+          }}>
+            {block.timestamp}
+          </span>
+          <a
+            href={`/sessions/${block.session}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            style={{
+              fontSize: 10,
+              color: '#5dade2',
+              fontFamily: "'JetBrains Mono', monospace",
+              background: 'rgba(93,173,226,0.12)',
+              padding: '1px 6px',
+              borderRadius: 4,
+              textDecoration: 'none',
+              flexShrink: 0,
+            }}
+          >
+            {block.session.slice(0, 8)}&hellip;
+          </a>
+          <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', opacity: 0.6 }}>
+            :{block.port}
+          </span>
+          {sources && (
+            <span style={{
+              fontSize: 10,
+              color: '#27ae60',
+              background: 'rgba(39,174,96,0.1)',
+              padding: '1px 5px',
+              borderRadius: 3,
+              flexShrink: 0,
+            }}>
+              {sources} sources
+            </span>
+          )}
+          {tokens && (
+            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
+              {tokens} tok
+            </span>
+          )}
+          {duration && (
+            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
+              {duration}ms
+            </span>
+          )}
+          <div style={{ flex: 1 }} />
+          <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
+            {expanded ? '▲' : '▼'} {nonEmptyLines}
+          </span>
+        </div>
+
+        {/* Prompt — the most important thing, prominent */}
+        {block.prompt && (
+          <div style={{
+            fontSize: 12,
+            color: 'var(--color-text-primary)',
+            fontWeight: 500,
+            lineHeight: 1.45,
+            whiteSpace: expanded ? 'normal' : 'nowrap',
+            overflow: expanded ? 'visible' : 'hidden',
+            textOverflow: expanded ? 'clip' : 'ellipsis',
+          }}>
+            {block.prompt}
+          </div>
+        )}
+      </div>
+
+      {/* Injected context */}
+      {expanded && block.contextLines.length > 0 && (
+        <div style={{ borderTop: '1px solid var(--color-border-default)' }}>
+          <ContextContent lines={block.contextLines} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ContextInjectLogViewer({ entries }: { entries: string[] }) {
+  const { blocks, orphans } = parseHookBlocks(entries);
+
+  if (blocks.length === 0 && orphans.length === 0) {
+    return (
+      <div style={{ padding: 20, textAlign: 'center', color: 'var(--color-text-tertiary)', fontSize: 13 }}>
+        No entries found
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: '4px 0' }}>
+      {orphans.map((line, i) => (
+        <div key={`orphan-${i}`} style={{
+          padding: '2px 14px',
+          fontSize: 11,
+          fontFamily: "'JetBrains Mono', monospace",
+          color: 'var(--color-text-tertiary)',
+        }}>
+          {line}
+        </div>
+      ))}
+      {blocks.map((block, i) => (
+        <HookInvocationCard
+          key={`block-${i}-${block.timestamp}`}
+          block={block}
+          defaultExpanded={i === blocks.length - 1}
+        />
+      ))}
     </div>
   );
 }

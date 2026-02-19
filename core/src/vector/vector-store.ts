@@ -57,6 +57,32 @@ export interface VectorSearchResult {
   phase?: number;
 }
 
+// ─── Reindex Status Tracker ─────────────────────────────────
+
+export interface ReindexStatus {
+  type: string | null;
+  status: 'idle' | 'running' | 'done' | 'error';
+  vectorsIndexed: number;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+let _reindexStatus: ReindexStatus = {
+  type: null,
+  status: 'idle',
+  vectorsIndexed: 0,
+  startedAt: null,
+  completedAt: null,
+};
+
+export function getReindexStatus(): ReindexStatus {
+  return { ..._reindexStatus };
+}
+
+export function setReindexStatus(s: Partial<ReindexStatus>): void {
+  Object.assign(_reindexStatus, s);
+}
+
 // ─── LanceDB row schema ─────────────────────────────────────
 // LanceDB cannot infer types from null, so optional fields use sentinel values:
 //   string fields → '' means absent
@@ -448,6 +474,20 @@ export class VectorStore {
     await this.table.delete(where);
 
     return count;
+  }
+
+  /**
+   * Delete vectors for multiple milestones in a single query (batch delete).
+   * Much faster than calling deleteMilestone() per milestone.
+   */
+  async deleteMilestoneBatch(sessionId: string, milestoneIndices: number[]): Promise<void> {
+    if (milestoneIndices.length === 0) return;
+    await this.init();
+
+    const escapedId = sessionId.replace(/'/g, "''");
+    const indexList = milestoneIndices.join(',');
+    const where = `sessionId = '${escapedId}' AND type = 'milestone' AND milestoneIndex IN (${indexList})`;
+    await this.table.delete(where);
   }
 
   /**

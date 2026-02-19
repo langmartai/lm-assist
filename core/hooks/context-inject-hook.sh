@@ -71,18 +71,32 @@ fi
 # Read which sources to include (knowledge, milestones)
 INCLUDE_KNOWLEDGE="true"
 INCLUDE_MILESTONES="false"
+EXPERIMENT_ENABLED="false"
+
+# Check milestone settings file for experiment (enabled) flag — default OFF if file absent
+MILESTONE_SETTINGS_FILE="${HOME}/.lm-assist/milestone/settings.json"
+if [ -f "$MILESTONE_SETTINGS_FILE" ] && command -v jq &>/dev/null; then
+  EXP_VAL=$(jq -r '.enabled // "false"' "$MILESTONE_SETTINGS_FILE" 2>/dev/null)
+  [ "$EXP_VAL" = "true" ] && EXPERIMENT_ENABLED="true"
+fi
+
 if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
   K_VAL=$(jq -r '.contextInjectKnowledge // empty' "$CONFIG_FILE" 2>/dev/null)
   M_VAL=$(jq -r '.contextInjectMilestones // empty' "$CONFIG_FILE" 2>/dev/null)
   [ "$K_VAL" = "false" ] && INCLUDE_KNOWLEDGE="false"
-  [ "$M_VAL" = "true" ] && INCLUDE_MILESTONES="true"
+  # Milestones only included when both the setting is on AND experiment is enabled
+  [ "$M_VAL" = "true" ] && [ "$EXPERIMENT_ENABLED" = "true" ] && INCLUDE_MILESTONES="true"
 fi
 
 # Build MCP search type filter based on enabled sources
 MCP_TYPES=""
 [ "$INCLUDE_KNOWLEDGE" = "true" ] && MCP_TYPES="${MCP_TYPES}knowledge, "
 [ "$INCLUDE_MILESTONES" = "true" ] && MCP_TYPES="${MCP_TYPES}milestones, "
-MCP_TYPES="${MCP_TYPES}architecture"
+[ "$EXPERIMENT_ENABLED" = "true" ] && MCP_TYPES="${MCP_TYPES}architecture, "
+# Strip trailing comma+space
+MCP_TYPES="${MCP_TYPES%, }"
+# Fallback if nothing enabled
+[ -z "$MCP_TYPES" ] && MCP_TYPES="knowledge"
 
 MCP_INSTRUCTION="Before responding, use MCP tools to retrieve relevant context:
 1. search(\"${PROMPT:0:100}\") — find top 5 matching ${MCP_TYPES} entries

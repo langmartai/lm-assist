@@ -25,7 +25,7 @@ import { getProjectArchitectureData } from './project-architecture';
 
 export const searchToolDef = {
   name: 'search',
-  description: `Unified search across knowledge, milestones, architecture, and file history. Auto-detects query type: file paths, IDs (K001, sessionId, sessionId:index), or natural language. Params: query, scope (24h|3d|7d|30d|all), project, type (knowledge|milestone|architecture|all), limit, offset`,
+  description: `Unified search across knowledge and file history. Auto-detects query type: file paths, IDs (K001, sessionId, sessionId:index), or natural language. Params: query, scope (24h|3d|7d|30d|all), project, type (knowledge|all), limit, offset`,
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -44,7 +44,7 @@ export const searchToolDef = {
       },
       type: {
         type: 'string',
-        enum: ['knowledge', 'milestone', 'architecture', 'all'],
+        enum: ['knowledge', 'all'],
         description: 'Result type filter (default: all)',
       },
       limit: {
@@ -57,6 +57,23 @@ export const searchToolDef = {
       },
     },
     required: ['query'],
+  },
+};
+
+/** Full description used when experiment features (milestones/architecture) are enabled */
+export const searchToolDefExperiment = {
+  ...searchToolDef,
+  description: `Unified search across knowledge, milestones, architecture, and file history. Auto-detects query type: file paths, IDs (K001, sessionId, sessionId:index), or natural language. Params: query, scope (24h|3d|7d|30d|all), project, type (knowledge|milestone|architecture|all), limit, offset`,
+  inputSchema: {
+    ...searchToolDef.inputSchema,
+    properties: {
+      ...searchToolDef.inputSchema.properties,
+      type: {
+        type: 'string',
+        enum: ['knowledge', 'milestone', 'architecture', 'all'],
+        description: 'Result type filter (default: all)',
+      },
+    },
   },
 };
 

@@ -73,7 +73,7 @@ async function runServer() {
 ╠══════════════════════════════════════════════════════════════╣
 ║  Project:  ${projectPath.padEnd(48)}║
 ║  Server:   http://${host}:${port}${' '.repeat(Math.max(0, 40 - host.length - String(port).length))}║
-${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : '║  Hub:      Not configured                                    ║'}
+${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : '║  Hub:      Not configured - http://localhost:3848/settings   ║'}
 ╚══════════════════════════════════════════════════════════════╝
   `);
 

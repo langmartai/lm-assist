@@ -32,10 +32,10 @@ import { getVectorStore } from '../vector/vector-store';
 import { getEmbedder } from '../vector/embedder';
 import { getMilestoneStore, isProjectExcluded } from '../milestone/store';
 import type { Milestone } from '../milestone/types';
-import { isSessionInScanRange } from '../milestone/settings';
+import { isSessionInScanRange, getMilestoneSettings } from '../milestone/settings';
 
-import { handleSearch, searchToolDef } from './tools/search';
-import { handleDetail, detailToolDef } from './tools/detail';
+import { handleSearch, searchToolDef, searchToolDefExperiment } from './tools/search';
+import { handleDetail, detailToolDef, detailToolDefExperiment } from './tools/detail';
 import { handleFeedback, feedbackToolDef } from './tools/feedback';
 import { logToolCall } from './mcp-logger';
 
@@ -55,15 +55,17 @@ const server = new Server(
 
 // ─── Tool Registration ──────────────────────────────────────────────────
 
-const TOOLS = [
-  searchToolDef,
-  detailToolDef,
-  feedbackToolDef,
-];
-
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: TOOLS,
-}));
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  // Use experiment (full) descriptions only when milestone detection is enabled
+  const experimentEnabled = getMilestoneSettings().enabled;
+  return {
+    tools: [
+      experimentEnabled ? searchToolDefExperiment : searchToolDef,
+      experimentEnabled ? detailToolDefExperiment : detailToolDef,
+      feedbackToolDef,
+    ],
+  };
+});
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;

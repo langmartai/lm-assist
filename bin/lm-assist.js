@@ -4,11 +4,12 @@
  * LM Assist CLI
  *
  * Usage:
- *   lm-assist start        Start API and Web services
- *   lm-assist stop         Stop all services
- *   lm-assist restart      Restart services
- *   lm-assist status       Show service status
- *   lm-assist logs [core|web]  View service logs
+ *   lm-assist start           Start API and Web services
+ *   lm-assist stop            Stop all services
+ *   lm-assist restart         Restart services
+ *   lm-assist status          Show service status
+ *   lm-assist logs [core|web] View service logs
+ *   lm-assist cleandata [-y]  Stop services and delete ~/.lm-assist data
  */
 
 const path = require('path');
@@ -32,7 +33,7 @@ if (!fs.existsSync(coreShPath)) {
 fs.chmodSync(coreShPath, 0o755);
 
 // Valid commands
-const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'build', 'clean', 'clean-data', 'test', 'hub'];
+const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'build', 'cleandata', 'test', 'hub'];
 
 if (command === 'help' || command === '--help' || command === '-h') {
   console.log(`
@@ -47,8 +48,7 @@ Commands:
   status             Show service status and health check
   logs [core|web]    View service logs
   build              Build TypeScript (core) and Next.js (web)
-  clean              Clean and rebuild everything
-  clean-data [-y]    Delete all lm-assist data (~/.lm-assist)
+  cleandata [-y]     Stop services and delete all lm-assist data (~/.lm-assist)
   test               Run API endpoint tests
   hub                Hub client commands (start, stop, status, logs)
   help               Show this help message

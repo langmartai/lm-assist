@@ -3,13 +3,16 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Search, Globe, Monitor, CloudOff, Maximize2, LogOut, Info } from 'lucide-react';
+import { Search, Globe, Monitor, CloudOff, Maximize2, LogOut, Info, Download } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { detectProxyInfo } from '@/lib/api-client';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useSearch } from '@/contexts/SearchContext';
 import { MachineDropdown } from './MachineDropdown';
 import { BackgroundProgress } from './BackgroundProgress';
+import { DataLoadingModal } from '@/components/data-loading/DataLoadingModal';
+import { DATA_LOADED_KEY } from '@/hooks/useDataLoading';
+import { useExperiment } from '@/hooks/useExperiment';
 
 
 /** Extract initials from a display name or email */
@@ -37,10 +40,14 @@ export function TopBar() {
   const [lanAccessToken, setLanAccessToken] = useState<string | null>(null);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const [showDataModal, setShowDataModal] = useState(false);
+  const [dataLoaded, setDataLoaded] = useState(true);
+  const { isExperiment } = useExperiment();
 
   useEffect(() => {
     setMounted(true);
     try { setInIframe(window.self !== window.top); } catch { setInIframe(true); }
+    try { setDataLoaded(localStorage.getItem(DATA_LOADED_KEY) === 'true'); } catch { /* ignore */ }
     const proxyInfo = detectProxyInfo();
     const apiBase = proxyInfo.isProxied ? proxyInfo.basePath : '';
     fetch(`${apiBase}/api/server`)
@@ -94,6 +101,7 @@ export function TopBar() {
     : `${localBaseUrl}${currentPage}`;
 
   return (
+    <>
     <div className="topbar">
 
       {mounted && (
@@ -151,6 +159,44 @@ export function TopBar() {
       )}
 
       <BackgroundProgress />
+
+      {/* Data Loading button — only visible in experiment mode */}
+      {mounted && isExperiment && (
+        <button
+          onClick={() => setShowDataModal(true)}
+          title="Data Loading"
+          style={{
+            position: 'relative',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            background: 'none',
+            border: '1px solid var(--color-border)',
+            borderRadius: 5,
+            padding: '3px 7px',
+            cursor: 'pointer',
+            color: 'var(--color-text-secondary)',
+            fontSize: 11,
+          }}
+        >
+          <Download size={11} />
+          <span>Data</span>
+          {!dataLoaded && (
+            <span
+              style={{
+                position: 'absolute',
+                top: -3,
+                right: -3,
+                width: 7,
+                height: 7,
+                borderRadius: '50%',
+                background: 'var(--color-status-orange, #f97316)',
+                animation: 'pulse-dot 2s ease-in-out infinite',
+              }}
+            />
+          )}
+        </button>
+      )}
 
       <div style={{ flex: 1 }} />
 
@@ -275,5 +321,16 @@ export function TopBar() {
         <div className="topbar-avatar topbar-avatar-initials">U</div>
       )}
     </div>
+
+    {isExperiment && (
+      <DataLoadingModal
+        isOpen={showDataModal}
+        onClose={() => {
+          setShowDataModal(false);
+          try { setDataLoaded(localStorage.getItem(DATA_LOADED_KEY) === 'true'); } catch { /* ignore */ }
+        }}
+      />
+    )}
+    </>
   );
 }

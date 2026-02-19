@@ -23,16 +23,31 @@ import { getProjectArchitectureData } from './project-architecture';
 
 export const detailToolDef = {
   name: 'detail',
-  description: 'Get details for any item by ID — knowledge, milestone, session, or architecture component. Progressive disclosure: summary first, section parameter for specific parts.',
+  description: 'Get details for any item by ID — knowledge, session. Progressive disclosure: summary first, section parameter for specific parts.',
   inputSchema: {
     type: 'object' as const,
+    properties: {
+      id: { type: 'string', description: 'K001, K001.2, sessionId:index, or sessionId' },
+      section: { type: 'string', description: 'Expand specific section: facts, files, content, conversation' },
+      offset: { type: 'number', description: 'For paginated content (conversation turns, file lists)' },
+      limit: { type: 'number', description: 'Items per page (default: 10)' },
+    },
+    required: ['id'],
+  },
+};
+
+/** Full description used when experiment features (milestones/architecture) are enabled */
+export const detailToolDefExperiment = {
+  ...detailToolDef,
+  description: 'Get details for any item by ID — knowledge, milestone, session, or architecture component. Progressive disclosure: summary first, section parameter for specific parts.',
+  inputSchema: {
+    ...detailToolDef.inputSchema,
     properties: {
       id: { type: 'string', description: 'K001, K001.2, sessionId:index, sessionId, or arch:component-name' },
       section: { type: 'string', description: 'Expand specific section: facts, files, content, conversation, milestones, connections, diagram' },
       offset: { type: 'number', description: 'For paginated content (conversation turns, file lists)' },
       limit: { type: 'number', description: 'Items per page (default: 10)' },
     },
-    required: ['id'],
   },
 };
 

@@ -23,7 +23,7 @@ const MILESTONE_DIR = path.join(getDataDir(), 'milestone');
 const SETTINGS_FILE = path.join(MILESTONE_DIR, 'settings.json');
 
 const DEFAULTS: MilestoneSettings = {
-  enabled: true,
+  enabled: false,
   autoEnrich: false,
   autoKnowledge: true,
   scanRangeDays: 1,

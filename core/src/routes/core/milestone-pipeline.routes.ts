@@ -908,6 +908,11 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
         let vectorsIndexed = 0;
         let sessionsAffected = 0;
 
+        // Collect all vectors and delete targets across all sessions (CPU only, no vector I/O)
+        const allNewVectors: Array<{ text: string; metadata: any }> = [];
+        const sessionDeleteBatches: Array<{ sessionId: string; indices: number[] }> = [];
+
+        let scanned = 0;
         for (const sessionId of sessionIds) {
           if (isProjectExcluded(sessionId)) continue;
 
@@ -927,8 +932,8 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
             continue;
           }
 
-          let sessionModified = false;
-          const newVectors: Array<{ text: string; metadata: any }> = [];
+          const sessionVectors: Array<{ text: string; metadata: any }> = [];
+          const indicesToDelete: number[] = [];
 
           for (const m of toEnrich) {
             const enriched = enrichPhase1(m);
@@ -938,35 +943,43 @@ export function createMilestonePipelineRoutes(ctx: RouteContext): RouteHandler[]
             m.facts = enriched.facts;
             // Leave phase=1, outcome=null, concepts=null, architectureRelevant=null
             // so Phase 2 LLM enrichment can still complete these fields
-            sessionModified = true;
             milestonesEnriched++;
 
             if (vectorsReady) {
-              newVectors.push(...extractMilestoneVectors(m));
+              sessionVectors.push(...extractMilestoneVectors(m));
+              indicesToDelete.push(m.index);
             }
           }
 
-          if (sessionModified) {
-            store.saveMilestones(sessionId, milestones);
-            sessionsAffected++;
+          store.saveMilestones(sessionId, milestones);
+          sessionsAffected++;
 
-            if (vectorsReady && newVectors.length > 0) {
-              try {
-                // Delete stale vectors (summary/assistant/thinking) before inserting
-                // new enriched vectors (title/description/fact/prompt) to avoid bloat
-                for (const m of toEnrich) {
-                  await vectorStore.deleteMilestone(sessionId, m.index);
-                }
-                await vectorStore.addVectors(newVectors);
-                vectorsIndexed += newVectors.length;
-              } catch { /* non-fatal */ }
-            }
+          if (vectorsReady && sessionVectors.length > 0) {
+            allNewVectors.push(...sessionVectors);
+            sessionDeleteBatches.push({ sessionId, indices: indicesToDelete });
           }
 
           // Yield to event loop every 50 sessions
-          if (sessionsAffected % 50 === 0) {
+          scanned++;
+          if (scanned % 50 === 0) {
             await new Promise(resolve => setTimeout(resolve, 10));
           }
+        }
+
+        // Batch delete stale vectors per session (one LanceDB query per session, not per milestone)
+        if (vectorsReady && sessionDeleteBatches.length > 0) {
+          for (const { sessionId, indices } of sessionDeleteBatches) {
+            try {
+              await vectorStore.deleteMilestoneBatch(sessionId, indices);
+            } catch { /* non-fatal */ }
+          }
+        }
+
+        // Single addVectors call for all sessions (one embedding pass, no per-session overhead)
+        if (vectorsReady && allNewVectors.length > 0) {
+          try {
+            vectorsIndexed = await vectorStore.addVectors(allNewVectors);
+          } catch { /* non-fatal */ }
         }
 
         // Rebuild FTS index once after all batches are done

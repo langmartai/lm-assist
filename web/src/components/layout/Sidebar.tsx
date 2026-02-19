@@ -17,8 +17,9 @@ import {
   BookOpen,
   Compass,
 } from 'lucide-react';
+import { useExperiment } from '@/hooks/useExperiment';
 
-const navItems = [
+const baseNavItems = [
   { href: '/terminal-dashboard', icon: Terminal, label: 'Terminal Dashboard' },
   { href: '/sessions', icon: MessageSquare, label: 'Sessions' },
   { href: '/session-dashboard', icon: LayoutDashboard, label: 'Session Dashboard' },
@@ -26,14 +27,22 @@ const navItems = [
   { href: '/search', icon: Search, label: 'Search' },
   { href: '/tasks', icon: CheckSquare, label: 'Tasks' },
   { href: '/projects', icon: FolderOpen, label: 'Projects' },
-  { href: '/architecture', icon: Network, label: 'Architecture' },
   { href: '/knowledge', icon: BookOpen, label: 'Knowledge' },
   { href: '/assist-resources', icon: Compass, label: 'Assist Resources' },
   { href: '/machines', icon: Monitor, label: 'Machines' },
 ];
 
+const experimentNavItems = [
+  { href: '/architecture', icon: Network, label: 'Architecture' },
+];
+
 export function Sidebar() {
   const pathname = usePathname();
+  const { isExperiment } = useExperiment();
+
+  const navItems = isExperiment
+    ? [...baseNavItems.slice(0, 7), experimentNavItems[0], ...baseNavItems.slice(7)]
+    : baseNavItems;
 
   return (
     <nav className="sidebar">
