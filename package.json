@@ -29,10 +29,14 @@
   "main": "./core/dist/index.js",
   "files": [
     "core/dist",
+    "core/hooks",
     "web/.next",
     "web/public",
     "core.sh",
     "bin",
+    ".claude-plugin",
+    ".mcp.json",
+    "commands",
     "LICENSE",
     "README.md",
     ".env.example"

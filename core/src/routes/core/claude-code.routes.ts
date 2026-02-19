@@ -326,7 +326,7 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async () => {
         const env = { ...process.env, CLAUDECODE: undefined };
         try {
-          const output = execFileSync('claude', ['mcp', 'get', 'tier-agent-context'], {
+          const output = execFileSync('claude', ['mcp', 'get', 'lm-assist-context'], {
             encoding: 'utf-8',
             timeout: 10000,
             env,
@@ -371,8 +371,19 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
         const mcpServerPath = path.resolve(__dirname, '../../dist/mcp-server/index.js');
 
         try {
+          // Remove legacy name if present (renamed from tier-agent-context)
+          try {
+            execFileSync('claude', ['mcp', 'remove', 'tier-agent-context', '-s', 'user'], {
+              encoding: 'utf-8',
+              timeout: 10000,
+              env,
+            });
+          } catch {
+            // Ignore — old name may not exist
+          }
+
           execFileSync('claude', [
-            'mcp', 'add', '-s', 'user', 'tier-agent-context', '--',
+            'mcp', 'add', '-s', 'user', 'lm-assist-context', '--',
             'node', mcpServerPath,
           ], {
             encoding: 'utf-8',
@@ -404,7 +415,7 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async () => {
         const env = { ...process.env, CLAUDECODE: undefined };
         try {
-          execFileSync('claude', ['mcp', 'remove', 'tier-agent-context', '-s', 'user'], {
+          execFileSync('claude', ['mcp', 'remove', 'lm-assist-context', '-s', 'user'], {
             encoding: 'utf-8',
             timeout: 10000,
             env,

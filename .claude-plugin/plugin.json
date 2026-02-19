@@ -1,0 +1,5 @@
+{
+  "name": "lm-assist",
+  "description": "Session knowledge, milestones, and architecture context for Claude Code",
+  "author": { "name": "langmartai" }
+}

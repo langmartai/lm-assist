@@ -86,7 +86,7 @@ Next.js 16 with Turbopack, React 19, Zustand for state, Tailwind CSS v4 for styl
 
 ### MCP Server (`core/src/mcp-server/`)
 
-Provides 3 tools via stdio transport (server name: `tier-agent-context`):
+Provides 3 tools via stdio transport (server name: `lm-assist-context`):
 
 | Tool | Description |
 |------|-------------|
@@ -205,6 +205,32 @@ Connects to LangMart Hub for remote API relay, console relay, and session sync. 
 | `install-hook-logger.sh` | Installer for the hook event logger |
 
 Install hooks via: `./core/hooks/install-hook-logger.sh`
+
+## Plugin / Slash Commands
+
+lm-assist is packaged as a Claude Code plugin. The plugin provides an MCP server and 6 slash commands for interacting with lm-assist from within Claude Code.
+
+**Plugin structure:**
+- `.claude-plugin/plugin.json` — Plugin metadata
+- `.mcp.json` — MCP server configuration (auto-registered on plugin install)
+- `commands/` — Slash command definitions
+
+**Slash commands:**
+
+| Command | Description |
+|---------|-------------|
+| `/assist` | Open the web UI — checks API health, opens browser or prints URL |
+| `/assist-logs` | View context-inject hook logs (`GET /assist-resources/log?file=context-inject-hook.log`) |
+| `/assist-mcp-logs` | View MCP tool call logs (`GET /assist-resources/log?file=mcp-calls.jsonl`) |
+| `/assist-search` | Search the knowledge base (`GET /knowledge/search?q=...`) |
+| `/assist-status` | Show status of all components — API, web, MCP, hooks, statusline, hub, knowledge |
+| `/assist-setup` | One-command installer — starts services, installs MCP + hooks + statusline via API |
+
+All commands call the existing REST API with `curl` on `localhost:3100`. If the API is not running, commands advise the user to start it or run `/assist-setup`.
+
+**Install methods:**
+- Plugin: `claude plugin install .` (from repo root)
+- npm global: `npm install -g lm-assist` then `/assist-setup`
 
 ## Development
 
