@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__lm-assist-context__search",
+      "mcp__lm-assist-context__detail"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "lm-assist-context"
+  ]
+}

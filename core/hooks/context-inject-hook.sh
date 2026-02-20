@@ -107,7 +107,12 @@ MCP_INSTRUCTION="Before responding, use MCP tools to retrieve relevant context:
 if [ "$INJECT_MODE" = "mcp" ]; then
   log "INJECT-MCP session=${SESSION_ID:-unknown}"
   echo "$MCP_INSTRUCTION" >> "$LOG_FILE"
-  echo "$MCP_INSTRUCTION"
+  jq -n --arg ctx "$MCP_INSTRUCTION" '{
+    hookSpecificOutput: {
+      hookEventName: "UserPromptSubmit",
+      additionalContext: $ctx
+    }
+  }'
   exit 0
 fi
 
@@ -165,23 +170,24 @@ ${MCP_INSTRUCTION}"
   fi
 
   if [ "$DISPLAY_MODE" = "stdout" ]; then
-    # Plain stdout — visible in terminal transcript (no JSON, just text)
-    echo "[context-inject] sources=[${SOURCES}] tokens=${TOKENS}"
-    echo "$CONTEXT"
-  else
-    # Quiet mode — inject via additionalContext (invisible to user, visible to model)
-    jq -n --arg ctx "$CONTEXT" '{
+    log "display=stdout sources=[${SOURCES}] tokens=${TOKENS}"
+  fi
+  jq -n --arg ctx "$CONTEXT" '{
+    hookSpecificOutput: {
+      hookEventName: "UserPromptSubmit",
+      additionalContext: $ctx
+    }
+  }'
+else
+  # No suggestion context, but in "both" mode still inject MCP instruction
+  if [ "$INJECT_MODE" = "both" ]; then
+    log "INJECT-MCP session=${SESSION_ID:-unknown} (no suggest context)"
+    jq -n --arg ctx "$MCP_INSTRUCTION" '{
       hookSpecificOutput: {
         hookEventName: "UserPromptSubmit",
         additionalContext: $ctx
       }
     }'
-  fi
-else
-  # No suggestion context, but in "both" mode still inject MCP instruction
-  if [ "$INJECT_MODE" = "both" ]; then
-    log "INJECT-MCP session=${SESSION_ID:-unknown} (no suggest context)"
-    echo "$MCP_INSTRUCTION"
   else
     log "EMPTY session=${SESSION_ID:-unknown} reason=no_matching_context"
   fi

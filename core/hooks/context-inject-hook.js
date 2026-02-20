@@ -115,6 +115,20 @@ function httpPost(port, urlPath, body) {
 }
 
 // ---------------------------------------------------------------------------
+// Hook output — always use hookSpecificOutput JSON for reliable context injection
+// ---------------------------------------------------------------------------
+
+function writeHookOutput(content) {
+  const hookOutput = JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: content,
+    },
+  });
+  process.stdout.write(hookOutput + '\n');
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -194,7 +208,7 @@ async function main() {
   if (injectMode === 'mcp') {
     log(`INJECT-MCP session=${sessionId || 'unknown'}`);
     log(mcpInstruction);
-    process.stdout.write(mcpInstruction + '\n');
+    writeHookOutput(mcpInstruction);
     process.exit(0);
   }
 
@@ -236,23 +250,12 @@ async function main() {
       log(`INJECT-BOTH session=${sessionId || 'unknown'} tokens=${tokens} sources=[${sources}]`);
     }
 
-    if (displayMode === 'stdout') {
-      process.stdout.write(`[context-inject] sources=[${sources}] tokens=${tokens}\n`);
-      process.stdout.write(output + '\n');
-    } else {
-      // Quiet mode — inject via additionalContext (invisible to user, visible to model)
-      const hookOutput = JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'UserPromptSubmit',
-          additionalContext: output,
-        },
-      });
-      process.stdout.write(hookOutput + '\n');
-    }
+    log(`display=${displayMode} sources=[${sources}] tokens=${tokens}`);
+    writeHookOutput(output);
   } else if (injectMode === 'both') {
     // No suggest context, but still inject MCP instruction
     log(`INJECT-MCP session=${sessionId || 'unknown'} (no suggest context)`);
-    process.stdout.write(mcpInstruction + '\n');
+    writeHookOutput(mcpInstruction);
   } else {
     log(`EMPTY session=${sessionId || 'unknown'} reason=no_matching_context`);
   }

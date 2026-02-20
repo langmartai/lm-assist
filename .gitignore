@@ -23,9 +23,13 @@ credentials/
 # OS
 .DS_Store
 Thumbs.db
+nul
 
 # Editor
 .vscode/
 .idea/
 *.swp
 *.swo
+
+# Temporary Claude files
+tmpclaude-*

@@ -31,6 +31,8 @@ Now consider how many sessions you have run across your projects. Dozens? Hundre
 
 All of that knowledge exists in your session history. The question is how to make it available to future sessions without manually curating documentation.
 
+![Session detail view — a single session contains hundreds of messages, tool calls, thinking steps, and structured code changes. This is the raw material for knowledge extraction.](screenshots/session-detail-chat.png)
+
 ---
 
 ## The Subagent Revolution: Why Opus 4 Sessions Are Perfect for Knowledge Capture
@@ -49,6 +51,8 @@ When Claude runs an Explore subagent, the result is not a casual response mixed 
 An Explore subagent that maps out your authentication flow produces a document that is just as useful six months from now as it was when first created. The codebase structure, the design patterns, the architectural decisions — these do not change with every commit.
 
 This is what makes modern Claude Code sessions uniquely valuable as a knowledge source. The subagent architecture transforms ad-hoc exploration into structured, reusable research artifacts.
+
+![Subagent tree — a single session spawns multiple Explore subagents, each conducting focused research. Notice the structured prompts, tool usage counts, and self-contained results. Each of these completed agents becomes a knowledge entry.](screenshots/agent-tree.png)
 
 ---
 
@@ -102,6 +106,8 @@ When you generate knowledge through LM Assist (via the web UI or API), it scans 
 
 A single exploration session might yield 3-5 knowledge entries, each with multiple parts. Over weeks of development, this builds into a comprehensive knowledge base that covers your entire project.
 
+![Knowledge base — 584 knowledge entries extracted from session history, organized by type (wiring, algorithm, invariant, contract, flow). Each entry is broken into numbered parts with source file locations. Zero manual curation.](screenshots/knowledge-base.png)
+
 ### Step 2: Vector Indexing
 
 Each knowledge part gets embedded into a 384-dimensional vector using a local embedding model (all-MiniLM-L6-v2, running entirely on your machine via ONNX). These vectors are stored in LanceDB, an embedded vector database.
@@ -131,6 +137,8 @@ Claude then calls the `search` tool, gets back the most relevant knowledge entri
 
 The result: Claude starts every session already knowing what it learned in previous sessions.
 
+![Context injection logs — every prompt triggers the hook, which injects matching knowledge entries (K020.2, K228.5, K228.6, etc.) with token counts. The "RELEVANT CONTEXT" block shows exactly what Claude receives before responding.](screenshots/context-hook-logs.png)
+
 ### Step 4: Progressive Disclosure
 
 Not all knowledge needs to be loaded at once. The MCP tools use **progressive disclosure**:
@@ -141,6 +149,8 @@ Not all knowledge needs to be loaded at once. The MCP tools use **progressive di
 
 This keeps token usage minimal while ensuring deep context is available on demand.
 
+![MCP tool logs — real SEARCH and DETAIL calls made by Claude during a session. The search returns ranked knowledge entries, and detail expands the full content of a specific part. This is the progressive disclosure pattern in action.](screenshots/mcp-tool-logs.png)
+
 ### Step 5: Feedback Loop
 
 Knowledge is not static. When Claude encounters outdated or incorrect knowledge, it can call `feedback()` to flag the issue. These flags feed into a review pipeline where knowledge entries get updated, corrected, or archived.
@@ -150,6 +160,8 @@ Over time, the knowledge base self-improves through use.
 ---
 
 ## What This Looks Like in Practice
+
+![Session browser — browse all your Claude Code sessions across projects with live console access, token counts, model info, and session metadata. This is where your accumulated knowledge lives before extraction.](screenshots/session-browser.png)
 
 **Session 1 (Tuesday):**
 You ask Claude to understand your project's database migration system. Claude launches Explore subagents, reads migration files, analyzes patterns, and produces a detailed analysis. This session costs ~120k tokens total.
