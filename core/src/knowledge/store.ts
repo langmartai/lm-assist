@@ -209,9 +209,11 @@ export class KnowledgeStore {
     status: string;
     partCount: number;
     unaddressedComments: number;
+    createdAt: string;
     updatedAt: string;
     sourceSessionId?: string;
     sourceAgentId?: string;
+    sourceTimestamp?: string;
     parts: Array<{ partId: string; title: string; summary: string }>;
   }> {
     const index = this.getIndex();

@@ -36,9 +36,11 @@ interface KnowledgeListItem {
   status: string;
   partCount: number;
   unaddressedComments: number;
+  createdAt?: string;
   updatedAt: string;
   sourceSessionId?: string;
   sourceAgentId?: string;
+  sourceTimestamp?: string;
   parts: Array<{ partId: string; title: string; summary: string }>;
 }
 
@@ -52,6 +54,7 @@ interface KnowledgeFull {
   updatedAt: string;
   sourceSessionId?: string;
   sourceAgentId?: string;
+  sourceTimestamp?: string;
   parts: Array<{ partId: string; title: string; summary: string; content: string }>;
 }
 
@@ -84,6 +87,7 @@ interface SearchResult {
   partId?: string;
   text: string;
   score: number;
+  timestamp?: string;
   knowledgeTitle?: string;
   partTitle?: string;
   knowledgeType?: string;
@@ -1183,6 +1187,9 @@ export function KnowledgePage() {
                 display: 'flex',
                 gap: 16,
               }}>
+                {knowledge.sourceTimestamp && (
+                  <span>Source: {formatDate(knowledge.sourceTimestamp)}</span>
+                )}
                 <span>Created: {formatDate(knowledge.createdAt)}</span>
                 <span>Updated: {formatDate(knowledge.updatedAt)}</span>
               </div>
@@ -1253,6 +1260,9 @@ function KnowledgeListGroup({
             <span className={`badge ${TYPE_COLORS[item.type] || 'badge-default'}`} style={{ fontSize: 9, flexShrink: 0 }}>
               {item.type}
             </span>
+            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>
+              {formatDate(item.sourceTimestamp || item.createdAt || item.updatedAt)}
+            </span>
           </div>
         </div>
       </div>
@@ -1317,7 +1327,7 @@ function KnowledgeListGroup({
               </span>
             )}
             <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>
-              {item.parts.length}
+              {item.parts.length} &middot; {formatDate(item.sourceTimestamp || item.createdAt || item.updatedAt)}
             </span>
           </div>
         </div>
@@ -1421,6 +1431,7 @@ function SearchResultRow({
         paddingLeft: 18,
       }}>
         {result.partId || result.knowledgeId} &middot; Score: {typeof result.score === 'number' ? result.score.toFixed(3) : result.score}
+        {result.timestamp && <> &middot; {formatDate(result.timestamp)}</>}
       </div>
     </div>
   );

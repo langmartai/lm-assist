@@ -149,6 +149,7 @@ interface ClaudeCodeConfig {
 
 interface McpStatus {
   installed: boolean;
+  source?: 'plugin' | 'manual' | null;
   status?: string;
   scope?: string;
   command?: string;
@@ -158,6 +159,7 @@ interface McpStatus {
 
 interface ContextHookStatus {
   installed: boolean;
+  source?: 'plugin' | 'manual' | null;
   scriptPath: string | null;
 }
 
@@ -2521,14 +2523,20 @@ export default function SettingsPage() {
                       <>
                         <InfoRow
                           label="Status"
-                          value={contextHookStatus.installed ? 'Installed' : 'Not installed'}
+                          value={
+                            contextHookStatus.installed
+                              ? contextHookStatus.source === 'plugin'
+                                ? 'Installed (via plugin)'
+                                : 'Installed'
+                              : 'Not installed'
+                          }
                           status={contextHookStatus.installed ? 'ok' : 'error'}
                         />
                         {contextHookStatus.installed && contextHookStatus.scriptPath && (
-                          <InfoRow label="Hook" value="UserPromptSubmit → context-inject-hook.sh" />
+                          <InfoRow label="Hook" value="UserPromptSubmit → context-inject-hook.js" />
                         )}
 
-                        {/* Action buttons */}
+                        {/* Action buttons — only show for manual installs, not plugin-managed */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                           {!contextHookStatus.installed && (
                             <button
@@ -2547,7 +2555,7 @@ export default function SettingsPage() {
                             </button>
                           )}
 
-                          {contextHookStatus.installed && (
+                          {contextHookStatus.installed && contextHookStatus.source !== 'plugin' && (
                             <button
                               className="btn btn-sm"
                               onClick={handleContextHookUninstall}
@@ -2579,7 +2587,12 @@ export default function SettingsPage() {
                       alignItems: 'flex-start',
                     }}>
                       <Info size={12} style={{ flexShrink: 0, marginTop: 2 }} />
-                      <span>Registers <code>context-inject-hook.sh</code> as a <code>UserPromptSubmit</code> hook in <code>~/.claude/settings.json</code>. Injects relevant knowledge and milestones before each Claude Code prompt.</span>
+                      <span>
+                        {contextHookStatus?.source === 'plugin'
+                          ? <>Registered via <code>claude plugin install</code>. The <code>context-inject-hook.js</code> hook runs on each <code>UserPromptSubmit</code>, injecting relevant knowledge and milestones before each Claude Code prompt.</>
+                          : <>Registers <code>context-inject-hook.js</code> as a <code>UserPromptSubmit</code> hook in <code>~/.claude/settings.json</code>. Injects relevant knowledge and milestones before each Claude Code prompt.</>
+                        }
+                      </span>
                     </div>
                   </div>
                 </SectionCard>
@@ -2668,7 +2681,13 @@ export default function SettingsPage() {
                       <>
                         <InfoRow
                           label="Status"
-                          value={mcpStatus.installed ? (mcpStatus.status || 'Connected') : 'Not installed'}
+                          value={
+                            mcpStatus.installed
+                              ? mcpStatus.source === 'plugin'
+                                ? 'Active (via plugin)'
+                                : (mcpStatus.status || 'Connected')
+                              : 'Not installed'
+                          }
                           status={mcpStatus.installed ? 'ok' : 'error'}
                         />
                         {mcpStatus.installed && mcpStatus.tools && mcpStatus.tools.length > 0 && (
@@ -2678,7 +2697,7 @@ export default function SettingsPage() {
                           />
                         )}
 
-                        {/* Action buttons */}
+                        {/* Action buttons — only show for manual installs, not plugin-managed */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                           {!mcpStatus.installed && (
                             <button
@@ -2697,7 +2716,7 @@ export default function SettingsPage() {
                             </button>
                           )}
 
-                          {mcpStatus.installed && (
+                          {mcpStatus.installed && mcpStatus.source !== 'plugin' && (
                             <button
                               className="btn btn-sm"
                               onClick={handleMcpUninstall}
@@ -2716,6 +2735,26 @@ export default function SettingsPage() {
                         </div>
                       </>
                     )}
+
+                    <div style={{
+                      padding: '6px 10px',
+                      background: 'var(--color-bg-secondary)',
+                      borderRadius: 'var(--radius-sm)',
+                      fontSize: 11,
+                      color: 'var(--color-text-tertiary)',
+                      lineHeight: 1.6,
+                      display: 'flex',
+                      gap: 8,
+                      alignItems: 'flex-start',
+                    }}>
+                      <Info size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                      <span>
+                        {mcpStatus?.source === 'plugin'
+                          ? <>Registered via <code>claude plugin install</code>. Provides <code>search</code>, <code>detail</code>, and <code>feedback</code> tools to Claude Code. Managed by the plugin system.</>
+                          : <>Provides <code>search</code>, <code>detail</code>, and <code>feedback</code> MCP tools to Claude Code for knowledge and milestone context.</>
+                        }
+                      </span>
+                    </div>
                   </div>
                 </SectionCard>
 
@@ -3879,7 +3918,7 @@ function InfoRow({ label, value, mono, copyable, status }: {
   value: string;
   mono?: boolean;
   copyable?: boolean;
-  status?: 'ok' | 'error' | 'loading';
+  status?: 'ok' | 'error' | 'warning' | 'loading';
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -3910,6 +3949,7 @@ function InfoRow({ label, value, mono, copyable, status }: {
         <span style={{ flexShrink: 0 }}>
           {status === 'ok' && <CheckCircle size={12} style={{ color: 'var(--color-status-green)' }} />}
           {status === 'error' && <XCircle size={12} style={{ color: 'var(--color-status-red)' }} />}
+          {status === 'warning' && <AlertTriangle size={12} style={{ color: 'rgb(251, 146, 60)' }} />}
           {status === 'loading' && <RefreshCw size={12} className="spin" style={{ color: 'var(--color-text-tertiary)' }} />}
         </span>
       )}

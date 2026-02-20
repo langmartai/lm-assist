@@ -28,7 +28,7 @@ const nextConfig: NextConfig = {
     // API calls use /_coreapi/... paths which get rewritten to the core API
     // on port 3100. This avoids header-based conditions (Content-Type) which
     // don't work through the WebSocket relay chain (headers are lost).
-    const coreApiUrl = `http://localhost:${process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100'}`;
+    const coreApiUrl = `http://127.0.0.1:${process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100'}`;
 
     return {
       beforeFiles: [

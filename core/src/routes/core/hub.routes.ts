@@ -350,6 +350,22 @@ export function createHubRoutes(ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // GET /hub/api-key - Get the configured hub API key (for hybrid mode)
+    {
+      method: 'GET',
+      pattern: /^\/hub\/api-key$/,
+      handler: async () => {
+        if (!isHubConfigured()) {
+          return { success: false, error: 'Hub not configured' };
+        }
+        const config = getHubConfig();
+        return {
+          success: true,
+          data: { apiKey: config.apiKey || null },
+        };
+      },
+    },
+
     // GET /hub/user - Get authenticated user info from hub
     {
       method: 'GET',

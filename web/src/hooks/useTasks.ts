@@ -24,7 +24,7 @@ export interface TaskGroup {
 }
 
 export function useTasks() {
-  const { apiClient, isLocal } = useAppMode();
+  const { apiClient, isLocal, isHybrid } = useAppMode();
   const { onlineMachines, selectedMachineId } = useMachineContext();
   const [allTasks, setAllTasks] = useState<SessionTask[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -40,26 +40,34 @@ export function useTasks() {
         const result = await apiClient.getTaskStoreAll();
         tasks = result.tasks;
       } else {
-        const targets = selectedMachineId
-          ? onlineMachines.filter(m => m.id === selectedMachineId)
-          : onlineMachines;
+        // Hybrid/Hub mode: fetch from online machines
+        const machineIds = selectedMachineId
+          ? [selectedMachineId]
+          : onlineMachines.map(m => m.id);
 
-        const results = await Promise.allSettled(
-          targets.map(async m => {
-            const result = await apiClient.getTaskStoreAll(m.id);
-            return result.tasks.map(t => ({
-              ...t,
-              machineId: m.id,
-              machineHostname: m.hostname,
-              machinePlatform: m.platform,
-              machineStatus: m.status,
-            }));
-          })
-        );
+        if (isHybrid && machineIds.length === 0) {
+          // No machines yet — fall back to local-only fetch
+          const result = await apiClient.getTaskStoreAll();
+          tasks = result.tasks;
+        } else {
+          const results = await Promise.allSettled(
+            machineIds.map(async id => {
+              const m = onlineMachines.find(m => m.id === id);
+              const result = await apiClient.getTaskStoreAll(id);
+              return result.tasks.map(t => ({
+                ...t,
+                machineId: id,
+                machineHostname: m?.hostname || id,
+                machinePlatform: m?.platform || 'linux',
+                machineStatus: m?.status || 'online',
+              }));
+            })
+          );
 
-        for (const r of results) {
-          if (r.status === 'fulfilled') {
-            tasks.push(...r.value);
+          for (const r of results) {
+            if (r.status === 'fulfilled') {
+              tasks.push(...r.value);
+            }
           }
         }
       }
@@ -70,7 +78,7 @@ export function useTasks() {
     } finally {
       setIsLoading(false);
     }
-  }, [apiClient, isLocal, onlineMachines, selectedMachineId]);
+  }, [apiClient, isLocal, isHybrid, onlineMachines, selectedMachineId]);
 
   useEffect(() => {
     fetchTasks();

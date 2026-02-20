@@ -52,8 +52,16 @@ export function useProjects() {
 
   // Filter by selected machine, sort git projects first + most recently used
   const projects = useMemo(() => {
+    // Find if the selected machine is the local one (may have gatewayId instead of 'localhost')
+    const selectedIsLocal = selectedMachineId
+      ? machines.find(m => m.id === selectedMachineId)?.isLocal
+      : false;
     let result = selectedMachineId
-      ? allProjects.filter(p => p.machineId === selectedMachineId)
+      ? allProjects.filter(p =>
+          p.machineId === selectedMachineId ||
+          // In local mode, projects have machineId='localhost' but machine may use gatewayId
+          (selectedIsLocal && (p.machineId === 'localhost' || p.machineId === selectedMachineId))
+        )
       : [...allProjects];
     // Sort: git projects first, then by most recent activity
     result.sort((a, b) => {

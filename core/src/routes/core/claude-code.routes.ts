@@ -25,15 +25,115 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 
+const IS_WINDOWS = process.platform === 'win32';
 const CLAUDE_CODE_CONFIG_FILE = path.join(os.homedir(), '.claude-code-config.json');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.json');
+const INSTALLED_PLUGINS_FILE = path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
 const STATUSLINE_SCRIPT = path.resolve(__dirname, '../../../hooks/statusline-worktree.sh');
+// Cross-platform statusline: Node.js script (works on Windows, macOS, Linux)
+const STATUSLINE_SCRIPT_JS = path.resolve(__dirname, '../../../hooks/statusline-worktree.js');
+const STATUSLINE_COMMAND = `node "${STATUSLINE_SCRIPT_JS}"`;
 // Cross-platform hook: Node.js script (works on Windows, macOS, Linux)
 const CONTEXT_INJECT_SCRIPT_JS = path.resolve(__dirname, '../../../hooks/context-inject-hook.js');
-// Legacy bash-only hook (kept for backward compatibility detection)
-const CONTEXT_INJECT_SCRIPT_SH = path.resolve(__dirname, '../../../hooks/context-inject-hook.sh');
 // The install command uses `node <script>` for cross-platform support
 const CONTEXT_INJECT_COMMAND = `node "${CONTEXT_INJECT_SCRIPT_JS}"`;
+
+// Plugin name as registered in Claude Code plugin system
+const PLUGIN_NAME = 'lm-assist@langmartai';
+
+/**
+ * Detect whether lm-assist is installed as a Claude Code plugin.
+ * Checks both installed_plugins.json and settings.json enabledPlugins.
+ * Returns the plugin install path if found and enabled, null otherwise.
+ */
+function detectPluginInstallation(): { installPath: string; version: string } | null {
+  try {
+    // Check installed_plugins.json
+    const raw = fs.readFileSync(INSTALLED_PLUGINS_FILE, 'utf-8');
+    const data = JSON.parse(raw);
+    const entries = data?.plugins?.[PLUGIN_NAME];
+    if (!Array.isArray(entries) || entries.length === 0) return null;
+
+    // Get the most recent installation entry
+    const entry = entries[entries.length - 1];
+    if (!entry?.installPath) return null;
+
+    // Check if the plugin is enabled in settings.json
+    const settings = readClaudeSettings();
+    const enabled = settings?.enabledPlugins?.[PLUGIN_NAME];
+    if (enabled !== true) return null;
+
+    return { installPath: entry.installPath, version: entry.version || 'unknown' };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if the plugin has an MCP server registered for lm-assist-context.
+ */
+function detectPluginMcp(pluginPath: string): boolean {
+  try {
+    const mcpJsonPath = path.join(pluginPath, '.mcp.json');
+    const raw = fs.readFileSync(mcpJsonPath, 'utf-8');
+    const data = JSON.parse(raw);
+    return !!(data?.mcpServers?.['lm-assist-context']);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if the plugin has a context-inject hook registered.
+ */
+function detectPluginHook(pluginPath: string): boolean {
+  try {
+    const hooksJsonPath = path.join(pluginPath, 'hooks', 'hooks.json');
+    const raw = fs.readFileSync(hooksJsonPath, 'utf-8');
+    const data = JSON.parse(raw);
+    const userPromptHooks: any[] = data?.hooks?.UserPromptSubmit || [];
+    return userPromptHooks.some((entry: any) =>
+      (entry.hooks || []).some((h: any) =>
+        typeof h.command === 'string' && h.command.includes('context-inject-hook.js')
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Cross-platform: find an executable binary path.
+ * Uses 'where' on Windows, 'which' on macOS/Linux.
+ */
+function findBinaryPath(name: string): string | null {
+  try {
+    const cmd = IS_WINDOWS ? 'where' : 'which';
+    const output = execFileSync(cmd, [name], { encoding: 'utf-8', timeout: 5000 }).trim();
+    // 'where' on Windows may return multiple lines; take the first
+    return output.split(/\r?\n/)[0].trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cross-platform: determine if a binary path points to claude-native.
+ */
+function detectBinaryType(binaryPath: string): 'claude' | 'claude-native' {
+  // On Windows, just check the filename
+  if (IS_WINDOWS) {
+    const basename = path.basename(binaryPath).toLowerCase();
+    return basename.includes('claude-native') ? 'claude-native' : 'claude';
+  }
+  // On Unix, resolve symlinks
+  try {
+    const resolved = fs.realpathSync(binaryPath);
+    return resolved.includes('claude-native') ? 'claude-native' : 'claude';
+  } catch {
+    return 'claude';
+  }
+}
 
 interface ClaudeCodeConfig {
   skipDangerPermission: boolean;
@@ -104,7 +204,7 @@ function writeClaudeSettings(settings: Record<string, any>): void {
 
 export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
-    // GET /claude-code/status - Detect Claude Code installation
+    // GET /claude-code/status - Detect Claude Code installation (cross-platform)
     {
       method: 'GET',
       pattern: /^\/claude-code\/status$/,
@@ -114,37 +214,14 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
         let binaryType: 'claude' | 'claude-native' | null = null;
         let version: string | null = null;
 
-        // Check for claude binary
-        try {
-          binaryPath = execFileSync('which', ['claude'], { encoding: 'utf-8', timeout: 5000 }).trim();
-        } catch {
-          // not found
-        }
-
-        // Check for claude-native binary
-        let claudeNativePath: string | null = null;
-        try {
-          claudeNativePath = execFileSync('which', ['claude-native'], { encoding: 'utf-8', timeout: 5000 }).trim();
-        } catch {
-          // not found
-        }
+        // Cross-platform binary detection
+        binaryPath = findBinaryPath('claude');
+        const claudeNativePath = findBinaryPath('claude-native');
 
         if (binaryPath) {
           installed = true;
+          binaryType = detectBinaryType(binaryPath);
 
-          // Determine binary type by resolving symlinks
-          try {
-            const resolved = execFileSync('readlink', ['-f', binaryPath], { encoding: 'utf-8', timeout: 5000 }).trim();
-            if (resolved.includes('claude-native')) {
-              binaryType = 'claude-native';
-            } else {
-              binaryType = 'claude';
-            }
-          } catch {
-            binaryType = 'claude';
-          }
-
-          // Get version
           try {
             version = execFileSync(binaryPath, ['--version'], { encoding: 'utf-8', timeout: 10000 }).trim();
           } catch {
@@ -248,10 +325,11 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
         const installed = !!(
           statusLine &&
           typeof statusLine.command === 'string' &&
-          statusLine.command.includes('statusline-worktree.sh')
+          (statusLine.command.includes('statusline-worktree.sh') ||
+           statusLine.command.includes('statusline-worktree.js'))
         );
 
-        const scriptPath = installed ? statusLine.command : STATUSLINE_SCRIPT;
+        const scriptPath = installed ? statusLine.command : STATUSLINE_COMMAND;
 
         const features = [
           'Context %',
@@ -279,10 +357,10 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async () => {
         const settings = readClaudeSettings();
 
-        // Deep merge: preserve other keys, set statusLine
+        // Deep merge: preserve other keys, set statusLine (cross-platform JS version)
         settings.statusLine = {
           type: 'command',
-          command: STATUSLINE_SCRIPT,
+          command: STATUSLINE_COMMAND,
           padding: 2,
         };
 
@@ -292,7 +370,7 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
           success: true,
           data: {
             installed: true,
-            scriptPath: STATUSLINE_SCRIPT,
+            scriptPath: STATUSLINE_COMMAND,
             features: [
               'Context %', 'Session RAM', 'Free RAM', 'PID', 'PTS',
               'Process time', 'Project dir', 'Last prompts', 'Worktree detection',
@@ -325,10 +403,29 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // GET /claude-code/mcp - Check MCP server installation status
+    // Detects both plugin-installed and manually-installed MCP servers
     {
       method: 'GET',
       pattern: /^\/claude-code\/mcp$/,
       handler: async () => {
+        // 1. Check plugin-based installation first (cross-platform, no CLI needed)
+        const plugin = detectPluginInstallation();
+        if (plugin && detectPluginMcp(plugin.installPath)) {
+          return {
+            success: true,
+            data: {
+              installed: true,
+              source: 'plugin',
+              scope: 'plugin',
+              status: 'active',
+              command: 'node',
+              args: path.join(plugin.installPath, 'core', 'dist', 'mcp-server', 'index.js'),
+              tools: ['search', 'detail', 'feedback'],
+            },
+          };
+        }
+
+        // 2. Fallback: check manual installation via `claude mcp get`
         const env = { ...process.env, CLAUDECODE: undefined };
         try {
           const output = execFileSync('claude', ['mcp', 'get', 'lm-assist-context'], {
@@ -336,6 +433,10 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
             timeout: 10000,
             env,
           }).trim();
+
+          if (!output) {
+            return { success: true, data: { installed: false, source: null } };
+          }
 
           // Parse the key: value lines from `claude mcp get` output
           const scopeMatch = output.match(/scope:\s*(.+)/i);
@@ -351,6 +452,7 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
             success: true,
             data: {
               installed: true,
+              source: 'manual',
               scope: scopeMatch?.[1]?.trim() || 'user',
               status: isConnected ? 'connected' : statusRaw,
               command: commandMatch?.[1]?.trim() || null,
@@ -361,17 +463,31 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
         } catch {
           return {
             success: true,
-            data: { installed: false },
+            data: { installed: false, source: null },
           };
         }
       },
     },
 
-    // POST /claude-code/mcp/install - Install MCP server
+    // POST /claude-code/mcp/install - Install MCP server (manual, skipped if plugin-managed)
     {
       method: 'POST',
       pattern: /^\/claude-code\/mcp\/install$/,
       handler: async () => {
+        // Skip if already installed via plugin
+        const plugin = detectPluginInstallation();
+        if (plugin && detectPluginMcp(plugin.installPath)) {
+          return {
+            success: true,
+            data: {
+              installed: true,
+              source: 'plugin',
+              status: 'active',
+              tools: ['search', 'detail', 'feedback'],
+            },
+          };
+        }
+
         const env = { ...process.env, CLAUDECODE: undefined };
         const mcpServerPath = path.resolve(__dirname, '../../dist/mcp-server/index.js');
 
@@ -400,6 +516,7 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
             success: true,
             data: {
               installed: true,
+              source: 'manual',
               status: 'connected',
               tools: ['search', 'detail', 'feedback'],
             },
@@ -413,11 +530,20 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // POST /claude-code/mcp/uninstall - Remove MCP server
+    // POST /claude-code/mcp/uninstall - Remove MCP server (manual installs only)
     {
       method: 'POST',
       pattern: /^\/claude-code\/mcp\/uninstall$/,
       handler: async () => {
+        // Refuse to uninstall plugin-managed MCP
+        const plugin = detectPluginInstallation();
+        if (plugin && detectPluginMcp(plugin.installPath)) {
+          return {
+            success: false,
+            error: 'MCP server is managed by the lm-assist plugin. Use "claude plugin uninstall lm-assist" to remove it.',
+          };
+        }
+
         const env = { ...process.env, CLAUDECODE: undefined };
         try {
           execFileSync('claude', ['mcp', 'remove', 'lm-assist-context', '-s', 'user'], {
@@ -428,7 +554,7 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
 
           return {
             success: true,
-            data: { installed: false },
+            data: { installed: false, source: null },
           };
         } catch (err: any) {
           return {
@@ -440,10 +566,26 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // GET /claude-code/context-hook - Check context-inject hook installation
+    // Detects both plugin-installed and manually-installed hooks
     {
       method: 'GET',
       pattern: /^\/claude-code\/context-hook$/,
       handler: async () => {
+        // 1. Check plugin-based installation first (cross-platform, no CLI needed)
+        const plugin = detectPluginInstallation();
+        if (plugin && detectPluginHook(plugin.installPath)) {
+          return {
+            success: true,
+            data: {
+              installed: true,
+              source: 'plugin',
+              scriptPath: path.join(plugin.installPath, 'core', 'hooks', 'context-inject-hook.js'),
+              command: `node "\${CLAUDE_PLUGIN_ROOT}/core/hooks/context-inject-hook.js"`,
+            },
+          };
+        }
+
+        // 2. Fallback: check manual installation in settings.json
         const settings = readClaudeSettings();
         const hooks = settings.hooks || {};
         const userPromptHooks: any[] = hooks.UserPromptSubmit || [];
@@ -458,16 +600,35 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
         );
         return {
           success: true,
-          data: { installed, scriptPath: CONTEXT_INJECT_SCRIPT_JS, command: CONTEXT_INJECT_COMMAND },
+          data: {
+            installed,
+            source: installed ? 'manual' : null,
+            scriptPath: CONTEXT_INJECT_SCRIPT_JS,
+            command: CONTEXT_INJECT_COMMAND,
+          },
         };
       },
     },
 
-    // POST /claude-code/context-hook/install - Install context-inject hook into settings.json
+    // POST /claude-code/context-hook/install - Install context-inject hook (manual, skipped if plugin-managed)
     {
       method: 'POST',
       pattern: /^\/claude-code\/context-hook\/install$/,
       handler: async () => {
+        // Skip if already installed via plugin
+        const plugin = detectPluginInstallation();
+        if (plugin && detectPluginHook(plugin.installPath)) {
+          return {
+            success: true,
+            data: {
+              installed: true,
+              source: 'plugin',
+              scriptPath: path.join(plugin.installPath, 'core', 'hooks', 'context-inject-hook.js'),
+              command: `node "\${CLAUDE_PLUGIN_ROOT}/core/hooks/context-inject-hook.js"`,
+            },
+          };
+        }
+
         const settings = readClaudeSettings();
         if (!settings.hooks) settings.hooks = {};
         let existingHooks: any[] = settings.hooks.UserPromptSubmit || [];
@@ -515,19 +676,28 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
 
         return {
           success: true,
-          data: { installed: true, scriptPath: CONTEXT_INJECT_SCRIPT_JS, command: CONTEXT_INJECT_COMMAND },
+          data: { installed: true, source: 'manual', scriptPath: CONTEXT_INJECT_SCRIPT_JS, command: CONTEXT_INJECT_COMMAND },
         };
       },
     },
 
-    // POST /claude-code/context-hook/uninstall - Remove context-inject hook from settings.json
+    // POST /claude-code/context-hook/uninstall - Remove context-inject hook from settings.json (manual installs only)
     {
       method: 'POST',
       pattern: /^\/claude-code\/context-hook\/uninstall$/,
       handler: async () => {
+        // Refuse to uninstall plugin-managed hook
+        const plugin = detectPluginInstallation();
+        if (plugin && detectPluginHook(plugin.installPath)) {
+          return {
+            success: false,
+            error: 'Context hook is managed by the lm-assist plugin. Use "claude plugin uninstall lm-assist" to remove it.',
+          };
+        }
+
         const settings = readClaudeSettings();
         if (!settings.hooks?.UserPromptSubmit) {
-          return { success: true, data: { installed: false, scriptPath: null } };
+          return { success: true, data: { installed: false, source: null, scriptPath: null } };
         }
 
         // Remove both legacy .sh and cross-platform .js versions
@@ -551,7 +721,7 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
         writeClaudeSettings(settings);
         return {
           success: true,
-          data: { installed: false, scriptPath: null },
+          data: { installed: false, source: null, scriptPath: null },
         };
       },
     },

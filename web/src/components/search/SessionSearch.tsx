@@ -47,6 +47,7 @@ interface KnowledgeSearchResult {
   partId?: string;
   text: string;
   score: number;
+  timestamp?: string;
   contentType?: string;
   knowledgeTitle?: string;
   partTitle?: string;
@@ -780,6 +781,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                       </div>
                       <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2, paddingLeft: 18 }}>
                         {kr.partId || kr.knowledgeId} &middot; Score: {typeof kr.score === 'number' ? kr.score.toFixed(3) : kr.score}
+                        {kr.timestamp && <> &middot; {timeAgo(kr.timestamp)}</>}
                       </div>
                     </button>
                   ))}

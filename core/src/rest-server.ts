@@ -63,7 +63,7 @@ export class TierRestServer {
 
     this.options = {
       port: options.port || 3100,
-      host: options.host || '0.0.0.0',
+      host: options.host || '::',
       projectPath: options.projectPath,
       tierManager: options.tierManager || undefined as any,
       cors: options.cors ?? true,
