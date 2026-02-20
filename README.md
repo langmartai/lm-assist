@@ -87,6 +87,10 @@ lm-assist automatically generates knowledge from your Claude Code sessions, then
 
 > *MCP Monitor — Claude Code actively searching the knowledge base*
 
+<a href="docs/screenshots/context-injection-cli.png"><img src="docs/screenshots/preview/context-injection-cli.png" alt="Context Injection in Claude Code CLI" width="700"></a>
+
+> *Claude Code CLI — MCP tools search and inject knowledge before Claude responds*
+
 ### Settings
 
 <a href="docs/screenshots/settings.png"><img src="docs/screenshots/preview/settings.png" alt="Settings" width="700"></a>

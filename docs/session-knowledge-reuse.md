@@ -92,6 +92,55 @@ That is a **95%+ reduction** in exploration tokens and near-zero startup time. T
 
 ---
 
+## The Obvious Alternative: Put It in CLAUDE.md
+
+Before looking at automated solutions, it is worth examining the approach most people try first: writing project knowledge directly into `CLAUDE.md` or `~/.claude/CLAUDE.md`.
+
+Claude Code reads these files at the start of every session. You can document your architecture, patterns, conventions, and decisions there. It works, and it requires no extra tooling.
+
+But there is a cost that is easy to underestimate.
+
+### How CLAUDE.md Affects Token Usage
+
+CLAUDE.md is injected as a system-level instruction on **every single prompt** in a session. Not once per session — every turn. If your CLAUDE.md is 2,000 tokens, and you send 40 prompts in a session, that is 80,000 tokens consumed just re-reading your project instructions. Every prompt pays the full cost.
+
+This creates three problems:
+
+**1. Direct token cost.** CLAUDE.md tokens are input tokens billed on every API call. A 3,000-token CLAUDE.md across 50 prompts per session, across 5 sessions per day, is 750,000 tokens/day — just for the instructions file. That adds up to real money at API pricing.
+
+**2. Earlier context compaction.** Claude Code has a finite context window. The more of it CLAUDE.md consumes, the sooner the conversation history gets compacted. This means Claude loses earlier messages (your prompts, its research, tool results) faster, degrading response quality as sessions get longer.
+
+**3. Scaling ceiling.** A useful CLAUDE.md for a non-trivial project quickly grows to thousands of tokens. But you cannot put everything in there — your auth patterns, your database conventions, your API contracts, your deployment setup, your test patterns. At some point you are choosing what to leave out, and the things you leave out are the things Claude will need to re-discover.
+
+### The Static Knowledge Problem
+
+CLAUDE.md is also manually maintained. When your codebase evolves — new patterns, refactored modules, deprecated approaches — someone has to update the file. In practice, CLAUDE.md drifts from reality. It describes patterns from three months ago. It references files that were renamed. It omits the new authentication flow because nobody remembered to document it.
+
+There is no feedback mechanism. Claude cannot flag that a CLAUDE.md entry is wrong. It just follows outdated instructions and produces subtly incorrect results.
+
+### Comparison: CLAUDE.md vs On-Demand Knowledge Injection
+
+| Dimension | CLAUDE.md | Context Injection (lm-assist) |
+|-----------|-----------|-------------------------------|
+| **Token cost per prompt** | Full file on every prompt (thousands of tokens) | Only relevant entries per prompt (hundreds of tokens) |
+| **Scaling** | Grows linearly; large files crowd out conversation context | Knowledge base grows indefinitely; only relevant subset injected |
+| **Maintenance** | Manual — you write and update it | Automatic — extracted from sessions |
+| **Relevance** | Everything injected regardless of prompt topic | Semantic search selects only what matches the current prompt |
+| **Freshness** | Drifts unless manually updated | Feedback loop flags outdated entries |
+| **Context compaction** | Accelerates compaction (large fixed overhead) | Minimal impact (small, targeted injection) |
+| **Discovery** | Limited to what you thought to document | Captures knowledge you never planned to write down |
+| **Setup effort** | None (built into Claude Code) | Install lm-assist, generate knowledge |
+
+CLAUDE.md is the right choice for **small, stable instructions** — coding style preferences, a few key conventions, project-specific rules. Keep it lean.
+
+For **project knowledge at scale** — architecture understanding, implementation patterns, debugging insights, API contracts — a different approach works better: extract knowledge automatically, search it semantically, and inject only what is relevant to the current prompt.
+
+![Knowledge detail view — a generated knowledge entry in the lm-assist web UI showing structured parts (overview, plugin registration, hook comparison) extracted from a session exploration. This is what automatic extraction produces — no manual writing needed.](screenshots/knowledge-detail-view.png)
+
+![Context injection in Claude Code — when the user types "hook configuration issue", the MCP tools automatically search the knowledge base, find matching entries (K006.11, K011.4, K011.2, K010.1), and inject relevant context before Claude responds. Only the knowledge that matches the prompt is loaded.](screenshots/context-injection-cli.png)
+
+---
+
 ## How LM Assist Makes This Work
 
 LM Assist is an open-source tool that turns your Claude Code session history into a live knowledge base — with zero manual curation effort. Here is how the pipeline works:
