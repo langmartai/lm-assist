@@ -1,8 +1,3 @@
 {
-  "mcpServers": {
-    "lm-assist-context": {
-      "command": "node",
-      "args": ["./core/dist/mcp-server/index.js"]
-    }
-  }
+  "mcpServers": {}
 }

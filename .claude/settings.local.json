@@ -4,7 +4,12 @@
       "mcp__lm-assist-context__search",
       "mcp__lm-assist-context__detail",
       "mcp__plugin_lm-assist_lm-assist-context__search",
-      "mcp__plugin_lm-assist_lm-assist-context__detail"
+      "mcp__plugin_lm-assist_lm-assist-context__detail",
+      "Bash(node:*)",
+      "Bash(git pull:*)",
+      "Bash(./core.sh build:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   },
   "enableAllProjectMcpServers": true,
