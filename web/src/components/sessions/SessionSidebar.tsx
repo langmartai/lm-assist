@@ -46,7 +46,7 @@ export function SessionSidebar({
   const filteredProjectNames = gitProjectNames && gitProjectNames.size > 0
     ? projectNames.filter(name => gitProjectNames.has(name))
     : projectNames;
-  const { machines, isSingleMachine } = useMachineContext();
+  const { isSingleMachine } = useMachineContext();
 
   // Scroll to URL-specified session once sessions load
   const scrolledToUrlRef = useRef(false);
@@ -169,21 +169,6 @@ export function SessionSidebar({
         flexWrap: 'wrap',
         gap: 4,
       }}>
-        {/* Machine filter - hidden in local mode */}
-        {!isSingleMachine && (
-          <select
-            className="input"
-            style={{ width: 'auto', fontSize: 11, padding: '3px 6px' }}
-            value={filters.machineId || ''}
-            onChange={e => setFilters({ machineId: e.target.value || null })}
-          >
-            <option value="">All machines</option>
-            {machines.map(m => (
-              <option key={m.id} value={m.id}>{m.hostname}</option>
-            ))}
-          </select>
-        )}
-
         {/* Project filter */}
         <select
           className="input"
