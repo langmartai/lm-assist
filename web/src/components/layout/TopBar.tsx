@@ -9,6 +9,7 @@ import { detectProxyInfo } from '@/lib/api-client';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useSearch } from '@/contexts/SearchContext';
 import { MachineDropdown } from './MachineDropdown';
+import { useMachineContext } from '@/contexts/MachineContext';
 import { BackgroundProgress } from './BackgroundProgress';
 import { DataLoadingModal } from '@/components/data-loading/DataLoadingModal';
 import { DATA_LOADED_KEY } from '@/hooks/useDataLoading';
@@ -30,6 +31,7 @@ export function TopBar() {
   const pathname = usePathname();
   const router = useRouter();
   const { proxy, hubUser, localGatewayId } = useAppMode();
+  const { selectedMachine } = useMachineContext();
   const { theme, toggleTheme } = useTheme();
   const { open: openSearch } = useSearch();
   const [mounted, setMounted] = useState(false);
@@ -92,9 +94,18 @@ export function TopBar() {
   const hubName = 'langmart.ai';
   const currentPage = pathname.replace(proxy.basePath, '') || '/session-dashboard';
   const cloudUrl = gatewayId ? `https://${hubName}/w/${gatewayId}/assist${currentPage}` : null;
-  const localHost = localIp && localIp !== 'localhost' ? localIp : 'localhost';
+  // When a different machine is selected from the dropdown, use its localIp.
+  // Fall back to the proxy machine's IP (fetched from /api/server) when viewing the proxy machine itself.
+  const isSelectedProxyMachine = !selectedMachine ||
+    selectedMachine.id === proxy.machineId ||
+    selectedMachine.gatewayId === proxy.machineId;
+  const effectiveLocalIp = isSelectedProxyMachine
+    ? localIp
+    : (selectedMachine?.localIp || localIp);
+  const localHost = effectiveLocalIp && effectiveLocalIp !== 'localhost' ? effectiveLocalIp : 'localhost';
   const localBaseUrl = `http://${localHost}:3848`;
-  const localUrl = lanAuthEnabled && lanAccessToken
+  // Only include auth token when viewing the proxy machine (token is machine-specific)
+  const localUrl = (isSelectedProxyMachine && lanAuthEnabled && lanAccessToken)
     ? `${localBaseUrl}/auth?token=${encodeURIComponent(lanAccessToken)}&redirect=${encodeURIComponent(currentPage)}`
     : `${localBaseUrl}${currentPage}`;
 

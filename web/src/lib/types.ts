@@ -13,6 +13,8 @@ export interface Machine {
   osVersion?: string;
   /** True when this machine is the local machine in hybrid mode */
   isLocal?: boolean;
+  /** Local LAN IP address (populated when available) */
+  localIp?: string;
   // Cross-reference counts (enriched client-side)
   projectCount?: number;
   sessionCount?: number;

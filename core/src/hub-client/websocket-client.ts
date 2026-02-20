@@ -230,6 +230,7 @@ export class WebSocketClient extends EventEmitter {
         hostname: os.hostname(),
         is_container: this.isInContainer(),
         run_mode: 'standalone',
+        local_ip: this.getLocalIp(),
       },
       capabilities: {
         supports_api_relay: true,
@@ -451,5 +452,16 @@ export class WebSocketClient extends EventEmitter {
     const total = os.totalmem();
     const free = os.freemem();
     return Math.round(((total - free) / total) * 100);
+  }
+
+  private getLocalIp(): string {
+    const ifaces = os.networkInterfaces();
+    for (const iface of Object.values(ifaces)) {
+      if (!iface) continue;
+      for (const addr of iface) {
+        if (addr.family === 'IPv4' && !addr.internal) return addr.address;
+      }
+    }
+    return 'localhost';
   }
 }

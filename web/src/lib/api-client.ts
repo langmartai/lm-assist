@@ -304,18 +304,21 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
 
     async getMachines(): Promise<Machine[]> {
       // Fetch local machine info and hub machines in parallel
-      const [healthResult, hubResult] = await Promise.allSettled([
+      const [healthResult, serverResult, hubResult] = await Promise.allSettled([
         fetchJson<{ hostname?: string; platform?: string }>(api('/health')),
+        fetchJson<{ localIp?: string }>(api('/api/server')),
         fetchJson<any>(api('/hub/machines')),
       ]);
 
       const health = healthResult.status === 'fulfilled' ? healthResult.value : {};
+      const serverInfo = serverResult.status === 'fulfilled' ? serverResult.value : {};
       const localMachine: Machine = {
         id: 'localhost',
         hostname: health.hostname || 'localhost',
         platform: health.platform || 'linux',
         status: 'online',
         lastHeartbeat: new Date().toISOString(),
+        localIp: serverInfo.localIp,
       };
 
       // If hub machines available, merge (same logic as hybrid client)
@@ -350,6 +353,7 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
             gatewayId: w.gatewayId,
             osVersion: w.osVersion,
             isLocal: true,
+            localIp: localMachine.localIp,
           });
           localFound = true;
         } else {
@@ -362,6 +366,7 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
             connectedAt: w.connectedAt,
             gatewayId: w.gatewayId,
             osVersion: w.osVersion,
+            localIp: w.localIp || w.local_ip || w.system_info?.local_ip,
           });
         }
       }
@@ -891,6 +896,7 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
         connectedAt: w.connectedAt,
         gatewayId: w.gatewayId,
         osVersion: w.osVersion,
+        localIp: w.localIp || w.local_ip || w.system_info?.local_ip,
       }));
     },
 
@@ -1405,6 +1411,7 @@ export function createHybridClient(options: HybridClientOptions): ApiClient {
             platform: localInfo?.platform || w.platform,
             status: 'online', // We know it's online since we can reach it directly
             isLocal: true,
+            localIp: localInfo?.localIp || w.localIp,
           } as Machine & { isLocal?: boolean });
           localFound = true;
         } else {
