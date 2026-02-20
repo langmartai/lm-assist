@@ -355,6 +355,28 @@ export interface SubagentConversationMessage {
 // Project types
 // ============================================
 
+export interface GitRemote {
+  name: string;
+  url: string;
+  type: 'fetch' | 'push';
+}
+
+export interface GitInfo {
+  initialized: boolean;
+  branch: string | null;
+  isBare: boolean;
+  isWorktree: boolean;
+  mainWorktreePath: string | null;
+  worktrees: Array<{
+    path: string;
+    branch: string | null;
+    head: string;
+    isCurrent: boolean;
+  }>;
+  remotes: GitRemote[];
+  headCommit: string | null;
+}
+
 export interface Project {
   projectPath: string;
   projectName: string;
@@ -373,6 +395,7 @@ export interface Project {
   lastUserMessage?: string;
   hasClaudeMd?: boolean;
   isGitProject?: boolean;
+  git?: GitInfo | null;
 }
 
 // ============================================

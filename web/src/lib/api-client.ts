@@ -299,6 +299,9 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
   let cachedSessions: Session[] | null = null;
   let cachedSessionsLastModified: string | null = null;
 
+  // Track the effective local machine ID (may be gatewayId when hub is connected)
+  let localMachineId = 'localhost';
+
   return {
     mode: 'local',
 
@@ -380,6 +383,9 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
         });
       }
 
+      // Update the effective local machine ID so getProjects/getSessions use it
+      localMachineId = localGatewayId || 'localhost';
+
       return result;
     },
 
@@ -419,7 +425,7 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
         lastUserMessage: s.lastUserMessage,
         running: s.running || undefined,
         forkedFromSessionId: s.forkedFromSessionId,
-        machineId: 'localhost',
+        machineId: localMachineId,
         machineHostname: 'localhost',
         machinePlatform: 'linux',
         machineStatus: 'online',
@@ -506,7 +512,7 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
       return projects.map(p => ({
         projectPath: p.projectPath || p.path,
         projectName: extractProjectName(p.projectPath || p.path),
-        machineId: 'localhost',
+        machineId: localMachineId,
         machineHostname: 'localhost',
         machinePlatform: 'linux',
         machineStatus: 'online',
@@ -519,6 +525,7 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
         lastUserMessage: p.lastUserMessage || undefined,
         hasClaudeMd: p.hasClaudeMd || false,
         isGitProject: p.isGitProject ?? true,
+        git: p.git || null,
       }));
     },
 
@@ -1015,6 +1022,7 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
         totalCost: p.totalCost || 0,
         lastActivity: p.lastActivity || p.lastModified,
         isGitProject: p.isGitProject ?? true,
+        git: p.git || null,
       }));
     },
 
@@ -1687,7 +1695,10 @@ export function detectAppMode(): { mode: AppMode; baseUrl: string } {
   // Local mode: localhost or local IP
   // The local tier-agent API port — configurable via env or default
   const localPort = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
-  return { mode: 'local', baseUrl: `http://${hostname}:${localPort}` };
+  // Use 127.0.0.1 instead of 'localhost' to avoid IPv6 resolution issues on Windows
+  // where browsers may resolve localhost to ::1 but the API only listens on IPv4
+  const apiHost = (hostname === 'localhost' || hostname === '127.0.0.1') ? '127.0.0.1' : hostname;
+  return { mode: 'local', baseUrl: `http://${apiHost}:${localPort}` };
 }
 
 /**
@@ -2148,7 +2159,8 @@ function transformSessionResponse(raw: any, sessionId: string): SessionDetail {
 
 function extractProjectName(projectPath: string): string {
   if (!projectPath) return 'Unknown';
-  const parts = projectPath.replace(/\/$/, '').split('/');
+  // Handle both Unix (/) and Windows (\) path separators
+  const parts = projectPath.replace(/[/\\]$/, '').split(/[/\\]/);
   return parts[parts.length - 1] || 'Unknown';
 }
 

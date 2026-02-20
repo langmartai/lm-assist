@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { homedir } from 'os';
 import * as readline from 'readline';
+import { execSync } from 'child_process';
 import {
   getProjectsDir,
   encodePath,
@@ -31,6 +32,39 @@ import { getSessionCache, isRealUserPrompt } from './session-cache';
 // Types
 // ============================================================================
 
+export interface GitRemote {
+  /** Remote name (e.g., origin, upstream) */
+  name: string;
+  /** Remote URL */
+  url: string;
+  /** Remote type (fetch or push) */
+  type: 'fetch' | 'push';
+}
+
+export interface GitInfo {
+  /** Whether this directory is inside a git repository */
+  initialized: boolean;
+  /** Current branch name (null if detached HEAD) */
+  branch: string | null;
+  /** Whether this is a bare repository */
+  isBare: boolean;
+  /** Whether this is a git worktree (linked working tree) */
+  isWorktree: boolean;
+  /** Path to the main worktree (if this is a linked worktree) */
+  mainWorktreePath: string | null;
+  /** List of all linked worktrees (from main worktree perspective) */
+  worktrees: Array<{
+    path: string;
+    branch: string | null;
+    head: string;
+    isCurrent: boolean;
+  }>;
+  /** Git remotes */
+  remotes: GitRemote[];
+  /** Short HEAD commit hash */
+  headCommit: string | null;
+}
+
 export interface Project {
   /** Decoded project path (e.g., /home/ubuntu/my-project) */
   path: string;
@@ -46,6 +80,8 @@ export interface Project {
   hasClaudeMd: boolean;
   /** Whether the project directory contains a .git folder */
   isGitProject: boolean;
+  /** Git repository details (null if not a git project or directory doesn't exist) */
+  git: GitInfo | null;
 }
 
 export interface ProjectSession {
@@ -256,6 +292,9 @@ export class ProjectsService {
       const hasClaudeMd = fs.existsSync(path.join(projectPath, 'CLAUDE.md'));
       const isGitProject = fs.existsSync(path.join(projectPath, '.git'));
 
+      // Detect git info (lightweight — only when directory exists on disk)
+      const git = isGitProject ? this.getGitInfo(projectPath) : null;
+
       projects.push({
         path: encoded ? encodedPath : projectPath,
         encodedPath,
@@ -264,6 +303,7 @@ export class ProjectsService {
         storageSize,
         hasClaudeMd,
         isGitProject,
+        git,
         _mostRecentSessionPath: mostRecentSessionPath,
       } as any);
     }
@@ -403,6 +443,7 @@ export class ProjectsService {
     const finalProjectPath = realProjectPath || projectPath;
     const hasClaudeMd = fs.existsSync(path.join(finalProjectPath, 'CLAUDE.md'));
     const isGitProject = fs.existsSync(path.join(finalProjectPath, '.git'));
+    const git = isGitProject ? this.getGitInfo(finalProjectPath) : null;
 
     return {
       path: finalProjectPath,
@@ -412,6 +453,7 @@ export class ProjectsService {
       storageSize,
       hasClaudeMd,
       isGitProject,
+      git,
     };
   }
 
@@ -1250,6 +1292,123 @@ export class ProjectsService {
         tasks: totalTasks,
       },
       projects: projectSizes,
+    };
+  }
+
+  // --------------------------------------------------------------------------
+  // Git Detection
+  // --------------------------------------------------------------------------
+
+  /**
+   * Detect git repository status for a project directory.
+   * Runs git commands in the project directory to extract branch, remotes, worktree info.
+   * Returns null if the directory doesn't exist or git is not available.
+   */
+  getGitInfo(projectPath: string): GitInfo | null {
+    if (!fs.existsSync(projectPath)) {
+      return null;
+    }
+
+    const execGit = (args: string): string | null => {
+      try {
+        return execSync(`git ${args}`, {
+          cwd: projectPath,
+          encoding: 'utf-8',
+          timeout: 5000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim();
+      } catch {
+        return null;
+      }
+    };
+
+    // Check if inside a git repo
+    const topLevel = execGit('rev-parse --is-inside-work-tree');
+    if (topLevel !== 'true') {
+      return { initialized: false, branch: null, isBare: false, isWorktree: false, mainWorktreePath: null, worktrees: [], remotes: [], headCommit: null };
+    }
+
+    // Check bare repo
+    const isBare = execGit('rev-parse --is-bare-repository') === 'true';
+
+    // Current branch
+    let branch: string | null = execGit('rev-parse --abbrev-ref HEAD');
+    if (branch === 'HEAD') branch = null; // detached HEAD
+
+    // HEAD commit
+    const headCommit = execGit('rev-parse --short HEAD');
+
+    // Worktree detection
+    const gitDir = execGit('rev-parse --git-dir');
+    const isWorktree = gitDir !== null && gitDir.includes('.git/worktrees');
+    let mainWorktreePath: string | null = null;
+    if (isWorktree) {
+      mainWorktreePath = execGit('rev-parse --path-format=absolute --git-common-dir');
+      if (mainWorktreePath && mainWorktreePath.endsWith('/.git')) {
+        mainWorktreePath = mainWorktreePath.slice(0, -5);
+      } else if (mainWorktreePath && mainWorktreePath.endsWith('\\.git')) {
+        mainWorktreePath = mainWorktreePath.slice(0, -5);
+      }
+    }
+
+    // List worktrees
+    const worktrees: GitInfo['worktrees'] = [];
+    const worktreeOutput = execGit('worktree list --porcelain');
+    if (worktreeOutput) {
+      const entries = worktreeOutput.split('\n\n').filter(Boolean);
+      for (const entry of entries) {
+        const lines = entry.split('\n');
+        let wtPath = '';
+        let wtBranch: string | null = null;
+        let wtHead = '';
+        for (const line of lines) {
+          if (line.startsWith('worktree ')) wtPath = line.slice(9);
+          else if (line.startsWith('HEAD ')) wtHead = line.slice(5, 12); // short hash
+          else if (line.startsWith('branch ')) {
+            wtBranch = line.slice(7);
+            // Strip refs/heads/ prefix
+            if (wtBranch.startsWith('refs/heads/')) wtBranch = wtBranch.slice(11);
+          }
+        }
+        if (wtPath) {
+          // Normalize for comparison
+          const normalizedWtPath = wtPath.replace(/\\/g, '/');
+          const normalizedProjectPath = projectPath.replace(/\\/g, '/');
+          worktrees.push({
+            path: wtPath,
+            branch: wtBranch,
+            head: wtHead,
+            isCurrent: normalizedWtPath === normalizedProjectPath,
+          });
+        }
+      }
+    }
+
+    // Remotes
+    const remotes: GitRemote[] = [];
+    const remoteOutput = execGit('remote -v');
+    if (remoteOutput) {
+      for (const line of remoteOutput.split('\n')) {
+        const match = line.match(/^(\S+)\s+(\S+)\s+\((fetch|push)\)$/);
+        if (match) {
+          remotes.push({
+            name: match[1],
+            url: match[2],
+            type: match[3] as 'fetch' | 'push',
+          });
+        }
+      }
+    }
+
+    return {
+      initialized: true,
+      branch,
+      isBare,
+      isWorktree,
+      mainWorktreePath,
+      worktrees,
+      remotes,
+      headCommit,
     };
   }
 
