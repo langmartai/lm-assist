@@ -5,7 +5,7 @@
  * background refresh. All API endpoints read from this store for O(1)
  * lookups instead of calling getRunningClaudeProcesses() synchronously.
  *
- * Pattern follows HookEventStore / TtydInstanceStore singleton approach.
+ * Pattern follows TtydInstanceStore singleton approach.
  *
  * @packageDocumentation
  */

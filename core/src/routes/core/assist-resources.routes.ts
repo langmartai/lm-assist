@@ -146,7 +146,6 @@ export function createAssistResourcesRoutes(_ctx: RouteContext): RouteHandler[] 
           // Scan the data directory
           const root = scanDir(DATA, 'lm-assist', depth);
 
-          // Also include extra allowed files (e.g., hook-events.jsonl)
           const extras: FileInfo[] = [];
           for (const extra of EXTRA_FILES) {
             const info = statFileInfo(extra.path, extra.category);

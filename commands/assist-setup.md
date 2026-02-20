@@ -7,7 +7,7 @@ description: Install and configure all lm-assist components
 
 Start lm-assist services and ensure all Claude Code integrations are working.
 
-**Note:** If lm-assist was installed as a Claude Code plugin (`claude plugin install`), the MCP server and hooks (context injection, event logger) are already registered automatically. This command focuses on starting services, verifying the integrations, and optionally installing the statusline.
+**Note:** If lm-assist was installed as a Claude Code plugin (`claude plugin install`), the MCP server and hooks (context injection) are already registered automatically. This command focuses on starting services, verifying the integrations, and optionally installing the statusline.
 
 ## Steps
 

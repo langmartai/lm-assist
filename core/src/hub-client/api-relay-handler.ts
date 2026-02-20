@@ -95,7 +95,6 @@ export class ApiRelayHandler {
     '/projects',
     '/tasks',
     '/task-store',
-    '/hook-events',
     '/ttyd',
     '/ttyd-proxy',
     '/health',
