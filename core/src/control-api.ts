@@ -11,6 +11,7 @@
  *          vibeCoder, visualEditor, executionIntegrator, checkpoint, sessionBackup
  */
 
+import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { TierManager } from './tier-manager';
 import {
@@ -280,6 +281,8 @@ export class TierControlApiImpl {
           uptime: Date.now() - this.startTime.getTime(),
           projectPath: this.projectPath,
           version: '0.1.0',
+          hostname: os.hostname(),
+          platform: os.platform(),
         }, start);
       },
     };
