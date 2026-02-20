@@ -99,7 +99,25 @@ lm-assist automatically generates knowledge from your Claude Code sessions, then
 
 ## Install
 
-### One-line install
+### Plugin marketplace install
+
+Start a new Claude Code session in the terminal and enter the following commands:
+
+```
+/plugin marketplace add langmartai/lm-assist
+
+/plugin install lm-assist
+
+/assist-setup
+```
+
+This automatically registers:
+- **MCP server** — `search`, `detail`, `feedback` tools available in Claude Code
+- **Context hook** — injects relevant knowledge into each prompt
+- **Slash commands** — 6 commands for managing lm-assist
+
+
+### Optional use One-line install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/langmartai/lm-assist/main/install.sh | bash
@@ -110,21 +128,6 @@ This clones the repo, builds, adds the marketplace, and installs the plugin. The
 ```
 /assist-setup
 ```
-
-### Plugin marketplace install
-
-Start a new Claude Code session in the terminal and enter the following commands:
-
-```
-/plugin marketplace add langmartai/lm-assist
-
-/plugin install lm-assist
-```
-
-This automatically registers:
-- **MCP server** — `search`, `detail`, `feedback` tools available in Claude Code
-- **Context hook** — injects relevant knowledge into each prompt
-- **Slash commands** — 6 commands for managing lm-assist
 
 Then clone, build, and start the services:
 
