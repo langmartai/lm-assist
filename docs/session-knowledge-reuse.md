@@ -86,14 +86,13 @@ Let's walk through a realistic scenario to understand the token and time impact.
 
 You are working on a Next.js application with a TypeScript backend. You need to add a new API endpoint that follows your existing patterns.
 
-| Step | Token Cost | Time |
-|------|-----------|------|
-| Claude explores project structure | ~15k tokens | 30s |
-| Claude reads existing route files to understand patterns | ~25k tokens | 45s |
-| Claude examines middleware, auth, error handling | ~20k tokens | 40s |
-| Claude checks type definitions and shared utilities | ~15k tokens | 30s |
-| Claude reviews test patterns | ~10k tokens | 20s |
-| **Total exploration overhead** | **~85k tokens** | **~3 min** |
+- **Claude explores project structure** — ~15k tokens (30s)
+- **Claude reads existing route files to understand patterns** — ~25k tokens (45s)
+- **Claude examines middleware, auth, error handling** — ~20k tokens (40s)
+- **Claude checks type definitions and shared utilities** — ~15k tokens (30s)
+- **Claude reviews test patterns** — ~10k tokens (20s)
+
+**Total exploration overhead: ~85k tokens (≈3 min)**
 
 Now you ask the same question next week in a new session. Same 85k tokens. Same 3 minutes. And the week after that. And for every team member who asks a similar question.
 
@@ -103,12 +102,11 @@ Over a month of active development, redundant exploration can easily consume **5
 
 The first session's exploration gets captured as knowledge. When the next session starts:
 
-| Step | Token Cost | Time |
-|------|-----------|------|
-| Knowledge injection (architecture, patterns, types) | ~3k tokens | instant |
-| Claude reads the injected context | ~0 extra (already in context) | 0s |
-| Claude proceeds directly to implementation | 0 exploration overhead | 0s |
-| **Total exploration overhead** | **~3k tokens** | **< 1s** |
+- **Knowledge injection** (architecture, patterns, types) — ~3k tokens (instant)
+- **Claude reads the injected context** — ~0 extra (already in context) (0s)
+- **Claude proceeds directly to implementation** — 0 exploration overhead (0s)
+
+**Total exploration overhead: ~3k tokens (< 1s)**
 
 That is a **95%+ reduction** in exploration tokens and near-zero startup time. The knowledge was already extracted, indexed, and delivered before Claude even begins thinking about your prompt.
 
@@ -142,16 +140,37 @@ There is no feedback mechanism. Claude cannot flag that a CLAUDE.md entry is wro
 
 ### Comparison: CLAUDE.md vs On-Demand Knowledge Injection
 
-| Dimension | CLAUDE.md | Context Injection (lm-assist) |
-|-----------|-----------|-------------------------------|
-| **Token cost per prompt** | Full file on every prompt (thousands of tokens) | Only relevant entries per prompt (hundreds of tokens) |
-| **Scaling** | Grows linearly; large files crowd out conversation context | Knowledge base grows indefinitely; only relevant subset injected |
-| **Maintenance** | Manual — you write and update it | Automatic — extracted from sessions |
-| **Relevance** | Everything injected regardless of prompt topic | Semantic search selects only what matches the current prompt |
-| **Freshness** | Drifts unless manually updated | Feedback loop flags outdated entries |
-| **Context compaction** | Accelerates compaction (large fixed overhead) | Minimal impact (small, targeted injection) |
-| **Discovery** | Limited to what you thought to document | Captures knowledge you never planned to write down |
-| **Setup effort** | None (built into Claude Code) | Install lm-assist, generate knowledge |
+**Token cost per prompt**
+- CLAUDE.md: Full file on every prompt (thousands of tokens)
+- Context Injection (lm-assist): Only relevant entries per prompt (hundreds of tokens)
+
+**Scaling**
+- CLAUDE.md: Grows linearly; large files crowd out conversation context
+- Context Injection (lm-assist): Knowledge base grows indefinitely; only relevant subset injected
+
+**Maintenance**
+- CLAUDE.md: Manual — you write and update it
+- Context Injection (lm-assist): Automatic — extracted from sessions
+
+**Relevance**
+- CLAUDE.md: Everything injected regardless of prompt topic
+- Context Injection (lm-assist): Semantic search selects only what matches the current prompt
+
+**Freshness**
+- CLAUDE.md: Drifts unless manually updated
+- Context Injection (lm-assist): Feedback loop flags outdated entries
+
+**Context compaction**
+- CLAUDE.md: Accelerates compaction (large fixed overhead)
+- Context Injection (lm-assist): Minimal impact (small, targeted injection)
+
+**Discovery**
+- CLAUDE.md: Limited to what you thought to document
+- Context Injection (lm-assist): Captures knowledge you never planned to write down
+
+**Setup effort**
+- CLAUDE.md: None (built into Claude Code)
+- Context Injection (lm-assist): Install lm-assist, generate knowledge
 
 CLAUDE.md is the right choice for **small, stable instructions** — coding style preferences, a few key conventions, project-specific rules. Keep it lean.
 
@@ -277,14 +296,29 @@ This is fundamentally different from traditional documentation:
 
 For a mid-size project with active development:
 
-| Metric | Without Knowledge Reuse | With LM Assist |
-|--------|------------------------|----------------|
-| Exploration tokens per session | 50-150k | 3-5k (injected context) |
-| Time to first useful response | 2-5 minutes | Seconds |
-| Repeated research across sessions | Constant | Near zero |
-| New team member ramp-up context | Manual or re-explored | Automatic |
-| Monthly token overhead (per dev) | 500k-1M+ wasted | ~50k total injection |
-| Knowledge curation effort | Manual documentation | Zero (automatic extraction) |
+**Exploration tokens per session**
+- Without Knowledge Reuse: 50-150k
+- With LM Assist: 3-5k (injected context)
+
+**Time to first useful response**
+- Without Knowledge Reuse: 2-5 minutes
+- With LM Assist: Seconds
+
+**Repeated research across sessions**
+- Without Knowledge Reuse: Constant
+- With LM Assist: Near zero
+
+**New team member ramp-up context**
+- Without Knowledge Reuse: Manual or re-explored
+- With LM Assist: Automatic
+
+**Monthly token overhead (per dev)**
+- Without Knowledge Reuse: 500k-1M+ wasted
+- With LM Assist: ~50k total injection
+
+**Knowledge curation effort**
+- Without Knowledge Reuse: Manual documentation
+- With LM Assist: Zero (automatic extraction)
 
 ---
 
