@@ -65,10 +65,7 @@ interface MilestonePipelineStatus {
 function getTierAgentBase(): string {
   if (typeof window === 'undefined') return 'http://localhost:3100';
   const proxyInfo = detectProxyInfo();
-  if (proxyInfo.isProxied) {
-    // In proxy mode, use same-origin relative paths — the proxy shim rewrites them
-    return '';
-  }
+  if (proxyInfo.isProxied) return '/_coreapi';
   const { baseUrl } = detectAppMode();
   return baseUrl || 'http://localhost:3100';
 }

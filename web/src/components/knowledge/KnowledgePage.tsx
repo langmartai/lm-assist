@@ -28,10 +28,10 @@ import rehypeHighlight from 'rehype-highlight';
 
 function getApiBase(): string {
   if (typeof window === 'undefined') return 'http://localhost:3100';
-  // When proxied (langmart.ai/w/:machineId/assist/...), use same-origin paths.
-  // Next.js rewrites on port 3848 proxy API calls to core API on port 3100.
+  // When proxied (langmart.ai/w/:machineId/assist/...), use /_coreapi prefix.
+  // Next.js beforeFiles rewrite forwards /_coreapi/* to core API on port 3100.
   const pathname = window.location.pathname;
-  if (pathname.match(/^\/w\/[^/]+\/assist(\/|$)/)) return '';
+  if (pathname.match(/^\/w\/[^/]+\/assist(\/|$)/)) return '/_coreapi';
   const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
   return `http://${window.location.hostname}:${port}`;
 }

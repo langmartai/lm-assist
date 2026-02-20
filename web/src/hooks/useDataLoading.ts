@@ -85,7 +85,7 @@ function saveConfig(enabled: Record<string, boolean>, autoStart: boolean) {
 function getTierAgentBase(): string {
   if (typeof window === 'undefined') return 'http://localhost:3100';
   const proxyInfo = detectProxyInfo();
-  if (proxyInfo.isProxied) return '';
+  if (proxyInfo.isProxied) return '/_coreapi';
   const { baseUrl } = detectAppMode();
   return baseUrl || 'http://localhost:3100';
 }

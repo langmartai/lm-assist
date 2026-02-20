@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -18,6 +19,7 @@ import {
 } from 'lucide-react';
 import { useExperiment } from '@/hooks/useExperiment';
 import { usePlatform } from '@/hooks/usePlatform';
+import { detectProxyInfo } from '@/lib/api-client';
 
 const baseNavItems = [
   { href: '/terminal-dashboard', icon: Terminal, label: 'Terminal Dashboard' },
@@ -36,10 +38,28 @@ const experimentNavItems = [
   { href: '/architecture', icon: Network, label: 'Architecture' },
 ];
 
+/** In proxy mode, use <a> for full-page navigation (client-side nav is unreliable through the proxy shim). */
+function NavItem({ href, basePath, children }: { href: string; basePath: string; children: React.ReactNode }) {
+  if (basePath) {
+    return <a href={`${basePath}${href}`}>{children}</a>;
+  }
+  return <Link href={href}>{children}</Link>;
+}
+
 export function Sidebar() {
   const pathname = usePathname();
   const { isExperiment } = useExperiment();
   const { isWindows } = usePlatform();
+
+  const proxy = useMemo(() => {
+    if (typeof window === 'undefined') return { isProxied: false, basePath: '', machineId: null };
+    return detectProxyInfo();
+  }, []);
+
+  // Strip basePath prefix from pathname for active-state detection
+  const effectivePath = proxy.isProxied
+    ? (pathname.replace(proxy.basePath, '') || '/')
+    : pathname;
 
   const filteredBaseNavItems = isWindows
     ? baseNavItems.filter(item => item.href !== '/terminal-dashboard' && item.href !== '/process-dashboard')
@@ -64,17 +84,17 @@ export function Sidebar() {
 
       {/* Nav items */}
       {navItems.map((item) => {
-        const isActive = pathname === item.href || pathname.startsWith(item.href + '/');
+        const isActive = effectivePath === item.href || effectivePath.startsWith(item.href + '/');
         const Icon = item.icon;
         return (
-          <Link key={item.href} href={item.href}>
+          <NavItem key={item.href} href={item.href} basePath={proxy.basePath}>
             <div
               className={`sidebar-item ${isActive ? 'active' : ''}`}
               title={item.label}
             >
               <Icon size={18} strokeWidth={isActive ? 2 : 1.5} />
             </div>
-          </Link>
+          </NavItem>
         );
       })}
 
@@ -83,14 +103,14 @@ export function Sidebar() {
 
       {/* Separator + Settings */}
       <div className="sidebar-separator" />
-      <Link href="/settings">
+      <NavItem href="/settings" basePath={proxy.basePath}>
         <div
-          className={`sidebar-item ${pathname === '/settings' || pathname.startsWith('/settings/') ? 'active' : ''}`}
+          className={`sidebar-item ${effectivePath === '/settings' || effectivePath.startsWith('/settings/') ? 'active' : ''}`}
           title="Settings"
         >
-          <Settings size={18} strokeWidth={pathname.startsWith('/settings') ? 2 : 1.5} />
+          <Settings size={18} strokeWidth={effectivePath.startsWith('/settings') ? 2 : 1.5} />
         </div>
-      </Link>
+      </NavItem>
     </nav>
   );
 }

@@ -23,36 +23,19 @@ const nextConfig: NextConfig = {
     // which must be forwarded to GW1 for token auth + worker relay
     const gatewayUrl = process.env.GATEWAY_TYPE1_URL || 'http://localhost:8081';
 
-    // Core API port for proxying API calls when served from web UI.
+    // Core API proxy via /_coreapi prefix.
     // When accessed via web proxy (langmart.ai/w/:machineId/assist/...),
-    // API calls like /knowledge arrive on port 3848 (web UI) and need
-    // to be forwarded to port 3100 (core API). The Content-Type header
-    // condition ensures only JSON API calls are proxied, not page navigations.
-    // Must be in beforeFiles so they run before Next.js page route matching.
+    // API calls use /_coreapi/... paths which get rewritten to the core API
+    // on port 3100. This avoids header-based conditions (Content-Type) which
+    // don't work through the WebSocket relay chain (headers are lost).
     const coreApiUrl = `http://localhost:${process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100'}`;
-    const coreApiPrefixes = [
-      '/knowledge',
-      '/milestones',
-      '/milestone-pipeline',
-      '/architecture',
-      '/assist-resources',
-    ];
-    const coreApiRewrites = coreApiPrefixes.flatMap(prefix => [
-      {
-        source: `${prefix}/:path*`,
-        has: [{ type: 'header' as const, key: 'content-type', value: '.*application/json.*' }],
-        destination: `${coreApiUrl}${prefix}/:path*`,
-      },
-      {
-        source: prefix,
-        has: [{ type: 'header' as const, key: 'content-type', value: '.*application/json.*' }],
-        destination: `${coreApiUrl}${prefix}`,
-      },
-    ]);
 
     return {
       beforeFiles: [
-        ...coreApiRewrites,
+        {
+          source: '/_coreapi/:path*',
+          destination: `${coreApiUrl}/:path*`,
+        },
       ],
       afterFiles: [
         {
