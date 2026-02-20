@@ -15,31 +15,8 @@ import {
   ChevronRight,
   ArrowDownToLine,
 } from 'lucide-react';
-
-// ============================================================================
-// API helpers
-// ============================================================================
-
-function getApiBase(): string {
-  if (typeof window === 'undefined') return 'http://localhost:3100';
-  // When proxied (langmart.ai/w/:machineId/assist/...), use /_coreapi prefix.
-  // Next.js beforeFiles rewrite forwards /_coreapi/* to core API on port 3100.
-  const pathname = window.location.pathname;
-  if (pathname.match(/^\/w\/[^/]+\/assist(\/|$)/)) return '/_coreapi';
-  const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
-  return `http://${window.location.hostname}:${port}`;
-}
-
-async function apiFetch<T>(path: string): Promise<T> {
-  const res = await fetch(`${getApiBase()}${path}`);
-  if (!res.ok) throw new Error(`API ${res.status}: ${await res.text().catch(() => res.statusText)}`);
-  const json = await res.json();
-  if (json && typeof json === 'object' && json.success === false) {
-    throw new Error(json.error?.message || json.error || 'Request failed');
-  }
-  if (json && typeof json === 'object' && 'data' in json) return json.data as T;
-  return json as T;
-}
+import { useAppMode } from '@/contexts/AppModeContext';
+import { useMachineContext } from '@/contexts/MachineContext';
 
 // ============================================================================
 // Types
@@ -179,6 +156,23 @@ function matchesSearch(node: FileInfo, search: string): boolean {
 // ============================================================================
 
 export function AssistResourcesPage() {
+  // ── Machine-aware API routing (same pattern as KnowledgePage / useSessions) ──
+  // Uses apiClient.fetchPath which routes through the correct client (local/hub)
+  // with proper auth headers for remote machine access.
+  const { apiClient } = useAppMode();
+  const { selectedMachineId } = useMachineContext();
+
+  const machineIdRef = useRef(selectedMachineId);
+  machineIdRef.current = selectedMachineId;
+  const apiClientRef = useRef(apiClient);
+  apiClientRef.current = apiClient;
+
+  const apiFetch = useCallback(async <T,>(path: string): Promise<T> => {
+    return apiClientRef.current.fetchPath<T>(path, {
+      machineId: machineIdRef.current || undefined,
+    });
+  }, []);
+
   // ── State ──
   const [rootNode, setRootNode] = useState<FileInfo | null>(null);
   const [extras, setExtras] = useState<FileInfo[]>([]);
@@ -244,6 +238,15 @@ export function AssistResourcesPage() {
   }, []);
 
   useEffect(() => { loadFiles(); }, [loadFiles]);
+
+  // Re-fetch when selected machine changes (hybrid mode machine switching)
+  useEffect(() => {
+    if (!selectedMachineId) return;
+    setListLoading(true);
+    setSelectedFile(null);
+    setContent(null);
+    loadFiles();
+  }, [selectedMachineId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Load file content ──
   const loadContent = useCallback(async (file: FileInfo, search?: string) => {

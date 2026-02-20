@@ -21,34 +21,8 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-
-// ============================================================================
-// API helpers
-// ============================================================================
-
-function getApiBase(): string {
-  if (typeof window === 'undefined') return 'http://localhost:3100';
-  // When proxied (langmart.ai/w/:machineId/assist/...), use /_coreapi prefix.
-  // Next.js beforeFiles rewrite forwards /_coreapi/* to core API on port 3100.
-  const pathname = window.location.pathname;
-  if (pathname.match(/^\/w\/[^/]+\/assist(\/|$)/)) return '/_coreapi';
-  const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
-  return `http://${window.location.hostname}:${port}`;
-}
-
-async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(`${getApiBase()}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...opts?.headers },
-    ...opts,
-  });
-  if (!res.ok) throw new Error(`API ${res.status}: ${await res.text().catch(() => res.statusText)}`);
-  const json = await res.json();
-  if (json && typeof json === 'object' && json.success === false) {
-    throw new Error(json.error || 'Request failed');
-  }
-  if (json && typeof json === 'object' && 'data' in json) return json.data as T;
-  return json as T;
-}
+import { useAppMode } from '@/contexts/AppModeContext';
+import { useMachineContext } from '@/contexts/MachineContext';
 
 // ============================================================================
 // Types
@@ -142,6 +116,31 @@ export function KnowledgePage() {
   const urlId = searchParams.get('id');
   const urlPart = searchParams.get('part');
 
+  // ─── Machine-aware API routing (follows same pattern as useSessions) ───
+  // Uses apiClient.fetchPath which routes through the correct client (local/hub)
+  // with proper auth headers, just like sessions use apiClient.getSessions(machineId).
+  const { apiClient } = useAppMode();
+  const { selectedMachineId } = useMachineContext();
+
+  // Refs so stable callbacks always read current values without being in deps
+  const machineIdRef = useRef(selectedMachineId);
+  machineIdRef.current = selectedMachineId;
+  const apiClientRef = useRef(apiClient);
+  apiClientRef.current = apiClient;
+
+  // Stable fetch function — reads client + machineId from refs
+  const apiFetch = useCallback(async <T,>(path: string, opts?: RequestInit): Promise<T> => {
+    let body: any = undefined;
+    if (opts?.body && typeof opts.body === 'string') {
+      try { body = JSON.parse(opts.body); } catch { /* use undefined */ }
+    }
+    return apiClientRef.current.fetchPath<T>(path, {
+      method: opts?.method,
+      body,
+      machineId: machineIdRef.current || undefined,
+    });
+  }, []);
+
   // ─── State ───────────────────────────────────────────────────
   const [list, setList] = useState<KnowledgeListItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -212,6 +211,16 @@ export function KnowledgePage() {
   useEffect(() => {
     fetchList();
   }, [fetchList]);
+
+  // Re-fetch when selected machine changes (hybrid mode machine switching)
+  useEffect(() => {
+    if (!selectedMachineId) return;
+    setLoading(true);
+    setSelectedId(null);
+    setKnowledge(null);
+    setComments([]);
+    fetchList();
+  }, [selectedMachineId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync URL params → selection
   useEffect(() => {

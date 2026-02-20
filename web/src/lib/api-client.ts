@@ -176,6 +176,9 @@ export interface ApiClient {
   searchSessionsAi(query: string, opts?: { projectPath?: string; scope?: string; limit?: number; model?: string }, machineId?: string): Promise<{ jobId: string; status: string; candidatesFound: number }>;
   getAiSearchJob(jobId: string, machineId?: string): Promise<any>;
   getRecentMilestones(machineId?: string, opts?: { projectPath?: string; directory?: string }): Promise<{ results: any[] }>;
+
+  // Generic fetch — routes any path through the correct client (local/hub) with auth
+  fetchPath<T = any>(path: string, opts?: { method?: string; body?: any; machineId?: string }): Promise<T>;
 }
 
 // ============================================
@@ -834,6 +837,13 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
       const res = await fetchJson<any>(api(`/session-search/recent${qs ? '?' + qs : ''}`));
       return res?.data || res;
     },
+
+    async fetchPath(path, opts) {
+      const options: RequestInit = {};
+      if (opts?.method) options.method = opts.method;
+      if (opts?.body) options.body = JSON.stringify(opts.body);
+      return fetchJson(api(path), options);
+    },
   };
 }
 
@@ -1315,6 +1325,15 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
       const qs = params.toString();
       return hubFetch(machineApi(machineId, `/session-search/recent${qs ? '?' + qs : ''}`)) as any;
     },
+
+    async fetchPath(path, opts) {
+      const machineId = opts?.machineId;
+      if (!machineId) throw new Error('Hub mode requires machineId');
+      const options: RequestInit = {};
+      if (opts?.method) options.method = opts.method;
+      if (opts?.body) options.body = JSON.stringify(opts.body);
+      return hubFetch(machineApi(machineId, path), options);
+    },
   };
 }
 
@@ -1629,6 +1648,14 @@ export function createHybridClient(options: HybridClientOptions): ApiClient {
         return localClient.getRecentMilestones(undefined, opts);
       }
       return hubClient.getRecentMilestones(machineId, opts);
+    },
+
+    async fetchPath(path, opts) {
+      const machineId = opts?.machineId;
+      if (isLocal(machineId)) {
+        return localClient.fetchPath(path, opts);
+      }
+      return hubClient.fetchPath(path, { ...opts, machineId });
     },
   };
 }

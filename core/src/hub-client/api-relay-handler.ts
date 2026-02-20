@@ -111,6 +111,13 @@ export class ApiRelayHandler {
     '/protocol',
     '/jobs',
     '/preflight',
+    '/knowledge',
+    '/assist-resources',
+    '/milestones',
+    '/milestone-pipeline',
+    '/architecture',
+    '/session-index',
+    '/session-search',
   ];
 
   /**
