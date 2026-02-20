@@ -20,6 +20,7 @@ import { getTtydProxyUrl } from '../../ttyd-proxy';
 import { execFileSync } from 'child_process';
 import * as path from 'path';
 import * as os from 'os';
+import { IS_WINDOWS, IS_POSIX, isBinaryInstalled } from '../../utils/process-utils';
 
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude/projects');
 import * as fs from 'fs';
@@ -71,21 +72,18 @@ function getProxyBaseUrl(req: any): string {
 }
 
 /**
- * Check if ttyd is installed
+ * Check if ttyd is installed (cross-platform)
  */
 function isTtydInstalled(): boolean {
-  try {
-    execFileSync('which', ['ttyd'], { encoding: 'utf-8' });
-    return true;
-  } catch {
-    return false;
-  }
+  if (IS_WINDOWS) return false;
+  return isBinaryInstalled('ttyd');
 }
 
 /**
- * Get ttyd version
+ * Get ttyd version (POSIX only)
  */
 function getTtydVersion(): string | null {
+  if (IS_WINDOWS) return null;
   try {
     const output = execFileSync('ttyd', ['--version'], { encoding: 'utf-8' });
     const match = output.match(/ttyd\s+([\d.]+)/);
@@ -117,7 +115,8 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
       method: 'GET',
       pattern: /^\/ttyd\/status$/,
       handler: async (req, api) => {
-        const installed = isTtydInstalled();
+        const platformSupported = IS_POSIX;
+        const installed = platformSupported ? isTtydInstalled() : false;
         const version = installed ? getTtydVersion() : null;
         const processes = ttydManager.getAllProcesses();
 
@@ -126,8 +125,9 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
           data: {
             installed,
             version,
+            platformSupported,
             activeProcesses: processes.length,
-            installCommand: 'sudo apt install ttyd',
+            installCommand: platformSupported ? 'sudo apt install ttyd' : 'Not supported on this platform',
           },
         };
       },
@@ -250,9 +250,10 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
 
         // If connectPid is provided, resolve the PID to its tmux session + pane
         // by walking the ancestor chain and matching against tmux pane_pids.
+        // POSIX only — tmux not available on Windows.
         let resolvedTmuxSession = typeof existingTmuxSession === 'string' ? existingTmuxSession : undefined;
         let resolvedTmuxPane: string | undefined;
-        if (connectPid && !resolvedTmuxSession) {
+        if (IS_POSIX && connectPid && !resolvedTmuxSession) {
           try {
             // Build set of ancestor PIDs (walk ppid chain)
             const ancestors = new Set<number>();
@@ -881,8 +882,8 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
             }
           }
 
-          // Screen-to-turn matching: if has tmux session
-          if (proc.tmuxSessionName) {
+          // Screen-to-turn matching: if has tmux session (POSIX only)
+          if (IS_POSIX && proc.tmuxSessionName) {
             try {
               const rawContent = execFileSync('tmux', ['capture-pane', '-t', proc.tmuxSessionName, '-p', '-S', '-'], {
                 encoding: 'utf-8',

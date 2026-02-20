@@ -13,6 +13,7 @@ import {
   decodePath,
   normalizePath,
   getClaudeConfigDir,
+  legacyEncodeProjectPath,
 } from './utils/path-utils';
 import { ClaudeMdManager } from './md-manager';
 
@@ -73,7 +74,16 @@ export class ProjectManager {
   getProjectInfo(projectPath: string): Project | null {
     const normalizedPath = normalizePath(projectPath);
     const encodedPath = encodePath(normalizedPath);
-    const storageDir = getProjectStorageDir(normalizedPath, this.configDir);
+    let storageDir = getProjectStorageDir(normalizedPath, this.configDir);
+
+    // If Base64-encoded dir doesn't exist, try legacy dash encoding
+    // (Windows dirs are stored as e.g. C--home-lm-assist, not Base64)
+    if (!fs.existsSync(storageDir)) {
+      const legacyDir = path.join(getProjectsDir(this.configDir), legacyEncodeProjectPath(normalizedPath));
+      if (fs.existsSync(legacyDir)) {
+        storageDir = legacyDir;
+      }
+    }
 
     // Count sessions and compute storage size
     let sessionCount = 0;

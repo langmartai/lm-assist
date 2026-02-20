@@ -12,7 +12,9 @@
 
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
+import * as os from 'os';
 import type { ClaudeProcessInfo, SystemStats } from './ttyd-manager';
+import { IS_WINDOWS } from './utils/process-utils';
 
 export interface ProcessRunningInfo {
   pid: number;
@@ -52,6 +54,10 @@ export class ProcessStatusStore {
   private _hash: string = '';
   /** Counter for periodic deep health checks (every 15 refreshes = ~15s at 1s interval) */
   private deepCheckCounter = 0;
+  /** Windows: cached disk stats (fetched in background to avoid wmic slowness) */
+  private _cachedDiskStats: { totalGb: number; usedGb: number; freeGb: number; usagePercent: number } | null = null;
+  private _diskStatsUpdatedAt = 0;
+  private _diskStatsFetching = false;
 
   constructor(private intervalMs = 1000) {}
 
@@ -75,6 +81,88 @@ export class ProcessStatusStore {
     if (this.refreshing) return;
     this.refreshing = true;
     try {
+      // On Windows: skip all process management (no ttyd/tmux/ps).
+      // Just collect system stats using Node.js built-ins.
+      if (IS_WINDOWS) {
+        await this.refreshWindows();
+        return;
+      }
+
+      await this.refreshPosix();
+    } catch (e) {
+      console.error('ProcessStatusStore refresh error:', e);
+    } finally {
+      this.refreshing = false;
+    }
+  }
+
+  /** Windows refresh: system stats only, no process scanning */
+  private async refreshWindows(): Promise<void> {
+    const cpus = os.cpus();
+    const cpuCount = cpus.length;
+    const cpuModel = cpus[0]?.model || 'unknown';
+    const [loadAvg1, loadAvg5, loadAvg15] = os.loadavg();
+    const cpuUsagePercent = Math.round((loadAvg1 / cpuCount) * 100 * 10) / 10;
+    const totalMemoryMb = Math.round(os.totalmem() / (1024 * 1024));
+    const freeMemoryMb = Math.round(os.freemem() / (1024 * 1024));
+    const usedMemoryMb = totalMemoryMb - freeMemoryMb;
+    const memoryUsagePercent = Math.round((usedMemoryMb / totalMemoryMb) * 100 * 10) / 10;
+
+    // Disk stats: use cached value or background-fetch to avoid wmic slowness
+    let diskStats = this._cachedDiskStats;
+    if (!diskStats || Date.now() - this._diskStatsUpdatedAt > 60_000) {
+      // Fire-and-forget disk stats update (runs in background, doesn't block refresh)
+      if (!this._diskStatsFetching) {
+        this._diskStatsFetching = true;
+        import('./utils/process-utils').then(pu => pu.getDiskStats()).then(ds => {
+          this._cachedDiskStats = ds;
+          this._diskStatsUpdatedAt = Date.now();
+          this._diskStatsFetching = false;
+        }).catch(() => { this._diskStatsFetching = false; });
+      }
+    }
+
+    const systemStats: SystemStats = {
+      cpuCount,
+      cpuModel,
+      loadAvg1: Math.round(loadAvg1 * 100) / 100,
+      loadAvg5: Math.round(loadAvg5 * 100) / 100,
+      loadAvg15: Math.round(loadAvg15 * 100) / 100,
+      cpuUsagePercent,
+      totalMemoryMb,
+      usedMemoryMb,
+      freeMemoryMb,
+      memoryUsagePercent,
+      totalDiskGb: diskStats?.totalGb ?? 0,
+      usedDiskGb: diskStats?.usedGb ?? 0,
+      freeDiskGb: diskStats?.freeGb ?? 0,
+      diskUsagePercent: diskStats?.usagePercent ?? 0,
+    };
+
+    this.cachedProcesses = [];
+    this.runningBySession = new Map();
+    this.lastRefreshedAt = new Date();
+
+    this.cachedResponse = {
+      managed: [],
+      allClaudeProcesses: [],
+      summary: {
+        totalManaged: 0,
+        totalClaude: 0,
+        unmanagedCount: 0,
+        byCategory: {},
+      },
+      processStatus: this.getStats(),
+      systemStats,
+    };
+
+    this._hash = createHash('md5')
+      .update(`win-${systemStats.cpuUsagePercent}:${systemStats.usedMemoryMb}:${systemStats.totalDiskGb}`)
+      .digest('hex').slice(0, 12);
+  }
+
+  /** POSIX refresh: full process scanning, tmux health checks, etc. */
+  private async refreshPosix(): Promise<void> {
       const { getTtydManager } = await import('./ttyd-manager');
       const mgr = getTtydManager();
 
@@ -138,12 +226,8 @@ export class ProcessStatusStore {
       // Periodic deep health check: every 15 refreshes (~15s), validate tmux-mode
       // ttyd instances are still healthy. If stale, stop them proactively so the
       // next console request gets a fresh one.
-      // NOTE: We check each record directly rather than using checkTtydSessionHealth()
-      // because activeBySession only tracks ONE record per sessionId, but there may be
-      // multiple stale records for the same sessionId (e.g. old linked tmux sessions).
       this.deepCheckCounter++;
       if (this.deepCheckCounter % 15 === 0) {
-        // Batch-fetch all alive tmux sessions in a single subprocess call
         let aliveTmuxSessions: Set<string>;
         try {
           const tmuxOut = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], {
@@ -156,7 +240,6 @@ export class ProcessStatusStore {
 
         for (const record of instanceStore.getAll()) {
           if ((record.status === 'running' || record.status === 'starting') && record.type === 'tmux' && record.tmuxSessionName) {
-            // Check 1: ttyd PID alive?
             try {
               process.kill(record.pid, 0);
             } catch {
@@ -164,7 +247,6 @@ export class ProcessStatusStore {
               instanceStore.markDead(record.id);
               continue;
             }
-            // Check 2: tmux session still exists? (O(1) lookup against batch result)
             if (!aliveTmuxSessions.has(record.tmuxSessionName)) {
               console.log(`[ProcessStatusStore] Deep health check: tmux '${record.tmuxSessionName}' gone for session ${record.sessionId} (PID ${record.pid}). Stopping.`);
               try { process.kill(record.pid, 'SIGTERM'); } catch { /* already dead */ }
@@ -172,13 +254,6 @@ export class ProcessStatusStore {
             }
           }
         }
-        // NOTE: We no longer run checkTtydSessionHealth() from the background
-        // health check. It aggressively killed ttyd for "pane running bash" and
-        // "newer Claude process in different tmux" scenarios, causing reconnection
-        // loops when the dashboard immediately restarted the ttyd.
-        // The PID-alive + tmux-exists checks above are sufficient for detecting
-        // truly broken instances. checkTtydSessionHealth() is still available
-        // for on-demand health queries via the API.
       }
 
       // Pre-compute the full response object
@@ -200,7 +275,6 @@ export class ProcessStatusStore {
       const allInstances = instanceStore.getAll();
       for (const inst of allInstances) {
         if (inst.sessionId.startsWith('shell-') && (inst.status === 'running' || inst.status === 'starting')) {
-          // Verify the process is still alive
           try {
             process.kill(inst.pid, 0);
             processes.push({
@@ -212,7 +286,6 @@ export class ProcessStatusStore {
               source: 'console-tab',
             });
           } catch {
-            // Process dead, mark it
             instanceStore.markDead(inst.id);
           }
         }
@@ -227,7 +300,7 @@ export class ProcessStatusStore {
       }
 
       const { getSystemStats } = await import('./ttyd-manager');
-      const systemStats = getSystemStats();
+      const systemStats = await getSystemStats();
 
       this.cachedResponse = {
         managed,
@@ -242,16 +315,11 @@ export class ProcessStatusStore {
         systemStats,
       };
 
-      // Compute hash from sorted PIDs + managed ports + resource usage — changes when processes or resource usage change
+      // Compute hash from sorted PIDs + managed ports + resource usage
       const pidKey = processes.map(p => `${p.pid}:${p.managedBy}:${p.sessionId || ''}:${p.cpuPercent}:${p.memoryRssKb}`).sort().join('|');
       const managedKey = managed.map(p => `${p.pid}:${p.port}:${p.sessionId}`).sort().join('|');
       const statsKey = `${systemStats.cpuUsagePercent}:${systemStats.usedMemoryMb}`;
       this._hash = createHash('md5').update(pidKey + '||' + managedKey + '||' + statsKey).digest('hex').slice(0, 12);
-    } catch (e) {
-      console.error('ProcessStatusStore refresh error:', e);
-    } finally {
-      this.refreshing = false;
-    }
   }
 
   /** Read cached processes (O(1)) */

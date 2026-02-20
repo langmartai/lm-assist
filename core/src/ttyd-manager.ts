@@ -12,6 +12,22 @@ import * as path from 'path';
 import * as os from 'os';
 import WebSocket from 'ws';
 import { getDataDir, legacyEncodeProjectPath } from './utils/path-utils';
+import {
+  IS_WINDOWS,
+  IS_POSIX,
+  getProcessCmdlineSync,
+  getChildPidsSync,
+  killProcessTree as killProcessTreeXPlat,
+  findProcessesByNameSync,
+  getProcessCwd,
+  isBinaryInstalled,
+  getDiskStatsSync,
+  getDiskStats,
+  getPsOutput as getPsOutputXPlat,
+  getPsPidPpidOutput,
+  getClaudeBinaryPath,
+  findAvailablePort as findAvailablePortXPlat,
+} from './utils/process-utils';
 
 // ============================================================================
 // Types
@@ -91,7 +107,7 @@ export interface TtydInstanceRecord {
 
 const TTYD_BASE_PORT = 7681;
 const TTYD_PORT_RANGE = 500; // 7681-8180
-const CLAUDE_BINARY = path.join(os.homedir(), '.local/bin/claude');
+const CLAUDE_BINARY = getClaudeBinaryPath();
 const PID_SESSION_MAP_LOG = path.join(os.homedir(), '.claude/pid-session-map.log');
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude/projects');
 
@@ -111,10 +127,10 @@ function safeExecFileSync(command: string, args: string[]): string {
 }
 
 /**
- * Get output from ps command
+ * Get output from ps command (POSIX only, returns empty on Windows)
  */
 function getPsOutput(): string {
-  return safeExecFileSync('ps', ['-eo', 'pid,ppid,etimes,tty,%cpu,rss,cmd']);
+  return getPsOutputXPlat();
 }
 
 export interface SystemStats {
@@ -134,8 +150,8 @@ export interface SystemStats {
   diskUsagePercent: number;
 }
 
-/** Get system-level CPU, memory, and disk stats */
-export function getSystemStats(): SystemStats {
+/** Get system-level CPU, memory, and disk stats (async for cross-platform disk stats) */
+export async function getSystemStats(): Promise<SystemStats> {
   const cpus = os.cpus();
   const cpuCount = cpus.length;
   const cpuModel = cpus[0]?.model || 'unknown';
@@ -146,19 +162,13 @@ export function getSystemStats(): SystemStats {
   const usedMemoryMb = totalMemoryMb - freeMemoryMb;
   const memoryUsagePercent = Math.round((usedMemoryMb / totalMemoryMb) * 100 * 10) / 10;
 
-  // Disk stats from df (values come with G suffix like "97G")
-  let totalDiskGb = 0, usedDiskGb = 0, freeDiskGb = 0, diskUsagePercent = 0;
-  try {
-    const dfOut = safeExecFileSync('df', ['-BG', '--output=size,used,avail', '/']);
-    const dfLines = dfOut.split('\n').filter(l => l.trim() && !l.includes('Size') && !l.includes('1G-blocks'));
-    if (dfLines.length > 0) {
-      const parts = dfLines[0].trim().split(/\s+/);
-      totalDiskGb = parseInt(parts[0].replace(/G$/i, ''), 10) || 0;
-      usedDiskGb = parseInt(parts[1].replace(/G$/i, ''), 10) || 0;
-      freeDiskGb = parseInt(parts[2].replace(/G$/i, ''), 10) || 0;
-      diskUsagePercent = totalDiskGb > 0 ? Math.round((usedDiskGb / totalDiskGb) * 100 * 10) / 10 : 0;
-    }
-  } catch { /* ignore */ }
+  // Disk stats: use async cross-platform check-disk-space on Windows,
+  // sync df on POSIX (faster, no async overhead)
+  const diskStats = IS_WINDOWS ? await getDiskStats() : getDiskStatsSync();
+  const totalDiskGb = diskStats.totalGb;
+  const usedDiskGb = diskStats.usedGb;
+  const freeDiskGb = diskStats.freeGb;
+  const diskUsagePercent = diskStats.usagePercent;
 
   return {
     cpuCount,
@@ -179,18 +189,10 @@ export function getSystemStats(): SystemStats {
 }
 
 /**
- * Get command line for a specific PID from /proc
+ * Get command line for a specific PID (cross-platform via process-utils)
  */
 function getProcessCmdline(pid: number): string | null {
-  try {
-    const cmdlinePath = `/proc/${pid}/cmdline`;
-    if (!fs.existsSync(cmdlinePath)) return null;
-    const cmdline = fs.readFileSync(cmdlinePath, 'utf-8');
-    // cmdline uses null bytes as separators
-    return cmdline.replace(/\0/g, ' ').trim();
-  } catch {
-    return null;
-  }
+  return getProcessCmdlineSync(pid);
 }
 
 /**
@@ -203,12 +205,10 @@ function extractSessionIdFromCmdline(cmdline: string): string | null {
 }
 
 /**
- * Get child PIDs of a process
+ * Get child PIDs of a process (cross-platform via pidtree)
  */
 function getChildPids(ppid: number): number[] {
-  const output = safeExecFileSync('pgrep', ['-P', String(ppid)]);
-  if (!output) return [];
-  return output.split('\n').filter(l => l.trim()).map(l => parseInt(l.trim(), 10));
+  return getChildPidsSync(ppid);
 }
 /**
  * Check if a port is in use (fast TCP probe, no subprocess)
@@ -241,10 +241,12 @@ async function isPortInUseAsync(port: number): Promise<boolean> {
 }
 
 /**
- * Build parent→children map from a ps output (pid,ppid format)
+ * Build parent→children map from a ps output (pid,ppid format).
+ * POSIX only — on Windows, callers should use pidtree directly.
  */
 function buildParentToChildrenMap(psPidPpidOutput: string): Map<number, number[]> {
   const parentToChildren = new Map<number, number[]>();
+  if (!psPidPpidOutput) return parentToChildren;
   for (const line of psPidPpidOutput.split('\n')) {
     const parts = line.trim().split(/\s+/);
     if (parts.length < 2) continue;
@@ -300,9 +302,11 @@ function buildTtydDescendantMap(ttydPids: number[], parentToChildren: Map<number
 /**
  * Build a map from pane_pid → tmux session name by querying actual tmux panes.
  * Returns Map<panePid, tmuxSessionName> e.g. { 27670 → "33", 2933590 → "claude-bc9297eb" }.
+ * On Windows: returns empty map (tmux not available).
  */
 function buildTmuxPanePidMap(): Map<number, string> {
   const pidToSession = new Map<number, string>();
+  if (IS_WINDOWS) return pidToSession;
   try {
     const output = execFileSync('tmux', ['list-panes', '-a', '-F', '#{session_name} #{pane_pid}'], {
       encoding: 'utf-8',
@@ -438,9 +442,11 @@ async function checkTtydHttp(port: number, timeoutMs: number): Promise<boolean> 
 }
 
 /**
- * Check if tmux session exists and has content
+ * Check if tmux session exists and has content.
+ * On Windows: always returns { exists: false } (tmux not available).
  */
 function checkTmuxSession(sessionName: string): { exists: boolean; hasContent: boolean } {
+  if (IS_WINDOWS) return { exists: false, hasContent: false };
   try {
     // Check if session exists
     const hasSession = safeExecFileSync('tmux', ['has-session', '-t', sessionName]);
@@ -465,23 +471,21 @@ let _ttydInstalled: boolean | null = null;
 let _tmuxInstalled: boolean | null = null;
 
 /**
- * Check if ttyd is installed (cached)
+ * Check if ttyd is installed (cached, cross-platform)
  */
 function isTtydInstalled(): boolean {
   if (_ttydInstalled === null) {
-    const output = safeExecFileSync('which', ['ttyd']);
-    _ttydInstalled = output.length > 0;
+    _ttydInstalled = isBinaryInstalled('ttyd');
   }
   return _ttydInstalled;
 }
 
 /**
- * Check if tmux is installed (cached)
+ * Check if tmux is installed (cached, cross-platform)
  */
 function isTmuxInstalled(): boolean {
   if (_tmuxInstalled === null) {
-    const output = safeExecFileSync('which', ['tmux']);
-    _tmuxInstalled = output.length > 0;
+    _tmuxInstalled = isBinaryInstalled('tmux');
   }
   return _tmuxInstalled;
 }
@@ -610,24 +614,10 @@ async function pollUntil(fn: () => boolean | Promise<boolean>, intervalMs: numbe
 }
 
 /**
- * Kill a process tree
+ * Kill a process tree (cross-platform via tree-kill)
  */
 function killProcessTree(pid: number): void {
-  // First kill children
-  const children = getChildPids(pid);
-  for (const childPid of children) {
-    try {
-      process.kill(childPid, 'SIGTERM');
-    } catch {
-      // Ignore errors
-    }
-  }
-  // Then kill parent
-  try {
-    process.kill(pid, 'SIGTERM');
-  } catch {
-    // Ignore errors
-  }
+  killProcessTreeXPlat(pid);
 }
 
 // ============================================================================
@@ -791,9 +781,16 @@ export class TtydManager {
   }
 
   /**
-   * Get all running Claude processes on the system
+   * Get all running Claude processes on the system.
+   * POSIX: uses ps + /proc for detailed process info.
+   * Windows: uses find-process for basic process discovery.
    */
   getRunningClaudeProcesses(): ClaudeProcessInfo[] {
+    // Windows path: use find-process for basic discovery
+    if (IS_WINDOWS) {
+      return this.getRunningClaudeProcessesWindows();
+    }
+
     try {
       const psOutput = getPsOutput();
       if (!psOutput) return [];
@@ -802,7 +799,7 @@ export class TtydManager {
       const lines = psOutput.split('\n').filter(l => l.includes('claude') && !l.includes('grep'));
 
       // Build shared parent→children map and child→parent map from a single ps call
-      const psPidPpid = safeExecFileSync('ps', ['-eo', 'pid,ppid', '--no-headers']);
+      const psPidPpid = getPsPidPpidOutput();
       const parentToChildren = psPidPpid ? buildParentToChildrenMap(psPidPpid) : new Map<number, number[]>();
       const pidToParent = new Map<number, number>();
       if (psPidPpid) {
@@ -863,16 +860,10 @@ export class TtydManager {
         // Compute process start time from elapsed seconds
         const startedAt = new Date(Date.now() - elapsedSecs * 1000);
 
-        // Try to get working directory of process
+        // Try to get working directory of process (cross-platform)
         let processProjectPath: string | undefined;
-        try {
-          const cwdLink = `/proc/${pid}/cwd`;
-          if (fs.existsSync(cwdLink)) {
-            processProjectPath = fs.readlinkSync(cwdLink);
-          }
-        } catch {
-          // Process may have exited
-        }
+        const cwd = getProcessCwd(pid);
+        if (cwd) processProjectPath = cwd;
 
         // Skip processes that aren't real Claude binaries:
         // If the cmd doesn't contain the actual claude binary path AND the
@@ -985,6 +976,18 @@ export class TtydManager {
   }
 
   /**
+   * Windows implementation of getRunningClaudeProcesses().
+   * Uses find-process for basic process discovery.
+   * No tmux/ttyd features — processes are classified as 'unknown' source.
+   */
+  private getRunningClaudeProcessesWindows(): ClaudeProcessInfo[] {
+    // Windows: synchronous fallback — return empty for now, async enrichment happens in ProcessStatusStore
+    // We can't easily do sync process enumeration on Windows without ps/proc.
+    // The ProcessStatusStore refresh will call the async version.
+    return [];
+  }
+
+  /**
    * Find if a ttyd process is serving a specific PID (as parent or grandparent)
    */
   private findTtydPortForPid(pid: number, ttydPids?: number[]): number | undefined {
@@ -1062,12 +1065,10 @@ export class TtydManager {
   }
 
   /**
-   * Get all ttyd PIDs on the system
+   * Get all ttyd PIDs on the system (cross-platform)
    */
   private getAllTtydPids(): number[] {
-    const output = safeExecFileSync('pgrep', ['-x', 'ttyd']);
-    if (!output) return [];
-    return output.split('\n').filter(l => l.trim()).map(l => parseInt(l.trim(), 10));
+    return findProcessesByNameSync('ttyd');
   }
 
   /**
@@ -1331,23 +1332,44 @@ export class TtydManager {
   }
 
   /**
-   * Find an available port for ttyd (batch check with single ss call)
+   * Find an available port for ttyd (cross-platform).
+   * Returns null synchronously but internally uses async port check on Windows.
    */
   private findAvailablePort(): number | null {
-    const output = safeExecFileSync('ss', ['-tlnp']);
-    const usedPorts = new Set<number>();
-    const portRegex = /:(\d+)\s/g;
-    let match;
-    while ((match = portRegex.exec(output)) !== null) {
-      usedPorts.add(parseInt(match[1], 10));
+    if (IS_POSIX) {
+      // POSIX: fast batch check with single ss call (existing proven path)
+      const output = safeExecFileSync('ss', ['-tlnp']);
+      const usedPorts = new Set<number>();
+      const portRegex = /:(\d+)\s/g;
+      let match;
+      while ((match = portRegex.exec(output)) !== null) {
+        usedPorts.add(parseInt(match[1], 10));
+      }
+      const activePorts = this.store.getActivePorts();
+      for (let port = TTYD_BASE_PORT; port < TTYD_BASE_PORT + TTYD_PORT_RANGE; port++) {
+        if (!activePorts.has(port) && !usedPorts.has(port) && !this.allocatingPorts.has(port)) {
+          return port;
+        }
+      }
+      return null;
     }
+    // Windows: store-only check (unreachable — startTtyd/startShell guard exits before this)
     const activePorts = this.store.getActivePorts();
     for (let port = TTYD_BASE_PORT; port < TTYD_BASE_PORT + TTYD_PORT_RANGE; port++) {
-      if (!activePorts.has(port) && !usedPorts.has(port) && !this.allocatingPorts.has(port)) {
+      if (!activePorts.has(port) && !this.allocatingPorts.has(port)) {
         return port;
       }
     }
     return null;
+  }
+
+  /**
+   * Find an available port for ttyd (async, cross-platform via get-port-please).
+   */
+  private async findAvailablePortAsync(): Promise<number | null> {
+    const activePorts = this.store.getActivePorts();
+    const excludePorts = new Set([...activePorts, ...this.allocatingPorts]);
+    return findAvailablePortXPlat(TTYD_BASE_PORT, TTYD_BASE_PORT + TTYD_PORT_RANGE, excludePorts);
   }
 
   /**
@@ -1365,6 +1387,14 @@ export class TtydManager {
     existingTmuxPane?: string;     // Target specific pane ID (e.g. "%42") within the session
     forkSession?: boolean;  // Fork from this session (uses --resume + --fork-session)
   }): Promise<TtydStartResult> {
+    // Platform guard: ttyd/tmux not supported on Windows
+    if (IS_WINDOWS) {
+      return {
+        success: false,
+        error: 'Terminal features (ttyd/tmux) are not supported on Windows. Use Claude Code CLI directly.',
+      };
+    }
+
     // CRITICAL: Check if already starting (prevents race conditions from concurrent requests)
     if (this.startingLocks.has(sessionId)) {
       // Wait a bit and check if ttyd is now running
@@ -1821,6 +1851,14 @@ export class TtydManager {
   async startShell(shellSessionId: string, projectPath: string, shellPath: string, options?: {
     port?: number;
   }): Promise<TtydStartResult> {
+    // Platform guard: ttyd not supported on Windows
+    if (IS_WINDOWS) {
+      return {
+        success: false,
+        error: 'Terminal features (ttyd) are not supported on Windows.',
+      };
+    }
+
     // Find available port
     const port = options?.port || this.findAvailablePort();
     if (!port) {

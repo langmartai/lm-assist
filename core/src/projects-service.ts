@@ -18,6 +18,7 @@ import {
   encodePath,
   decodePath,
   getClaudeConfigDir,
+  legacyEncodeProjectPath,
 } from './utils/path-utils';
 import {
   TasksService,
@@ -353,6 +354,16 @@ export class ProjectsService {
       // Treat as a project path, encode it
       encodedPath = encodePath(projectPathOrEncoded);
       projectPath = projectPathOrEncoded;
+
+      // If Base64-encoded dir doesn't exist, try legacy dash encoding
+      const base64Dir = path.join(this.projectsDir, encodedPath);
+      if (!fs.existsSync(base64Dir)) {
+        const legacyKey = legacyEncodeProjectPath(projectPathOrEncoded);
+        const legacyDir = path.join(this.projectsDir, legacyKey);
+        if (fs.existsSync(legacyDir)) {
+          encodedPath = legacyKey;
+        }
+      }
     }
 
     const projectStorageDir = path.join(this.projectsDir, encodedPath);
@@ -428,8 +439,18 @@ export class ProjectsService {
       return { storageDir: base64StorageDir, encodedPath: base64Encoded };
     }
 
+    // Try legacy dash encoding (handles Windows paths like C:\home\project -> C--home-project)
+    const legacyEncoded = legacyEncodeProjectPath(projectPath);
+    const legacyStorageDir = path.join(this.projectsDir, legacyEncoded);
+    if (
+      fs.existsSync(legacyStorageDir) &&
+      fs.statSync(legacyStorageDir).isDirectory()
+    ) {
+      return { storageDir: legacyStorageDir, encodedPath: legacyEncoded };
+    }
+
     // Search through existing directories to find a match
-    // This handles legacy dash-based encoding
+    // This handles edge cases where neither encoding matches
     if (!fs.existsSync(this.projectsDir)) {
       return null;
     }
@@ -705,9 +726,11 @@ export class ProjectsService {
         sessionId = listId;
         sessionInfo = sessionInfoMap.get(listId);
       } else if (listSummary.sessionInfo) {
-        // Check if sessionInfo points to our project
+        // Check if sessionInfo points to our project (try both Base64 and legacy encoding)
         const encodedProjectPath = encodePath(projectPath);
-        if (listSummary.sessionInfo.projectKey === encodedProjectPath) {
+        const legacyProjectKey = legacyEncodeProjectPath(projectPath);
+        if (listSummary.sessionInfo.projectKey === encodedProjectPath ||
+            listSummary.sessionInfo.projectKey === legacyProjectKey) {
           belongsToProject = true;
           sessionId = listSummary.sessionInfo.sessionId;
           sessionInfo = {

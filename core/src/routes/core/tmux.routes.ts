@@ -15,6 +15,7 @@ import { execFile, execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import { IS_WINDOWS } from '../../utils/process-utils';
 
 const BASHRC = path.join(os.homedir(), '.bashrc');
 const TMUX_CONF = path.join(os.homedir(), '.tmux.conf');
@@ -247,6 +248,43 @@ function runTmuxScript(action: 'install' | 'uninstall'): Promise<{ success: bool
 }
 
 export function createTmuxRoutes(_ctx: RouteContext): RouteHandler[] {
+  // Platform guard: on Windows, return stub routes that report unsupported
+  if (IS_WINDOWS) {
+    const unsupportedStatus = {
+      installed: false,
+      version: null,
+      tmuxConfConfigured: false,
+      bashrcConfigured: false,
+      inTmuxSession: false,
+      fullyConfigured: false,
+      features: [],
+      config: { ...DEFAULT_CONFIG },
+      platformSupported: false,
+    };
+    return [
+      {
+        method: 'GET',
+        pattern: /^\/tmux\/status$/,
+        handler: async () => ({ success: true, data: unsupportedStatus }),
+      },
+      {
+        method: 'POST',
+        pattern: /^\/tmux\/install$/,
+        handler: async () => ({ success: false, error: 'tmux is not supported on Windows', data: unsupportedStatus }),
+      },
+      {
+        method: 'POST',
+        pattern: /^\/tmux\/uninstall$/,
+        handler: async () => ({ success: false, error: 'tmux is not supported on Windows', data: unsupportedStatus }),
+      },
+      {
+        method: 'PUT',
+        pattern: /^\/tmux\/config$/,
+        handler: async () => ({ success: false, error: 'tmux is not supported on Windows', data: unsupportedStatus }),
+      },
+    ];
+  }
+
   return [
     // GET /tmux/status - Check tmux installation and configuration status
     {

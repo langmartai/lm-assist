@@ -53,6 +53,21 @@ export function decodePath(encodedPath: string): string {
   // 4. No uppercase letters (which appear in Base64)
   const isLikelyLegacy = /^-[a-z0-9-]*$/.test(encodedPath) && !encodedPath.includes('_');
 
+  // Windows legacy format: C--home-project (drive letter + -- for colon, dashes for backslashes)
+  // Pattern: single uppercase letter followed by -- (from C:\ -> C--)
+  // No underscore guard needed: ^[A-Z]-- is a sufficient discriminator — no valid
+  // Base64-encoded printable-ASCII path can produce this pattern.
+  const isWindowsLegacy = /^[A-Z]--/.test(encodedPath);
+
+  if (isWindowsLegacy) {
+    // Windows legacy decoding: C--home-lm-assist -> C:\home\lm-assist
+    // The drive letter and colon come from the first char + '--' pattern
+    const driveLetter = encodedPath[0];
+    const rest = encodedPath.slice(2); // Skip drive letter and first dash (from colon)
+    // rest starts with '-' (from backslash after colon), e.g., '-home-lm-assist'
+    return decodeWindowsPathWithFilesystemCheck(driveLetter, rest);
+  }
+
   if (isLikelyLegacy) {
     // Legacy decoding with filesystem verification
     // Problem: -home-ubuntu-sample-project could be:
@@ -153,6 +168,67 @@ function decodePathWithFilesystemCheck(encodedPath: string): string {
   // If we didn't build a valid path, fall back to all-slashes interpretation
   if (!currentPath || currentPath === '/') {
     return '/' + parts.join('/');
+  }
+
+  return currentPath;
+}
+
+/**
+ * Decode a Windows legacy dash-encoded path by checking which interpretation exists on disk.
+ * For C--home-lm-assist, the drive letter and rest are split by the caller.
+ * rest = '-home-lm-assist' (leading dash from backslash after colon)
+ * We reconstruct C:\ + path using filesystem checks to resolve dash ambiguity.
+ */
+function decodeWindowsPathWithFilesystemCheck(driveLetter: string, rest: string): string {
+  // rest starts with '-' (from backslash), e.g., '-home-lm-assist'
+  const parts = rest.replace(/^-/, '').split('-');
+  const driveRoot = driveLetter + ':\\';
+
+  // Build path progressively, checking filesystem at each level
+  let currentPath = driveRoot;
+  let partIndex = 0;
+
+  while (partIndex < parts.length) {
+    const part = parts[partIndex];
+    const testPath = path.join(currentPath, part);
+
+    // Check if this path exists as a directory
+    try {
+      const stat = fs.statSync(testPath);
+      if (stat.isDirectory()) {
+        currentPath = testPath;
+        partIndex++;
+        continue;
+      }
+    } catch {
+      // Path doesn't exist, try combining with remaining parts
+    }
+
+    // Try combining remaining parts with dashes to see if that exists
+    if (partIndex < parts.length) {
+      let found = false;
+      for (let endIndex = parts.length; endIndex > partIndex; endIndex--) {
+        const combinedPart = parts.slice(partIndex, endIndex).join('-');
+        const combinedPath = path.join(currentPath, combinedPart);
+
+        try {
+          const stat = fs.statSync(combinedPath);
+          if (stat.isDirectory() || stat.isFile()) {
+            currentPath = combinedPath;
+            partIndex = endIndex;
+            found = true;
+            break;
+          }
+        } catch {
+          // Continue trying shorter combinations
+        }
+      }
+
+      if (!found) {
+        currentPath = path.join(currentPath, parts[partIndex]);
+        partIndex++;
+      }
+    }
   }
 
   return currentPath;

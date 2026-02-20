@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as readline from 'readline';
+import { decodePath } from './utils/path-utils';
 
 // Re-export types from agent-session-store for backward compatibility
 // These will eventually be moved here
@@ -147,9 +148,10 @@ export class SessionReader {
    * Convert a working directory to a project key
    */
   cwdToProjectKey(cwd: string): string {
-    // Path with slashes replaced by hyphens
-    // e.g., /home/ubuntu/tier-agent -> -home-ubuntu-tier-agent
-    return cwd.replace(/\//g, '-');
+    // Path with slashes, backslashes, and colons replaced by hyphens
+    // Linux:   /home/ubuntu/tier-agent   -> -home-ubuntu-tier-agent
+    // Windows: C:\home\lm-assist         -> C--home-lm-assist
+    return cwd.replace(/[:\\/]/g, '-');
   }
 
   /**
@@ -293,7 +295,7 @@ export class SessionReader {
 
       projects.push({
         key: entry.name,
-        path: '/' + entry.name.replace(/-/g, '/'),
+        path: decodePath(entry.name),
         sessionCount: files.length,
         lastActivity,
       });

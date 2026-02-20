@@ -401,12 +401,16 @@ export class ClaudeCliRunner extends EventEmitter {
   }
 
   /**
-   * Shell-escape a string for safe use in shell commands
-   * Uses single quotes and escapes embedded single quotes
+   * Shell-escape a string for safe use in shell commands (cross-platform).
+   * POSIX: single-quote wrapping.
+   * Windows: double-quote wrapping with caret-escaping.
    */
   private shellQuote(str: string): string {
-    // Use single quotes - they prevent all interpretation except for single quotes themselves
-    // Escape embedded single quotes by ending the quote, adding escaped quote, and restarting
+    if (process.platform === 'win32') {
+      // Windows cmd.exe: wrap in double quotes, escape inner double quotes with caret
+      return `"${str.replace(/"/g, '^"')}"`;
+    }
+    // POSIX: single quotes prevent all interpretation except for single quotes themselves
     return `'${str.replace(/'/g, "'\\''")}'`;
   }
 }
