@@ -93,7 +93,6 @@ function getTierAgentBase(): string {
 async function apiGet<T>(path: string): Promise<T | null> {
   try {
     const base = getTierAgentBase();
-    if (!base) return null;
     const res = await fetch(`${base}${path}`);
     if (!res.ok) return null;
     const json = await res.json();
@@ -105,7 +104,6 @@ async function apiGet<T>(path: string): Promise<T | null> {
 async function apiPost<T>(path: string, body?: Record<string, unknown>): Promise<T | null> {
   try {
     const base = getTierAgentBase();
-    if (!base) return null;
     const res = await fetch(`${base}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

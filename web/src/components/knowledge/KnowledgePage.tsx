@@ -28,6 +28,15 @@ import rehypeHighlight from 'rehype-highlight';
 
 function getApiBase(): string {
   if (typeof window === 'undefined') return 'http://localhost:3100';
+  // When proxied through hub (langmart.ai/w/:machineId/assist/...),
+  // route API calls through the hub's machine relay endpoint.
+  // The proxy shim rewrites fetch URLs, and the gateway forwards
+  // /api/tier-agent/... paths internally to the hub API.
+  const path = window.location.pathname;
+  const proxyMatch = path.match(/^\/w\/([^/]+)\/assist(\/|$)/);
+  if (proxyMatch) {
+    return `/api/tier-agent/machines/${proxyMatch[1]}`;
+  }
   const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
   return `http://${window.location.hostname}:${port}`;
 }

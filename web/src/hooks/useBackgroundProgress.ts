@@ -66,8 +66,7 @@ function getTierAgentBase(): string {
   if (typeof window === 'undefined') return 'http://localhost:3100';
   const proxyInfo = detectProxyInfo();
   if (proxyInfo.isProxied) {
-    // In proxy mode, tier-agent endpoints aren't directly reachable.
-    // Return empty string — fetches will fail silently and chips won't show.
+    // In proxy mode, use same-origin relative paths — the proxy shim rewrites them
     return '';
   }
   const { baseUrl } = detectAppMode();
@@ -77,7 +76,6 @@ function getTierAgentBase(): string {
 async function fetchStatus<T>(path: string): Promise<T | null> {
   try {
     const base = getTierAgentBase();
-    if (!base) return null;
     const res = await fetch(`${base}${path}`, {
       headers: { 'Content-Type': 'application/json' },
     });
