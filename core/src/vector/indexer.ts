@@ -207,10 +207,17 @@ export function extractMilestoneVectors(
  * Extract indexable items from a knowledge document.
  * Creates:
  *   - 1 vector per part (title + summary as embedding text)
+ *
+ * @param remoteOrigin When provided, marks vectors as remote with source machine metadata
  */
 export function extractKnowledgeVectors(
   knowledge: Knowledge,
-  projectPath?: string
+  projectPath?: string,
+  remoteOrigin?: {
+    machineId: string;
+    machineHostname: string;
+    machineOS: string;
+  }
 ): IndexableItem[] {
   const items: IndexableItem[] = [];
 
@@ -220,6 +227,10 @@ export function extractKnowledgeVectors(
     knowledgeId: knowledge.id,
     projectPath: projectPath || knowledge.project,
     timestamp: knowledge.updatedAt,
+    origin: (remoteOrigin ? 'remote' : 'local') as 'local' | 'remote',
+    machineId: remoteOrigin?.machineId || '',
+    machineHostname: remoteOrigin?.machineHostname || '',
+    machineOS: remoteOrigin?.machineOS || '',
   };
 
   // One vector per part — includes knowledge title for search context

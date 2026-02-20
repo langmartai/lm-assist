@@ -30,6 +30,7 @@ import { getDataDir } from '../utils/path-utils';
 
 const KNOWLEDGE_DIR = path.join(getDataDir(), 'knowledge');
 const COMMENTS_DIR = path.join(KNOWLEDGE_DIR, 'comments');
+const REMOTE_DIR = path.join(KNOWLEDGE_DIR, 'remote');
 const INDEX_FILE = path.join(KNOWLEDGE_DIR, 'index.json');
 
 export class KnowledgeStore {
@@ -48,10 +49,25 @@ export class KnowledgeStore {
     if (!fs.existsSync(COMMENTS_DIR)) {
       fs.mkdirSync(COMMENTS_DIR, { recursive: true });
     }
+    if (!fs.existsSync(REMOTE_DIR)) {
+      fs.mkdirSync(REMOTE_DIR, { recursive: true });
+    }
   }
 
-  private knowledgePath(id: string): string {
+  private knowledgePath(id: string, machineId?: string): string {
+    if (machineId) {
+      const machineDir = path.join(REMOTE_DIR, machineId);
+      if (!fs.existsSync(machineDir)) {
+        fs.mkdirSync(machineDir, { recursive: true });
+      }
+      return path.join(machineDir, `${id}.md`);
+    }
     return path.join(KNOWLEDGE_DIR, `${id}.md`);
+  }
+
+  /** Build index key: local = "K001", remote = "machineId:K001" */
+  private indexKey(id: string, machineId?: string): string {
+    return machineId ? `${machineId}:${id}` : id;
   }
 
   private commentsPath(knowledgeId: string): string {
@@ -100,9 +116,10 @@ export class KnowledgeStore {
 
   private updateIndexEntry(knowledge: Knowledge): void {
     const index = this.getIndex();
-    const comments = this.getComments(knowledge.id, false);
+    const indexKey = this.indexKey(knowledge.id, knowledge.machineId);
+    const comments = knowledge.origin === 'remote' ? [] : this.getComments(knowledge.id, false);
 
-    index.knowledges[knowledge.id] = {
+    index.knowledges[indexKey] = {
       title: knowledge.title,
       type: knowledge.type,
       project: knowledge.project,
@@ -113,6 +130,10 @@ export class KnowledgeStore {
       sourceSessionId: knowledge.sourceSessionId,
       sourceAgentId: knowledge.sourceAgentId,
       sourceTimestamp: knowledge.sourceTimestamp,
+      origin: knowledge.origin,
+      machineId: knowledge.machineId,
+      machineHostname: knowledge.machineHostname,
+      machineOS: knowledge.machineOS,
     };
     index.lastUpdated = Date.now();
     this.saveIndex();
@@ -135,11 +156,12 @@ export class KnowledgeStore {
 
   // ─── Knowledge CRUD ──────────────────────────────────────────────────
 
-  getKnowledge(id: string): Knowledge | null {
-    const filePath = this.knowledgePath(id);
+  getKnowledge(id: string, machineId?: string): Knowledge | null {
+    const cacheKey = machineId ? `${machineId}:${id}` : id;
+    const filePath = this.knowledgePath(id, machineId);
 
     // Check cache — but validate against file mtime so cross-process writes are picked up
-    const cached = this.cache.get(id);
+    const cached = this.cache.get(cacheKey);
     if (cached) {
       try {
         const stat = fs.statSync(filePath);
@@ -150,7 +172,7 @@ export class KnowledgeStore {
         // File is newer than cached version — fall through to reload
       } catch {
         // File disappeared; evict and return null
-        this.cache.delete(id);
+        this.cache.delete(cacheKey);
         return null;
       }
     }
@@ -164,7 +186,7 @@ export class KnowledgeStore {
       const knowledge = parseKnowledgeMd(md);
       if (!knowledge) return null;
 
-      this.cache.set(id, { knowledge, lastAccessed: Date.now(), cachedMtimeMs: stat.mtimeMs });
+      this.cache.set(cacheKey, { knowledge, lastAccessed: Date.now(), cachedMtimeMs: stat.mtimeMs });
       this.evictIfNeeded();
 
       return knowledge;
@@ -180,18 +202,23 @@ export class KnowledgeStore {
   }
 
   /**
-   * Get all knowledge documents, optionally filtered by project and/or type.
+   * Get all knowledge documents, optionally filtered by project, type, origin.
+   * @param origin 'local' = only local, 'remote' = only remote, undefined = all
    */
-  getAllKnowledge(project?: string, type?: KnowledgeType, status?: string): Knowledge[] {
+  getAllKnowledge(project?: string, type?: KnowledgeType, status?: string, origin?: 'local' | 'remote'): Knowledge[] {
     const index = this.getIndex();
     const results: Knowledge[] = [];
 
-    for (const [id, meta] of Object.entries(index.knowledges)) {
+    for (const [indexKey, meta] of Object.entries(index.knowledges)) {
       if (project && meta.project !== project) continue;
       if (type && meta.type !== type) continue;
       if (status && meta.status !== status) continue;
+      if (origin === 'local' && meta.origin === 'remote') continue;
+      if (origin === 'remote' && meta.origin !== 'remote') continue;
 
-      const knowledge = this.getKnowledge(id);
+      const knowledge = meta.origin === 'remote' && meta.machineId
+        ? this.getKnowledge(indexKey.replace(`${meta.machineId}:`, ''), meta.machineId)
+        : this.getKnowledge(indexKey);
       if (knowledge) results.push(knowledge);
     }
 
@@ -200,8 +227,9 @@ export class KnowledgeStore {
 
   /**
    * Get a lightweight list of knowledge (summaries only, no full content).
+   * @param origin 'local' = only local, 'remote' = only remote, undefined = all
    */
-  getKnowledgeList(project?: string, type?: KnowledgeType, status?: string): Array<{
+  getKnowledgeList(project?: string, type?: KnowledgeType, status?: string, origin?: 'local' | 'remote'): Array<{
     id: string;
     title: string;
     type: KnowledgeType;
@@ -214,21 +242,29 @@ export class KnowledgeStore {
     sourceSessionId?: string;
     sourceAgentId?: string;
     sourceTimestamp?: string;
+    origin?: string;
+    machineId?: string;
+    machineHostname?: string;
+    machineOS?: string;
     parts: Array<{ partId: string; title: string; summary: string }>;
   }> {
     const index = this.getIndex();
     const results: Array<any> = [];
 
-    for (const [id, meta] of Object.entries(index.knowledges)) {
+    for (const [indexKey, meta] of Object.entries(index.knowledges)) {
       if (project && meta.project !== project) continue;
       if (type && meta.type !== type) continue;
       if (status && meta.status !== status) continue;
+      if (origin === 'local' && meta.origin === 'remote') continue;
+      if (origin === 'remote' && meta.origin !== 'remote') continue;
 
-      const knowledge = this.getKnowledge(id);
+      const knowledge = meta.origin === 'remote' && meta.machineId
+        ? this.getKnowledge(indexKey.replace(`${meta.machineId}:`, ''), meta.machineId)
+        : this.getKnowledge(indexKey);
       if (!knowledge) continue;
 
       results.push({
-        id,
+        id: knowledge.id,
         title: meta.title,
         type: meta.type,
         project: meta.project,
@@ -240,6 +276,10 @@ export class KnowledgeStore {
         sourceSessionId: meta.sourceSessionId,
         sourceAgentId: meta.sourceAgentId,
         sourceTimestamp: knowledge.sourceTimestamp,
+        origin: meta.origin,
+        machineId: meta.machineId,
+        machineHostname: meta.machineHostname,
+        machineOS: meta.machineOS,
         parts: knowledge.parts.map(p => ({
           partId: p.partId,
           title: p.title,
@@ -263,24 +303,36 @@ export class KnowledgeStore {
     sourceSessionId?: string;
     sourceAgentId?: string;
     sourceTimestamp?: string;
+    /** Remote origin fields — when set, stores in remote/{machineId}/ subdirectory */
+    id?: string;
+    origin?: 'local' | 'remote';
+    machineId?: string;
+    machineHostname?: string;
+    machineOS?: string;
+    createdAt?: string;
+    updatedAt?: string;
   }): Knowledge {
-    // Atomic dedup: reject if sourceAgentId already exists (synchronous — no race window)
-    if (data.sourceAgentId) {
-      const existing = this.findByAgentId(data.sourceAgentId);
-      if (existing) {
-        throw new Error(`Duplicate: agent ${data.sourceAgentId} already generated as ${existing}`);
+    // Skip dedup checks for remote knowledge (uses composite key dedup instead)
+    if (data.origin !== 'remote') {
+      // Atomic dedup: reject if sourceAgentId already exists (synchronous — no race window)
+      if (data.sourceAgentId) {
+        const existing = this.findByAgentId(data.sourceAgentId);
+        if (existing) {
+          throw new Error(`Duplicate: agent ${data.sourceAgentId} already generated as ${existing}`);
+        }
+      }
+
+      // Dedup by title + sourceSessionId: reject if same title already exists for this session
+      if (data.sourceSessionId && data.title) {
+        const existing = this.findByTitleAndSession(data.title, data.sourceSessionId);
+        if (existing) {
+          throw new Error(`Duplicate: "${data.title}" already exists for session ${data.sourceSessionId} as ${existing}`);
+        }
       }
     }
 
-    // Dedup by title + sourceSessionId: reject if same title already exists for this session
-    if (data.sourceSessionId && data.title) {
-      const existing = this.findByTitleAndSession(data.title, data.sourceSessionId);
-      if (existing) {
-        throw new Error(`Duplicate: "${data.title}" already exists for session ${data.sourceSessionId} as ${existing}`);
-      }
-    }
-
-    const id = this.allocateId();
+    // For remote knowledge, use the provided ID; for local, allocate a new one
+    const id = (data.origin === 'remote' && data.id) ? data.id : this.allocateId();
     const now = new Date().toISOString();
 
     // Ensure part IDs match the knowledge ID
@@ -295,12 +347,16 @@ export class KnowledgeStore {
       type: data.type,
       project: data.project,
       status: data.status || 'active',
-      createdAt: now,
-      updatedAt: now,
+      createdAt: data.createdAt || now,
+      updatedAt: data.updatedAt || now,
       parts,
       sourceSessionId: data.sourceSessionId,
       sourceAgentId: data.sourceAgentId,
       sourceTimestamp: data.sourceTimestamp,
+      origin: data.origin,
+      machineId: data.machineId,
+      machineHostname: data.machineHostname,
+      machineOS: data.machineOS,
     };
 
     this.saveKnowledge(knowledge);
@@ -402,7 +458,7 @@ export class KnowledgeStore {
   private saveKnowledge(knowledge: Knowledge): void {
     this.ensureDir();
 
-    const filePath = this.knowledgePath(knowledge.id);
+    const filePath = this.knowledgePath(knowledge.id, knowledge.machineId);
     const md = renderKnowledgeMd(knowledge);
     fs.writeFileSync(filePath, md);
 
@@ -410,7 +466,8 @@ export class KnowledgeStore {
     const mtimeMs = fs.statSync(filePath).mtimeMs;
 
     // Update cache
-    this.cache.set(knowledge.id, { knowledge, lastAccessed: Date.now(), cachedMtimeMs: mtimeMs });
+    const cacheKey = this.indexKey(knowledge.id, knowledge.machineId);
+    this.cache.set(cacheKey, { knowledge, lastAccessed: Date.now(), cachedMtimeMs: mtimeMs });
     this.evictIfNeeded();
 
     // Update index
@@ -522,8 +579,10 @@ export class KnowledgeStore {
    */
   refreshIndex(): void {
     const index = this.getIndex();
-    for (const id of Object.keys(index.knowledges)) {
-      const knowledge = this.getKnowledge(id);
+    for (const [indexKey, meta] of Object.entries(index.knowledges)) {
+      const knowledge = meta.origin === 'remote' && meta.machineId
+        ? this.getKnowledge(indexKey.replace(`${meta.machineId}:`, ''), meta.machineId)
+        : this.getKnowledge(indexKey);
       if (knowledge) {
         this.updateIndexEntry(knowledge);
       }
@@ -582,6 +641,80 @@ export class KnowledgeStore {
     for (const [id, meta] of Object.entries(index.knowledges)) {
       if (meta.title === title && meta.sourceSessionId === sourceSessionId) return id;
     }
+    return null;
+  }
+
+  // ─── Remote Knowledge Helpers ──────────────────────────────────────────
+
+  /**
+   * Find remote knowledge by machineId + knowledgeId composite key.
+   */
+  findRemoteKnowledge(machineId: string, knowledgeId: string): Knowledge | null {
+    return this.getKnowledge(knowledgeId, machineId);
+  }
+
+  /**
+   * Get all knowledge IDs synced from a specific remote machine.
+   */
+  getRemoteKnowledgeIds(machineId: string): string[] {
+    const index = this.getIndex();
+    const ids: string[] = [];
+    const prefix = `${machineId}:`;
+    for (const [indexKey, meta] of Object.entries(index.knowledges)) {
+      if (meta.origin === 'remote' && indexKey.startsWith(prefix)) {
+        ids.push(indexKey.replace(prefix, ''));
+      }
+    }
+    return ids;
+  }
+
+  /**
+   * Delete a remote knowledge entry by machineId + knowledgeId.
+   */
+  deleteRemoteKnowledge(machineId: string, knowledgeId: string): boolean {
+    const filePath = this.knowledgePath(knowledgeId, machineId);
+    const indexKey = this.indexKey(knowledgeId, machineId);
+
+    let deleted = false;
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      deleted = true;
+    }
+
+    this.cache.delete(indexKey);
+
+    const index = this.getIndex();
+    if (index.knowledges[indexKey]) {
+      delete index.knowledges[indexKey];
+      index.lastUpdated = Date.now();
+      this.saveIndex();
+    }
+
+    return deleted;
+  }
+
+  /**
+   * Find knowledge by its original ID, searching both local and remote entries.
+   * Returns the first match found (local preferred over remote).
+   */
+  findKnowledgeByOriginalId(knowledgeId: string): Knowledge | null {
+    // Try local first
+    const local = this.getKnowledge(knowledgeId);
+    if (local) return local;
+
+    // Search remote entries — check each unique machineId for this knowledgeId
+    const index = this.getIndex();
+    const tried = new Set<string>();
+    for (const [indexKey, meta] of Object.entries(index.knowledges)) {
+      if (meta.origin !== 'remote' || !meta.machineId) continue;
+      if (tried.has(meta.machineId)) continue;
+      // Check if this index key matches the requested knowledgeId
+      if (indexKey !== `${meta.machineId}:${knowledgeId}`) continue;
+      tried.add(meta.machineId);
+      const remote = this.getKnowledge(knowledgeId, meta.machineId);
+      if (remote) return remote;
+    }
+
     return null;
   }
 }

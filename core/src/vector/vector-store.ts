@@ -41,6 +41,16 @@ export interface VectorMetadata {
   projectPath?: string;
   /** Phase for milestone quality signal */
   phase?: number;
+  /** Origin: 'local' (default) or 'remote' (synced from another machine) */
+  origin?: 'local' | 'remote';
+  /** Machine ID of the source (for remote knowledge) */
+  machineId?: string;
+  /** Hostname of the source machine */
+  machineHostname?: string;
+  /** OS platform of the source machine */
+  machineOS?: string;
+  /** True if remote source no longer has this entry */
+  stale?: boolean;
 }
 
 export interface VectorSearchResult {
@@ -55,6 +65,11 @@ export interface VectorSearchResult {
   timestamp?: string;
   projectPath?: string;
   phase?: number;
+  origin?: 'local' | 'remote';
+  machineId?: string;
+  machineHostname?: string;
+  machineOS?: string;
+  stale?: boolean;
 }
 
 // ─── Reindex Status Tracker ─────────────────────────────────
@@ -101,6 +116,11 @@ interface LanceRow {
   timestamp: string;
   projectPath: string;
   phase: number;
+  origin: string;          // 'local' | 'remote' | ''
+  machineId: string;       // '' = local
+  machineHostname: string; // '' = local
+  machineOS: string;       // '' = local
+  stale: number;           // 0 = fresh, 1 = stale
 }
 
 function metadataToRow(vector: number[], meta: VectorMetadata): LanceRow {
@@ -117,6 +137,11 @@ function metadataToRow(vector: number[], meta: VectorMetadata): LanceRow {
     timestamp: meta.timestamp || '',
     projectPath: meta.projectPath || '',
     phase: meta.phase ?? -1,
+    origin: meta.origin || '',
+    machineId: meta.machineId || '',
+    machineHostname: meta.machineHostname || '',
+    machineOS: meta.machineOS || '',
+    stale: meta.stale ? 1 : 0,
   };
 }
 
@@ -133,6 +158,11 @@ function rowToResult(row: any, score: number): VectorSearchResult {
     timestamp: row.timestamp || undefined,
     projectPath: row.projectPath || undefined,
     phase: row.phase === -1 ? undefined : row.phase,
+    origin: row.origin === 'remote' ? 'remote' : (row.origin === 'local' ? 'local' : undefined),
+    machineId: row.machineId || undefined,
+    machineHostname: row.machineHostname || undefined,
+    machineOS: row.machineOS || undefined,
+    stale: row.stale === 1 ? true : undefined,
   };
 }
 
@@ -234,6 +264,11 @@ export class VectorStore {
           timestamp: '',
           projectPath: '',
           phase: -1,
+          origin: '',
+          machineId: '',
+          machineHostname: '',
+          machineOS: '',
+          stale: 0,
         }]);
         try { await this.table.delete(`id = '${seedId}'`); } catch { /* best effort */ }
       }
@@ -516,6 +551,59 @@ export class VectorStore {
 
     await this.table.delete(`type = '${type}'`);
 
+    return count;
+  }
+
+  /**
+   * Delete all LOCAL vectors of a given type (preserves remote vectors).
+   * Used during knowledge reindex to avoid wiping remote synced vectors.
+   */
+  async deleteLocalByType(type: 'session' | 'milestone' | 'knowledge'): Promise<number> {
+    await this.init();
+
+    const where = `type = '${type}' AND (origin = '' OR origin = 'local')`;
+    const count = await this.countWhere(where);
+    if (count === 0) return 0;
+
+    await this.table.delete(where);
+
+    return count;
+  }
+
+  /**
+   * Delete remote knowledge vectors for a specific machine + knowledge ID.
+   */
+  async deleteRemoteKnowledgeVectors(machineId: string, knowledgeId: string): Promise<number> {
+    await this.init();
+
+    const escapedMachine = machineId.replace(/'/g, "''");
+    const escapedKnowledge = knowledgeId.replace(/'/g, "''");
+    const where = `machineId = '${escapedMachine}' AND knowledgeId = '${escapedKnowledge}' AND type = 'knowledge'`;
+    const count = await this.countWhere(where);
+    if (count === 0) return 0;
+
+    await this.table.delete(where);
+    return count;
+  }
+
+  /**
+   * Delete all remote knowledge vectors for a specific machine.
+   */
+  async deleteAllRemoteKnowledge(machineId?: string): Promise<number> {
+    await this.init();
+
+    let where: string;
+    if (machineId) {
+      const escaped = machineId.replace(/'/g, "''");
+      where = `origin = 'remote' AND machineId = '${escaped}' AND type = 'knowledge'`;
+    } else {
+      where = `origin = 'remote' AND type = 'knowledge'`;
+    }
+
+    const count = await this.countWhere(where);
+    if (count === 0) return 0;
+
+    await this.table.delete(where);
     return count;
   }
 

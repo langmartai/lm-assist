@@ -108,7 +108,7 @@ async function handleKnowledgePart(id: string, section?: string): Promise<{
 
   // Extract knowledge ID from part ID (K001.2 → K001)
   const knowledgeId = id.replace(/\.\d+$/, '');
-  const knowledge = store.getKnowledge(knowledgeId);
+  const knowledge = store.findKnowledgeByOriginalId(knowledgeId);
   if (!knowledge) {
     return { content: [{ type: 'text', text: `Knowledge document ${knowledgeId} not found` }] };
   }
@@ -121,7 +121,10 @@ async function handleKnowledgePart(id: string, section?: string): Promise<{
   const lines: string[] = [];
 
   lines.push(`${id}: ${knowledge.title} → ${part.title} [${knowledge.type}]`);
-  lines.push(`Status: ${knowledge.status} | Updated: ${knowledge.updatedAt}`);
+  const originLine = knowledge.origin === 'remote'
+    ? ` | Origin: remote (${knowledge.machineHostname || 'unknown'}, ${knowledge.machineOS || 'unknown'})`
+    : '';
+  lines.push(`Status: ${knowledge.status} | Updated: ${knowledge.updatedAt}${originLine}`);
   lines.push('');
 
   // Show content
@@ -156,7 +159,7 @@ async function handleKnowledgeDoc(id: string, section?: string): Promise<{
   content: Array<{ type: string; text: string }>;
 }> {
   const store = getKnowledgeStore();
-  const knowledge = store.getKnowledge(id);
+  const knowledge = store.findKnowledgeByOriginalId(id);
   if (!knowledge) {
     return { content: [{ type: 'text', text: `Knowledge document ${id} not found` }] };
   }
@@ -164,7 +167,10 @@ async function handleKnowledgeDoc(id: string, section?: string): Promise<{
   const lines: string[] = [];
 
   lines.push(`${id}: ${knowledge.title} [${knowledge.type}]`);
-  lines.push(`Status: ${knowledge.status} | ${knowledge.parts.length} parts | Updated: ${knowledge.updatedAt}`);
+  const docOriginLine = knowledge.origin === 'remote'
+    ? ` | Origin: remote (${knowledge.machineHostname || 'unknown'}, ${knowledge.machineOS || 'unknown'})`
+    : '';
+  lines.push(`Status: ${knowledge.status} | ${knowledge.parts.length} parts | Updated: ${knowledge.updatedAt}${docOriginLine}`);
   lines.push('');
 
   lines.push('Parts:');

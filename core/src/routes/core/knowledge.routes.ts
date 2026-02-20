@@ -48,6 +48,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
   ensureStatsWatcher();
   return [
     // GET /knowledge — List all knowledge documents
+    // ?origin=local|remote|all (default: all) — filter by origin
     {
       method: 'GET',
       pattern: /^\/knowledge$/,
@@ -58,11 +59,15 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
         // status defaults to 'active'; pass 'all' to list all statuses
         const statusParam = req.query.status || 'active';
         const status = statusParam === 'all' ? undefined : statusParam;
+        // origin filter: 'local' = only local, 'remote' = only remote, 'all'/undefined = all
+        const originParam = req.query.origin as string | undefined;
+        const origin = (originParam === 'local' || originParam === 'remote') ? originParam : undefined;
 
         const list = store.getKnowledgeList(
           project || undefined,
           type && KNOWLEDGE_TYPES.includes(type) ? type : undefined,
           status,
+          origin,
         );
 
         return { success: true, data: list };
@@ -107,7 +112,11 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
           // Filter orphaned vectors (knowledge deleted but vectors remain)
           const valid: any[] = merged.filter((r: any) => {
             const kId = (r.knowledgeId || r.id || '').split('.')[0];
-            return kId ? !!knowledgeStore.getKnowledge(kId) : false;
+            if (!kId) return false;
+            // For remote knowledge, look up with machineId
+            return r.machineId
+              ? !!knowledgeStore.getKnowledge(kId, r.machineId)
+              : !!knowledgeStore.getKnowledge(kId);
           });
 
           // Content-match boost + supplementary knowledge scan
@@ -119,7 +128,9 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
             // 1. Boost existing results that contain the query
             for (const r of valid) {
               const kId = (r.knowledgeId || r.id || '').split('.')[0];
-              const knowledge = knowledgeStore.getKnowledge(kId);
+              const knowledge = r.machineId
+                ? knowledgeStore.getKnowledge(kId, r.machineId)
+                : knowledgeStore.getKnowledge(kId);
               if (!knowledge) continue;
               const part = r.partId ? knowledge.parts.find((p: any) => p.partId === r.partId) : null;
               const haystack = [part?.title || '', part?.summary || '', part?.content || ''].join(' ').toLowerCase();
@@ -164,7 +175,9 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
           // Enrich results with knowledge/part titles for UI display
           const enriched = (limit > 0 ? valid.slice(0, limit) : valid).map((r: any) => {
             const kId = r.knowledgeId || (r.id || '').split('.')[0] || '';
-            const knowledge = knowledgeStore.getKnowledge(kId);
+            const knowledge = r.machineId
+              ? knowledgeStore.getKnowledge(kId, r.machineId)
+              : knowledgeStore.getKnowledge(kId);
             const knowledgeTitle = knowledge?.title || '';
             const knowledgeType = knowledge?.type || '';
             let partTitle = '';
@@ -172,7 +185,13 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
               const part = knowledge.parts.find((p: any) => p.partId === r.partId);
               partTitle = part?.title || '';
             }
-            return { ...r, knowledgeTitle, partTitle, knowledgeType };
+            if (!knowledge) return r;
+            return {
+              ...r, knowledgeTitle, partTitle, knowledgeType,
+              origin: knowledge.origin || 'local',
+              machineHostname: knowledge.machineHostname,
+              machineOS: knowledge.machineOS,
+            };
           });
 
           return { success: true, data: enriched };
@@ -620,6 +639,75 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
         });
 
         return { success: true, data: comment };
+      },
+    },
+
+    // POST /knowledge/remote-sync — Trigger remote knowledge sync
+    {
+      method: 'POST',
+      pattern: /^\/knowledge\/remote-sync$/,
+      handler: async (req) => {
+        try {
+          const { sync } = require('../../knowledge/remote-sync');
+          const project = req.body?.project;
+
+          // Fire-and-forget — returns immediately
+          (async () => {
+            try {
+              await sync(project);
+            } catch (err: any) {
+              console.error('[RemoteSync] Background sync error:', err.message);
+            }
+          })();
+
+          return { success: true, data: { started: true } };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
+    // GET /knowledge/remote-sync/status — Get remote sync status
+    {
+      method: 'GET',
+      pattern: /^\/knowledge\/remote-sync\/status$/,
+      handler: async () => {
+        try {
+          const { getSyncStatus } = require('../../knowledge/remote-sync');
+          return { success: true, data: getSyncStatus() };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
+    // DELETE /knowledge/remote — Delete all remote knowledge
+    {
+      method: 'DELETE',
+      pattern: /^\/knowledge\/remote$/,
+      handler: async () => {
+        try {
+          const store = getKnowledgeStore();
+          const remoteList = store.getKnowledgeList(undefined, undefined, undefined, 'remote');
+          let deleted = 0;
+
+          for (const k of remoteList) {
+            if (k.machineId) {
+              if (store.deleteRemoteKnowledge(k.machineId, k.id)) deleted++;
+            }
+          }
+
+          // Also delete remote vectors
+          try {
+            const { getVectorStore } = require('../../vector/vector-store');
+            const vectra = getVectorStore();
+            await vectra.deleteAllRemoteKnowledge();
+          } catch { /* best-effort */ }
+
+          return { success: true, data: { deleted } };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
       },
     },
 

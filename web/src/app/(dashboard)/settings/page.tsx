@@ -259,6 +259,11 @@ export default function SettingsPage() {
   const [availableProjects, setAvailableProjects] = useState<string[]>([]);
   const [projectPickerLoading, setProjectPickerLoading] = useState(false);
 
+  // remote knowledge sync state
+  const [knowledgeSettings, setKnowledgeSettings] = useState<{ remoteSyncEnabled: boolean; syncIntervalMinutes: number; lastSyncTimestamps: Record<string, string> } | null>(null);
+  const [remoteSyncStatus, setRemoteSyncStatus] = useState<{ status: string; machinesChecked: number; machinesMatched: number; entriesSynced: number; entriesSkipped: number; entriesFlaggedStale: number; errors: string[]; startedAt: string | null; completedAt: string | null } | null>(null);
+  const [isRemoteSyncing, setIsRemoteSyncing] = useState(false);
+
   // pipeline status state
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatusData | null>(null);
   const [isPipelineLoading, setIsPipelineLoading] = useState(false);
@@ -766,8 +771,12 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!proxy.isProxied && localStatus?.healthy && (activeTab === 'data-loading' || activeTab === 'experiment')) {
       fetchMilestoneSettings();
+      // Also fetch knowledge settings
+      fetch(tierAgentUrl + '/knowledge-settings').then(r => r.json()).then(j => {
+        if (j.success) setKnowledgeSettings(j.data);
+      }).catch(() => {});
     }
-  }, [fetchMilestoneSettings, proxy.isProxied, localStatus?.healthy, activeTab]);
+  }, [fetchMilestoneSettings, proxy.isProxied, localStatus?.healthy, activeTab, tierAgentUrl]);
 
   const saveMilestoneSettings = useCallback(async (partial: Partial<MilestoneSettingsData>) => {
     setIsMilestoneSaving(true);
@@ -3355,6 +3364,96 @@ export default function SettingsPage() {
                   </div>
                 </SectionCard>
 
+                )}
+
+                {/* Data Loading tab: Remote Knowledge */}
+                {activeTab === 'data-loading' && (
+                <SectionCard title="Remote Knowledge" icon={Cloud}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <ToggleRow
+                      label="Load knowledge from remote machines"
+                      description="Fetch knowledge from Hub-connected machines sharing the same git repo."
+                      checked={knowledgeSettings?.remoteSyncEnabled === true}
+                      onChange={(checked) => {
+                        const updated = { ...knowledgeSettings, remoteSyncEnabled: checked } as any;
+                        setKnowledgeSettings(updated);
+                        fetch(tierAgentUrl + '/knowledge-settings', {
+                          method: 'PUT',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ remoteSyncEnabled: checked }),
+                        }).catch(() => {});
+                      }}
+                    />
+
+                    {/* Sync status display */}
+                    {remoteSyncStatus?.status === 'done' && (
+                      <div style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                        Last sync: {remoteSyncStatus.completedAt ? new Date(remoteSyncStatus.completedAt).toLocaleString() : 'unknown'}
+                        {' · '}{remoteSyncStatus.machinesMatched} machine{remoteSyncStatus.machinesMatched !== 1 ? 's' : ''}
+                        {' · '}{remoteSyncStatus.entriesSynced} entries synced
+                        {remoteSyncStatus.entriesFlaggedStale > 0 && (
+                          <span style={{ color: 'var(--color-text-tertiary)' }}> · {remoteSyncStatus.entriesFlaggedStale} stale</span>
+                        )}
+                      </div>
+                    )}
+
+                    {remoteSyncStatus?.status === 'error' && remoteSyncStatus.errors.length > 0 && (
+                      <div style={{ fontSize: 10, color: 'var(--color-status-red)' }}>
+                        {remoteSyncStatus.errors[0]}
+                      </div>
+                    )}
+
+                    {/* Sync Now button */}
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button
+                        className="btn btn-primary"
+                        disabled={isRemoteSyncing || !(hubStatus?.connected)}
+                        onClick={async () => {
+                          setIsRemoteSyncing(true);
+                          setRemoteSyncStatus(null);
+                          try {
+                            await fetch(tierAgentUrl + '/knowledge/remote-sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+                            // Poll status with 2-minute timeout
+                            let elapsed = 0;
+                            const poll = setInterval(async () => {
+                              elapsed += 1500;
+                              if (elapsed > 120000) {
+                                clearInterval(poll);
+                                setIsRemoteSyncing(false);
+                                return;
+                              }
+                              try {
+                                const r = await fetch(tierAgentUrl + '/knowledge/remote-sync/status');
+                                const j = await r.json();
+                                if (j.success) {
+                                  setRemoteSyncStatus(j.data);
+                                  if (j.data.status !== 'running') {
+                                    clearInterval(poll);
+                                    setIsRemoteSyncing(false);
+                                  }
+                                }
+                              } catch { clearInterval(poll); setIsRemoteSyncing(false); }
+                            }, 1500);
+                          } catch { setIsRemoteSyncing(false); }
+                        }}
+                        style={{ padding: '6px 12px', fontSize: 11, gap: 4 }}
+                      >
+                        {isRemoteSyncing ? <Loader2 size={11} className="spin" /> : <RefreshCw size={11} />}
+                        {isRemoteSyncing ? 'Syncing...' : 'Sync Now'}
+                      </button>
+                    </div>
+
+                    {!(hubStatus?.connected) && (
+                      <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5, margin: 0 }}>
+                        Hub connection required. Connect to Hub in the Connection tab to enable remote sync.
+                      </p>
+                    )}
+
+                    <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5, margin: 0 }}>
+                      Fetches knowledge generated on remote machines connected via Hub that share the same git repository. Synced knowledge appears in search results with origin metadata.
+                    </p>
+                  </div>
+                </SectionCard>
                 )}
 
                 {/* Experiment-only: Excluded Projects + Advanced */}

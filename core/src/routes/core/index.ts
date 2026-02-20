@@ -20,6 +20,7 @@ import { createMilestoneSettingsRoutes } from './milestone-settings.routes';
 import { createMilestonePipelineRoutes } from './milestone-pipeline.routes';
 import { createMilestonesRoutes } from './milestones.routes';
 import { createKnowledgeRoutes } from './knowledge.routes';
+import { createKnowledgeSettingsRoutes } from './knowledge-settings.routes';
 import { createArchitectureRoutes } from './architecture.routes';
 import { createSessionSearchRoutes } from './session-search.routes';
 import { createAssistResourcesRoutes } from './assist-resources.routes';
@@ -49,6 +50,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createMilestonePipelineRoutes(ctx),
     ...createMilestonesRoutes(ctx),
     ...createKnowledgeRoutes(ctx),
+    ...createKnowledgeSettingsRoutes(ctx),
     ...createArchitectureRoutes(ctx),
     ...createSessionSearchRoutes(ctx),
     ...createAssistResourcesRoutes(ctx),

@@ -327,6 +327,7 @@ async function handleHybridSearch(
       projectPath: r.projectPath,
       knowledgeId: r.knowledgeId,
       partId: r.partId,
+      machineId: r.machineId,
     };
   });
 
@@ -338,7 +339,7 @@ async function handleHybridSearch(
   const resolvable = ranked.filter(r => {
     if (r.type === 'knowledge') {
       const kId = (r.knowledgeId || r.id || '').split('.')[0];
-      return kId ? !!knowledgeStore.getKnowledge(kId) : false;
+      return kId ? !!knowledgeStore.getKnowledge(kId, r.machineId) : false;
     }
     if (r.type === 'milestone') {
       return !!milestoneStore.getMilestoneById(r.id);
@@ -358,7 +359,7 @@ async function handleHybridSearch(
     for (const r of resolvable) {
       if (r.type !== 'knowledge') continue;
       const kId = (r.knowledgeId || r.id || '').split('.')[0];
-      const knowledge = knowledgeStore.getKnowledge(kId);
+      const knowledge = knowledgeStore.getKnowledge(kId, r.machineId);
       if (!knowledge) continue;
       const part = r.partId ? knowledge.parts.find(p => p.partId === r.partId) : null;
       const haystack = [part?.title || '', part?.summary || '', part?.content || ''].join(' ').toLowerCase();
@@ -391,6 +392,7 @@ async function handleHybridSearch(
             knowledgeId: k.id,
             partId: part.partId,
             projectPath: k.project,
+            machineId: k.machineId,
           });
           existingIds.add(part.partId);
           changed = true;
@@ -684,15 +686,19 @@ function formatResults(
 
     if (r.type === 'knowledge') {
       const kId = r.knowledgeId || r.id;
-      const knowledge = knowledgeStore.getKnowledge(kId);
+      const knowledge = knowledgeStore.getKnowledge(kId, r.machineId);
+      // Origin suffix for remote knowledge
+      const originSuffix = knowledge?.origin === 'remote'
+        ? ` (remote: ${knowledge.machineHostname || 'unknown'}, ${knowledge.machineOS || 'unknown'})`
+        : '';
 
       if (knowledge && r.partId) {
         const part = knowledge.parts.find(p => p.partId === r.partId);
-        lines.push(`${offset + i + 1}. [knowledge] ${r.partId}: ${knowledge.title} → ${part?.title || 'Unknown'} [${knowledge.type}]`);
+        lines.push(`${offset + i + 1}. [knowledge] ${r.partId}: ${knowledge.title} → ${part?.title || 'Unknown'} [${knowledge.type}]${originSuffix}`);
         lines.push(`   ${part?.summary || ''}`);
         lines.push(`   → detail("${r.partId}")`);
       } else if (knowledge) {
-        lines.push(`${offset + i + 1}. [knowledge] ${kId}: ${knowledge.title} [${knowledge.type}] (${knowledge.parts.length} parts)`);
+        lines.push(`${offset + i + 1}. [knowledge] ${kId}: ${knowledge.title} [${knowledge.type}] (${knowledge.parts.length} parts)${originSuffix}`);
         lines.push(`   → detail("${kId}")`);
       }
     } else if (r.type === 'milestone') {

@@ -16,6 +16,7 @@ export interface ScoredResult {
   projectPath?: string; // for affinity
   knowledgeId?: string; // for knowledge results
   partId?: string;      // for knowledge part results
+  machineId?: string;   // for remote knowledge results
 }
 
 export interface CompositeScoreOptions {

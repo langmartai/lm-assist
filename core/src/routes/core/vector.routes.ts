@@ -204,7 +204,8 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
               try {
                 const startMs = Date.now();
                 console.log(`[Reindex] Starting knowledge: ${allVectors.length} vectors from ${knowledgeIds.length} docs`);
-                await vectra.deleteAllByType('knowledge');
+                // Use deleteLocalByType to preserve remote synced vectors
+                await vectra.deleteLocalByType('knowledge');
                 console.log(`[Reindex] Deleted old knowledge vectors in ${((Date.now() - startMs) / 1000).toFixed(1)}s`);
                 if (allVectors.length > 0) {
                   const embedStart = Date.now();

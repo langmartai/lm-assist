@@ -52,6 +52,9 @@ interface KnowledgeSearchResult {
   knowledgeTitle?: string;
   partTitle?: string;
   knowledgeType?: string;
+  origin?: string;
+  machineHostname?: string;
+  machineOS?: string;
 }
 
 interface KnowledgeFull {
@@ -776,6 +779,12 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                         {kr.knowledgeType && (
                           <span className={`badge ${KNOWLEDGE_TYPE_COLORS[kr.knowledgeType] || 'badge-default'}`} style={{ fontSize: 9, flexShrink: 0 }}>
                             {kr.knowledgeType}
+                          </span>
+                        )}
+                        {kr.origin === 'remote' && (
+                          <span className="badge badge-default" style={{ fontSize: 8, flexShrink: 0 }}
+                            title={`From ${kr.machineHostname || 'remote'} (${kr.machineOS || 'unknown'})`}>
+                            {kr.machineHostname || 'remote'}
                           </span>
                         )}
                       </div>

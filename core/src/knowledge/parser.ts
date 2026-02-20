@@ -35,6 +35,10 @@ interface Frontmatter {
   sourceSessionId?: string;
   sourceAgentId?: string;
   sourceTimestamp?: string;
+  origin?: 'local' | 'remote';
+  machineId?: string;
+  machineHostname?: string;
+  machineOS?: string;
 }
 
 function parseFrontmatter(raw: string): Frontmatter | null {
@@ -68,6 +72,10 @@ function parseFrontmatter(raw: string): Frontmatter | null {
     sourceSessionId: fm.sourceSessionId || undefined,
     sourceAgentId: fm.sourceAgentId || undefined,
     sourceTimestamp: fm.sourceTimestamp || undefined,
+    origin: (fm.origin === 'remote' ? 'remote' : undefined) as Frontmatter['origin'],
+    machineId: fm.machineId || undefined,
+    machineHostname: fm.machineHostname || undefined,
+    machineOS: fm.machineOS || undefined,
   };
 }
 
@@ -85,6 +93,10 @@ function renderFrontmatter(k: Knowledge): string {
   if (k.sourceSessionId) lines.push(`sourceSessionId: ${k.sourceSessionId}`);
   if (k.sourceAgentId) lines.push(`sourceAgentId: ${k.sourceAgentId}`);
   if (k.sourceTimestamp) lines.push(`sourceTimestamp: ${k.sourceTimestamp}`);
+  if (k.origin === 'remote') lines.push(`origin: remote`);
+  if (k.machineId) lines.push(`machineId: ${k.machineId}`);
+  if (k.machineHostname) lines.push(`machineHostname: ${k.machineHostname}`);
+  if (k.machineOS) lines.push(`machineOS: ${k.machineOS}`);
   lines.push('---');
   return lines.join('\n');
 }
@@ -188,6 +200,10 @@ export function parseKnowledgeMd(mdContent: string): Knowledge | null {
     sourceSessionId: frontmatter.sourceSessionId,
     sourceAgentId: frontmatter.sourceAgentId,
     sourceTimestamp: frontmatter.sourceTimestamp,
+    origin: frontmatter.origin,
+    machineId: frontmatter.machineId,
+    machineHostname: frontmatter.machineHostname,
+    machineOS: frontmatter.machineOS,
   };
 }
 

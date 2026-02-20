@@ -18,6 +18,10 @@ export interface Knowledge {
   sourceSessionId?: string;      // Parent session ID (for generated knowledge)
   sourceAgentId?: string;        // Explore agent ID (for generated knowledge)
   sourceTimestamp?: string;      // When the source agent completed (ISO timestamp)
+  origin?: 'local' | 'remote';  // Source origin (default: 'local')
+  machineId?: string;            // Source machine ID (for remote knowledge)
+  machineHostname?: string;      // Source hostname (for remote knowledge)
+  machineOS?: string;            // Source OS platform (for remote knowledge)
 }
 
 export interface KnowledgePart {
@@ -49,7 +53,7 @@ export type KnowledgeCommentType = 'remove' | 'update' | 'outdated' | 'expand' |
 export const COMMENT_TYPES: KnowledgeCommentType[] = ['remove', 'update', 'outdated', 'expand', 'general'];
 
 export interface KnowledgeIndex {
-  knowledges: Record<string, {
+  knowledges: Record<string, {  // key: "K001" (local) or "machineId:K001" (remote)
     title: string;
     type: KnowledgeType;
     project: string;
@@ -60,6 +64,10 @@ export interface KnowledgeIndex {
     sourceSessionId?: string;
     sourceAgentId?: string;
     sourceTimestamp?: string;
+    origin?: 'local' | 'remote';
+    machineId?: string;
+    machineHostname?: string;
+    machineOS?: string;
   }>;
   nextId: number;
   lastUpdated: number;

@@ -41,6 +41,10 @@ interface KnowledgeListItem {
   sourceSessionId?: string;
   sourceAgentId?: string;
   sourceTimestamp?: string;
+  origin?: string;
+  machineId?: string;
+  machineHostname?: string;
+  machineOS?: string;
   parts: Array<{ partId: string; title: string; summary: string }>;
 }
 
@@ -55,6 +59,10 @@ interface KnowledgeFull {
   sourceSessionId?: string;
   sourceAgentId?: string;
   sourceTimestamp?: string;
+  origin?: string;
+  machineId?: string;
+  machineHostname?: string;
+  machineOS?: string;
   parts: Array<{ partId: string; title: string; summary: string; content: string }>;
 }
 
@@ -91,6 +99,9 @@ interface SearchResult {
   knowledgeTitle?: string;
   partTitle?: string;
   knowledgeType?: string;
+  origin?: string;
+  machineHostname?: string;
+  machineOS?: string;
 }
 
 const KNOWLEDGE_TYPES = ['algorithm', 'contract', 'schema', 'wiring', 'invariant', 'flow'] as const;
@@ -1040,6 +1051,11 @@ export function KnowledgePage() {
                       {knowledge.project}
                     </span>
                   )}
+                  {(knowledge as any).origin === 'remote' && (
+                    <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+                      From: {(knowledge as any).machineHostname || 'remote'} ({(knowledge as any).machineOS || 'unknown'})
+                    </span>
+                  )}
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
@@ -1260,6 +1276,12 @@ function KnowledgeListGroup({
             <span className={`badge ${TYPE_COLORS[item.type] || 'badge-default'}`} style={{ fontSize: 9, flexShrink: 0 }}>
               {item.type}
             </span>
+            {item.origin === 'remote' && (
+              <span className="badge badge-default" style={{ fontSize: 8, flexShrink: 0 }}
+                title={`From ${item.machineHostname || 'remote'} (${item.machineOS || 'unknown'})`}>
+                {item.machineHostname || 'remote'}
+              </span>
+            )}
             <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>
               {formatDate(item.sourceTimestamp || item.createdAt || item.updatedAt)}
             </span>
@@ -1320,6 +1342,12 @@ function KnowledgeListGroup({
             <span className={`badge ${TYPE_COLORS[item.type] || 'badge-default'}`} style={{ fontSize: 9, flexShrink: 0 }}>
               {item.type}
             </span>
+            {item.origin === 'remote' && (
+              <span className="badge badge-default" style={{ fontSize: 8, flexShrink: 0 }}
+                title={`From ${item.machineHostname || 'remote'} (${item.machineOS || 'unknown'})`}>
+                {item.machineHostname || 'remote'}
+              </span>
+            )}
             {item.unaddressedComments > 0 && (
               <span className="badge badge-orange" style={{ fontSize: 9, flexShrink: 0 }}>
                 <Circle size={5} fill="currentColor" />
@@ -1421,6 +1449,12 @@ function SearchResultRow({
         {result.knowledgeType && (
           <span className={`badge ${TYPE_COLORS[result.knowledgeType] || 'badge-default'}`} style={{ fontSize: 9, flexShrink: 0 }}>
             {result.knowledgeType}
+          </span>
+        )}
+        {result.origin === 'remote' && (
+          <span className="badge badge-default" style={{ fontSize: 8, flexShrink: 0 }}
+            title={`From ${result.machineHostname || 'remote'} (${result.machineOS || 'unknown'})`}>
+            {result.machineHostname || 'remote'}
           </span>
         )}
       </div>
