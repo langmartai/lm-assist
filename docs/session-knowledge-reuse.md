@@ -1,25 +1,3 @@
----
-title: "Your Claude Sessions Are Gold: Stop Paying Twice for the Same Knowledge"
-description: "Learn how to reuse Claude Code session knowledge to save tokens, reduce exploration overhead, and build a searchable knowledge base. Compare CLAUDE.md vs automated context injection for token-efficient context management."
-keywords:
-  - Claude Code context management
-  - Token saving
-  - Context engineering
-  - Claude Opus 4.6
-  - Subagent execution
-  - Team collaboration
-  - Knowledge extraction
-  - MCP tools
-  - LM Assist
-  - Session reuse
-  - Vector search
-  - Knowledge base
-  - Context injection
-  - API cost reduction
-article_type: long-form guide
-estimated_reading_time: 12 minutes
----
-
 # Your Claude Sessions Are Gold: Stop Paying Twice for the Same Knowledge
 
 ## The Hidden Cost of Starting Fresh
