@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { detectAppMode } from '@/lib/api-client';
 import { useExperiment } from '@/hooks/useExperiment';
+import { usePlatform } from '@/hooks/usePlatform';
 import {
   Settings,
   Globe,
@@ -192,6 +193,13 @@ export default function SettingsPage() {
     return 'connection';
   });
   const { isExperiment, setExperiment: handleSetExperiment } = useExperiment();
+  const { isWindows } = usePlatform();
+  // Redirect away from terminal tab on Windows
+  useEffect(() => {
+    if (isWindows && activeTab === 'terminal') {
+      handleSetActiveTab('connection');
+    }
+  }, [isWindows, activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
   const handleSetActiveTab = (tab: SettingsTab) => {
     setActiveTab(tab);
     localStorage.setItem('settings-active-tab', tab);
@@ -1226,13 +1234,15 @@ export default function SettingsPage() {
           icon={<Monitor size={13} />}
           label="Connection"
         />
-        <TabButton
-          active={activeTab === 'terminal'}
-          onClick={() => handleSetActiveTab('terminal')}
-          icon={<Terminal size={13} />}
-          label="Terminal"
-          badge={tmuxNeedsAttention ? 'warning' : undefined}
-        />
+        {!isWindows && (
+          <TabButton
+            active={activeTab === 'terminal'}
+            onClick={() => handleSetActiveTab('terminal')}
+            icon={<Terminal size={13} />}
+            label="Terminal"
+            badge={tmuxNeedsAttention ? 'warning' : undefined}
+          />
+        )}
         <TabButton
           active={activeTab === 'claude-code'}
           onClick={() => handleSetActiveTab('claude-code')}
