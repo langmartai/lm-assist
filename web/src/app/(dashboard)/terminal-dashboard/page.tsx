@@ -5,10 +5,12 @@ import { useSessionDashboard } from '@/hooks/useSessionDashboard';
 import { useRunningProcesses } from '@/hooks/useRunningProcesses';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { useMachineContext } from '@/contexts/MachineContext';
+import { usePlatform } from '@/hooks/usePlatform';
 import { resolveConsoleUrl } from '@/lib/api-client';
 import { DashboardToolbar } from '@/components/console-dashboard/DashboardToolbar';
 import { LayoutEngine } from '@/components/console-dashboard/LayoutEngine';
 import { useConsoleDashboardStore } from '@/stores/consoleDashboardStore';
+import { Terminal } from 'lucide-react';
 import type { ConsoleInstance } from '@/components/console-dashboard/types';
 
 // ============================================================================
@@ -30,6 +32,7 @@ export default function ConsoleDashboardPage() {
   const positionTimerRef = useRef<NodeJS.Timeout | null>(null);
   const { apiClient, proxy } = useAppMode();
   const { selectedMachineId } = useMachineContext();
+  const { isWindows } = usePlatform();
 
   const {
     openConsoles,
@@ -282,6 +285,20 @@ export default function ConsoleDashboardPage() {
   const openCount = openConsoles.length;
   const runningCount = openConsoles.filter(c => c.isRunning).length;
   const totalAvailable = availableSessions?.length ?? 0;
+
+  // ── Windows: terminal not supported ──────────────────────────────────
+
+  if (isWindows) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center" style={{ background: 'var(--color-bg-root)' }}>
+        <div className="flex flex-col items-center gap-3" style={{ color: 'var(--color-text-tertiary)' }}>
+          <Terminal size={32} style={{ opacity: 0.3 }} />
+          <span style={{ fontSize: 14, fontWeight: 500 }}>Terminal Dashboard is not supported on Windows</span>
+          <span style={{ fontSize: 12 }}>ttyd requires a Unix-based platform (Linux or macOS).</span>
+        </div>
+      </div>
+    );
+  }
 
   // ── Loading state ─────────────────────────────────────────────────────
 

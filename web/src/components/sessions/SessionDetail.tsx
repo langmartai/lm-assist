@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useSessionDetail } from '@/hooks/useSessionDetail';
 import { useExperiment } from '@/hooks/useExperiment';
+import { usePlatform } from '@/hooks/usePlatform';
 import { useHighlightValue } from '@/hooks/useHighlight';
 import { useMachineContext } from '@/contexts/MachineContext';
 import { useAppMode } from '@/contexts/AppModeContext';
@@ -103,6 +104,7 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
   });
   const { detail, isLoading, error, refetch, applyBatchCheck, pollState } = useSessionDetail({ sessionId, machineId, externalPolling, lastN: chatLastN });
   const { isExperiment } = useExperiment();
+  const { isWindows } = usePlatform();
   const { isSingleMachine, machines } = useMachineContext();
   const { apiClient } = useAppMode();
   const searchParams = useSearchParams();
@@ -113,12 +115,18 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
       const saved = localStorage.getItem('session-detail-tab');
       if (saved) return saved as TabId;
     }
-    return 'console';
+    return isWindows ? 'chat' : 'console';
   });
   const handleSetActiveTab = (tab: TabId) => {
     setActiveTab(tab);
     try { localStorage.setItem('session-detail-tab', tab); } catch { /* ignore */ }
   };
+  // Redirect away from console tab on Windows (e.g. restored from localStorage)
+  useEffect(() => {
+    if (isWindows && activeTab === 'console') {
+      setActiveTab('chat');
+    }
+  }, [isWindows, activeTab]);
   const [copied, setCopied] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [milestoneCount, setMilestoneCount] = useState<number | undefined>(undefined);
@@ -247,7 +255,7 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
   const statusBadge = getStatusBadge(detail);
 
   const tabs: { id: TabId; label: string; count?: number }[] = [
-    { id: 'console', label: 'Console' },
+    ...(!isWindows ? [{ id: 'console' as TabId, label: 'Console' }] : []),
     { id: 'chat', label: 'Chat', count: detail?.messages?.length },
     { id: 'tasks', label: 'Tasks', count: tasks.length || undefined },
     { id: 'plans', label: 'Plans', count: plans.length || undefined },
@@ -448,30 +456,34 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
         )}
 
         {/* Actions */}
-        <button className="btn btn-sm btn-secondary" title="Open Terminal" onClick={() => handleSetActiveTab('console')}>
-          <TerminalIcon size={12} />
-        </button>
-        <button
-          className="btn btn-sm btn-ghost"
-          title="Open Console in new tab"
-          onClick={() => window.open(`/console?sessionId=${encodeURIComponent(sessionId)}&projectPath=${encodeURIComponent(projectPath || detail?.projectPath || '')}`, '_blank')}
-        >
-          <ExternalLink size={12} />
-        </button>
-        <button
-          className="btn btn-sm btn-ghost"
-          title="Fork Session"
-          onClick={() => window.open(`/console?sessionId=${encodeURIComponent(sessionId)}&projectPath=${encodeURIComponent(projectPath || detail?.projectPath || '')}&fork=true`, '_blank')}
-        >
-          <GitFork size={12} />
-        </button>
-        <button
-          className="btn btn-sm btn-ghost"
-          title="New Shell"
-          onClick={() => window.open(`/console?shell=true&projectPath=${encodeURIComponent(projectPath || detail?.projectPath || '')}`, '_blank')}
-        >
-          <SquareTerminal size={12} />
-        </button>
+        {!isWindows && (
+          <>
+            <button className="btn btn-sm btn-secondary" title="Open Terminal" onClick={() => handleSetActiveTab('console')}>
+              <TerminalIcon size={12} />
+            </button>
+            <button
+              className="btn btn-sm btn-ghost"
+              title="Open Console in new tab"
+              onClick={() => window.open(`/console?sessionId=${encodeURIComponent(sessionId)}&projectPath=${encodeURIComponent(projectPath || detail?.projectPath || '')}`, '_blank')}
+            >
+              <ExternalLink size={12} />
+            </button>
+            <button
+              className="btn btn-sm btn-ghost"
+              title="Fork Session"
+              onClick={() => window.open(`/console?sessionId=${encodeURIComponent(sessionId)}&projectPath=${encodeURIComponent(projectPath || detail?.projectPath || '')}&fork=true`, '_blank')}
+            >
+              <GitFork size={12} />
+            </button>
+            <button
+              className="btn btn-sm btn-ghost"
+              title="New Shell"
+              onClick={() => window.open(`/console?shell=true&projectPath=${encodeURIComponent(projectPath || detail?.projectPath || '')}`, '_blank')}
+            >
+              <SquareTerminal size={12} />
+            </button>
+          </>
+        )}
         <button
           className="btn btn-sm btn-ghost"
           onClick={() => setIsFullscreen(prev => !prev)}
@@ -507,14 +519,16 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
           <ChatTab messages={detail.messages} isActive={detail.isActive} sessionId={sessionId} machineId={machineId} projectPath={projectPath || detail.projectPath} isSubagent={!!parentSessionId} agentCount={subagents.length} onLastNChange={setChatLastN} highlightMilestoneId={highlightMilestoneId} />
         )}
         {/* Console tab: always mounted to preserve terminal connection */}
-        <div style={{
-          display: activeTab === 'console' ? 'flex' : 'none',
-          flexDirection: 'column',
-          position: 'absolute',
-          inset: 0,
-        }}>
-          <ConsoleTab key={sessionId} sessionId={sessionId} machineId={machineId} projectPath={projectPath || detail?.projectPath} running={detail?.running} />
-        </div>
+        {!isWindows && (
+          <div style={{
+            display: activeTab === 'console' ? 'flex' : 'none',
+            flexDirection: 'column',
+            position: 'absolute',
+            inset: 0,
+          }}>
+            <ConsoleTab key={sessionId} sessionId={sessionId} machineId={machineId} projectPath={projectPath || detail?.projectPath} running={detail?.running} />
+          </div>
+        )}
 {activeTab === 'tasks' && (
           <TasksTab tasks={tasks} />
         )}

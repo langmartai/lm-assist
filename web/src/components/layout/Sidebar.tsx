@@ -17,6 +17,7 @@ import {
   Compass,
 } from 'lucide-react';
 import { useExperiment } from '@/hooks/useExperiment';
+import { usePlatform } from '@/hooks/usePlatform';
 
 const baseNavItems = [
   { href: '/terminal-dashboard', icon: Terminal, label: 'Terminal Dashboard' },
@@ -38,10 +39,15 @@ const experimentNavItems = [
 export function Sidebar() {
   const pathname = usePathname();
   const { isExperiment } = useExperiment();
+  const { isWindows } = usePlatform();
+
+  const filteredBaseNavItems = isWindows
+    ? baseNavItems.filter(item => item.href !== '/terminal-dashboard' && item.href !== '/process-dashboard')
+    : baseNavItems;
 
   const navItems = isExperiment
-    ? [...baseNavItems.slice(0, 2), ...experimentNavItems, ...baseNavItems.slice(2)]
-    : baseNavItems;
+    ? [...filteredBaseNavItems.slice(0, isWindows ? 1 : 2), ...experimentNavItems, ...filteredBaseNavItems.slice(isWindows ? 1 : 2)]
+    : filteredBaseNavItems;
 
   return (
     <nav className="sidebar">

@@ -5,6 +5,7 @@ import { useRunningProcesses } from '@/hooks/useRunningProcesses';
 import { useSessionEnrichment } from '@/hooks/useSessionEnrichment';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { useMachineContext } from '@/contexts/MachineContext';
+import { usePlatform } from '@/hooks/usePlatform';
 import Link from 'next/link';
 import {
   Activity,
@@ -1080,6 +1081,7 @@ function ProcessCategoryGroup({
 export default function ProcessDashboardPage() {
   const { apiClient, isLocal, proxy } = useAppMode();
   const { isSingleMachine } = useMachineContext();
+  const { isWindows } = usePlatform();
   const { data, isLoading, error, refetch } = useRunningProcesses(5000);
   const [killingPids, setKillingPids] = useState<Set<number>>(new Set());
   const [identifyMap, setIdentifyMap] = useState<Map<number, IdentifiedProcess>>(new Map());
@@ -1382,6 +1384,18 @@ export default function ProcessDashboardPage() {
   }, [deduped, handleKillAll]);
 
   // ─── Render ─────────────────────────────────────────────────────────────
+
+  if (isWindows) {
+    return (
+      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, color: 'var(--color-text-tertiary)' }}>
+          <Activity size={32} style={{ opacity: 0.3 }} />
+          <span style={{ fontSize: 14, fontWeight: 500 }}>Process management is not supported on Windows</span>
+          <span style={{ fontSize: 12 }}>Process scanning requires a Unix-based platform (Linux or macOS).</span>
+        </div>
+      </div>
+    );
+  }
 
   if (isLoading && data.allClaudeProcesses.length === 0) {
     return (
