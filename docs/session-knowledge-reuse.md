@@ -1,3 +1,25 @@
+---
+title: "Your Claude Sessions Are Gold: Stop Paying Twice for the Same Knowledge"
+description: "Learn how to reuse Claude Code session knowledge to save tokens, reduce exploration overhead, and build a searchable knowledge base. Compare CLAUDE.md vs automated context injection for token-efficient context management."
+keywords:
+  - Claude Code context management
+  - Token saving
+  - Context engineering
+  - Claude Opus 4.6
+  - Subagent execution
+  - Team collaboration
+  - Knowledge extraction
+  - MCP tools
+  - LM Assist
+  - Session reuse
+  - Vector search
+  - Knowledge base
+  - Context injection
+  - API cost reduction
+article_type: long-form guide
+estimated_reading_time: 12 minutes
+---
+
 # Your Claude Sessions Are Gold: Stop Paying Twice for the Same Knowledge
 
 ## The Hidden Cost of Starting Fresh
@@ -268,7 +290,9 @@ For a mid-size project with active development:
 
 ## Getting Started
 
-LM Assist runs entirely on your machine. No data leaves your environment.
+LM Assist is open-source and runs entirely on your machine. No data leaves your environment.
+
+**Project:** [github.com/langmartai/lm-assist](https://github.com/langmartai/lm-assist)
 
 **Install:**
 ```bash
@@ -306,3 +330,12 @@ LM Assist closes this loop automatically:
 The result is sessions that start informed instead of ignorant, meaningful token and cost savings, and a knowledge base that grows with every session you run — all with zero manual effort.
 
 Your sessions are not disposable transcripts. They are your project's memory. Use them.
+
+---
+
+## Resources
+
+- **GitHub:** [github.com/langmartai/lm-assist](https://github.com/langmartai/lm-assist)
+- **Issues & Feature Requests:** [github.com/langmartai/lm-assist/issues](https://github.com/langmartai/lm-assist/issues)
+- **Install Guide:** See `README.md` in the project root
+- **API Documentation:** See `CLAUDE.md` for complete API, routes, and architecture overview
