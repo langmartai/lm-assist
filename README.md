@@ -10,13 +10,13 @@ A web UI and knowledge engine for [Claude Code](https://docs.anthropic.com/en/do
 
 lm-assist runs a web server on your local network. Open any browser on any device — laptop, tablet, phone — and browse all your Claude Code sessions in real time.
 
-<a href="docs/screenshots/session-browser.png"><img src="docs/screenshots/preview/session-browser.png" alt="Session Browser" width="700"></a>
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/session-browser.png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/session-browser.png" alt="Session Browser" width="700"></a>
 
 > *Session Browser — view all your Claude Code sessions in one place*
 
 Connect a live terminal to any running session directly from the web:
 
-<a href="docs/screenshots/session-terminal.png"><img src="docs/screenshots/preview/session-terminal.png" alt="Web Terminal" width="700"></a>
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/session-terminal.png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/session-terminal.png" alt="Web Terminal" width="700"></a>
 
 > *Web Terminal — connect to running Claude Code sessions from your browser*
 
@@ -24,23 +24,23 @@ Connect a live terminal to any running session directly from the web:
 
 Every session gets a full breakdown across **13 specialized tabs** — Chat, Thinking, Agents, Tasks, Plans, Team, Files, Git, Console, Summary, Meta, JSON, and DB.
 
-<a href="docs/screenshots/session-detail-chat.png"><img src="docs/screenshots/preview/session-detail-chat.png" alt="Session Detail — Chat" width="700"></a>
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/session-detail-chat.png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/session-detail-chat.png" alt="Session Detail — Chat" width="700"></a>
 
 > *Chat tab — full conversation with syntax-highlighted code blocks*
 
-<a href="docs/screenshots/agent-tree.png"><img src="docs/screenshots/preview/agent-tree.png" alt="Agent Tree" width="700"></a>
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/agent-tree.png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/agent-tree.png" alt="Agent Tree" width="700"></a>
 
 > *Agents tab — subagent tree showing Explore, Plan, Bash, and custom agents*
 
-<a href="docs/screenshots/plan-view.png"><img src="docs/screenshots/preview/plan-view.png" alt="Plan View" width="700"></a>
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/plan-view.png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/plan-view.png" alt="Plan View" width="700"></a>
 
 > *Plans tab — plan mode entries with structured implementation steps*
 
-<a href="docs/screenshots/team-view.png"><img src="docs/screenshots/preview/team-view.png" alt="Team View" width="700"></a>
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/team-view.png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/team-view.png" alt="Team View" width="700"></a>
 
 > *Team tab — multi-agent coordination timeline (Opus 4.6 swarm)*
 
-<a href="docs/screenshots/task-kanban.png"><img src="docs/screenshots/preview/task-kanban.png" alt="Task Kanban" width="700"></a>
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/task-kanban.png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/task-kanban.png" alt="Task Kanban" width="700"></a>
 
 > *Task Dashboard — kanban board aggregating tasks across all sessions*
 
@@ -69,7 +69,7 @@ Every session gets a full breakdown across **13 specialized tabs** — Chat, Thi
 
 lm-assist automatically generates knowledge from your Claude Code sessions, then injects it back into future prompts — giving Claude Code memory of what you've worked on before.
 
-<a href="docs/screenshots/knowledge-base.png"><img src="docs/screenshots/preview/knowledge-base.png" alt="Knowledge Base" width="700"></a>
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/knowledge-base.png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/knowledge-base.png" alt="Knowledge Base" width="700"></a>
 
 > *Knowledge Base — auto-generated entries from your sessions, searchable and editable*
 
@@ -79,21 +79,21 @@ lm-assist automatically generates knowledge from your Claude Code sessions, then
 3. **Inject** — On every prompt, the context-injection hook finds relevant knowledge and injects it as context
 4. **MCP tools** — Claude Code can also actively search and retrieve knowledge using `search`, `detail`, and `feedback` tools
 
-<a href="docs/screenshots/context-hook-logs.png"><img src="docs/screenshots/preview/context-hook-logs.png" alt="Context Hook Logs" width="700"></a>
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/context-hook-logs.png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/context-hook-logs.png" alt="Context Hook Logs" width="700"></a>
 
 > *Context Injection — hook logs showing knowledge injected into each prompt*
 
-<a href="docs/screenshots/mcp-tool-logs.png"><img src="docs/screenshots/preview/mcp-tool-logs.png" alt="MCP Tool Logs" width="700"></a>
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/mcp-tool-logs.png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/mcp-tool-logs.png" alt="MCP Tool Logs" width="700"></a>
 
 > *MCP Monitor — Claude Code actively searching the knowledge base*
 
-<a href="docs/screenshots/context-injection-cli.png"><img src="docs/screenshots/preview/context-injection-cli.png" alt="Context Injection in Claude Code CLI" width="700"></a>
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/context-injection-cli.png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/context-injection-cli.png" alt="Context Injection in Claude Code CLI" width="700"></a>
 
 > *Claude Code CLI — MCP tools search and inject knowledge before Claude responds*
 
 ### Settings
 
-<a href="docs/screenshots/settings.png"><img src="docs/screenshots/preview/settings.png" alt="Settings" width="700"></a>
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/settings.png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/settings.png" alt="Settings" width="700"></a>
 
 > *Settings — cloud sign-in, LAN access, connection status, and more*
 
