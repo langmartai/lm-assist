@@ -22,7 +22,7 @@ Connect a live terminal to any running session directly from the web:
 
 ### 2. Deep Insight Views
 
-Every session gets a full breakdown across **15 specialized tabs** — Chat, Thinking, Agents, Tasks, Plans, Team, DAG, Files, Git, Console, Milestones, Summary, Meta, JSON, and DB.
+Every session gets a full breakdown across **13 specialized tabs** — Chat, Thinking, Agents, Tasks, Plans, Team, Files, Git, Console, Summary, Meta, JSON, and DB.
 
 <a href="docs/screenshots/session-detail-chat.png"><img src="docs/screenshots/preview/session-detail-chat.png" alt="Session Detail — Chat" width="700"></a>
 
@@ -45,7 +45,7 @@ Every session gets a full breakdown across **15 specialized tabs** — Chat, Thi
 > *Task Dashboard — kanban board aggregating tasks across all sessions*
 
 <details>
-<summary><strong>All 15 tabs at a glance</strong></summary>
+<summary><strong>All 13 tabs at a glance</strong></summary>
 
 | Tab | What You See |
 |-----|-------------|
@@ -55,11 +55,9 @@ Every session gets a full breakdown across **15 specialized tabs** — Chat, Thi
 | **Tasks** | Todo lists created during the session |
 | **Plans** | Plan mode entries with approval status |
 | **Team** | Team/swarm coordination (Opus 4.6 multi-agent) |
-| **DAG** | Message dependency graph with branch visualization |
 | **Files** | All files read, written, or edited during the session |
 | **Git** | Commits, pushes, and diffs from the session |
 | **Console** | Terminal output and process management |
-| **Milestones** | Key achievements extracted from the session |
 | **Summary** | AI-generated session summary |
 | **Meta** | Session metadata — timing, model, token usage |
 | **JSON** | Raw session JSONL data |
@@ -76,7 +74,7 @@ lm-assist automatically generates knowledge from your Claude Code sessions, then
 > *Knowledge Base — auto-generated entries from your sessions, searchable and editable*
 
 **How it works:**
-1. **Generate** — Analyzes your sessions and extracts reusable knowledge (patterns, decisions, architecture, debugging insights)
+1. **Generate** — Analyzes your sessions and extracts reusable knowledge (patterns, decisions, debugging insights)
 2. **Search** — Indexed with BM25 + vector similarity for fast retrieval
 3. **Inject** — On every prompt, the context-injection hook finds relevant knowledge and injects it as context
 4. **MCP tools** — Claude Code can also actively search and retrieve knowledge using `search`, `detail`, and `feedback` tools
@@ -193,7 +191,7 @@ The MCP server (`lm-assist-context`) provides 3 tools that Claude Code can use d
 
 | Tool | Description |
 |------|-------------|
-| `search` | Unified search across knowledge, milestones, architecture, and file history |
+| `search` | Unified search across knowledge and file history |
 | `detail` | Progressive disclosure — expand any item by ID (e.g., `K001`, `arch:component`) |
 | `feedback` | Flag context as outdated, wrong, irrelevant, or useful |
 
@@ -209,7 +207,7 @@ lm-assist runs two services:
 
 | Service | Port | Description |
 |---------|------|-------------|
-| Core API | 3100 | REST API — sessions, knowledge, milestones, architecture, tasks |
+| Core API | 3100 | REST API — sessions, knowledge, tasks |
 | Web UI | 3848 | Next.js dashboard — accessible from any device on your network |
 
 ```bash
@@ -239,7 +237,6 @@ lm-assist/
 │   │   ├── mcp-server/      ← MCP server (search, detail, feedback tools)
 │   │   ├── routes/core/     ← REST API routes (155 endpoints)
 │   │   ├── knowledge/       ← Knowledge generation pipeline
-│   │   ├── milestone/       ← Milestone extraction pipeline
 │   │   └── vector/          ← Embeddings + vector store
 │   └── hooks/               ← Claude Code hook scripts
 ├── web/                     ← Web UI (Next.js, React 19)

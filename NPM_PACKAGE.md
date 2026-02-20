@@ -6,17 +6,17 @@ LM Assistant is now available as an npm package for easy installation and deploy
 
 ### Global Installation
 ```bash
-npm install -g @langmartai/lm-assist
+npm install -g lm-assist
 ```
 
 ### Local Project Installation
 ```bash
-npm install @langmartai/lm-assist
+npm install lm-assist
 ```
 
 ### Using npx (No Installation)
 ```bash
-npx @langmartai/lm-assist start
+npx lm-assist start
 ```
 
 ## Quick Start
@@ -40,6 +40,41 @@ lm-assist logs web          # View Web UI logs
 lm-assist build             # Rebuild application
 lm-assist hub start         # Connect to LangMart Hub
 ```
+
+## Screenshots
+
+### Session Browser
+![Session Browser](https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/session-browser.png)
+
+### Session Detail — Chat View
+![Session Detail Chat](https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/session-detail-chat.png)
+
+### Session Terminal
+![Session Terminal](https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/session-terminal.png)
+
+### Agent Tree
+![Agent Tree](https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/agent-tree.png)
+
+### Plan View
+![Plan View](https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/plan-view.png)
+
+### Task Kanban
+![Task Kanban](https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/task-kanban.png)
+
+### Knowledge Base
+![Knowledge Base](https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/knowledge-base.png)
+
+### Team View
+![Team View](https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/team-view.png)
+
+### MCP Tool Logs
+![MCP Tool Logs](https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/mcp-tool-logs.png)
+
+### Context Hook Logs
+![Context Hook Logs](https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/context-hook-logs.png)
+
+### Settings
+![Settings](https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/settings.png)
 
 ## Configuration
 
@@ -69,15 +104,12 @@ The npm package includes:
 - **Backend API** — Node.js/TypeScript REST API with:
   - Session management
   - Knowledge base with vector search
-  - Architecture analysis
-  - Milestone tracking
   - MCP server for context integration
   - Hub client for remote relay
 
 - **Frontend UI** — Next.js 16 with React 19 providing:
   - Session browsing and management
-  - Knowledge and milestone views
-  - Architecture visualization
+  - Knowledge views
   - Settings and configuration
   - Real-time terminal integration
 
@@ -88,7 +120,7 @@ All data is stored locally:
 - **Sessions:** `~/.claude/projects/*/sessions/*.jsonl`
 - **Tasks:** `~/.claude/tasks/`
 - **Config:** `~/.lm-assist/`
-- **Knowledge/Milestones:** `~/.lm-assist/knowledge`, `~/.lm-assist/milestones`
+- **Knowledge:** `~/.lm-assist/knowledge`
 
 ## API Endpoints
 
@@ -98,7 +130,6 @@ The API server (port 3100) provides endpoints for:
 - **Projects:** `/projects`, `/projects/:path/sessions`
 - **Tasks:** `/tasks`, `/task-store/tasks`
 - **Knowledge:** `/knowledge`, `/knowledge/search`
-- **Architecture:** `/architecture`
 - **Health:** `/health`, `/status`
 
 See the [GitHub repository](https://github.com/langmartai/lm-assist) for complete API documentation.
