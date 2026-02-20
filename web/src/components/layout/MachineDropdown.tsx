@@ -100,7 +100,7 @@ export function MachineDropdown() {
 
           <div className="machine-dropdown-divider" />
 
-          {machines.map(m => {
+          {onlineMachines.map(m => {
             // In local/hybrid mode, clicking a non-local machine opens its cloud URL
             const isLocalMachine = m.isLocal || m.id === 'localhost';
             const isLocalOrHybrid = mode === 'local' || mode === 'hybrid';
