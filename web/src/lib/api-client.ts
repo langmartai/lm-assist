@@ -301,6 +301,9 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
 
   // Track the effective local machine ID (may be gatewayId when hub is connected)
   let localMachineId = 'localhost';
+  // Track local machine info for enriching sessions/projects
+  let localMachineHostname = 'localhost';
+  let localMachinePlatform = 'linux';
 
   return {
     mode: 'local',
@@ -315,6 +318,9 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
 
       const health = healthResult.status === 'fulfilled' ? healthResult.value : {};
       const serverInfo = serverResult.status === 'fulfilled' ? serverResult.value : {};
+      // Update tracked local machine info from health check
+      if (health.hostname) localMachineHostname = health.hostname;
+      if (health.platform) localMachinePlatform = health.platform;
       const localMachine: Machine = {
         id: 'localhost',
         hostname: health.hostname || 'localhost',
@@ -363,7 +369,7 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
           result.push({
             id: machineId,
             hostname: w.hostname || w.name,
-            platform: w.platform || 'linux',
+            platform: w.platform || w.os_platform || w.system_info?.os_platform || 'linux',
             status: w.status === 'online' || w.connected ? 'online' : 'offline',
             lastHeartbeat: w.lastHeartbeat,
             connectedAt: w.connectedAt,
@@ -426,8 +432,8 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
         running: s.running || undefined,
         forkedFromSessionId: s.forkedFromSessionId,
         machineId: localMachineId,
-        machineHostname: 'localhost',
-        machinePlatform: 'linux',
+        machineHostname: localMachineHostname,
+        machinePlatform: localMachinePlatform,
         machineStatus: 'online',
       });
 
@@ -513,8 +519,8 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
         projectPath: p.projectPath || p.path,
         projectName: extractProjectName(p.projectPath || p.path),
         machineId: localMachineId,
-        machineHostname: 'localhost',
-        machinePlatform: 'linux',
+        machineHostname: localMachineHostname,
+        machinePlatform: localMachinePlatform,
         machineStatus: 'online',
         sessionCount: p.sessionCount || 0,
         runningSessionCount: p.runningSessionCount || 0,
@@ -897,7 +903,7 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
       return machines.map(w => ({
         id: w.gatewayId || w.id,
         hostname: w.hostname || w.name,
-        platform: w.platform || 'linux',
+        platform: w.platform || w.os_platform || w.system_info?.os_platform || 'linux',
         status: w.status === 'online' || w.connected ? 'online' : 'offline',
         lastHeartbeat: w.lastHeartbeat,
         connectedAt: w.connectedAt,

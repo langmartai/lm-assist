@@ -39,6 +39,17 @@ export function useTasks() {
       if (isLocal) {
         const result = await apiClient.getTaskStoreAll();
         tasks = result.tasks;
+        // Enrich with local machine info if available (so platform badge shows correctly)
+        const localMachine = onlineMachines.find(m => m.isLocal) || onlineMachines[0];
+        if (localMachine) {
+          tasks = tasks.map(t => ({
+            ...t,
+            machineId: t.machineId || localMachine.id,
+            machineHostname: t.machineHostname || localMachine.hostname,
+            machinePlatform: t.machinePlatform || localMachine.platform,
+            machineStatus: t.machineStatus || localMachine.status,
+          }));
+        }
       } else {
         // Hybrid/Hub mode: fetch from online machines
         const machineIds = selectedMachineId
@@ -49,6 +60,17 @@ export function useTasks() {
           // No machines yet — fall back to local-only fetch
           const result = await apiClient.getTaskStoreAll();
           tasks = result.tasks;
+          // Enrich with local machine info if available
+          const localMachine = onlineMachines.find(m => m.isLocal) || onlineMachines[0];
+          if (localMachine) {
+            tasks = tasks.map(t => ({
+              ...t,
+              machineId: t.machineId || localMachine.id,
+              machineHostname: t.machineHostname || localMachine.hostname,
+              machinePlatform: t.machinePlatform || localMachine.platform,
+              machineStatus: t.machineStatus || localMachine.status,
+            }));
+          }
         } else {
           const results = await Promise.allSettled(
             machineIds.map(async id => {
