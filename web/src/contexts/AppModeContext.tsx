@@ -27,6 +27,8 @@ interface AppModeContextValue {
   hubConnected: boolean;
   /** The local machine's gateway ID when connected to hub */
   localGatewayId: string | null;
+  /** Hub WebSocket URL (e.g. wss://api.langmart.ai) — available when hub is connected */
+  hubUrl: string | null;
   /** Whether the proxy session cookie has expired (proxy mode only) */
   proxySessionExpired: boolean;
   /** Refresh hub connection state + user info (call after connect/disconnect) */
@@ -195,10 +197,11 @@ export function AppModeProvider({ children }: { children: ReactNode }) {
       hubUser,
       hubConnected,
       localGatewayId,
+      hubUrl,
       proxySessionExpired,
       refreshHubConnection: fetchLocalHubUser,
     }),
-    [effectiveMode, effectiveClient, base.proxy, hubUser, hubConnected, localGatewayId, proxySessionExpired, fetchLocalHubUser],
+    [effectiveMode, effectiveClient, base.proxy, hubUser, hubConnected, localGatewayId, hubUrl, proxySessionExpired, fetchLocalHubUser],
   );
 
   return (

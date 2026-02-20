@@ -249,6 +249,107 @@ export function createHubRoutes(ctx: RouteContext): RouteHandler[] {
         };
       },
     },
+    // GET /hub/machines - Get all online machines from hub
+    {
+      method: 'GET',
+      pattern: /^\/hub\/machines$/,
+      handler: async () => {
+        if (!isHubConfigured()) {
+          return { success: false, error: 'Hub not configured' };
+        }
+
+        const hubClient = getHubClient();
+        const status = hubClient.getStatus();
+        if (!status.connected) {
+          return { success: false, error: 'Not connected to hub' };
+        }
+
+        try {
+          const config = getHubConfig();
+          const hubHttpUrl = (config.hubUrl || '')
+            .replace(/^ws:/, 'http:')
+            .replace(/^wss:/, 'https:');
+
+          const res = await fetch(`${hubHttpUrl}/api/tier-agent/machines`, {
+            headers: { 'Authorization': `Bearer ${config.apiKey}` },
+          });
+
+          if (!res.ok) {
+            return { success: false, error: `Hub returned ${res.status}` };
+          }
+
+          const json = await res.json() as any;
+          const machines = Array.isArray(json) ? json : json.machines || json.data || [];
+
+          return {
+            success: true,
+            data: { machines },
+          };
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to fetch machines',
+          };
+        }
+      },
+    },
+
+    // POST /hub/machines/:machineId/proxy-token - Get a proxy token for a remote machine
+    {
+      method: 'POST',
+      pattern: /^\/hub\/machines\/(?<machineId>[^/]+)\/proxy-token$/,
+      handler: async (req: ParsedRequest) => {
+        if (!isHubConfigured()) {
+          return { success: false, error: 'Hub not configured' };
+        }
+
+        const hubClient = getHubClient();
+        const status = hubClient.getStatus();
+        if (!status.authenticated) {
+          return { success: false, error: 'Not authenticated' };
+        }
+
+        const machineId = req.params.machineId;
+        if (!machineId) {
+          return { success: false, error: 'Machine ID required' };
+        }
+
+        try {
+          const config = getHubConfig();
+          const hubHttpUrl = (config.hubUrl || '')
+            .replace(/^ws:/, 'http:')
+            .replace(/^wss:/, 'https:');
+
+          const res = await fetch(`${hubHttpUrl}/api/tier-agent/machines/${machineId}/proxy-token`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${config.apiKey}`,
+              'Content-Type': 'application/json',
+            },
+          });
+
+          if (!res.ok) {
+            const text = await res.text().catch(() => '');
+            return { success: false, error: `Hub returned ${res.status}: ${text}` };
+          }
+
+          const json = await res.json() as any;
+          return {
+            success: true,
+            data: {
+              token: json.token || json.data?.token,
+              expiresIn: json.expiresIn || json.data?.expiresIn,
+            },
+          };
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to get proxy token',
+          };
+        }
+      },
+    },
+
     // GET /hub/user - Get authenticated user info from hub
     {
       method: 'GET',
