@@ -37,10 +37,19 @@ export function MachineProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Validate stored selection against available machines
+  // Validate stored selection against available machines,
+  // and auto-select the local machine if no selection is stored
   useEffect(() => {
-    if (selectedMachineId && machines.length > 0 && !machines.find(m => m.id === selectedMachineId)) {
+    if (machines.length === 0) return;
+    if (selectedMachineId && !machines.find(m => m.id === selectedMachineId)) {
       setSelectedMachineId(null);
+    }
+    // Auto-select local machine when no selection exists
+    if (!selectedMachineId) {
+      const localMachine = machines.find(m => m.isLocal) || machines[0];
+      if (localMachine) {
+        setSelectedMachineId(localMachine.id);
+      }
     }
   }, [machines, selectedMachineId, setSelectedMachineId]);
 
