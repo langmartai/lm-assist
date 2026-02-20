@@ -63,12 +63,26 @@ export async function POST(request: NextRequest) {
     writeConfig(config);
   }
 
-  const gatewayUrl = process.env.GATEWAY_URL || 'http://localhost:8081';
   const apiPort = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
   const tierAgentUrl = `http://localhost:${apiPort}`;
 
   try {
-    // 1. Validate the OAuth user's API key against the gateway
+    // 1. Get the hub URL from the local tier-agent to determine gateway URL
+    const hubStatusRes = await fetch(`${tierAgentUrl}/hub/status`);
+    const hubStatus = await hubStatusRes.json();
+    const hubWsUrl = hubStatus?.data?.hubUrl || hubStatus?.hubUrl;
+
+    if (!hubWsUrl) {
+      return NextResponse.json(
+        { valid: false, error: 'Device is not connected to cloud. Connect on localhost first.' },
+        { status: 503 },
+      );
+    }
+
+    // Convert wss://api.langmart.ai → https://api.langmart.ai
+    const gatewayUrl = hubWsUrl.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
+
+    // 2. Validate the OAuth user's API key against the cloud gateway
     const oauthRes = await fetch(`${gatewayUrl}/auth/validate`, {
       headers: {
         'Content-Type': 'application/json',
@@ -87,7 +101,7 @@ export async function POST(request: NextRequest) {
 
     const oauthUserId = oauthData.user.id;
 
-    // 2. Get the device-bound user from tier-agent
+    // 3. Get the device-bound user from tier-agent
     const deviceRes = await fetch(`${tierAgentUrl}/hub/user`);
     if (!deviceRes.ok) {
       return NextResponse.json(
@@ -106,7 +120,7 @@ export async function POST(request: NextRequest) {
 
     const deviceUserId = deviceData.data.id;
 
-    // 3. Compare user IDs
+    // 4. Compare user IDs
     if (oauthUserId !== deviceUserId) {
       return NextResponse.json({
         valid: false,
@@ -114,7 +128,7 @@ export async function POST(request: NextRequest) {
       }, { status: 403 });
     }
 
-    // 4. User matches — return the LAN access token
+    // 5. User matches — return the LAN access token
     return NextResponse.json({
       valid: true,
       token: config.lanAccessToken,

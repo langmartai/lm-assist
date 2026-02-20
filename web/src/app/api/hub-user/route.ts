@@ -17,10 +17,21 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'No authorization header' }, { status: 401 });
   }
 
-  // Gateway Type 1 runs on the same machine
-  const gatewayUrl = process.env.GATEWAY_URL || 'http://localhost:8081';
+  // Derive gateway URL from hub status (wss:// → https://)
+  const apiPort = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
+  const tierAgentUrl = `http://localhost:${apiPort}`;
 
   try {
+    const hubStatusRes = await fetch(`${tierAgentUrl}/hub/status`);
+    const hubStatus = await hubStatusRes.json();
+    const hubWsUrl = hubStatus?.data?.hubUrl || hubStatus?.hubUrl;
+
+    if (!hubWsUrl) {
+      return NextResponse.json({ error: 'Hub not configured' }, { status: 503 });
+    }
+
+    const gatewayUrl = hubWsUrl.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
+
     const res = await fetch(`${gatewayUrl}/auth/validate`, {
       headers: {
         'Content-Type': 'application/json',
