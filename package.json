@@ -1,6 +1,6 @@
 {
   "name": "lm-assist",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "LM Assistant - Web UI for managing Claude Code sessions with backend API for session management, knowledge base, and hub connectivity",
   "license": "AGPL-3.0-or-later",
   "author": {
