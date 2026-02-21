@@ -1,7 +1,7 @@
 {
   "name": "lm-assist",
   "version": "0.1.15",
-  "description": "Session knowledge, milestones, and architecture context for Claude Code",
+  "description": "Knowledge management, session inspector, and web terminal control for Claude Code",
   "author": { "name": "langmartai" },
   "repository": "https://github.com/langmartai/lm-assist",
   "license": "AGPL-3.0-or-later"

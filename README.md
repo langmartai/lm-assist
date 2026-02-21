@@ -1,6 +1,6 @@
 # lm-assist
 
-A web UI and knowledge engine for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Browse your sessions from any device on your network, get deep insights into every conversation, and auto-build a knowledge base that makes Claude Code smarter over time.
+Knowledge management, session inspector, and web terminal control for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Auto-build knowledge from your sessions and inject it as context. Inspect agents, tasks, teams, plans, and tool calls. Access and control all Claude Code terminals from any device via browser.
 
 > **Read:** [Your Claude Sessions Are Gold: Stop Paying Twice for the Same Knowledge](https://databunny.medium.com/your-claude-sessions-are-gold-stop-paying-twice-for-the-same-knowledge-7632ac6ddb88) — deep dive into session knowledge reuse, CLAUDE.md vs context injection, and token cost savings.
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "langmartai",
-  "description": "LM Assist — session knowledge, milestones, and architecture context for Claude Code",
+  "description": "LM Assist — knowledge management, session inspector, and web terminal control for Claude Code",
   "owner": {
     "name": "langmartai"
   },
@@ -14,7 +14,7 @@
       "name": "lm-assist",
       "version": "0.1.15",
       "source": "./",
-      "description": "Session knowledge, milestones, and architecture context for Claude Code. Auto-installs MCP server (search, detail, feedback), context-injection hook, event logger, and 6 slash commands.",
+      "description": "Auto-build knowledge from Claude Code sessions and inject it as context. Inspect sessions with deep views into agents, tasks, teams, plans, and tool calls. Access and control all Claude Code terminals from any device via web browser. Includes MCP server (search, detail, feedback), context-injection hook, and 6 slash commands.",
       "category": "productivity",
       "homepage": "https://github.com/langmartai/lm-assist"
     }
