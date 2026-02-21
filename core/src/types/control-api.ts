@@ -1801,6 +1801,7 @@ export interface BatchCheckSessionResult {
 
 export interface BatchCheckListSession {
   sessionId: string;
+  projectPath: string;
   lastModified: string;
   fileSize: number;
   isRunning: boolean;
@@ -1811,6 +1812,9 @@ export interface BatchCheckListSession {
   agentCount?: number;
   userPromptCount?: number;
   taskCount?: number;
+  teamName?: string;
+  allTeams?: string[];
+  forkedFromSessionId?: string;
 }
 
 export interface BatchCheckListStatus {

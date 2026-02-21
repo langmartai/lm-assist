@@ -103,9 +103,9 @@ export function SessionBrowser() {
   }, [selectedSessionId, selectedMachineId, sessionsHook.sessions]);
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Poll Loop — runs in parallel:
-  //   - Session list: getSessions() with ifModifiedSince (cached when unchanged)
-  //   - Session detail: batch-check for the selected session only
+  // Unified Poll Loop — single batchCheckSessions call handles both:
+  //   - Session list (via listCheck): detects count/timestamp changes
+  //   - Session detail (via sessions[]): checks selected session for updates
   // ═══════════════════════════════════════════════════════════════════════════
   const isActiveRef = useRef(false);
   const batchPollTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -130,38 +130,45 @@ export function SessionBrowser() {
       const currentApiClient = apiClientRef.current;
       const currentSessionsHook = sessionsHookRef.current;
 
-      // Session list: use getSessions() with ifModifiedSince (returns cached data when unchanged)
-      // Session detail: use batch-check for the selected session only
-      const listPromise = currentSessionsHook.refetch();
+      try {
+        // Build a single batch-check request with both listCheck and session detail
+        const request: import('@/lib/api-client').BatchCheckRequest = {
+          listCheck: {
+            knownSessionCount: currentSessionsHook.knownSessionCount || undefined,
+            knownLatestModified: currentSessionsHook.knownLatestModified || undefined,
+          },
+        };
 
-      let detailPromise: Promise<void> | undefined;
-      if (currentSessionId && pollControlsRef.current) {
-        detailPromise = (async () => {
-          try {
-            const { pollState } = pollControlsRef.current!;
-            const result = await currentApiClient.batchCheckSessions({
-              sessions: [{
-                sessionId: currentSessionId,
-                knownFileSize: pollState.knownFileSize || undefined,
-                knownAgentCount: pollState.knownAgentCount || undefined,
-              }],
-            }, currentMachineId);
+        // Include selected session detail check if we have poll controls
+        if (currentSessionId && pollControlsRef.current) {
+          const { pollState } = pollControlsRef.current;
+          request.sessions = [{
+            sessionId: currentSessionId,
+            knownFileSize: pollState.knownFileSize || undefined,
+            knownAgentCount: pollState.knownAgentCount || undefined,
+          }];
+        }
 
-            if (!isMounted) return;
+        const result = await currentApiClient.batchCheckSessions(request, currentMachineId);
+        if (!isMounted) return;
 
-            const sessionResult = result.sessions[currentSessionId];
-            if (sessionResult && pollControlsRef.current) {
-              isActiveRef.current = !!sessionResult.lastModified &&
-                (Date.now() - new Date(sessionResult.lastModified).getTime()) < 15000;
-              await pollControlsRef.current.applyBatchCheck(sessionResult);
-            }
-          } catch (err) {
-            console.debug('[batch-poll] session check error:', err);
+        // Update session list from listStatus
+        if (result.listStatus) {
+          currentSessionsHook.updateFromBatchCheck(result.listStatus);
+        }
+
+        // Update selected session detail
+        if (currentSessionId && pollControlsRef.current) {
+          const sessionResult = result.sessions[currentSessionId];
+          if (sessionResult) {
+            isActiveRef.current = !!sessionResult.lastModified &&
+              (Date.now() - new Date(sessionResult.lastModified).getTime()) < 15000;
+            await pollControlsRef.current.applyBatchCheck(sessionResult);
           }
-        })();
+        }
+      } catch (err) {
+        console.debug('[batch-poll] unified poll error:', err);
       }
-
-      await Promise.all([listPromise, detailPromise].filter(Boolean));
     };
 
     const scheduleNext = () => {

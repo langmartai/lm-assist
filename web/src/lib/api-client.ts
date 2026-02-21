@@ -74,6 +74,7 @@ export interface BatchCheckSessionResult {
 
 export interface BatchCheckListSession {
   sessionId: string;
+  projectPath: string;
   lastModified: string;
   fileSize: number;
   isRunning: boolean;
@@ -305,20 +306,84 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
   let localMachineHostname = 'localhost';
   let localMachinePlatform = 'linux';
 
+  // Cache /api/server result — localIp doesn't change during a session
+  let cachedServerInfo: { localIp?: string } | null = null;
+  // Helper: fetchJson with a timeout (hub endpoints can hang when not connected)
+  const fetchJsonWithTimeout = <T>(url: string, timeoutMs = 5000, options?: RequestInit): Promise<T> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    return fetchJson<T>(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+  };
+
+  // Helper: merge hub machines with local machine info
+  const mergeHubMachines = async (localMachine: Machine, hubMachines: any[]): Promise<Machine[]> => {
+    // Get local gatewayId from hub status
+    let localGatewayId: string | null = null;
+    try {
+      const statusResult = await fetchJsonWithTimeout<any>(api('/hub/status'));
+      localGatewayId = statusResult?.gatewayId || null;
+    } catch { /* ignore */ }
+
+    const result: Machine[] = [];
+    let localFound = false;
+
+    for (const w of hubMachines) {
+      const machineId = w.gatewayId || w.id;
+      if (localGatewayId && (machineId === localGatewayId || w.gatewayId === localGatewayId)) {
+        result.push({
+          id: machineId,
+          hostname: localMachine.hostname,
+          platform: localMachine.platform,
+          status: 'online',
+          lastHeartbeat: w.lastHeartbeat,
+          connectedAt: w.connectedAt,
+          gatewayId: w.gatewayId,
+          osVersion: w.osVersion,
+          isLocal: true,
+          localIp: localMachine.localIp,
+        });
+        localFound = true;
+      } else {
+        result.push({
+          id: machineId,
+          hostname: w.hostname || w.name,
+          platform: w.platform || w.os_platform || w.system_info?.os_platform || 'linux',
+          status: w.status === 'online' || w.connected ? 'online' : 'offline',
+          lastHeartbeat: w.lastHeartbeat,
+          connectedAt: w.connectedAt,
+          gatewayId: w.gatewayId,
+          osVersion: w.osVersion,
+          localIp: w.localIp || w.local_ip || w.system_info?.local_ip,
+        });
+      }
+    }
+
+    if (!localFound) {
+      result.unshift({
+        ...localMachine,
+        id: localGatewayId || 'localhost',
+        isLocal: true,
+      });
+    }
+
+    localMachineId = localGatewayId || 'localhost';
+    return result;
+  };
+
   return {
     mode: 'local',
 
     async getMachines(): Promise<Machine[]> {
-      // Fetch local machine info and hub machines in parallel
-      const [healthResult, serverResult, hubResult] = await Promise.allSettled([
-        fetchJson<{ hostname?: string; platform?: string }>(api('/health')),
-        fetchJson<{ localIp?: string }>(api('/api/server')),
-        fetchJson<any>(api('/hub/machines')),
-      ]);
+      // Always fetch health; cache /api/server (localIp doesn't change)
+      const healthPromise = fetchJson<{ hostname?: string; platform?: string }>(api('/health')).catch((): { hostname?: string; platform?: string } => ({}));
+      const serverPromise = cachedServerInfo
+        ? Promise.resolve(cachedServerInfo)
+        : fetchJson<{ localIp?: string }>(api('/api/server')).catch((): { localIp?: string } => ({}));
 
-      const health = healthResult.status === 'fulfilled' ? healthResult.value : {};
-      const serverInfo = serverResult.status === 'fulfilled' ? serverResult.value : {};
-      // Update tracked local machine info from health check
+      const [health, serverInfo] = await Promise.all([healthPromise, serverPromise]);
+
+      // Cache server info for subsequent calls
+      if (!cachedServerInfo && serverInfo) cachedServerInfo = serverInfo;
       if (health.hostname) localMachineHostname = health.hostname;
       if (health.platform) localMachinePlatform = health.platform;
       const localMachine: Machine = {
@@ -330,69 +395,19 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
         localIp: serverInfo.localIp,
       };
 
-      // If hub machines available, merge (same logic as hybrid client)
-      const hubData = hubResult.status === 'fulfilled' ? hubResult.value : null;
-      const hubMachines: any[] = hubData?.machines || [];
+      // Check hub machines (needed to detect hub connections)
+      // Use timeout since hub endpoints can hang when not connected
+      let hubMachines: any[] = [];
+      try {
+        const hubData = await fetchJsonWithTimeout<any>(api('/hub/machines'));
+        hubMachines = hubData?.machines || [];
+      } catch { /* ignore */ }
 
       if (hubMachines.length === 0) {
         return [localMachine];
       }
 
-      // Get local gatewayId from hub status (cached in AppModeContext, but we need it here)
-      let localGatewayId: string | null = null;
-      try {
-        const statusResult = await fetchJson<any>(api('/hub/status'));
-        localGatewayId = statusResult?.gatewayId || null;
-      } catch { /* ignore */ }
-
-      const result: Machine[] = [];
-      let localFound = false;
-
-      for (const w of hubMachines) {
-        const machineId = w.gatewayId || w.id;
-        if (localGatewayId && (machineId === localGatewayId || w.gatewayId === localGatewayId)) {
-          // This is the local machine — merge with local health data
-          result.push({
-            id: machineId,
-            hostname: localMachine.hostname,
-            platform: localMachine.platform,
-            status: 'online',
-            lastHeartbeat: w.lastHeartbeat,
-            connectedAt: w.connectedAt,
-            gatewayId: w.gatewayId,
-            osVersion: w.osVersion,
-            isLocal: true,
-            localIp: localMachine.localIp,
-          });
-          localFound = true;
-        } else {
-          result.push({
-            id: machineId,
-            hostname: w.hostname || w.name,
-            platform: w.platform || w.os_platform || w.system_info?.os_platform || 'linux',
-            status: w.status === 'online' || w.connected ? 'online' : 'offline',
-            lastHeartbeat: w.lastHeartbeat,
-            connectedAt: w.connectedAt,
-            gatewayId: w.gatewayId,
-            osVersion: w.osVersion,
-            localIp: w.localIp || w.local_ip || w.system_info?.local_ip,
-          });
-        }
-      }
-
-      // If local machine wasn't in hub list, add it
-      if (!localFound) {
-        result.unshift({
-          ...localMachine,
-          id: localGatewayId || 'localhost',
-          isLocal: true,
-        });
-      }
-
-      // Update the effective local machine ID so getProjects/getSessions use it
-      localMachineId = localGatewayId || 'localhost';
-
-      return result;
+      return await mergeHubMachines(localMachine, hubMachines);
     },
 
     async getSessions(machineId?: string): Promise<Session[]> {
@@ -991,8 +1006,11 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
         if (request.listCheck?.projectPath) {
           params.set('listCheck.projectPath', request.listCheck.projectPath);
         }
-        if (request.listCheck?.since) {
-          params.set('listCheck.since', request.listCheck.since);
+        if (request.listCheck?.knownSessionCount !== undefined) {
+          params.set('listCheck.knownSessionCount', String(request.listCheck.knownSessionCount));
+        }
+        if (request.listCheck?.knownLatestModified) {
+          params.set('listCheck.knownLatestModified', request.listCheck.knownLatestModified);
         }
         if (request.sessions) {
           params.set('sessions', JSON.stringify(request.sessions));

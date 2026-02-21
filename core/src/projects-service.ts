@@ -199,6 +199,11 @@ export class ProjectsService {
   private _sessionListCache: { result: ProjectSession[]; optionsKey: string } | null = null;
   private _sessionListDirty = true;
 
+  // TTL + file-change-invalidated project list cache
+  private _projectListCache: { result: Project[]; optionsKey: string; timestamp: number } | null = null;
+  private _projectListDirty = true;
+  private static readonly PROJECT_CACHE_TTL_MS = 60_000; // 60 seconds
+
   constructor(configDir?: string) {
     this.configDir = configDir || getClaudeConfigDir();
     this.projectsDir = getProjectsDir(this.configDir);
@@ -210,6 +215,7 @@ export class ProjectsService {
       const sessionCache = getSessionCache();
       sessionCache.onFileEvent(() => {
         this._sessionListDirty = true;
+        this._projectListDirty = true;
       });
     } catch {
       // SessionCache may not be initialized yet; cache stays dirty by default
@@ -223,6 +229,8 @@ export class ProjectsService {
   invalidateSessionListCache(): void {
     this._sessionListDirty = true;
     this._sessionListCache = null;
+    this._projectListDirty = true;
+    this._projectListCache = null;
   }
 
   // --------------------------------------------------------------------------
@@ -234,6 +242,18 @@ export class ProjectsService {
    */
   listProjects(options: ListProjectsOptions = {}): Project[] {
     const { encoded = false, includeSize = true } = options;
+    const optionsKey = `${encoded}:${includeSize}`;
+
+    // Return cached result if still valid (not dirty and within TTL)
+    if (
+      !this._projectListDirty &&
+      this._projectListCache &&
+      this._projectListCache.optionsKey === optionsKey &&
+      Date.now() - this._projectListCache.timestamp < ProjectsService.PROJECT_CACHE_TTL_MS
+    ) {
+      return this._projectListCache.result;
+    }
+
     const projects: Project[] = [];
 
     if (!fs.existsSync(this.projectsDir)) {
@@ -330,6 +350,10 @@ export class ProjectsService {
       if (!b.lastActivity) return -1;
       return b.lastActivity.getTime() - a.lastActivity.getTime();
     });
+
+    // Cache the result
+    this._projectListCache = { result: projects, optionsKey, timestamp: Date.now() };
+    this._projectListDirty = false;
 
     return projects;
   }

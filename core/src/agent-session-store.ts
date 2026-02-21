@@ -4370,6 +4370,7 @@ export class AgentSessionStore extends EventEmitter {
       changed: boolean;
       sessions?: Array<{
         sessionId: string;
+        projectPath: string;
         lastModified: string;
         fileSize: number;
         isRunning: boolean;
@@ -4380,6 +4381,9 @@ export class AgentSessionStore extends EventEmitter {
         agentCount?: number;
         userPromptCount?: number;
         taskCount?: number;
+        teamName?: string;
+        allTeams?: string[];
+        forkedFromSessionId?: string;
       }>;
     };
   } {
@@ -4434,6 +4438,7 @@ export class AgentSessionStore extends EventEmitter {
       changed: boolean;
       sessions?: Array<{
         sessionId: string;
+        projectPath: string;
         lastModified: string;
         fileSize: number;
         isRunning: boolean;
@@ -4444,6 +4449,9 @@ export class AgentSessionStore extends EventEmitter {
         agentCount?: number;
         userPromptCount?: number;
         taskCount?: number;
+        teamName?: string;
+        allTeams?: string[];
+        forkedFromSessionId?: string;
       }>;
     } | undefined;
 
@@ -4479,6 +4487,7 @@ export class AgentSessionStore extends EventEmitter {
 
           return {
             sessionId: s.sessionId,
+            projectPath: s.projectPath,
             lastModified: s.lastModified,
             fileSize: s.size,
             isRunning,
@@ -4491,6 +4500,7 @@ export class AgentSessionStore extends EventEmitter {
             taskCount: s.taskCount,
             teamName: cacheData?.teamName,
             allTeams: cacheData?.allTeams && cacheData.allTeams.length > 0 ? cacheData.allTeams : undefined,
+            forkedFromSessionId: cacheData?.forkedFromSessionId,
           };
         });
       }

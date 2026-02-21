@@ -39,14 +39,14 @@ export function createSessionProjectsRoutes(ctx: RouteContext): RouteHandler[] {
         const encoded = req.query.encoded === 'true';
         const includeSize = req.query.includeSize !== 'false';
 
-        const projects = service.listProjects({ encoded, includeSize });
+        const rawProjects = service.listProjects({ encoded, includeSize });
 
-        // Enrich with lastUserMessage from most recent session (batch via Promise.all)
+        // Build enriched copies without mutating the cached originals
         const cache = getSessionCache();
-        await Promise.all(projects.map(async (project: any) => {
+        const projects = await Promise.all(rawProjects.map(async (project: any) => {
           const sessionPath = project._mostRecentSessionPath;
-          delete project._mostRecentSessionPath;
-
+          // Create a shallow copy without the internal _mostRecentSessionPath field
+          const { _mostRecentSessionPath, ...clean } = project;
           if (sessionPath) {
             const sessionData = cache.getSessionDataFromMemory(sessionPath)
               || await cache.getSessionData(sessionPath);
@@ -54,12 +54,13 @@ export function createSessionProjectsRoutes(ctx: RouteContext): RouteHandler[] {
               const realPrompts = sessionData.userPrompts.filter(isRealUserPrompt);
               const lastPrompt = realPrompts[realPrompts.length - 1];
               if (lastPrompt?.text) {
-                project.lastUserMessage = lastPrompt.text.length > 200
+                clean.lastUserMessage = lastPrompt.text.length > 200
                   ? lastPrompt.text.substring(0, 200) + '...'
                   : lastPrompt.text;
               }
             }
           }
+          return clean;
         }));
 
         return {

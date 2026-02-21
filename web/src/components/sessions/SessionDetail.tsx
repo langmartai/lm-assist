@@ -171,14 +171,15 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
     return () => document.removeEventListener('mousedown', handler);
   }, [tabDropdownOpen]);
 
-  // Eagerly fetch milestone count so the tab badge shows on initial load
+  // Lazy-load milestones: only fetch when the milestones tab is selected
   useEffect(() => {
+    if (activeTab !== 'milestones') return;
     let cancelled = false;
     apiClient.getMilestones(sessionId, machineId).then(result => {
       if (!cancelled) setMilestoneCount(result.milestones.length);
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [sessionId, machineId, apiClient]);
+  }, [sessionId, machineId, apiClient, activeTab]);
 
   // Highlight stats when they change
   const hlTurns = useHighlightValue(detail?.numTurns);

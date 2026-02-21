@@ -46,8 +46,6 @@ export function useProjects() {
 
   useEffect(() => {
     fetchProjects();
-    const interval = setInterval(fetchProjects, 15000);
-    return () => clearInterval(interval);
   }, [fetchProjects]);
 
   // Filter by selected machine, sort git projects first + most recently used

@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { useMachineContext } from '@/contexts/MachineContext';
 import type { Session } from '@/lib/types';
+import type { BatchCheckResponse } from '@/lib/api-client';
 
 export type SessionFilter = {
   machineId: string | null;
@@ -36,6 +37,12 @@ interface UseSessionsResult {
   filters: SessionFilter;
   setFilters: (f: Partial<SessionFilter>) => void;
   refetch: () => void;
+  /** Update session list from batch-check listStatus data (avoids separate getSessions call) */
+  updateFromBatchCheck: (listStatus: BatchCheckResponse['listStatus']) => void;
+  /** Current known session count for listCheck change detection */
+  knownSessionCount: number;
+  /** Current known latest modified timestamp for listCheck change detection */
+  knownLatestModified: string;
   // Derived
   projectNames: string[];
 }
@@ -59,6 +66,10 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
     return defaultFilter;
   });
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Track list metadata for batch-check change detection
+  const knownSessionCountRef = useRef(0);
+  const knownLatestModifiedRef = useRef('');
 
   const setFilters = useCallback((partial: Partial<SessionFilter>) => {
     setFiltersState(prev => ({ ...prev, ...partial }));
@@ -118,6 +129,9 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
       );
 
       setAllSessions(sessions);
+      // Update tracked metadata for batch-check change detection
+      knownSessionCountRef.current = sessions.length;
+      knownLatestModifiedRef.current = sessions.length > 0 ? sessions[0].lastModified : '';
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch sessions');
@@ -125,6 +139,24 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
       setIsLoading(false);
     }
   }, [apiClient, isLocal, isHybrid, onlineMachines, selectedMachineId]);
+
+  // Process batch-check listStatus: update tracking metadata and trigger
+  // a full refetch when the session list has changed.
+  // NOTE: We don't replace the session list directly from listStatus because
+  // the batch-check's listCheck only covers the server's default project,
+  // while the sessions page shows sessions across ALL projects.
+  const updateFromBatchCheck = useCallback((listStatus: BatchCheckResponse['listStatus']) => {
+    if (!listStatus) return;
+
+    // Update tracked metadata for next poll's change detection
+    knownSessionCountRef.current = listStatus.totalSessions;
+    knownLatestModifiedRef.current = listStatus.latestModified;
+
+    // If the list changed, trigger a full multi-project refetch
+    if (listStatus.changed) {
+      fetchSessions();
+    }
+  }, [fetchSessions]);
 
   // Poll by calling fetchSessions directly -- getSessions() uses ifModifiedSince
   // internally, returning cached data (~200 bytes) when nothing has changed.
@@ -219,6 +251,9 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
     filters,
     setFilters,
     refetch: fetchSessions,
+    updateFromBatchCheck,
+    knownSessionCount: knownSessionCountRef.current,
+    knownLatestModified: knownLatestModifiedRef.current,
     projectNames,
   };
 }
