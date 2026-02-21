@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useState, useMemo, useCallback, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useState, useMemo, useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { useMachines } from '@/hooks/useMachines';
 import type { Machine } from '@/lib/types';
 
@@ -23,10 +23,8 @@ const MachineContext = createContext<MachineContextValue | null>(null);
 
 export function MachineProvider({ children }: { children: ReactNode }) {
   const { machines, isLoading, error } = useMachines();
-  const [selectedMachineId, setSelectedMachineIdRaw] = useState<string | null>(() => {
-    if (typeof window === 'undefined') return null;
-    return localStorage.getItem(STORAGE_KEY);
-  });
+  const [selectedMachineId, setSelectedMachineIdRaw] = useState<string | null>(null);
+  const hasInitialized = useRef(false);
 
   const setSelectedMachineId = useCallback((id: string | null) => {
     setSelectedMachineIdRaw(id);
@@ -37,14 +35,32 @@ export function MachineProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Validate stored selection against available machines,
-  // and auto-select the local machine if no selection is stored
+  // On first load, always select the local machine.
+  // On subsequent polls, validate existing selection and fall back if needed.
   useEffect(() => {
     if (machines.length === 0) return;
-    if (selectedMachineId && !machines.find(m => m.id === selectedMachineId)) {
-      setSelectedMachineId(null);
+
+    if (!hasInitialized.current) {
+      // First time machines are available: always prefer the local machine
+      const localMachine = machines.find(m => m.isLocal);
+      if (localMachine) {
+        setSelectedMachineId(localMachine.id);
+      } else {
+        // No isLocal flag — try localStorage, then fall back to first machine
+        const stored = localStorage.getItem(STORAGE_KEY);
+        const storedMachine = stored ? machines.find(m => m.id === stored) : null;
+        setSelectedMachineId(storedMachine ? storedMachine.id : machines[0].id);
+      }
+      hasInitialized.current = true;
+      return;
     }
-    // Auto-select local machine when no selection exists
+
+    // After init: validate selection still exists
+    if (selectedMachineId && !machines.find(m => m.id === selectedMachineId)) {
+      const localMachine = machines.find(m => m.isLocal) || machines[0];
+      setSelectedMachineId(localMachine ? localMachine.id : null);
+    }
+    // If somehow null after init, pick local
     if (!selectedMachineId) {
       const localMachine = machines.find(m => m.isLocal) || machines[0];
       if (localMachine) {
