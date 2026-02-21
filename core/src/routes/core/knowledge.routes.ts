@@ -107,6 +107,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
             partId: r.partId,
             projectPath: r.projectPath,
             phase: r.phase as 1 | 2 | undefined,
+            machineId: r.machineId || undefined,
           }));
 
           // Filter orphaned vectors (knowledge deleted but vectors remain)
@@ -158,6 +159,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
                     knowledgeId: k.id,
                     partId: part.partId,
                     projectPath: k.project,
+                    machineId: k.machineId || undefined,
                   });
                   existingIds.add(part.partId);
                   changed = true;

@@ -240,6 +240,18 @@ export class VectorStore {
           this.table = await this.db.openTable(TABLE_NAME);
           // Validate table is readable (detects stale/corrupt data files)
           await this.table.countRows();
+          // Schema migration: check if table has required columns (added for remote sync)
+          try {
+            const schema = await this.table.schema();
+            const fieldNames = schema.fields.map((f: any) => f.name);
+            if (!fieldNames.includes('origin')) {
+              console.warn('[VectorStore] Table missing new columns (origin, machineId, etc.), recreating for schema migration');
+              try { await this.db.dropTable(TABLE_NAME); } catch { /* best effort */ }
+              this.table = null;
+            }
+          } catch {
+            // If schema check fails, continue with existing table
+          }
         } catch (openErr: any) {
           console.warn(`[VectorStore] Existing table corrupt, recreating: ${openErr.message}`);
           try { await this.db.dropTable(TABLE_NAME); } catch { /* best effort */ }

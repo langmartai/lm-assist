@@ -187,14 +187,17 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
             const { getKnowledgeStore } = require('../../knowledge/store');
             const { extractKnowledgeVectors } = require('../../vector/indexer');
             const store = getKnowledgeStore();
-            const knowledgeIds = store.getAllIds();
+
+            // Get all knowledge (local + remote) for reindex
+            const allKnowledge = store.getAllKnowledge();
 
             // Collect all vector texts+metadata (cheap, no embedding yet)
             const allVectors: Array<{ text: string; metadata: any }> = [];
-            for (const id of knowledgeIds) {
-              const knowledge = store.getKnowledge(id);
-              if (!knowledge) continue;
-              allVectors.push(...extractKnowledgeVectors(knowledge));
+            for (const knowledge of allKnowledge) {
+              const remoteOrigin = knowledge.origin === 'remote' && knowledge.machineId
+                ? { machineId: knowledge.machineId, machineHostname: knowledge.machineHostname || '', machineOS: knowledge.machineOS || '' }
+                : undefined;
+              allVectors.push(...extractKnowledgeVectors(knowledge, knowledge.project, remoteOrigin));
             }
 
             // Run delete + embed + insert in background (embedding is slow on CPU)
@@ -203,9 +206,9 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
             (async () => {
               try {
                 const startMs = Date.now();
-                console.log(`[Reindex] Starting knowledge: ${allVectors.length} vectors from ${knowledgeIds.length} docs`);
-                // Use deleteLocalByType to preserve remote synced vectors
-                await vectra.deleteLocalByType('knowledge');
+                console.log(`[Reindex] Starting knowledge: ${allVectors.length} vectors from ${allKnowledge.length} docs`);
+                // Full reindex: delete all knowledge vectors (local + remote) and re-add
+                await vectra.deleteAllByType('knowledge');
                 console.log(`[Reindex] Deleted old knowledge vectors in ${((Date.now() - startMs) / 1000).toFixed(1)}s`);
                 if (allVectors.length > 0) {
                   const embedStart = Date.now();
@@ -223,7 +226,7 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
 
             return {
               success: true,
-              data: { status: 'started', type, documentsToProcess: knowledgeIds.length, vectorsToIndex: allVectors.length },
+              data: { status: 'started', type, documentsToProcess: allKnowledge.length, vectorsToIndex: allVectors.length },
             };
           }
 

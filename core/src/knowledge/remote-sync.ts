@@ -187,15 +187,18 @@ export async function sync(projectPath?: string): Promise<void> {
     const machinesJson = await hubFetch('/api/tier-agent/machines');
     const machines: any[] = Array.isArray(machinesJson) ? machinesJson : machinesJson.machines || machinesJson.data || [];
 
-    const localMachineId = getHubConfig().machineId || '';
+    const hubConfig = getHubConfig();
+    const localMachineId = hubConfig.machineId || '';
+    const localGatewayId = hubConfig.gatewayId || '';
 
     // 4. For each remote machine, find matching projects and sync knowledge
     for (const machine of machines) {
-      const remoteMachineId = machine.machineId || machine.id;
+      const remoteMachineId = machine.machineId || machine.gatewayId || machine.id;
       if (!remoteMachineId || typeof remoteMachineId !== 'string') continue;
 
-      // Skip self
-      if (localMachineId && remoteMachineId === localMachineId) continue;
+      // Skip self — compare against both machineId and gatewayId
+      if ((localMachineId && remoteMachineId === localMachineId) ||
+          (localGatewayId && remoteMachineId === localGatewayId)) continue;
 
       _syncStatus.machinesChecked++;
 
@@ -204,7 +207,7 @@ export async function sync(projectPath?: string): Promise<void> {
         let remoteProjects: any[];
         try {
           const projJson = await proxyFetch(remoteMachineId, '/projects');
-          const projData = projJson.data || projJson;
+          const projData = projJson.data?.projects || projJson.data || projJson;
           remoteProjects = Array.isArray(projData) ? projData : [];
         } catch (err: any) {
           _syncStatus.errors.push(`${remoteMachineId}: Failed to get projects: ${err.message}`);
@@ -279,10 +282,20 @@ export async function sync(projectPath?: string): Promise<void> {
             }
           }
 
+          // Fetch full knowledge entry with content
+          let fullEntry: any;
+          try {
+            const fullJson = await proxyFetch(remoteMachineId, `/knowledge/${knowledgeId}`);
+            fullEntry = fullJson.data || fullJson;
+          } catch (err: any) {
+            _syncStatus.errors.push(`${remoteMachineId}:${knowledgeId}: Failed to fetch full entry: ${err.message}`);
+            continue;
+          }
+
           // Create remote knowledge entry
           try {
-            const parts = (rk.parts || []).map((p: any, i: number) => ({
-              partId: `${knowledgeId}.${i + 1}`,
+            const parts = (fullEntry.parts || rk.parts || []).map((p: any, i: number) => ({
+              partId: p.partId || `${knowledgeId}.${i + 1}`,
               title: p.title || '',
               summary: p.summary || '',
               content: p.content || '',
