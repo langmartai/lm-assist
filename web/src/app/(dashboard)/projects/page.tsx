@@ -25,6 +25,7 @@ import {
 import { formatTimeAgo, formatBytes } from '@/lib/utils';
 import Link from 'next/link';
 import { useExperiment } from '@/hooks/useExperiment';
+import { usePlatform } from '@/hooks/usePlatform';
 
 /**
  * Extract a display-friendly name from a git remote URL.
@@ -60,6 +61,7 @@ export default function ProjectsPage() {
   const { projects, isLoading, error, refetch } = useProjects();
   const { isSingleMachine } = useMachineContext();
   const { isExperiment } = useExperiment();
+  const { isWindows } = usePlatform();
   const [search, setSearch] = useState('');
 
   const handleNewSession = (e: React.MouseEvent, project: typeof projects[0]) => {
@@ -209,36 +211,38 @@ export default function ProjectsPage() {
                       <Network size={14} />
                     </button>
                   )}
-                  <button
-                    onClick={(e) => handleNewSession(e, project)}
-                    title="Start new Claude Code session"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: 26,
-                      height: 26,
-                      borderRadius: 'var(--radius-sm)',
-                      border: '1px solid transparent',
-                      background: 'transparent',
-                      color: 'var(--color-text-tertiary)',
-                      cursor: 'pointer',
-                      flexShrink: 0,
-                      transition: 'all 0.15s',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'rgba(74, 222, 128, 0.1)';
-                      e.currentTarget.style.borderColor = 'rgba(74, 222, 128, 0.3)';
-                      e.currentTarget.style.color = 'var(--color-status-green)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent';
-                      e.currentTarget.style.borderColor = 'transparent';
-                      e.currentTarget.style.color = 'var(--color-text-tertiary)';
-                    }}
-                  >
-                    <Plus size={14} />
-                  </button>
+                  {!isWindows && (
+                    <button
+                      onClick={(e) => handleNewSession(e, project)}
+                      title="Start new Claude Code session"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: 26,
+                        height: 26,
+                        borderRadius: 'var(--radius-sm)',
+                        border: '1px solid transparent',
+                        background: 'transparent',
+                        color: 'var(--color-text-tertiary)',
+                        cursor: 'pointer',
+                        flexShrink: 0,
+                        transition: 'all 0.15s',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(74, 222, 128, 0.1)';
+                        e.currentTarget.style.borderColor = 'rgba(74, 222, 128, 0.3)';
+                        e.currentTarget.style.color = 'var(--color-status-green)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'transparent';
+                        e.currentTarget.style.borderColor = 'transparent';
+                        e.currentTarget.style.color = 'var(--color-text-tertiary)';
+                      }}
+                    >
+                      <Plus size={14} />
+                    </button>
+                  )}
                   {!isSingleMachine && (
                     <MachineBadge
                       hostname={project.machineHostname}
