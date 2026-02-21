@@ -174,11 +174,11 @@ lm-assist start
 | Component | Auto-installed by plugin | Purpose |
 |-----------|-------------------------|---------|
 | MCP server | Yes | `search`, `detail`, `feedback` tools in Claude Code |
-| Context hook | Yes | Injects relevant knowledge into each prompt |
+| Context hook (Node.js) | Yes | Injects relevant knowledge into each prompt |
 | Slash commands | Yes | 6 `/assist-*` commands |
 | Statusline | No (optional) | Git branch, context %, process stats in status bar |
 
-The statusline is optional — install via `/assist-setup --statusline` or the web UI settings page.
+The context hook uses Node.js for cross-platform support (Windows, macOS, Linux). The statusline is optional — install via `/assist-setup --statusline` or the web UI settings page.
 
 ## Slash Commands
 
@@ -195,7 +195,7 @@ Use these from within any Claude Code session:
 
 ## MCP Server
 
-The MCP server (`lm-assist-context`) provides 3 tools that Claude Code can use directly:
+The MCP server (`lm-assist`) provides 3 tools that Claude Code can use directly:
 
 | Tool | Description |
 |------|-------------|
@@ -246,7 +246,7 @@ lm-assist/
 │   │   ├── routes/core/     ← REST API routes (155 endpoints)
 │   │   ├── knowledge/       ← Knowledge generation pipeline
 │   │   └── vector/          ← Embeddings + vector store
-│   └── hooks/               ← Claude Code hook scripts
+│   └── hooks/               ← Claude Code hook scripts (Node.js, cross-platform)
 ├── web/                     ← Web UI (Next.js, React 19)
 ├── commands/                ← Slash command definitions
 ├── hooks/                   ← Plugin hook registration
@@ -256,6 +256,17 @@ lm-assist/
 ├── core.sh                  ← Service manager
 └── bin/lm-assist.js         ← CLI entry point
 ```
+
+## Platform Support
+
+| Platform | Support | Notes |
+|----------|---------|-------|
+| Linux | Full | All features including web terminal |
+| macOS | Full | All features including web terminal |
+| Windows | Partial | Everything except console/terminal access (ttyd not available) |
+| Mobile / Tablet | Web UI | Browse sessions, tasks, knowledge from any device on your network |
+
+The web UI is fully responsive — optimized for phone, tablet, and desktop viewports.
 
 ## Requirements
 

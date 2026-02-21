@@ -85,7 +85,7 @@ Next.js 16 with Turbopack, React 19, Zustand for state, Tailwind CSS v4 for styl
 
 ### MCP Server (`core/src/mcp-server/`)
 
-Provides 3 tools via stdio transport (server name: `lm-assist-context`):
+Provides 3 tools via stdio transport (server name: `lm-assist`):
 
 | Tool | Description |
 |------|-------------|
@@ -198,15 +198,14 @@ Connects to LangMart Hub for remote API relay, console relay, and session sync. 
 | Script | Platform | Description |
 |--------|----------|-------------|
 | `context-inject-hook.js` | All (Node.js) | Cross-platform context injection hook (Windows, macOS, Linux) |
-| `context-inject-hook.sh` | Linux/macOS | Legacy bash context injection hook |
 | `statusline-worktree.sh` | Linux/macOS | Claude Code status line showing git branch, session info |
 
-The **context-inject hook** is the primary hook. It uses Node.js for cross-platform support.
+The **context-inject hook** is the primary hook. It uses Node.js for cross-platform support (no shell dependencies like jq, curl, or flock).
 
 ## Plugin / Slash Commands
 
 lm-assist is packaged as a Claude Code plugin. On `claude plugin install .`, the plugin auto-registers:
-- **MCP server** (`lm-assist-context`) — search, detail, feedback tools
+- **MCP server** (`lm-assist`) — search, detail, feedback tools
 - **Hook** — context injection (UserPromptSubmit) via cross-platform Node.js script
 - **Slash commands** — 6 commands for managing lm-assist
 
