@@ -14,9 +14,11 @@ import {
   ChevronDown,
   ChevronRight,
   ArrowDownToLine,
+  ArrowLeft,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { useMachineContext } from '@/contexts/MachineContext';
+import { useDeviceInfo } from '@/hooks/useDeviceInfo';
 
 // ============================================================================
 // Types
@@ -161,6 +163,8 @@ export function AssistResourcesPage() {
   // with proper auth headers for remote machine access.
   const { apiClient } = useAppMode();
   const { selectedMachineId } = useMachineContext();
+  const { viewMode } = useDeviceInfo();
+  const isMobile = viewMode === 'mobile';
 
   const machineIdRef = useRef(selectedMachineId);
   machineIdRef.current = selectedMachineId;
@@ -245,6 +249,7 @@ export function AssistResourcesPage() {
     setListLoading(true);
     setSelectedFile(null);
     setContent(null);
+    initialSelectionDone.current = false; // re-enable auto-select
     loadFiles();
   }, [selectedMachineId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -380,10 +385,10 @@ export function AssistResourcesPage() {
     }}>
       {/* ── Left Panel: File List ── */}
       <div style={{
-        width: 300,
-        minWidth: 300,
-        borderRight: '1px solid var(--color-border-default)',
-        display: 'flex',
+        width: isMobile ? '100%' : 300,
+        minWidth: isMobile ? 0 : 300,
+        borderRight: isMobile ? 'none' : '1px solid var(--color-border-default)',
+        display: (isMobile && selectedFile) ? 'none' : 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
       }}>
@@ -514,7 +519,7 @@ export function AssistResourcesPage() {
       {/* ── Right Panel: Content Viewer ── */}
       <div style={{
         flex: 1,
-        display: 'flex',
+        display: (isMobile && !selectedFile) ? 'none' : 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
       }}>
@@ -527,7 +532,27 @@ export function AssistResourcesPage() {
               display: 'flex',
               alignItems: 'center',
               gap: 8,
+              flexWrap: isMobile ? 'wrap' : undefined,
             }}>
+              {isMobile && (
+                <button
+                  onClick={() => { setSelectedFile(null); setContent(null); }}
+                  style={{
+                    background: 'none',
+                    border: '1px solid var(--color-border-default)',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    padding: '4px 6px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    color: 'var(--color-text-secondary)',
+                    flexShrink: 0,
+                  }}
+                  title="Back to file list"
+                >
+                  <ArrowLeft size={12} />
+                </button>
+              )}
               {isLogFile(selectedFile) ? (
                 <div style={{
                   flex: 1,

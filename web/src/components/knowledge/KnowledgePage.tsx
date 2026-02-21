@@ -23,6 +23,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { useMachineContext } from '@/contexts/MachineContext';
+import { useDeviceInfo } from '@/hooks/useDeviceInfo';
 
 // ============================================================================
 // Types
@@ -188,6 +189,9 @@ export function KnowledgePage() {
   const [regenerating, setRegenerating] = useState(false);
   const [processingAll, setProcessingAll] = useState(false);
   const [processAllProgress, setProcessAllProgress] = useState<{ processed: number; total: number; errors: number } | null>(null);
+
+  const { viewMode } = useDeviceInfo();
+  const isMobile = viewMode === 'mobile';
 
   const viewerRef = useRef<HTMLDivElement>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -527,12 +531,12 @@ export function KnowledgePage() {
       overflow: 'hidden',
       background: 'var(--color-bg-root)',
     }}>
-      {/* Left panel — List */}
+      {/* Left panel — List (hidden on mobile when detail is selected) */}
       <div style={{
-        width: 340,
-        minWidth: 340,
-        borderRight: '1px solid var(--color-border-default)',
-        display: 'flex',
+        width: isMobile ? '100%' : 340,
+        minWidth: isMobile ? 0 : 340,
+        borderRight: isMobile ? 'none' : '1px solid var(--color-border-default)',
+        display: (isMobile && selectedId) ? 'none' : 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
       }}>
@@ -996,12 +1000,12 @@ export function KnowledgePage() {
         </div>
       </div>
 
-      {/* Right panel — Viewer */}
+      {/* Right panel — Viewer (hidden on mobile when no selection) */}
       <div
         ref={viewerRef}
         style={{
           flex: 1,
-          display: 'flex',
+          display: (isMobile && !selectedId) ? 'none' : 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
         }}
@@ -1016,13 +1020,22 @@ export function KnowledgePage() {
           <>
             {/* Header */}
             <div style={{
-              padding: '10px 16px',
+              padding: isMobile ? '8px 10px' : '10px 16px',
               borderBottom: '1px solid var(--color-border-default)',
               display: 'flex',
               alignItems: 'center',
-              gap: 10,
+              gap: isMobile ? 6 : 10,
               flexShrink: 0,
             }}>
+              {isMobile && (
+                <button
+                  onClick={() => { setSelectedId(null); setKnowledge(null); setComments([]); }}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', display: 'flex', color: 'var(--color-text-secondary)', flexShrink: 0 }}
+                  title="Back to list"
+                >
+                  <ArrowLeft size={16} />
+                </button>
+              )}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{
                   fontSize: 15,
@@ -1058,7 +1071,7 @@ export function KnowledgePage() {
                   )}
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+              <div style={{ display: isMobile ? 'none' : 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
                 <label style={{
                   display: 'flex',
                   alignItems: 'center',

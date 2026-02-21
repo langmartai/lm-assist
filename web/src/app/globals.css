@@ -136,6 +136,7 @@ body {
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
   height: 100vh;
+  height: 100dvh;
 }
 
 code, pre, .font-mono {
@@ -204,6 +205,7 @@ code, pre, .font-mono {
   grid-template-columns: var(--size-sidebar) 1fr;
   grid-template-rows: var(--size-topbar) 1fr;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -537,7 +539,7 @@ code, pre, .font-mono {
   color: var(--color-text-secondary);
 }
 
-@media (max-width: 640px) {
+@media (max-width: 767px) {
   .bg-progress-label {
     display: none;
   }
@@ -1821,4 +1823,608 @@ code, pre, .font-mono {
   margin: 4px 0;
   padding-left: 10px;
   color: var(--color-text-tertiary);
+}
+
+/* ============================================
+   Mobile Shell Layout — sidebar always visible
+   ============================================ */
+
+/* ============================================
+   TopBar Mobile
+   ============================================ */
+
+.topbar-search-input {
+  width: 200px;
+}
+
+@media (max-width: 767px) {
+  .topbar-search-input {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+  }
+
+  .topbar-connection {
+    display: none !important;
+  }
+
+  .topbar-connect-cloud {
+    display: none !important;
+  }
+
+  .topbar-user-info {
+    display: none !important;
+  }
+
+  .bg-progress-chip {
+    display: none !important;
+  }
+
+  .topbar {
+    padding: 0 8px;
+    gap: 6px;
+  }
+}
+
+/* ============================================
+   Tasks Page Mobile
+   ============================================ */
+
+.tasks-filter-toggle {
+  display: none;
+}
+
+.tasks-filter-panel {
+  width: 220px;
+}
+
+@media (max-width: 767px) {
+  .tasks-layout {
+    flex-direction: column;
+  }
+
+  .tasks-filter-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    background: var(--color-bg-surface);
+    border: none;
+    border-bottom: 1px solid var(--color-border-default);
+    font-size: 12px;
+    font-weight: 500;
+    font-family: var(--font-sans);
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    width: 100%;
+    flex-shrink: 0;
+  }
+
+  .tasks-filter-panel {
+    width: 100% !important;
+    max-height: 0;
+    overflow: hidden !important;
+    transition: max-height 200ms ease;
+    border-right: none !important;
+    border-bottom: 1px solid var(--color-border-default);
+    padding: 0 16px !important;
+    flex-shrink: 0;
+  }
+
+  .tasks-filter-panel.open {
+    max-height: 50vh;
+    overflow: auto !important;
+    padding: 16px !important;
+  }
+
+  .kanban-board {
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: visible;
+  }
+
+  .kanban-column {
+    min-width: 0;
+    flex: none;
+    width: 100%;
+  }
+
+  .kanban-column-body {
+    max-height: none;
+    overflow-y: visible;
+  }
+}
+
+/* Kanban floating status nav (mobile only) */
+.kanban-fab-bar {
+  position: fixed;
+  bottom: 12px;
+  left: var(--size-sidebar);
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  z-index: 30;
+  padding: 0 12px;
+  pointer-events: none;
+}
+
+.kanban-fab-btn {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.3);
+  transition: all 150ms ease;
+}
+
+.kanban-fab-btn.active {
+  background: var(--fab-color, var(--color-accent));
+  color: #fff;
+  border-color: var(--fab-color, var(--color-accent));
+}
+
+.kanban-fab-count {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  opacity: 0.8;
+}
+
+/* ============================================
+   Sessions Mobile
+   ============================================ */
+
+.session-mobile-back-fab {
+  position: absolute;
+  top: 33vh;
+  right: 4px;
+  z-index: 20;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: var(--color-accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.4);
+  opacity: 0.85;
+}
+
+/* ============================================
+   Touch Device Improvements
+   ============================================ */
+
+@media (pointer: coarse) and (hover: none) {
+  /* Minimum 44px touch targets */
+  button, a, [role="button"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Exceptions: inline badges, compact UI that shouldn't grow */
+  .badge, .tab-badge, .status-dot,
+  .sidebar-item, .topbar-theme-toggle,
+  .topbar button, .topbar a,
+  .btn-icon, .btn-sm,
+  .kanban-column-header .badge,
+  .kanban-fab-btn,
+  .compact-msg a, .compact-msg button {
+    min-height: unset;
+    min-width: unset;
+  }
+
+  /* Disable hover effects on touch */
+  .sidebar-item:hover,
+  .card:hover,
+  .btn-ghost:hover,
+  .kanban-card:hover,
+  .machine-dropdown-item:hover,
+  .search-dropdown-item:hover,
+  .topbar-user-menu-item:hover:not(:disabled) {
+    background: inherit;
+    color: inherit;
+    border-color: inherit;
+  }
+
+  /* Prevent double-tap zoom on buttons */
+  button, a, [role="button"] {
+    touch-action: manipulation;
+  }
+}
+
+/* ============================================
+   Mobile Modals & Dropdowns
+   ============================================ */
+
+@media (max-width: 767px) {
+  /* Modals: full-width, bottom-anchored (account for sidebar) */
+  .modal-content {
+    max-width: calc(100vw - var(--size-sidebar));
+    width: calc(100vw - var(--size-sidebar));
+    max-height: 90vh;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    margin: 0;
+    position: fixed;
+    bottom: 0;
+    left: var(--size-sidebar);
+    right: 0;
+  }
+
+  .modal-overlay {
+    align-items: flex-end;
+  }
+
+  /* Dropdowns: prevent horizontal overflow (account for sidebar) */
+  .machine-dropdown-panel,
+  .topbar-user-menu,
+  .search-dropdown {
+    max-width: calc(100vw - var(--size-sidebar) - 20px);
+  }
+
+  /* Search dropdown: slightly narrower on mobile */
+  .search-dropdown {
+    width: calc(100vw - var(--size-sidebar) - 20px);
+    right: auto;
+    left: 10px;
+  }
+
+  /* Reduce padding on general pages */
+  .empty-state {
+    padding: 32px 16px;
+  }
+
+  /* Stat cards: smaller padding */
+  .stat-card {
+    padding: 10px 12px;
+  }
+
+  .stat-card .stat-value {
+    font-size: 20px;
+  }
+
+  /* Task popup: full-width on mobile */
+  .card {
+    padding: 12px;
+  }
+}
+
+/* ============================================
+   Session Detail Header — Mobile
+   ============================================ */
+
+.session-detail-header {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--color-border-default);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 767px) {
+  .session-detail-header {
+    flex-direction: row;
+    align-items: center;
+    padding: 4px 36px 4px 10px; /* right padding for FAB overlap */
+    gap: 6px;
+  }
+
+  .session-detail-header-row1 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  /* Hide stats row entirely on mobile */
+  .session-detail-header-stats {
+    display: none !important;
+  }
+
+  .session-detail-header-actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+}
+
+/* ============================================
+   Tab Bar — Mobile
+   ============================================ */
+
+@media (max-width: 767px) {
+  .tab-bar {
+    padding: 0 8px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    position: relative;
+  }
+  .tab-bar::-webkit-scrollbar { display: none; }
+  .tab-bar::after {
+    content: '';
+    position: sticky;
+    right: 0;
+    flex-shrink: 0;
+    width: 20px;
+    background: linear-gradient(to right, transparent, var(--color-bg-root));
+    pointer-events: none;
+  }
+
+  .tab-item {
+    padding: 6px 10px;
+    font-size: 11px;
+    gap: 4px;
+  }
+  .tab-badge { font-size: 9px; padding: 0 4px; min-width: 14px; }
+}
+
+/* ============================================
+   Chat Filter Toggle (mobile only)
+   ============================================ */
+
+.chat-filter-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  width: 100%;
+  background: var(--color-bg-surface);
+  border: none;
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.chat-filter-count {
+  margin-left: auto;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--color-text-tertiary);
+}
+
+@media (max-width: 767px) {
+  .chat-filter-row {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding: 6px 8px;
+  }
+  .chat-filter-row::-webkit-scrollbar { display: none; }
+}
+
+/* ============================================
+   Chat Controls Row — Mobile
+   ============================================ */
+
+.chat-search-input { width: 140px; }
+
+@media (max-width: 767px) {
+  .chat-search-input { width: 80px; flex: 1; min-width: 60px; }
+  .chat-controls-row {
+    padding: 4px 8px !important;
+    gap: 6px !important;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .chat-controls-row::-webkit-scrollbar { display: none; }
+}
+
+/* ============================================
+   Prose — Mobile overflow protection
+   ============================================ */
+
+@media (max-width: 767px) {
+  .prose {
+    overflow-wrap: break-word;
+    word-break: break-word;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .prose pre {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .prose code {
+    word-break: break-all;
+  }
+  .prose table {
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  .prose img { max-width: 100%; height: auto; }
+  .msg {
+    min-width: 0;
+    overflow: hidden;
+    overflow-wrap: break-word;
+    word-break: break-word;
+  }
+  .msg-tool { margin-left: 8px !important; }
+}
+
+/* ============================================
+   Tasks View Bar — Mobile
+   ============================================ */
+
+@media (max-width: 767px) {
+  .tasks-view-bar { padding: 6px 10px; flex-wrap: wrap; }
+  .tasks-view-stats { display: none; }
+}
+
+/* ============================================
+   Task Detail Popup — Mobile
+   ============================================ */
+
+@media (max-width: 767px) {
+  .task-detail-overlay {
+    align-items: flex-end !important;
+    padding-left: var(--size-sidebar);
+  }
+  .task-detail-card {
+    width: 100% !important;
+    max-width: 100% !important;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0 !important;
+    padding: 16px !important;
+  }
+}
+
+/* ============================================
+   Task Mobile Card
+   ============================================ */
+
+.task-mobile-card {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid;
+  background: var(--color-bg-surface);
+  border-top: 1px solid var(--color-border-subtle);
+  border-right: 1px solid var(--color-border-subtle);
+  border-bottom: 1px solid var(--color-border-subtle);
+  cursor: pointer;
+  transition: background 100ms ease;
+}
+
+.task-mobile-card:hover {
+  background: var(--color-bg-hover);
+}
+
+/* ============================================
+   Mobile Tab Dropdown
+   ============================================ */
+
+.mobile-tab-dropdown {
+  position: relative;
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.mobile-tab-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+.mobile-tab-panel {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 100;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  min-width: 200px;
+  max-width: 280px;
+  width: 70vw;
+  padding: 6px 0;
+}
+
+.mobile-tab-panel-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 99;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.mobile-tab-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 10px 16px;
+  background: none;
+  border: none;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.mobile-tab-option:hover {
+  background: var(--color-bg-hover);
+}
+
+.mobile-tab-option.active {
+  color: var(--color-accent);
+  background: var(--color-accent-glow);
+}
+
+/* Inline tab trigger — compact, sits inside the chat bar */
+.mobile-tab-inline-trigger {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  font-size: 11px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  color: var(--color-accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* ============================================
+   Mobile Chat Compact Bar + Bottom Sheet
+   ============================================ */
+
+.mobile-chat-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.mobile-filter-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 30;
+  display: flex;
+  align-items: flex-end;
+}
+
+.mobile-filter-sheet {
+  width: 100%;
+  margin-left: var(--size-sidebar);
+  max-height: 70vh;
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  animation: slide-up 200ms ease;
+}
+
+@keyframes slide-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
 }

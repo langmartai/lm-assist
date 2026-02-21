@@ -293,6 +293,7 @@ export function useSessionDetail({
 
         // Merge new main messages
         let mergedMessages = prev.messages;
+        let hasNewMainMessages = false;
         if (newMessages.length > 0) {
           const existingLines = new Set(
             prev.messages
@@ -304,7 +305,29 @@ export function useSessionDetail({
           );
           if (uniqueNew.length > 0) {
             mergedMessages = [...prev.messages, ...uniqueNew];
+            hasNewMainMessages = true;
           }
+        }
+
+        // Check if scalar values changed
+        const newLineCount = delta.lineCount || prev.lineCount;
+        const newNumTurns = delta.numTurns ?? prev.numTurns;
+        const newCost = delta.totalCostUsd ?? prev.totalCostUsd;
+        const newIsActive = delta.isActive ?? prev.isActive;
+        const scalarsChanged =
+          newLineCount !== prev.lineCount ||
+          newNumTurns !== prev.numTurns ||
+          newCost !== prev.totalCostUsd ||
+          newIsActive !== prev.isActive;
+
+        // Check if subagent count changed
+        const newSubagentCount = subagentsData.sessions.length;
+        const prevSubagentCount = prev.subagents?.length || 0;
+        const subagentsChanged = newSubagentCount > 0 && newSubagentCount !== prevSubagentCount;
+
+        // If nothing changed, return same reference to skip re-render
+        if (!hasNewMainMessages && !scalarsChanged && !subagentsChanged) {
+          return prev;
         }
 
         // Strip old agent messages before re-merging with fresh subagent data
@@ -328,13 +351,13 @@ export function useSessionDetail({
           ...prev,
           messages: finalMessages,
           subagents: subagentsData.sessions.length > 0 ? subagentsData.sessions : prev.subagents,
-          lineCount: delta.lineCount || prev.lineCount,
-          totalCostUsd: delta.totalCostUsd ?? prev.totalCostUsd,
-          numTurns: delta.numTurns ?? prev.numTurns,
+          lineCount: newLineCount,
+          totalCostUsd: newCost,
+          numTurns: newNumTurns,
           inputTokens: delta.inputTokens ?? prev.inputTokens,
           outputTokens: delta.outputTokens ?? prev.outputTokens,
           lastModified: delta.lastModified ?? prev.lastModified,
-          isActive: delta.isActive ?? prev.isActive,
+          isActive: newIsActive,
         };
       });
 

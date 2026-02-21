@@ -2,10 +2,13 @@
 
 import { useEffect, useCallback } from 'react';
 import { useSearch } from '@/contexts/SearchContext';
+import { useDeviceInfo } from '@/hooks/useDeviceInfo';
 import { SessionSearch } from './SessionSearch';
 
 export function SearchOverlay() {
   const { isOpen, close, initialQuery, directory, projectPath } = useSearch();
+  const { viewMode } = useDeviceInfo();
+  const isMobile = viewMode === 'mobile';
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === 'Escape') close();
@@ -26,11 +29,12 @@ export function SearchOverlay() {
         inset: 0,
         zIndex: 9000,
         display: 'flex',
-        alignItems: 'flex-start',
+        alignItems: isMobile ? 'stretch' : 'flex-start',
         justifyContent: 'center',
-        paddingTop: '5vh',
-        backgroundColor: 'rgba(0, 0, 0, 0.6)',
-        backdropFilter: 'blur(4px)',
+        paddingTop: isMobile ? 0 : '5vh',
+        paddingLeft: isMobile ? 'var(--size-sidebar)' : 0,
+        backgroundColor: isMobile ? 'transparent' : 'rgba(0, 0, 0, 0.6)',
+        backdropFilter: isMobile ? 'none' : 'blur(4px)',
       }}
       onClick={(e) => {
         if (e.target === e.currentTarget) close();
@@ -38,14 +42,14 @@ export function SearchOverlay() {
     >
       <div
         style={{
-          width: '90%',
-          maxWidth: 1100,
-          height: '80vh',
+          width: isMobile ? '100%' : '90%',
+          maxWidth: isMobile ? undefined : 1100,
+          height: isMobile ? '100%' : '80vh',
           background: 'var(--color-bg-surface)',
-          border: '1px solid var(--color-border-default)',
-          borderRadius: 'var(--radius-xl)',
+          border: isMobile ? 'none' : '1px solid var(--color-border-default)',
+          borderRadius: isMobile ? 0 : 'var(--radius-xl)',
           overflow: 'hidden',
-          animation: 'dropdown-appear 150ms ease',
+          animation: isMobile ? undefined : 'dropdown-appear 150ms ease',
           display: 'flex',
           flexDirection: 'column',
         }}

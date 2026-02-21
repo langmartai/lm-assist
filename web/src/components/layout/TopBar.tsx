@@ -225,9 +225,9 @@ export function TopBar() {
           }}
         />
         <input
-          className="input input-with-icon"
+          className="input input-with-icon topbar-search-input"
           placeholder="Search... ⌘K"
-          style={{ width: 200, paddingLeft: 28, fontSize: 11, cursor: 'pointer' }}
+          style={{ paddingLeft: 28, fontSize: 11, cursor: 'pointer' }}
           readOnly
           onClick={() => openSearch()}
         />

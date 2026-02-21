@@ -11,6 +11,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import type { Session, SessionDetail } from '@/lib/types';
 import { useExperiment } from '@/hooks/useExperiment';
+import { useDeviceInfo } from '@/hooks/useDeviceInfo';
 
 type Scope = 'smart' | '24h' | '3d' | '7d' | '30d' | 'all';
 
@@ -161,6 +162,8 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
   const machineId = selectedMachine?.id;
   const router = useRouter();
   const { isExperiment } = useExperiment();
+  const { viewMode } = useDeviceInfo();
+  const isMobile = viewMode === 'mobile';
 
   const [query, setQuery] = useState(initialQuery);
   const [directory, setDirectory] = useState(initialDirectory);
@@ -194,7 +197,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
   const [loadingRecentKnowledge, setLoadingRecentKnowledge] = useState(false);
 
   // Search config: which result types to include
-  const [searchFilter, setSearchFilter] = useState<'knowledge' | 'milestones' | 'both'>('both');
+  const [searchFilter, setSearchFilter] = useState<'knowledge' | 'milestones' | 'both'>(isMobile ? 'knowledge' : 'both');
   const searchIncludeKnowledge = searchFilter === 'knowledge' || searchFilter === 'both';
   const searchIncludeMilestones = searchFilter === 'milestones' || searchFilter === 'both';
 
@@ -218,10 +221,16 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
         if (json?.data) {
           const inclK = typeof json.data.searchIncludeKnowledge === 'boolean' ? json.data.searchIncludeKnowledge : true;
           const inclM = typeof json.data.searchIncludeMilestones === 'boolean' ? json.data.searchIncludeMilestones : true;
-          if (inclK && inclM) setSearchFilter('both');
-          else if (inclK) setSearchFilter('knowledge');
-          else if (inclM) setSearchFilter('milestones');
-          else setSearchFilter('both');
+          // On mobile: default to knowledge-only for cleaner list view
+          if (isMobile) {
+            if (inclK) setSearchFilter('knowledge');
+            else if (inclM) setSearchFilter('milestones');
+          } else {
+            if (inclK && inclM) setSearchFilter('both');
+            else if (inclK) setSearchFilter('knowledge');
+            else if (inclM) setSearchFilter('milestones');
+            else setSearchFilter('both');
+          }
         }
       })
       .catch(() => {});
@@ -459,8 +468,9 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
   const displayResults = query.trim() ? displaySearchResults : recentMilestones;
 
   // Auto-select first result unless user manually picked one
+  // On mobile: skip auto-select so the list stays visible
   useEffect(() => {
-    if (userSelectedRef.current) return;
+    if (userSelectedRef.current || isMobile) return;
     // When searching: prefer first knowledge result, then first milestone
     if (query.trim()) {
       if (knowledgeResults.length > 0) {
@@ -683,13 +693,14 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
 
       {/* Main content area */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {/* Results list */}
+        {/* Results list — hidden on mobile when a result is selected */}
         <div style={{
-          width: (selectedSessionId || selectedKnowledgeId) ? '40%' : '100%',
-          minWidth: 300,
-          overflow: 'auto',
-          borderRight: (selectedSessionId || selectedKnowledgeId) ? '1px solid var(--color-border-default)' : 'none',
+          width: (selectedSessionId || selectedKnowledgeId) ? (isMobile ? 0 : '40%') : '100%',
+          minWidth: (isMobile && (selectedSessionId || selectedKnowledgeId)) ? 0 : (isMobile ? 0 : 300),
+          overflow: (isMobile && (selectedSessionId || selectedKnowledgeId)) ? 'hidden' : 'auto',
+          borderRight: (selectedSessionId || selectedKnowledgeId) && !isMobile ? '1px solid var(--color-border-default)' : 'none',
           transition: 'width 200ms ease',
+          flexShrink: (isMobile && (selectedSessionId || selectedKnowledgeId)) ? 0 : undefined,
         }}>
           {displayResults.length === 0 && knowledgeResults.length === 0 && query && !searching ? (
             <div className="empty-state" style={{ padding: '32px 16px' }}>
@@ -1124,6 +1135,15 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                   fontSize: 11,
                   color: 'var(--color-text-secondary)',
                 }}>
+                  {isMobile && (
+                    <button
+                      onClick={() => { setSelectedSessionId(null); setSessionDetail(null); }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', display: 'flex', color: 'var(--color-text-secondary)' }}
+                      title="Back to results"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>
+                    </button>
+                  )}
                   <span
                     style={{ fontFamily: 'var(--font-mono)', fontSize: 10, cursor: 'pointer', textDecoration: 'underline', textDecorationColor: 'transparent' }}
                     title="Open in session viewer"
@@ -1242,6 +1262,15 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                   gap: 8,
                   flexShrink: 0,
                 }}>
+                  {isMobile && (
+                    <button
+                      onClick={() => { setSelectedKnowledgeId(null); setSelectedKnowledgePartId(null); }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', display: 'flex', color: 'var(--color-text-secondary)', flexShrink: 0 }}
+                      title="Back to results"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>
+                    </button>
+                  )}
                   <BookOpen size={14} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{

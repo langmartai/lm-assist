@@ -8,6 +8,8 @@ import { useProjects } from '@/hooks/useProjects';
 import { SessionSidebar } from './SessionSidebar';
 import { SessionDetail } from './SessionDetail';
 import type { SubagentSession } from '@/lib/types';
+import { useDeviceInfo } from '@/hooks/useDeviceInfo';
+import { ArrowLeft } from 'lucide-react';
 
 export function SessionBrowser() {
   const searchParams = useSearchParams();
@@ -233,12 +235,70 @@ export function SessionBrowser() {
   // Get session list's data for the selected session
   const selectedListSession = sessionsHook.sessions.find(s => s.sessionId === selectedSessionId);
 
+  const { viewMode } = useDeviceInfo();
+  const isMobile = viewMode === 'mobile';
+  const sidebarWidth = viewMode === 'tablet' ? 280 : 320;
+
+  // Mobile: back button clears selection, showing list
+  const handleBack = () => {
+    setSelectedSessionId(null);
+    setSelectedMachineId(undefined);
+  };
+
+  // Mobile stack navigation: show either list OR detail
+  if (isMobile) {
+    if (selectedSessionId) {
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', position: 'relative' }}>
+          {/* Floating back button */}
+          <button className="session-mobile-back-fab" onClick={handleBack} title="Back to sessions">
+            <ArrowLeft size={16} />
+          </button>
+          {/* Detail panel */}
+          <div style={{ flex: 1, overflow: 'hidden' }}>
+            <SessionDetail
+              sessionId={selectedSessionId}
+              machineId={selectedMachineId}
+              onLastSuggestion={setLastSuggestion}
+              onSubagents={setSelectedSubagents}
+              onDetailMeta={handleDetailMeta}
+              onPollControls={handlePollControls}
+              externalPolling={true}
+              listNumTurns={selectedListSession?.numTurns}
+              listLastModified={selectedListSession?.lastModified}
+              initialTab={urlTab || undefined}
+              highlightMilestoneId={urlMilestone || undefined}
+              onSelectSession={handleSelectSession}
+            />
+          </div>
+        </div>
+      );
+    }
+
+    // Mobile: full-width session list
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+        <SessionSidebar
+          sessionsHook={sessionsHook}
+          selectedSessionId={selectedSessionId}
+          sidebarHighlightId={urlParent || undefined}
+          onSelectSession={handleSelectSession}
+          lastSuggestion={lastSuggestion}
+          subagents={selectedSubagents}
+          gitProjectNames={gitProjectNames}
+          scrollToSessionId={hasUrlSession ? (urlParent || searchParams.get('session')) : null}
+        />
+      </div>
+    );
+  }
+
+  // Desktop / Tablet: side-by-side layout
   return (
     <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
       {/* Left sidebar */}
       <div style={{
-        width: 320,
-        minWidth: 320,
+        width: sidebarWidth,
+        minWidth: sidebarWidth,
         borderRight: '1px solid var(--color-border-default)',
         display: 'flex',
         flexDirection: 'column',

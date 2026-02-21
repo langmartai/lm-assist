@@ -13,9 +13,11 @@ import {
   LayoutGrid,
   List,
   X,
+  SlidersHorizontal,
 } from 'lucide-react';
 import type { SessionTask } from '@/lib/types';
 import { useState } from 'react';
+import { useDeviceInfo } from '@/hooks/useDeviceInfo';
 
 const STATUS_CONFIG = {
   pending: { label: 'Pending', icon: Circle, color: 'var(--color-status-yellow)', bgClass: 'badge-yellow' },
@@ -29,19 +31,42 @@ export default function TasksPage() {
     refetch, projectNames, counts, allTasks,
   } = useTasks();
   const { machines, isSingleMachine } = useMachineContext();
-  const [viewMode, setViewMode] = useState<'kanban' | 'list'>('kanban');
+  const [viewLayout, setViewLayout] = useState<'kanban' | 'list'>('kanban');
   const [selectedTask, setSelectedTask] = useState<SessionTask | null>(null);
+  const { viewMode } = useDeviceInfo();
+  const isMobile = viewMode === 'mobile';
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [kanbanStatus, setKanbanStatus] = useState<'pending' | 'in_progress' | 'completed'>('pending');
+
+  // Total counts across all groups for FAB bar
+  const totalPending = filteredTasks.filter(t => t.status === 'pending').length;
+  const totalInProgress = filteredTasks.filter(t => t.status === 'in_progress').length;
+  const totalCompleted = filteredTasks.filter(t => t.status === 'completed').length;
 
   return (
-    <div style={{ display: 'flex', height: '100%' }}>
+    <div className="tasks-layout" style={{ display: 'flex', height: '100%' }}>
+      {/* Mobile filter toggle */}
+      <button
+        className="tasks-filter-toggle"
+        onClick={() => setFilterOpen(!filterOpen)}
+      >
+        <SlidersHorizontal size={14} />
+        <span>Filters</span>
+        {(filters.status !== 'all' || filters.projectName || filters.machineId) && (
+          <span className="badge badge-amber" style={{ fontSize: 9 }}>Active</span>
+        )}
+      </button>
+
       {/* Left filter panel */}
-      <div style={{
-        width: 220,
-        borderRight: '1px solid var(--color-border-default)',
-        padding: 16,
-        overflow: 'auto',
-        flexShrink: 0,
-      }} className="scrollbar-thin">
+      <div
+        className={`tasks-filter-panel scrollbar-thin ${filterOpen ? 'open' : ''}`}
+        style={{
+          borderRight: '1px solid var(--color-border-default)',
+          padding: 16,
+          overflow: 'auto',
+          flexShrink: 0,
+        }}
+      >
         <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 16 }}>Tasks</h3>
 
         {/* Summary */}
@@ -168,15 +193,15 @@ export default function TasksPage() {
           </h4>
           <div style={{ display: 'flex', gap: 4 }}>
             <button
-              className={`btn btn-sm ${viewMode === 'kanban' ? 'btn-secondary' : 'btn-ghost'}`}
-              onClick={() => setViewMode('kanban')}
+              className={`btn btn-sm ${viewLayout === 'kanban' ? 'btn-secondary' : 'btn-ghost'}`}
+              onClick={() => setViewLayout('kanban')}
               style={{ gap: 4 }}
             >
               <LayoutGrid size={12} /> Kanban
             </button>
             <button
-              className={`btn btn-sm ${viewMode === 'list' ? 'btn-secondary' : 'btn-ghost'}`}
-              onClick={() => setViewMode('list')}
+              className={`btn btn-sm ${viewLayout === 'list' ? 'btn-secondary' : 'btn-ghost'}`}
+              onClick={() => setViewLayout('list')}
               style={{ gap: 4 }}
             >
               <List size={12} /> List
@@ -249,8 +274,8 @@ export default function TasksPage() {
               </div>
             )}
 
-            {viewMode === 'kanban' ? (
-              <KanbanRow tasks={group.tasks} onSelect={setSelectedTask} />
+            {viewLayout === 'kanban' ? (
+              <KanbanRow tasks={group.tasks} onSelect={setSelectedTask} mobileActiveStatus={isMobile ? kanbanStatus : undefined} />
             ) : (
               <TaskListView tasks={group.tasks} onSelect={setSelectedTask} />
             )}
@@ -266,23 +291,52 @@ export default function TasksPage() {
           onClose={() => setSelectedTask(null)}
         />
       )}
+
+      {/* Mobile kanban status FAB bar */}
+      {isMobile && viewLayout === 'kanban' && (
+        <div className="kanban-fab-bar">
+          {([
+            { status: 'pending' as const, count: totalPending },
+            { status: 'in_progress' as const, count: totalInProgress },
+            { status: 'completed' as const, count: totalCompleted },
+          ]).map(({ status, count }) => {
+            const config = STATUS_CONFIG[status];
+            return (
+              <button
+                key={status}
+                className={`kanban-fab-btn ${kanbanStatus === status ? 'active' : ''}`}
+                style={{ '--fab-color': config.color } as React.CSSProperties}
+                onClick={() => setKanbanStatus(status)}
+              >
+                <config.icon size={12} />
+                <span>{config.label}</span>
+                <span className="kanban-fab-count">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
-function KanbanRow({ tasks, onSelect }: { tasks: SessionTask[]; onSelect: (t: SessionTask) => void }) {
+function KanbanRow({ tasks, onSelect, mobileActiveStatus }: { tasks: SessionTask[]; onSelect: (t: SessionTask) => void; mobileActiveStatus?: string }) {
   const pending = tasks.filter(t => t.status === 'pending');
   const inProgress = tasks.filter(t => t.status === 'in_progress');
   const completed = tasks.filter(t => t.status === 'completed');
 
+  const columns = [
+    { status: 'pending' as const, items: pending },
+    { status: 'in_progress' as const, items: inProgress },
+    { status: 'completed' as const, items: completed },
+  ];
+
   return (
     <div className="kanban-board">
-      {([
-        { status: 'pending' as const, items: pending },
-        { status: 'in_progress' as const, items: inProgress },
-        { status: 'completed' as const, items: completed },
-      ]).map(({ status, items }) => {
+      {columns.map(({ status, items }) => {
         const config = STATUS_CONFIG[status];
+        // On mobile, only show the active status column
+        if (mobileActiveStatus && status !== mobileActiveStatus) return null;
         return (
           <div key={status} className="kanban-column">
             <div className="kanban-column-header">

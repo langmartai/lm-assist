@@ -10,6 +10,7 @@ import { resolveConsoleUrl } from '@/lib/api-client';
 import { DashboardToolbar } from '@/components/console-dashboard/DashboardToolbar';
 import { LayoutEngine } from '@/components/console-dashboard/LayoutEngine';
 import { useConsoleDashboardStore } from '@/stores/consoleDashboardStore';
+import { useDeviceInfo } from '@/hooks/useDeviceInfo';
 import { Terminal } from 'lucide-react';
 import type { ConsoleInstance } from '@/components/console-dashboard/types';
 
@@ -33,6 +34,7 @@ export default function ConsoleDashboardPage() {
   const { apiClient, proxy } = useAppMode();
   const { selectedMachineId } = useMachineContext();
   const { isWindows } = usePlatform();
+  const { viewMode } = useDeviceInfo();
 
   const {
     openConsoles,
@@ -43,12 +45,23 @@ export default function ConsoleDashboardPage() {
     setFocusedConsole,
     refreshPositions,
     hydrate,
+    layout,
+    setLayout,
   } = useConsoleDashboardStore();
 
   // Hydrate store from localStorage on mount
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  // Clamp layout columns based on viewMode
+  useEffect(() => {
+    if (viewMode === 'mobile' && layout !== 1) {
+      setLayout(1);
+    } else if (viewMode === 'tablet' && layout > 2) {
+      setLayout(2);
+    }
+  }, [viewMode, layout, setLayout]);
 
   // ── Data queries ──────────────────────────────────────────────────────
 

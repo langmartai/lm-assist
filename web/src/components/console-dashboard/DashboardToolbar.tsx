@@ -1,12 +1,12 @@
 'use client';
 
-import { } from 'react';
 import {
   Square, Columns2, Columns3, Columns4,
   Terminal, RefreshCw,
 } from 'lucide-react';
 import type { LayoutStrategy } from './types';
 import { useConsoleDashboardStore } from '@/stores/consoleDashboardStore';
+import { useDeviceInfo } from '@/hooks/useDeviceInfo';
 
 // ============================================================================
 // Layout options config
@@ -46,6 +46,12 @@ export function DashboardToolbar({
     layout,
     setLayout,
   } = useConsoleDashboardStore();
+  const { viewMode } = useDeviceInfo();
+
+  // Filter layout options based on viewMode
+  const visibleLayoutOptions = viewMode === 'tablet'
+    ? LAYOUT_OPTIONS.filter(opt => opt.value <= 2)
+    : LAYOUT_OPTIONS;
 
   return (
     <>
@@ -55,7 +61,7 @@ export function DashboardToolbar({
         <div className="flex items-center gap-3 mr-auto min-w-0">
           <div className="flex items-center gap-2 shrink-0">
             <Terminal className="h-4 w-4" style={{ color: 'var(--color-status-green)' }} />
-            <h1 className="text-[14px] font-semibold tracking-tight" style={{ color: 'var(--color-text-primary)' }}>
+            <h1 className="text-[14px] font-semibold tracking-tight hidden md:block" style={{ color: 'var(--color-text-primary)' }}>
               Terminal Dashboard
             </h1>
           </div>
@@ -64,22 +70,23 @@ export function DashboardToolbar({
           <div className="flex items-center gap-1.5 shrink-0">
             <span className="text-[9px] h-5 px-1.5 inline-flex items-center rounded-full font-mono"
               style={{ border: '1px solid var(--color-border-default)', color: 'var(--color-text-secondary)' }}>
-              {openCount} open
+              {openCount}<span className="hidden md:inline"> open</span>
             </span>
             {runningCount > 0 && (
               <span className="text-[9px] h-5 px-1.5 inline-flex items-center rounded-full bg-emerald-500/20 text-emerald-300">
-                {runningCount} live
+                {runningCount}<span className="hidden md:inline"> live</span>
               </span>
             )}
             <span className="text-[9px]" style={{ color: 'var(--color-text-tertiary)', opacity: 0.5 }}>/</span>
-            <span className="text-[9px]" style={{ color: 'var(--color-text-tertiary)' }}>{totalAvailable} available</span>
+            <span className="text-[9px]" style={{ color: 'var(--color-text-tertiary)' }}>{totalAvailable}<span className="hidden md:inline"> available</span></span>
           </div>
         </div>
 
-        {/* Center: Layout switcher */}
-        <div className="flex items-center gap-1 px-2 py-1 rounded-md shrink-0"
+        {/* Center: Layout switcher (hidden on mobile) */}
+        {viewMode !== 'mobile' && (
+        <div className="flex items-center gap-1 px-2 py-1 rounded-md shrink-0 layout-switcher"
           style={{ background: 'var(--color-bg-hover)', border: '1px solid var(--color-border-subtle)' }}>
-          {LAYOUT_OPTIONS.map(opt => {
+          {visibleLayoutOptions.map(opt => {
             const Icon = opt.icon;
             const isActive = layout === opt.value;
             return (
@@ -98,6 +105,7 @@ export function DashboardToolbar({
             );
           })}
         </div>
+        )}
 
         {/* Right: Refresh */}
         <div className="flex items-center gap-1.5 shrink-0">

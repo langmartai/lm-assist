@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import type { SessionTask } from '@/lib/types';
+import { useDeviceInfo } from '@/hooks/useDeviceInfo';
 
 interface TasksTabProps {
   tasks: SessionTask[];
@@ -31,6 +32,8 @@ const STATUS_CONFIG = {
 };
 
 export function TasksTab({ tasks }: TasksTabProps) {
+  const { viewMode: deviceViewMode } = useDeviceInfo();
+  const isMobile = deviceViewMode === 'mobile';
   const [viewMode, setViewMode] = useState<ViewMode>('kanban');
   const [selectedTask, setSelectedTask] = useState<SessionTask | null>(null);
 
@@ -52,7 +55,7 @@ export function TasksTab({ tasks }: TasksTabProps) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* View mode bar */}
-      <div style={{
+      <div className="tasks-view-bar" style={{
         padding: '6px 16px',
         borderBottom: '1px solid var(--color-border-default)',
         display: 'flex',
@@ -78,7 +81,7 @@ export function TasksTab({ tasks }: TasksTabProps) {
         ))}
 
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+        <span className="tasks-view-stats" style={{ fontSize: 11, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
           {grouped.pending.length} pending · {grouped.in_progress.length} active · {grouped.completed.length} done
         </span>
       </div>
@@ -89,7 +92,7 @@ export function TasksTab({ tasks }: TasksTabProps) {
           <KanbanView grouped={grouped} onSelect={setSelectedTask} />
         )}
         {viewMode === 'list' && (
-          <ListView tasks={tasks} onSelect={setSelectedTask} />
+          <ListView tasks={tasks} onSelect={setSelectedTask} isMobile={isMobile} />
         )}
         {viewMode === 'sequence' && (
           <SequenceView tasks={tasks} onSelect={setSelectedTask} />
@@ -154,10 +157,47 @@ function KanbanView({
 function ListView({
   tasks,
   onSelect,
+  isMobile,
 }: {
   tasks: SessionTask[];
   onSelect: (t: SessionTask) => void;
+  isMobile?: boolean;
 }) {
+  if (isMobile) {
+    // Mobile: card-based layout
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {tasks.map(task => {
+          const config = STATUS_CONFIG[task.status];
+          return (
+            <div
+              key={task.id}
+              className="task-mobile-card"
+              onClick={() => onSelect(task)}
+              style={{ borderLeftColor: config.color }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--color-text-tertiary)' }}>
+                  #{task.id}
+                </span>
+                <span className={`badge ${config.bgClass}`} style={{ fontSize: 9 }}>
+                  {config.label}
+                </span>
+                {task.owner && (
+                  <span className="badge badge-default" style={{ fontSize: 9 }}>{task.owner}</span>
+                )}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--color-text-primary)', lineHeight: 1.4 }}>
+                {task.subject}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // Desktop: grid layout
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       {/* Header */}
@@ -547,6 +587,8 @@ function TaskDetailPopup({
   allTasks: SessionTask[];
   onClose: () => void;
 }) {
+  const { viewMode: deviceViewMode } = useDeviceInfo();
+  const isMobile = deviceViewMode === 'mobile';
   const config = STATUS_CONFIG[task.status];
   const blockedByTasks = (task.blockedBy || [])
     .map(id => allTasks.find(t => t.id === id))
@@ -557,24 +599,26 @@ function TaskDetailPopup({
 
   return (
     <div
+      className="task-detail-overlay"
       style={{
         position: 'fixed',
         inset: 0,
         background: 'rgba(0,0,0,0.6)',
         display: 'flex',
-        alignItems: 'center',
+        alignItems: isMobile ? 'flex-end' : 'center',
         justifyContent: 'center',
         zIndex: 100,
       }}
       onClick={onClose}
     >
       <div
-        className="card"
+        className={`card task-detail-card`}
         style={{
-          width: 520,
+          width: isMobile ? '100%' : 520,
           maxHeight: '80vh',
           overflow: 'auto',
-          padding: 24,
+          padding: isMobile ? 16 : 24,
+          ...(isMobile ? { borderRadius: 'var(--radius-xl) var(--radius-xl) 0 0' } : {}),
         }}
         onClick={e => e.stopPropagation()}
       >

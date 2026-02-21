@@ -8,8 +8,10 @@ import {
   ChevronRight, ChevronDown, ChevronUp, User, Bot, Settings,
   Play, RotateCcw, FileText, FolderOpen, Cpu, ListChecks, CheckCircle2,
   ChevronsUp, Wrench, AlertTriangle, Map as MapIcon, Flag,
+  Filter,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
+import { useDeviceInfo } from '@/hooks/useDeviceInfo';
 import { useExperiment } from '@/hooks/useExperiment';
 import { formatToolCallString, formatToolCall, shouldHideInSmartDisplay, smartTransformContent, parseApiError } from '@/lib/smart-display';
 import type { SessionMessage, MessageType, Milestone, MilestoneType } from '@/lib/types';
@@ -34,6 +36,10 @@ interface ChatTabProps {
   onLastNChange?: (n: number) => void;
   /** Deep-link: milestone ID to highlight, scroll to, and filter for */
   highlightMilestoneId?: string;
+  /** Called on scroll for auto-hide header */
+  onContentScroll?: (scrollTop: number) => void;
+  /** Optional inline element rendered at the start of the mobile bar (e.g. tab selector) */
+  tabSelector?: React.ReactNode;
 }
 
 // Message type config
@@ -81,9 +87,13 @@ function isCompactMessage(content: string | unknown): boolean {
     content.includes('context summarized');
 }
 
-export function ChatTab({ messages, isActive, sessionId, machineId, projectPath, isSubagent, agentCount: agentCountProp, onLastNChange, highlightMilestoneId }: ChatTabProps) {
+export function ChatTab({ messages, isActive, sessionId, machineId, projectPath, isSubagent, agentCount: agentCountProp, onLastNChange, highlightMilestoneId, onContentScroll, tabSelector }: ChatTabProps) {
   const { apiClient } = useAppMode();
   const { isExperiment } = useExperiment();
+  const { viewMode: deviceViewMode } = useDeviceInfo();
+  const isMobile = deviceViewMode === 'mobile';
+  const [showFilters, setShowFilters] = useState(true);
+  const [showMobileFilterSheet, setShowMobileFilterSheet] = useState(false);
 
   // Milestone data
   const [milestones, setMilestones] = useState<Milestone[]>([]);
@@ -500,12 +510,148 @@ export function ChatTab({ messages, isActive, sessionId, machineId, projectPath,
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Filter Row 1: message type toggles */}
-      <div style={{
+      {/* Mobile: Compact filter bar + bottom sheet */}
+      {isMobile && (
+        <>
+          <div className="mobile-chat-bar">
+            {tabSelector}
+            <button
+              style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', color: 'var(--color-text-secondary)', cursor: 'pointer', padding: '2px 4px', flexShrink: 0 }}
+              onClick={() => setShowMobileFilterSheet(true)}
+            >
+              <Filter size={12} />
+              <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--color-accent)' }}>
+                {Object.values(showTypes).filter(Boolean).length}
+              </span>
+            </button>
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+              <Search size={11} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />
+              <input
+                className="input"
+                placeholder="Search..."
+                value={searchQuery}
+                onChange={e => { setSearchQuery(e.target.value); setCurrentMatch(0); }}
+                style={{ fontSize: 11, padding: '2px 6px', flex: 1, minWidth: 0 }}
+              />
+              {searchQuery && (
+                <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', padding: 0, flexShrink: 0 }} onClick={() => { setSearchQuery(''); setCurrentMatch(0); }}>
+                  <X size={10} />
+                </button>
+              )}
+            </div>
+            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+              {filteredMessages.length}/{messages.length}
+            </span>
+          </div>
+          {showMobileFilterSheet && (
+            <div className="mobile-filter-overlay" onClick={() => setShowMobileFilterSheet(false)}>
+              <div className="mobile-filter-sheet" onClick={e => e.stopPropagation()}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid var(--color-border-default)' }}>
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>Filters & Controls</span>
+                  <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-secondary)', padding: 4 }} onClick={() => setShowMobileFilterSheet(false)}>
+                    <X size={16} />
+                  </button>
+                </div>
+                <div style={{ padding: '12px 16px', overflowY: 'auto', maxHeight: 'calc(70vh - 50px)' }} className="scrollbar-thin">
+                  <div style={{ marginBottom: 12 }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 6, display: 'block' }}>Message Types</span>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {([
+                        ['user', 'User', 'rgba(0,92,75,0.5)', '#5eead4', messageCounts.user, User],
+                        ['assistant', 'Asst', 'rgba(51,100,164,0.5)', '#93c5fd', messageCounts.assistant, Bot],
+                        ['thinking', 'Think', 'rgba(51,65,85,1)', '#cbd5e1', messageCounts.thinking, Sparkles],
+                        ['tools', 'Tools', 'rgba(55,65,81,1)', '#d1d5db', messageCounts.tools, Wrench],
+                        ['todos', 'Todos', 'rgba(20,83,45,0.5)', '#86efac', messageCounts.todos, CheckCircle2],
+                        ['tasks', 'Tasks', 'rgba(49,46,129,0.5)', '#a5b4fc', messageCounts.tasks, ListChecks],
+                        ['plans', 'Plans', 'rgba(120,53,15,0.5)', '#fbbf24', messageCounts.plans, MapIcon],
+                        ...(isExperiment ? [['milestones', 'Miles', 'rgba(120,53,15,0.5)', '#d97706', milestones.length, Flag] as [ConvType, string, string, string, number, any]] : []),
+                        ['agents', 'Agents', 'rgba(22,78,99,0.5)', '#67e8f9', agentCountProp ?? messageCounts.agents, Cpu],
+                      ] as [ConvType, string, string, string, number, any][]).map(([key, label, bg, fg, count, Icon]) => (
+                        <button
+                          key={key}
+                          style={{
+                            background: showTypes[key] ? bg : 'transparent',
+                            color: showTypes[key] ? fg : 'var(--color-text-tertiary)',
+                            fontSize: 11, padding: '6px 10px', borderRadius: 'var(--radius-sm)',
+                            border: '1px solid var(--color-border-subtle)',
+                            display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer',
+                            minHeight: 36,
+                          }}
+                          onClick={() => toggleConvType(key)}
+                        >
+                          <Icon size={12} />{label}{countLabel(count)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ height: 1, background: 'var(--color-border-default)', margin: '8px 0' }} />
+                  <div style={{ marginBottom: 12 }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 6, display: 'block' }}>Raw Types</span>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {([
+                        ['system', 'Sys', 'rgba(22,78,99,0.5)', '#67e8f9', messageCounts.system, Settings],
+                        ['result', 'Res', 'rgba(20,83,45,0.5)', '#86efac', messageCounts.result, Play],
+                        ['progress', 'Prog', 'rgba(113,63,18,0.5)', '#fde047', messageCounts.progress, RotateCcw],
+                        ['summary', 'Sum', 'rgba(124,45,18,0.5)', '#fdba74', messageCounts.summary, FileText],
+                        ['fileHistory', 'Files', 'rgba(55,65,81,1)', '#d1d5db', messageCounts.fileHistory, FolderOpen],
+                        ['queueOp', 'Queue', 'rgba(51,65,85,1)', '#cbd5e1', messageCounts.queueOp, ListChecks],
+                      ] as [RawType, string, string, string, number, any][]).map(([key, label, bg, fg, count, Icon]) => (
+                        <button
+                          key={key}
+                          style={{
+                            background: showRawTypes[key] ? bg : 'transparent',
+                            color: showRawTypes[key] ? fg : 'var(--color-text-tertiary)',
+                            fontSize: 11, padding: '6px 10px', borderRadius: 'var(--radius-sm)',
+                            border: '1px solid var(--color-border-subtle)',
+                            display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer',
+                            minHeight: 36,
+                          }}
+                          onClick={() => toggleRawType(key)}
+                        >
+                          <Icon size={12} />{label}{countLabel(count)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ height: 1, background: 'var(--color-border-default)', margin: '8px 0' }} />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <button className="btn btn-sm btn-ghost" onClick={() => handleSetViewMode(viewMode === 'compact' ? 'detailed' : 'compact')} style={{ minHeight: 36, padding: '4px 10px', gap: 4, display: 'inline-flex', alignItems: 'center' }}>
+                        {viewMode === 'compact' ? <List size={12} /> : <AlignJustify size={12} />}
+                        <span style={{ fontSize: 11 }}>{viewMode === 'compact' ? 'Detail View' : 'List View'}</span>
+                      </button>
+                      <button className="btn btn-sm" style={{ minHeight: 36, padding: '4px 10px', fontSize: 11, background: smartDisplay ? 'rgba(6,78,59,0.5)' : 'transparent', color: smartDisplay ? '#6ee7b7' : 'var(--color-text-tertiary)' }} onClick={() => handleSetSmartDisplay(!smartDisplay)}>
+                        Smart Display
+                      </button>
+                      <button className="btn btn-sm btn-ghost" style={{ minHeight: 36, padding: '4px 6px', color: isPinned ? 'var(--color-accent)' : 'var(--color-text-tertiary)' }} onClick={() => setIsPinned(!isPinned)}>
+                        <Pin size={12} /> Pin
+                      </button>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>Last</span>
+                      <select
+                        value={lastNUserPrompts}
+                        onChange={e => handleLastNChange(Number(e.target.value))}
+                        style={{ fontSize: 11, padding: '4px 6px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--color-border-default)', background: 'var(--color-bg-primary)', color: 'var(--color-text-secondary)', cursor: 'pointer', minHeight: 36 }}
+                      >
+                        {LAST_N_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                      <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>prompts</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+      {/* Filter Row 1: message type toggles (desktop only) */}
+      {!isMobile && (
+      <div className={isMobile ? 'chat-filter-row' : undefined} style={{
         padding: '6px 12px',
         borderBottom: '1px solid var(--color-border-subtle)',
         display: 'flex',
-        flexWrap: 'wrap',
+        flexWrap: isMobile ? 'nowrap' as const : 'wrap' as const,
         gap: 3,
         alignItems: 'center',
       }}>
@@ -596,9 +742,10 @@ export function ChatTab({ messages, isActive, sessionId, machineId, projectPath,
           Smart Display
         </button>
       </div>
+      )}
 
-      {/* Filter Row 2: controls */}
-      <div style={{
+      {/* Filter Row 2: controls (desktop only) */}
+      {!isMobile && <div className="chat-controls-row" style={{
         padding: '4px 12px',
         borderBottom: '1px solid var(--color-border-subtle)',
         display: 'flex',
@@ -630,11 +777,13 @@ export function ChatTab({ messages, isActive, sessionId, machineId, projectPath,
 
         <div style={{ width: 1, height: 14, background: 'var(--color-border-default)' }} />
 
-        {/* Auto-scroll */}
-        <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-text-tertiary)', cursor: 'pointer' }}>
-          <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
-          Auto-scroll
-        </label>
+        {/* Auto-scroll (hidden on mobile) */}
+        {!isMobile && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-text-tertiary)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
+            Auto-scroll
+          </label>
+        )}
 
         {/* Pin */}
         <button
@@ -648,38 +797,40 @@ export function ChatTab({ messages, isActive, sessionId, machineId, projectPath,
 
         <div style={{ width: 1, height: 14, background: 'var(--color-border-default)' }} />
 
-        {/* Font size */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-          {(['sm', 'md', 'lg', 'xl'] as const).map(size => (
-            <button
-              key={size}
-              className="btn btn-sm btn-ghost"
-              style={{
-                padding: '1px 5px',
-                fontSize: size === 'sm' ? 9 : size === 'md' ? 11 : size === 'lg' ? 13 : 15,
-                fontWeight: fontSize === size ? 700 : 400,
-                color: fontSize === size ? 'var(--color-accent)' : 'var(--color-text-tertiary)',
-              }}
-              onClick={() => handleSetFontSize(size)}
-              title={`Font size: ${{ sm: 'Small', md: 'Medium', lg: 'Large', xl: 'Extra Large' }[size]}`}
-            >
-              {{ sm: 'S', md: 'M', lg: 'L', xl: 'XL' }[size]}
-            </button>
-          ))}
-        </div>
+        {/* Font size (hidden on mobile) */}
+        {!isMobile && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            {(['sm', 'md', 'lg', 'xl'] as const).map(size => (
+              <button
+                key={size}
+                className="btn btn-sm btn-ghost"
+                style={{
+                  padding: '1px 5px',
+                  fontSize: size === 'sm' ? 9 : size === 'md' ? 11 : size === 'lg' ? 13 : 15,
+                  fontWeight: fontSize === size ? 700 : 400,
+                  color: fontSize === size ? 'var(--color-accent)' : 'var(--color-text-tertiary)',
+                }}
+                onClick={() => handleSetFontSize(size)}
+                title={`Font size: ${{ sm: 'Small', md: 'Medium', lg: 'Large', xl: 'Extra Large' }[size]}`}
+              >
+                {{ sm: 'S', md: 'M', lg: 'L', xl: 'XL' }[size]}
+              </button>
+            ))}
+          </div>
+        )}
 
-        <div style={{ flex: 1 }} />
+        {!isMobile && <div style={{ flex: 1 }} />}
 
         {/* Search */}
         <div ref={searchRef} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 4 }}>
           <Search size={11} style={{ color: 'var(--color-text-tertiary)' }} />
           <input
-            className="input"
+            className="input chat-search-input"
             placeholder="Search messages..."
             value={searchQuery}
             onChange={e => { setSearchQuery(e.target.value); setCurrentMatch(0); setShowSearchDropdown(true); }}
             onFocus={() => { if (searchQuery && searchMatchData.length > 1) setShowSearchDropdown(true); }}
-            style={{ width: 140, fontSize: 11, padding: '2px 6px' }}
+            style={{ fontSize: 11, padding: '2px 6px' }}
           />
           {searchQuery && (
             <>
@@ -756,13 +907,14 @@ export function ChatTab({ messages, isActive, sessionId, machineId, projectPath,
         <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
           {filteredMessages.length}/{messages.length} msgs
         </span>
-      </div>
+      </div>}
 
       {/* Message list */}
       <div
         ref={scrollRef}
-        style={{ flex: 1, overflowY: 'auto', padding: '8px 12px', fontSize: fontSize === 'sm' ? 11 : fontSize === 'lg' ? 15 : fontSize === 'xl' ? 17 : 13 }}
+        style={{ flex: 1, overflowY: 'auto', padding: isMobile ? '4px 6px' : '8px 12px', fontSize: fontSize === 'sm' ? 11 : fontSize === 'lg' ? 15 : fontSize === 'xl' ? 17 : 13 }}
         className="scrollbar-thin"
+        onScroll={onContentScroll ? (e) => onContentScroll((e.target as HTMLDivElement).scrollTop) : undefined}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
           {/* Load More bar when truncated */}
@@ -819,6 +971,7 @@ export function ChatTab({ messages, isActive, sessionId, machineId, projectPath,
                 copiedId={copiedId}
                 onCopy={handleCopyMessage}
                 onOpenAgent={handleOpenAgent}
+                isMobile={isMobile}
               />
             );
           })}
@@ -970,6 +1123,7 @@ interface MessageBubbleProps {
   copiedId: string | null;
   onCopy: (id: string, content: string) => void;
   onOpenAgent?: (agentId: string) => void;
+  isMobile?: boolean;
 }
 
 function MessageBubble({
@@ -991,6 +1145,7 @@ function MessageBubble({
   copiedId,
   onCopy,
   onOpenAgent,
+  isMobile,
 }: MessageBubbleProps) {
   const baseConfig = msgTypeConfig[msg.type] || msgTypeConfig.system;
   const isToolCall = !!msg.toolName;
@@ -1098,7 +1253,8 @@ function MessageBubble({
         outline: getOutline(),
         outlineOffset: isCurrentMatch ? 1 : 0,
         position: 'relative',
-        marginLeft: isToolCall && !['task', 'todo', 'plan', 'agent_user', 'agent_assistant'].includes(msg.type) ? 16 : 0,
+        minWidth: 0,
+        marginLeft: isToolCall && !['task', 'todo', 'plan', 'agent_user', 'agent_assistant'].includes(msg.type) ? (isMobile ? 8 : 16) : 0,
       }}
       onClick={(e) => {
         // If clicking the copy button, don't toggle

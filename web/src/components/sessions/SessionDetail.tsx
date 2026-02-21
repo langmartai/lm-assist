@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useSessionDetail } from '@/hooks/useSessionDetail';
 import { useExperiment } from '@/hooks/useExperiment';
@@ -35,8 +35,10 @@ import {
   ExternalLink,
   GitFork,
   SquareTerminal,
+  ChevronDown,
 } from 'lucide-react';
 import { formatCost } from '@/lib/utils';
+import { useDeviceInfo } from '@/hooks/useDeviceInfo';
 import { extractFileChanges, extractThinkingBlocks, extractGitOperations, extractTasks, extractDbOperations, enrichSubagentStatus } from '@/lib/session-extractors';
 import type { SessionDetail as SessionDetailType } from '@/lib/types';
 import { isProcessManaged, managedByLabel } from '@/lib/types';
@@ -97,6 +99,8 @@ function truncateProjectPath(path: string, maxLen = 40): string {
 }
 
 export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubagents, onDetailMeta, onPollControls, externalPolling, listNumTurns, listLastModified, initialTab, highlightMilestoneId, onSelectSession }: SessionDetailProps) {
+  const { viewMode: deviceViewMode } = useDeviceInfo();
+  const isMobile = deviceViewMode === 'mobile';
   const [chatLastN, setChatLastN] = useState(() => {
     if (typeof window === 'undefined') return 200;
     try { const v = localStorage.getItem('chat-lastN-user-prompts'); if (v) return Number(v); } catch {}
@@ -111,6 +115,8 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<TabId>(() => {
     if (initialTab) return initialTab;
+    // Mobile: always default to chat (ignore saved preference)
+    if (isMobile) return 'chat';
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('session-detail-tab');
       if (saved) return saved as TabId;
@@ -130,6 +136,40 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
   const [copied, setCopied] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [milestoneCount, setMilestoneCount] = useState<number | undefined>(undefined);
+
+  // Mobile: auto-hide header on scroll down (with cooldown to prevent layout-shift loop)
+  const [headerHidden, setHeaderHidden] = useState(false);
+  const lastScrollY = useRef(0);
+  const headerHiddenRef = useRef(false);
+  const scrollCooldownRef = useRef(false);
+  const handleContentScroll = useCallback((scrollTop: number) => {
+    if (!isMobile || scrollCooldownRef.current) return;
+    const diff = scrollTop - lastScrollY.current;
+    if (diff > 10 && scrollTop > 50 && !headerHiddenRef.current) {
+      headerHiddenRef.current = true;
+      setHeaderHidden(true);
+      scrollCooldownRef.current = true;
+      setTimeout(() => { scrollCooldownRef.current = false; }, 400);
+    } else if (diff < -10 && headerHiddenRef.current) {
+      headerHiddenRef.current = false;
+      setHeaderHidden(false);
+      scrollCooldownRef.current = true;
+      setTimeout(() => { scrollCooldownRef.current = false; }, 400);
+    }
+    lastScrollY.current = scrollTop;
+  }, [isMobile]);
+
+  // Mobile: tab dropdown
+  const [tabDropdownOpen, setTabDropdownOpen] = useState(false);
+  const tabDropdownRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!tabDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (tabDropdownRef.current && !tabDropdownRef.current.contains(e.target as Node)) setTabDropdownOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [tabDropdownOpen]);
 
   // Eagerly fetch milestone count so the tab badge shows on initial load
   useEffect(() => {
@@ -302,16 +342,10 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
       } : {}),
     }}>
       {/* Session Header */}
-      <div style={{
-        padding: '8px 16px',
-        borderBottom: '1px solid var(--color-border-default)',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-      }}>
-        {/* Parent link + Status + Project name */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
-          {parentSessionId && (
+      <div className="session-detail-header" style={isMobile && headerHidden ? { display: 'none' } : undefined}>
+        {/* Row 1: Identity + Actions */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }} className={isMobile ? 'session-detail-header-row1' : undefined}>
+          {!isMobile && parentSessionId && (
             <span
               style={{
                 display: 'inline-flex',
@@ -325,7 +359,6 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
               onClick={() => {
                 if (onSelectSession) {
                   onSelectSession(parentSessionId, machineId);
-                  // Update URL without full navigation
                   const params = new URLSearchParams();
                   params.set('session', parentSessionId);
                   if (machineId) params.set('machine', machineId);
@@ -345,7 +378,7 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
               <span style={{ fontFamily: 'var(--font-mono)' }}>{parentSessionId.slice(0, 8)}</span>
             </span>
           )}
-          {detail?.forkedFromSessionId && detail.forkedFromSessionId !== sessionId && !parentSessionId && (
+          {!isMobile && detail?.forkedFromSessionId && detail.forkedFromSessionId !== sessionId && !parentSessionId && (
             <span
               style={{
                 display: 'inline-flex',
@@ -379,7 +412,7 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
             </span>
           )}
           {detail?.isActive && <span className="status-dot running" />}
-          {detail?.running && (
+          {!isMobile && detail?.running && (
             <span className="badge" style={{
               fontSize: 8, padding: '0 4px',
               background: isProcessManaged(detail.running.managedBy) ? 'rgba(34,197,94,0.15)' : 'rgba(251,146,60,0.15)',
@@ -389,38 +422,63 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
               PID {detail.running.pid} · {managedByLabel(detail.running.managedBy)}
             </span>
           )}
-          <span style={{ fontSize: 14, fontWeight: 600 }}>
+          <span style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600 }}>
             {detail?.projectPath ? detail.projectPath.split('/').pop() : 'Session'}
           </span>
-          {detail?.projectPath && (
+          {!isMobile && detail?.projectPath && (
             <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }} title={detail.projectPath}>
               {truncateProjectPath(detail.projectPath)}
             </span>
           )}
-          {!isSingleMachine && machine && (
+          {!isMobile && !isSingleMachine && machine && (
             <MachineBadge
               hostname={machine.hostname}
               platform={machine.platform}
               status={machine.status}
             />
           )}
-          {detail?.model && (
+          {!isMobile && detail?.model && (
             <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--color-text-tertiary)' }}>
               {detail.model}
             </span>
           )}
-          <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--color-text-quaternary, var(--color-text-tertiary))' }}>
-            {sessionId.slice(0, 8)}
-          </span>
-          <button className="btn btn-sm btn-ghost" onClick={handleCopyId} title="Copy Session ID" style={{ padding: '1px 3px', flexShrink: 0 }}>
-            {copied ? <Check size={10} style={{ color: 'var(--color-status-green)' }} /> : <Copy size={10} />}
-          </button>
+          {!isMobile && (
+            <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--color-text-quaternary, var(--color-text-tertiary))' }}>
+              {sessionId.slice(0, 8)}
+            </span>
+          )}
+          {!isMobile && (
+            <button className="btn btn-sm btn-ghost" onClick={handleCopyId} title="Copy Session ID" style={{ padding: '1px 3px', flexShrink: 0 }}>
+              {copied ? <Check size={10} style={{ color: 'var(--color-status-green)' }} /> : <Copy size={10} />}
+            </button>
+          )}
+
+          {/* Mobile: inline action buttons */}
+          {isMobile && (
+            <div className="session-detail-header-actions">
+              {!isWindows && (
+                <button className="btn btn-sm btn-secondary" title="Open Terminal" onClick={() => handleSetActiveTab('console')}>
+                  <TerminalIcon size={12} />
+                </button>
+              )}
+              <button
+                className="btn btn-sm btn-ghost"
+                onClick={() => setIsFullscreen(prev => !prev)}
+                title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+                style={isFullscreen ? { color: 'var(--color-accent)' } : undefined}
+              >
+                {isFullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+              </button>
+              <button className="btn btn-sm btn-ghost" onClick={refetch} title="Refresh">
+                <RefreshCw size={12} />
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Stats */}
+        {/* Row 2 (or inline on desktop): Stats */}
         {detail && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-            {/* Status badge */}
+          <div className={isMobile ? 'session-detail-header-stats' : undefined} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
             {statusBadge && (
               <span className={`badge ${statusBadge.className}`} style={{ fontSize: 9, padding: '1px 6px' }}>
                 {statusBadge.label}
@@ -441,7 +499,7 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
             {detail.totalCostUsd ? <span className={hlCost}>{formatCost(detail.totalCostUsd)}</span> : null}
             {detail.messages && <span className={hlMsgs}>{detail.messages.length} msgs</span>}
             {/* Watchdog: show session list vs chat freshness */}
-            {listNumTurns !== undefined && (
+            {!isMobile && listNumTurns !== undefined && (
               <span style={{
                 color: listNumTurns > (detail.numTurns || 0) + 2
                   ? '#f59e0b'
@@ -455,68 +513,146 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
           </div>
         )}
 
-        {/* Actions */}
-        {!isWindows && (
+        {/* Desktop-only Actions */}
+        {!isMobile && (
           <>
-            <button className="btn btn-sm btn-secondary" title="Open Terminal" onClick={() => handleSetActiveTab('console')}>
-              <TerminalIcon size={12} />
-            </button>
+            {!isWindows && (
+              <>
+                <button className="btn btn-sm btn-secondary" title="Open Terminal" onClick={() => handleSetActiveTab('console')}>
+                  <TerminalIcon size={12} />
+                </button>
+                <button
+                  className="btn btn-sm btn-ghost"
+                  title="Open Console in new tab"
+                  onClick={() => window.open(`/console?sessionId=${encodeURIComponent(sessionId)}&projectPath=${encodeURIComponent(projectPath || detail?.projectPath || '')}`, '_blank')}
+                >
+                  <ExternalLink size={12} />
+                </button>
+                <button
+                  className="btn btn-sm btn-ghost"
+                  title="Fork Session"
+                  onClick={() => window.open(`/console?sessionId=${encodeURIComponent(sessionId)}&projectPath=${encodeURIComponent(projectPath || detail?.projectPath || '')}&fork=true`, '_blank')}
+                >
+                  <GitFork size={12} />
+                </button>
+                <button
+                  className="btn btn-sm btn-ghost"
+                  title="New Shell"
+                  onClick={() => window.open(`/console?shell=true&projectPath=${encodeURIComponent(projectPath || detail?.projectPath || '')}`, '_blank')}
+                >
+                  <SquareTerminal size={12} />
+                </button>
+              </>
+            )}
             <button
               className="btn btn-sm btn-ghost"
-              title="Open Console in new tab"
-              onClick={() => window.open(`/console?sessionId=${encodeURIComponent(sessionId)}&projectPath=${encodeURIComponent(projectPath || detail?.projectPath || '')}`, '_blank')}
+              onClick={() => setIsFullscreen(prev => !prev)}
+              title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+              style={isFullscreen ? { color: 'var(--color-accent)' } : undefined}
             >
-              <ExternalLink size={12} />
+              {isFullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
             </button>
-            <button
-              className="btn btn-sm btn-ghost"
-              title="Fork Session"
-              onClick={() => window.open(`/console?sessionId=${encodeURIComponent(sessionId)}&projectPath=${encodeURIComponent(projectPath || detail?.projectPath || '')}&fork=true`, '_blank')}
-            >
-              <GitFork size={12} />
-            </button>
-            <button
-              className="btn btn-sm btn-ghost"
-              title="New Shell"
-              onClick={() => window.open(`/console?shell=true&projectPath=${encodeURIComponent(projectPath || detail?.projectPath || '')}`, '_blank')}
-            >
-              <SquareTerminal size={12} />
+            <button className="btn btn-sm btn-ghost" onClick={refetch} title="Refresh">
+              <RefreshCw size={12} />
             </button>
           </>
         )}
-        <button
-          className="btn btn-sm btn-ghost"
-          onClick={() => setIsFullscreen(prev => !prev)}
-          title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-          style={isFullscreen ? { color: 'var(--color-accent)' } : undefined}
-        >
-          {isFullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-        </button>
-        <button className="btn btn-sm btn-ghost" onClick={refetch} title="Refresh">
-          <RefreshCw size={12} />
-        </button>
       </div>
 
       {/* Tab bar */}
-      <div className="tab-bar">
-        {tabs.map(tab => (
-          <div
-            key={tab.id}
-            className={`tab-item ${activeTab === tab.id ? 'active' : ''}`}
-            onClick={() => handleSetActiveTab(tab.id)}
-          >
-            {tab.label}
-            {tab.count !== undefined && tab.count > 0 && (
-              <span className="tab-badge">{tab.count}</span>
+      {isMobile ? (
+        // On mobile + chat tab: hide standalone dropdown (merged into ChatTab's bar)
+        // On mobile + other tabs: show dropdown as full-width row
+        activeTab !== 'chat' ? (
+          <div className="mobile-tab-dropdown" ref={tabDropdownRef}>
+            <button className="mobile-tab-trigger" onClick={() => setTabDropdownOpen(!tabDropdownOpen)}>
+              <span>{tabs.find(t => t.id === activeTab)?.label || activeTab}</span>
+              {(() => { const t = tabs.find(t => t.id === activeTab); return t?.count !== undefined && t.count > 0 ? <span className="tab-badge">{t.count}</span> : null; })()}
+              <ChevronDown size={12} style={{ marginLeft: 'auto', transform: tabDropdownOpen ? 'rotate(180deg)' : undefined, transition: 'transform 200ms' }} />
+            </button>
+            {tabDropdownOpen && (
+              <>
+                <div className="mobile-tab-panel-backdrop" onClick={() => setTabDropdownOpen(false)} />
+                <div className="mobile-tab-panel">
+                  {tabs.map(tab => (
+                    <button
+                      key={tab.id}
+                      className={`mobile-tab-option ${activeTab === tab.id ? 'active' : ''}`}
+                      onClick={() => { handleSetActiveTab(tab.id); setTabDropdownOpen(false); }}
+                    >
+                      <span>{tab.label}</span>
+                      {tab.count !== undefined && tab.count > 0 && (
+                        <span className="tab-badge">{tab.count}</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </>
             )}
           </div>
-        ))}
-      </div>
+        ) : null
+      ) : (
+        <div className="tab-bar">
+          {tabs.map(tab => (
+            <div
+              key={tab.id}
+              className={`tab-item ${activeTab === tab.id ? 'active' : ''}`}
+              onClick={() => handleSetActiveTab(tab.id)}
+            >
+              {tab.label}
+              {tab.count !== undefined && tab.count > 0 && (
+                <span className="tab-badge">{tab.count}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Tab content */}
       <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
         {activeTab === 'chat' && detail && (
-          <ChatTab messages={detail.messages} isActive={detail.isActive} sessionId={sessionId} machineId={machineId} projectPath={projectPath || detail.projectPath} isSubagent={!!parentSessionId} agentCount={subagents.length} onLastNChange={setChatLastN} highlightMilestoneId={highlightMilestoneId} />
+          <ChatTab
+            messages={detail.messages}
+            isActive={detail.isActive}
+            sessionId={sessionId}
+            machineId={machineId}
+            projectPath={projectPath || detail.projectPath}
+            isSubagent={!!parentSessionId}
+            agentCount={subagents.length}
+            onLastNChange={setChatLastN}
+            highlightMilestoneId={highlightMilestoneId}
+            onContentScroll={handleContentScroll}
+            tabSelector={isMobile ? (
+              <div className="mobile-tab-dropdown" ref={tabDropdownRef} style={{ position: 'relative', flexShrink: 0 }}>
+                <button
+                  className="mobile-tab-inline-trigger"
+                  onClick={() => setTabDropdownOpen(!tabDropdownOpen)}
+                >
+                  <span>{tabs.find(t => t.id === activeTab)?.label || activeTab}</span>
+                  <ChevronDown size={10} style={{ transform: tabDropdownOpen ? 'rotate(180deg)' : undefined, transition: 'transform 200ms' }} />
+                </button>
+                {tabDropdownOpen && (
+                  <>
+                    <div className="mobile-tab-panel-backdrop" onClick={() => setTabDropdownOpen(false)} />
+                    <div className="mobile-tab-panel">
+                      {tabs.map(tab => (
+                        <button
+                          key={tab.id}
+                          className={`mobile-tab-option ${activeTab === tab.id ? 'active' : ''}`}
+                          onClick={() => { handleSetActiveTab(tab.id); setTabDropdownOpen(false); }}
+                        >
+                          <span>{tab.label}</span>
+                          {tab.count !== undefined && tab.count > 0 && (
+                            <span className="tab-badge">{tab.count}</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : undefined}
+          />
         )}
         {/* Console tab: always mounted to preserve terminal connection */}
         {!isWindows && (
