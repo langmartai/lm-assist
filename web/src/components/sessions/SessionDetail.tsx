@@ -8,7 +8,6 @@ import { usePlatform } from '@/hooks/usePlatform';
 import { useHighlightValue } from '@/hooks/useHighlight';
 import { useMachineContext } from '@/contexts/MachineContext';
 import { useAppMode } from '@/contexts/AppModeContext';
-import { MachineBadge } from '@/components/shared/MachineBadge';
 import { ChatTab } from './tabs/ChatTab';
 import { TasksTab } from './tabs/TasksTab';
 import { FilesTab } from './tabs/FilesTab';
@@ -338,7 +337,7 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
       {/* Session Header */}
       <div className="session-detail-header" style={isMobile && headerHidden ? { display: 'none' } : undefined}>
         {/* Row 1: Identity + Actions */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }} className={isMobile ? 'session-detail-header-row1' : undefined}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0, flexWrap: 'wrap' }} className={isMobile ? 'session-detail-header-row1' : undefined}>
           {!isMobile && parentSessionId && (
             <span
               style={{
@@ -424,13 +423,6 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
               {truncateProjectPath(detail.projectPath)}
             </span>
           )}
-          {!isMobile && !isSingleMachine && machine && (
-            <MachineBadge
-              hostname={machine.hostname}
-              platform={machine.platform}
-              status={machine.status}
-            />
-          )}
           {!isMobile && detail?.model && (
             <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--color-text-tertiary)' }}>
               {detail.model}
@@ -472,7 +464,7 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
 
         {/* Row 2 (or inline on desktop): Stats */}
         {detail && (
-          <div className={isMobile ? 'session-detail-header-stats' : undefined} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+          <div className={isMobile ? 'session-detail-header-stats' : undefined} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)', flexWrap: 'wrap' }}>
             {statusBadge && (
               <span className={`badge ${statusBadge.className}`} style={{ fontSize: 9, padding: '1px 6px' }}>
                 {statusBadge.label}
@@ -509,7 +501,7 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
 
         {/* Desktop-only Actions */}
         {!isMobile && (
-          <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0, marginLeft: 'auto' }}>
             {!isWindows && (
               <>
                 <button className="btn btn-sm btn-secondary" title="Open Terminal" onClick={() => handleSetActiveTab('console')}>
@@ -549,7 +541,7 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
             <button className="btn btn-sm btn-ghost" onClick={refetch} title="Refresh">
               <RefreshCw size={12} />
             </button>
-          </>
+          </div>
         )}
       </div>
 

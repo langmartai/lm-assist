@@ -2146,6 +2146,7 @@ code, pre, .font-mono {
   gap: 8px;
   overflow: hidden;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 767px) {

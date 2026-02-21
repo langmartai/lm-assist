@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from 'react';
 import { Search, X, Clock, MessageSquare, Cpu, ListChecks, User, Users, ExternalLink, GitFork, ChevronDown } from 'lucide-react';
 import { useHighlight } from '@/hooks/useHighlight';
 import { useMachineContext } from '@/contexts/MachineContext';
-import { MachineBadge } from '@/components/shared/MachineBadge';
 import { formatTimeAgo, getSessionIdShort, formatCost, getModelShortName, formatBytes } from '@/lib/utils';
 import type { useSessions } from '@/hooks/useSessions';
 import type { SubagentSession } from '@/lib/types';
@@ -476,13 +475,6 @@ function SessionCard({ session, isSelected, showMachine, onClick }: SessionCardP
           <span style={{ fontSize: 9, padding: '0px 4px', background: 'rgba(6,182,212,0.15)', color: '#06b6d4', border: '1px solid rgba(6,182,212,0.3)', borderRadius: 3, display: 'inline-flex', alignItems: 'center', gap: 2 }}>
             <GitFork size={10} />Fork
           </span>
-        )}
-        {showMachine && (
-          <MachineBadge
-            hostname={session.machineHostname}
-            platform={session.machinePlatform}
-            status={session.machineStatus}
-          />
         )}
       </div>
     </div>
