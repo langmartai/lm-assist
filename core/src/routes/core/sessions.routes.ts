@@ -120,23 +120,25 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
     },
 
     // GET /sessions/batch-check - Batch check via query params (for proxied environments where POST body is stripped)
-    // Query params: listCheck.projectPath, listCheck.since, sessionChecks (JSON array)
+    // Query params: listCheck.projectPath, listCheck.knownSessionCount, listCheck.knownLatestModified, sessions (JSON array)
     {
       method: 'GET',
       pattern: /^\/sessions\/batch-check$/,
       handler: async (req, api) => {
         const body: {
           sessions?: Array<{ sessionId: string; knownFileSize?: number; knownAgentCount?: number }>;
-          listCheck?: { projectPath?: string; knownSessionCount?: number; knownLatestModified?: string; since?: string };
+          listCheck?: { projectPath?: string; knownSessionCount?: number; knownLatestModified?: string };
         } = {};
 
         // Parse listCheck params
         const projectPath = req.query['listCheck.projectPath'];
-        const since = req.query['listCheck.since'];
-        if (projectPath || since) {
+        const knownSessionCount = req.query['listCheck.knownSessionCount'];
+        const knownLatestModified = req.query['listCheck.knownLatestModified'];
+        if (projectPath || knownSessionCount !== undefined || knownLatestModified) {
           body.listCheck = {};
           if (projectPath) body.listCheck.projectPath = projectPath;
-          if (since) (body.listCheck as any).since = since;
+          if (knownSessionCount !== undefined) body.listCheck.knownSessionCount = Number(knownSessionCount);
+          if (knownLatestModified) body.listCheck.knownLatestModified = knownLatestModified;
         }
 
         // Parse sessions from JSON query param

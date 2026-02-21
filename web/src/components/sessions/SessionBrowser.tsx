@@ -134,7 +134,7 @@ export function SessionBrowser() {
         // Build a single batch-check request with both listCheck and session detail
         const request: import('@/lib/api-client').BatchCheckRequest = {
           listCheck: {
-            knownSessionCount: currentSessionsHook.knownSessionCount || undefined,
+            knownSessionCount: currentSessionsHook.knownSessionCount ?? undefined,
             knownLatestModified: currentSessionsHook.knownLatestModified || undefined,
           },
         };

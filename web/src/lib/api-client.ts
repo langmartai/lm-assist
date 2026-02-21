@@ -382,8 +382,8 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
 
       const [health, serverInfo] = await Promise.all([healthPromise, serverPromise]);
 
-      // Cache server info for subsequent calls
-      if (!cachedServerInfo && serverInfo) cachedServerInfo = serverInfo;
+      // Cache server info for subsequent calls (only if we got real data)
+      if (!cachedServerInfo && serverInfo?.localIp) cachedServerInfo = serverInfo;
       if (health.hostname) localMachineHostname = health.hostname;
       if (health.platform) localMachinePlatform = health.platform;
       const localMachine: Machine = {

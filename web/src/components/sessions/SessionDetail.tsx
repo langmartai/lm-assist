@@ -171,15 +171,8 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
     return () => document.removeEventListener('mousedown', handler);
   }, [tabDropdownOpen]);
 
-  // Lazy-load milestones: only fetch when the milestones tab is selected
-  useEffect(() => {
-    if (activeTab !== 'milestones') return;
-    let cancelled = false;
-    apiClient.getMilestones(sessionId, machineId).then(result => {
-      if (!cancelled) setMilestoneCount(result.milestones.length);
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [sessionId, machineId, apiClient, activeTab]);
+  // Milestone count is set by MilestonesTab's onMilestoneCount callback
+  // when the milestones tab is opened (lazy-loaded, no eager fetch).
 
   // Highlight stats when they change
   const hlTurns = useHighlightValue(detail?.numTurns);
