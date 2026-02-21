@@ -2422,6 +2422,19 @@ export class AgentSessionStore extends EventEmitter {
       return null;
     }
 
+    // Helper: extract cwd from file and validate it encodes to the expected project directory.
+    // Subagent files may have a different cwd than their parent project (e.g., cwd=C:\home\project\web
+    // but stored under C--home-project). If the extracted cwd doesn't match, fall back to entry.name
+    // which is the encoded project directory and will re-encode to itself via legacyEncodeProjectPath.
+    const extractValidatedCwd = (filePath: string, expectedDirName: string): string => {
+      const extractedCwd = this.extractCwdFromSessionFile(filePath);
+      if (extractedCwd && legacyEncodeProjectPath(extractedCwd) === expectedDirName) {
+        return extractedCwd;
+      }
+      // Fall back to the encoded directory name (re-encodes to itself since it has no slashes/colons)
+      return expectedDirName;
+    };
+
     try {
       const entries = fs.readdirSync(projectsDir, { withFileTypes: true });
       for (const entry of entries) {
@@ -2432,13 +2445,13 @@ export class AgentSessionStore extends EventEmitter {
         // Check for regular session file
         const sessionPath = path.join(projectDir, `${sessionId}.jsonl`);
         if (fs.existsSync(sessionPath)) {
-          return this.extractCwdFromSessionFile(sessionPath) || entry.name;
+          return extractValidatedCwd(sessionPath, entry.name);
         }
 
         // Check for agent file at top level
         const agentPath = path.join(projectDir, `agent-${sessionId}.jsonl`);
         if (fs.existsSync(agentPath)) {
-          return this.extractCwdFromSessionFile(agentPath) || entry.name;
+          return extractValidatedCwd(agentPath, entry.name);
         }
 
         // Check for agent file in nested subagents directories
@@ -2448,7 +2461,7 @@ export class AgentSessionStore extends EventEmitter {
             if (sub.isDirectory()) {
               const nestedPath = path.join(projectDir, sub.name, 'subagents', `agent-${sessionId}.jsonl`);
               if (fs.existsSync(nestedPath)) {
-                return this.extractCwdFromSessionFile(nestedPath) || entry.name;
+                return extractValidatedCwd(nestedPath, entry.name);
               }
             }
           }
