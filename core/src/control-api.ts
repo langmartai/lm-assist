@@ -276,6 +276,18 @@ export class TierControlApiImpl {
 
       getHealth: async () => {
         const start = Date.now();
+        // Get first non-internal IPv4 address for LAN display
+        let localIp = 'localhost';
+        const nets = os.networkInterfaces();
+        for (const ifaces of Object.values(nets)) {
+          for (const iface of ifaces || []) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+              localIp = iface.address;
+              break;
+            }
+          }
+          if (localIp !== 'localhost') break;
+        }
         return wrapResponse({
           status: 'healthy',
           uptime: Date.now() - this.startTime.getTime(),
@@ -283,6 +295,7 @@ export class TierControlApiImpl {
           version: '0.1.0',
           hostname: os.hostname(),
           platform: os.platform(),
+          localIp,
         }, start);
       },
     };

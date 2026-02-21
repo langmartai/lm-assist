@@ -306,8 +306,6 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
   let localMachineHostname = 'localhost';
   let localMachinePlatform = 'linux';
 
-  // Cache /api/server result — localIp doesn't change during a session
-  let cachedServerInfo: { localIp?: string } | null = null;
   // Helper: fetchJson with a timeout (hub endpoints can hang when not connected)
   const fetchJsonWithTimeout = <T>(url: string, timeoutMs = 5000, options?: RequestInit): Promise<T> => {
     const controller = new AbortController();
@@ -374,16 +372,9 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
     mode: 'local',
 
     async getMachines(): Promise<Machine[]> {
-      // Always fetch health; cache /api/server (localIp doesn't change)
-      const healthPromise = fetchJson<{ hostname?: string; platform?: string }>(api('/health')).catch((): { hostname?: string; platform?: string } => ({}));
-      const serverPromise = cachedServerInfo
-        ? Promise.resolve(cachedServerInfo)
-        : fetchJson<{ localIp?: string }>(api('/api/server')).catch((): { localIp?: string } => ({}));
+      // Fetch health (includes localIp, hostname, platform)
+      const health = await fetchJson<{ hostname?: string; platform?: string; localIp?: string }>(api('/health')).catch((): { hostname?: string; platform?: string; localIp?: string } => ({}));
 
-      const [health, serverInfo] = await Promise.all([healthPromise, serverPromise]);
-
-      // Cache server info for subsequent calls (only if we got real data)
-      if (!cachedServerInfo && serverInfo?.localIp) cachedServerInfo = serverInfo;
       if (health.hostname) localMachineHostname = health.hostname;
       if (health.platform) localMachinePlatform = health.platform;
       const localMachine: Machine = {
@@ -392,7 +383,7 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
         platform: health.platform || 'linux',
         status: 'online',
         lastHeartbeat: new Date().toISOString(),
-        localIp: serverInfo.localIp,
+        localIp: health.localIp,
       };
 
       // Check hub machines (needed to detect hub connections)
