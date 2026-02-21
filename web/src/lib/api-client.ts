@@ -372,9 +372,13 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
     mode: 'local',
 
     async getMachines(): Promise<Machine[]> {
-      // Fetch health (includes localIp, hostname, platform)
-      const health = await fetchJson<{ hostname?: string; platform?: string; localIp?: string }>(api('/health')).catch((): { hostname?: string; platform?: string; localIp?: string } => ({}));
+      // Fetch health and hub machines in parallel
+      const [healthResult, hubResult] = await Promise.allSettled([
+        fetchJson<{ hostname?: string; platform?: string; localIp?: string }>(api('/health')),
+        fetchJsonWithTimeout<any>(api('/hub/machines')),
+      ]);
 
+      const health = healthResult.status === 'fulfilled' ? healthResult.value : {} as { hostname?: string; platform?: string; localIp?: string };
       if (health.hostname) localMachineHostname = health.hostname;
       if (health.platform) localMachinePlatform = health.platform;
       const localMachine: Machine = {
@@ -386,13 +390,9 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
         localIp: health.localIp,
       };
 
-      // Check hub machines (needed to detect hub connections)
-      // Use timeout since hub endpoints can hang when not connected
-      let hubMachines: any[] = [];
-      try {
-        const hubData = await fetchJsonWithTimeout<any>(api('/hub/machines'));
-        hubMachines = hubData?.machines || [];
-      } catch { /* ignore */ }
+      const hubMachines = hubResult.status === 'fulfilled'
+        ? (hubResult.value?.machines || [])
+        : [];
 
       if (hubMachines.length === 0) {
         return [localMachine];

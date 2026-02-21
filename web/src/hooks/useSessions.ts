@@ -39,10 +39,10 @@ interface UseSessionsResult {
   refetch: () => void;
   /** Update session list from batch-check listStatus data (avoids separate getSessions call) */
   updateFromBatchCheck: (listStatus: BatchCheckResponse['listStatus']) => void;
-  /** Current known session count for listCheck change detection */
-  knownSessionCount: number;
-  /** Current known latest modified timestamp for listCheck change detection */
-  knownLatestModified: string;
+  /** Current known session count for listCheck change detection (getter to avoid stale snapshots) */
+  getKnownSessionCount: () => number;
+  /** Current known latest modified timestamp for listCheck change detection (getter to avoid stale snapshots) */
+  getKnownLatestModified: () => string;
   // Derived
   projectNames: string[];
 }
@@ -84,7 +84,12 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
     }
   }, []);
 
+  // Guard against concurrent fetchSessions calls
+  const fetchingRef = useRef(false);
+
   const fetchSessions = useCallback(async () => {
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
     try {
       let sessions: Session[];
 
@@ -129,26 +134,24 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
       );
 
       setAllSessions(sessions);
-      // Update tracked metadata for batch-check change detection
-      knownSessionCountRef.current = sessions.length;
-      knownLatestModifiedRef.current = sessions.length > 0 ? sessions[0].lastModified : '';
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch sessions');
     } finally {
+      fetchingRef.current = false;
       setIsLoading(false);
     }
   }, [apiClient, isLocal, isHybrid, onlineMachines, selectedMachineId]);
 
   // Process batch-check listStatus: update tracking metadata and trigger
   // a full refetch when the session list has changed.
-  // NOTE: We don't replace the session list directly from listStatus because
-  // the batch-check's listCheck only covers the server's default project,
-  // while the sessions page shows sessions across ALL projects.
+  // NOTE: knownSessionCount/knownLatestModified track the server's single-project
+  // values (echoed back for change detection), NOT the client's all-project count.
   const updateFromBatchCheck = useCallback((listStatus: BatchCheckResponse['listStatus']) => {
     if (!listStatus) return;
 
-    // Update tracked metadata for next poll's change detection
+    // Always echo back the server's values for next poll's change detection.
+    // These track the server's scope (single project), not our all-project list.
     knownSessionCountRef.current = listStatus.totalSessions;
     knownLatestModifiedRef.current = listStatus.latestModified;
 
@@ -252,8 +255,8 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
     setFilters,
     refetch: fetchSessions,
     updateFromBatchCheck,
-    knownSessionCount: knownSessionCountRef.current,
-    knownLatestModified: knownLatestModifiedRef.current,
+    getKnownSessionCount: () => knownSessionCountRef.current,
+    getKnownLatestModified: () => knownLatestModifiedRef.current,
     projectNames,
   };
 }

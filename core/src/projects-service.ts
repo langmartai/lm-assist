@@ -251,8 +251,11 @@ export class ProjectsService {
       this._projectListCache.optionsKey === optionsKey &&
       Date.now() - this._projectListCache.timestamp < ProjectsService.PROJECT_CACHE_TTL_MS
     ) {
-      return this._projectListCache.result;
+      return [...this._projectListCache.result];
     }
+
+    // Clear dirty flag before computation so concurrent file events re-dirty it
+    this._projectListDirty = false;
 
     const projects: Project[] = [];
 
@@ -353,7 +356,6 @@ export class ProjectsService {
 
     // Cache the result
     this._projectListCache = { result: projects, optionsKey, timestamp: Date.now() };
-    this._projectListDirty = false;
 
     return projects;
   }

@@ -132,10 +132,12 @@ export function SessionBrowser() {
 
       try {
         // Build a single batch-check request with both listCheck and session detail
+        const knownCount = currentSessionsHook.getKnownSessionCount();
+        const knownModified = currentSessionsHook.getKnownLatestModified();
         const request: import('@/lib/api-client').BatchCheckRequest = {
           listCheck: {
-            knownSessionCount: currentSessionsHook.knownSessionCount ?? undefined,
-            knownLatestModified: currentSessionsHook.knownLatestModified || undefined,
+            knownSessionCount: knownCount ?? undefined,
+            knownLatestModified: knownModified || undefined,
           },
         };
 
@@ -144,8 +146,8 @@ export function SessionBrowser() {
           const { pollState } = pollControlsRef.current;
           request.sessions = [{
             sessionId: currentSessionId,
-            knownFileSize: pollState.knownFileSize || undefined,
-            knownAgentCount: pollState.knownAgentCount || undefined,
+            knownFileSize: pollState.knownFileSize ?? undefined,
+            knownAgentCount: pollState.knownAgentCount ?? undefined,
           }];
         }
 
