@@ -1,6 +1,6 @@
 {
   "name": "lm-assist",
-  "version": "0.1.6",
+  "version": "0.1.15",
   "description": "Session knowledge, milestones, and architecture context for Claude Code",
   "author": { "name": "langmartai" },
   "repository": "https://github.com/langmartai/lm-assist",

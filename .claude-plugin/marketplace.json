@@ -12,7 +12,7 @@
   "plugins": [
     {
       "name": "lm-assist",
-      "version": "0.1.6",
+      "version": "0.1.15",
       "source": "./",
       "description": "Session knowledge, milestones, and architecture context for Claude Code. Auto-installs MCP server (search, detail, feedback), context-injection hook, event logger, and 6 slash commands.",
       "category": "productivity",
