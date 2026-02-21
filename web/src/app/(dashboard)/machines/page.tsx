@@ -1,7 +1,6 @@
 'use client';
 
 import { useMachineContext } from '@/contexts/MachineContext';
-import { MachineBadge } from '@/components/shared/MachineBadge';
 import { CrossRefStats } from '@/components/shared/CrossRefStats';
 import { Monitor, ExternalLink } from 'lucide-react';
 import { getPlatformEmoji } from '@/lib/utils';
@@ -78,9 +77,9 @@ export default function MachinesPage() {
                 </div>
 
                 {/* Info */}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 14, fontWeight: 600, fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
                       {machine.hostname}
                     </span>
                     <span className={`status-dot ${machine.status === 'online' ? 'online' : 'offline'}`} />

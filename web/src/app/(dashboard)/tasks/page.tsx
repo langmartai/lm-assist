@@ -256,7 +256,7 @@ export default function TasksPage() {
                 minWidth: 0,
                 flexWrap: 'wrap',
               }}>
-                <span style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{group.label}</span>
+                <span style={{ fontSize: 13, fontWeight: 600, wordBreak: 'break-word' }}>{group.label}</span>
                 {group.sublabel && (
                   <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
                     {group.sublabel}
