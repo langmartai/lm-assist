@@ -24,8 +24,8 @@ export default function MachinesPage() {
   const offlineCount = machines.filter(m => m.status === 'offline').length;
 
   return (
-    <div style={{ padding: 20, overflowY: 'auto', height: '100%' }} className="scrollbar-thin">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+    <div style={{ padding: 20, overflowY: 'auto', height: '100%', minWidth: 0 }} className="scrollbar-thin">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
         <h2 style={{ fontSize: 16, fontWeight: 600 }}>Machines</h2>
         <div style={{ display: 'flex', gap: 4 }}>
           {(['all', 'online', 'offline'] as FilterType[]).map(f => (
@@ -61,11 +61,12 @@ export default function MachinesPage() {
                 opacity: machine.status === 'offline' ? 0.65 : 1,
               }}
             >
-              <div style={{ display: 'grid', gridTemplateColumns: '56px 1fr auto', gap: 16, alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', minWidth: 0 }}>
                 {/* Platform icon */}
                 <div style={{
                   width: 48,
                   height: 48,
+                  flexShrink: 0,
                   background: 'var(--color-bg-active)',
                   borderRadius: 'var(--radius-md)',
                   display: 'flex',
@@ -77,9 +78,9 @@ export default function MachinesPage() {
                 </div>
 
                 {/* Info */}
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                    <span style={{ fontSize: 14, fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {machine.hostname}
                     </span>
                     <span className={`status-dot ${machine.status === 'online' ? 'online' : 'offline'}`} />
@@ -104,7 +105,7 @@ export default function MachinesPage() {
                 </div>
 
                 {/* Actions */}
-                <div style={{ display: 'flex', gap: 6 }}>
+                <div style={{ flexShrink: 0 }}>
                   <Link href={`/sessions?machine=${machine.id}`}>
                     <button className="btn btn-sm btn-secondary">
                       Sessions <ExternalLink size={12} />

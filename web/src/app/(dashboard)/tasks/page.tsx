@@ -253,8 +253,10 @@ export default function TasksPage() {
                 background: 'var(--color-bg-surface)',
                 borderRadius: 'var(--radius-md)',
                 border: '1px solid var(--color-border-default)',
+                minWidth: 0,
+                flexWrap: 'wrap',
               }}>
-                <span style={{ fontSize: 13, fontWeight: 600 }}>{group.label}</span>
+                <span style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{group.label}</span>
                 {group.sublabel && (
                   <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
                     {group.sublabel}
@@ -412,11 +414,8 @@ function TaskListView({ tasks, onSelect }: { tasks: SessionTask[]; onSelect: (t:
           <div
             key={task.id}
             onClick={() => onSelect(task)}
-            className="card"
+            className="card task-list-row"
             style={{
-              display: 'grid',
-              gridTemplateColumns: '32px 1fr 100px 80px',
-              gap: 8,
               padding: '6px 8px',
               fontSize: 12,
               cursor: 'pointer',
@@ -426,11 +425,11 @@ function TaskListView({ tasks, onSelect }: { tasks: SessionTask[]; onSelect: (t:
             <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-tertiary)', fontSize: 11 }}>
               {task.id}
             </span>
-            <span style={{ color: 'var(--color-text-primary)' }}>{task.subject}</span>
-            <span className={`badge ${config.bgClass}`} style={{ fontSize: 10, width: 'fit-content' }}>
+            <span style={{ color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{task.subject}</span>
+            <span className={`badge ${config.bgClass} task-list-status`} style={{ fontSize: 10, width: 'fit-content' }}>
               {config.label}
             </span>
-            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+            <span className="task-list-project" style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
               {task.projectName || '—'}
             </span>
           </div>
@@ -467,7 +466,7 @@ function TaskPopup({
     >
       <div
         className="card"
-        style={{ width: 520, maxHeight: '80vh', overflow: 'auto', padding: 24 }}
+        style={{ width: '100%', maxWidth: 520, maxHeight: '80vh', overflow: 'auto', padding: 24, margin: '0 16px' }}
         onClick={e => e.stopPropagation()}
       >
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 }}>
