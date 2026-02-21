@@ -211,6 +211,7 @@ export class VectorStore {
   private initialized = false;
   private initializing: Promise<void> | null = null;
   private ftsReady = false;
+  private _reinitAttempted = false;
 
   constructor(storeDir?: string) {
     this.storeDir = storeDir || STORE_DIR;
@@ -286,6 +287,7 @@ export class VectorStore {
       }
 
       this.initialized = true;
+      this._reinitAttempted = false;
       console.log('[VectorStore] LanceDB initialized');
 
       // Create FTS index on text column (async, non-blocking)
@@ -293,6 +295,36 @@ export class VectorStore {
     })();
 
     await this.initializing;
+  }
+
+  /**
+   * Force re-initialization by resetting state and re-running init().
+   * Called when a stale data file reference is detected (e.g. after schema migration
+   * in a long-running MCP server process).
+   */
+  private async reinit(): Promise<void> {
+    console.warn('[VectorStore] Reinitializing due to stale data reference');
+    this.initialized = false;
+    this.initializing = null;
+    this.table = null as any;
+    this.db = null as any;
+    this.ftsReady = false;
+    this._reinitAttempted = true;
+    await this.init();
+  }
+
+  /**
+   * Check if an error is a stale LanceDB data file reference and attempt recovery.
+   * Returns true if reinit was performed and the caller should retry.
+   */
+  private async handleLanceError(err: any): Promise<boolean> {
+    if (this._reinitAttempted) return false;
+    const msg = String(err?.message || err || '');
+    if (msg.includes('Not found') && msg.includes('.lance')) {
+      await this.reinit();
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -368,13 +400,25 @@ export class VectorStore {
     const embedder = getEmbedder();
     const queryVector = await embedder.embed(query);
 
-    let q = this.table.search(queryVector).limit(limit);
-    if (filter) {
-      const where = buildWhere(filter);
-      if (where) q = q.where(where);
-    }
+    const doSearch = async () => {
+      let q = this.table.search(queryVector).limit(limit);
+      if (filter) {
+        const where = buildWhere(filter);
+        if (where) q = q.where(where);
+      }
+      return q.toArray();
+    };
 
-    const results = await q.toArray();
+    let results: any[];
+    try {
+      results = await doSearch();
+    } catch (err: any) {
+      if (await this.handleLanceError(err)) {
+        results = await doSearch();
+      } else {
+        throw err;
+      }
+    }
 
     // LanceDB returns _distance (L2 or cosine distance). Convert to similarity score.
     // Cosine distance ∈ [0, 2]; similarity = 1 - distance/2 maps to [0, 1].
@@ -401,30 +445,40 @@ export class VectorStore {
     const embedder = getEmbedder();
     const queryVector = await embedder.embed(query);
 
-    const fetchCount = limit * 3; // Over-fetch for dedup + filtering
-    const whereClause = filter ? buildWhere(filter) : '';
+    const runSearches = async (): Promise<[any[], any[]]> => {
+      const fetchCount = limit * 3; // Over-fetch for dedup + filtering
+      const whereClause = filter ? buildWhere(filter) : '';
 
-    // Build vector search query
-    let vecQ = this.table.search(queryVector).limit(fetchCount);
-    if (whereClause) vecQ = vecQ.where(whereClause);
+      // Build vector search query
+      let vecQ = this.table.search(queryVector).limit(fetchCount);
+      if (whereClause) vecQ = vecQ.where(whereClause);
 
-    // Build FTS query (only if index is ready)
-    let ftsPromise: Promise<any[]>;
-    if (this.ftsReady) {
-      let ftsQ = this.table.query()
-        .fullTextSearch(query, { columns: ['text'] })
-        .limit(fetchCount);
-      if (whereClause) ftsQ = ftsQ.where(whereClause);
-      ftsPromise = ftsQ.toArray().catch(() => []);
-    } else {
-      ftsPromise = Promise.resolve([]);
+      // Build FTS query (only if index is ready)
+      let ftsPromise: Promise<any[]>;
+      if (this.ftsReady) {
+        let ftsQ = this.table.query()
+          .fullTextSearch(query, { columns: ['text'] })
+          .limit(fetchCount);
+        if (whereClause) ftsQ = ftsQ.where(whereClause);
+        ftsPromise = ftsQ.toArray().catch(() => []);
+      } else {
+        ftsPromise = Promise.resolve([]);
+      }
+
+      return Promise.all([vecQ.toArray(), ftsPromise]);
+    };
+
+    let vecResults: any[];
+    let ftsResults: any[];
+    try {
+      [vecResults, ftsResults] = await runSearches();
+    } catch (err: any) {
+      if (await this.handleLanceError(err)) {
+        [vecResults, ftsResults] = await runSearches();
+      } else {
+        throw err;
+      }
     }
-
-    // Run both in parallel
-    const [vecResults, ftsResults] = await Promise.all([
-      vecQ.toArray(),
-      ftsPromise,
-    ]);
 
     // ─── Deduplicate vector results by entity ID (keep highest similarity) ───
     const vecByEntity = new Map<string, { row: any; sim: number }>();
