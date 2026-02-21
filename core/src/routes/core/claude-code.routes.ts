@@ -70,14 +70,14 @@ function detectPluginInstallation(): { installPath: string; version: string } | 
 }
 
 /**
- * Check if the plugin has an MCP server registered for lm-assist-context.
+ * Check if the plugin has an MCP server registered for lm-assist.
  */
 function detectPluginMcp(pluginPath: string): boolean {
   try {
     const mcpJsonPath = path.join(pluginPath, '.mcp.json');
     const raw = fs.readFileSync(mcpJsonPath, 'utf-8');
     const data = JSON.parse(raw);
-    return !!(data?.mcpServers?.['lm-assist-context']);
+    return !!(data?.mcpServers?.['lm-assist']);
   } catch {
     return false;
   }
@@ -426,46 +426,51 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
         }
 
         // 2. Fallback: check manual installation via `claude mcp get`
+        // Try current name first, then legacy name for migration detection
         const env = { ...process.env, CLAUDECODE: undefined };
-        try {
-          const output = execFileSync('claude', ['mcp', 'get', 'lm-assist-context'], {
-            encoding: 'utf-8',
-            timeout: 10000,
-            env,
-          }).trim();
+        for (const name of ['lm-assist', 'lm-assist-context']) {
+          try {
+            const output = execFileSync('claude', ['mcp', 'get', name], {
+              encoding: 'utf-8',
+              timeout: 10000,
+              env,
+            }).trim();
 
-          if (!output) {
-            return { success: true, data: { installed: false, source: null } };
+            if (!output) continue;
+
+            // Parse the key: value lines from `claude mcp get` output
+            const scopeMatch = output.match(/scope:\s*(.+)/i);
+            const statusMatch = output.match(/status:\s*(.+)/i);
+            const commandMatch = output.match(/command:\s*(.+)/i);
+            const argsMatch = output.match(/args:\s*(.+)/i);
+
+            // Determine connected status from the status line (e.g. "✓ Connected")
+            const statusRaw = statusMatch?.[1]?.trim() || '';
+            const isConnected = statusRaw.includes('Connected') || statusRaw.includes('✓');
+
+            return {
+              success: true,
+              data: {
+                installed: true,
+                source: 'manual',
+                registeredName: name,
+                needsRename: name !== 'lm-assist',
+                scope: scopeMatch?.[1]?.trim() || 'user',
+                status: isConnected ? 'connected' : statusRaw,
+                command: commandMatch?.[1]?.trim() || null,
+                args: argsMatch?.[1]?.trim() || null,
+                tools: ['search', 'detail', 'feedback'],
+              },
+            };
+          } catch {
+            // Not found under this name, try next
           }
-
-          // Parse the key: value lines from `claude mcp get` output
-          const scopeMatch = output.match(/scope:\s*(.+)/i);
-          const statusMatch = output.match(/status:\s*(.+)/i);
-          const commandMatch = output.match(/command:\s*(.+)/i);
-          const argsMatch = output.match(/args:\s*(.+)/i);
-
-          // Determine connected status from the status line (e.g. "✓ Connected")
-          const statusRaw = statusMatch?.[1]?.trim() || '';
-          const isConnected = statusRaw.includes('Connected') || statusRaw.includes('✓');
-
-          return {
-            success: true,
-            data: {
-              installed: true,
-              source: 'manual',
-              scope: scopeMatch?.[1]?.trim() || 'user',
-              status: isConnected ? 'connected' : statusRaw,
-              command: commandMatch?.[1]?.trim() || null,
-              args: argsMatch?.[1]?.trim() || null,
-              tools: ['search', 'detail', 'feedback'],
-            },
-          };
-        } catch {
-          return {
-            success: true,
-            data: { installed: false, source: null },
-          };
         }
+
+        return {
+          success: true,
+          data: { installed: false, source: null },
+        };
       },
     },
 
@@ -492,19 +497,21 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
         const mcpServerPath = path.resolve(__dirname, '../../dist/mcp-server/index.js');
 
         try {
-          // Remove legacy name if present (renamed from tier-agent-context)
-          try {
-            execFileSync('claude', ['mcp', 'remove', 'tier-agent-context', '-s', 'user'], {
-              encoding: 'utf-8',
-              timeout: 10000,
-              env,
-            });
-          } catch {
-            // Ignore — old name may not exist
+          // Remove legacy names if present (renamed: tier-agent-context → lm-assist-context → lm-assist)
+          for (const legacyName of ['tier-agent-context', 'lm-assist-context']) {
+            try {
+              execFileSync('claude', ['mcp', 'remove', legacyName, '-s', 'user'], {
+                encoding: 'utf-8',
+                timeout: 10000,
+                env,
+              });
+            } catch {
+              // Ignore — old name may not exist
+            }
           }
 
           execFileSync('claude', [
-            'mcp', 'add', '-s', 'user', 'lm-assist-context', '--',
+            'mcp', 'add', '-s', 'user', 'lm-assist', '--',
             'node', mcpServerPath,
           ], {
             encoding: 'utf-8',
@@ -546,7 +553,7 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
 
         const env = { ...process.env, CLAUDECODE: undefined };
         try {
-          execFileSync('claude', ['mcp', 'remove', 'lm-assist-context', '-s', 'user'], {
+          execFileSync('claude', ['mcp', 'remove', 'lm-assist', '-s', 'user'], {
             encoding: 'utf-8',
             timeout: 10000,
             env,

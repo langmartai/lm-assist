@@ -1,7 +1,7 @@
 /**
  * Assist Resources Routes
  *
- * File browser and log viewer for lm-assist-context system files.
+ * File browser and log viewer for lm-assist system files.
  * Whitelist security approach — only allows reading from known assist directories.
  */
 

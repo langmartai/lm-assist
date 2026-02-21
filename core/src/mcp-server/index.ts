@@ -43,7 +43,7 @@ import { logToolCall } from './mcp-logger';
 
 const server = new Server(
   {
-    name: 'lm-assist-context',
+    name: 'lm-assist',
     version: '2.0.0',
   },
   {
@@ -343,7 +343,7 @@ async function main(): Promise<void> {
   // Start background initialization (non-blocking)
   startBackgroundInit();
 
-  console.error('[MCP] lm-assist-context server started (v2 — search, detail, feedback)');
+  console.error('[MCP] lm-assist server started (v2 — search, detail, feedback)');
 }
 
 main().catch((err) => {
