@@ -569,9 +569,9 @@ export type TierEvent =
   | { type: "sdk_subagent_stop"; tier: string; executionId: string; agentName: string; agentId: string; success: boolean; durationMs: number }
   | { type: "sdk_mcp_connect"; tier: string; executionId: string; serverName: string; tools: string[] }
   | { type: "sdk_mcp_disconnect"; tier: string; executionId: string; serverName: string; reason: string }
-  | { type: "sdk_user_question"; tier: string; executionId: string; questions: unknown[] }
+  | { type: "sdk_user_question"; tier: string; executionId: string; sessionId: string; requestId: string; questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }>; timeout?: number }
   | { type: "sdk_user_answer"; tier: string; executionId: string; answers: Record<string, string> }
-  | { type: "sdk_permission_request"; tier: string; executionId: string; toolName: string; decision: string }
+  | { type: "sdk_permission_request"; tier: string; executionId: string; sessionId: string; requestId: string; toolName: string; toolInput: Record<string, unknown>; toolUseId: string; decision?: string }
   // Session events
   | { type: "session_update"; timestamp: Date; tier: string; data: SessionUpdateEventData }
   // Progress events (for Vibe Coder UI)

@@ -661,7 +661,8 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
     },
 
     respondToPermission: async (sessionId: string, response: PermissionResponse) => {
-      const success = sdkRunner.respondToBlockingEvent(sessionId, response);
+      // respondToBlockingEvent expects requestId as the lookup key
+      const success = sdkRunner.respondToBlockingEvent(response.requestId, response);
       return {
         success,
         sessionId,
@@ -672,7 +673,8 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
 
     answerQuestion: async (sessionId: string, requestId: string, answers: Record<string, string | string[]>) => {
       const response: UserQuestionResponse = { requestId, answers, timedOut: false };
-      const success = sdkRunner.respondToBlockingEvent(sessionId, response);
+      // respondToBlockingEvent expects requestId as the lookup key
+      const success = sdkRunner.respondToBlockingEvent(requestId, response);
       return { success, sessionId, answers };
     },
   };

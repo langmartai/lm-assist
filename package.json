@@ -62,11 +62,13 @@
   },
   "workspaces": [
     "core",
-    "web"
+    "web",
+    "openclaw"
   ],
   "scripts": {
     "build:core": "cd core && npm run build",
     "build:web": "cd web && npm run build",
+    "build:openclaw": "cd openclaw && npm run build",
     "build": "npm run build:core && npm run build:web",
     "start": "./core.sh start",
     "stop": "./core.sh stop",

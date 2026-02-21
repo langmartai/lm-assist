@@ -166,6 +166,73 @@ export class TierControlApiImpl {
       });
     });
 
+    // Forward SDK events to the TierEvent system (for SSE broadcasting)
+    this.sdkRunner.on('sdk_event', (event: any) => {
+      if (!event.executionId) return;
+      const tier = event.tier || 'agent';
+
+      switch (event.type) {
+        case 'sdk_hook':
+          if (event.hookType === 'PermissionRequest' && event.data) {
+            this.emit({
+              type: 'sdk_permission_request',
+              tier,
+              executionId: event.executionId,
+              sessionId: event.sessionId || '',
+              requestId: event.data.requestId || '',
+              toolName: event.data.toolName || '',
+              toolInput: event.data.toolInput || {},
+              toolUseId: event.data.toolUseId || '',
+              decision: event.data.decision,
+            });
+          }
+          break;
+        case 'sdk_user_input':
+          if (event.action === 'question' && event.data) {
+            this.emit({
+              type: 'sdk_user_question',
+              tier,
+              executionId: event.executionId,
+              sessionId: event.sessionId || '',
+              requestId: event.data.requestId || '',
+              questions: event.data.questions || [],
+              timeout: event.data.timeout,
+            });
+          }
+          break;
+      }
+    });
+
+    // Forward blocking events with full request data (has requestId)
+    this.sdkRunner.on('blocking_event', (event: { type: string; request: any }) => {
+      if (!event.request) return;
+      const req = event.request;
+      const tier = req.tier || 'agent';
+
+      if (event.type === 'user_question') {
+        this.emit({
+          type: 'sdk_user_question',
+          tier,
+          executionId: req.executionId || '',
+          sessionId: req.sessionId || '',
+          requestId: req.requestId || '',
+          questions: req.questions || [],
+          timeout: req.timeout,
+        });
+      } else if (event.type === 'permission_request') {
+        this.emit({
+          type: 'sdk_permission_request',
+          tier,
+          executionId: req.executionId || '',
+          sessionId: req.sessionId || '',
+          requestId: req.requestId || '',
+          toolName: req.toolName || '',
+          toolInput: req.toolInput || {},
+          toolUseId: req.toolUseId || '',
+        });
+      }
+    });
+
     // Initialize sub-APIs
     profiler.start('subApis', 'Sub-APIs', 'ControlApi');
     this.monitor = this.createMonitorApi();
