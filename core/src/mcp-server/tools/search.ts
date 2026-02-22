@@ -21,61 +21,9 @@ import { tokenize, scoreSession, getProjectPathForSession } from '../../search/t
 import { isFileQuery } from '../../search/file-matcher';
 import { getProjectArchitectureData } from './project-architecture';
 
-// ─── Tool Definition ──────────────────────────────────────────────────
+// ─── Tool Definition (canonical source: definitions.ts) ─────────────
 
-export const searchToolDef = {
-  name: 'search',
-  description: `Unified search across knowledge and file history. Auto-detects query type: file paths, IDs (K001, sessionId, sessionId:index), or natural language. Params: query, scope (24h|3d|7d|30d|all), project, type (knowledge|all), limit, offset`,
-  inputSchema: {
-    type: 'object' as const,
-    properties: {
-      query: {
-        type: 'string',
-        description: 'Natural language, keywords, file paths, or IDs (K001, K001.2, sessionId, sessionId:index)',
-      },
-      scope: {
-        type: 'string',
-        enum: ['24h', '3d', '7d', '30d', 'all'],
-        description: 'Time scope for search (default: 7d)',
-      },
-      project: {
-        type: 'string',
-        description: 'Filter to a specific project path',
-      },
-      type: {
-        type: 'string',
-        enum: ['knowledge', 'all'],
-        description: 'Result type filter (default: all)',
-      },
-      limit: {
-        type: 'number',
-        description: 'Results per page (default: 5, max: 20)',
-      },
-      offset: {
-        type: 'number',
-        description: 'Pagination offset (default: 0)',
-      },
-    },
-    required: ['query'],
-  },
-};
-
-/** Full description used when experiment features (milestones/architecture) are enabled */
-export const searchToolDefExperiment = {
-  ...searchToolDef,
-  description: `Unified search across knowledge, milestones, architecture, and file history. Auto-detects query type: file paths, IDs (K001, sessionId, sessionId:index), or natural language. Params: query, scope (24h|3d|7d|30d|all), project, type (knowledge|milestone|architecture|all), limit, offset`,
-  inputSchema: {
-    ...searchToolDef.inputSchema,
-    properties: {
-      ...searchToolDef.inputSchema.properties,
-      type: {
-        type: 'string',
-        enum: ['knowledge', 'milestone', 'architecture', 'all'],
-        description: 'Result type filter (default: all)',
-      },
-    },
-  },
-};
+export { searchToolDef, searchToolDefExperiment } from './definitions';
 
 // ─── Scope filtering ──────────────────────────────────────────────────
 

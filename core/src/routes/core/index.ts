@@ -30,6 +30,7 @@ import { createSessionDagRoutes } from './session-dag.routes';
 import { createContextRoutes } from './context.routes';
 import { createVectorRoutes } from './vector.routes';
 import { createAgentRoutes } from './agent.routes';
+import { createMcpApiRoutes } from './mcp-api.routes';
 
 /**
  * Create all core routes
@@ -59,5 +60,6 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createSessionDagRoutes(ctx),
     ...createContextRoutes(ctx),
     ...createVectorRoutes(ctx),
+    ...createMcpApiRoutes(ctx),
   ];
 }

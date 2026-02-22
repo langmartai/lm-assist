@@ -15,31 +15,9 @@
 import { getKnowledgeStore } from '../../knowledge/store';
 import type { KnowledgeCommentType } from '../../knowledge/types';
 
-// ─── Tool Definition ──────────────────────────────────────────────────
+// ─── Tool Definition (canonical source: definitions.ts) ─────────────
 
-export const feedbackToolDef = {
-  name: 'feedback',
-  description: `Provide quality feedback on any context you received — from search results, detail content, or hook-injected suggestions. Feedback improves future results. Params: id (source ID like K001.2, sessionId:index), type (outdated|wrong|irrelevant|needs_update|useful), content (specific feedback text)`,
-  inputSchema: {
-    type: 'object' as const,
-    properties: {
-      id: {
-        type: 'string',
-        description: 'Source ID from context (K001.2, K001, sessionId:index, etc.)',
-      },
-      type: {
-        type: 'string',
-        enum: ['outdated', 'wrong', 'irrelevant', 'needs_update', 'useful'],
-        description: 'Feedback type: outdated (no longer accurate), wrong (factually incorrect), irrelevant (not helpful), needs_update (partially correct), useful (helpful context)',
-      },
-      content: {
-        type: 'string',
-        description: 'Specific feedback text. Be specific about what needs to change and why.',
-      },
-    },
-    required: ['id', 'type', 'content'],
-  },
-};
+export { feedbackToolDef } from './definitions';
 
 // ─── Feedback Types ──────────────────────────────────────────────────
 
