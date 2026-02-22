@@ -2,32 +2,16 @@
  * MCP API Client
  *
  * Thin HTTP client for the MCP server to call core API endpoints.
- * Uses Node.js built-in fetch. On startup, ensures the core API is running
- * (auto-starts via core.sh if needed).
+ * Uses Node.js built-in fetch. On startup, ensures the core API and web
+ * are running (auto-starts via service-manager if needed).
  */
 
-import { spawn, execFileSync } from 'child_process';
-import * as path from 'path';
-import * as os from 'os';
+import { startCore, startWeb } from '../service-manager';
 
 // ─── Configuration ──────────────────────────────────────────────────
 
 const API_PORT = process.env.API_PORT || '3100';
 const BASE_URL = `http://127.0.0.1:${API_PORT}`;
-
-// Paths relative to repo root. At runtime __dirname is core/dist/mcp-server/, so 3 levels up.
-const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
-const CORE_SH = path.join(REPO_ROOT, 'core.sh').replace(/\\/g, '/');
-const CLI_JS = path.join(REPO_ROOT, 'core', 'dist', 'cli.js');
-
-function hasBash(): boolean {
-  try {
-    execFileSync('bash', ['--version'], { stdio: 'ignore', timeout: 3000 });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -94,7 +78,7 @@ export async function getMcpSettings(): Promise<{ milestoneEnabled: boolean }> {
   return get<{ milestoneEnabled: boolean }>('/mcp/settings');
 }
 
-// ─── Core API Auto-Start ──────────────────────────────────────────────────
+// ─── Core API + Web Auto-Start ──────────────────────────────────────────────────
 
 async function isApiRunning(): Promise<boolean> {
   try {
@@ -105,64 +89,35 @@ async function isApiRunning(): Promise<boolean> {
   }
 }
 
-async function startCoreApi(): Promise<void> {
-  try {
-    if (hasBash()) {
-      console.error('[MCP] Core API not running, starting via core.sh...');
-      const child = spawn('bash', [CORE_SH, 'start'], {
-        detached: true,
-        stdio: 'ignore',
-      });
-      child.on('error', (err) => {
-        console.error('[MCP] Failed to spawn core.sh:', err.message);
-      });
-      child.unref();
-    } else {
-      // Fallback: start node directly (no bash required)
-      console.error('[MCP] Core API not running, starting via node directly...');
-      const child = spawn(process.execPath, [CLI_JS, 'serve', '--port', API_PORT, '--project', os.homedir()], {
-        detached: true,
-        stdio: 'ignore',
-        cwd: REPO_ROOT,
-      });
-      child.on('error', (err) => {
-        console.error('[MCP] Failed to spawn node:', err.message);
-      });
-      child.unref();
-    }
-  } catch (err) {
-    console.error('[MCP] Failed to start core API:', err);
-  }
-
-  // Don't wait for the child — it's a long-running server.
-  // Let the polling loop in ensureCoreApi() wait for health.
-  await new Promise(resolve => setTimeout(resolve, 1000));
-}
-
 /**
- * Ensure the core API is running. If not, attempt to start it and wait.
+ * Ensure the core API and web are running. If not, start them via the
+ * cross-platform service-manager (no bash required).
  * Called once on MCP server startup.
  */
 export async function ensureCoreApi(): Promise<void> {
   if (await isApiRunning()) {
     console.error('[MCP] Core API is running');
+    // Still try to start web (might not be running)
+    startWeb().then((r) => {
+      console.error(`[MCP] Web: ${r.message}`);
+    }).catch((err) => {
+      console.error(`[MCP] Web start failed: ${err.message}`);
+    });
     return;
   }
 
-  await startCoreApi();
-
-  // Poll for health with timeout
-  const maxWaitMs = 30_000;
-  const pollIntervalMs = 2000;
-  const deadline = Date.now() + maxWaitMs;
-
-  while (Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-    if (await isApiRunning()) {
-      console.error('[MCP] Core API started successfully');
-      return;
-    }
+  console.error('[MCP] Core API not running, starting via service-manager...');
+  const coreResult = await startCore();
+  if (coreResult.success) {
+    console.error(`[MCP] ${coreResult.message}`);
+  } else {
+    console.error(`[MCP] Warning: ${coreResult.message}. Tools may fail.`);
   }
 
-  console.error('[MCP] Warning: Core API did not start within timeout. Tools may fail.');
+  // Start web in background (don't block MCP startup)
+  startWeb().then((r) => {
+    console.error(`[MCP] Web: ${r.message}`);
+  }).catch((err) => {
+    console.error(`[MCP] Web start failed: ${err.message}`);
+  });
 }

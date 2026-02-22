@@ -1,6 +1,6 @@
 {
   "name": "lm-assist",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "description": "Knowledge management, session inspector, and web terminal control for Claude Code",
   "license": "AGPL-3.0-or-later",
   "author": {
@@ -54,9 +54,11 @@
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@types/chokidar": "^1.7.5",
     "chokidar": "^5.0.0",
+    "find-process": "^2.0.0",
     "hono": "^4.11.5",
     "http-proxy": "^1.18.1",
     "lmdb": "^3.5.1",
+    "tree-kill": "^1.2.2",
     "uuid": "^9.0.0",
     "ws": "^8.18.0"
   },
@@ -68,9 +70,9 @@
     "build:core": "cd core && npm run build",
     "build:web": "cd web && npm run build",
     "build": "npm run build:core && npm run build:web",
-    "start": "./core.sh start",
-    "stop": "./core.sh stop",
-    "restart": "./core.sh restart",
+    "start": "node bin/lm-assist.js start",
+    "stop": "node bin/lm-assist.js stop",
+    "restart": "node bin/lm-assist.js restart",
     "prepublishOnly": "npm run build:core",
     "prepare": "npm run build"
   },

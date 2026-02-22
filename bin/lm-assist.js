@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * LM Assist CLI
+ * LM Assist CLI — Cross-platform service manager
  *
  * Usage:
  *   lm-assist start           Start API and Web services
@@ -9,31 +9,33 @@
  *   lm-assist restart         Restart services
  *   lm-assist status          Show service status
  *   lm-assist logs [core|web] View service logs
- *   lm-assist cleandata [-y]  Stop services and delete ~/.lm-assist data
  */
 
 const path = require('path');
-const fs = require('fs');
-const { spawn } = require('child_process');
 
 const projectRoot = path.dirname(path.dirname(__filename));
-const coreShPath = path.join(projectRoot, 'core.sh');
+const smPath = path.join(projectRoot, 'core', 'dist', 'service-manager');
+
+// Lazy-load service-manager (compiled TypeScript)
+let sm;
+function loadSm() {
+  if (sm) return sm;
+  try {
+    sm = require(smPath);
+    return sm;
+  } catch (err) {
+    console.error('Error: Could not load service-manager. Is the core built?');
+    console.error(`  Expected: ${smPath}.js`);
+    console.error(`  Run: cd ${projectRoot} && npm run build:core`);
+    process.exit(1);
+  }
+}
 
 // Get command from argv
 const command = process.argv[2] || 'help';
 const args = process.argv.slice(3);
 
-// Ensure core.sh exists
-if (!fs.existsSync(coreShPath)) {
-  console.error(`Error: core.sh not found at ${coreShPath}`);
-  process.exit(1);
-}
-
-// Make core.sh executable
-fs.chmodSync(coreShPath, 0o755);
-
-// Valid commands
-const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'build', 'cleandata', 'test', 'hub'];
+const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'help'];
 
 if (command === 'help' || command === '--help' || command === '-h') {
   console.log(`
@@ -46,18 +48,14 @@ Commands:
   stop               Stop all services
   restart            Restart services
   status             Show service status and health check
-  logs [core|web]    View service logs
-  build              Build TypeScript (core) and Next.js (web)
-  cleandata [-y]     Stop services and delete all lm-assist data (~/.lm-assist)
-  test               Run API endpoint tests
-  hub                Hub client commands (start, stop, status, logs)
+  logs [core|web]    View service logs (last 100 lines)
   help               Show this help message
 
 Examples:
   lm-assist start
-  lm-assist restart
-  lm-assist logs core
+  lm-assist stop
   lm-assist status
+  lm-assist logs core
 
 More info: https://github.com/langmartai/lm-assist
 `);
@@ -70,20 +68,73 @@ if (!validCommands.includes(command)) {
   process.exit(1);
 }
 
-// Execute core.sh with the command
-// Use the user's home directory as cwd so that core.sh's PROJECT_ROOT resolves
-// to the npm package location (via BASH_SOURCE), while data always goes to ~/.lm-assist
-const coreProcess = spawn('bash', [coreShPath, command, ...args], {
-  cwd: process.env.HOME || process.env.USERPROFILE || process.cwd(),
-  stdio: 'inherit',
-  env: { ...process.env, LM_ASSIST_PKG_DIR: projectRoot }
-});
+async function main() {
+  const svc = loadSm();
 
-coreProcess.on('exit', (code) => {
-  process.exit(code);
-});
+  switch (command) {
+    case 'start': {
+      console.log('Starting lm-assist services...\n');
+      const result = await svc.startAll();
+      console.log(`  Core API: ${result.core.message}`);
+      console.log(`  Web:      ${result.web.message}`);
+      if (result.core.success && result.web.success) {
+        console.log('\nAll services started.');
+      } else {
+        process.exitCode = 1;
+      }
+      break;
+    }
 
-coreProcess.on('error', (err) => {
-  console.error(`Error executing core.sh: ${err.message}`);
+    case 'stop': {
+      console.log('Stopping lm-assist services...\n');
+      const result = await svc.stopAll();
+      console.log(`  Core API: ${result.core.message}`);
+      console.log(`  Web:      ${result.web.message}`);
+      break;
+    }
+
+    case 'restart': {
+      console.log('Restarting lm-assist services...\n');
+      const result = await svc.restartAll();
+      console.log(`  Core API: ${result.core.message}`);
+      console.log(`  Web:      ${result.web.message}`);
+      if (!result.core.success || !result.web.success) {
+        process.exitCode = 1;
+      }
+      break;
+    }
+
+    case 'status': {
+      const s = await svc.status();
+      console.log('lm-assist Service Status\n');
+      const coreStatus = s.core.healthy ? 'Running & Healthy' : s.core.running ? 'Running (Unhealthy)' : 'Not Running';
+      const webStatus = s.web.running ? 'Running' : 'Not Running';
+      console.log(`  Core API (port ${s.core.port}):  ${coreStatus}${s.core.pid ? ` (PID ${s.core.pid})` : ''}`);
+      console.log(`  Web      (port ${s.web.port}):  ${webStatus}${s.web.pid ? ` (PID ${s.web.pid})` : ''}`);
+
+      if (s.core.running || s.web.running) {
+        console.log('\nURLs:');
+        if (s.core.running) console.log(`  Core API:  http://localhost:${s.core.port}`);
+        if (s.web.running) console.log(`  Web:       http://localhost:${s.web.port}`);
+      }
+      break;
+    }
+
+    case 'logs': {
+      const service = args[0];
+      if (!service || !['core', 'web'].includes(service)) {
+        console.error('Usage: lm-assist logs [core|web]');
+        process.exitCode = 1;
+        break;
+      }
+      const log = svc.readLog(service, 100);
+      console.log(log);
+      break;
+    }
+  }
+}
+
+main().catch((err) => {
+  console.error('Error:', err.message || err);
   process.exit(1);
 });
