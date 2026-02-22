@@ -58,7 +58,7 @@ function formatRemoteUrl(url: string): { display: string; webUrl: string | null 
 }
 
 export default function ProjectsPage() {
-  const { projects, isLoading, error, refetch } = useProjects();
+  const { projects, isLoading, error, forceRefetch } = useProjects();
   const { isSingleMachine } = useMachineContext();
   const { isExperiment } = useExperiment();
   const { isWindows } = usePlatform();
@@ -131,7 +131,7 @@ export default function ProjectsPage() {
       {error && (
         <div className="empty-state">
           <span style={{ fontSize: 13, color: 'var(--color-status-red)' }}>{error}</span>
-          <button className="btn btn-sm btn-secondary" onClick={refetch}>Retry</button>
+          <button className="btn btn-sm btn-secondary" onClick={forceRefetch}>Retry</button>
         </div>
       )}
 

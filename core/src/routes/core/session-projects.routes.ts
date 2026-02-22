@@ -29,6 +29,7 @@ export function createSessionProjectsRoutes(ctx: RouteContext): RouteHandler[] {
     // ========================================================================
 
     // GET /projects - List all Claude Code projects
+    // Query params: encoded, includeSize, force (bypass cache)
     {
       method: 'GET',
       pattern: /^\/projects$/,
@@ -38,8 +39,9 @@ export function createSessionProjectsRoutes(ctx: RouteContext): RouteHandler[] {
 
         const encoded = req.query.encoded === 'true';
         const includeSize = req.query.includeSize !== 'false';
+        const force = req.query.force === 'true';
 
-        const rawProjects = service.listProjects({ encoded, includeSize });
+        const rawProjects = service.listProjects({ encoded, includeSize, force });
 
         // Build enriched copies without mutating the cached originals
         const cache = getSessionCache();

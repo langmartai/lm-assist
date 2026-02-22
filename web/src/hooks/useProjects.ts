@@ -12,13 +12,13 @@ export function useProjects() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchProjects = useCallback(async () => {
+  const fetchProjects = useCallback(async (options?: { force?: boolean }) => {
     try {
       setError(null);
       let projects: Project[] = [];
 
       if (isLocal) {
-        projects = await apiClient.getProjects();
+        projects = await apiClient.getProjects(undefined, options);
       } else {
         // Hub: fetch from each online machine (or selected machine)
         const targets = selectedMachineId
@@ -26,7 +26,7 @@ export function useProjects() {
           : onlineMachines;
 
         const results = await Promise.allSettled(
-          targets.map(m => apiClient.getProjects(m.id))
+          targets.map(m => apiClient.getProjects(m.id, options))
         );
 
         for (const r of results) {
@@ -73,5 +73,8 @@ export function useProjects() {
     return result;
   }, [allProjects, selectedMachineId]);
 
-  return { projects, allProjects, isLoading, error, refetch: fetchProjects };
+  const refetch = useCallback(() => fetchProjects(), [fetchProjects]);
+  const forceRefetch = useCallback(() => fetchProjects({ force: true }), [fetchProjects]);
+
+  return { projects, allProjects, isLoading, error, refetch, forceRefetch };
 }

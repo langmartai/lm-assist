@@ -124,7 +124,7 @@ export interface ApiClient {
   ): Promise<BatchCheckResponse>;
 
   // Projects
-  getProjects(machineId?: string): Promise<Project[]>;
+  getProjects(machineId?: string, options?: { force?: boolean }): Promise<Project[]>;
 
   // Tasks
   getTaskLists(machineId?: string): Promise<TaskList[]>;
@@ -518,8 +518,9 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
       }
     },
 
-    async getProjects(): Promise<Project[]> {
-      const result = await fetchJson<any>(api('/projects'));
+    async getProjects(_machineId?: string, options?: { force?: boolean }): Promise<Project[]> {
+      const qs = options?.force ? '?force=true' : '';
+      const result = await fetchJson<any>(api(`/projects${qs}`));
       const projects: any[] = Array.isArray(result) ? result : result.projects || [];
       return projects.map(p => ({
         projectPath: p.projectPath || p.path,
@@ -1013,7 +1014,7 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
       }
     },
 
-    async getProjects(machineId): Promise<Project[]> {
+    async getProjects(machineId, options?: { force?: boolean }): Promise<Project[]> {
       if (!machineId) throw new Error('Hub mode requires machineId');
       const machine = { id: machineId, hostname: machineId, platform: 'linux', status: 'online' as const };
       try {
@@ -1022,7 +1023,8 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
         if (m) Object.assign(machine, m);
       } catch { /* use defaults */ }
 
-      const result = await hubFetch<any>(machineApi(machineId, '/projects'));
+      const qs = options?.force ? '?force=true' : '';
+      const result = await hubFetch<any>(machineApi(machineId, `/projects${qs}`));
       const projects: any[] = Array.isArray(result) ? result : result.projects || [];
       return projects.map(p => ({
         projectPath: p.projectPath || p.path,
@@ -1495,12 +1497,12 @@ export function createHybridClient(options: HybridClientOptions): ApiClient {
       return hubClient.batchCheckSessions(request, machineId);
     },
 
-    async getProjects(machineId): Promise<Project[]> {
+    async getProjects(machineId, options?: { force?: boolean }): Promise<Project[]> {
       if (isLocal(machineId)) {
-        const projects = await localClient.getProjects();
+        const projects = await localClient.getProjects(undefined, options);
         return projects.map(p => ({ ...p, machineId: localGatewayId }));
       }
-      return hubClient.getProjects(machineId);
+      return hubClient.getProjects(machineId, options);
     },
 
     async getTaskLists(machineId): Promise<TaskList[]> {

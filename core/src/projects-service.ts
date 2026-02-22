@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { homedir } from 'os';
 import * as readline from 'readline';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import {
   getProjectsDir,
   encodePath,
@@ -176,6 +176,8 @@ export interface ListProjectsOptions {
   encoded?: boolean;
   /** Include storage size calculation (default: true) */
   includeSize?: boolean;
+  /** Bypass cache and force a fresh load (default: false) */
+  force?: boolean;
 }
 
 export interface ListSessionsOptions {
@@ -202,7 +204,11 @@ export class ProjectsService {
   // TTL + file-change-invalidated project list cache
   private _projectListCache: { result: Project[]; optionsKey: string; timestamp: number } | null = null;
   private _projectListDirty = true;
-  private static readonly PROJECT_CACHE_TTL_MS = 60_000; // 60 seconds
+  private static readonly PROJECT_CACHE_TTL_MS = 120_000; // 2 minutes
+
+  // TTL cache for getGitInfo to avoid spawning git subprocesses on every request
+  private _gitInfoCache = new Map<string, { result: GitInfo | null; timestamp: number }>();
+  private static readonly GIT_INFO_CACHE_TTL_MS = 120_000; // 2 minutes (matches project list TTL)
 
   constructor(configDir?: string) {
     this.configDir = configDir || getClaudeConfigDir();
@@ -216,6 +222,8 @@ export class ProjectsService {
       sessionCache.onFileEvent(() => {
         this._sessionListDirty = true;
         this._projectListDirty = true;
+        // Don't clear git info cache on session file changes — git state
+        // is independent of session files and the TTL handles freshness.
       });
     } catch {
       // SessionCache may not be initialized yet; cache stays dirty by default
@@ -241,17 +249,23 @@ export class ProjectsService {
    * List all Claude Code projects
    */
   listProjects(options: ListProjectsOptions = {}): Project[] {
-    const { encoded = false, includeSize = true } = options;
+    const { encoded = false, includeSize = true, force = false } = options;
     const optionsKey = `${encoded}:${includeSize}`;
 
-    // Return cached result if still valid (not dirty and within TTL)
+    // Return cached result if still valid (not dirty, within TTL, and not forced)
     if (
+      !force &&
       !this._projectListDirty &&
       this._projectListCache &&
       this._projectListCache.optionsKey === optionsKey &&
       Date.now() - this._projectListCache.timestamp < ProjectsService.PROJECT_CACHE_TTL_MS
     ) {
       return [...this._projectListCache.result];
+    }
+
+    // Force also clears the git info cache so we get fresh git status
+    if (force) {
+      this._gitInfoCache.clear();
     }
 
     // Clear dirty flag before computation so concurrent file events re-dirty it
@@ -1335,13 +1349,22 @@ export class ProjectsService {
       return null;
     }
 
-    const execGit = (args: string): string | null => {
+    // Return cached result if still fresh
+    const cached = this._gitInfoCache.get(projectPath);
+    if (cached && Date.now() - cached.timestamp < ProjectsService.GIT_INFO_CACHE_TTL_MS) {
+      return cached.result;
+    }
+
+    // Use execFileSync to avoid spawning cmd.exe on Windows (prevents popup windows).
+    // windowsHide: true ensures no console window flashes even if cmd.exe is somehow invoked.
+    const execGit = (args: string[]): string | null => {
       try {
-        return execSync(`git ${args}`, {
+        return execFileSync('git', args, {
           cwd: projectPath,
           encoding: 'utf-8',
           timeout: 5000,
           stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true,
         }).trim();
       } catch {
         return null;
@@ -1349,27 +1372,29 @@ export class ProjectsService {
     };
 
     // Check if inside a git repo
-    const topLevel = execGit('rev-parse --is-inside-work-tree');
+    const topLevel = execGit(['rev-parse', '--is-inside-work-tree']);
     if (topLevel !== 'true') {
-      return { initialized: false, branch: null, isBare: false, isWorktree: false, mainWorktreePath: null, worktrees: [], remotes: [], headCommit: null };
+      const result: GitInfo = { initialized: false, branch: null, isBare: false, isWorktree: false, mainWorktreePath: null, worktrees: [], remotes: [], headCommit: null };
+      this._gitInfoCache.set(projectPath, { result, timestamp: Date.now() });
+      return result;
     }
 
     // Check bare repo
-    const isBare = execGit('rev-parse --is-bare-repository') === 'true';
+    const isBare = execGit(['rev-parse', '--is-bare-repository']) === 'true';
 
     // Current branch
-    let branch: string | null = execGit('rev-parse --abbrev-ref HEAD');
+    let branch: string | null = execGit(['rev-parse', '--abbrev-ref', 'HEAD']);
     if (branch === 'HEAD') branch = null; // detached HEAD
 
     // HEAD commit
-    const headCommit = execGit('rev-parse --short HEAD');
+    const headCommit = execGit(['rev-parse', '--short', 'HEAD']);
 
     // Worktree detection
-    const gitDir = execGit('rev-parse --git-dir');
+    const gitDir = execGit(['rev-parse', '--git-dir']);
     const isWorktree = gitDir !== null && gitDir.includes('.git/worktrees');
     let mainWorktreePath: string | null = null;
     if (isWorktree) {
-      mainWorktreePath = execGit('rev-parse --path-format=absolute --git-common-dir');
+      mainWorktreePath = execGit(['rev-parse', '--path-format=absolute', '--git-common-dir']);
       if (mainWorktreePath && mainWorktreePath.endsWith('/.git')) {
         mainWorktreePath = mainWorktreePath.slice(0, -5);
       } else if (mainWorktreePath && mainWorktreePath.endsWith('\\.git')) {
@@ -1379,7 +1404,7 @@ export class ProjectsService {
 
     // List worktrees
     const worktrees: GitInfo['worktrees'] = [];
-    const worktreeOutput = execGit('worktree list --porcelain');
+    const worktreeOutput = execGit(['worktree', 'list', '--porcelain']);
     if (worktreeOutput) {
       const entries = worktreeOutput.split('\n\n').filter(Boolean);
       for (const entry of entries) {
@@ -1412,7 +1437,7 @@ export class ProjectsService {
 
     // Remotes
     const remotes: GitRemote[] = [];
-    const remoteOutput = execGit('remote -v');
+    const remoteOutput = execGit(['remote', '-v']);
     if (remoteOutput) {
       for (const line of remoteOutput.split('\n')) {
         const match = line.match(/^(\S+)\s+(\S+)\s+\((fetch|push)\)$/);
@@ -1426,7 +1451,7 @@ export class ProjectsService {
       }
     }
 
-    return {
+    const result: GitInfo = {
       initialized: true,
       branch,
       isBare,
@@ -1436,6 +1461,11 @@ export class ProjectsService {
       remotes,
       headCommit,
     };
+
+    // Cache the result
+    this._gitInfoCache.set(projectPath, { result, timestamp: Date.now() });
+
+    return result;
   }
 
   // --------------------------------------------------------------------------

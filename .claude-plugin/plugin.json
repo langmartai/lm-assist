@@ -1,6 +1,6 @@
 {
   "name": "lm-assist",
-  "version": "0.1.18",
+  "version": "0.1.20",
   "description": "Knowledge management, session inspector, and web terminal control for Claude Code",
   "author": { "name": "langmartai" },
   "repository": "https://github.com/langmartai/lm-assist",
