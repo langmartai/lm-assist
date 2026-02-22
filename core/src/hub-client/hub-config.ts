@@ -168,14 +168,17 @@ export function clearGatewayId(): void {
  * Get tier-agent version from package.json
  */
 function getVersion(): string {
-  try {
-    const packagePath = path.join(__dirname, '../../package.json');
-    if (fs.existsSync(packagePath)) {
-      const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf-8')) as { version?: string };
-      return pkg.version || '0.0.0';
+  // Try root package.json first (npm install), then core package.json (local dev)
+  for (const rel of ['../../../package.json', '../../package.json']) {
+    try {
+      const packagePath = path.join(__dirname, rel);
+      if (fs.existsSync(packagePath)) {
+        const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf-8')) as { version?: string };
+        if (pkg.version) return pkg.version;
+      }
+    } catch {
+      // Try next path
     }
-  } catch {
-    // Silently fall back to default version if package.json is unavailable
   }
   return '0.0.0';
 }

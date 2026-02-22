@@ -146,6 +146,13 @@ interface ClaudeCodeConfig {
   contextInjectMilestoneCount: number;
   searchIncludeKnowledge: boolean;
   searchIncludeMilestones: boolean;
+  statuslinePromptCount: number;
+  statuslineShowPrompts: boolean;
+  statuslineShowWorktree: boolean;
+  statuslineShowContext: boolean;
+  statuslineShowRam: boolean;
+  statuslineShowProcess: boolean;
+  statuslineShowModel: boolean;
 }
 
 interface McpStatus {
@@ -248,7 +255,7 @@ export default function SettingsPage() {
   const [contextHookStatus, setContextHookStatus] = useState<ContextHookStatus | null>(null);
   const [isContextHookInstalling, setIsContextHookInstalling] = useState(false);
   const [isContextHookUninstalling, setIsContextHookUninstalling] = useState(false);
-  const [claudeSettings, setClaudeSettings] = useState<{ cleanupPeriodDays: number } | null>(null);
+  const [claudeSettings, setClaudeSettings] = useState<{ cleanupPeriodDays: number; env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: boolean } } | null>(null);
   const [claudeCodeMessage, setClaudeCodeMessage] = useState<{ text: string; type: 'ok' | 'error' } | null>(null);
 
   // milestone settings state
@@ -1067,7 +1074,7 @@ export default function SettingsPage() {
     }
   }, [tierAgentUrl, isClaudeCodeConfigSaving]);
 
-  const handleClaudeSettingsChange = useCallback(async (key: string, value: number) => {
+  const handleClaudeSettingsChange = useCallback(async (key: string, value: number | Record<string, boolean>) => {
     try {
       const res = await fetch(tierAgentUrl + '/claude-code/settings', {
         method: 'PUT',
@@ -2507,8 +2514,8 @@ export default function SettingsPage() {
                   </div>
                 </SectionCard>
 
-                {/* Storage Card */}
-                <SectionCard title="Storage" icon={HardDrive}>
+                {/* Claude Settings Card */}
+                <SectionCard title="Claude Settings" icon={HardDrive}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                     {claudeSettings ? (
                       <div style={{
@@ -2552,12 +2559,35 @@ export default function SettingsPage() {
                             }}
                           />
                         </div>
+                        <div style={{ borderTop: '1px solid var(--color-border)', margin: '0' }} />
+                        <ToggleRow
+                          label="Agent Teams"
+                          description="Enable experimental agent teams feature (CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS). Allows Claude to spawn and coordinate multiple sub-agents working in parallel."
+                          checked={claudeSettings.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS}
+                          onChange={(v) => handleClaudeSettingsChange('env', { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: v })}
+                        />
                       </div>
                     ) : (
                       <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
                         Loading settings...
                       </div>
                     )}
+                    <div style={{
+                      padding: '6px 10px',
+                      background: 'var(--color-bg-secondary)',
+                      borderRadius: 'var(--radius-sm)',
+                      fontSize: 11,
+                      color: 'var(--color-text-tertiary)',
+                      lineHeight: 1.6,
+                      display: 'flex',
+                      gap: 8,
+                      alignItems: 'flex-start',
+                    }}>
+                      <Info size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                      <div>
+                        These settings are stored in <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>~/.claude/settings.json</span> and apply to all Claude Code sessions. Changes take effect on the next session start.
+                      </div>
+                    </div>
                   </div>
                 </SectionCard>
 
@@ -2759,6 +2789,93 @@ export default function SettingsPage() {
                         {claudeCodeMessage.text}
                       </div>
                     )}
+
+                    {/* Statusline display config */}
+                    {claudeCodeConfig && (
+                      <div style={{
+                        padding: '10px 12px',
+                        background: 'var(--color-bg-secondary)',
+                        borderRadius: 'var(--radius-sm)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 10,
+                      }}>
+                        <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--color-text-secondary)', marginBottom: 2 }}>
+                          Display Settings
+                        </div>
+
+                        {/* Prompt count */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--color-text-primary)', lineHeight: 1.4 }}>
+                              User prompt lines
+                            </div>
+                            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5, marginTop: 2 }}>
+                              Number of recent user prompts to show (0–10)
+                            </div>
+                          </div>
+                          <input
+                            type="number"
+                            min={0}
+                            max={10}
+                            value={claudeCodeConfig.statuslinePromptCount ?? 4}
+                            onChange={(e) => {
+                              const v = parseInt(e.target.value, 10);
+                              if (!isNaN(v) && v >= 0 && v <= 10) {
+                                handleClaudeCodeConfigChange('statuslinePromptCount', v);
+                              }
+                            }}
+                            style={{
+                              width: 52,
+                              padding: '4px 6px',
+                              fontSize: 11,
+                              background: 'var(--color-bg-primary)',
+                              border: '1px solid var(--color-border)',
+                              borderRadius: 'var(--radius-sm)',
+                              color: 'var(--color-text-primary)',
+                              textAlign: 'center',
+                            }}
+                          />
+                        </div>
+
+                        <ToggleRow
+                          label="Show user prompts"
+                          description="Recent user prompts from session transcript"
+                          checked={claudeCodeConfig.statuslineShowPrompts ?? true}
+                          onChange={(v) => handleClaudeCodeConfigChange('statuslineShowPrompts', v)}
+                        />
+                        <ToggleRow
+                          label="Show git branch / worktree"
+                          description="Project directory, branch, worktree info, and ports"
+                          checked={claudeCodeConfig.statuslineShowWorktree ?? true}
+                          onChange={(v) => handleClaudeCodeConfigChange('statuslineShowWorktree', v)}
+                        />
+                        <ToggleRow
+                          label="Show context window %"
+                          description="Context window usage (green <50%, yellow <80%, red ≥80%)"
+                          checked={claudeCodeConfig.statuslineShowContext ?? true}
+                          onChange={(v) => handleClaudeCodeConfigChange('statuslineShowContext', v)}
+                        />
+                        <ToggleRow
+                          label="Show RAM / free memory"
+                          description="Claude Code process RSS and system available memory"
+                          checked={claudeCodeConfig.statuslineShowRam ?? true}
+                          onChange={(v) => handleClaudeCodeConfigChange('statuslineShowRam', v)}
+                        />
+                        <ToggleRow
+                          label="Show PID / TTY / uptime"
+                          description="Claude Code process ID, terminal, and session uptime"
+                          checked={claudeCodeConfig.statuslineShowProcess ?? true}
+                          onChange={(v) => handleClaudeCodeConfigChange('statuslineShowProcess', v)}
+                        />
+                        <ToggleRow
+                          label="Show model name"
+                          description="Current Claude model name (e.g. Opus 4.6)"
+                          checked={claudeCodeConfig.statuslineShowModel ?? true}
+                          onChange={(v) => handleClaudeCodeConfigChange('statuslineShowModel', v)}
+                        />
+                      </div>
+                    )}
                   </div>
                 </SectionCard>
 
@@ -2846,27 +2963,6 @@ export default function SettingsPage() {
                   </div>
                 </SectionCard>
 
-                {/* What the status line shows */}
-                <SectionCard title="What the Status Line Shows" icon={Info}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    <FeatureRow
-                      title="Context window usage"
-                      description="Color-coded percentage showing how much of the context window is used (green < 50%, yellow < 80%, red >= 80%)."
-                    />
-                    <FeatureRow
-                      title="Process information"
-                      description="Session RAM usage, system free memory, Claude process PID, TTY, and process uptime."
-                    />
-                    <FeatureRow
-                      title="Worktree detection"
-                      description="Automatically detects which worktree the session is working in by analyzing file path references in the transcript."
-                    />
-                    <FeatureRow
-                      title="Recent prompts"
-                      description="Shows the last 4 user prompts from the session transcript, with the most recent highlighted."
-                    />
-                  </div>
-                </SectionCard>
               </>
             )}
           </div>

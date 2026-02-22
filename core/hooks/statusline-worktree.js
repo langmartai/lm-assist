@@ -492,6 +492,38 @@ function ctxColor(pct) {
 }
 
 // ---------------------------------------------------------------------------
+// Load config from ~/.claude-code-config.json
+// ---------------------------------------------------------------------------
+
+function loadStatuslineConfig() {
+  const defaults = {
+    statuslinePromptCount: 4,
+    statuslineShowPrompts: true,
+    statuslineShowWorktree: true,
+    statuslineShowContext: true,
+    statuslineShowRam: true,
+    statuslineShowProcess: true,
+    statuslineShowModel: true,
+  };
+  try {
+    const configPath = path.join(os.homedir(), '.claude-code-config.json');
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return {
+      statuslinePromptCount: typeof parsed.statuslinePromptCount === 'number' && parsed.statuslinePromptCount >= 0 && parsed.statuslinePromptCount <= 10 ? parsed.statuslinePromptCount : defaults.statuslinePromptCount,
+      statuslineShowPrompts: typeof parsed.statuslineShowPrompts === 'boolean' ? parsed.statuslineShowPrompts : defaults.statuslineShowPrompts,
+      statuslineShowWorktree: typeof parsed.statuslineShowWorktree === 'boolean' ? parsed.statuslineShowWorktree : defaults.statuslineShowWorktree,
+      statuslineShowContext: typeof parsed.statuslineShowContext === 'boolean' ? parsed.statuslineShowContext : defaults.statuslineShowContext,
+      statuslineShowRam: typeof parsed.statuslineShowRam === 'boolean' ? parsed.statuslineShowRam : defaults.statuslineShowRam,
+      statuslineShowProcess: typeof parsed.statuslineShowProcess === 'boolean' ? parsed.statuslineShowProcess : defaults.statuslineShowProcess,
+      statuslineShowModel: typeof parsed.statuslineShowModel === 'boolean' ? parsed.statuslineShowModel : defaults.statuslineShowModel,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -511,8 +543,11 @@ async function main() {
   );
   const model = (input.model && input.model.display_name) || '';
 
-  // --- Extract last 4 user prompts ---
-  const prompts = extractPrompts(transcriptPath, 4);
+  // --- Load config ---
+  const cfg = loadStatuslineConfig();
+
+  // --- Extract user prompts (respects config count) ---
+  const prompts = cfg.statuslineShowPrompts ? extractPrompts(transcriptPath, cfg.statuslinePromptCount) : [];
 
   // --- Detect worktree ---
   const currentWt = detectWorktree(transcriptPath);
@@ -527,7 +562,7 @@ async function main() {
   // --- System free memory ---
   const sysFree = getSystemFreeMemory();
 
-  // === Render Line 1: Last 4 user prompts (oldest first, newest bold) ===
+  // === Render Line 1: Last N user prompts (oldest first, newest bold) ===
   if (prompts.length > 0) {
     // prompts[0] is newest, prompts[N-1] is oldest — render oldest first
     for (let i = prompts.length - 1; i >= 0; i--) {
@@ -541,64 +576,78 @@ async function main() {
   }
 
   // === Render Line 2: Project dir + worktree context ===
-  let line2 = `${DIM}${projectDir}${RESET}`;
-  if (currentWt && wtDetails && wtDetails.desc) {
-    const dbLabel = (!wtDetails.dbPort || wtDetails.dbPort === '5432')
-      ? 'shared'
-      : `isolated:${wtDetails.dbPort}`;
-    line2 += ` ${BOLD}${CYAN}wt-${currentWt}${RESET}`;
-    line2 += ` ${GREEN}${wtDetails.desc}${RESET}`;
-    line2 += ` ${DIM}[${wtDetails.branch || '?'}] api:${wtDetails.apiPort || '?'} db:${dbLabel}${RESET}`;
-  } else if (currentWt) {
-    line2 += ` ${BOLD}${YELLOW}wt-${currentWt}${RESET} ${DIM}(not found)${RESET}`;
-  } else {
-    // Detect actual git branch from project directory
-    let branch = 'main';
-    try {
-      branch = execSync(`git -C "${projectDir}" branch --show-current`, {
-        encoding: 'utf-8',
-        timeout: 3000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim() || 'main';
-    } catch {}
-    line2 += ` ${BOLD}${BLUE}${branch}${RESET}`;
+  if (cfg.statuslineShowWorktree) {
+    let line2 = `${DIM}${projectDir}${RESET}`;
+    if (currentWt && wtDetails && wtDetails.desc) {
+      const dbLabel = (!wtDetails.dbPort || wtDetails.dbPort === '5432')
+        ? 'shared'
+        : `isolated:${wtDetails.dbPort}`;
+      line2 += ` ${BOLD}${CYAN}wt-${currentWt}${RESET}`;
+      line2 += ` ${GREEN}${wtDetails.desc}${RESET}`;
+      line2 += ` ${DIM}[${wtDetails.branch || '?'}] api:${wtDetails.apiPort || '?'} db:${dbLabel}${RESET}`;
+    } else if (currentWt) {
+      line2 += ` ${BOLD}${YELLOW}wt-${currentWt}${RESET} ${DIM}(not found)${RESET}`;
+    } else {
+      // Detect actual git branch from project directory
+      let branch = 'main';
+      try {
+        branch = execSync(`git -C "${projectDir}" branch --show-current`, {
+          encoding: 'utf-8',
+          timeout: 3000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim() || 'main';
+      } catch {}
+      line2 += ` ${BOLD}${BLUE}${branch}${RESET}`;
+    }
+    process.stdout.write(line2 + '\n');
   }
-  process.stdout.write(line2 + '\n');
 
   // === Render Line 3: Worktree list + system info ===
-  let line3 = '';
+  const line3Parts = [];
 
-  if (worktrees.length > 0) {
-    const parts = worktrees.map(wt => {
-      let desc = wt.desc;
-      if (desc.length > 20) desc = desc.slice(0, 18) + '..';
+  if (cfg.statuslineShowWorktree) {
+    if (worktrees.length > 0) {
+      const parts = worktrees.map(wt => {
+        let desc = wt.desc;
+        if (desc.length > 20) desc = desc.slice(0, 18) + '..';
 
-      if (wt.num === currentWt) {
-        if (wt.status === 'ON') {
-          return `${BOLD}${GREEN}*${wt.num}${RESET}${DIM}:${desc}${RESET}`;
+        if (wt.num === currentWt) {
+          if (wt.status === 'ON') {
+            return `${BOLD}${GREEN}*${wt.num}${RESET}${DIM}:${desc}${RESET}`;
+          }
+          return `${BOLD}${YELLOW}*${wt.num}${RESET}${DIM}:${desc}${RESET}`;
         }
-        return `${BOLD}${YELLOW}*${wt.num}${RESET}${DIM}:${desc}${RESET}`;
-      }
-      if (wt.status === 'ON') {
-        return `${GREEN}${wt.num}${RESET}${DIM}:${desc}${RESET}`;
-      }
-      return `${DIM}${wt.num}:${desc}${RESET}`;
-    });
-    line3 += 'wt: ' + parts.join(' ');
-  } else {
-    line3 += `${DIM}no worktrees${RESET}`;
+        if (wt.status === 'ON') {
+          return `${GREEN}${wt.num}${RESET}${DIM}:${desc}${RESET}`;
+        }
+        return `${DIM}${wt.num}:${desc}${RESET}`;
+      });
+      line3Parts.push('wt: ' + parts.join(' '));
+    } else {
+      line3Parts.push(`${DIM}no worktrees${RESET}`);
+    }
   }
 
   // System info
-  line3 += ` ${ctxColor(ctxPct)}ctx:${ctxPct}%${RESET}`;
-  if (procInfo.mem) line3 += ` ${DIM}ram:${procInfo.mem}${RESET}`;
-  if (sysFree) line3 += ` ${DIM}free:${sysFree}${RESET}`;
-  if (procInfo.pid) line3 += ` ${DIM}pid:${procInfo.pid}${RESET}`;
-  if (procInfo.tty) line3 += ` ${DIM}${procInfo.tty}${RESET}`;
-  if (procInfo.age) line3 += ` ${DIM}up:${procInfo.age}${RESET}`;
-  if (model) line3 += ` ${DIM}${model}${RESET}`;
+  if (cfg.statuslineShowContext) {
+    line3Parts.push(`${ctxColor(ctxPct)}ctx:${ctxPct}%${RESET}`);
+  }
+  if (cfg.statuslineShowRam) {
+    if (procInfo.mem) line3Parts.push(`${DIM}ram:${procInfo.mem}${RESET}`);
+    if (sysFree) line3Parts.push(`${DIM}free:${sysFree}${RESET}`);
+  }
+  if (cfg.statuslineShowProcess) {
+    if (procInfo.pid) line3Parts.push(`${DIM}pid:${procInfo.pid}${RESET}`);
+    if (procInfo.tty) line3Parts.push(`${DIM}${procInfo.tty}${RESET}`);
+    if (procInfo.age) line3Parts.push(`${DIM}up:${procInfo.age}${RESET}`);
+  }
+  if (cfg.statuslineShowModel && model) {
+    line3Parts.push(`${DIM}${model}${RESET}`);
+  }
 
-  process.stdout.write(line3 + '\n');
+  if (line3Parts.length > 0) {
+    process.stdout.write(line3Parts.join(' ') + '\n');
+  }
 }
 
 main().catch(() => process.exit(0));

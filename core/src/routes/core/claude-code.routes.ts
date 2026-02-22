@@ -31,12 +31,22 @@ const IS_WINDOWS = process.platform === 'win32';
 const CLAUDE_CODE_CONFIG_FILE = path.join(os.homedir(), '.claude-code-config.json');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.json');
 const INSTALLED_PLUGINS_FILE = path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
+// Resolve hook scripts: prefer npm global install, fall back to local repo
+function findNpmHookPath(hookName: string): string | null {
+  try {
+    const npmRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf-8', timeout: 5000 }).trim();
+    const npmPath = path.join(npmRoot, 'lm-assist', 'core', 'hooks', hookName);
+    if (fs.existsSync(npmPath)) return npmPath;
+  } catch {}
+  return null;
+}
+
 const STATUSLINE_SCRIPT = path.resolve(__dirname, '../../../hooks/statusline-worktree.sh');
 // Cross-platform statusline: Node.js script (works on Windows, macOS, Linux)
-const STATUSLINE_SCRIPT_JS = path.resolve(__dirname, '../../../hooks/statusline-worktree.js');
+const STATUSLINE_SCRIPT_JS = findNpmHookPath('statusline-worktree.js') || path.resolve(__dirname, '../../../hooks/statusline-worktree.js');
 const STATUSLINE_COMMAND = `node "${STATUSLINE_SCRIPT_JS}"`;
 // Cross-platform hook: Node.js script (works on Windows, macOS, Linux)
-const CONTEXT_INJECT_SCRIPT_JS = path.resolve(__dirname, '../../../hooks/context-inject-hook.js');
+const CONTEXT_INJECT_SCRIPT_JS = findNpmHookPath('context-inject-hook.js') || path.resolve(__dirname, '../../../hooks/context-inject-hook.js');
 // The install command uses `node <script>` for cross-platform support
 const CONTEXT_INJECT_COMMAND = `node "${CONTEXT_INJECT_SCRIPT_JS}"`;
 
@@ -73,16 +83,38 @@ function detectPluginInstallation(): { installPath: string; version: string } | 
 
 /**
  * Check if the plugin has an MCP server registered for lm-assist.
+ * Returns the MCP server config (command + args) if found, null otherwise.
  */
-function detectPluginMcp(pluginPath: string): boolean {
+function detectPluginMcp(pluginPath: string): { command: string; args: string } | null {
   try {
     const mcpJsonPath = path.join(pluginPath, '.mcp.json');
     const raw = fs.readFileSync(mcpJsonPath, 'utf-8');
     const data = JSON.parse(raw);
-    return !!(data?.mcpServers?.['lm-assist']);
+    const server = data?.mcpServers?.['lm-assist'];
+    if (!server) return null;
+    const command = server.command || 'node';
+    const args = Array.isArray(server.args) ? server.args.join(' ') : (server.args || '');
+    return { command, args };
   } catch {
-    return false;
+    return null;
   }
+}
+
+/**
+ * Find the npm-installed lm-assist MCP server path.
+ * Looks for the globally-installed npm package first, then falls back to local repo.
+ */
+function findMcpServerPath(): string {
+  // 1. Try npm global: resolve lm-assist package → core/dist/mcp-server/index.js
+  try {
+    const npmRoot = require('child_process').execFileSync('npm', ['root', '-g'], {
+      encoding: 'utf-8', timeout: 5000,
+    }).trim();
+    const npmMcpPath = path.join(npmRoot, 'lm-assist', 'core', 'dist', 'mcp-server', 'index.js');
+    if (fs.existsSync(npmMcpPath)) return npmMcpPath;
+  } catch {}
+  // 2. Fallback: local repo build output
+  return path.resolve(__dirname, '../../dist/mcp-server/index.js');
 }
 
 /**
@@ -148,6 +180,13 @@ interface ClaudeCodeConfig {
   contextInjectMilestoneCount: number;
   searchIncludeKnowledge: boolean;
   searchIncludeMilestones: boolean;
+  statuslinePromptCount: number;
+  statuslineShowPrompts: boolean;
+  statuslineShowWorktree: boolean;
+  statuslineShowContext: boolean;
+  statuslineShowRam: boolean;
+  statuslineShowProcess: boolean;
+  statuslineShowModel: boolean;
 }
 
 const DEFAULT_CONFIG: ClaudeCodeConfig = {
@@ -161,6 +200,13 @@ const DEFAULT_CONFIG: ClaudeCodeConfig = {
   contextInjectMilestoneCount: 2,
   searchIncludeKnowledge: true,
   searchIncludeMilestones: false,
+  statuslinePromptCount: 4,
+  statuslineShowPrompts: true,
+  statuslineShowWorktree: true,
+  statuslineShowContext: true,
+  statuslineShowRam: true,
+  statuslineShowProcess: true,
+  statuslineShowModel: true,
 };
 
 function loadConfig(): ClaudeCodeConfig {
@@ -179,6 +225,13 @@ function loadConfig(): ClaudeCodeConfig {
       contextInjectMilestoneCount: typeof parsed.contextInjectMilestoneCount === 'number' && parsed.contextInjectMilestoneCount >= 0 ? parsed.contextInjectMilestoneCount : DEFAULT_CONFIG.contextInjectMilestoneCount,
       searchIncludeKnowledge: typeof parsed.searchIncludeKnowledge === 'boolean' ? parsed.searchIncludeKnowledge : DEFAULT_CONFIG.searchIncludeKnowledge,
       searchIncludeMilestones: typeof parsed.searchIncludeMilestones === 'boolean' ? parsed.searchIncludeMilestones : DEFAULT_CONFIG.searchIncludeMilestones,
+      statuslinePromptCount: typeof parsed.statuslinePromptCount === 'number' && parsed.statuslinePromptCount >= 0 && parsed.statuslinePromptCount <= 10 ? parsed.statuslinePromptCount : DEFAULT_CONFIG.statuslinePromptCount,
+      statuslineShowPrompts: typeof parsed.statuslineShowPrompts === 'boolean' ? parsed.statuslineShowPrompts : DEFAULT_CONFIG.statuslineShowPrompts,
+      statuslineShowWorktree: typeof parsed.statuslineShowWorktree === 'boolean' ? parsed.statuslineShowWorktree : DEFAULT_CONFIG.statuslineShowWorktree,
+      statuslineShowContext: typeof parsed.statuslineShowContext === 'boolean' ? parsed.statuslineShowContext : DEFAULT_CONFIG.statuslineShowContext,
+      statuslineShowRam: typeof parsed.statuslineShowRam === 'boolean' ? parsed.statuslineShowRam : DEFAULT_CONFIG.statuslineShowRam,
+      statuslineShowProcess: typeof parsed.statuslineShowProcess === 'boolean' ? parsed.statuslineShowProcess : DEFAULT_CONFIG.statuslineShowProcess,
+      statuslineShowModel: typeof parsed.statuslineShowModel === 'boolean' ? parsed.statuslineShowModel : DEFAULT_CONFIG.statuslineShowModel,
     };
   } catch {
     return { ...DEFAULT_CONFIG };
@@ -308,6 +361,17 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
           current.searchIncludeMilestones = body.searchIncludeMilestones;
           changed = true;
         }
+        if (typeof body.statuslinePromptCount === 'number' && body.statuslinePromptCount >= 0 && body.statuslinePromptCount <= 10 && body.statuslinePromptCount !== current.statuslinePromptCount) {
+          current.statuslinePromptCount = body.statuslinePromptCount;
+          changed = true;
+        }
+        const slBooleans: (keyof ClaudeCodeConfig)[] = ['statuslineShowPrompts', 'statuslineShowWorktree', 'statuslineShowContext', 'statuslineShowRam', 'statuslineShowProcess', 'statuslineShowModel'];
+        for (const key of slBooleans) {
+          if (typeof body[key] === 'boolean' && body[key] !== current[key]) {
+            (current as any)[key] = body[key];
+            changed = true;
+          }
+        }
 
         if (changed) {
           saveConfig(current);
@@ -334,15 +398,16 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
         const scriptPath = installed ? statusLine.command : STATUSLINE_COMMAND;
 
         const features = [
+          'Last 4 prompts',
+          'Project dir',
+          'Worktree detection',
           'Context %',
           'Session RAM',
           'Free RAM',
           'PID',
-          'PTS',
-          'Process time',
-          'Project dir',
-          'Last prompts',
-          'Worktree detection',
+          'TTY',
+          'Uptime',
+          'Model name',
         ];
 
         return {
@@ -374,8 +439,8 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
             installed: true,
             scriptPath: STATUSLINE_COMMAND,
             features: [
-              'Context %', 'Session RAM', 'Free RAM', 'PID', 'PTS',
-              'Process time', 'Project dir', 'Last prompts', 'Worktree detection',
+              'Last 4 prompts', 'Project dir', 'Worktree detection',
+              'Context %', 'Session RAM', 'Free RAM', 'PID', 'TTY', 'Uptime', 'Model name',
             ],
           },
         };
@@ -412,7 +477,8 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async () => {
         // 1. Check plugin-based installation first (cross-platform, no CLI needed)
         const plugin = detectPluginInstallation();
-        if (plugin && detectPluginMcp(plugin.installPath)) {
+        const pluginMcp = plugin ? detectPluginMcp(plugin.installPath) : null;
+        if (pluginMcp) {
           return {
             success: true,
             data: {
@@ -420,8 +486,8 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
               source: 'plugin',
               scope: 'plugin',
               status: 'active',
-              command: 'node',
-              args: path.join(plugin.installPath, 'core', 'dist', 'mcp-server', 'index.js'),
+              command: pluginMcp.command,
+              args: pluginMcp.args,
               tools: ['search', 'detail', 'feedback'],
             },
           };
@@ -476,27 +542,64 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // POST /claude-code/mcp/install - Install MCP server (manual, skipped if plugin-managed)
+    // POST /claude-code/mcp/install - Install MCP server (plugin .mcp.json or manual claude mcp add)
     {
       method: 'POST',
       pattern: /^\/claude-code\/mcp\/install$/,
       handler: async () => {
-        // Skip if already installed via plugin
         const plugin = detectPluginInstallation();
-        if (plugin && detectPluginMcp(plugin.installPath)) {
-          return {
-            success: true,
-            data: {
-              installed: true,
-              source: 'plugin',
-              status: 'active',
-              tools: ['search', 'detail', 'feedback'],
-            },
-          };
+
+        // If plugin is installed, ensure .mcp.json exists with correct MCP server path
+        if (plugin) {
+          const pluginMcp = detectPluginMcp(plugin.installPath);
+          if (pluginMcp) {
+            return {
+              success: true,
+              data: {
+                installed: true,
+                source: 'plugin',
+                status: 'active',
+                tools: ['search', 'detail', 'feedback'],
+              },
+            };
+          }
+
+          // Plugin installed but .mcp.json missing — create it with npm package path
+          try {
+            const mcpServerPath = findMcpServerPath();
+            const mcpJson = {
+              mcpServers: {
+                'lm-assist': {
+                  command: 'node',
+                  args: [mcpServerPath],
+                },
+              },
+            };
+            const mcpJsonPath = path.join(plugin.installPath, '.mcp.json');
+            fs.writeFileSync(mcpJsonPath, JSON.stringify(mcpJson, null, 2) + '\n');
+
+            return {
+              success: true,
+              data: {
+                installed: true,
+                source: 'plugin',
+                status: 'active',
+                command: 'node',
+                args: mcpServerPath,
+                tools: ['search', 'detail', 'feedback'],
+              },
+            };
+          } catch (err: any) {
+            return {
+              success: false,
+              error: `Failed to create plugin .mcp.json: ${err.message || err}`,
+            };
+          }
         }
 
+        // No plugin — fall back to manual `claude mcp add`
         const env = { ...process.env, CLAUDECODE: undefined };
-        const mcpServerPath = path.resolve(__dirname, '../../dist/mcp-server/index.js');
+        const mcpServerPath = findMcpServerPath();
 
         try {
           // Remove legacy names if present (renamed: tier-agent-context → lm-assist-context → lm-assist)
@@ -735,27 +838,33 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // GET /claude-code/settings - Read Claude settings (cleanupPeriodDays)
+    // GET /claude-code/settings - Read Claude settings
     {
       method: 'GET',
       pattern: /^\/claude-code\/settings$/,
       handler: async () => {
         const settings = readClaudeSettings();
+        const env = settings.env || {};
         return {
           success: true,
           data: {
             cleanupPeriodDays: typeof settings.cleanupPeriodDays === 'number' ? settings.cleanupPeriodDays : 30,
+            env: {
+              CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === '1',
+            },
           },
         };
       },
     },
 
-    // PUT /claude-code/settings - Update Claude settings (cleanupPeriodDays)
+    // PUT /claude-code/settings - Update Claude settings
     {
       method: 'PUT',
       pattern: /^\/claude-code\/settings$/,
       handler: async (req) => {
         const body = req.body || {};
+        const settings = readClaudeSettings();
+        let changed = false;
 
         if (body.cleanupPeriodDays !== undefined) {
           const val = body.cleanupPeriodDays;
@@ -765,23 +874,34 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
               error: { code: 'INVALID_VALUE', message: 'cleanupPeriodDays must be a positive integer' },
             };
           }
-
-          const settings = readClaudeSettings();
           settings.cleanupPeriodDays = val;
-          writeClaudeSettings(settings);
-
-          return {
-            success: true,
-            data: { cleanupPeriodDays: val },
-          };
+          changed = true;
         }
 
-        // No recognized fields provided
-        const settings = readClaudeSettings();
+        if (body.env && typeof body.env === 'object') {
+          if (!settings.env) settings.env = {};
+          if (typeof body.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === 'boolean') {
+            if (body.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS) {
+              settings.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+            } else {
+              delete settings.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+            }
+            changed = true;
+          }
+        }
+
+        if (changed) {
+          writeClaudeSettings(settings);
+        }
+
+        const env = settings.env || {};
         return {
           success: true,
           data: {
             cleanupPeriodDays: typeof settings.cleanupPeriodDays === 'number' ? settings.cleanupPeriodDays : 30,
+            env: {
+              CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === '1',
+            },
           },
         };
       },

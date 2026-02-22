@@ -30,6 +30,7 @@
   "files": [
     "core/dist",
     "core/hooks",
+    "core/scripts",
     "web/.next",
     "web/public",
     "core.sh",
