@@ -27,7 +27,30 @@ npm list -g lm-assist --depth=0 2>/dev/null
 
 If not found, tell the user to clone or install lm-assist first.
 
-### 2. Start Services
+### 2. Install Dependencies & Build
+
+Check if dependencies are installed and code is built:
+```bash
+# Check if node_modules exists (from the lm-assist directory)
+ls <lm-assist-dir>/node_modules/.package-lock.json 2>/dev/null
+```
+
+If `node_modules` doesn't exist, install dependencies:
+```bash
+cd <lm-assist-dir> && npm install
+```
+
+Check if core is built:
+```bash
+ls <lm-assist-dir>/core/dist/cli.js 2>/dev/null
+```
+
+If `core/dist` doesn't exist, build:
+```bash
+cd <lm-assist-dir> && npm run build:core
+```
+
+### 3. Start Services
 
 Check if the API is already running:
 ```bash
@@ -47,7 +70,7 @@ for i in 1 2 3 4 5; do
 done
 ```
 
-### 3. Verify MCP Server
+### 4. Verify MCP Server
 
 Check if the MCP server is reachable (it may be registered by the plugin or manually):
 ```bash
@@ -59,7 +82,7 @@ If not installed (e.g., non-plugin install), install it:
 curl -s -X POST http://localhost:3100/claude-code/mcp/install
 ```
 
-### 4. Verify Context Hook
+### 5. Verify Context Hook
 
 Check if the context-inject hook is active (registered by plugin hooks or manually):
 ```bash
@@ -71,7 +94,7 @@ If not installed (e.g., non-plugin install), install it:
 curl -s -X POST http://localhost:3100/claude-code/context-hook/install
 ```
 
-### 5. Install Statusline (Optional)
+### 6. Install Statusline (Optional)
 
 The statusline is not installed by the plugin — it's optional. Check and offer to install:
 ```bash
@@ -83,7 +106,7 @@ If not installed, ask the user if they want it, then install:
 curl -s -X POST http://localhost:3100/claude-code/statusline/install
 ```
 
-### 6. Verify
+### 7. Verify
 
 Run a final status check:
 ```bash
@@ -101,10 +124,11 @@ Show progress as you go:
 lm-assist Setup
 ===============
 
-[1/4] Starting services...          done
-[2/4] Verifying MCP server...       active (tools: search, detail, feedback)
-[3/4] Verifying context hook...     active
-[4/4] Verifying installation...     all components healthy
+[1/5] Installing dependencies...     done (already installed)
+[2/5] Starting services...          done
+[3/5] Verifying MCP server...       active (tools: search, detail, feedback)
+[4/5] Verifying context hook...     active
+[5/5] Verifying installation...     all components healthy
 
 Setup complete!
   Web UI: http://localhost:3848

@@ -23,8 +23,18 @@ if [ -f "$ENV_FILE" ]; then
     set +a
 fi
 
+# Platform detection
+IS_WINDOWS=false
+if [[ "$(uname -s)" == MINGW* ]] || [[ "$(uname -s)" == MSYS* ]] || [[ "$(uname -s)" == CYGWIN* ]]; then
+    IS_WINDOWS=true
+fi
+
 # Detect host IP address
-HOST_IP=$(hostname -I | awk '{print $1}')
+if [ "$IS_WINDOWS" = true ]; then
+    HOST_IP=$(powershell -NoProfile -Command "(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { \$_.IPAddress -ne '127.0.0.1' } | Select-Object -First 1).IPAddress" 2>/dev/null)
+else
+    HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+fi
 if [ -z "$HOST_IP" ]; then
     HOST_IP="localhost"
 fi
@@ -96,7 +106,7 @@ check_prerequisites() {
         all_good=false
     fi
 
-    if ! command -v lsof &> /dev/null; then
+    if [ "$IS_WINDOWS" != true ] && ! command -v lsof &> /dev/null; then
         missing_deps+=("lsof")
         all_good=false
     fi
@@ -119,6 +129,10 @@ check_prerequisites() {
 # Function to check if a port is in use (supports both IPv4 and IPv6)
 check_port() {
     local port=$1
+    if [ "$IS_WINDOWS" = true ]; then
+        netstat -ano 2>/dev/null | grep -q ":${port}.*LISTENING"
+        return $?
+    fi
     # Check using lsof (both IPv4 and IPv6)
     if lsof -i ":$port" -sTCP:LISTEN -t >/dev/null 2>&1; then
         return 0
@@ -143,6 +157,11 @@ check_port_responding() {
 kill_process_tree() {
     local pid=$1
     local signal=${2:-TERM}
+
+    if [ "$IS_WINDOWS" = true ]; then
+        taskkill //F //T //PID "$pid" > /dev/null 2>&1
+        return $?
+    fi
 
     # Get all child processes
     local children=$(pgrep -P "$pid" 2>/dev/null)
@@ -170,13 +189,24 @@ get_process_pid() {
 
     if [ -f "$pid_file" ]; then
         local pid=$(cat "$pid_file")
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "$pid"
-            return 0
+        if [ "$IS_WINDOWS" = true ]; then
+            if tasklist //FI "PID eq $pid" 2>/dev/null | grep -q "$pid"; then
+                echo "$pid"
+                return 0
+            fi
+        else
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "$pid"
+                return 0
+            fi
         fi
     fi
     # Fallback: find by port
-    lsof -i ":$port" -sTCP:LISTEN -t 2>/dev/null | head -1
+    if [ "$IS_WINDOWS" = true ]; then
+        netstat -ano 2>/dev/null | grep ":${port}.*LISTENING" | awk '{print $NF}' | head -1
+    else
+        lsof -i ":$port" -sTCP:LISTEN -t 2>/dev/null | head -1
+    fi
 }
 
 # Function to check if hub is configured via .env
@@ -417,19 +447,34 @@ stop_core() {
         sleep 1
 
         # Force kill if still running
-        if kill -0 "$pid" 2>/dev/null; then
-            echo -e "${YELLOW}   Process didn't terminate gracefully, forcing...${NC}"
-            kill_process_tree "$pid" KILL
+        if [ "$IS_WINDOWS" = true ]; then
+            if tasklist //FI "PID eq $pid" 2>/dev/null | grep -q "$pid"; then
+                echo -e "${YELLOW}   Process didn't terminate gracefully, forcing...${NC}"
+                kill_process_tree "$pid" KILL
+            fi
+        else
+            if kill -0 "$pid" 2>/dev/null; then
+                echo -e "${YELLOW}   Process didn't terminate gracefully, forcing...${NC}"
+                kill_process_tree "$pid" KILL
+            fi
         fi
         stopped=true
     fi
 
     # Kill anything still holding the port
-    local port_pids=$(lsof -i ":$API_PORT" -t 2>/dev/null)
+    if [ "$IS_WINDOWS" = true ]; then
+        local port_pids=$(netstat -ano 2>/dev/null | grep ":${API_PORT}.*LISTENING" | awk '{print $NF}' | sort -u)
+    else
+        local port_pids=$(lsof -i ":$API_PORT" -t 2>/dev/null)
+    fi
     for port_pid in $port_pids; do
         if [ -n "$port_pid" ]; then
             echo -e "${YELLOW}   Killing process on port $API_PORT: $port_pid${NC}"
-            kill -9 "$port_pid" 2>/dev/null
+            if [ "$IS_WINDOWS" = true ]; then
+                taskkill //F //PID "$port_pid" > /dev/null 2>&1
+            else
+                kill -9 "$port_pid" 2>/dev/null
+            fi
             stopped=true
         fi
     done
@@ -580,19 +625,34 @@ stop_web() {
         sleep 1
 
         # Force kill if still running
-        if kill -0 "$pid" 2>/dev/null; then
-            echo -e "${YELLOW}   Process didn't terminate gracefully, forcing...${NC}"
-            kill_process_tree "$pid" KILL
+        if [ "$IS_WINDOWS" = true ]; then
+            if tasklist //FI "PID eq $pid" 2>/dev/null | grep -q "$pid"; then
+                echo -e "${YELLOW}   Process didn't terminate gracefully, forcing...${NC}"
+                kill_process_tree "$pid" KILL
+            fi
+        else
+            if kill -0 "$pid" 2>/dev/null; then
+                echo -e "${YELLOW}   Process didn't terminate gracefully, forcing...${NC}"
+                kill_process_tree "$pid" KILL
+            fi
         fi
         stopped=true
     fi
 
     # Kill anything still holding the port
-    local port_pids=$(lsof -i ":$WEB_PORT" -t 2>/dev/null)
+    if [ "$IS_WINDOWS" = true ]; then
+        local port_pids=$(netstat -ano 2>/dev/null | grep ":${WEB_PORT}.*LISTENING" | awk '{print $NF}' | sort -u)
+    else
+        local port_pids=$(lsof -i ":$WEB_PORT" -t 2>/dev/null)
+    fi
     for port_pid in $port_pids; do
         if [ -n "$port_pid" ]; then
             echo -e "${YELLOW}   Killing process on port $WEB_PORT: $port_pid${NC}"
-            kill -9 "$port_pid" 2>/dev/null
+            if [ "$IS_WINDOWS" = true ]; then
+                taskkill //F //PID "$port_pid" > /dev/null 2>&1
+            else
+                kill -9 "$port_pid" 2>/dev/null
+            fi
             stopped=true
         fi
     done
