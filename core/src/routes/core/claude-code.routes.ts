@@ -17,6 +17,8 @@
  *   GET  /claude-code/context-hook              Check context-inject hook installation
  *   POST /claude-code/context-hook/install      Install context-inject hook into ~/.claude/settings.json
  *   POST /claude-code/context-hook/uninstall    Remove context-inject hook from ~/.claude/settings.json
+ *   GET  /claude-code/settings                  Read Claude settings (~/.claude/settings.json)
+ *   PUT  /claude-code/settings                  Update Claude settings (cleanupPeriodDays)
  */
 
 import type { RouteHandler, RouteContext } from '../index';
@@ -729,6 +731,58 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
         return {
           success: true,
           data: { installed: false, source: null, scriptPath: null },
+        };
+      },
+    },
+
+    // GET /claude-code/settings - Read Claude settings (cleanupPeriodDays)
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/settings$/,
+      handler: async () => {
+        const settings = readClaudeSettings();
+        return {
+          success: true,
+          data: {
+            cleanupPeriodDays: typeof settings.cleanupPeriodDays === 'number' ? settings.cleanupPeriodDays : 30,
+          },
+        };
+      },
+    },
+
+    // PUT /claude-code/settings - Update Claude settings (cleanupPeriodDays)
+    {
+      method: 'PUT',
+      pattern: /^\/claude-code\/settings$/,
+      handler: async (req) => {
+        const body = req.body || {};
+
+        if (body.cleanupPeriodDays !== undefined) {
+          const val = body.cleanupPeriodDays;
+          if (typeof val !== 'number' || !Number.isInteger(val) || val < 1) {
+            return {
+              success: false,
+              error: { code: 'INVALID_VALUE', message: 'cleanupPeriodDays must be a positive integer' },
+            };
+          }
+
+          const settings = readClaudeSettings();
+          settings.cleanupPeriodDays = val;
+          writeClaudeSettings(settings);
+
+          return {
+            success: true,
+            data: { cleanupPeriodDays: val },
+          };
+        }
+
+        // No recognized fields provided
+        const settings = readClaudeSettings();
+        return {
+          success: true,
+          data: {
+            cleanupPeriodDays: typeof settings.cleanupPeriodDays === 'number' ? settings.cleanupPeriodDays : 30,
+          },
         };
       },
     },

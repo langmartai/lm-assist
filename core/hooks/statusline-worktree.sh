@@ -183,6 +183,9 @@ else
     CTX_COLOR="$GREEN"
 fi
 
+# --- Render Line 0: PS1-style header (user@host:cwd) ---
+printf "\033[01;32m$(whoami)@$(hostname -s)\033[00m:\033[01;34m$(pwd)\033[00m\n"
+
 # --- Render: Last 4 user prompts (oldest first, newest bold) ---
 PROMPT_COUNT=${#PROMPTS[@]}
 for ((i=PROMPT_COUNT-1; i>=0; i--)); do

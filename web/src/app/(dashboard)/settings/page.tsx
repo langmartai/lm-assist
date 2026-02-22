@@ -46,6 +46,7 @@ import {
   Activity,
   BookOpen,
   FlaskConical,
+  HardDrive,
 } from 'lucide-react';
 
 // ============================================
@@ -247,6 +248,7 @@ export default function SettingsPage() {
   const [contextHookStatus, setContextHookStatus] = useState<ContextHookStatus | null>(null);
   const [isContextHookInstalling, setIsContextHookInstalling] = useState(false);
   const [isContextHookUninstalling, setIsContextHookUninstalling] = useState(false);
+  const [claudeSettings, setClaudeSettings] = useState<{ cleanupPeriodDays: number } | null>(null);
   const [claudeCodeMessage, setClaudeCodeMessage] = useState<{ text: string; type: 'ok' | 'error' } | null>(null);
 
   // milestone settings state
@@ -701,12 +703,13 @@ export default function SettingsPage() {
     if (proxy.isProxied) return;
     setIsClaudeCodeLoading(true);
     try {
-      const [statusRes, configRes, slRes, mcpRes, hookRes] = await Promise.all([
+      const [statusRes, configRes, slRes, mcpRes, hookRes, settingsRes] = await Promise.all([
         fetch(tierAgentUrl + '/claude-code/status').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/config').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/statusline').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/mcp').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/context-hook').catch(() => null),
+        fetch(tierAgentUrl + '/claude-code/settings').catch(() => null),
       ]);
       if (statusRes?.ok) {
         const json = await statusRes.json();
@@ -727,6 +730,10 @@ export default function SettingsPage() {
       if (hookRes?.ok) {
         const json = await hookRes.json();
         setContextHookStatus(json.data || null);
+      }
+      if (settingsRes?.ok) {
+        const json = await settingsRes.json();
+        setClaudeSettings(json.data || null);
       }
     } catch {
       // silently fail
@@ -1059,6 +1066,24 @@ export default function SettingsPage() {
       setIsClaudeCodeConfigSaving(false);
     }
   }, [tierAgentUrl, isClaudeCodeConfigSaving]);
+
+  const handleClaudeSettingsChange = useCallback(async (key: string, value: number) => {
+    try {
+      const res = await fetch(tierAgentUrl + '/claude-code/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [key]: value }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setClaudeSettings(json.data || null);
+      } else {
+        showClaudeCodeMessage('Failed to update setting', 'error');
+      }
+    } catch {
+      showClaudeCodeMessage('Failed to reach tier-agent', 'error');
+    }
+  }, [tierAgentUrl]);
 
   const handleStatuslineInstall = useCallback(async () => {
     setIsStatuslineInstalling(true);
@@ -2479,6 +2504,60 @@ export default function SettingsPage() {
                         </div>
                       </div>
                     </div>
+                  </div>
+                </SectionCard>
+
+                {/* Storage Card */}
+                <SectionCard title="Storage" icon={HardDrive}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    {claudeSettings ? (
+                      <div style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 10,
+                        padding: '10px 12px',
+                        background: 'var(--color-bg-secondary)',
+                        borderRadius: 'var(--radius-sm)',
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--color-text-primary)', lineHeight: 1.4 }}>
+                              Session cleanup days
+                            </div>
+                            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5, marginTop: 2 }}>
+                              Number of days to retain Claude Code session files before automatic cleanup. Default: 30 days.
+                            </div>
+                          </div>
+                          <input
+                            type="number"
+                            min={1}
+                            max={9999}
+                            value={claudeSettings.cleanupPeriodDays}
+                            onChange={(e) => {
+                              const v = Math.max(1, Math.min(9999, parseInt(e.target.value) || 30));
+                              handleClaudeSettingsChange('cleanupPeriodDays', v);
+                            }}
+                            style={{
+                              width: 64,
+                              padding: '4px 8px',
+                              fontSize: 11,
+                              fontFamily: 'var(--font-mono)',
+                              background: 'var(--color-bg-primary)',
+                              border: '1px solid var(--color-border)',
+                              borderRadius: 4,
+                              color: 'var(--color-text-primary)',
+                              textAlign: 'center',
+                              flexShrink: 0,
+                              marginTop: 1,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+                        Loading settings...
+                      </div>
+                    )}
                   </div>
                 </SectionCard>
 

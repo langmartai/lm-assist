@@ -217,8 +217,10 @@ code, pre, .font-mono {
 .shell-topbar {
   grid-row: 1;
   grid-column: 2;
-  overflow: hidden;
+  overflow: visible;
   min-width: 0;
+  position: relative;
+  z-index: 100;
 }
 
 .shell-main {
@@ -297,8 +299,10 @@ code, pre, .font-mono {
   align-items: center;
   padding: 0 16px;
   gap: 12px;
-  overflow: hidden;
+  overflow: visible;
   min-width: 0;
+  position: relative;
+  z-index: 100;
 }
 
 .topbar-breadcrumb {
