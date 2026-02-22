@@ -26,7 +26,7 @@ open http://localhost:3848 2>/dev/null || xdg-open http://localhost:3848 2>/dev/
 
 4. If the API is **not** running, tell the user:
    - The lm-assist services are not running
-   - They can start them with: `./core.sh start` (from the lm-assist directory)
+   - They can start them with: `lm-assist start` (if installed globally via npm)
    - Or run `/assist-setup` to do a full install and start
 
 ## Output Format

@@ -12,7 +12,7 @@
   "plugins": [
     {
       "name": "lm-assist",
-      "version": "0.1.15",
+      "version": "0.1.18",
       "source": "./",
       "description": "Auto-build knowledge from Claude Code sessions and inject it as context. Inspect sessions with deep views into agents, tasks, teams, plans, and tool calls. Access and control all Claude Code terminals from any device via web browser. Includes MCP server (search, detail, feedback), context-injection hook, and 6 slash commands.",
       "category": "productivity",

@@ -14,7 +14,7 @@ Query the MCP server's tool call log to see search, detail, and feedback calls m
 curl -s --max-time 2 http://localhost:3100/health
 ```
 
-If the API is not running, tell the user to start services with `./core.sh start` or run `/assist-setup`.
+If the API is not running, tell the user to start services with `lm-assist start` or run `/assist-setup`.
 
 2. Fetch the MCP call logs:
 ```bash

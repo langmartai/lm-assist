@@ -14,7 +14,7 @@ Query the context-inject hook log to see what knowledge and milestones are being
 curl -s --max-time 2 http://localhost:3100/health
 ```
 
-If the API is not running, tell the user to start services with `./core.sh start` or run `/assist-setup`.
+If the API is not running, tell the user to start services with `lm-assist start` or run `/assist-setup`.
 
 2. Fetch the context-inject hook logs:
 ```bash

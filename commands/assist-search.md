@@ -14,7 +14,7 @@ Search across knowledge entries, milestones, and architecture using the lm-assis
 curl -s --max-time 2 http://localhost:3100/health
 ```
 
-If the API is not running, tell the user to start services with `./core.sh start` or run `/assist-setup`.
+If the API is not running, tell the user to start services with `lm-assist start` or run `/assist-setup`.
 
 2. The user's search query comes from `$ARGUMENTS`. If no arguments are provided, ask the user what they want to search for.
 
