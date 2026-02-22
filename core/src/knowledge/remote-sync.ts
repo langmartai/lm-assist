@@ -265,7 +265,9 @@ export async function sync(projectPath?: string): Promise<void> {
 
           if (existing) {
             // Compare updatedAt — if remote is newer, update
-            if (rk.updatedAt && existing.updatedAt && rk.updatedAt > existing.updatedAt) {
+            const remoteIsNewer = rk.updatedAt && existing.updatedAt && rk.updatedAt > existing.updatedAt;
+
+            if (remoteIsNewer) {
               // Delete old vectors, will re-index below
               try {
                 const { getVectorStore } = require('../vector/vector-store');
@@ -277,7 +279,47 @@ export async function sync(projectPath?: string): Promise<void> {
               store.deleteRemoteKnowledge(remoteMachineId, knowledgeId);
               // Fall through to create below
             } else {
-              _syncStatus.entriesSkipped++;
+              // Entry exists on disk and is up-to-date.
+              // Repair: ensure index entry exists (may be missing if a previous sync
+              // saved .md file but crashed before updating the index).
+              let repaired = false;
+              try {
+                const indexEntry = store.getIndex().knowledges[`${remoteMachineId}:${knowledgeId}`];
+                if (!indexEntry) {
+                  // Re-save to repair the index entry (saveKnowledge updates the index)
+                  store.resaveKnowledge(existing);
+                  repaired = true;
+                }
+              } catch { /* best-effort */ }
+
+              // Also verify vectors are indexed
+              // (may be missing if a previous sync saved .md but vector indexing failed)
+              try {
+                const { getVectorStore } = require('../vector/vector-store');
+                const vectra = getVectorStore();
+                const hasVec = await vectra.hasKnowledge(knowledgeId);
+                if (!hasVec) {
+                  // Re-index vectors for existing entry
+                  const { extractKnowledgeVectors } = require('../vector/indexer');
+                  const vectors = extractKnowledgeVectors(existing, effectivePath, {
+                    machineId: remoteMachineId,
+                    machineHostname: remoteHostname,
+                    machineOS: remoteOS,
+                  });
+                  if (vectors.length > 0) {
+                    await vectra.addVectors(vectors);
+                    repaired = true;
+                  }
+                }
+              } catch (err: any) {
+                _syncStatus.errors.push(`${remoteMachineId}:${knowledgeId}: Vector re-index failed: ${err.message}`);
+              }
+
+              if (repaired) {
+                _syncStatus.entriesSynced++;
+              } else {
+                _syncStatus.entriesSkipped++;
+              }
               continue;
             }
           }

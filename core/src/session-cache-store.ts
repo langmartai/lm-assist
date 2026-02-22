@@ -39,6 +39,27 @@ export class SessionCacheStore {
       fs.mkdirSync(dir, { recursive: true });
     }
 
+    // Startup cleanup: if a previous compact flagged for file deletion,
+    // delete the old data.mdb before opening LMDB so it creates a fresh file.
+    const compactFlag = path.join(dir, '.compact-pending');
+    if (fs.existsSync(compactFlag)) {
+      const dataFile = path.join(dir, 'data.mdb');
+      const lockFile = path.join(dir, 'lock.mdb');
+      for (const f of [dataFile, lockFile]) {
+        try { fs.unlinkSync(f); } catch { /* ok — may not exist */ }
+      }
+      // Clean up .old files from previous compactions
+      try {
+        for (const f of fs.readdirSync(dir)) {
+          if (f.endsWith('.old')) {
+            try { fs.unlinkSync(path.join(dir, f)); } catch { /* ok */ }
+          }
+        }
+      } catch { /* ok */ }
+      try { fs.unlinkSync(compactFlag); } catch { /* ok */ }
+      console.log('[SessionCacheStore] Startup compact: deleted old LMDB data files');
+    }
+
     this.env = open({
       path: dir,
       compression: true,       // LZ4 — ~5 GB/s decompression
@@ -152,6 +173,75 @@ export class SessionCacheStore {
       await this.sessionsDb.clearAsync();
       await this.rawDb.clearAsync();
     }
+  }
+
+  /**
+   * Compact the LMDB database to reclaim disk space.
+   *
+   * On Windows, LMDB data files are memory-mapped and cannot be deleted while
+   * any process (including MCP servers spawned by Claude Code) has them open.
+   *
+   * Strategy:
+   * 1. Clear all data immediately (pages become free internally)
+   * 2. Write a `.compact-pending` flag file
+   * 3. On next server restart, the constructor deletes data.mdb before opening
+   *
+   * All cached data is lost and will be reparsed on demand.
+   */
+  async compact(): Promise<{ beforeSize: number; afterSize: number }> {
+    const dataFile = path.join(this._path, 'data.mdb');
+
+    // Measure before size
+    let beforeSize = 0;
+    try { beforeSize = fs.statSync(dataFile).size; } catch { /* ok */ }
+
+    // Clear all data (marks pages as free within LMDB — file size unchanged)
+    await this.sessionsDb.clearAsync();
+    await this.rawDb.clearAsync();
+    await this.metaDb.clearAsync();
+
+    // Try to delete the file directly (works on Linux/macOS, rarely on Windows)
+    let deleted = false;
+    this.close();
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    try {
+      fs.unlinkSync(dataFile);
+      try { fs.unlinkSync(path.join(this._path, 'lock.mdb')); } catch { /* ok */ }
+      deleted = true;
+    } catch {
+      // File is locked (Windows mmap) — flag for cleanup on next startup
+      const compactFlag = path.join(this._path, '.compact-pending');
+      fs.writeFileSync(compactFlag, new Date().toISOString());
+      console.log('[SessionCacheStore] File locked by other processes, flagged for cleanup on next restart');
+    }
+
+    // Clean up .old files from previous compactions
+    try {
+      for (const f of fs.readdirSync(this._path)) {
+        if (f.endsWith('.old')) {
+          try { fs.unlinkSync(path.join(this._path, f)); } catch { /* ok */ }
+        }
+      }
+    } catch { /* ok */ }
+
+    // Reopen (either fresh file if deleted, or the cleared-but-same-size file)
+    this._closed = false;
+    this.env = open({
+      path: this._path,
+      compression: true,
+      maxDbs: 3,
+      mapSize: 2 * 1024 * 1024 * 1024,
+    });
+    this.sessionsDb = this.env.openDB('sessions', { encoding: 'msgpack' });
+    this.rawDb = this.env.openDB('raw', { encoding: 'msgpack' });
+    this.metaDb = this.env.openDB('meta', { encoding: 'msgpack' });
+
+    // Measure after size
+    let afterSize = 0;
+    try { afterSize = fs.statSync(dataFile).size; } catch { /* ok */ }
+
+    return { beforeSize, afterSize };
   }
 
   /**

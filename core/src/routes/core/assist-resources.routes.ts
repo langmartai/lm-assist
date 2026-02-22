@@ -52,6 +52,26 @@ interface FileInfo {
   children?: FileInfo[];
 }
 
+/** Recursively compute total size of all files under a directory. */
+function recursiveDirSize(dirPath: string): number {
+  let total = 0;
+  try {
+    const entries = fs.readdirSync(dirPath);
+    for (const entry of entries) {
+      const full = path.join(dirPath, entry);
+      try {
+        const st = fs.statSync(full);
+        if (st.isDirectory()) {
+          total += recursiveDirSize(full);
+        } else {
+          total += st.size;
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* skip */ }
+  return total;
+}
+
 function statFileInfo(filePath: string, category: string): FileInfo | null {
   try {
     const stats = fs.statSync(filePath);
@@ -67,11 +87,7 @@ function statFileInfo(filePath: string, category: string): FileInfo | null {
       try {
         const children = fs.readdirSync(filePath);
         info.fileCount = children.length;
-        let totalSize = 0;
-        for (const child of children) {
-          try { totalSize += fs.statSync(path.join(filePath, child)).size; } catch { /* skip */ }
-        }
-        info.size = totalSize;
+        info.size = recursiveDirSize(filePath);
       } catch { /* empty dir */ }
     }
     return info;
@@ -141,7 +157,7 @@ export function createAssistResourcesRoutes(_ctx: RouteContext): RouteHandler[] 
       handler: async (req) => {
         const start = Date.now();
         try {
-          const depth = Math.min(parseInt(req.query.depth || '2', 10), 5);
+          const depth = Math.min(parseInt(req.query.depth || '4', 10), 6);
 
           // Scan the data directory
           const root = scanDir(DATA, 'lm-assist', depth);

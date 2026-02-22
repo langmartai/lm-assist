@@ -474,6 +474,15 @@ export class KnowledgeStore {
     this.updateIndexEntry(knowledge);
   }
 
+  /**
+   * Re-save a knowledge entry: updates the index without re-fetching.
+   * Used to repair index entries for .md files that exist on disk
+   * but are missing from the index (e.g. after a crashed sync).
+   */
+  resaveKnowledge(knowledge: Knowledge): void {
+    this.updateIndexEntry(knowledge);
+  }
+
   // ─── Comments ──────────────────────────────────────────────────
 
   private loadCommentFile(knowledgeId: string): KnowledgeCommentFile {

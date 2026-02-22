@@ -320,7 +320,14 @@ export class VectorStore {
   private async handleLanceError(err: any): Promise<boolean> {
     if (this._reinitAttempted) return false;
     const msg = String(err?.message || err || '');
+    // Stale data file reference (e.g. after external schema migration)
     if (msg.includes('Not found') && msg.includes('.lance')) {
+      await this.reinit();
+      return true;
+    }
+    // Schema mismatch: table missing columns added in later versions
+    if (msg.includes('not in schema') || msg.includes('Found field not in schema')) {
+      console.warn(`[VectorStore] Schema mismatch detected, recreating table: ${msg}`);
       await this.reinit();
       return true;
     }
@@ -352,7 +359,16 @@ export class VectorStore {
     await this.init();
     const embedder = getEmbedder();
     const vector = await embedder.embed(text);
-    await this.table.add([metadataToRow(vector, metadata)]);
+
+    try {
+      await this.table.add([metadataToRow(vector, metadata)]);
+    } catch (err: any) {
+      if (await this.handleLanceError(err)) {
+        await this.table.add([metadataToRow(vector, metadata)]);
+      } else {
+        throw err;
+      }
+    }
   }
 
   /**
@@ -368,15 +384,27 @@ export class VectorStore {
     const embedder = getEmbedder();
     let totalAdded = 0;
 
-    for (let offset = 0; offset < items.length; offset += WRITE_CHUNK) {
-      const chunk = items.slice(offset, offset + WRITE_CHUNK);
-      const texts = chunk.map(i => i.text);
-      const vectors = await embedder.embedBatch(texts);
+    const doAdd = async () => {
+      for (let offset = totalAdded; offset < items.length; offset += WRITE_CHUNK) {
+        const chunk = items.slice(offset, offset + WRITE_CHUNK);
+        const texts = chunk.map(i => i.text);
+        const vectors = await embedder.embedBatch(texts);
 
-      const rows = chunk.map((item, i) => metadataToRow(vectors[i], item.metadata));
-      await this.table.add(rows);
+        const rows = chunk.map((item, i) => metadataToRow(vectors[i], item.metadata));
+        await this.table.add(rows);
 
-      totalAdded += chunk.length;
+        totalAdded += chunk.length;
+      }
+    };
+
+    try {
+      await doAdd();
+    } catch (err: any) {
+      if (await this.handleLanceError(err)) {
+        await doAdd();
+      } else {
+        throw err;
+      }
     }
 
     return totalAdded;

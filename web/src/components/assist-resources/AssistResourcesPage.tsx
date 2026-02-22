@@ -76,7 +76,8 @@ interface FileStatResponse {
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 function formatRelativeTime(iso: string): string {
@@ -211,7 +212,7 @@ export function AssistResourcesPage() {
   const loadFiles = useCallback(async () => {
     setListLoading(true);
     try {
-      const data = await apiFetch<FilesResponse>('/assist-resources/files?depth=3');
+      const data = await apiFetch<FilesResponse>('/assist-resources/files?depth=4');
       setRootNode(data.root);
       setExtras(data.extras);
       setTotalSize(data.totalSize);
@@ -767,8 +768,8 @@ function TreeNode({
           <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-text-primary)', flex: 1 }}>
             {node.name}
           </span>
-          <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
-            {node.fileCount ?? children.length}
+          <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', whiteSpace: 'nowrap' }}>
+            {node.fileCount ?? children.length} · {formatSize(node.size)}
           </span>
         </div>
         {isExpanded && children.map(child => (

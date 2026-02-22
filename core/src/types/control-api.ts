@@ -1240,6 +1240,11 @@ export interface SessionsApi {
   clearCache(sessionPath?: string): Promise<ApiResponse<CacheClearResponse>>;
 
   /**
+   * Compact the LMDB cache to reclaim disk space.
+   */
+  compactCache(): Promise<ApiResponse<{ message: string; beforeSize: number; afterSize: number; savedBytes: number }>>;
+
+  /**
    * Start the file watcher for proactive cache updates.
    */
   startCacheWatcher(projectPaths?: string[]): Promise<ApiResponse<CacheWatcherResponse>>;

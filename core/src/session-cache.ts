@@ -1421,6 +1421,29 @@ export class SessionCache {
   }
 
   /**
+   * Compact the LMDB database to reclaim disk space.
+   * Stops file watcher, deletes the data file, reopens, restarts watcher.
+   * All cached data is lost and will be lazily reparsed on next access.
+   */
+  async compactCache(): Promise<{ beforeSize: number; afterSize: number }> {
+    // Stop watcher during compaction
+    const wasWatching = this.isWatching;
+    const watchedPaths = [...this.watchedPaths];
+    if (wasWatching) {
+      this.stopWatching();
+    }
+
+    const result = await this.store.compact();
+
+    // Restart watcher
+    if (wasWatching) {
+      this.startWatching(watchedPaths.length > 0 ? watchedPaths : undefined);
+    }
+
+    return result;
+  }
+
+  /**
    * Get cached session data synchronously.
    * Uses LMDB cache (sync read via mmap), falls back to full parse if needed.
    * Note: On cache miss or invalidation, the LMDB write is fire-and-forget

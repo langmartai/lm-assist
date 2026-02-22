@@ -364,6 +364,13 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // POST /session-cache/compact - Compact LMDB to reclaim disk space
+    {
+      method: 'POST',
+      pattern: /^\/session-cache\/compact$/,
+      handler: async (_req, api) => api.sessions.compactCache(),
+    },
+
     // POST /session-cache/watcher/start - Start cache watcher
     {
       method: 'POST',

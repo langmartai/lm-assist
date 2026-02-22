@@ -878,6 +878,29 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
       }
     },
 
+    compactCache: async () => {
+      const start = Date.now();
+      try {
+        const { getSessionCache } = await import('../session-cache');
+        const cache = getSessionCache();
+        const result = await cache.compactCache();
+
+        const saved = result.beforeSize - result.afterSize;
+        const deferred = saved <= 0 && result.beforeSize > 0;
+        return wrapResponse({
+          message: deferred
+            ? 'Cache data cleared. File locked by other processes — disk space will be reclaimed on next core restart.'
+            : 'Cache compacted',
+          beforeSize: result.beforeSize,
+          afterSize: result.afterSize,
+          savedBytes: Math.max(0, saved),
+          deferredCleanup: deferred,
+        }, start);
+      } catch (e) {
+        return wrapError('CACHE_COMPACT_ERROR', String(e), start);
+      }
+    },
+
     startCacheWatcher: async (projectPaths?: string[]) => {
       const start = Date.now();
       try {
