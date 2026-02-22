@@ -1,6 +1,6 @@
 {
   "name": "lm-assist",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "description": "Knowledge management, session inspector, and web terminal control for Claude Code",
   "license": "AGPL-3.0-or-later",
   "author": {
