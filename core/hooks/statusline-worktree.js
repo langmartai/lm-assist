@@ -552,7 +552,16 @@ async function main() {
   } else if (currentWt) {
     line2 += ` ${BOLD}${YELLOW}wt-${currentWt}${RESET} ${DIM}(not found)${RESET}`;
   } else {
-    line2 += ` ${BOLD}${BLUE}main${RESET}`;
+    // Detect actual git branch from project directory
+    let branch = 'main';
+    try {
+      branch = execSync(`git -C "${projectDir}" branch --show-current`, {
+        encoding: 'utf-8',
+        timeout: 3000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim() || 'main';
+    } catch {}
+    line2 += ` ${BOLD}${BLUE}${branch}${RESET}`;
   }
   process.stdout.write(line2 + '\n');
 
