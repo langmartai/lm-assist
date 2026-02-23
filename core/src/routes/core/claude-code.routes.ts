@@ -14,6 +14,12 @@
  *   GET  /claude-code/mcp                       Check MCP server installation status
  *   POST /claude-code/mcp/install               Install MCP server via claude mcp add
  *   POST /claude-code/mcp/uninstall             Remove MCP server via claude mcp remove
+ *   GET  /claude-code/ide-mcp/vscode             Check VS Code MCP integration status
+ *   POST /claude-code/ide-mcp/vscode/activate    Add lm-assist to VS Code mcp.json
+ *   POST /claude-code/ide-mcp/vscode/deactivate  Remove lm-assist from VS Code mcp.json
+ *   GET  /claude-code/ide-mcp/codex              Check Codex MCP integration status
+ *   POST /claude-code/ide-mcp/codex/activate     Add lm-assist to Codex config.toml
+ *   POST /claude-code/ide-mcp/codex/deactivate   Remove lm-assist from Codex config.toml
  *   GET  /claude-code/context-hook              Check context-inject hook installation
  *   POST /claude-code/context-hook/install      Install context-inject hook into ~/.claude/settings.json
  *   POST /claude-code/context-hook/uninstall    Remove context-inject hook from ~/.claude/settings.json
@@ -149,6 +155,50 @@ function findMcpServerPath(): string {
   }
   // Fallback: local build output
   return path.resolve(__dirname, '../../dist/mcp-server/index.js');
+}
+
+/**
+ * Get the VS Code mcp.json path (cross-platform).
+ */
+function getVsCodeMcpJsonPath(): string {
+  if (IS_WINDOWS) {
+    return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Code', 'User', 'mcp.json');
+  } else if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'Code', 'User', 'mcp.json');
+  }
+  return path.join(os.homedir(), '.config', 'Code', 'User', 'mcp.json');
+}
+
+/**
+ * Get the Codex config.toml path.
+ */
+function getCodexConfigPath(): string {
+  return path.join(os.homedir(), '.codex', 'config.toml');
+}
+
+/**
+ * Remove a TOML section by name (e.g. 'mcp_servers.lm-assist').
+ * Handles sections at any position (start, middle, end) and cleans up blank lines.
+ * Works correctly even when the last line has no trailing newline.
+ */
+function removeTomlSection(content: string, sectionName: string): string {
+  // Ensure trailing newline for consistent regex matching
+  const hasTrailingNewline = content.endsWith('\n');
+  let text = hasTrailingNewline ? content : content + '\n';
+  const escaped = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Match the section header + all content lines until next section header or EOF
+  const re = new RegExp(`\\n*\\[${escaped}\\][ \\t]*\\n(?:[^\\[\\n].*\\n|[ \\t]*\\n)*`, 'g');
+  text = text.replace(re, '\n\n');
+  // Also handle case where section is at very start of file (no leading newline)
+  const reStart = new RegExp(`^\\[${escaped}\\][ \\t]*\\n(?:[^\\[\\n].*\\n|[ \\t]*\\n)*`, 'g');
+  text = text.replace(reStart, '');
+  // Clean up: collapse 3+ consecutive newlines to 2, trim leading blank lines,
+  // and normalize trailing whitespace to a single newline (or none if original had none)
+  text = text.replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '').replace(/\n+$/, '\n');
+  if (!hasTrailingNewline) text = text.replace(/\n$/, '');
+  // If everything was removed, return empty
+  if (text.trim().length === 0) text = '';
+  return text;
 }
 
 /**
@@ -904,6 +954,185 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
             success: false,
             error: err.message || 'Failed to remove MCP server',
           };
+        }
+      },
+    },
+
+    // ─── IDE MCP Integration (VS Code, Codex) ───
+
+    // GET /claude-code/ide-mcp/vscode - Check VS Code MCP integration status
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/ide-mcp\/vscode$/,
+      handler: async () => {
+        const configPath = getVsCodeMcpJsonPath();
+        const configExists = fs.existsSync(configPath);
+        if (!configExists) {
+          return { success: true, data: { installed: false, configPath, configExists: false } };
+        }
+        try {
+          const raw = fs.readFileSync(configPath, 'utf-8');
+          const data = JSON.parse(raw);
+          const server = data?.servers?.['lm-assist'];
+          if (server) {
+            return {
+              success: true,
+              data: {
+                installed: true,
+                configPath,
+                configExists: true,
+                command: server.command || 'node',
+                args: Array.isArray(server.args) ? server.args : [],
+              },
+            };
+          }
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        } catch {
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        }
+      },
+    },
+
+    // POST /claude-code/ide-mcp/vscode/activate - Add lm-assist to VS Code mcp.json
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/ide-mcp\/vscode\/activate$/,
+      handler: async () => {
+        try {
+          const configPath = getVsCodeMcpJsonPath();
+          const mcpServerPath = findMcpServerPath().replace(/\\/g, '/');
+          let data: any = { servers: {} };
+          try {
+            if (fs.existsSync(configPath)) {
+              data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+              if (!data.servers) data.servers = {};
+            }
+          } catch {
+            data = { servers: {} };
+          }
+          data.servers['lm-assist'] = {
+            command: 'node',
+            args: [mcpServerPath],
+          };
+          const dir = path.dirname(configPath);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+          return {
+            success: true,
+            data: { installed: true, configPath, configExists: true, command: 'node', args: [mcpServerPath] },
+          };
+        } catch (err: any) {
+          return { success: false, error: err.message || 'Failed to activate VS Code MCP' };
+        }
+      },
+    },
+
+    // POST /claude-code/ide-mcp/vscode/deactivate - Remove lm-assist from VS Code mcp.json
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/ide-mcp\/vscode\/deactivate$/,
+      handler: async () => {
+        const configPath = getVsCodeMcpJsonPath();
+        if (!fs.existsSync(configPath)) {
+          return { success: true, data: { installed: false, configPath, configExists: false } };
+        }
+        try {
+          const data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+          if (data?.servers?.['lm-assist']) {
+            delete data.servers['lm-assist'];
+            fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+          }
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        } catch (err: any) {
+          return { success: false, error: err.message || 'Failed to update VS Code mcp.json' };
+        }
+      },
+    },
+
+    // GET /claude-code/ide-mcp/codex - Check Codex MCP integration status
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/ide-mcp\/codex$/,
+      handler: async () => {
+        const configPath = getCodexConfigPath();
+        const configExists = fs.existsSync(configPath);
+        if (!configExists) {
+          return { success: true, data: { installed: false, configPath, configExists: false } };
+        }
+        try {
+          const raw = fs.readFileSync(configPath, 'utf-8');
+          const sectionMatch = raw.match(/\[mcp_servers\.lm-assist\][^\n]*\n([\s\S]*?)(?=\n\[|$)/);
+          if (sectionMatch) {
+            const section = sectionMatch[1];
+            const cmdMatch = section.match(/command\s*=\s*"([^"]*)"/);
+            const argsMatch = section.match(/args\s*=\s*\[([^\]]*)\]/);
+            const command = cmdMatch ? cmdMatch[1] : 'node';
+            const args = argsMatch
+              ? argsMatch[1].split(',').map((a: string) => a.trim().replace(/^"|"$/g, '')).filter(Boolean)
+              : [];
+            return {
+              success: true,
+              data: { installed: true, configPath, configExists: true, command, args },
+            };
+          }
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        } catch {
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        }
+      },
+    },
+
+    // POST /claude-code/ide-mcp/codex/activate - Add lm-assist to Codex config.toml
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/ide-mcp\/codex\/activate$/,
+      handler: async () => {
+        try {
+          const configPath = getCodexConfigPath();
+          const mcpServerPath = findMcpServerPath().replace(/\\/g, '/');
+          const section = `[mcp_servers.lm-assist]\ncommand = "node"\nargs = ["${mcpServerPath}"]\n`;
+          let content = '';
+          try {
+            if (fs.existsSync(configPath)) {
+              content = fs.readFileSync(configPath, 'utf-8');
+              // Remove existing section if present (including surrounding blank lines)
+              content = removeTomlSection(content, 'mcp_servers.lm-assist');
+            }
+          } catch {
+            content = '';
+          }
+          // Ensure exactly one trailing newline before appending
+          content = content.trimEnd() + (content.trim().length > 0 ? '\n\n' : '');
+          content += section;
+          const dir = path.dirname(configPath);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(configPath, content, 'utf-8');
+          return {
+            success: true,
+            data: { installed: true, configPath, configExists: true, command: 'node', args: [mcpServerPath] },
+          };
+        } catch (err: any) {
+          return { success: false, error: err.message || 'Failed to activate Codex MCP' };
+        }
+      },
+    },
+
+    // POST /claude-code/ide-mcp/codex/deactivate - Remove lm-assist from Codex config.toml
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/ide-mcp\/codex\/deactivate$/,
+      handler: async () => {
+        const configPath = getCodexConfigPath();
+        if (!fs.existsSync(configPath)) {
+          return { success: true, data: { installed: false, configPath, configExists: false } };
+        }
+        try {
+          let content = fs.readFileSync(configPath, 'utf-8');
+          content = removeTomlSection(content, 'mcp_servers.lm-assist');
+          fs.writeFileSync(configPath, content, 'utf-8');
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        } catch (err: any) {
+          return { success: false, error: err.message || 'Failed to update Codex config.toml' };
         }
       },
     },

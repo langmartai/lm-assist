@@ -207,6 +207,14 @@ interface McpStatus {
   tools?: string[];
 }
 
+interface IdeMcpStatus {
+  installed: boolean;
+  configPath: string;
+  configExists: boolean;
+  command?: string;
+  args?: string[];
+}
+
 interface ContextHookStatus {
   installed: boolean;
   source?: 'plugin' | 'manual' | null;
@@ -294,6 +302,12 @@ export default function SettingsPage() {
   const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
   const [isMcpInstalling, setIsMcpInstalling] = useState(false);
   const [isMcpUninstalling, setIsMcpUninstalling] = useState(false);
+  const [vscodeMcpStatus, setVscodeMcpStatus] = useState<IdeMcpStatus | null>(null);
+  const [isVscodeActivating, setIsVscodeActivating] = useState(false);
+  const [isVscodeDeactivating, setIsVscodeDeactivating] = useState(false);
+  const [codexMcpStatus, setCodexMcpStatus] = useState<IdeMcpStatus | null>(null);
+  const [isCodexActivating, setIsCodexActivating] = useState(false);
+  const [isCodexDeactivating, setIsCodexDeactivating] = useState(false);
   const [contextHookStatus, setContextHookStatus] = useState<ContextHookStatus | null>(null);
   const [isContextHookInstalling, setIsContextHookInstalling] = useState(false);
   const [isContextHookUninstalling, setIsContextHookUninstalling] = useState(false);
@@ -773,13 +787,15 @@ export default function SettingsPage() {
     if (proxy.isProxied) return;
     setIsClaudeCodeLoading(true);
     try {
-      const [statusRes, configRes, slRes, mcpRes, hookRes, settingsRes] = await Promise.all([
+      const [statusRes, configRes, slRes, mcpRes, hookRes, settingsRes, vscodeRes, codexRes] = await Promise.all([
         fetch(tierAgentUrl + '/claude-code/status').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/config').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/statusline').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/mcp').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/context-hook').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/settings').catch(() => null),
+        fetch(tierAgentUrl + '/claude-code/ide-mcp/vscode').catch(() => null),
+        fetch(tierAgentUrl + '/claude-code/ide-mcp/codex').catch(() => null),
       ]);
       if (statusRes?.ok) {
         const json = await statusRes.json();
@@ -804,6 +820,14 @@ export default function SettingsPage() {
       if (settingsRes?.ok) {
         const json = await settingsRes.json();
         setClaudeSettings(json.data || null);
+      }
+      if (vscodeRes?.ok) {
+        const json = await vscodeRes.json();
+        setVscodeMcpStatus(json.data || null);
+      }
+      if (codexRes?.ok) {
+        const json = await codexRes.json();
+        setCodexMcpStatus(json.data || null);
       }
     } catch {
       // silently fail
@@ -1465,6 +1489,82 @@ export default function SettingsPage() {
       showClaudeCodeMessage('Failed to reach tier-agent', 'error');
     } finally {
       setIsMcpUninstalling(false);
+    }
+  }, [tierAgentUrl]);
+
+  const handleVscodeActivate = useCallback(async () => {
+    setIsVscodeActivating(true);
+    setClaudeCodeMessage(null);
+    try {
+      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/vscode/activate', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setVscodeMcpStatus(json.data || null);
+        showClaudeCodeMessage('VS Code MCP activated', 'ok');
+      } else {
+        showClaudeCodeMessage(json.error || 'Failed to activate VS Code MCP', 'error');
+      }
+    } catch {
+      showClaudeCodeMessage('Failed to reach tier-agent', 'error');
+    } finally {
+      setIsVscodeActivating(false);
+    }
+  }, [tierAgentUrl]);
+
+  const handleVscodeDeactivate = useCallback(async () => {
+    setIsVscodeDeactivating(true);
+    setClaudeCodeMessage(null);
+    try {
+      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/vscode/deactivate', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setVscodeMcpStatus(json.data || null);
+        showClaudeCodeMessage('VS Code MCP deactivated', 'ok');
+      } else {
+        showClaudeCodeMessage(json.error || 'Failed to deactivate VS Code MCP', 'error');
+      }
+    } catch {
+      showClaudeCodeMessage('Failed to reach tier-agent', 'error');
+    } finally {
+      setIsVscodeDeactivating(false);
+    }
+  }, [tierAgentUrl]);
+
+  const handleCodexActivate = useCallback(async () => {
+    setIsCodexActivating(true);
+    setClaudeCodeMessage(null);
+    try {
+      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/codex/activate', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setCodexMcpStatus(json.data || null);
+        showClaudeCodeMessage('Codex MCP activated', 'ok');
+      } else {
+        showClaudeCodeMessage(json.error || 'Failed to activate Codex MCP', 'error');
+      }
+    } catch {
+      showClaudeCodeMessage('Failed to reach tier-agent', 'error');
+    } finally {
+      setIsCodexActivating(false);
+    }
+  }, [tierAgentUrl]);
+
+  const handleCodexDeactivate = useCallback(async () => {
+    setIsCodexDeactivating(true);
+    setClaudeCodeMessage(null);
+    try {
+      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/codex/deactivate', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setCodexMcpStatus(json.data || null);
+        showClaudeCodeMessage('Codex MCP deactivated', 'ok');
+      } else {
+        showClaudeCodeMessage(json.error || 'Failed to deactivate Codex MCP', 'error');
+      }
+    } catch {
+      showClaudeCodeMessage('Failed to reach tier-agent', 'error');
+    } finally {
+      setIsCodexDeactivating(false);
     }
   }, [tierAgentUrl]);
 
@@ -3260,6 +3360,132 @@ export default function SettingsPage() {
                         }
                       </span>
                     </div>
+                  </div>
+                </SectionCard>
+
+                {/* IDE MCP Integration Card */}
+                <SectionCard title="IDE MCP Integration" icon={Code2}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+
+                    {/* VS Code */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)' }}>VS Code</div>
+                      {vscodeMcpStatus && (
+                        <>
+                          <InfoRow
+                            label="Status"
+                            value={vscodeMcpStatus.installed ? 'Active' : 'Not configured'}
+                            status={vscodeMcpStatus.installed ? 'ok' : 'error'}
+                          />
+                          <InfoRow label="Config" value={vscodeMcpStatus.configPath} mono />
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            {!vscodeMcpStatus.installed && (
+                              <button
+                                className="btn btn-sm"
+                                onClick={handleVscodeActivate}
+                                disabled={isVscodeActivating}
+                                style={{
+                                  gap: 4,
+                                  background: 'rgba(74, 222, 128, 0.1)',
+                                  border: '1px solid rgba(74, 222, 128, 0.3)',
+                                  color: 'var(--color-status-green)',
+                                }}
+                              >
+                                {isVscodeActivating ? <Loader2 size={12} className="spin" /> : <Plug size={12} />}
+                                Activate
+                              </button>
+                            )}
+                            {vscodeMcpStatus.installed && (
+                              <button
+                                className="btn btn-sm"
+                                onClick={handleVscodeDeactivate}
+                                disabled={isVscodeDeactivating}
+                                style={{
+                                  gap: 4,
+                                  background: 'rgba(248, 113, 113, 0.06)',
+                                  border: '1px solid rgba(248, 113, 113, 0.2)',
+                                  color: 'var(--color-status-red)',
+                                }}
+                              >
+                                {isVscodeDeactivating ? <Loader2 size={12} className="spin" /> : <Unplug size={12} />}
+                                Deactivate
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Divider */}
+                    <div style={{ borderTop: '1px solid var(--color-border)', margin: '4px 0' }} />
+
+                    {/* Codex */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)' }}>Codex (OpenAI CLI)</div>
+                      {codexMcpStatus && (
+                        <>
+                          <InfoRow
+                            label="Status"
+                            value={codexMcpStatus.installed ? 'Active' : 'Not configured'}
+                            status={codexMcpStatus.installed ? 'ok' : 'error'}
+                          />
+                          <InfoRow label="Config" value={codexMcpStatus.configPath} mono />
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            {!codexMcpStatus.installed && (
+                              <button
+                                className="btn btn-sm"
+                                onClick={handleCodexActivate}
+                                disabled={isCodexActivating}
+                                style={{
+                                  gap: 4,
+                                  background: 'rgba(74, 222, 128, 0.1)',
+                                  border: '1px solid rgba(74, 222, 128, 0.3)',
+                                  color: 'var(--color-status-green)',
+                                }}
+                              >
+                                {isCodexActivating ? <Loader2 size={12} className="spin" /> : <Plug size={12} />}
+                                Activate
+                              </button>
+                            )}
+                            {codexMcpStatus.installed && (
+                              <button
+                                className="btn btn-sm"
+                                onClick={handleCodexDeactivate}
+                                disabled={isCodexDeactivating}
+                                style={{
+                                  gap: 4,
+                                  background: 'rgba(248, 113, 113, 0.06)',
+                                  border: '1px solid rgba(248, 113, 113, 0.2)',
+                                  color: 'var(--color-status-red)',
+                                }}
+                              >
+                                {isCodexDeactivating ? <Loader2 size={12} className="spin" /> : <Unplug size={12} />}
+                                Deactivate
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Info footer */}
+                    <div style={{
+                      padding: '6px 10px',
+                      background: 'var(--color-bg-secondary)',
+                      borderRadius: 'var(--radius-sm)',
+                      fontSize: 11,
+                      color: 'var(--color-text-tertiary)',
+                      lineHeight: 1.6,
+                      display: 'flex',
+                      gap: 8,
+                      alignItems: 'flex-start',
+                    }}>
+                      <Info size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                      <span>
+                        Register the lm-assist MCP server (<code>search</code>, <code>detail</code>, <code>feedback</code>) in other IDEs so their AI assistants can access your knowledge base and milestones.
+                      </span>
+                    </div>
+
                   </div>
                 </SectionCard>
 
