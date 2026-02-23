@@ -2,6 +2,23 @@
 
 Knowledge management, session inspector, and web terminal control for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Auto-build knowledge from your sessions and inject it as context. Inspect agents, tasks, teams, plans, and tool calls. Access and control all Claude Code terminals from any device via browser.
 
+### Install
+
+Start a new Claude Code session in the terminal and enter the following commands:
+
+```
+/plugin marketplace add langmartai/lm-assist
+
+/plugin install lm-assist
+
+/assist-setup
+```
+
+This automatically registers:
+- **MCP server** — `search`, `detail`, `feedback` tools available in Claude Code
+- **Context hook** — injects relevant knowledge into each prompt
+- **Slash commands** — 6 commands for managing lm-assist
+
 > **Read:** [Your Claude Sessions Are Gold: Stop Paying Twice for the Same Knowledge](https://databunny.medium.com/your-claude-sessions-are-gold-stop-paying-twice-for-the-same-knowledge-7632ac6ddb88) — deep dive into session knowledge reuse, CLAUDE.md vs context injection, and token cost savings.
 
 > **Read:** [Inside Claude Code: The Session File Format and How to Inspect It](https://databunny.medium.com/inside-claude-code-the-session-file-format-and-how-to-inspect-it-b9998e66d56b) — technical breakdown of the JSONL session format, message types, subagent trees, and how lm-assist surfaces it all.
@@ -105,25 +122,7 @@ lm-assist automatically generates knowledge from your Claude Code sessions, then
 
 ## Install
 
-### Plugin marketplace install
-
-Start a new Claude Code session in the terminal and enter the following commands:
-
-```
-/plugin marketplace add langmartai/lm-assist
-
-/plugin install lm-assist
-
-/assist-setup
-```
-
-This automatically registers:
-- **MCP server** — `search`, `detail`, `feedback` tools available in Claude Code
-- **Context hook** — injects relevant knowledge into each prompt
-- **Slash commands** — 6 commands for managing lm-assist
-
-
-### Optional use One-line install
+### One-line install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/langmartai/lm-assist/main/install.sh | bash
