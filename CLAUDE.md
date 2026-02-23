@@ -281,6 +281,87 @@ export function createMyRoutes(ctx: RouteContext): RouteHandler[] {
 
 Register new route files in `core/src/routes/core/index.ts`.
 
+### Publishing / Version Bumps
+
+When releasing a new version, update the version in **all three files** before committing:
+
+| File | Field | Purpose |
+|------|-------|---------|
+| `package.json` | `"version"` | npm package version (what `npm view lm-assist version` reports) |
+| `.claude-plugin/plugin.json` | `"version"` | Plugin version (shown in Claude Code plugin cache) |
+| `.claude-plugin/marketplace.json` | `plugins[0].version` | Marketplace listing version (used by plugin registry) |
+
+**Release steps:**
+
+```bash
+# 1. Bump version in all three files (keep them in sync)
+# 2. Commit and push
+git add package.json .claude-plugin/plugin.json .claude-plugin/marketplace.json
+git commit -m "chore: bump version to X.Y.Z"
+git push origin main
+
+# 3. Publish to npm
+npm publish
+
+# 4. Verify
+npm view lm-assist version   # Should show new version
+```
+
+**How each version is used:**
+- `package.json` → npm registry, `GET /dev-mode/check-update` (current vs latest comparison)
+- `.claude-plugin/plugin.json` → `claude plugin install lm-assist@langmartai` reads this for the version string stored in `~/.claude/plugins/installed_plugins.json`
+- `.claude-plugin/marketplace.json` → Plugin marketplace/registry uses this to index the plugin
+
+**Upgrade flow** (from web UI or CLI):
+- Web UI: Settings → Experiment → "Check for Updates" → "Upgrade" (calls `POST /dev-mode/upgrade`, runs detached `core/scripts/upgrade.js`)
+- CLI: `lm-assist upgrade` (runs `core/scripts/upgrade.js` in foreground)
+- The upgrade script: plugin install → kill services → `npm install -g lm-assist@latest` → restart services
+- Upgrade log: `~/.cache/lm-assist/upgrade.log`
+
+### Running Modes: npm Package vs Dev Repo
+
+lm-assist can run in two modes. The mode is controlled by `~/.claude-code-config.json` (`devModeEnabled` + `devRepoPath`). The Settings → Experiment → Developer Mode toggle switches between them.
+
+**npm Package mode** (default): Code runs from the globally installed npm package.
+**Dev Repo mode**: Code runs from a cloned git repository for local development.
+
+#### Component launch paths
+
+| Component | npm Package mode | Dev Repo mode |
+|-----------|-----------------|---------------|
+| **Core API** | `<npm-root>/lm-assist/core/dist/cli.js` | `<repo>/core/dist/cli.js` |
+| **Web UI** | `<npm-root>/lm-assist/web/` (next start) | `<repo>/web/` (next start) |
+| **MCP Server** | `<npm-root>/lm-assist/core/dist/mcp-server/index.js` | `<repo>/core/dist/mcp-server/index.js` |
+| **Hook** | `node "${CLAUDE_PLUGIN_ROOT}/core/hooks/context-inject-hook.js"` | Same (plugin root is plugin cache, but hook calls API on localhost:3100 which resolves to dev repo) |
+| **Statusline** | `node "<npm-root>/lm-assist/core/hooks/statusline-worktree.js"` | `node "<repo>/core/hooks/statusline-worktree.js"` |
+
+Where `<npm-root>` = e.g. `~/.nvm/versions/node/v20.19.6/lib/node_modules` and `<repo>` = e.g. `/home/ubuntu/lm-assist`.
+
+#### How mode switching works
+
+1. `bin/lm-assist.js` → `getProjectRoot()` checks `~/.claude-code-config.json`
+2. If `devModeEnabled && devRepoPath` → uses repo path; otherwise → uses npm package path (`path.dirname(path.dirname(__filename))`)
+3. `core/src/service-manager.ts` → same logic in `getRepoRoot()`
+4. Both Core API and Web UI resolve their working directory from this root
+5. The MCP server path is hardcoded in `.mcp.json` at plugin install time (points to npm root); in dev mode, MCP still runs from npm but the API it talks to runs from dev repo
+6. The hook runs from the plugin cache (`${CLAUDE_PLUGIN_ROOT}`), but it calls the Core API on `localhost:3100` which serves from whichever mode is active
+
+#### Upgrade methods
+
+| Method | Command | What it does |
+|--------|---------|-------------|
+| **Web UI** | Settings → Experiment → "Check for Updates" → "Upgrade" | `POST /dev-mode/upgrade` → spawns detached `core/scripts/upgrade.js` |
+| **CLI** | `lm-assist upgrade` | Runs `core/scripts/upgrade.js` in foreground with live output |
+
+**Upgrade script steps** (`core/scripts/upgrade.js`):
+1. `claude plugin install lm-assist@langmartai` — update plugin cache (MCP, hooks, slash commands)
+2. `fuser -k 3100/tcp && fuser -k 3848/tcp` — kill running services
+3. `npm install -g lm-assist@latest` — update npm package
+4. Wait 2s
+5. `lm-assist start` — restart services
+
+Log file: `~/.cache/lm-assist/upgrade.log`
+
 ### Key Types
 
 ```typescript
