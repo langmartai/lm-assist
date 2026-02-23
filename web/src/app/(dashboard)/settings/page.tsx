@@ -1007,7 +1007,7 @@ export default function SettingsPage() {
               if (logRes.ok) {
                 const logJson = await logRes.json();
                 if (logJson.success) {
-                  setUpgradeLines(logJson.data.lines);
+                  setUpgradeLines(logJson.data.friendlyLines?.length ? logJson.data.friendlyLines : logJson.data.lines);
                   setUpgradeComplete(logJson.data.complete);
                   if (logJson.data.complete) {
                     logComplete = true;
@@ -1026,7 +1026,7 @@ export default function SettingsPage() {
               if (logRes.ok) {
                 const logJson = await logRes.json();
                 if (logJson.success) {
-                  setUpgradeLines(logJson.data.lines);
+                  setUpgradeLines(logJson.data.friendlyLines?.length ? logJson.data.friendlyLines : logJson.data.lines);
                   setUpgradeComplete(logJson.data.complete);
                 }
               }
@@ -3419,7 +3419,12 @@ export default function SettingsPage() {
                           wordBreak: 'break-all',
                         }}>
                         {upgradeLines.map((line, i) => (
-                          <div key={i}>{line}</div>
+                          <div key={i} style={{
+                            color: line.startsWith('\u2713') ? 'var(--color-status-green)'
+                              : line.startsWith('\u26A0') ? 'var(--color-status-amber, #f59e0b)'
+                              : line.endsWith('...') ? 'var(--color-text-tertiary)'
+                              : undefined,
+                          }}>{line}</div>
                         ))}
                       </div>
                     </div>

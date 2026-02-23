@@ -149,6 +149,72 @@ let updateCheckCache: { currentVersion: string | null; latestVersion: string | n
 
 const UPGRADE_LOG_FILE = path.join(os.homedir(), '.cache', 'lm-assist', 'upgrade.log');
 
+// ============================================================================
+// Upgrade Log Transformer
+// ============================================================================
+
+/**
+ * Transform raw upgrade log lines into user-friendly progress messages.
+ * Strips timestamps, internal details, and stack traces — shows only
+ * meaningful progress steps with status indicators.
+ */
+function transformUpgradeLog(rawLines: string[]): string[] {
+  const friendly: string[] = [];
+
+  for (const raw of rawLines) {
+    // Strip leading timestamp: [2026-02-24T...]
+    const line = raw.replace(/^\[[\d\-T:.Z]+\]\s*/, '');
+
+    // --- Exact matches / starts-with ---
+    if (line === '=== upgrade started ===') {
+      friendly.push('Starting upgrade...');
+    } else if (line.startsWith('--- Step 1:')) {
+      friendly.push('Updating plugin cache...');
+    } else if (/^\[Plugin install\] Done/.test(line)) {
+      friendly.push('\u2713 Plugin updated');
+    } else if (/^\[Plugin install\] Failed/.test(line) || line.includes('claude binary not found')) {
+      friendly.push('\u26A0 Plugin update skipped (non-critical)');
+    } else if (line.startsWith('--- Step 2:')) {
+      friendly.push('Stopping services...');
+    } else if (/^Waiting \d+s for file handles/.test(line)) {
+      friendly.push('Waiting for services to stop...');
+    } else if (line.startsWith('--- Step 3:')) {
+      friendly.push('Installing update...');
+    } else if (/^\[npm install\] Done/.test(line)) {
+      friendly.push('\u2713 Package updated');
+    } else if (line.includes('tarball + robocopy fallback')) {
+      friendly.push('Using alternative update method (normal on Windows)...');
+    } else if (/^\[tarball\] Downloading/.test(line)) {
+      friendly.push('Downloading package...');
+    } else if (/^\[tarball\] Downloaded/.test(line)) {
+      friendly.push('\u2713 Package downloaded');
+    } else if (/^\[tarball\] Extracting/.test(line)) {
+      friendly.push('Extracting files...');
+    } else if (/^\[tarball\] Copying files/.test(line)) {
+      friendly.push('Applying update...');
+    } else if (/^\[tarball\] robocopy completed/.test(line)) {
+      friendly.push('\u2713 Files updated');
+    } else if (/^\[tarball\] Dependencies installed/.test(line)) {
+      friendly.push('\u2713 Dependencies updated');
+    } else if (/^\[tarball\] Upgrade via tarball completed/.test(line)) {
+      friendly.push('\u2713 Package updated');
+    } else if (line.startsWith('--- Step 4:')) {
+      friendly.push('Starting services...');
+    } else if (/^\[Service start\] Done/.test(line)) {
+      friendly.push('\u2713 Services started');
+    } else if (line === '=== upgrade finished ===') {
+      friendly.push('\u2713 Upgrade complete!');
+    } else if (/^ERROR:/.test(line) && !line.includes('tarball')) {
+      // Real errors that weren't recovered from
+      const msg = line.replace(/^ERROR:\s*/, '');
+      friendly.push(`\u26A0 ${msg}`);
+    }
+    // Everything else (internal details, stack traces, PID info) is skipped
+  }
+
+  return friendly;
+}
+
 function getNpmVersion(): string | null {
   const now = Date.now();
   if (npmVersionCache && now - npmVersionCache.fetchedAt < 60_000) {
@@ -719,11 +785,13 @@ export function createDevModeRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/dev-mode\/upgrade-log$/,
       handler: async () => {
         let lines: string[] = [];
+        let friendlyLines: string[] = [];
         let complete = false;
 
         try {
           const content = fs.readFileSync(UPGRADE_LOG_FILE, 'utf-8');
           lines = content.split('\n').filter((l: string) => l.trim());
+          friendlyLines = transformUpgradeLog(lines);
           complete = content.includes('upgrade finished');
         } catch {
           // File doesn't exist or can't be read
@@ -731,7 +799,7 @@ export function createDevModeRoutes(_ctx: RouteContext): RouteHandler[] {
 
         return {
           success: true,
-          data: { lines, complete },
+          data: { lines, friendlyLines, complete },
         };
       },
     },
