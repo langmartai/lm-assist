@@ -23,7 +23,7 @@ This automatically registers:
 
 <a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-diagram.svg"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-diagram.svg" alt="How lm-assist Works — architecture diagram" width="700"></a>
 
-> *Left: You use Claude Code directly — hooks and MCP tools search the knowledge base and inject context. Right: You access the Web UI from localhost, LAN, or langmart.ai for terminal management, session inspection, and more. [Full details →](docs/how-it-works.md)*
+> *Left: Any MCP-compatible IDE (Claude Code, VS Code, Cursor, Codex CLI, Gemini CLI, Antigravity) accesses the knowledge base via MCP. Right: You access the Web UI from localhost, LAN, or langmart.ai for terminal management, session inspection, and more. [Full details →](docs/how-it-works.md)*
 
 > **Read:** [Your Claude Sessions Are Gold: Stop Paying Twice for the Same Knowledge](https://databunny.medium.com/your-claude-sessions-are-gold-stop-paying-twice-for-the-same-knowledge-7632ac6ddb88) — deep dive into session knowledge reuse, CLAUDE.md vs context injection, and token cost savings.
 
@@ -200,7 +200,7 @@ Use these from within any Claude Code session:
 
 ## MCP Server
 
-The MCP server (`lm-assist`) provides 3 tools that Claude Code can use directly:
+The MCP server (`lm-assist`) provides 3 tools that any MCP-compatible IDE can use directly (Claude Code, VS Code, Cursor, Codex CLI, Gemini CLI, Antigravity):
 
 | Tool | Description |
 |------|-------------|

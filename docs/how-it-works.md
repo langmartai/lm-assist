@@ -50,7 +50,7 @@ A Next.js application that talks to the Core API. This is what you open in your 
 
 ### 3. MCP Server (search, detail, feedback)
 
-The MCP (Model Context Protocol) server gives Claude Code direct access to the knowledge base through three tools:
+The MCP (Model Context Protocol) server gives any MCP-compatible IDE direct access to the knowledge base through three tools. This includes Claude Code, VS Code, Cursor, Codex CLI, Gemini CLI, Google Antigravity, and any other IDE that supports MCP.
 
 | Tool | What it does |
 |------|-------------|
@@ -58,7 +58,7 @@ The MCP (Model Context Protocol) server gives Claude Code direct access to the k
 | `detail` | Expand a knowledge entry by ID (e.g., `K001`, `K001.2`) to get full content. Progressive disclosure — summary first, drill down as needed. |
 | `feedback` | Flag a knowledge entry as outdated, wrong, irrelevant, or useful. Drives the self-improvement loop. |
 
-The MCP server runs as a subprocess spawned by Claude Code (stdio transport). It forwards tool calls to the Core API via HTTP on port 3100.
+The MCP server runs as a subprocess spawned by the IDE (stdio transport). It forwards tool calls to the Core API via HTTP on port 3100. In Claude Code, it's registered automatically via the plugin. For other IDEs, configure it as an MCP server pointing to `core/dist/mcp-server/index.js`.
 
 **Entry point:** `core/dist/mcp-server/index.js` (compiled from `core/src/mcp-server/index.ts`)
 
@@ -367,20 +367,20 @@ Or connect from the Web UI: **Settings** page has Hub connection controls.
 
 If you run Claude Code on more than one machine — a desktop at the office, a laptop on the go, a cloud VM — each machine runs its own independent lm-assist instance with its own Core API, Web UI, session files, and knowledge base. Each machine extracts knowledge locally from its own sessions.
 
-The Hub connects them all, so Claude Code on any machine sees knowledge from every connected host:
+The Hub connects them all, so any MCP-compatible IDE on any machine sees knowledge from every connected host:
 
-1. **Knowledge sync** — when you type a prompt on any machine, Claude Code's MCP tools and hook injection query knowledge from all connected machines via the Hub. Claude doesn't just see local knowledge — it sees what was learned everywhere.
+1. **Knowledge sync** — when you type a prompt on any machine, the IDE's MCP tools query knowledge from all connected machines via the Hub. Your IDE doesn't just see local knowledge — it sees what was learned everywhere.
 
 2. **Remote terminal management** — access any machine's Claude Code terminal from a single browser via `langmart.ai`. Monitor running sessions, resume work from wherever you are.
 
 **How cross-machine knowledge sync works:**
 
-1. **You type a prompt** on Machine B (your laptop)
-2. **Hook + MCP `search()`** queries local knowledge and the Hub
+1. **You type a prompt** in any IDE on Machine B (your laptop)
+2. **MCP `search()`** queries local knowledge and the Hub
 3. **Hub relays the query** to Machine A and Machine C's Core APIs
-4. **Merged results injected** into Claude's context from all three machines
+4. **Merged results injected** into your IDE's context from all three machines
 
-Each machine's sessions produce knowledge independently. But when the Hub connects them, Claude Code on any machine can query across the full set. A bug you debugged on the cloud VM last week can inform Claude's response on your laptop today.
+Each machine's sessions produce knowledge independently. But when the Hub connects them, any MCP-compatible IDE on any machine can query across the full set. A bug you debugged on the cloud VM last week can inform your IDE's response on your laptop today.
 
 **Session sync.** Each machine periodically sends a session cache summary to the Hub (session IDs, project paths, models, token counts, timestamps). The Hub knows what exists on each machine, enabling the Web UI to browse sessions from any connected host.
 
@@ -388,7 +388,7 @@ Each machine's sessions produce knowledge independently. But when the Hub connec
 
 **Key points:**
 
-- Claude Code on any machine sees knowledge from all connected machines via MCP + hook injection
+- Any MCP-compatible IDE on any machine sees knowledge from all connected machines via MCP
 - Each machine is fully independent — if the Hub goes down, local knowledge still works
 - Machines can be on completely different networks (office LAN, home WiFi, cloud VPC)
 - The Hub is a relay only — no session data or knowledge is stored on the Hub
@@ -398,26 +398,26 @@ Each machine's sessions produce knowledge independently. But when the Hub connec
 
 ## How the Pieces Connect (end to end)
 
-Here is what happens when you type a prompt in Claude Code with lm-assist running (matching the left side of the diagram):
+Here is what happens when you type a prompt in any MCP-compatible IDE with lm-assist running (matching the left side of the diagram):
 
-**Step 1: You → Claude Code**
-1. **You type a prompt** in Claude Code (CLI terminal)
+**Step 1: You → Your IDE**
+1. **You type a prompt** in any IDE — Claude Code, VS Code, Cursor, Codex CLI, Gemini CLI, or Google Antigravity
 
-**Step 2: Claude Code triggers knowledge retrieval**
-2. **Context injection hook fires** — `context-inject-hook.js` runs, calls `POST /context/suggest` on the Core API
-3. **Claude calls MCP tools** — uses `search()` and `detail()` to pull knowledge from the base
+**Step 2: Knowledge retrieval via MCP**
+2. **MCP tools fire** — the IDE calls `search()` and `detail()` to pull knowledge from the base
+3. **Context injection hook** (Claude Code only) — `context-inject-hook.js` also fires on every prompt, calling `POST /context/suggest` on the Core API
 
 **Step 3: Knowledge base is searched**
 4. **LanceDB + LMDB** return matching knowledge entries (semantic + BM25 full-text search)
-5. **Results injected** into Claude's context before it writes its response
+5. **Results injected** into your IDE's context before it responds
 
 **Then the cycle continues:**
-6. **Claude responds** informed by both your prompt and the accumulated knowledge
+6. **Your IDE responds** informed by both your prompt and the accumulated knowledge
 7. **The session is recorded** as a JSONL file in `~/.claude/projects/*/sessions/`
-8. **Knowledge generation** — later, the Core API extracts knowledge from this session's Explore subagents (parse → embed → store in vector DB), adding to the knowledge base for future sessions
+8. **Knowledge generation** — later, the Core API extracts knowledge from session Explore subagents (parse → embed → store in vector DB), adding to the knowledge base for future sessions
 9. **The Web UI reflects it** — open `http://localhost:3848` to see the session, manage terminals, browse tasks
 
-The cycle is: **sessions produce knowledge, knowledge improves future sessions.**
+The cycle is: **sessions produce knowledge, knowledge improves future sessions across all IDEs.**
 
 ---
 
