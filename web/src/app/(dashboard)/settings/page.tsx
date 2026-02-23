@@ -3447,6 +3447,60 @@ export default function SettingsPage() {
                       </div>
                     </div>
                   )}
+                  {/* Component Locations — always visible */}
+                  {devModeStatus?.components && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 2 }}>
+                        Component Locations
+                      </span>
+                      {([
+                        ['Core API', 'core'],
+                        ['Web UI', 'web'],
+                        ['MCP Server', 'mcp'],
+                        ['Hook', 'hook'],
+                        ['Statusline', 'statusline'],
+                      ] as const).map(([label, key]) => {
+                        const comp = devModeStatus.components![key as keyof typeof devModeStatus.components];
+                        if (!comp) return null;
+                        const notInstalled = comp.installed === false;
+                        return (
+                          <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', width: 80, flexShrink: 0 }}>
+                              {label}
+                            </span>
+                            <span style={{
+                              fontSize: 10,
+                              fontFamily: 'var(--font-mono)',
+                              color: notInstalled ? 'var(--color-text-tertiary)' : 'var(--color-text-secondary)',
+                              flex: 1,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              opacity: notInstalled ? 0.5 : 1,
+                            }} title={comp.path || undefined}>
+                              {notInstalled ? 'Not installed' : (comp.path || '—')}
+                            </span>
+                            {!notInstalled && (
+                              <span style={{
+                                fontSize: 9,
+                                padding: '1px 5px',
+                                borderRadius: 3,
+                                background: comp.source === 'dev-repo' ? 'rgba(52,199,89,0.12)' :
+                                            comp.source === 'plugin' ? 'rgba(88,166,255,0.12)' :
+                                            comp.source === 'npm' ? 'rgba(255,179,64,0.12)' : 'rgba(255,255,255,0.06)',
+                                color: comp.source === 'dev-repo' ? 'var(--color-status-green)' :
+                                       comp.source === 'plugin' ? 'rgb(88,166,255)' :
+                                       comp.source === 'npm' ? 'rgb(255,179,64)' : 'var(--color-text-tertiary)',
+                                flexShrink: 0,
+                              }}>
+                                {comp.source}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </SectionCard>
             )}
