@@ -19,6 +19,12 @@ This automatically registers:
 - **Context hook** — injects relevant knowledge into each prompt
 - **Slash commands** — 6 commands for managing lm-assist
 
+### How It Works
+
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-diagram.svg"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-diagram.svg" alt="How lm-assist Works — architecture diagram" width="700"></a>
+
+> *Left: You use Claude Code directly — hooks and MCP tools search the knowledge base and inject context. Right: You access the Web UI from localhost, LAN, or langmart.ai for terminal management, session inspection, and more. [Full details →](docs/how-it-works.md)*
+
 > **Read:** [Your Claude Sessions Are Gold: Stop Paying Twice for the Same Knowledge](https://databunny.medium.com/your-claude-sessions-are-gold-stop-paying-twice-for-the-same-knowledge-7632ac6ddb88) — deep dive into session knowledge reuse, CLAUDE.md vs context injection, and token cost savings.
 
 > **Read:** [Inside Claude Code: The Session File Format and How to Inspect It](https://databunny.medium.com/inside-claude-code-the-session-file-format-and-how-to-inspect-it-b9998e66d56b) — technical breakdown of the JSONL session format, message types, subagent trees, and how lm-assist surfaces it all.

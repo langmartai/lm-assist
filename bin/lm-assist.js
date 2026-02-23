@@ -137,12 +137,29 @@ if (command === 'upgrade') {
 function printComponents(svc) {
   if (typeof svc.getComponentInfo !== 'function') return;
   const info = svc.getComponentInfo();
-  console.log('\nComponents:');
-  console.log(`  API:        ${info.api.url}  [${info.api.source}]`);
-  console.log(`  Web:        ${info.web.url}  [${info.web.source}]`);
-  console.log(`  MCP:        ${info.mcp.installed ? info.mcp.location + '  [' + info.mcp.source + ']' : '(not installed)'}`);
-  console.log(`  Hook:       ${info.hook.installed ? info.hook.location + '  [' + info.hook.source + ']' : '(not installed)'}`);
-  console.log(`  Statusline: ${info.statusline.installed ? info.statusline.location : '(not installed)'}`);
+  console.log('\nComponent Locations');
+  console.log(`  Core API    ${info.api.path}`);
+  console.log(`              ${info.api.source}`);
+  console.log(`  Web UI      ${info.web.path}`);
+  console.log(`              ${info.web.source}`);
+  if (info.mcp.installed) {
+    console.log(`  MCP Server  ${info.mcp.location}`);
+    console.log(`              ${info.mcp.source}`);
+  } else {
+    console.log('  MCP Server  (not installed)');
+  }
+  if (info.hook.installed) {
+    console.log(`  Hook        ${info.hook.location}`);
+    console.log(`              ${info.hook.source}`);
+  } else {
+    console.log('  Hook        (not installed)');
+  }
+  if (info.statusline.installed) {
+    console.log(`  Statusline  ${info.statusline.location}`);
+    console.log(`              ${info.statusline.source}`);
+  } else {
+    console.log('  Statusline  (not installed)');
+  }
 }
 
 async function main() {

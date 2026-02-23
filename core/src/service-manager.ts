@@ -489,11 +489,11 @@ export function readLog(service: 'core' | 'web', lines: number = 100): string {
 // ─── Component Info ──────────────────────────────────────────────────
 
 export interface ComponentInfo {
-  api: { port: number; url: string; source: string };
-  web: { port: number; url: string; source: string };
+  api: { port: number; url: string; source: string; path: string };
+  web: { port: number; url: string; source: string; path: string };
   mcp: { installed: boolean; source: string | null; location: string | null };
   hook: { installed: boolean; source: string | null; location: string | null };
-  statusline: { installed: boolean; location: string | null };
+  statusline: { installed: boolean; source: string | null; location: string | null };
 }
 
 export function getComponentInfo(config?: ServiceConfig): ComponentInfo {
@@ -502,8 +502,9 @@ export function getComponentInfo(config?: ServiceConfig): ComponentInfo {
   const settingsFile = path.join(os.homedir(), '.claude', 'settings.json');
   const pluginsFile = path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
 
-  // Determine source (npm or dev repo)
-  const source = repoRoot === DEFAULT_REPO_ROOT ? repoRoot : `${repoRoot} (dev)`;
+  // Determine source label: "dev-repo" if running from a git repo, "npm" if from node_modules
+  const isDevRepo = !repoRoot.includes('node_modules');
+  const sourceLabel = isDevRepo ? 'dev-repo' : 'npm';
 
   // Find plugin install path
   let pluginInstallPath: string | null = null;
@@ -576,18 +577,28 @@ export function getComponentInfo(config?: ServiceConfig): ComponentInfo {
   }
 
   // Statusline: check settings.json statusLine field
-  let statusline: ComponentInfo['statusline'] = { installed: false, location: null };
+  let statusline: ComponentInfo['statusline'] = { installed: false, source: null, location: null };
   try {
     const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
     const sl = settings?.statusLine;
     if (sl && typeof sl.command === 'string' && sl.command.includes('statusline')) {
-      statusline = { installed: true, location: sl.command };
+      // Determine source by checking if path points to dev repo or npm
+      const slSource = sl.command.includes('node_modules') ? 'npm' : 'dev-repo';
+      statusline = { installed: true, source: slSource, location: sl.command };
     }
   } catch {}
 
+  // Determine source labels for MCP and Hook based on resolved paths
+  if (mcp.installed && mcp.location) {
+    mcp.source = mcp.location.includes('node_modules') ? 'npm' : 'dev-repo';
+  }
+  if (hook.installed && hook.location) {
+    hook.source = hook.location.includes('node_modules') ? 'npm' : 'dev-repo';
+  }
+
   return {
-    api: { port: apiPort, url: `http://localhost:${apiPort}`, source },
-    web: { port: webPort, url: `http://localhost:${webPort}`, source },
+    api: { port: apiPort, url: `http://localhost:${apiPort}`, source: sourceLabel, path: path.join(repoRoot, 'core', 'dist', 'cli.js') },
+    web: { port: webPort, url: `http://localhost:${webPort}`, source: sourceLabel, path: path.join(repoRoot, 'web') },
     mcp,
     hook,
     statusline,

@@ -1,0 +1,351 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 1010" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="coreGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#6d28d9"/>
+    </linearGradient>
+    <linearGradient id="webGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <linearGradient id="claudeGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d97706"/>
+      <stop offset="100%" stop-color="#b45309"/>
+    </linearGradient>
+    <linearGradient id="hubGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#059669"/>
+      <stop offset="100%" stop-color="#047857"/>
+    </linearGradient>
+    <linearGradient id="storageGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#475569"/>
+      <stop offset="100%" stop-color="#334155"/>
+    </linearGradient>
+    <linearGradient id="machineGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="960" height="1010" fill="url(#bgGrad)" rx="12"/>
+
+  <!-- ================================================================ -->
+  <!-- PART 1: TWO PERSPECTIVES — CLAUDE CODE VIEW + USER VIEW          -->
+  <!-- ================================================================ -->
+  <text x="480" y="30" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700" letter-spacing="0.5">How lm-assist Works</text>
+
+  <!-- ==================== COLUMN HEADERS ==================== -->
+  <!-- Left column header -->
+  <rect x="20" y="48" width="448" height="24" rx="6" fill="#d97706" opacity="0.12"/>
+  <text x="244" y="64" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="700">You → Claude Code</text>
+  <text x="410" y="64" fill="#94a3b8" font-size="8" opacity="0.7">direct CLI + knowledge</text>
+
+  <!-- Right column header -->
+  <rect x="492" y="48" width="448" height="24" rx="6" fill="#2563eb" opacity="0.12"/>
+  <text x="716" y="64" text-anchor="middle" fill="#60a5fa" font-size="11" font-weight="700">What You See</text>
+  <text x="890" y="64" fill="#94a3b8" font-size="8" opacity="0.7">terminal access</text>
+
+  <!-- Vertical divider line -->
+  <line x1="480" y1="80" x2="480" y2="570" stroke="#334155" stroke-width="1" stroke-dasharray="3 4" opacity="0.4"/>
+
+  <!-- ===================== LEFT SIDE: YOU → CLAUDE CODE → KNOWLEDGE ===================== -->
+
+  <!-- Step 1: You → Claude Code -->
+  <!-- User icon (same style as right side) -->
+  <circle cx="120" cy="96" r="16" fill="#38bdf8" opacity="0.12"/>
+  <circle cx="120" cy="90" r="6" fill="none" stroke="#38bdf8" stroke-width="1.8"/>
+  <path d="M109 104 a12 10 0 0 1 22 0" fill="none" stroke="#38bdf8" stroke-width="1.8" stroke-linecap="round"/>
+  <text x="120" y="126" text-anchor="middle" fill="#e2e8f0" font-size="11" font-weight="600">You</text>
+  <!-- Step 1 number -->
+  <circle cx="160" cy="88" r="11" fill="#d97706" opacity="0.5"/>
+  <text x="160" y="92" text-anchor="middle" fill="#fde68a" font-size="9" font-weight="700">1</text>
+
+  <!-- Arrow: You → Claude Code -->
+  <line x1="120" y1="132" x2="120" y2="150" stroke="#fbbf24" stroke-width="1.5" opacity="0.6"/>
+  <polygon points="120,150 116,142 124,142" fill="#fbbf24" opacity="0.6"/>
+
+  <!-- Claude Code box -->
+  <rect x="30" y="152" width="430" height="42" rx="8" fill="url(#claudeGrad)" filter="url(#shadow)"/>
+  <text x="245" y="172" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">Claude Code (CLI)</text>
+  <text x="245" y="187" text-anchor="middle" fill="#fde68a" font-size="8.5">You type prompts directly in your terminal</text>
+
+  <!-- Arrow: Claude Code → Hook + MCP -->
+  <line x1="245" y1="194" x2="245" y2="212" stroke="#a78bfa" stroke-width="1.5" opacity="0.6"/>
+  <polygon points="245,212 241,204 249,204" fill="#a78bfa" opacity="0.6"/>
+
+  <!-- Step 2: Hook + MCP Tools -->
+  <rect x="30" y="214" width="430" height="82" rx="10" fill="#1e293b" stroke="#a78bfa" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="50" y="231" fill="#c4b5fd" font-size="7.5" font-weight="600" opacity="0.8">STEP 2 — CLAUDE CODE TRIGGERS KNOWLEDGE RETRIEVAL</text>
+  <!-- Step 2 number -->
+  <circle cx="420" cy="230" r="11" fill="#4c1d95" opacity="0.7"/>
+  <text x="420" y="234" text-anchor="middle" fill="#c4b5fd" font-size="9" font-weight="700">2</text>
+  <!-- Hook sub-box -->
+  <rect x="44" y="242" width="195" height="40" rx="6" fill="#4c1d95" opacity="0.5"/>
+  <text x="141" y="258" text-anchor="middle" fill="#c4b5fd" font-size="9" font-weight="600">Context Hook</text>
+  <text x="141" y="271" text-anchor="middle" fill="#a78bfa" font-size="7.5" opacity="0.8">fires on every prompt automatically</text>
+  <!-- MCP sub-box -->
+  <rect x="249" y="242" width="200" height="40" rx="6" fill="#4c1d95" opacity="0.5"/>
+  <text x="349" y="258" text-anchor="middle" fill="#c4b5fd" font-size="9" font-weight="600">MCP Tools</text>
+  <text x="349" y="271" text-anchor="middle" fill="#a78bfa" font-size="7.5" opacity="0.8">search() · detail() · feedback()</text>
+
+  <!-- Arrow: Hook/MCP → Knowledge -->
+  <line x1="245" y1="296" x2="245" y2="314" stroke="#f59e0b" stroke-width="1.5" opacity="0.6"/>
+  <polygon points="245,314 241,306 249,306" fill="#f59e0b" opacity="0.6"/>
+
+  <!-- Step 3: Knowledge / Vector DB -->
+  <rect x="30" y="316" width="430" height="76" rx="10" fill="#1e293b" stroke="#f59e0b" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="50" y="333" fill="#f59e0b" font-size="7.5" font-weight="600">STEP 3 — SEARCHES KNOWLEDGE BASE</text>
+  <!-- Step 3 number -->
+  <circle cx="420" cy="332" r="11" fill="#92400e" opacity="0.7"/>
+  <text x="420" y="336" text-anchor="middle" fill="#fcd34d" font-size="9" font-weight="700">3</text>
+  <text x="245" y="354" text-anchor="middle" fill="#fcd34d" font-size="12" font-weight="700">LanceDB + LMDB</text>
+  <text x="245" y="370" text-anchor="middle" fill="#94a3b8" font-size="8.5">~/.lm-assist/knowledge/ · Semantic + BM25 full-text search</text>
+  <text x="245" y="384" text-anchor="middle" fill="#fbbf24" font-size="8" font-weight="600">Results injected into Claude's context before it responds</text>
+
+  <!-- Extraction pipeline (how knowledge gets built) -->
+  <rect x="30" y="404" width="430" height="56" rx="8" fill="url(#coreGrad)" filter="url(#shadow)" opacity="0.65"/>
+  <text x="50" y="421" fill="#c4b5fd" font-size="7.5" font-weight="600" opacity="0.8">HOW KNOWLEDGE IS BUILT — CORE API :3100</text>
+  <!-- Mini flow: sessions → parse → vector DB -->
+  <rect x="44" y="430" width="118" height="22" rx="5" fill="url(#storageGrad)" opacity="0.7"/>
+  <text x="103" y="445" text-anchor="middle" fill="#e2e8f0" font-size="7.5">sessions/*.jsonl</text>
+  <text x="170" y="445" fill="#c4b5fd" font-size="10">→</text>
+  <rect x="184" y="430" width="106" height="22" rx="5" fill="#4c1d95" opacity="0.5"/>
+  <text x="237" y="445" text-anchor="middle" fill="#ddd6fe" font-size="7.5">Parse + Embed</text>
+  <text x="298" y="445" fill="#c4b5fd" font-size="10">→</text>
+  <rect x="310" y="430" width="140" height="22" rx="5" fill="#92400e" opacity="0.5"/>
+  <text x="380" y="445" text-anchor="middle" fill="#fcd34d" font-size="7.5">Vector DB (feeds Step 3)</text>
+
+  <!-- Cycle arrow: Claude Code creates sessions → extraction → back to knowledge -->
+  <path d="M30 455 Q10 455 10 300 Q10 170 30 170" fill="none" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4 3" opacity="0.35"/>
+  <polygon points="30,170 22,176 26,168" fill="#94a3b8" opacity="0.35"/>
+  <text x="5" y="310" fill="#94a3b8" font-size="7" opacity="0.5" transform="rotate(-90,5,310)">new sessions feed back</text>
+
+  <!-- ===================== RIGHT SIDE: USER VIEW ===================== -->
+
+  <!-- User icon -->
+  <circle cx="716" cy="100" r="16" fill="#38bdf8" opacity="0.12"/>
+  <circle cx="716" cy="94" r="6" fill="none" stroke="#38bdf8" stroke-width="1.8"/>
+  <path d="M705 108 a12 10 0 0 1 22 0" fill="none" stroke="#38bdf8" stroke-width="1.8" stroke-linecap="round"/>
+  <text x="716" y="130" text-anchor="middle" fill="#e2e8f0" font-size="11" font-weight="600">You</text>
+
+  <!-- Three access methods -->
+  <!-- localhost -->
+  <line x1="680" y1="120" x2="580" y2="165" stroke="#38bdf8" stroke-width="1.3" stroke-dasharray="5 3" opacity="0.6"/>
+  <polygon points="580,165 588,159 585,168" fill="#38bdf8" opacity="0.6"/>
+  <text x="620" y="140" text-anchor="middle" fill="#38bdf8" font-size="8" opacity="0.8">localhost</text>
+
+  <!-- LAN -->
+  <line x1="716" y1="135" x2="716" y2="165" stroke="#818cf8" stroke-width="1.3" stroke-dasharray="5 3" opacity="0.6"/>
+  <polygon points="716,165 712,157 720,157" fill="#818cf8" opacity="0.6"/>
+  <text x="738" y="153" fill="#818cf8" font-size="8" opacity="0.8">LAN/WiFi</text>
+
+  <!-- Internet / langmart.ai -->
+  <line x1="752" y1="120" x2="850" y2="165" stroke="#34d399" stroke-width="1.3" stroke-dasharray="5 3" opacity="0.6"/>
+  <polygon points="850,165 842,159 845,168" fill="#34d399" opacity="0.6"/>
+  <text x="812" y="140" text-anchor="middle" fill="#34d399" font-size="8" opacity="0.8">langmart.ai</text>
+
+  <!-- Web UI box -->
+  <rect x="520" y="168" width="380" height="72" rx="10" fill="url(#webGrad)" filter="url(#shadow)" opacity="0.95"/>
+  <rect x="840" y="173" width="50" height="16" rx="8" fill="#1e40af" opacity="0.8"/>
+  <text x="865" y="184" text-anchor="middle" fill="#93c5fd" font-size="7" font-weight="600">:3848</text>
+  <text x="540" y="188" fill="#bfdbfe" font-size="7.5" font-weight="600" opacity="0.8">WEB UI — YOUR DASHBOARD</text>
+  <text x="710" y="207" text-anchor="middle" fill="#fff" font-size="13" font-weight="700">lm-assist Web UI</text>
+  <text x="710" y="225" text-anchor="middle" fill="#bfdbfe" font-size="9">Terminal (ttyd)  ·  Sessions  ·  Tasks  ·  Knowledge  ·  Settings</text>
+
+  <!-- Arrow: Web UI → Core API -->
+  <line x1="710" y1="240" x2="710" y2="260" stroke="#60a5fa" stroke-width="1.3" opacity="0.5"/>
+  <polygon points="710,260 706,252 714,252" fill="#60a5fa" opacity="0.5"/>
+
+  <!-- Core API (right-side representation) -->
+  <rect x="580" y="262" width="260" height="52" rx="8" fill="url(#coreGrad)" filter="url(#shadow)" opacity="0.8"/>
+  <text x="600" y="280" fill="#c4b5fd" font-size="7.5" font-weight="600" opacity="0.8">CORE API</text>
+  <rect x="780" y="267" width="50" height="16" rx="8" fill="#4c1d95" opacity="0.8"/>
+  <text x="805" y="278" text-anchor="middle" fill="#c4b5fd" font-size="7" font-weight="600">:3100</text>
+  <text x="710" y="296" text-anchor="middle" fill="#ddd6fe" font-size="8.5">REST API  ·  ttyd manager  ·  session cache  ·  Hub client</text>
+
+  <!-- What user can do — feature boxes -->
+  <rect x="520" y="328" width="175" height="56" rx="8" fill="#1e293b" stroke="#38bdf8" stroke-width="1" opacity="0.8"/>
+  <text x="535" y="346" fill="#38bdf8" font-size="9" font-weight="700">Live Terminal</text>
+  <text x="535" y="360" fill="#94a3b8" font-size="8">Open Claude Code in browser</text>
+  <text x="535" y="372" fill="#94a3b8" font-size="8">Monitor output · resume work</text>
+
+  <rect x="710" y="328" width="215" height="56" rx="8" fill="#1e293b" stroke="#818cf8" stroke-width="1" opacity="0.8"/>
+  <text x="725" y="346" fill="#818cf8" font-size="9" font-weight="700">Session Inspector</text>
+  <text x="725" y="360" fill="#94a3b8" font-size="8">Browse all sessions · agent trees</text>
+  <text x="725" y="372" fill="#94a3b8" font-size="8">Tool calls · thinking · token costs</text>
+
+  <rect x="520" y="396" width="175" height="56" rx="8" fill="#1e293b" stroke="#34d399" stroke-width="1" opacity="0.8"/>
+  <text x="535" y="414" fill="#34d399" font-size="9" font-weight="700">Remote Access</text>
+  <text x="535" y="428" fill="#94a3b8" font-size="8">Via langmart.ai cloud proxy</text>
+  <text x="535" y="440" fill="#94a3b8" font-size="8">From any browser, anywhere</text>
+
+  <rect x="710" y="396" width="215" height="56" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="1" opacity="0.8"/>
+  <text x="725" y="414" fill="#f59e0b" font-size="9" font-weight="700">Knowledge + Tasks</text>
+  <text x="725" y="428" fill="#94a3b8" font-size="8">Browse knowledge base</text>
+  <text x="725" y="440" fill="#94a3b8" font-size="8">Task kanban across all sessions</text>
+
+  <!-- ==================== BOTTOM BAR ==================== -->
+  <rect x="20" y="478" width="920" height="88" rx="10" fill="#1e293b" stroke="#475569" stroke-width="1" opacity="0.6"/>
+
+  <!-- Left: knowledge cycle -->
+  <path d="M55 510 a10 10 0 1 1 2 -5" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>
+  <polygon points="57,505 53,512 61,510" fill="#f59e0b"/>
+  <text x="75" y="507" fill="#e2e8f0" font-size="9.5" font-weight="600">Knowledge Cycle</text>
+  <text x="75" y="520" fill="#94a3b8" font-size="8">Sessions → extract → vector DB → inject into future sessions</text>
+  <text x="75" y="533" fill="#f59e0b" font-size="8" font-weight="600">Claude starts every session already knowing what it learned before</text>
+
+  <!-- Center: file paths -->
+  <text x="420" y="498" fill="#94a3b8" font-size="7.5" font-weight="600">KEY PATHS</text>
+  <text x="420" y="512" fill="#64748b" font-size="8">Sessions:   ~/.claude/projects/*/sessions/*.jsonl</text>
+  <text x="420" y="524" fill="#64748b" font-size="8">Knowledge:  ~/.lm-assist/knowledge/</text>
+  <text x="420" y="536" fill="#64748b" font-size="8">Logs:       ~/.lm-assist/logs/</text>
+  <text x="420" y="548" fill="#64748b" font-size="8">Config:     ~/.claude-code-config.json</text>
+
+  <!-- Right: install + ports -->
+  <text x="720" y="498" fill="#94a3b8" font-size="7.5" font-weight="600">QUICK START</text>
+  <text x="720" y="512" fill="#fbbf24" font-size="9">npm install -g lm-assist</text>
+  <text x="720" y="526" fill="#94a3b8" font-size="8.5">lm-assist start</text>
+  <text x="720" y="544" fill="#64748b" font-size="8">Core API :3100  ·  Web UI :3848  ·  ttyd :5900+</text>
+
+  <!-- ================================================================ -->
+  <!-- PART 2: KNOWLEDGE SYNC ACROSS MACHINES                           -->
+  <!-- ================================================================ -->
+
+  <!-- Divider -->
+  <line x1="60" y1="590" x2="900" y2="590" stroke="#334155" stroke-width="1" stroke-dasharray="3 4" opacity="0.5"/>
+  <text x="480" y="616" text-anchor="middle" fill="#e2e8f0" font-size="16" font-weight="700">Knowledge Sync Across Machines</text>
+  <text x="480" y="634" text-anchor="middle" fill="#94a3b8" font-size="10">Each machine extracts knowledge locally. Hub relays queries so Claude Code sees knowledge from all hosts.</text>
+
+  <!-- ==================== HUB (center) ==================== -->
+  <rect x="260" y="652" width="440" height="52" rx="10" fill="url(#hubGrad)" filter="url(#shadow)"/>
+  <text x="480" y="673" text-anchor="middle" fill="#fff" font-size="13" font-weight="700">LangMart Hub</text>
+  <text x="480" y="690" text-anchor="middle" fill="#a7f3d0" font-size="9">Knowledge relay · session sync · no data stored</text>
+
+  <!-- ==================== THREE MACHINES ==================== -->
+
+  <!-- Machine A (left) -->
+  <rect x="38" y="750" width="260" height="110" rx="10" fill="url(#machineGrad)" stroke="#475569" stroke-width="1" filter="url(#shadow)"/>
+  <rect x="50" y="757" width="28" height="20" rx="3" fill="none" stroke="#d97706" stroke-width="1.2" opacity="0.7"/>
+  <text x="86" y="770" fill="#fbbf24" font-size="10" font-weight="700">Machine A</text>
+  <text x="86" y="782" fill="#94a3b8" font-size="8">Desktop — Office network</text>
+  <rect x="50" y="792" width="105" height="20" rx="5" fill="url(#coreGrad)" opacity="0.7"/>
+  <text x="102" y="806" text-anchor="middle" fill="#ddd6fe" font-size="8">Core API</text>
+  <rect x="163" y="792" width="55" height="20" rx="5" fill="url(#claudeGrad)" opacity="0.5"/>
+  <text x="190" y="806" text-anchor="middle" fill="#fde68a" font-size="8">Claude</text>
+  <rect x="226" y="792" width="62" height="20" rx="5" fill="url(#webGrad)" opacity="0.6"/>
+  <text x="257" y="806" text-anchor="middle" fill="#bfdbfe" font-size="8">Web UI</text>
+  <rect x="50" y="818" width="118" height="20" rx="5" fill="#1e293b" stroke="#a78bfa" stroke-width="1" opacity="0.8"/>
+  <text x="109" y="832" text-anchor="middle" fill="#c4b5fd" font-size="7.5">42 sessions</text>
+  <rect x="176" y="818" width="112" height="20" rx="5" fill="#1e293b" stroke="#f59e0b" stroke-width="1" opacity="0.8"/>
+  <text x="232" y="832" text-anchor="middle" fill="#fcd34d" font-size="7.5">128 knowledge entries</text>
+  <rect x="50" y="844" width="238" height="14" rx="4" fill="#f59e0b" opacity="0.15"/>
+  <text x="169" y="854" text-anchor="middle" fill="#f59e0b" font-size="7" font-weight="600">Extracts locally → syncs via Hub</text>
+
+  <!-- Machine B (center) — YOU ARE HERE -->
+  <rect x="350" y="750" width="260" height="110" rx="10" fill="url(#machineGrad)" stroke="#fbbf24" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="350" y="750" width="260" height="110" rx="10" fill="none" stroke="#fbbf24" stroke-width="1" opacity="0.3"/>
+  <rect x="362" y="757" width="28" height="20" rx="3" fill="none" stroke="#d97706" stroke-width="1.2" opacity="0.7"/>
+  <text x="398" y="770" fill="#fbbf24" font-size="10" font-weight="700">Machine B</text>
+  <text x="513" y="770" fill="#fbbf24" font-size="8" font-weight="600" opacity="0.8">YOU ARE HERE</text>
+  <text x="398" y="782" fill="#94a3b8" font-size="8">Laptop — Coffee shop WiFi</text>
+  <rect x="362" y="792" width="105" height="20" rx="5" fill="url(#coreGrad)" opacity="0.7"/>
+  <text x="414" y="806" text-anchor="middle" fill="#ddd6fe" font-size="8">Core API</text>
+  <rect x="475" y="792" width="55" height="20" rx="5" fill="url(#claudeGrad)" opacity="0.9"/>
+  <text x="502" y="806" text-anchor="middle" fill="#fde68a" font-size="8" font-weight="700">Claude</text>
+  <rect x="538" y="792" width="62" height="20" rx="5" fill="url(#webGrad)" opacity="0.6"/>
+  <text x="569" y="806" text-anchor="middle" fill="#bfdbfe" font-size="8">Web UI</text>
+  <rect x="362" y="818" width="118" height="20" rx="5" fill="#1e293b" stroke="#a78bfa" stroke-width="1" opacity="0.8"/>
+  <text x="421" y="832" text-anchor="middle" fill="#c4b5fd" font-size="7.5">18 sessions</text>
+  <rect x="488" y="818" width="112" height="20" rx="5" fill="#1e293b" stroke="#f59e0b" stroke-width="1" opacity="0.8"/>
+  <text x="544" y="832" text-anchor="middle" fill="#fcd34d" font-size="7.5">64 knowledge entries</text>
+  <rect x="362" y="844" width="238" height="14" rx="4" fill="#fbbf24" opacity="0.2"/>
+  <text x="481" y="854" text-anchor="middle" fill="#fbbf24" font-size="7" font-weight="600">Claude sees knowledge from A + B + C via MCP</text>
+
+  <!-- Machine C (right) -->
+  <rect x="662" y="750" width="260" height="110" rx="10" fill="url(#machineGrad)" stroke="#475569" stroke-width="1" filter="url(#shadow)"/>
+  <rect x="674" y="757" width="28" height="20" rx="3" fill="none" stroke="#d97706" stroke-width="1.2" opacity="0.7"/>
+  <text x="710" y="770" fill="#fbbf24" font-size="10" font-weight="700">Machine C</text>
+  <text x="710" y="782" fill="#94a3b8" font-size="8">Cloud VM — data center</text>
+  <rect x="674" y="792" width="105" height="20" rx="5" fill="url(#coreGrad)" opacity="0.7"/>
+  <text x="726" y="806" text-anchor="middle" fill="#ddd6fe" font-size="8">Core API</text>
+  <rect x="787" y="792" width="55" height="20" rx="5" fill="url(#claudeGrad)" opacity="0.5"/>
+  <text x="814" y="806" text-anchor="middle" fill="#fde68a" font-size="8">Claude</text>
+  <rect x="850" y="792" width="62" height="20" rx="5" fill="url(#webGrad)" opacity="0.6"/>
+  <text x="881" y="806" text-anchor="middle" fill="#bfdbfe" font-size="8">Web UI</text>
+  <rect x="674" y="818" width="118" height="20" rx="5" fill="#1e293b" stroke="#a78bfa" stroke-width="1" opacity="0.8"/>
+  <text x="733" y="832" text-anchor="middle" fill="#c4b5fd" font-size="7.5">95 sessions</text>
+  <rect x="800" y="818" width="112" height="20" rx="5" fill="#1e293b" stroke="#f59e0b" stroke-width="1" opacity="0.8"/>
+  <text x="856" y="832" text-anchor="middle" fill="#fcd34d" font-size="7.5">210 knowledge entries</text>
+  <rect x="674" y="844" width="238" height="14" rx="4" fill="#f59e0b" opacity="0.15"/>
+  <text x="793" y="854" text-anchor="middle" fill="#f59e0b" font-size="7" font-weight="600">Extracts locally → syncs via Hub</text>
+
+  <!-- ==================== Hub ↔ Machine WebSocket lines ==================== -->
+  <line x1="370" y1="704" x2="210" y2="750" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5 3" opacity="0.5"/>
+  <polygon points="210,750 218,743 215,752" fill="#34d399" opacity="0.5"/>
+  <polygon points="370,704 362,711 365,702" fill="#34d399" opacity="0.5"/>
+
+  <line x1="480" y1="704" x2="480" y2="750" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5 3" opacity="0.5"/>
+  <polygon points="480,750 476,741 484,741" fill="#34d399" opacity="0.5"/>
+  <polygon points="480,704 476,713 484,713" fill="#34d399" opacity="0.5"/>
+
+  <line x1="590" y1="704" x2="750" y2="750" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5 3" opacity="0.5"/>
+  <polygon points="750,750 742,743 745,752" fill="#34d399" opacity="0.5"/>
+  <polygon points="590,704 598,711 595,702" fill="#34d399" opacity="0.5"/>
+
+  <!-- ==================== KNOWLEDGE FLOW ARROWS (A/C → B) ==================== -->
+  <path d="M232 843 Q320 810 475 805" fill="none" stroke="#f59e0b" stroke-width="2" opacity="0.6"/>
+  <polygon points="475,805 466,801 466,809" fill="#f59e0b" opacity="0.7"/>
+  <path d="M732 843 Q640 810 535 805" fill="none" stroke="#f59e0b" stroke-width="2" opacity="0.6"/>
+  <polygon points="535,805 544,801 544,809" fill="#f59e0b" opacity="0.7"/>
+
+  <text x="340" y="823" text-anchor="middle" fill="#f59e0b" font-size="7" opacity="0.8" font-weight="600">knowledge syncs in</text>
+  <text x="620" y="823" text-anchor="middle" fill="#f59e0b" font-size="7" opacity="0.8" font-weight="600">knowledge syncs in</text>
+
+  <!-- ==================== FLOW STEPS ==================== -->
+  <rect x="38" y="878" width="884" height="56" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1" opacity="0.7"/>
+
+  <circle cx="70" cy="894" r="10" fill="#d97706" opacity="0.3"/>
+  <text x="70" y="898" text-anchor="middle" fill="#fbbf24" font-size="9" font-weight="700">1</text>
+  <text x="88" y="894" fill="#e2e8f0" font-size="8.5" font-weight="600">You type a prompt</text>
+  <text x="88" y="906" fill="#94a3b8" font-size="7.5">on Machine B</text>
+
+  <circle cx="260" cy="894" r="10" fill="#7c3aed" opacity="0.3"/>
+  <text x="260" y="898" text-anchor="middle" fill="#c4b5fd" font-size="9" font-weight="700">2</text>
+  <text x="278" y="894" fill="#e2e8f0" font-size="8.5" font-weight="600">Hook + MCP search()</text>
+  <text x="278" y="906" fill="#94a3b8" font-size="7.5">queries local + Hub knowledge</text>
+
+  <circle cx="480" cy="894" r="10" fill="#059669" opacity="0.3"/>
+  <text x="480" y="898" text-anchor="middle" fill="#34d399" font-size="9" font-weight="700">3</text>
+  <text x="498" y="894" fill="#e2e8f0" font-size="8.5" font-weight="600">Hub relays to A + C</text>
+  <text x="498" y="906" fill="#94a3b8" font-size="7.5">queries their knowledge stores</text>
+
+  <circle cx="700" cy="894" r="10" fill="#f59e0b" opacity="0.3"/>
+  <text x="700" y="898" text-anchor="middle" fill="#fcd34d" font-size="9" font-weight="700">4</text>
+  <text x="718" y="894" fill="#e2e8f0" font-size="8.5" font-weight="600">Merged results injected</text>
+  <text x="718" y="906" fill="#94a3b8" font-size="7.5">into Claude's context</text>
+
+  <!-- Bottom summary -->
+  <text x="480" y="950" text-anchor="middle" fill="#f59e0b" font-size="9" font-weight="600">Claude Code on any machine sees knowledge extracted from sessions on every connected machine.</text>
+
+  <!-- ==================== LEGEND ==================== -->
+  <rect x="30" y="962" width="900" height="36" rx="8" fill="#0f172a" opacity="0.6"/>
+  <circle cx="60" cy="980" r="5" fill="#2563eb"/>
+  <text x="72" y="984" fill="#94a3b8" font-size="9">Local access</text>
+  <circle cx="170" cy="980" r="5" fill="#059669"/>
+  <text x="182" y="984" fill="#94a3b8" font-size="9">Cloud relay</text>
+  <circle cx="280" cy="980" r="5" fill="#d97706"/>
+  <text x="292" y="984" fill="#94a3b8" font-size="9">Claude Code</text>
+  <circle cx="395" cy="980" r="5" fill="#7c3aed"/>
+  <text x="407" y="984" fill="#94a3b8" font-size="9">Core API</text>
+  <line x1="480" y1="975" x2="510" y2="975" stroke="#f59e0b" stroke-width="2"/>
+  <polygon points="510,975 504,971 504,979" fill="#f59e0b"/>
+  <text x="518" y="979" fill="#94a3b8" font-size="9">Knowledge sync</text>
+  <text x="660" y="984" fill="#64748b" font-size="9">Ports: Core 3100 · Web 3848 · ttyd 5900+</text>
+</svg>
