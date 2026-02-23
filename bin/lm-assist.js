@@ -19,12 +19,39 @@ function getProjectRoot() {
   try {
     const cfgPath = path.join(os.homedir(), '.claude-code-config.json');
     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+
+    // Dev mode ON → use repo
     if (cfg.devModeEnabled && cfg.devRepoPath) {
       const devSm = path.join(cfg.devRepoPath, 'core', 'dist', 'service-manager.js');
       if (fs.existsSync(devSm)) return cfg.devRepoPath;
     }
+
+    // Dev mode OFF → always use npm global package
+    const fromFilename = path.dirname(path.dirname(__filename));
+    if (fromFilename.includes('node_modules')) {
+      return fromFilename; // Already running from npm global
+    }
+    // Running from repo but devMode is off → find npm global package
+    return findNpmPackage() || fromFilename;
   } catch {}
   return path.dirname(path.dirname(__filename));
+}
+
+function findNpmPackage() {
+  // Derive npm global root from node executable path (no process spawn needed)
+  // e.g. C:\nvm4w\nodejs\node.exe → C:\nvm4w\nodejs\node_modules\lm-assist
+  //      /usr/local/bin/node → /usr/local/lib/node_modules/lm-assist
+  const nodeDir = path.dirname(process.execPath);
+  const candidates = [
+    path.join(nodeDir, 'node_modules', 'lm-assist'),            // Windows (nvm4w, standard)
+    path.join(nodeDir, '..', 'lib', 'node_modules', 'lm-assist'), // Linux/macOS
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, 'core', 'dist', 'service-manager.js'))) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 const projectRoot = getProjectRoot();
@@ -58,10 +85,10 @@ lm-assist - LM Assistant CLI
 Usage: lm-assist <command> [options]
 
 Commands:
-  start              Start API (port 3100) and Web (port 3848) services
+  start              Start API and Web services
   stop               Stop all services
   restart            Restart services
-  status             Show service status and health check
+  status             Show service status and component locations
   logs [core|web]    View service logs (last 100 lines)
   upgrade            Upgrade to latest version (npm + plugin + restart)
   help               Show this help message
@@ -96,11 +123,26 @@ if (command === 'upgrade') {
     execFileSync(process.execPath, [upgradeScript], {
       stdio: 'inherit',
       env: process.env,
+      windowsHide: true,
     });
   } catch (err) {
     process.exit(err.status || 1);
   }
   process.exit(0);
+}
+
+/**
+ * Print component locations after start/restart/status
+ */
+function printComponents(svc) {
+  if (typeof svc.getComponentInfo !== 'function') return;
+  const info = svc.getComponentInfo();
+  console.log('\nComponents:');
+  console.log(`  API:        ${info.api.url}  [${info.api.source}]`);
+  console.log(`  Web:        ${info.web.url}  [${info.web.source}]`);
+  console.log(`  MCP:        ${info.mcp.installed ? info.mcp.location + '  [' + info.mcp.source + ']' : '(not installed)'}`);
+  console.log(`  Hook:       ${info.hook.installed ? info.hook.location + '  [' + info.hook.source + ']' : '(not installed)'}`);
+  console.log(`  Statusline: ${info.statusline.installed ? info.statusline.location : '(not installed)'}`);
 }
 
 async function main() {
@@ -110,10 +152,10 @@ async function main() {
     case 'start': {
       console.log('Starting lm-assist services...\n');
       const result = await svc.startAll();
-      console.log(`  Core API: ${result.core.message}`);
-      console.log(`  Web:      ${result.web.message}`);
+      console.log(`  API: ${result.core.message}`);
+      console.log(`  Web: ${result.web.message}`);
       if (result.core.success && result.web.success) {
-        console.log('\nAll services started.');
+        printComponents(svc);
       } else {
         process.exitCode = 1;
       }
@@ -123,17 +165,19 @@ async function main() {
     case 'stop': {
       console.log('Stopping lm-assist services...\n');
       const result = await svc.stopAll();
-      console.log(`  Core API: ${result.core.message}`);
-      console.log(`  Web:      ${result.web.message}`);
+      console.log(`  API: ${result.core.message}`);
+      console.log(`  Web: ${result.web.message}`);
       break;
     }
 
     case 'restart': {
       console.log('Restarting lm-assist services...\n');
       const result = await svc.restartAll();
-      console.log(`  Core API: ${result.core.message}`);
-      console.log(`  Web:      ${result.web.message}`);
-      if (!result.core.success || !result.web.success) {
+      console.log(`  API: ${result.core.message}`);
+      console.log(`  Web: ${result.web.message}`);
+      if (result.core.success && result.web.success) {
+        printComponents(svc);
+      } else {
         process.exitCode = 1;
       }
       break;
@@ -141,17 +185,12 @@ async function main() {
 
     case 'status': {
       const s = await svc.status();
-      console.log('lm-assist Service Status\n');
-      const coreStatus = s.core.healthy ? 'Running & Healthy' : s.core.running ? 'Running (Unhealthy)' : 'Not Running';
-      const webStatus = s.web.running ? 'Running' : 'Not Running';
-      console.log(`  Core API (port ${s.core.port}):  ${coreStatus}${s.core.pid ? ` (PID ${s.core.pid})` : ''}`);
-      console.log(`  Web      (port ${s.web.port}):  ${webStatus}${s.web.pid ? ` (PID ${s.web.pid})` : ''}`);
-
-      if (s.core.running || s.web.running) {
-        console.log('\nURLs:');
-        if (s.core.running) console.log(`  Core API:  http://localhost:${s.core.port}`);
-        if (s.web.running) console.log(`  Web:       http://localhost:${s.web.port}`);
-      }
+      console.log('lm-assist Status\n');
+      const apiStatus = s.core.healthy ? 'Running' : s.core.running ? 'Unhealthy' : 'Stopped';
+      const webStatus = s.web.running ? 'Running' : 'Stopped';
+      console.log(`  API (port ${s.core.port}):  ${apiStatus}${s.core.pid ? ` (PID ${s.core.pid})` : ''}`);
+      console.log(`  Web (port ${s.web.port}):  ${webStatus}${s.web.pid ? ` (PID ${s.web.pid})` : ''}`);
+      printComponents(svc);
       break;
     }
 

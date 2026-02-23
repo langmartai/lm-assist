@@ -15,25 +15,54 @@ import * as os from 'os';
 
 const DEFAULT_REPO_ROOT = path.resolve(__dirname, '..', '..');
 
+function findNpmPackage(): string | null {
+  const nodeDir = path.dirname(process.execPath);
+  const candidates = [
+    path.join(nodeDir, 'node_modules', 'lm-assist'),
+    path.join(nodeDir, '..', 'lib', 'node_modules', 'lm-assist'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, 'core', 'dist', 'cli.js'))) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 function getRepoRoot(): string {
   try {
     const cfgPath = path.join(os.homedir(), '.claude-code-config.json');
     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+
+    // Dev mode ON → use repo
     if (cfg.devModeEnabled && cfg.devRepoPath) {
       const devCli = path.join(cfg.devRepoPath, 'core', 'dist', 'cli.js');
       if (fs.existsSync(devCli)) return cfg.devRepoPath;
     }
+
+    // Dev mode OFF → always prefer npm global package
+    if (DEFAULT_REPO_ROOT.includes('node_modules')) {
+      return DEFAULT_REPO_ROOT; // Already running from npm global
+    }
+    return findNpmPackage() || DEFAULT_REPO_ROOT;
   } catch {}
   return DEFAULT_REPO_ROOT;
+}
+
+/** Centralized runtime dir for PID files and logs — consistent regardless of npm vs repo */
+function getRuntimeDir(): string {
+  const dir = path.join(os.homedir(), '.cache', 'lm-assist');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 function getCoreDir(): string { return path.join(getRepoRoot(), 'core'); }
 function getWebDir(): string { return path.join(getRepoRoot(), 'web'); }
 function getCliJs(): string { return path.join(getCoreDir(), 'dist', 'cli.js'); }
-function getCorePidFile(): string { return path.join(getCoreDir(), 'server.pid'); }
-function getWebPidFile(): string { return path.join(getWebDir(), 'web.pid'); }
-function getCoreLog(): string { return path.join(getCoreDir(), 'server.log'); }
-function getWebLog(): string { return path.join(getWebDir(), 'web.log'); }
+function getCorePidFile(): string { return path.join(getRuntimeDir(), 'core.pid'); }
+function getWebPidFile(): string { return path.join(getRuntimeDir(), 'web.pid'); }
+function getCoreLog(): string { return path.join(getRuntimeDir(), 'core.log'); }
+function getWebLog(): string { return path.join(getRuntimeDir(), 'web.log'); }
 
 // ─── Config ──────────────────────────────────────────────────
 
@@ -185,7 +214,8 @@ async function killByPid(pid: number): Promise<void> {
 
 async function killByPort(port: number): Promise<void> {
   try {
-    const findProcess = require('find-process') as (type: string, value: number) => Promise<Array<{ pid: number }>>;
+    const fpModule = require('find-process');
+    const findProcess = (fpModule.default || fpModule) as (type: string, value: number) => Promise<Array<{ pid: number }>>;
     const list = await findProcess('port', port);
     const treeKill = require('tree-kill') as (pid: number, signal?: string, callback?: (err?: Error) => void) => void;
     for (const proc of list) {
@@ -454,4 +484,112 @@ export function readLog(service: 'core' | 'web', lines: number = 100): string {
   } catch {
     return `No log found at ${logPath}`;
   }
+}
+
+// ─── Component Info ──────────────────────────────────────────────────
+
+export interface ComponentInfo {
+  api: { port: number; url: string; source: string };
+  web: { port: number; url: string; source: string };
+  mcp: { installed: boolean; source: string | null; location: string | null };
+  hook: { installed: boolean; source: string | null; location: string | null };
+  statusline: { installed: boolean; location: string | null };
+}
+
+export function getComponentInfo(config?: ServiceConfig): ComponentInfo {
+  const { apiPort, webPort } = getConfig(config);
+  const repoRoot = getRepoRoot();
+  const settingsFile = path.join(os.homedir(), '.claude', 'settings.json');
+  const pluginsFile = path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
+
+  // Determine source (npm or dev repo)
+  const source = repoRoot === DEFAULT_REPO_ROOT ? repoRoot : `${repoRoot} (dev)`;
+
+  // Find plugin install path
+  let pluginInstallPath: string | null = null;
+  try {
+    const pluginsData = JSON.parse(fs.readFileSync(pluginsFile, 'utf-8'));
+    const entries = pluginsData?.plugins?.['lm-assist@langmartai'];
+    if (Array.isArray(entries) && entries.length > 0) {
+      pluginInstallPath = entries[0].installPath || null;
+    }
+  } catch {}
+
+  // MCP: check plugin .mcp.json, then settings.json
+  let mcp: ComponentInfo['mcp'] = { installed: false, source: null, location: null };
+  if (pluginInstallPath) {
+    try {
+      const mcpJson = JSON.parse(fs.readFileSync(path.join(pluginInstallPath, '.mcp.json'), 'utf-8'));
+      const srv = mcpJson?.mcpServers?.['lm-assist'];
+      if (srv) {
+        const args = srv.args || [];
+        const mcpPath = args.find((a: string) => a.includes('mcp-server')) || `${srv.command} ${args.join(' ')}`;
+        mcp = { installed: true, source: 'plugin', location: mcpPath };
+      }
+    } catch {}
+  }
+  if (!mcp.installed) {
+    try {
+      const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+      const mcpEntry = settings?.mcpServers?.['lm-assist'] || settings?.mcpServers?.['lm-assist-context'];
+      if (mcpEntry) {
+        const args = mcpEntry.args || [];
+        const mcpPath = args.find((a: string) => a.includes('mcp-server')) || args.join(' ');
+        mcp = { installed: true, source: 'settings', location: mcpPath };
+      }
+    } catch {}
+  }
+
+  // Hook: check plugin hooks/hooks.json, then settings.json
+  let hook: ComponentInfo['hook'] = { installed: false, source: null, location: null };
+  if (pluginInstallPath) {
+    try {
+      const hooksJson = JSON.parse(fs.readFileSync(path.join(pluginInstallPath, 'hooks', 'hooks.json'), 'utf-8'));
+      const uph = hooksJson?.hooks?.UserPromptSubmit || [];
+      for (const entry of uph) {
+        const hookCmd = (entry.hooks || []).find((h: any) =>
+          typeof h.command === 'string' && h.command.includes('context-inject')
+        );
+        if (hookCmd) {
+          // Resolve ${CLAUDE_PLUGIN_ROOT} to actual path
+          const cmd = hookCmd.command.replace('${CLAUDE_PLUGIN_ROOT}', pluginInstallPath);
+          hook = { installed: true, source: 'plugin', location: cmd };
+          break;
+        }
+      }
+    } catch {}
+  }
+  if (!hook.installed) {
+    try {
+      const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+      const uph = settings?.hooks?.UserPromptSubmit || [];
+      for (const entry of uph) {
+        const hookCmd = (entry.hooks || []).find((h: any) =>
+          typeof h.command === 'string' && h.command.includes('context-inject')
+        );
+        if (hookCmd) {
+          hook = { installed: true, source: 'settings', location: hookCmd.command };
+          break;
+        }
+      }
+    } catch {}
+  }
+
+  // Statusline: check settings.json statusLine field
+  let statusline: ComponentInfo['statusline'] = { installed: false, location: null };
+  try {
+    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+    const sl = settings?.statusLine;
+    if (sl && typeof sl.command === 'string' && sl.command.includes('statusline')) {
+      statusline = { installed: true, location: sl.command };
+    }
+  } catch {}
+
+  return {
+    api: { port: apiPort, url: `http://localhost:${apiPort}`, source },
+    web: { port: webPort, url: `http://localhost:${webPort}`, source },
+    mcp,
+    hook,
+    statusline,
+  };
 }

@@ -22,7 +22,7 @@
  */
 
 import type { RouteHandler, RouteContext } from '../index';
-import { execFileSync } from 'child_process';
+import { execFileSync } from '../../utils/exec';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -31,27 +31,40 @@ const IS_WINDOWS = process.platform === 'win32';
 const CLAUDE_CODE_CONFIG_FILE = path.join(os.homedir(), '.claude-code-config.json');
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.json');
 const INSTALLED_PLUGINS_FILE = path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
+// Resolve npm global root without spawning npm (which fails on Windows with execFileSync)
+function getNpmGlobalRoot(): string | null {
+  const nodeDir = path.dirname(process.execPath);
+  const candidates = [
+    path.join(nodeDir, 'node_modules', 'lm-assist'),              // Windows (nvm4w, standard)
+    path.join(nodeDir, '..', 'lib', 'node_modules', 'lm-assist'), // Linux/macOS
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
 // Resolve hook scripts: prefer npm global install, fall back to local repo
 function findNpmHookPath(hookName: string): string | null {
-  try {
-    const npmRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf-8', timeout: 5000 }).trim();
-    const npmPath = path.join(npmRoot, 'lm-assist', 'core', 'hooks', hookName);
+  const npmPkg = getNpmGlobalRoot();
+  if (npmPkg) {
+    const npmPath = path.join(npmPkg, 'core', 'hooks', hookName);
     if (fs.existsSync(npmPath)) return npmPath;
-  } catch {}
+  }
   return null;
 }
 
 function getHookPath(hookName: string): string {
   const config = loadConfig();
-  // 1. Dev repo (if enabled and exists)
+  // Dev mode ON → use repo
   if (config.devModeEnabled && config.devRepoPath) {
     const devPath = path.join(config.devRepoPath, 'core', 'hooks', hookName);
     if (fs.existsSync(devPath)) return devPath;
   }
-  // 2. npm global
+  // Dev mode OFF → prefer npm global
   const npmPath = findNpmHookPath(hookName);
   if (npmPath) return npmPath;
-  // 3. Local relative
+  // Fallback: local relative
   return path.resolve(__dirname, '../../../hooks/', hookName);
 }
 
@@ -122,21 +135,19 @@ function detectPluginMcp(pluginPath: string): { command: string; args: string } 
  * Looks for the globally-installed npm package first, then falls back to local repo.
  */
 function findMcpServerPath(): string {
-  // 0. Dev repo (if enabled)
   const config = loadConfig();
+  // Dev mode ON → use repo
   if (config.devModeEnabled && config.devRepoPath) {
     const devMcpPath = path.join(config.devRepoPath, 'core', 'dist', 'mcp-server', 'index.js');
     if (fs.existsSync(devMcpPath)) return devMcpPath;
   }
-  // 1. Try npm global: resolve lm-assist package → core/dist/mcp-server/index.js
-  try {
-    const npmRoot = require('child_process').execFileSync('npm', ['root', '-g'], {
-      encoding: 'utf-8', timeout: 5000,
-    }).trim();
-    const npmMcpPath = path.join(npmRoot, 'lm-assist', 'core', 'dist', 'mcp-server', 'index.js');
+  // Dev mode OFF → prefer npm global package
+  const npmPkg = getNpmGlobalRoot();
+  if (npmPkg) {
+    const npmMcpPath = path.join(npmPkg, 'core', 'dist', 'mcp-server', 'index.js');
     if (fs.existsSync(npmMcpPath)) return npmMcpPath;
-  } catch {}
-  // 2. Fallback: local repo build output
+  }
+  // Fallback: local build output
   return path.resolve(__dirname, '../../dist/mcp-server/index.js');
 }
 
@@ -575,10 +586,11 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
                 `'${process.execPath}' '${lmAssistBin}' start`,
               ].join('; ');
 
-              const { spawn } = require('child_process');
-              const child = spawn('/bin/bash', ['-c', script], {
+              const { spawn: _spawn } = require('child_process');
+              const child = _spawn('/bin/bash', ['-c', script], {
                 detached: true,
                 stdio: 'ignore',
+                windowsHide: true,
               });
               child.unref();
               restartScheduled = true;
@@ -761,7 +773,22 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
         // If plugin is installed, ensure .mcp.json exists with correct MCP server path
         if (plugin) {
           const pluginMcp = detectPluginMcp(plugin.installPath);
+          const correctMcpPath = findMcpServerPath();
+
           if (pluginMcp) {
+            // Update path if it's stale (e.g. devMode changed)
+            const currentPath = (pluginMcp.args || '').trim();
+            if (currentPath !== correctMcpPath) {
+              try {
+                const mcpJsonPath = path.join(plugin.installPath, '.mcp.json');
+                const mcpJson = {
+                  mcpServers: {
+                    'lm-assist': { command: 'node', args: [correctMcpPath] },
+                  },
+                };
+                fs.writeFileSync(mcpJsonPath, JSON.stringify(mcpJson, null, 2) + '\n');
+              } catch { /* non-fatal */ }
+            }
             return {
               success: true,
               data: {
@@ -773,9 +800,9 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
             };
           }
 
-          // Plugin installed but .mcp.json missing — create it with npm package path
+          // Plugin installed but .mcp.json missing — create it
           try {
-            const mcpServerPath = findMcpServerPath();
+            const mcpServerPath = correctMcpPath;
             const mcpJson = {
               mcpServers: {
                 'lm-assist': {

@@ -6,7 +6,7 @@
  * using npm packages: tree-kill, pidtree, find-process, check-disk-space, get-port-please.
  */
 
-import { execFileSync } from 'child_process';
+import { execFileSync } from './exec';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';

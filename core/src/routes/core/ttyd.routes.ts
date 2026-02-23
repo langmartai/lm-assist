@@ -17,7 +17,7 @@
 import type { RouteHandler, RouteContext } from '../index';
 import { getTtydManager } from '../../ttyd-manager';
 import { getTtydProxyUrl } from '../../ttyd-proxy';
-import { execFileSync } from 'child_process';
+import { execFileSync } from '../../utils/exec';
 import * as path from 'path';
 import * as os from 'os';
 import { IS_WINDOWS, IS_POSIX, isBinaryInstalled } from '../../utils/process-utils';

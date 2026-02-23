@@ -11,7 +11,7 @@
  */
 
 import type { RouteHandler, RouteContext } from '../index';
-import { execFile, execFileSync } from 'child_process';
+import { execFile, execFileSync } from '../../utils/exec';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
