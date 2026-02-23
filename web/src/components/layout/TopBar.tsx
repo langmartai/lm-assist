@@ -3,9 +3,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Search, Globe, Monitor, CloudOff, Maximize2, LogOut, Info, Download } from 'lucide-react';
+import { Search, Globe, Monitor, CloudOff, Maximize2, LogOut, Info, Download, Wifi } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
-import { detectProxyInfo } from '@/lib/api-client';
+import { detectAppMode, detectProxyInfo } from '@/lib/api-client';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useSearch } from '@/contexts/SearchContext';
 import { MachineDropdown } from './MachineDropdown';
@@ -30,7 +30,7 @@ function getInitials(name?: string, email?: string): string {
 export function TopBar() {
   const pathname = usePathname();
   const router = useRouter();
-  const { proxy, hubUser, localGatewayId } = useAppMode();
+  const { proxy, hubUser, localGatewayId, hubConnected } = useAppMode();
   const { selectedMachine } = useMachineContext();
   const { theme, toggleTheme } = useTheme();
   const { open: openSearch } = useSearch();
@@ -90,7 +90,10 @@ export function TopBar() {
   }, [router]);
 
   const isCloud = proxy.isProxied;
-  const gatewayId = proxy.machineId || localGatewayId;
+  // Use the selected machine's gatewayId for the cloud URL so "Cloud" opens the correct machine
+  const selectedGatewayId = selectedMachine?.gatewayId
+    || (selectedMachine?.id !== 'localhost' ? selectedMachine?.id : null);
+  const gatewayId = proxy.machineId || selectedGatewayId || localGatewayId;
   const hubName = 'langmart.ai';
   const currentPage = pathname.replace(proxy.basePath, '') || '/session-dashboard';
   const cloudUrl = gatewayId ? `https://${hubName}/w/${gatewayId}/assist${currentPage}` : null;
@@ -109,6 +112,28 @@ export function TopBar() {
     ? `${localBaseUrl}/auth?token=${encodeURIComponent(lanAccessToken)}&redirect=${encodeURIComponent(currentPage)}`
     : `${localBaseUrl}${currentPage}`;
 
+  // Distinguish Local (localhost) vs LAN (private IP) access
+  const isLan = mounted && !isCloud && !isLocalhost;
+  const localLabel = isLan ? 'LAN' : 'Local';
+  const LocalIcon = isLan ? Wifi : Monitor;
+
+  // Open cloud proxy URL with a proxy token for authentication
+  const openCloud = useCallback(async () => {
+    if (!gatewayId) return;
+    const baseCloudUrl = `https://${hubName}/w/${gatewayId}/assist${currentPage}`;
+    try {
+      const { baseUrl } = detectAppMode();
+      const res = await fetch(`${baseUrl}/hub/machines/${gatewayId}/proxy-token`, { method: 'POST' });
+      const json = await res.json();
+      if (json.success && json.data?.token) {
+        window.open(`${baseCloudUrl}?token=${json.data.token}`, '_blank');
+        return;
+      }
+    } catch { /* fall through */ }
+    // Fallback: open without token (user will need to authenticate manually)
+    window.open(baseCloudUrl, '_blank');
+  }, [gatewayId, hubName, currentPage]);
+
   return (
     <>
     <div className="topbar">
@@ -117,6 +142,7 @@ export function TopBar() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <MachineDropdown />
           {isCloud ? (
+            /* State 4: Through langmart.ai proxy */
             <>
               <div className="topbar-connection proxied">
                 <Globe size={11} />
@@ -129,27 +155,36 @@ export function TopBar() {
                 className="topbar-connection local"
                 style={{ textDecoration: 'none', cursor: 'pointer', opacity: 0.6 }}
               >
-                <Monitor size={11} />
-                <span>Switch to Local</span>
+                <LocalIcon size={11} />
+                <span>Switch to {localLabel}</span>
               </a>
             </>
-          ) : (
+          ) : hubConnected ? (
+            /* State 3: Local/LAN + Cloud connected (hybrid) */
             <>
-              {cloudUrl && (
-                <a
-                  href={cloudUrl}
+              {gatewayId && (
+                <button
                   className="topbar-connection proxied"
-                  style={{ textDecoration: 'none', cursor: 'pointer', opacity: 0.6 }}
+                  style={{ cursor: 'pointer', background: 'rgba(74, 222, 128, 0.08)' }}
+                  onClick={openCloud}
+                  title="Open in cloud proxy"
                 >
                   <Globe size={11} />
                   <span>Cloud</span>
-                </a>
+                  <span className="topbar-connected-dot" title="Connected to cloud" />
+                </button>
               )}
               <div className="topbar-connection local">
-                <Monitor size={11} />
-                <span>Local</span>
+                <LocalIcon size={11} />
+                <span>{localLabel}</span>
               </div>
             </>
+          ) : (
+            /* State 1/2: Local or LAN only (no cloud) */
+            <div className="topbar-connection local">
+              <LocalIcon size={11} />
+              <span>{localLabel}</span>
+            </div>
           )}
         </div>
       )}

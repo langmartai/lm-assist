@@ -346,6 +346,14 @@ code, pre, .font-mono {
   text-transform: uppercase;
 }
 
+.topbar-connected-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-status-green);
+  flex-shrink: 0;
+}
+
 .topbar-connect-cloud {
   display: inline-flex;
   align-items: center;
