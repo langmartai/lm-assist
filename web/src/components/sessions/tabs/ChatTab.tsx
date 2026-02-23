@@ -1227,7 +1227,7 @@ function MessageBubble({
     if (isCompact) {
       badges.push(<span key="compact" className="badge badge-amber" style={{ fontSize: 9, padding: '0 5px' }}>Compact</span>);
     }
-    if (isAgent && agentType) {
+    if (isAgent && agentType && !isMobile) {
       badges.push(
         <span
           key="agent"
@@ -1304,13 +1304,33 @@ function MessageBubble({
             <ChevronIcon size={10} style={{ color: config.iconColor, opacity: 0.6, flexShrink: 0, marginTop: 4 }} />
             <Icon size={12} style={{ color: config.iconColor, flexShrink: 0, marginTop: 3 }} />
             <div style={{ flex: 1, minWidth: 0 }}>
+              {/* Mobile: float turn# + copy into first line of content */}
+              {isMobile && (
+                <span style={{ float: 'right', display: 'flex', alignItems: 'center', gap: 3, marginLeft: 4 }}>
+                  {badges.length > 0 && <span style={{ display: 'flex', gap: 3 }}>{badges}</span>}
+                  {msg.turnIndex !== undefined && (
+                    <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+                      #{msg.turnIndex}
+                    </span>
+                  )}
+                  <button
+                    data-copy-btn
+                    className="btn btn-sm btn-ghost"
+                    style={{ padding: '1px 3px', opacity: 0.4 }}
+                    onClick={(e) => { e.stopPropagation(); onCopy(msgId, getCopyContent()); }}
+                    title="Copy to clipboard"
+                  >
+                    {copiedId === msgId ? <Check size={10} style={{ color: 'var(--color-status-green)' }} /> : <Copy size={10} />}
+                  </button>
+                </span>
+              )}
               <div
                 style={{
                   maxHeight: (expandState === 'expanded' || (!expandState && viewMode === 'detailed')) ? 240 : undefined,
                   overflow: (expandState === 'expanded' || (!expandState && viewMode === 'detailed')) ? 'auto' : undefined,
                 }}
                 className={(expandState === 'expanded' || (!expandState && viewMode === 'detailed')) ? 'scrollbar-thin' : ''}
-          >
+              >
             {/* Tool call detail — smart display ON: structured view */}
             {isToolCall && smartDisplay && (
               <ToolCallDetail toolName={msg.toolName!} input={msg.toolInput} result={msg.toolResult} />
@@ -1425,21 +1445,24 @@ function MessageBubble({
             )}
               </div>
             </div>
-            {badges.length > 0 && <span style={{ display: 'flex', gap: 3, flexShrink: 0 }}>{badges}</span>}
-            {msg.turnIndex !== undefined && (
+            {/* Desktop: badges, turn#, copy after content area */}
+            {!isMobile && badges.length > 0 && <span style={{ display: 'flex', gap: 3, flexShrink: 0 }}>{badges}</span>}
+            {!isMobile && msg.turnIndex !== undefined && (
               <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)', flexShrink: 0, marginTop: 3 }}>
                 #{msg.turnIndex}
               </span>
             )}
-            <button
-              data-copy-btn
-              className="btn btn-sm btn-ghost"
-              style={{ padding: '1px 3px', opacity: 0.4, flexShrink: 0, marginTop: 2 }}
-              onClick={(e) => { e.stopPropagation(); onCopy(msgId, getCopyContent()); }}
-              title="Copy to clipboard"
-            >
-              {copiedId === msgId ? <Check size={10} style={{ color: 'var(--color-status-green)' }} /> : <Copy size={10} />}
-            </button>
+            {!isMobile && (
+              <button
+                data-copy-btn
+                className="btn btn-sm btn-ghost"
+                style={{ padding: '1px 3px', opacity: 0.4, flexShrink: 0, marginTop: 2 }}
+                onClick={(e) => { e.stopPropagation(); onCopy(msgId, getCopyContent()); }}
+                title="Copy to clipboard"
+              >
+                {copiedId === msgId ? <Check size={10} style={{ color: 'var(--color-status-green)' }} /> : <Copy size={10} />}
+              </button>
+            )}
           </div>
         </div>
       )}
