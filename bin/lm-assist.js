@@ -118,9 +118,13 @@ if (command === 'upgrade') {
     console.error('Upgrade script not found at:', upgradeScript);
     process.exit(1);
   }
+  // Copy to temp so the script doesn't hold a file lock on the npm package
+  // directory (Windows EBUSY when npm tries to rename core/).
+  const tmpScript = path.join(os.tmpdir(), `lm-assist-upgrade-${Date.now()}.js`);
+  fs.copyFileSync(upgradeScript, tmpScript);
   const { execFileSync } = require('child_process');
   try {
-    execFileSync(process.execPath, [upgradeScript], {
+    execFileSync(process.execPath, [tmpScript], {
       stdio: 'inherit',
       env: process.env,
       windowsHide: true,

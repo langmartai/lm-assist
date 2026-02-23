@@ -543,51 +543,46 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
 
           // Schedule a service restart so core/web pick up the new source (npm vs dev-repo).
           // The `lm-assist` CLI checks devModeEnabled to decide which codebase to start from.
-          // Strategy: spawn a detached bash process that kills by port (most reliable,
-          // avoids PID file location mismatch between dev-repo and npm), then starts.
+          // Strategy: spawn a detached Node.js process that stops and restarts via lm-assist CLI.
+          // This is cross-platform (no bash/fuser/sleep dependencies).
           try {
-            const whichCmd = IS_WINDOWS ? 'where' : 'which';
-            const lmAssistBin = execFileSync(whichCmd, ['lm-assist'], {
-              encoding: 'utf-8', timeout: 5000,
-            }).trim().split(/\r?\n/)[0];
-            if (lmAssistBin && fs.existsSync(lmAssistBin)) {
-              // Read ports from .env or defaults
-              const apiPort = process.env.API_PORT || '3100';
-              const webPort = process.env.WEB_PORT || '3848';
-
-              // Clean up PID files from BOTH possible roots (dev-repo and npm)
-              const serverRoot = path.resolve(__dirname, '../../../..');
-              const pidFiles: string[] = [
-                path.join(serverRoot, 'core', 'server.pid'),
-                path.join(serverRoot, 'web', 'web.pid'),
-              ];
+            // Find lm-assist bin: prefer npm global, then PATH lookup
+            let lmAssistBin: string | null = null;
+            const npmPkg = getNpmGlobalRoot();
+            if (npmPkg) {
+              const candidate = path.join(npmPkg, 'bin', 'lm-assist.js');
+              if (fs.existsSync(candidate)) lmAssistBin = candidate;
+            }
+            if (!lmAssistBin) {
+              const whichCmd = IS_WINDOWS ? 'where' : 'which';
               try {
-                const npmRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf-8', timeout: 5000 }).trim();
-                const npmPkg = path.join(npmRoot, 'lm-assist');
-                if (fs.existsSync(npmPkg)) {
-                  pidFiles.push(path.join(npmPkg, 'core', 'server.pid'));
-                  pidFiles.push(path.join(npmPkg, 'web', 'web.pid'));
+                const result = execFileSync(whichCmd, ['lm-assist'], {
+                  encoding: 'utf-8', timeout: 5000,
+                }).trim().split(/\r?\n/);
+                // On Windows, prefer .cmd/.exe over extensionless bash scripts
+                if (IS_WINDOWS && result.length > 1) {
+                  lmAssistBin = result.find(l => /\.(cmd|exe|ps1|js)$/i.test(l.trim()))?.trim() || result[0].trim();
+                } else {
+                  lmAssistBin = result[0].trim();
                 }
               } catch {}
-              const rmCmds = pidFiles.map(f => `rm -f '${f}'`).join('; ');
+            }
 
-              // Build a shell script that:
-              // 1. Waits 1 second (for this HTTP response to complete)
-              // 2. Kills by port (fuser is the most reliable cross-root method)
-              // 3. Cleans up PID files from both roots
-              // 4. Waits 2 seconds for graceful shutdown
-              // 5. Starts services via lm-assist CLI (reads devModeEnabled to pick source)
-              const script = [
-                'sleep 1',
-                `fuser -k ${apiPort}/tcp 2>/dev/null || true`,
-                `fuser -k ${webPort}/tcp 2>/dev/null || true`,
-                rmCmds,
-                'sleep 2',
-                `'${process.execPath}' '${lmAssistBin}' start`,
-              ].join('; ');
+            if (lmAssistBin && fs.existsSync(lmAssistBin)) {
+              // Inline Node.js script: wait 1s, run "lm-assist restart"
+              const inlineScript = [
+                `setTimeout(() => {`,
+                `  const { execFileSync } = require('child_process');`,
+                `  try {`,
+                `    execFileSync(process.execPath, [${JSON.stringify(lmAssistBin)}, 'restart'], {`,
+                `      stdio: 'ignore', windowsHide: true, timeout: 60000`,
+                `    });`,
+                `  } catch {}`,
+                `}, 1000);`,
+              ].join(' ');
 
               const { spawn: _spawn } = require('child_process');
-              const child = _spawn('/bin/bash', ['-c', script], {
+              const child = _spawn(process.execPath, ['-e', inlineScript], {
                 detached: true,
                 stdio: 'ignore',
                 windowsHide: true,

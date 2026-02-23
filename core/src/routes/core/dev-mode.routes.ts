@@ -689,8 +689,13 @@ export function createDevModeRoutes(_ctx: RouteContext): RouteHandler[] {
           };
         }
 
+        // Copy upgrade script to temp so it doesn't hold a file lock on the npm
+        // package directory (Windows EBUSY when npm tries to rename core/).
+        const tmpScript = path.join(os.tmpdir(), `lm-assist-upgrade-${Date.now()}.js`);
+        fs.copyFileSync(upgradeScript, tmpScript);
+
         // Spawn detached — the script will kill this server process
-        const child = spawn(process.execPath, [upgradeScript], {
+        const child = spawn(process.execPath, [tmpScript], {
           detached: true,
           stdio: 'ignore',
           env: process.env,
