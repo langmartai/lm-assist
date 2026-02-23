@@ -162,7 +162,7 @@ export function AssistResourcesPage() {
   // ── Machine-aware API routing (same pattern as KnowledgePage / useSessions) ──
   // Uses apiClient.fetchPath which routes through the correct client (local/hub)
   // with proper auth headers for remote machine access.
-  const { apiClient } = useAppMode();
+  const { apiClient, proxy } = useAppMode();
   const { selectedMachineId } = useMachineContext();
   const { viewMode } = useDeviceInfo();
   const isMobile = viewMode === 'mobile';
@@ -174,9 +174,9 @@ export function AssistResourcesPage() {
 
   const apiFetch = useCallback(async <T,>(path: string): Promise<T> => {
     return apiClientRef.current.fetchPath<T>(path, {
-      machineId: machineIdRef.current || undefined,
+      machineId: machineIdRef.current || proxy.machineId || undefined,
     });
-  }, []);
+  }, [proxy.machineId]);
 
   // ── State ──
   const [rootNode, setRootNode] = useState<FileInfo | null>(null);

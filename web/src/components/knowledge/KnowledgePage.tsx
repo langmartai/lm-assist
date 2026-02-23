@@ -135,7 +135,7 @@ export function KnowledgePage() {
   // ─── Machine-aware API routing (follows same pattern as useSessions) ───
   // Uses apiClient.fetchPath which routes through the correct client (local/hub)
   // with proper auth headers, just like sessions use apiClient.getSessions(machineId).
-  const { apiClient } = useAppMode();
+  const { apiClient, proxy } = useAppMode();
   const { selectedMachineId } = useMachineContext();
 
   // Refs so stable callbacks always read current values without being in deps
@@ -153,9 +153,9 @@ export function KnowledgePage() {
     return apiClientRef.current.fetchPath<T>(path, {
       method: opts?.method,
       body,
-      machineId: machineIdRef.current || undefined,
+      machineId: machineIdRef.current || proxy.machineId || undefined,
     });
-  }, []);
+  }, [proxy.machineId]);
 
   // ─── State ───────────────────────────────────────────────────
   const [list, setList] = useState<KnowledgeListItem[]>([]);
