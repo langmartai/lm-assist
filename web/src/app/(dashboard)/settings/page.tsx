@@ -999,17 +999,39 @@ export default function SettingsPage() {
       try {
         const healthRes = await fetch(tierAgentUrl + '/health', { signal: AbortSignal.timeout(3000) });
         if (healthRes.ok) {
-          // Server is back — fetch upgrade log
-          try {
-            const logRes = await fetch(tierAgentUrl + '/dev-mode/upgrade-log');
-            if (logRes.ok) {
-              const logJson = await logRes.json();
-              if (logJson.success) {
-                setUpgradeLines(logJson.data.lines);
-                setUpgradeComplete(logJson.data.complete);
+          // Server is back — poll upgrade log until complete (up to 30s)
+          let logComplete = false;
+          for (let attempt = 0; attempt < 15; attempt++) {
+            try {
+              const logRes = await fetch(tierAgentUrl + '/dev-mode/upgrade-log');
+              if (logRes.ok) {
+                const logJson = await logRes.json();
+                if (logJson.success) {
+                  setUpgradeLines(logJson.data.lines);
+                  setUpgradeComplete(logJson.data.complete);
+                  if (logJson.data.complete) {
+                    logComplete = true;
+                    break;
+                  }
+                }
               }
-            }
-          } catch {}
+            } catch {}
+            await new Promise(r => setTimeout(r, 2000));
+            if (!upgradePollRef.current) return;
+          }
+          if (!logComplete) {
+            // Final fetch — show whatever we have
+            try {
+              const logRes = await fetch(tierAgentUrl + '/dev-mode/upgrade-log');
+              if (logRes.ok) {
+                const logJson = await logRes.json();
+                if (logJson.success) {
+                  setUpgradeLines(logJson.data.lines);
+                  setUpgradeComplete(logJson.data.complete);
+                }
+              }
+            } catch {}
+          }
           setIsUpgrading(false);
           setUpdateAvailable(false);
           setLatestNpmVersion(null);
