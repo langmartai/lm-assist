@@ -12,8 +12,22 @@
  */
 
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 
-const projectRoot = path.dirname(path.dirname(__filename));
+function getProjectRoot() {
+  try {
+    const cfgPath = path.join(os.homedir(), '.claude-code-config.json');
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+    if (cfg.devModeEnabled && cfg.devRepoPath) {
+      const devSm = path.join(cfg.devRepoPath, 'core', 'dist', 'service-manager.js');
+      if (fs.existsSync(devSm)) return cfg.devRepoPath;
+    }
+  } catch {}
+  return path.dirname(path.dirname(__filename));
+}
+
+const projectRoot = getProjectRoot();
 const smPath = path.join(projectRoot, 'core', 'dist', 'service-manager');
 
 // Lazy-load service-manager (compiled TypeScript)
@@ -35,7 +49,7 @@ function loadSm() {
 const command = process.argv[2] || 'help';
 const args = process.argv.slice(3);
 
-const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'help'];
+const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'help'];
 
 if (command === 'help' || command === '--help' || command === '-h') {
   console.log(`
@@ -49,6 +63,7 @@ Commands:
   restart            Restart services
   status             Show service status and health check
   logs [core|web]    View service logs (last 100 lines)
+  upgrade            Upgrade to latest version (npm + plugin + restart)
   help               Show this help message
 
 Examples:
@@ -66,6 +81,26 @@ if (!validCommands.includes(command)) {
   console.error(`Unknown command: ${command}`);
   console.error('Run "lm-assist help" for usage information');
   process.exit(1);
+}
+
+// Handle upgrade separately — doesn't need service-manager
+if (command === 'upgrade') {
+  console.log('Upgrading lm-assist...\n');
+  const upgradeScript = path.join(path.dirname(path.dirname(__filename)), 'core', 'scripts', 'upgrade.js');
+  if (!fs.existsSync(upgradeScript)) {
+    console.error('Upgrade script not found at:', upgradeScript);
+    process.exit(1);
+  }
+  const { execFileSync } = require('child_process');
+  try {
+    execFileSync(process.execPath, [upgradeScript], {
+      stdio: 'inherit',
+      env: process.env,
+    });
+  } catch (err) {
+    process.exit(err.status || 1);
+  }
+  process.exit(0);
 }
 
 async function main() {
@@ -131,6 +166,7 @@ async function main() {
       console.log(log);
       break;
     }
+
   }
 }
 

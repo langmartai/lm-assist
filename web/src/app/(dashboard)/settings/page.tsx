@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { detectAppMode } from '@/lib/api-client';
 import { useExperiment } from '@/hooks/useExperiment';
@@ -47,6 +47,10 @@ import {
   BookOpen,
   FlaskConical,
   HardDrive,
+  Package,
+  FolderGit2,
+  RotateCcw,
+  ArrowDownToLine,
 } from 'lucide-react';
 
 // ============================================
@@ -153,6 +157,44 @@ interface ClaudeCodeConfig {
   statuslineShowRam: boolean;
   statuslineShowProcess: boolean;
   statuslineShowModel: boolean;
+  devModeEnabled: boolean;
+  devRepoPath: string;
+}
+
+interface ComponentInfo {
+  path: string;
+  source: 'dev-repo' | 'npm' | 'plugin' | 'unknown';
+  installed?: boolean;
+}
+
+interface DevModeStatus {
+  enabled: boolean;
+  repoPath: string;
+  repoExists: boolean;
+  repoBranch: string | null;
+  repoCommit: string | null;
+  repoDirty: boolean;
+  coreBuilt: boolean;
+  webBuilt: boolean;
+  runningFrom: 'npm' | 'dev-repo';
+  npmVersion: string | null;
+  repoVersion: string | null;
+  activeOperation: { id: string; type: string } | null;
+  components?: {
+    core: ComponentInfo;
+    web: ComponentInfo;
+    mcp: ComponentInfo;
+    hook: ComponentInfo;
+    statusline: ComponentInfo;
+  };
+}
+
+interface DevModeOperationLog {
+  operationId: string;
+  type: string;
+  lines: string[];
+  complete: boolean;
+  success: boolean | null;
 }
 
 interface McpStatus {
@@ -257,6 +299,27 @@ export default function SettingsPage() {
   const [isContextHookUninstalling, setIsContextHookUninstalling] = useState(false);
   const [claudeSettings, setClaudeSettings] = useState<{ cleanupPeriodDays: number; env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: boolean } } | null>(null);
   const [claudeCodeMessage, setClaudeCodeMessage] = useState<{ text: string; type: 'ok' | 'error' } | null>(null);
+
+  // dev mode state
+  const [devModeStatus, setDevModeStatus] = useState<DevModeStatus | null>(null);
+  const [isDevModeLoading, setIsDevModeLoading] = useState(false);
+  const [devModeOperation, setDevModeOperation] = useState<string | null>(null);
+  const [devModeLines, setDevModeLines] = useState<string[]>([]);
+  const [devModeComplete, setDevModeComplete] = useState(false);
+  const [devModeSuccess, setDevModeSuccess] = useState<boolean | null>(null);
+  const [devRepoPathInput, setDevRepoPathInput] = useState('');
+  const [isDevModeActionLoading, setIsDevModeActionLoading] = useState(false);
+  const [devModeMessage, setDevModeMessage] = useState<{ text: string; type: 'ok' | 'error' } | null>(null);
+
+  // upgrade state
+  const [latestNpmVersion, setLatestNpmVersion] = useState<string | null>(null);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [isUpgrading, setIsUpgrading] = useState(false);
+  const [upgradeLines, setUpgradeLines] = useState<string[]>([]);
+  const [upgradeComplete, setUpgradeComplete] = useState(false);
+  const upgradeTerminalRef = useRef<HTMLDivElement | null>(null);
+  const upgradePollRef = useRef(false);
 
   // milestone settings state
   const [milestoneSettings, setMilestoneSettings] = useState<MilestoneSettingsData | null>(null);
@@ -750,7 +813,7 @@ export default function SettingsPage() {
   }, [tierAgentUrl, proxy.isProxied]);
 
   useEffect(() => {
-    if (!proxy.isProxied && localStatus?.healthy && activeTab === 'claude-code') {
+    if (!proxy.isProxied && localStatus?.healthy && (activeTab === 'claude-code' || activeTab === 'experiment')) {
       fetchClaudeCodeStatus();
     }
   }, [fetchClaudeCodeStatus, proxy.isProxied, localStatus?.healthy, activeTab]);
@@ -781,6 +844,193 @@ export default function SettingsPage() {
       setIsMilestoneLoading(false);
     }
   }, [tierAgentUrl]);
+
+  // ──────── Dev Mode status & actions ────────
+
+  const fetchDevModeStatus = useCallback(async () => {
+    if (proxy.isProxied || !localStatus?.healthy) return;
+    setIsDevModeLoading(true);
+    try {
+      const res = await fetch(tierAgentUrl + '/dev-mode/status');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success) {
+          setDevModeStatus(json.data);
+          setDevRepoPathInput(prev => prev || json.data.repoPath || '');
+        }
+      }
+    } catch {} finally {
+      setIsDevModeLoading(false);
+    }
+  }, [tierAgentUrl, proxy.isProxied, localStatus?.healthy]);
+
+  useEffect(() => {
+    if (!proxy.isProxied && localStatus?.healthy && activeTab === 'experiment') {
+      fetchDevModeStatus();
+    }
+  }, [fetchDevModeStatus, proxy.isProxied, localStatus?.healthy, activeTab]);
+
+  const pollAbortRef = useRef<AbortController | null>(null);
+  const devModeTerminalRef = useRef<HTMLDivElement | null>(null);
+
+  const pollOperation = useCallback(async (operationId: string) => {
+    // Abort any previous polling
+    pollAbortRef.current?.abort();
+    const abort = new AbortController();
+    pollAbortRef.current = abort;
+
+    setDevModeLines([]);
+    setDevModeComplete(false);
+    setDevModeSuccess(null);
+    setDevModeOperation(operationId);
+
+    const poll = async () => {
+      if (abort.signal.aborted) return;
+      try {
+        const res = await fetch(tierAgentUrl + '/dev-mode/operation/' + operationId, { signal: abort.signal });
+        if (abort.signal.aborted) return;
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success) {
+            const data: DevModeOperationLog = json.data;
+            setDevModeLines(data.lines);
+            if (data.complete) {
+              setDevModeComplete(true);
+              setDevModeSuccess(data.success);
+              setDevModeOperation(null);
+              setIsDevModeActionLoading(false);
+              fetchDevModeStatus();
+              return; // stop polling
+            }
+          }
+        }
+      } catch {
+        if (abort.signal.aborted) return;
+      }
+      setTimeout(poll, 1500);
+    };
+    poll();
+  }, [tierAgentUrl, fetchDevModeStatus]);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => { pollAbortRef.current?.abort(); upgradePollRef.current = false; };
+  }, []);
+
+  // Auto-scroll terminal output to bottom
+  useEffect(() => {
+    if (devModeTerminalRef.current) {
+      devModeTerminalRef.current.scrollTop = devModeTerminalRef.current.scrollHeight;
+    }
+  }, [devModeLines]);
+
+  const handleDevModeAction = useCallback(async (action: 'clone' | 'build' | 'pull' | 'npm-update') => {
+    setIsDevModeActionLoading(true);
+    setDevModeMessage(null);
+    setDevModeLines([]);
+    setDevModeComplete(false);
+    setDevModeSuccess(null);
+    try {
+      const res = await fetch(tierAgentUrl + '/dev-mode/' + action, { method: 'POST' });
+      const json = await res.json();
+      if (json.success && json.data?.operationId) {
+        pollOperation(json.data.operationId);
+      } else {
+        setDevModeMessage({ text: json.error?.message || json.error || 'Action failed', type: 'error' });
+        setIsDevModeActionLoading(false);
+      }
+    } catch {
+      setDevModeMessage({ text: 'Failed to reach API', type: 'error' });
+      setIsDevModeActionLoading(false);
+    }
+  }, [tierAgentUrl, pollOperation]);
+
+  // ──────── Upgrade: check + run ────────
+
+  const handleCheckUpdate = useCallback(async () => {
+    setIsCheckingUpdate(true);
+    try {
+      const res = await fetch(tierAgentUrl + '/dev-mode/check-update');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success) {
+          setLatestNpmVersion(json.data.latestVersion);
+          setUpdateAvailable(json.data.updateAvailable);
+        }
+      }
+    } catch {} finally {
+      setIsCheckingUpdate(false);
+    }
+  }, [tierAgentUrl]);
+
+  const handleUpgrade = useCallback(async () => {
+    setIsUpgrading(true);
+    setUpgradeLines([]);
+    setUpgradeComplete(false);
+    upgradePollRef.current = true;
+
+    try {
+      const res = await fetch(tierAgentUrl + '/dev-mode/upgrade', { method: 'POST' });
+      const json = await res.json();
+      if (!json.success) {
+        setUpgradeLines([json.error?.message || 'Failed to start upgrade']);
+        setUpgradeComplete(true);
+        setIsUpgrading(false);
+        upgradePollRef.current = false;
+        return;
+      }
+    } catch {
+      // Server might already be dying — that's expected
+    }
+
+    setUpgradeLines(['Upgrade started... waiting for server restart']);
+
+    // Poll /health until server comes back (up to 120s)
+    const startTime = Date.now();
+    const pollHealth = async () => {
+      if (!upgradePollRef.current) return;
+      if (Date.now() - startTime > 120_000) {
+        setUpgradeLines(prev => [...prev, 'Timed out waiting for server restart']);
+        setUpgradeComplete(true);
+        setIsUpgrading(false);
+        upgradePollRef.current = false;
+        return;
+      }
+      try {
+        const healthRes = await fetch(tierAgentUrl + '/health', { signal: AbortSignal.timeout(3000) });
+        if (healthRes.ok) {
+          // Server is back — fetch upgrade log
+          try {
+            const logRes = await fetch(tierAgentUrl + '/dev-mode/upgrade-log');
+            if (logRes.ok) {
+              const logJson = await logRes.json();
+              if (logJson.success) {
+                setUpgradeLines(logJson.data.lines);
+                setUpgradeComplete(logJson.data.complete);
+              }
+            }
+          } catch {}
+          setIsUpgrading(false);
+          setUpdateAvailable(false);
+          setLatestNpmVersion(null);
+          upgradePollRef.current = false;
+          fetchDevModeStatus();
+          return;
+        }
+      } catch {}
+      setTimeout(pollHealth, 2000);
+    };
+
+    // Give the server a few seconds to die before polling
+    setTimeout(pollHealth, 3000);
+  }, [tierAgentUrl, fetchDevModeStatus]);
+
+  // Auto-scroll upgrade terminal
+  useEffect(() => {
+    if (upgradeTerminalRef.current) {
+      upgradeTerminalRef.current.scrollTop = upgradeTerminalRef.current.scrollHeight;
+    }
+  }, [upgradeLines]);
 
   useEffect(() => {
     if (!proxy.isProxied && localStatus?.healthy && (activeTab === 'data-loading' || activeTab === 'experiment')) {
@@ -1064,6 +1314,28 @@ export default function SettingsPage() {
       const json = await res.json();
       if (json.success) {
         setClaudeCodeConfig(json.data || null);
+
+        // If server scheduled a restart, show message and poll until it comes back
+        if (json.restartScheduled) {
+          setDevModeMessage({ text: 'Restarting services...', type: 'ok' });
+          // Poll health until server comes back (up to 30s)
+          const pollHealth = async () => {
+            for (let i = 0; i < 30; i++) {
+              await new Promise(r => setTimeout(r, 1000));
+              try {
+                const h = await fetch(tierAgentUrl + '/health', { signal: AbortSignal.timeout(2000) });
+                if (h.ok) {
+                  setDevModeMessage({ text: 'Services restarted successfully', type: 'ok' });
+                  setTimeout(() => setDevModeMessage(null), 3000);
+                  fetchDevModeStatus();
+                  return;
+                }
+              } catch { /* still restarting */ }
+            }
+            setDevModeMessage({ text: 'Restart timed out — run "lm-assist status" to check', type: 'error' });
+          };
+          pollHealth();
+        }
       } else {
         showClaudeCodeMessage('Failed to update setting', 'error');
       }
@@ -1072,7 +1344,13 @@ export default function SettingsPage() {
     } finally {
       setIsClaudeCodeConfigSaving(false);
     }
-  }, [tierAgentUrl, isClaudeCodeConfigSaving]);
+  }, [tierAgentUrl, isClaudeCodeConfigSaving, fetchDevModeStatus]);
+
+  const handleSaveDevRepoPath = useCallback(async () => {
+    if (!devRepoPathInput.trim()) return;
+    await handleClaudeCodeConfigChange('devRepoPath', devRepoPathInput.trim());
+    fetchDevModeStatus();
+  }, [devRepoPathInput, handleClaudeCodeConfigChange, fetchDevModeStatus]);
 
   const handleClaudeSettingsChange = useCallback(async (key: string, value: number | Record<string, boolean>) => {
     try {
@@ -3014,6 +3292,429 @@ export default function SettingsPage() {
                   <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', margin: 0, lineHeight: 1.5 }}>
                     Controls visibility of: Session Dashboard nav, Architecture nav, milestone status bar, milestone search filters, FlowGraph tab in session detail, and milestone/architecture settings below.
                   </p>
+                </div>
+              </SectionCard>
+            )}
+
+            {/* Installation card — always visible on experiment tab */}
+            {activeTab === 'experiment' && !proxy.isProxied && localStatus?.healthy && (
+              <SectionCard title="Installation" icon={Package}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <InfoRow label="Version" value={localStatus?.version || 'Unknown'} mono />
+                  <InfoRow
+                    label="Running From"
+                    value={devModeStatus?.runningFrom === 'dev-repo' ? 'Dev Repository' : 'npm Package'}
+                    status={devModeStatus ? 'ok' : 'loading'}
+                  />
+                  {devModeStatus?.npmVersion && (
+                    <InfoRow label="npm Version" value={devModeStatus.npmVersion} mono />
+                  )}
+                  {latestNpmVersion && (
+                    <InfoRow
+                      label="Latest Version"
+                      value={latestNpmVersion}
+                      mono
+                      status={updateAvailable ? undefined : 'ok'}
+                    />
+                  )}
+                  {latestNpmVersion && !updateAvailable && (
+                    <div style={{ fontSize: 10, color: 'var(--color-status-green)', marginTop: -4 }}>
+                      Up to date
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                    <button
+                      className="btn btn-sm"
+                      disabled={isCheckingUpdate || isUpgrading}
+                      onClick={handleCheckUpdate}
+                      style={{ fontSize: 11, padding: '4px 10px', display: 'flex', alignItems: 'center', gap: 4 }}
+                    >
+                      {isCheckingUpdate ? (
+                        <Loader2 size={11} className="spin" />
+                      ) : (
+                        <RefreshCw size={11} />
+                      )}
+                      Check for Updates
+                    </button>
+                    <button
+                      className="btn btn-sm"
+                      disabled={isUpgrading}
+                      onClick={handleUpgrade}
+                      style={{
+                        fontSize: 11,
+                        padding: '4px 10px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        ...(updateAvailable ? { background: 'var(--color-status-green)', color: '#000' } : {}),
+                      }}
+                    >
+                      {isUpgrading ? (
+                        <Loader2 size={11} className="spin" />
+                      ) : (
+                        <ArrowDownToLine size={11} />
+                      )}
+                      Upgrade
+                    </button>
+                  </div>
+                  {/* Upgrade terminal output */}
+                  {(upgradeLines.length > 0 || isUpgrading) && (
+                    <div style={{
+                      marginTop: 6,
+                      background: 'rgba(0,0,0,0.3)',
+                      borderRadius: 6,
+                      border: '1px solid rgba(255,255,255,0.06)',
+                      overflow: 'hidden',
+                    }}>
+                      <div style={{
+                        padding: '6px 10px',
+                        borderBottom: '1px solid rgba(255,255,255,0.06)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        fontSize: 10,
+                        color: 'var(--color-text-tertiary)',
+                      }}>
+                        {isUpgrading ? (
+                          <><Loader2 size={10} className="spin" /> Upgrading...</>
+                        ) : upgradeComplete ? (
+                          <><CheckCircle size={10} style={{ color: 'var(--color-status-green)' }} /> Upgrade complete</>
+                        ) : (
+                          <><XCircle size={10} style={{ color: 'var(--color-status-red)' }} /> Upgrade incomplete</>
+                        )}
+                      </div>
+                      <div
+                        ref={upgradeTerminalRef}
+                        style={{
+                          padding: '8px 10px',
+                          maxHeight: 200,
+                          overflow: 'auto',
+                          fontSize: 10,
+                          fontFamily: 'var(--font-mono)',
+                          lineHeight: 1.6,
+                          color: 'var(--color-text-secondary)',
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-all',
+                        }}>
+                        {upgradeLines.map((line, i) => (
+                          <div key={i}>{line}</div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {/* Show operation feedback inline when dev mode card terminal is not visible */}
+                  {devModeLines.length > 0 && !isUpgrading && !(devModeStatus?.enabled || claudeCodeConfig?.devModeEnabled) && (
+                    <div style={{
+                      marginTop: 6,
+                      background: 'rgba(0,0,0,0.3)',
+                      borderRadius: 6,
+                      border: '1px solid rgba(255,255,255,0.06)',
+                      overflow: 'hidden',
+                    }}>
+                      <div style={{
+                        padding: '6px 10px',
+                        borderBottom: '1px solid rgba(255,255,255,0.06)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        fontSize: 10,
+                        color: 'var(--color-text-tertiary)',
+                      }}>
+                        {!devModeComplete ? (
+                          <><Loader2 size={10} className="spin" /> Running...</>
+                        ) : devModeSuccess ? (
+                          <><CheckCircle size={10} style={{ color: 'var(--color-status-green)' }} /> Completed</>
+                        ) : (
+                          <><XCircle size={10} style={{ color: 'var(--color-status-red)' }} /> Failed</>
+                        )}
+                      </div>
+                      <div
+                        ref={devModeTerminalRef}
+                        style={{
+                        padding: '8px 10px',
+                        maxHeight: 150,
+                        overflow: 'auto',
+                        fontSize: 10,
+                        fontFamily: 'var(--font-mono)',
+                        lineHeight: 1.6,
+                        color: 'var(--color-text-secondary)',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-all',
+                      }}>
+                        {devModeLines.map((line, i) => (
+                          <div key={i}>{line}</div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </SectionCard>
+            )}
+
+            {/* Developer Mode card — always visible on experiment tab */}
+            {activeTab === 'experiment' && !proxy.isProxied && localStatus?.healthy && (
+              <SectionCard title="Developer Mode" icon={FolderGit2}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <ToggleRow
+                    label="Enable Developer Mode"
+                    description={devModeStatus?.runningFrom === 'dev-repo'
+                      ? 'Server is running from a dev repository. Toggle controls whether components (MCP, hook, statusline) point to the dev repo or npm.'
+                      : 'Run lm-assist from a cloned git repository instead of the npm package. Allows instant access to latest changes and local development.'}
+                    checked={claudeCodeConfig?.devModeEnabled ?? false}
+                    onChange={(v) => handleClaudeCodeConfigChange('devModeEnabled', v)}
+                  />
+
+                  {(devModeStatus?.enabled || claudeCodeConfig?.devModeEnabled) && (
+                    <>
+                      {/* Repo path input */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', width: 80, flexShrink: 0 }}>Repo Path</span>
+                        <input
+                          type="text"
+                          value={devRepoPathInput}
+                          onChange={e => setDevRepoPathInput(e.target.value)}
+                          style={{
+                            flex: 1,
+                            fontSize: 11,
+                            fontFamily: 'var(--font-mono)',
+                            padding: '4px 8px',
+                            borderRadius: 4,
+                            border: '1px solid rgba(255,255,255,0.1)',
+                            background: 'rgba(255,255,255,0.04)',
+                            color: 'var(--color-text-primary)',
+                            outline: 'none',
+                          }}
+                          placeholder="~/lm-assist"
+                        />
+                        <button
+                          className="btn btn-sm"
+                          onClick={handleSaveDevRepoPath}
+                          disabled={isClaudeCodeConfigSaving || devRepoPathInput === (claudeCodeConfig?.devRepoPath || '')}
+                          style={{ fontSize: 10, padding: '3px 8px' }}
+                        >
+                          Save
+                        </button>
+                      </div>
+
+                      {/* Repo status info */}
+                      {isDevModeLoading ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <Loader2 size={12} className="spin" />
+                          <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>Loading status...</span>
+                        </div>
+                      ) : devModeStatus ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          <InfoRow
+                            label="Repo Status"
+                            value={devModeStatus.repoExists
+                              ? (devModeStatus.coreBuilt && devModeStatus.webBuilt ? 'Ready' : 'Needs Build')
+                              : 'Not Cloned'}
+                            status={devModeStatus.repoExists && devModeStatus.coreBuilt && devModeStatus.webBuilt ? 'ok' : 'warning'}
+                          />
+                          {devModeStatus.repoExists && (
+                            <>
+                              <InfoRow label="Branch" value={devModeStatus.repoBranch || 'Unknown'} mono />
+                              <InfoRow label="Commit" value={devModeStatus.repoCommit || 'Unknown'} mono />
+                              {devModeStatus.repoVersion && (
+                                <InfoRow label="Repo Version" value={devModeStatus.repoVersion} mono />
+                              )}
+                              {devModeStatus.repoDirty && (
+                                <div style={{ fontSize: 10, color: 'rgb(251, 146, 60)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                  <AlertTriangle size={10} />
+                                  Repository has uncommitted changes
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      ) : null}
+
+                      {/* Component Locations */}
+                      {devModeStatus?.components && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 2 }}>
+                            Component Locations
+                          </span>
+                          {([
+                            ['Core API', 'core'],
+                            ['Web UI', 'web'],
+                            ['MCP Server', 'mcp'],
+                            ['Hook', 'hook'],
+                            ['Statusline', 'statusline'],
+                          ] as const).map(([label, key]) => {
+                            const comp = devModeStatus.components![key as keyof typeof devModeStatus.components];
+                            if (!comp) return null;
+                            const notInstalled = comp.installed === false;
+                            const expectedSource = devModeStatus.enabled ? 'dev-repo' : 'npm';
+                            // Warn if source doesn't match expected, but not for plugin (can't repoint) or unknown
+                            const mismatch = !notInstalled && comp.source !== expectedSource
+                              && comp.source !== 'unknown' && comp.source !== 'plugin';
+
+                            return (
+                              <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', width: 80, flexShrink: 0 }}>
+                                  {label}
+                                </span>
+                                <span style={{
+                                  fontSize: 10,
+                                  fontFamily: 'var(--font-mono)',
+                                  color: notInstalled ? 'var(--color-text-tertiary)' : 'var(--color-text-secondary)',
+                                  flex: 1,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                  opacity: notInstalled ? 0.5 : 1,
+                                }} title={comp.path || undefined}>
+                                  {notInstalled ? 'Not installed' : (comp.path || '—')}
+                                </span>
+                                {!notInstalled && (
+                                  <span style={{
+                                    fontSize: 9,
+                                    padding: '1px 5px',
+                                    borderRadius: 3,
+                                    background: comp.source === 'dev-repo' ? 'rgba(52,199,89,0.12)' :
+                                                comp.source === 'plugin' ? 'rgba(88,166,255,0.12)' :
+                                                comp.source === 'npm' ? 'rgba(255,179,64,0.12)' : 'rgba(255,255,255,0.06)',
+                                    color: comp.source === 'dev-repo' ? 'var(--color-status-green)' :
+                                           comp.source === 'plugin' ? 'rgb(88,166,255)' :
+                                           comp.source === 'npm' ? 'rgb(255,179,64)' : 'var(--color-text-tertiary)',
+                                    flexShrink: 0,
+                                  }}>
+                                    {comp.source}
+                                  </span>
+                                )}
+                                {mismatch && (
+                                  <AlertTriangle size={10} style={{ color: 'rgb(251,146,60)', flexShrink: 0 }} />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Action buttons */}
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 2 }}>
+                        {devModeStatus && !devModeStatus.repoExists && (
+                          <button
+                            className="btn btn-sm"
+                            disabled={isDevModeActionLoading}
+                            onClick={() => handleDevModeAction('clone')}
+                            style={{ fontSize: 11, padding: '4px 10px', display: 'flex', alignItems: 'center', gap: 4 }}
+                          >
+                            {isDevModeActionLoading ? <Loader2 size={11} className="spin" /> : <Download size={11} />}
+                            Clone Repository
+                          </button>
+                        )}
+                        {devModeStatus?.repoExists && (!devModeStatus.coreBuilt || !devModeStatus.webBuilt) && (
+                          <button
+                            className="btn btn-sm"
+                            disabled={isDevModeActionLoading}
+                            onClick={() => handleDevModeAction('build')}
+                            style={{ fontSize: 11, padding: '4px 10px', display: 'flex', alignItems: 'center', gap: 4 }}
+                          >
+                            {isDevModeActionLoading ? <Loader2 size={11} className="spin" /> : <Play size={11} />}
+                            Build
+                          </button>
+                        )}
+                        {devModeStatus?.repoExists && devModeStatus.coreBuilt && (
+                          <button
+                            className="btn btn-sm"
+                            disabled={isDevModeActionLoading}
+                            onClick={() => handleDevModeAction('pull')}
+                            style={{ fontSize: 11, padding: '4px 10px', display: 'flex', alignItems: 'center', gap: 4 }}
+                          >
+                            {isDevModeActionLoading ? <Loader2 size={11} className="spin" /> : <RotateCcw size={11} />}
+                            Pull &amp; Rebuild
+                          </button>
+                        )}
+                        <button
+                          className="btn btn-sm"
+                          disabled={isDevModeActionLoading || isDevModeLoading}
+                          onClick={fetchDevModeStatus}
+                          style={{ fontSize: 11, padding: '4px 10px', display: 'flex', alignItems: 'center', gap: 4 }}
+                        >
+                          <RefreshCw size={11} />
+                          Refresh
+                        </button>
+                      </div>
+
+                      {/* Operation output terminal */}
+                      {(devModeLines.length > 0 || devModeOperation) && (
+                        <div style={{
+                          marginTop: 6,
+                          background: 'rgba(0,0,0,0.3)',
+                          borderRadius: 6,
+                          border: '1px solid rgba(255,255,255,0.06)',
+                          overflow: 'hidden',
+                        }}>
+                          <div style={{
+                            padding: '6px 10px',
+                            borderBottom: '1px solid rgba(255,255,255,0.06)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            fontSize: 10,
+                            color: 'var(--color-text-tertiary)',
+                          }}>
+                            {!devModeComplete ? (
+                              <><Loader2 size={10} className="spin" /> Running...</>
+                            ) : devModeSuccess ? (
+                              <><CheckCircle size={10} style={{ color: 'var(--color-status-green)' }} /> Completed</>
+                            ) : (
+                              <><XCircle size={10} style={{ color: 'var(--color-status-red)' }} /> Failed</>
+                            )}
+                          </div>
+                          <div
+                            ref={devModeTerminalRef}
+                            style={{
+                            padding: '8px 10px',
+                            maxHeight: 200,
+                            overflow: 'auto',
+                            fontSize: 10,
+                            fontFamily: 'var(--font-mono)',
+                            lineHeight: 1.6,
+                            color: 'var(--color-text-secondary)',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-all',
+                          }}>
+                            {devModeLines.map((line, i) => (
+                              <div key={i}>{line}</div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Restart notice */}
+                      {devModeStatus && devModeStatus.runningFrom !== (devModeStatus.enabled && devModeStatus.repoExists && devModeStatus.coreBuilt ? 'dev-repo' : 'npm') && (
+                        <div style={{
+                          padding: '8px 12px',
+                          borderRadius: 6,
+                          background: 'rgba(251,146,60,0.08)',
+                          border: '1px solid rgba(251,146,60,0.25)',
+                          fontSize: 11,
+                          color: 'var(--color-text-secondary)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                        }}>
+                          <AlertTriangle size={12} style={{ color: 'rgb(251, 146, 60)', flexShrink: 0 }} />
+                          Restart services for changes to take effect. Run: <code style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>lm-assist restart</code>
+                        </div>
+                      )}
+
+                      {devModeMessage && (
+                        <div style={{
+                          padding: '6px 10px',
+                          borderRadius: 4,
+                          fontSize: 11,
+                          background: devModeMessage.type === 'ok' ? 'rgba(52,199,89,0.1)' : 'rgba(255,69,58,0.1)',
+                          color: devModeMessage.type === 'ok' ? 'var(--color-status-green)' : 'var(--color-status-red)',
+                        }}>
+                          {devModeMessage.text}
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               </SectionCard>
             )}

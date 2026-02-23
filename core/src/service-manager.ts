@@ -13,15 +13,27 @@ import * as os from 'os';
 
 // ─── Paths ──────────────────────────────────────────────────
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const CORE_DIR = path.join(REPO_ROOT, 'core');
-const WEB_DIR = path.join(REPO_ROOT, 'web');
-const CLI_JS = path.join(CORE_DIR, 'dist', 'cli.js');
+const DEFAULT_REPO_ROOT = path.resolve(__dirname, '..', '..');
 
-const CORE_PID_FILE = path.join(CORE_DIR, 'server.pid');
-const WEB_PID_FILE = path.join(WEB_DIR, 'web.pid');
-const CORE_LOG = path.join(CORE_DIR, 'server.log');
-const WEB_LOG = path.join(WEB_DIR, 'web.log');
+function getRepoRoot(): string {
+  try {
+    const cfgPath = path.join(os.homedir(), '.claude-code-config.json');
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+    if (cfg.devModeEnabled && cfg.devRepoPath) {
+      const devCli = path.join(cfg.devRepoPath, 'core', 'dist', 'cli.js');
+      if (fs.existsSync(devCli)) return cfg.devRepoPath;
+    }
+  } catch {}
+  return DEFAULT_REPO_ROOT;
+}
+
+function getCoreDir(): string { return path.join(getRepoRoot(), 'core'); }
+function getWebDir(): string { return path.join(getRepoRoot(), 'web'); }
+function getCliJs(): string { return path.join(getCoreDir(), 'dist', 'cli.js'); }
+function getCorePidFile(): string { return path.join(getCoreDir(), 'server.pid'); }
+function getWebPidFile(): string { return path.join(getWebDir(), 'web.pid'); }
+function getCoreLog(): string { return path.join(getCoreDir(), 'server.log'); }
+function getWebLog(): string { return path.join(getWebDir(), 'web.log'); }
 
 // ─── Config ──────────────────────────────────────────────────
 
@@ -32,7 +44,7 @@ export interface ServiceConfig {
 }
 
 function loadEnv(): Record<string, string> {
-  const envFile = path.join(REPO_ROOT, '.env');
+  const envFile = path.join(getRepoRoot(), '.env');
   const vars: Record<string, string> = {};
   try {
     const content = fs.readFileSync(envFile, 'utf-8');
@@ -201,7 +213,7 @@ function spawnDetached(
     stdio: ['ignore', logFd, logFd],
     windowsHide: true,
     env: { ...process.env, ...env },
-    cwd: cwd || REPO_ROOT,
+    cwd: cwd || getRepoRoot(),
   });
   child.on('error', () => {}); // prevent unhandled rejection on spawn failure
   child.unref();
@@ -221,8 +233,8 @@ export async function startCore(config?: ServiceConfig): Promise<{ success: bool
   }
 
   // Check if cli.js exists
-  if (!fs.existsSync(CLI_JS)) {
-    return { success: false, message: `Core not built. Run: npm run build:core (cli.js not found at ${CLI_JS})` };
+  if (!fs.existsSync(getCliJs())) {
+    return { success: false, message: `Core not built. Run: npm run build:core (cli.js not found at ${getCliJs()})` };
   }
 
   // Build environment variables to forward
@@ -237,14 +249,14 @@ export async function startCore(config?: ServiceConfig): Promise<{ success: bool
 
   const child = spawnDetached(
     process.execPath,
-    [CLI_JS, 'serve', '--port', String(apiPort), '--project', projectPath],
-    CORE_LOG,
+    [getCliJs(), 'serve', '--port', String(apiPort), '--project', projectPath],
+    getCoreLog(),
     forwardEnv,
-    CORE_DIR,
+    getCoreDir(),
   );
 
   if (child.pid) {
-    writePid(CORE_PID_FILE, child.pid);
+    writePid(getCorePidFile(), child.pid);
   }
 
   // Poll for health
@@ -252,7 +264,7 @@ export async function startCore(config?: ServiceConfig): Promise<{ success: bool
   if (healthy) {
     return { success: true, message: `Core API started on port ${apiPort}` };
   }
-  return { success: false, message: `Core API did not become healthy within 30s. Check ${CORE_LOG}` };
+  return { success: false, message: `Core API did not become healthy within 30s. Check ${getCoreLog()}` };
 }
 
 export async function startWeb(config?: ServiceConfig): Promise<{ success: boolean; message: string }> {
@@ -264,10 +276,10 @@ export async function startWeb(config?: ServiceConfig): Promise<{ success: boole
   }
 
   // Try standalone server first (preferred for npm installs)
-  const standaloneServer = path.join(WEB_DIR, '.next', 'standalone', 'web', 'server.js');
+  const standaloneServer = path.join(getWebDir(), '.next', 'standalone', 'web', 'server.js');
   const hasStandalone = fs.existsSync(standaloneServer);
 
-  if (!hasStandalone && !fs.existsSync(path.join(WEB_DIR, '.next'))) {
+  if (!hasStandalone && !fs.existsSync(path.join(getWebDir(), '.next'))) {
     return { success: false, message: `Web not built. Run: npm run build:web (.next not found)` };
   }
 
@@ -286,8 +298,8 @@ export async function startWeb(config?: ServiceConfig): Promise<{ success: boole
 
   if (hasStandalone) {
     // Link static assets into standalone dir (standalone doesn't bundle them)
-    const staticSrc = path.join(WEB_DIR, '.next', 'static');
-    const staticDest = path.join(WEB_DIR, '.next', 'standalone', 'web', '.next', 'static');
+    const staticSrc = path.join(getWebDir(), '.next', 'static');
+    const staticDest = path.join(getWebDir(), '.next', 'standalone', 'web', '.next', 'static');
     if (fs.existsSync(staticSrc) && !fs.existsSync(staticDest)) {
       try {
         fs.mkdirSync(path.dirname(staticDest), { recursive: true });
@@ -297,8 +309,8 @@ export async function startWeb(config?: ServiceConfig): Promise<{ success: boole
         // May already exist or lack permissions — not fatal
       }
     }
-    const publicSrc = path.join(WEB_DIR, 'public');
-    const publicDest = path.join(WEB_DIR, '.next', 'standalone', 'web', 'public');
+    const publicSrc = path.join(getWebDir(), 'public');
+    const publicDest = path.join(getWebDir(), '.next', 'standalone', 'web', 'public');
     if (fs.existsSync(publicSrc) && !fs.existsSync(publicDest)) {
       try {
         fs.symlinkSync(publicSrc, publicDest, process.platform === 'win32' ? 'junction' : 'dir');
@@ -307,15 +319,15 @@ export async function startWeb(config?: ServiceConfig): Promise<{ success: boole
       }
     }
 
-    child = spawnDetached(process.execPath, [standaloneServer], WEB_LOG, webEnv, WEB_DIR);
+    child = spawnDetached(process.execPath, [standaloneServer], getWebLog(), webEnv, getWebDir());
   } else {
     // Fallback: npx next start
     const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-    child = spawnDetached(npxCmd, ['next', 'start', '-p', String(webPort)], WEB_LOG, webEnv, WEB_DIR);
+    child = spawnDetached(npxCmd, ['next', 'start', '-p', String(webPort)], getWebLog(), webEnv, getWebDir());
   }
 
   if (child.pid) {
-    writePid(WEB_PID_FILE, child.pid);
+    writePid(getWebPidFile(), child.pid);
   }
 
   // Poll for port
@@ -323,7 +335,7 @@ export async function startWeb(config?: ServiceConfig): Promise<{ success: boole
   if (ready) {
     return { success: true, message: `Web started on port ${webPort}` };
   }
-  return { success: false, message: `Web did not start within 30s. Check ${WEB_LOG}` };
+  return { success: false, message: `Web did not start within 30s. Check ${getWebLog()}` };
 }
 
 export async function startAll(config?: ServiceConfig): Promise<{ core: { success: boolean; message: string }; web: { success: boolean; message: string } }> {
@@ -340,7 +352,7 @@ export async function stopCore(config?: ServiceConfig): Promise<{ success: boole
   let stopped = false;
 
   // Kill by PID file
-  const pid = readPid(CORE_PID_FILE);
+  const pid = readPid(getCorePidFile());
   if (pid && isPidAlive(pid)) {
     await killByPid(pid);
     stopped = true;
@@ -354,7 +366,7 @@ export async function stopCore(config?: ServiceConfig): Promise<{ success: boole
     await sleep(1000);
   }
 
-  removePid(CORE_PID_FILE);
+  removePid(getCorePidFile());
 
   if (stopped) {
     return { success: true, message: 'Core API stopped' };
@@ -368,7 +380,7 @@ export async function stopWeb(config?: ServiceConfig): Promise<{ success: boolea
   let stopped = false;
 
   // Kill by PID file
-  const pid = readPid(WEB_PID_FILE);
+  const pid = readPid(getWebPidFile());
   if (pid && isPidAlive(pid)) {
     await killByPid(pid);
     stopped = true;
@@ -382,7 +394,7 @@ export async function stopWeb(config?: ServiceConfig): Promise<{ success: boolea
     await sleep(1000);
   }
 
-  removePid(WEB_PID_FILE);
+  removePid(getWebPidFile());
 
   if (stopped) {
     return { success: true, message: 'Web stopped' };
@@ -408,10 +420,10 @@ export async function status(config?: ServiceConfig): Promise<ServiceStatus> {
 
   const coreRunning = await checkPort(apiPort);
   const coreHealthy = coreRunning ? await checkHealth(apiPort) : false;
-  const corePid = readPid(CORE_PID_FILE);
+  const corePid = readPid(getCorePidFile());
 
   const webRunning = await checkPort(webPort);
-  const webPid = readPid(WEB_PID_FILE);
+  const webPid = readPid(getWebPidFile());
 
   return {
     core: { running: coreRunning, healthy: coreHealthy, port: apiPort, pid: corePid },
@@ -430,7 +442,7 @@ export async function restartAll(config?: ServiceConfig): Promise<{ core: { succ
 // ─── Log Helpers ──────────────────────────────────────────────────
 
 export function getLogPath(service: 'core' | 'web'): string {
-  return service === 'core' ? CORE_LOG : WEB_LOG;
+  return service === 'core' ? getCoreLog() : getWebLog();
 }
 
 export function readLog(service: 'core' | 'web', lines: number = 100): string {

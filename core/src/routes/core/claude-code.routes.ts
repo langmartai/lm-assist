@@ -41,14 +41,31 @@ function findNpmHookPath(hookName: string): string | null {
   return null;
 }
 
-const STATUSLINE_SCRIPT = path.resolve(__dirname, '../../../hooks/statusline-worktree.sh');
-// Cross-platform statusline: Node.js script (works on Windows, macOS, Linux)
-const STATUSLINE_SCRIPT_JS = findNpmHookPath('statusline-worktree.js') || path.resolve(__dirname, '../../../hooks/statusline-worktree.js');
-const STATUSLINE_COMMAND = `node "${STATUSLINE_SCRIPT_JS}"`;
-// Cross-platform hook: Node.js script (works on Windows, macOS, Linux)
-const CONTEXT_INJECT_SCRIPT_JS = findNpmHookPath('context-inject-hook.js') || path.resolve(__dirname, '../../../hooks/context-inject-hook.js');
-// The install command uses `node <script>` for cross-platform support
-const CONTEXT_INJECT_COMMAND = `node "${CONTEXT_INJECT_SCRIPT_JS}"`;
+function getHookPath(hookName: string): string {
+  const config = loadConfig();
+  // 1. Dev repo (if enabled and exists)
+  if (config.devModeEnabled && config.devRepoPath) {
+    const devPath = path.join(config.devRepoPath, 'core', 'hooks', hookName);
+    if (fs.existsSync(devPath)) return devPath;
+  }
+  // 2. npm global
+  const npmPath = findNpmHookPath(hookName);
+  if (npmPath) return npmPath;
+  // 3. Local relative
+  return path.resolve(__dirname, '../../../hooks/', hookName);
+}
+
+function getStatuslineCommand(): string {
+  return `node "${getHookPath('statusline-worktree.js')}"`;
+}
+
+function getContextInjectScriptJs(): string {
+  return getHookPath('context-inject-hook.js');
+}
+
+function getContextInjectCommand(): string {
+  return `node "${getContextInjectScriptJs()}"`;
+}
 
 // Plugin name as registered in Claude Code plugin system
 const PLUGIN_NAME = 'lm-assist@langmartai';
@@ -105,6 +122,12 @@ function detectPluginMcp(pluginPath: string): { command: string; args: string } 
  * Looks for the globally-installed npm package first, then falls back to local repo.
  */
 function findMcpServerPath(): string {
+  // 0. Dev repo (if enabled)
+  const config = loadConfig();
+  if (config.devModeEnabled && config.devRepoPath) {
+    const devMcpPath = path.join(config.devRepoPath, 'core', 'dist', 'mcp-server', 'index.js');
+    if (fs.existsSync(devMcpPath)) return devMcpPath;
+  }
   // 1. Try npm global: resolve lm-assist package → core/dist/mcp-server/index.js
   try {
     const npmRoot = require('child_process').execFileSync('npm', ['root', '-g'], {
@@ -187,6 +210,8 @@ interface ClaudeCodeConfig {
   statuslineShowRam: boolean;
   statuslineShowProcess: boolean;
   statuslineShowModel: boolean;
+  devModeEnabled: boolean;
+  devRepoPath: string;
 }
 
 const DEFAULT_CONFIG: ClaudeCodeConfig = {
@@ -207,6 +232,8 @@ const DEFAULT_CONFIG: ClaudeCodeConfig = {
   statuslineShowRam: true,
   statuslineShowProcess: true,
   statuslineShowModel: true,
+  devModeEnabled: false,
+  devRepoPath: path.join(os.homedir(), 'lm-assist'),
 };
 
 function loadConfig(): ClaudeCodeConfig {
@@ -232,6 +259,8 @@ function loadConfig(): ClaudeCodeConfig {
       statuslineShowRam: typeof parsed.statuslineShowRam === 'boolean' ? parsed.statuslineShowRam : DEFAULT_CONFIG.statuslineShowRam,
       statuslineShowProcess: typeof parsed.statuslineShowProcess === 'boolean' ? parsed.statuslineShowProcess : DEFAULT_CONFIG.statuslineShowProcess,
       statuslineShowModel: typeof parsed.statuslineShowModel === 'boolean' ? parsed.statuslineShowModel : DEFAULT_CONFIG.statuslineShowModel,
+      devModeEnabled: typeof parsed.devModeEnabled === 'boolean' ? parsed.devModeEnabled : DEFAULT_CONFIG.devModeEnabled,
+      devRepoPath: typeof parsed.devRepoPath === 'string' && parsed.devRepoPath.trim() ? parsed.devRepoPath : DEFAULT_CONFIG.devRepoPath,
     };
   } catch {
     return { ...DEFAULT_CONFIG };
@@ -255,6 +284,108 @@ function writeClaudeSettings(settings: Record<string, any>): void {
   const dir = path.dirname(CLAUDE_SETTINGS_FILE);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(settings, null, 2) + '\n');
+}
+
+/**
+ * When devModeEnabled or devRepoPath changes, re-point any already-installed
+ * components (statusline, context-inject hook, MCP server) to the new paths.
+ * Only touches components that are currently installed; skips plugin-managed ones.
+ */
+function reapplyInstalledPaths(): { updated: string[] } {
+  const updated: string[] = [];
+  const settings = readClaudeSettings();
+
+  // 1. Statusline — if installed, update the command path
+  const sl = settings.statusLine;
+  if (sl && typeof sl.command === 'string' &&
+      (sl.command.includes('statusline-worktree.sh') || sl.command.includes('statusline-worktree.js'))) {
+    const newCommand = getStatuslineCommand();
+    if (sl.command !== newCommand) {
+      settings.statusLine = { ...sl, command: newCommand };
+      updated.push('statusline');
+    }
+  }
+
+  // 2. Context-inject hook — update manual hooks in settings.json
+  // Always update manual hooks regardless of plugin status, since both can coexist
+  const plugin = detectPluginInstallation();
+  {
+    const hooks: any[] = settings.hooks?.UserPromptSubmit || [];
+    let hookUpdated = false;
+    const newCommand = getContextInjectCommand();
+    const updatedHooks = hooks.map((entry: any) => ({
+      ...entry,
+      hooks: (entry.hooks || []).map((h: any) => {
+        if (typeof h.command === 'string' &&
+            (h.command.includes('context-inject-hook.sh') || h.command.includes('context-inject-hook.js'))) {
+          if (h.command !== newCommand) {
+            hookUpdated = true;
+            return { ...h, command: newCommand };
+          }
+        }
+        return h;
+      }),
+    }));
+    if (hookUpdated) {
+      if (!settings.hooks) settings.hooks = {};
+      settings.hooks.UserPromptSubmit = updatedHooks;
+      updated.push('context-hook');
+    }
+  }
+
+  // Write settings if anything changed
+  if (updated.length > 0) {
+    writeClaudeSettings(settings);
+  }
+
+  // 3. MCP server — update path in plugin .mcp.json or manual registration
+  const newMcpServerPath = findMcpServerPath();
+  const pluginMcp = plugin ? detectPluginMcp(plugin.installPath) : null;
+  if (pluginMcp) {
+    // Plugin-managed MCP — update the .mcp.json args to point to the correct path
+    const currentPath = (pluginMcp.args || '').trim();
+    if (currentPath !== newMcpServerPath) {
+      try {
+        const mcpJsonPath = path.join(plugin!.installPath, '.mcp.json');
+        const mcpJson = {
+          mcpServers: {
+            'lm-assist': {
+              command: 'node',
+              args: [newMcpServerPath],
+            },
+          },
+        };
+        fs.writeFileSync(mcpJsonPath, JSON.stringify(mcpJson, null, 2) + '\n');
+        updated.push('mcp');
+      } catch { /* non-fatal */ }
+    }
+  } else {
+    const env = { ...process.env, CLAUDECODE: undefined };
+    try {
+      const output = execFileSync('claude', ['mcp', 'get', 'lm-assist'], {
+        encoding: 'utf-8', timeout: 10000, env,
+      }).trim();
+      if (output) {
+        // MCP is manually installed — re-register with new path
+        try {
+          execFileSync('claude', ['mcp', 'remove', 'lm-assist', '-s', 'user'], {
+            encoding: 'utf-8', timeout: 10000, env,
+          });
+        } catch { /* may not exist */ }
+        execFileSync('claude', [
+          'mcp', 'add', '-s', 'user', 'lm-assist', '--',
+          'node', newMcpServerPath,
+        ], {
+          encoding: 'utf-8', timeout: 15000, env,
+        });
+        updated.push('mcp');
+      }
+    } catch {
+      // MCP not installed manually, skip
+    }
+  }
+
+  return { updated };
 }
 
 export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
@@ -372,12 +503,90 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
             changed = true;
           }
         }
+        let devModeChanged = false;
+        if (typeof body.devModeEnabled === 'boolean' && body.devModeEnabled !== current.devModeEnabled) {
+          current.devModeEnabled = body.devModeEnabled;
+          changed = true;
+          devModeChanged = true;
+        }
+        if (typeof body.devRepoPath === 'string' && body.devRepoPath.trim() && body.devRepoPath !== current.devRepoPath) {
+          current.devRepoPath = body.devRepoPath;
+          changed = true;
+          devModeChanged = true;
+        }
 
         if (changed) {
           saveConfig(current);
         }
 
-        return { success: true, data: current };
+        // When dev mode settings change, re-point installed components to new paths
+        let pathsUpdated: string[] = [];
+        let restartScheduled = false;
+        if (devModeChanged) {
+          try {
+            const result = reapplyInstalledPaths();
+            pathsUpdated = result.updated;
+          } catch {
+            // Non-fatal: paths will be updated on next manual install
+          }
+
+          // Schedule a service restart so core/web pick up the new source (npm vs dev-repo).
+          // The `lm-assist` CLI checks devModeEnabled to decide which codebase to start from.
+          // Strategy: spawn a detached bash process that kills by port (most reliable,
+          // avoids PID file location mismatch between dev-repo and npm), then starts.
+          try {
+            const whichCmd = IS_WINDOWS ? 'where' : 'which';
+            const lmAssistBin = execFileSync(whichCmd, ['lm-assist'], {
+              encoding: 'utf-8', timeout: 5000,
+            }).trim().split(/\r?\n/)[0];
+            if (lmAssistBin && fs.existsSync(lmAssistBin)) {
+              // Read ports from .env or defaults
+              const apiPort = process.env.API_PORT || '3100';
+              const webPort = process.env.WEB_PORT || '3848';
+
+              // Clean up PID files from BOTH possible roots (dev-repo and npm)
+              const serverRoot = path.resolve(__dirname, '../../../..');
+              const pidFiles: string[] = [
+                path.join(serverRoot, 'core', 'server.pid'),
+                path.join(serverRoot, 'web', 'web.pid'),
+              ];
+              try {
+                const npmRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf-8', timeout: 5000 }).trim();
+                const npmPkg = path.join(npmRoot, 'lm-assist');
+                if (fs.existsSync(npmPkg)) {
+                  pidFiles.push(path.join(npmPkg, 'core', 'server.pid'));
+                  pidFiles.push(path.join(npmPkg, 'web', 'web.pid'));
+                }
+              } catch {}
+              const rmCmds = pidFiles.map(f => `rm -f '${f}'`).join('; ');
+
+              // Build a shell script that:
+              // 1. Waits 1 second (for this HTTP response to complete)
+              // 2. Kills by port (fuser is the most reliable cross-root method)
+              // 3. Cleans up PID files from both roots
+              // 4. Waits 2 seconds for graceful shutdown
+              // 5. Starts services via lm-assist CLI (reads devModeEnabled to pick source)
+              const script = [
+                'sleep 1',
+                `fuser -k ${apiPort}/tcp 2>/dev/null || true`,
+                `fuser -k ${webPort}/tcp 2>/dev/null || true`,
+                rmCmds,
+                'sleep 2',
+                `'${process.execPath}' '${lmAssistBin}' start`,
+              ].join('; ');
+
+              const { spawn } = require('child_process');
+              const child = spawn('/bin/bash', ['-c', script], {
+                detached: true,
+                stdio: 'ignore',
+              });
+              child.unref();
+              restartScheduled = true;
+            }
+          } catch { /* lm-assist binary not found, skip restart */ }
+        }
+
+        return { success: true, data: current, ...(pathsUpdated.length > 0 ? { pathsUpdated } : {}), ...(restartScheduled ? { restartScheduled } : {}) };
       },
     },
 
@@ -395,7 +604,7 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
            statusLine.command.includes('statusline-worktree.js'))
         );
 
-        const scriptPath = installed ? statusLine.command : STATUSLINE_COMMAND;
+        const scriptPath = installed ? statusLine.command : getStatuslineCommand();
 
         const features = [
           'Last 4 prompts',
@@ -427,7 +636,7 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
         // Deep merge: preserve other keys, set statusLine (cross-platform JS version)
         settings.statusLine = {
           type: 'command',
-          command: STATUSLINE_COMMAND,
+          command: getStatuslineCommand(),
           padding: 2,
         };
 
@@ -437,7 +646,7 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
           success: true,
           data: {
             installed: true,
-            scriptPath: STATUSLINE_COMMAND,
+            scriptPath: getStatuslineCommand(),
             features: [
               'Last 4 prompts', 'Project dir', 'Worktree detection',
               'Context %', 'Session RAM', 'Free RAM', 'PID', 'TTY', 'Uptime', 'Model name',
@@ -715,8 +924,8 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
           data: {
             installed,
             source: installed ? 'manual' : null,
-            scriptPath: CONTEXT_INJECT_SCRIPT_JS,
-            command: CONTEXT_INJECT_COMMAND,
+            scriptPath: getContextInjectScriptJs(),
+            command: getContextInjectCommand(),
           },
         };
       },
@@ -758,7 +967,7 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!alreadyInstalled) {
           // Install cross-platform Node.js hook
           existingHooks.push({
-            hooks: [{ type: 'command', command: CONTEXT_INJECT_COMMAND, timeout: 10 }],
+            hooks: [{ type: 'command', command: getContextInjectCommand(), timeout: 10 }],
           });
           settings.hooks.UserPromptSubmit = existingHooks;
           writeClaudeSettings(settings);
@@ -776,7 +985,7 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
               ...entry,
               hooks: (entry.hooks || []).map((h: any) => {
                 if (typeof h.command === 'string' && h.command.includes('context-inject-hook.sh')) {
-                  return { ...h, command: CONTEXT_INJECT_COMMAND };
+                  return { ...h, command: getContextInjectCommand() };
                 }
                 return h;
               }),
@@ -788,7 +997,7 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
 
         return {
           success: true,
-          data: { installed: true, source: 'manual', scriptPath: CONTEXT_INJECT_SCRIPT_JS, command: CONTEXT_INJECT_COMMAND },
+          data: { installed: true, source: 'manual', scriptPath: getContextInjectScriptJs(), command: getContextInjectCommand() },
         };
       },
     },

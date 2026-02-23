@@ -11,7 +11,9 @@
  *          vibeCoder, visualEditor, executionIntegrator, checkpoint, sessionBackup
  */
 
-import os from 'os';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { TierManager } from './tier-manager';
 import {
@@ -82,6 +84,18 @@ export interface SimpleMonitorApi {
     version: string;
   }>>;
 }
+
+// ============================================================================
+// Cached version & running mode (computed once at module load)
+// ============================================================================
+
+const repoRoot = path.resolve(__dirname, '..', '..');
+const cachedVersion: string = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf-8')).version || '0.0.0';
+  } catch { return '0.0.0'; }
+})();
+const cachedRunningFrom: 'dev-repo' | 'npm' = fs.existsSync(path.join(repoRoot, '.git')) ? 'dev-repo' : 'npm';
 
 // ============================================================================
 // Control API Implementation
@@ -292,7 +306,8 @@ export class TierControlApiImpl {
           status: 'healthy',
           uptime: Date.now() - this.startTime.getTime(),
           projectPath: this.projectPath,
-          version: '0.1.0',
+          version: cachedVersion,
+          runningFrom: cachedRunningFrom,
           hostname: os.hostname(),
           platform: os.platform(),
           localIp,
