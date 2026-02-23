@@ -124,6 +124,47 @@ lm-assist automatically generates knowledge from your Claude Code sessions, then
 
 > *Settings — cloud sign-in, LAN access, connection status, and more*
 
+### Mobile & Tablet Support
+
+The web UI is fully responsive. Access everything from your phone or tablet — control terminals, browse sessions, review knowledge, and manage tasks on the go.
+
+<table>
+  <tr>
+    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/session-terminal%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/session-terminal%20(mobile).png" alt="Terminal on mobile" width="180"></a><br><sub>Live Terminal</sub></td>
+    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/session-detail-chat%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/session-detail-chat%20(mobile).png" alt="Session detail on mobile" width="180"></a><br><sub>Session Detail</sub></td>
+    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/task-kanban%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/task-kanban%20(mobile).png" alt="Task kanban on mobile" width="180"></a><br><sub>Task Kanban</sub></td>
+    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/knowledge-list%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/knowledge-list%20(mobile).png" alt="Knowledge list on mobile" width="180"></a><br><sub>Knowledge Base</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/knowledge-detail-full%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/knowledge-detail-full%20(mobile).png" alt="Knowledge detail on mobile" width="180"></a><br><sub>Knowledge Detail</sub></td>
+    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/context-hook-logs%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/context-hook-logs%20(mobile).png" alt="Context hook logs on mobile" width="180"></a><br><sub>Context Injection Logs</sub></td>
+    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/settings-connection%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/settings-connection%20(mobile).png" alt="Settings on mobile" width="180"></a><br><sub>Settings</sub></td>
+    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/settings-claude-code%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/settings-claude-code%20(mobile).png" alt="Claude Code settings on mobile" width="180"></a><br><sub>Claude Code Config</sub></td>
+  </tr>
+</table>
+
+### Bring Your Knowledge to Every IDE
+
+lm-assist builds knowledge from your Claude Code sessions — but that knowledge isn't locked to Claude Code. Any MCP-compatible IDE can connect to the lm-assist MCP server and access the same knowledge base: search entries, view details, and provide feedback.
+
+One-click activation from the Settings page:
+
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/settings-ide-mcp%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/settings-ide-mcp%20(mobile).png" alt="IDE MCP Integration" width="280"></a>
+
+**Supported IDEs:**
+
+| IDE | MCP Config |
+|-----|-----------|
+| **Claude Code** | Auto-registered via plugin install |
+| **VS Code** (Copilot) | `settings.json` — MCP server entry |
+| **Cursor** | `.cursor/mcp.json` |
+| **Windsurf** | `~/.windsurf/mcp.json` |
+| **Codex CLI** (OpenAI) | `~/.codex/config.toml` |
+| **Gemini CLI** (Google) | `~/.gemini/settings.json` |
+| **Google Antigravity** | `~/.gemini/antigravity/settings.json` |
+
+All IDEs get access to the same 3 MCP tools (`search`, `detail`, `feedback`) and the same knowledge base. Generate knowledge once in Claude Code, use it everywhere.
+
 ---
 
 ## Install
