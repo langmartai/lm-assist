@@ -2,7 +2,7 @@
 
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { detectAppMode, detectProxyInfo, resolveConsoleUrl } from '@/lib/api-client';
+import { detectAppMode, detectProxyInfo, resolveConsoleUrl, getHubHttpUrl } from '@/lib/api-client';
 
 /** Extract a string error message from various response formats. */
 function extractErrorMessage(data: any, fallback = 'Failed to start console'): string {
@@ -27,6 +27,27 @@ function normalizeConsoleUrl(url: string): string {
     }
   } catch { /* not valid URL */ }
   return url;
+}
+
+/** Fetch hub connection info from the core API for standalone (localhost/LAN) hub mode.
+ * Returns the hub HTTP base URL and API key needed to call hub endpoints directly. */
+async function getHubInfo(coreBaseUrl: string): Promise<{ hubHttpUrl: string; apiKey: string } | null> {
+  try {
+    const [statusRes, keyRes] = await Promise.all([
+      fetch(`${coreBaseUrl}/hub/status`),
+      fetch(`${coreBaseUrl}/hub/api-key`),
+    ]);
+    const statusData = await statusRes.json();
+    const keyData = await keyRes.json();
+
+    const hubWsUrl = statusData?.data?.hubUrl;
+    const apiKey = keyData?.data?.apiKey;
+    if (!hubWsUrl || !apiKey) return null;
+
+    return { hubHttpUrl: getHubHttpUrl(hubWsUrl), apiKey };
+  } catch {
+    return null;
+  }
 }
 
 function FullScreenConsole() {
@@ -109,11 +130,21 @@ function FullScreenConsole() {
             setError(extractErrorMessage(startData));
           }
         } else if (machineId) {
-          // Hub mode (non-proxy): use hub API with machineId
-          const hubPath = `${baseUrl}/api/tier-agent/machines/${machineId}/console/${effectiveSessionId}/start`;
+          // Standalone hub mode (localhost/LAN): fetch hub URL + API key from core API,
+          // then call the hub's console start endpoint directly with auth.
+          const localBase = baseUrl || `http://localhost:${process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100'}`;
+          const hubInfo = await getHubInfo(localBase);
+          if (!hubInfo) {
+            setError('Hub not connected. Cannot start console on remote machine.');
+            return;
+          }
+          const hubPath = `${hubInfo.hubHttpUrl}/api/tier-agent/machines/${machineId}/console/${effectiveSessionId}/start`;
           const startRes = await fetch(hubPath, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${hubInfo.apiKey}`,
+            },
             body: JSON.stringify({
               projectPath,
               force: true,
@@ -193,19 +224,27 @@ function FullScreenConsole() {
         const { baseUrl } = detectAppMode();
 
         let url: string;
+        let headers: Record<string, string> = {};
         if (proxy.isProxied && proxy.machineId) {
-          // Proxy mode: relay through hub
+          // Proxy mode: relay through hub (relative path → Next.js rewrite → gateway)
           url = `/api/tier-agent/machines/${proxy.machineId}/sessions/${sessionId}/conversation`;
         } else if (machineId) {
-          // Hub mode
-          url = `${baseUrl}/api/tier-agent/machines/${machineId}/sessions/${sessionId}/conversation`;
+          // Standalone hub mode: fetch hub URL + API key, call hub directly
+          const localBase = baseUrl || `http://localhost:${process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100'}`;
+          const hubInfo = await getHubInfo(localBase);
+          if (!hubInfo) {
+            document.title = `Session ${sessionId?.slice(0, 8) || 'Unknown'}`;
+            return;
+          }
+          url = `${hubInfo.hubHttpUrl}/api/tier-agent/machines/${machineId}/sessions/${sessionId}/conversation`;
+          headers = { 'Authorization': `Bearer ${hubInfo.apiKey}` };
         } else {
           // Local mode
           const localBase = baseUrl || `http://localhost:${process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100'}`;
           url = `${localBase}/sessions/${sessionId}/conversation`;
         }
 
-        const res = await fetch(url);
+        const res = await fetch(url, { headers });
         if (!res.ok) return;
 
         const data = await res.json();
