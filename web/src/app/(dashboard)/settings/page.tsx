@@ -308,6 +308,18 @@ export default function SettingsPage() {
   const [codexMcpStatus, setCodexMcpStatus] = useState<IdeMcpStatus | null>(null);
   const [isCodexActivating, setIsCodexActivating] = useState(false);
   const [isCodexDeactivating, setIsCodexDeactivating] = useState(false);
+  const [antigravityMcpStatus, setAntigravityMcpStatus] = useState<IdeMcpStatus | null>(null);
+  const [isAntigravityActivating, setIsAntigravityActivating] = useState(false);
+  const [isAntigravityDeactivating, setIsAntigravityDeactivating] = useState(false);
+  const [geminiCliMcpStatus, setGeminiCliMcpStatus] = useState<IdeMcpStatus | null>(null);
+  const [isGeminiCliActivating, setIsGeminiCliActivating] = useState(false);
+  const [isGeminiCliDeactivating, setIsGeminiCliDeactivating] = useState(false);
+  const [cursorMcpStatus, setCursorMcpStatus] = useState<IdeMcpStatus | null>(null);
+  const [isCursorActivating, setIsCursorActivating] = useState(false);
+  const [isCursorDeactivating, setIsCursorDeactivating] = useState(false);
+  const [windsurfMcpStatus, setWindsurfMcpStatus] = useState<IdeMcpStatus | null>(null);
+  const [isWindsurfActivating, setIsWindsurfActivating] = useState(false);
+  const [isWindsurfDeactivating, setIsWindsurfDeactivating] = useState(false);
   const [contextHookStatus, setContextHookStatus] = useState<ContextHookStatus | null>(null);
   const [isContextHookInstalling, setIsContextHookInstalling] = useState(false);
   const [isContextHookUninstalling, setIsContextHookUninstalling] = useState(false);
@@ -787,7 +799,7 @@ export default function SettingsPage() {
     if (proxy.isProxied) return;
     setIsClaudeCodeLoading(true);
     try {
-      const [statusRes, configRes, slRes, mcpRes, hookRes, settingsRes, vscodeRes, codexRes] = await Promise.all([
+      const [statusRes, configRes, slRes, mcpRes, hookRes, settingsRes, vscodeRes, codexRes, antigravityRes, geminiCliRes, cursorRes, windsurfRes] = await Promise.all([
         fetch(tierAgentUrl + '/claude-code/status').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/config').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/statusline').catch(() => null),
@@ -796,6 +808,10 @@ export default function SettingsPage() {
         fetch(tierAgentUrl + '/claude-code/settings').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/ide-mcp/vscode').catch(() => null),
         fetch(tierAgentUrl + '/claude-code/ide-mcp/codex').catch(() => null),
+        fetch(tierAgentUrl + '/claude-code/ide-mcp/antigravity').catch(() => null),
+        fetch(tierAgentUrl + '/claude-code/ide-mcp/gemini-cli').catch(() => null),
+        fetch(tierAgentUrl + '/claude-code/ide-mcp/cursor').catch(() => null),
+        fetch(tierAgentUrl + '/claude-code/ide-mcp/windsurf').catch(() => null),
       ]);
       if (statusRes?.ok) {
         const json = await statusRes.json();
@@ -828,6 +844,22 @@ export default function SettingsPage() {
       if (codexRes?.ok) {
         const json = await codexRes.json();
         setCodexMcpStatus(json.data || null);
+      }
+      if (antigravityRes?.ok) {
+        const json = await antigravityRes.json();
+        setAntigravityMcpStatus(json.data || null);
+      }
+      if (geminiCliRes?.ok) {
+        const json = await geminiCliRes.json();
+        setGeminiCliMcpStatus(json.data || null);
+      }
+      if (cursorRes?.ok) {
+        const json = await cursorRes.json();
+        setCursorMcpStatus(json.data || null);
+      }
+      if (windsurfRes?.ok) {
+        const json = await windsurfRes.json();
+        setWindsurfMcpStatus(json.data || null);
       }
     } catch {
       // silently fail
@@ -1565,6 +1597,158 @@ export default function SettingsPage() {
       showClaudeCodeMessage('Failed to reach tier-agent', 'error');
     } finally {
       setIsCodexDeactivating(false);
+    }
+  }, [tierAgentUrl]);
+
+  const handleAntigravityActivate = useCallback(async () => {
+    setIsAntigravityActivating(true);
+    setClaudeCodeMessage(null);
+    try {
+      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/antigravity/activate', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setAntigravityMcpStatus(json.data || null);
+        showClaudeCodeMessage('Antigravity MCP activated', 'ok');
+      } else {
+        showClaudeCodeMessage(json.error || 'Failed to activate Antigravity MCP', 'error');
+      }
+    } catch {
+      showClaudeCodeMessage('Failed to reach tier-agent', 'error');
+    } finally {
+      setIsAntigravityActivating(false);
+    }
+  }, [tierAgentUrl]);
+
+  const handleAntigravityDeactivate = useCallback(async () => {
+    setIsAntigravityDeactivating(true);
+    setClaudeCodeMessage(null);
+    try {
+      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/antigravity/deactivate', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setAntigravityMcpStatus(json.data || null);
+        showClaudeCodeMessage('Antigravity MCP deactivated', 'ok');
+      } else {
+        showClaudeCodeMessage(json.error || 'Failed to deactivate Antigravity MCP', 'error');
+      }
+    } catch {
+      showClaudeCodeMessage('Failed to reach tier-agent', 'error');
+    } finally {
+      setIsAntigravityDeactivating(false);
+    }
+  }, [tierAgentUrl]);
+
+  const handleGeminiCliActivate = useCallback(async () => {
+    setIsGeminiCliActivating(true);
+    setClaudeCodeMessage(null);
+    try {
+      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/gemini-cli/activate', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setGeminiCliMcpStatus(json.data || null);
+        showClaudeCodeMessage('Gemini CLI MCP activated', 'ok');
+      } else {
+        showClaudeCodeMessage(json.error || 'Failed to activate Gemini CLI MCP', 'error');
+      }
+    } catch {
+      showClaudeCodeMessage('Failed to reach tier-agent', 'error');
+    } finally {
+      setIsGeminiCliActivating(false);
+    }
+  }, [tierAgentUrl]);
+
+  const handleGeminiCliDeactivate = useCallback(async () => {
+    setIsGeminiCliDeactivating(true);
+    setClaudeCodeMessage(null);
+    try {
+      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/gemini-cli/deactivate', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setGeminiCliMcpStatus(json.data || null);
+        showClaudeCodeMessage('Gemini CLI MCP deactivated', 'ok');
+      } else {
+        showClaudeCodeMessage(json.error || 'Failed to deactivate Gemini CLI MCP', 'error');
+      }
+    } catch {
+      showClaudeCodeMessage('Failed to reach tier-agent', 'error');
+    } finally {
+      setIsGeminiCliDeactivating(false);
+    }
+  }, [tierAgentUrl]);
+
+  const handleCursorActivate = useCallback(async () => {
+    setIsCursorActivating(true);
+    setClaudeCodeMessage(null);
+    try {
+      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/cursor/activate', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setCursorMcpStatus(json.data || null);
+        showClaudeCodeMessage('Cursor MCP activated', 'ok');
+      } else {
+        showClaudeCodeMessage(json.error || 'Failed to activate Cursor MCP', 'error');
+      }
+    } catch {
+      showClaudeCodeMessage('Failed to reach tier-agent', 'error');
+    } finally {
+      setIsCursorActivating(false);
+    }
+  }, [tierAgentUrl]);
+
+  const handleCursorDeactivate = useCallback(async () => {
+    setIsCursorDeactivating(true);
+    setClaudeCodeMessage(null);
+    try {
+      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/cursor/deactivate', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setCursorMcpStatus(json.data || null);
+        showClaudeCodeMessage('Cursor MCP deactivated', 'ok');
+      } else {
+        showClaudeCodeMessage(json.error || 'Failed to deactivate Cursor MCP', 'error');
+      }
+    } catch {
+      showClaudeCodeMessage('Failed to reach tier-agent', 'error');
+    } finally {
+      setIsCursorDeactivating(false);
+    }
+  }, [tierAgentUrl]);
+
+  const handleWindsurfActivate = useCallback(async () => {
+    setIsWindsurfActivating(true);
+    setClaudeCodeMessage(null);
+    try {
+      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/windsurf/activate', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setWindsurfMcpStatus(json.data || null);
+        showClaudeCodeMessage('Windsurf MCP activated', 'ok');
+      } else {
+        showClaudeCodeMessage(json.error || 'Failed to activate Windsurf MCP', 'error');
+      }
+    } catch {
+      showClaudeCodeMessage('Failed to reach tier-agent', 'error');
+    } finally {
+      setIsWindsurfActivating(false);
+    }
+  }, [tierAgentUrl]);
+
+  const handleWindsurfDeactivate = useCallback(async () => {
+    setIsWindsurfDeactivating(true);
+    setClaudeCodeMessage(null);
+    try {
+      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/windsurf/deactivate', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setWindsurfMcpStatus(json.data || null);
+        showClaudeCodeMessage('Windsurf MCP deactivated', 'ok');
+      } else {
+        showClaudeCodeMessage(json.error || 'Failed to deactivate Windsurf MCP', 'error');
+      }
+    } catch {
+      showClaudeCodeMessage('Failed to reach tier-agent', 'error');
+    } finally {
+      setIsWindsurfDeactivating(false);
     }
   }, [tierAgentUrl]);
 
@@ -3460,6 +3644,214 @@ export default function SettingsPage() {
                                 }}
                               >
                                 {isCodexDeactivating ? <Loader2 size={12} className="spin" /> : <Unplug size={12} />}
+                                Deactivate
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Divider */}
+                    <div style={{ borderTop: '1px solid var(--color-border)', margin: '4px 0' }} />
+
+                    {/* Antigravity */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)' }}>Google Antigravity</div>
+                      {antigravityMcpStatus && (
+                        <>
+                          <InfoRow
+                            label="Status"
+                            value={antigravityMcpStatus.installed ? 'Active' : 'Not configured'}
+                            status={antigravityMcpStatus.installed ? 'ok' : 'error'}
+                          />
+                          <InfoRow label="Config" value={antigravityMcpStatus.configPath} mono />
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            {!antigravityMcpStatus.installed && (
+                              <button
+                                className="btn btn-sm"
+                                onClick={handleAntigravityActivate}
+                                disabled={isAntigravityActivating}
+                                style={{
+                                  gap: 4,
+                                  background: 'rgba(74, 222, 128, 0.1)',
+                                  border: '1px solid rgba(74, 222, 128, 0.3)',
+                                  color: 'var(--color-status-green)',
+                                }}
+                              >
+                                {isAntigravityActivating ? <Loader2 size={12} className="spin" /> : <Plug size={12} />}
+                                Activate
+                              </button>
+                            )}
+                            {antigravityMcpStatus.installed && (
+                              <button
+                                className="btn btn-sm"
+                                onClick={handleAntigravityDeactivate}
+                                disabled={isAntigravityDeactivating}
+                                style={{
+                                  gap: 4,
+                                  background: 'rgba(248, 113, 113, 0.06)',
+                                  border: '1px solid rgba(248, 113, 113, 0.2)',
+                                  color: 'var(--color-status-red)',
+                                }}
+                              >
+                                {isAntigravityDeactivating ? <Loader2 size={12} className="spin" /> : <Unplug size={12} />}
+                                Deactivate
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Divider */}
+                    <div style={{ borderTop: '1px solid var(--color-border)', margin: '4px 0' }} />
+
+                    {/* Gemini CLI */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)' }}>Gemini CLI</div>
+                      {geminiCliMcpStatus && (
+                        <>
+                          <InfoRow
+                            label="Status"
+                            value={geminiCliMcpStatus.installed ? 'Active' : 'Not configured'}
+                            status={geminiCliMcpStatus.installed ? 'ok' : 'error'}
+                          />
+                          <InfoRow label="Config" value={geminiCliMcpStatus.configPath} mono />
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            {!geminiCliMcpStatus.installed && (
+                              <button
+                                className="btn btn-sm"
+                                onClick={handleGeminiCliActivate}
+                                disabled={isGeminiCliActivating}
+                                style={{
+                                  gap: 4,
+                                  background: 'rgba(74, 222, 128, 0.1)',
+                                  border: '1px solid rgba(74, 222, 128, 0.3)',
+                                  color: 'var(--color-status-green)',
+                                }}
+                              >
+                                {isGeminiCliActivating ? <Loader2 size={12} className="spin" /> : <Plug size={12} />}
+                                Activate
+                              </button>
+                            )}
+                            {geminiCliMcpStatus.installed && (
+                              <button
+                                className="btn btn-sm"
+                                onClick={handleGeminiCliDeactivate}
+                                disabled={isGeminiCliDeactivating}
+                                style={{
+                                  gap: 4,
+                                  background: 'rgba(248, 113, 113, 0.06)',
+                                  border: '1px solid rgba(248, 113, 113, 0.2)',
+                                  color: 'var(--color-status-red)',
+                                }}
+                              >
+                                {isGeminiCliDeactivating ? <Loader2 size={12} className="spin" /> : <Unplug size={12} />}
+                                Deactivate
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Divider */}
+                    <div style={{ borderTop: '1px solid var(--color-border)', margin: '4px 0' }} />
+
+                    {/* Cursor */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)' }}>Cursor</div>
+                      {cursorMcpStatus && (
+                        <>
+                          <InfoRow
+                            label="Status"
+                            value={cursorMcpStatus.installed ? 'Active' : 'Not configured'}
+                            status={cursorMcpStatus.installed ? 'ok' : 'error'}
+                          />
+                          <InfoRow label="Config" value={cursorMcpStatus.configPath} mono />
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            {!cursorMcpStatus.installed && (
+                              <button
+                                className="btn btn-sm"
+                                onClick={handleCursorActivate}
+                                disabled={isCursorActivating}
+                                style={{
+                                  gap: 4,
+                                  background: 'rgba(74, 222, 128, 0.1)',
+                                  border: '1px solid rgba(74, 222, 128, 0.3)',
+                                  color: 'var(--color-status-green)',
+                                }}
+                              >
+                                {isCursorActivating ? <Loader2 size={12} className="spin" /> : <Plug size={12} />}
+                                Activate
+                              </button>
+                            )}
+                            {cursorMcpStatus.installed && (
+                              <button
+                                className="btn btn-sm"
+                                onClick={handleCursorDeactivate}
+                                disabled={isCursorDeactivating}
+                                style={{
+                                  gap: 4,
+                                  background: 'rgba(248, 113, 113, 0.06)',
+                                  border: '1px solid rgba(248, 113, 113, 0.2)',
+                                  color: 'var(--color-status-red)',
+                                }}
+                              >
+                                {isCursorDeactivating ? <Loader2 size={12} className="spin" /> : <Unplug size={12} />}
+                                Deactivate
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Divider */}
+                    <div style={{ borderTop: '1px solid var(--color-border)', margin: '4px 0' }} />
+
+                    {/* Windsurf */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)' }}>Windsurf</div>
+                      {windsurfMcpStatus && (
+                        <>
+                          <InfoRow
+                            label="Status"
+                            value={windsurfMcpStatus.installed ? 'Active' : 'Not configured'}
+                            status={windsurfMcpStatus.installed ? 'ok' : 'error'}
+                          />
+                          <InfoRow label="Config" value={windsurfMcpStatus.configPath} mono />
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            {!windsurfMcpStatus.installed && (
+                              <button
+                                className="btn btn-sm"
+                                onClick={handleWindsurfActivate}
+                                disabled={isWindsurfActivating}
+                                style={{
+                                  gap: 4,
+                                  background: 'rgba(74, 222, 128, 0.1)',
+                                  border: '1px solid rgba(74, 222, 128, 0.3)',
+                                  color: 'var(--color-status-green)',
+                                }}
+                              >
+                                {isWindsurfActivating ? <Loader2 size={12} className="spin" /> : <Plug size={12} />}
+                                Activate
+                              </button>
+                            )}
+                            {windsurfMcpStatus.installed && (
+                              <button
+                                className="btn btn-sm"
+                                onClick={handleWindsurfDeactivate}
+                                disabled={isWindsurfDeactivating}
+                                style={{
+                                  gap: 4,
+                                  background: 'rgba(248, 113, 113, 0.06)',
+                                  border: '1px solid rgba(248, 113, 113, 0.2)',
+                                  color: 'var(--color-status-red)',
+                                }}
+                              >
+                                {isWindsurfDeactivating ? <Loader2 size={12} className="spin" /> : <Unplug size={12} />}
                                 Deactivate
                               </button>
                             )}

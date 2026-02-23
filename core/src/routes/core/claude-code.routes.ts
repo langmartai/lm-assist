@@ -20,6 +20,18 @@
  *   GET  /claude-code/ide-mcp/codex              Check Codex MCP integration status
  *   POST /claude-code/ide-mcp/codex/activate     Add lm-assist to Codex config.toml
  *   POST /claude-code/ide-mcp/codex/deactivate   Remove lm-assist from Codex config.toml
+ *   GET  /claude-code/ide-mcp/antigravity        Check Antigravity MCP integration status
+ *   POST /claude-code/ide-mcp/antigravity/activate    Add lm-assist to Antigravity mcp_config.json
+ *   POST /claude-code/ide-mcp/antigravity/deactivate  Remove lm-assist from Antigravity mcp_config.json
+ *   GET  /claude-code/ide-mcp/gemini-cli          Check Gemini CLI MCP integration status
+ *   POST /claude-code/ide-mcp/gemini-cli/activate     Add lm-assist to Gemini CLI settings.json
+ *   POST /claude-code/ide-mcp/gemini-cli/deactivate   Remove lm-assist from Gemini CLI settings.json
+ *   GET  /claude-code/ide-mcp/cursor               Check Cursor MCP integration status
+ *   POST /claude-code/ide-mcp/cursor/activate       Add lm-assist to Cursor mcp.json
+ *   POST /claude-code/ide-mcp/cursor/deactivate     Remove lm-assist from Cursor mcp.json
+ *   GET  /claude-code/ide-mcp/windsurf              Check Windsurf MCP integration status
+ *   POST /claude-code/ide-mcp/windsurf/activate     Add lm-assist to Windsurf mcp_config.json
+ *   POST /claude-code/ide-mcp/windsurf/deactivate   Remove lm-assist from Windsurf mcp_config.json
  *   GET  /claude-code/context-hook              Check context-inject hook installation
  *   POST /claude-code/context-hook/install      Install context-inject hook into ~/.claude/settings.json
  *   POST /claude-code/context-hook/uninstall    Remove context-inject hook from ~/.claude/settings.json
@@ -174,6 +186,34 @@ function getVsCodeMcpJsonPath(): string {
  */
 function getCodexConfigPath(): string {
   return path.join(os.homedir(), '.codex', 'config.toml');
+}
+
+/**
+ * Get the Google Antigravity MCP config path.
+ */
+function getAntigravityMcpConfigPath(): string {
+  return path.join(os.homedir(), '.gemini', 'antigravity', 'mcp_config.json');
+}
+
+/**
+ * Get the Gemini CLI settings.json path.
+ */
+function getGeminiCliSettingsPath(): string {
+  return path.join(os.homedir(), '.gemini', 'settings.json');
+}
+
+/**
+ * Get the Cursor mcp.json path.
+ */
+function getCursorMcpJsonPath(): string {
+  return path.join(os.homedir(), '.cursor', 'mcp.json');
+}
+
+/**
+ * Get the Windsurf mcp_config.json path.
+ */
+function getWindsurfMcpConfigPath(): string {
+  return path.join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json');
 }
 
 /**
@@ -1133,6 +1173,340 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
           return { success: true, data: { installed: false, configPath, configExists: true } };
         } catch (err: any) {
           return { success: false, error: err.message || 'Failed to update Codex config.toml' };
+        }
+      },
+    },
+
+    // GET /claude-code/ide-mcp/antigravity - Check Google Antigravity MCP integration status
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/ide-mcp\/antigravity$/,
+      handler: async () => {
+        const configPath = getAntigravityMcpConfigPath();
+        const configExists = fs.existsSync(configPath);
+        if (!configExists) {
+          return { success: true, data: { installed: false, configPath, configExists: false } };
+        }
+        try {
+          const raw = fs.readFileSync(configPath, 'utf-8');
+          const data = JSON.parse(raw);
+          const server = data?.mcpServers?.['lm-assist'];
+          if (server) {
+            return {
+              success: true,
+              data: {
+                installed: true, configPath, configExists: true,
+                command: server.command || 'node',
+                args: Array.isArray(server.args) ? server.args : [],
+              },
+            };
+          }
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        } catch {
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        }
+      },
+    },
+
+    // POST /claude-code/ide-mcp/antigravity/activate - Add lm-assist to Antigravity mcp_config.json
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/ide-mcp\/antigravity\/activate$/,
+      handler: async () => {
+        try {
+          const configPath = getAntigravityMcpConfigPath();
+          const mcpServerPath = findMcpServerPath().replace(/\\/g, '/');
+          let data: any = { mcpServers: {} };
+          try {
+            if (fs.existsSync(configPath)) {
+              data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+              if (!data.mcpServers) data.mcpServers = {};
+            }
+          } catch {
+            data = { mcpServers: {} };
+          }
+          data.mcpServers['lm-assist'] = { command: 'node', args: [mcpServerPath] };
+          const dir = path.dirname(configPath);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+          return {
+            success: true,
+            data: { installed: true, configPath, configExists: true, command: 'node', args: [mcpServerPath] },
+          };
+        } catch (err: any) {
+          return { success: false, error: err.message || 'Failed to activate Antigravity MCP' };
+        }
+      },
+    },
+
+    // POST /claude-code/ide-mcp/antigravity/deactivate - Remove lm-assist from Antigravity mcp_config.json
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/ide-mcp\/antigravity\/deactivate$/,
+      handler: async () => {
+        const configPath = getAntigravityMcpConfigPath();
+        if (!fs.existsSync(configPath)) {
+          return { success: true, data: { installed: false, configPath, configExists: false } };
+        }
+        try {
+          const data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+          if (data?.mcpServers?.['lm-assist']) {
+            delete data.mcpServers['lm-assist'];
+            fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+          }
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        } catch (err: any) {
+          return { success: false, error: err.message || 'Failed to update Antigravity mcp_config.json' };
+        }
+      },
+    },
+
+    // GET /claude-code/ide-mcp/gemini-cli - Check Gemini CLI MCP integration status
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/ide-mcp\/gemini-cli$/,
+      handler: async () => {
+        const configPath = getGeminiCliSettingsPath();
+        const configExists = fs.existsSync(configPath);
+        if (!configExists) {
+          return { success: true, data: { installed: false, configPath, configExists: false } };
+        }
+        try {
+          const raw = fs.readFileSync(configPath, 'utf-8');
+          const data = JSON.parse(raw);
+          const server = data?.mcpServers?.['lm-assist'];
+          if (server) {
+            return {
+              success: true,
+              data: {
+                installed: true, configPath, configExists: true,
+                command: server.command || 'node',
+                args: Array.isArray(server.args) ? server.args : [],
+              },
+            };
+          }
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        } catch {
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        }
+      },
+    },
+
+    // POST /claude-code/ide-mcp/gemini-cli/activate - Add lm-assist to Gemini CLI settings.json
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/ide-mcp\/gemini-cli\/activate$/,
+      handler: async () => {
+        try {
+          const configPath = getGeminiCliSettingsPath();
+          const mcpServerPath = findMcpServerPath().replace(/\\/g, '/');
+          let data: any = {};
+          try {
+            if (fs.existsSync(configPath)) {
+              data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+            }
+          } catch {
+            data = {};
+          }
+          if (!data.mcpServers) data.mcpServers = {};
+          data.mcpServers['lm-assist'] = { command: 'node', args: [mcpServerPath] };
+          const dir = path.dirname(configPath);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+          return {
+            success: true,
+            data: { installed: true, configPath, configExists: true, command: 'node', args: [mcpServerPath] },
+          };
+        } catch (err: any) {
+          return { success: false, error: err.message || 'Failed to activate Gemini CLI MCP' };
+        }
+      },
+    },
+
+    // POST /claude-code/ide-mcp/gemini-cli/deactivate - Remove lm-assist from Gemini CLI settings.json
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/ide-mcp\/gemini-cli\/deactivate$/,
+      handler: async () => {
+        const configPath = getGeminiCliSettingsPath();
+        if (!fs.existsSync(configPath)) {
+          return { success: true, data: { installed: false, configPath, configExists: false } };
+        }
+        try {
+          const data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+          if (data?.mcpServers?.['lm-assist']) {
+            delete data.mcpServers['lm-assist'];
+            fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+          }
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        } catch (err: any) {
+          return { success: false, error: err.message || 'Failed to update Gemini CLI settings.json' };
+        }
+      },
+    },
+
+    // GET /claude-code/ide-mcp/cursor - Check Cursor MCP integration status
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/ide-mcp\/cursor$/,
+      handler: async () => {
+        const configPath = getCursorMcpJsonPath();
+        const configExists = fs.existsSync(configPath);
+        if (!configExists) {
+          return { success: true, data: { installed: false, configPath, configExists: false } };
+        }
+        try {
+          const data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+          const server = data?.mcpServers?.['lm-assist'];
+          if (server) {
+            return {
+              success: true,
+              data: {
+                installed: true, configPath, configExists: true,
+                command: server.command || 'node',
+                args: Array.isArray(server.args) ? server.args : [],
+              },
+            };
+          }
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        } catch {
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        }
+      },
+    },
+
+    // POST /claude-code/ide-mcp/cursor/activate - Add lm-assist to Cursor mcp.json
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/ide-mcp\/cursor\/activate$/,
+      handler: async () => {
+        try {
+          const configPath = getCursorMcpJsonPath();
+          const mcpServerPath = findMcpServerPath().replace(/\\/g, '/');
+          let data: any = { mcpServers: {} };
+          try {
+            if (fs.existsSync(configPath)) {
+              data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+              if (!data.mcpServers) data.mcpServers = {};
+            }
+          } catch {
+            data = { mcpServers: {} };
+          }
+          data.mcpServers['lm-assist'] = { command: 'node', args: [mcpServerPath] };
+          const dir = path.dirname(configPath);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+          return {
+            success: true,
+            data: { installed: true, configPath, configExists: true, command: 'node', args: [mcpServerPath] },
+          };
+        } catch (err: any) {
+          return { success: false, error: err.message || 'Failed to activate Cursor MCP' };
+        }
+      },
+    },
+
+    // POST /claude-code/ide-mcp/cursor/deactivate - Remove lm-assist from Cursor mcp.json
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/ide-mcp\/cursor\/deactivate$/,
+      handler: async () => {
+        const configPath = getCursorMcpJsonPath();
+        if (!fs.existsSync(configPath)) {
+          return { success: true, data: { installed: false, configPath, configExists: false } };
+        }
+        try {
+          const data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+          if (data?.mcpServers?.['lm-assist']) {
+            delete data.mcpServers['lm-assist'];
+            fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+          }
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        } catch (err: any) {
+          return { success: false, error: err.message || 'Failed to update Cursor mcp.json' };
+        }
+      },
+    },
+
+    // GET /claude-code/ide-mcp/windsurf - Check Windsurf MCP integration status
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/ide-mcp\/windsurf$/,
+      handler: async () => {
+        const configPath = getWindsurfMcpConfigPath();
+        const configExists = fs.existsSync(configPath);
+        if (!configExists) {
+          return { success: true, data: { installed: false, configPath, configExists: false } };
+        }
+        try {
+          const data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+          const server = data?.mcpServers?.['lm-assist'];
+          if (server) {
+            return {
+              success: true,
+              data: {
+                installed: true, configPath, configExists: true,
+                command: server.command || 'node',
+                args: Array.isArray(server.args) ? server.args : [],
+              },
+            };
+          }
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        } catch {
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        }
+      },
+    },
+
+    // POST /claude-code/ide-mcp/windsurf/activate - Add lm-assist to Windsurf mcp_config.json
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/ide-mcp\/windsurf\/activate$/,
+      handler: async () => {
+        try {
+          const configPath = getWindsurfMcpConfigPath();
+          const mcpServerPath = findMcpServerPath().replace(/\\/g, '/');
+          let data: any = { mcpServers: {} };
+          try {
+            if (fs.existsSync(configPath)) {
+              data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+              if (!data.mcpServers) data.mcpServers = {};
+            }
+          } catch {
+            data = { mcpServers: {} };
+          }
+          data.mcpServers['lm-assist'] = { command: 'node', args: [mcpServerPath] };
+          const dir = path.dirname(configPath);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+          return {
+            success: true,
+            data: { installed: true, configPath, configExists: true, command: 'node', args: [mcpServerPath] },
+          };
+        } catch (err: any) {
+          return { success: false, error: err.message || 'Failed to activate Windsurf MCP' };
+        }
+      },
+    },
+
+    // POST /claude-code/ide-mcp/windsurf/deactivate - Remove lm-assist from Windsurf mcp_config.json
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/ide-mcp\/windsurf\/deactivate$/,
+      handler: async () => {
+        const configPath = getWindsurfMcpConfigPath();
+        if (!fs.existsSync(configPath)) {
+          return { success: true, data: { installed: false, configPath, configExists: false } };
+        }
+        try {
+          const data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+          if (data?.mcpServers?.['lm-assist']) {
+            delete data.mcpServers['lm-assist'];
+            fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+          }
+          return { success: true, data: { installed: false, configPath, configExists: true } };
+        } catch (err: any) {
+          return { success: false, error: err.message || 'Failed to update Windsurf mcp_config.json' };
         }
       },
     },
