@@ -1428,7 +1428,7 @@ export function createHybridClient(options: HybridClientOptions): ApiClient {
       for (const w of hub) {
         if (w.id === localGatewayId || w.gatewayId === localGatewayId) {
           // This is the local machine — merge with local health data
-          const localInfo = local[0];
+          const localInfo = local.find(m => m.isLocal) || local[0];
           result.push({
             ...w,
             id: w.id || localGatewayId,
@@ -1446,8 +1446,9 @@ export function createHybridClient(options: HybridClientOptions): ApiClient {
 
       // If local machine wasn't in hub list (e.g., just connected), add it
       if (!localFound && local.length > 0) {
+        const localInfo = local.find(m => m.isLocal) || local[0];
         result.unshift({
-          ...local[0],
+          ...localInfo,
           id: localGatewayId,
           isLocal: true,
         } as Machine & { isLocal?: boolean });
