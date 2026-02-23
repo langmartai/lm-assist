@@ -1854,11 +1854,15 @@ code, pre, .font-mono {
     min-width: 0;
   }
 
-  .topbar-connection {
+  div.topbar-connection {
     display: none !important;
   }
 
-  .topbar-connect-cloud {
+  a.topbar-connection span {
+    display: none !important;
+  }
+
+  .topbar-connect-cloud span {
     display: none !important;
   }
 
