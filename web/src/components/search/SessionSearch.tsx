@@ -402,13 +402,14 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
     }
     let cancelled = false;
     setLoadingKnowledge(true);
-    // Use item-specific machineId only (no fallback to global machineId)
-    // Local knowledge has no machineId; remote synced knowledge has one
+    // Item-specific machineId goes in the URL for the API to look up the right data
+    // Global machineId goes in opts for hub/cloud routing (hub client requires it)
     const itemMachineId = selectedKnowledgeMachineId;
     const mq = itemMachineId ? `?machineId=${encodeURIComponent(itemMachineId)}` : '';
+    const routeOpts = machineId ? { machineId } : undefined;
     Promise.all([
-      apiClient.fetchPath(`/knowledge/${selectedKnowledgeId}${mq}`),
-      apiClient.fetchPath(`/knowledge/${selectedKnowledgeId}/comments?includeAddressed=false${itemMachineId ? '&machineId=' + encodeURIComponent(itemMachineId) : ''}`),
+      apiClient.fetchPath(`/knowledge/${selectedKnowledgeId}${mq}`, routeOpts),
+      apiClient.fetchPath(`/knowledge/${selectedKnowledgeId}/comments?includeAddressed=false${itemMachineId ? '&machineId=' + encodeURIComponent(itemMachineId) : ''}`, routeOpts),
     ]).then(([kJson, cJson]: any[]) => {
       if (cancelled) return;
       const kData = kJson?.data || kJson || null;
@@ -424,7 +425,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
       if (!cancelled) setLoadingKnowledge(false);
     });
     return () => { cancelled = true; };
-  }, [selectedKnowledgeId, selectedKnowledgeMachineId, apiClient]);
+  }, [selectedKnowledgeId, selectedKnowledgeMachineId, apiClient, machineId]);
 
   // Scroll to knowledge part after detail loads
   useEffect(() => {
