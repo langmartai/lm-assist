@@ -54,6 +54,7 @@ interface KnowledgeSearchResult {
   partTitle?: string;
   knowledgeType?: string;
   origin?: string;
+  machineId?: string;
   machineHostname?: string;
   machineOS?: string;
 }
@@ -186,12 +187,14 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
   const [knowledgeDetail, setKnowledgeDetail] = useState<KnowledgeFull | null>(null);
   const [knowledgeComments, setKnowledgeComments] = useState<KnowledgeCommentItem[]>([]);
   const [loadingKnowledge, setLoadingKnowledge] = useState(false);
+  const [selectedKnowledgeMachineId, setSelectedKnowledgeMachineId] = useState<string | undefined>();
   const [highlightKnowledgePartId, setHighlightKnowledgePartId] = useState<string | null>(null);
 
   // Recent knowledge for default view (no query)
   const [recentKnowledge, setRecentKnowledge] = useState<Array<{
     id: string; title: string; type: string; updatedAt: string;
     sourceTimestamp?: string; sourceSessionId?: string;
+    machineId?: string;
     parts: Array<{ partId: string; title: string; summary: string }>;
   }>>([]);
   const [loadingRecentKnowledge, setLoadingRecentKnowledge] = useState(false);
@@ -399,13 +402,19 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
     }
     let cancelled = false;
     setLoadingKnowledge(true);
+    // Use item-specific machineId only (no fallback to global machineId)
+    // Local knowledge has no machineId; remote synced knowledge has one
+    const itemMachineId = selectedKnowledgeMachineId;
+    const mq = itemMachineId ? `?machineId=${encodeURIComponent(itemMachineId)}` : '';
     Promise.all([
-      apiClient.fetchPath(`/knowledge/${selectedKnowledgeId}`, { machineId }),
-      apiClient.fetchPath(`/knowledge/${selectedKnowledgeId}/comments?includeAddressed=false`, { machineId }),
+      apiClient.fetchPath(`/knowledge/${selectedKnowledgeId}${mq}`),
+      apiClient.fetchPath(`/knowledge/${selectedKnowledgeId}/comments?includeAddressed=false${itemMachineId ? '&machineId=' + encodeURIComponent(itemMachineId) : ''}`),
     ]).then(([kJson, cJson]: any[]) => {
       if (cancelled) return;
-      setKnowledgeDetail(kJson?.data || kJson || null);
-      setKnowledgeComments(cJson?.data || cJson || []);
+      const kData = kJson?.data || kJson || null;
+      // Guard against API returning { success: false } with 200 status
+      setKnowledgeDetail(kData?.id ? kData : null);
+      setKnowledgeComments(kData?.id ? (cJson?.data || cJson || []) : []);
     }).catch(() => {
       if (!cancelled) {
         setKnowledgeDetail(null);
@@ -415,7 +424,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
       if (!cancelled) setLoadingKnowledge(false);
     });
     return () => { cancelled = true; };
-  }, [selectedKnowledgeId, apiClient, machineId]);
+  }, [selectedKnowledgeId, selectedKnowledgeMachineId, apiClient]);
 
   // Scroll to knowledge part after detail loads
   useEffect(() => {
@@ -465,13 +474,16 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
         setSelectedSessionId(null);
         setSelectedStartTurn(undefined);
         setSelectedMilestoneId(undefined);
-        setSelectedKnowledgeId(knowledgeResults[0].knowledgeId || null);
-        setSelectedKnowledgePartId(knowledgeResults[0].partId || null);
+        const kr0 = knowledgeResults[0];
+        setSelectedKnowledgeId(kr0.knowledgeId || (kr0.partId || '').split('.')[0] || null);
+        setSelectedKnowledgePartId(kr0.partId || null);
+        setSelectedKnowledgeMachineId(kr0.machineId);
       } else {
         const first = displayResults[0];
         if (first) {
           setSelectedKnowledgeId(null);
           setSelectedKnowledgePartId(null);
+          setSelectedKnowledgeMachineId(undefined);
           setSelectedSessionId(first.sessionId);
           setSelectedStartTurn(first.startTurn);
           setSelectedMilestoneId(first.milestoneId);
@@ -481,6 +493,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
           setSelectedMilestoneId(undefined);
           setSelectedKnowledgeId(null);
           setSelectedKnowledgePartId(null);
+          setSelectedKnowledgeMachineId(undefined);
         }
       }
     } else {
@@ -491,11 +504,13 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
         setSelectedMilestoneId(undefined);
         setSelectedKnowledgeId(recentKnowledge[0].id);
         setSelectedKnowledgePartId(null);
+        setSelectedKnowledgeMachineId(recentKnowledge[0].machineId);
       } else {
         const first = displayResults[0];
         if (first) {
           setSelectedKnowledgeId(null);
           setSelectedKnowledgePartId(null);
+          setSelectedKnowledgeMachineId(undefined);
           setSelectedSessionId(first.sessionId);
           setSelectedStartTurn(first.startTurn);
           setSelectedMilestoneId(first.milestoneId);
@@ -505,6 +520,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
           setSelectedMilestoneId(undefined);
           setSelectedKnowledgeId(null);
           setSelectedKnowledgePartId(null);
+          setSelectedKnowledgeMachineId(undefined);
         }
       }
     }
@@ -551,7 +567,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
           />
           {query && (
             <button
-              onClick={() => { setQuery(''); setSearchResults([]); setKnowledgeResults([]); setSelectedKnowledgeId(null); setSelectedKnowledgePartId(null); userSelectedRef.current = false; }}
+              onClick={() => { setQuery(''); setSearchResults([]); setKnowledgeResults([]); setSelectedKnowledgeId(null); setSelectedKnowledgePartId(null); setSelectedKnowledgeMachineId(undefined); userSelectedRef.current = false; }}
               style={{
                 position: 'absolute',
                 right: 8,
@@ -735,8 +751,9 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                         setSelectedSessionId(null);
                         setSelectedStartTurn(undefined);
                         setSelectedMilestoneId(undefined);
-                        setSelectedKnowledgeId(kr.knowledgeId || null);
+                        setSelectedKnowledgeId(kr.knowledgeId || (kr.partId || '').split('.')[0] || null);
                         setSelectedKnowledgePartId(kr.partId || null);
+                        setSelectedKnowledgeMachineId(kr.machineId);
                       }}
                       style={{
                         display: 'block',
@@ -830,6 +847,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                         setSelectedMilestoneId(undefined);
                         setSelectedKnowledgeId(k.id);
                         setSelectedKnowledgePartId(null);
+                        setSelectedKnowledgeMachineId(k.machineId);
                       }}
                       style={{
                         display: 'block',
@@ -947,6 +965,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                       userSelectedRef.current = true;
                       setSelectedKnowledgeId(null);
                       setSelectedKnowledgePartId(null);
+                      setSelectedKnowledgeMachineId(undefined);
                       if (isSelected) {
                         setSelectedSessionId(null);
                         setSelectedStartTurn(undefined);
@@ -1252,7 +1271,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                 }}>
                   {isMobile && (
                     <button
-                      onClick={() => { setSelectedKnowledgeId(null); setSelectedKnowledgePartId(null); }}
+                      onClick={() => { setSelectedKnowledgeId(null); setSelectedKnowledgePartId(null); setSelectedKnowledgeMachineId(undefined); }}
                       style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', display: 'flex', color: 'var(--color-text-secondary)', flexShrink: 0 }}
                       title="Back to results"
                     >
@@ -1308,7 +1327,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                       <ExternalLink size={11} />
                     </span>
                     <button
-                      onClick={() => { setSelectedKnowledgeId(null); setSelectedKnowledgePartId(null); }}
+                      onClick={() => { setSelectedKnowledgeId(null); setSelectedKnowledgePartId(null); setSelectedKnowledgeMachineId(undefined); }}
                       style={{
                         background: 'none',
                         border: 'none',

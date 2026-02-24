@@ -189,7 +189,9 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
             }
             if (!knowledge) return r;
             return {
-              ...r, knowledgeTitle, partTitle, knowledgeType,
+              ...r,
+              knowledgeId: r.knowledgeId || kId, // backfill if missing from vector row
+              knowledgeTitle, partTitle, knowledgeType,
               origin: knowledge.origin || 'local',
               machineHostname: knowledge.machineHostname,
               machineOS: knowledge.machineOS,

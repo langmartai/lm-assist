@@ -199,7 +199,6 @@ async function killByPid(pid: number): Promise<void> {
     await new Promise<void>((resolve) => {
       treeKill(pid, 'SIGTERM', (err) => {
         if (err) {
-          // Force kill
           treeKill(pid, 'SIGKILL', () => resolve());
         } else {
           resolve();
@@ -207,8 +206,12 @@ async function killByPid(pid: number): Promise<void> {
       });
     });
   } catch {
-    // tree-kill failed — try plain process.kill as last resort
+    // tree-kill failed — use process.kill directly (works on Windows unlike taskkill from Git Bash)
     try { process.kill(pid, 'SIGTERM'); } catch { /* already dead */ }
+  }
+  // Verify the process is actually dead
+  if (isPidAlive(pid)) {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
   }
 }
 
@@ -217,15 +220,34 @@ async function killByPort(port: number): Promise<void> {
     const fpModule = require('find-process');
     const findProcess = (fpModule.default || fpModule) as (type: string, value: number) => Promise<Array<{ pid: number }>>;
     const list = await findProcess('port', port);
-    const treeKill = require('tree-kill') as (pid: number, signal?: string, callback?: (err?: Error) => void) => void;
     for (const proc of list) {
-      await new Promise<void>((resolve) => {
-        treeKill(proc.pid, 'SIGTERM', () => resolve());
-      });
+      await killByPid(proc.pid);
     }
   } catch {
-    // find-process may fail on some platforms; that's ok
+    // find-process failed — use process.kill with netstat-parsed PIDs on Windows
+    if (process.platform === 'win32') {
+      killByPortNetstat(port);
+    }
   }
+}
+
+/** Windows fallback: find PIDs by port using netstat, kill with process.kill */
+function killByPortNetstat(port: number): void {
+  const { execSync } = require('child_process');
+  try {
+    const output = execSync(`netstat -ano`, { encoding: 'utf-8', timeout: 5000 });
+    const pids = new Set<number>();
+    for (const line of output.split('\n')) {
+      if (line.includes(`:${port}`) && line.includes('LISTENING')) {
+        const parts = line.trim().split(/\s+/);
+        const pid = parseInt(parts[parts.length - 1], 10);
+        if (pid > 0) pids.add(pid);
+      }
+    }
+    for (const pid of pids) {
+      try { process.kill(pid, 'SIGTERM'); } catch { /* ignore */ }
+    }
+  } catch { /* netstat failed */ }
 }
 
 // ─── Spawn Helpers ──────────────────────────────────────────────────
@@ -396,9 +418,19 @@ export async function stopCore(config?: ServiceConfig): Promise<{ success: boole
     await sleep(1000);
   }
 
+  // Final verification: if port is still open, use taskkill fallback (Windows)
+  if (stopped && await checkPort(apiPort) && process.platform === 'win32') {
+    killByPortNetstat(apiPort);
+    await sleep(1000);
+  }
+
   removePid(getCorePidFile());
 
   if (stopped) {
+    const stillRunning = await checkPort(apiPort);
+    if (stillRunning) {
+      return { success: false, message: `Core API stop attempted but port ${apiPort} is still in use` };
+    }
     return { success: true, message: 'Core API stopped' };
   }
   return { success: true, message: 'Core API was not running' };
@@ -424,9 +456,19 @@ export async function stopWeb(config?: ServiceConfig): Promise<{ success: boolea
     await sleep(1000);
   }
 
+  // Final verification: if port is still open, use taskkill fallback (Windows)
+  if (stopped && await checkPort(webPort) && process.platform === 'win32') {
+    killByPortNetstat(webPort);
+    await sleep(1000);
+  }
+
   removePid(getWebPidFile());
 
   if (stopped) {
+    const stillRunning = await checkPort(webPort);
+    if (stillRunning) {
+      return { success: false, message: `Web stop attempted but port ${webPort} is still in use` };
+    }
     return { success: true, message: 'Web stopped' };
   }
   return { success: true, message: 'Web was not running' };

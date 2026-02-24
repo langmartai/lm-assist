@@ -229,10 +229,13 @@ export function KnowledgePage() {
         apiFetch<KnowledgeFull>(`/knowledge/${id}${machineQs}`),
         apiFetch<KnowledgeComment[]>(`/knowledge/${id}/comments${commentQs}`),
       ]);
-      setKnowledge(data);
-      setComments(commentsData);
+      // Guard against API returning { success: false } with 200 status
+      setKnowledge((data as any)?.id ? data : null);
+      setComments((data as any)?.id ? commentsData : []);
     } catch (err) {
       console.error('Failed to fetch knowledge:', err);
+      setKnowledge(null);
+      setComments([]);
     } finally {
       setDetailLoading(false);
     }
@@ -971,12 +974,13 @@ export function KnowledgePage() {
                   key={i}
                   result={r}
                   onClick={() => {
-                    if (r.knowledgeId) {
+                    const kId = r.knowledgeId || (r.partId || '').split('.')[0] || null;
+                    if (kId) {
                       setSelectedItemMachineId(r.machineId);
                       if (r.partId) {
-                        selectPart(r.knowledgeId, r.partId);
+                        selectPart(kId, r.partId);
                       } else {
-                        setSelectedId(r.knowledgeId);
+                        setSelectedId(kId);
                         setSelectedPartId(null);
                       }
                     }

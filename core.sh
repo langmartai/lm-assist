@@ -29,9 +29,10 @@ if [[ "$(uname -s)" == MINGW* ]] || [[ "$(uname -s)" == MSYS* ]] || [[ "$(uname 
     IS_WINDOWS=true
 fi
 
-# Detect host IP address
+# Detect host IP address (use fast methods to avoid PowerShell startup delay)
 if [ "$IS_WINDOWS" = true ]; then
-    HOST_IP=$(powershell -NoProfile -Command "(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { \$_.IPAddress -ne '127.0.0.1' } | Select-Object -First 1).IPAddress" 2>/dev/null)
+    # Use ipconfig (native, fast) instead of PowerShell (3-5s startup delay)
+    HOST_IP=$(ipconfig 2>/dev/null | grep -A5 'Ethernet\|Wi-Fi' | grep 'IPv4' | head -1 | awk -F': ' '{print $2}' | tr -d '\r')
 else
     HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 fi
@@ -159,7 +160,9 @@ kill_process_tree() {
     local signal=${2:-TERM}
 
     if [ "$IS_WINDOWS" = true ]; then
-        taskkill //F //T //PID "$pid" > /dev/null 2>&1
+        # taskkill doesn't work reliably from Git Bash (path mangling + permission issues)
+        # node process.kill() is fast and works cross-platform
+        node -e "try { process.kill($pid, 'SIGTERM'); } catch(e) {}" 2>/dev/null
         return $?
     fi
 
@@ -444,20 +447,6 @@ stop_core() {
 
     if [ -n "$pid" ]; then
         kill_process_tree "$pid" TERM
-        sleep 1
-
-        # Force kill if still running
-        if [ "$IS_WINDOWS" = true ]; then
-            if tasklist //FI "PID eq $pid" 2>/dev/null | grep -q "$pid"; then
-                echo -e "${YELLOW}   Process didn't terminate gracefully, forcing...${NC}"
-                kill_process_tree "$pid" KILL
-            fi
-        else
-            if kill -0 "$pid" 2>/dev/null; then
-                echo -e "${YELLOW}   Process didn't terminate gracefully, forcing...${NC}"
-                kill_process_tree "$pid" KILL
-            fi
-        fi
         stopped=true
     fi
 
@@ -471,7 +460,7 @@ stop_core() {
         if [ -n "$port_pid" ]; then
             echo -e "${YELLOW}   Killing process on port $API_PORT: $port_pid${NC}"
             if [ "$IS_WINDOWS" = true ]; then
-                taskkill //F //PID "$port_pid" > /dev/null 2>&1
+                node -e "try { process.kill($port_pid, 'SIGTERM'); } catch(e) {}" 2>/dev/null
             else
                 kill -9 "$port_pid" 2>/dev/null
             fi
@@ -622,20 +611,6 @@ stop_web() {
 
     if [ -n "$pid" ]; then
         kill_process_tree "$pid" TERM
-        sleep 1
-
-        # Force kill if still running
-        if [ "$IS_WINDOWS" = true ]; then
-            if tasklist //FI "PID eq $pid" 2>/dev/null | grep -q "$pid"; then
-                echo -e "${YELLOW}   Process didn't terminate gracefully, forcing...${NC}"
-                kill_process_tree "$pid" KILL
-            fi
-        else
-            if kill -0 "$pid" 2>/dev/null; then
-                echo -e "${YELLOW}   Process didn't terminate gracefully, forcing...${NC}"
-                kill_process_tree "$pid" KILL
-            fi
-        fi
         stopped=true
     fi
 
@@ -649,7 +624,7 @@ stop_web() {
         if [ -n "$port_pid" ]; then
             echo -e "${YELLOW}   Killing process on port $WEB_PORT: $port_pid${NC}"
             if [ "$IS_WINDOWS" = true ]; then
-                taskkill //F //PID "$port_pid" > /dev/null 2>&1
+                node -e "try { process.kill($port_pid, 'SIGTERM'); } catch(e) {}" 2>/dev/null
             else
                 kill -9 "$port_pid" 2>/dev/null
             fi
