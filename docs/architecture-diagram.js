@@ -47,6 +47,17 @@ function brandBar(w, y) {
   <text x="${cx}" y="${y + 18}" text-anchor="middle" fill="#7c3aed" font-size="11" font-weight="700" letter-spacing="1.5">lm-assist</text>`;
 }
 
+// Shared install + GitHub footer block
+function installFooter(x, y, w) {
+  return `
+  <rect x="${x}" y="${y}" width="${w}" height="82" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1" opacity="0.6"/>
+  <text x="${x+20}" y="${y+16}" fill="#94a3b8" font-size="7.5" font-weight="600">INSTALL</text>
+  <text x="${x+20}" y="${y+32}" fill="#fbbf24" font-size="9">/plugin marketplace add langmartai/lm-assist</text>
+  <text x="${x+20}" y="${y+46}" fill="#fbbf24" font-size="9">/plugin install lm-assist</text>
+  <text x="${x+20}" y="${y+60}" fill="#94a3b8" font-size="9">/assist-setup</text>
+  <text x="${x+20}" y="${y+76}" fill="#64748b" font-size="8">github.com/langmartai/lm-assist  ·  Core :3100  ·  Web :3848  ·  ttyd :5900+</text>`;
+}
+
 async function renderSvgToPng(svgString, outPath) {
   const buf = await sharp(Buffer.from(svgString), { density: 300 })
     .flatten({ background: '#0f172a' })
@@ -71,15 +82,15 @@ async function main() {
 // SVG 1: IDE → MCP → Knowledge Pipeline
 // ============================================================
 function buildTopLeftSvg() {
-  const W = 500, H = 560;
+  const W = 500, H = 580;
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
   ${DEFS}
   <rect width="${W}" height="${H}" fill="url(#bgGrad)" rx="12"/>
   ${brandBar(W, 0)}
 
   <!-- Title -->
-  <text x="${W/2}" y="50" text-anchor="middle" fill="#fbbf24" font-size="14" font-weight="700">You → Any IDE → Knowledge</text>
-  <text x="${W/2}" y="66" text-anchor="middle" fill="#94a3b8" font-size="8">MCP integration — works with every MCP-compatible IDE</text>
+  <text x="${W/2}" y="50" text-anchor="middle" fill="#fbbf24" font-size="14" font-weight="700">Turn Claude Code Sessions Into Reusable Knowledge</text>
+  <text x="${W/2}" y="66" text-anchor="middle" fill="#94a3b8" font-size="8">Extracts what Claude Code already knows from past sessions · serves it to any MCP-compatible IDE</text>
 
   <!-- Step 1: You → Your IDE -->
   <circle cx="90" cy="96" r="16" fill="#38bdf8" opacity="0.12"/>
@@ -155,14 +166,8 @@ function buildTopLeftSvg() {
   <polygon points="20,162 12,168 16,160" fill="#94a3b8" opacity="0.35"/>
   <text x="-2" y="310" fill="#94a3b8" font-size="7" opacity="0.5" transform="rotate(-90,-2,310)">new sessions feed back</text>
 
-  <!-- Key Paths -->
-  <rect x="20" y="480" width="460" height="68" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1" opacity="0.6"/>
-  <path d="M45 500 a10 10 0 1 1 2 -5" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>
-  <polygon points="47,495 43,502 51,500" fill="#f59e0b"/>
-  <text x="65" y="497" fill="#e2e8f0" font-size="9.5" font-weight="600">Knowledge Cycle</text>
-  <text x="65" y="510" fill="#94a3b8" font-size="8">Sessions → extract → vector DB → inject into future sessions</text>
-  <text x="65" y="523" fill="#f59e0b" font-size="8" font-weight="600">Every IDE session starts with knowledge from past sessions</text>
-  <text x="65" y="538" fill="#64748b" font-size="7.5">Sessions: ~/.claude/projects/*/sessions/*.jsonl  ·  Knowledge: ~/.lm-assist/knowledge/</text>
+  <!-- Install + GitHub -->
+  ${installFooter(20, 480, 460)}
 </svg>`;
 }
 
@@ -239,13 +244,8 @@ function buildTopRightSvg() {
   <text x="270" y="428" fill="#94a3b8" font-size="8">Browse knowledge base</text>
   <text x="270" y="440" fill="#94a3b8" font-size="8">Task kanban across all sessions</text>
 
-  <!-- Quick Start -->
-  <rect x="30" y="466" width="440" height="82" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1" opacity="0.6"/>
-  <text x="50" y="484" fill="#94a3b8" font-size="7.5" font-weight="600">QUICK START</text>
-  <text x="50" y="500" fill="#fbbf24" font-size="9">/plugin marketplace add langmartai/lm-assist</text>
-  <text x="50" y="514" fill="#fbbf24" font-size="9">/plugin install lm-assist</text>
-  <text x="50" y="528" fill="#94a3b8" font-size="9">/assist-setup</text>
-  <text x="50" y="542" fill="#64748b" font-size="8">Core API :3100  ·  Web UI :3848  ·  ttyd :5900+</text>
+  <!-- Install + GitHub -->
+  ${installFooter(30, 466, 440)}
 </svg>`;
 }
 
@@ -253,7 +253,7 @@ function buildTopRightSvg() {
 // SVG 3: Knowledge Sync Across Machines (2 hosts)
 // ============================================================
 function buildBottomSvg() {
-  const W = 960, H = 440;
+  const W = 960, H = 530;
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
   ${DEFS}
   <rect width="${W}" height="${H}" fill="url(#bgGrad)" rx="12"/>
@@ -356,6 +356,9 @@ function buildBottomSvg() {
   <polygon points="510,411 504,407 504,415" fill="#f59e0b"/>
   <text x="518" y="415" fill="#94a3b8" font-size="9">Knowledge sync</text>
   <text x="660" y="420" fill="#64748b" font-size="9">Ports: Core 3100 · Web 3848 · ttyd 5900+</text>
+
+  <!-- Install + GitHub -->
+  ${installFooter(30, 442, 900)}
 </svg>`;
 }
 
