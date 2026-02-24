@@ -195,8 +195,8 @@ export class KnowledgeStore {
     }
   }
 
-  getKnowledgePart(knowledgeId: string, partId: string): KnowledgePart | null {
-    const knowledge = this.getKnowledge(knowledgeId);
+  getKnowledgePart(knowledgeId: string, partId: string, machineId?: string): KnowledgePart | null {
+    const knowledge = this.getKnowledge(knowledgeId, machineId);
     if (!knowledge) return null;
     return knowledge.parts.find(p => p.partId === partId) ?? null;
   }

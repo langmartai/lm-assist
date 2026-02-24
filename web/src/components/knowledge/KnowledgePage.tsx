@@ -101,6 +101,7 @@ interface SearchResult {
   partTitle?: string;
   knowledgeType?: string;
   origin?: string;
+  machineId?: string;
   machineHostname?: string;
   machineOS?: string;
 }
@@ -162,6 +163,8 @@ export function KnowledgePage() {
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(urlId);
   const [selectedPartId, setSelectedPartId] = useState<string | null>(urlPart);
+  // machineId of the currently selected list item (for remote knowledge detail fetches)
+  const [selectedItemMachineId, setSelectedItemMachineId] = useState<string | undefined>(undefined);
   const [knowledge, setKnowledge] = useState<KnowledgeFull | null>(null);
   const [comments, setComments] = useState<KnowledgeComment[]>([]);
   const [showAddressed, setShowAddressed] = useState(false);
@@ -214,11 +217,15 @@ export function KnowledgePage() {
     }
   }, [filterType, filterStatus, filterProject]);
 
-  const fetchKnowledge = useCallback(async (id: string) => {
+  const fetchKnowledge = useCallback(async (id: string, machineId?: string) => {
     try {
+      const machineQs = machineId ? `?machineId=${encodeURIComponent(machineId)}` : '';
+      const commentQs = machineId
+        ? `?includeAddressed=true&machineId=${encodeURIComponent(machineId)}`
+        : '?includeAddressed=true';
       const [data, commentsData] = await Promise.all([
-        apiFetch<KnowledgeFull>(`/knowledge/${id}`),
-        apiFetch<KnowledgeComment[]>(`/knowledge/${id}/comments?includeAddressed=true`),
+        apiFetch<KnowledgeFull>(`/knowledge/${id}${machineQs}`),
+        apiFetch<KnowledgeComment[]>(`/knowledge/${id}/comments${commentQs}`),
       ]);
       setKnowledge(data);
       setComments(commentsData);
@@ -236,6 +243,7 @@ export function KnowledgePage() {
     if (!selectedMachineId) return;
     setLoading(true);
     setSelectedId(null);
+    setSelectedItemMachineId(undefined);
     setKnowledge(null);
     setComments([]);
     fetchList();
@@ -259,12 +267,12 @@ export function KnowledgePage() {
 
   useEffect(() => {
     if (selectedId) {
-      fetchKnowledge(selectedId);
+      fetchKnowledge(selectedId, selectedItemMachineId);
     } else {
       setKnowledge(null);
       setComments([]);
     }
-  }, [selectedId, fetchKnowledge]);
+  }, [selectedId, selectedItemMachineId, fetchKnowledge]);
 
   // Scroll selected knowledge into view in left panel after list loads
   const scrolledToUrlRef = useRef(false);
@@ -358,8 +366,11 @@ export function KnowledgePage() {
       });
       setCommentForm(null);
       // Refresh comments
+      const commentQs = selectedItemMachineId
+        ? `?includeAddressed=true&machineId=${encodeURIComponent(selectedItemMachineId)}`
+        : '?includeAddressed=true';
       const data = await apiFetch<KnowledgeComment[]>(
-        `/knowledge/${selectedId}/comments?includeAddressed=true`,
+        `/knowledge/${selectedId}/comments${commentQs}`,
       );
       setComments(data);
       // Refresh list (comment counts changed)
@@ -369,7 +380,7 @@ export function KnowledgePage() {
     } finally {
       setSubmittingComment(false);
     }
-  }, [commentForm, selectedId, fetchList]);
+  }, [commentForm, selectedId, selectedItemMachineId, fetchList]);
 
   // ─── Generate from Explore ─────────────────────────────────
 
@@ -961,6 +972,7 @@ export function KnowledgePage() {
                   result={r}
                   onClick={() => {
                     if (r.knowledgeId) {
+                      setSelectedItemMachineId(r.machineId);
                       if (r.partId) {
                         selectPart(r.knowledgeId, r.partId);
                       } else {
@@ -990,8 +1002,8 @@ export function KnowledgePage() {
                 isFirst={ki === 0}
                 selectedId={selectedId}
                 selectedPartId={selectedPartId}
-                onSelect={(id) => { setSelectedId(id); setSelectedPartId(null); }}
-                onSelectPart={(kId, pId) => selectPart(kId, pId)}
+                onSelect={(id, machineId) => { setSelectedId(id); setSelectedPartId(null); setSelectedItemMachineId(machineId); }}
+                onSelectPart={(kId, pId, machineId) => { setSelectedItemMachineId(machineId); selectPart(kId, pId); }}
               />
             ))
           )}
@@ -1029,7 +1041,7 @@ export function KnowledgePage() {
             }}>
               {isMobile && (
                 <button
-                  onClick={() => { setSelectedId(null); setKnowledge(null); setComments([]); }}
+                  onClick={() => { setSelectedId(null); setSelectedItemMachineId(undefined); setKnowledge(null); setComments([]); }}
                   style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', display: 'flex', color: 'var(--color-text-secondary)', flexShrink: 0 }}
                   title="Back to list"
                 >
@@ -1246,8 +1258,8 @@ function KnowledgeListGroup({
   isFirst: boolean;
   selectedId: string | null;
   selectedPartId: string | null;
-  onSelect: (id: string) => void;
-  onSelectPart: (knowledgeId: string, partId: string) => void;
+  onSelect: (id: string, machineId?: string) => void;
+  onSelectPart: (knowledgeId: string, partId: string, machineId?: string) => void;
 }) {
   // Auto-expand when this knowledge doc is selected
   const hasSelectedPart = selectedId === item.id;
@@ -1262,7 +1274,7 @@ function KnowledgeListGroup({
     return (
       <div data-knowledge-id={item.id} style={{ borderBottom: '1px solid var(--color-border-default)' }}>
         <div
-          onClick={() => onSelect(item.id)}
+          onClick={() => onSelect(item.id, item.machineId)}
           style={{
             padding: '8px 12px',
             cursor: 'pointer',
@@ -1382,7 +1394,7 @@ function KnowledgeListGroup({
             return (
               <div
                 key={part.partId}
-                onClick={() => onSelectPart(item.id, part.partId)}
+                onClick={() => onSelectPart(item.id, part.partId, item.machineId)}
                 style={{
                   padding: '6px 12px 6px 32px',
                   cursor: 'pointer',

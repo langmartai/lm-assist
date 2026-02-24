@@ -456,12 +456,13 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // GET /knowledge/:id — Get full document
+    // ?machineId= — for remote knowledge, specify the machine that owns it
     {
       method: 'GET',
       pattern: /^\/knowledge\/(?<id>K\d+)$/,
       handler: async (req) => {
         const store = getKnowledgeStore();
-        const knowledge = store.getKnowledge(req.params.id);
+        const knowledge = store.getKnowledge(req.params.id, req.query.machineId || undefined);
         if (!knowledge) {
           return { success: false, error: 'Not found' };
         }
@@ -470,12 +471,13 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // GET /knowledge/:id/parts/:partId — Get specific part
+    // ?machineId= — for remote knowledge, specify the machine that owns it
     {
       method: 'GET',
       pattern: /^\/knowledge\/(?<id>K\d+)\/parts\/(?<partId>K\d+\.\d+)$/,
       handler: async (req) => {
         const store = getKnowledgeStore();
-        const part = store.getKnowledgePart(req.params.id, req.params.partId);
+        const part = store.getKnowledgePart(req.params.id, req.params.partId, req.query.machineId || undefined);
         if (!part) {
           return { success: false, error: 'Not found' };
         }
@@ -594,6 +596,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // GET /knowledge/:id/comments — Get comments
+    // ?machineId= — for remote knowledge (comments are local-only but we validate existence)
     {
       method: 'GET',
       pattern: /^\/knowledge\/(?<id>K\d+)\/comments$/,
