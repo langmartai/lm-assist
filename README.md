@@ -41,7 +41,7 @@ lm-assist runs a web server on your local network. Open any browser on any devic
 
 <a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/session-browsing.gif"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/session-browsing.gif" alt="Session Browsing" width="700"></a>
 
-> *Browse sessions, switch between projects, scroll through conversations with rich formatting — all from your browser*
+> *Terminal dashboard with 4 live sessions via langmart.ai, then browse into session detail with rich chat history — accessible from any browser, anywhere*
 
 ### 2. Deep Insight Views
 
