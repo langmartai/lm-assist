@@ -117,6 +117,7 @@ export class ApiRelayHandler {
     '/architecture',
     '/session-index',
     '/session-search',
+    '/claude-code',
   ];
 
   /**

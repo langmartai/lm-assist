@@ -168,6 +168,7 @@ export function KnowledgePage() {
   const [knowledge, setKnowledge] = useState<KnowledgeFull | null>(null);
   const [comments, setComments] = useState<KnowledgeComment[]>([]);
   const [showAddressed, setShowAddressed] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null);
   const [searching, setSearching] = useState(false);
@@ -218,6 +219,7 @@ export function KnowledgePage() {
   }, [filterType, filterStatus, filterProject]);
 
   const fetchKnowledge = useCallback(async (id: string, machineId?: string) => {
+    setDetailLoading(true);
     try {
       const machineQs = machineId ? `?machineId=${encodeURIComponent(machineId)}` : '';
       const commentQs = machineId
@@ -231,6 +233,8 @@ export function KnowledgePage() {
       setComments(commentsData);
     } catch (err) {
       console.error('Failed to fetch knowledge:', err);
+    } finally {
+      setDetailLoading(false);
     }
   }, []);
 
@@ -951,15 +955,11 @@ export function KnowledgePage() {
                 </div>
               )}
             </div>
-          ) : (
-          <>
-          {searching && (
+          ) : searching ? (
             <div style={{ padding: 16, textAlign: 'center', color: 'var(--color-text-tertiary)', fontSize: 13 }}>
               Searching...
             </div>
-          )}
-
-          {searchResults && !searching ? (
+          ) : searchResults ? (
             searchResults.length === 0 ? (
               <div className="empty-state">
                 <Search size={32} className="empty-state-icon" />
@@ -1007,8 +1007,6 @@ export function KnowledgePage() {
               />
             ))
           )}
-          </>
-          )}
         </div>
       </div>
 
@@ -1022,7 +1020,11 @@ export function KnowledgePage() {
           overflow: 'hidden',
         }}
       >
-        {!knowledge ? (
+        {detailLoading && !knowledge ? (
+          <div className="empty-state" style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, color: 'var(--color-text-tertiary)' }}>Loading...</div>
+          </div>
+        ) : !knowledge ? (
           <div className="empty-state" style={{ flex: 1 }}>
             <BookOpen size={48} className="empty-state-icon" />
             <div style={{ fontSize: 15 }}>Select a knowledge document</div>

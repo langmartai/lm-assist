@@ -271,6 +271,80 @@ function filesMatchDir(files: string[] | undefined, relPrefix: string, directory
   );
 }
 
+// ─── Shared Search Logic ──────────────────────────────────────────────────
+
+function milestoneKeywordSearch(params: Record<string, string>) {
+  const startTime = Date.now();
+
+  if (!params.query || typeof params.query !== 'string') {
+    return { success: false, error: { code: 'MISSING_QUERY', message: 'query is required' } };
+  }
+
+  const query = params.query.trim();
+  if (!query) {
+    return { success: false, error: { code: 'MISSING_QUERY', message: 'query is required' } };
+  }
+  const scope: Scope = params.scope && SCOPE_MS[params.scope as Scope] ? params.scope as Scope : 'all';
+  const limit = params.limit ? parseInt(params.limit, 10) || 0 : 0;
+
+  let allMilestones = loadAllMilestones();
+
+  // Project path filter: restrict to milestones from matching sessions
+  if (params.projectPath) {
+    const cache = getSessionCache();
+    const allowedSessions = new Set<string>();
+    for (const { sessionId, cacheData } of cache.getAllSessionsFromCache()) {
+      if (cacheData.cwd === params.projectPath) {
+        allowedSessions.add(sessionId);
+      }
+    }
+    allMilestones = allMilestones.filter(m => allowedSessions.has(m.sessionId));
+  }
+
+  // Directory filter
+  if (params.directory) {
+    const relPrefix = params.directory.endsWith('/') ? params.directory : params.directory + '/';
+    const absPrefix = params.projectPath ? (params.projectPath.endsWith('/') ? params.projectPath : params.projectPath + '/') + relPrefix : null;
+    allMilestones = allMilestones.filter(m =>
+      filesMatchDir(m.filesModified, relPrefix, params.directory!, absPrefix) ||
+      filesMatchDir(m.filesRead, relPrefix, params.directory!, absPrefix)
+    );
+  }
+
+  const queryTokens = tokenize(query);
+  const queryLower = query.toLowerCase();
+
+  const results: MilestoneSearchResult[] = [];
+  let milestonesScanned = 0;
+
+  for (const milestone of allMilestones) {
+    const ts = milestone.endTimestamp || milestone.startTimestamp;
+    if (!isWithinScope(ts, scope)) continue;
+
+    milestonesScanned++;
+
+    const rawScore = scoreMilestone(milestone, queryTokens, queryLower);
+    if (rawScore <= 0) continue;
+
+    const boostedScore = applyBoosts(rawScore, milestone);
+    results.push(toSearchResult(milestone, boostedScore));
+  }
+
+  results.sort((a, b) => b.score - a.score);
+
+  return {
+    success: true,
+    data: {
+      results: limit > 0 ? results.slice(0, limit) : results,
+      total: results.length,
+      query,
+      scope,
+      searchTimeMs: Date.now() - startTime,
+      milestonesScanned,
+    },
+  };
+}
+
 // ─── Routes ──────────────────────────────────────────────────
 
 export function createSessionSearchRoutes(ctx: RouteContext): RouteHandler[] {
@@ -340,84 +414,29 @@ export function createSessionSearchRoutes(ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // POST /session-search - Milestone keyword search (sync, fast)
+    // GET|POST /session-search - Milestone keyword search (sync, fast)
+    // Supports both GET (query params) and POST (JSON body) to work around
+    // hub proxy not forwarding POST bodies through WebSocket relay.
+    {
+      method: 'GET',
+      pattern: /^\/session-search$/,
+      handler: async (req) => {
+        return milestoneKeywordSearch(req.query as Record<string, string>);
+      },
+    },
     {
       method: 'POST',
       pattern: /^\/session-search$/,
       handler: async (req) => {
-        const startTime = Date.now();
-        const body = req.body as SearchRequest;
-
-        if (!body.query || typeof body.query !== 'string') {
-          return { success: false, error: { code: 'MISSING_QUERY', message: 'query is required' } };
-        }
-
-        const query = body.query.trim();
-        if (!query) {
-          return { success: false, error: { code: 'MISSING_QUERY', message: 'query is required' } };
-        }
-        const scope: Scope = body.scope && SCOPE_MS[body.scope as Scope] ? body.scope as Scope : 'all';
-        const limit = body.limit || 0; // 0 = no limit
-
-        let allMilestones = loadAllMilestones();
-
-        // Project path filter: restrict to milestones from matching sessions
-        if (body.projectPath) {
-          const cache = getSessionCache();
-          const allowedSessions = new Set<string>();
-          for (const { sessionId, cacheData } of cache.getAllSessionsFromCache()) {
-            if (cacheData.cwd === body.projectPath) {
-              allowedSessions.add(sessionId);
-            }
-          }
-          allMilestones = allMilestones.filter(m => allowedSessions.has(m.sessionId));
-        }
-
-        // Directory filter: keep milestones whose filesModified OR filesRead
-        // match the directory prefix. The architecture builder counts both, so we must too.
-        if (body.directory) {
-          const relPrefix = body.directory.endsWith('/') ? body.directory : body.directory + '/';
-          const absPrefix = body.projectPath ? (body.projectPath.endsWith('/') ? body.projectPath : body.projectPath + '/') + relPrefix : null;
-          allMilestones = allMilestones.filter(m =>
-            filesMatchDir(m.filesModified, relPrefix, body.directory!, absPrefix) ||
-            filesMatchDir(m.filesRead, relPrefix, body.directory!, absPrefix)
-          );
-        }
-
-        const queryTokens = tokenize(query);
-        const queryLower = query.toLowerCase();
-
-        const results: MilestoneSearchResult[] = [];
-        let milestonesScanned = 0;
-
-        for (const milestone of allMilestones) {
-          // Scope filter
-          const ts = milestone.endTimestamp || milestone.startTimestamp;
-          if (!isWithinScope(ts, scope)) continue;
-
-          milestonesScanned++;
-
-          const rawScore = scoreMilestone(milestone, queryTokens, queryLower);
-          if (rawScore <= 0) continue;
-
-          const boostedScore = applyBoosts(rawScore, milestone);
-          results.push(toSearchResult(milestone, boostedScore));
-        }
-
-        // Sort by score descending
-        results.sort((a, b) => b.score - a.score);
-
-        return {
-          success: true,
-          data: {
-            results: limit > 0 ? results.slice(0, limit) : results,
-            total: results.length,
-            query,
-            scope,
-            searchTimeMs: Date.now() - startTime,
-            milestonesScanned,
-          },
-        };
+        // Merge: prefer body fields, fall back to query params (for relay compatibility)
+        const body = req.body as Record<string, unknown>;
+        const params: Record<string, string> = { ...req.query as Record<string, string> };
+        if (body.query) params.query = String(body.query);
+        if (body.scope) params.scope = String(body.scope);
+        if (body.limit) params.limit = String(body.limit);
+        if (body.projectPath) params.projectPath = String(body.projectPath);
+        if (body.directory) params.directory = String(body.directory);
+        return milestoneKeywordSearch(params);
       },
     },
 

@@ -83,6 +83,22 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : '�
     const server = await startServer(projectPath, port);
     profiler.end('startServer');
 
+    // Pre-warm the embedder + vector store in the background (async, non-blocking)
+    // This eliminates the cold-start delay on the first search request
+    try {
+      const { getEmbedder } = require('./vector/embedder');
+      const { getVectorStore } = require('./vector/vector-store');
+      // Warm embedder model (~2-3s) and LanceDB connection in parallel
+      Promise.all([
+        getEmbedder().load().then(() => console.log('Embedder model pre-warmed')),
+        getVectorStore().init().then(() => console.log('Vector store pre-warmed')),
+      ]).catch(() => {
+        // Silently ignore — will lazy-load on first use
+      });
+    } catch {
+      // Not available (e.g., missing dependencies)
+    }
+
     // Start hub client connection if configured
     let hubClient = null;
     if (hubConfigured) {

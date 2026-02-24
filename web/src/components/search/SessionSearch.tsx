@@ -213,11 +213,8 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
 
   // Load search config on mount
   useEffect(() => {
-    const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
-    const base = typeof window !== 'undefined' ? `http://${window.location.hostname}:${port}` : 'http://localhost:3100';
-    fetch(`${base}/claude-code/config`)
-      .then(r => r.ok ? r.json() : null)
-      .then(json => {
+    apiClient.fetchPath('/claude-code/config', { machineId })
+      .then((json: any) => {
         if (json?.data) {
           const inclK = typeof json.data.searchIncludeKnowledge === 'boolean' ? json.data.searchIncludeKnowledge : true;
           const inclM = typeof json.data.searchIncludeMilestones === 'boolean' ? json.data.searchIncludeMilestones : true;
@@ -234,7 +231,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
         }
       })
       .catch(() => {});
-  }, []);
+  }, [apiClient, machineId]);
 
   // Load recent milestones on mount (gated by searchIncludeMilestones)
   useEffect(() => {
@@ -282,13 +279,10 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
     }
     let cancelled = false;
     setLoadingRecentKnowledge(true);
-    const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
-    const base = typeof window !== 'undefined' ? `http://${window.location.hostname}:${port}` : 'http://localhost:3100';
-    fetch(`${base}/knowledge`)
-      .then(r => r.ok ? r.json() : null)
-      .then(json => {
+    apiClient.fetchPath('/knowledge', { machineId })
+      .then((json: any) => {
         if (cancelled) return;
-        const items = (json?.data || []) as Array<{
+        const items = (json?.data || json || []) as Array<{
           id: string; title: string; type: string; updatedAt: string;
           sourceTimestamp?: string; sourceSessionId?: string;
           parts: Array<{ partId: string; title: string; summary: string }>;
@@ -300,23 +294,19 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoadingRecentKnowledge(false); });
     return () => { cancelled = true; };
-  }, [searchIncludeKnowledge]);
+  }, [searchIncludeKnowledge, apiClient, machineId]);
 
   // Knowledge search (parallel, non-blocking) — gated by searchIncludeKnowledge
   const doKnowledgeSearch = useCallback(async (q: string) => {
     if (!searchIncludeKnowledge) { setKnowledgeResults([]); return; }
     if (!q.trim()) { setKnowledgeResults([]); return; }
     try {
-      const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
-      const base = typeof window !== 'undefined' ? `http://${window.location.hostname}:${port}` : 'http://localhost:3100';
-      const res = await fetch(`${base}/knowledge/search?q=${encodeURIComponent(q)}`);
-      if (!res.ok) { setKnowledgeResults([]); return; }
-      const json = await res.json();
-      setKnowledgeResults(json.data || []);
+      const json = await apiClient.fetchPath(`/knowledge/search?q=${encodeURIComponent(q)}`, { machineId }) as any;
+      setKnowledgeResults(json?.data || json || []);
     } catch {
       setKnowledgeResults([]);
     }
-  }, [searchIncludeKnowledge]);
+  }, [searchIncludeKnowledge, apiClient, machineId]);
 
   // Milestone search on keystroke (debounced) — smart scope auto-escalates
   const doSearch = useCallback(async (q: string, s: Scope) => {
@@ -409,15 +399,13 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
     }
     let cancelled = false;
     setLoadingKnowledge(true);
-    const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
-    const base = typeof window !== 'undefined' ? `http://${window.location.hostname}:${port}` : 'http://localhost:3100';
     Promise.all([
-      fetch(`${base}/knowledge/${selectedKnowledgeId}`).then(r => r.json()),
-      fetch(`${base}/knowledge/${selectedKnowledgeId}/comments?includeAddressed=false`).then(r => r.json()),
-    ]).then(([kJson, cJson]) => {
+      apiClient.fetchPath(`/knowledge/${selectedKnowledgeId}`, { machineId }),
+      apiClient.fetchPath(`/knowledge/${selectedKnowledgeId}/comments?includeAddressed=false`, { machineId }),
+    ]).then(([kJson, cJson]: any[]) => {
       if (cancelled) return;
-      setKnowledgeDetail(kJson.data || null);
-      setKnowledgeComments(cJson.data || []);
+      setKnowledgeDetail(kJson?.data || kJson || null);
+      setKnowledgeComments(cJson?.data || cJson || []);
     }).catch(() => {
       if (!cancelled) {
         setKnowledgeDetail(null);
@@ -427,7 +415,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
       if (!cancelled) setLoadingKnowledge(false);
     });
     return () => { cancelled = true; };
-  }, [selectedKnowledgeId]);
+  }, [selectedKnowledgeId, apiClient, machineId]);
 
   // Scroll to knowledge part after detail loads
   useEffect(() => {

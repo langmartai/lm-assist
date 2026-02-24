@@ -1329,10 +1329,13 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
 
     async searchSessions(query, opts, machineId) {
       if (!machineId) throw new Error('Hub mode requires machineId');
-      return hubFetch(machineApi(machineId, '/session-search'), {
-        method: 'POST',
-        body: JSON.stringify({ query, ...opts }),
-      });
+      // Use GET with query params to avoid hub proxy stripping POST bodies
+      const params = new URLSearchParams({ query });
+      if (opts?.scope) params.set('scope', opts.scope);
+      if (opts?.limit) params.set('limit', String(opts.limit));
+      if (opts?.projectPath) params.set('projectPath', opts.projectPath);
+      if (opts?.directory) params.set('directory', opts.directory);
+      return hubFetch(machineApi(machineId, `/session-search?${params.toString()}`));
     },
 
     async searchSessionsAi(query, opts, machineId) {

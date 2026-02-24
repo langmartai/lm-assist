@@ -457,6 +457,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
 
     // GET /knowledge/:id — Get full document
     // ?machineId= — for remote knowledge, specify the machine that owns it
+    // ?include=comments — also return comments in the response (saves a round-trip through cloud proxy)
     {
       method: 'GET',
       pattern: /^\/knowledge\/(?<id>K\d+)$/,
@@ -465,6 +466,12 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
         const knowledge = store.getKnowledge(req.params.id, req.query.machineId || undefined);
         if (!knowledge) {
           return { success: false, error: 'Not found' };
+        }
+        // Optionally include comments in a single response
+        if (req.query.include === 'comments') {
+          const includeAddressed = req.query.includeAddressed === 'true';
+          const comments = store.getComments(req.params.id, includeAddressed);
+          return { success: true, data: { ...knowledge, comments } };
         }
         return { success: true, data: knowledge };
       },
