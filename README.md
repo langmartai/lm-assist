@@ -2,6 +2,8 @@
 
 Knowledge management, session inspector, and web terminal control for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Auto-build knowledge from your sessions and inject it as context. Inspect agents, tasks, teams, plans, and tool calls. Access and control all Claude Code terminals from any device via browser.
 
+[![Discord](https://img.shields.io/discord/1475647234669543558?logo=discord&label=Discord&color=5865F2)](https://discord.gg/xb2BNnk4)
+
 ### Install
 
 Start a new Claude Code session in the terminal and enter the following commands:
