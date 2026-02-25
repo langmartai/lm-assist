@@ -110,14 +110,14 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
             machineId: r.machineId || undefined,
           }));
 
-          // Filter orphaned vectors (knowledge deleted but vectors remain)
+          // Filter orphaned vectors and bad-reviewed knowledge
           const valid: any[] = merged.filter((r: any) => {
             const kId = (r.knowledgeId || r.id || '').split('.')[0];
             if (!kId) return false;
-            // For remote knowledge, look up with machineId
-            return r.machineId
-              ? !!knowledgeStore.getKnowledge(kId, r.machineId)
-              : !!knowledgeStore.getKnowledge(kId);
+            const knowledge = r.machineId
+              ? knowledgeStore.getKnowledge(kId, r.machineId)
+              : knowledgeStore.getKnowledge(kId);
+            return knowledge && knowledge.reviewRating !== 'bad';
           });
 
           // Content-match boost + supplementary knowledge scan
@@ -145,6 +145,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
             const injectionScore = Math.max(...valid.map((r: any) => r.score), 0.03);
             const allKnowledge = knowledgeStore.getAllKnowledge();
             for (const k of allKnowledge) {
+              if (k.reviewRating === 'bad') continue;
               for (const part of k.parts) {
                 if (existingIds.has(part.partId)) continue;
                 const haystack = [part.title, part.summary, part.content].join(' ').toLowerCase();

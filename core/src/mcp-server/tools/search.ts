@@ -287,7 +287,9 @@ async function handleHybridSearch(
   const resolvable = ranked.filter(r => {
     if (r.type === 'knowledge') {
       const kId = (r.knowledgeId || r.id || '').split('.')[0];
-      return kId ? !!knowledgeStore.getKnowledge(kId, r.machineId) : false;
+      if (!kId) return false;
+      const knowledge = knowledgeStore.getKnowledge(kId, r.machineId);
+      return knowledge && knowledge.reviewRating !== 'bad';
     }
     if (r.type === 'milestone') {
       return !!milestoneStore.getMilestoneById(r.id);
@@ -323,6 +325,7 @@ async function handleHybridSearch(
     const injectionScore = Math.max(...resolvable.map(r => r.finalScore), 0.05);
     const allKnowledge = knowledgeStore.getAllKnowledge();
     for (const k of allKnowledge) {
+      if (k.reviewRating === 'bad') continue;
       if (!isWithinScope(k.sourceTimestamp || k.createdAt, scope)) continue;
       if (project && k.project !== project) continue;
       if (typeFilter !== 'all' && typeFilter !== 'knowledge') continue;

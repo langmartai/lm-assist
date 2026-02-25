@@ -116,12 +116,14 @@ async function suggestContext(
       phase: r.phase as 1 | 2 | undefined,
     }));
 
-    // Filter out orphaned vectors (knowledge deleted but vectors remain)
+    // Filter out orphaned vectors and bad-reviewed knowledge
     const knowledgeStore = getKnowledgeStore();
     const validKnowledge = merged
       .filter(r => {
         const kId = (r.knowledgeId || r.id || '').split('.')[0];
-        return kId ? !!knowledgeStore.getKnowledge(kId) : false;
+        if (!kId) return false;
+        const knowledge = knowledgeStore.getKnowledge(kId);
+        return knowledge && knowledge.reviewRating !== 'bad';
       });
 
     // Content-match: boost existing results AND inject missing content matches
@@ -148,6 +150,7 @@ async function suggestContext(
       const injectionScore = Math.max(...validKnowledge.map(r => r.score), 0.03);
       const allKnowledge = knowledgeStore.getAllKnowledge();
       for (const k of allKnowledge) {
+        if (k.reviewRating === 'bad') continue;
         for (const part of k.parts) {
           if (existingIds.has(part.partId)) continue;
           const haystack = [part.title, part.summary, part.content].join(' ').toLowerCase();
