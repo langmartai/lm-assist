@@ -77,6 +77,8 @@ export interface FormatResult {
   type: KnowledgeType;
   parts: KnowledgePart[];
   sourceTimestamp?: string;
+  sourceLineIndex?: number;
+  sourceTurnIndex?: number;
 }
 
 /**

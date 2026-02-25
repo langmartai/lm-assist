@@ -266,6 +266,9 @@ export class KnowledgeGenerator {
         type: formatResult.type,
         parts,
         sourceTimestamp: formatResult.sourceTimestamp,
+        sourceIdentifier: identifierType,
+        sourceLineIndex: formatResult.sourceLineIndex,
+        sourceTurnIndex: formatResult.sourceTurnIndex,
       });
 
       if (!updated) {
@@ -357,6 +360,8 @@ export class KnowledgeGenerator {
           }
 
           if (allVectors.length > 0) {
+            // Delete existing knowledge vectors first to prevent unbounded growth
+            await vectra.deleteLocalByType('knowledge');
             await vectra.addVectors(allVectors);
             await vectra.rebuildFtsIndex();
             console.log(`[KnowledgeGenerator] Indexed ${allVectors.length} vectors from ${allIds.length} knowledge docs`);

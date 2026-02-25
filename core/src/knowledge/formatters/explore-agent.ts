@@ -54,6 +54,8 @@ export class ExploreAgentFormatter implements KnowledgeFormatter {
       type,
       parts,
       sourceTimestamp: agentData.completedAt,
+      sourceLineIndex: agentData.lineIndex,
+      sourceTurnIndex: agentData.turnIndex,
     };
   }
 
@@ -64,7 +66,7 @@ export class ExploreAgentFormatter implements KnowledgeFormatter {
     sessionId: string,
     agentId: string,
     project: string,
-  ): Promise<{ prompt: string; result: string; description?: string; completedAt?: string } | null> {
+  ): Promise<{ prompt: string; result: string; description?: string; completedAt?: string; lineIndex?: number; turnIndex?: number } | null> {
     const { getSessionReader } = require('../../session-reader');
     const { getSessionCache } = require('../../session-cache');
 
@@ -86,6 +88,8 @@ export class ExploreAgentFormatter implements KnowledgeFormatter {
           result: agent.result,
           description: agent.description,
           completedAt: agent.completedAt || agent.startedAt,
+          lineIndex: agent.lineIndex,
+          turnIndex: agent.turnIndex,
         };
       }
     }
