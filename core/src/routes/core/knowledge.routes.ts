@@ -884,6 +884,28 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // POST /knowledge/generate/validated — Generate knowledge from all validated identifications
+    // Body: { project, identifierType? }
+    {
+      method: 'POST',
+      pattern: /^\/knowledge\/generate\/validated$/,
+      handler: async (req) => {
+        const { project, identifierType } = req.body || {};
+        if (!project) {
+          return { success: false, error: 'project is required' };
+        }
+
+        try {
+          const { getKnowledgePipeline } = require('../../knowledge/pipeline');
+          const pipeline = getKnowledgePipeline();
+          const result = await pipeline.generateValidated(project, identifierType);
+          return { success: true, data: result };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
     // PUT /knowledge/comments/:commentId — Update comment state
     {
       method: 'PUT',
