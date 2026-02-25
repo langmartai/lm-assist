@@ -358,7 +358,7 @@ export default function SettingsPage() {
   const [projectPickerLoading, setProjectPickerLoading] = useState(false);
 
   // remote knowledge sync state
-  const [knowledgeSettings, setKnowledgeSettings] = useState<{ remoteSyncEnabled: boolean; syncIntervalMinutes: number; lastSyncTimestamps: Record<string, string> } | null>(null);
+  const [knowledgeSettings, setKnowledgeSettings] = useState<{ remoteSyncEnabled: boolean; syncIntervalMinutes: number; lastSyncTimestamps: Record<string, string>; reviewModel: 'haiku' | 'sonnet' | 'opus'; autoReview: boolean; autoExploreGeneration: boolean; autoGenericDiscovery: boolean; genericValidationModel: 'haiku' | 'sonnet' | 'opus' } | null>(null);
   const [remoteSyncStatus, setRemoteSyncStatus] = useState<{ status: string; machinesChecked: number; machinesMatched: number; entriesSynced: number; entriesSkipped: number; entriesFlaggedStale: number; errors: string[]; startedAt: string | null; completedAt: string | null } | null>(null);
   const [isRemoteSyncing, setIsRemoteSyncing] = useState(false);
 
@@ -4822,15 +4822,172 @@ export default function SettingsPage() {
                 {activeTab === 'data-loading' && (
                 <SectionCard title="Knowledge Processing" icon={Code2}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {/* Auto Processing Toggle */}
-                    {milestoneSettings && (
+                    {/* Auto Explore Agent Knowledge Toggle */}
+                    {knowledgeSettings && (
                       <ToggleRow
-                        label="Auto knowledge processing"
+                        label="Auto explore agent knowledge"
                         description="Automatically generate knowledge from completed explore agents."
-                        checked={milestoneSettings.autoKnowledge === true}
+                        checked={knowledgeSettings.autoExploreGeneration === true}
                         onChange={(checked) => {
-                          setMilestoneSettings({ ...milestoneSettings, autoKnowledge: checked });
-                          saveMilestoneSettings({ autoKnowledge: checked });
+                          setKnowledgeSettings({ ...knowledgeSettings, autoExploreGeneration: checked });
+                          fetch(tierAgentUrl + '/knowledge-settings', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ autoExploreGeneration: checked }),
+                          }).catch(() => {});
+                          // Backward compat: sync with legacy milestone autoKnowledge setting
+                          if (milestoneSettings) {
+                            setMilestoneSettings({ ...milestoneSettings, autoKnowledge: checked });
+                            saveMilestoneSettings({ autoKnowledge: checked });
+                          }
+                        }}
+                      />
+                    )}
+
+                    {/* Auto Generic Content Discovery Toggle */}
+                    {knowledgeSettings && (
+                      <ToggleRow
+                        label="Auto generic content discovery"
+                        description="Automatically discover knowledge from any session message using LLM validation. Uses API tokens."
+                        checked={knowledgeSettings.autoGenericDiscovery === true}
+                        onChange={(checked) => {
+                          setKnowledgeSettings({ ...knowledgeSettings, autoGenericDiscovery: checked });
+                          fetch(tierAgentUrl + '/knowledge-settings', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ autoGenericDiscovery: checked }),
+                          }).catch(() => {});
+                        }}
+                      />
+                    )}
+
+                    {/* Validation Model Selector (shown when generic discovery enabled) */}
+                    {knowledgeSettings && knowledgeSettings.autoGenericDiscovery && (
+                    <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--color-text-secondary)' }}>Validation Model</div>
+                    {([
+                      { value: 'haiku' as const, label: 'Haiku', desc: 'Fast and cheap. May pass lower quality content.' },
+                      { value: 'sonnet' as const, label: 'Sonnet', desc: 'Balanced cost and quality. Recommended.' },
+                      { value: 'opus' as const, label: 'Opus', desc: 'Highest quality. Strictest validation, highest cost.' },
+                    ]).map((opt) => (
+                      <button
+                        key={opt.value}
+                        onClick={() => {
+                          setKnowledgeSettings({ ...knowledgeSettings, genericValidationModel: opt.value });
+                          fetch(tierAgentUrl + '/knowledge-settings', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ genericValidationModel: opt.value }),
+                          }).catch(() => {});
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: 10,
+                          padding: '8px 10px',
+                          borderRadius: 6,
+                          border: knowledgeSettings.genericValidationModel === opt.value
+                            ? '1px solid var(--color-accent)'
+                            : '1px solid var(--color-border)',
+                          background: knowledgeSettings.genericValidationModel === opt.value
+                            ? 'rgba(var(--color-accent-rgb, 59,130,246), 0.08)'
+                            : 'transparent',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                        }}
+                      >
+                        <div style={{
+                          width: 14,
+                          height: 14,
+                          borderRadius: '50%',
+                          border: knowledgeSettings.genericValidationModel === opt.value
+                            ? '4px solid var(--color-accent)'
+                            : '2px solid var(--color-text-tertiary)',
+                          flexShrink: 0,
+                          marginTop: 1,
+                        }} />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--color-text-primary)' }}>{opt.label}</div>
+                          <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.4 }}>{opt.desc}</div>
+                        </div>
+                      </button>
+                    ))}
+                      <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5, margin: 0 }}>
+                        Model used for LLM validation of generic content candidates. Determines which session messages qualify as knowledge.
+                      </p>
+                    </div>
+                    )}
+
+                    {/* Review Model Selector */}
+                    {knowledgeSettings && (
+                    <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--color-text-secondary)' }}>Review Model</div>
+                    {([
+                      { value: 'haiku' as const, label: 'Haiku', desc: 'Fast and cost-effective. Lenient quality ratings.' },
+                      { value: 'sonnet' as const, label: 'Sonnet', desc: 'Balanced quality. Moderate review strictness.' },
+                      { value: 'opus' as const, label: 'Opus', desc: 'Highest quality. Strict standalone knowledge criteria.' },
+                    ]).map((opt) => (
+                      <button
+                        key={opt.value}
+                        onClick={() => {
+                          setKnowledgeSettings({ ...knowledgeSettings, reviewModel: opt.value });
+                          fetch(tierAgentUrl + '/knowledge-settings', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ reviewModel: opt.value }),
+                          }).catch(() => {});
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: 10,
+                          padding: '8px 10px',
+                          borderRadius: 6,
+                          border: knowledgeSettings.reviewModel === opt.value
+                            ? '1px solid var(--color-accent)'
+                            : '1px solid var(--color-border)',
+                          background: knowledgeSettings.reviewModel === opt.value
+                            ? 'rgba(var(--color-accent-rgb, 59,130,246), 0.08)'
+                            : 'transparent',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                        }}
+                      >
+                        <div style={{
+                          width: 14,
+                          height: 14,
+                          borderRadius: '50%',
+                          border: knowledgeSettings.reviewModel === opt.value
+                            ? '4px solid var(--color-accent)'
+                            : '2px solid var(--color-text-tertiary)',
+                          flexShrink: 0,
+                          marginTop: 1,
+                        }} />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--color-text-primary)' }}>{opt.label}</div>
+                          <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.4 }}>{opt.desc}</div>
+                        </div>
+                      </button>
+                    ))}
+                      <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5, margin: 0 }}>
+                        Model used for LLM quality review of knowledge entries. Opus is strictest (only standalone references pass), Haiku is most lenient.
+                      </p>
+                    </div>
+                    )}
+
+                    {/* Auto Review Toggle */}
+                    {knowledgeSettings && (
+                      <ToggleRow
+                        label="Auto review"
+                        description="Automatically run LLM quality review after knowledge generation completes."
+                        checked={knowledgeSettings.autoReview === true}
+                        onChange={(checked) => {
+                          setKnowledgeSettings({ ...knowledgeSettings, autoReview: checked });
+                          fetch(tierAgentUrl + '/knowledge-settings', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ autoReview: checked }),
+                          }).catch(() => {});
                         }}
                       />
                     )}

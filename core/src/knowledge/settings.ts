@@ -17,6 +17,11 @@ export interface KnowledgeSettings {
   remoteSyncEnabled: boolean;                        // master toggle (default: false)
   syncIntervalMinutes: number;                       // 0 = manual only (default: 0)
   lastSyncTimestamps: Record<string, string>;        // machineId → ISO timestamp
+  reviewModel: 'haiku' | 'sonnet' | 'opus';         // model for LLM quality review (default: opus)
+  autoReview: boolean;                               // auto-trigger LLM review after generation (default: false)
+  autoExploreGeneration: boolean;                    // auto-generate from explore agents (default: true)
+  autoGenericDiscovery: boolean;                     // auto-discover generic content via LLM (default: false, costs tokens)
+  genericValidationModel: 'haiku' | 'sonnet' | 'opus'; // model for generic content validation (default: sonnet)
 }
 
 // ── Constants ──────────────────────────────────────────
@@ -28,6 +33,11 @@ const DEFAULTS: KnowledgeSettings = {
   remoteSyncEnabled: false,
   syncIntervalMinutes: 0,
   lastSyncTimestamps: {},
+  reviewModel: 'opus',
+  autoReview: false,
+  autoExploreGeneration: true,
+  autoGenericDiscovery: false,
+  genericValidationModel: 'sonnet',
 };
 
 // ── Mtime Cache ──────────────────────────────────────────
@@ -65,6 +75,11 @@ export function getKnowledgeSettings(): KnowledgeSettings {
       lastSyncTimestamps: typeof data.lastSyncTimestamps === 'object' && data.lastSyncTimestamps !== null
         ? data.lastSyncTimestamps
         : DEFAULTS.lastSyncTimestamps,
+      reviewModel: ['haiku', 'sonnet', 'opus'].includes(data.reviewModel) ? data.reviewModel : DEFAULTS.reviewModel,
+      autoReview: typeof data.autoReview === 'boolean' ? data.autoReview : DEFAULTS.autoReview,
+      autoExploreGeneration: typeof data.autoExploreGeneration === 'boolean' ? data.autoExploreGeneration : DEFAULTS.autoExploreGeneration,
+      autoGenericDiscovery: typeof data.autoGenericDiscovery === 'boolean' ? data.autoGenericDiscovery : DEFAULTS.autoGenericDiscovery,
+      genericValidationModel: ['haiku', 'sonnet', 'opus'].includes(data.genericValidationModel) ? data.genericValidationModel : DEFAULTS.genericValidationModel,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -88,6 +103,15 @@ export function saveKnowledgeSettings(partial: Partial<KnowledgeSettings>): Know
     lastSyncTimestamps: partial.lastSyncTimestamps !== undefined
       ? { ...current.lastSyncTimestamps, ...partial.lastSyncTimestamps }
       : current.lastSyncTimestamps,
+    reviewModel: partial.reviewModel && ['haiku', 'sonnet', 'opus'].includes(partial.reviewModel)
+      ? partial.reviewModel
+      : current.reviewModel,
+    autoReview: typeof partial.autoReview === 'boolean' ? partial.autoReview : current.autoReview,
+    autoExploreGeneration: typeof partial.autoExploreGeneration === 'boolean' ? partial.autoExploreGeneration : current.autoExploreGeneration,
+    autoGenericDiscovery: typeof partial.autoGenericDiscovery === 'boolean' ? partial.autoGenericDiscovery : current.autoGenericDiscovery,
+    genericValidationModel: partial.genericValidationModel && ['haiku', 'sonnet', 'opus'].includes(partial.genericValidationModel)
+      ? partial.genericValidationModel
+      : current.genericValidationModel,
   };
 
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(merged, null, 2));

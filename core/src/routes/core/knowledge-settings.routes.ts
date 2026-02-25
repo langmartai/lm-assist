@@ -33,6 +33,11 @@ export function createKnowledgeSettingsRoutes(_ctx: RouteContext): RouteHandler[
           remoteSyncEnabled: body.remoteSyncEnabled,
           syncIntervalMinutes: body.syncIntervalMinutes,
           lastSyncTimestamps: body.lastSyncTimestamps,
+          reviewModel: body.reviewModel,
+          autoReview: body.autoReview,
+          autoExploreGeneration: body.autoExploreGeneration,
+          autoGenericDiscovery: body.autoGenericDiscovery,
+          genericValidationModel: body.genericValidationModel,
         });
 
         return { success: true, data: updated };

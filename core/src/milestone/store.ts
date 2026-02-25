@@ -333,11 +333,23 @@ export function handleSessionChangeForMilestones(
     }
   }
 
-  // Auto knowledge generation from explore agents (independent of milestone enabled)
-  // Debounced: schedule a single generation run after a quiet period to avoid
-  // spamming "Generation already in progress" errors during bulk milestone scans.
-  if (settings.autoKnowledge && cacheData.cwd) {
-    scheduleKnowledgeGeneration(cacheData.cwd, logPrefix);
+  // Auto knowledge generation (independent of milestone enabled)
+  // Debounced: schedule generation runs after quiet periods to avoid
+  // spamming "already in progress" errors during bulk milestone scans.
+  if (cacheData.cwd) {
+    const { getKnowledgeSettings } = require('../knowledge/settings');
+    const knowledgeSettings = getKnowledgeSettings();
+
+    // V1: Explore agent knowledge (2s debounce)
+    // Honor both the new autoExploreGeneration toggle and legacy autoKnowledge for backward compat
+    if (knowledgeSettings.autoExploreGeneration || settings.autoKnowledge) {
+      scheduleKnowledgeGeneration(cacheData.cwd, logPrefix);
+    }
+
+    // V2: Generic content discovery via LLM (30s debounce, opt-in)
+    if (knowledgeSettings.autoGenericDiscovery) {
+      scheduleGenericKnowledgeGeneration(cacheData.cwd, logPrefix, knowledgeSettings.genericValidationModel);
+    }
   }
 }
 
@@ -377,4 +389,55 @@ function scheduleKnowledgeGeneration(cwd: string, logPrefix: string): void {
       }
     }
   }, 2000);
+}
+
+// ─── Generic content (V2) knowledge generation deduplication ──────────────────
+// Separate debounce with 30s delay — LLM calls are expensive, so batch aggressively.
+let _genericGenTimer: ReturnType<typeof setTimeout> | null = null;
+const _genericGenPending = new Map<string, { logPrefix: string; model: string }>(); // cwd → {logPrefix, model}
+let _genericGenRunning = false;
+
+function scheduleGenericKnowledgeGeneration(cwd: string, logPrefix: string, model: string): void {
+  _genericGenPending.set(cwd, { logPrefix, model });
+
+  if (_genericGenTimer) clearTimeout(_genericGenTimer);
+  _genericGenTimer = setTimeout(async () => {
+    _genericGenTimer = null;
+    if (_genericGenRunning) return; // skip if already running
+
+    const pending = new Map(_genericGenPending);
+    _genericGenPending.clear();
+    _genericGenRunning = true;
+
+    try {
+      for (const [pendingCwd, { logPrefix: prefix, model: validationModel }] of pending) {
+        try {
+          const { getKnowledgeValidator } = require('../knowledge/validator');
+          const validator = getKnowledgeValidator();
+
+          // Skip if validator is already busy
+          if (validator.getStatus().status !== 'idle') continue;
+
+          console.log(`${prefix} Auto-discovering generic knowledge for ${pendingCwd} (model: ${validationModel})`);
+          const result = await validator.discoverAndValidate(pendingCwd, validationModel);
+
+          if (result.validated > 0) {
+            // Generate knowledge entries from validated identifications
+            const { getKnowledgePipeline } = require('../knowledge/pipeline');
+            const pipeline = getKnowledgePipeline();
+            const genResult = await pipeline.generateValidated(pendingCwd, 'generic-content');
+            console.log(`${prefix} Generic knowledge: ${result.discovered} discovered, ${result.validated} validated, ${result.rejected} rejected, ${genResult.generated} generated`);
+          } else if (result.discovered > 0) {
+            console.log(`${prefix} Generic knowledge: ${result.discovered} discovered, none validated (all rejected)`);
+          }
+        } catch (err: any) {
+          if (!err?.message?.includes('already in progress')) {
+            console.warn(`${prefix} Auto generic knowledge error:`, err);
+          }
+        }
+      }
+    } finally {
+      _genericGenRunning = false;
+    }
+  }, 30000);
 }
