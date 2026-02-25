@@ -50,8 +50,8 @@ export class GenericContentIdentifier implements KnowledgeIdentifier {
 
             const scoreResult = scoreKnowledgeCandidate(response.text);
 
-            // Only auto-discover candidates and auto-accepts
-            if (scoreResult.classification === 'reject' || scoreResult.classification === 'low-confidence') {
+            // Only skip hard rejects — let LLM validate everything else
+            if (scoreResult.classification === 'reject') {
               continue;
             }
 
