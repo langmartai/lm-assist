@@ -847,6 +847,43 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // POST /knowledge/validate/generic — Discover + LLM-validate generic content candidates
+    // Body: { project, model? } — model defaults to 'haiku'
+    {
+      method: 'POST',
+      pattern: /^\/knowledge\/validate\/generic$/,
+      handler: async (req) => {
+        const { project, model } = req.body || {};
+        if (!project) {
+          return { success: false, error: 'project is required' };
+        }
+
+        try {
+          const { getKnowledgeValidator } = require('../../knowledge/validator');
+          const validator = getKnowledgeValidator();
+          const result = await validator.discoverAndValidate(project, model || 'haiku');
+          return { success: true, data: result };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
+    // GET /knowledge/validate/status — Get validator status
+    {
+      method: 'GET',
+      pattern: /^\/knowledge\/validate\/status$/,
+      handler: async () => {
+        try {
+          const { getKnowledgeValidator } = require('../../knowledge/validator');
+          const validator = getKnowledgeValidator();
+          return { success: true, data: validator.getStatus() };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
     // PUT /knowledge/comments/:commentId — Update comment state
     {
       method: 'PUT',

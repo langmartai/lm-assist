@@ -34,9 +34,14 @@ export interface IdentificationResult {
   score?: number;                 // Heuristic score (-11 to +12)
   classification?: string;        // 'auto-accept' | 'candidate' | 'low-confidence' | 'reject'
 
+  // LLM validation (Phase 2)
+  validatedAt?: string;           // When LLM validation was performed
+  validationReason?: string;      // LLM's reason for accept/reject
+  suggestedTitle?: string;        // LLM-suggested title (if validated)
+
   // Lifecycle tracking
   knowledgeId?: string;           // Set after knowledge is generated from this identification
-  status: 'candidate' | 'generated' | 'skipped'; // Lifecycle state
+  status: 'candidate' | 'validated' | 'generated' | 'skipped'; // Lifecycle state
 }
 
 /**

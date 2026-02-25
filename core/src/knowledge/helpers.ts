@@ -293,6 +293,7 @@ export interface KnowledgeCandidateScore {
 
 const NARRATION_OPENER_RE = /^(?:Now (?:let me|I(?:'ll| need to| will| also| add)|also )|Let me (?:read|check|verify|search|review|look|also|do|now)|I(?:'ll| need to| see| will) (?:update|add|check|search|find|now))/i;
 const BOILERPLATE_RE = /^(?:Done\.|Cloned successfully|Website created|Archive complete|Repository created|Created the|Good, branch created|All working\.)/i;
+const COMPACT_MESSAGE_RE = /^This session is being continued from a previous conversation that ran out of context/i;
 const INCOMPLETE_RE = /(?:Let me (?:check|verify|also|now)|Actually wait|Actually,\s+looking at|I need to (?:also|check|verify))/gi;
 const DELIVERABLE_RE = /^(?:I've (?:completed|finished|created|set up|updated)|The (?:website|project|repository|implementation) (?:is|has been)|Here(?:'s| is) (?:the|what|a summary of what))/i;
 const SELF_CORRECTION_RE = /^Actually (?:wait|no|I (?:realize|see|notice))/im;
@@ -361,6 +362,15 @@ export function scoreKnowledgeCandidate(text: string): KnowledgeCandidateScore {
       score: -10, classification: 'reject', hardRule: 'hard-reject',
       reason: 'Completion boilerplate',
       signals: [{ rule: 'HR4-boilerplate', delta: -10 }],
+    };
+  }
+
+  // HR5: Claude Code compact/compaction summary message
+  if (COMPACT_MESSAGE_RE.test(trimmed)) {
+    return {
+      score: -10, classification: 'reject', hardRule: 'hard-reject',
+      reason: 'Claude Code compact summary message',
+      signals: [{ rule: 'HR5-compact-message', delta: -10 }],
     };
   }
 
