@@ -133,6 +133,7 @@ export class HubClient extends EventEmitter {
         machineId: this.config.machineId,
         gatewayId: this.config.gatewayId,
         localApiPort: this.options.localApiPort,
+        hostname: this.config.hostname,
       });
 
       // Build service routes from options

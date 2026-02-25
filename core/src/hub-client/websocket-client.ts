@@ -23,6 +23,8 @@ export interface WebSocketClientOptions {
   gatewayId: string | null;
   /** Local API port for relay */
   localApiPort: number;
+  /** Display hostname (may include dev tag) */
+  hostname?: string;
 }
 
 export class WebSocketClient extends EventEmitter {
@@ -227,7 +229,7 @@ export class WebSocketClient extends EventEmitter {
         os_release: os.release(),
         node_version: process.version,
         arch: os.arch(),
-        hostname: os.hostname(),
+        hostname: this.options.hostname || os.hostname(),
         is_container: this.isInContainer(),
         run_mode: 'standalone',
         local_ip: this.getLocalIp(),
