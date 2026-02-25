@@ -930,5 +930,179 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
         return { success: true };
       },
     },
+
+    // POST /knowledge/review/llm — LLM quality review of existing knowledge
+    // Reviews unreviewed entries in batches, stores rating on each Knowledge doc.
+    // Body: { model?: 'opus'|'sonnet', limit?: number, project?: string, forceReview?: boolean }
+    {
+      method: 'POST',
+      pattern: /^\/knowledge\/review\/llm$/,
+      handler: async (req) => {
+        const { model = 'opus', limit = 50, project, forceReview = false } = req.body || {};
+        const store = getKnowledgeStore();
+        const { getDataDir } = require('../../utils/path-utils');
+
+        // Get all active local knowledge entries (skip remote — reviewed on source machine)
+        const all = store.getAllKnowledge(project, undefined, 'active', 'local');
+
+        // Filter to unreviewed (or all if forceReview)
+        const toReview = forceReview
+          ? all.slice(0, limit)
+          : all.filter(k => !k.reviewedAt).slice(0, limit);
+
+        if (toReview.length === 0) {
+          return {
+            success: true,
+            data: {
+              reviewed: 0,
+              total: all.length,
+              alreadyReviewed: all.filter(k => k.reviewedAt).length,
+              message: 'No unreviewed entries found',
+            },
+          };
+        }
+
+        // Build previews (first 1500 chars of content)
+        const previews = toReview.map(k => {
+          const content = k.parts.map(p => {
+            return (p.title ? `### ${p.title}\n` : '') + p.summary + (p.content ? '\n' + p.content : '');
+          }).join('\n\n').slice(0, 1500);
+          return { id: k.id, title: k.title, type: k.type, partsCount: k.parts.length, content };
+        });
+
+        // Build LLM prompt
+        const systemPrompt = `You are a knowledge quality reviewer. You evaluate whether knowledge documents extracted from coding sessions contain genuinely useful, standalone, reusable knowledge.
+
+Rate each entry as:
+- GOOD: Standalone reference material. Someone reading this 6 months later with no context would learn something useful about how a system works.
+- BORDERLINE: Contains some useful info but mixed with task-specific context, or too shallow to be genuinely useful standalone.
+- BAD: Not standalone knowledge. Task report, file listing without explanation, exploration log, debugging notes, or content that only makes sense in original conversation context.
+
+Key criteria:
+- Does it explain HOW something works, not just WHERE files are?
+- Is there actual analysis/insight, or just a file/component inventory?
+- Would this be useful reference material for a new developer?
+- "Explore X" titles that just list file locations without explaining behavior = BAD
+- Architecture analysis with data flows and component interactions = GOOD
+
+Output ONLY valid JSON, no markdown.`;
+
+        const promptLines = [
+          'Review each knowledge entry below. Rate GOOD, BORDERLINE, or BAD.',
+          '',
+          'Respond with JSON array: [{"id": "K001", "rating": "GOOD|BORDERLINE|BAD", "reason": "one sentence"}]',
+          '',
+        ];
+
+        for (const p of previews) {
+          promptLines.push(`## ${p.id}: ${p.title} (type=${p.type}, parts=${p.partsCount})`);
+          promptLines.push(p.content);
+          promptLines.push('');
+        }
+        promptLines.push('Respond with JSON array only:');
+
+        const prompt = promptLines.join('\n');
+
+        try {
+          const port = process.env.API_PORT || '3200';
+          const apiBaseUrl = `http://localhost:${port}`;
+
+          const response = await fetch(`${apiBaseUrl}/agent/execute`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt,
+              systemPrompt,
+              model,
+              maxTurns: 1,
+              permissionMode: 'bypassPermissions',
+              cwd: getDataDir(),
+              env: { CLAUDE_CODE_REMOTE: 'true' },
+              disallowedTools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit'],
+              settingSources: [],
+            }),
+            signal: AbortSignal.timeout(600_000),
+          });
+
+          if (!response.ok) {
+            return { success: false, error: `Agent API error: ${response.status}` };
+          }
+
+          const data = await response.json() as any;
+          const result = data.data || data;
+          if (!result.success) {
+            return { success: false, error: `Agent execution failed: ${result.error}` };
+          }
+
+          const text = result.result || '';
+          const cleaned = text.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim();
+          const parsed = JSON.parse(cleaned);
+          const arr = Array.isArray(parsed) ? parsed : [parsed];
+
+          // Update each knowledge entry with review results
+          const now = new Date().toISOString();
+          const counts = { good: 0, borderline: 0, bad: 0 };
+
+          for (const entry of arr) {
+            if (!entry.id || !entry.rating) continue;
+            const rating = entry.rating.toLowerCase() as 'good' | 'borderline' | 'bad';
+            if (!['good', 'borderline', 'bad'].includes(rating)) continue;
+
+            counts[rating]++;
+            store.updateKnowledge(entry.id, {
+              reviewedAt: now,
+              reviewRating: rating,
+              reviewReason: String(entry.reason || ''),
+              reviewModel: model,
+            });
+          }
+
+          return {
+            success: true,
+            data: {
+              reviewed: arr.length,
+              good: counts.good,
+              borderline: counts.borderline,
+              bad: counts.bad,
+              total: all.length,
+              alreadyReviewed: all.filter(k => k.reviewedAt).length,
+              model,
+            },
+          };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
+    // GET /knowledge/review/llm/status — Show review coverage stats
+    {
+      method: 'GET',
+      pattern: /^\/knowledge\/review\/llm\/status$/,
+      handler: async (req) => {
+        const store = getKnowledgeStore();
+        const project = typeof req.query?.project === 'string' ? req.query.project : undefined;
+        // Only count local entries (remote entries are reviewed on their source machine)
+        const all = store.getAllKnowledge(project, undefined, 'active', 'local');
+
+        const reviewed = all.filter(k => k.reviewedAt);
+        const unreviewed = all.filter(k => !k.reviewedAt);
+        const byRating = { good: 0, borderline: 0, bad: 0, unreviewed: unreviewed.length };
+
+        for (const k of reviewed) {
+          if (k.reviewRating) byRating[k.reviewRating]++;
+        }
+
+        return {
+          success: true,
+          data: {
+            total: all.length,
+            reviewed: reviewed.length,
+            unreviewed: unreviewed.length,
+            ratings: byRating,
+          },
+        };
+      },
+    },
   ];
 }

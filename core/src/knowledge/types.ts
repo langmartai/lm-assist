@@ -25,6 +25,11 @@ export interface Knowledge {
   machineId?: string;            // Source machine ID (for remote knowledge)
   machineHostname?: string;      // Source hostname (for remote knowledge)
   machineOS?: string;            // Source OS platform (for remote knowledge)
+  // LLM review tracking
+  reviewedAt?: string;           // When this was last reviewed by LLM
+  reviewRating?: 'good' | 'borderline' | 'bad'; // LLM quality rating
+  reviewReason?: string;         // One-sentence reason for rating
+  reviewModel?: string;          // Model used for review (e.g. 'opus', 'sonnet')
 }
 
 export interface KnowledgePart {
@@ -74,6 +79,10 @@ export interface KnowledgeIndex {
     machineId?: string;
     machineHostname?: string;
     machineOS?: string;
+    reviewedAt?: string;
+    reviewRating?: 'good' | 'borderline' | 'bad';
+    reviewReason?: string;
+    reviewModel?: string;
   }>;
   nextId: number;
   lastUpdated: number;

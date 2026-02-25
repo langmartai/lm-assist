@@ -137,6 +137,10 @@ export class KnowledgeStore {
       machineId: knowledge.machineId,
       machineHostname: knowledge.machineHostname,
       machineOS: knowledge.machineOS,
+      reviewedAt: knowledge.reviewedAt,
+      reviewRating: knowledge.reviewRating,
+      reviewReason: knowledge.reviewReason,
+      reviewModel: knowledge.reviewModel,
     };
     index.lastUpdated = Date.now();
     this.saveIndex();
@@ -404,7 +408,7 @@ export class KnowledgeStore {
   /**
    * Update an existing knowledge document.
    */
-  updateKnowledge(id: string, updates: Partial<Pick<Knowledge, 'title' | 'type' | 'project' | 'status' | 'parts' | 'sourceSessionId' | 'sourceAgentId' | 'sourceTimestamp' | 'sourceIdentifier' | 'sourceLineIndex' | 'sourceTurnIndex'>>): Knowledge | null {
+  updateKnowledge(id: string, updates: Partial<Pick<Knowledge, 'title' | 'type' | 'project' | 'status' | 'parts' | 'sourceSessionId' | 'sourceAgentId' | 'sourceTimestamp' | 'sourceIdentifier' | 'sourceLineIndex' | 'sourceTurnIndex' | 'reviewedAt' | 'reviewRating' | 'reviewReason' | 'reviewModel'>>): Knowledge | null {
     const existing = this.getKnowledge(id);
     if (!existing) return null;
 
@@ -422,6 +426,10 @@ export class KnowledgeStore {
     if (updates.sourceIdentifier !== undefined) updated.sourceIdentifier = updates.sourceIdentifier;
     if (updates.sourceLineIndex !== undefined) updated.sourceLineIndex = updates.sourceLineIndex;
     if (updates.sourceTurnIndex !== undefined) updated.sourceTurnIndex = updates.sourceTurnIndex;
+    if (updates.reviewedAt !== undefined) updated.reviewedAt = updates.reviewedAt;
+    if (updates.reviewRating !== undefined) updated.reviewRating = updates.reviewRating;
+    if (updates.reviewReason !== undefined) updated.reviewReason = updates.reviewReason;
+    if (updates.reviewModel !== undefined) updated.reviewModel = updates.reviewModel;
     updated.updatedAt = new Date().toISOString();
 
     this.saveKnowledge(updated);

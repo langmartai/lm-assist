@@ -42,6 +42,10 @@ interface Frontmatter {
   machineId?: string;
   machineHostname?: string;
   machineOS?: string;
+  reviewedAt?: string;
+  reviewRating?: 'good' | 'borderline' | 'bad';
+  reviewReason?: string;
+  reviewModel?: string;
 }
 
 function parseFrontmatter(raw: string): Frontmatter | null {
@@ -82,6 +86,10 @@ function parseFrontmatter(raw: string): Frontmatter | null {
     machineId: fm.machineId || undefined,
     machineHostname: fm.machineHostname || undefined,
     machineOS: fm.machineOS || undefined,
+    reviewedAt: fm.reviewedAt || undefined,
+    reviewRating: (['good', 'borderline', 'bad'].includes(fm.reviewRating as string) ? fm.reviewRating : undefined) as Frontmatter['reviewRating'],
+    reviewReason: fm.reviewReason || undefined,
+    reviewModel: fm.reviewModel || undefined,
   };
 }
 
@@ -106,6 +114,10 @@ function renderFrontmatter(k: Knowledge): string {
   if (k.machineId) lines.push(`machineId: ${k.machineId}`);
   if (k.machineHostname) lines.push(`machineHostname: ${k.machineHostname}`);
   if (k.machineOS) lines.push(`machineOS: ${k.machineOS}`);
+  if (k.reviewedAt) lines.push(`reviewedAt: ${k.reviewedAt}`);
+  if (k.reviewRating) lines.push(`reviewRating: ${k.reviewRating}`);
+  if (k.reviewReason) lines.push(`reviewReason: "${k.reviewReason.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+  if (k.reviewModel) lines.push(`reviewModel: ${k.reviewModel}`);
   lines.push('---');
   return lines.join('\n');
 }
@@ -216,6 +228,10 @@ export function parseKnowledgeMd(mdContent: string): Knowledge | null {
     machineId: frontmatter.machineId,
     machineHostname: frontmatter.machineHostname,
     machineOS: frontmatter.machineOS,
+    reviewedAt: frontmatter.reviewedAt,
+    reviewRating: frontmatter.reviewRating,
+    reviewReason: frontmatter.reviewReason,
+    reviewModel: frontmatter.reviewModel,
   };
 }
 
