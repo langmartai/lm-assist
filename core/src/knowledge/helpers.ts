@@ -274,3 +274,268 @@ export function detectType(title: string, parts: KnowledgePart[]): KnowledgeType
 
   return bestType;
 }
+
+// ─── Knowledge Candidate Scoring ──────────────────────────────────────
+
+export interface CandidateSignal {
+  rule: string;
+  delta: number;
+  match?: string;
+}
+
+export interface KnowledgeCandidateScore {
+  score: number;
+  classification: 'auto-accept' | 'candidate' | 'low-confidence' | 'reject';
+  hardRule: 'hard-accept' | 'hard-reject' | null;
+  reason: string;
+  signals: CandidateSignal[];
+}
+
+const NARRATION_OPENER_RE = /^(?:Now (?:let me|I(?:'ll| need to| will| also| add)|also )|Let me (?:read|check|verify|search|review|look|also|do|now)|I(?:'ll| need to| see| will) (?:update|add|check|search|find|now))/i;
+const BOILERPLATE_RE = /^(?:Done\.|Cloned successfully|Website created|Archive complete|Repository created|Created the|Good, branch created|All working\.)/i;
+const INCOMPLETE_RE = /(?:Let me (?:check|verify|also|now)|Actually wait|Actually,\s+looking at|I need to (?:also|check|verify))/gi;
+const DELIVERABLE_RE = /^(?:I've (?:completed|finished|created|set up|updated)|The (?:website|project|repository|implementation) (?:is|has been)|Here(?:'s| is) (?:the|what|a summary of what))/i;
+const SELF_CORRECTION_RE = /^Actually (?:wait|no|I (?:realize|see|notice))/im;
+const CANCEL_RE = /\b(?:never mind|scratch that|ignore (?:that|this))\b/i;
+const ANALYSIS_PATTERNS = [
+  /\bkey findings?\b/i,
+  /\broot cause\b/i,
+  /\bissues?\s+(?:found|identified|discovered)\b/i,
+  /\bbugs?\s+(?:found|identified|discovered)\b/i,
+  /\banalysis\b/i,
+  /\bcomparison\b/i,
+  /\binvestigation\b/i,
+  /\bsummary of (?:changes|findings|implementation)\b/i,
+  /\bimplementation (?:summary|details|overview)\b/i,
+  /\barchitectur(?:e|al)\s+(?:overview|analysis|review)\b/i,
+];
+
+/**
+ * Score an assistant message for knowledge candidacy.
+ *
+ * Applies hard rules first (instant accept/reject), then soft scoring
+ * from structural, semantic, and negative signals.
+ *
+ * Score range: -11 to +12
+ * Thresholds: >= 8 auto-accept, 5-7 candidate, 1-4 low-confidence, <= 0 reject
+ * Only significant, standalone content should pass — reject tool narration,
+ * task delivery, debugging-in-progress, and short messages.
+ */
+export function scoreKnowledgeCandidate(text: string): KnowledgeCandidateScore {
+  const trimmed = text.trim();
+  const len = trimmed.length;
+
+  // ─── HARD REJECT RULES ───────────────────────────────────────
+
+  // HR1: Minimum length — messages under 500 chars are almost never knowledge
+  if (len < 500) {
+    return {
+      score: -10, classification: 'reject', hardRule: 'hard-reject',
+      reason: `Too short (${len} chars, minimum 500)`,
+      signals: [{ rule: 'HR1-min-length', delta: -10 }],
+    };
+  }
+
+  // HR2: Execution narration opener (hard reject only if < 800 chars)
+  if (NARRATION_OPENER_RE.test(trimmed) && len < 800) {
+    return {
+      score: -10, classification: 'reject', hardRule: 'hard-reject',
+      reason: 'Execution narration opener under 800 chars',
+      signals: [{ rule: 'HR2-narration-opener', delta: -10 }],
+    };
+  }
+
+  // HR3: Few lines with little content
+  const nonEmptyLines = trimmed.split('\n').filter(l => l.trim().length > 0);
+  if (nonEmptyLines.length <= 3 && len < 600) {
+    return {
+      score: -10, classification: 'reject', hardRule: 'hard-reject',
+      reason: `Too few lines (${nonEmptyLines.length} lines, ${len} chars)`,
+      signals: [{ rule: 'HR3-few-lines', delta: -10 }],
+    };
+  }
+
+  // HR4: Completion boilerplate
+  if (BOILERPLATE_RE.test(trimmed)) {
+    return {
+      score: -10, classification: 'reject', hardRule: 'hard-reject',
+      reason: 'Completion boilerplate',
+      signals: [{ rule: 'HR4-boilerplate', delta: -10 }],
+    };
+  }
+
+  // ─── HARD ACCEPT RULE ────────────────────────────────────────
+
+  // HA1: Long structured document
+  if (len >= 2000 && !isDirectoryListing(trimmed)) {
+    const markers = countStructuralMarkers(trimmed);
+    if (markers >= 2) {
+      return {
+        score: 12, classification: 'auto-accept', hardRule: 'hard-accept',
+        reason: `Long structured document (${len} chars, ${markers} structural markers)`,
+        signals: [{ rule: 'HA1-long-structured', delta: 12 }],
+      };
+    }
+  }
+
+  // ─── SOFT SCORING ────────────────────────────────────────────
+
+  const signals: CandidateSignal[] = [];
+  let score = 0;
+
+  // SP1: Structural formatting (+1 to +4)
+  const codeFence = buildCodeFenceMap(trimmed);
+  const headings = findHeadingsOutsideCode(trimmed, /^#{2,3}\s+.+$/gm, codeFence);
+  if (headings.length > 0) {
+    const bonus = Math.min(headings.length * 2, 4);
+    score += bonus;
+    signals.push({ rule: 'SP1-headings', delta: bonus });
+  }
+  if (/^\|.+\|.+\|/m.test(trimmed)) {
+    score += 2;
+    signals.push({ rule: 'SP1-table', delta: 2 });
+  }
+  // Match both **Label**: and **Label:** (colon inside or outside bold)
+  const boldLabels = (trimmed.match(/^\*\*[^*]+(?:\*\*:|:\*\*)/gm) || []).length;
+  if (boldLabels > 0) {
+    const bonus = Math.min(boldLabels, 3);
+    score += bonus;
+    signals.push({ rule: 'SP1-bold-labels', delta: bonus });
+  }
+  if (/(?:^|\n)\s*1\.\s.*\n\s*2\.\s.*\n\s*3\.\s/m.test(trimmed)) {
+    score += 2;
+    signals.push({ rule: 'SP1-numbered-list', delta: 2 });
+  }
+  const bulletCount = (trimmed.match(/^[-*]\s+\S/gm) || []).length;
+  if (bulletCount >= 3) {
+    score += 1;
+    signals.push({ rule: 'SP1-bullets', delta: 1 });
+  }
+
+  // SP2: Code reference density (+1 to +3)
+  const fileRefs = new Set(
+    (trimmed.match(/`[\w./-]+\.\w{1,5}`/g) || []).map(m => m.replace(/`/g, '')),
+  );
+  if (fileRefs.size > 0) {
+    const bonus = Math.min(fileRefs.size, 3);
+    score += bonus;
+    signals.push({ rule: 'SP2-file-refs', delta: bonus, match: `${fileRefs.size} files` });
+  }
+  if (/`[^`]+\.\w{1,5}:\d+`/.test(trimmed)) {
+    score += 1;
+    signals.push({ rule: 'SP2-line-refs', delta: 1 });
+  }
+
+  // SP3: Analysis/findings language (+1 to +2)
+  let analysisMatches = 0;
+  for (const p of ANALYSIS_PATTERNS) {
+    if (p.test(trimmed)) analysisMatches++;
+  }
+  if (analysisMatches > 0) {
+    const bonus = Math.min(analysisMatches, 2);
+    score += bonus;
+    signals.push({ rule: 'SP3-analysis-lang', delta: bonus, match: `${analysisMatches} patterns` });
+  }
+
+  // SP4: Length bonus (+1 to +4)
+  if (len >= 2500) {
+    score += 4;
+    signals.push({ rule: 'SP4-length', delta: 4, match: `${len} chars` });
+  } else if (len >= 1500) {
+    score += 3;
+    signals.push({ rule: 'SP4-length', delta: 3, match: `${len} chars` });
+  } else if (len >= 1000) {
+    score += 2;
+    signals.push({ rule: 'SP4-length', delta: 2, match: `${len} chars` });
+  } else if (len >= 700) {
+    score += 1;
+    signals.push({ rule: 'SP4-length', delta: 1, match: `${len} chars` });
+  }
+
+  // SN1: Incomplete analysis signal (-1 to -3, position-aware)
+  const incompleteMatches = trimmed.match(INCOMPLETE_RE) || [];
+  if (incompleteMatches.length > 0) {
+    let penalty = 0;
+    for (const m of incompleteMatches) {
+      const pos = trimmed.indexOf(m);
+      penalty -= (pos / len) > 0.8 ? 1 : 2;
+    }
+    penalty = Math.max(penalty, -3);
+    score += penalty;
+    signals.push({ rule: 'SN1-incomplete', delta: penalty, match: incompleteMatches[0] });
+  }
+
+  // SN2: Deliverable/task completion (-2)
+  if (DELIVERABLE_RE.test(trimmed)) {
+    score -= 2;
+    signals.push({ rule: 'SN2-deliverable', delta: -2 });
+  }
+
+  // SN3: Directory listing (-3)
+  if (isDirectoryListing(trimmed)) {
+    score -= 3;
+    signals.push({ rule: 'SN3-dir-listing', delta: -3 });
+  }
+
+  // SN4: Conversational / question (-1)
+  const firstLine = nonEmptyLines[0] || '';
+  if (firstLine.trim().endsWith('?') && len < 600) {
+    score -= 1;
+    signals.push({ rule: 'SN4-conversational', delta: -1 });
+  }
+
+  // SN5: Self-correction / reversal (-2)
+  if (SELF_CORRECTION_RE.test(trimmed) || CANCEL_RE.test(trimmed)) {
+    score -= 2;
+    signals.push({ rule: 'SN5-self-correction', delta: -2 });
+  }
+
+  // HR2 soft variant: narration opener on longer messages (-3)
+  if (NARRATION_OPENER_RE.test(trimmed) && len >= 500) {
+    score -= 3;
+    signals.push({ rule: 'HR2-narration-soft', delta: -3 });
+  }
+
+  // ─── CLASSIFY ────────────────────────────────────────────────
+
+  let classification: KnowledgeCandidateScore['classification'];
+  if (score >= 8) classification = 'auto-accept';
+  else if (score >= 5) classification = 'candidate';
+  else if (score >= 1) classification = 'low-confidence';
+  else classification = 'reject';
+
+  return {
+    score,
+    classification,
+    hardRule: null,
+    reason: `Score ${score}: ${signals.map(s => `${s.rule}(${s.delta > 0 ? '+' : ''}${s.delta})`).join(', ')}`,
+    signals,
+  };
+}
+
+/**
+ * Count distinct structural markers in text (headings, tables, bold labels, numbered lists).
+ */
+function countStructuralMarkers(text: string): number {
+  let count = 0;
+  const codeFence = buildCodeFenceMap(text);
+  if (findHeadingsOutsideCode(text, /^##\s+.+$/gm, codeFence).length > 0) count++;
+  if (/^\|.+\|.+\|/m.test(text)) count++;
+  if (/^\*\*[^*]+(?:\*\*:|:\*\*)/m.test(text)) count++;
+  if (/(?:^|\n)\s*1\.\s.*\n\s*2\.\s.*\n\s*3\.\s/m.test(text)) count++;
+  return count;
+}
+
+/**
+ * Check if text is primarily a directory/file listing (tree output, file manifests).
+ */
+function isDirectoryListing(text: string): boolean {
+  const lines = text.split('\n').filter(l => l.trim().length > 0);
+  if (lines.length < 5) return false;
+  const treeLines = lines.filter(l =>
+    /^\s*[─│├└┌┐┘┤┬┴┼\-|]/.test(l) ||
+    /^\s*[\w.-]+\/\s*$/.test(l) ||
+    /^\s{2,}[\w.-]+\.\w{1,5}\s*$/.test(l),
+  );
+  return treeLines.length / lines.length > 0.4;
+}

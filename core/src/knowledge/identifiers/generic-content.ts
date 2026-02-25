@@ -1,23 +1,83 @@
 /**
  * Generic Content Identifier
  *
- * Resolves arbitrary assistant messages by sessionId + lineIndex.
- * Unlike explore-agent, this is manual-only (no auto-discovery) —
- * any assistant message could be knowledge, so we don't auto-scan.
+ * Discovers and resolves knowledge-worthy assistant messages from sessions.
+ * Uses heuristic scoring (scoreKnowledgeCandidate) to auto-detect significant
+ * content: analysis, architecture, debugging findings, comparisons, etc.
  */
 
 import type { KnowledgeIdentifier, IdentificationResult } from '../identifier-types';
 import { getIdentificationStore } from '../identification-store';
+import { scoreKnowledgeCandidate } from '../helpers';
 
 export class GenericContentIdentifier implements KnowledgeIdentifier {
   readonly type = 'generic-content' as const;
 
   /**
-   * Generic content has no auto-discovery — returns empty.
-   * Knowledge from arbitrary messages is created manually via resolve().
+   * Discover knowledge-worthy assistant messages from sessions.
+   * Scans responses through heuristic scoring and identifies candidates
+   * that score 'candidate' or 'auto-accept'.
    */
-  async discover(_project: string): Promise<IdentificationResult[]> {
-    return [];
+  async discover(project: string): Promise<IdentificationResult[]> {
+    try {
+      const { getSessionReader } = require('../../session-reader');
+      const { getSessionCache } = require('../../session-cache');
+
+      const reader = getSessionReader();
+      const cache = getSessionCache();
+      const idStore = getIdentificationStore();
+
+      if (cache.isWarming()) {
+        await cache.waitForWarming();
+      }
+
+      const sessions = reader.listSessions(project);
+      const newResults: Omit<IdentificationResult, 'id'>[] = [];
+
+      for (const session of sessions) {
+        try {
+          const filePath = reader.getSessionFilePath(session.sessionId, project);
+          const data = await cache.getSessionData(filePath);
+          if (!data?.responses?.length) continue;
+
+          for (const response of data.responses) {
+            if (!response.text || response.text.length < 500) continue;
+
+            // Skip already identified
+            if (idStore.hasIdentification('generic-content', session.sessionId, response.lineIndex)) {
+              continue;
+            }
+
+            const scoreResult = scoreKnowledgeCandidate(response.text);
+
+            // Only auto-discover candidates and auto-accepts
+            if (scoreResult.classification === 'reject' || scoreResult.classification === 'low-confidence') {
+              continue;
+            }
+
+            newResults.push({
+              sessionId: session.sessionId,
+              lineIndex: response.lineIndex,
+              turnIndex: response.turnIndex,
+              projectPath: project,
+              timestamp: (response as any).timestamp || new Date().toISOString(),
+              identifiedAt: new Date().toISOString(),
+              identifierType: 'generic-content',
+              score: scoreResult.score,
+              classification: scoreResult.classification,
+              status: 'candidate',
+            });
+          }
+        } catch {
+          // Skip sessions that fail to load
+        }
+      }
+
+      return newResults.length > 0 ? idStore.add(newResults) : [];
+    } catch (err) {
+      console.error('[GenericContentIdentifier] Discovery failed:', err);
+      return [];
+    }
   }
 
   /**
@@ -46,6 +106,9 @@ export class GenericContentIdentifier implements KnowledgeIdentifier {
     // Must have enough content to be meaningful
     if (content.text.length < 100) return null;
 
+    // Score the content (for manual resolve, we still accept even low-confidence)
+    const scoreResult = scoreKnowledgeCandidate(content.text);
+
     const result: Omit<IdentificationResult, 'id'> = {
       sessionId,
       lineIndex,
@@ -54,6 +117,8 @@ export class GenericContentIdentifier implements KnowledgeIdentifier {
       timestamp: content.timestamp || new Date().toISOString(),
       identifiedAt: new Date().toISOString(),
       identifierType: 'generic-content',
+      score: scoreResult.score,
+      classification: scoreResult.classification,
       status: 'candidate',
     };
 
@@ -61,9 +126,6 @@ export class GenericContentIdentifier implements KnowledgeIdentifier {
     return added[0] || null;
   }
 
-  /**
-   * Load an assistant message from a session by line index.
-   */
   /**
    * Load an assistant message from a session by line index.
    * Uses the session cache which stores responses and userPrompts separately.

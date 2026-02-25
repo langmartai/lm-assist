@@ -777,6 +777,49 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // POST /knowledge/discover/generic — Discover generic content candidates via heuristic scoring
+    // Body: { project }
+    {
+      method: 'POST',
+      pattern: /^\/knowledge\/discover\/generic$/,
+      handler: async (req) => {
+        const { project } = req.body || {};
+        if (!project) {
+          return { success: false, error: 'project is required' };
+        }
+
+        try {
+          const { getKnowledgePipeline } = require('../../knowledge/pipeline');
+          const pipeline = getKnowledgePipeline();
+          const results = await pipeline.discover(project, 'generic-content');
+          return { success: true, data: { discovered: results.length, identifications: results } };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
+    // POST /knowledge/score/preview — Score a message without storing anything
+    // Body: { text } — returns the scoring result
+    {
+      method: 'POST',
+      pattern: /^\/knowledge\/score\/preview$/,
+      handler: async (req) => {
+        const { text } = req.body || {};
+        if (!text) {
+          return { success: false, error: 'text is required' };
+        }
+
+        try {
+          const { scoreKnowledgeCandidate } = require('../../knowledge/helpers');
+          const result = scoreKnowledgeCandidate(text);
+          return { success: true, data: result };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
     // POST /knowledge/generate/generic/preview — Preview generic content knowledge (no storage)
     // Body: { sessionId, lineIndex, project, title? }
     {

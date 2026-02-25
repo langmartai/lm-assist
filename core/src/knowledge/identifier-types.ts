@@ -30,6 +30,10 @@ export interface IdentificationResult {
   // Type-specific fields (optional, only present for relevant types)
   agentId?: string;               // For explore-agent: the subagent ID
 
+  // Scoring (for generic-content auto-discovery)
+  score?: number;                 // Heuristic score (-11 to +12)
+  classification?: string;        // 'auto-accept' | 'candidate' | 'low-confidence' | 'reject'
+
   // Lifecycle tracking
   knowledgeId?: string;           // Set after knowledge is generated from this identification
   status: 'candidate' | 'generated' | 'skipped'; // Lifecycle state
