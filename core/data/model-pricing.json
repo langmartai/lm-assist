@@ -1,0 +1,113 @@
+[
+  {
+    "modelPattern": "claude-opus-4-6",
+    "displayName": "Claude Opus 4.6",
+    "inputPricePerMillion": 5.0,
+    "outputPricePerMillion": 25.0,
+    "cache5mWritePricePerMillion": 6.25,
+    "cache1hWritePricePerMillion": 10.0,
+    "cacheReadPricePerMillion": 0.5,
+    "inputPricePerMillionAbove200k": 10.0,
+    "outputPricePerMillionAbove200k": 37.5,
+    "cache5mWritePricePerMillionAbove200k": 12.5,
+    "cache1hWritePricePerMillionAbove200k": 20.0,
+    "cacheReadPricePerMillionAbove200k": 1.0,
+    "tieredThreshold": 200000
+  },
+  {
+    "modelPattern": "claude-opus-4-5",
+    "displayName": "Claude Opus 4.5",
+    "inputPricePerMillion": 5.0,
+    "outputPricePerMillion": 25.0,
+    "cache5mWritePricePerMillion": 6.25,
+    "cache1hWritePricePerMillion": 10.0,
+    "cacheReadPricePerMillion": 0.5
+  },
+  {
+    "modelPattern": "claude-sonnet-4-6",
+    "displayName": "Claude Sonnet 4.6",
+    "inputPricePerMillion": 3.0,
+    "outputPricePerMillion": 15.0,
+    "cache5mWritePricePerMillion": 3.75,
+    "cache1hWritePricePerMillion": 6.0,
+    "cacheReadPricePerMillion": 0.3,
+    "inputPricePerMillionAbove200k": 6.0,
+    "outputPricePerMillionAbove200k": 22.5,
+    "cache5mWritePricePerMillionAbove200k": 7.5,
+    "cache1hWritePricePerMillionAbove200k": 12.0,
+    "cacheReadPricePerMillionAbove200k": 0.6,
+    "tieredThreshold": 200000
+  },
+  {
+    "modelPattern": "claude-sonnet-4-5",
+    "displayName": "Claude Sonnet 4.5",
+    "inputPricePerMillion": 3.0,
+    "outputPricePerMillion": 15.0,
+    "cache5mWritePricePerMillion": 3.75,
+    "cache1hWritePricePerMillion": 6.0,
+    "cacheReadPricePerMillion": 0.3,
+    "inputPricePerMillionAbove200k": 6.0,
+    "outputPricePerMillionAbove200k": 22.5,
+    "cache5mWritePricePerMillionAbove200k": 7.5,
+    "cache1hWritePricePerMillionAbove200k": 12.0,
+    "cacheReadPricePerMillionAbove200k": 0.6,
+    "tieredThreshold": 200000
+  },
+  {
+    "modelPattern": "claude-sonnet-4",
+    "displayName": "Claude Sonnet 4",
+    "inputPricePerMillion": 3.0,
+    "outputPricePerMillion": 15.0,
+    "cache5mWritePricePerMillion": 3.75,
+    "cache1hWritePricePerMillion": 6.0,
+    "cacheReadPricePerMillion": 0.3,
+    "inputPricePerMillionAbove200k": 6.0,
+    "outputPricePerMillionAbove200k": 22.5,
+    "cache5mWritePricePerMillionAbove200k": 7.5,
+    "cache1hWritePricePerMillionAbove200k": 12.0,
+    "cacheReadPricePerMillionAbove200k": 0.6,
+    "tieredThreshold": 200000
+  },
+  {
+    "modelPattern": "claude-haiku-4-5",
+    "displayName": "Claude Haiku 4.5",
+    "inputPricePerMillion": 1.0,
+    "outputPricePerMillion": 5.0,
+    "cache5mWritePricePerMillion": 1.25,
+    "cache1hWritePricePerMillion": 2.0,
+    "cacheReadPricePerMillion": 0.1
+  },
+  {
+    "modelPattern": "claude-3-5-sonnet",
+    "displayName": "Claude 3.5 Sonnet",
+    "inputPricePerMillion": 3.0,
+    "outputPricePerMillion": 15.0,
+    "cache5mWritePricePerMillion": 3.75,
+    "cache1hWritePricePerMillion": 6.0,
+    "cacheReadPricePerMillion": 0.3,
+    "inputPricePerMillionAbove200k": 6.0,
+    "outputPricePerMillionAbove200k": 30.0,
+    "cache5mWritePricePerMillionAbove200k": 7.5,
+    "cache1hWritePricePerMillionAbove200k": 12.0,
+    "cacheReadPricePerMillionAbove200k": 0.6,
+    "tieredThreshold": 200000
+  },
+  {
+    "modelPattern": "claude-3-5-haiku",
+    "displayName": "Claude 3.5 Haiku",
+    "inputPricePerMillion": 0.8,
+    "outputPricePerMillion": 4.0,
+    "cache5mWritePricePerMillion": 1.0,
+    "cache1hWritePricePerMillion": 1.6,
+    "cacheReadPricePerMillion": 0.08
+  },
+  {
+    "modelPattern": "claude-3-opus",
+    "displayName": "Claude 3 Opus",
+    "inputPricePerMillion": 15.0,
+    "outputPricePerMillion": 75.0,
+    "cache5mWritePricePerMillion": 18.75,
+    "cache1hWritePricePerMillion": 30.0,
+    "cacheReadPricePerMillion": 1.5
+  }
+]

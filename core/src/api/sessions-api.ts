@@ -188,6 +188,37 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
           const { getProcessStatusStore } = await import('../process-status-store');
           const processRunning = getProcessStatusStore().getSessionProcess(cacheData?.sessionId || sessionId);
 
+          // Calculate cost and per-model usage
+          let totalCostUsd = cacheData?.totalCostUsd || cacheData?.cumulativeCostUsd || 0;
+          let modelUsageCopy = cacheData?.modelUsage && Object.keys(cacheData.modelUsage).length > 0
+            ? Object.fromEntries(Object.entries(cacheData.modelUsage).map(([k, v]) => [k, { ...v }]))
+            : undefined;
+
+          const needsCostCalc = (!totalCostUsd && cacheData?.usage && cacheData.usage.inputTokens > 0) ||
+            (modelUsageCopy && Object.values(modelUsageCopy).some(mu => !mu.costUsd && mu.inputTokens > 0));
+
+          if (needsCostCalc) {
+            const { CostCalculator } = await import('../cost-calculator');
+            const calc = new CostCalculator();
+
+            if (!totalCostUsd && cacheData?.usage && cacheData.usage.inputTokens > 0) {
+              totalCostUsd = calc.calculateCost(cacheData.usage, cacheData.model || '').totalCost;
+            }
+
+            if (modelUsageCopy) {
+              for (const [mName, mu] of Object.entries(modelUsageCopy)) {
+                if (!mu.costUsd && mu.inputTokens > 0) {
+                  mu.costUsd = calc.calculateCost({
+                    inputTokens: mu.inputTokens,
+                    outputTokens: mu.outputTokens,
+                    cacheCreationInputTokens: mu.cacheCreationInputTokens,
+                    cacheReadInputTokens: mu.cacheReadInputTokens,
+                  }, mName).totalCost;
+                }
+              }
+            }
+          }
+
           return wrapResponse({
             sessionId: cacheData?.sessionId || sessionId,
             cwd: cacheData?.cwd || '',
@@ -200,8 +231,9 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
             numTurns: cacheData?.numTurns || 0,
             durationMs: cacheData?.durationMs || 0,
             durationApiMs: cacheData?.durationApiMs || 0,
-            totalCostUsd: cacheData?.totalCostUsd || 0,
+            totalCostUsd: totalCostUsd,
             usage: cacheData?.usage || { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+            modelUsage: modelUsageCopy,
             success: cacheData?.success ?? true,
             isActive,
             running: processRunning,
@@ -398,6 +430,7 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
           durationApiMs: data.durationApiMs,
           totalCostUsd: data.totalCostUsd,
           usage: data.usage,
+          modelUsage: data.modelUsage,
           result: data.result,
           errors: data.errors,
           success: data.success,

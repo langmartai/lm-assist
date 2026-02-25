@@ -29,6 +29,7 @@
   "main": "./core/dist/index.js",
   "files": [
     "core/dist",
+    "core/data",
     "core/hooks",
     "core/scripts",
     "web/.next",

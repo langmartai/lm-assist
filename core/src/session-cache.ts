@@ -26,6 +26,7 @@ import chokidar, { FSWatcher } from 'chokidar';
 import { getStartupProfiler } from './startup-profiler';
 import { SessionCacheStore } from './session-cache-store';
 import { getDataDir, legacyEncodeProjectPath } from './utils/path-utils';
+import { CostCalculator } from './cost-calculator';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -1825,6 +1826,38 @@ export class SessionCache {
     }
 
     return results;
+  }
+
+  /**
+   * Compute per-project total cost in a single pass over all LMDB entries.
+   * Returns a Map keyed by encoded project path (e.g. "-home-ubuntu-lm-assist").
+   * Includes both parent sessions and subagent entries — parent LMDB entries
+   * do NOT include subagent costs, so summing all entries is correct.
+   */
+  getPerProjectCosts(): Map<string, number> {
+    let calc: CostCalculator | null = null;
+    const costMap = new Map<string, number>();
+
+    for (const { key: filePath, value: cacheData } of this.store.allSessions()) {
+      const normalized = filePath.replace(/\\/g, '/');
+
+      // Extract encoded project key from path: .../projects/{key}/session.jsonl
+      const projMatch = normalized.match(/\/projects\/([^/]+)\//);
+      if (!projMatch) continue;
+      const encodedKey = projMatch[1];
+
+      let cost = cacheData.totalCostUsd || cacheData.cumulativeCostUsd || 0;
+      if (!cost && cacheData.usage && cacheData.usage.inputTokens > 0) {
+        if (!calc) calc = new CostCalculator();
+        cost = calc.calculateCost(cacheData.usage, cacheData.model || '').totalCost;
+      }
+
+      if (cost > 0) {
+        costMap.set(encodedKey, (costMap.get(encodedKey) || 0) + cost);
+      }
+    }
+
+    return costMap;
   }
 
   /**

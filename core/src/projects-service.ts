@@ -27,6 +27,7 @@ import {
   TaskListSummary,
 } from './tasks-service';
 import { getSessionCache, isRealUserPrompt } from './session-cache';
+import { CostCalculator } from './cost-calculator';
 
 // ============================================================================
 // Types
@@ -111,6 +112,22 @@ export interface ProjectSession {
   model?: string;
   /** Total cost in USD */
   totalCostUsd?: number;
+  /** Token usage */
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheReadInputTokens: number;
+  };
+  /** Per-model usage breakdown */
+  modelUsage?: Record<string, {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheReadInputTokens: number;
+    costUsd: number;
+    messageCount: number;
+  }>;
   /** Number of turns */
   numTurns?: number;
   /** Session this was forked from */
@@ -649,6 +666,7 @@ export class ProjectsService {
     const sessions: ProjectSession[] = [];
     const now = Date.now();
     const sessionCache = getSessionCache();
+    let calc: CostCalculator | null = null;
 
     // Count agent files for a session
     const countAgentFiles = (sessionId: string): number => {
@@ -694,9 +712,43 @@ export class ProjectsService {
           session.taskCount = cacheData.tasks.length;
           session.lastUserMessage = lastPrompt?.text?.slice(0, 200);
           session.model = cacheData.model;
-          session.totalCostUsd = cacheData.totalCostUsd || undefined;
           session.numTurns = cacheData.numTurns || undefined;
           session.forkedFromSessionId = cacheData.forkedFromSessionId;
+
+          // Usage and cost data
+          if (cacheData.usage && cacheData.usage.inputTokens > 0) {
+            session.usage = { ...cacheData.usage };
+          }
+
+          // Cost cascade: result totalCostUsd → cumulativeCostUsd → token-based calculation
+          let cost = cacheData.totalCostUsd || cacheData.cumulativeCostUsd || 0;
+          const needsCalc = !cost && cacheData.usage && cacheData.usage.inputTokens > 0;
+          if (needsCalc) {
+            if (!calc) calc = new CostCalculator();
+            cost = calc.calculateCost(cacheData.usage, cacheData.model || '').totalCost;
+          }
+          if (cost > 0) {
+            session.totalCostUsd = cost;
+          }
+
+          // Per-model usage (deep copy to avoid mutating LMDB cache)
+          if (cacheData.modelUsage && Object.keys(cacheData.modelUsage).length > 0) {
+            session.modelUsage = Object.fromEntries(
+              Object.entries(cacheData.modelUsage).map(([k, v]) => [k, { ...v }])
+            );
+            // Calculate per-model costs if missing
+            for (const [modelName, mu] of Object.entries(session.modelUsage)) {
+              if (!mu.costUsd && mu.inputTokens > 0) {
+                if (!calc) calc = new CostCalculator();
+                mu.costUsd = calc.calculateCost({
+                  inputTokens: mu.inputTokens,
+                  outputTokens: mu.outputTokens,
+                  cacheCreationInputTokens: mu.cacheCreationInputTokens,
+                  cacheReadInputTokens: mu.cacheReadInputTokens,
+                }, modelName).totalCost;
+              }
+            }
+          }
         }
         if (agentCount > 0) {
           session.agentCount = agentCount;
@@ -1092,6 +1144,23 @@ export class ProjectsService {
       return { costUsd: 0 };
     }
 
+    // Fast path: use LMDB cache if available (avoids re-reading the JSONL file)
+    const sessionCache = getSessionCache();
+    const cacheData = sessionCache.getSessionDataSync(filePath);
+    if (cacheData) {
+      let cost = cacheData.totalCostUsd || cacheData.cumulativeCostUsd || 0;
+      if (!cost && cacheData.usage && cacheData.usage.inputTokens > 0) {
+        const calc = new CostCalculator();
+        cost = calc.calculateCost(cacheData.usage, cacheData.model || '').totalCost;
+      }
+      return {
+        costUsd: cost,
+        model: cacheData.model || undefined,
+        numTurns: cacheData.numTurns || undefined,
+      };
+    }
+
+    // Slow path: read from disk (fallback for uncached files)
     return new Promise((resolve) => {
       let model: string | undefined;
       let numTurns = 0;
@@ -1102,6 +1171,7 @@ export class ProjectsService {
       let outputTokens = 0;
       let cacheReadTokens = 0;
       let cacheCreateTokens = 0;
+      let cumulativeCostUsd = 0;
 
       const fileStream = fs.createReadStream(filePath, { encoding: 'utf-8' });
       const rl = readline.createInterface({
@@ -1130,6 +1200,16 @@ export class ProjectsService {
             outputTokens += usage.output_tokens || 0;
             cacheReadTokens += usage.cache_read_input_tokens || 0;
             cacheCreateTokens += usage.cache_creation_input_tokens || 0;
+
+            // Extract model from assistant message
+            if (record.message?.model && record.message.model !== '<synthetic>') {
+              model = record.message.model;
+            }
+          }
+
+          // Accumulate per-message costUSD (pre-calculated by Claude Code)
+          if (record.type === 'assistant' && typeof record.costUSD === 'number' && record.costUSD > 0) {
+            cumulativeCostUsd += record.costUSD;
           }
 
           // Extract cost from result message if available (overrides calculated)
@@ -1142,15 +1222,18 @@ export class ProjectsService {
       });
 
       rl.on('close', () => {
-        // Calculate cost if not already set from result message
+        // Use cumulativeCostUsd (from per-message costUSD) if no result-level cost
+        if (!totalCostUsd && cumulativeCostUsd > 0) {
+          totalCostUsd = cumulativeCostUsd;
+        }
+        // Calculate cost if not already set from result or per-message costUSD
         if (!totalCostUsd && inputTokens > 0) {
-          totalCostUsd = this.calculateCost(
-            model || '',
+          totalCostUsd = new CostCalculator().calculateCost({
             inputTokens,
             outputTokens,
-            cacheReadTokens,
-            cacheCreateTokens
-          );
+            cacheReadInputTokens: cacheReadTokens,
+            cacheCreationInputTokens: cacheCreateTokens,
+          }, model || '').totalCost;
         }
 
         resolve({ costUsd: totalCostUsd, model, numTurns });
@@ -1160,63 +1243,6 @@ export class ProjectsService {
         resolve({ costUsd: 0 });
       });
     });
-  }
-
-  /**
-   * Calculate cost based on model and token usage
-   * See: https://platform.claude.com/docs/en/about-claude/pricing
-   */
-  private calculateCost(
-    model: string,
-    inputTokens: number,
-    outputTokens: number,
-    cacheReadTokens: number,
-    cacheCreateTokens: number
-  ): number {
-    // Default: Sonnet 4/4.5 rates
-    let inputRate = 3;
-    let outputRate = 15;
-    let cacheReadRate = 0.3;    // 10% of input
-    let cacheCreateRate = 3.75; // 125% of input
-
-    const modelLower = model.toLowerCase();
-
-    if (modelLower.includes('opus-4-6') || modelLower.includes('opus-4.6') || modelLower.includes('opus-4-5') || modelLower.includes('opus-4.5')) {
-      // Opus 4.5/4.6: $5 input, $25 output
-      inputRate = 5;
-      outputRate = 25;
-      cacheReadRate = 0.5;
-      cacheCreateRate = 6.25;
-    } else if (modelLower.includes('opus')) {
-      // Opus 4, 4.1, 3: $15 input, $75 output
-      inputRate = 15;
-      outputRate = 75;
-      cacheReadRate = 1.5;
-      cacheCreateRate = 18.75;
-    } else if (modelLower.includes('haiku-4-5') || modelLower.includes('haiku-4.5')) {
-      // Haiku 4.5: $1 input, $5 output
-      inputRate = 1;
-      outputRate = 5;
-      cacheReadRate = 0.1;
-      cacheCreateRate = 1.25;
-    } else if (modelLower.includes('haiku-3-5') || modelLower.includes('haiku-3.5')) {
-      // Haiku 3.5: $0.80 input, $4 output
-      inputRate = 0.8;
-      outputRate = 4;
-      cacheReadRate = 0.08;
-      cacheCreateRate = 1.0;
-    } else if (modelLower.includes('haiku')) {
-      // Haiku 3: $0.25 input, $1.25 output
-      inputRate = 0.25;
-      outputRate = 1.25;
-      cacheReadRate = 0.03;
-      cacheCreateRate = 0.30;
-    }
-
-    return (inputTokens / 1_000_000) * inputRate +
-           (outputTokens / 1_000_000) * outputRate +
-           (cacheReadTokens / 1_000_000) * cacheReadRate +
-           (cacheCreateTokens / 1_000_000) * cacheCreateRate;
   }
 
   // --------------------------------------------------------------------------

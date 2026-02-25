@@ -504,6 +504,7 @@ function loadStatuslineConfig() {
     statuslineShowRam: true,
     statuslineShowProcess: true,
     statuslineShowModel: true,
+    statuslineShowCost: true,
   };
   try {
     const configPath = path.join(os.homedir(), '.claude-code-config.json');
@@ -517,6 +518,7 @@ function loadStatuslineConfig() {
       statuslineShowRam: typeof parsed.statuslineShowRam === 'boolean' ? parsed.statuslineShowRam : defaults.statuslineShowRam,
       statuslineShowProcess: typeof parsed.statuslineShowProcess === 'boolean' ? parsed.statuslineShowProcess : defaults.statuslineShowProcess,
       statuslineShowModel: typeof parsed.statuslineShowModel === 'boolean' ? parsed.statuslineShowModel : defaults.statuslineShowModel,
+      statuslineShowCost: typeof parsed.statuslineShowCost === 'boolean' ? parsed.statuslineShowCost : defaults.statuslineShowCost,
     };
   } catch {
     return defaults;
@@ -542,6 +544,7 @@ async function main() {
     (input.context_window && input.context_window.used_percentage) || 0
   );
   const model = (input.model && input.model.display_name) || '';
+  const sessionCostUsd = (input.cost && input.cost.total_cost_usd) || 0;
 
   // --- Load config ---
   const cfg = loadStatuslineConfig();
@@ -631,6 +634,12 @@ async function main() {
   // System info
   if (cfg.statuslineShowContext) {
     line3Parts.push(`${ctxColor(ctxPct)}ctx:${ctxPct}%${RESET}`);
+  }
+  if (cfg.statuslineShowCost && sessionCostUsd > 0) {
+    const costStr = sessionCostUsd >= 1
+      ? `$${sessionCostUsd.toFixed(2)}`
+      : `$${sessionCostUsd.toFixed(3)}`;
+    line3Parts.push(`${YELLOW}${costStr}${RESET}`);
   }
   if (cfg.statuslineShowRam) {
     if (procInfo.mem) line3Parts.push(`${DIM}ram:${procInfo.mem}${RESET}`);

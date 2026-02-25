@@ -11,7 +11,6 @@ import {
   Search,
   MessageSquare,
   Clock,
-  HardDrive,
   FileText,
   Plus,
   Info,
@@ -22,7 +21,7 @@ import {
   Hash,
   ExternalLink,
 } from 'lucide-react';
-import { formatTimeAgo, formatBytes } from '@/lib/utils';
+import { formatTimeAgo, formatCost } from '@/lib/utils';
 import Link from 'next/link';
 import { useExperiment } from '@/hooks/useExperiment';
 import { usePlatform } from '@/hooks/usePlatform';
@@ -452,11 +451,11 @@ export default function ProjectsPage() {
                     </span>
                   </div>
 
-                  {(project.storageSize ?? 0) > 0 && (
+                  {project.totalCost > 0 && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <HardDrive size={11} style={{ color: 'var(--color-text-tertiary)' }} />
+                      <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 500 }}>$</span>
                       <span style={{ color: 'var(--color-text-secondary)', fontFamily: 'var(--font-mono)' }}>
-                        {formatBytes(project.storageSize!)}
+                        {formatCost(project.totalCost).slice(1)}
                       </span>
                     </div>
                   )}

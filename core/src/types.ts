@@ -292,6 +292,18 @@ export interface ModelPricing {
   cache1hWritePricePerMillion: number;
   /** Cache read price per 1M */
   cacheReadPricePerMillion: number;
+  /** Input price per 1M for tokens above tiered threshold */
+  inputPricePerMillionAbove200k?: number;
+  /** Output price per 1M for tokens above tiered threshold */
+  outputPricePerMillionAbove200k?: number;
+  /** 5-minute cache write price per 1M above tiered threshold */
+  cache5mWritePricePerMillionAbove200k?: number;
+  /** 1-hour cache write price per 1M above tiered threshold */
+  cache1hWritePricePerMillionAbove200k?: number;
+  /** Cache read price per 1M above tiered threshold */
+  cacheReadPricePerMillionAbove200k?: number;
+  /** Token threshold for tiered pricing (default: 200000) */
+  tieredThreshold?: number;
 }
 
 export interface CostEstimate {

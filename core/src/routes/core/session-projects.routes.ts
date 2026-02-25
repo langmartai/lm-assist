@@ -45,6 +45,10 @@ export function createSessionProjectsRoutes(ctx: RouteContext): RouteHandler[] {
 
         // Build enriched copies without mutating the cached originals
         const cache = getSessionCache();
+
+        // Single-pass: compute per-project total cost from all LMDB entries
+        const projectCostMap = cache.getPerProjectCosts();
+
         const projects = await Promise.all(rawProjects.map(async (project: any) => {
           const sessionPath = project._mostRecentSessionPath;
           // Create a shallow copy without the internal _mostRecentSessionPath field
@@ -62,6 +66,13 @@ export function createSessionProjectsRoutes(ctx: RouteContext): RouteHandler[] {
               }
             }
           }
+
+          // Attach pre-computed cost
+          const cost = projectCostMap.get(clean.encodedPath);
+          if (cost && cost > 0) {
+            clean.totalCost = cost;
+          }
+
           return clean;
         }));
 
