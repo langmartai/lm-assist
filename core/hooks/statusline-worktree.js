@@ -239,7 +239,7 @@ function readWorktreeDetails(wtNum) {
 // Scan all available worktrees
 // ---------------------------------------------------------------------------
 
-function scanWorktrees() {
+function scanWorktrees(devModeEnabled) {
   const worktrees = [];
   const baseDir = '/home/ubuntu';
 
@@ -264,8 +264,8 @@ function scanWorktrees() {
         }
       } catch {}
 
-      // Check if API is running on expected port
-      const apiPort = 3100 + parseInt(num, 10);
+      // Check if API is running on expected port (dev: 3200, prod: 3100)
+      const apiPort = (devModeEnabled ? 3200 : 3100) + parseInt(num, 10);
       try {
         if (process.platform === 'linux') {
           const ssOut = execSync(`ss -tlnp 2>/dev/null`, {
@@ -505,6 +505,7 @@ function loadStatuslineConfig() {
     statuslineShowProcess: true,
     statuslineShowModel: true,
     statuslineShowCost: true,
+    devModeEnabled: false,
   };
   try {
     const configPath = path.join(os.homedir(), '.claude-code-config.json');
@@ -519,6 +520,7 @@ function loadStatuslineConfig() {
       statuslineShowProcess: typeof parsed.statuslineShowProcess === 'boolean' ? parsed.statuslineShowProcess : defaults.statuslineShowProcess,
       statuslineShowModel: typeof parsed.statuslineShowModel === 'boolean' ? parsed.statuslineShowModel : defaults.statuslineShowModel,
       statuslineShowCost: typeof parsed.statuslineShowCost === 'boolean' ? parsed.statuslineShowCost : defaults.statuslineShowCost,
+      devModeEnabled: parsed.devModeEnabled === true,
     };
   } catch {
     return defaults;
@@ -557,7 +559,7 @@ async function main() {
   const wtDetails = currentWt ? readWorktreeDetails(currentWt) : null;
 
   // --- Scan all worktrees ---
-  const worktrees = scanWorktrees();
+  const worktrees = scanWorktrees(cfg.devModeEnabled);
 
   // --- Process info ---
   const procInfo = getProcessInfo();

@@ -328,6 +328,6 @@ export function isTtydProxyPath(url: string): boolean {
 /**
  * Get the proxied URL for a ttyd instance
  */
-export function getTtydProxyUrl(port: number, baseUrl: string = 'http://localhost:3100'): string {
+export function getTtydProxyUrl(port: number, baseUrl: string = `http://localhost:${__dirname.includes('node_modules') ? 3100 : 3200}`): string {
   return `${baseUrl}/ttyd-proxy/${port}/`;
 }

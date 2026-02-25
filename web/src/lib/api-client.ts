@@ -1702,8 +1702,9 @@ export function createHybridClient(options: HybridClientOptions): ApiClient {
 
 export function detectAppMode(): { mode: AppMode; baseUrl: string } {
   if (typeof window === 'undefined') {
-    // SSR — default to local
-    return { mode: 'local', baseUrl: 'http://localhost:3100' };
+    // SSR — default to local (use runtime env var for correct port)
+    const ssrPort = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
+    return { mode: 'local', baseUrl: `http://localhost:${ssrPort}` };
   }
 
   const hostname = window.location.hostname;

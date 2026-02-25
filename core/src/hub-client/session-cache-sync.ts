@@ -47,7 +47,7 @@ export class SessionCacheSync extends EventEmitter {
 
   constructor(options: SessionCacheSyncOptions = {}) {
     super();
-    this.localApiPort = options.localApiPort || 3100;
+    this.localApiPort = options.localApiPort || (__dirname.includes('node_modules') ? 3100 : 3200);
     this.syncIntervalMs = options.syncIntervalMs || 5 * 60 * 1000; // 5 minutes
     this.maxSessionsPerSync = options.maxSessionsPerSync || 100;
   }

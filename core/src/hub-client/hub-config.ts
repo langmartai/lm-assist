@@ -13,6 +13,11 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { getDataDir } from '../utils/path-utils';
 
+/** Dev repo → true (separate hub identity), npm package → false */
+const IS_DEV_REPO = !__dirname.includes('node_modules');
+/** File suffix for dev-mode hub files (machine-id-dev, gateway-id-dev, hub-dev.json) */
+const DEV_SUFFIX = IS_DEV_REPO ? '-dev' : '';
+
 export interface HubConfig {
   /** Hub WebSocket URL */
   hubUrl: string;
@@ -46,7 +51,7 @@ function getConfigDir(): string {
  */
 function generateMachineId(): string {
   const configDir = getConfigDir();
-  const machineIdFile = path.join(configDir, 'machine-id');
+  const machineIdFile = path.join(configDir, `machine-id${DEV_SUFFIX}`);
 
   // If we have a saved machine ID, use it
   if (fs.existsSync(machineIdFile)) {
@@ -69,6 +74,7 @@ function generateMachineId(): string {
   // - Number of CPUs
   // - Total memory (rounded to nearest GB to be stable)
   // - MAC address of first non-internal interface
+  // - Dev/prod mode (so dev and prod get different IDs on same machine)
   const fingerprint = [
     cpus[0]?.model || 'unknown-cpu',
     cpus.length.toString(),
@@ -76,6 +82,7 @@ function generateMachineId(): string {
     os.hostname(),
     os.platform(),
     os.arch(),
+    IS_DEV_REPO ? 'dev' : 'prod',
   ];
 
   // Add first MAC address
@@ -116,7 +123,7 @@ function generateMachineId(): string {
  */
 function loadGatewayId(): string | null {
   const configDir = getConfigDir();
-  const gatewayIdFile = path.join(configDir, 'gateway-id');
+  const gatewayIdFile = path.join(configDir, `gateway-id${DEV_SUFFIX}`);
 
   if (fs.existsSync(gatewayIdFile)) {
     try {
@@ -137,7 +144,7 @@ function loadGatewayId(): string | null {
  */
 export function saveGatewayId(gatewayId: string): void {
   const configDir = getConfigDir();
-  const gatewayIdFile = path.join(configDir, 'gateway-id');
+  const gatewayIdFile = path.join(configDir, `gateway-id${DEV_SUFFIX}`);
 
   try {
     fs.writeFileSync(gatewayIdFile, gatewayId);
@@ -152,7 +159,7 @@ export function saveGatewayId(gatewayId: string): void {
  */
 export function clearGatewayId(): void {
   const configDir = getConfigDir();
-  const gatewayIdFile = path.join(configDir, 'gateway-id');
+  const gatewayIdFile = path.join(configDir, `gateway-id${DEV_SUFFIX}`);
 
   try {
     if (fs.existsSync(gatewayIdFile)) {
@@ -196,7 +203,7 @@ interface HubConnectionConfig {
 }
 
 function loadHubConnectionConfig(): HubConnectionConfig {
-  const configFile = path.join(getConfigDir(), 'hub.json');
+  const configFile = path.join(getConfigDir(), `hub${DEV_SUFFIX}.json`);
   try {
     if (fs.existsSync(configFile)) {
       return JSON.parse(fs.readFileSync(configFile, 'utf-8'));
@@ -212,7 +219,7 @@ function loadHubConnectionConfig(): HubConnectionConfig {
  */
 export function saveHubConnectionConfig(updates: HubConnectionConfig): void {
   const configDir = getConfigDir();
-  const configFile = path.join(configDir, 'hub.json');
+  const configFile = path.join(configDir, `hub${DEV_SUFFIX}.json`);
   const existing = loadHubConnectionConfig();
   const merged = { ...existing, ...updates };
 
@@ -245,7 +252,7 @@ export function getHubConfig(): HubConfig {
     apiKey: saved.apiKey || process.env.TIER_AGENT_API_KEY || '',
     machineId: generateMachineId(),
     gatewayId: loadGatewayId(),
-    hostname: os.hostname(),
+    hostname: IS_DEV_REPO ? `${os.hostname()} (dev)` : os.hostname(),
     platform: os.platform(),
     version: getVersion(),
   };

@@ -96,11 +96,19 @@ function loadEnv(): Record<string, string> {
   return vars;
 }
 
+/** Default ports: dev repo → 3200/3948, npm package → 3100/3848 */
+function getDefaultPorts(): { api: string; web: string } {
+  const repoRoot = getRepoRoot();
+  const isDevRepo = !repoRoot.includes('node_modules');
+  return isDevRepo ? { api: '3200', web: '3948' } : { api: '3100', web: '3848' };
+}
+
 function getConfig(cfg?: ServiceConfig) {
   const env = loadEnv();
+  const defaults = getDefaultPorts();
   return {
-    apiPort: cfg?.apiPort || parseInt(process.env.API_PORT || env.API_PORT || '3100', 10),
-    webPort: cfg?.webPort || parseInt(process.env.WEB_PORT || env.WEB_PORT || '3848', 10),
+    apiPort: cfg?.apiPort || parseInt(process.env.API_PORT || env.API_PORT || defaults.api, 10),
+    webPort: cfg?.webPort || parseInt(process.env.WEB_PORT || env.WEB_PORT || defaults.web, 10),
     projectPath: cfg?.projectPath || process.env.LM_ASSIST_PROJECT || env.LM_ASSIST_PROJECT || os.homedir(),
   };
 }
@@ -335,10 +343,12 @@ export async function startWeb(config?: ServiceConfig): Promise<{ success: boole
     return { success: false, message: `Web not built. Run: npm run build:web (.next not found)` };
   }
 
+  const { apiPort } = getConfig(config);
   const dotenv = loadEnv();
   const webEnv: Record<string, string> = {
     PORT: String(webPort),
     HOSTNAME: '0.0.0.0',
+    NEXT_PUBLIC_LOCAL_API_PORT: String(apiPort),
   };
   // Forward relevant env vars
   for (const key of ['NEXT_PUBLIC_LOCAL_API_PORT', 'GATEWAY_TYPE1_URL']) {

@@ -17,7 +17,7 @@ import { renderKnowledgeMd } from './parser';
 import { REVIEWER_SYSTEM_PROMPT } from './prompts';
 import { getDataDir } from '../utils/path-utils';
 
-const DEFAULT_API_BASE_URL = 'http://localhost:3100';
+const DEFAULT_API_BASE_URL = `http://localhost:${__dirname.includes('node_modules') ? 3100 : 3200}`;
 const DEFAULT_TIMEOUT = 180_000;
 
 export interface ReviewStatus {

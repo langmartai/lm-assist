@@ -18,10 +18,9 @@ import { getDataDir } from '../utils/path-utils';
 
 // ─── Constants ──────────────────────────────────────────────────
 
-const MAX_INPUT_TOKENS = 100_000;       // Conservative budget for validation
-const MAX_PREVIEW_CHARS = 800;          // First N chars of each candidate
-const MAX_BATCH_SIZE = 30;              // Max candidates per batch
-const DEFAULT_TIMEOUT = 120_000;        // 2 minutes
+const MAX_INPUT_TOKENS = 140_000;       // Budget for validation (Haiku has 200k context)
+const MAX_PREVIEW_CHARS = 2000;         // First N chars — enough for LLM to judge content quality
+const DEFAULT_TIMEOUT = 180_000;        // 3 minutes (larger batches take longer)
 const TOKENS_PER_CHAR = 0.25;          // ~4 chars per token
 
 const SYSTEM_PROMPT = `You validate whether assistant messages from coding sessions contain reusable knowledge.
@@ -266,11 +265,8 @@ export class KnowledgeValidator {
     for (const preview of previews) {
       const itemTokens = Math.ceil(preview.text.length * TOKENS_PER_CHAR) + 100; // + formatting overhead
 
-      if (currentBatch.length >= MAX_BATCH_SIZE ||
-          currentTokens + itemTokens > MAX_INPUT_TOKENS) {
-        if (currentBatch.length > 0) {
-          batches.push(currentBatch);
-        }
+      if (currentTokens + itemTokens > MAX_INPUT_TOKENS && currentBatch.length > 0) {
+        batches.push(currentBatch);
         currentBatch = [];
         currentTokens = Math.ceil(SYSTEM_PROMPT.length * TOKENS_PER_CHAR) + 500;
       }

@@ -6,7 +6,7 @@
  *   lm-assist serve [options]    Start REST API server
  *
  * Options:
- *   --port, -p       Server port (default: 3100)
+ *   --port, -p       Server port (default: 3100 prod / 3200 dev)
  *   --host, -h       Server host (default: 0.0.0.0)
  *   --project, -d    Project directory (default: cwd)
  *   --api-key        API key for authentication
@@ -17,6 +17,11 @@ import { startServer } from './index';
 import { getHubClient, isHubConfigured } from './hub-client';
 import { saveHubConnectionConfig } from './hub-client/hub-config';
 import { getStartupProfiler } from './startup-profiler';
+
+// Dev repo → 3200/3948, npm package → 3100/3848
+const IS_DEV_REPO = !__dirname.includes('node_modules');
+const DEFAULT_API_PORT = IS_DEV_REPO ? '3200' : '3100';
+const DEFAULT_WEB_PORT = IS_DEV_REPO ? '3948' : '3848';
 
 // Parse arguments
 const args = process.argv.slice(2);
@@ -37,7 +42,7 @@ function getArg(names: string[], defaultValue?: string): string | undefined {
 }
 
 const projectPath = getArg(['--project', '-d'], os.homedir())!;
-const port = parseInt(getArg(['--port', '-p'], '3100')!);
+const port = parseInt(getArg(['--port', '-p'], process.env.API_PORT || DEFAULT_API_PORT)!);
 const host = getArg(['--host', '-h'], '0.0.0.0')!;
 
 async function main() {
@@ -74,7 +79,7 @@ async function runServer() {
 ╠══════════════════════════════════════════════════════════════╣
 ║  Project:  ${projectPath.padEnd(48)}║
 ║  Server:   http://${host}:${port}${' '.repeat(Math.max(0, 40 - host.length - String(port).length))}║
-${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : '║  Hub:      Not configured - http://localhost:3848/settings   ║'}
+${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `║  Hub:      Not configured - http://localhost:${DEFAULT_WEB_PORT}/settings   ║`}
 ╚══════════════════════════════════════════════════════════════╝
   `);
 
@@ -103,7 +108,7 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : '�
     let hubClient = null;
     if (hubConfigured) {
       console.log('Connecting to Hub...');
-      const assistWebPort = process.env.ASSIST_WEB_PORT ? parseInt(process.env.ASSIST_WEB_PORT, 10) : 3848;
+      const assistWebPort = process.env.ASSIST_WEB_PORT ? parseInt(process.env.ASSIST_WEB_PORT, 10) : parseInt(DEFAULT_WEB_PORT, 10);
 
       // Persist service ports to ~/.lm-assist/hub.json so reconnects
       // and tier-agent (when lm-assist is an npm package) can discover them
@@ -178,7 +183,7 @@ Commands:
   help              Show this help
 
 Options:
-  --port, -p        Server port (default: 3100)
+  --port, -p        Server port (default: ${DEFAULT_API_PORT} — ${IS_DEV_REPO ? 'dev repo' : 'npm package'})
   --host, -h        Server host (default: 0.0.0.0)
   --project, -d     Project directory (default: current)
 

@@ -52,8 +52,9 @@ else
 fi
 
 # Ports (can be overridden via .env, offset by worktree number)
-API_PORT="${API_PORT:-$((3100 + WT_PORT_OFFSET))}"
-WEB_PORT="${WEB_PORT:-$((3848 + WT_PORT_OFFSET))}"
+# Dev defaults: 3200/3948 — prod (npm package via `lm-assist start`) uses 3100/3848
+API_PORT="${API_PORT:-$((3200 + WT_PORT_OFFSET))}"
+WEB_PORT="${WEB_PORT:-$((3948 + WT_PORT_OFFSET))}"
 
 # Project paths
 CORE_DIR="$PROJECT_ROOT/core"
@@ -297,7 +298,7 @@ build_web() {
 
     cd "$WEB_DIR"
     echo -e "${BLUE}Running next build...${NC}"
-    npx next build >> "$BUILD_LOG" 2>&1
+    NEXT_PUBLIC_LOCAL_API_PORT=$API_PORT npx next build >> "$BUILD_LOG" 2>&1
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}Web build successful${NC}"
         return 0
@@ -357,17 +358,31 @@ clean_data() {
         fi
     fi
 
-    # Check and stop services if running
+    # Check and stop services on both dev and prod ports
     echo ""
-    local api_running=false
-    local web_running=false
-    check_port $API_PORT && api_running=true
-    check_port $WEB_PORT && web_running=true
+    local any_running=false
 
-    if [ "$api_running" = true ] || [ "$web_running" = true ]; then
-        echo -e "${BLUE}Stopping running services...${NC}"
-        [ "$web_running" = true ] && stop_web
-        [ "$api_running" = true ] && stop_core
+    # Dev ports
+    if check_port $API_PORT || check_port $WEB_PORT; then
+        echo -e "${BLUE}Stopping dev services (ports $API_PORT/$WEB_PORT)...${NC}"
+        check_port $WEB_PORT && stop_web
+        check_port $API_PORT && stop_core
+        any_running=true
+    fi
+
+    # Prod ports (3100/3848) — stop if running and different from dev ports
+    local PROD_API_PORT=$((3100 + WT_PORT_OFFSET))
+    local PROD_WEB_PORT=$((3848 + WT_PORT_OFFSET))
+    if [ "$PROD_API_PORT" != "$API_PORT" ] || [ "$PROD_WEB_PORT" != "$WEB_PORT" ]; then
+        if check_port $PROD_API_PORT || check_port $PROD_WEB_PORT; then
+            echo -e "${BLUE}Stopping prod services (ports $PROD_API_PORT/$PROD_WEB_PORT)...${NC}"
+            check_port $PROD_WEB_PORT && fuser -k "$PROD_WEB_PORT/tcp" 2>/dev/null
+            check_port $PROD_API_PORT && fuser -k "$PROD_API_PORT/tcp" 2>/dev/null
+            any_running=true
+        fi
+    fi
+
+    if [ "$any_running" = true ]; then
         sleep 1
     else
         echo -e "${GREEN}Services already stopped${NC}"
@@ -569,9 +584,9 @@ start_web() {
         if [ ! -e "$WEB_DIR/.next/standalone/web/public" ] && [ -d "$WEB_DIR/public" ]; then
             ln -s "$WEB_DIR/public" "$WEB_DIR/.next/standalone/web/public" 2>/dev/null || true
         fi
-        nohup env HOSTNAME="0.0.0.0" PORT=$WEB_PORT node "$standalone_server" > "$WEB_LOG" 2>&1 &
+        nohup env HOSTNAME="0.0.0.0" PORT=$WEB_PORT NEXT_PUBLIC_LOCAL_API_PORT=$API_PORT node "$standalone_server" > "$WEB_LOG" 2>&1 &
     else
-        nohup npx next start -p $WEB_PORT > "$WEB_LOG" 2>&1 &
+        nohup env NEXT_PUBLIC_LOCAL_API_PORT=$API_PORT npx next start -p $WEB_PORT > "$WEB_LOG" 2>&1 &
     fi
 
     local pid=$!
@@ -849,6 +864,86 @@ restart_all() {
 # Status Function
 # ============================================================================
 
+# Helper to print status of a core+web+hub environment
+# Usage: _print_env_status <label> <api_port> <web_port>
+_print_env_status() {
+    local label="$1"
+    local ap="$2"
+    local wp="$3"
+
+    local api_up=false
+    local web_up=false
+    check_port "$ap" && api_up=true
+    check_port "$wp" && web_up=true
+
+    # Skip section if nothing running and this is not the dev section
+    if [ "$api_up" = false ] && [ "$web_up" = false ] && [ "$label" != "DEV" ]; then
+        echo -e "  ${YELLOW}Not running${NC}"
+        echo ""
+        return
+    fi
+
+    # Core API
+    echo -n "  Core API (port $ap):     "
+    if [ "$api_up" = true ]; then
+        local health=$(curl -s "http://localhost:$ap/health" 2>/dev/null)
+        local ok=$(echo "$health" | jq -r '.success // false' 2>/dev/null)
+        if [ "$ok" = "true" ]; then
+            local version=$(echo "$health" | jq -r '.data.version // "unknown"' 2>/dev/null)
+            echo -e "${GREEN}Running & Healthy${NC} (v$version)"
+        else
+            echo -e "${YELLOW}Running (Unhealthy)${NC}"
+        fi
+    else
+        echo -e "${RED}Not Running${NC}"
+    fi
+
+    # Web
+    echo -n "  Web (port $wp):          "
+    if [ "$web_up" = true ]; then
+        if check_port_responding "$wp" 3; then
+            echo -e "${GREEN}Running${NC}"
+        else
+            echo -e "${YELLOW}Stuck (port in use but not responding)${NC}"
+        fi
+    else
+        echo -e "${RED}Not Running${NC}"
+    fi
+
+    # Hub (only if core API is healthy)
+    if [ "$api_up" = true ]; then
+        echo -n "  Hub Client:              "
+        if is_hub_configured; then
+            local hub_status=$(curl -s "http://localhost:$ap/hub/status" 2>/dev/null)
+            local hub_auth=$(echo "$hub_status" | jq -r '.data.authenticated // false' 2>/dev/null)
+            local hub_gw=$(echo "$hub_status" | jq -r '.data.gatewayId // ""' 2>/dev/null)
+            local hub_retries=$(echo "$hub_status" | jq -r '.data.reconnectAttempts // 0' 2>/dev/null)
+
+            if [ "$hub_auth" = "true" ]; then
+                echo -e "${GREEN}Connected${NC} (${hub_gw})"
+            elif [ "$(echo "$hub_status" | jq -r '.data.connected // false' 2>/dev/null)" = "true" ]; then
+                echo -e "${YELLOW}Connected (auth pending)${NC}"
+            else
+                if [ "$hub_retries" -gt 0 ] 2>/dev/null; then
+                    echo -e "${YELLOW}Reconnecting (attempt ${hub_retries})${NC}"
+                else
+                    echo -e "${RED}Disconnected${NC}"
+                fi
+            fi
+        else
+            echo -e "${YELLOW}Not configured${NC}"
+        fi
+    fi
+
+    # URLs
+    if [ "$api_up" = true ] || [ "$web_up" = true ]; then
+        echo -e "  URLs:"
+        [ "$api_up" = true ] && echo -e "    Core API:  ${CYAN}http://localhost:$ap${NC}"
+        [ "$web_up" = true ] && echo -e "    Web:       ${CYAN}http://localhost:$wp${NC}"
+    fi
+    echo ""
+}
+
 # Function to check status of all services
 check_status() {
     show_header
@@ -875,89 +970,29 @@ check_status() {
             echo -e "${RED}Not built${NC}"
             ;;
     esac
-
-    # Core API Server
-    echo -n "Core API (port $API_PORT):    "
-    if check_port $API_PORT; then
-        if check_api_health; then
-            local health=$(curl -s "http://localhost:$API_PORT/health" 2>/dev/null)
-            local version=$(echo "$health" | jq -r '.data.version // "unknown"' 2>/dev/null)
-            echo -e "${GREEN}Running & Healthy${NC} (v$version)"
-        else
-            echo -e "${YELLOW}Running (Unhealthy)${NC}"
-        fi
-    else
-        echo -e "${RED}Not Running${NC}"
-    fi
-
-    # Web
-    echo -n "Web (port $WEB_PORT):         "
-    if check_port $WEB_PORT; then
-        if check_port_responding $WEB_PORT 3; then
-            echo -e "${GREEN}Running${NC}"
-        else
-            echo -e "${YELLOW}Stuck (port in use but not responding)${NC}"
-        fi
-    else
-        echo -e "${RED}Not Running${NC}"
-    fi
-
-    # Hub Client
-    echo -n "Hub Client:                "
-    if is_hub_configured; then
-        if check_api_health; then
-            local hub_status=$(curl -s "http://localhost:$API_PORT/hub/status" 2>/dev/null)
-            local hub_connected=$(echo "$hub_status" | jq -r '.data.connected // false' 2>/dev/null)
-            local hub_auth=$(echo "$hub_status" | jq -r '.data.authenticated // false' 2>/dev/null)
-            local hub_gw=$(echo "$hub_status" | jq -r '.data.gatewayId // ""' 2>/dev/null)
-            local hub_retries=$(echo "$hub_status" | jq -r '.data.reconnectAttempts // 0' 2>/dev/null)
-
-            if [ "$hub_auth" = "true" ]; then
-                echo -e "${GREEN}Connected${NC} (${hub_gw})"
-            elif [ "$hub_connected" = "true" ]; then
-                echo -e "${YELLOW}Connected (auth pending)${NC}"
-            else
-                if [ "$hub_retries" -gt 0 ] 2>/dev/null; then
-                    echo -e "${YELLOW}Reconnecting (attempt ${hub_retries})${NC}"
-                else
-                    echo -e "${RED}Disconnected${NC}"
-                fi
-            fi
-        else
-            echo -e "${RED}Core API not running${NC}"
-        fi
-    else
-        echo -e "${YELLOW}Not configured${NC} (use web ${CYAN}http://localhost:3848/settings${NC} to connect to cloud)"
-    fi
-
     echo ""
 
-    # Node.js Version
+    # Determine prod ports (3100/3848 + worktree offset)
+    local PROD_API_PORT=$((3100 + WT_PORT_OFFSET))
+    local PROD_WEB_PORT=$((3848 + WT_PORT_OFFSET))
+
+    # === DEV ===
+    echo -e "${BLUE}=== DEV ===${NC} (./core.sh)"
+    _print_env_status "DEV" "$API_PORT" "$WEB_PORT"
+
+    # === PROD ===
+    echo -e "${BLUE}=== PROD ===${NC} (lm-assist start)"
+    _print_env_status "PROD" "$PROD_API_PORT" "$PROD_WEB_PORT"
+
+    # Node.js / npm
     echo -n "Node.js:                   "
     local node_version=$(node --version 2>/dev/null || echo "not installed")
     echo -e "${CYAN}$node_version${NC}"
 
-    # npm Version
     echo -n "npm:                       "
     local npm_version=$(npm --version 2>/dev/null || echo "not installed")
     echo -e "${CYAN}$npm_version${NC}"
-
     echo ""
-
-    # Show URLs if services are running
-    if check_port $API_PORT || check_port $WEB_PORT; then
-        echo -e "${BLUE}Service URLs:${NC}"
-        if check_port $API_PORT; then
-            echo -e "  Core API:  ${CYAN}http://localhost:$API_PORT${NC}"
-        fi
-        if check_port $WEB_PORT; then
-            echo -e "  Web:       ${CYAN}http://localhost:$WEB_PORT${NC}"
-        fi
-        if is_hub_configured; then
-            echo -e "  Hub:       ${CYAN}${TIER_AGENT_HUB_URL}${NC}"
-        fi
-        echo ""
-    fi
 }
 
 # ============================================================================
@@ -1338,7 +1373,7 @@ case "${1:-}" in
         echo "  start [service]   Start a service (default: all)"
         echo "  stop [service]    Stop a service (default: all)"
         echo "  restart [service] Restart a service (default: all)"
-        echo "  status            Show all service status"
+        echo "  status            Show all service status (dev + prod)"
         echo "  build             Build Core (TypeScript)"
         echo "  cleandata [-y]    Stop services and delete all lm-assist data (~/.lm-assist)"
         echo "  test              Test API endpoints"
@@ -1351,6 +1386,10 @@ case "${1:-}" in
         echo "  web            Web Server (port $WEB_PORT)"
         echo "  hub            Hub Client (auto-starts with Core API)"
         echo "  all            All services (default)"
+        echo ""
+        echo "Port allocation:"
+        echo "  Dev  (./core.sh):        API=$API_PORT, Web=$WEB_PORT"
+        echo "  Prod (lm-assist start):  API=3100, Web=3848"
         echo ""
         echo "Examples:"
         echo "  $0                     Interactive menu"

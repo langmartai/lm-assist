@@ -31,7 +31,16 @@ const LOG_DIR = path.join(HOME, '.lm-assist', 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'context-inject-hook.log');
 const CONFIG_FILE = path.join(HOME, '.claude-code-config.json');
 const MILESTONE_SETTINGS_FILE = path.join(HOME, '.lm-assist', 'milestone', 'settings.json');
-const API_PORT = process.env.TIER_AGENT_PORT || '3100';
+
+// Dev-aware port: when devModeEnabled, default to 3200 (dev), else 3100 (prod)
+function getDefaultApiPort() {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+    if (cfg.devModeEnabled) return '3200';
+  } catch {}
+  return '3100';
+}
+const API_PORT = process.env.TIER_AGENT_PORT || getDefaultApiPort();
 
 // ---------------------------------------------------------------------------
 // Logging

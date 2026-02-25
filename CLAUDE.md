@@ -6,7 +6,7 @@ Monorepo for the LM Assistant — a web UI for managing Claude Code sessions, wi
 
 ```
 lm-assist/
-├── core/                    ← Backend API (TypeScript, port 3100)
+├── core/                    ← Backend API (TypeScript, dev :3200 / prod :3100)
 │   ├── src/
 │   │   ├── api/             ← API helper implementations (sessions, agent, tasks)
 │   │   ├── checkpoint/      ← Git checkpoint management
@@ -23,7 +23,7 @@ lm-assist/
 │   ├── scripts/             ← tmux-autostart.sh
 │   ├── package.json
 │   └── tsconfig.json
-├── web/                     ← Web UI (Next.js 16, port 3848)
+├── web/                     ← Web UI (Next.js 16, dev :3948 / prod :3848)
 │   ├── src/
 │   │   ├── app/             ← Next.js App Router pages
 │   │   ├── components/      ← React components
@@ -60,6 +60,48 @@ lm-assist/
 
 After modifying TypeScript in `core/src/`, rebuild with `./core.sh build` (or `./core.sh restart` which auto-builds if outdated).
 
+## Dev/Prod Port Separation
+
+Dev (repo) and prod (npm package) use **separate port spaces** so both can run simultaneously:
+
+| Mode | Core API | Web UI | Managed by |
+|------|----------|--------|------------|
+| **Dev** | 3200 | 3948 | `./core.sh start/stop` (this repo) |
+| **Prod** | 3100 | 3848 | `lm-assist start/stop` (npm package) |
+
+`./core.sh status` shows both environments side-by-side.
+
+**Port detection methods by component:**
+- `core.sh` — hardcoded dev defaults (3200/3948)
+- TypeScript (cli.ts, service-manager, rest-server, hub-client, etc.) — `__dirname.includes('node_modules')` → prod (3100), else dev (3200)
+- Hook + MCP + Statusline — reads `devModeEnabled` from `~/.claude-code-config.json`
+- Web UI SSR — `NEXT_PUBLIC_LOCAL_API_PORT` env var (set by core.sh at build + start time)
+- Web UI client — `NEXT_PUBLIC_LOCAL_API_PORT` baked in at `next build` time, plus `window.location.port` for self-referencing URLs
+
+**When adding new port references:** never hardcode `3100` or `3848`. Use the appropriate detection method for the component type. For core TypeScript, use the `__dirname.includes('node_modules')` pattern.
+
+### Testing After Code Changes
+
+After modifying and rebuilding (`./core.sh build`), restart **dev** services:
+```bash
+./core.sh restart          # Restarts on dev ports 3200/3948
+./core.sh status           # Verify both dev and prod status
+```
+
+Test the dev API: `curl http://localhost:3200/health`
+Test the dev web: open `http://localhost:3948`
+
+**Prod stays untouched** — `./core.sh restart` only affects dev ports. To test prod, use `lm-assist restart`.
+
+### Browser Testing (Remote / MCP)
+
+The browser automation MCP (Claude in Chrome) may run on a **different machine** than the dev server. When testing the web UI via browser:
+
+1. Get this machine's IP: `hostname -I | awk '{print $1}'`
+2. Use the IP (not `localhost`) in browser URLs: `http://<IP>:3948`
+3. The core API also binds to `0.0.0.0`, so `http://<IP>:3200/health` works for remote testing
+4. When navigating in browser automation tools, always use the IP-based URL for cross-machine access
+
 ## Architecture
 
 ### Core API (`core/`)
@@ -81,7 +123,7 @@ The backend is a raw Node.js HTTP server (no Express/Hono runtime — Hono is a 
 
 ### Web UI (`web/`)
 
-Next.js 16 with Turbopack, React 19, Zustand for state, Tailwind CSS v4 for styling. Renders sessions, terminals, tasks, knowledge, architecture, and settings pages. Communicates with the core API on port 3100.
+Next.js 16 with Turbopack, React 19, Zustand for state, Tailwind CSS v4 for styling. Renders sessions, terminals, tasks, knowledge, architecture, and settings pages. Communicates with the core API (dev :3200 / prod :3100).
 
 ### MCP Server (`core/src/mcp-server/`)
 
@@ -174,13 +216,13 @@ All configuration is via `.env` (see `.env.example`):
 
 ```bash
 ANTHROPIC_API_KEY=your-key       # For AI summaries/architecture generation
-API_PORT=3100                    # Core API port (default: 3100)
-WEB_PORT=3848                    # Web UI port (default: 3848)
+API_PORT=3200                    # Core API port (dev default: 3200, prod: 3100)
+WEB_PORT=3948                    # Web UI port (dev default: 3948, prod: 3848)
 TIER_AGENT_HUB_URL=wss://...    # Hub gateway WebSocket URL (optional)
 TIER_AGENT_API_KEY=sk-...       # Hub API key (optional)
 ```
 
-The server also accepts CLI options: `node dist/cli.js serve --port 3100 --host 0.0.0.0 --project /path --api-key KEY`
+The server also accepts CLI options: `node dist/cli.js serve --port 3200 --host 0.0.0.0 --project /path --api-key KEY`
 
 ## Hub Client
 
@@ -228,7 +270,7 @@ The **statusline** is optional and not auto-installed by the plugin.
 | `/assist-status` | Show status of all components — API, web, MCP, hooks, statusline, hub, knowledge |
 | `/assist-setup` | Start services and verify integrations (statusline optional via `--statusline`) |
 
-All commands call the existing REST API with `curl` on `localhost:3100`. If the API is not running, commands advise the user to start it or run `/assist-setup`.
+All commands call the existing REST API with `curl` on the active port (dev :3200, prod :3100). If the API is not running, commands advise the user to start it or run `/assist-setup`.
 
 **Install methods:**
 - Plugin: `claude plugin install .` (from repo root)
@@ -332,7 +374,7 @@ lm-assist can run in two modes. The mode is controlled by `~/.claude-code-config
 | **Core API** | `<npm-root>/lm-assist/core/dist/cli.js` | `<repo>/core/dist/cli.js` |
 | **Web UI** | `<npm-root>/lm-assist/web/` (next start) | `<repo>/web/` (next start) |
 | **MCP Server** | `<npm-root>/lm-assist/core/dist/mcp-server/index.js` | `<repo>/core/dist/mcp-server/index.js` |
-| **Hook** | `node "${CLAUDE_PLUGIN_ROOT}/core/hooks/context-inject-hook.js"` | Same (plugin root is plugin cache, but hook calls API on localhost:3100 which resolves to dev repo) |
+| **Hook** | `node "${CLAUDE_PLUGIN_ROOT}/core/hooks/context-inject-hook.js"` | Same (hook reads `devModeEnabled` from config to pick port 3200 or 3100) |
 | **Statusline** | `node "<npm-root>/lm-assist/core/hooks/statusline-worktree.js"` | `node "<repo>/core/hooks/statusline-worktree.js"` |
 
 Where `<npm-root>` = e.g. `~/.nvm/versions/node/v20.19.6/lib/node_modules` and `<repo>` = e.g. `/home/ubuntu/lm-assist`.
@@ -344,7 +386,7 @@ Where `<npm-root>` = e.g. `~/.nvm/versions/node/v20.19.6/lib/node_modules` and `
 3. `core/src/service-manager.ts` → same logic in `getRepoRoot()`
 4. Both Core API and Web UI resolve their working directory from this root
 5. The MCP server path is hardcoded in `.mcp.json` at plugin install time (points to npm root); in dev mode, MCP still runs from npm but the API it talks to runs from dev repo
-6. The hook runs from the plugin cache (`${CLAUDE_PLUGIN_ROOT}`), but it calls the Core API on `localhost:3100` which serves from whichever mode is active
+6. The hook runs from the plugin cache (`${CLAUDE_PLUGIN_ROOT}`), reads `devModeEnabled` from config to determine port (3200 dev / 3100 prod), and calls the Core API accordingly
 
 #### Upgrade methods
 
@@ -355,7 +397,7 @@ Where `<npm-root>` = e.g. `~/.nvm/versions/node/v20.19.6/lib/node_modules` and `
 
 **Upgrade script steps** (`core/scripts/upgrade.js`):
 1. `claude plugin install lm-assist@langmartai` — update plugin cache (MCP, hooks, slash commands)
-2. `fuser -k 3100/tcp && fuser -k 3848/tcp` — kill running services
+2. `fuser -k 3100/tcp && fuser -k 3848/tcp` — kill prod services
 3. `npm install -g lm-assist@latest` — update npm package
 4. Wait 2s
 5. `lm-assist start` — restart services

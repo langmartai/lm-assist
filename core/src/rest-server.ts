@@ -62,7 +62,7 @@ export class TierRestServer {
     profiler.start('constructor', 'Server Constructor');
 
     this.options = {
-      port: options.port || 3100,
+      port: options.port || (__dirname.includes('node_modules') ? 3100 : 3200),
       host: options.host || '::',
       projectPath: options.projectPath,
       tierManager: options.tierManager || undefined as any,
@@ -611,7 +611,7 @@ export function createRestServer(options: ServerOptions): TierRestServer {
 /**
  * Quick start server with defaults
  */
-export async function startServer(projectPath: string, port = 3100): Promise<TierRestServer> {
+export async function startServer(projectPath: string, port = (__dirname.includes('node_modules') ? 3100 : 3200)): Promise<TierRestServer> {
   const server = new TierRestServer({ projectPath, port });
   await server.start();
   return server;

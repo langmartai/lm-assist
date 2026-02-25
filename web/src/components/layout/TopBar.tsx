@@ -106,7 +106,8 @@ export function TopBar() {
     ? localIp
     : (selectedMachine?.localIp || localIp);
   const localHost = effectiveLocalIp && effectiveLocalIp !== 'localhost' ? effectiveLocalIp : 'localhost';
-  const localBaseUrl = `http://${localHost}:3848`;
+  const webPort = typeof window !== 'undefined' ? window.location.port || '3848' : '3848';
+  const localBaseUrl = `http://${localHost}:${webPort}`;
   // Only include auth token when viewing the proxy machine (token is machine-specific)
   const localUrl = (isSelectedProxyMachine && lanAuthEnabled && lanAccessToken)
     ? `${localBaseUrl}/auth?token=${encodeURIComponent(lanAccessToken)}&redirect=${encodeURIComponent(currentPage)}`

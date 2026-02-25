@@ -195,9 +195,9 @@ function fetchLiteLLMPricing(): void {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     })
-    .then((data) => {
+    .then((data: any) => {
       const cache = new Map<string, ModelPricing>();
-      const entries = data as Record<string, any>;
+      const entries = data;
       for (const [key, entry] of Object.entries(entries)) {
         if (!entry || typeof entry !== 'object') continue;
         const pricing = convertLiteLLMEntry(key, entry);

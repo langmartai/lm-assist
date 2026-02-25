@@ -256,7 +256,7 @@ export class KnowledgeGenerator {
       const formatResult: FormatResult = await formatter.format(identification);
 
       // Re-number parts with existing knowledge ID
-      const parts = formatResult.parts.map((p, i) => ({
+      const parts = formatResult.parts.map((p: any, i: number) => ({
         ...p,
         partId: `${knowledgeId}.${i + 1}`,
       }));

@@ -83,11 +83,14 @@ function saveConfig(enabled: Record<string, boolean>, autoStart: boolean) {
 // ─── API helpers ─────────────────────────────────────────────
 
 function getTierAgentBase(): string {
-  if (typeof window === 'undefined') return 'http://localhost:3100';
+  if (typeof window === 'undefined') {
+    const ssrPort = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
+    return `http://localhost:${ssrPort}`;
+  }
   const proxyInfo = detectProxyInfo();
   if (proxyInfo.isProxied) return '/_coreapi';
   const { baseUrl } = detectAppMode();
-  return baseUrl || 'http://localhost:3100';
+  return baseUrl || `http://localhost:${process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100'}`;
 }
 
 async function apiGet<T>(path: string): Promise<T | null> {

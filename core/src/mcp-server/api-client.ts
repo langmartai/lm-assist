@@ -6,11 +6,23 @@
  * are running (auto-starts via service-manager if needed).
  */
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { startCore, startWeb } from '../service-manager';
 
 // ─── Configuration ──────────────────────────────────────────────────
 
-const API_PORT = process.env.API_PORT || '3100';
+function getDefaultApiPort(): string {
+  try {
+    const cfgPath = path.join(os.homedir(), '.claude-code-config.json');
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+    if (cfg.devModeEnabled) return '3200';
+  } catch {}
+  return '3100';
+}
+
+const API_PORT = process.env.API_PORT || getDefaultApiPort();
 const BASE_URL = `http://127.0.0.1:${API_PORT}`;
 
 // ─── Types ──────────────────────────────────────────────────

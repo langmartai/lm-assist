@@ -83,7 +83,7 @@ export interface CachedArchitectureModel {
 
 const CACHE_DIR = path.join(getDataDir(), 'architecture');
 const MODEL_CACHE_VERSION = 3;
-const DEFAULT_API_BASE_URL = 'http://localhost:3100';
+const DEFAULT_API_BASE_URL = `http://localhost:${__dirname.includes('node_modules') ? 3100 : 3200}`;
 const DEFAULT_TIMEOUT = 180_000; // 3 min — multi-turn agent takes longer
 
 // ─── Session Context Collection ──────────────────────────────────────────

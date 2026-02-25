@@ -2015,7 +2015,7 @@ export default function SettingsPage() {
                     </a>
                   )}
                   <a
-                    href={`http://${lanEnabled && localIp ? localIp : 'localhost'}:3848/settings`}
+                    href={`http://${lanEnabled && localIp ? localIp : 'localhost'}:${typeof window !== 'undefined' ? window.location.port || '3848' : '3848'}/settings`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="btn btn-sm btn-ghost"

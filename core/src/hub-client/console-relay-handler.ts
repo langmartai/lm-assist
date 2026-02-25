@@ -87,7 +87,7 @@ export class ConsoleRelayHandler extends EventEmitter {
 
   constructor(options: ConsoleRelayOptions = {}) {
     super();
-    this.localApiPort = options.localApiPort || 3100;
+    this.localApiPort = options.localApiPort || (__dirname.includes('node_modules') ? 3100 : 3200);
     this.minTtydPort = options.ttydPortRange?.min || ConsoleRelayHandler.DEFAULT_MIN_PORT;
     this.maxTtydPort = options.ttydPortRange?.max || ConsoleRelayHandler.DEFAULT_MAX_PORT;
   }

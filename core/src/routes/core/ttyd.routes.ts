@@ -66,7 +66,7 @@ async function findProjectPathForSession(sessionId: string): Promise<string | nu
  * Get base URL for proxy from request headers
  */
 function getProxyBaseUrl(req: any): string {
-  const host = req.headers?.host || 'localhost:3100';
+  const host = req.headers?.host || `localhost:${__dirname.includes('node_modules') ? 3100 : 3200}`;
   const protocol = req.headers?.['x-forwarded-proto'] || 'http';
   return `${protocol}://${host}`;
 }

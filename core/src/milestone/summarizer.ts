@@ -23,7 +23,7 @@ const MAX_PROMPT_CHARS = 400;
 // Truncate file lists
 const MAX_FILES = 20;
 // Default API base URL
-const DEFAULT_API_BASE_URL = 'http://localhost:3100';
+const DEFAULT_API_BASE_URL = `http://localhost:${__dirname.includes('node_modules') ? 3100 : 3200}`;
 // Default request timeout (3 minutes)
 const DEFAULT_TIMEOUT = 180_000;
 
