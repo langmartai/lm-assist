@@ -20,7 +20,7 @@ import { getDataDir } from '../utils/path-utils';
 
 const MAX_INPUT_TOKENS = 140_000;       // Budget for validation (Haiku has 200k context)
 const MAX_PREVIEW_CHARS = 2000;         // First N chars — enough for LLM to judge content quality
-const DEFAULT_TIMEOUT = 180_000;        // 3 minutes (larger batches take longer)
+const DEFAULT_TIMEOUT = 300_000;        // 5 minutes base (Sonnet needs more time)
 const TOKENS_PER_CHAR = 0.25;          // ~4 chars per token
 
 const SYSTEM_PROMPT = `You validate whether assistant messages from coding sessions contain reusable knowledge.
@@ -28,20 +28,52 @@ const SYSTEM_PROMPT = `You validate whether assistant messages from coding sessi
 Knowledge = standalone, reusable content that would help someone understand a system months later.
 NOT knowledge = task coordination, tool narration, status updates, debugging-in-progress, deliverable handoffs.
 
+## The Standalone Test
+If someone read this 6 months from now with NO context about the original conversation, would it teach them something about how the system works?
+
+Reject if:
+- The message only makes sense as a reply in conversation (task completion, "here's what I did")
+- The message describes a point-in-time state that will be stale tomorrow
+- The message is planning future work rather than documenting completed understanding
+- The core content is a pass/fail checklist rather than an explanation
+
 ## What IS knowledge:
 - Architecture analysis with specific components and data flows
 - Bug findings with root causes, file locations, and fixes
-- Implementation summaries with what changed and why
+- Implementation summaries explaining HOW something works and WHY
 - Comparison tables with specific features and gaps
 - Pipeline/flow descriptions with phases and criteria
 
+## Implementation summary vs. Task completion report:
+- KNOWLEDGE: "The cost cascade has 3 priority levels: (1) result message, (2) cumulative, (3) token-based"
+- NOT KNOWLEDGE: "Here's what I implemented: [list of files + verification that endpoints return 200]"
+Knowledge explains HOW something works. Task reports describe WHAT was done.
+
 ## What is NOT knowledge:
 - "Let me check...", "Now let me read..." — tool coordination
-- "Done. Website created." — task completion
-- "Everything is working" + verification checklists — status reports
-- Mid-investigation analysis with "Actually wait..." — unsettled thinking
-- Directory listings, file manifests — raw output
+- "Done. Website created.", "Everything is working" — task completion
+- Verification/test matrices ("Endpoint | Status | Pass") — QA checklists
+- Messages ending with "Would you like me to...", "Want me to..." — interactive dialogue
+- Messages opening with "Everything is working", "All changes are working", "Status:" — status reports
+- Debugging environment state ("port 3100 running, port 3200 running") — ephemeral snapshots
+- "Root cause found" + CLI fix addressed to a specific user — troubleshooting responses
 - Compact/compaction summaries from context overflow
+
+## Thinking-process markers (always reject):
+Messages containing these are mid-investigation, not settled knowledge:
+- "Actually, the real issue is...", "Actually wait", "Actually, let me..."
+- "Wait — let me re-read...", "Wait, that's not right"
+- "Let me fix...", "Let me take a different approach", "Let me implement..."
+- "Let me check if...", "Let me look at...", "I need to..."
+These signal the author is still working through the problem, not documenting a conclusion.
+
+## Content quality:
+If the preview is mostly headings/structure with little actual text beneath them, mark invalid.
+
+## Heuristic score context:
+- score >= 8: High structural confidence. Still validate content purpose.
+- score 5-7: Moderate. Look for task-coordination disguised as knowledge.
+- score 1-4: Low confidence — apply extra scrutiny for conversational framing or status content.
 
 Output ONLY valid JSON, no markdown, no explanation.`;
 
@@ -92,7 +124,7 @@ export class KnowledgeValidator {
   async validateCandidates(
     candidates: IdentificationResult[],
     project: string,
-    model: string = 'haiku',
+    model: string = 'sonnet',
   ): Promise<ValidationResult[]> {
     if (candidates.length === 0) return [];
 
@@ -148,7 +180,7 @@ export class KnowledgeValidator {
    */
   async discoverAndValidate(
     project: string,
-    model: string = 'haiku',
+    model: string = 'sonnet',
   ): Promise<{ discovered: number; candidates: number; validated: number; rejected: number; errors: number }> {
     // Run discovery first (finds new candidates)
     const { getKnowledgePipeline } = require('./pipeline');
@@ -340,13 +372,16 @@ export class KnowledgeValidator {
         });
       }
 
-      // Any candidates not in the response default to valid (conservative)
+      // Any candidates not in the response: low-confidence defaults to invalid, others to valid
       for (const item of batch) {
         if (!respondedIds.has(item.id)) {
+          const defaultValid = item.score >= 5; // Only trust high-scoring defaults
           results.push({
             id: item.id,
-            valid: true,
-            reason: 'Not evaluated by LLM (defaulting to valid)',
+            valid: defaultValid,
+            reason: defaultValid
+              ? 'Not evaluated by LLM (defaulting to valid — high heuristic score)'
+              : 'Not evaluated by LLM (defaulting to invalid — low heuristic score)',
           });
         }
       }

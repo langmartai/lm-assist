@@ -848,7 +848,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // POST /knowledge/validate/generic — Discover + LLM-validate generic content candidates
-    // Body: { project, model? } — model defaults to 'haiku'
+    // Body: { project, model? } — model defaults to 'sonnet'
     {
       method: 'POST',
       pattern: /^\/knowledge\/validate\/generic$/,
@@ -861,7 +861,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
         try {
           const { getKnowledgeValidator } = require('../../knowledge/validator');
           const validator = getKnowledgeValidator();
-          const result = await validator.discoverAndValidate(project, model || 'haiku');
+          const result = await validator.discoverAndValidate(project, model || 'sonnet');
           return { success: true, data: result };
         } catch (err: any) {
           return { success: false, error: err.message };

@@ -298,6 +298,16 @@ const INCOMPLETE_RE = /(?:Let me (?:check|verify|also|now)|Actually wait|Actuall
 const DELIVERABLE_RE = /^(?:I've (?:completed|finished|created|set up|updated)|The (?:website|project|repository|implementation) (?:is|has been)|Here(?:'s| is) (?:the|what|a summary of what))/i;
 const SELF_CORRECTION_RE = /^Actually (?:wait|no|I (?:realize|see|notice))/im;
 const CANCEL_RE = /\b(?:never mind|scratch that|ignore (?:that|this))\b/i;
+
+// Task completion openers — messages starting with these are status reports, not knowledge
+const TASK_COMPLETION_RE = /^(?:Everything (?:is|looks) (?:working|good|clean|correct)|All (?:deployed|changes|tests|working|done)|Build is clean|(?:The )?(?:fix|implementation|feature) is (?:complete|done|in|working)|(?:Here's|Here is) (?:a |the )?summary|Summary of (?:changes|what)|Changes [Mm]ade|(?:Page|Server|API) is (?:serving|running|working)|All (?:\d+ )?(?:tests|checks|endpoints) pass)/i;
+
+// Mid-investigation thinking — signals unsettled analysis
+const THINKING_RE = /^(?:(?:Now )?I (?:see|found|notice) (?:several|a few|two|three|the)|(?:Now )?I (?:fully )?understand|Wait\s*[-—]|There it is|Now I (?:see|have|can see)|I see (?:two|three|a few|several)|(?:Now )?[Ll]et me (?:fix|implement|trace|take a different)|Args is )/i;
+
+// Trailing action intent — message ends with planning to do something
+const TRAILING_ACTION_RE = /(?:Let me (?:fix|implement|check|look at|take|also|now|do|update|add|trace|investigate)|Want me to|Would you like me to|I'll (?:fix|implement|update|add|check)|I need to (?:fix|implement|update))[^.]*\.?\s*$/i;
+
 const ANALYSIS_PATTERNS = [
   /\bkey findings?\b/i,
   /\broot cause\b/i,
@@ -374,10 +384,29 @@ export function scoreKnowledgeCandidate(text: string): KnowledgeCandidateScore {
     };
   }
 
+  // HR6: Task completion opener (short messages — status reports, not knowledge)
+  if (TASK_COMPLETION_RE.test(trimmed) && len < 1500) {
+    return {
+      score: -10, classification: 'reject', hardRule: 'hard-reject',
+      reason: 'Task completion / status report opener',
+      signals: [{ rule: 'HR6-task-completion', delta: -10 }],
+    };
+  }
+
+  // HR7: Mid-investigation thinking opener (unsettled analysis)
+  if (THINKING_RE.test(trimmed) && len < 1500) {
+    return {
+      score: -10, classification: 'reject', hardRule: 'hard-reject',
+      reason: 'Mid-investigation thinking (unsettled analysis)',
+      signals: [{ rule: 'HR7-thinking', delta: -10 }],
+    };
+  }
+
   // ─── HARD ACCEPT RULE ────────────────────────────────────────
 
-  // HA1: Long structured document
-  if (len >= 2000 && !isDirectoryListing(trimmed)) {
+  // HA1: Long structured document (but NOT if it's a task report or thinking)
+  if (len >= 2000 && !isDirectoryListing(trimmed)
+      && !TASK_COMPLETION_RE.test(trimmed) && !THINKING_RE.test(trimmed)) {
     const markers = countStructuralMarkers(trimmed);
     if (markers >= 2) {
       return {
@@ -504,6 +533,26 @@ export function scoreKnowledgeCandidate(text: string): KnowledgeCandidateScore {
   if (NARRATION_OPENER_RE.test(trimmed) && len >= 500) {
     score -= 3;
     signals.push({ rule: 'HR2-narration-soft', delta: -3 });
+  }
+
+  // SN6: Task completion opener on longer messages (-4)
+  if (TASK_COMPLETION_RE.test(trimmed) && len >= 1500) {
+    score -= 4;
+    signals.push({ rule: 'SN6-task-completion', delta: -4 });
+  }
+
+  // SN7: Mid-investigation thinking on longer messages (-4)
+  if (THINKING_RE.test(trimmed) && len >= 1500) {
+    score -= 4;
+    signals.push({ rule: 'SN7-thinking', delta: -4 });
+  }
+
+  // SN8: Trailing action intent — message ends with "Let me fix..." (-3)
+  // Check the last 300 chars for action-planning language
+  const tail = trimmed.slice(-300);
+  if (TRAILING_ACTION_RE.test(tail)) {
+    score -= 3;
+    signals.push({ rule: 'SN8-trailing-action', delta: -3 });
   }
 
   // ─── CLASSIFY ────────────────────────────────────────────────
