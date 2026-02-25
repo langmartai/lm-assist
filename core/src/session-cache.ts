@@ -143,6 +143,17 @@ export interface CachedUsage {
   cacheReadInputTokens: number;
 }
 
+export interface CachedModelUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  /** Accumulated costUSD from per-message costUSD fields (when available) */
+  costUsd: number;
+  /** Number of assistant messages for this model */
+  messageCount: number;
+}
+
 export interface SessionCacheData {
   // Cache metadata
   version: number;
@@ -189,7 +200,11 @@ export interface SessionCacheData {
   durationMs: number;
   durationApiMs: number;
   totalCostUsd: number;
+  /** Accumulated costUSD from per-message costUSD fields (real-time cost before result) */
+  cumulativeCostUsd: number;
   usage: CachedUsage;
+  /** Per-model token usage breakdown */
+  modelUsage: Record<string, CachedModelUsage>;
 
   // Result info
   result?: string;
@@ -672,6 +687,10 @@ export class SessionCache {
     updated.fileSize = stats.size;
     updated.fileMtime = stats.mtime.getTime();
 
+    // Ensure new fields exist (backward compat with old LMDB cache entries)
+    if (updated.cumulativeCostUsd === undefined) updated.cumulativeCostUsd = 0;
+    if (!updated.modelUsage) updated.modelUsage = {};
+
     let turnIndex = cache.lastTurnIndex;
     let lastTimestamp: string | undefined = cache.lastTimestamp;
 
@@ -1028,10 +1047,50 @@ export class SessionCache {
         // Update usage
         if (msg.message?.usage) {
           const u = msg.message.usage;
-          updated.usage.inputTokens += u.input_tokens || 0;
-          updated.usage.outputTokens += u.output_tokens || 0;
-          updated.usage.cacheCreationInputTokens += u.cache_creation_input_tokens || 0;
-          updated.usage.cacheReadInputTokens += u.cache_read_input_tokens || 0;
+          const inputToks = u.input_tokens || 0;
+          const outputToks = u.output_tokens || 0;
+          const cacheCreateToks = u.cache_creation_input_tokens || 0;
+          const cacheReadToks = u.cache_read_input_tokens || 0;
+
+          updated.usage.inputTokens += inputToks;
+          updated.usage.outputTokens += outputToks;
+          updated.usage.cacheCreationInputTokens += cacheCreateToks;
+          updated.usage.cacheReadInputTokens += cacheReadToks;
+
+          // Track per-model usage breakdown
+          const modelName = msg.message?.model;
+          if (modelName && modelName !== '<synthetic>') {
+            if (!updated.modelUsage) {
+              updated.modelUsage = {};
+            }
+            if (!updated.modelUsage[modelName]) {
+              updated.modelUsage[modelName] = {
+                inputTokens: 0,
+                outputTokens: 0,
+                cacheCreationInputTokens: 0,
+                cacheReadInputTokens: 0,
+                costUsd: 0,
+                messageCount: 0,
+              };
+            }
+            const mu = updated.modelUsage[modelName];
+            mu.inputTokens += inputToks;
+            mu.outputTokens += outputToks;
+            mu.cacheCreationInputTokens += cacheCreateToks;
+            mu.cacheReadInputTokens += cacheReadToks;
+            mu.messageCount++;
+          }
+        }
+
+        // Accumulate per-message costUSD (pre-calculated by Claude Code)
+        if (typeof msg.costUSD === 'number' && msg.costUSD > 0) {
+          updated.cumulativeCostUsd += msg.costUSD;
+
+          // Also attribute to model (only if model entry exists from usage tracking above)
+          const modelName = msg.message?.model;
+          if (modelName && modelName !== '<synthetic>' && updated.modelUsage?.[modelName]) {
+            updated.modelUsage[modelName].costUsd += msg.costUSD;
+          }
         }
       }
 
@@ -1053,6 +1112,26 @@ export class SessionCache {
             cacheCreationInputTokens: msg.usage.cache_creation_input_tokens || 0,
             cacheReadInputTokens: msg.usage.cache_read_input_tokens || 0,
           };
+        }
+
+        // Capture per-model usage from result message (most accurate, from Claude Code)
+        if (msg.modelUsage && typeof msg.modelUsage === 'object') {
+          if (!updated.modelUsage) {
+            updated.modelUsage = {};
+          }
+          for (const [modelName, mu] of Object.entries(msg.modelUsage as Record<string, any>)) {
+            if (modelName === '<synthetic>' || !mu) continue;
+            // Preserve messageCount from incremental tracking before overwriting
+            const existingMessageCount = updated.modelUsage[modelName]?.messageCount || 0;
+            updated.modelUsage[modelName] = {
+              inputTokens: mu.input_tokens || mu.inputTokens || 0,
+              outputTokens: mu.output_tokens || mu.outputTokens || 0,
+              cacheCreationInputTokens: mu.cache_creation_input_tokens || mu.cacheCreationInputTokens || 0,
+              cacheReadInputTokens: mu.cache_read_input_tokens || mu.cacheReadInputTokens || 0,
+              costUsd: mu.costUSD || mu.costUsd || 0,
+              messageCount: existingMessageCount,
+            };
+          }
         }
       }
 
@@ -1150,12 +1229,14 @@ export class SessionCache {
       durationMs: 0,
       durationApiMs: 0,
       totalCostUsd: 0,
+      cumulativeCostUsd: 0,
       usage: {
         inputTokens: 0,
         outputTokens: 0,
         cacheCreationInputTokens: 0,
         cacheReadInputTokens: 0,
       },
+      modelUsage: {},
 
       success: false,
     };
@@ -1556,12 +1637,14 @@ export class SessionCache {
       durationMs: 0,
       durationApiMs: 0,
       totalCostUsd: 0,
+      cumulativeCostUsd: 0,
       usage: {
         inputTokens: 0,
         outputTokens: 0,
         cacheCreationInputTokens: 0,
         cacheReadInputTokens: 0,
       },
+      modelUsage: {},
 
       success: false,
     };
@@ -1704,6 +1787,40 @@ export class SessionCache {
         if (!sessionId.startsWith('agent-')) {
           results.push({ sessionId, filePath, cacheData });
         }
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Get cached subagent sessions for a parent session.
+   * Reads the subagents directory on disk and uses getSessionDataSync
+   * (which triggers on-demand LMDB caching) for each agent file.
+   */
+  getSubagentSessionsFromCache(projectPath: string, sessionId: string): Array<{
+    filePath: string;
+    cacheData: SessionCacheData;
+  }> {
+    const projectKey = legacyEncodeProjectPath(projectPath);
+    const subagentsDir = path.join(os.homedir(), '.claude', 'projects', projectKey, sessionId, 'subagents');
+
+    if (!fs.existsSync(subagentsDir)) return [];
+
+    let agentFiles: string[];
+    try {
+      agentFiles = fs.readdirSync(subagentsDir)
+        .filter(f => f.startsWith('agent-') && f.endsWith('.jsonl'));
+    } catch {
+      return [];
+    }
+
+    const results: Array<{ filePath: string; cacheData: SessionCacheData }> = [];
+    for (const file of agentFiles) {
+      const filePath = path.join(subagentsDir, file);
+      const cacheData = this.getSessionDataSync(filePath);
+      if (cacheData) {
+        results.push({ filePath, cacheData });
       }
     }
 

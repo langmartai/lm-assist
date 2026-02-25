@@ -24,6 +24,7 @@ import * as readline from 'readline';
 import type { TierName } from './types/instruction-protocol';
 import { getSessionCache, type SessionCacheData, type CachedToolUse, isRealUserPrompt } from './session-cache';
 import { legacyEncodeProjectPath } from './utils/path-utils';
+import { CostCalculator } from './cost-calculator';
 
 // ============================================================================
 // Session Cache Converter
@@ -118,13 +119,16 @@ function convertCacheToSessionData(
     numTurns: cache.numTurns,
     durationMs: cache.durationMs,
     durationApiMs: cache.durationApiMs,
-    totalCostUsd: cache.totalCostUsd,
+    totalCostUsd: cache.totalCostUsd || cache.cumulativeCostUsd || 0,
     usage: {
       inputTokens: cache.usage.inputTokens,
       outputTokens: cache.usage.outputTokens,
       cacheCreationInputTokens: cache.usage.cacheCreationInputTokens,
       cacheReadInputTokens: cache.usage.cacheReadInputTokens,
     },
+    modelUsage: cache.modelUsage && Object.keys(cache.modelUsage).length > 0
+      ? Object.fromEntries(Object.entries(cache.modelUsage).map(([k, v]) => [k, { ...v }]))
+      : undefined,
     result: cache.result,
     errors: cache.errors,
     success: cache.success,
@@ -195,6 +199,28 @@ function convertCacheToSessionData(
       ? Object.fromEntries(cache.tasks.filter(t => t.subject).map(t => [t.id, t.subject]))
       : undefined,
   };
+
+  // Calculate cost from tokens if no cost from result or per-message costUSD
+  if (!data.totalCostUsd && cache.usage.inputTokens > 0) {
+    const calc = new CostCalculator();
+    data.totalCostUsd = calc.calculateCost(cache.usage, cache.model).totalCost;
+  }
+
+  // Calculate per-model costs from tokens if not set (independent of totalCostUsd source)
+  if (data.modelUsage) {
+    let calc: CostCalculator | null = null;
+    for (const [modelName, mu] of Object.entries(data.modelUsage)) {
+      if (!mu.costUsd && mu.inputTokens > 0) {
+        if (!calc) calc = new CostCalculator();
+        mu.costUsd = calc.calculateCost({
+          inputTokens: mu.inputTokens,
+          outputTokens: mu.outputTokens,
+          cacheCreationInputTokens: mu.cacheCreationInputTokens,
+          cacheReadInputTokens: mu.cacheReadInputTokens,
+        }, modelName).totalCost;
+      }
+    }
+  }
 
   if (includeRawMessages && rawMessages) {
     data.rawMessages = rawMessages;
@@ -825,6 +851,15 @@ export interface ClaudeSessionData {
     cacheCreationInputTokens: number;
     cacheReadInputTokens: number;
   };
+  /** Per-model usage breakdown */
+  modelUsage?: Record<string, {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheReadInputTokens: number;
+    costUsd: number;
+    messageCount: number;
+  }>;
   /** Final result text */
   result?: string;
   /** Error messages if failed */
@@ -2854,12 +2889,21 @@ export class AgentSessionStore extends EventEmitter {
     let durationMs = 0;
     let durationApiMs = 0;
     let totalCostUsd = 0;
+    let cumulativeCostUsd = 0;
     let usage = {
       inputTokens: 0,
       outputTokens: 0,
       cacheCreationInputTokens: 0,
       cacheReadInputTokens: 0,
     };
+    const modelUsageMap: Record<string, {
+      inputTokens: number;
+      outputTokens: number;
+      cacheCreationInputTokens: number;
+      cacheReadInputTokens: number;
+      costUsd: number;
+      messageCount: number;
+    }> = {};
     let result: string | undefined;
     let errors: string[] | undefined;
     let success = false;
@@ -3110,10 +3154,45 @@ export class AgentSessionStore extends EventEmitter {
         // Update usage from this message
         const msgUsage = assistantMsg.message?.usage;
         if (msgUsage) {
-          usage.inputTokens += msgUsage.input_tokens || 0;
-          usage.outputTokens += msgUsage.output_tokens || 0;
-          usage.cacheCreationInputTokens += msgUsage.cache_creation_input_tokens || 0;
-          usage.cacheReadInputTokens += msgUsage.cache_read_input_tokens || 0;
+          const inputToks = msgUsage.input_tokens || 0;
+          const outputToks = msgUsage.output_tokens || 0;
+          const cacheCreateToks = msgUsage.cache_creation_input_tokens || 0;
+          const cacheReadToks = msgUsage.cache_read_input_tokens || 0;
+
+          usage.inputTokens += inputToks;
+          usage.outputTokens += outputToks;
+          usage.cacheCreationInputTokens += cacheCreateToks;
+          usage.cacheReadInputTokens += cacheReadToks;
+
+          // Track per-model usage breakdown
+          const msgModel = assistantMsg.message?.model;
+          if (msgModel && msgModel !== '<synthetic>') {
+            if (!modelUsageMap[msgModel]) {
+              modelUsageMap[msgModel] = {
+                inputTokens: 0,
+                outputTokens: 0,
+                cacheCreationInputTokens: 0,
+                cacheReadInputTokens: 0,
+                costUsd: 0,
+                messageCount: 0,
+              };
+            }
+            const mu = modelUsageMap[msgModel];
+            mu.inputTokens += inputToks;
+            mu.outputTokens += outputToks;
+            mu.cacheCreationInputTokens += cacheCreateToks;
+            mu.cacheReadInputTokens += cacheReadToks;
+            mu.messageCount++;
+          }
+        }
+
+        // Accumulate per-message costUSD (pre-calculated by Claude Code)
+        if (typeof assistantMsg.costUSD === 'number' && assistantMsg.costUSD > 0) {
+          cumulativeCostUsd += assistantMsg.costUSD;
+          const msgModel = assistantMsg.message?.model;
+          if (msgModel && msgModel !== '<synthetic>' && modelUsageMap[msgModel]) {
+            modelUsageMap[msgModel].costUsd += assistantMsg.costUSD;
+          }
         }
       }
 
@@ -3290,6 +3369,22 @@ export class AgentSessionStore extends EventEmitter {
             cacheReadInputTokens: resultMsg.usage.cache_read_input_tokens,
           };
         }
+
+        // Capture per-model usage from result message (most accurate, from Claude Code)
+        if ((resultMsg as any).modelUsage && typeof (resultMsg as any).modelUsage === 'object') {
+          for (const [mName, mu] of Object.entries((resultMsg as any).modelUsage as Record<string, any>)) {
+            if (mName === '<synthetic>' || !mu) continue;
+            const existingMsgCount = modelUsageMap[mName]?.messageCount || 0;
+            modelUsageMap[mName] = {
+              inputTokens: mu.input_tokens || mu.inputTokens || 0,
+              outputTokens: mu.output_tokens || mu.outputTokens || 0,
+              cacheCreationInputTokens: mu.cache_creation_input_tokens || mu.cacheCreationInputTokens || 0,
+              cacheReadInputTokens: mu.cache_read_input_tokens || mu.cacheReadInputTokens || 0,
+              costUsd: mu.costUSD || mu.costUsd || 0,
+              messageCount: existingMsgCount,
+            };
+          }
+        }
       }
 
     }
@@ -3299,55 +3394,15 @@ export class AgentSessionStore extends EventEmitter {
       durationMs = lastTimestamp.getTime() - firstTimestamp.getTime();
     }
 
-    // Calculate cost if not set (model-specific rates)
-    // See: https://platform.claude.com/docs/en/about-claude/pricing
+    // Use cumulativeCostUsd (from per-message costUSD) if no result-level cost
+    if (!totalCostUsd && cumulativeCostUsd > 0) {
+      totalCostUsd = cumulativeCostUsd;
+    }
+
+    // Calculate cost if not set
     if (!totalCostUsd && usage.inputTokens > 0) {
-      // Per-million token rates by model (USD)
-      // Default: Sonnet 4/4.5 rates
-      let inputRate = 3;
-      let outputRate = 15;
-      let cacheReadRate = 0.3;    // 10% of input
-      let cacheCreateRate = 3.75; // 125% of input
-
-      const modelLower = model.toLowerCase();
-
-      if (modelLower.includes('opus-4-6') || modelLower.includes('opus-4.6') || modelLower.includes('opus-4-5') || modelLower.includes('opus-4.5')) {
-        // Opus 4.5/4.6: $5 input, $25 output
-        inputRate = 5;
-        outputRate = 25;
-        cacheReadRate = 0.5;
-        cacheCreateRate = 6.25;
-      } else if (modelLower.includes('opus')) {
-        // Opus 4, 4.1, 3: $15 input, $75 output
-        inputRate = 15;
-        outputRate = 75;
-        cacheReadRate = 1.5;
-        cacheCreateRate = 18.75;
-      } else if (modelLower.includes('haiku-4-5') || modelLower.includes('haiku-4.5')) {
-        // Haiku 4.5: $1 input, $5 output
-        inputRate = 1;
-        outputRate = 5;
-        cacheReadRate = 0.1;
-        cacheCreateRate = 1.25;
-      } else if (modelLower.includes('haiku-3-5') || modelLower.includes('haiku-3.5')) {
-        // Haiku 3.5: $0.80 input, $4 output
-        inputRate = 0.8;
-        outputRate = 4;
-        cacheReadRate = 0.08;
-        cacheCreateRate = 1.0;
-      } else if (modelLower.includes('haiku')) {
-        // Haiku 3: $0.25 input, $1.25 output
-        inputRate = 0.25;
-        outputRate = 1.25;
-        cacheReadRate = 0.03;
-        cacheCreateRate = 0.30;
-      }
-      // Sonnet (default): $3 input, $15 output
-
-      totalCostUsd = (usage.inputTokens / 1_000_000) * inputRate +
-                     (usage.outputTokens / 1_000_000) * outputRate +
-                     (usage.cacheReadInputTokens / 1_000_000) * cacheReadRate +
-                     (usage.cacheCreationInputTokens / 1_000_000) * cacheCreateRate;
+      const calc = new CostCalculator();
+      totalCostUsd = calc.calculateCost(usage, model).totalCost;
     }
 
     // Determine success if we have responses
@@ -3455,6 +3510,7 @@ export class AgentSessionStore extends EventEmitter {
       durationApiMs,
       totalCostUsd,
       usage,
+      modelUsage: Object.keys(modelUsageMap).length > 0 ? modelUsageMap : undefined,
       result,
       errors,
       success,
@@ -3524,6 +3580,12 @@ export class AgentSessionStore extends EventEmitter {
     userPromptCount?: number;
     taskCount?: number;
     planCount?: number;
+    totalCostUsd?: number;
+    subagentCostUsd?: number;
+    usage?: { inputTokens: number; outputTokens: number; cacheCreationInputTokens: number; cacheReadInputTokens: number };
+    modelUsage?: Record<string, { inputTokens: number; outputTokens: number; cacheCreationInputTokens: number; cacheReadInputTokens: number; costUsd: number; messageCount: number }>;
+    model?: string;
+    numTurns?: number;
   }> {
     const projectCwd = cwd || this.config.projectPath;
     const sessionCache = getSessionCache();
@@ -3540,6 +3602,64 @@ export class AgentSessionStore extends EventEmitter {
       }
     };
 
+    // Shared calculator instance — only created if needed (token-based cost fallback)
+    let calc: CostCalculator | null = null;
+
+    // Helper: aggregate subagent costs from LMDB cache for a session
+    const aggregateSubagentCosts = (sessionId: string, agentCount: number): {
+      subagentCostUsd: number;
+      subagentUsage: { inputTokens: number; outputTokens: number; cacheCreationInputTokens: number; cacheReadInputTokens: number };
+      subagentModelUsage: Record<string, any>;
+    } | null => {
+      if (!agentCount) return null;
+      const subagentEntries = sessionCache.getSubagentSessionsFromCache(projectCwd, sessionId);
+      if (subagentEntries.length === 0) return null;
+
+      let subagentCostUsd = 0;
+      const subagentUsage = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
+      const subagentModelUsage: Record<string, any> = {};
+
+      for (const entry of subagentEntries) {
+        const cd = entry.cacheData;
+        // Cost cascade: same as parent
+        let cost = cd.totalCostUsd || cd.cumulativeCostUsd || 0;
+        if (!cost && cd.usage && cd.usage.inputTokens > 0) {
+          if (!calc) calc = new CostCalculator();
+          cost = calc.calculateCost(cd.usage, cd.model || '').totalCost;
+        }
+        subagentCostUsd += cost;
+
+        // Aggregate usage tokens
+        if (cd.usage) {
+          subagentUsage.inputTokens += cd.usage.inputTokens;
+          subagentUsage.outputTokens += cd.usage.outputTokens;
+          subagentUsage.cacheCreationInputTokens += cd.usage.cacheCreationInputTokens;
+          subagentUsage.cacheReadInputTokens += cd.usage.cacheReadInputTokens;
+        }
+
+        // Merge modelUsage
+        if (cd.modelUsage) {
+          for (const [model, mu] of Object.entries(cd.modelUsage)) {
+            if (!subagentModelUsage[model]) {
+              subagentModelUsage[model] = { ...mu };
+            } else {
+              const existing = subagentModelUsage[model];
+              existing.inputTokens += mu.inputTokens;
+              existing.outputTokens += mu.outputTokens;
+              existing.cacheCreationInputTokens += mu.cacheCreationInputTokens;
+              existing.cacheReadInputTokens += mu.cacheReadInputTokens;
+              existing.costUsd += mu.costUsd;
+              existing.messageCount += mu.messageCount;
+            }
+          }
+        }
+      }
+
+      return subagentCostUsd > 0 || subagentUsage.inputTokens > 0
+        ? { subagentCostUsd, subagentUsage, subagentModelUsage }
+        : null;
+    };
+
     // Fast path: if project is fully cached, use memory cache directly
     if (sessionCache.isProjectCached(projectCwd)) {
       const cachedSessions = sessionCache.getProjectSessionsFromCache(projectCwd);
@@ -3551,6 +3671,62 @@ export class AgentSessionStore extends EventEmitter {
           const lastPrompt = realPrompts[realPrompts.length - 1];
           // Count actual agent files on disk (more accurate than parsing Task tool calls)
           const agentCount = countAgentFiles(s.sessionId);
+
+          // Cost cascade: result totalCostUsd → cumulativeCostUsd → token-based calculation
+          let costUsd: number | undefined = s.cacheData.totalCostUsd || s.cacheData.cumulativeCostUsd || 0;
+          if (!costUsd && s.cacheData.usage && s.cacheData.usage.inputTokens > 0) {
+            if (!calc) calc = new CostCalculator();
+            costUsd = calc.calculateCost(s.cacheData.usage, s.cacheData.model || '').totalCost;
+          }
+          if (!costUsd) costUsd = undefined;
+          const { usage: cachedUsage, modelUsage: cachedModelUsage } = s.cacheData;
+          const hasUsage = cachedUsage && (cachedUsage.inputTokens > 0 || cachedUsage.outputTokens > 0);
+          // Deep copy modelUsage entries to avoid mutating cache
+          let modelUsageCopy: Record<string, any> | undefined;
+          if (cachedModelUsage && Object.keys(cachedModelUsage).length > 0) {
+            modelUsageCopy = {};
+            for (const [k, v] of Object.entries(cachedModelUsage)) {
+              modelUsageCopy[k] = { ...v };
+            }
+          }
+
+          // Aggregate subagent costs from LMDB cache
+          let subagentCostUsd: number | undefined;
+          const subagentAgg = aggregateSubagentCosts(s.sessionId, agentCount);
+          if (subagentAgg) {
+            subagentCostUsd = subagentAgg.subagentCostUsd;
+            // Add subagent cost to total
+            if (costUsd) {
+              costUsd += subagentAgg.subagentCostUsd;
+            } else if (subagentAgg.subagentCostUsd > 0) {
+              costUsd = subagentAgg.subagentCostUsd;
+            }
+            // Merge subagent modelUsage
+            for (const [model, mu] of Object.entries(subagentAgg.subagentModelUsage)) {
+              if (!modelUsageCopy) modelUsageCopy = {};
+              if (!modelUsageCopy[model]) {
+                modelUsageCopy[model] = { ...mu };
+              } else {
+                const existing = modelUsageCopy[model];
+                existing.inputTokens += mu.inputTokens;
+                existing.outputTokens += mu.outputTokens;
+                existing.cacheCreationInputTokens += mu.cacheCreationInputTokens;
+                existing.cacheReadInputTokens += mu.cacheReadInputTokens;
+                existing.costUsd += mu.costUsd;
+                existing.messageCount += mu.messageCount;
+              }
+            }
+          }
+
+          // Build merged usage (parent + subagent)
+          const mergedUsage = hasUsage || subagentAgg
+            ? {
+                inputTokens: (hasUsage ? cachedUsage.inputTokens : 0) + (subagentAgg?.subagentUsage.inputTokens || 0),
+                outputTokens: (hasUsage ? cachedUsage.outputTokens : 0) + (subagentAgg?.subagentUsage.outputTokens || 0),
+                cacheCreationInputTokens: (hasUsage ? cachedUsage.cacheCreationInputTokens : 0) + (subagentAgg?.subagentUsage.cacheCreationInputTokens || 0),
+                cacheReadInputTokens: (hasUsage ? cachedUsage.cacheReadInputTokens : 0) + (subagentAgg?.subagentUsage.cacheReadInputTokens || 0),
+              }
+            : undefined;
 
           return {
             sessionId: s.sessionId,
@@ -3567,6 +3743,12 @@ export class AgentSessionStore extends EventEmitter {
             teamName: s.cacheData.teamName,
             allTeams: s.cacheData.allTeams && s.cacheData.allTeams.length > 0 ? s.cacheData.allTeams : undefined,
             forkedFromSessionId: s.cacheData.forkedFromSessionId,
+            totalCostUsd: costUsd && costUsd > 0 ? costUsd : undefined,
+            subagentCostUsd: subagentCostUsd && subagentCostUsd > 0 ? subagentCostUsd : undefined,
+            usage: mergedUsage,
+            modelUsage: modelUsageCopy,
+            model: s.cacheData.model || undefined,
+            numTurns: s.cacheData.numTurns > 0 ? s.cacheData.numTurns : undefined,
           };
         });
 
@@ -3597,6 +3779,12 @@ export class AgentSessionStore extends EventEmitter {
       planCount?: number;
       teamName?: string;
       allTeams?: string[];
+      totalCostUsd?: number;
+      subagentCostUsd?: number;
+      usage?: { inputTokens: number; outputTokens: number; cacheCreationInputTokens: number; cacheReadInputTokens: number };
+      modelUsage?: Record<string, any>;
+      model?: string;
+      numTurns?: number;
     }> = [];
 
     const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-'));
@@ -3623,6 +3811,58 @@ export class AgentSessionStore extends EventEmitter {
         // Count actual agent files on disk (more accurate than parsing Task tool calls)
         const agentCount = countAgentFiles(sessionId);
 
+        // Cost cascade: result totalCostUsd → cumulativeCostUsd → token-based calculation
+        let costUsd: number | undefined = cacheData.totalCostUsd || cacheData.cumulativeCostUsd || 0;
+        if (!costUsd && cacheData.usage && cacheData.usage.inputTokens > 0) {
+          if (!calc) calc = new CostCalculator();
+          costUsd = calc.calculateCost(cacheData.usage, cacheData.model || '').totalCost;
+        }
+        if (!costUsd) costUsd = undefined;
+        const hasUsage = cacheData.usage && (cacheData.usage.inputTokens > 0 || cacheData.usage.outputTokens > 0);
+        let modelUsageCopy: Record<string, any> | undefined;
+        if (cacheData.modelUsage && Object.keys(cacheData.modelUsage).length > 0) {
+          modelUsageCopy = {};
+          for (const [k, v] of Object.entries(cacheData.modelUsage)) {
+            modelUsageCopy[k] = { ...v };
+          }
+        }
+
+        // Aggregate subagent costs from LMDB cache
+        let subagentCostUsd: number | undefined;
+        const subagentAgg = aggregateSubagentCosts(sessionId, agentCount);
+        if (subagentAgg) {
+          subagentCostUsd = subagentAgg.subagentCostUsd;
+          if (costUsd) {
+            costUsd += subagentAgg.subagentCostUsd;
+          } else if (subagentAgg.subagentCostUsd > 0) {
+            costUsd = subagentAgg.subagentCostUsd;
+          }
+          for (const [model, mu] of Object.entries(subagentAgg.subagentModelUsage)) {
+            if (!modelUsageCopy) modelUsageCopy = {};
+            if (!modelUsageCopy[model]) {
+              modelUsageCopy[model] = { ...mu };
+            } else {
+              const existing = modelUsageCopy[model];
+              existing.inputTokens += mu.inputTokens;
+              existing.outputTokens += mu.outputTokens;
+              existing.cacheCreationInputTokens += mu.cacheCreationInputTokens;
+              existing.cacheReadInputTokens += mu.cacheReadInputTokens;
+              existing.costUsd += mu.costUsd;
+              existing.messageCount += mu.messageCount;
+            }
+          }
+        }
+
+        // Build merged usage (parent + subagent)
+        const mergedUsage = hasUsage || subagentAgg
+          ? {
+              inputTokens: (hasUsage ? cacheData.usage.inputTokens : 0) + (subagentAgg?.subagentUsage.inputTokens || 0),
+              outputTokens: (hasUsage ? cacheData.usage.outputTokens : 0) + (subagentAgg?.subagentUsage.outputTokens || 0),
+              cacheCreationInputTokens: (hasUsage ? cacheData.usage.cacheCreationInputTokens : 0) + (subagentAgg?.subagentUsage.cacheCreationInputTokens || 0),
+              cacheReadInputTokens: (hasUsage ? cacheData.usage.cacheReadInputTokens : 0) + (subagentAgg?.subagentUsage.cacheReadInputTokens || 0),
+            }
+          : undefined;
+
         sessions.push({
           sessionId,
           projectPath: projectCwd,
@@ -3637,6 +3877,12 @@ export class AgentSessionStore extends EventEmitter {
           planCount: cacheData.plans.length > 0 ? cacheData.plans.length : undefined,
           teamName: cacheData.teamName,
           allTeams: cacheData.allTeams && cacheData.allTeams.length > 0 ? cacheData.allTeams : undefined,
+          totalCostUsd: costUsd && costUsd > 0 ? costUsd : undefined,
+          subagentCostUsd: subagentCostUsd && subagentCostUsd > 0 ? subagentCostUsd : undefined,
+          usage: mergedUsage,
+          modelUsage: modelUsageCopy,
+          model: cacheData.model || undefined,
+          numTurns: cacheData.numTurns > 0 ? cacheData.numTurns : undefined,
         });
       } catch {
         // Skip files we can't stat
