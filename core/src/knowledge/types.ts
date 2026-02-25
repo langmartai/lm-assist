@@ -18,6 +18,9 @@ export interface Knowledge {
   sourceSessionId?: string;      // Parent session ID (for generated knowledge)
   sourceAgentId?: string;        // Explore agent ID (for generated knowledge)
   sourceTimestamp?: string;      // When the source agent completed (ISO timestamp)
+  sourceIdentifier?: string;    // Identifier type that produced this (undefined = 'explore-agent' for backwards compat)
+  sourceLineIndex?: number;     // Line index in JSONL file
+  sourceTurnIndex?: number;     // Turn number in session
   origin?: 'local' | 'remote';  // Source origin (default: 'local')
   machineId?: string;            // Source machine ID (for remote knowledge)
   machineHostname?: string;      // Source hostname (for remote knowledge)
@@ -64,6 +67,9 @@ export interface KnowledgeIndex {
     sourceSessionId?: string;
     sourceAgentId?: string;
     sourceTimestamp?: string;
+    sourceIdentifier?: string;
+    sourceLineIndex?: number;
+    sourceTurnIndex?: number;
     origin?: 'local' | 'remote';
     machineId?: string;
     machineHostname?: string;

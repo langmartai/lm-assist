@@ -35,6 +35,9 @@ interface Frontmatter {
   sourceSessionId?: string;
   sourceAgentId?: string;
   sourceTimestamp?: string;
+  sourceIdentifier?: string;
+  sourceLineIndex?: number;
+  sourceTurnIndex?: number;
   origin?: 'local' | 'remote';
   machineId?: string;
   machineHostname?: string;
@@ -72,6 +75,9 @@ function parseFrontmatter(raw: string): Frontmatter | null {
     sourceSessionId: fm.sourceSessionId || undefined,
     sourceAgentId: fm.sourceAgentId || undefined,
     sourceTimestamp: fm.sourceTimestamp || undefined,
+    sourceIdentifier: fm.sourceIdentifier || undefined,
+    sourceLineIndex: fm.sourceLineIndex ? parseInt(fm.sourceLineIndex, 10) : undefined,
+    sourceTurnIndex: fm.sourceTurnIndex ? parseInt(fm.sourceTurnIndex, 10) : undefined,
     origin: (fm.origin === 'remote' ? 'remote' : undefined) as Frontmatter['origin'],
     machineId: fm.machineId || undefined,
     machineHostname: fm.machineHostname || undefined,
@@ -93,6 +99,9 @@ function renderFrontmatter(k: Knowledge): string {
   if (k.sourceSessionId) lines.push(`sourceSessionId: ${k.sourceSessionId}`);
   if (k.sourceAgentId) lines.push(`sourceAgentId: ${k.sourceAgentId}`);
   if (k.sourceTimestamp) lines.push(`sourceTimestamp: ${k.sourceTimestamp}`);
+  if (k.sourceIdentifier) lines.push(`sourceIdentifier: ${k.sourceIdentifier}`);
+  if (k.sourceLineIndex !== undefined) lines.push(`sourceLineIndex: ${k.sourceLineIndex}`);
+  if (k.sourceTurnIndex !== undefined) lines.push(`sourceTurnIndex: ${k.sourceTurnIndex}`);
   if (k.origin === 'remote') lines.push(`origin: remote`);
   if (k.machineId) lines.push(`machineId: ${k.machineId}`);
   if (k.machineHostname) lines.push(`machineHostname: ${k.machineHostname}`);
@@ -200,6 +209,9 @@ export function parseKnowledgeMd(mdContent: string): Knowledge | null {
     sourceSessionId: frontmatter.sourceSessionId,
     sourceAgentId: frontmatter.sourceAgentId,
     sourceTimestamp: frontmatter.sourceTimestamp,
+    sourceIdentifier: frontmatter.sourceIdentifier,
+    sourceLineIndex: frontmatter.sourceLineIndex,
+    sourceTurnIndex: frontmatter.sourceTurnIndex,
     origin: frontmatter.origin,
     machineId: frontmatter.machineId,
     machineHostname: frontmatter.machineHostname,

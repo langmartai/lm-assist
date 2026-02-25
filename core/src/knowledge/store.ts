@@ -130,6 +130,9 @@ export class KnowledgeStore {
       sourceSessionId: knowledge.sourceSessionId,
       sourceAgentId: knowledge.sourceAgentId,
       sourceTimestamp: knowledge.sourceTimestamp,
+      sourceIdentifier: knowledge.sourceIdentifier,
+      sourceLineIndex: knowledge.sourceLineIndex,
+      sourceTurnIndex: knowledge.sourceTurnIndex,
       origin: knowledge.origin,
       machineId: knowledge.machineId,
       machineHostname: knowledge.machineHostname,
@@ -303,6 +306,9 @@ export class KnowledgeStore {
     sourceSessionId?: string;
     sourceAgentId?: string;
     sourceTimestamp?: string;
+    sourceIdentifier?: string;
+    sourceLineIndex?: number;
+    sourceTurnIndex?: number;
     /** Remote origin fields — when set, stores in remote/{machineId}/ subdirectory */
     id?: string;
     origin?: 'local' | 'remote';
@@ -353,6 +359,9 @@ export class KnowledgeStore {
       sourceSessionId: data.sourceSessionId,
       sourceAgentId: data.sourceAgentId,
       sourceTimestamp: data.sourceTimestamp,
+      sourceIdentifier: data.sourceIdentifier,
+      sourceLineIndex: data.sourceLineIndex,
+      sourceTurnIndex: data.sourceTurnIndex,
       origin: data.origin,
       machineId: data.machineId,
       machineHostname: data.machineHostname,
@@ -395,7 +404,7 @@ export class KnowledgeStore {
   /**
    * Update an existing knowledge document.
    */
-  updateKnowledge(id: string, updates: Partial<Pick<Knowledge, 'title' | 'type' | 'project' | 'status' | 'parts' | 'sourceSessionId' | 'sourceAgentId' | 'sourceTimestamp'>>): Knowledge | null {
+  updateKnowledge(id: string, updates: Partial<Pick<Knowledge, 'title' | 'type' | 'project' | 'status' | 'parts' | 'sourceSessionId' | 'sourceAgentId' | 'sourceTimestamp' | 'sourceIdentifier' | 'sourceLineIndex' | 'sourceTurnIndex'>>): Knowledge | null {
     const existing = this.getKnowledge(id);
     if (!existing) return null;
 
@@ -410,6 +419,9 @@ export class KnowledgeStore {
     if (updates.sourceSessionId !== undefined) updated.sourceSessionId = updates.sourceSessionId;
     if (updates.sourceAgentId !== undefined) updated.sourceAgentId = updates.sourceAgentId;
     if (updates.sourceTimestamp !== undefined) updated.sourceTimestamp = updates.sourceTimestamp;
+    if (updates.sourceIdentifier !== undefined) updated.sourceIdentifier = updates.sourceIdentifier;
+    if (updates.sourceLineIndex !== undefined) updated.sourceLineIndex = updates.sourceLineIndex;
+    if (updates.sourceTurnIndex !== undefined) updated.sourceTurnIndex = updates.sourceTurnIndex;
     updated.updatedAt = new Date().toISOString();
 
     this.saveKnowledge(updated);

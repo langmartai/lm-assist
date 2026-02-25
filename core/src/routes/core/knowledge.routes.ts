@@ -725,6 +725,85 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // GET /knowledge/identifications — List all identification results
+    // ?identifierType= — filter by type (explore-agent, generic-content)
+    // ?status= — filter by status (candidate, generated, skipped)
+    // ?project= — filter by project path
+    // ?sessionId= — filter by session ID
+    {
+      method: 'GET',
+      pattern: /^\/knowledge\/identifications$/,
+      handler: async (req) => {
+        try {
+          const { getIdentificationStore } = require('../../knowledge/identification-store');
+          const store = getIdentificationStore();
+          const results = store.list({
+            identifierType: req.query.identifierType || undefined,
+            status: req.query.status || undefined,
+            projectPath: req.query.project || undefined,
+            sessionId: req.query.sessionId || undefined,
+          });
+          return { success: true, data: results };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
+    // POST /knowledge/generate/generic — Generate knowledge from generic content
+    // Body: { sessionId, lineIndex, project, title? }
+    {
+      method: 'POST',
+      pattern: /^\/knowledge\/generate\/generic$/,
+      handler: async (req) => {
+        const { sessionId, lineIndex, project, title } = req.body || {};
+        if (!sessionId || lineIndex === undefined || !project) {
+          return { success: false, error: 'sessionId, lineIndex, and project are required' };
+        }
+
+        try {
+          const { getKnowledgePipeline } = require('../../knowledge/pipeline');
+          const pipeline = getKnowledgePipeline();
+          const knowledge = await pipeline.generateFromGenericContent(
+            sessionId,
+            parseInt(String(lineIndex), 10),
+            project,
+            title,
+          );
+          return { success: true, data: knowledge };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
+    // POST /knowledge/generate/generic/preview — Preview generic content knowledge (no storage)
+    // Body: { sessionId, lineIndex, project, title? }
+    {
+      method: 'POST',
+      pattern: /^\/knowledge\/generate\/generic\/preview$/,
+      handler: async (req) => {
+        const { sessionId, lineIndex, project, title } = req.body || {};
+        if (!sessionId || lineIndex === undefined || !project) {
+          return { success: false, error: 'sessionId, lineIndex, and project are required' };
+        }
+
+        try {
+          const { getKnowledgePipeline } = require('../../knowledge/pipeline');
+          const pipeline = getKnowledgePipeline();
+          const preview = await pipeline.previewGenericContent(
+            sessionId,
+            parseInt(String(lineIndex), 10),
+            project,
+            title,
+          );
+          return { success: true, data: preview };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
     // PUT /knowledge/comments/:commentId — Update comment state
     {
       method: 'PUT',

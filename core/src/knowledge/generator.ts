@@ -13,10 +13,16 @@
  */
 
 import { getKnowledgeStore } from './store';
-import type { Knowledge, KnowledgePart, KnowledgeType } from './types';
-import { KNOWLEDGE_TYPES } from './types';
+import type { Knowledge } from './types';
+import type { IdentifierType, FormatResult } from './identifier-types';
+import {
+  deriveTitle,
+  splitIntoParts,
+  detectType,
+  isJunkResult,
+  MIN_RESULT_LENGTH,
+} from './helpers';
 
-const MIN_RESULT_LENGTH = 200;
 const MAX_SESSIONS_TO_SCAN = Infinity;
 
 // ─── Types ──────────────────────────────────────────────────
@@ -98,13 +104,13 @@ export class KnowledgeGenerator {
 
           // Must have substantial result that isn't junk
           if (!agent.result || agent.result.length < MIN_RESULT_LENGTH) continue;
-          if (this.isJunkResult(agent.result.trim())) continue;
+          if (isJunkResult(agent.result.trim())) continue;
 
           // Skip if already generated (by agentId)
           if (generatedIds.has(agent.agentId)) continue;
 
           // Skip if title+session already generated (catches duplicates with different agentIds)
-          const derivedTitle = this.deriveTitle(agent.prompt, agent.description);
+          const derivedTitle = deriveTitle(agent.prompt, agent.description);
           if (generatedTitleKeys.has(`${derivedTitle}\0${session.sessionId}`)) continue;
 
           candidates.push({
@@ -161,21 +167,21 @@ export class KnowledgeGenerator {
 
       // Quality check: reject empty/failed explore results
       const trimmedResult = agentData.result.trim();
-      if (trimmedResult.length < MIN_RESULT_LENGTH || this.isJunkResult(trimmedResult)) {
+      if (trimmedResult.length < MIN_RESULT_LENGTH || isJunkResult(trimmedResult)) {
         throw new Error(`Explore agent ${agentId} has insufficient or junk content — skipping`);
       }
 
       // Phase 1: Derive title from prompt
-      const title = this.deriveTitle(agentData.prompt, agentData.description);
+      const title = deriveTitle(agentData.prompt, agentData.description);
 
       // Phase 2: Split result into parts
-      const rawParts = this.splitIntoParts(agentData.result);
+      const rawParts = splitIntoParts(agentData.result);
       if (rawParts.length === 0) {
         throw new Error('No sections found in explore agent output (expected ## headings)');
       }
 
       // Detect knowledge type from content
-      const type = this.detectType(title, rawParts);
+      const type = detectType(title, rawParts);
 
       // Create knowledge document
       const knowledge = store.createKnowledge({
@@ -196,7 +202,8 @@ export class KnowledgeGenerator {
   }
 
   /**
-   * Regenerate knowledge by re-extracting from its original explore source.
+   * Regenerate knowledge by re-extracting from its original source.
+   * Checks sourceIdentifier to pick the right formatter (defaults to explore-agent for backwards compat).
    */
   async regenerateKnowledge(knowledgeId: string): Promise<Knowledge> {
     const store = getKnowledgeStore();
@@ -204,8 +211,21 @@ export class KnowledgeGenerator {
     if (!existing) {
       throw new Error(`Knowledge ${knowledgeId} not found`);
     }
-    if (!existing.sourceSessionId || !existing.sourceAgentId) {
-      throw new Error(`Knowledge ${knowledgeId} has no source tracking (not generated from explore)`);
+
+    const identifierType = (existing.sourceIdentifier || 'explore-agent') as IdentifierType;
+
+    // For explore-agent, require sourceAgentId
+    if (identifierType === 'explore-agent') {
+      if (!existing.sourceSessionId || !existing.sourceAgentId) {
+        throw new Error(`Knowledge ${knowledgeId} has no source tracking (not generated from explore)`);
+      }
+    }
+
+    // For generic-content, require sourceSessionId and sourceLineIndex
+    if (identifierType === 'generic-content') {
+      if (!existing.sourceSessionId || existing.sourceLineIndex === undefined) {
+        throw new Error(`Knowledge ${knowledgeId} has no source tracking (missing session or line index)`);
+      }
     }
 
     this.currentStatus = {
@@ -215,39 +235,37 @@ export class KnowledgeGenerator {
     };
 
     try {
-      // Re-fetch the explore agent data (waits for warming if needed)
-      const agentData = await this.loadSubagentData(
-        existing.sourceSessionId,
-        existing.sourceAgentId,
-        existing.project,
-      );
-      if (!agentData) {
-        throw new Error(`Original explore agent ${existing.sourceAgentId} no longer available`);
-      }
+      // Use the formatter for the identifier type
+      const { getFormatter } = require('./formatters/index');
+      const formatter = getFormatter(identifierType);
 
-      // Phase 1: Derive title
-      const title = this.deriveTitle(agentData.prompt, agentData.description);
+      // Build a minimal identification for the formatter
+      const identification = {
+        id: '',
+        sessionId: existing.sourceSessionId!,
+        lineIndex: existing.sourceLineIndex ?? 0,
+        turnIndex: existing.sourceTurnIndex ?? 0,
+        projectPath: existing.project,
+        timestamp: existing.sourceTimestamp || '',
+        identifiedAt: '',
+        identifierType,
+        agentId: existing.sourceAgentId,
+        status: 'generated' as const,
+      };
 
-      // Phase 2: Split result into parts
-      const rawParts = this.splitIntoParts(agentData.result);
-      if (rawParts.length === 0) {
-        throw new Error('No sections found in explore agent output (expected ## headings)');
-      }
-
-      // Detect type
-      const type = this.detectType(title, rawParts);
+      const formatResult: FormatResult = await formatter.format(identification);
 
       // Re-number parts with existing knowledge ID
-      const parts = rawParts.map((p, i) => ({
+      const parts = formatResult.parts.map((p, i) => ({
         ...p,
         partId: `${knowledgeId}.${i + 1}`,
       }));
 
       const updated = store.updateKnowledge(knowledgeId, {
-        title,
-        type,
+        title: formatResult.title,
+        type: formatResult.type,
         parts,
-        sourceTimestamp: agentData.completedAt,
+        sourceTimestamp: formatResult.sourceTimestamp,
       });
 
       if (!updated) {
@@ -348,276 +366,6 @@ export class KnowledgeGenerator {
         }
       })();
     }, 5000);
-  }
-
-  // ─── Private Helpers ──────────────────────────────────────────────────
-
-  /**
-   * Derive a knowledge title from the explore agent's prompt.
-   * Cleans up the prompt to be a concise title.
-   */
-  private deriveTitle(prompt: string, description?: string): string {
-    // If description is short and clean, prefer it
-    if (description && description.length > 5 && description.length < 120) {
-      // Capitalize first letter, remove trailing period
-      let title = description.trim();
-      title = title.charAt(0).toUpperCase() + title.slice(1);
-      if (title.endsWith('.')) title = title.slice(0, -1);
-      return title;
-    }
-
-    // Extract title from first line of prompt (before any newline)
-    let title = prompt.split('\n')[0].trim();
-
-    // Remove common prefixes like "Research...", "Find...", "Look at...", "I need to..."
-    title = title
-      .replace(/^(?:I need to |Please |Can you |Help me )/i, '')
-      .replace(/^(?:research|investigate|explore|find|look at|understand|analyze|search for)\s+/i, '');
-
-    // Capitalize first letter
-    title = title.charAt(0).toUpperCase() + title.slice(1);
-
-    // Truncate if too long
-    if (title.length > 120) {
-      title = title.slice(0, 117) + '...';
-    }
-
-    // Remove trailing period
-    if (title.endsWith('.')) title = title.slice(0, -1);
-
-    return title;
-  }
-
-  /**
-   * Split the explore agent's result into knowledge parts.
-   *
-   * Splits on ## headings. Each section becomes a part with:
-   * - title from the heading
-   * - summary from the first paragraph (up to first blank line)
-   * - content from the rest
-   *
-   * If no ## headings found, tries ### headings.
-   * If still none, treats the entire result as a single part.
-   */
-  private splitIntoParts(result: string): KnowledgePart[] {
-    // Build a set of character offsets that are inside fenced code blocks
-    const insideCodeFence = this.buildCodeFenceMap(result);
-
-    // Find headings outside code blocks at ## and ### levels
-    const h2Matches = this.findHeadingsOutsideCode(result, /^## (.+)$/gm, insideCodeFence);
-    const h3Matches = this.findHeadingsOutsideCode(result, /^### (.+)$/gm, insideCodeFence);
-
-    // Choose split level intelligently:
-    // - If ### gives 3x more sections than ##, the real content is at ### level
-    // - If ## gives 2+ sections and ### doesn't dominate, use ##
-    // - Otherwise fall back to whatever has more matches
-    let matches: typeof h2Matches;
-    if (h3Matches.length >= 3 && h3Matches.length >= h2Matches.length * 2) {
-      // ### clearly has the real content sections (e.g. ### 1. System Overview, ### 2. ...)
-      matches = h3Matches;
-    } else if (h2Matches.length >= 2) {
-      matches = h2Matches;
-    } else if (h3Matches.length >= 2) {
-      matches = h3Matches;
-    } else if (h2Matches.length === 1) {
-      matches = h3Matches.length >= 2 ? h3Matches : h2Matches;
-    } else {
-      matches = h3Matches.length > 0 ? h3Matches : h2Matches;
-    }
-
-    if (matches.length === 0) {
-      // No headings — treat entire result as a single part
-      const { summary, content } = this.extractSummaryAndContent(result);
-      return [{
-        partId: 'TEMP.1',
-        title: 'Overview',
-        summary: summary || result.slice(0, 200).trim(),
-        content,
-      }];
-    }
-
-    // Split on heading positions into raw sections
-    const rawSections: Array<{ title: string; body: string }> = [];
-
-    // Content before the first heading
-    const preContent = result.slice(0, matches[0].index).trim();
-    if (preContent.length > 100) {
-      rawSections.push({ title: 'Overview', body: preContent });
-    }
-
-    for (let i = 0; i < matches.length; i++) {
-      const match = matches[i];
-      const title = this.cleanHeadingTitle(match.title);
-      const startIdx = match.index + match.fullMatch.length;
-      const endIdx = i + 1 < matches.length ? matches[i + 1].index : result.length;
-      rawSections.push({ title, body: result.slice(startIdx, endIdx).trim() });
-    }
-
-    // Merge empty/tiny sections into the next section (they're standalone sub-headings)
-    const MIN_SECTION_SIZE = 50;
-    const merged: typeof rawSections = [];
-    for (let i = 0; i < rawSections.length; i++) {
-      const section = rawSections[i];
-      if (section.body.length < MIN_SECTION_SIZE && i + 1 < rawSections.length) {
-        // Prepend this heading + body to the next section
-        const prefix = section.body
-          ? `**${section.title}**\n${section.body}\n\n`
-          : `**${section.title}**\n\n`;
-        rawSections[i + 1].body = prefix + rawSections[i + 1].body;
-      } else {
-        merged.push(section);
-      }
-    }
-
-    // Build parts
-    const parts: KnowledgePart[] = [];
-    for (const section of merged) {
-      const { summary, content } = this.extractSummaryAndContent(section.body);
-      parts.push({
-        partId: `TEMP.${parts.length + 1}`,
-        title: section.title,
-        summary: summary || section.body.slice(0, 200).trim(),
-        content,
-      });
-    }
-
-    return parts;
-  }
-
-  /**
-   * Build a Set of line-start offsets that are inside fenced code blocks.
-   */
-  private buildCodeFenceMap(text: string): Set<number> {
-    const insideFence = new Set<number>();
-    const lines = text.split('\n');
-    let inFence = false;
-    let offset = 0;
-
-    for (const line of lines) {
-      if (line.trimStart().startsWith('```')) {
-        inFence = !inFence;
-      } else if (inFence) {
-        insideFence.add(offset);
-      }
-      offset += line.length + 1; // +1 for \n
-    }
-
-    return insideFence;
-  }
-
-  /**
-   * Find regex heading matches that are NOT inside code fences.
-   */
-  private findHeadingsOutsideCode(
-    text: string,
-    re: RegExp,
-    insideCodeFence: Set<number>,
-  ): Array<{ index: number; fullMatch: string; title: string }> {
-    const results: Array<{ index: number; fullMatch: string; title: string }> = [];
-    for (const match of text.matchAll(re)) {
-      if (!insideCodeFence.has(match.index!)) {
-        results.push({
-          index: match.index!,
-          fullMatch: match[0],
-          title: match[1],
-        });
-      }
-    }
-    return results;
-  }
-
-  /**
-   * Extract summary (first paragraph) and remaining content from a section.
-   */
-  private extractSummaryAndContent(text: string): { summary: string; content: string } {
-    const lines = text.split('\n');
-
-    // Skip leading empty lines
-    while (lines.length > 0 && lines[0].trim() === '') lines.shift();
-
-    if (lines.length === 0) {
-      return { summary: '', content: '' };
-    }
-
-    // Find first blank line to split summary from content
-    let blankIdx = -1;
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].trim() === '') {
-        blankIdx = i;
-        break;
-      }
-    }
-
-    if (blankIdx === -1) {
-      // No blank line — everything is summary
-      return { summary: lines.join('\n').trim(), content: '' };
-    }
-
-    const summary = lines.slice(0, blankIdx).join('\n').trim();
-    const content = lines.slice(blankIdx + 1).join('\n').trim();
-    return { summary, content };
-  }
-
-  /**
-   * Clean up a heading title — remove markdown formatting artifacts.
-   */
-  private cleanHeadingTitle(title: string): string {
-    return title
-      .replace(/\*\*/g, '')       // Remove bold markers
-      .replace(/`/g, '')          // Remove backticks
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')  // Convert links to text
-      .trim();
-  }
-
-  /**
-   * Check if an explore result is junk (failed agent, placeholder text, etc.)
-   */
-  private isJunkResult(result: string): boolean {
-    const junkPatterns = [
-      /^async agent launched/i,
-      /^agent launched/i,
-      /^spawned successfully/i,
-      /^task completed/i,
-      /^no results/i,
-      /^error:/i,
-      /^failed to/i,
-      /^the user doesn't want to proceed/i,
-      /^tool use was rejected/i,
-    ];
-    const firstLine = result.split('\n')[0].trim();
-    return junkPatterns.some(p => p.test(firstLine));
-  }
-
-  /**
-   * Detect the most appropriate knowledge type based on title and content.
-   */
-  private detectType(title: string, parts: KnowledgePart[]): KnowledgeType {
-    const text = (title + ' ' + parts.map(p => p.title + ' ' + p.summary).join(' ')).toLowerCase();
-
-    const typeSignals: Array<{ type: KnowledgeType; patterns: string[] }> = [
-      { type: 'algorithm', patterns: ['algorithm', 'scoring', 'formula', 'heuristic', 'detection', 'threshold', 'weight', 'calculate'] },
-      { type: 'contract', patterns: ['contract', 'concurrency', 'lock', 'mutex', 'guarantee', 'invariant', 'serializ', 'atomic'] },
-      { type: 'schema', patterns: ['schema', 'interface', 'type definition', 'data model', 'field', 'struct', 'typedef'] },
-      { type: 'wiring', patterns: ['wiring', 'integration', 'callback', 'event', 'hook', 'registration', 'pipeline', 'chain', 'architecture'] },
-      { type: 'invariant', patterns: ['constant', 'limit', 'budget', 'timeout', 'batch size', 'threshold', 'config', 'parameter'] },
-      { type: 'flow', patterns: ['flow', 'pipeline', 'phase', 'stage', 'state machine', 'transition', 'sequence', 'process', 'workflow'] },
-    ];
-
-    let bestType: KnowledgeType = 'wiring';
-    let bestScore = 0;
-
-    for (const { type, patterns } of typeSignals) {
-      let score = 0;
-      for (const pattern of patterns) {
-        if (text.includes(pattern)) score++;
-      }
-      if (score > bestScore) {
-        bestScore = score;
-        bestType = type;
-      }
-    }
-
-    return bestType;
   }
 
   /**
