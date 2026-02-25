@@ -308,7 +308,7 @@ export class TierControlApiImpl {
           projectPath: this.projectPath,
           version: cachedVersion,
           runningFrom: cachedRunningFrom,
-          hostname: !__dirname.includes('node_modules') ? `${os.hostname()} (dev)` : os.hostname(),
+          hostname: os.hostname(),
           platform: os.platform(),
           localIp,
         }, start);
