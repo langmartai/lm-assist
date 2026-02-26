@@ -6,13 +6,17 @@ Knowledge management, session inspector, and web terminal control for [Claude Co
 
 ### Install
 
-Start a new Claude Code session in the terminal and enter the following commands:
+In Claude Code, run:
 
 ```
 /plugin marketplace add langmartai/lm-assist
 
-/plugin install lm-assist
+/plugin install lm-assist@langmartai
+```
 
+Then **open a new Claude Code session** and run:
+
+```
 /assist-setup
 ```
 
@@ -147,19 +151,10 @@ All IDEs get access to the same 3 MCP tools (`search`, `detail`, `feedback`) and
 curl -fsSL https://raw.githubusercontent.com/langmartai/lm-assist/main/install.sh | bash
 ```
 
-This clones the repo, builds, adds the marketplace, and installs the plugin. Then in Claude Code:
+This clones the repo, builds, adds the marketplace, and installs the plugin. Then **open a new Claude Code session** and run:
 
 ```
 /assist-setup
-```
-
-Then clone, build, and start the services:
-
-```bash
-git clone https://github.com/langmartai/lm-assist.git
-cd lm-assist
-npm install && npm run build
-./core.sh start
 ```
 
 ### Install from source
@@ -168,24 +163,19 @@ npm install && npm run build
 git clone https://github.com/langmartai/lm-assist.git
 cd lm-assist
 npm install && npm run build
-
-# Install as Claude Code plugin (registers MCP, hooks, commands)
-# In a Claude Code session, run:
-# /plugin install .
-
-# Start services
 ./core.sh start
 ```
+
+Then in Claude Code, run `/plugin install .` to register the plugin. **Open a new Claude Code session** and run `/assist-setup`.
 
 ### Install via npm
 
 ```bash
 npm install -g lm-assist
 lm-assist start
-
-# Then in Claude Code:
-/assist-setup
 ```
+
+Then in Claude Code, run `/assist-setup`.
 
 ### What gets installed
 

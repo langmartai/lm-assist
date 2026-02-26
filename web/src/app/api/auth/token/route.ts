@@ -24,7 +24,9 @@ function readConfig(): AssistConfig {
  * GET /api/auth/token — Return the LAN access token for URL building
  *
  * Only serves the token when the request comes from localhost or a proxied context.
- * LAN requests (non-localhost) get 403.
+ * LAN requests (non-localhost) get 403 — this is intentional since Next.js API routes
+ * cannot reliably check the client's TCP source IP. Same-machine LAN IP access is
+ * handled by the client-side auth guard (layout.tsx) which checks via the Core API.
  */
 export async function GET(request: NextRequest) {
   const host = request.headers.get('host') || '';

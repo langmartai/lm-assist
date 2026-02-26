@@ -61,12 +61,16 @@ export function TopBar() {
       })
       .catch(() => {});
     // Fetch LAN access token for building Switch to Local URL (only served to localhost/proxy)
-    fetch(`${apiBase}/api/auth/token`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (d?.lanAccessToken) setLanAccessToken(d.lanAccessToken);
-      })
-      .catch(() => {});
+    const hostname = window.location.hostname;
+    const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
+    if (isLocal || proxyInfo.isProxied) {
+      fetch(`${apiBase}/api/auth/token`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          if (d?.lanAccessToken) setLanAccessToken(d.lanAccessToken);
+        })
+        .catch(() => {});
+    }
   }, []);
 
   const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');

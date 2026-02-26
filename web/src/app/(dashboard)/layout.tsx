@@ -9,7 +9,7 @@ import { SearchProvider, useSearch } from '@/contexts/SearchContext';
 import { SearchOverlay } from '@/components/search/SearchOverlay';
 import { DataLoadingModal } from '@/components/data-loading/DataLoadingModal';
 import { DATA_LOADED_KEY } from '@/hooks/useDataLoading';
-import { detectProxyInfo } from '@/lib/api-client';
+import { detectAppMode, detectProxyInfo } from '@/lib/api-client';
 import { useExperiment } from '@/hooks/useExperiment';
 
 function useLanAuthGuard() {
@@ -17,62 +17,67 @@ function useLanAuthGuard() {
   const [checked, setChecked] = useState(false);
 
   useEffect(() => {
-    const hostname = window.location.hostname;
-    const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
+    const controller = new AbortController();
 
-    // Localhost always passes
-    if (isLocalhost) {
-      setChecked(true);
-      return;
-    }
+    (async () => {
+      const hostname = window.location.hostname;
+      const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
 
-    // Cloud proxy always passes — already authenticated by LangMartDesign
-    const proxyInfo = detectProxyInfo();
-    if (proxyInfo.isProxied) {
-      setChecked(true);
-      return;
-    }
+      // Localhost always passes
+      if (isLocalhost) { setChecked(true); return; }
 
-    // Non-localhost — check if LAN auth is enabled
-    fetch('/api/server')
-      .then((r) => r.json())
-      .then(async (data) => {
-        if (!data.lanAuthEnabled) {
-          // Auth not enabled, pass through
+      // Cloud proxy always passes — already authenticated by LangMartDesign
+      const proxyInfo = detectProxyInfo();
+      if (proxyInfo.isProxied) { setChecked(true); return; }
+
+      // Non-localhost — check if this is actually a local request via LAN IP
+      // by asking the Core API (which can check the TCP connection's remote address)
+      try {
+        const { baseUrl } = detectAppMode();
+        const localRes = await fetch(`${baseUrl}/auth/is-local`, {
+          signal: AbortSignal.timeout(2000),
+        });
+        const localData = await localRes.json();
+        if (localData?.data?.isLocal === true) {
           setChecked(true);
           return;
         }
+      } catch {
+        // Core API unreachable — fall through to LAN auth check
+      }
+
+      // Truly remote — check if LAN auth is enabled
+      try {
+        const serverRes = await fetch('/api/server', { signal: controller.signal });
+        const data = await serverRes.json();
+
+        if (!data.lanAuthEnabled) { setChecked(true); return; }
 
         // Auth enabled — check localStorage for token
         const storedToken = localStorage.getItem('assist_access_key');
-        if (!storedToken) {
-          router.replace('/lan-blocked');
-          return;
-        }
+        if (!storedToken) { router.replace('/lan-blocked'); return; }
 
         // Validate the stored token
-        try {
-          const res = await fetch('/api/auth/validate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token: storedToken }),
-          });
-          const result = await res.json();
-          if (result.valid) {
-            setChecked(true);
-          } else {
-            localStorage.removeItem('assist_access_key');
-            router.replace('/lan-blocked');
-          }
-        } catch {
-          // Validation failed — allow through (fail open on network error)
+        const res = await fetch('/api/auth/validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: storedToken }),
+          signal: controller.signal,
+        });
+        const result = await res.json();
+        if (result.valid) {
           setChecked(true);
+        } else {
+          localStorage.removeItem('assist_access_key');
+          router.replace('/lan-blocked');
         }
-      })
-      .catch(() => {
-        // Can't reach server config — allow through
+      } catch {
+        // Can't reach server config — allow through (fail open on network error)
         setChecked(true);
-      });
+      }
+    })();
+
+    return () => controller.abort();
   }, [router]);
 
   return checked;

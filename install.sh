@@ -56,7 +56,7 @@ fi
 # ─── Step 2: Install plugin ───
 
 info "Installing lm-assist plugin..."
-if claude plugin install lm-assist 2>&1; then
+if claude plugin install lm-assist@langmartai 2>&1; then
   ok "Plugin installed (MCP server, hooks, slash commands)"
 else
   warn "Plugin install returned non-zero (may already be installed)"
@@ -100,10 +100,7 @@ echo "  Plugin:  MCP server + hooks + slash commands registered"
 echo "  Source:  $INSTALL_DIR"
 echo ""
 echo "  Next steps:"
-echo "    1. Add your API key:  echo 'ANTHROPIC_API_KEY=sk-...' >> $INSTALL_DIR/.env"
-echo "    2. Start services:    cd $INSTALL_DIR && ./core.sh start"
-echo "    3. In Claude Code:    /assist-status"
-echo ""
-echo "  Or use the slash command to do it all:"
-echo "    /assist-setup"
+echo "    1. Start services:    cd $INSTALL_DIR && ./core.sh start"
+echo "    2. Open a NEW Claude Code session (required for MCP/hooks to activate)"
+echo "    3. In Claude Code:    /assist-setup"
 echo ""

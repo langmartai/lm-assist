@@ -21,6 +21,8 @@ export interface ParsedRequest {
   params: Record<string, string>;
   query: Record<string, string>;
   body: any;
+  /** Client IP address from the TCP connection */
+  clientIp?: string;
   raw?: {
     req: any;
     res: any;
