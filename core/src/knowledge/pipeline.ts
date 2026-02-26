@@ -164,6 +164,25 @@ export class KnowledgePipeline {
     // Schedule async vector indexing
     this.indexKnowledgeVectorsAsync();
 
+    // Auto-trigger LLM review if enabled and we generated new entries
+    if (generated > 0) {
+      try {
+        const { getKnowledgeSettings } = require('./settings');
+        const { getKnowledgeLlmReviewer } = require('./llm-reviewer');
+        const settings = getKnowledgeSettings();
+        if (settings.autoReview) {
+          const reviewer = getKnowledgeLlmReviewer();
+          if (reviewer.getStatus().status === 'idle') {
+            reviewer.review({ project, trigger: 'auto' }).catch((err: any) => {
+              console.error('[KnowledgePipeline] Auto LLM review failed:', err.message);
+            });
+          }
+        }
+      } catch (err: any) {
+        console.error('[KnowledgePipeline] Auto review trigger error:', err.message);
+      }
+    }
+
     return { generated, errors, skipped, results };
   }
 

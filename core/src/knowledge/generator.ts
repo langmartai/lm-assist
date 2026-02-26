@@ -330,6 +330,25 @@ export class KnowledgeGenerator {
       // even if this batch generated 0 (earlier batches may have generated docs)
       this.indexKnowledgeVectorsAsync();
 
+      // Auto-trigger LLM review if enabled and we generated new entries
+      if (generated > 0) {
+        try {
+          const { getKnowledgeSettings } = require('./settings');
+          const { getKnowledgeLlmReviewer } = require('./llm-reviewer');
+          const settings = getKnowledgeSettings();
+          if (settings.autoReview) {
+            const reviewer = getKnowledgeLlmReviewer();
+            if (reviewer.getStatus().status === 'idle') {
+              reviewer.review({ project, trigger: 'auto' }).catch((err: any) => {
+                console.error('[KnowledgeGenerator] Auto LLM review failed:', err.message);
+              });
+            }
+          }
+        } catch (err: any) {
+          console.error('[KnowledgeGenerator] Auto review trigger error:', err.message);
+        }
+      }
+
       return { generated, errors, stopped };
     }
   }
