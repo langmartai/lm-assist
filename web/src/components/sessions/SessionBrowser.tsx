@@ -82,14 +82,20 @@ export function SessionBrowser() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-select most recent session when no session specified in URL
+  // Auto-select most recent session when no session specified in URL,
+  // or when the selected session is no longer in the list (e.g. machine changed via proxy)
   useEffect(() => {
-    if (hasUrlSession || selectedSessionId) return;
-    if (sessionsHook.sessions.length > 0) {
-      const first = sessionsHook.sessions[0];
-      setSelectedSessionId(first.sessionId);
-      setSelectedMachineId(first.machineId);
-    }
+    if (hasUrlSession) return;
+    const sessions = sessionsHook.sessions;
+    if (sessions.length === 0) return;
+
+    // If current selection is still in the list, keep it
+    if (selectedSessionId && sessions.find(s => s.sessionId === selectedSessionId)) return;
+
+    // Select the first session from the (possibly new) list
+    const first = sessions[0];
+    setSelectedSessionId(first.sessionId);
+    setSelectedMachineId(first.machineId);
   }, [hasUrlSession, selectedSessionId, sessionsHook.sessions]);
 
   // Resolve machineId from sessions list when selected session has no machineId
