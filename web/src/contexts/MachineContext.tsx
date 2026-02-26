@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useState, useMemo, useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { useMachines } from '@/hooks/useMachines';
+import { useAppMode } from '@/contexts/AppModeContext';
 import type { Machine } from '@/lib/types';
 
 const STORAGE_KEY = 'langmart-selected-machine';
@@ -23,22 +24,38 @@ const MachineContext = createContext<MachineContextValue | null>(null);
 
 export function MachineProvider({ children }: { children: ReactNode }) {
   const { machines, isLoading, error } = useMachines();
+  const { proxy } = useAppMode();
   const [selectedMachineId, setSelectedMachineIdRaw] = useState<string | null>(null);
   const hasInitialized = useRef(false);
 
   const setSelectedMachineId = useCallback((id: string | null) => {
+    // In proxy mode, lock selection to the proxied machine
+    if (proxy.isProxied && proxy.machineId) {
+      setSelectedMachineIdRaw(proxy.machineId);
+      return;
+    }
     setSelectedMachineIdRaw(id);
     if (id === null) {
       localStorage.removeItem(STORAGE_KEY);
     } else {
       localStorage.setItem(STORAGE_KEY, id);
     }
-  }, []);
+  }, [proxy.isProxied, proxy.machineId]);
 
   // On first load, always select the local machine.
+  // In proxy mode, lock to the proxied machine.
   // On subsequent polls, validate existing selection and fall back if needed.
   useEffect(() => {
     if (machines.length === 0) return;
+
+    // Proxy mode: always lock to the proxied machine
+    if (proxy.isProxied && proxy.machineId) {
+      if (selectedMachineId !== proxy.machineId) {
+        setSelectedMachineIdRaw(proxy.machineId);
+      }
+      hasInitialized.current = true;
+      return;
+    }
 
     if (!hasInitialized.current) {
       // First time machines are available: always prefer the local machine
@@ -67,7 +84,7 @@ export function MachineProvider({ children }: { children: ReactNode }) {
         setSelectedMachineId(localMachine.id);
       }
     }
-  }, [machines, selectedMachineId, setSelectedMachineId]);
+  }, [machines, selectedMachineId, setSelectedMachineId, proxy.isProxied, proxy.machineId]);
 
   const onlineMachines = useMemo(() =>
     machines.filter(m => m.status === 'online'),
