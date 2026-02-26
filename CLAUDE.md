@@ -68,12 +68,14 @@ Dev (repo) and prod (npm package) use **separate port spaces** so both can run s
 | **Dev** | 3200 | 3948 | `./core.sh start/stop` (this repo) |
 | **Prod** | 3100 | 3848 | `lm-assist start/stop` (npm package) |
 
+**Use `./core.sh` for development** — build, start, test, and iterate on this repo. Use `lm-assist` CLI for managing the prod npm-installed version. Never use `lm-assist` to manage dev services or `./core.sh` to manage prod.
+
 `./core.sh status` shows both environments side-by-side.
 
 **Port detection methods by component:**
 - `core.sh` — hardcoded dev defaults (3200/3948)
 - TypeScript (cli.ts, service-manager, rest-server, hub-client, etc.) — `__dirname.includes('node_modules')` → prod (3100), else dev (3200)
-- Hook + MCP + Statusline — reads `devModeEnabled` from `~/.claude-code-config.json`
+- Hook + MCP + Statusline — reads `devModeEnabled` from `~/.claude-code-config.json`; when `devModeEnabled=true`, these components talk to the dev API (:3200) instead of prod (:3100)
 - Web UI SSR — `NEXT_PUBLIC_LOCAL_API_PORT` env var (set by core.sh at build + start time)
 - Web UI client — `NEXT_PUBLIC_LOCAL_API_PORT` baked in at `next build` time, plus `window.location.port` for self-referencing URLs
 
@@ -348,20 +350,29 @@ npm view lm-assist version   # Should show new version
 
 ### Running Modes: npm Package vs Dev Repo
 
-lm-assist can run in two modes. The mode is controlled by `~/.claude-code-config.json` (`devModeEnabled` + `devRepoPath`). The Settings → Experiment → Developer Mode toggle switches between them.
+lm-assist has two independent environments that can run simultaneously on separate ports:
 
-**npm Package mode** (default): Code runs from the globally installed npm package.
-**Dev Repo mode**: Code runs from a cloned git repository for local development.
+- **Prod (npm package)**: Managed by `lm-assist start/stop/restart`. Runs on ports 3100/3848. Do not modify.
+- **Dev (this repo)**: Managed by `./core.sh start/stop/restart`. Runs on ports 3200/3948. Use for development and testing.
+
+The `devModeEnabled` flag in `~/.claude-code-config.json` controls which environment the **MCP server, hook, and statusline** talk to. The Settings → Experiment → Developer Mode toggle switches it.
+
+| `devModeEnabled` | MCP/Hook/Statusline target | Effect |
+|-------------------|---------------------------|--------|
+| `false` (default) | Prod API (:3100) | Normal operation — plugin tools use the npm-installed prod services |
+| `true` | Dev API (:3200) | Plugin tools switch to the dev repo services for testing |
+
+**Important:** `devModeEnabled` only affects which API port the MCP/hook/statusline connect to. It does NOT change which services are running — prod and dev run independently on their own ports.
 
 #### Component launch paths
 
-| Component | npm Package mode | Dev Repo mode |
-|-----------|-----------------|---------------|
-| **Core API** | `<npm-root>/lm-assist/core/dist/cli.js` | `<repo>/core/dist/cli.js` |
-| **Web UI** | `<npm-root>/lm-assist/web/` (next start) | `<repo>/web/` (next start) |
-| **MCP Server** | `<npm-root>/lm-assist/core/dist/mcp-server/index.js` | `<repo>/core/dist/mcp-server/index.js` |
-| **Hook** | `node "${CLAUDE_PLUGIN_ROOT}/core/hooks/context-inject-hook.js"` | Same (hook reads `devModeEnabled` from config to pick port 3200 or 3100) |
-| **Statusline** | `node "<npm-root>/lm-assist/core/hooks/statusline-worktree.js"` | `node "<repo>/core/hooks/statusline-worktree.js"` |
+| Component | Prod (`lm-assist start`) | Dev (`./core.sh start`) |
+|-----------|--------------------------|-------------------------|
+| **Core API** | `<npm-root>/lm-assist/core/dist/cli.js` → :3100 | `<repo>/core/dist/cli.js` → :3200 |
+| **Web UI** | `<npm-root>/lm-assist/web/` → :3848 | `<repo>/web/` → :3948 |
+| **MCP Server** | Always runs from plugin cache (`${CLAUDE_PLUGIN_ROOT}`) | Same binary — `devModeEnabled` switches target port |
+| **Hook** | Always runs from plugin cache (`${CLAUDE_PLUGIN_ROOT}`) | Same binary — `devModeEnabled` switches target port |
+| **Statusline** | `<npm-root>/lm-assist/core/hooks/statusline-worktree.js` | `<repo>/core/hooks/statusline-worktree.js` |
 
 Where `<npm-root>` = e.g. `~/.nvm/versions/node/v20.19.6/lib/node_modules` and `<repo>` = e.g. `/home/ubuntu/lm-assist`.
 
@@ -371,8 +382,7 @@ Where `<npm-root>` = e.g. `~/.nvm/versions/node/v20.19.6/lib/node_modules` and `
 2. If `devModeEnabled && devRepoPath` → uses repo path; otherwise → uses npm package path (`path.dirname(path.dirname(__filename))`)
 3. `core/src/service-manager.ts` → same logic in `getRepoRoot()`
 4. Both Core API and Web UI resolve their working directory from this root
-5. The MCP server path is hardcoded in `.mcp.json` at plugin install time (points to npm root); in dev mode, MCP still runs from npm but the API it talks to runs from dev repo
-6. The hook runs from the plugin cache (`${CLAUDE_PLUGIN_ROOT}`), reads `devModeEnabled` from config to determine port (3200 dev / 3100 prod), and calls the Core API accordingly
+5. The MCP server and hook always run from the plugin cache (`${CLAUDE_PLUGIN_ROOT}`); they read `devModeEnabled` from config to determine which API port to call (3200 dev / 3100 prod)
 
 #### Upgrade methods
 

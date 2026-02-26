@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Shield, Globe, LogIn, Loader2, CheckCircle, XCircle, Info } from 'lucide-react';
+import { detectAppMode, detectProxyInfo } from '@/lib/api-client';
 
 type VerifyStatus = 'idle' | 'waiting' | 'verifying' | 'success' | 'error';
 
@@ -11,6 +12,27 @@ export default function LanBlockedPage() {
   const [verifyStatus, setVerifyStatus] = useState<VerifyStatus>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [hubConfigured, setHubConfigured] = useState<boolean | null>(null);
+
+  // If user is actually local (localhost or same-machine LAN IP), redirect to dashboard
+  useEffect(() => {
+    const hostname = window.location.hostname;
+    const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
+    if (isLocalhost) { router.replace('/'); return; }
+
+    const proxyInfo = detectProxyInfo();
+    if (proxyInfo.isProxied) { router.replace('/'); return; }
+
+    // Check via Core API if the request originates from this machine
+    const { baseUrl } = detectAppMode();
+    fetch(`${baseUrl}/auth/is-local`, { signal: AbortSignal.timeout(2000) })
+      .then(r => r.json())
+      .then(data => {
+        if (data?.data?.isLocal === true) {
+          router.replace('/');
+        }
+      })
+      .catch(() => { /* not local or API unreachable — stay on blocked page */ });
+  }, [router]);
 
   // Check if hub is configured (device has a cloud account bound)
   useEffect(() => {
