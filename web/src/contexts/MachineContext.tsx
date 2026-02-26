@@ -25,11 +25,16 @@ const MachineContext = createContext<MachineContextValue | null>(null);
 export function MachineProvider({ children }: { children: ReactNode }) {
   const { machines, isLoading, error } = useMachines();
   const { proxy } = useAppMode();
-  const [selectedMachineId, setSelectedMachineIdRaw] = useState<string | null>(null);
-  const hasInitialized = useRef(false);
+
+  // In proxy mode, initialize synchronously from the URL — never null, never localStorage.
+  // This prevents a flash of "all machines" before the effect fires.
+  const [selectedMachineId, setSelectedMachineIdRaw] = useState<string | null>(
+    () => (proxy.isProxied && proxy.machineId) ? proxy.machineId : null
+  );
+  const hasInitialized = useRef(proxy.isProxied && !!proxy.machineId);
 
   const setSelectedMachineId = useCallback((id: string | null) => {
-    // In proxy mode, lock selection to the proxied machine
+    // In proxy mode, lock selection to the proxied machine — never touch localStorage
     if (proxy.isProxied && proxy.machineId) {
       setSelectedMachineIdRaw(proxy.machineId);
       return;
@@ -48,7 +53,7 @@ export function MachineProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (machines.length === 0) return;
 
-    // Proxy mode: always lock to the proxied machine
+    // Proxy mode: always lock to the proxied machine — skip localStorage entirely
     if (proxy.isProxied && proxy.machineId) {
       if (selectedMachineId !== proxy.machineId) {
         setSelectedMachineIdRaw(proxy.machineId);
