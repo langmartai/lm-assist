@@ -1,17 +1,43 @@
 'use client';
 
 import { useMachineContext } from '@/contexts/MachineContext';
+import { useAppMode } from '@/contexts/AppModeContext';
+import { detectAppMode } from '@/lib/api-client';
 import { CrossRefStats } from '@/components/shared/CrossRefStats';
-import { Monitor, ExternalLink } from 'lucide-react';
+import { Monitor, LayoutDashboard } from 'lucide-react';
 import { getPlatformEmoji } from '@/lib/utils';
 import { useState } from 'react';
-import Link from 'next/link';
 
 type FilterType = 'all' | 'online' | 'offline';
 
 export default function MachinesPage() {
   const { machines, isLoading } = useMachineContext();
-  const [filter, setFilter] = useState<FilterType>('all');
+  const { mode, proxy } = useAppMode();
+  const [filter, setFilter] = useState<FilterType>('online');
+
+  const openDashboard = async (machine: typeof machines[0]) => {
+    const hubName = 'langmart.ai';
+    const remoteGatewayId = machine.gatewayId || machine.id;
+    const dashboardPath = '/sessions';
+
+    if (mode === 'hub') {
+      // In hub mode, user is already on langmart.ai — navigate directly
+      window.open(`https://${hubName}/w/${remoteGatewayId}/assist${dashboardPath}`, '_blank');
+      return;
+    }
+
+    // In local/hybrid mode, fetch a proxy token for authentication
+    try {
+      const { baseUrl } = detectAppMode();
+      const res = await fetch(`${baseUrl}/hub/machines/${remoteGatewayId}/proxy-token`, { method: 'POST' });
+      const json = await res.json();
+      if (json.success && json.data?.token) {
+        window.open(`https://${hubName}/w/${remoteGatewayId}/assist${dashboardPath}?token=${json.data.token}`, '_blank');
+        return;
+      }
+    } catch { /* fall through */ }
+    window.open(`https://${hubName}/w/${remoteGatewayId}/assist${dashboardPath}`, '_blank');
+  };
 
   const filtered = machines.filter(m => {
     if (filter === 'online') return m.status === 'online';
@@ -103,14 +129,17 @@ export default function MachinesPage() {
                   />
                 </div>
 
-                {/* Actions */}
-                <div style={{ flexShrink: 0 }}>
-                  <Link href={`/sessions?machine=${machine.id}`}>
-                    <button className="btn btn-sm btn-secondary">
-                      Sessions <ExternalLink size={12} />
+                {/* Actions — hide for current machine (already viewing it) */}
+                {machine.status === 'online' && !machine.isLocal && !(proxy.isProxied && proxy.machineId === (machine.gatewayId || machine.id)) && (
+                  <div style={{ flexShrink: 0 }}>
+                    <button
+                      className="btn btn-sm btn-primary"
+                      onClick={() => openDashboard(machine)}
+                    >
+                      <LayoutDashboard size={12} /> Dashboard
                     </button>
-                  </Link>
-                </div>
+                  </div>
+                )}
               </div>
             </div>
           ))}
