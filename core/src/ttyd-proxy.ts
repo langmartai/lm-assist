@@ -154,7 +154,7 @@ const TTYD_INJECTED_CSS = `
     function addTokenToUrl(url) {
       if (!url || typeof url !== 'string') return url;
       // Don't add to absolute URLs on different origins
-      if (url.match(/^https?:\/\//i) && url.indexOf(window.location.host) === -1) return url;
+      if (url.match(/^https?:\\/\\//i) && url.indexOf(window.location.host) === -1) return url;
       var sep = url.indexOf('?') >= 0 ? '&' : '?';
       return url + sep + 'token=' + hubAuthToken;
     }
