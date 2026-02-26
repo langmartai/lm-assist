@@ -91,7 +91,7 @@ export class HubClient extends EventEmitter {
       apiKey: options.apiKey || this.config.apiKey || '',
       localApiPort: options.localApiPort || (__dirname.includes('node_modules') ? 3100 : 3200),
       adminWebPort: options.adminWebPort || (process.env.ADMIN_WEB_PORT ? parseInt(process.env.ADMIN_WEB_PORT, 10) : undefined),
-      assistWebPort: options.assistWebPort || (process.env.ASSIST_WEB_PORT ? parseInt(process.env.ASSIST_WEB_PORT, 10) : undefined) || savedPorts.assistWebPort,
+      assistWebPort: options.assistWebPort || (process.env.ASSIST_WEB_PORT ? parseInt(process.env.ASSIST_WEB_PORT, 10) : undefined) || (__dirname.includes('node_modules') ? (savedPorts.assistWebPort || 3848) : 3948),
       vibeCoderPort: options.vibeCoderPort || (process.env.VIBE_CODER_PORT ? parseInt(process.env.VIBE_CODER_PORT, 10) : undefined),
       autoReconnect: options.autoReconnect ?? true,
       reconnectDelay: options.reconnectDelay || 1000,
