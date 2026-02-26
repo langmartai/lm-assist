@@ -12,6 +12,8 @@
  *   POST /ttyd/session/:sessionId/stop       Stop ttyd for session
  *   POST /ttyd/process/identify               PID-based session identify with screen-to-turn matching
  *   POST /ttyd/session/identify              Identify session for unmanaged tmux
+ *   POST /ttyd/session/:sessionId/input     Send input (text/keys) to a session's terminal
+ *   GET  /ttyd/session/:sessionId/screen    Capture terminal screen from a session
  */
 
 import type { RouteHandler, RouteContext } from '../index';
@@ -1050,6 +1052,84 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
             matchDetails: result.matchDetails,
           },
         };
+      },
+    },
+
+    // ─── Terminal Input ───────────────────────────────────────────
+
+    /**
+     * POST /ttyd/session/:sessionId/input
+     *
+     * Send input (text, keys, or raw bytes) to a session's terminal.
+     * Auto-selects tmux send-keys or ttyd WebSocket based on session type.
+     */
+    {
+      method: 'POST',
+      pattern: /^\/ttyd\/session\/(?<sessionId>[^/]+)\/input$/,
+      handler: async (req) => {
+        const { sessionId } = req.params;
+        const { text, keys, raw } = req.body || {};
+
+        // Validate at least one input type
+        if (!text && !keys && !raw) {
+          return {
+            success: false,
+            error: 'At least one of text, keys, or raw must be provided',
+          };
+        }
+
+        // Type + size limits
+        if (text != null && (typeof text !== 'string' || text.length > 10_000)) {
+          return { success: false, error: 'text must be a string of at most 10,000 characters' };
+        }
+        if (keys != null && (!Array.isArray(keys) || keys.length > 100 || !keys.every((k: any) => typeof k === 'string'))) {
+          return { success: false, error: 'keys must be an array of strings with at most 100 entries' };
+        }
+        if (raw != null && (typeof raw !== 'string' || raw.length > 20_000)) {
+          return { success: false, error: 'raw must be a base64 string of at most 20,000 characters' };
+        }
+
+        const { sendInput } = await import('../../terminal-input');
+        const result = await sendInput(sessionId, { text, keys, raw });
+
+        if (!result.success) {
+          return { success: false, error: result.error };
+        }
+
+        return {
+          success: true,
+          data: {
+            method: result.method,
+            tmuxSession: result.tmuxSession,
+            ttydPort: result.ttydPort,
+          },
+        };
+      },
+    },
+
+    /**
+     * GET /ttyd/session/:sessionId/screen
+     *
+     * Capture the current terminal screen for a session.
+     * Uses tmux capture-pane when available (full scrollback), falls back
+     * to ttyd WebSocket for direct-mode sessions (current visible output).
+     */
+    {
+      method: 'GET',
+      pattern: /^\/ttyd\/session\/(?<sessionId>[^/]+)\/screen$/,
+      handler: async (req) => {
+        const { sessionId } = req.params;
+
+        try {
+          const { captureScreenForSession } = await import('../../terminal-input');
+          const screen = await captureScreenForSession(sessionId);
+          return { success: true, data: screen };
+        } catch (err: any) {
+          return {
+            success: false,
+            error: `Screen capture failed: ${err.message}`,
+          };
+        }
       },
     },
   ];
