@@ -187,9 +187,34 @@ export function sendViaTmux(tmuxSessionName: string, input: InputRequest): Input
 export async function sendViaWebSocket(port: number, input: InputRequest): Promise<InputResult> {
   const { default: WebSocket } = await import('ws');
 
+  // Pre-validate keys before connecting
+  if (input.keys) {
+    for (const key of input.keys) {
+      if (!WS_KEY_MAP[key]) {
+        return {
+          success: false,
+          method: 'websocket',
+          ttydPort: port,
+          error: `Invalid key name: '${key}'`,
+        };
+      }
+    }
+  }
+
+  // Build payload upfront
+  const chunks: Buffer[] = [];
+  if (input.text) chunks.push(Buffer.from(input.text, 'utf-8'));
+  if (input.keys) {
+    for (const key of input.keys) {
+      chunks.push(Buffer.from(WS_KEY_MAP[key], 'binary'));
+    }
+  }
+  if (input.raw) chunks.push(Buffer.from(input.raw, 'base64'));
+
   return new Promise((resolve) => {
     let settled = false;
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    let inputSent = false;
 
     const done = (result: InputResult) => {
       if (settled) return;
@@ -197,6 +222,31 @@ export async function sendViaWebSocket(port: number, input: InputRequest): Promi
       clearTimeout(connectionTimeout);
       if (flushTimer) clearTimeout(flushTimer);
       resolve(result);
+    };
+
+    const sendPayload = () => {
+      if (inputSent || settled) return;
+      inputSent = true;
+      try {
+        if (chunks.length > 0) {
+          const payload = Buffer.concat(chunks);
+          const frame = Buffer.concat([Buffer.from([0x30]), payload]);
+          ws.send(frame);
+        }
+        // Flush delay before closing
+        flushTimer = setTimeout(() => {
+          ws.close();
+          done({ success: true, method: 'websocket', ttydPort: port });
+        }, 100);
+      } catch (err: any) {
+        ws.close();
+        done({
+          success: false,
+          method: 'websocket',
+          ttydPort: port,
+          error: err.message || 'WebSocket send failed',
+        });
+      }
     };
 
     const connectionTimeout = setTimeout(() => {
@@ -207,7 +257,7 @@ export async function sendViaWebSocket(port: number, input: InputRequest): Promi
         ttydPort: port,
         error: 'WebSocket connection timeout',
       });
-    }, 3000);
+    }, 5000);
 
     const ws = new WebSocket(`ws://localhost:${port}/ws`, ['tty']);
 
@@ -222,56 +272,15 @@ export async function sendViaWebSocket(port: number, input: InputRequest): Promi
     });
 
     ws.on('open', () => {
-      try {
-        // Send init message (terminal size)
-        ws.send(JSON.stringify({ columns: 120, rows: 40 }));
+      // Send init message — ttyd needs this to spawn/attach the process
+      ws.send(JSON.stringify({ columns: 120, rows: 40 }));
+    });
 
-        // Build payload from text + keys + raw
-        const chunks: Buffer[] = [];
-
-        if (input.text) {
-          chunks.push(Buffer.from(input.text, 'utf-8'));
-        }
-        if (input.keys) {
-          for (const key of input.keys) {
-            const seq = WS_KEY_MAP[key];
-            if (!seq) {
-              ws.close();
-              done({
-                success: false,
-                method: 'websocket',
-                ttydPort: port,
-                error: `Invalid key name: '${key}'`,
-              });
-              return;
-            }
-            chunks.push(Buffer.from(seq, 'binary'));
-          }
-        }
-        if (input.raw) {
-          chunks.push(Buffer.from(input.raw, 'base64'));
-        }
-
-        if (chunks.length > 0) {
-          const payload = Buffer.concat(chunks);
-          // ttyd protocol: type byte 0x30 ('0') = client input
-          const frame = Buffer.concat([Buffer.from([0x30]), payload]);
-          ws.send(frame);
-        }
-
-        // Flush delay before closing
-        flushTimer = setTimeout(() => {
-          ws.close();
-          done({ success: true, method: 'websocket', ttydPort: port });
-        }, 100);
-      } catch (err: any) {
-        ws.close();
-        done({
-          success: false,
-          method: 'websocket',
-          ttydPort: port,
-          error: err.message || 'WebSocket send failed',
-        });
+    ws.on('message', (data: Buffer) => {
+      // Wait for first server output (type 0x30 = output data) before sending input.
+      // This confirms ttyd has processed the init and the terminal is ready.
+      if (!inputSent && data.length > 0 && data[0] === 0x30) {
+        sendPayload();
       }
     });
   });
