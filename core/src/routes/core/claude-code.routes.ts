@@ -622,7 +622,7 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
 
         // When dev mode settings change, re-point installed components to new paths
         let pathsUpdated: string[] = [];
-        let restartScheduled = false;
+        let devActionScheduled = false;
         if (devModeChanged) {
           try {
             const result = reapplyInstalledPaths();
@@ -631,59 +631,23 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
             // Non-fatal: paths will be updated on next manual install
           }
 
-          // Schedule a service restart so core/web pick up the new source (npm vs dev-repo).
-          // The `lm-assist` CLI checks devModeEnabled to decide which codebase to start from.
-          // Strategy: spawn a detached Node.js process that stops and restarts via lm-assist CLI.
-          // This is cross-platform (no bash/fuser/sleep dependencies).
+          // Start or stop the dev instance (prod stays running).
+          // Import service-manager and call startDevAll/stopDevAll directly.
           try {
-            // Find lm-assist bin: prefer npm global, then PATH lookup
-            let lmAssistBin: string | null = null;
-            const npmPkg = getNpmGlobalRoot();
-            if (npmPkg) {
-              const candidate = path.join(npmPkg, 'bin', 'lm-assist.js');
-              if (fs.existsSync(candidate)) lmAssistBin = candidate;
+            const svcMgr = require('../../service-manager');
+            if (current.devModeEnabled && current.devRepoPath) {
+              // Dev toggled ON → start dev instance in background
+              svcMgr.startDevAll(current.devRepoPath).catch(() => {});
+              devActionScheduled = true;
+            } else {
+              // Dev toggled OFF → stop dev instance in background
+              svcMgr.stopDevAll().catch(() => {});
+              devActionScheduled = true;
             }
-            if (!lmAssistBin) {
-              const whichCmd = IS_WINDOWS ? 'where' : 'which';
-              try {
-                const result = execFileSync(whichCmd, ['lm-assist'], {
-                  encoding: 'utf-8', timeout: 5000,
-                }).trim().split(/\r?\n/);
-                // On Windows, prefer .cmd/.exe over extensionless bash scripts
-                if (IS_WINDOWS && result.length > 1) {
-                  lmAssistBin = result.find(l => /\.(cmd|exe|ps1|js)$/i.test(l.trim()))?.trim() || result[0].trim();
-                } else {
-                  lmAssistBin = result[0].trim();
-                }
-              } catch {}
-            }
-
-            if (lmAssistBin && fs.existsSync(lmAssistBin)) {
-              // Inline Node.js script: wait 1s, run "lm-assist restart"
-              const inlineScript = [
-                `setTimeout(() => {`,
-                `  const { execFileSync } = require('child_process');`,
-                `  try {`,
-                `    execFileSync(process.execPath, [${JSON.stringify(lmAssistBin)}, 'restart'], {`,
-                `      stdio: 'ignore', windowsHide: true, timeout: 60000`,
-                `    });`,
-                `  } catch {}`,
-                `}, 1000);`,
-              ].join(' ');
-
-              const { spawn: _spawn } = require('child_process');
-              const child = _spawn(process.execPath, ['-e', inlineScript], {
-                detached: true,
-                stdio: 'ignore',
-                windowsHide: true,
-              });
-              child.unref();
-              restartScheduled = true;
-            }
-          } catch { /* lm-assist binary not found, skip restart */ }
+          } catch { /* service-manager not available */ }
         }
 
-        return { success: true, data: current, ...(pathsUpdated.length > 0 ? { pathsUpdated } : {}), ...(restartScheduled ? { restartScheduled } : {}) };
+        return { success: true, data: current, ...(pathsUpdated.length > 0 ? { pathsUpdated } : {}), ...(devActionScheduled ? { devActionScheduled } : {}) };
       },
     },
 

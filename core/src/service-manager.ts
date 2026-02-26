@@ -29,24 +29,12 @@ function findNpmPackage(): string | null {
   return null;
 }
 
+/** Always returns the npm package path (prod). Dev mode no longer switches this. */
 function getRepoRoot(): string {
-  try {
-    const cfgPath = path.join(os.homedir(), '.claude-code-config.json');
-    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-
-    // Dev mode ON → use repo
-    if (cfg.devModeEnabled && cfg.devRepoPath) {
-      const devCli = path.join(cfg.devRepoPath, 'core', 'dist', 'cli.js');
-      if (fs.existsSync(devCli)) return cfg.devRepoPath;
-    }
-
-    // Dev mode OFF → always prefer npm global package
-    if (DEFAULT_REPO_ROOT.includes('node_modules')) {
-      return DEFAULT_REPO_ROOT; // Already running from npm global
-    }
-    return findNpmPackage() || DEFAULT_REPO_ROOT;
-  } catch {}
-  return DEFAULT_REPO_ROOT;
+  if (DEFAULT_REPO_ROOT.includes('node_modules')) {
+    return DEFAULT_REPO_ROOT;
+  }
+  return findNpmPackage() || DEFAULT_REPO_ROOT;
 }
 
 /** Centralized runtime dir for PID files and logs — consistent regardless of npm vs repo */
@@ -59,10 +47,43 @@ function getRuntimeDir(): string {
 function getCoreDir(): string { return path.join(getRepoRoot(), 'core'); }
 function getWebDir(): string { return path.join(getRepoRoot(), 'web'); }
 function getCliJs(): string { return path.join(getCoreDir(), 'dist', 'cli.js'); }
-function getCorePidFile(): string { return path.join(getRuntimeDir(), 'core.pid'); }
-function getWebPidFile(): string { return path.join(getRuntimeDir(), 'web.pid'); }
-function getCoreLog(): string { return path.join(getRuntimeDir(), 'core.log'); }
-function getWebLog(): string { return path.join(getRuntimeDir(), 'web.log'); }
+
+// Prod PID/log files
+function getCorePidFile(): string { return path.join(getRuntimeDir(), 'core-prod.pid'); }
+function getWebPidFile(): string { return path.join(getRuntimeDir(), 'web-prod.pid'); }
+function getCoreLog(): string { return path.join(getRuntimeDir(), 'core-prod.log'); }
+function getWebLog(): string { return path.join(getRuntimeDir(), 'web-prod.log'); }
+
+// Dev PID/log files
+function getDevCorePidFile(): string { return path.join(getRuntimeDir(), 'core-dev.pid'); }
+function getDevWebPidFile(): string { return path.join(getRuntimeDir(), 'web-dev.pid'); }
+function getDevCoreLog(): string { return path.join(getRuntimeDir(), 'core-dev.log'); }
+function getDevWebLog(): string { return path.join(getRuntimeDir(), 'web-dev.log'); }
+
+/** Migrate old PID/log files (core.pid → core-prod.pid, etc.) on first access */
+function migrateRuntimeFiles(): void {
+  const dir = getRuntimeDir();
+  const renames: [string, string][] = [
+    ['core.pid', 'core-prod.pid'],
+    ['web.pid', 'web-prod.pid'],
+    ['core.log', 'core-prod.log'],
+    ['web.log', 'web-prod.log'],
+  ];
+  for (const [oldName, newName] of renames) {
+    const oldPath = path.join(dir, oldName);
+    const newPath = path.join(dir, newName);
+    try {
+      if (fs.existsSync(oldPath) && !fs.existsSync(newPath)) {
+        fs.renameSync(oldPath, newPath);
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+}
+
+// Run migration on module load
+migrateRuntimeFiles();
 
 // ─── Config ──────────────────────────────────────────────────
 
@@ -72,8 +93,8 @@ export interface ServiceConfig {
   projectPath?: string;
 }
 
-function loadEnv(): Record<string, string> {
-  const envFile = path.join(getRepoRoot(), '.env');
+function loadEnv(rootDir?: string): Record<string, string> {
+  const envFile = path.join(rootDir || getRepoRoot(), '.env');
   const vars: Record<string, string> = {};
   try {
     const content = fs.readFileSync(envFile, 'utf-8');
@@ -96,12 +117,15 @@ function loadEnv(): Record<string, string> {
   return vars;
 }
 
-/** Default ports: dev repo → 3200/3948, npm package → 3100/3848 */
+/** Default prod ports (getRepoRoot always returns npm path now) */
 function getDefaultPorts(): { api: string; web: string } {
   const repoRoot = getRepoRoot();
   const isDevRepo = !repoRoot.includes('node_modules');
   return isDevRepo ? { api: '3200', web: '3948' } : { api: '3100', web: '3848' };
 }
+
+const DEV_API_PORT = 3200;
+const DEV_WEB_PORT = 3948;
 
 function getConfig(cfg?: ServiceConfig) {
   const env = loadEnv();
@@ -655,4 +679,190 @@ export function getComponentInfo(config?: ServiceConfig): ComponentInfo {
     hook,
     statusline,
   };
+}
+
+// ─── Dev Instance Functions ──────────────────────────────────────────────────
+// When devModeEnabled is true, these run a second set of services from the dev repo
+// on ports 3200 (API) and 3948 (Web), alongside the prod instance.
+
+/** Read devModeEnabled + devRepoPath from ~/.claude-code-config.json */
+export function getDevConfig(): { enabled: boolean; repoPath: string | null } {
+  try {
+    const cfgPath = path.join(os.homedir(), '.claude-code-config.json');
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+    return {
+      enabled: !!cfg.devModeEnabled,
+      repoPath: cfg.devRepoPath || null,
+    };
+  } catch {
+    return { enabled: false, repoPath: null };
+  }
+}
+
+export async function startDevAll(devRepoPath: string): Promise<{ core: { success: boolean; message: string }; web: { success: boolean; message: string } }> {
+  const devCoreDir = path.join(devRepoPath, 'core');
+  const devWebDir = path.join(devRepoPath, 'web');
+  const devCliJs = path.join(devCoreDir, 'dist', 'cli.js');
+
+  // Start dev core
+  let coreResult: { success: boolean; message: string };
+  if (await checkHealth(DEV_API_PORT)) {
+    coreResult = { success: true, message: `Dev Core API already running on port ${DEV_API_PORT}` };
+  } else if (!fs.existsSync(devCliJs)) {
+    coreResult = { success: false, message: `Dev core not built. Run: cd ${devRepoPath} && ./core.sh build (cli.js not found at ${devCliJs})` };
+  } else {
+    const forwardEnv: Record<string, string> = {};
+    const dotenv = loadEnv(devRepoPath);
+    for (const key of ['ANTHROPIC_API_KEY', 'TIER_AGENT_HUB_URL', 'TIER_AGENT_API_KEY']) {
+      const val = process.env[key] || dotenv[key];
+      if (val) forwardEnv[key] = val;
+    }
+    forwardEnv.API_PORT = String(DEV_API_PORT);
+
+    const child = spawnDetached(
+      process.execPath,
+      [devCliJs, 'serve', '--port', String(DEV_API_PORT), '--project', os.homedir()],
+      getDevCoreLog(),
+      forwardEnv,
+      devCoreDir,
+    );
+    if (child.pid) writePid(getDevCorePidFile(), child.pid);
+
+    const healthy = await waitForHealth(DEV_API_PORT, 30_000);
+    coreResult = healthy
+      ? { success: true, message: `Dev Core API started on port ${DEV_API_PORT}` }
+      : { success: false, message: `Dev Core API did not become healthy within 30s. Check ${getDevCoreLog()}` };
+  }
+
+  // Start dev web
+  let webResult: { success: boolean; message: string };
+  if (await checkPort(DEV_WEB_PORT)) {
+    webResult = { success: true, message: `Dev Web already running on port ${DEV_WEB_PORT}` };
+  } else {
+    const standaloneServer = path.join(devWebDir, '.next', 'standalone', 'web', 'server.js');
+    const hasStandalone = fs.existsSync(standaloneServer);
+
+    if (!hasStandalone && !fs.existsSync(path.join(devWebDir, '.next'))) {
+      webResult = { success: false, message: `Dev web not built. Run: cd ${devRepoPath}/web && npx next build` };
+    } else {
+      const devDotenv = loadEnv(devRepoPath);
+      const webEnv: Record<string, string> = {
+        PORT: String(DEV_WEB_PORT),
+        HOSTNAME: '0.0.0.0',
+        NEXT_PUBLIC_LOCAL_API_PORT: String(DEV_API_PORT),
+      };
+      // Forward relevant env vars
+      for (const key of ['NEXT_PUBLIC_LOCAL_API_PORT', 'GATEWAY_TYPE1_URL']) {
+        const val = process.env[key] || devDotenv[key];
+        if (val) webEnv[key] = val;
+      }
+
+      let child: ChildProcess;
+      if (hasStandalone) {
+        const staticSrc = path.join(devWebDir, '.next', 'static');
+        const staticDest = path.join(devWebDir, '.next', 'standalone', 'web', '.next', 'static');
+        if (fs.existsSync(staticSrc) && !fs.existsSync(staticDest)) {
+          try {
+            fs.mkdirSync(path.dirname(staticDest), { recursive: true });
+            fs.symlinkSync(staticSrc, staticDest, process.platform === 'win32' ? 'junction' : 'dir');
+          } catch {}
+        }
+        const publicSrc = path.join(devWebDir, 'public');
+        const publicDest = path.join(devWebDir, '.next', 'standalone', 'web', 'public');
+        if (fs.existsSync(publicSrc) && !fs.existsSync(publicDest)) {
+          try { fs.symlinkSync(publicSrc, publicDest, process.platform === 'win32' ? 'junction' : 'dir'); } catch {}
+        }
+        child = spawnDetached(process.execPath, [standaloneServer], getDevWebLog(), webEnv, devWebDir);
+      } else {
+        const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+        child = spawnDetached(npxCmd, ['next', 'start', '-p', String(DEV_WEB_PORT)], getDevWebLog(), webEnv, devWebDir);
+      }
+      if (child.pid) writePid(getDevWebPidFile(), child.pid);
+
+      const ready = await waitForPort(DEV_WEB_PORT, 30_000);
+      webResult = ready
+        ? { success: true, message: `Dev Web started on port ${DEV_WEB_PORT}` }
+        : { success: false, message: `Dev Web did not start within 30s. Check ${getDevWebLog()}` };
+    }
+  }
+
+  return { core: coreResult, web: webResult };
+}
+
+export async function stopDevAll(): Promise<{ core: { success: boolean; message: string }; web: { success: boolean; message: string } }> {
+  // Stop dev web
+  let webStopped = false;
+  const webPid = readPid(getDevWebPidFile());
+  if (webPid && isPidAlive(webPid)) {
+    await killByPid(webPid);
+    webStopped = true;
+    await sleep(1000);
+  }
+  if (await checkPort(DEV_WEB_PORT)) {
+    await killByPort(DEV_WEB_PORT);
+    webStopped = true;
+    await sleep(1000);
+  }
+  removePid(getDevWebPidFile());
+  const webResult = webStopped
+    ? (await checkPort(DEV_WEB_PORT)
+        ? { success: false, message: `Dev Web stop attempted but port ${DEV_WEB_PORT} is still in use` }
+        : { success: true, message: 'Dev Web stopped' })
+    : { success: true, message: 'Dev Web was not running' };
+
+  // Stop dev core
+  let coreStopped = false;
+  const corePid = readPid(getDevCorePidFile());
+  if (corePid && isPidAlive(corePid)) {
+    await killByPid(corePid);
+    coreStopped = true;
+    await sleep(1000);
+  }
+  if (await checkPort(DEV_API_PORT)) {
+    await killByPort(DEV_API_PORT);
+    coreStopped = true;
+    await sleep(1000);
+  }
+  removePid(getDevCorePidFile());
+  const coreResult = coreStopped
+    ? (await checkPort(DEV_API_PORT)
+        ? { success: false, message: `Dev Core API stop attempted but port ${DEV_API_PORT} is still in use` }
+        : { success: true, message: 'Dev Core API stopped' })
+    : { success: true, message: 'Dev Core API was not running' };
+
+  return { core: coreResult, web: webResult };
+}
+
+export interface DevServiceStatus {
+  core: { running: boolean; healthy: boolean; port: number; pid: number | null };
+  web: { running: boolean; port: number; pid: number | null };
+}
+
+export async function devStatus(): Promise<DevServiceStatus> {
+  const coreRunning = await checkPort(DEV_API_PORT);
+  const coreHealthy = coreRunning ? await checkHealth(DEV_API_PORT) : false;
+  const corePid = readPid(getDevCorePidFile());
+
+  const webRunning = await checkPort(DEV_WEB_PORT);
+  const webPid = readPid(getDevWebPidFile());
+
+  return {
+    core: { running: coreRunning, healthy: coreHealthy, port: DEV_API_PORT, pid: corePid },
+    web: { running: webRunning, port: DEV_WEB_PORT, pid: webPid },
+  };
+}
+
+export function getDevLogPath(service: 'core' | 'web'): string {
+  return service === 'core' ? getDevCoreLog() : getDevWebLog();
+}
+
+export function readDevLog(service: 'core' | 'web', lines: number = 100): string {
+  const logPath = getDevLogPath(service);
+  try {
+    const content = fs.readFileSync(logPath, 'utf-8');
+    const allLines = content.split('\n');
+    return allLines.slice(-lines).join('\n');
+  } catch {
+    return `No dev log found at ${logPath}`;
+  }
 }

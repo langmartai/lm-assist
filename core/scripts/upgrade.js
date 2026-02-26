@@ -449,9 +449,11 @@ async function main() {
   // ── Step 2: Kill everything ─────────────────────────────────────────────
   log('--- Step 2: Stopping all lm-assist processes ---');
 
-  // 2a: Kill services by port
+  // 2a: Kill services by port (prod + dev)
   killByPort(apiPort);
   killByPort(webPort);
+  killByPort('3200');  // dev API
+  killByPort('3948');  // dev Web
 
   // 2b: Clean PID files
   cleanPidFiles(LOG_DIR);

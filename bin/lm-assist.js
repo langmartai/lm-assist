@@ -15,26 +15,27 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
+/** Always returns the npm package path (prod). Dev mode no longer switches this. */
 function getProjectRoot() {
+  const fromFilename = path.dirname(path.dirname(__filename));
+  if (fromFilename.includes('node_modules')) {
+    return fromFilename;
+  }
+  return findNpmPackage() || fromFilename;
+}
+
+/** Read devModeEnabled + devRepoPath from ~/.claude-code-config.json */
+function getDevConfig() {
   try {
     const cfgPath = path.join(os.homedir(), '.claude-code-config.json');
     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-
-    // Dev mode ON → use repo
-    if (cfg.devModeEnabled && cfg.devRepoPath) {
-      const devSm = path.join(cfg.devRepoPath, 'core', 'dist', 'service-manager.js');
-      if (fs.existsSync(devSm)) return cfg.devRepoPath;
-    }
-
-    // Dev mode OFF → always use npm global package
-    const fromFilename = path.dirname(path.dirname(__filename));
-    if (fromFilename.includes('node_modules')) {
-      return fromFilename; // Already running from npm global
-    }
-    // Running from repo but devMode is off → find npm global package
-    return findNpmPackage() || fromFilename;
-  } catch {}
-  return path.dirname(path.dirname(__filename));
+    return {
+      enabled: !!cfg.devModeEnabled,
+      repoPath: cfg.devRepoPath || null,
+    };
+  } catch {
+    return { enabled: false, repoPath: null };
+  }
 }
 
 function findNpmPackage() {
@@ -89,7 +90,7 @@ Commands:
   stop               Stop all services
   restart            Restart services
   status             Show service status and component locations
-  logs [core|web]    View service logs (last 100 lines)
+  logs [core|web]    View service logs (last 100 lines, --dev for dev logs)
   upgrade            Upgrade to latest version (npm + plugin + restart)
   help               Show this help message
 
@@ -98,6 +99,7 @@ Examples:
   lm-assist stop
   lm-assist status
   lm-assist logs core
+  lm-assist logs core --dev
 
 More info: https://github.com/langmartai/lm-assist
 `);
@@ -168,13 +170,27 @@ function printComponents(svc) {
 
 async function main() {
   const svc = loadSm();
+  const devCfg = getDevConfig();
 
   switch (command) {
     case 'start': {
       console.log('Starting lm-assist services...\n');
+      // Always start prod
       const result = await svc.startAll();
-      console.log(`  API: ${result.core.message}`);
-      console.log(`  Web: ${result.web.message}`);
+      console.log('  Prod:');
+      console.log(`    API: ${result.core.message}`);
+      console.log(`    Web: ${result.web.message}`);
+      // If dev mode enabled, also start dev
+      if (devCfg.enabled && devCfg.repoPath) {
+        console.log('');
+        const devResult = await svc.startDevAll(devCfg.repoPath);
+        console.log('  Dev:');
+        console.log(`    API: ${devResult.core.message}`);
+        console.log(`    Web: ${devResult.web.message}`);
+        if (!devResult.core.success || !devResult.web.success) {
+          process.exitCode = 1;
+        }
+      }
       if (result.core.success && result.web.success) {
         printComponents(svc);
       } else {
@@ -185,17 +201,44 @@ async function main() {
 
     case 'stop': {
       console.log('Stopping lm-assist services...\n');
+      // Stop dev first if enabled
+      if (devCfg.enabled) {
+        const devResult = await svc.stopDevAll();
+        console.log('  Dev:');
+        console.log(`    API: ${devResult.core.message}`);
+        console.log(`    Web: ${devResult.web.message}`);
+        console.log('');
+      }
+      // Then stop prod
       const result = await svc.stopAll();
-      console.log(`  API: ${result.core.message}`);
-      console.log(`  Web: ${result.web.message}`);
+      console.log('  Prod:');
+      console.log(`    API: ${result.core.message}`);
+      console.log(`    Web: ${result.web.message}`);
       break;
     }
 
     case 'restart': {
       console.log('Restarting lm-assist services...\n');
+      // Stop dev first if enabled
+      if (devCfg.enabled) {
+        await svc.stopDevAll();
+      }
+      // Stop + start prod
       const result = await svc.restartAll();
-      console.log(`  API: ${result.core.message}`);
-      console.log(`  Web: ${result.web.message}`);
+      console.log('  Prod:');
+      console.log(`    API: ${result.core.message}`);
+      console.log(`    Web: ${result.web.message}`);
+      // Restart dev if enabled
+      if (devCfg.enabled && devCfg.repoPath) {
+        console.log('');
+        const devResult = await svc.startDevAll(devCfg.repoPath);
+        console.log('  Dev:');
+        console.log(`    API: ${devResult.core.message}`);
+        console.log(`    Web: ${devResult.web.message}`);
+        if (!devResult.core.success || !devResult.web.success) {
+          process.exitCode = 1;
+        }
+      }
       if (result.core.success && result.web.success) {
         printComponents(svc);
       } else {
@@ -209,21 +252,37 @@ async function main() {
       console.log('lm-assist Status\n');
       const apiStatus = s.core.healthy ? 'Running' : s.core.running ? 'Unhealthy' : 'Stopped';
       const webStatus = s.web.running ? 'Running' : 'Stopped';
-      console.log(`  API (port ${s.core.port}):  ${apiStatus}${s.core.pid ? ` (PID ${s.core.pid})` : ''}`);
-      console.log(`  Web (port ${s.web.port}):  ${webStatus}${s.web.pid ? ` (PID ${s.web.pid})` : ''}`);
+      console.log('  Prod:');
+      console.log(`    API (port ${s.core.port}):  ${apiStatus}${s.core.pid ? ` (PID ${s.core.pid})` : ''}`);
+      console.log(`    Web (port ${s.web.port}):  ${webStatus}${s.web.pid ? ` (PID ${s.web.pid})` : ''}`);
+      // Show dev status if enabled
+      if (devCfg.enabled && typeof svc.devStatus === 'function') {
+        const ds = await svc.devStatus();
+        const devApiStatus = ds.core.healthy ? 'Running' : ds.core.running ? 'Unhealthy' : 'Stopped';
+        const devWebStatus = ds.web.running ? 'Running' : 'Stopped';
+        console.log('  Dev:');
+        console.log(`    API (port ${ds.core.port}):  ${devApiStatus}${ds.core.pid ? ` (PID ${ds.core.pid})` : ''}`);
+        console.log(`    Web (port ${ds.web.port}):  ${devWebStatus}${ds.web.pid ? ` (PID ${ds.web.pid})` : ''}`);
+      }
       printComponents(svc);
       break;
     }
 
     case 'logs': {
-      const service = args[0];
-      if (!service || !['core', 'web'].includes(service)) {
-        console.error('Usage: lm-assist logs [core|web]');
+      const isDev = args.includes('--dev');
+      const service = args.find(a => ['core', 'web'].includes(a));
+      if (!service) {
+        console.error('Usage: lm-assist logs [core|web] [--dev]');
         process.exitCode = 1;
         break;
       }
-      const log = svc.readLog(service, 100);
-      console.log(log);
+      if (isDev && typeof svc.readDevLog === 'function') {
+        const log = svc.readDevLog(service, 100);
+        console.log(log);
+      } else {
+        const log = svc.readLog(service, 100);
+        console.log(log);
+      }
       break;
     }
 
