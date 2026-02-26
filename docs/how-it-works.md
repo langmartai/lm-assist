@@ -43,7 +43,6 @@ A Next.js application that talks to the Core API. This is what you open in your 
 - **Session Detail** — full conversation timeline with tool calls, thinking blocks, and agent trees
 - **Tasks** — Kanban board aggregating task lists from all active sessions
 - **Knowledge** — browse, search, and manage extracted knowledge entries
-- **Architecture** — auto-generated codebase structure documentation
 - **Settings** — manage hooks, MCP server, statusline, hub connection, experiments
 
 **Entry point:** `web/` directory (Next.js 16)
@@ -136,8 +135,6 @@ lm-assist keeps its own data separate from Claude Code:
 │   ├── context-inject-hook.log         ← hook execution log
 │   └── mcp-calls.jsonl                 ← MCP tool call log (search/detail/feedback)
 ├── hub.json                            ← Hub gateway config (if connected)
-├── milestone/
-│   └── settings.json                   ← experiment settings
 └── knowledge/                          ← knowledge database files
 ```
 

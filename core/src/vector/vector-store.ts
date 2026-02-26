@@ -1,7 +1,7 @@
 /**
  * Vector Store (LanceDB)
  *
- * Vector database for semantic search over session and milestone data.
+ * Vector database for semantic search over session and knowledge data.
  * Uses LanceDB (embedded Rust engine via NAPI) with local embeddings
  * from transformers.js.
  *
@@ -24,8 +24,9 @@ import { getDataDir } from '../utils/path-utils';
 // ─── Types ──────────────────────────────────────────────────
 
 export interface VectorMetadata {
-  type: 'session' | 'milestone' | 'knowledge';
+  type: 'session' | 'knowledge';
   sessionId: string;
+  /** @deprecated Kept for LanceDB schema compatibility with existing vectors */
   milestoneIndex?: number;
   /** Knowledge document ID (e.g., "K001") — set when type='knowledge' */
   knowledgeId?: string;
@@ -39,7 +40,7 @@ export interface VectorMetadata {
   timestamp?: string;
   /** Project path for affinity */
   projectPath?: string;
-  /** Phase for milestone quality signal */
+  /** @deprecated Kept for LanceDB schema compatibility */
   phase?: number;
   /** Origin: 'local' (default) or 'remote' (synced from another machine) */
   origin?: 'local' | 'remote';
@@ -54,7 +55,7 @@ export interface VectorMetadata {
 }
 
 export interface VectorSearchResult {
-  type: 'session' | 'milestone' | 'knowledge';
+  type: 'session' | 'knowledge';
   sessionId: string;
   milestoneIndex?: number;
   knowledgeId?: string;
@@ -188,8 +189,6 @@ function buildWhere(filter: Record<string, unknown>): string {
 function entityId(row: any): string {
   if (row.type === 'knowledge') {
     return row.partId || row.knowledgeId || '';
-  } else if (row.type === 'milestone') {
-    return `${row.sessionId}:${row.milestoneIndex}`;
   }
   return row.sessionId;
 }
@@ -591,35 +590,6 @@ export class VectorStore {
   }
 
   /**
-   * Delete all vectors for a specific milestone
-   */
-  async deleteMilestone(sessionId: string, milestoneIndex: number): Promise<number> {
-    await this.init();
-
-    const where = `sessionId = '${sessionId.replace(/'/g, "''")}' AND milestoneIndex = ${milestoneIndex} AND type = 'milestone'`;
-    const count = await this.countWhere(where);
-    if (count === 0) return 0;
-
-    await this.table.delete(where);
-
-    return count;
-  }
-
-  /**
-   * Delete vectors for multiple milestones in a single query (batch delete).
-   * Much faster than calling deleteMilestone() per milestone.
-   */
-  async deleteMilestoneBatch(sessionId: string, milestoneIndices: number[]): Promise<void> {
-    if (milestoneIndices.length === 0) return;
-    await this.init();
-
-    const escapedId = sessionId.replace(/'/g, "''");
-    const indexList = milestoneIndices.join(',');
-    const where = `sessionId = '${escapedId}' AND type = 'milestone' AND milestoneIndex IN (${indexList})`;
-    await this.table.delete(where);
-  }
-
-  /**
    * Delete all vectors for a knowledge document
    */
   async deleteKnowledge(knowledgeId: string): Promise<number> {
@@ -637,7 +607,7 @@ export class VectorStore {
   /**
    * Delete all vectors of a given type.
    */
-  async deleteAllByType(type: 'session' | 'milestone' | 'knowledge'): Promise<number> {
+  async deleteAllByType(type: 'session' | 'knowledge'): Promise<number> {
     await this.init();
 
     const count = await this.countWhere(`type = '${type}'`);
@@ -652,7 +622,7 @@ export class VectorStore {
    * Delete all LOCAL vectors of a given type (preserves remote vectors).
    * Used during knowledge reindex to avoid wiping remote synced vectors.
    */
-  async deleteLocalByType(type: 'session' | 'milestone' | 'knowledge'): Promise<number> {
+  async deleteLocalByType(type: 'session' | 'knowledge'): Promise<number> {
     await this.init();
 
     const where = `type = '${type}' AND (origin = '' OR origin = 'local')`;
@@ -763,23 +733,20 @@ export class VectorStore {
   async getStatsByType(): Promise<{
     totalVectors: number;
     sessionVectors: number;
-    milestoneVectors: number;
     knowledgeVectors: number;
     isInitialized: boolean;
   }> {
     // Trigger lazy init so status polls auto-connect on server startup
     await this.init();
 
-    const [sessions, milestones, knowledge] = await Promise.all([
+    const [sessions, knowledge] = await Promise.all([
       this.countWhere("type = 'session'"),
-      this.countWhere("type = 'milestone'"),
       this.countWhere("type = 'knowledge'"),
     ]);
 
     return {
-      totalVectors: sessions + milestones + knowledge,
+      totalVectors: sessions + knowledge,
       sessionVectors: sessions,
-      milestoneVectors: milestones,
       knowledgeVectors: knowledge,
       isInitialized: true,
     };

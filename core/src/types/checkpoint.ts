@@ -25,7 +25,6 @@ export type CheckpointStatus =
 export type CheckpointTrigger =
   | 'execution_start'  // Auto-created at execution start
   | 'tier_start'       // Auto-created when tier begins
-  | 'milestone'        // Created at milestone completion
   | 'manual'           // User-initiated checkpoint
   | 'auto_save';       // Periodic auto-save
 

@@ -2,7 +2,7 @@
  * Knowledge Reviewer
  *
  * Batch-processes unaddressed comments on knowledge documents using an LLM.
- * Pattern: follows MilestoneSummarizer — singleton, debounced queue, LLM API calls.
+ * Pattern: singleton, debounced queue, LLM API calls.
  *
  * Process:
  * 1. Collect all knowledge documents with unaddressed comments

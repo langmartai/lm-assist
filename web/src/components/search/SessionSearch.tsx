@@ -10,37 +10,9 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import type { Session, SessionDetail } from '@/lib/types';
-import { useExperiment } from '@/hooks/useExperiment';
 import { useDeviceInfo } from '@/hooks/useDeviceInfo';
 
 type Scope = 'smart' | '24h' | '3d' | '7d' | '30d' | 'all';
-
-const SCOPE_ESCALATION: Record<string, Scope | null> = {
-  '24h': '3d',
-  '3d': '7d',
-  '7d': '30d',
-  '30d': 'all',
-  'all': null,
-};
-
-interface MilestoneResult {
-  milestoneId: string;
-  sessionId: string;
-  milestoneIndex: number;
-  title: string | null;
-  type: string | null;
-  description: string | null;
-  outcome: string | null;
-  facts: string[];
-  concepts: string[];
-  startTurn: number;
-  endTurn: number;
-  score: number;
-  phase: 1 | 2;
-  timestamp: string;
-  filesModified: string[];
-  userPrompts: string[];
-}
 
 interface KnowledgeSearchResult {
   type: string;
@@ -96,29 +68,6 @@ const KNOWLEDGE_STATUS_COLORS: Record<string, string> = {
   archived: 'badge-default',
 };
 
-interface DisplayResult {
-  sessionId: string;
-  projectPath: string;
-  score: number;
-  // Milestone fields (null when showing recent sessions)
-  milestoneId?: string;
-  milestoneIndex?: number;
-  title: string | null;
-  type: string | null;
-  description: string | null;
-  startTurn?: number;
-  endTurn?: number;
-  phase?: 1 | 2;
-  facts?: string[];
-  // Fallback fields for recent sessions
-  matchedPrompts?: string[];
-  numTurns: number;
-  lastTimestamp: string;
-  model: string;
-  subagentCount: number;
-  fileSize?: number;
-}
-
 interface SessionSearchProps {
   mode: 'page' | 'popup';
   initialQuery?: string;
@@ -135,15 +84,6 @@ const SCOPES: { value: Scope; label: string }[] = [
   { value: '30d', label: '30d' },
   { value: 'all', label: 'All' },
 ];
-
-const TYPE_COLORS: Record<string, string> = {
-  bugfix: 'badge-red',
-  implementation: 'badge-green',
-  discovery: 'badge-blue',
-  refactor: 'badge-purple',
-  decision: 'badge-amber',
-  configuration: 'badge-default',
-};
 
 function timeAgo(ts: string): string {
   if (!ts) return '';
@@ -162,7 +102,6 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
   const { selectedMachine } = useMachineContext();
   const machineId = selectedMachine?.id;
   const router = useRouter();
-  const { isExperiment } = useExperiment();
   const { viewMode } = useDeviceInfo();
   const isMobile = viewMode === 'mobile';
 
@@ -170,15 +109,10 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
   const [directory, setDirectory] = useState(initialDirectory);
   const [scope, setScope] = useState<Scope>('smart');
   const [effectiveScope, setEffectiveScope] = useState<string>('');
-  const [searchResults, setSearchResults] = useState<MilestoneResult[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const [selectedStartTurn, setSelectedStartTurn] = useState<number | undefined>();
-  const [selectedMilestoneId, setSelectedMilestoneId] = useState<string | undefined>();
   const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [searching, setSearching] = useState(false);
-  const [recentMilestones, setRecentMilestones] = useState<DisplayResult[]>([]);
-  const [loadingRecent, setLoadingRecent] = useState(false);
   const [previewLastN, setPreviewLastN] = useState(getPersistedLastN);
   const [copiedId, setCopiedId] = useState(false);
   const [knowledgeResults, setKnowledgeResults] = useState<KnowledgeSearchResult[]>([]);
@@ -199,10 +133,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
   }>>([]);
   const [loadingRecentKnowledge, setLoadingRecentKnowledge] = useState(false);
 
-  // Search config: which result types to include
-  const [searchFilter, setSearchFilter] = useState<'knowledge' | 'milestones' | 'both'>(isMobile ? 'knowledge' : 'both');
-  const searchIncludeKnowledge = searchFilter === 'knowledge' || searchFilter === 'both';
-  const searchIncludeMilestones = searchFilter === 'milestones' || searchFilter === 'both';
+  const searchIncludeKnowledge = true;
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -214,66 +145,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, []);
 
-  // Load search config on mount
-  useEffect(() => {
-    apiClient.fetchPath('/claude-code/config', { machineId })
-      .then((json: any) => {
-        if (json?.data) {
-          const inclK = typeof json.data.searchIncludeKnowledge === 'boolean' ? json.data.searchIncludeKnowledge : true;
-          const inclM = typeof json.data.searchIncludeMilestones === 'boolean' ? json.data.searchIncludeMilestones : true;
-          // On mobile: default to knowledge-only for cleaner list view
-          if (isMobile) {
-            if (inclK) setSearchFilter('knowledge');
-            else if (inclM) setSearchFilter('milestones');
-          } else {
-            if (inclK && inclM) setSearchFilter('both');
-            else if (inclK) setSearchFilter('knowledge');
-            else if (inclM) setSearchFilter('milestones');
-            else setSearchFilter('both');
-          }
-        }
-      })
-      .catch(() => {});
-  }, [apiClient, machineId]);
-
-  // Load recent milestones on mount (gated by searchIncludeMilestones)
-  useEffect(() => {
-    if (!searchIncludeMilestones) {
-      setRecentMilestones([]);
-      setLoadingRecent(false);
-      return;
-    }
-    let cancelled = false;
-    setLoadingRecent(true);
-    apiClient.getRecentMilestones(machineId, { projectPath: initialProjectPath, directory })
-      .then((res: { results: MilestoneResult[] }) => {
-        if (cancelled) return;
-        setRecentMilestones((res.results || []).map(r => ({
-          sessionId: r.sessionId,
-          projectPath: '',
-          score: 0,
-          milestoneId: r.milestoneId,
-          milestoneIndex: r.milestoneIndex,
-          title: r.title,
-          type: r.type,
-          description: r.description,
-          startTurn: r.startTurn,
-          endTurn: r.endTurn,
-          phase: r.phase,
-          facts: r.facts,
-          matchedPrompts: r.userPrompts,
-          numTurns: r.endTurn - r.startTurn,
-          lastTimestamp: r.timestamp,
-          model: '',
-          subagentCount: 0,
-        })));
-      })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setLoadingRecent(false); });
-    return () => { cancelled = true; };
-  }, [apiClient, machineId, initialProjectPath, directory, searchIncludeMilestones]);
-
-  // Load recent knowledge on mount (gated by searchIncludeKnowledge)
+  // Load recent knowledge on mount
   useEffect(() => {
     if (!searchIncludeKnowledge) {
       setRecentKnowledge([]);
@@ -311,53 +183,17 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
     }
   }, [searchIncludeKnowledge, apiClient, machineId]);
 
-  // Milestone search on keystroke (debounced) — smart scope auto-escalates
-  const doSearch = useCallback(async (q: string, s: Scope) => {
+  // Search on keystroke (debounced)
+  const doSearch = useCallback(async (q: string, _s: Scope) => {
     if (!q.trim()) {
-      setSearchResults([]);
       setKnowledgeResults([]);
       setEffectiveScope('');
       return;
     }
     setSearching(true);
-    doKnowledgeSearch(q); // fire in parallel
-
-    // Skip milestone search if disabled
-    if (!searchIncludeMilestones) {
-      setSearchResults([]);
-      setEffectiveScope('');
-      setSearching(false);
-      return;
-    }
-
-    const searchOpts: Record<string, any> = { limit: 50 };
-    if (directory) searchOpts.directory = directory;
-    if (initialProjectPath) searchOpts.projectPath = initialProjectPath;
-    try {
-      if (s === 'smart') {
-        let currentScope: Scope | null = '24h';
-        while (currentScope) {
-          const res = await apiClient.searchSessions(q, { ...searchOpts, scope: currentScope }, machineId);
-          if ((res.results || []).length > 0) {
-            setSearchResults(res.results);
-            setEffectiveScope(currentScope);
-            return;
-          }
-          currentScope = SCOPE_ESCALATION[currentScope] || null;
-        }
-        setSearchResults([]);
-        setEffectiveScope('all');
-      } else {
-        const res = await apiClient.searchSessions(q, { ...searchOpts, scope: s }, machineId);
-        setSearchResults(res.results || []);
-        setEffectiveScope(s);
-      }
-    } catch {
-      // ignore
-    } finally {
-      setSearching(false);
-    }
-  }, [apiClient, machineId, directory, initialProjectPath, doKnowledgeSearch, searchIncludeMilestones]);
+    await doKnowledgeSearch(q);
+    setSearching(false);
+  }, [doKnowledgeSearch]);
 
   // Debounced input handler
   const handleInputChange = useCallback((value: string) => {
@@ -372,7 +208,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
     if (query.trim()) {
       doSearch(query, scope);
     }
-  }, [scope, directory, searchFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scope, directory]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load session preview
   useEffect(() => {
@@ -439,93 +275,28 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
     }
   }, [selectedKnowledgePartId, knowledgeDetail]);
 
-  // Convert milestone results to display results
-  const displaySearchResults: DisplayResult[] = useMemo(() => {
-    return searchResults.map(r => ({
-      sessionId: r.sessionId,
-      projectPath: '', // milestones don't carry projectPath
-      score: r.score,
-      milestoneId: r.milestoneId,
-      milestoneIndex: r.milestoneIndex,
-      title: r.title,
-      type: r.type,
-      description: r.description,
-      startTurn: r.startTurn,
-      endTurn: r.endTurn,
-      phase: r.phase,
-      facts: r.facts,
-      matchedPrompts: r.userPrompts,
-      numTurns: r.endTurn - r.startTurn,
-      lastTimestamp: r.timestamp,
-      model: '',
-      subagentCount: 0,
-    }));
-  }, [searchResults]);
-
-  // Show search results when query present, recent milestones when empty
-  const displayResults = query.trim() ? displaySearchResults : recentMilestones;
-
   // Auto-select first result unless user manually picked one
   // On mobile: skip auto-select so the list stays visible
   useEffect(() => {
     if (userSelectedRef.current || isMobile) return;
-    // When searching: prefer first knowledge result, then first milestone
-    if (query.trim()) {
-      if (knowledgeResults.length > 0) {
-        setSelectedSessionId(null);
-        setSelectedStartTurn(undefined);
-        setSelectedMilestoneId(undefined);
-        const kr0 = knowledgeResults[0];
-        setSelectedKnowledgeId(kr0.knowledgeId || (kr0.partId || '').split('.')[0] || null);
-        setSelectedKnowledgePartId(kr0.partId || null);
-        setSelectedKnowledgeMachineId(kr0.machineId);
-      } else {
-        const first = displayResults[0];
-        if (first) {
-          setSelectedKnowledgeId(null);
-          setSelectedKnowledgePartId(null);
-          setSelectedKnowledgeMachineId(undefined);
-          setSelectedSessionId(first.sessionId);
-          setSelectedStartTurn(first.startTurn);
-          setSelectedMilestoneId(first.milestoneId);
-        } else {
-          setSelectedSessionId(null);
-          setSelectedStartTurn(undefined);
-          setSelectedMilestoneId(undefined);
-          setSelectedKnowledgeId(null);
-          setSelectedKnowledgePartId(null);
-          setSelectedKnowledgeMachineId(undefined);
-        }
-      }
+    if (knowledgeResults.length > 0) {
+      setSelectedSessionId(null);
+      const kr0 = knowledgeResults[0];
+      setSelectedKnowledgeId(kr0.knowledgeId || (kr0.partId || '').split('.')[0] || null);
+      setSelectedKnowledgePartId(kr0.partId || null);
+      setSelectedKnowledgeMachineId(kr0.machineId);
+    } else if (recentKnowledge.length > 0 && !query.trim()) {
+      setSelectedSessionId(null);
+      setSelectedKnowledgeId(recentKnowledge[0].id);
+      setSelectedKnowledgePartId(null);
+      setSelectedKnowledgeMachineId(recentKnowledge[0].machineId);
     } else {
-      // Default view: prefer first recent knowledge, then first recent milestone
-      if (recentKnowledge.length > 0) {
-        setSelectedSessionId(null);
-        setSelectedStartTurn(undefined);
-        setSelectedMilestoneId(undefined);
-        setSelectedKnowledgeId(recentKnowledge[0].id);
-        setSelectedKnowledgePartId(null);
-        setSelectedKnowledgeMachineId(recentKnowledge[0].machineId);
-      } else {
-        const first = displayResults[0];
-        if (first) {
-          setSelectedKnowledgeId(null);
-          setSelectedKnowledgePartId(null);
-          setSelectedKnowledgeMachineId(undefined);
-          setSelectedSessionId(first.sessionId);
-          setSelectedStartTurn(first.startTurn);
-          setSelectedMilestoneId(first.milestoneId);
-        } else {
-          setSelectedSessionId(null);
-          setSelectedStartTurn(undefined);
-          setSelectedMilestoneId(undefined);
-          setSelectedKnowledgeId(null);
-          setSelectedKnowledgePartId(null);
-          setSelectedKnowledgeMachineId(undefined);
-        }
-      }
+      setSelectedSessionId(null);
+      setSelectedKnowledgeId(null);
+      setSelectedKnowledgePartId(null);
+      setSelectedKnowledgeMachineId(undefined);
     }
-  }, [displayResults, recentKnowledge, knowledgeResults, query]);
+  }, [recentKnowledge, knowledgeResults, query]);
 
   // Filter preview messages to user+assistant only
   const previewMessages = useMemo(() => {
@@ -561,14 +332,14 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
           <input
             ref={inputRef}
             className="input input-with-icon"
-            placeholder={searchIncludeKnowledge && searchIncludeMilestones ? 'Search knowledge & milestones...' : searchIncludeKnowledge ? 'Search knowledge...' : searchIncludeMilestones ? 'Search milestones...' : 'Search...'}
+            placeholder="Search knowledge..."
             style={{ paddingLeft: 28, fontSize: 12 }}
             value={query}
             onChange={e => handleInputChange(e.target.value)}
           />
           {query && (
             <button
-              onClick={() => { setQuery(''); setSearchResults([]); setKnowledgeResults([]); setSelectedKnowledgeId(null); setSelectedKnowledgePartId(null); setSelectedKnowledgeMachineId(undefined); userSelectedRef.current = false; }}
+              onClick={() => { setQuery(''); setKnowledgeResults([]); setSelectedKnowledgeId(null); setSelectedKnowledgePartId(null); setSelectedKnowledgeMachineId(undefined); userSelectedRef.current = false; }}
               style={{
                 position: 'absolute',
                 right: 8,
@@ -607,32 +378,6 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
             >
               <X size={10} />
             </button>
-          </div>
-        )}
-
-        {/* Filter toggle: Knowledge / Milestones / Both — only shown in experiment mode */}
-        {isExperiment && (
-          <div style={{ display: 'flex', gap: 2, borderRight: '1px solid var(--color-border-subtle)', paddingRight: 6, marginRight: 2 }}>
-            {(['both', 'knowledge', 'milestones'] as const).map(f => (
-              <button
-                key={f}
-                onClick={() => setSearchFilter(f)}
-                style={{
-                  padding: '4px 8px',
-                  fontSize: 10,
-                  fontWeight: 500,
-                  borderRadius: 'var(--radius-sm)',
-                  border: 'none',
-                  cursor: 'pointer',
-                  background: searchFilter === f ? 'var(--color-accent-glow)' : 'transparent',
-                  color: searchFilter === f ? 'var(--color-accent)' : 'var(--color-text-tertiary)',
-                  transition: 'all 100ms ease',
-                  textTransform: 'capitalize',
-                }}
-              >
-                {f === 'both' ? 'Both' : f === 'knowledge' ? 'Knowledge' : 'Milestones'}
-              </button>
-            ))}
           </div>
         )}
 
@@ -679,22 +424,10 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
           borderBottom: '1px solid var(--color-border-subtle)',
           lineHeight: 1.5,
         }}>
-          <span><strong style={{ color: 'var(--color-text-secondary)' }}>Type</strong> to search {searchIncludeKnowledge && searchIncludeMilestones ? 'knowledge & milestones' : searchIncludeKnowledge ? 'knowledge' : searchIncludeMilestones ? 'milestones' : '...'}</span>
+          <span><strong style={{ color: 'var(--color-text-secondary)' }}>Type</strong> to search knowledge</span>
         </div>
       )}
 
-      {/* Smart scope indicator */}
-      {scope === 'smart' && effectiveScope && query.trim() && !searching && (
-        <div style={{
-          padding: '4px 16px',
-          fontSize: 10,
-          color: 'var(--color-text-tertiary)',
-          borderBottom: '1px solid var(--color-border-subtle)',
-        }}>
-          Searched: {effectiveScope === 'all' ? 'all time' : `last ${effectiveScope}`}
-          {displaySearchResults.length === 0 && ' — no results'}
-        </div>
-      )}
 
       {/* Main content area */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -707,7 +440,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
           transition: 'width 200ms ease',
           flexShrink: (isMobile && (selectedSessionId || selectedKnowledgeId)) ? 0 : undefined,
         }}>
-          {displayResults.length === 0 && knowledgeResults.length === 0 && query && !searching ? (
+          {knowledgeResults.length === 0 && query && !searching ? (
             <div className="empty-state" style={{ padding: '32px 16px' }}>
               <Search size={32} className="empty-state-icon" />
               <div style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>No results found</div>
@@ -715,9 +448,9 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                 Try broadening your search or changing the scope
               </div>
             </div>
-          ) : displayResults.length === 0 && knowledgeResults.length === 0 && recentKnowledge.length === 0 && !query ? (
+          ) : knowledgeResults.length === 0 && recentKnowledge.length === 0 && !query ? (
             <div className="empty-state" style={{ padding: '32px 16px' }}>
-              {loadingRecent || loadingRecentKnowledge ? (
+              {loadingRecentKnowledge ? (
                 <>
                   <Loader2 size={24} className="spin" style={{ color: 'var(--color-text-tertiary)' }} />
                   <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>Loading recent entries...</div>
@@ -750,8 +483,6 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                       onClick={() => {
                         userSelectedRef.current = true;
                         setSelectedSessionId(null);
-                        setSelectedStartTurn(undefined);
-                        setSelectedMilestoneId(undefined);
                         setSelectedKnowledgeId(kr.knowledgeId || (kr.partId || '').split('.')[0] || null);
                         setSelectedKnowledgePartId(kr.partId || null);
                         setSelectedKnowledgeMachineId(kr.machineId);
@@ -811,18 +542,6 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                       </div>
                     </button>
                   ))}
-                  {displayResults.length > 0 && (
-                    <div style={{
-                      padding: '6px 12px 4px',
-                      fontSize: 10,
-                      fontWeight: 600,
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.05em',
-                      color: 'var(--color-text-tertiary)',
-                    }}>
-                      Milestones
-                    </div>
-                  )}
                 </>
               )}
               {/* Recent knowledge (default view, no query) */}
@@ -844,8 +563,6 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                       onClick={() => {
                         userSelectedRef.current = true;
                         setSelectedSessionId(null);
-                        setSelectedStartTurn(undefined);
-                        setSelectedMilestoneId(undefined);
                         setSelectedKnowledgeId(k.id);
                         setSelectedKnowledgePartId(null);
                         setSelectedKnowledgeMachineId(k.machineId);
@@ -931,186 +648,6 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                   ))}
                 </>
               )}
-              {!query.trim() && displayResults.length > 0 && (
-                <div style={{
-                  padding: '4px 12px 6px',
-                  fontSize: 10,
-                  fontWeight: 600,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.05em',
-                  color: 'var(--color-text-tertiary)',
-                }}>
-                  Recent Milestones
-                </div>
-              )}
-              {displayResults.map((r, i) => {
-                const isSelected = selectedSessionId === r.sessionId
-                  && (!r.milestoneId || selectedStartTurn === r.startTurn);
-                const isMilestone = !!r.milestoneId;
-                const typeBadge = r.type ? TYPE_COLORS[r.type] || 'badge-default' : 'badge-default';
-
-                const navigateToMilestone = (e: React.MouseEvent) => {
-                  e.stopPropagation();
-                  const params = new URLSearchParams();
-                  params.set('session', r.sessionId);
-                  params.set('tab', 'chat');
-                  if (r.milestoneId) params.set('milestone', r.milestoneId);
-                  router.push(`/sessions?${params.toString()}`);
-                  onClose?.();
-                };
-
-                return (
-                  <button
-                    key={r.milestoneId || r.sessionId + '-' + i}
-                    onClick={() => {
-                      userSelectedRef.current = true;
-                      setSelectedKnowledgeId(null);
-                      setSelectedKnowledgePartId(null);
-                      setSelectedKnowledgeMachineId(undefined);
-                      if (isSelected) {
-                        setSelectedSessionId(null);
-                        setSelectedStartTurn(undefined);
-                        setSelectedMilestoneId(undefined);
-                      } else {
-                        setSelectedSessionId(r.sessionId);
-                        setSelectedStartTurn(r.startTurn);
-                        setSelectedMilestoneId(r.milestoneId);
-                      }
-                    }}
-                    onDoubleClick={navigateToMilestone}
-                    style={{
-                      display: 'block',
-                      width: '100%',
-                      textAlign: 'left',
-                      padding: '8px 12px',
-                      borderRadius: 'var(--radius-md)',
-                      border: 'none',
-                      cursor: 'pointer',
-                      fontFamily: 'var(--font-sans)',
-                      transition: 'all 100ms ease',
-                      background: isSelected
-                        ? 'var(--color-accent-glow)'
-                        : 'transparent',
-                      borderLeft: isSelected
-                        ? '3px solid var(--color-accent)'
-                        : '3px solid transparent',
-                    }}
-                    onMouseEnter={e => {
-                      if (!isSelected) {
-                        e.currentTarget.style.background = 'var(--color-bg-hover)';
-                      }
-                    }}
-                    onMouseLeave={e => {
-                      if (!isSelected) {
-                        e.currentTarget.style.background = 'transparent';
-                      }
-                    }}
-                  >
-                    {/* Row 1: type badge + title/prompt */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2, overflow: 'hidden' }}>
-                      {isMilestone && r.type && (
-                        <span
-                          className={`badge ${typeBadge}`}
-                          style={{ fontSize: 9, padding: '1px 6px', flexShrink: 0 }}
-                        >
-                          {r.type}
-                        </span>
-                      )}
-                      <span style={{
-                        fontSize: 11,
-                        color: 'var(--color-text-primary)',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        minWidth: 0,
-                        flex: 1,
-                      }}>
-                        {r.title || r.matchedPrompts?.[0] || 'No preview'}
-                      </span>
-                      {isMilestone && (
-                        <span
-                          onClick={navigateToMilestone}
-                          title="Open in session detail"
-                          style={{
-                            flexShrink: 0,
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            padding: '2px 4px',
-                            borderRadius: 'var(--radius-sm)',
-                            color: 'var(--color-text-tertiary)',
-                            cursor: 'pointer',
-                            transition: 'color 100ms',
-                          }}
-                          onMouseEnter={e => { e.currentTarget.style.color = 'var(--color-accent)'; }}
-                          onMouseLeave={e => { e.currentTarget.style.color = 'var(--color-text-tertiary)'; }}
-                        >
-                          <ExternalLink size={10} />
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Row 2: description (milestone) or meta */}
-                    {isMilestone && r.description && (
-                      <div style={{
-                        fontSize: 10,
-                        color: 'var(--color-text-secondary)',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        marginBottom: 2,
-                      }}>
-                        {r.description}
-                      </div>
-                    )}
-
-                    {/* Row 3: meta */}
-                    <div style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      fontSize: 10,
-                      color: 'var(--color-text-tertiary)',
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                    }}>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
-                        <Clock size={10} />
-                        {timeAgo(r.lastTimestamp)}
-                      </span>
-                      {isMilestone ? (
-                        <>
-                          <span style={{ flexShrink: 0 }}>turns {r.startTurn}-{r.endTurn}</span>
-                          {r.phase === 2 && (
-                            <span className="badge badge-green" style={{ fontSize: 8, padding: '0 4px' }}>P2</span>
-                          )}
-                          {r.facts && r.facts.length > 0 && (
-                            <span style={{ flexShrink: 0 }}>{r.facts.length} facts</span>
-                          )}
-                        </>
-                      ) : (
-                        <>
-                          <span style={{ flexShrink: 0 }}>{r.numTurns}t</span>
-                          {r.model && <span style={{ flexShrink: 0 }}>{r.model}</span>}
-                          {r.subagentCount > 0 && (
-                            <span style={{ flexShrink: 0 }}>{r.subagentCount} sub</span>
-                          )}
-                        </>
-                      )}
-                      <span style={{
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        direction: 'rtl',
-                        textAlign: 'left',
-                        minWidth: 0,
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: 9,
-                      }}>
-                        {r.sessionId.slice(0, 8)}
-                      </span>
-                    </div>
-                  </button>
-                );
-              })}
             </div>
           )}
         </div>
@@ -1207,7 +744,7 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                       <SquareTerminal size={11} />
                     </button>
                     <button
-                      onClick={() => { setSelectedSessionId(null); setSelectedMilestoneId(undefined); }}
+                      onClick={() => { setSelectedSessionId(null); }}
                       style={{
                         background: 'none',
                         border: 'none',
@@ -1225,13 +762,12 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                 {/* Chat messages */}
                 <div style={{ flex: 1, overflow: 'auto', height: 'calc(100% - 32px)' }}>
                   <ChatTab
-                    key={selectedMilestoneId || selectedSessionId}
+                    key={selectedSessionId}
                     messages={previewMessages}
                     sessionId={selectedSessionId}
                     machineId={machineId}
                     projectPath={sessionDetail.projectPath}
                     onLastNChange={setPreviewLastN}
-                    highlightMilestoneId={selectedMilestoneId}
                   />
                 </div>
               </div>

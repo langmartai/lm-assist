@@ -86,10 +86,6 @@ export async function mcpFeedback(args: Record<string, unknown>): Promise<McpToo
   return post<McpToolResult>('/mcp/feedback', args);
 }
 
-export async function getMcpSettings(): Promise<{ milestoneEnabled: boolean }> {
-  return get<{ milestoneEnabled: boolean }>('/mcp/settings');
-}
-
 // ─── Core API + Web Auto-Start ──────────────────────────────────────────────────
 
 async function isApiRunning(): Promise<boolean> {

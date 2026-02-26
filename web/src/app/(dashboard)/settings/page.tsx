@@ -35,15 +35,10 @@ import {
   LogIn,
   Code2,
   Layers,
-  Plus,
-  FolderPlus,
   ChevronRight,
   GitBranch,
   Square,
-  ChevronDown,
   Zap,
-  Wrench,
-  Activity,
   BookOpen,
   FlaskConical,
   HardDrive,
@@ -58,41 +53,6 @@ import {
 // ============================================
 
 type SettingsTab = 'connection' | 'terminal' | 'claude-code' | 'data-loading' | 'experiment';
-
-interface MilestoneSettingsData {
-  enabled: boolean;
-  autoEnrich: boolean;
-  autoKnowledge: boolean;
-  scanRangeDays: number | null;
-  phase2Model: 'haiku' | 'sonnet' | 'opus';
-  architectureModel: 'haiku' | 'sonnet' | 'opus';
-  excludedPaths: string[];
-}
-
-interface PipelineStatusData {
-  sessions: { total: number; phase1: number; phase2: number; inRange: number; inRangePhase1: number; inRangePhase2: number };
-  milestones: { total: number; phase1: number; phase2: number; inRange: number; inRangePhase1: number; inRangePhase2: number };
-  vectors: { total: number; session: number; milestone: number; isInitialized: boolean };
-  pipeline: {
-    status: 'idle' | 'processing' | 'stopping' | 'unavailable';
-    queueSize: number; processed: number; errors: number;
-    lastProcessedAt: string | null; startedAt: string | null;
-    currentBatch: { batchNumber: number; milestoneCount: number } | null;
-    throughput: { milestonesPerMinute: number; batchesCompleted: number } | null;
-    currentModel: string | null;
-    vectorsIndexed?: number; vectorErrors?: number;
-    mergesApplied?: number; milestonesAbsorbed?: number;
-  };
-  scanRangeDays: number | null;
-}
-
-interface VerificationData {
-  summary: {
-    sessionsScanned: number; sessionsWithProblems: number;
-    problemCounts: Record<string, number>;
-    milestonesByProblem: Record<string, number>;
-  };
-}
 
 interface HubStatusData {
   configured: boolean;
@@ -145,11 +105,8 @@ interface ClaudeCodeConfig {
   contextInjectDisplay: boolean;
   contextInjectMode: 'mcp' | 'suggest' | 'both' | 'off';
   contextInjectKnowledge: boolean;
-  contextInjectMilestones: boolean;
   contextInjectKnowledgeCount: number;
-  contextInjectMilestoneCount: number;
   searchIncludeKnowledge: boolean;
-  searchIncludeMilestones: boolean;
   statuslinePromptCount: number;
   statuslineShowPrompts: boolean;
   statuslineShowWorktree: boolean;
@@ -248,7 +205,6 @@ export default function SettingsPage() {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('settings-active-tab');
       if (saved === 'connection' || saved === 'terminal' || saved === 'claude-code' || saved === 'data-loading' || saved === 'experiment') return saved;
-      if (saved === 'milestones') return 'experiment'; // migrate old tab name
     }
     return 'connection';
   });
@@ -347,32 +303,10 @@ export default function SettingsPage() {
   const upgradeTerminalRef = useRef<HTMLDivElement | null>(null);
   const upgradePollRef = useRef(false);
 
-  // milestone settings state
-  const [milestoneSettings, setMilestoneSettings] = useState<MilestoneSettingsData | null>(null);
-  const [isMilestoneLoading, setIsMilestoneLoading] = useState(false);
-  const [isMilestoneSaving, setIsMilestoneSaving] = useState(false);
-  const [milestoneMessage, setMilestoneMessage] = useState<{ text: string; type: 'ok' | 'error' } | null>(null);
-  const [newExcludedPath, setNewExcludedPath] = useState('');
-  const [showProjectPicker, setShowProjectPicker] = useState(false);
-  const [availableProjects, setAvailableProjects] = useState<string[]>([]);
-  const [projectPickerLoading, setProjectPickerLoading] = useState(false);
-
   // remote knowledge sync state
   const [knowledgeSettings, setKnowledgeSettings] = useState<{ remoteSyncEnabled: boolean; syncIntervalMinutes: number; lastSyncTimestamps: Record<string, string>; reviewModel: 'haiku' | 'sonnet' | 'opus'; autoReview: boolean; autoExploreGeneration: boolean; autoGenericDiscovery: boolean; genericValidationModel: 'haiku' | 'sonnet' | 'opus' } | null>(null);
   const [remoteSyncStatus, setRemoteSyncStatus] = useState<{ status: string; machinesChecked: number; machinesMatched: number; entriesSynced: number; entriesSkipped: number; entriesFlaggedStale: number; errors: string[]; startedAt: string | null; completedAt: string | null } | null>(null);
   const [isRemoteSyncing, setIsRemoteSyncing] = useState(false);
-
-  // pipeline status state
-  const [pipelineStatus, setPipelineStatus] = useState<PipelineStatusData | null>(null);
-  const [isPipelineLoading, setIsPipelineLoading] = useState(false);
-  const [isPipelineActionLoading, setIsPipelineActionLoading] = useState(false);
-  const [pipelineMessage, setPipelineMessage] = useState<{ text: string; type: 'ok' | 'error' } | null>(null);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [isVerifying, setIsVerifying] = useState(false);
-  const [verificationResult, setVerificationResult] = useState<VerificationData | null>(null);
-  const [isExtracting, setIsExtracting] = useState(false);
-  const [isRebuilding, setIsRebuilding] = useState(false);
-  const [isFixingIndex, setIsFixingIndex] = useState(false);
 
   // knowledge processing state
   const [knowledgeStats, setKnowledgeStats] = useState<{ candidates: number; generated: number } | null>(null);
@@ -874,33 +808,6 @@ export default function SettingsPage() {
     }
   }, [fetchClaudeCodeStatus, proxy.isProxied, localStatus?.healthy, activeTab]);
 
-  // Fetch milestone settings when tab activates
-  const fetchMilestoneSettings = useCallback(async () => {
-    setIsMilestoneLoading(true);
-    try {
-      // Auto-exclude non-git projects first, then fetch the updated settings
-      const autoRes = await fetch(tierAgentUrl + '/milestone-settings/auto-exclude', { method: 'POST' }).catch(() => null);
-      if (autoRes?.ok) {
-        const autoJson = await autoRes.json();
-        if (autoJson.success) {
-          setMilestoneSettings(autoJson.data || null);
-          setIsMilestoneLoading(false);
-          return;
-        }
-      }
-      // Fallback: just fetch settings directly
-      const res = await fetch(tierAgentUrl + '/milestone-settings');
-      if (res.ok) {
-        const json = await res.json();
-        setMilestoneSettings(json.data || null);
-      }
-    } catch {
-      // silently fail
-    } finally {
-      setIsMilestoneLoading(false);
-    }
-  }, [tierAgentUrl]);
-
   // ──────── Dev Mode status & actions ────────
 
   const fetchDevModeStatus = useCallback(async () => {
@@ -1112,199 +1019,12 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (!proxy.isProxied && localStatus?.healthy && (activeTab === 'data-loading' || activeTab === 'experiment')) {
-      fetchMilestoneSettings();
-      // Also fetch knowledge settings
+      // Fetch knowledge settings
       fetch(tierAgentUrl + '/knowledge-settings').then(r => r.json()).then(j => {
         if (j.success) setKnowledgeSettings(j.data);
       }).catch(() => {});
     }
-  }, [fetchMilestoneSettings, proxy.isProxied, localStatus?.healthy, activeTab, tierAgentUrl]);
-
-  const saveMilestoneSettings = useCallback(async (partial: Partial<MilestoneSettingsData>) => {
-    setIsMilestoneSaving(true);
-    try {
-      const res = await fetch(tierAgentUrl + '/milestone-settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(partial),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setMilestoneSettings(json.data);
-        setMilestoneMessage({ text: 'Settings saved', type: 'ok' });
-      } else {
-        setMilestoneMessage({ text: json.error || 'Failed to save', type: 'error' });
-      }
-    } catch {
-      setMilestoneMessage({ text: 'Failed to reach API', type: 'error' });
-    } finally {
-      setIsMilestoneSaving(false);
-      setTimeout(() => setMilestoneMessage(null), 3000);
-    }
-  }, [tierAgentUrl]);
-
-  // ──────── Pipeline status & actions ────────
-
-  const fetchPipelineStatus = useCallback(async () => {
-    if (proxy.isProxied || !localStatus?.healthy) return;
-    setIsPipelineLoading(true);
-    try {
-      const res = await fetch(tierAgentUrl + '/milestone-pipeline/status');
-      if (res.ok) {
-        const json = await res.json();
-        setPipelineStatus(json.data || null);
-      }
-    } catch {
-      // silently fail
-    } finally {
-      setIsPipelineLoading(false);
-    }
-  }, [tierAgentUrl, proxy.isProxied, localStatus?.healthy]);
-
-  // Fetch on milestones tab activation
-  useEffect(() => {
-    if (!proxy.isProxied && localStatus?.healthy && activeTab === 'milestones') {
-      fetchPipelineStatus();
-    }
-  }, [fetchPipelineStatus, proxy.isProxied, localStatus?.healthy, activeTab]);
-
-  // Poll: 5s when processing, 30s when idle
-  useEffect(() => {
-    if (!proxy.isProxied && localStatus?.healthy && activeTab === 'milestones') {
-      const interval = pipelineStatus?.pipeline?.status === 'processing' ? 5000 : 30000;
-      const timer = setInterval(fetchPipelineStatus, interval);
-      return () => clearInterval(timer);
-    }
-  }, [fetchPipelineStatus, proxy.isProxied, localStatus?.healthy, activeTab, pipelineStatus?.pipeline?.status]);
-
-  const showPipelineMessage = (text: string, type: 'ok' | 'error') => {
-    setPipelineMessage({ text, type });
-    setTimeout(() => setPipelineMessage(null), 4000);
-  };
-
-  const handleStartEnrichment = useCallback(async () => {
-    setIsPipelineActionLoading(true);
-    setPipelineMessage(null);
-    try {
-      const model = milestoneSettings?.phase2Model || 'haiku';
-      const res = await fetch(tierAgentUrl + '/milestone-pipeline/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        showPipelineMessage('Enrichment started', 'ok');
-        await fetchPipelineStatus();
-      } else {
-        showPipelineMessage(json.error || 'Failed to start', 'error');
-      }
-    } catch {
-      showPipelineMessage('Failed to reach API', 'error');
-    } finally {
-      setIsPipelineActionLoading(false);
-    }
-  }, [tierAgentUrl, milestoneSettings?.phase2Model, fetchPipelineStatus]);
-
-  const handleStopEnrichment = useCallback(async () => {
-    setIsPipelineActionLoading(true);
-    setPipelineMessage(null);
-    try {
-      const res = await fetch(tierAgentUrl + '/milestone-pipeline/stop', { method: 'POST' });
-      const json = await res.json();
-      if (json.success) {
-        showPipelineMessage('Enrichment stopping...', 'ok');
-        await fetchPipelineStatus();
-      } else {
-        showPipelineMessage(json.error || 'Failed to stop', 'error');
-      }
-    } catch {
-      showPipelineMessage('Failed to reach API', 'error');
-    } finally {
-      setIsPipelineActionLoading(false);
-    }
-  }, [tierAgentUrl, fetchPipelineStatus]);
-
-  const handleExtract = useCallback(async () => {
-    setIsExtracting(true);
-    setPipelineMessage(null);
-    try {
-      const res = await fetch(tierAgentUrl + '/milestone-pipeline/extract', { method: 'POST' });
-      const json = await res.json();
-      if (json.success) {
-        showPipelineMessage(`Extraction complete: ${json.data?.extracted ?? 0} milestones`, 'ok');
-        await fetchPipelineStatus();
-      } else {
-        showPipelineMessage(json.error || 'Extraction failed', 'error');
-      }
-    } catch {
-      showPipelineMessage('Failed to reach API', 'error');
-    } finally {
-      setIsExtracting(false);
-    }
-  }, [tierAgentUrl, fetchPipelineStatus]);
-
-  const handleVerify = useCallback(async () => {
-    setIsVerifying(true);
-    setVerificationResult(null);
-    setPipelineMessage(null);
-    try {
-      const res = await fetch(tierAgentUrl + '/milestone-pipeline/verify');
-      const json = await res.json();
-      if (json.success) {
-        setVerificationResult(json.data || null);
-      } else {
-        showPipelineMessage(json.error || 'Verification failed', 'error');
-      }
-    } catch {
-      showPipelineMessage('Failed to reach API', 'error');
-    } finally {
-      setIsVerifying(false);
-    }
-  }, [tierAgentUrl]);
-
-  const handleRebuild = useCallback(async () => {
-    setIsRebuilding(true);
-    setPipelineMessage(null);
-    try {
-      const model = milestoneSettings?.phase2Model || 'haiku';
-      const res = await fetch(tierAgentUrl + '/milestone-pipeline/reprocess', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'all', model }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        showPipelineMessage('Rebuild started', 'ok');
-        await fetchPipelineStatus();
-      } else {
-        showPipelineMessage(json.error || 'Rebuild failed', 'error');
-      }
-    } catch {
-      showPipelineMessage('Failed to reach API', 'error');
-    } finally {
-      setIsRebuilding(false);
-    }
-  }, [tierAgentUrl, milestoneSettings?.phase2Model, fetchPipelineStatus]);
-
-  const handleFixIndex = useCallback(async () => {
-    setIsFixingIndex(true);
-    setPipelineMessage(null);
-    try {
-      const res = await fetch(tierAgentUrl + '/milestone-pipeline/fix-index', { method: 'POST' });
-      const json = await res.json();
-      if (json.success) {
-        showPipelineMessage('Index fixed', 'ok');
-        await fetchPipelineStatus();
-      } else {
-        showPipelineMessage(json.error || 'Fix failed', 'error');
-      }
-    } catch {
-      showPipelineMessage('Failed to reach API', 'error');
-    } finally {
-      setIsFixingIndex(false);
-    }
-  }, [tierAgentUrl, fetchPipelineStatus]);
+  }, [proxy.isProxied, localStatus?.healthy, activeTab, tierAgentUrl]);
 
   // ──────── Knowledge processing ────────
 
@@ -1328,14 +1048,14 @@ export default function SettingsPage() {
   }, [tierAgentUrl, proxy.isProxied, localStatus?.healthy]);
 
   useEffect(() => {
-    if (!proxy.isProxied && localStatus?.healthy && activeTab === 'milestones') {
+    if (!proxy.isProxied && localStatus?.healthy && activeTab === 'experiment') {
       fetchKnowledgeStats();
     }
   }, [fetchKnowledgeStats, proxy.isProxied, localStatus?.healthy, activeTab]);
 
   // Poll knowledge status when generating
   useEffect(() => {
-    if (!proxy.isProxied && localStatus?.healthy && activeTab === 'milestones' && isKnowledgeGenerating) {
+    if (!proxy.isProxied && localStatus?.healthy && activeTab === 'experiment' && isKnowledgeGenerating) {
       const timer = setInterval(fetchKnowledgeStats, 3000);
       return () => clearInterval(timer);
     }
@@ -3030,44 +2750,6 @@ export default function SettingsPage() {
                             </span>
                           </div>
                         )}
-                        {isExperiment && (<>
-                        <div style={{ borderTop: '1px solid var(--color-border)', margin: '0' }} />
-                        <ToggleRow
-                          label="Include milestones"
-                          description="Include milestone entries (recent work summaries) in context injection."
-                          checked={claudeCodeConfig.contextInjectMilestones}
-                          onChange={(v) => handleClaudeCodeConfigChange('contextInjectMilestones', v)}
-                        />
-                        {claudeCodeConfig.contextInjectMilestones && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 4 }}>
-                            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', minWidth: 60 }}>Max results</span>
-                            <input
-                              type="number"
-                              min={1}
-                              max={10}
-                              value={claudeCodeConfig.contextInjectMilestoneCount ?? 2}
-                              onChange={(e) => {
-                                const v = Math.max(1, Math.min(10, parseInt(e.target.value) || 2));
-                                handleClaudeCodeConfigChange('contextInjectMilestoneCount', v);
-                              }}
-                              style={{
-                                width: 48,
-                                padding: '2px 6px',
-                                fontSize: 11,
-                                fontFamily: 'var(--font-mono)',
-                                background: 'var(--color-bg-primary)',
-                                border: '1px solid var(--color-border)',
-                                borderRadius: 4,
-                                color: 'var(--color-text-primary)',
-                                textAlign: 'center',
-                              }}
-                            />
-                            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
-                              ~{(claudeCodeConfig.contextInjectMilestoneCount ?? 2) * 40} tokens
-                            </span>
-                          </div>
-                        )}
-                        </>)}
                       </div>
                     ) : (
                       <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
@@ -3087,11 +2769,10 @@ export default function SettingsPage() {
                     }}>
                       <Info size={12} style={{ flexShrink: 0, marginTop: 2 }} />
                       <div>
-                        <div style={{ marginBottom: 4 }}>Context injection prepends relevant knowledge/milestones to each prompt before Claude processes it. Token estimates:</div>
+                        <div style={{ marginBottom: 4 }}>Context injection prepends relevant knowledge to each prompt before Claude processes it. Token estimates:</div>
                         <div style={{ paddingLeft: 8 }}>
                           <div>Knowledge: ~80 tokens/entry (title + summary). 3 entries &#8776; 240 tokens.</div>
-                          <div>Milestones: ~40 tokens/entry (title only). 2 entries &#8776; 80 tokens.</div>
-                          <div style={{ marginTop: 4 }}>Best practice: start with 3 knowledge + 2 milestones (~320 tokens). Increase if Claude lacks context; decrease if prompts are long to save context window.</div>
+                          <div style={{ marginTop: 4 }}>Best practice: start with 3 knowledge entries (~240 tokens). Increase if Claude lacks context; decrease if prompts are long to save context window.</div>
                         </div>
                       </div>
                     </div>
@@ -3186,15 +2867,6 @@ export default function SettingsPage() {
                           checked={claudeCodeConfig.searchIncludeKnowledge !== false}
                           onChange={(v) => handleClaudeCodeConfigChange('searchIncludeKnowledge', v)}
                         />
-                        {isExperiment && (<>
-                        <div style={{ borderTop: '1px solid var(--color-border)', margin: '0' }} />
-                        <ToggleRow
-                          label="Include milestones"
-                          description="Show milestone entries (recent work summaries) in search results."
-                          checked={claudeCodeConfig.searchIncludeMilestones === true}
-                          onChange={(v) => handleClaudeCodeConfigChange('searchIncludeMilestones', v)}
-                        />
-                        </>)}
                       </div>
                     ) : (
                       <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
@@ -3291,8 +2963,8 @@ export default function SettingsPage() {
                       <Info size={12} style={{ flexShrink: 0, marginTop: 2 }} />
                       <span>
                         {contextHookStatus?.source === 'plugin'
-                          ? <>Registered via <code>claude plugin install</code>. The <code>context-inject-hook.js</code> hook runs on each <code>UserPromptSubmit</code>, injecting relevant knowledge and milestones before each Claude Code prompt.</>
-                          : <>Registers <code>context-inject-hook.js</code> as a <code>UserPromptSubmit</code> hook in <code>~/.claude/settings.json</code>. Injects relevant knowledge and milestones before each Claude Code prompt.</>
+                          ? <>Registered via <code>claude plugin install</code>. The <code>context-inject-hook.js</code> hook runs on each <code>UserPromptSubmit</code>, injecting relevant knowledge before each Claude Code prompt.</>
+                          : <>Registers <code>context-inject-hook.js</code> as a <code>UserPromptSubmit</code> hook in <code>~/.claude/settings.json</code>. Injects relevant knowledge before each Claude Code prompt.</>
                         }
                       </span>
                     </div>
@@ -3540,7 +3212,7 @@ export default function SettingsPage() {
                       <span>
                         {mcpStatus?.source === 'plugin'
                           ? <>Registered via <code>claude plugin install</code>. Provides <code>search</code>, <code>detail</code>, and <code>feedback</code> tools to Claude Code. Managed by the plugin system.</>
-                          : <>Provides <code>search</code>, <code>detail</code>, and <code>feedback</code> MCP tools to Claude Code for knowledge and milestone context.</>
+                          : <>Provides <code>search</code>, <code>detail</code>, and <code>feedback</code> MCP tools to Claude Code for knowledge context.</>
                         }
                       </span>
                     </div>
@@ -3874,7 +3546,7 @@ export default function SettingsPage() {
                     }}>
                       <Info size={12} style={{ flexShrink: 0, marginTop: 2 }} />
                       <span>
-                        Register the lm-assist MCP server (<code>search</code>, <code>detail</code>, <code>feedback</code>) in other IDEs so their AI assistants can access your knowledge base and milestones.
+                        Register the lm-assist MCP server (<code>search</code>, <code>detail</code>, <code>feedback</code>) in other IDEs so their AI assistants can access your knowledge base.
                       </span>
                     </div>
 
@@ -3930,7 +3602,7 @@ export default function SettingsPage() {
                     )}
                   </div>
                   <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', margin: 0, lineHeight: 1.5 }}>
-                    Controls visibility of: Session Dashboard nav, Architecture nav, milestone status bar, milestone search filters, FlowGraph tab in session detail, and milestone/architecture settings below.
+                    Controls visibility of: Session Dashboard nav, FlowGraph tab in session detail, and experimental settings below.
                   </p>
                 </div>
               </SectionCard>
@@ -4430,393 +4102,9 @@ export default function SettingsPage() {
                   Cannot reach tier-agent. Start the server to configure settings.
                 </p>
               </SectionCard>
-            ) : isMilestoneLoading ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 20 }}>
-                <Loader2 size={14} className="spin" />
-                <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>Loading milestone settings...</span>
-              </div>
-            ) : milestoneSettings ? (
+            ) : (
               <>
-                {milestoneMessage && (
-                  <div style={{
-                    padding: '8px 12px',
-                    borderRadius: 6,
-                    fontSize: 11,
-                    background: milestoneMessage.type === 'ok' ? 'rgba(52,199,89,0.1)' : 'rgba(255,69,58,0.1)',
-                    color: milestoneMessage.type === 'ok' ? 'var(--color-status-green)' : 'var(--color-status-red)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                  }}>
-                    {milestoneMessage.type === 'ok' ? <CheckCircle size={12} /> : <AlertTriangle size={12} />}
-                    {milestoneMessage.text}
-                  </div>
-                )}
 
-                {/* Experiment-only: Milestone Processing, Phase 2 Model, Architecture Model */}
-                {activeTab === 'experiment' && isExperiment && (<>
-                {/* Milestone Processing */}
-                <SectionCard title="Milestone Processing" icon={Activity}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {isPipelineLoading && !pipelineStatus ? (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <Loader2 size={12} className="spin" />
-                        <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>Loading status...</span>
-                      </div>
-                    ) : pipelineStatus ? (
-                      <>
-                        {/* Status indicator */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <div style={{
-                            width: 8, height: 8, borderRadius: '50%',
-                            background: pipelineStatus.pipeline.status === 'processing'
-                              ? 'var(--color-status-green)'
-                              : pipelineStatus.pipeline.status === 'stopping'
-                                ? '#f59e0b'
-                                : 'var(--color-text-tertiary)',
-                            boxShadow: pipelineStatus.pipeline.status === 'processing'
-                              ? '0 0 6px rgba(52,199,89,0.5)' : 'none',
-                          }} />
-                          <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-text-primary)' }}>
-                            {pipelineStatus.pipeline.status === 'processing' ? 'Processing'
-                              : pipelineStatus.pipeline.status === 'stopping' ? 'Stopping...'
-                              : pipelineStatus.pipeline.status === 'unavailable' ? 'Unavailable'
-                              : 'Idle'}
-                          </span>
-                          {pipelineStatus.pipeline.status === 'processing' && pipelineStatus.pipeline.currentModel && (
-                            <span style={{
-                              fontSize: 10, padding: '1px 6px', borderRadius: 4,
-                              background: 'rgba(var(--color-accent-rgb, 59,130,246), 0.1)',
-                              color: 'var(--color-accent)',
-                            }}>
-                              using {pipelineStatus.pipeline.currentModel}
-                            </span>
-                          )}
-                        </div>
-
-                        {/* Progress — scoped to scan range */}
-                        {(() => {
-                          const hasRange = pipelineStatus.scanRangeDays !== null;
-                          const enriched = hasRange ? pipelineStatus.milestones.inRangePhase2 : pipelineStatus.milestones.phase2;
-                          const total = hasRange ? pipelineStatus.milestones.inRange : pipelineStatus.milestones.total;
-                          const pending = total - enriched;
-                          const pct = total > 0 ? Math.round((enriched / total) * 100) : 0;
-                          const outOfRange = pipelineStatus.milestones.total - (hasRange ? pipelineStatus.milestones.inRange : pipelineStatus.milestones.total);
-                          return (
-                            <>
-                              <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
-                                <span>{total} detected</span>
-                                <span style={{ color: 'var(--color-text-tertiary)' }}>·</span>
-                                <span style={{ color: 'var(--color-status-green)' }}>{enriched} enriched</span>
-                                {total > 0 && <span style={{ color: 'var(--color-text-tertiary)' }}>({pct}%)</span>}
-                                {pending > 0 && (
-                                  <><span style={{ color: 'var(--color-text-tertiary)' }}>·</span>
-                                  <span style={{ color: 'var(--color-text-tertiary)' }}>{pending} pending</span></>
-                                )}
-                              </div>
-                              <div style={{
-                                height: 4, borderRadius: 2, overflow: 'hidden',
-                                background: 'rgba(255,255,255,0.06)',
-                              }}>
-                                <div style={{
-                                  height: '100%', borderRadius: 2,
-                                  background: 'var(--color-status-green)',
-                                  width: `${pct}%`,
-                                  transition: 'width 0.3s ease',
-                                }} />
-                              </div>
-                              {hasRange && outOfRange > 0 && (
-                                <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
-                                  {outOfRange} milestones outside scan range ({pipelineStatus.milestones.total} total)
-                                </div>
-                              )}
-                            </>
-                          );
-                        })()}
-
-                        {/* Throughput when processing */}
-                        {pipelineStatus.pipeline.status === 'processing' && pipelineStatus.pipeline.throughput && (
-                          <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                            <span>{pipelineStatus.pipeline.throughput.milestonesPerMinute.toFixed(1)}/min</span>
-                            <span>{pipelineStatus.pipeline.queueSize} remaining</span>
-                            {pipelineStatus.pipeline.errors > 0 && (
-                              <span style={{ color: 'var(--color-status-red)' }}>{pipelineStatus.pipeline.errors} errors</span>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Pipeline message */}
-                        {pipelineMessage && (
-                          <div style={{
-                            padding: '6px 10px', borderRadius: 4, fontSize: 10,
-                            background: pipelineMessage.type === 'ok' ? 'rgba(52,199,89,0.1)' : 'rgba(255,69,58,0.1)',
-                            color: pipelineMessage.type === 'ok' ? 'var(--color-status-green)' : 'var(--color-status-red)',
-                            display: 'flex', alignItems: 'center', gap: 4,
-                          }}>
-                            {pipelineMessage.type === 'ok' ? <CheckCircle size={10} /> : <AlertTriangle size={10} />}
-                            {pipelineMessage.text}
-                          </div>
-                        )}
-
-                        {/* Auto Processing Toggles */}
-                        <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                          <ToggleRow
-                            label="Auto detection"
-                            description="Automatically detect milestones when sessions change."
-                            checked={milestoneSettings.enabled !== false}
-                            onChange={(checked) => {
-                              setMilestoneSettings({ ...milestoneSettings, enabled: checked });
-                              saveMilestoneSettings({ enabled: checked });
-                            }}
-                          />
-                          <ToggleRow
-                            label="Auto enrichment"
-                            description="Use AI to enrich detected milestones and add to vector search (only for sessions in scan range)."
-                            checked={milestoneSettings.autoEnrich === true}
-                            onChange={(checked) => {
-                              setMilestoneSettings({ ...milestoneSettings, autoEnrich: checked });
-                              saveMilestoneSettings({ autoEnrich: checked });
-                            }}
-                          />
-                        </div>
-
-                        {/* Scan Range */}
-                        <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                          <ToggleRow
-                            label="Process all sessions"
-                            description="When disabled, only recent sessions are processed."
-                            checked={milestoneSettings.scanRangeDays === null}
-                            onChange={(checked) => {
-                              const newVal = checked ? null : 90;
-                              setMilestoneSettings({ ...milestoneSettings, scanRangeDays: newVal });
-                              saveMilestoneSettings({ scanRangeDays: newVal }).then(() => fetchPipelineStatus());
-                            }}
-                          />
-                          {milestoneSettings.scanRangeDays !== null && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 4 }}>
-                              <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>Scan last</span>
-                              <input
-                                type="number"
-                                min={1}
-                                max={365}
-                                value={milestoneSettings.scanRangeDays}
-                                onChange={(e) => {
-                                  const days = parseInt(e.target.value, 10);
-                                  if (!isNaN(days) && days > 0) {
-                                    setMilestoneSettings({ ...milestoneSettings, scanRangeDays: days });
-                                  }
-                                }}
-                                onBlur={() => {
-                                  if (milestoneSettings.scanRangeDays !== null && milestoneSettings.scanRangeDays > 0) {
-                                    saveMilestoneSettings({ scanRangeDays: milestoneSettings.scanRangeDays }).then(() => fetchPipelineStatus());
-                                  }
-                                }}
-                                style={{
-                                  width: 60,
-                                  padding: '4px 8px',
-                                  fontSize: 11,
-                                  borderRadius: 4,
-                                  border: '1px solid var(--color-border)',
-                                  background: 'var(--color-bg-secondary)',
-                                  color: 'var(--color-text-primary)',
-                                  textAlign: 'center',
-                                }}
-                              />
-                              <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>days</span>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Action buttons */}
-                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                          {(() => {
-                            const hasRange = pipelineStatus.scanRangeDays !== null;
-                            const pending = hasRange
-                              ? (pipelineStatus.milestones.inRange - pipelineStatus.milestones.inRangePhase2)
-                              : (pipelineStatus.milestones.total - pipelineStatus.milestones.phase2);
-                            return (pipelineStatus.pipeline.status === 'processing' || pipelineStatus.pipeline.status === 'stopping') ? (
-                              <button
-                                className="btn btn-secondary"
-                                onClick={handleStopEnrichment}
-                                disabled={isPipelineActionLoading || pipelineStatus.pipeline.status === 'stopping'}
-                                style={{ padding: '6px 12px', fontSize: 11, gap: 4 }}
-                              >
-                                {(isPipelineActionLoading || pipelineStatus.pipeline.status === 'stopping') ? <Loader2 size={11} className="spin" /> : <Square size={11} />}
-                                {pipelineStatus.pipeline.status === 'stopping' ? 'Stopping...' : 'Stop'}
-                              </button>
-                            ) : (
-                              <button
-                                className="btn btn-primary"
-                                onClick={handleStartEnrichment}
-                                disabled={isPipelineActionLoading || pending === 0}
-                                style={{ padding: '6px 12px', fontSize: 11, gap: 4 }}
-                              >
-                                {isPipelineActionLoading ? <Loader2 size={11} className="spin" /> : <Play size={11} />}
-                                Start Enrichment
-                                {pending > 0 && (
-                                  <span style={{ opacity: 0.7 }}>({pending})</span>
-                                )}
-                              </button>
-                            );
-                          })()}
-                          <button
-                            className="btn btn-secondary"
-                            onClick={handleExtract}
-                            disabled={isExtracting}
-                            style={{ padding: '6px 10px', fontSize: 11, gap: 4 }}
-                          >
-                            {isExtracting ? <Loader2 size={11} className="spin" /> : <Zap size={11} />}
-                            Scan
-                          </button>
-                          <button
-                            className="btn btn-secondary"
-                            onClick={fetchPipelineStatus}
-                            disabled={isPipelineLoading}
-                            style={{ padding: '6px 10px', fontSize: 11, gap: 4 }}
-                          >
-                            <RefreshCw size={11} className={isPipelineLoading ? 'spin' : ''} />
-                            Refresh
-                          </button>
-                        </div>
-
-                        {/* Footer */}
-                        <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                          <span>
-                            {pipelineStatus.scanRangeDays !== null
-                              ? `${pipelineStatus.sessions.inRange} of ${pipelineStatus.sessions.total} sessions in range`
-                              : `${pipelineStatus.sessions.total} sessions tracked`
-                            }
-                          </span>
-                          {pipelineStatus.pipeline.lastProcessedAt && (
-                            <span>Last run {new Date(pipelineStatus.pipeline.lastProcessedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-                          )}
-                        </div>
-                      </>
-                    ) : (
-                      <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                        Pipeline status unavailable
-                      </span>
-                    )}
-
-                    {/* Enrichment Model */}
-                    {milestoneSettings && (
-                    <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--color-text-secondary)' }}>Enrichment Model</div>
-                    {([
-                      { value: 'haiku' as const, label: 'Haiku', desc: 'Fast and cost-effective. Good for most milestone summaries.' },
-                      { value: 'sonnet' as const, label: 'Sonnet', desc: 'Balanced quality and speed. Better for nuanced summaries.' },
-                      { value: 'opus' as const, label: 'Opus', desc: 'Highest quality. Best for complex, multi-faceted milestones.' },
-                    ]).map((opt) => (
-                      <button
-                        key={opt.value}
-                        onClick={() => {
-                          setMilestoneSettings({ ...milestoneSettings, phase2Model: opt.value });
-                          saveMilestoneSettings({ phase2Model: opt.value });
-                        }}
-                        disabled={isMilestoneSaving}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'flex-start',
-                          gap: 10,
-                          padding: '8px 10px',
-                          borderRadius: 6,
-                          border: milestoneSettings.phase2Model === opt.value
-                            ? '1px solid var(--color-accent)'
-                            : '1px solid var(--color-border)',
-                          background: milestoneSettings.phase2Model === opt.value
-                            ? 'rgba(var(--color-accent-rgb, 59,130,246), 0.08)'
-                            : 'transparent',
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                        }}
-                      >
-                        <div style={{
-                          width: 14,
-                          height: 14,
-                          borderRadius: '50%',
-                          border: milestoneSettings.phase2Model === opt.value
-                            ? '4px solid var(--color-accent)'
-                            : '2px solid var(--color-text-tertiary)',
-                          flexShrink: 0,
-                          marginTop: 1,
-                        }} />
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--color-text-primary)' }}>
-                            {opt.label}
-                          </div>
-                          <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                            {opt.desc}
-                          </div>
-                        </div>
-                      </button>
-                    ))}
-                    <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5, margin: 0 }}>
-                      Model used for LLM enrichment. Higher-quality models produce better summaries but cost more and are slower.
-                    </p>
-                    </div>
-                    )}
-                  </div>
-                </SectionCard>
-
-                {/* Architecture Model */}
-                <SectionCard title="Architecture Model" icon={Layers}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {([
-                      { value: 'haiku' as const, label: 'Haiku', desc: 'Fastest. Basic architecture analysis for simple projects.' },
-                      { value: 'sonnet' as const, label: 'Sonnet', desc: 'Recommended. Good balance of quality and speed for architecture.' },
-                      { value: 'opus' as const, label: 'Opus', desc: 'Highest quality. Best for complex multi-service architectures.' },
-                    ]).map((opt) => (
-                      <button
-                        key={opt.value}
-                        onClick={() => {
-                          setMilestoneSettings({ ...milestoneSettings, architectureModel: opt.value });
-                          saveMilestoneSettings({ architectureModel: opt.value });
-                        }}
-                        disabled={isMilestoneSaving}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'flex-start',
-                          gap: 10,
-                          padding: '8px 10px',
-                          borderRadius: 6,
-                          border: milestoneSettings.architectureModel === opt.value
-                            ? '1px solid var(--color-accent)'
-                            : '1px solid var(--color-border)',
-                          background: milestoneSettings.architectureModel === opt.value
-                            ? 'rgba(var(--color-accent-rgb, 59,130,246), 0.08)'
-                            : 'transparent',
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                        }}
-                      >
-                        <div style={{
-                          width: 14,
-                          height: 14,
-                          borderRadius: '50%',
-                          border: milestoneSettings.architectureModel === opt.value
-                            ? '4px solid var(--color-accent)'
-                            : '2px solid var(--color-text-tertiary)',
-                          flexShrink: 0,
-                          marginTop: 1,
-                        }} />
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--color-text-primary)' }}>
-                            {opt.label}
-                          </div>
-                          <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                            {opt.desc}
-                          </div>
-                        </div>
-                      </button>
-                    ))}
-                    <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5, margin: 0 }}>
-                      Model used for AI-powered architecture generation. Independent from the enrichment model.
-                    </p>
-                  </div>
-                </SectionCard>
-
-                {/* End of experiment-only milestone sections */}
-                </>)}
 
                 {/* Data Loading tab: Knowledge Processing */}
                 {activeTab === 'data-loading' && (
@@ -4835,11 +4123,6 @@ export default function SettingsPage() {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ autoExploreGeneration: checked }),
                           }).catch(() => {});
-                          // Backward compat: sync with legacy milestone autoKnowledge setting
-                          if (milestoneSettings) {
-                            setMilestoneSettings({ ...milestoneSettings, autoKnowledge: checked });
-                            saveMilestoneSettings({ autoKnowledge: checked });
-                          }
                         }}
                       />
                     )}
@@ -5188,343 +4471,7 @@ export default function SettingsPage() {
                 </SectionCard>
                 )}
 
-                {/* Experiment-only: Excluded Projects + Advanced */}
-                {activeTab === 'experiment' && isExperiment && (<>
-                {/* Excluded Projects */}
-                <SectionCard title="Excluded Projects" icon={Shield}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {milestoneSettings.excludedPaths.length > 0 ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                        {milestoneSettings.excludedPaths.map((p, i) => (
-                          <div
-                            key={i}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 8,
-                              padding: '4px 8px',
-                              borderRadius: 4,
-                              background: 'var(--color-bg-secondary)',
-                              fontSize: 11,
-                              fontFamily: 'var(--font-mono)',
-                              color: 'var(--color-text-primary)',
-                            }}
-                          >
-                            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p}</span>
-                            {p.endsWith('/.milestone') ? (
-                              <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>built-in</span>
-                            ) : (
-                              <button
-                                className="btn-icon"
-                                onClick={() => {
-                                  const updated = milestoneSettings.excludedPaths.filter((_, idx) => idx !== i);
-                                  setMilestoneSettings({ ...milestoneSettings, excludedPaths: updated });
-                                  saveMilestoneSettings({ excludedPaths: updated });
-                                }}
-                                title="Remove"
-                                style={{ flexShrink: 0 }}
-                              >
-                                <X size={11} />
-                              </button>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)', margin: 0 }}>
-                        No excluded projects. All sessions will be processed.
-                      </p>
-                    )}
-                    <div style={{ display: 'flex', gap: 6, position: 'relative' }}>
-                      <button
-                        className="btn btn-secondary"
-                        onClick={async () => {
-                          if (showProjectPicker) {
-                            setShowProjectPicker(false);
-                            return;
-                          }
-                          setProjectPickerLoading(true);
-                          setShowProjectPicker(true);
-                          try {
-                            const res = await fetch(tierAgentUrl + '/projects');
-                            const json = await res.json();
-                            const paths: string[] = (json.data?.projects || []).map((p: any) => p.path);
-                            setAvailableProjects(paths);
-                          } catch {
-                            setAvailableProjects([]);
-                          } finally {
-                            setProjectPickerLoading(false);
-                          }
-                        }}
-                        style={{ padding: '6px 10px', fontSize: 11 }}
-                      >
-                        <FolderPlus size={11} />
-                        Add Project
-                      </button>
-                      <button
-                        className="btn btn-secondary"
-                        onClick={async () => {
-                          try {
-                            const res = await fetch(tierAgentUrl + '/milestone-settings/auto-exclude', { method: 'POST' });
-                            const json = await res.json();
-                            if (json.success) {
-                              setMilestoneSettings({ ...milestoneSettings, excludedPaths: json.data.excludedPaths });
-                              const count = json.added?.length || 0;
-                              setMilestoneMessage({ text: count > 0 ? `Auto-excluded ${count} non-git project${count > 1 ? 's' : ''}` : 'No new projects to exclude', type: 'ok' });
-                              setTimeout(() => setMilestoneMessage(null), 3000);
-                            }
-                          } catch {
-                            setMilestoneMessage({ text: 'Failed to auto-exclude', type: 'error' });
-                            setTimeout(() => setMilestoneMessage(null), 3000);
-                          }
-                        }}
-                        style={{ padding: '6px 10px', fontSize: 11 }}
-                      >
-                        <GitBranch size={11} />
-                        Auto-exclude non-git
-                      </button>
-                      {showProjectPicker && (
-                        <div style={{
-                          position: 'absolute',
-                          bottom: '100%',
-                          left: 0,
-                          right: 0,
-                          marginBottom: 4,
-                          background: 'var(--color-bg-elevated)',
-                          border: '1px solid var(--color-border)',
-                          borderRadius: 6,
-                          maxHeight: 240,
-                          overflowY: 'auto',
-                          zIndex: 100,
-                          boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
-                        }}>
-                          <div style={{ padding: '6px 8px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <input
-                              type="text"
-                              value={newExcludedPath}
-                              onChange={(e) => setNewExcludedPath(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' && newExcludedPath.trim()) {
-                                  const updated = [...milestoneSettings.excludedPaths, newExcludedPath.trim()];
-                                  setMilestoneSettings({ ...milestoneSettings, excludedPaths: updated });
-                                  saveMilestoneSettings({ excludedPaths: updated });
-                                  setNewExcludedPath('');
-                                  setShowProjectPicker(false);
-                                }
-                                if (e.key === 'Escape') setShowProjectPicker(false);
-                              }}
-                              placeholder="Custom path or select below..."
-                              autoFocus
-                              style={{
-                                flex: 1,
-                                padding: '4px 6px',
-                                fontSize: 11,
-                                borderRadius: 4,
-                                border: '1px solid var(--color-border)',
-                                background: 'var(--color-bg-secondary)',
-                                color: 'var(--color-text-primary)',
-                                fontFamily: 'var(--font-mono)',
-                              }}
-                            />
-                          </div>
-                          {projectPickerLoading ? (
-                            <div style={{ padding: '12px', textAlign: 'center', fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                              Loading projects...
-                            </div>
-                          ) : (
-                            <>
-                              {availableProjects
-                                .filter(p => !milestoneSettings.excludedPaths.includes(p))
-                                .filter(p => !newExcludedPath || p.toLowerCase().includes(newExcludedPath.toLowerCase()))
-                                .map(p => (
-                                  <button
-                                    key={p}
-                                    onClick={() => {
-                                      const updated = [...milestoneSettings.excludedPaths, p];
-                                      setMilestoneSettings({ ...milestoneSettings, excludedPaths: updated });
-                                      saveMilestoneSettings({ excludedPaths: updated });
-                                      setShowProjectPicker(false);
-                                      setNewExcludedPath('');
-                                    }}
-                                    style={{
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      gap: 6,
-                                      width: '100%',
-                                      padding: '6px 10px',
-                                      border: 'none',
-                                      background: 'transparent',
-                                      color: 'var(--color-text-primary)',
-                                      fontSize: 11,
-                                      fontFamily: 'var(--font-mono)',
-                                      cursor: 'pointer',
-                                      textAlign: 'left',
-                                    }}
-                                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--color-bg-hover)')}
-                                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                                  >
-                                    <ChevronRight size={10} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />
-                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p}</span>
-                                  </button>
-                                ))}
-                              {availableProjects.filter(p => !milestoneSettings.excludedPaths.includes(p)).length === 0 && (
-                                <div style={{ padding: '12px', textAlign: 'center', fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                                  All projects already excluded
-                                </div>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                    <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5, margin: 0 }}>
-                      Project paths to exclude from milestone processing. Supports trailing glob (*) for prefix matching.
-                    </p>
-                  </div>
-                </SectionCard>
-
-                {/* Advanced Section */}
-                <button
-                  onClick={() => setShowAdvanced(!showAdvanced)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    background: 'none', border: 'none', cursor: 'pointer',
-                    fontSize: 12, fontWeight: 500, color: 'var(--color-text-secondary)',
-                    padding: '4px 0',
-                  }}
-                >
-                  <ChevronDown
-                    size={12}
-                    style={{
-                      transition: 'transform 0.15s',
-                      transform: showAdvanced ? 'rotate(0deg)' : 'rotate(-90deg)',
-                    }}
-                  />
-                  Advanced
-                </button>
-
-                {showAdvanced && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    {/* Button row */}
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      <button
-                        className="btn btn-secondary"
-                        onClick={handleExtract}
-                        disabled={isExtracting}
-                        style={{ padding: '6px 10px', fontSize: 11, gap: 4 }}
-                      >
-                        {isExtracting ? <Loader2 size={11} className="spin" /> : <Zap size={11} />}
-                        Extract
-                      </button>
-                      <button
-                        className="btn btn-secondary"
-                        onClick={handleVerify}
-                        disabled={isVerifying}
-                        style={{ padding: '6px 10px', fontSize: 11, gap: 4 }}
-                      >
-                        {isVerifying ? <Loader2 size={11} className="spin" /> : <CheckCircle size={11} />}
-                        Verify
-                      </button>
-                      <button
-                        className="btn btn-secondary"
-                        onClick={handleRebuild}
-                        disabled={isRebuilding}
-                        style={{ padding: '6px 10px', fontSize: 11, gap: 4 }}
-                      >
-                        {isRebuilding ? <Loader2 size={11} className="spin" /> : <RefreshCw size={11} />}
-                        Rebuild
-                      </button>
-                      <button
-                        className="btn btn-secondary"
-                        onClick={handleFixIndex}
-                        disabled={isFixingIndex}
-                        style={{ padding: '6px 10px', fontSize: 11, gap: 4 }}
-                      >
-                        {isFixingIndex ? <Loader2 size={11} className="spin" /> : <Wrench size={11} />}
-                        Fix Index
-                      </button>
-                    </div>
-                    <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.6 }}>
-                      <strong>Extract</strong> — Scan sessions for raw milestones.{' '}
-                      <strong>Verify</strong> — Check for data quality issues.{' '}
-                      <strong>Rebuild</strong> — Re-enrich all milestones from scratch.{' '}
-                      <strong>Fix Index</strong> — Repair vector search index.
-                    </div>
-
-                    {/* Verification results */}
-                    {verificationResult && (
-                      <div className="card" style={{ padding: 12 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-                          {verificationResult.summary.sessionsWithProblems === 0
-                            ? <CheckCircle size={12} style={{ color: 'var(--color-status-green)' }} />
-                            : <AlertTriangle size={12} style={{ color: 'var(--color-status-red)' }} />}
-                          <span style={{ fontSize: 12, fontWeight: 600 }}>Verification Results</span>
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                          <InfoRow label="Scanned" value={`${verificationResult.summary.sessionsScanned} sessions`} />
-                          <InfoRow
-                            label="Problems"
-                            value={verificationResult.summary.sessionsWithProblems > 0
-                              ? `${verificationResult.summary.sessionsWithProblems} sessions`
-                              : 'None found'}
-                            status={verificationResult.summary.sessionsWithProblems === 0 ? 'ok' : 'error'}
-                          />
-                          {(verificationResult.summary.problemCounts['stuck_phase1'] ?? 0) > 0 && (
-                            <InfoRow label="Unenriched" value={`${verificationResult.summary.milestonesByProblem['stuck_phase1'] ?? 0} milestones`} />
-                          )}
-                          {(verificationResult.summary.problemCounts['incomplete_phase2'] ?? 0) > 0 && (
-                            <InfoRow label="Incomplete" value={`${verificationResult.summary.milestonesByProblem['incomplete_phase2'] ?? 0} milestones`} />
-                          )}
-                          {(verificationResult.summary.problemCounts['bad_data'] ?? 0) > 0 && (
-                            <InfoRow label="Low quality" value={`${verificationResult.summary.milestonesByProblem['bad_data'] ?? 0} milestones`} />
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Detailed Stats */}
-                    {pipelineStatus && (
-                      <div className="card" style={{ padding: 12 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-                          <Info size={12} />
-                          <span style={{ fontSize: 12, fontWeight: 600 }}>Detailed Stats</span>
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                          <InfoRow
-                            label="Sessions"
-                            value={pipelineStatus.scanRangeDays !== null
-                              ? `${pipelineStatus.sessions.inRange} in range (${pipelineStatus.sessions.inRangePhase2} enriched, ${pipelineStatus.sessions.inRange - pipelineStatus.sessions.inRangePhase2} pending) · ${pipelineStatus.sessions.total} total`
-                              : `${pipelineStatus.sessions.total} total (${pipelineStatus.sessions.phase2} enriched, ${pipelineStatus.sessions.total - pipelineStatus.sessions.phase2} pending)`}
-                          />
-                          <InfoRow
-                            label="Vectors"
-                            value={`${pipelineStatus.vectors.total} total (${pipelineStatus.vectors.session} session, ${pipelineStatus.vectors.milestone} milestone)`}
-                          />
-                          <InfoRow
-                            label="Vector DB"
-                            value={pipelineStatus.vectors.isInitialized ? 'Initialized' : 'Not initialized'}
-                            status={pipelineStatus.vectors.isInitialized ? 'ok' : 'error'}
-                          />
-                          {pipelineStatus.pipeline.errors > 0 && (
-                            <InfoRow
-                              label="Errors"
-                              value={`${pipelineStatus.pipeline.errors}`}
-                              status="error"
-                            />
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-                </>)} {/* End experiment-only: Excluded Projects + Advanced */}
               </>
-            ) : (
-              <SectionCard title="Settings" icon={Layers}>
-                <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                  Failed to load settings. Check that the API server is running.
-                </p>
-              </SectionCard>
             )}
 
           </div>

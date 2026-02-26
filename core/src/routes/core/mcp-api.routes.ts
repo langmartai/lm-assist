@@ -6,10 +6,9 @@
  * directly opening LMDB, LanceDB, embedding model, and other stores.
  *
  * Endpoints:
- *   POST /mcp/search    — unified search across knowledge, milestones, architecture, file history
+ *   POST /mcp/search    — unified search across knowledge and file history
  *   POST /mcp/detail    — progressive disclosure for any item by ID
  *   POST /mcp/feedback  — context quality feedback
- *   GET  /mcp/settings  — returns milestone settings (for tool description selection)
  */
 
 import type { RouteHandler, RouteContext } from '../index';
@@ -17,7 +16,6 @@ import { wrapResponse, wrapError } from '../../api/helpers';
 import { handleSearch } from '../../mcp-server/tools/search';
 import { handleDetail } from '../../mcp-server/tools/detail';
 import { handleFeedback } from '../../mcp-server/tools/feedback';
-import { getMilestoneSettings } from '../../milestone/settings';
 
 export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -72,15 +70,5 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // GET /mcp/settings
-    {
-      method: 'GET',
-      pattern: /^\/mcp\/settings$/,
-      handler: async () => {
-        const start = Date.now();
-        const settings = getMilestoneSettings();
-        return wrapResponse({ milestoneEnabled: settings.enabled }, start);
-      },
-    },
   ];
 }

@@ -21,7 +21,6 @@ import { DbTab } from './tabs/DbTab';
 import { JsonTab } from './tabs/JsonTab';
 import { TeamTab } from './tabs/TeamTab';
 import { DagTab } from './tabs/DagTab';
-import { MilestonesTab } from './tabs/MilestonesTab';
 import {
   RefreshCw,
   Copy,
@@ -66,13 +65,11 @@ interface SessionDetailProps {
   listLastModified?: string;
   /** Initial tab to select (from URL deep-link) */
   initialTab?: TabId;
-  /** Milestone ID to highlight + scroll to (from URL deep-link) */
-  highlightMilestoneId?: string;
   /** Navigate to a different session (used by parent link) */
   onSelectSession?: (sessionId: string, machineId?: string) => void;
 }
 
-type TabId = 'chat' | 'console' | 'tasks' | 'plans' | 'milestones' | 'files' | 'thinking' | 'git' | 'agents' | 'team' | 'dag' | 'db' | 'json' | 'meta';
+type TabId = 'chat' | 'console' | 'tasks' | 'plans' | 'files' | 'thinking' | 'git' | 'agents' | 'team' | 'dag' | 'db' | 'json' | 'meta';
 
 // Session status badge config
 function getStatusBadge(detail: SessionDetailType | null): { label: string; className: string } | null {
@@ -97,7 +94,7 @@ function truncateProjectPath(path: string, maxLen = 40): string {
   return path;
 }
 
-export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubagents, onDetailMeta, onPollControls, externalPolling, listNumTurns, listLastModified, initialTab, highlightMilestoneId, onSelectSession }: SessionDetailProps) {
+export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubagents, onDetailMeta, onPollControls, externalPolling, listNumTurns, listLastModified, initialTab, onSelectSession }: SessionDetailProps) {
   const { viewMode: deviceViewMode } = useDeviceInfo();
   const isMobile = deviceViewMode === 'mobile';
   const [chatLastN, setChatLastN] = useState(() => {
@@ -134,8 +131,6 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
   }, [isWindows, activeTab]);
   const [copied, setCopied] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [milestoneCount, setMilestoneCount] = useState<number | undefined>(undefined);
-
   // Mobile: auto-hide header on scroll down (with cooldown to prevent layout-shift loop)
   const [headerHidden, setHeaderHidden] = useState(false);
   const lastScrollY = useRef(0);
@@ -169,9 +164,6 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [tabDropdownOpen]);
-
-  // Milestone count is set by MilestonesTab's onMilestoneCount callback
-  // when the milestones tab is opened (lazy-loaded, no eager fetch).
 
   // Highlight stats when they change
   const hlTurns = useHighlightValue(detail?.numTurns);
@@ -292,7 +284,6 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
     { id: 'chat', label: 'Chat', count: detail?.messages?.length },
     { id: 'tasks', label: 'Tasks', count: tasks.length || undefined },
     { id: 'plans', label: 'Plans', count: plans.length || undefined },
-    ...(isExperiment ? [{ id: 'milestones' as TabId, label: 'Milestones', count: milestoneCount || undefined }] : []),
     { id: 'agents', label: 'Agents', count: subagents.length || undefined },
     { id: 'team', label: 'Team', count: teamEntryCount || undefined },
     ...(isExperiment ? [{ id: 'dag' as TabId, label: 'FlowGraph' }] : []),
@@ -606,7 +597,6 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
             isSubagent={!!parentSessionId}
             agentCount={subagents.length}
             onLastNChange={setChatLastN}
-            highlightMilestoneId={highlightMilestoneId}
             onContentScroll={handleContentScroll}
             tabSelector={isMobile ? (
               <div className="mobile-tab-dropdown" ref={tabDropdownRef} style={{ position: 'relative', flexShrink: 0 }}>
@@ -656,9 +646,6 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
         )}
         {activeTab === 'plans' && (
           <PlansTab plans={plans} toolUses={detail?.toolUses} machineId={machineId} />
-        )}
-        {activeTab === 'milestones' && (
-          <MilestonesTab sessionId={sessionId} machineId={machineId} onMilestoneCount={setMilestoneCount} highlightMilestoneId={highlightMilestoneId} />
         )}
         {activeTab === 'agents' && (
           <AgentsTab subagents={subagents} sessionId={sessionId} machineId={machineId} projectPath={projectPath || detail?.projectPath} />

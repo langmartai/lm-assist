@@ -2,8 +2,7 @@
  * Knowledge Management Types
  *
  * Knowledge captures IMPLEMENTATION TRUTH — algorithms, design contracts,
- * data schemas, integration wiring, invariants, and multi-stage flows
- * that milestones and architecture don't capture.
+ * data schemas, integration wiring, invariants, and multi-stage flows.
  */
 
 export interface Knowledge {

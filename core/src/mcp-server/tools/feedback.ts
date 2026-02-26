@@ -2,7 +2,7 @@
  * feedback tool — General-purpose context quality feedback
  *
  * Replaces knowledge_comment with a broader feedback mechanism that works
- * on any context source: knowledge parts, milestones, architecture, etc.
+ * on any context source: knowledge parts, etc.
  *
  * Feedback drives a backend review process that converts comments into actions:
  *   - outdated: mark for review, flag in future results
@@ -35,11 +35,9 @@ const FEEDBACK_TO_COMMENT: Record<FeedbackType, KnowledgeCommentType> = {
 
 // ─── ID Detection ──────────────────────────────────────────────────
 
-function detectSourceType(id: string): 'knowledge_part' | 'knowledge_doc' | 'milestone' | 'unknown' {
+function detectSourceType(id: string): 'knowledge_part' | 'knowledge_doc' | 'unknown' {
   if (/^K\d+\.\d+$/.test(id)) return 'knowledge_part';
   if (/^K\d+$/.test(id)) return 'knowledge_doc';
-  // milestone ID: sessionId:index (8+ hex chars with colon and number)
-  if (/^[0-9a-f-]{8,}:\d+$/i.test(id)) return 'milestone';
   return 'unknown';
 }
 
@@ -69,12 +67,7 @@ export async function handleFeedback(args: Record<string, unknown>): Promise<{
     return handleKnowledgeFeedback(id, sourceType, feedbackType, feedbackContent);
   }
 
-  // Handle milestone feedback
-  if (sourceType === 'milestone') {
-    return handleMilestoneFeedback(id, feedbackType, feedbackContent);
-  }
-
-  // Unknown source type — store as milestone-style feedback so it's not lost
+  // Unknown source type — store as general feedback so it's not lost
   const store = getKnowledgeStore();
   const comment = store.addComment({
     knowledgeId: 'GENERAL_FEEDBACK',
@@ -150,39 +143,6 @@ function handleKnowledgeFeedback(
       type: 'text',
       text: `Feedback recorded on ${knowledgeId}${partRef} (${feedbackType} → ${commentType} comment #${comment.id}).\n` +
         `Your feedback will be reviewed and applied by the knowledge curation process.`,
-    }],
-  };
-}
-
-// ─── Milestone Feedback ──────────────────────────────────────────────────
-
-function handleMilestoneFeedback(
-  milestoneId: string,
-  feedbackType: FeedbackType,
-  feedbackContent: string,
-): { content: Array<{ type: string; text: string }> } {
-  // For milestones, we store feedback as a knowledge comment on a synthetic
-  // "milestone-feedback" knowledge document. This leverages the existing
-  // comment review infrastructure.
-  //
-  // In the future, milestone feedback could also adjust vector ranking weights.
-
-  const store = getKnowledgeStore();
-
-  // Try to find an existing milestone-feedback knowledge doc, or note that
-  // milestone feedback is tracked separately
-  const comment = store.addComment({
-    knowledgeId: 'MILESTONE_FEEDBACK',
-    type: FEEDBACK_TO_COMMENT[feedbackType],
-    content: `[${milestoneId}] ${feedbackContent}`,
-    source: 'llm',
-  });
-
-  return {
-    content: [{
-      type: 'text',
-      text: `Feedback recorded for milestone ${milestoneId} (${feedbackType}, comment #${comment.id}).\n` +
-        `Milestone feedback is tracked and reviewed by the curation process.`,
     }],
   };
 }

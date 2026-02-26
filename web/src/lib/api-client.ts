@@ -3,9 +3,7 @@ import type {
   Session,
   SessionDetail,
   SessionMessage,
-  Milestone,
   Project,
-  ProjectArchitecture,
   TaskList,
   Terminal,
   IndexedSessionResult,
@@ -153,14 +151,6 @@ export interface ApiClient {
     sessions: import('./types').SubagentSession[];
   }>;
 
-  // Milestones
-  getMilestones(sessionId: string, machineId?: string): Promise<{ milestones: Milestone[]; phase: number | null }>;
-
-  // Architecture
-  getProjectArchitecture(projectPath?: string, machineId?: string): Promise<ProjectArchitecture | null>;
-  getArchitectureModel(projectPath?: string, machineId?: string): Promise<import('./types').ArchitectureModelResponse | null>;
-  generateArchitectureModel(projectPath?: string, machineId?: string, model?: string): Promise<{ model: import('./types').ArchitectureModel; generatedAt: number; sessionId?: string } | null>;
-
   // Session Index
   getIndexedSession(sessionId: string, machineId?: string): Promise<IndexedSessionResult | null>;
 
@@ -173,10 +163,8 @@ export interface ApiClient {
   getPlanFileContent(planFile: string, machineId?: string): Promise<string | null>;
 
   // Session Search
-  searchSessions(query: string, opts?: { projectPath?: string; scope?: string; limit?: number; directory?: string }, machineId?: string): Promise<{ results: any[]; total: number; query: string; scope: string; searchTimeMs: number; sessionsScanned: number }>;
   searchSessionsAi(query: string, opts?: { projectPath?: string; scope?: string; limit?: number; model?: string }, machineId?: string): Promise<{ jobId: string; status: string; candidatesFound: number }>;
   getAiSearchJob(jobId: string, machineId?: string): Promise<any>;
-  getRecentMilestones(machineId?: string, opts?: { projectPath?: string; directory?: string }): Promise<{ results: any[] }>;
 
   // Generic fetch — routes any path through the correct client (local/hub) with auth
   fetchPath<T = any>(path: string, opts?: { method?: string; body?: any; machineId?: string }): Promise<T>;
@@ -733,53 +721,6 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
       }
     },
 
-    async getMilestones(sessionId): Promise<{ milestones: Milestone[]; phase: number | null }> {
-      try {
-        return await fetchJson<{ milestones: Milestone[]; phase: number | null }>(api(`/milestones/${sessionId}`));
-      } catch {
-        return { milestones: [], phase: null };
-      }
-    },
-
-    async getProjectArchitecture(projectPath?) {
-      try {
-        const qs = projectPath ? `?project=${encodeURIComponent(projectPath)}` : '';
-        return await fetchJson<ProjectArchitecture>(api(`/architecture${qs}`));
-      } catch {
-        return null;
-      }
-    },
-
-    async getArchitectureModel(projectPath?) {
-      try {
-        const qs = projectPath ? `?project=${encodeURIComponent(projectPath)}` : '';
-        const resp = await fetchJson<{ model: import('./types').ArchitectureModel; stale: boolean; generatedAt: number; sessionId?: string } | null>(api(`/architecture/model${qs}`));
-        return resp;
-      } catch {
-        return null;
-      }
-    },
-
-    async generateArchitectureModel(projectPath?, _machineId?, model?) {
-      try {
-        const qs = projectPath ? `?project=${encodeURIComponent(projectPath)}` : '';
-        const body = model ? { model } : {};
-        const resp = await fetch(api(`/architecture/generate${qs}`), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (!resp.ok) return null;
-        const json = await resp.json();
-        // Route returns { success, data: { model, generatedAt, sessionId } }
-        const inner = json?.data;
-        if (!inner?.model) return null;
-        return { model: inner.model, generatedAt: inner.generatedAt, sessionId: inner.sessionId };
-      } catch {
-        return null;
-      }
-    },
-
     async getIndexedSession(sessionId): Promise<IndexedSessionResult | null> {
       try {
         return await fetchJson<IndexedSessionResult>(api(`/session-index/sessions/${sessionId}`));
@@ -836,13 +777,6 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
       }
     },
 
-    async searchSessions(query, opts) {
-      return fetchJson(api('/session-search'), {
-        method: 'POST',
-        body: JSON.stringify({ query, ...opts }),
-      });
-    },
-
     async searchSessionsAi(query, opts) {
       return fetchJson(api('/session-search/ai'), {
         method: 'POST',
@@ -852,15 +786,6 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
 
     async getAiSearchJob(jobId) {
       return fetchJson(api(`/session-search/ai/${jobId}`));
-    },
-
-    async getRecentMilestones(_machineId?, opts?) {
-      const params = new URLSearchParams();
-      if (opts?.projectPath) params.set('projectPath', opts.projectPath);
-      if (opts?.directory) params.set('directory', opts.directory);
-      const qs = params.toString();
-      const res = await fetchJson<any>(api(`/session-search/recent${qs ? '?' + qs : ''}`));
-      return res?.data || res;
     },
 
     async fetchPath(path, opts) {
@@ -1214,55 +1139,6 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
       }
     },
 
-    async getMilestones(sessionId, machineId) {
-      if (!machineId) throw new Error('Hub mode requires machineId');
-      try {
-        return await hubFetch<{ milestones: Milestone[]; phase: number | null }>(
-          machineApi(machineId, `/milestones/${sessionId}`)
-        );
-      } catch {
-        return { milestones: [], phase: null };
-      }
-    },
-
-    async getProjectArchitecture(projectPath?, machineId?) {
-      if (!machineId) throw new Error('Hub mode requires machineId');
-      try {
-        const qs = projectPath ? `?project=${encodeURIComponent(projectPath)}` : '';
-        return await hubFetch<ProjectArchitecture>(machineApi(machineId, `/architecture${qs}`));
-      } catch {
-        return null;
-      }
-    },
-
-    async getArchitectureModel(projectPath?, machineId?) {
-      if (!machineId) throw new Error('Hub mode requires machineId');
-      try {
-        const qs = projectPath ? `?project=${encodeURIComponent(projectPath)}` : '';
-        return await hubFetch<import('./types').ArchitectureModelResponse | null>(machineApi(machineId, `/architecture/model${qs}`));
-      } catch {
-        return null;
-      }
-    },
-
-    async generateArchitectureModel(projectPath?, machineId?, model?) {
-      if (!machineId) throw new Error('Hub mode requires machineId');
-      try {
-        const qs = projectPath ? `?project=${encodeURIComponent(projectPath)}` : '';
-        const body = model ? { model } : {};
-        // hubFetch auto-unwraps { data: { model, generatedAt, sessionId } }
-        const result = await hubFetch<{ model: any; generatedAt: number; sessionId?: string }>(machineApi(machineId, `/architecture/generate${qs}`), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (!result?.model) return null;
-        return { model: result.model, generatedAt: result.generatedAt, sessionId: result.sessionId };
-      } catch {
-        return null;
-      }
-    },
-
     async getIndexedSession(sessionId, machineId) {
       if (!machineId) throw new Error('Hub mode requires machineId');
       try {
@@ -1327,17 +1203,6 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
       }
     },
 
-    async searchSessions(query, opts, machineId) {
-      if (!machineId) throw new Error('Hub mode requires machineId');
-      // Use GET with query params to avoid hub proxy stripping POST bodies
-      const params = new URLSearchParams({ query });
-      if (opts?.scope) params.set('scope', opts.scope);
-      if (opts?.limit) params.set('limit', String(opts.limit));
-      if (opts?.projectPath) params.set('projectPath', opts.projectPath);
-      if (opts?.directory) params.set('directory', opts.directory);
-      return hubFetch(machineApi(machineId, `/session-search?${params.toString()}`));
-    },
-
     async searchSessionsAi(query, opts, machineId) {
       if (!machineId) throw new Error('Hub mode requires machineId');
       return hubFetch(machineApi(machineId, '/session-search/ai'), {
@@ -1349,15 +1214,6 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
     async getAiSearchJob(jobId, machineId) {
       if (!machineId) throw new Error('Hub mode requires machineId');
       return hubFetch(machineApi(machineId, `/session-search/ai/${jobId}`));
-    },
-
-    async getRecentMilestones(machineId, opts?) {
-      if (!machineId) throw new Error('Hub mode requires machineId');
-      const params = new URLSearchParams();
-      if (opts?.projectPath) params.set('projectPath', opts.projectPath);
-      if (opts?.directory) params.set('directory', opts.directory);
-      const qs = params.toString();
-      return hubFetch(machineApi(machineId, `/session-search/recent${qs ? '?' + qs : ''}`)) as any;
     },
 
     async fetchPath(path, opts) {
@@ -1602,34 +1458,6 @@ export function createHybridClient(options: HybridClientOptions): ApiClient {
       return hubClient.getSessionSubagents(sessionId, machineId);
     },
 
-    async getMilestones(sessionId, machineId) {
-      if (isLocal(machineId)) {
-        return localClient.getMilestones(sessionId);
-      }
-      return hubClient.getMilestones(sessionId, machineId);
-    },
-
-    async getProjectArchitecture(projectPath?, machineId?) {
-      if (isLocal(machineId)) {
-        return localClient.getProjectArchitecture(projectPath);
-      }
-      return hubClient.getProjectArchitecture(projectPath, machineId);
-    },
-
-    async getArchitectureModel(projectPath?, machineId?) {
-      if (isLocal(machineId)) {
-        return localClient.getArchitectureModel(projectPath);
-      }
-      return hubClient.getArchitectureModel(projectPath, machineId);
-    },
-
-    async generateArchitectureModel(projectPath?, machineId?, model?) {
-      if (isLocal(machineId)) {
-        return localClient.generateArchitectureModel(projectPath, undefined, model);
-      }
-      return hubClient.generateArchitectureModel(projectPath, machineId, model);
-    },
-
     async getIndexedSession(sessionId, machineId) {
       if (isLocal(machineId)) {
         return localClient.getIndexedSession(sessionId);
@@ -1658,13 +1486,6 @@ export function createHybridClient(options: HybridClientOptions): ApiClient {
       return hubClient.getPlanFileContent(planFile, machineId);
     },
 
-    async searchSessions(query, opts, machineId) {
-      if (isLocal(machineId)) {
-        return localClient.searchSessions(query, opts);
-      }
-      return hubClient.searchSessions(query, opts, machineId);
-    },
-
     async searchSessionsAi(query, opts, machineId) {
       if (isLocal(machineId)) {
         return localClient.searchSessionsAi(query, opts);
@@ -1677,13 +1498,6 @@ export function createHybridClient(options: HybridClientOptions): ApiClient {
         return localClient.getAiSearchJob(jobId);
       }
       return hubClient.getAiSearchJob(jobId, machineId);
-    },
-
-    async getRecentMilestones(machineId, opts?) {
-      if (isLocal(machineId)) {
-        return localClient.getRecentMilestones(undefined, opts);
-      }
-      return hubClient.getRecentMilestones(machineId, opts);
     },
 
     async fetchPath(path, opts) {

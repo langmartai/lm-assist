@@ -30,7 +30,6 @@ const HOME = os.homedir();
 const LOG_DIR = path.join(HOME, '.lm-assist', 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'context-inject-hook.log');
 const CONFIG_FILE = path.join(HOME, '.claude-code-config.json');
-const MILESTONE_SETTINGS_FILE = path.join(HOME, '.lm-assist', 'milestone', 'settings.json');
 
 // Dev-aware port: when devModeEnabled, default to 3200 (dev), else 3100 (prod)
 function getDefaultApiPort() {
@@ -185,30 +184,15 @@ async function main() {
 
   // --- Determine which sources to include ---
   let includeKnowledge = true;
-  let includeMilestones = false;
-  let experimentEnabled = false;
-
-  const milestoneSettings = readJson(MILESTONE_SETTINGS_FILE);
-  if (milestoneSettings && milestoneSettings.enabled === true) {
-    experimentEnabled = true;
-  }
 
   if (config) {
     if (config.contextInjectKnowledge === false) includeKnowledge = false;
-    if (config.contextInjectMilestones === true && experimentEnabled) includeMilestones = true;
   }
-
-  // Build MCP type filter
-  const types = [];
-  if (includeKnowledge) types.push('knowledge');
-  if (includeMilestones) types.push('milestones');
-  if (experimentEnabled) types.push('architecture');
-  const mcpTypes = types.length > 0 ? types.join(', ') : 'knowledge';
 
   const promptPreview = prompt.length > 100 ? prompt.slice(0, 100) : prompt;
   const mcpInstruction =
     `Before responding, use MCP tools to retrieve relevant context:\n` +
-    `1. search("${promptPreview}") — find top 5 matching ${mcpTypes} entries\n` +
+    `1. search("${promptPreview}") — find top 5 matching knowledge entries\n` +
     `2. For any highly relevant results, use detail(id) to expand the full content\n` +
     `3. Use this retrieved context to inform your response\n` +
     `4. If any retrieved context is outdated or wrong, use feedback(id, type, content) to flag it`;

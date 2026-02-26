@@ -49,23 +49,6 @@ export const searchToolDef = {
   },
 };
 
-/** Full description used when experiment features (milestones/architecture) are enabled */
-export const searchToolDefExperiment = {
-  ...searchToolDef,
-  description: `Unified search across knowledge, milestones, architecture, and file history. Auto-detects query type: file paths, IDs (K001, sessionId, sessionId:index), or natural language. Params: query, scope (24h|3d|7d|30d|all), project, type (knowledge|milestone|architecture|all), limit, offset`,
-  inputSchema: {
-    ...searchToolDef.inputSchema,
-    properties: {
-      ...searchToolDef.inputSchema.properties,
-      type: {
-        type: 'string',
-        enum: ['knowledge', 'milestone', 'architecture', 'all'],
-        description: 'Result type filter (default: all)',
-      },
-    },
-  },
-};
-
 // ─── Detail Tool ──────────────────────────────────────────────────
 
 export const detailToolDef = {
@@ -80,21 +63,6 @@ export const detailToolDef = {
       limit: { type: 'number', description: 'Items per page (default: 10)' },
     },
     required: ['id'],
-  },
-};
-
-/** Full description used when experiment features (milestones/architecture) are enabled */
-export const detailToolDefExperiment = {
-  ...detailToolDef,
-  description: 'Get details for any item by ID — knowledge, milestone, session, or architecture component. Progressive disclosure: summary first, section parameter for specific parts.',
-  inputSchema: {
-    ...detailToolDef.inputSchema,
-    properties: {
-      id: { type: 'string', description: 'K001, K001.2, sessionId:index, sessionId, or arch:component-name' },
-      section: { type: 'string', description: 'Expand specific section: facts, files, content, conversation, milestones, connections, diagram' },
-      offset: { type: 'number', description: 'For paginated content (conversation turns, file lists)' },
-      limit: { type: 'number', description: 'Items per page (default: 10)' },
-    },
   },
 };
 

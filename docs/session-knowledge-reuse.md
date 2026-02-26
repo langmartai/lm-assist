@@ -350,4 +350,4 @@ Your sessions are not disposable transcripts. They are your project's memory. Us
 - **GitHub:** [github.com/langmartai/lm-assist](https://github.com/langmartai/lm-assist)
 - **Issues & Feature Requests:** [github.com/langmartai/lm-assist/issues](https://github.com/langmartai/lm-assist/issues)
 - **Install Guide:** See `README.md` in the project root
-- **API Documentation:** See `CLAUDE.md` for complete API, routes, and architecture overview
+- **API Documentation:** See `CLAUDE.md` for complete API and routes overview

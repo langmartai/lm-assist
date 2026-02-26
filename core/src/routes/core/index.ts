@@ -16,12 +16,8 @@ import { createTtydRoutes } from './ttyd.routes';
 import { createHubRoutes } from './hub.routes';
 import { createTmuxRoutes } from './tmux.routes';
 import { createClaudeCodeRoutes } from './claude-code.routes';
-import { createMilestoneSettingsRoutes } from './milestone-settings.routes';
-import { createMilestonePipelineRoutes } from './milestone-pipeline.routes';
-import { createMilestonesRoutes } from './milestones.routes';
 import { createKnowledgeRoutes } from './knowledge.routes';
 import { createKnowledgeSettingsRoutes } from './knowledge-settings.routes';
-import { createArchitectureRoutes } from './architecture.routes';
 import { createSessionSearchRoutes } from './session-search.routes';
 import { createAssistResourcesRoutes } from './assist-resources.routes';
 import { createShellConfigRoutes } from './shell-config.routes';
@@ -48,12 +44,8 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createHubRoutes(ctx),
     ...createTmuxRoutes(ctx),
     ...createClaudeCodeRoutes(ctx),
-    ...createMilestoneSettingsRoutes(ctx),
-    ...createMilestonePipelineRoutes(ctx),
-    ...createMilestonesRoutes(ctx),
     ...createKnowledgeRoutes(ctx),
     ...createKnowledgeSettingsRoutes(ctx),
-    ...createArchitectureRoutes(ctx),
     ...createSessionSearchRoutes(ctx),
     ...createAssistResourcesRoutes(ctx),
     ...createShellConfigRoutes(ctx),

@@ -7,14 +7,14 @@ import {
   Search, X, List, AlignJustify, Sparkles, Pin, Copy, Check,
   ChevronRight, ChevronDown, ChevronUp, User, Bot, Settings,
   Play, RotateCcw, FileText, FolderOpen, Cpu, ListChecks, CheckCircle2,
-  ChevronsUp, Wrench, AlertTriangle, Map as MapIcon, Flag,
+  ChevronsUp, Wrench, AlertTriangle, Map as MapIcon,
   Filter,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { useDeviceInfo } from '@/hooks/useDeviceInfo';
 import { useExperiment } from '@/hooks/useExperiment';
 import { formatToolCallString, formatToolCall, shouldHideInSmartDisplay, smartTransformContent, parseApiError } from '@/lib/smart-display';
-import type { SessionMessage, MessageType, Milestone, MilestoneType } from '@/lib/types';
+import type { SessionMessage, MessageType } from '@/lib/types';
 
 const LAST_N_KEY = 'chat-lastN-user-prompts';
 const LAST_N_OPTIONS = [20, 50, 100, 200, 500, 1000];
@@ -34,8 +34,6 @@ interface ChatTabProps {
   isSubagent?: boolean;
   agentCount?: number;
   onLastNChange?: (n: number) => void;
-  /** Deep-link: milestone ID to highlight, scroll to, and filter for */
-  highlightMilestoneId?: string;
   /** Called on scroll for auto-hide header */
   onContentScroll?: (scrollTop: number) => void;
   /** Optional inline element rendered at the start of the mobile bar (e.g. tab selector) */
@@ -65,18 +63,8 @@ const msgTypeConfig: Record<string, { bg: string; icon: any; label: string; icon
 // Tool icon color
 const toolIconColor = '#d1d5db';
 
-// Milestone type colors
-const milestoneTypeColors: Record<string, string> = {
-  discovery: '#60a5fa',
-  implementation: '#4ade80',
-  bugfix: '#f87171',
-  refactor: '#c084fc',
-  decision: '#fbbf24',
-  configuration: '#22d3ee',
-};
-
 // Toggle types
-type ConvType = 'user' | 'assistant' | 'thinking' | 'tools' | 'todos' | 'tasks' | 'plans' | 'agents' | 'milestones';
+type ConvType = 'user' | 'assistant' | 'thinking' | 'tools' | 'todos' | 'tasks' | 'plans' | 'agents';
 type RawType = 'system' | 'result' | 'progress' | 'summary' | 'fileHistory' | 'queueOp';
 
 // Detect compact/continuation messages
@@ -87,24 +75,13 @@ function isCompactMessage(content: string | unknown): boolean {
     content.includes('context summarized');
 }
 
-export function ChatTab({ messages, isActive, sessionId, machineId, projectPath, isSubagent, agentCount: agentCountProp, onLastNChange, highlightMilestoneId, onContentScroll, tabSelector }: ChatTabProps) {
+export function ChatTab({ messages, isActive, sessionId, machineId, projectPath, isSubagent, agentCount: agentCountProp, onLastNChange, onContentScroll, tabSelector }: ChatTabProps) {
   const { apiClient } = useAppMode();
   const { isExperiment } = useExperiment();
   const { viewMode: deviceViewMode } = useDeviceInfo();
   const isMobile = deviceViewMode === 'mobile';
   const [showFilters, setShowFilters] = useState(true);
   const [showMobileFilterSheet, setShowMobileFilterSheet] = useState(false);
-
-  // Milestone data
-  const [milestones, setMilestones] = useState<Milestone[]>([]);
-  useEffect(() => {
-    if (!sessionId) return;
-    let cancelled = false;
-    apiClient.getMilestones(sessionId, machineId).then(result => {
-      if (!cancelled) setMilestones(result.milestones);
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [sessionId, machineId, apiClient]);
 
   const handleOpenAgent = useCallback((agentId: string) => {
     const params = new URLSearchParams();
@@ -115,28 +92,17 @@ export function ChatTab({ messages, isActive, sessionId, machineId, projectPath,
     window.open(`/sessions?${params.toString()}`, '_blank');
   }, [sessionId, machineId, projectPath]);
 
-  // Filter toggles (persisted, with milestones forced on when deep-linking)
+  // Filter toggles (persisted)
   const [showTypes, setShowTypes] = useState<Record<ConvType, boolean>>(() => {
-    const defaults = { user: true, assistant: true, thinking: true, tools: true, todos: true, tasks: true, plans: false, agents: true, milestones: true };
-    let saved: Record<ConvType, boolean> | null = null;
+    const defaults = { user: true, assistant: true, thinking: true, tools: true, todos: true, tasks: true, plans: false, agents: true };
     if (typeof window !== 'undefined') {
-      try { const s = localStorage.getItem('chat-show-types'); if (s) saved = { ...defaults, ...JSON.parse(s) }; } catch {}
+      try { const s = localStorage.getItem('chat-show-types'); if (s) return { ...defaults, ...JSON.parse(s) }; } catch {}
     }
-    if (highlightMilestoneId) {
-      // Has saved prefs: use them but ensure milestones is on
-      if (saved) return { ...saved, milestones: true };
-      // No saved prefs (first time): milestones only
-      return { user: false, assistant: false, thinking: false, tools: false, todos: false, tasks: false, plans: false, agents: false, milestones: true };
-    }
-    return saved || defaults;
+    return defaults;
   });
-  const isDeepLinked = !!highlightMilestoneId;
   const handleSetShowTypes = (update: Record<ConvType, boolean>) => {
     setShowTypes(update);
-    // Don't persist deep-link filter override to localStorage
-    if (!isDeepLinked) {
-      localStorage.setItem('chat-show-types', JSON.stringify(update));
-    }
+    localStorage.setItem('chat-show-types', JSON.stringify(update));
   };
   const [showRawTypes, setShowRawTypes] = useState<Record<RawType, boolean>>(() => {
     const defaults = { system: false, result: false, progress: false, summary: false, fileHistory: false, queueOp: false };
@@ -194,10 +160,8 @@ export function ChatTab({ messages, isActive, sessionId, machineId, projectPath,
   const [currentMatch, setCurrentMatch] = useState(0);
   const [showSearchDropdown, setShowSearchDropdown] = useState(false);
 
-  // Message count dropdown (persisted, or load all when deep-linking to milestone)
-  const [lastNUserPrompts, setLastNUserPrompts] = useState(() =>
-    highlightMilestoneId ? 1000 : getPersistedLastN()
-  );
+  // Message count dropdown (persisted)
+  const [lastNUserPrompts, setLastNUserPrompts] = useState(() => getPersistedLastN());
   const handleLastNChange = useCallback((n: number) => {
     setLastNUserPrompts(n);
     try { localStorage.setItem(LAST_N_KEY, String(n)); } catch {}
@@ -206,13 +170,6 @@ export function ChatTab({ messages, isActive, sessionId, machineId, projectPath,
 
   // Expansion
   const [expanded, setExpanded] = useState<Record<number, 'expanded' | 'full'>>({});
-  const [expandedMilestones, setExpandedMilestones] = useState<Set<string>>(() =>
-    highlightMilestoneId ? new Set([highlightMilestoneId]) : new Set()
-  );
-
-  // Deep-link milestone highlight
-  const [highlightedMilestoneId, setHighlightedMilestoneId] = useState<string | null>(highlightMilestoneId || null);
-  const milestoneHighlightAppliedRef = useRef(false);
 
   // Active message
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
@@ -354,63 +311,12 @@ export function ChatTab({ messages, isActive, sessionId, machineId, projectPath,
     });
   }, [messages, showTypes, showRawTypes, smartDisplay, lastNUserPrompts, userMessageCount]);
 
-  // Merged items: messages + milestone markers sorted by turn
-  type MergedItem = { kind: 'message'; msg: SessionMessage; idx: number } | { kind: 'milestone'; milestone: Milestone };
+  // Merged items: messages sorted by turn
+  type MergedItem = { kind: 'message'; msg: SessionMessage; idx: number };
 
   const mergedItems = useMemo((): MergedItem[] => {
-    const items: MergedItem[] = filteredMessages.map((msg, idx) => ({ kind: 'message' as const, msg, idx }));
-
-    if (showTypes.milestones && milestones.length > 0) {
-      for (const m of milestones) {
-        items.push({ kind: 'milestone' as const, milestone: m });
-      }
-    }
-
-    // Sort: messages by turnIndex (then lineIndex), milestones by startTurn
-    // Milestones appear before messages at the same turn
-    items.sort((a, b) => {
-      const aTurn = a.kind === 'message' ? (a.msg.turnIndex ?? 0) : a.milestone.startTurn;
-      const bTurn = b.kind === 'message' ? (b.msg.turnIndex ?? 0) : b.milestone.startTurn;
-      if (aTurn !== bTurn) return aTurn - bTurn;
-      // Milestones before messages at the same turn
-      if (a.kind === 'milestone' && b.kind === 'message') return -1;
-      if (a.kind === 'message' && b.kind === 'milestone') return 1;
-      // Both messages: preserve original order
-      if (a.kind === 'message' && b.kind === 'message') {
-        const aLine = a.msg.lineIndex ?? 0;
-        const bLine = b.msg.lineIndex ?? 0;
-        return aLine - bLine;
-      }
-      // Both milestones: sort by startTurn then index
-      if (a.kind === 'milestone' && b.kind === 'milestone') return a.milestone.index - b.milestone.index;
-      return 0;
-    });
-
-    return items;
-  }, [filteredMessages, milestones, showTypes.milestones]);
-
-  // Deep-link: scroll to + highlight target milestone after milestones load
-  useEffect(() => {
-    if (!highlightMilestoneId || milestoneHighlightAppliedRef.current) return;
-    // Wait for milestones to be in the merged list
-    const hasMilestone = mergedItems.some(
-      item => item.kind === 'milestone' && item.milestone.id === highlightMilestoneId
-    );
-    if (!hasMilestone) return;
-
-    milestoneHighlightAppliedRef.current = true;
-    // Disable auto-scroll so it doesn't fight our scroll
-    setAutoScroll(false);
-
-    requestAnimationFrame(() => {
-      const el = document.getElementById(`chat-milestone-${highlightMilestoneId}`);
-      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    });
-
-    // Fade highlight after 3s
-    const timer = setTimeout(() => setHighlightedMilestoneId(null), 3000);
-    return () => clearTimeout(timer);
-  }, [highlightMilestoneId, mergedItems]);
+    return filteredMessages.map((msg, idx) => ({ kind: 'message' as const, msg, idx }));
+  }, [filteredMessages]);
 
   // Search matches with preview data
   const searchMatchData = useMemo(() => {
@@ -564,7 +470,6 @@ export function ChatTab({ messages, isActive, sessionId, machineId, projectPath,
                         ['todos', 'Todos', 'rgba(20,83,45,0.5)', '#86efac', messageCounts.todos, CheckCircle2],
                         ['tasks', 'Tasks', 'rgba(49,46,129,0.5)', '#a5b4fc', messageCounts.tasks, ListChecks],
                         ['plans', 'Plans', 'rgba(120,53,15,0.5)', '#fbbf24', messageCounts.plans, MapIcon],
-                        ...(isExperiment ? [['milestones', 'Miles', 'rgba(120,53,15,0.5)', '#d97706', milestones.length, Flag] as [ConvType, string, string, string, number, any]] : []),
                         ['agents', 'Agents', 'rgba(22,78,99,0.5)', '#67e8f9', agentCountProp ?? messageCounts.agents, Cpu],
                       ] as [ConvType, string, string, string, number, any][]).map(([key, label, bg, fg, count, Icon]) => (
                         <button
@@ -664,7 +569,6 @@ export function ChatTab({ messages, isActive, sessionId, machineId, projectPath,
           ['todos', 'Todos', 'rgba(20,83,45,0.5)', '#86efac', messageCounts.todos, CheckCircle2],
           ['tasks', 'Tasks', 'rgba(49,46,129,0.5)', '#a5b4fc', messageCounts.tasks, ListChecks],
           ['plans', 'Plans', 'rgba(120,53,15,0.5)', '#fbbf24', messageCounts.plans, MapIcon],
-          ...(isExperiment ? [['milestones', 'Miles', 'rgba(120,53,15,0.5)', '#d97706', milestones.length, Flag] as [ConvType, string, string, string, number, any]] : []),
           ['agents', 'Agents', 'rgba(22,78,99,0.5)', '#67e8f9', agentCountProp ?? messageCounts.agents, Cpu],
         ] as [ConvType, string, string, string, number, any][]).map(([key, label, bg, fg, count, Icon]) => (
           <button
@@ -932,23 +836,6 @@ export function ChatTab({ messages, isActive, sessionId, machineId, projectPath,
           )}
 
           {mergedItems.map((item, i) => {
-            if (item.kind === 'milestone') {
-              const m = item.milestone;
-              return (
-                <MilestoneMarker
-                  key={`milestone-${m.id}`}
-                  milestone={m}
-                  isExpanded={expandedMilestones.has(m.id)}
-                  isHighlighted={highlightedMilestoneId === m.id}
-                  onToggle={() => setExpandedMilestones(prev => {
-                    const next = new Set(prev);
-                    if (next.has(m.id)) next.delete(m.id);
-                    else next.add(m.id);
-                    return next;
-                  })}
-                />
-              );
-            }
             const { msg, idx } = item;
             return (
               <MessageBubble
@@ -977,125 +864,6 @@ export function ChatTab({ messages, isActive, sessionId, machineId, projectPath,
           })}
         </div>
       </div>
-    </div>
-  );
-}
-
-// ============================================
-// MilestoneMarker (inline in chat)
-// ============================================
-
-function MilestoneMarker({ milestone: m, isExpanded, isHighlighted, onToggle }: { milestone: Milestone; isExpanded: boolean; isHighlighted?: boolean; onToggle: () => void }) {
-  const typeColor = milestoneTypeColors[m.type || ''] || '#94a3b8';
-  const hasTitle = m.phase === 2 && m.title;
-  const totalTools = Object.values(m.toolUseSummary).reduce((a, b) => a + b, 0);
-
-  return (
-    <div
-      id={`chat-milestone-${m.id}`}
-      onClick={onToggle}
-      style={{
-        borderLeft: `3px solid ${typeColor}`,
-        background: isHighlighted ? `${typeColor}25` : `${typeColor}11`,
-        borderRadius: 'var(--radius-sm)',
-        padding: '4px 10px',
-        margin: '2px 0',
-        cursor: 'pointer',
-        transition: 'box-shadow 0.5s ease, background 0.5s ease',
-        ...(isHighlighted ? {
-          boxShadow: `0 0 0 2px ${typeColor}88, 0 0 16px ${typeColor}44`,
-        } : {}),
-      }}
-    >
-      {/* Line 1 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <Flag size={10} style={{ color: typeColor, flexShrink: 0 }} />
-        {hasTitle ? (
-          <span className="badge" style={{
-            fontSize: 8, padding: '0 4px', flexShrink: 0,
-            background: `${typeColor}22`, color: typeColor,
-            border: `1px solid ${typeColor}44`,
-          }}>
-            {m.type}
-          </span>
-        ) : (
-          <span className="badge" style={{
-            fontSize: 8, padding: '0 4px', flexShrink: 0,
-            background: 'rgba(148,163,184,0.15)', color: '#94a3b8',
-            border: '1px solid rgba(148,163,184,0.3)',
-          }}>
-            P1
-          </span>
-        )}
-        <span className="truncate" style={{
-          flex: 1, fontSize: 11,
-          fontWeight: hasTitle ? 600 : 400,
-          color: hasTitle ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-        }}>
-          {hasTitle ? m.title : (m.userPrompts[0] || `Milestone #${m.index}`)}
-        </span>
-        <span style={{ fontSize: 9, fontFamily: 'var(--font-mono)', color: 'var(--color-text-tertiary)', flexShrink: 0 }}>
-          #{m.startTurn}{m.endTurn !== m.startTurn ? `\u2013#${m.endTurn}` : ''}
-        </span>
-        {isExpanded ? <ChevronDown size={9} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} /> : <ChevronRight size={9} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />}
-      </div>
-
-      {/* Line 2: stats */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 16, fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 1 }}>
-        {hasTitle && m.description ? (
-          <span className="truncate" style={{ flex: 1 }}>{m.description}</span>
-        ) : (
-          <>
-            {m.filesModified.length > 0 && <span>{m.filesModified.length} files</span>}
-            {totalTools > 0 && <span>{totalTools} tools</span>}
-            {m.taskCompletions.length > 0 && <span>{m.taskCompletions.length} tasks</span>}
-          </>
-        )}
-      </div>
-
-      {/* Expanded */}
-      {isExpanded && (
-        <div style={{ marginTop: 6, paddingLeft: 16, paddingTop: 6, borderTop: '1px solid var(--color-border-subtle)', fontSize: 10 }}>
-          {m.outcome && (
-            <div style={{ marginBottom: 4 }}>
-              <span style={{ fontWeight: 600, color: 'var(--color-text-secondary)' }}>Outcome: </span>
-              <span style={{ color: 'var(--color-text-secondary)' }}>{m.outcome}</span>
-            </div>
-          )}
-          {m.facts && m.facts.length > 0 && (
-            <div style={{ marginBottom: 4 }}>
-              <span style={{ fontWeight: 600, color: 'var(--color-text-secondary)' }}>Facts:</span>
-              <ul style={{ margin: '2px 0 0 16px', padding: 0, listStyle: 'disc' }}>
-                {m.facts.map((f, i) => <li key={i} style={{ color: 'var(--color-text-secondary)', marginBottom: 1 }}>{f}</li>)}
-              </ul>
-            </div>
-          )}
-          {m.concepts && m.concepts.length > 0 && (
-            <div style={{ marginBottom: 4, display: 'flex', flexWrap: 'wrap', gap: 3, alignItems: 'center' }}>
-              <span style={{ fontWeight: 600, color: 'var(--color-text-secondary)' }}>Concepts: </span>
-              {m.concepts.map((c, i) => <span key={i} className="badge" style={{ fontSize: 9, padding: '1px 4px' }}>{c}</span>)}
-            </div>
-          )}
-          {m.filesModified.length > 0 && (
-            <div style={{ marginBottom: 4 }}>
-              <span style={{ fontWeight: 600, color: 'var(--color-text-secondary)' }}>Files: </span>
-              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-tertiary)' }}>
-                {m.filesModified.join(', ')}
-              </span>
-            </div>
-          )}
-          {totalTools > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, alignItems: 'center' }}>
-              <span style={{ fontWeight: 600, color: 'var(--color-text-secondary)' }}>Tools: </span>
-              {Object.entries(m.toolUseSummary).map(([tool, count]) => (
-                <span key={tool} className="badge" style={{ fontSize: 9, padding: '1px 4px', fontFamily: 'var(--font-mono)' }}>
-                  {tool}: {count}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }

@@ -1,13 +1,12 @@
 /**
  * Session Context MCP Server
  *
- * Provides Claude Code sessions with semantic search over past work
- * and milestone-based navigation.
+ * Provides Claude Code sessions with semantic search over past work.
  *
  * Transport: stdio (spawned by Claude Code as an MCP server)
  *
  * 3 Tools:
- *   search  — Unified search across knowledge, milestones, architecture, file history
+ *   search  — Unified search across knowledge and file history
  *   detail  — Progressive disclosure for any item by ID
  *   feedback — Context quality feedback on any source
  *
@@ -30,12 +29,12 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import {
-  searchToolDef, searchToolDefExperiment,
-  detailToolDef, detailToolDefExperiment,
+  searchToolDef,
+  detailToolDef,
   feedbackToolDef,
 } from './tools/definitions';
 import { logToolCall } from './mcp-logger';
-import { ensureCoreApi, mcpSearch, mcpDetail, mcpFeedback, getMcpSettings } from './api-client';
+import { ensureCoreApi, mcpSearch, mcpDetail, mcpFeedback } from './api-client';
 
 // ─── Server Setup ──────────────────────────────────────────────────
 
@@ -51,30 +50,13 @@ const server = new Server(
   }
 );
 
-// ─── Settings Cache ──────────────────────────────────────────────────
-
-let cachedMilestoneEnabled: boolean | null = null;
-
-async function isMilestoneEnabled(): Promise<boolean> {
-  if (cachedMilestoneEnabled !== null) return cachedMilestoneEnabled;
-  try {
-    const settings = await getMcpSettings();
-    cachedMilestoneEnabled = settings.milestoneEnabled;
-    return cachedMilestoneEnabled;
-  } catch {
-    // Default to false if API unreachable
-    return false;
-  }
-}
-
 // ─── Tool Registration ──────────────────────────────────────────────────
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const experimentEnabled = await isMilestoneEnabled();
   return {
     tools: [
-      experimentEnabled ? searchToolDefExperiment : searchToolDef,
-      experimentEnabled ? detailToolDefExperiment : detailToolDef,
+      searchToolDef,
+      detailToolDef,
       feedbackToolDef,
     ],
   };

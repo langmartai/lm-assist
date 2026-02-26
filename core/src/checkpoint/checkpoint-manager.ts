@@ -125,8 +125,6 @@ export class CheckpointManager extends EventEmitter {
         return `Before execution${tier} - ${date}`;
       case 'tier_start':
         return `Before ${options.tier || 'tier'} - ${date}`;
-      case 'milestone':
-        return `Milestone${tier} - ${date}`;
       case 'auto_save':
         return `Auto-save${tier} - ${date}`;
       case 'manual':

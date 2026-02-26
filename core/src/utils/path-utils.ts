@@ -238,7 +238,7 @@ function decodeWindowsPathWithFilesystemCheck(driveLetter: string, rest: string)
  * Get the lm-assist data directory
  * Default: ~/.lm-assist
  * Can be overridden with LM_ASSIST_DATA_DIR env var
- * All lm-assist owned data lives here (knowledge, milestones, vectors, cache, etc.)
+ * All lm-assist owned data lives here (knowledge, vectors, cache, etc.)
  */
 export function getDataDir(): string {
   return process.env.LM_ASSIST_DATA_DIR || path.join(os.homedir(), '.lm-assist');

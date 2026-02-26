@@ -60,9 +60,8 @@ export function SessionBrowser() {
   const hasUrlSession = searchParams.has('session');
   const urlParent = searchParams.get('parent');
 
-  // Read tab + milestone from URL params for deep-linking
+  // Read tab from URL params for deep-linking
   const urlTab = searchParams.get('tab') as any;
-  const urlMilestone = searchParams.get('milestone');
 
   // Apply URL search params as initial filters
   useEffect(() => {
@@ -282,7 +281,7 @@ export function SessionBrowser() {
               listNumTurns={selectedListSession?.numTurns}
               listLastModified={selectedListSession?.lastModified}
               initialTab={urlTab || undefined}
-              highlightMilestoneId={urlMilestone || undefined}
+  
               onSelectSession={handleSelectSession}
             />
           </div>
@@ -345,7 +344,7 @@ export function SessionBrowser() {
             listNumTurns={selectedListSession?.numTurns}
             listLastModified={selectedListSession?.lastModified}
             initialTab={urlTab || undefined}
-            highlightMilestoneId={urlMilestone || undefined}
+
             onSelectSession={handleSelectSession}
           />
         ) : (

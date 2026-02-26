@@ -41,20 +41,6 @@ const INITIAL_STEPS: LoadingStep[] = [
     status: 'pending',
     enabledByDefault: true,
   },
-  {
-    id: 'milestone-phase1',
-    label: 'Milestone Detection',
-    description: 'Scan sessions from the past day to detect milestones',
-    status: 'pending',
-    enabledByDefault: false,
-  },
-  {
-    id: 'milestone-enrich',
-    label: 'Milestone Enrichment',
-    description: 'Enrich detected milestones and index them into the vector store',
-    status: 'pending',
-    enabledByDefault: false,
-  },
 ];
 
 // ─── Config persistence ───────────────────────────────────────
@@ -151,27 +137,9 @@ async function runKnowledgeGen(): Promise<string> {
   return 'Complete';
 }
 
-async function runMilestonePhase1(): Promise<string> {
-  const data = await apiPost<{ milestonesExtracted?: number; sessionsProcessed?: number }>('/milestone-pipeline/extract');
-  const milestones = data?.milestonesExtracted ?? 0;
-  const sessions = data?.sessionsProcessed ?? 0;
-  if (milestones > 0) return `${milestones} milestones from ${sessions} sessions`;
-  return 'No new milestones detected';
-}
-
-async function runMilestoneEnrich(): Promise<string> {
-  const data = await apiPost<{ milestonesEnriched?: number; vectorsIndexed?: number }>('/milestone-pipeline/enrich-phase1', { inRangeOnly: true });
-  const enriched = data?.milestonesEnriched ?? 0;
-  const vectors = data?.vectorsIndexed ?? 0;
-  if (enriched > 0) return `${enriched} milestones enriched, ${vectors} vectors indexed`;
-  return 'No new milestones to enrich';
-}
-
 const STEP_RUNNERS: Record<string, () => Promise<string>> = {
   'session-cache': runSessionCache,
   'knowledge-gen': runKnowledgeGen,
-  'milestone-phase1': runMilestonePhase1,
-  'milestone-enrich': runMilestoneEnrich,
 };
 
 // ─── Hook ─────────────────────────────────────────────────────

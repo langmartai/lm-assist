@@ -1,29 +1,25 @@
 /**
- * search tool — Unified search across knowledge, milestones, architecture, and file history
+ * search tool — Unified search across knowledge and file history
  *
- * Replaces: search, files_history, recent_activity, knowledge_list,
- *           project_architecture listing
+ * Replaces: search, files_history, recent_activity, knowledge_list
  *
  * Auto-detects query type:
  *   /path/to/file or .ts/.tsx → file history search
  *   K\d+ or K\d+.\d+          → knowledge ID lookup
  *   UUID pattern               → session ID lookup
- *   sessionId:index            → milestone ID lookup
  *   Otherwise                  → vector semantic search + keyword fallback
  */
 
 import { getVectorStore } from '../../vector/vector-store';
 import { getSessionCache } from '../../session-cache';
-import { getMilestoneStore } from '../../milestone/store';
 import { getKnowledgeStore } from '../../knowledge/store';
 import { compositeScore, type ScoredResult } from '../../search/composite-scorer';
 import { tokenize, scoreSession, getProjectPathForSession } from '../../search/text-scorer';
 import { isFileQuery } from '../../search/file-matcher';
-import { getProjectArchitectureData } from './project-architecture';
 
 // ─── Tool Definition (canonical source: definitions.ts) ─────────────
 
-export { searchToolDef, searchToolDefExperiment } from './definitions';
+export { searchToolDef } from './definitions';
 
 // ─── Scope filtering ──────────────────────────────────────────────────
 
@@ -47,7 +43,7 @@ function isWithinScope(timestamp: string | undefined, scope: Scope): boolean {
 
 // ─── Query Type Detection ──────────────────────────────────────────────────
 
-type QueryType = 'file' | 'knowledge_id' | 'knowledge_part_id' | 'session_id' | 'milestone_id' | 'semantic';
+type QueryType = 'file' | 'knowledge_id' | 'knowledge_part_id' | 'session_id' | 'semantic';
 
 function detectQueryType(query: string): QueryType {
   const trimmed = query.trim();
@@ -57,9 +53,6 @@ function detectQueryType(query: string): QueryType {
 
   // Knowledge doc ID: K001
   if (/^K\d+$/.test(trimmed)) return 'knowledge_id';
-
-  // Milestone ID: hexId:number
-  if (/^[0-9a-f-]{8,}:\d+$/i.test(trimmed)) return 'milestone_id';
 
   // Session ID: UUID-like
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)) return 'session_id';
@@ -88,11 +81,6 @@ export async function handleSearch(args: Record<string, unknown>): Promise<{
   const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 20);
   const offset = Math.max(Number(args.offset) || 0, 0);
 
-  // Architecture-only search
-  if (typeFilter === 'architecture') {
-    return handleArchitectureSearch(query, project);
-  }
-
   // Detect query type (trim for ID matching)
   const queryType = detectQueryType(query);
   const trimmedQuery = query.trim();
@@ -103,8 +91,6 @@ export async function handleSearch(args: Record<string, unknown>): Promise<{
       return handleIdLookup(trimmedQuery, 'knowledge');
     case 'session_id':
       return handleIdLookup(trimmedQuery, 'session');
-    case 'milestone_id':
-      return handleIdLookup(trimmedQuery, 'milestone');
     case 'file':
       return handleFileAndSemanticSearch(query, scope, project, typeFilter, limit, offset);
     default:
@@ -116,7 +102,7 @@ export async function handleSearch(args: Record<string, unknown>): Promise<{
 
 function handleIdLookup(
   id: string,
-  idType: 'knowledge' | 'session' | 'milestone',
+  idType: 'knowledge' | 'session',
 ): { content: Array<{ type: string; text: string }> } {
   const lines: string[] = [];
 
@@ -134,14 +120,6 @@ function handleIdLookup(
     } else {
       lines.push(`Knowledge ${id} not found`);
     }
-  } else if (idType === 'milestone') {
-    const store = getMilestoneStore();
-    const milestone = store.getMilestoneById(id);
-    if (milestone) {
-      lines.push(`Found: ${id}: ${milestone.title || 'Untitled'} [${milestone.type || 'unknown'}]`);
-    } else {
-      lines.push(`Milestone ${id} not found`);
-    }
   } else {
     const cache = getSessionCache();
     const sessions = cache.getAllSessionsFromCache();
@@ -156,53 +134,6 @@ function handleIdLookup(
 
   lines.push('');
   lines.push(`→ detail("${id}") for full content`);
-
-  return { content: [{ type: 'text', text: lines.join('\n') }] };
-}
-
-// ─── Architecture Search ──────────────────────────────────────────────────
-
-async function handleArchitectureSearch(
-  query: string,
-  project?: string,
-): Promise<{ content: Array<{ type: string; text: string }> }> {
-  const lines: string[] = [];
-
-  try {
-    const arch = await getProjectArchitectureData(project);
-    if (!arch) {
-      return { content: [{ type: 'text', text: 'No architecture data available. Run milestone indexing first.' }] };
-    }
-
-    const queryLower = query.toLowerCase();
-    const isWildcard = query === '*' || query === '';
-
-    // Filter components by query
-    const matchingComponents = arch.components.filter(c => {
-      if (isWildcard) return true;
-      return c.directory.toLowerCase().includes(queryLower) ||
-        c.purpose.toLowerCase().includes(queryLower) ||
-        c.recentMilestones.some(m => m.toLowerCase().includes(queryLower));
-    });
-
-    if (matchingComponents.length === 0) {
-      lines.push(`No architecture components matching "${query}"`);
-    } else {
-      lines.push(`Found ${matchingComponents.length} architecture component${matchingComponents.length !== 1 ? 's' : ''}`);
-      lines.push('');
-
-      for (let i = 0; i < matchingComponents.length; i++) {
-        const c = matchingComponents[i];
-        const componentId = c.directory.replace(/\//g, '-').replace(/^-|-$/g, '');
-        lines.push(`${i + 1}. [architecture] arch:${componentId}: ${c.directory} [${c.temperature}]`);
-        lines.push(`   ${c.purpose || 'No description'} (${c.fileCount} files, ${c.milestoneCount} milestones)`);
-        lines.push(`   → detail("arch:${componentId}")`);
-        lines.push('');
-      }
-    }
-  } catch {
-    lines.push('Architecture data not available');
-  }
 
   return { content: [{ type: 'text', text: lines.join('\n') }] };
 }
@@ -238,7 +169,6 @@ async function handleHybridSearch(
   offset: number,
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   const vectorStore = getVectorStore();
-  const milestoneStore = getMilestoneStore();
 
   // Build metadata filter for type-scoped search
   const metadataFilter = typeFilter !== 'all' ? { type: typeFilter } : undefined;
@@ -259,8 +189,6 @@ async function handleHybridSearch(
     let id: string;
     if (r.type === 'knowledge') {
       id = r.partId || r.knowledgeId || '';
-    } else if (r.type === 'milestone') {
-      id = `${r.sessionId}:${r.milestoneIndex}`;
     } else {
       id = r.sessionId;
     }
@@ -279,7 +207,7 @@ async function handleHybridSearch(
     };
   });
 
-  // Apply composite scoring (also filters out session results when milestones exist)
+  // Apply composite scoring
   const ranked = compositeScore(merged, { currentProject: project });
 
   // Filter out orphaned results (vectors exist but source data was deleted)
@@ -290,9 +218,6 @@ async function handleHybridSearch(
       if (!kId) return false;
       const knowledge = knowledgeStore.getKnowledge(kId, r.machineId);
       return knowledge && knowledge.reviewRating !== 'bad';
-    }
-    if (r.type === 'milestone') {
-      return !!milestoneStore.getMilestoneById(r.id);
     }
     return true;
   });
@@ -364,7 +289,7 @@ async function handleHybridSearch(
   const pageResults = resolvable.slice(offset, offset + limit);
 
   // Format results
-  return formatResults(pageResults, totalMatches, query, offset, limit, milestoneStore);
+  return formatResults(pageResults, totalMatches, query, offset, limit);
 }
 
 // ─── Text Search Fallback ──────────────────────────────────────────────────
@@ -377,17 +302,15 @@ async function handleTextSearch(
   offset: number,
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   const cache = getSessionCache();
-  const milestoneStore = getMilestoneStore();
   const sessions = cache.getAllSessionsFromCache();
 
   const queryTokens = tokenize(query);
   const queryLower = query.toLowerCase();
 
-  // Score sessions and extract milestone matches
-  const milestoneResults: Array<{
-    milestoneId: string;
+  // Score sessions
+  const sessionResults: Array<{
+    sessionId: string;
     score: number;
-    milestone: ReturnType<typeof milestoneStore.getMilestoneById>;
   }> = [];
 
   for (const { sessionId, filePath, cacheData } of sessions) {
@@ -400,25 +323,12 @@ async function handleTextSearch(
     const { score } = scoreSession(cacheData, queryTokens, queryLower);
     if (score <= 0) continue;
 
-    // Get milestones for this session
-    const milestones = milestoneStore.getMilestones(sessionId);
-    for (const m of milestones) {
-      const titleMatch = m.title && m.title.toLowerCase().includes(queryLower) ? 2 : 0;
-      const factMatch = m.facts?.some(f => f.toLowerCase().includes(queryLower)) ? 1 : 0;
-      const mScore = score + titleMatch + factMatch;
-      if (mScore > 0) {
-        milestoneResults.push({
-          milestoneId: m.id,
-          score: mScore,
-          milestone: m,
-        });
-      }
-    }
+    sessionResults.push({ sessionId, score });
   }
 
-  milestoneResults.sort((a, b) => b.score - a.score);
-  const totalMatches = milestoneResults.length;
-  const pageResults = milestoneResults.slice(offset, offset + limit);
+  sessionResults.sort((a, b) => b.score - a.score);
+  const totalMatches = sessionResults.length;
+  const pageResults = sessionResults.slice(offset, offset + limit);
 
   if (pageResults.length === 0) {
     return { content: [{ type: 'text', text: `No results found for "${query}" (text search)` }] };
@@ -430,15 +340,8 @@ async function handleTextSearch(
 
   for (let i = 0; i < pageResults.length; i++) {
     const r = pageResults[i];
-    const m = r.milestone;
-    if (m) {
-      lines.push(`${offset + i + 1}. [milestone] ${r.milestoneId}: ${m.title || 'Untitled'} [${m.type || 'unknown'}]`);
-      if (m.description) {
-        const desc = m.description.length > 100 ? m.description.slice(0, 100) + '...' : m.description;
-        lines.push(`   ${desc}`);
-      }
-      lines.push(`   → detail("${r.milestoneId}")`);
-    }
+    lines.push(`${offset + i + 1}. [session] ${r.sessionId}`);
+    lines.push(`   → detail("${r.sessionId}")`);
     lines.push('');
   }
 
@@ -459,30 +362,24 @@ async function handleFileSearch(
   offset: number,
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   const cache = getSessionCache();
-  const milestoneStore = getMilestoneStore();
   const sessions = cache.getAllSessionsFromCache()
     .filter(s => isWithinScope(s.cacheData.lastTimestamp, scope))
     .filter(s => !project || s.cacheData.cwd === project);
 
   const queryPaths = query.split(/[,\s]+/).filter(p => p.length > 0);
 
-  // Search through sessions for file matches with milestone context
+  // Search through sessions for file matches
   interface FileMatch {
     filePath: string;
     sessionId: string;
     action: string;
     turnIndex: number;
     timestamp?: string;
-    milestoneId?: string;
-    milestoneTitle?: string;
-    milestoneType?: string;
   }
 
   const matches: FileMatch[] = [];
 
   for (const { sessionId, cacheData } of sessions) {
-    let milestones: ReturnType<typeof milestoneStore.getMilestones> | null = null;
-
     for (const tu of cacheData.toolUses) {
       const fp = tu.input?.file_path || tu.input?.path;
       if (!fp) continue;
@@ -495,20 +392,6 @@ async function handleFileSearch(
       if (tu.name === 'Write') action = 'write';
       else if (tu.name === 'Edit') action = 'edit';
 
-      // Find milestone context
-      let milestoneId: string | undefined;
-      let milestoneTitle: string | undefined;
-      let milestoneType: string | undefined;
-      if (!milestones) milestones = milestoneStore.getMilestones(sessionId);
-      for (const m of milestones) {
-        if (tu.turnIndex >= m.startTurn && tu.turnIndex <= m.endTurn && m.title) {
-          milestoneId = m.id;
-          milestoneTitle = m.title;
-          milestoneType = m.type ?? undefined;
-          break;
-        }
-      }
-
       const nearestPrompt = cacheData.userPrompts
         .filter(p => p.turnIndex <= tu.turnIndex)
         .pop();
@@ -519,9 +402,6 @@ async function handleFileSearch(
         action,
         turnIndex: tu.turnIndex,
         timestamp: nearestPrompt?.timestamp,
-        milestoneId,
-        milestoneTitle,
-        milestoneType,
       });
     }
   }
@@ -554,15 +434,8 @@ async function handleFileSearch(
 
   for (let i = 0; i < pageResults.length; i++) {
     const m = pageResults[i];
-    if (m.milestoneId && m.milestoneTitle) {
-      const typeTag = m.milestoneType ? ` [${m.milestoneType}]` : '';
-      lines.push(`${offset + i + 1}. ${m.action.toUpperCase()} ${m.filePath}${typeTag}`);
-      lines.push(`   "${m.milestoneTitle}"`);
-      lines.push(`   → detail("${m.milestoneId}")`);
-    } else {
-      lines.push(`${offset + i + 1}. ${m.action.toUpperCase()} ${m.filePath}`);
-      lines.push(`   Session: ${m.sessionId} | Turn ${m.turnIndex}`);
-    }
+    lines.push(`${offset + i + 1}. ${m.action.toUpperCase()} ${m.filePath}`);
+    lines.push(`   Session: ${m.sessionId} | Turn ${m.turnIndex}`);
     if (m.timestamp) {
       lines.push(`   ${m.timestamp}`);
     }
@@ -607,8 +480,8 @@ async function handleFileAndSemanticSearch(
   // If file search found nothing, return semantic only
   if (fileText.startsWith('No file matches')) return semanticResult;
 
-  // Combine: file history first, then knowledge/milestone results
-  const combined = [fileText, '', '--- Related knowledge & milestones ---', '', semanticText].join('\n');
+  // Combine: file history first, then knowledge results
+  const combined = [fileText, '', '--- Related knowledge ---', '', semanticText].join('\n');
   return { content: [{ type: 'text', text: combined }] };
 }
 
@@ -620,7 +493,6 @@ function formatResults(
   query: string,
   offset: number,
   limit: number,
-  milestoneStore: ReturnType<typeof getMilestoneStore>,
 ): { content: Array<{ type: string; text: string }> } {
   const knowledgeStore = getKnowledgeStore();
   const lines: string[] = [];
@@ -652,19 +524,8 @@ function formatResults(
         lines.push(`${offset + i + 1}. [knowledge] ${kId}: ${knowledge.title} [${knowledge.type}] (${knowledge.parts.length} parts)${originSuffix}`);
         lines.push(`   → detail("${kId}")`);
       }
-    } else if (r.type === 'milestone') {
-      const milestone = milestoneStore.getMilestoneById(r.id);
-
-      if (milestone) {
-        lines.push(`${offset + i + 1}. [milestone] ${r.id}: ${milestone.title || 'Untitled'} [${milestone.type || 'unknown'}]`);
-        if (milestone.description) {
-          const desc = milestone.description.length > 100 ? milestone.description.slice(0, 100) + '...' : milestone.description;
-          lines.push(`   ${desc}`);
-        }
-        lines.push(`   → detail("${r.id}")`);
-      }
     } else {
-      // Session results (should be rare with milestones taking precedence)
+      // Session results
       lines.push(`${offset + i + 1}. [session] ${r.sessionId}`);
       lines.push(`   → detail("${r.sessionId}")`);
     }

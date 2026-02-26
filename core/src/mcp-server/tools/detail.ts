@@ -1,38 +1,28 @@
 /**
  * detail tool — Unified progressive disclosure for any item by ID
  *
- * Replaces: milestone_detail, session_context, session_conversation,
- *           knowledge_detail, and architecture detail views.
+ * Replaces: session_context, session_conversation, knowledge_detail
  *
  * ID detection:
  *   K001.2        → knowledge part
  *   K001          → knowledge doc
- *   arch:name     → architecture component
- *   hexId:index   → milestone
  *   hexId         → session
  */
 
 import { getSessionCache, isRealUserPrompt } from '../../session-cache';
-import { getMilestoneStore } from '../../milestone/store';
 import { getKnowledgeStore } from '../../knowledge/store';
-import type { Milestone } from '../../milestone/types';
-import { loadModelCache, type ArchitectureModel } from '../../architecture-llm';
-import { getProjectArchitectureData } from './project-architecture';
 
 // ─── Tool Definition (canonical source: definitions.ts) ─────────────
 
-export { detailToolDef, detailToolDefExperiment } from './definitions';
+export { detailToolDef } from './definitions';
 
 // ─── ID Detection ──────────────────────────────────────────────────
 
-type IdType = 'knowledge_part' | 'knowledge_doc' | 'milestone' | 'session' | 'architecture' | 'unknown';
+type IdType = 'knowledge_part' | 'knowledge_doc' | 'session' | 'unknown';
 
 function detectIdType(id: string): IdType {
   if (/^K\d+\.\d+$/.test(id)) return 'knowledge_part';
   if (/^K\d+$/.test(id)) return 'knowledge_doc';
-  if (/^arch:/.test(id)) return 'architecture';
-  // Milestone ID: hex/uuid:index (8+ chars before colon, may include hyphens)
-  if (/^[0-9a-f-]{8,}:\d+$/i.test(id)) return 'milestone';
   // Session ID: strict UUID format or hex string (8+ chars, may include hyphens)
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return 'session';
   if (/^[0-9a-f-]{8,}$/i.test(id)) return 'session';
@@ -60,14 +50,10 @@ export async function handleDetail(args: Record<string, unknown>): Promise<{
       return handleKnowledgePart(id, section);
     case 'knowledge_doc':
       return handleKnowledgeDoc(id, section);
-    case 'milestone':
-      return handleMilestone(id, section, offset, limit);
     case 'session':
       return handleSession(id, section, offset, limit);
-    case 'architecture':
-      return handleArchitecture(id, section);
     default:
-      return { content: [{ type: 'text', text: `Unknown ID format: "${id}". Expected: K001, K001.2, sessionId:index, sessionId, or arch:component-name` }] };
+      return { content: [{ type: 'text', text: `Unknown ID format: "${id}". Expected: K001, K001.2, or sessionId` }] };
   }
 }
 
@@ -163,121 +149,6 @@ async function handleKnowledgeDoc(id: string, section?: string): Promise<{
   return { content: [{ type: 'text', text: lines.join('\n') }] };
 }
 
-// ─── Milestone (sessionId:index) ──────────────────────────────────────
-
-async function handleMilestone(id: string, section?: string, offset = 0, limit = 10): Promise<{
-  content: Array<{ type: string; text: string }>;
-}> {
-  const store = getMilestoneStore();
-  const milestone = store.getMilestoneById(id);
-
-  if (!milestone) {
-    return { content: [{ type: 'text', text: `Milestone not found: ${id}` }] };
-  }
-
-  // Section: conversation — scoped to milestone turn range
-  if (section === 'conversation') {
-    return renderConversation(
-      milestone.sessionId,
-      milestone.startTurn,
-      milestone.endTurn,
-      offset,
-      limit,
-      `Milestone ${id}`,
-      id,
-    );
-  }
-
-  // Section: files — complete file lists
-  if (section === 'files') {
-    return renderMilestoneFiles(milestone);
-  }
-
-  // Default: summary
-  const lines: string[] = [];
-
-  const typeTag = milestone.type ? ` [${milestone.type}]` : '';
-  const phaseTag = ` (Phase ${milestone.phase})`;
-  lines.push(`${id}: ${milestone.title || 'Untitled'}${typeTag}${phaseTag}`);
-  lines.push(`Session: ${milestone.sessionId} | Turns ${milestone.startTurn}-${milestone.endTurn} | ${milestone.startTimestamp || '?'}`);
-  lines.push('');
-
-  if (milestone.description) {
-    lines.push(milestone.description);
-    lines.push('');
-  }
-
-  if (milestone.outcome) {
-    lines.push(`Outcome: ${milestone.outcome}`);
-    lines.push('');
-  }
-
-  if (milestone.facts && milestone.facts.length > 0) {
-    lines.push('Facts:');
-    for (const fact of milestone.facts) {
-      lines.push(`- ${fact}`);
-    }
-    lines.push('');
-  }
-
-  if (milestone.concepts && milestone.concepts.length > 0) {
-    lines.push(`Concepts: ${milestone.concepts.join(', ')}`);
-    lines.push('');
-  }
-
-  // Files summary (abbreviated)
-  if (milestone.filesModified.length > 0) {
-    const fileNames = milestone.filesModified.map(f => basename(f));
-    lines.push(`Files modified: ${fileNames.join(', ')}`);
-  }
-  if (milestone.filesRead.length > 0) {
-    const shown = milestone.filesRead.slice(0, 5).map(f => basename(f));
-    const more = milestone.filesRead.length > 5 ? ` (+${milestone.filesRead.length - 5} more)` : '';
-    lines.push(`Files read: ${shown.join(', ')}${more}`);
-  }
-
-  lines.push('');
-  lines.push(`→ detail("${id}", section="conversation") for turn-by-turn`);
-  lines.push(`→ detail("${id}", section="files") for full file lists`);
-
-  return { content: [{ type: 'text', text: lines.join('\n') }] };
-}
-
-function renderMilestoneFiles(milestone: Milestone): {
-  content: Array<{ type: string; text: string }>;
-} {
-  const lines: string[] = [];
-
-  lines.push(`# Files for milestone ${milestone.id}`);
-  lines.push('');
-
-  if (milestone.filesModified.length > 0) {
-    lines.push(`## Modified (${milestone.filesModified.length})`);
-    for (const f of milestone.filesModified) {
-      lines.push(`- ${f}`);
-    }
-    lines.push('');
-  }
-
-  if (milestone.filesRead.length > 0) {
-    lines.push(`## Read (${milestone.filesRead.length})`);
-    for (const f of milestone.filesRead) {
-      lines.push(`- ${f}`);
-    }
-    lines.push('');
-  }
-
-  if (Object.keys(milestone.toolUseSummary).length > 0) {
-    const toolStr = Object.entries(milestone.toolUseSummary)
-      .sort((a, b) => b[1] - a[1])
-      .map(([name, count]) => `${name}(${count})`)
-      .join(', ');
-    lines.push(`Tools used: ${toolStr}`);
-  }
-
-  return { content: [{ type: 'text', text: lines.join('\n') }] };
-}
-
 // ─── Session (UUID) ──────────────────────────────────────────────────
 
 async function handleSession(id: string, section?: string, offset = 0, limit = 10): Promise<{
@@ -296,26 +167,13 @@ async function handleSession(id: string, section?: string, offset = 0, limit = 1
     return renderConversation(id, undefined, undefined, offset, limit, `Session ${id}`);
   }
 
-  // Default: session overview with milestones
+  // Default: session overview
   const cd = session.cacheData;
   const lines: string[] = [];
 
   lines.push(`Session ${id}`);
   lines.push(`Project: ${cd.cwd || 'unknown'} | Model: ${cd.model} | Turns: ${cd.numTurns} | Cost: $${cd.totalCostUsd.toFixed(2)}`);
   lines.push('');
-
-  // Milestones
-  const milestoneStore = getMilestoneStore();
-  const milestones = milestoneStore.getMilestones(id);
-
-  if (milestones.length > 0) {
-    lines.push(`Milestones (${milestones.length}):`);
-    for (const m of milestones) {
-      const typeTag = m.type ? ` [${m.type}]` : '';
-      lines.push(`  ${m.id}: ${m.title || `Milestone #${m.index}`}${typeTag}`);
-    }
-    lines.push('');
-  }
 
   // User prompts summary
   const realPrompts = cd.userPrompts.filter(isRealUserPrompt);
@@ -354,203 +212,7 @@ async function handleSession(id: string, section?: string, offset = 0, limit = 1
     lines.push('');
   }
 
-  if (milestones.length > 0) {
-    lines.push(`→ detail("${milestones[0].id}") for milestone details`);
-  }
   lines.push(`→ detail("${id}", section="conversation") for raw conversation`);
-
-  return { content: [{ type: 'text', text: lines.join('\n') }] };
-}
-
-// ─── Architecture (arch:component-name) ──────────────────────────────
-
-async function handleArchitecture(id: string, section?: string): Promise<{
-  content: Array<{ type: string; text: string }>;
-}> {
-  const componentName = id.replace(/^arch:/, '');
-
-  // Get architecture data
-  const archData = await getProjectArchitectureData();
-  if (!archData) {
-    return { content: [{ type: 'text', text: 'No architecture data available. Run project_architecture() first.' }] };
-  }
-
-  // Try to find as a directory component
-  // IDs from search use hyphens (arch:src-mcp-server), directories use slashes (src/mcp-server/)
-  const component = archData.components.find(c => {
-    const dir = c.directory === '(project root)' ? '.' : c.directory;
-    const dirNormalized = dir.replace(/\/$/, '');
-    const dirHyphenated = dirNormalized.replace(/\//g, '-');
-    return dirNormalized === componentName || dir === componentName ||
-           dirHyphenated === componentName ||
-           c.directory === componentName || c.directory === componentName + '/';
-  });
-
-  // Also try matching against service names from LLM model
-  const modelCache = loadModelCache(archData.project);
-  const model = modelCache?.model;
-  const service = model?.services.find(s =>
-    s.id === componentName || s.name.toLowerCase().replace(/\s+/g, '-') === componentName
-  );
-
-  if (!component && !service) {
-    // List available components
-    const lines: string[] = [];
-    lines.push(`Component not found: ${componentName}`);
-    lines.push('');
-    lines.push('Available components:');
-    for (const c of archData.components.slice(0, 15)) {
-      const dir = c.directory === '(project root)' ? '.' : c.directory;
-      const dirHyphenated = dir === '.' ? '.' : dir.replace(/\/$/, '').replace(/\//g, '-');
-      lines.push(`  arch:${dirHyphenated}`);
-    }
-    if (model && model.services.length > 0) {
-      lines.push('');
-      lines.push('Available services:');
-      for (const s of model.services) {
-        lines.push(`  arch:${s.id}`);
-      }
-    }
-    return { content: [{ type: 'text', text: lines.join('\n') }] };
-  }
-
-  // Section: connections — show connections for this component
-  if (section === 'connections') {
-    return renderArchConnections(componentName, model ? model : null, archData);
-  }
-
-  // Section: diagram
-  if (section === 'diagram') {
-    if (!model || !model.mermaidDiagram) {
-      return { content: [{ type: 'text', text: 'No diagram available. Architecture model has not been generated.' }] };
-    }
-    const lines: string[] = [];
-    lines.push('## Architecture Diagram');
-    lines.push('');
-    lines.push('```mermaid');
-    lines.push(model.mermaidDiagram);
-    lines.push('```');
-    return { content: [{ type: 'text', text: lines.join('\n') }] };
-  }
-
-  // Default: component detail
-  const lines: string[] = [];
-
-  if (component) {
-    const dir = component.directory === '(project root)' ? '.' : component.directory;
-    const tempLabel = component.temperature === 'hot' ? 'hot' : component.temperature === 'warm' ? 'warm' : 'cold';
-    const lastTouched = component.lastTouched ? formatTimeAgo(component.lastTouched) : 'unknown';
-
-    lines.push(`arch:${dir}: ${component.purpose}`);
-    lines.push(`Directory: ${component.directory}/ | Temperature: ${tempLabel} | Last touched: ${lastTouched}`);
-    lines.push('');
-
-    // Purpose from types
-    if (Object.keys(component.types).length > 0) {
-      const typeStr = Object.entries(component.types)
-        .sort((a, b) => b[1] - a[1])
-        .map(([t, n]) => `${t}:${n}`)
-        .join(', ');
-      lines.push(`Activity: ${typeStr}`);
-    }
-
-    lines.push(`Files: ${component.fileCount} | Milestones: ${component.milestoneCount}`);
-    lines.push('');
-
-    // Recent milestones
-    if (component.recentMilestones.length > 0) {
-      lines.push('Recent milestones:');
-      for (const title of component.recentMilestones) {
-        lines.push(`  - ${title}`);
-      }
-      lines.push('');
-    }
-
-    // Key files in this directory
-    const dirPath = component.directory === '(project root)' ? '' : component.directory;
-    const matchingFiles = archData.keyFiles.filter(f =>
-      dirPath === '' ? true : (f.filePath.startsWith(dirPath + '/') || f.filePath === dirPath)
-    );
-
-    if (matchingFiles.length > 0) {
-      lines.push(`Key files (${matchingFiles.length}):`);
-      for (const f of matchingFiles.slice(0, 10)) {
-        let detail = `${f.modifyCount} modifies, ${f.readCount} reads`;
-        if (f.lastMilestoneTitle) {
-          detail += ` — ${f.lastMilestoneTitle}`;
-        }
-        lines.push(`  ${f.filePath} (${detail})`);
-      }
-      if (matchingFiles.length > 10) {
-        lines.push(`  ... and ${matchingFiles.length - 10} more`);
-      }
-      lines.push('');
-    }
-  }
-
-  // Service info from LLM model
-  if (service) {
-    if (component) lines.push('---');
-    const portStr = service.port ? `:${service.port}` : '';
-    const techStr = service.technologies.length > 0 ? ` [${service.technologies.join(', ')}]` : '';
-    lines.push(`Service: ${service.name} (${service.type}${portStr})${techStr}`);
-    lines.push(service.description);
-    if (service.responsibilities.length > 0) {
-      lines.push('');
-      lines.push('Responsibilities:');
-      for (const r of service.responsibilities) {
-        lines.push(`  - ${r}`);
-      }
-    }
-    lines.push('');
-  }
-
-  lines.push(`→ detail("${id}", section="connections") for connection details`);
-  lines.push(`→ detail("${id}", section="diagram") for architecture diagram`);
-
-  return { content: [{ type: 'text', text: lines.join('\n') }] };
-}
-
-function renderArchConnections(
-  componentName: string,
-  model: ArchitectureModel | null,
-  archData: Awaited<ReturnType<typeof getProjectArchitectureData>>
-): { content: Array<{ type: string; text: string }> } {
-  const lines: string[] = [];
-
-  if (!model) {
-    return { content: [{ type: 'text', text: 'No architecture model available. Model has not been generated.' }] };
-  }
-
-  // Find connections involving this component
-  const relevantConnections = model.connections.filter(c =>
-    c.from === componentName || c.to === componentName ||
-    c.from.toLowerCase().replace(/\s+/g, '-') === componentName ||
-    c.to.toLowerCase().replace(/\s+/g, '-') === componentName
-  );
-
-  if (relevantConnections.length === 0) {
-    lines.push(`No connections found for: ${componentName}`);
-    lines.push('');
-    lines.push('All connections:');
-    for (const conn of model.connections.slice(0, 10)) {
-      const portStr = conn.port ? ` :${conn.port}` : '';
-      lines.push(`  ${conn.from} → ${conn.to} (${conn.type}${portStr}) — ${conn.label}`);
-    }
-  } else {
-    lines.push(`## Connections for ${componentName} (${relevantConnections.length})`);
-    lines.push('');
-    for (const conn of relevantConnections) {
-      const portStr = conn.port ? ` :${conn.port}` : '';
-      const direction = conn.from === componentName || conn.from.toLowerCase().replace(/\s+/g, '-') === componentName
-        ? `→ ${conn.to}`
-        : `← ${conn.from}`;
-      lines.push(`- ${direction} (${conn.type}${portStr}) — ${conn.label}`);
-      if (conn.description) {
-        lines.push(`  ${conn.description}`);
-      }
-    }
-  }
 
   return { content: [{ type: 'text', text: lines.join('\n') }] };
 }
@@ -717,11 +379,6 @@ function formatToolSummary(block: any): string {
 
 // ─── Utility Helpers ──────────────────────────────────────────────────
 
-function basename(filePath: string): string {
-  const parts = filePath.split('/');
-  return parts[parts.length - 1] || filePath;
-}
-
 function formatTimeAgo(timestamp: string): string {
   const ts = Date.parse(timestamp);
   if (isNaN(ts)) return timestamp;
@@ -741,4 +398,3 @@ function formatTimeAgo(timestamp: string): string {
 
   return timestamp.slice(0, 10);
 }
-

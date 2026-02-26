@@ -14,7 +14,6 @@ import {
   FileText,
   Plus,
   Info,
-  Network,
   GitBranch,
   GitFork,
   Globe,
@@ -23,7 +22,6 @@ import {
 } from 'lucide-react';
 import { formatTimeAgo, formatCost } from '@/lib/utils';
 import Link from 'next/link';
-import { useExperiment } from '@/hooks/useExperiment';
 import { usePlatform } from '@/hooks/usePlatform';
 
 /**
@@ -59,7 +57,6 @@ function formatRemoteUrl(url: string): { display: string; webUrl: string | null 
 export default function ProjectsPage() {
   const { projects, isLoading, error, forceRefetch } = useProjects();
   const { isSingleMachine } = useMachineContext();
-  const { isExperiment } = useExperiment();
   const { isWindows } = usePlatform();
   const [search, setSearch] = useState('');
 
@@ -69,14 +66,6 @@ export default function ProjectsPage() {
     const params = new URLSearchParams({ projectPath: project.projectPath, newSession: 'true' });
     if (!isSingleMachine && project.machineId) params.set('machineId', project.machineId);
     window.open(`/console?${params.toString()}`, '_blank');
-  };
-
-  const handleViewArchitecture = (e: React.MouseEvent, project: typeof projects[0]) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const params = new URLSearchParams({ project: project.projectPath });
-    if (!isSingleMachine && project.machineId) params.set('machine', project.machineId);
-    window.location.href = `/projects/architecture?${params.toString()}`;
   };
 
   // Filter out non-git projects, then apply search
@@ -178,38 +167,6 @@ export default function ProjectsPage() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                   <FolderOpen size={16} style={{ color: accent, flexShrink: 0 }} />
                   <span style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>{project.projectName}</span>
-                  {isExperiment && (
-                    <button
-                      onClick={(e) => handleViewArchitecture(e, project)}
-                      title="View project architecture"
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        width: 26,
-                        height: 26,
-                        borderRadius: 'var(--radius-sm)',
-                        border: '1px solid transparent',
-                        background: 'transparent',
-                        color: 'var(--color-text-tertiary)',
-                        cursor: 'pointer',
-                        flexShrink: 0,
-                        transition: 'all 0.15s',
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.background = 'rgba(34, 211, 238, 0.1)';
-                        e.currentTarget.style.borderColor = 'rgba(34, 211, 238, 0.3)';
-                        e.currentTarget.style.color = '#22d3ee';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.background = 'transparent';
-                        e.currentTarget.style.borderColor = 'transparent';
-                        e.currentTarget.style.color = 'var(--color-text-tertiary)';
-                      }}
-                    >
-                      <Network size={14} />
-                    </button>
-                  )}
                   {!isWindows && (
                     <button
                       onClick={(e) => handleNewSession(e, project)}

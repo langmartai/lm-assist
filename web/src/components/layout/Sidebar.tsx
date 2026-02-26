@@ -13,7 +13,6 @@ import {
   Settings,
   Terminal,
   Search,
-  Network,
   BookOpen,
   Compass,
 } from 'lucide-react';
@@ -35,7 +34,6 @@ const baseNavItems = [
 
 const experimentNavItems = [
   { href: '/session-dashboard', icon: LayoutDashboard, label: 'Session Dashboard' },
-  { href: '/architecture', icon: Network, label: 'Architecture' },
 ];
 
 /** In proxy mode, use <a> for full-page navigation (client-side nav is unreliable through the proxy shim). */

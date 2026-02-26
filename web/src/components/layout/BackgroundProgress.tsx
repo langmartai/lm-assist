@@ -1,9 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { HardDrive, Layers, BookOpen, Database } from 'lucide-react';
+import { HardDrive, BookOpen } from 'lucide-react';
 import { useBackgroundProgress, type ProcessStatus } from '@/hooks/useBackgroundProgress';
-import { useExperiment } from '@/hooks/useExperiment';
 
 const stateColors: Record<string, string> = {
   idle: 'var(--color-text-tertiary)',
@@ -64,14 +63,11 @@ function ProgressChip({
 }
 
 export function BackgroundProgress() {
-  const { cacheStatus, milestone, knowledge, vectorStore } = useBackgroundProgress();
-  const { isExperiment } = useExperiment();
+  const { cacheStatus, knowledge } = useBackgroundProgress();
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
       <ProgressChip status={cacheStatus} icon={HardDrive} />
-      {isExperiment && <ProgressChip status={milestone} icon={Layers} />}
-      {isExperiment && <ProgressChip status={vectorStore} icon={Database} />}
       <ProgressChip status={knowledge} icon={BookOpen} />
     </div>
   );

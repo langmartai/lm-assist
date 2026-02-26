@@ -299,11 +299,8 @@ interface ClaudeCodeConfig {
   contextInjectDisplay: boolean;
   contextInjectMode: 'mcp' | 'suggest' | 'both' | 'off';
   contextInjectKnowledge: boolean;
-  contextInjectMilestones: boolean;
   contextInjectKnowledgeCount: number;
-  contextInjectMilestoneCount: number;
   searchIncludeKnowledge: boolean;
-  searchIncludeMilestones: boolean;
   statuslinePromptCount: number;
   statuslineShowPrompts: boolean;
   statuslineShowWorktree: boolean;
@@ -321,11 +318,8 @@ const DEFAULT_CONFIG: ClaudeCodeConfig = {
   contextInjectDisplay: true,
   contextInjectMode: 'mcp',
   contextInjectKnowledge: true,
-  contextInjectMilestones: false,
   contextInjectKnowledgeCount: 3,
-  contextInjectMilestoneCount: 2,
   searchIncludeKnowledge: true,
-  searchIncludeMilestones: false,
   statuslinePromptCount: 4,
   statuslineShowPrompts: true,
   statuslineShowWorktree: true,
@@ -348,11 +342,8 @@ function loadConfig(): ClaudeCodeConfig {
       contextInjectDisplay: typeof parsed.contextInjectDisplay === 'boolean' ? parsed.contextInjectDisplay : DEFAULT_CONFIG.contextInjectDisplay,
       contextInjectMode: validModes.includes(parsed.contextInjectMode) ? parsed.contextInjectMode : DEFAULT_CONFIG.contextInjectMode,
       contextInjectKnowledge: typeof parsed.contextInjectKnowledge === 'boolean' ? parsed.contextInjectKnowledge : DEFAULT_CONFIG.contextInjectKnowledge,
-      contextInjectMilestones: typeof parsed.contextInjectMilestones === 'boolean' ? parsed.contextInjectMilestones : DEFAULT_CONFIG.contextInjectMilestones,
       contextInjectKnowledgeCount: typeof parsed.contextInjectKnowledgeCount === 'number' && parsed.contextInjectKnowledgeCount >= 0 ? parsed.contextInjectKnowledgeCount : DEFAULT_CONFIG.contextInjectKnowledgeCount,
-      contextInjectMilestoneCount: typeof parsed.contextInjectMilestoneCount === 'number' && parsed.contextInjectMilestoneCount >= 0 ? parsed.contextInjectMilestoneCount : DEFAULT_CONFIG.contextInjectMilestoneCount,
       searchIncludeKnowledge: typeof parsed.searchIncludeKnowledge === 'boolean' ? parsed.searchIncludeKnowledge : DEFAULT_CONFIG.searchIncludeKnowledge,
-      searchIncludeMilestones: typeof parsed.searchIncludeMilestones === 'boolean' ? parsed.searchIncludeMilestones : DEFAULT_CONFIG.searchIncludeMilestones,
       statuslinePromptCount: typeof parsed.statuslinePromptCount === 'number' && parsed.statuslinePromptCount >= 0 && parsed.statuslinePromptCount <= 10 ? parsed.statuslinePromptCount : DEFAULT_CONFIG.statuslinePromptCount,
       statuslineShowPrompts: typeof parsed.statuslineShowPrompts === 'boolean' ? parsed.statuslineShowPrompts : DEFAULT_CONFIG.statuslineShowPrompts,
       statuslineShowWorktree: typeof parsed.statuslineShowWorktree === 'boolean' ? parsed.statuslineShowWorktree : DEFAULT_CONFIG.statuslineShowWorktree,
@@ -573,24 +564,12 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
           current.contextInjectKnowledge = body.contextInjectKnowledge;
           changed = true;
         }
-        if (typeof body.contextInjectMilestones === 'boolean' && body.contextInjectMilestones !== current.contextInjectMilestones) {
-          current.contextInjectMilestones = body.contextInjectMilestones;
-          changed = true;
-        }
         if (typeof body.contextInjectKnowledgeCount === 'number' && body.contextInjectKnowledgeCount >= 0 && body.contextInjectKnowledgeCount !== current.contextInjectKnowledgeCount) {
           current.contextInjectKnowledgeCount = body.contextInjectKnowledgeCount;
           changed = true;
         }
-        if (typeof body.contextInjectMilestoneCount === 'number' && body.contextInjectMilestoneCount >= 0 && body.contextInjectMilestoneCount !== current.contextInjectMilestoneCount) {
-          current.contextInjectMilestoneCount = body.contextInjectMilestoneCount;
-          changed = true;
-        }
         if (typeof body.searchIncludeKnowledge === 'boolean' && body.searchIncludeKnowledge !== current.searchIncludeKnowledge) {
           current.searchIncludeKnowledge = body.searchIncludeKnowledge;
-          changed = true;
-        }
-        if (typeof body.searchIncludeMilestones === 'boolean' && body.searchIncludeMilestones !== current.searchIncludeMilestones) {
-          current.searchIncludeMilestones = body.searchIncludeMilestones;
           changed = true;
         }
         if (typeof body.statuslinePromptCount === 'number' && body.statuslinePromptCount >= 0 && body.statuslinePromptCount <= 10 && body.statuslinePromptCount !== current.statuslinePromptCount) {

@@ -2,7 +2,7 @@
  * Knowledge Store
  *
  * Singleton store for knowledge documents and comments.
- * Pattern: follows MilestoneStore — in-memory LRU cache, JSON index, per-document files.
+ * Pattern: in-memory LRU cache, JSON index, per-document files.
  *
  * Storage layout:
  *   ~/.lm-assist/knowledge/

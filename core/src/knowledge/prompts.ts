@@ -3,26 +3,19 @@
  *
  * System prompts for the knowledge reviewer and generator LLM processes.
  * These prompts embed the knowledge purpose contract — what knowledge IS,
- * why it exists alongside milestones and architecture, and how to curate it.
+ * how to curate it, and what makes good implementation knowledge.
  */
 
 // ─── Knowledge Purpose (shared across all prompts) ──────────────────────
 
 export const KNOWLEDGE_PURPOSE = `## What Knowledge Is
-Knowledge captures IMPLEMENTATION TRUTH that milestones and architecture don't:
+Knowledge captures IMPLEMENTATION TRUTH — the details that make a system work:
 - Algorithms: scoring formulas, heuristics, thresholds, detection logic
 - Design contracts: concurrency guarantees, lock ordering, serialization rules
 - Data schemas: full interface/type definitions with all fields and their purposes
 - Integration wiring: callback chains, event flows, hook registration sequences
 - Invariants & limits: constants, budgets, timeouts, batch sizes that govern behavior
-- Progressive flows: multi-stage pipelines, phase transitions, state machines
-
-## Three-Layer Context Model
-| Layer | Captures | Misses |
-|-------|----------|--------|
-| Milestones | What happened (activity), what changed, when | How algorithms work internally, why they're designed that way |
-| Architecture | Topology — services, connections, ports, data stores | Internal pipeline stages, callback chains, integration wiring |
-| Knowledge | Implementation truth — algorithms, contracts, schemas, invariants, flows | *(this is what knowledge captures)* |`;
+- Progressive flows: multi-stage pipelines, phase transitions, state machines`;
 
 // ─── Reviewer System Prompt ──────────────────────────────────────────
 
@@ -113,7 +106,7 @@ Each vector includes metadata:
 ### Search Flow
 
 1. Query text is embedded using the same embedder
-2. Vectra matches against all vector types (sessions, milestones, knowledge)
+2. Vectra matches against all vector types (sessions, knowledge)
 3. Results are filtered to \`type === 'knowledge'\` and sliced to limit
 \`\`\`
 

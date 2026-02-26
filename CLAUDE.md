@@ -1,6 +1,6 @@
 # lm-assist
 
-Monorepo for the LM Assistant — a web UI for managing Claude Code sessions, with a backend API for session management, milestones, knowledge, architecture, and hub connectivity.
+Monorepo for the LM Assistant — a web UI for managing Claude Code sessions, with a backend API for session management, knowledge, and hub connectivity.
 
 ## Structure
 
@@ -13,8 +13,7 @@ lm-assist/
 │   │   ├── hub-client/      ← Hub WebSocket client (relay, sync)
 │   │   ├── knowledge/       ← Knowledge generation pipeline
 │   │   ├── mcp-server/      ← MCP server + tools (search, detail, feedback)
-│   │   ├── milestone/       ← Milestone extraction pipeline
-│   │   ├── routes/core/     ← 20 route files, 155 endpoints
+│   │   ├── routes/core/     ← Route files and endpoints
 │   │   ├── search/          ← BM25 + text scoring
 │   │   ├── types/           ← Shared TypeScript types
 │   │   ├── utils/           ← Git, JSONL, path utilities
@@ -123,7 +122,7 @@ The backend is a raw Node.js HTTP server (no Express/Hono runtime — Hono is a 
 
 ### Web UI (`web/`)
 
-Next.js 16 with Turbopack, React 19, Zustand for state, Tailwind CSS v4 for styling. Renders sessions, terminals, tasks, knowledge, architecture, and settings pages. Communicates with the core API (dev :3200 / prod :3100).
+Next.js 16 with Turbopack, React 19, Zustand for state, Tailwind CSS v4 for styling. Renders sessions, terminals, tasks, knowledge, and settings pages. Communicates with the core API (dev :3200 / prod :3100).
 
 ### MCP Server (`core/src/mcp-server/`)
 
@@ -131,8 +130,8 @@ Provides 3 tools via stdio transport (server name: `lm-assist`):
 
 | Tool | Description |
 |------|-------------|
-| `search` | Unified search across knowledge, milestones, architecture, file history |
-| `detail` | Progressive disclosure for any item by ID (K001, sessionId:index, arch:name) |
+| `search` | Unified search across knowledge and file history |
+| `detail` | Progressive disclosure for any item by ID (K001, sessionId:index) |
 | `feedback` | Quality feedback on context sources (outdated, wrong, useful, etc.) |
 
 ## Key API Endpoints
@@ -175,19 +174,6 @@ Provides 3 tools via stdio transport (server name: `lm-assist`):
 | GET | `/knowledge/search` | Search knowledge (BM25 + vector) |
 | POST | `/knowledge/generate` | Generate knowledge from sessions |
 
-### Architecture (4 endpoints)
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/architecture` | Get architecture model |
-| POST | `/architecture/generate` | Generate architecture from codebase |
-
-### Milestones
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/milestones/:sessionId` | Session milestones |
-| GET | `/milestone-pipeline/status` | Pipeline status |
-| POST | `/milestone-pipeline/extract` | Trigger extraction |
-
 ### Web Terminal (13 endpoints)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -215,7 +201,7 @@ Provides 3 tools via stdio transport (server name: `lm-assist`):
 All configuration is via `.env` (see `.env.example`):
 
 ```bash
-ANTHROPIC_API_KEY=your-key       # For AI summaries/architecture generation
+ANTHROPIC_API_KEY=your-key       # For AI features (knowledge generation, etc.)
 API_PORT=3200                    # Core API port (dev default: 3200, prod: 3100)
 WEB_PORT=3948                    # Web UI port (dev default: 3948, prod: 3848)
 TIER_AGENT_HUB_URL=wss://...    # Hub gateway WebSocket URL (optional)

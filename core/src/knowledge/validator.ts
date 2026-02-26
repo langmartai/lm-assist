@@ -2,7 +2,7 @@
  * Knowledge Validator
  *
  * Phase 2 LLM validation for knowledge candidates discovered by the heuristic
- * scoring system (Phase 1). Follows the same pattern as milestone/summarizer.ts:
+ * scoring system (Phase 1).
  *
  * 1. Heuristic prefilter produces candidates with scores
  * 2. Candidates are batched (first N chars of each) and sent to LLM
@@ -399,7 +399,7 @@ export class KnowledgeValidator {
   }
 
   /**
-   * Call agent execution API — same pattern as milestone/summarizer.ts
+   * Call agent execution API
    */
   private async callAgentApi(prompt: string, model: string): Promise<string | null> {
     try {

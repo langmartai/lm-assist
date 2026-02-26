@@ -2,7 +2,7 @@
  * Knowledge Settings
  *
  * Manages configuration for knowledge features, particularly remote knowledge sync.
- * Pattern follows core/src/milestone/settings.ts — mtime cache, partial updates, JSON storage.
+ * Uses mtime cache, partial updates, JSON storage.
  *
  * Storage: ~/.lm-assist/knowledge/settings.json
  */

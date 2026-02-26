@@ -101,27 +101,21 @@ export class TierRestServer {
     this.initClaudeTasksWatcher();
     profiler.end('tasksWatcher');
 
-    // Wire session cache onChange to milestone auto-extraction
-    profiler.start('milestones', 'Milestone Wiring', 'Server Constructor');
-    this.initMilestoneAutoExtraction();
-    profiler.end('milestones');
+    // Wire session cache events
+    profiler.start('sessionEvents', 'Session Events', 'Server Constructor');
+    this.initSessionCacheEvents();
+    profiler.end('sessionEvents');
 
     profiler.end('constructor');
   }
 
   /**
-   * Wire session cache onChange to auto-extract milestones when sessions grow.
+   * Wire session cache file events to invalidate caches.
    */
-  private initMilestoneAutoExtraction(): void {
+  private initSessionCacheEvents(): void {
     try {
       const { getSessionCache } = require('./session-cache');
-      const { handleSessionChangeForMilestones } = require('./milestone/store');
-      const { getMilestoneSettings } = require('./milestone/settings');
       const cache = getSessionCache();
-
-      cache.onSessionChange((sessionId: string, cacheData: any) => {
-        handleSessionChangeForMilestones(sessionId, cacheData, '[RestServer]');
-      });
 
       // Invalidate tasks session-info cache when session files are added/deleted
       // (a new session file could resolve a previously-null lookup)
@@ -136,62 +130,9 @@ export class TierRestServer {
         }
       });
 
-      // Only run the staleness scan if milestone processing is enabled
-      const settings = getMilestoneSettings();
-      if (settings.enabled) {
-        setImmediate(() => {
-          this.scanStaleMilestones(cache, handleSessionChangeForMilestones);
-        });
-      } else {
-        console.log('Milestone auto-extraction disabled — skipping staleness scan');
-      }
-
-      console.log('Milestone auto-extraction wired to session cache');
+      console.log('Session cache events wired');
     } catch (err) {
-      console.warn('TierRestServer: Failed to initialize milestone auto-extraction:', err);
-    }
-  }
-
-  private scanStaleMilestones(
-    cache: any,
-    handler: (sessionId: string, cacheData: any, prefix: string) => void
-  ): void {
-    try {
-      const { getMilestoneStore } = require('./milestone/store');
-      const store = getMilestoneStore();
-
-      const staleSessions: Array<{ sessionId: string; cacheData: any }> = [];
-      let total = 0;
-      for (const { sessionId, cacheData } of cache.getAllSessionsFromCache()) {
-        total++;
-        if (store.needsReExtraction(sessionId, cacheData.numTurns)) {
-          staleSessions.push({ sessionId, cacheData });
-        }
-      }
-
-      if (staleSessions.length === 0) return;
-
-      let processed = 0;
-      const BATCH_SIZE = 5;
-
-      const processBatch = () => {
-        const end = Math.min(processed + BATCH_SIZE, staleSessions.length);
-        for (let i = processed; i < end; i++) {
-          const { sessionId, cacheData } = staleSessions[i];
-          handler(sessionId, cacheData, '[PostWarming]');
-        }
-        processed = end;
-
-        if (processed < staleSessions.length) {
-          setImmediate(processBatch);
-        } else {
-          console.log(`[PostWarming] Milestone staleness scan: ${staleSessions.length} stale of ${total} sessions re-extracted`);
-        }
-      };
-
-      processBatch();
-    } catch (err) {
-      console.warn('[PostWarming] Milestone staleness scan failed:', err);
+      console.warn('TierRestServer: Failed to initialize session cache events:', err);
     }
   }
 

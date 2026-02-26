@@ -5281,7 +5281,7 @@ function parseConversation(
   // Sort messages by turnIndex for proper conversation order
   conversation.sort((a, b) => a.turnIndex - b.turnIndex);
 
-  // Turn range filtering (for milestone-based conversation retrieval)
+  // Turn range filtering (for scoped conversation retrieval)
   let turnFiltered = conversation;
   if (options.fromTurnIndex !== undefined || options.toTurnIndex !== undefined) {
     turnFiltered = conversation.filter(m => {

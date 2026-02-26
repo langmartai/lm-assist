@@ -56,27 +56,22 @@ async function suggestContext(
   const os = await import('os');
   const configFile = path.join(os.homedir(), '.claude-code-config.json');
   let includeKnowledge = true;
-  let includeMilestones = false;
   let knowledgeCount = 3;
-  let milestoneCount = 2;
   try {
     const raw = fs.readFileSync(configFile, 'utf-8');
     const parsed = JSON.parse(raw);
     if (typeof parsed.contextInjectKnowledge === 'boolean') includeKnowledge = parsed.contextInjectKnowledge;
-    if (typeof parsed.contextInjectMilestones === 'boolean') includeMilestones = parsed.contextInjectMilestones;
     if (typeof parsed.contextInjectKnowledgeCount === 'number' && parsed.contextInjectKnowledgeCount >= 0) knowledgeCount = parsed.contextInjectKnowledgeCount;
-    if (typeof parsed.contextInjectMilestoneCount === 'number' && parsed.contextInjectMilestoneCount >= 0) milestoneCount = parsed.contextInjectMilestoneCount;
   } catch { /* use defaults */ }
 
   // If nothing enabled, return empty
-  if (!includeKnowledge && !includeMilestones) {
+  if (!includeKnowledge) {
     return { context: '', tokens: 0, sources: [] };
   }
 
-  // Lazy-import to avoid startup dependency on vector/knowledge/milestone stores
+  // Lazy-import to avoid startup dependency on vector/knowledge stores
   const { getVectorStore } = await import('../../vector/vector-store');
   const { getKnowledgeStore } = await import('../../knowledge/store');
-  const { getMilestoneStore } = await import('../../milestone/store');
 
   const vectorStore = getVectorStore();
 
@@ -215,66 +210,7 @@ async function suggestContext(
     // Non-fatal — continue without knowledge
   }
 
-  // 2. Hybrid milestone search: vector + FTS, RRF merge → top N (configurable)
-  if (includeMilestones && milestoneCount > 0) try {
-    const mFetch = Math.max(milestoneCount * 2, 5);
-    const hybridMilestones = await vectorStore.hybridSearch(prompt, mFetch, { type: 'milestone' });
-
-    // Convert to ScoredResult format
-    const milestoneScored: ScoredResult[] = hybridMilestones.map(r => ({
-      type: r.type as 'milestone',
-      id: `${r.sessionId}:${r.milestoneIndex}`,
-      sessionId: r.sessionId,
-      score: r.score,
-      finalScore: 0,
-      timestamp: r.timestamp || '',
-      projectPath: r.projectPath,
-      phase: r.phase as 1 | 2 | undefined,
-    }));
-
-    const topMilestones = milestoneScored.slice(0, milestoneCount);
-
-    if (topMilestones.length > 0) {
-      const milestoneStore = getMilestoneStore();
-      const milestoneLines: string[] = [];
-
-      for (const r of topMilestones) {
-        if (r.score <= 0) continue;
-        const milestoneId = r.id;
-        const milestone = milestoneStore.getMilestoneById(milestoneId);
-
-        if (milestone) {
-          const rawTitle = milestone.title?.trim() || '';
-          // For Phase 1 milestones (no LLM title), synthesize from first user prompt or files
-          const displayTitle = (rawTitle && rawTitle.toLowerCase() !== 'untitled milestone')
-            ? rawTitle
-            : (() => {
-                const firstPrompt = (milestone.userPrompts as string[] | undefined)
-                  ?.find(p => p.trim().length > 15);
-                if (firstPrompt) return firstPrompt.trim().slice(0, 80) + (firstPrompt.length > 80 ? '…' : '');
-                const files = (milestone.filesModified as string[] | undefined)?.slice(0, 3)
-                  .map((f: string) => f.split('/').pop()).filter(Boolean);
-                if (files?.length) return 'Modified: ' + files.join(', ');
-                return '';
-              })();
-          if (!displayTitle) continue;
-          const phase1Label = !rawTitle ? ' ~p1' : '';
-          const timeAgo = formatTimeAgo(milestone.endTimestamp || milestone.startTimestamp);
-          milestoneLines.push(`- [${milestoneId}] ${timeAgo}${phase1Label}: ${displayTitle}`);
-          sources.push(milestoneId);
-        }
-      }
-
-      if (milestoneLines.length > 0) {
-        sections.push('**Recent work:**');
-        sections.push(...milestoneLines);
-      }
-    }
-  } catch {
-    // Non-fatal — continue without milestones
-  }
-
-  // 3. Build final context
+  // 2. Build final context
   if (sections.length === 0) {
     return { context: '', tokens: 0, sources: [] };
   }
@@ -285,7 +221,7 @@ async function suggestContext(
     ...sections,
     '',
     'Use the context above to inform your response. Knowledge entries (K###) contain verified facts extracted from past sessions.',
-    'For deeper investigation, use MCP tools: search(query) to find more knowledge/milestones/architecture, detail(id) to expand any entry, feedback(id, type, content) to flag outdated or wrong context.',
+    'For deeper investigation, use MCP tools: search(query) to find more knowledge, detail(id) to expand any entry, feedback(id, type, content) to flag outdated or wrong context.',
   ];
 
   const context = contextLines.join('\n');

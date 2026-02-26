@@ -633,7 +633,7 @@ export type TierEvent =
         imageUrl: string;
         thumbnailUrl?: string;
         capturedAt: string;
-        triggerType: "scheduled" | "file_change" | "milestone" | "final";
+        triggerType: "scheduled" | "file_change" | "final";
         context?: {
           step: number;
           stepDescription: string;
