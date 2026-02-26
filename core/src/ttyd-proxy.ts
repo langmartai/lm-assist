@@ -187,7 +187,7 @@ const TTYD_INJECTED_CSS = `
   // ESC[>0;276;0c back through the WebSocket as input. Nobody needs this
   // answer — it just leaks into Claude's stdin as garbage.
   // Patch WebSocket.prototype.send to drop DA responses from ttyd input messages.
-  var daRe = /\x1b\[[\?>]\d+(?:;\d+)*c|\[>\d+(?:;\d+)*c/g;
+  var daRe = /\\x1b\\[[\\?>]\\d+(?:;\\d+)*c|\\[>\\d+(?:;\\d+)*c/g;
   var origSend = WebSocket.prototype.send;
   WebSocket.prototype.send = function(data) {
     if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
