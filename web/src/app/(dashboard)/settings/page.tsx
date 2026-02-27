@@ -1735,7 +1735,7 @@ export default function SettingsPage() {
                     </a>
                   )}
                   <a
-                    href={`http://${lanEnabled && localIp ? localIp : 'localhost'}:${typeof window !== 'undefined' ? window.location.port || '3848' : '3848'}/settings`}
+                    href={`http://${lanEnabled && localIp ? localIp : 'localhost'}:${typeof window !== 'undefined' ? window.location.port || (process.env.NEXT_PUBLIC_LOCAL_API_PORT === '3200' ? '3948' : '3848') : '3848'}/settings`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="btn btn-sm btn-ghost"
@@ -1991,12 +1991,12 @@ export default function SettingsPage() {
                       <span style={{ color: 'var(--color-text-secondary)' }}>
                         Open{' '}
                         <a
-                          href={`http://${localIp}:${typeof window !== 'undefined' ? window.location.port || '3848' : '3848'}`}
+                          href={`http://${localIp}:${typeof window !== 'undefined' ? window.location.port || (process.env.NEXT_PUBLIC_LOCAL_API_PORT === '3200' ? '3948' : '3848') : '3848'}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-primary)', background: 'rgba(255,255,255,0.06)', padding: '1px 4px', borderRadius: 3, textDecoration: 'none', borderBottom: '1px solid var(--color-text-tertiary)' }}
                         >
-                          http://{localIp}:{typeof window !== 'undefined' ? window.location.port || '3848' : '3848'}
+                          http://{localIp}:{typeof window !== 'undefined' ? window.location.port || (process.env.NEXT_PUBLIC_LOCAL_API_PORT === '3200' ? '3948' : '3848') : '3848'}
                         </a>
                         {' '}from any phone, tablet, or computer on the same Wi-Fi network.
                       </span>

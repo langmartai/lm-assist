@@ -247,12 +247,12 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
         try {
           const store = getKnowledgeStore();
           const generatedCount = store.getGeneratedAgentIds().size;
-          const { getKnowledgeGenerator } = require('../../knowledge/generator');
-          const generator = getKnowledgeGenerator();
+          const { getKnowledgePipeline } = require('../../knowledge/pipeline');
+          const pipeline = getKnowledgePipeline();
 
           const project = req.query.project;
           if (project) {
-            const candidates = await generator.discoverExploreSessions(project);
+            const candidates = await pipeline.discoverExploreCandidates(project);
             return {
               success: true,
               data: { candidates: candidates.length, generated: generatedCount },
@@ -276,7 +276,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
             let totalCandidates = 0;
             for (const p of projects) {
               try {
-                const candidates = await generator.discoverExploreSessions((p as any).path);
+                const candidates = await pipeline.discoverExploreCandidates((p as any).path);
                 totalCandidates += candidates.length;
               } catch { /* skip */ }
             }
@@ -309,12 +309,12 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/knowledge\/generate\/candidates$/,
       handler: async (req) => {
         try {
-          const { getKnowledgeGenerator } = require('../../knowledge/generator');
-          const generator = getKnowledgeGenerator();
+          const { getKnowledgePipeline } = require('../../knowledge/pipeline');
+          const pipeline = getKnowledgePipeline();
           const project = req.query.project;
 
           if (project) {
-            const candidates = await generator.discoverExploreSessions(project);
+            const candidates = await pipeline.discoverExploreCandidates(project);
             return { success: true, data: candidates };
           }
 
@@ -325,7 +325,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
           const allCandidates: any[] = [];
           for (const p of projects) {
             try {
-              const candidates = await generator.discoverExploreSessions((p as any).path);
+              const candidates = await pipeline.discoverExploreCandidates((p as any).path);
               // Tag each candidate with its project
               for (const c of candidates) {
                 (c as any).project = (p as any).path;
@@ -358,9 +358,9 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
         }
 
         try {
-          const { getKnowledgeGenerator } = require('../../knowledge/generator');
-          const generator = getKnowledgeGenerator();
-          const knowledge = await generator.generateFromExplore(sessionId, agentId, project);
+          const { getKnowledgePipeline } = require('../../knowledge/pipeline');
+          const pipeline = getKnowledgePipeline();
+          const knowledge = await pipeline.generateFromExploreAgent(sessionId, agentId, project);
           return { success: true, data: knowledge };
         } catch (err: any) {
           return { success: false, error: err.message };
@@ -374,9 +374,9 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/knowledge\/(?<id>K\d+)\/regenerate$/,
       handler: async (req) => {
         try {
-          const { getKnowledgeGenerator } = require('../../knowledge/generator');
-          const generator = getKnowledgeGenerator();
-          const knowledge = await generator.regenerateKnowledge(req.params.id);
+          const { getKnowledgePipeline } = require('../../knowledge/pipeline');
+          const pipeline = getKnowledgePipeline();
+          const knowledge = await pipeline.regenerateKnowledge(req.params.id);
           return { success: true, data: knowledge };
         } catch (err: any) {
           return { success: false, error: err.message };
@@ -394,11 +394,11 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
         const { project } = req.body || {};
 
         try {
-          const { getKnowledgeGenerator } = require('../../knowledge/generator');
-          const generator = getKnowledgeGenerator();
+          const { getKnowledgePipeline } = require('../../knowledge/pipeline');
+          const pipeline = getKnowledgePipeline();
 
           if (project) {
-            const result = await generator.generateAll(project);
+            const result = await pipeline.generateAll(project);
             return { success: true, data: result };
           }
 
@@ -413,7 +413,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
           for (const p of projects) {
             if (stopped) break;
             try {
-              const result = await generator.generateAll((p as any).path);
+              const result = await pipeline.generateAll((p as any).path);
               totalGenerated += result.generated;
               totalErrors += result.errors;
               stopped = result.stopped;
@@ -462,9 +462,9 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/knowledge\/generate\/stop$/,
       handler: async () => {
         try {
-          const { getKnowledgeGenerator } = require('../../knowledge/generator');
-          const generator = getKnowledgeGenerator();
-          generator.stop();
+          const { getKnowledgePipeline } = require('../../knowledge/pipeline');
+          const pipeline = getKnowledgePipeline();
+          pipeline.stop();
           return { success: true };
         } catch (err: any) {
           return { success: false, error: err.message };
@@ -478,9 +478,9 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/knowledge\/generate\/status$/,
       handler: async () => {
         try {
-          const { getKnowledgeGenerator } = require('../../knowledge/generator');
-          const generator = getKnowledgeGenerator();
-          return { success: true, data: generator.getStatus() };
+          const { getKnowledgePipeline } = require('../../knowledge/pipeline');
+          const pipeline = getKnowledgePipeline();
+          return { success: true, data: pipeline.getStatus() };
         } catch (err: any) {
           return { success: false, error: err.message };
         }

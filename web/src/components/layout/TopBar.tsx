@@ -110,7 +110,11 @@ export function TopBar() {
     ? localIp
     : (selectedMachine?.localIp || localIp);
   const localHost = effectiveLocalIp && effectiveLocalIp !== 'localhost' ? effectiveLocalIp : 'localhost';
-  const webPort = typeof window !== 'undefined' ? window.location.port || '3848' : '3848';
+  // Derive web port: when proxied, window.location.port is empty (443).
+  // Use NEXT_PUBLIC_LOCAL_API_PORT (baked at build) to determine dev vs prod web port.
+  const apiPort = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
+  const defaultWebPort = apiPort === '3200' ? '3948' : '3848';
+  const webPort = typeof window !== 'undefined' ? window.location.port || defaultWebPort : defaultWebPort;
   const localBaseUrl = `http://${localHost}:${webPort}`;
   // Only include auth token when viewing the proxy machine (token is machine-specific)
   const localUrl = (isSelectedProxyMachine && lanAuthEnabled && lanAccessToken)

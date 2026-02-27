@@ -9,15 +9,40 @@
  * pipeline while maintaining its backwards-compatible API.
  */
 
-import type { IdentificationResult, IdentifierType } from './identifier-types';
+import type { IdentificationResult, IdentifierType, FormatResult } from './identifier-types';
 import { getIdentificationStore } from './identification-store';
 import { getIdentifier, getAllIdentifiers } from './identifiers/index';
 import { getFormatter } from './formatters/index';
 import { getKnowledgeStore } from './store';
 import type { Knowledge } from './types';
-import { findDuplicateKnowledge, markDuplicatesAsOutdated } from './dedup';
+import { findDuplicateKnowledge, markDuplicatesAsOutdated, deduplicateBatch } from './dedup';
+import { deriveTitle, isJunkResult, MIN_RESULT_LENGTH } from './helpers';
+
+// ─── Types ──────────────────────────────────────────────────
+
+export interface ExploreCandidate {
+  sessionId: string;
+  agentId: string;
+  type: string;
+  prompt: string;
+  resultPreview: string;
+  description?: string;
+  timestamp?: string;
+}
+
+export interface GenerateStatus {
+  status: 'idle' | 'generating';
+  currentSessionId?: string;
+  currentAgentId?: string;
+  processed?: number;
+  total?: number;
+  errors?: number;
+}
 
 export class KnowledgePipeline {
+  private currentStatus: GenerateStatus = { status: 'idle' };
+  private stopRequested = false;
+
   /**
    * Discover candidates for a project using one or all identifier types.
    * Stores identification results and returns them.
@@ -210,14 +235,303 @@ export class KnowledgePipeline {
   private _vectorIndexTimer: ReturnType<typeof setTimeout> | null = null;
   private indexKnowledgeVectorsAsync(): void {
     if (this._vectorIndexTimer) clearTimeout(this._vectorIndexTimer);
-    this._vectorIndexTimer = setTimeout(async () => {
-      try {
-        const { extractKnowledgeVectors } = require('../vector/knowledge-vectors');
-        await extractKnowledgeVectors();
-      } catch (err) {
-        console.error('[KnowledgePipeline] Vector indexing failed:', err);
-      }
+    this._vectorIndexTimer = setTimeout(() => {
+      this._vectorIndexTimer = null;
+      (async () => {
+        try {
+          const { getVectorStore } = require('../vector/vector-store');
+          const { extractKnowledgeVectors } = require('../vector/indexer');
+          const store = getKnowledgeStore();
+          const vectra = getVectorStore();
+
+          const allIds = store.getAllIds();
+          const allVectors: Array<{ text: string; metadata: any }> = [];
+          for (const id of allIds) {
+            const knowledge = store.getKnowledge(id);
+            if (!knowledge) continue;
+            allVectors.push(...extractKnowledgeVectors(knowledge));
+          }
+
+          if (allVectors.length > 0) {
+            await vectra.deleteLocalByType('knowledge');
+            await vectra.addVectors(allVectors);
+            await vectra.rebuildFtsIndex();
+            console.log(`[KnowledgePipeline] Indexed ${allVectors.length} vectors from ${allIds.length} knowledge docs`);
+          }
+        } catch (err) {
+          console.warn('[KnowledgePipeline] Async vector indexing failed:', err);
+        }
+      })();
     }, 5_000);
+  }
+
+  // ─── V1 feature parity methods ──────────────────────────────────────
+
+  getStatus(): GenerateStatus {
+    return { ...this.currentStatus };
+  }
+
+  stop(): void {
+    if (this.currentStatus.status === 'generating') {
+      this.stopRequested = true;
+    }
+  }
+
+  /**
+   * Discover explore agent candidates for knowledge generation.
+   * Returns ExploreCandidate[] matching V1's discoverExploreSessions() shape.
+   */
+  async discoverExploreCandidates(project: string): Promise<ExploreCandidate[]> {
+    const { getSessionReader } = require('../session-reader');
+    const { getSessionCache } = require('../session-cache');
+
+    const reader = getSessionReader();
+    const cache = getSessionCache();
+    const store = getKnowledgeStore();
+
+    // Wait for background warming to finish so all sessions are available
+    if (cache.isWarming()) {
+      await cache.waitForWarming();
+    }
+
+    const allSessions = reader.listSessions(project);
+    if (allSessions.length === 0) return [];
+
+    // Get already-generated agent IDs for dedup
+    const generatedIds = store.getGeneratedAgentIds();
+    const generatedTitleKeys = store.getGeneratedTitleSessionKeys();
+
+    const rawCandidates: (ExploreCandidate & { resultLength: number })[] = [];
+
+    for (const session of allSessions) {
+      try {
+        const filePath = reader.getSessionFilePath(session.sessionId, project);
+        const data = await cache.getSessionData(filePath);
+        if (!data?.subagents?.length) continue;
+
+        for (const agent of data.subagents) {
+          if (!agent.agentId) continue;
+          if (!agent.type || agent.type.toLowerCase() !== 'explore') continue;
+          if (agent.status !== 'completed') continue;
+          if (!agent.result || agent.result.length < MIN_RESULT_LENGTH) continue;
+          if (isJunkResult(agent.result.trim())) continue;
+
+          // Skip if already generated (by agentId)
+          if (generatedIds.has(agent.agentId)) continue;
+
+          // Skip if title+session already generated
+          const derivedTitle = deriveTitle(agent.prompt, agent.description);
+          if (generatedTitleKeys.has(`${derivedTitle}\0${session.sessionId}`)) continue;
+
+          rawCandidates.push({
+            sessionId: session.sessionId,
+            agentId: agent.agentId,
+            type: agent.type,
+            prompt: agent.prompt,
+            resultPreview: agent.result.slice(0, 300) + (agent.result.length > 300 ? '...' : ''),
+            description: agent.description,
+            timestamp: agent.completedAt || agent.startedAt,
+            resultLength: agent.result.length,
+          });
+        }
+      } catch {
+        // Skip sessions that fail to load
+      }
+    }
+
+    // Sort by timestamp descending (most recent first) BEFORE dedup
+    rawCandidates.sort((a, b) => {
+      if (!a.timestamp && !b.timestamp) return 0;
+      if (!a.timestamp) return 1;
+      if (!b.timestamp) return -1;
+      return b.timestamp.localeCompare(a.timestamp);
+    });
+
+    // Within-batch dedup: group by normalized title, keep most complete
+    const dedupedCandidates = deduplicateBatch(
+      rawCandidates,
+      (c) => deriveTitle(c.prompt, c.description),
+      (c) => c.resultLength,
+    );
+
+    // Strip internal field
+    return dedupedCandidates.map(({ resultLength, ...rest }) => rest);
+  }
+
+  /**
+   * Generate knowledge from a specific explore agent.
+   * Uses V2 identifier.resolve() + pipeline.generate() internally.
+   */
+  async generateFromExploreAgent(
+    sessionId: string,
+    agentId: string,
+    project: string,
+    options?: { skipStatusTracking?: boolean },
+  ): Promise<Knowledge> {
+    if (!options?.skipStatusTracking) {
+      this.currentStatus = { status: 'generating', currentSessionId: sessionId, currentAgentId: agentId };
+    }
+
+    try {
+      // Pre-check: reject if agentId already generated
+      const store = getKnowledgeStore();
+      const generatedIds = store.getGeneratedAgentIds();
+      if (generatedIds.has(agentId)) {
+        const existingId = store.findByAgentId(agentId);
+        throw new Error(`Agent ${agentId} already generated as ${existingId || 'unknown'} — skipping duplicate`);
+      }
+
+      // Use V2 identifier to resolve/create identification
+      const identifier = getIdentifier('explore-agent');
+      const identification = await identifier.resolve(project, sessionId, 0, { agentId });
+      if (!identification) {
+        throw new Error(`Explore agent ${agentId} not found in session ${sessionId}`);
+      }
+
+      // Generate via the standard pipeline path
+      return await this.generate(identification.id, project);
+    } finally {
+      if (!options?.skipStatusTracking) {
+        this.currentStatus = { status: 'idle' };
+      }
+    }
+  }
+
+  /**
+   * Generate knowledge from all candidates for a project.
+   * Processes sequentially, respects stop requests.
+   */
+  async generateAll(project: string): Promise<{ generated: number; errors: number; stopped: boolean }> {
+    if (this.currentStatus.status === 'generating') {
+      throw new Error('Generation already in progress');
+    }
+
+    this.stopRequested = false;
+    const candidates = await this.discoverExploreCandidates(project);
+    const total = candidates.length;
+    let generated = 0;
+    let errors = 0;
+
+    this.currentStatus = { status: 'generating', processed: 0, total, errors: 0 };
+
+    try {
+      for (const candidate of candidates) {
+        if (this.stopRequested) break;
+
+        try {
+          await this.generateFromExploreAgent(candidate.sessionId, candidate.agentId, project, { skipStatusTracking: true });
+          generated++;
+        } catch (err) {
+          errors++;
+          console.error(`[KnowledgePipeline] Failed to generate from ${candidate.agentId}:`, err);
+        }
+
+        this.currentStatus = { status: 'generating', processed: generated + errors, total, errors };
+      }
+    } finally {
+      const stopped = this.stopRequested;
+      this.stopRequested = false;
+      this.currentStatus = { status: 'idle' };
+
+      // Async vector indexing
+      this.indexKnowledgeVectorsAsync();
+
+      // Auto-trigger LLM review if enabled and we generated new entries
+      if (generated > 0) {
+        try {
+          const { getKnowledgeSettings } = require('./settings');
+          const { getKnowledgeLlmReviewer } = require('./llm-reviewer');
+          const settings = getKnowledgeSettings();
+          if (settings.autoReview) {
+            const reviewer = getKnowledgeLlmReviewer();
+            if (reviewer.getStatus().status === 'idle') {
+              reviewer.review({ project, trigger: 'auto' }).catch((err: any) => {
+                console.error('[KnowledgePipeline] Auto LLM review failed:', err.message);
+              });
+            }
+          }
+        } catch (err: any) {
+          console.error('[KnowledgePipeline] Auto review trigger error:', err.message);
+        }
+      }
+
+      return { generated, errors, stopped };
+    }
+  }
+
+  /**
+   * Regenerate knowledge by re-extracting from its original source.
+   */
+  async regenerateKnowledge(knowledgeId: string): Promise<Knowledge> {
+    const store = getKnowledgeStore();
+    const existing = store.getKnowledge(knowledgeId);
+    if (!existing) {
+      throw new Error(`Knowledge ${knowledgeId} not found`);
+    }
+
+    const identifierType = (existing.sourceIdentifier || 'explore-agent') as IdentifierType;
+
+    if (identifierType === 'explore-agent') {
+      if (!existing.sourceSessionId || !existing.sourceAgentId) {
+        throw new Error(`Knowledge ${knowledgeId} has no source tracking (not generated from explore)`);
+      }
+    }
+
+    if (identifierType === 'generic-content') {
+      if (!existing.sourceSessionId || existing.sourceLineIndex === undefined) {
+        throw new Error(`Knowledge ${knowledgeId} has no source tracking (missing session or line index)`);
+      }
+    }
+
+    this.currentStatus = {
+      status: 'generating',
+      currentSessionId: existing.sourceSessionId,
+      currentAgentId: existing.sourceAgentId,
+    };
+
+    try {
+      const formatter = getFormatter(identifierType);
+
+      // Build a minimal identification for the formatter
+      const identification = {
+        id: '',
+        sessionId: existing.sourceSessionId!,
+        lineIndex: existing.sourceLineIndex ?? 0,
+        turnIndex: existing.sourceTurnIndex ?? 0,
+        projectPath: existing.project,
+        timestamp: existing.sourceTimestamp || '',
+        identifiedAt: '',
+        identifierType,
+        agentId: existing.sourceAgentId,
+        status: 'generated' as const,
+      };
+
+      const formatResult: FormatResult = await formatter.format(identification);
+
+      // Re-number parts with existing knowledge ID
+      const parts = formatResult.parts.map((p: any, i: number) => ({
+        ...p,
+        partId: `${knowledgeId}.${i + 1}`,
+      }));
+
+      const updated = store.updateKnowledge(knowledgeId, {
+        title: formatResult.title,
+        type: formatResult.type,
+        parts,
+        sourceTimestamp: formatResult.sourceTimestamp,
+        sourceIdentifier: identifierType,
+        sourceLineIndex: formatResult.sourceLineIndex,
+        sourceTurnIndex: formatResult.sourceTurnIndex,
+      });
+
+      if (!updated) {
+        throw new Error('Failed to update knowledge document');
+      }
+
+      return updated;
+    } finally {
+      this.currentStatus = { status: 'idle' };
+    }
   }
 
   /**
