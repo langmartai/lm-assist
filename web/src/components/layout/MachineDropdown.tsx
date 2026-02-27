@@ -101,10 +101,12 @@ export function MachineDropdown() {
           <div className="machine-dropdown-divider" />
 
           {onlineMachines.map(m => {
-            // In local/hybrid mode, clicking a non-local machine opens its cloud URL
-            const isLocalMachine = m.isLocal || m.id === 'localhost';
-            const isLocalOrHybrid = mode === 'local' || mode === 'hybrid';
-            const shouldOpenCloud = isLocalOrHybrid && !isLocalMachine;
+            // Determine if this machine is the "current" one (local machine or proxied machine)
+            const isCurrentMachine = m.isLocal || m.id === 'localhost' ||
+              (proxy.isProxied && proxy.machineId === (m.gatewayId || m.id));
+            // In local/hybrid mode, clicking a non-local machine opens its cloud URL.
+            // In proxy mode, clicking a non-proxied machine also opens its cloud URL.
+            const shouldOpenCloud = !isCurrentMachine && (mode === 'local' || mode === 'hybrid' || proxy.isProxied);
 
             const handleClick = async () => {
               setOpen(false);
@@ -112,7 +114,14 @@ export function MachineDropdown() {
                 const hubName = 'langmart.ai';
                 const currentPage = pathname.replace(proxy.basePath, '') || '/session-dashboard';
                 const remoteGatewayId = m.gatewayId || m.id;
-                // Fetch a proxy token so the cloud URL authenticates automatically
+
+                if (proxy.isProxied) {
+                  // Already on langmart.ai — navigate directly (no token needed)
+                  window.open(`https://${hubName}/w/${remoteGatewayId}/assist${currentPage}`, '_blank');
+                  return;
+                }
+
+                // Local/hybrid: fetch a proxy token so the cloud URL authenticates automatically
                 try {
                   const { baseUrl } = detectAppMode();
                   const res = await fetch(`${baseUrl}/hub/machines/${remoteGatewayId}/proxy-token`, { method: 'POST' });
