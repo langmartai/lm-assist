@@ -87,6 +87,16 @@ export function AppModeProvider({ children }: { children: ReactNode }) {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Fix favicon path in proxy mode — Next.js generates absolute "/icon.png"
+  // which resolves to the domain root, missing the proxy prefix.
+  useEffect(() => {
+    if (!base.proxy.isProxied) return;
+    const link = document.querySelector('link[rel="icon"]') as HTMLLinkElement | null;
+    if (link && link.href.includes('/icon.png')) {
+      link.href = `${base.proxy.basePath}/icon.png`;
+    }
+  }, [base.proxy.isProxied, base.proxy.basePath]);
+
   // Fetch local hub user from machine's /hub/status endpoint
   const fetchLocalHubUser = useCallback(async (force = false) => {
     if (base.proxy.isProxied) return;
