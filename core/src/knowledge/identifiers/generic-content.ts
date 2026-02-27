@@ -6,6 +6,7 @@
  * content: analysis, architecture, debugging findings, comparisons, etc.
  */
 
+import * as crypto from 'crypto';
 import type { KnowledgeIdentifier, IdentificationResult } from '../identifier-types';
 import { getIdentificationStore } from '../identification-store';
 import { scoreKnowledgeCandidate } from '../helpers';
@@ -34,6 +35,9 @@ export class GenericContentIdentifier implements KnowledgeIdentifier {
       const sessions = reader.listSessions(project);
       const newResults: Omit<IdentificationResult, 'id'>[] = [];
 
+      // Within-batch dedup: track content fingerprints to skip same content at different positions
+      const seenFingerprints = new Set<string>();
+
       for (const session of sessions) {
         try {
           const filePath = reader.getSessionFilePath(session.sessionId, project);
@@ -48,12 +52,20 @@ export class GenericContentIdentifier implements KnowledgeIdentifier {
               continue;
             }
 
+            // Within-batch fingerprint dedup: skip if same content already seen in this batch
+            const fingerprint = this.contentFingerprint(response.text);
+            if (seenFingerprints.has(fingerprint)) {
+              continue;
+            }
+
             const scoreResult = scoreKnowledgeCandidate(response.text);
 
             // Only skip hard rejects — let LLM validate everything else
             if (scoreResult.classification === 'reject') {
               continue;
             }
+
+            seenFingerprints.add(fingerprint);
 
             newResults.push({
               sessionId: session.sessionId,
@@ -124,6 +136,16 @@ export class GenericContentIdentifier implements KnowledgeIdentifier {
 
     const added = idStore.add([result]);
     return added[0] || null;
+  }
+
+  /**
+   * Generate a content fingerprint for dedup. Uses SHA-256 of the first 500 chars
+   * (normalized: lowercased, whitespace collapsed). This catches identical or
+   * near-identical content appearing at different positions or in different sessions.
+   */
+  private contentFingerprint(text: string): string {
+    const normalized = text.slice(0, 500).toLowerCase().replace(/\s+/g, ' ').trim();
+    return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
   }
 
   /**

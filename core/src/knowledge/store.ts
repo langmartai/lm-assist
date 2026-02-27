@@ -339,6 +339,27 @@ export class KnowledgeStore {
           throw new Error(`Duplicate: "${data.title}" already exists for session ${data.sourceSessionId} as ${existing}`);
         }
       }
+
+      // Cross-session dedup for explore agents only:
+      // If same normalized title exists in the project from another explore agent,
+      // mark old entry as outdated (newer research supersedes older).
+      // Does NOT apply to generic content — those are unique per conversation context.
+      if (data.title && data.project && data.sourceAgentId) {
+        const { normalizeTitle } = require('./dedup');
+        const normalizedNew = normalizeTitle(data.title);
+        const index = this.getIndex();
+        for (const [existingId, meta] of Object.entries(index.knowledges)) {
+          if (meta.project !== data.project) continue;
+          if (meta.origin === 'remote') continue;
+          if (meta.status === 'outdated' || meta.status === 'archived') continue;
+          // Only match against other explore-agent entries (have sourceAgentId)
+          if (!meta.sourceAgentId) continue;
+          if (normalizeTitle(meta.title) === normalizedNew) {
+            // Mark old entry as outdated — will be replaced by the new one
+            this.updateKnowledge(existingId, { status: 'outdated' });
+          }
+        }
+      }
     }
 
     // For remote knowledge, use the provided ID; for local, allocate a new one
@@ -649,6 +670,32 @@ export class KnowledgeStore {
       }
     }
     return keys;
+  }
+
+  /**
+   * Get set of titles for a given project (cross-session dedup).
+   * Returns all titles of existing knowledge entries matching the project.
+   */
+  getGeneratedTitlesForProject(project: string): Set<string> {
+    const index = this.getIndex();
+    const titles = new Set<string>();
+    for (const meta of Object.values(index.knowledges)) {
+      if (meta.title && meta.project === project) {
+        titles.add(meta.title);
+      }
+    }
+    return titles;
+  }
+
+  /**
+   * Find knowledge ID by title + project (cross-session dedup).
+   */
+  findByTitleAndProject(title: string, project: string): string | null {
+    const index = this.getIndex();
+    for (const [id, meta] of Object.entries(index.knowledges)) {
+      if (meta.title === title && meta.project === project) return id;
+    }
+    return null;
   }
 
   /**

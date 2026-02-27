@@ -9,7 +9,8 @@
 import type { KnowledgeIdentifier, IdentificationResult } from '../identifier-types';
 import { getIdentificationStore } from '../identification-store';
 import { getKnowledgeStore } from '../store';
-import { isJunkResult, MIN_RESULT_LENGTH } from '../helpers';
+import { isJunkResult, MIN_RESULT_LENGTH, deriveTitle } from '../helpers';
+import { normalizeTitle } from '../dedup';
 
 export class ExploreAgentIdentifier implements KnowledgeIdentifier {
   readonly type = 'explore-agent' as const;
@@ -40,6 +41,8 @@ export class ExploreAgentIdentifier implements KnowledgeIdentifier {
     const generatedAgentIds = store.getGeneratedAgentIds();
 
     const newResults: Omit<IdentificationResult, 'id'>[] = [];
+    // Within-batch dedup: track normalized titles, keep most complete per title
+    const bestByTitle = new Map<string, { result: Omit<IdentificationResult, 'id'>; contentLength: number }>();
 
     for (const session of allSessions) {
       try {
@@ -64,7 +67,7 @@ export class ExploreAgentIdentifier implements KnowledgeIdentifier {
           const lineIndex = agent.lineIndex ?? 0;
           const turnIndex = agent.turnIndex ?? 0;
 
-          newResults.push({
+          const candidate: Omit<IdentificationResult, 'id'> = {
             sessionId: session.sessionId,
             lineIndex,
             turnIndex,
@@ -74,11 +77,25 @@ export class ExploreAgentIdentifier implements KnowledgeIdentifier {
             identifierType: 'explore-agent',
             agentId: agent.agentId,
             status: 'candidate',
-          });
+          };
+
+          // Within-batch dedup: group by normalized title, keep most complete
+          const derivedTitle = deriveTitle(agent.prompt, agent.description);
+          const normalizedKey = normalizeTitle(derivedTitle);
+          const contentLength = agent.result?.length ?? 0;
+          const existing = bestByTitle.get(normalizedKey);
+          if (!existing || contentLength > existing.contentLength) {
+            bestByTitle.set(normalizedKey, { result: candidate, contentLength });
+          }
         }
       } catch {
         // Skip sessions that fail to load
       }
+    }
+
+    // Collect the best candidate per normalized title
+    for (const { result } of bestByTitle.values()) {
+      newResults.push(result);
     }
 
     if (newResults.length === 0) return [];

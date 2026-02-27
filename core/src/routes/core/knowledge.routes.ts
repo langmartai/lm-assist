@@ -427,6 +427,35 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // POST /knowledge/dedup — Clean up duplicate knowledge entries
+    // Scans active explore-agent entries, groups by normalized title + embedding similarity,
+    // keeps the newest/most complete, marks the rest as outdated.
+    // Query params: ?project=... (optional), ?dryRun=true (preview without changes)
+    {
+      method: 'POST',
+      pattern: /^\/knowledge\/dedup$/,
+      handler: async (req) => {
+        const start = Date.now();
+        try {
+          const { cleanupExistingDuplicates } = require('../../knowledge/dedup');
+          const project = req.body?.project || req.query?.project;
+          const dryRun = req.body?.dryRun === true || req.query?.dryRun === 'true';
+
+          const result = await cleanupExistingDuplicates(project, dryRun);
+          return {
+            success: true,
+            data: {
+              ...result,
+              dryRun,
+            },
+            meta: { timestamp: new Date(), requestId: '', durationMs: Date.now() - start },
+          };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
     // POST /knowledge/generate/stop — Stop batch generation
     {
       method: 'POST',

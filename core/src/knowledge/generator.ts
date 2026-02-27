@@ -22,6 +22,7 @@ import {
   isJunkResult,
   MIN_RESULT_LENGTH,
 } from './helpers';
+import { normalizeTitle, deduplicateBatch, findDuplicateKnowledge, markDuplicatesAsOutdated } from './dedup';
 
 const MAX_SESSIONS_TO_SCAN = Infinity;
 
@@ -82,11 +83,12 @@ export class KnowledgeGenerator {
     // Limit scan to most recent sessions for performance
     const sessions = allSessions.slice(0, MAX_SESSIONS_TO_SCAN);
 
-    // Get already-generated agent IDs and title+session keys for dedup
+    // Get already-generated agent IDs for dedup
     const generatedIds = store.getGeneratedAgentIds();
     const generatedTitleKeys = store.getGeneratedTitleSessionKeys();
 
-    const candidates: ExploreCandidate[] = [];
+    // Collect all valid candidates first (including ones that match existing titles)
+    const rawCandidates: (ExploreCandidate & { resultLength: number })[] = [];
 
     for (const session of sessions) {
       try {
@@ -109,11 +111,11 @@ export class KnowledgeGenerator {
           // Skip if already generated (by agentId)
           if (generatedIds.has(agent.agentId)) continue;
 
-          // Skip if title+session already generated (catches duplicates with different agentIds)
+          // Skip if title+session already generated (catches duplicates with different agentIds in same session)
           const derivedTitle = deriveTitle(agent.prompt, agent.description);
           if (generatedTitleKeys.has(`${derivedTitle}\0${session.sessionId}`)) continue;
 
-          candidates.push({
+          rawCandidates.push({
             sessionId: session.sessionId,
             agentId: agent.agentId,
             type: agent.type,
@@ -121,6 +123,7 @@ export class KnowledgeGenerator {
             resultPreview: agent.result.slice(0, 300) + (agent.result.length > 300 ? '...' : ''),
             description: agent.description,
             timestamp: agent.completedAt || agent.startedAt,
+            resultLength: agent.result.length,
           });
         }
       } catch {
@@ -128,13 +131,24 @@ export class KnowledgeGenerator {
       }
     }
 
-    // Sort by timestamp descending (most recent first)
-    candidates.sort((a, b) => {
+    // Sort by timestamp descending (most recent first) BEFORE dedup
+    // so deduplicateBatch picks the most complete among the newest
+    rawCandidates.sort((a, b) => {
       if (!a.timestamp && !b.timestamp) return 0;
       if (!a.timestamp) return 1;
       if (!b.timestamp) return -1;
       return b.timestamp.localeCompare(a.timestamp);
     });
+
+    // Within-batch dedup: group by normalized title, keep most complete
+    const dedupedCandidates = deduplicateBatch(
+      rawCandidates,
+      (c) => deriveTitle(c.prompt, c.description),
+      (c) => c.resultLength,
+    );
+
+    // Strip internal field
+    const candidates: ExploreCandidate[] = dedupedCandidates.map(({ resultLength, ...rest }) => rest);
 
     return candidates;
   }
@@ -182,6 +196,20 @@ export class KnowledgeGenerator {
 
       // Detect knowledge type from content
       const type = detectType(title, rawParts);
+
+      // Embedding-based dedup: find similar existing knowledge and mark as outdated
+      try {
+        const contentText = rawParts.map(p => `${p.title}: ${p.summary}`).join('\n');
+        const duplicates = await findDuplicateKnowledge(title, contentText, project);
+        if (duplicates.length > 0) {
+          const dupIds = duplicates.map(d => d.id);
+          markDuplicatesAsOutdated(dupIds);
+          console.log(`[KnowledgeGenerator] Marked ${dupIds.length} older entries as outdated: ${dupIds.join(', ')}`);
+        }
+      } catch (err) {
+        // Non-fatal — dedup is best-effort
+        console.warn('[KnowledgeGenerator] Embedding dedup failed:', err);
+      }
 
       // Create knowledge document
       const knowledge = store.createKnowledge({

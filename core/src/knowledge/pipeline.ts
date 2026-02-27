@@ -15,6 +15,7 @@ import { getIdentifier, getAllIdentifiers } from './identifiers/index';
 import { getFormatter } from './formatters/index';
 import { getKnowledgeStore } from './store';
 import type { Knowledge } from './types';
+import { findDuplicateKnowledge, markDuplicatesAsOutdated } from './dedup';
 
 export class KnowledgePipeline {
   /**
@@ -71,6 +72,23 @@ export class KnowledgePipeline {
 
     // Allow title override
     const title = options?.title || formatResult.title;
+
+    // Embedding-based dedup: find similar existing knowledge (explore agents only)
+    // and mark old entries as outdated before creating the new one
+    if (identification.agentId) {
+      try {
+        const contentText = formatResult.parts.map(p => `${p.title}: ${p.summary}`).join('\n');
+        const duplicates = await findDuplicateKnowledge(title, contentText, project);
+        if (duplicates.length > 0) {
+          const dupIds = duplicates.map(d => d.id);
+          markDuplicatesAsOutdated(dupIds);
+          console.log(`[KnowledgePipeline] Marked ${dupIds.length} older entries as outdated: ${dupIds.join(', ')}`);
+        }
+      } catch (err) {
+        // Non-fatal — dedup is best-effort, creation proceeds
+        console.warn('[KnowledgePipeline] Embedding dedup failed:', err);
+      }
+    }
 
     // Create knowledge document
     const knowledge = knowledgeStore.createKnowledge({
