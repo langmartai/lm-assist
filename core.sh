@@ -463,9 +463,14 @@ stop_core() {
     if [ -n "$pid" ]; then
         kill_process_tree "$pid" TERM
         stopped=true
+        # Wait up to 3s for graceful shutdown (hub disconnect, etc.)
+        for i in {1..6}; do
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+            sleep 0.5
+        done
     fi
 
-    # Kill anything still holding the port
+    # Kill anything still holding the port (only reached if graceful shutdown didn't release it)
     if [ "$IS_WINDOWS" = true ]; then
         local port_pids=$(netstat -ano 2>/dev/null | grep ":${API_PORT}.*LISTENING" | awk '{print $NF}' | sort -u)
     else
@@ -627,9 +632,14 @@ stop_web() {
     if [ -n "$pid" ]; then
         kill_process_tree "$pid" TERM
         stopped=true
+        # Wait up to 3s for graceful shutdown
+        for i in {1..6}; do
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+            sleep 0.5
+        done
     fi
 
-    # Kill anything still holding the port
+    # Kill anything still holding the port (only reached if graceful shutdown didn't release it)
     if [ "$IS_WINDOWS" = true ]; then
         local port_pids=$(netstat -ano 2>/dev/null | grep ":${WEB_PORT}.*LISTENING" | awk '{print $NF}' | sort -u)
     else
