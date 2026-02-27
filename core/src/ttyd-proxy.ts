@@ -87,37 +87,13 @@ const TTYD_INJECTED_CSS = `
   // This happens when the terminal container has no dimensions yet (hidden iframe, not laid out).
   // proposeDimensions() returns undefined → accessing .cols throws TypeError.
   // Without the auth message, the terminal stays blank forever.
-  // Fix: wrap WebSocket so onopen has a try/catch; on cols error, send auth with 80x24 defaults
-  // and schedule a proper resize once the terminal is ready.
+  // Fix: track last WebSocket + global error handler to catch cols error and send auth defaults.
+  // (Cannot use Object.defineProperty on ws.onopen — it shadows the native setter and breaks WS.)
   var _OrigWS = window.WebSocket;
+  var _lastWs = null;
   window.WebSocket = function(url, protocols) {
     var ws = protocols !== undefined ? new _OrigWS(url, protocols) : new _OrigWS(url);
-    var _onopen = null;
-    Object.defineProperty(ws, 'onopen', {
-      get: function() { return _onopen; },
-      set: function(fn) {
-        _onopen = function(evt) {
-          try { return fn.call(ws, evt); }
-          catch(err) {
-            if (err && String(err).indexOf('cols') >= 0) {
-              console.warn('[ttyd-proxy] proposeDimensions() failed, sending auth with 80x24 defaults');
-              var enc = new TextEncoder();
-              try { ws.send(enc.encode(JSON.stringify({AuthToken:'',columns:80,rows:24}))); } catch(e2){}
-              // Resize to correct dimensions once terminal is ready
-              var rid = setInterval(function() {
-                var t = window.term;
-                if (t && t.cols && t.rows) {
-                  clearInterval(rid);
-                  try { ws.send(enc.encode('1'+JSON.stringify({columns:t.cols,rows:t.rows}))); } catch(e3){}
-                  try { t.focus(); } catch(e4){}
-                }
-              }, 200);
-            } else throw err;
-          }
-        };
-      },
-      configurable: true
-    });
+    _lastWs = ws;
     return ws;
   };
   window.WebSocket.prototype = _OrigWS.prototype;
@@ -125,6 +101,24 @@ const TTYD_INJECTED_CSS = `
   window.WebSocket.OPEN = _OrigWS.OPEN;
   window.WebSocket.CLOSING = _OrigWS.CLOSING;
   window.WebSocket.CLOSED = _OrigWS.CLOSED;
+
+  window.addEventListener('error', function(e) {
+    if (e.error && String(e.error).indexOf('cols') >= 0 && _lastWs && _lastWs.readyState === 1) {
+      e.preventDefault();
+      console.warn('[ttyd-proxy] proposeDimensions() failed, sending auth with 80x24 defaults');
+      var enc = new TextEncoder();
+      var ws = _lastWs;
+      try { ws.send(enc.encode(JSON.stringify({AuthToken:'',columns:80,rows:24}))); } catch(e2){}
+      var rid = setInterval(function() {
+        var t = window.term;
+        if (t && t.cols && t.rows) {
+          clearInterval(rid);
+          try { ws.send(enc.encode('1'+JSON.stringify({columns:t.cols,rows:t.rows}))); } catch(e3){}
+          try { t.focus(); } catch(e4){}
+        }
+      }, 200);
+    }
+  });
 
   var fitTimer, scrollTimer;
 
