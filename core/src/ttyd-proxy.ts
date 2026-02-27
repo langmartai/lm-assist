@@ -83,6 +83,49 @@ const TTYD_INJECTED_CSS = `
 </style>
 <script id="ttyd-proxy-resize-script">
 (function(){
+  // --- Fix: ttyd onSocketOpen crashes when fitAddon.proposeDimensions() returns undefined ---
+  // This happens when the terminal container has no dimensions yet (hidden iframe, not laid out).
+  // proposeDimensions() returns undefined → accessing .cols throws TypeError.
+  // Without the auth message, the terminal stays blank forever.
+  // Fix: wrap WebSocket so onopen has a try/catch; on cols error, send auth with 80x24 defaults
+  // and schedule a proper resize once the terminal is ready.
+  var _OrigWS = window.WebSocket;
+  window.WebSocket = function(url, protocols) {
+    var ws = protocols !== undefined ? new _OrigWS(url, protocols) : new _OrigWS(url);
+    var _onopen = null;
+    Object.defineProperty(ws, 'onopen', {
+      get: function() { return _onopen; },
+      set: function(fn) {
+        _onopen = function(evt) {
+          try { return fn.call(ws, evt); }
+          catch(err) {
+            if (err && String(err).indexOf('cols') >= 0) {
+              console.warn('[ttyd-proxy] proposeDimensions() failed, sending auth with 80x24 defaults');
+              var enc = new TextEncoder();
+              try { ws.send(enc.encode(JSON.stringify({AuthToken:'',columns:80,rows:24}))); } catch(e2){}
+              // Resize to correct dimensions once terminal is ready
+              var rid = setInterval(function() {
+                var t = window.term;
+                if (t && t.cols && t.rows) {
+                  clearInterval(rid);
+                  try { ws.send(enc.encode('1'+JSON.stringify({columns:t.cols,rows:t.rows}))); } catch(e3){}
+                  try { t.focus(); } catch(e4){}
+                }
+              }, 200);
+            } else throw err;
+          }
+        };
+      },
+      configurable: true
+    });
+    return ws;
+  };
+  window.WebSocket.prototype = _OrigWS.prototype;
+  window.WebSocket.CONNECTING = _OrigWS.CONNECTING;
+  window.WebSocket.OPEN = _OrigWS.OPEN;
+  window.WebSocket.CLOSING = _OrigWS.CLOSING;
+  window.WebSocket.CLOSED = _OrigWS.CLOSED;
+
   var fitTimer, scrollTimer;
 
   /** Safely scroll xterm viewport to the very bottom */
