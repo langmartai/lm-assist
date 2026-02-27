@@ -15,20 +15,9 @@ import { getIdentifier, getAllIdentifiers } from './identifiers/index';
 import { getFormatter } from './formatters/index';
 import { getKnowledgeStore } from './store';
 import type { Knowledge } from './types';
-import { findDuplicateKnowledge, markDuplicatesAsOutdated, deduplicateBatch } from './dedup';
-import { deriveTitle, isJunkResult, MIN_RESULT_LENGTH } from './helpers';
+import { findDuplicateKnowledge, markDuplicatesAsOutdated } from './dedup';
 
 // ─── Types ──────────────────────────────────────────────────
-
-export interface ExploreCandidate {
-  sessionId: string;
-  agentId: string;
-  type: string;
-  prompt: string;
-  resultPreview: string;
-  description?: string;
-  timestamp?: string;
-}
 
 export interface GenerateStatus {
   status: 'idle' | 'generating';
@@ -140,25 +129,44 @@ export class KnowledgePipeline {
   }
 
   /**
-   * Generate knowledge from generic content (manual, no prior identification needed).
-   * Identifies the content, then generates knowledge in one step.
+   * Resolve content via identifier and generate knowledge in one step.
+   * Universal replacement for type-specific generateFromExploreAgent / generateFromGenericContent.
    */
-  async generateFromGenericContent(
+  async resolveAndGenerate(
+    identifierType: IdentifierType,
+    project: string,
     sessionId: string,
     lineIndex: number,
-    project: string,
-    title?: string,
+    extra?: Record<string, any>,
+    options?: { title?: string; skipStatusTracking?: boolean },
   ): Promise<Knowledge> {
-    const identifier = getIdentifier('generic-content');
-
-    // Resolve (creates identification result)
-    const identification = await identifier.resolve(project, sessionId, lineIndex);
-    if (!identification) {
-      throw new Error(`No valid content found at session ${sessionId} line ${lineIndex}`);
+    if (!options?.skipStatusTracking) {
+      this.currentStatus = { status: 'generating', currentSessionId: sessionId, currentAgentId: extra?.agentId };
     }
 
-    // Generate from the identification
-    return this.generate(identification.id, project, { title });
+    try {
+      // Pre-check for explore-agent: reject if agentId already generated
+      if (identifierType === 'explore-agent' && extra?.agentId) {
+        const store = getKnowledgeStore();
+        const generatedIds = store.getGeneratedAgentIds();
+        if (generatedIds.has(extra.agentId)) {
+          const existingId = store.findByAgentId(extra.agentId);
+          throw new Error(`Agent ${extra.agentId} already generated as ${existingId || 'unknown'} — skipping duplicate`);
+        }
+      }
+
+      const identifier = getIdentifier(identifierType);
+      const identification = await identifier.resolve(project, sessionId, lineIndex, extra);
+      if (!identification) {
+        throw new Error(`Could not resolve ${identifierType} content in session ${sessionId}${extra?.agentId ? ` (agentId: ${extra.agentId})` : ''}`);
+      }
+
+      return await this.generate(identification.id, project, { title: options?.title });
+    } finally {
+      if (!options?.skipStatusTracking) {
+        this.currentStatus = { status: 'idle' };
+      }
+    }
   }
 
   /**
@@ -278,136 +286,29 @@ export class KnowledgePipeline {
   }
 
   /**
-   * Discover explore agent candidates for knowledge generation.
-   * Returns ExploreCandidate[] matching V1's discoverExploreSessions() shape.
-   */
-  async discoverExploreCandidates(project: string): Promise<ExploreCandidate[]> {
-    const { getSessionReader } = require('../session-reader');
-    const { getSessionCache } = require('../session-cache');
-
-    const reader = getSessionReader();
-    const cache = getSessionCache();
-    const store = getKnowledgeStore();
-
-    // Wait for background warming to finish so all sessions are available
-    if (cache.isWarming()) {
-      await cache.waitForWarming();
-    }
-
-    const allSessions = reader.listSessions(project);
-    if (allSessions.length === 0) return [];
-
-    // Get already-generated agent IDs for dedup
-    const generatedIds = store.getGeneratedAgentIds();
-    const generatedTitleKeys = store.getGeneratedTitleSessionKeys();
-
-    const rawCandidates: (ExploreCandidate & { resultLength: number })[] = [];
-
-    for (const session of allSessions) {
-      try {
-        const filePath = reader.getSessionFilePath(session.sessionId, project);
-        const data = await cache.getSessionData(filePath);
-        if (!data?.subagents?.length) continue;
-
-        for (const agent of data.subagents) {
-          if (!agent.agentId) continue;
-          if (!agent.type || agent.type.toLowerCase() !== 'explore') continue;
-          if (agent.status !== 'completed') continue;
-          if (!agent.result || agent.result.length < MIN_RESULT_LENGTH) continue;
-          if (isJunkResult(agent.result.trim())) continue;
-
-          // Skip if already generated (by agentId)
-          if (generatedIds.has(agent.agentId)) continue;
-
-          // Skip if title+session already generated
-          const derivedTitle = deriveTitle(agent.prompt, agent.description);
-          if (generatedTitleKeys.has(`${derivedTitle}\0${session.sessionId}`)) continue;
-
-          rawCandidates.push({
-            sessionId: session.sessionId,
-            agentId: agent.agentId,
-            type: agent.type,
-            prompt: agent.prompt,
-            resultPreview: agent.result.slice(0, 300) + (agent.result.length > 300 ? '...' : ''),
-            description: agent.description,
-            timestamp: agent.completedAt || agent.startedAt,
-            resultLength: agent.result.length,
-          });
-        }
-      } catch {
-        // Skip sessions that fail to load
-      }
-    }
-
-    // Sort by timestamp descending (most recent first) BEFORE dedup
-    rawCandidates.sort((a, b) => {
-      if (!a.timestamp && !b.timestamp) return 0;
-      if (!a.timestamp) return 1;
-      if (!b.timestamp) return -1;
-      return b.timestamp.localeCompare(a.timestamp);
-    });
-
-    // Within-batch dedup: group by normalized title, keep most complete
-    const dedupedCandidates = deduplicateBatch(
-      rawCandidates,
-      (c) => deriveTitle(c.prompt, c.description),
-      (c) => c.resultLength,
-    );
-
-    // Strip internal field
-    return dedupedCandidates.map(({ resultLength, ...rest }) => rest);
-  }
-
-  /**
-   * Generate knowledge from a specific explore agent.
-   * Uses V2 identifier.resolve() + pipeline.generate() internally.
-   */
-  async generateFromExploreAgent(
-    sessionId: string,
-    agentId: string,
-    project: string,
-    options?: { skipStatusTracking?: boolean },
-  ): Promise<Knowledge> {
-    if (!options?.skipStatusTracking) {
-      this.currentStatus = { status: 'generating', currentSessionId: sessionId, currentAgentId: agentId };
-    }
-
-    try {
-      // Pre-check: reject if agentId already generated
-      const store = getKnowledgeStore();
-      const generatedIds = store.getGeneratedAgentIds();
-      if (generatedIds.has(agentId)) {
-        const existingId = store.findByAgentId(agentId);
-        throw new Error(`Agent ${agentId} already generated as ${existingId || 'unknown'} — skipping duplicate`);
-      }
-
-      // Use V2 identifier to resolve/create identification
-      const identifier = getIdentifier('explore-agent');
-      const identification = await identifier.resolve(project, sessionId, 0, { agentId });
-      if (!identification) {
-        throw new Error(`Explore agent ${agentId} not found in session ${sessionId}`);
-      }
-
-      // Generate via the standard pipeline path
-      return await this.generate(identification.id, project);
-    } finally {
-      if (!options?.skipStatusTracking) {
-        this.currentStatus = { status: 'idle' };
-      }
-    }
-  }
-
-  /**
    * Generate knowledge from all candidates for a project.
-   * Processes sequentially, respects stop requests.
+   * Uses V2 discover → generate flow. Processes sequentially, respects stop requests.
    */
-  async generateAll(project: string): Promise<{ generated: number; errors: number; stopped: boolean }> {
+  async generateAll(
+    project: string,
+    identifierType?: IdentifierType,
+  ): Promise<{ generated: number; errors: number; stopped: boolean }> {
     if (this.currentStatus.status === 'generating') {
       throw new Error('Generation already in progress');
     }
 
     this.stopRequested = false;
-    const candidates = await this.discoverExploreCandidates(project);
+    const idStore = getIdentificationStore();
+
+    // Discover new candidates via V2 identifiers
+    await this.discover(project, identifierType);
+
+    // Get all pending candidates
+    const candidates = idStore.list({
+      status: 'candidate',
+      identifierType,
+      projectPath: project,
+    });
     const total = candidates.length;
     let generated = 0;
     let errors = 0;
@@ -418,12 +319,21 @@ export class KnowledgePipeline {
       for (const candidate of candidates) {
         if (this.stopRequested) break;
 
+        this.currentStatus = {
+          status: 'generating',
+          currentSessionId: candidate.sessionId,
+          currentAgentId: candidate.agentId,
+          processed: generated + errors,
+          total,
+          errors,
+        };
+
         try {
-          await this.generateFromExploreAgent(candidate.sessionId, candidate.agentId, project, { skipStatusTracking: true });
+          await this.generate(candidate.id, project);
           generated++;
         } catch (err) {
           errors++;
-          console.error(`[KnowledgePipeline] Failed to generate from ${candidate.agentId}:`, err);
+          console.error(`[KnowledgePipeline] Failed to generate from ${candidate.id}:`, err);
         }
 
         this.currentStatus = { status: 'generating', processed: generated + errors, total, errors };

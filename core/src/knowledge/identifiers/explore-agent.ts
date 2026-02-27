@@ -39,6 +39,7 @@ export class ExploreAgentIdentifier implements KnowledgeIdentifier {
 
     // Get already-generated agent IDs for dedup
     const generatedAgentIds = store.getGeneratedAgentIds();
+    const generatedTitleKeys = store.getGeneratedTitleSessionKeys();
 
     const newResults: Omit<IdentificationResult, 'id'>[] = [];
     // Within-batch dedup: track normalized titles, keep most complete per title
@@ -63,9 +64,14 @@ export class ExploreAgentIdentifier implements KnowledgeIdentifier {
           // Skip if already identified
           if (idStore.findByAgentId(agent.agentId)) continue;
 
+          // Skip if title+session already generated (V1 parity)
+          const derivedTitle = deriveTitle(agent.prompt, agent.description);
+          if (generatedTitleKeys.has(`${derivedTitle}\0${session.sessionId}`)) continue;
+
           // Determine lineIndex and turnIndex from subagent data
           const lineIndex = agent.lineIndex ?? 0;
           const turnIndex = agent.turnIndex ?? 0;
+          const resultLength = agent.result?.length ?? 0;
 
           const candidate: Omit<IdentificationResult, 'id'> = {
             sessionId: session.sessionId,
@@ -77,15 +83,21 @@ export class ExploreAgentIdentifier implements KnowledgeIdentifier {
             identifierType: 'explore-agent',
             agentId: agent.agentId,
             status: 'candidate',
+            metadata: {
+              type: agent.type,
+              prompt: agent.prompt,
+              resultPreview: agent.result.slice(0, 300) + (agent.result.length > 300 ? '...' : ''),
+              description: agent.description,
+              resultLength,
+            },
           };
 
-          // Within-batch dedup: group by normalized title, keep most complete
-          const derivedTitle = deriveTitle(agent.prompt, agent.description);
+          // Within-batch dedup: group by normalized title, keep most complete (longest result, newest on tie)
           const normalizedKey = normalizeTitle(derivedTitle);
-          const contentLength = agent.result?.length ?? 0;
           const existing = bestByTitle.get(normalizedKey);
-          if (!existing || contentLength > existing.contentLength) {
-            bestByTitle.set(normalizedKey, { result: candidate, contentLength });
+          if (!existing || resultLength > existing.contentLength ||
+              (resultLength === existing.contentLength && candidate.timestamp > existing.result.timestamp)) {
+            bestByTitle.set(normalizedKey, { result: candidate, contentLength: resultLength });
           }
         }
       } catch {

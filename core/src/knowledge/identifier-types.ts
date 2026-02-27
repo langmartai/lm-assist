@@ -29,6 +29,7 @@ export interface IdentificationResult {
 
   // Type-specific fields (optional, only present for relevant types)
   agentId?: string;               // For explore-agent: the subagent ID
+  metadata?: Record<string, any>; // Type-specific display data (prompt, preview, etc.)
 
   // Scoring (for generic-content auto-discovery)
   score?: number;                 // Heuristic score (-11 to +12)

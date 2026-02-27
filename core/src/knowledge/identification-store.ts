@@ -240,7 +240,7 @@ export class IdentificationStore {
    * Update an identification result (e.g., mark as generated with knowledgeId, or validated).
    */
   update(id: string, updates: Partial<Pick<IdentificationResult,
-    'knowledgeId' | 'status' | 'validatedAt' | 'validationReason' | 'suggestedTitle'
+    'knowledgeId' | 'status' | 'validatedAt' | 'validationReason' | 'suggestedTitle' | 'metadata'
   >>): IdentificationResult | null {
     const file = this.read();
     const result = file.identifications.find(r => r.id === id);
@@ -251,6 +251,7 @@ export class IdentificationStore {
     if (updates.validatedAt !== undefined) result.validatedAt = updates.validatedAt;
     if (updates.validationReason !== undefined) result.validationReason = updates.validationReason;
     if (updates.suggestedTitle !== undefined) result.suggestedTitle = updates.suggestedTitle;
+    if (updates.metadata !== undefined) result.metadata = updates.metadata;
 
     this.write(file);
     return result;

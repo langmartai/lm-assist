@@ -28,6 +28,11 @@ import type { KnowledgeType, KnowledgeCommentType } from '../../knowledge/types'
 let _statsCache: { candidates: number; generated: number } | null = null;
 let _statsCacheDirty = true;
 
+/** Invalidate stats cache — call after any generation changes identification state. */
+function invalidateStatsCache(): void {
+  _statsCacheDirty = true;
+}
+
 // Register invalidation with SessionCache (deferred to avoid import-order issues)
 let _statsWatcherRegistered = false;
 function ensureStatsWatcher(): void {
@@ -248,11 +253,14 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
           const store = getKnowledgeStore();
           const generatedCount = store.getGeneratedAgentIds().size;
           const { getKnowledgePipeline } = require('../../knowledge/pipeline');
+          const { getIdentificationStore } = require('../../knowledge/identification-store');
           const pipeline = getKnowledgePipeline();
+          const idStore = getIdentificationStore();
 
           const project = req.query.project;
           if (project) {
-            const candidates = await pipeline.discoverExploreCandidates(project);
+            await pipeline.discover(project, 'explore-agent');
+            const candidates = idStore.list({ status: 'candidate', identifierType: 'explore-agent', projectPath: project });
             return {
               success: true,
               data: { candidates: candidates.length, generated: generatedCount },
@@ -276,7 +284,8 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
             let totalCandidates = 0;
             for (const p of projects) {
               try {
-                const candidates = await pipeline.discoverExploreCandidates((p as any).path);
+                await pipeline.discover((p as any).path, 'explore-agent');
+                const candidates = idStore.list({ status: 'candidate', identifierType: 'explore-agent', projectPath: (p as any).path });
                 totalCandidates += candidates.length;
               } catch { /* skip */ }
             }
@@ -310,37 +319,47 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => {
         try {
           const { getKnowledgePipeline } = require('../../knowledge/pipeline');
+          const { getIdentificationStore } = require('../../knowledge/identification-store');
           const pipeline = getKnowledgePipeline();
+          const idStore = getIdentificationStore();
           const project = req.query.project;
 
-          if (project) {
-            const candidates = await pipeline.discoverExploreCandidates(project);
-            return { success: true, data: candidates };
-          }
-
-          // Scan all projects
-          const { createProjectsService } = require('../../projects-service');
-          const service = createProjectsService();
-          const projects = service.listProjects({ includeSize: false });
-          const allCandidates: any[] = [];
-          for (const p of projects) {
-            try {
-              const candidates = await pipeline.discoverExploreCandidates((p as any).path);
-              // Tag each candidate with its project
-              for (const c of candidates) {
-                (c as any).project = (p as any).path;
-              }
-              allCandidates.push(...candidates);
-            } catch { /* skip */ }
-          }
-          // Sort all by timestamp descending
-          allCandidates.sort((a, b) => {
+          const mapToCandidate = (id: Record<string, any>, proj?: string) => ({
+            sessionId: id.sessionId,
+            agentId: id.agentId || '',
+            type: id.metadata?.type || 'Explore',
+            prompt: id.metadata?.prompt || '',
+            resultPreview: id.metadata?.resultPreview || '',
+            description: id.metadata?.description,
+            timestamp: id.timestamp,
+            ...(proj ? { project: proj } : {}),
+          });
+          const sortByTimestamp = (arr: any[]) => arr.sort((a: any, b: any) => {
             if (!a.timestamp && !b.timestamp) return 0;
             if (!a.timestamp) return 1;
             if (!b.timestamp) return -1;
             return b.timestamp.localeCompare(a.timestamp);
           });
-          return { success: true, data: allCandidates };
+
+          if (project) {
+            await pipeline.discover(project, 'explore-agent');
+            const identifications = idStore.list({ status: 'candidate', identifierType: 'explore-agent', projectPath: project });
+            return { success: true, data: sortByTimestamp(identifications.map((id: any) => mapToCandidate(id))) };
+          }
+
+          // Scan all projects
+          const { getProjectsService } = require('../../projects-service');
+          const service = getProjectsService();
+          const projects = service.listProjects({ includeSize: false });
+          const allCandidates: any[] = [];
+          for (const p of projects) {
+            try {
+              await pipeline.discover((p as any).path, 'explore-agent');
+              const identifications = idStore.list({ status: 'candidate', identifierType: 'explore-agent', projectPath: (p as any).path });
+              allCandidates.push(...identifications.map((id: any) => mapToCandidate(id, (p as any).path)));
+            } catch { /* skip */ }
+          }
+          return { success: true, data: sortByTimestamp(allCandidates) };
         } catch (err: any) {
           return { success: false, error: err.message };
         }
@@ -360,7 +379,8 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
         try {
           const { getKnowledgePipeline } = require('../../knowledge/pipeline');
           const pipeline = getKnowledgePipeline();
-          const knowledge = await pipeline.generateFromExploreAgent(sessionId, agentId, project);
+          const knowledge = await pipeline.resolveAndGenerate('explore-agent', project, sessionId, 0, { agentId });
+          invalidateStatsCache();
           return { success: true, data: knowledge };
         } catch (err: any) {
           return { success: false, error: err.message };
@@ -398,13 +418,14 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
           const pipeline = getKnowledgePipeline();
 
           if (project) {
-            const result = await pipeline.generateAll(project);
+            const result = await pipeline.generateAll(project, 'explore-agent');
+            invalidateStatsCache();
             return { success: true, data: result };
           }
 
           // Generate across all projects
-          const { createProjectsService } = require('../../projects-service');
-          const service = createProjectsService();
+          const { getProjectsService } = require('../../projects-service');
+          const service = getProjectsService();
           const projects = service.listProjects({ includeSize: false });
           let totalGenerated = 0;
           let totalErrors = 0;
@@ -413,13 +434,14 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
           for (const p of projects) {
             if (stopped) break;
             try {
-              const result = await pipeline.generateAll((p as any).path);
+              const result = await pipeline.generateAll((p as any).path, 'explore-agent');
               totalGenerated += result.generated;
               totalErrors += result.errors;
               stopped = result.stopped;
             } catch { /* skip */ }
           }
 
+          invalidateStatsCache();
           return { success: true, data: { generated: totalGenerated, errors: totalErrors, stopped } };
         } catch (err: any) {
           return { success: false, error: err.message };
@@ -794,12 +816,15 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
         try {
           const { getKnowledgePipeline } = require('../../knowledge/pipeline');
           const pipeline = getKnowledgePipeline();
-          const knowledge = await pipeline.generateFromGenericContent(
+          const knowledge = await pipeline.resolveAndGenerate(
+            'generic-content',
+            project,
             sessionId,
             parseInt(String(lineIndex), 10),
-            project,
-            title,
+            undefined,
+            { title },
           );
+          invalidateStatsCache();
           return { success: true, data: knowledge };
         } catch (err: any) {
           return { success: false, error: err.message };
@@ -929,6 +954,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
           const { getKnowledgePipeline } = require('../../knowledge/pipeline');
           const pipeline = getKnowledgePipeline();
           const result = await pipeline.generateValidated(project, identifierType);
+          invalidateStatsCache();
           return { success: true, data: result };
         } catch (err: any) {
           return { success: false, error: err.message };
