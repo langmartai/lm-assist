@@ -19,7 +19,10 @@ import { saveHubConnectionConfig } from './hub-client/hub-config';
 import { getStartupProfiler } from './startup-profiler';
 
 // Dev repo → 3200/3948, npm package → 3100/3848
-const IS_DEV_REPO = !__dirname.includes('node_modules');
+// Override with LM_ASSIST_PROD=true to use prod ports/identity from dev repo
+const IS_DEV_REPO = process.env.LM_ASSIST_PROD === 'true'
+  ? false
+  : !__dirname.includes('node_modules');
 const DEFAULT_API_PORT = IS_DEV_REPO ? '3200' : '3100';
 const DEFAULT_WEB_PORT = IS_DEV_REPO ? '3948' : '3848';
 

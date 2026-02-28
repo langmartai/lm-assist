@@ -188,9 +188,33 @@ interface StatuslineStatus {
 // Hub URL auto-detection
 // ============================================
 
-/** Dev uses local WS, prod uses wss via Cloudflare */
-function getDefaultHubUrl(): string {
-  if (typeof window === 'undefined') return 'wss://api.langmart.ai';
+/** Known platform domains and their hub WS URLs */
+const PLATFORM_DOMAINS: Record<string, string> = {
+  'langmart.ai': 'wss://api.langmart.ai',
+  'xeenhub.com': 'wss://assist-api.xeenhub.com',
+};
+
+/** Extract the platform domain from a hub URL (e.g. wss://assist-api.xeenhub.com → xeenhub.com) */
+function getPlatformDomain(hubUrl: string | null | undefined): string {
+  if (!hubUrl) return 'langmart.ai';
+  try {
+    const hostname = new URL(hubUrl.replace(/^wss?:/, 'https:')).hostname;
+    for (const domain of Object.keys(PLATFORM_DOMAINS)) {
+      if (hostname.endsWith(domain)) return domain;
+    }
+  } catch { /* ignore */ }
+  return 'langmart.ai';
+}
+
+/** Get default hub URL based on current hub status or fallback */
+function getDefaultHubUrl(currentHubUrl?: string | null): string {
+  if (currentHubUrl) return currentHubUrl;
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    for (const [domain, wsUrl] of Object.entries(PLATFORM_DOMAINS)) {
+      if (host.endsWith(domain)) return wsUrl;
+    }
+  }
   return 'wss://api.langmart.ai';
 }
 
@@ -403,10 +427,11 @@ export default function SettingsPage() {
   // Listen for postMessage from Cloud OAuth popup
   useEffect(() => {
     const handler = async (event: MessageEvent) => {
-      // Validate origin: must be exactly langmart.ai (not a subdomain spoof)
+      // Validate origin: must be a known platform domain (not a subdomain spoof)
       let originHost: string;
       try { originHost = new URL(event.origin).hostname; } catch { return; }
-      const isValid = originHost === 'langmart.ai' || originHost === 'www.langmart.ai';
+      const validDomains = Object.keys(PLATFORM_DOMAINS);
+      const isValid = validDomains.some(d => originHost === d || originHost === `www.${d}`);
       if (!isValid) return;
       if (event.data?.type !== 'langmart-assist-connect') return;
       const receivedKey = event.data.apiKey;
@@ -415,7 +440,7 @@ export default function SettingsPage() {
       setIsCloudSigningIn(true);
       setCloudSignInMessage(null);
       try {
-        const hubUrl = getDefaultHubUrl();
+        const hubUrl = getDefaultHubUrl(hubStatus?.hubUrl);
         const res = await fetch(tierAgentUrl + '/hub/config', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -449,17 +474,18 @@ export default function SettingsPage() {
 
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, [tierAgentUrl, fetchStatus, refreshHubConnection]);
+  }, [tierAgentUrl, fetchStatus, refreshHubConnection, hubStatus?.hubUrl]);
 
   // Open Cloud OAuth popup
   const handleCloudSignIn = useCallback(() => {
     const origin = encodeURIComponent(window.location.origin);
+    const platformDomain = getPlatformDomain(hubStatus?.hubUrl);
     window.open(
-      `https://langmart.ai/assist-connect?origin=${origin}`,
+      `https://${platformDomain}/assist-connect?origin=${origin}`,
       'langmart-connect',
       'width=460,height=560,left=200,top=100',
     );
-  }, []);
+  }, [hubStatus?.hubUrl]);
 
   const handleLanToggle = useCallback(async (value: boolean) => {
     setLanLoading(true);
@@ -1550,7 +1576,7 @@ export default function SettingsPage() {
   if (!mounted) return null;
 
   const isProxied = proxy.isProxied;
-  const hubName = 'langmart.ai';
+  const hubName = getPlatformDomain(hubStatus?.hubUrl);
 
   const isHubConnected = hubStatus?.connected ?? localStatus?.hubConnected ?? false;
   const isAuthenticated = hubStatus?.authenticated ?? localStatus?.hubAuthenticated ?? false;

@@ -316,9 +316,12 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
     for (const w of hubMachines) {
       const machineId = w.gatewayId || w.id;
       if (localGatewayId && (machineId === localGatewayId || w.gatewayId === localGatewayId)) {
+        // Prefer the hub-registered hostname (may include suffixes like "(dev)")
+        // over the local /health hostname which is just the bare OS hostname.
+        const hubHostname = w.hostname || w.name;
         result.push({
           id: machineId,
-          hostname: localMachine.hostname,
+          hostname: hubHostname || localMachine.hostname,
           platform: localMachine.platform,
           status: 'online',
           lastHeartbeat: w.lastHeartbeat,
@@ -1523,8 +1526,8 @@ export function detectAppMode(): { mode: AppMode; baseUrl: string } {
 
   const hostname = window.location.hostname;
 
-  // Hub mode: running on langmart.ai (includes proxy mode)
-  if (hostname.includes('langmart.ai')) {
+  // Hub mode: running on langmart.ai or xeenhub.com (includes proxy mode)
+  if (hostname.includes('langmart.ai') || hostname.includes('xeenhub.com')) {
     return { mode: 'hub', baseUrl: '' }; // Same origin
   }
 
@@ -1606,7 +1609,8 @@ export function getHubHttpUrl(hubWsUrl?: string): string {
   }
   if (typeof window === 'undefined') return 'http://localhost:8081';
   const host = window.location.hostname;
-  if (host.includes('langmart')) return 'https://api.langmart.ai';
+  if (host.includes('langmart')) return 'https://assist-api.langmart.ai';
+  if (host.includes('xeenhub')) return 'https://assist-api.xeenhub.com';
   return 'http://localhost:8081';
 }
 

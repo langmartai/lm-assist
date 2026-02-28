@@ -47,6 +47,18 @@ export function formatCost(cost: number): string {
   return `$${cost.toFixed(2)}`;
 }
 
+/** Extract the platform domain from a hub WebSocket URL.
+ *  e.g. wss://assist-api.xeenhub.com → xeenhub.com */
+export function getHubDomain(hubUrl: string | null | undefined): string {
+  if (!hubUrl) return 'langmart.ai';
+  try {
+    const hostname = new URL(hubUrl.replace(/^wss?:/, 'https:')).hostname;
+    if (hostname.endsWith('xeenhub.com')) return 'xeenhub.com';
+    if (hostname.endsWith('langmart.ai')) return 'langmart.ai';
+  } catch { /* ignore */ }
+  return 'langmart.ai';
+}
+
 export function formatCostPrecise(cost: number): string {
   return `$${cost.toFixed(4)}`;
 }

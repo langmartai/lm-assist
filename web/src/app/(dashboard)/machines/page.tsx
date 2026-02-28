@@ -5,38 +5,39 @@ import { useAppMode } from '@/contexts/AppModeContext';
 import { detectAppMode } from '@/lib/api-client';
 import { CrossRefStats } from '@/components/shared/CrossRefStats';
 import { Monitor, LayoutDashboard } from 'lucide-react';
-import { getPlatformEmoji } from '@/lib/utils';
+import { getPlatformEmoji, getHubDomain } from '@/lib/utils';
 import { useState } from 'react';
 
 type FilterType = 'all' | 'online' | 'offline';
 
 export default function MachinesPage() {
   const { machines, isLoading } = useMachineContext();
-  const { mode, proxy } = useAppMode();
+  const { mode, proxy, hubUrl } = useAppMode();
   const [filter, setFilter] = useState<FilterType>('online');
 
   const openDashboard = async (machine: typeof machines[0]) => {
-    const hubName = 'langmart.ai';
+    const hubName = getHubDomain(hubUrl);
+    const assistDomain = hubName === 'xeenhub.com' ? 'assist.xeenhub.com' : 'assist.langmart.ai';
     const remoteGatewayId = machine.gatewayId || machine.id;
     const dashboardPath = '/sessions';
+    const baseUrl = `https://${assistDomain}/w/${remoteGatewayId}/assist${dashboardPath}`;
 
     if (mode === 'hub') {
-      // In hub mode, user is already on langmart.ai — navigate directly
-      window.open(`https://${hubName}/w/${remoteGatewayId}/assist${dashboardPath}`, '_blank');
+      window.open(baseUrl, '_blank');
       return;
     }
 
-    // In local/hybrid mode, fetch a proxy token for authentication
+    // Local/hybrid: fetch a proxy token for authentication
     try {
-      const { baseUrl } = detectAppMode();
-      const res = await fetch(`${baseUrl}/hub/machines/${remoteGatewayId}/proxy-token`, { method: 'POST' });
+      const { baseUrl: apiBase } = detectAppMode();
+      const res = await fetch(`${apiBase}/hub/machines/${remoteGatewayId}/proxy-token`, { method: 'POST' });
       const json = await res.json();
       if (json.success && json.data?.token) {
-        window.open(`https://${hubName}/w/${remoteGatewayId}/assist${dashboardPath}?token=${json.data.token}`, '_blank');
+        window.open(`${baseUrl}?token=${json.data.token}`, '_blank');
         return;
       }
     } catch { /* fall through */ }
-    window.open(`https://${hubName}/w/${remoteGatewayId}/assist${dashboardPath}`, '_blank');
+    window.open(baseUrl, '_blank');
   };
 
   const filtered = machines.filter(m => {

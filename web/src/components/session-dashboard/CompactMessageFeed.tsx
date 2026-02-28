@@ -190,7 +190,7 @@ export function inlineMarkdown(text: string): ReactNode[] {
 
 /**
  * Map message type to ConvType for filtering.
- * In langmart-assistant, tool uses are type:'assistant' with subtype:'tool_use'.
+ * Tool uses are type:'assistant' with subtype:'tool_use'.
  */
 function getConvType(msg: SessionMessage): ConvType | null {
   switch (msg.type) {

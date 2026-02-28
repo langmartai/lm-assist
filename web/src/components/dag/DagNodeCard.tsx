@@ -1,5 +1,5 @@
 // DagNodeCard — SVG node renderer for DAG graphs
-// Portable: no langmart-assistant-specific imports
+// Portable: no external imports
 
 import type { DagNode } from './dag-types';
 

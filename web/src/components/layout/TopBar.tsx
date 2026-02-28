@@ -14,6 +14,7 @@ import { BackgroundProgress } from './BackgroundProgress';
 import { DataLoadingModal } from '@/components/data-loading/DataLoadingModal';
 import { DATA_LOADED_KEY } from '@/hooks/useDataLoading';
 import { useExperiment } from '@/hooks/useExperiment';
+import { getHubDomain } from '@/lib/utils';
 
 
 /** Extract initials from a display name or email */
@@ -30,7 +31,7 @@ function getInitials(name?: string, email?: string): string {
 export function TopBar() {
   const pathname = usePathname();
   const router = useRouter();
-  const { proxy, hubUser, localGatewayId, hubConnected } = useAppMode();
+  const { proxy, hubUser, localGatewayId, hubConnected, hubUrl } = useAppMode();
   const { selectedMachine } = useMachineContext();
   const { theme, toggleTheme } = useTheme();
   const { open: openSearch } = useSearch();
@@ -98,9 +99,11 @@ export function TopBar() {
   const selectedGatewayId = selectedMachine?.gatewayId
     || (selectedMachine?.id !== 'localhost' ? selectedMachine?.id : null);
   const gatewayId = proxy.machineId || selectedGatewayId || localGatewayId;
-  const hubName = 'langmart.ai';
+  const hubName = getHubDomain(hubUrl);
   const currentPage = pathname.replace(proxy.basePath, '') || '/session-dashboard';
-  const cloudUrl = gatewayId ? `https://${hubName}/w/${gatewayId}/assist${currentPage}` : null;
+  // Cloud URL uses the /w/ web proxy path on the assist subdomain
+  const assistDomain = hubName === 'xeenhub.com' ? 'assist.xeenhub.com' : 'assist.langmart.ai';
+  const cloudUrl = gatewayId ? `https://${assistDomain}/w/${gatewayId}/assist${currentPage}` : null;
   // When a different machine is selected from the dropdown, use its localIp.
   // Fall back to the proxy machine's IP (fetched from /api/server) when viewing the proxy machine itself.
   const isSelectedProxyMachine = !selectedMachine ||
@@ -126,10 +129,10 @@ export function TopBar() {
   const localLabel = isLan ? 'LAN' : 'Local';
   const LocalIcon = isLan ? Wifi : Monitor;
 
-  // Open cloud proxy URL with a proxy token for authentication
+  // Open the assist subdomain via web proxy with auth token
   const openCloud = useCallback(async () => {
     if (!gatewayId) return;
-    const baseCloudUrl = `https://${hubName}/w/${gatewayId}/assist${currentPage}`;
+    const baseCloudUrl = `https://${assistDomain}/w/${gatewayId}/assist${currentPage}`;
     try {
       const { baseUrl } = detectAppMode();
       const res = await fetch(`${baseUrl}/hub/machines/${gatewayId}/proxy-token`, { method: 'POST' });
@@ -139,9 +142,8 @@ export function TopBar() {
         return;
       }
     } catch { /* fall through */ }
-    // Fallback: open without token (user will need to authenticate manually)
     window.open(baseCloudUrl, '_blank');
-  }, [gatewayId, hubName, currentPage]);
+  }, [gatewayId, assistDomain, currentPage]);
 
   return (
     <>

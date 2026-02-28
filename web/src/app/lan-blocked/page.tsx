@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Shield, Globe, LogIn, Loader2, CheckCircle, XCircle, Info } from 'lucide-react';
 import { detectAppMode, detectProxyInfo } from '@/lib/api-client';
+import { getHubDomain } from '@/lib/utils';
 
 type VerifyStatus = 'idle' | 'waiting' | 'verifying' | 'success' | 'error';
 
@@ -12,6 +13,7 @@ export default function LanBlockedPage() {
   const [verifyStatus, setVerifyStatus] = useState<VerifyStatus>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [hubConfigured, setHubConfigured] = useState<boolean | null>(null);
+  const [hubDomain, setHubDomain] = useState('langmart.ai');
 
   // If user is actually local (localhost or same-machine LAN IP), redirect to dashboard
   useEffect(() => {
@@ -42,6 +44,7 @@ export default function LanBlockedPage() {
       .then(data => {
         const d = data.data || data;
         setHubConfigured(d.authenticated === true);
+        if (d.hubUrl) setHubDomain(getHubDomain(d.hubUrl));
       })
       .catch(() => setHubConfigured(false));
   }, []);
@@ -49,10 +52,10 @@ export default function LanBlockedPage() {
   // Listen for postMessage from the OAuth popup (verify mode)
   useEffect(() => {
     const handler = async (event: MessageEvent) => {
-      // Validate origin: must be exactly langmart.ai (not a subdomain spoof)
+      // Validate origin: must be a known platform domain (not a subdomain spoof)
       let originHost: string;
       try { originHost = new URL(event.origin).hostname; } catch { return; }
-      const isValid = originHost === 'langmart.ai' || originHost === 'www.langmart.ai';
+      const isValid = originHost === hubDomain || originHost === `www.${hubDomain}`;
       if (!isValid) return;
       if (event.data?.type !== 'langmart-assist-verify') return;
 
@@ -99,11 +102,11 @@ export default function LanBlockedPage() {
     setVerifyStatus('waiting');
     setErrorMessage(null);
     window.open(
-      `https://langmart.ai/assist-connect?origin=${origin}&mode=verify`,
+      `https://${hubDomain}/assist-connect?origin=${origin}&mode=verify`,
       'langmart-verify',
       'width=460,height=560,left=200,top=100',
     );
-  }, []);
+  }, [hubDomain]);
 
   const showSignIn = hubConfigured === true;
   const showManualSteps = hubConfigured !== true;

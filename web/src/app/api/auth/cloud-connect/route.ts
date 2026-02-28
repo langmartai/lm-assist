@@ -16,7 +16,12 @@ import { NextRequest, NextResponse } from 'next/server';
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
   const key = searchParams.get('key');
-  const hubUrl = searchParams.get('hubUrl') || 'wss://api.langmart.ai';
+  // hubUrl is passed from the OAuth popup; fallback based on the request's host
+  const hubUrl = searchParams.get('hubUrl') || (() => {
+    const host = request.nextUrl.hostname;
+    if (host.includes('xeenhub')) return 'wss://assist-api.xeenhub.com';
+    return 'wss://api.langmart.ai';
+  })();
 
   if (!key) {
     return new NextResponse(errorPage('Missing API key parameter'), {

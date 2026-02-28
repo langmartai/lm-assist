@@ -6,7 +6,7 @@ import { ChevronDown, Monitor, Globe, ExternalLink } from 'lucide-react';
 import { useMachineContext } from '@/contexts/MachineContext';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { detectAppMode } from '@/lib/api-client';
-import { getPlatformEmoji } from '@/lib/utils';
+import { getPlatformEmoji, getHubDomain } from '@/lib/utils';
 
 export function MachineDropdown() {
   const {
@@ -17,7 +17,7 @@ export function MachineDropdown() {
     selectedMachine,
     isSingleMachine,
   } = useMachineContext();
-  const { hubConnected, mode, proxy } = useAppMode();
+  const { hubConnected, mode, proxy, hubUrl } = useAppMode();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -111,28 +111,28 @@ export function MachineDropdown() {
             const handleClick = async () => {
               setOpen(false);
               if (shouldOpenCloud) {
-                const hubName = 'langmart.ai';
+                const hubName = getHubDomain(hubUrl);
+                const assistDomain = hubName === 'xeenhub.com' ? 'assist.xeenhub.com' : 'assist.langmart.ai';
                 const currentPage = pathname.replace(proxy.basePath, '') || '/session-dashboard';
                 const remoteGatewayId = m.gatewayId || m.id;
+                const baseUrl = `https://${assistDomain}/w/${remoteGatewayId}/assist${currentPage}`;
 
                 if (proxy.isProxied) {
-                  // Already on langmart.ai — navigate directly (no token needed)
-                  window.open(`https://${hubName}/w/${remoteGatewayId}/assist${currentPage}`, '_blank');
+                  window.open(baseUrl, '_blank');
                   return;
                 }
 
-                // Local/hybrid: fetch a proxy token so the cloud URL authenticates automatically
+                // Local/hybrid: fetch a proxy token for authentication
                 try {
-                  const { baseUrl } = detectAppMode();
-                  const res = await fetch(`${baseUrl}/hub/machines/${remoteGatewayId}/proxy-token`, { method: 'POST' });
+                  const { baseUrl: apiBase } = detectAppMode();
+                  const res = await fetch(`${apiBase}/hub/machines/${remoteGatewayId}/proxy-token`, { method: 'POST' });
                   const json = await res.json();
                   if (json.success && json.data?.token) {
-                    window.open(`https://${hubName}/w/${remoteGatewayId}/assist${currentPage}?token=${json.data.token}`, '_blank');
+                    window.open(`${baseUrl}?token=${json.data.token}`, '_blank');
                     return;
                   }
-                } catch { /* fall through to URL without token */ }
-                // Fallback: open without token (user will need to authenticate manually)
-                window.open(`https://${hubName}/w/${remoteGatewayId}/assist${currentPage}`, '_blank');
+                } catch { /* fall through */ }
+                window.open(baseUrl, '_blank');
               } else {
                 setSelectedMachineId(m.id);
               }

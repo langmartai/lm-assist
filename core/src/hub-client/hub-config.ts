@@ -13,8 +13,11 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { getDataDir } from '../utils/path-utils';
 
-/** Dev repo → true (separate hub identity), npm package → false */
-const IS_DEV_REPO = !__dirname.includes('node_modules');
+/** Dev repo → true (separate hub identity), npm package → false.
+ *  Override with LM_ASSIST_PROD=true to use prod identity from dev repo. */
+const IS_DEV_REPO = process.env.LM_ASSIST_PROD === 'true'
+  ? false
+  : !__dirname.includes('node_modules');
 /** File suffix for dev-mode hub files (machine-id-dev, gateway-id-dev, hub-dev.json) */
 const DEV_SUFFIX = IS_DEV_REPO ? '-dev' : '';
 

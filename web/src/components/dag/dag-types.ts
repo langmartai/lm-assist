@@ -1,5 +1,5 @@
 // DAG Types — mirrors backend types from tier-agent-core/src/session-dag.ts
-// Portable: no langmart-assistant or external dependencies
+// Portable: no external dependencies
 
 export interface DagNode {
   id: string;

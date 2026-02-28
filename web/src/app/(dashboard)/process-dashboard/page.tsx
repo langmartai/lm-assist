@@ -1310,7 +1310,7 @@ export default function ProcessDashboardPage() {
     // Include machineId for hub/proxy mode
     const mid = proxy.isProxied ? proxy.machineId : (!isLocal ? process.machineId : null);
     if (mid) params.set('machineId', mid);
-    // Route through langmart-assistant console page (supports connectPid without sessionId)
+    // Route through console page (supports connectPid without sessionId)
     const basePath = proxy.isProxied ? proxy.basePath : '';
     window.open(`${basePath}/console?${params.toString()}`, `terminal-pid-${process.pid}`);
   }, [isLocal, proxy, managedPortToSessionId]);
