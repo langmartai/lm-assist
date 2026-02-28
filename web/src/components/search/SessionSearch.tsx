@@ -98,7 +98,7 @@ function timeAgo(ts: string): string {
 }
 
 export function SessionSearch({ mode, initialQuery = '', directory: initialDirectory, projectPath: initialProjectPath, onClose }: SessionSearchProps) {
-  const { apiClient } = useAppMode();
+  const { apiClient, isLocal, proxy } = useAppMode();
   const { selectedMachine } = useMachineContext();
   const machineId = selectedMachine?.id;
   const router = useRouter();
@@ -721,7 +721,13 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                   <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
                     <button
                       className="btn btn-sm btn-ghost"
-                      onClick={() => window.open(`/console?sessionId=${encodeURIComponent(selectedSessionId)}&projectPath=${encodeURIComponent(sessionDetail.projectPath || '')}`, '_blank')}
+                      onClick={() => {
+                        const params = new URLSearchParams({ sessionId: selectedSessionId, projectPath: sessionDetail.projectPath || '' });
+                        const mid = proxy.isProxied ? proxy.machineId : (!isLocal ? machineId : null);
+                        if (mid) params.set('machineId', mid);
+                        const basePath = proxy.isProxied ? proxy.basePath : '';
+                        window.open(`${basePath}/console?${params.toString()}`, '_blank');
+                      }}
                       title="Open Console"
                       style={{ padding: '1px 3px' }}
                     >
@@ -729,7 +735,13 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                     </button>
                     <button
                       className="btn btn-sm btn-ghost"
-                      onClick={() => window.open(`/console?sessionId=${encodeURIComponent(selectedSessionId)}&projectPath=${encodeURIComponent(sessionDetail.projectPath || '')}&fork=true`, '_blank')}
+                      onClick={() => {
+                        const params = new URLSearchParams({ sessionId: selectedSessionId, projectPath: sessionDetail.projectPath || '', fork: 'true' });
+                        const mid = proxy.isProxied ? proxy.machineId : (!isLocal ? machineId : null);
+                        if (mid) params.set('machineId', mid);
+                        const basePath = proxy.isProxied ? proxy.basePath : '';
+                        window.open(`${basePath}/console?${params.toString()}`, '_blank');
+                      }}
                       title="Fork Session"
                       style={{ padding: '1px 3px' }}
                     >
@@ -737,7 +749,13 @@ export function SessionSearch({ mode, initialQuery = '', directory: initialDirec
                     </button>
                     <button
                       className="btn btn-sm btn-ghost"
-                      onClick={() => window.open(`/console?shell=true&projectPath=${encodeURIComponent(sessionDetail.projectPath || '')}`, '_blank')}
+                      onClick={() => {
+                        const params = new URLSearchParams({ shell: 'true', projectPath: sessionDetail.projectPath || '' });
+                        const mid = proxy.isProxied ? proxy.machineId : (!isLocal ? machineId : null);
+                        if (mid) params.set('machineId', mid);
+                        const basePath = proxy.isProxied ? proxy.basePath : '';
+                        window.open(`${basePath}/console?${params.toString()}`, '_blank');
+                      }}
                       title="New Shell"
                       style={{ padding: '1px 3px' }}
                     >

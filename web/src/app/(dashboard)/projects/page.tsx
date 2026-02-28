@@ -23,6 +23,7 @@ import {
 import { formatTimeAgo, formatCost } from '@/lib/utils';
 import Link from 'next/link';
 import { usePlatform } from '@/hooks/usePlatform';
+import { useAppMode } from '@/contexts/AppModeContext';
 
 /**
  * Extract a display-friendly name from a git remote URL.
@@ -58,14 +59,17 @@ export default function ProjectsPage() {
   const { projects, isLoading, error, forceRefetch } = useProjects();
   const { isSingleMachine } = useMachineContext();
   const { isWindows } = usePlatform();
+  const { isLocal, proxy } = useAppMode();
   const [search, setSearch] = useState('');
 
   const handleNewSession = (e: React.MouseEvent, project: typeof projects[0]) => {
     e.preventDefault();
     e.stopPropagation();
     const params = new URLSearchParams({ projectPath: project.projectPath, newSession: 'true' });
-    if (!isSingleMachine && project.machineId) params.set('machineId', project.machineId);
-    window.open(`/console?${params.toString()}`, '_blank');
+    const mid = proxy.isProxied ? proxy.machineId : (!isLocal ? project.machineId : null);
+    if (mid) params.set('machineId', mid);
+    const basePath = proxy.isProxied ? proxy.basePath : '';
+    window.open(`${basePath}/console?${params.toString()}`, '_blank');
   };
 
   // Filter out non-git projects, then apply search

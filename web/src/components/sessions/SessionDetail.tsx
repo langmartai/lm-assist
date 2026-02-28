@@ -106,7 +106,7 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
   const { isExperiment } = useExperiment();
   const { isWindows } = usePlatform();
   const { isSingleMachine, machines } = useMachineContext();
-  const { apiClient } = useAppMode();
+  const { apiClient, isLocal, proxy } = useAppMode();
   const searchParams = useSearchParams();
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<TabId>(() => {
@@ -501,21 +501,39 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
                 <button
                   className="btn btn-sm btn-ghost"
                   title="Open Console in new tab"
-                  onClick={() => window.open(`/console?sessionId=${encodeURIComponent(sessionId)}&projectPath=${encodeURIComponent(projectPath || detail?.projectPath || '')}`, '_blank')}
+                  onClick={() => {
+                    const params = new URLSearchParams({ sessionId, projectPath: projectPath || detail?.projectPath || '' });
+                    const mid = proxy.isProxied ? proxy.machineId : (!isLocal ? machineId : null);
+                    if (mid) params.set('machineId', mid);
+                    const basePath = proxy.isProxied ? proxy.basePath : '';
+                    window.open(`${basePath}/console?${params.toString()}`, '_blank');
+                  }}
                 >
                   <ExternalLink size={12} />
                 </button>
                 <button
                   className="btn btn-sm btn-ghost"
                   title="Fork Session"
-                  onClick={() => window.open(`/console?sessionId=${encodeURIComponent(sessionId)}&projectPath=${encodeURIComponent(projectPath || detail?.projectPath || '')}&fork=true`, '_blank')}
+                  onClick={() => {
+                    const params = new URLSearchParams({ sessionId, projectPath: projectPath || detail?.projectPath || '', fork: 'true' });
+                    const mid = proxy.isProxied ? proxy.machineId : (!isLocal ? machineId : null);
+                    if (mid) params.set('machineId', mid);
+                    const basePath = proxy.isProxied ? proxy.basePath : '';
+                    window.open(`${basePath}/console?${params.toString()}`, '_blank');
+                  }}
                 >
                   <GitFork size={12} />
                 </button>
                 <button
                   className="btn btn-sm btn-ghost"
                   title="New Shell"
-                  onClick={() => window.open(`/console?shell=true&projectPath=${encodeURIComponent(projectPath || detail?.projectPath || '')}`, '_blank')}
+                  onClick={() => {
+                    const params = new URLSearchParams({ shell: 'true', projectPath: projectPath || detail?.projectPath || '' });
+                    const mid = proxy.isProxied ? proxy.machineId : (!isLocal ? machineId : null);
+                    if (mid) params.set('machineId', mid);
+                    const basePath = proxy.isProxied ? proxy.basePath : '';
+                    window.open(`${basePath}/console?${params.toString()}`, '_blank');
+                  }}
                 >
                   <SquareTerminal size={12} />
                 </button>
