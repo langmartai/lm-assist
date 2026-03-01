@@ -11,11 +11,14 @@
  * - Non-blocking: sync runs in background, status polled by UI
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { getHubConfig, isHubConfigured } from '../hub-client/hub-config';
 import { getKnowledgeStore } from './store';
 import { getKnowledgeSettings, saveKnowledgeSettings } from './settings';
 import type { Knowledge, KnowledgeType } from './types';
 import { KNOWLEDGE_TYPES } from './types';
+import { getDataDir } from '../utils/path-utils';
 
 // ── Types ──────────────────────────────────────────
 
@@ -31,9 +34,29 @@ export interface SyncStatus {
   completedAt: string | null;
 }
 
+// ── Status Persistence ──────────────────────────────────────────
+
+const STATUS_FILE = path.join(getDataDir(), 'knowledge', 'remote-sync-status.json');
+
+function loadPersistedStatus(): SyncStatus | null {
+  try {
+    if (fs.existsSync(STATUS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(STATUS_FILE, 'utf-8'));
+      if (data.status === 'done' || data.status === 'error') return data;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+function persistStatus(status: SyncStatus): void {
+  try {
+    fs.writeFileSync(STATUS_FILE, JSON.stringify(status));
+  } catch { /* best-effort */ }
+}
+
 // ── Status Tracker ──────────────────────────────────────────
 
-let _syncStatus: SyncStatus = {
+let _syncStatus: SyncStatus = loadPersistedStatus() || {
   status: 'idle',
   machinesChecked: 0,
   machinesMatched: 0,
@@ -165,22 +188,39 @@ export async function sync(projectPath?: string): Promise<void> {
       throw new Error('Hub not connected');
     }
 
-    // 2. Get local git remote URL for project matching
-    const { createProjectsService } = require('../projects-service');
-    const projectsService = createProjectsService();
-    const effectivePath = projectPath || process.cwd();
+    // 2. Get local git remote URLs for project matching
+    const { getProjectsService } = require('../projects-service');
+    const projectsService = getProjectsService();
 
-    const gitInfo = projectsService.getGitInfo(effectivePath);
-    if (!gitInfo || !gitInfo.remotes || gitInfo.remotes.length === 0) {
-      throw new Error('No git remotes found for project');
+    // Map normalized git remote URL → local project path
+    const remoteToLocalProject: Record<string, string> = {};
+
+    const addFetchRemotes = (remotes: any[], localPath: string) => {
+      for (const r of remotes) {
+        if (r.type !== 'fetch') continue;
+        const norm = normalizeGitUrl(r.url);
+        if (!(norm in remoteToLocalProject)) {
+          remoteToLocalProject[norm] = localPath;
+        }
+      }
+    };
+
+    if (projectPath) {
+      const gitInfo = projectsService.getGitInfo(projectPath);
+      if (gitInfo?.remotes?.length) {
+        addFetchRemotes(gitInfo.remotes, projectPath);
+      }
+    } else {
+      // No specific project — scan all known projects for git remotes
+      for (const proj of projectsService.listProjects({ includeSize: false })) {
+        if (proj.git?.remotes?.length) {
+          addFetchRemotes(proj.git.remotes, proj.path);
+        }
+      }
     }
 
-    const localRemotes = gitInfo.remotes
-      .filter((r: any) => r.type === 'fetch')
-      .map((r: any) => normalizeGitUrl(r.url));
-
-    if (localRemotes.length === 0) {
-      throw new Error('No fetch remotes found');
+    if (Object.keys(remoteToLocalProject).length === 0) {
+      throw new Error('No git remotes found for any local project');
     }
 
     // 3. Discover remote machines
@@ -214,25 +254,24 @@ export async function sync(projectPath?: string): Promise<void> {
           continue;
         }
 
-        // Find projects with matching git remote
-        let matchedProjectPath: string | null = null;
+        // Find a remote project whose git remote matches one of our local projects
+        let matchedLocalProjectPath: string | null = null;
         for (const rp of remoteProjects) {
           const rpGit = rp.git;
           if (!rpGit || !rpGit.remotes) continue;
-          const rpRemotes = rpGit.remotes
-            .filter((r: any) => r.type === 'fetch')
-            .map((r: any) => normalizeGitUrl(r.url));
 
-          for (const rpRemote of rpRemotes) {
-            if (localRemotes.includes(rpRemote)) {
-              matchedProjectPath = rp.path;
+          for (const r of rpGit.remotes) {
+            if (r.type !== 'fetch') continue;
+            const norm = normalizeGitUrl(r.url);
+            if (norm in remoteToLocalProject) {
+              matchedLocalProjectPath = remoteToLocalProject[norm];
               break;
             }
           }
-          if (matchedProjectPath) break;
+          if (matchedLocalProjectPath) break;
         }
 
-        if (!matchedProjectPath) continue;
+        if (!matchedLocalProjectPath) continue;
         _syncStatus.machinesMatched++;
 
         // Fetch knowledge from remote machine — only local origin to prevent sync loops
@@ -301,7 +340,7 @@ export async function sync(projectPath?: string): Promise<void> {
                 if (!hasVec) {
                   // Re-index vectors for existing entry
                   const { extractKnowledgeVectors } = require('../vector/indexer');
-                  const vectors = extractKnowledgeVectors(existing, effectivePath, {
+                  const vectors = extractKnowledgeVectors(existing, matchedLocalProjectPath!, {
                     machineId: remoteMachineId,
                     machineHostname: remoteHostname,
                     machineOS: remoteOS,
@@ -347,7 +386,7 @@ export async function sync(projectPath?: string): Promise<void> {
               id: knowledgeId,
               title: rk.title || 'Untitled',
               type: (KNOWLEDGE_TYPES.includes(rk.type) ? rk.type : 'algorithm') as KnowledgeType,
-              project: effectivePath, // Map to local project path
+              project: matchedLocalProjectPath!, // Map to local project path
               parts,
               status: rk.status || 'active',
               sourceSessionId: rk.sourceSessionId,
@@ -366,7 +405,7 @@ export async function sync(projectPath?: string): Promise<void> {
               const { getVectorStore } = require('../vector/vector-store');
               const { extractKnowledgeVectors } = require('../vector/indexer');
               const vectra = getVectorStore();
-              const vectors = extractKnowledgeVectors(created, effectivePath, {
+              const vectors = extractKnowledgeVectors(created, matchedLocalProjectPath!, {
                 machineId: remoteMachineId,
                 machineHostname: remoteHostname,
                 machineOS: remoteOS,
@@ -438,12 +477,14 @@ export async function sync(projectPath?: string): Promise<void> {
 
     _syncStatus.status = 'done';
     _syncStatus.completedAt = new Date().toISOString();
+    persistStatus(_syncStatus);
     console.log(`[RemoteSync] Done: ${_syncStatus.entriesSynced} synced, ${_syncStatus.entriesSkipped} skipped, ${_syncStatus.entriesFlaggedStale} stale`);
 
   } catch (err: any) {
     _syncStatus.status = 'error';
     _syncStatus.errors.push(err.message);
     _syncStatus.completedAt = new Date().toISOString();
+    persistStatus(_syncStatus);
     console.error('[RemoteSync] Error:', err.message);
   }
 }

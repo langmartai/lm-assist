@@ -1049,6 +1049,12 @@ export default function SettingsPage() {
       fetch(tierAgentUrl + '/knowledge-settings').then(r => r.json()).then(j => {
         if (j.success) setKnowledgeSettings(j.data);
       }).catch(() => {});
+      // Fetch last remote sync status (show previous result on page load)
+      if (!isRemoteSyncing) {
+        fetch(tierAgentUrl + '/knowledge/remote-sync/status').then(r => r.json()).then(j => {
+          if (j.success && j.data.status !== 'idle') setRemoteSyncStatus(j.data);
+        }).catch(() => {});
+      }
     }
   }, [proxy.isProxied, localStatus?.healthy, activeTab, tierAgentUrl]);
 
@@ -4427,6 +4433,13 @@ export default function SettingsPage() {
                     />
 
                     {/* Sync status display */}
+                    {remoteSyncStatus?.status === 'running' && (
+                      <div style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                        {remoteSyncStatus.machinesChecked > 0 && <>{remoteSyncStatus.machinesMatched}/{remoteSyncStatus.machinesChecked} machines matched</>}
+                        {remoteSyncStatus.entriesSynced > 0 && <>{' · '}{remoteSyncStatus.entriesSynced} synced</>}
+                        {remoteSyncStatus.entriesSkipped > 0 && <>{' · '}{remoteSyncStatus.entriesSkipped} skipped</>}
+                      </div>
+                    )}
                     {remoteSyncStatus?.status === 'done' && (
                       <div style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
                         Last sync: {remoteSyncStatus.completedAt ? new Date(remoteSyncStatus.completedAt).toLocaleString() : 'unknown'}
@@ -4454,18 +4467,13 @@ export default function SettingsPage() {
                           setRemoteSyncStatus(null);
                           try {
                             await fetch(tierAgentUrl + '/knowledge/remote-sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-                            // Poll status with 2-minute timeout
-                            let elapsed = 0;
+                            // Poll status until sync completes (no timeout — sync can take several minutes)
+                            let failures = 0;
                             const poll = setInterval(async () => {
-                              elapsed += 1500;
-                              if (elapsed > 120000) {
-                                clearInterval(poll);
-                                setIsRemoteSyncing(false);
-                                return;
-                              }
                               try {
                                 const r = await fetch(tierAgentUrl + '/knowledge/remote-sync/status');
                                 const j = await r.json();
+                                failures = 0;
                                 if (j.success) {
                                   setRemoteSyncStatus(j.data);
                                   if (j.data.status !== 'running') {
@@ -4473,8 +4481,11 @@ export default function SettingsPage() {
                                     setIsRemoteSyncing(false);
                                   }
                                 }
-                              } catch { clearInterval(poll); setIsRemoteSyncing(false); }
-                            }, 1500);
+                              } catch {
+                                failures++;
+                                if (failures >= 5) { clearInterval(poll); setIsRemoteSyncing(false); }
+                              }
+                            }, 2000);
                           } catch { setIsRemoteSyncing(false); }
                         }}
                         style={{ padding: '6px 12px', fontSize: 11, gap: 4 }}
