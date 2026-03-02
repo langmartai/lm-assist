@@ -19,6 +19,7 @@ import {
   Globe,
   Hash,
   ExternalLink,
+  Bot,
 } from 'lucide-react';
 import { formatTimeAgo, formatCost } from '@/lib/utils';
 import Link from 'next/link';
@@ -72,12 +73,13 @@ export default function ProjectsPage() {
     window.open(`${basePath}/console?${params.toString()}`, '_blank');
   };
 
-  // Filter out non-git projects, then apply search
-  const gitProjects = projects.filter(p => p.isGitProject !== false);
+  // Filter out non-git projects (but keep lm-assist managed projects), then apply search
+  const gitProjects = projects.filter(p => p.isGitProject !== false || p.managedBy);
   const filtered = search
     ? gitProjects.filter(p =>
         p.projectName.toLowerCase().includes(search.toLowerCase()) ||
-        p.projectPath.toLowerCase().includes(search.toLowerCase())
+        p.projectPath.toLowerCase().includes(search.toLowerCase()) ||
+        (p.managedBy || '').toLowerCase().includes(search.toLowerCase())
       )
     : gitProjects;
 
@@ -171,6 +173,27 @@ export default function ProjectsPage() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                   <FolderOpen size={16} style={{ color: accent, flexShrink: 0 }} />
                   <span style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>{project.projectName}</span>
+                  {project.managedBy && (
+                    <span
+                      title={`Managed by lm-assist — ${project.managedBy === 'lm-assist:knowledge-pipeline' ? 'Knowledge pipeline SDK sessions' : project.managedBy}`}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 3,
+                        padding: '1px 6px',
+                        borderRadius: 10,
+                        background: 'rgba(251, 191, 36, 0.1)',
+                        border: '1px solid rgba(251, 191, 36, 0.25)',
+                        fontSize: 9,
+                        color: 'rgb(251, 191, 36)',
+                        lineHeight: '14px',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      <Bot size={9} />
+                      {project.managedBy === 'lm-assist:knowledge-pipeline' ? 'Knowledge Pipeline' : 'Managed'}
+                    </span>
+                  )}
                   {!isWindows && (
                     <button
                       onClick={(e) => handleNewSession(e, project)}

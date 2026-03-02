@@ -16,6 +16,7 @@ import * as readline from 'readline';
 import { execFileSync } from 'child_process';
 import {
   getProjectsDir,
+  getDataDir,
   encodePath,
   decodePath,
   getClaudeConfigDir,
@@ -83,6 +84,8 @@ export interface Project {
   isGitProject: boolean;
   /** Git repository details (null if not a git project or directory doesn't exist) */
   git: GitInfo | null;
+  /** If set, this project is managed by lm-assist (e.g., knowledge pipeline sessions) */
+  managedBy?: string;
 }
 
 export interface ProjectSession {
@@ -349,6 +352,14 @@ export class ProjectsService {
       // Detect git info (lightweight — only when directory exists on disk)
       const git = isGitProject ? this.getGitInfo(projectPath) : null;
 
+      // Detect lm-assist managed projects (e.g., knowledge pipeline sessions
+      // stored with cwd ~/.lm-assist)
+      const dataDir = getDataDir();
+      const normalizedProjectPath = path.normalize(projectPath);
+      const managedBy = normalizedProjectPath === path.normalize(dataDir)
+        ? 'lm-assist:knowledge-pipeline'
+        : undefined;
+
       projects.push({
         path: encoded ? encodedPath : projectPath,
         encodedPath,
@@ -358,6 +369,7 @@ export class ProjectsService {
         hasClaudeMd,
         isGitProject,
         git,
+        managedBy,
         _mostRecentSessionPath: mostRecentSessionPath,
       } as any);
     }
@@ -402,30 +414,43 @@ export class ProjectsService {
       return null;
     }
 
-    // Try to read the cwd from the first session file
+    // Try to read the cwd from the first session file.
+    // Uses progressive buffer sizes because SDK runner sessions can have
+    // very large JSON lines (80KB+) that get truncated by small buffers.
     const firstFile = path.join(projectStorageDir, sessionFiles[0]);
-    try {
-      const fd = fs.openSync(firstFile, 'r');
-      const buffer = Buffer.alloc(16384); // Read up to 16KB
-      const bytesRead = fs.readSync(fd, buffer, 0, 16384, 0);
-      fs.closeSync(fd);
+    const bufferSizes = [16384, 262144]; // 16KB, then 256KB
 
-      const content = buffer.slice(0, bytesRead).toString('utf8');
-      const lines = content.split('\n').slice(0, 20); // Check first 20 lines
+    for (const bufSize of bufferSizes) {
+      try {
+        const fd = fs.openSync(firstFile, 'r');
+        const buffer = Buffer.alloc(bufSize);
+        const bytesRead = fs.readSync(fd, buffer, 0, bufSize, 0);
+        fs.closeSync(fd);
 
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const msg = JSON.parse(line);
-          if (msg.cwd) {
-            return msg.cwd;
+        const content = buffer.slice(0, bytesRead).toString('utf8');
+        const lines = content.split('\n').slice(0, 20);
+
+        let hitTruncation = false;
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const msg = JSON.parse(line);
+            if (msg.cwd) {
+              return msg.cwd;
+            }
+          } catch {
+            // JSON parse error — likely a truncated line. Try larger buffer.
+            hitTruncation = true;
+            break;
           }
-        } catch {
-          // Skip malformed lines
         }
+        if (!hitTruncation) {
+          // All lines parsed OK but none had cwd — larger buffer won't help
+          break;
+        }
+      } catch {
+        break; // File read error — no point retrying
       }
-    } catch {
-      // Couldn't read the file
     }
 
     return null;

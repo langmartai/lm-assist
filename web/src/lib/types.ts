@@ -396,6 +396,8 @@ export interface Project {
   hasClaudeMd?: boolean;
   isGitProject?: boolean;
   git?: GitInfo | null;
+  /** If set, this project is managed by lm-assist (e.g., 'lm-assist:knowledge-pipeline') */
+  managedBy?: string;
 }
 
 // ============================================

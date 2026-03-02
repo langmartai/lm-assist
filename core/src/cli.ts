@@ -145,6 +145,16 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
       });
     }
 
+    // Start knowledge scheduler (discovery, generation, remote sync)
+    let knowledgeScheduler: any = null;
+    try {
+      const { getKnowledgeScheduler } = require('./knowledge/scheduler');
+      knowledgeScheduler = getKnowledgeScheduler();
+      knowledgeScheduler.start();
+    } catch (err: any) {
+      console.error('Scheduler start failed:', err.message);
+    }
+
     profiler.end('total');
     profiler.summary();
 
@@ -153,6 +163,7 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
     // Handle shutdown
     process.on('SIGINT', async () => {
       console.log('\nShutting down...');
+      try { if (knowledgeScheduler) knowledgeScheduler.stop(); } catch {}
       if (hubClient) {
         await hubClient.disconnect();
       }
@@ -161,6 +172,7 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
     });
 
     process.on('SIGTERM', async () => {
+      try { if (knowledgeScheduler) knowledgeScheduler.stop(); } catch {}
       if (hubClient) {
         await hubClient.disconnect();
       }

@@ -241,12 +241,19 @@ export function KnowledgePage() {
     }
   }, []);
 
+  // Fetch list on mount and when filters change
   useEffect(() => {
     fetchList();
   }, [fetchList]);
 
   // Re-fetch when selected machine changes (hybrid mode machine switching)
+  // Skip initial machine context resolution to prevent double-fetch on mount
+  const machineInitRef = useRef(true);
   useEffect(() => {
+    if (machineInitRef.current) {
+      machineInitRef.current = false;
+      return;
+    }
     if (!selectedMachineId) return;
     setLoading(true);
     setSelectedId(null);
@@ -551,12 +558,14 @@ export function KnowledgePage() {
     }}>
       {/* Left panel — List (hidden on mobile when detail is selected) */}
       <div style={{
-        width: isMobile ? '100%' : 340,
-        minWidth: isMobile ? 0 : 340,
-        borderRight: isMobile ? 'none' : '1px solid var(--color-border-default)',
+        width: selectedId ? (isMobile ? 0 : '40%') : '100%',
+        minWidth: (isMobile && selectedId) ? 0 : (isMobile ? 0 : 300),
+        overflow: (isMobile && selectedId) ? 'hidden' : undefined,
+        borderRight: selectedId && !isMobile ? '1px solid var(--color-border-default)' : 'none',
         display: (isMobile && selectedId) ? 'none' : 'flex',
         flexDirection: 'column',
-        overflow: 'hidden',
+        transition: 'width 200ms ease',
+        flexShrink: (isMobile && selectedId) ? 0 : undefined,
       }}>
         {/* Search bar */}
         <div style={{
@@ -969,24 +978,26 @@ export function KnowledgePage() {
                 <div>No results found</div>
               </div>
             ) : (
-              searchResults.map((r, i) => (
-                <SearchResultRow
-                  key={i}
-                  result={r}
-                  onClick={() => {
-                    const kId = r.knowledgeId || (r.partId || '').split('.')[0] || null;
-                    if (kId) {
-                      setSelectedItemMachineId(r.machineId);
-                      if (r.partId) {
-                        selectPart(kId, r.partId);
-                      } else {
-                        setSelectedId(kId);
-                        setSelectedPartId(null);
+              <div style={{ padding: 4 }}>
+                {searchResults.map((r, i) => (
+                  <SearchResultRow
+                    key={i}
+                    result={r}
+                    onClick={() => {
+                      const kId = r.knowledgeId || (r.partId || '').split('.')[0] || null;
+                      if (kId) {
+                        setSelectedItemMachineId(r.machineId);
+                        if (r.partId) {
+                          selectPart(kId, r.partId);
+                        } else {
+                          setSelectedId(kId);
+                          setSelectedPartId(null);
+                        }
                       }
-                    }
-                  }}
-                />
-              ))
+                    }}
+                  />
+                ))}
+              </div>
             )
           ) : loading ? (
             <div style={{ padding: 16, textAlign: 'center', color: 'var(--color-text-tertiary)', fontSize: 13 }}>
@@ -999,17 +1010,19 @@ export function KnowledgePage() {
               <div style={{ fontSize: 12 }}>Knowledge is created via MCP tools or REST API</div>
             </div>
           ) : (
-            list.map((k, ki) => (
-              <KnowledgeListGroup
-                key={k.id}
-                item={k}
-                isFirst={ki === 0}
-                selectedId={selectedId}
-                selectedPartId={selectedPartId}
-                onSelect={(id, machineId) => { setSelectedId(id); setSelectedPartId(null); setSelectedItemMachineId(machineId); }}
-                onSelectPart={(kId, pId, machineId) => { setSelectedItemMachineId(machineId); selectPart(kId, pId); }}
-              />
-            ))
+            <div style={{ padding: 4 }}>
+              {list.map((k, ki) => (
+                <KnowledgeListGroup
+                  key={k.id}
+                  item={k}
+                  isFirst={ki === 0}
+                  selectedId={selectedId}
+                  selectedPartId={selectedPartId}
+                  onSelect={(id, machineId) => { setSelectedId(id); setSelectedPartId(null); setSelectedItemMachineId(machineId); }}
+                  onSelectPart={(kId, pId, machineId) => { setSelectedItemMachineId(machineId); selectPart(kId, pId); }}
+                />
+              ))}
+            </div>
           )}
         </div>
       </div>
@@ -1278,64 +1291,73 @@ function KnowledgeListGroup({
   if (item.parts.length === 0) {
     const isActive = selectedId === item.id && !selectedPartId;
     return (
-      <div data-knowledge-id={item.id} style={{ borderBottom: '1px solid var(--color-border-default)' }}>
-        <div
-          onClick={() => onSelect(item.id, item.machineId)}
-          style={{
-            padding: '8px 12px',
-            cursor: 'pointer',
-            background: isActive ? 'var(--color-bg-elevated)' : 'transparent',
-          }}
-          onMouseEnter={(e) => {
-            if (!isActive) (e.currentTarget as HTMLElement).style.background = 'var(--color-bg-hover)';
-          }}
-          onMouseLeave={(e) => {
-            if (!isActive) (e.currentTarget as HTMLElement).style.background = 'transparent';
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{
-              fontSize: 13,
-              fontWeight: 500,
-              color: 'var(--color-text-primary)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}>
-              {item.title}
+      <button
+        data-knowledge-id={item.id}
+        onClick={() => onSelect(item.id, item.machineId)}
+        style={{
+          display: 'block',
+          width: '100%',
+          textAlign: 'left',
+          padding: '8px 12px',
+          background: isActive ? 'var(--color-accent-glow)' : 'transparent',
+          border: 'none',
+          borderLeft: isActive ? '3px solid var(--color-accent)' : '3px solid transparent',
+          borderRadius: 'var(--radius-md)',
+          cursor: 'pointer',
+          marginBottom: 2,
+        }}
+        onMouseEnter={(e) => {
+          if (!isActive) e.currentTarget.style.background = 'var(--color-bg-hover)';
+        }}
+        onMouseLeave={(e) => {
+          if (!isActive) e.currentTarget.style.background = 'transparent';
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <BookOpen size={12} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
+          <span style={{
+            fontSize: 12,
+            fontWeight: 500,
+            color: 'var(--color-text-primary)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}>
+            {item.title}
+          </span>
+          <span className={`badge ${TYPE_COLORS[item.type] || 'badge-default'}`} style={{ fontSize: 9, flexShrink: 0 }}>
+            {item.type}
+          </span>
+          {item.origin === 'remote' && (
+            <span className="badge badge-default" style={{ fontSize: 8, flexShrink: 0 }}
+              title={`From ${item.machineHostname || 'remote'} (${item.machineOS || 'unknown'})`}>
+              {item.machineHostname || 'remote'}
             </span>
-            <span className={`badge ${TYPE_COLORS[item.type] || 'badge-default'}`} style={{ fontSize: 9, flexShrink: 0 }}>
-              {item.type}
-            </span>
-            {item.origin === 'remote' && (
-              <span className="badge badge-default" style={{ fontSize: 8, flexShrink: 0 }}
-                title={`From ${item.machineHostname || 'remote'} (${item.machineOS || 'unknown'})`}>
-                {item.machineHostname || 'remote'}
-              </span>
-            )}
-            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>
-              {formatDate(item.sourceTimestamp || item.createdAt || item.updatedAt)}
-            </span>
-          </div>
+          )}
         </div>
-      </div>
+        <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2, paddingLeft: 18 }}>
+          {item.id} &middot; {formatDate(item.sourceTimestamp || item.createdAt || item.updatedAt)}
+        </div>
+      </button>
     );
   }
 
   return (
     <div data-knowledge-id={item.id} style={{
-      borderBottom: '1px solid var(--color-border-default)',
+      marginBottom: 2,
+      borderRadius: 'var(--radius-md)',
       background: hasSelectedPart ? 'var(--color-bg-elevated)' : 'transparent',
     }}>
       {/* Collapsible knowledge title header */}
       <div
         onClick={() => setExpanded(!expanded)}
         style={{
-          padding: '7px 12px',
+          padding: '8px 12px',
           cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',
           gap: 6,
+          borderRadius: 'var(--radius-md)',
         }}
         onMouseEnter={(e) => {
           if (!hasSelectedPart) (e.currentTarget as HTMLElement).style.background = 'var(--color-bg-hover)';
@@ -1358,10 +1380,11 @@ function KnowledgeListGroup({
         >
           <ChevronRight size={13} style={{ color: 'var(--color-text-tertiary)' }} />
         </button>
+        <BookOpen size={12} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{
-              fontSize: 13,
+              fontSize: 12,
               fontWeight: 500,
               color: 'var(--color-text-primary)',
               overflow: 'hidden',
@@ -1385,9 +1408,9 @@ function KnowledgeListGroup({
                 {item.unaddressedComments}
               </span>
             )}
-            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>
-              {item.parts.length} &middot; {formatDate(item.sourceTimestamp || item.createdAt || item.updatedAt)}
-            </span>
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2, paddingLeft: 0 }}>
+            {item.id} &middot; {item.parts.length} part{item.parts.length !== 1 ? 's' : ''} &middot; {formatDate(item.sourceTimestamp || item.createdAt || item.updatedAt)}
           </div>
         </div>
       </div>
@@ -1406,6 +1429,8 @@ function KnowledgeListGroup({
                   cursor: 'pointer',
                   background: isActive ? 'var(--color-accent-glow)' : 'transparent',
                   borderLeft: isActive ? '3px solid var(--color-accent)' : '3px solid transparent',
+                  borderRadius: 'var(--radius-md)',
+                  marginBottom: 1,
                 }}
                 onMouseEnter={(e) => {
                   if (!isActive) (e.currentTarget as HTMLElement).style.background = 'var(--color-bg-hover)';
@@ -1425,7 +1450,7 @@ function KnowledgeListGroup({
                   {part.title}
                 </div>
                 <div style={{
-                  fontSize: 11,
+                  fontSize: 10,
                   color: 'var(--color-text-tertiary)',
                   marginTop: 1,
                   overflow: 'hidden',
@@ -1455,15 +1480,22 @@ function SearchResultRow({
     : result.knowledgeTitle || `${result.partId || result.knowledgeId}: ${result.text}`;
 
   return (
-    <div
+    <button
       onClick={onClick}
       style={{
+        display: 'block',
+        width: '100%',
+        textAlign: 'left',
         padding: '8px 12px',
-        borderBottom: '1px solid var(--color-border-default)',
+        background: 'transparent',
+        border: 'none',
+        borderLeft: '3px solid transparent',
+        borderRadius: 'var(--radius-md)',
         cursor: 'pointer',
+        marginBottom: 2,
       }}
-      onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.background = 'var(--color-bg-hover)'}
-      onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+      onMouseEnter={(e) => e.currentTarget.style.background = 'var(--color-bg-hover)'}
+      onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
     >
       <div style={{
         fontSize: 12,
@@ -1490,7 +1522,7 @@ function SearchResultRow({
         )}
       </div>
       <div style={{
-        fontSize: 11,
+        fontSize: 10,
         color: 'var(--color-text-tertiary)',
         marginTop: 2,
         paddingLeft: 18,
@@ -1498,7 +1530,7 @@ function SearchResultRow({
         {result.partId || result.knowledgeId} &middot; Score: {typeof result.score === 'number' ? result.score.toFixed(3) : result.score}
         {result.timestamp && <> &middot; {formatDate(result.timestamp)}</>}
       </div>
-    </div>
+    </button>
   );
 }
 

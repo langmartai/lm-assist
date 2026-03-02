@@ -530,6 +530,7 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
         hasClaudeMd: p.hasClaudeMd || false,
         isGitProject: p.isGitProject ?? true,
         git: p.git || null,
+        managedBy: p.managedBy || undefined,
       }));
     },
 
@@ -968,6 +969,7 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
         lastActivity: p.lastActivity || p.lastModified,
         isGitProject: p.isGitProject ?? true,
         git: p.git || null,
+        managedBy: p.managedBy || undefined,
       }));
     },
 
@@ -1268,55 +1270,11 @@ export function createHybridClient(options: HybridClientOptions): ApiClient {
     mode: 'hybrid',
 
     async getMachines(): Promise<Machine[]> {
-      // Fetch both local machine info and hub machine list in parallel
-      const [localMachines, hubMachines] = await Promise.allSettled([
-        localClient.getMachines(),
-        hubClient.getMachines(),
-      ]);
-
-      const local = localMachines.status === 'fulfilled' ? localMachines.value : [];
-      const hub = hubMachines.status === 'fulfilled' ? hubMachines.value : [];
-
-      // Build result: use hub list as base (includes all machines)
-      // but replace the local machine entry with enriched local data
-      if (hub.length === 0) {
-        // Hub not reachable — fall back to local only
-        return local;
-      }
-
-      const result: Machine[] = [];
-      let localFound = false;
-
-      for (const w of hub) {
-        if (w.id === localGatewayId || w.gatewayId === localGatewayId) {
-          // This is the local machine — merge with local health data
-          const localInfo = local.find(m => m.isLocal) || local[0];
-          result.push({
-            ...w,
-            id: w.id || localGatewayId,
-            hostname: localInfo?.hostname || w.hostname,
-            platform: localInfo?.platform || w.platform,
-            status: 'online', // We know it's online since we can reach it directly
-            isLocal: true,
-            localIp: localInfo?.localIp || w.localIp,
-          } as Machine & { isLocal?: boolean });
-          localFound = true;
-        } else {
-          result.push(w);
-        }
-      }
-
-      // If local machine wasn't in hub list (e.g., just connected), add it
-      if (!localFound && local.length > 0) {
-        const localInfo = local.find(m => m.isLocal) || local[0];
-        result.unshift({
-          ...localInfo,
-          id: localGatewayId,
-          isLocal: true,
-        } as Machine & { isLocal?: boolean });
-      }
-
-      return result;
+      // Delegate to localClient — it already fetches both /health (local info)
+      // and /hub/machines (hub machines via core API proxy) and merges them.
+      // Calling hubClient.getMachines() directly would hit the external hub URL
+      // from the browser, which gets blocked by CORS on localhost.
+      return localClient.getMachines();
     },
 
     async getSessions(machineId?: string): Promise<Session[]> {

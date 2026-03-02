@@ -328,7 +328,8 @@ export default function SettingsPage() {
   const upgradePollRef = useRef(false);
 
   // remote knowledge sync state
-  const [knowledgeSettings, setKnowledgeSettings] = useState<{ remoteSyncEnabled: boolean; syncIntervalMinutes: number; lastSyncTimestamps: Record<string, string>; reviewModel: 'haiku' | 'sonnet' | 'opus'; autoReview: boolean; autoExploreGeneration: boolean; autoGenericDiscovery: boolean; genericValidationModel: 'haiku' | 'sonnet' | 'opus' } | null>(null);
+  const [knowledgeSettings, setKnowledgeSettings] = useState<{ remoteSyncEnabled: boolean; syncIntervalMinutes: number; lastSyncTimestamps: Record<string, string>; reviewModel: 'haiku' | 'sonnet' | 'opus'; autoReview: boolean; autoExploreGeneration: boolean; autoGenericDiscovery: boolean; genericValidationModel: 'haiku' | 'sonnet' | 'opus'; discoveryIntervalMinutes: number; discoveryBatchSize: number } | null>(null);
+  const [schedulerStatus, setSchedulerStatus] = useState<{ running: boolean; agentDiscovery: { enabled: boolean; intervalMinutes: number; lastRunAt: string | null; lastResult: string | null; isRunning: boolean }; genericDiscovery: { enabled: boolean; intervalMinutes: number; lastRunAt: string | null; lastResult: string | null; isRunning: boolean }; generation: { enabled: boolean; lastRunAt: string | null; lastResult: string | null; isRunning: boolean }; remoteSync: { enabled: boolean; intervalMinutes: number; lastRunAt: string | null; lastResult: string | null; isRunning: boolean } } | null>(null);
   const [remoteSyncStatus, setRemoteSyncStatus] = useState<{ status: string; machinesChecked: number; machinesMatched: number; entriesSynced: number; entriesSkipped: number; entriesFlaggedStale: number; errors: string[]; startedAt: string | null; completedAt: string | null } | null>(null);
   const [isRemoteSyncing, setIsRemoteSyncing] = useState(false);
 
@@ -1055,6 +1056,10 @@ export default function SettingsPage() {
           if (j.success && j.data.status !== 'idle') setRemoteSyncStatus(j.data);
         }).catch(() => {});
       }
+      // Fetch scheduler status
+      fetch(tierAgentUrl + '/knowledge/scheduler/status').then(r => r.json()).then(j => {
+        if (j.success) setSchedulerStatus(j.data);
+      }).catch(() => {});
     }
   }, [proxy.isProxied, localStatus?.healthy, activeTab, tierAgentUrl]);
 
@@ -4142,11 +4147,49 @@ export default function SettingsPage() {
                 {activeTab === 'data-loading' && (
                 <SectionCard title="Knowledge Processing" icon={Code2}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {/* Auto Explore Agent Knowledge Toggle */}
+                    {/* ── Auto Discovery ── */}
+
+                    {/* 1. Agent Discovery Toggle */}
                     {knowledgeSettings && (
                       <ToggleRow
-                        label="Auto explore agent knowledge"
-                        description="Automatically generate knowledge from completed explore agents."
+                        label="Auto agent discovery"
+                        description="Periodically discover explore-agent candidates across all projects. Runs every 5 minutes."
+                        checked={(knowledgeSettings.discoveryIntervalMinutes ?? 5) > 0}
+                        onChange={(checked) => {
+                          const val = checked ? 5 : 0;
+                          setKnowledgeSettings({ ...knowledgeSettings, discoveryIntervalMinutes: val });
+                          fetch(tierAgentUrl + '/knowledge-settings', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ discoveryIntervalMinutes: val }),
+                          }).catch(() => {});
+                        }}
+                      />
+                    )}
+
+                    {/* 2. Generic Content Discovery Toggle */}
+                    {knowledgeSettings && (
+                      <ToggleRow
+                        label="Auto generic discovery"
+                        description="Periodically discover knowledge from session messages using LLM validation. Uses API tokens."
+                        checked={knowledgeSettings.autoGenericDiscovery === true}
+                        onChange={(checked) => {
+                          setKnowledgeSettings({ ...knowledgeSettings, autoGenericDiscovery: checked });
+                          fetch(tierAgentUrl + '/knowledge-settings', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ autoGenericDiscovery: checked }),
+                          }).catch(() => {});
+                        }}
+                      />
+                    )}
+
+                    {/* ── Auto Generation ── */}
+
+                    {knowledgeSettings && (
+                      <ToggleRow
+                        label="Auto generation"
+                        description="Automatically generate knowledge from discovered candidates (agent and generic)."
                         checked={knowledgeSettings.autoExploreGeneration === true}
                         onChange={(checked) => {
                           setKnowledgeSettings({ ...knowledgeSettings, autoExploreGeneration: checked });
@@ -4159,21 +4202,40 @@ export default function SettingsPage() {
                       />
                     )}
 
-                    {/* Auto Generic Content Discovery Toggle */}
+                    {/* ── Auto Remote Sync ── */}
+
                     {knowledgeSettings && (
                       <ToggleRow
-                        label="Auto generic content discovery"
-                        description="Automatically discover knowledge from any session message using LLM validation. Uses API tokens."
-                        checked={knowledgeSettings.autoGenericDiscovery === true}
+                        label="Auto remote sync"
+                        description="Periodically sync knowledge from Hub-connected machines every 5 minutes."
+                        checked={knowledgeSettings.remoteSyncEnabled === true}
                         onChange={(checked) => {
-                          setKnowledgeSettings({ ...knowledgeSettings, autoGenericDiscovery: checked });
+                          setKnowledgeSettings({ ...knowledgeSettings, remoteSyncEnabled: checked });
                           fetch(tierAgentUrl + '/knowledge-settings', {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ autoGenericDiscovery: checked }),
+                            body: JSON.stringify({ remoteSyncEnabled: checked }),
                           }).catch(() => {});
                         }}
                       />
+                    )}
+
+                    {/* ── Scheduler Status ── */}
+                    {schedulerStatus && (schedulerStatus.agentDiscovery.lastRunAt || schedulerStatus.genericDiscovery.lastRunAt || schedulerStatus.generation.lastRunAt || schedulerStatus.remoteSync.lastRunAt) && (
+                      <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.6, borderTop: '1px solid var(--color-border)', paddingTop: 8 }}>
+                        {schedulerStatus.agentDiscovery.lastRunAt && (
+                          <div>Agent discovery: {schedulerStatus.agentDiscovery.lastResult} · {new Date(schedulerStatus.agentDiscovery.lastRunAt).toLocaleTimeString()}</div>
+                        )}
+                        {schedulerStatus.genericDiscovery.lastRunAt && (
+                          <div>Generic discovery: {schedulerStatus.genericDiscovery.lastResult} · {new Date(schedulerStatus.genericDiscovery.lastRunAt).toLocaleTimeString()}</div>
+                        )}
+                        {schedulerStatus.generation.lastRunAt && (
+                          <div>Generation: {schedulerStatus.generation.lastResult} · {new Date(schedulerStatus.generation.lastRunAt).toLocaleTimeString()}</div>
+                        )}
+                        {schedulerStatus.remoteSync.lastRunAt && (
+                          <div>Remote sync: {schedulerStatus.remoteSync.lastResult} · {new Date(schedulerStatus.remoteSync.lastRunAt).toLocaleTimeString()}</div>
+                        )}
+                      </div>
                     )}
 
                     {/* Validation Model Selector (shown when generic discovery enabled) */}
@@ -4233,8 +4295,25 @@ export default function SettingsPage() {
                     </div>
                     )}
 
-                    {/* Review Model Selector */}
+                    {/* Auto Review Toggle */}
                     {knowledgeSettings && (
+                      <ToggleRow
+                        label="Auto review"
+                        description="Automatically run LLM quality review after knowledge generation completes."
+                        checked={knowledgeSettings.autoReview === true}
+                        onChange={(checked) => {
+                          setKnowledgeSettings({ ...knowledgeSettings, autoReview: checked });
+                          fetch(tierAgentUrl + '/knowledge-settings', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ autoReview: checked }),
+                          }).catch(() => {});
+                        }}
+                      />
+                    )}
+
+                    {/* Review Model Selector (shown when auto review enabled) */}
+                    {knowledgeSettings && knowledgeSettings.autoReview && (
                     <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
                       <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--color-text-secondary)' }}>Review Model</div>
                     {([
@@ -4288,23 +4367,6 @@ export default function SettingsPage() {
                         Model used for LLM quality review of knowledge entries. Opus is strictest (only standalone references pass), Haiku is most lenient.
                       </p>
                     </div>
-                    )}
-
-                    {/* Auto Review Toggle */}
-                    {knowledgeSettings && (
-                      <ToggleRow
-                        label="Auto review"
-                        description="Automatically run LLM quality review after knowledge generation completes."
-                        checked={knowledgeSettings.autoReview === true}
-                        onChange={(checked) => {
-                          setKnowledgeSettings({ ...knowledgeSettings, autoReview: checked });
-                          fetch(tierAgentUrl + '/knowledge-settings', {
-                            method: 'PUT',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ autoReview: checked }),
-                          }).catch(() => {});
-                        }}
-                      />
                     )}
 
                     {knowledgeStats ? (

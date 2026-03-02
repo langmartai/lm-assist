@@ -167,7 +167,7 @@ export function TopBar() {
                 style={{ textDecoration: 'none', cursor: 'pointer', opacity: 0.6 }}
               >
                 <LocalIcon size={11} />
-                <span>Switch to {localLabel}</span>
+                <span>{localLabel}</span>
               </a>
             </>
           ) : hubConnected ? (

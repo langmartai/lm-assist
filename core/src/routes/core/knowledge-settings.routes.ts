@@ -9,6 +9,7 @@
 
 import type { RouteHandler, RouteContext } from '../index';
 import { getKnowledgeSettings, saveKnowledgeSettings } from '../../knowledge/settings';
+import { getKnowledgeScheduler } from '../../knowledge/scheduler';
 
 export function createKnowledgeSettingsRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -38,9 +39,21 @@ export function createKnowledgeSettingsRoutes(_ctx: RouteContext): RouteHandler[
           autoExploreGeneration: body.autoExploreGeneration,
           autoGenericDiscovery: body.autoGenericDiscovery,
           genericValidationModel: body.genericValidationModel,
+          discoveryIntervalMinutes: body.discoveryIntervalMinutes,
+          discoveryBatchSize: body.discoveryBatchSize,
         });
 
         return { success: true, data: updated };
+      },
+    },
+
+    // GET /knowledge/scheduler/status — Get scheduler status
+    {
+      method: 'GET',
+      pattern: /^\/knowledge\/scheduler\/status$/,
+      handler: async () => {
+        const status = getKnowledgeScheduler().getStatus();
+        return { success: true, data: status };
       },
     },
   ];

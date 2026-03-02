@@ -400,10 +400,23 @@ export class KnowledgeGenerator {
 
           const allIds = store.getAllIds();
           const allVectors: Array<{ text: string; metadata: any }> = [];
+          const badIds: string[] = [];
           for (const id of allIds) {
             const knowledge = store.getKnowledge(id);
             if (!knowledge) continue;
+            if (knowledge.reviewRating === 'bad') {
+              badIds.push(id);
+              continue;
+            }
             allVectors.push(...extractKnowledgeVectors(knowledge));
+          }
+
+          // Remove BAD-rated entries from vector DB
+          for (const id of badIds) {
+            await vectra.deleteKnowledge(id).catch(() => {});
+          }
+          if (badIds.length > 0) {
+            console.log(`[KnowledgeGenerator] Removed ${badIds.length} BAD-rated entries from vector DB`);
           }
 
           if (allVectors.length > 0) {
@@ -411,7 +424,7 @@ export class KnowledgeGenerator {
             await vectra.deleteLocalByType('knowledge');
             await vectra.addVectors(allVectors);
             await vectra.rebuildFtsIndex();
-            console.log(`[KnowledgeGenerator] Indexed ${allVectors.length} vectors from ${allIds.length} knowledge docs`);
+            console.log(`[KnowledgeGenerator] Indexed ${allVectors.length} vectors from ${allIds.length - badIds.length} knowledge docs (skipped ${badIds.length} BAD)`);
           }
         } catch (err) {
           console.warn('[KnowledgeGenerator] Async vector indexing failed:', err);
