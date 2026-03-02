@@ -5,7 +5,7 @@
  * without requiring bash. Uses existing deps: tree-kill, find-process.
  */
 
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, execSync, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as net from 'net';
@@ -265,7 +265,6 @@ async function killByPort(port: number): Promise<void> {
 
 /** Windows fallback: find PIDs by port using netstat, kill with process.kill */
 function killByPortNetstat(port: number): void {
-  const { execSync } = require('child_process');
   try {
     const output = execSync(`netstat -ano`, { encoding: 'utf-8', timeout: 5000 });
     const pids = new Set<number>();
@@ -282,6 +281,29 @@ function killByPortNetstat(port: number): void {
   } catch { /* netstat failed */ }
 }
 
+/** Find the PID of a process listening on a given port (used on Windows to resolve actual node PID) */
+async function findPidByPort(port: number): Promise<number | null> {
+  try {
+    const fpModule = require('find-process');
+    const findProcess = (fpModule.default || fpModule) as (type: string, value: number) => Promise<Array<{ pid: number }>>;
+    const list = await findProcess('port', port);
+    if (list.length > 0) return list[0].pid;
+  } catch {
+    // Fallback: parse netstat
+    try {
+      const output = execSync('netstat -ano', { encoding: 'utf-8', timeout: 5000 });
+      for (const line of output.split('\n')) {
+        if (line.includes(`:${port}`) && line.includes('LISTENING')) {
+          const parts = line.trim().split(/\s+/);
+          const pid = parseInt(parts[parts.length - 1], 10);
+          if (pid > 0) return pid;
+        }
+      }
+    } catch { /* netstat failed */ }
+  }
+  return null;
+}
+
 // ─── Spawn Helpers ──────────────────────────────────────────────────
 
 function spawnDetached(
@@ -291,6 +313,12 @@ function spawnDetached(
   env?: Record<string, string>,
   cwd?: string,
 ): ChildProcess {
+  // On Windows, detached processes still get killed when an SSH session closes
+  // because they remain in the session's Job Object. Use WMI to spawn outside the job.
+  if (process.platform === 'win32') {
+    return spawnDetachedWin32(command, args, logFile, env, cwd);
+  }
+
   const logFd = fs.openSync(logFile, 'a');
   const child = spawn(command, args, {
     detached: true,
@@ -304,6 +332,71 @@ function spawnDetached(
   // Close the fd in the parent so we don't hold the file open
   fs.closeSync(logFd);
   return child;
+}
+
+/**
+ * Windows-specific detached spawn using WMI.
+ *
+ * On Windows, SSH (OpenSSH) tracks spawned processes via a Job Object and kills
+ * them all when the session closes — even with detached: true. WMI's Win32_Process.Create()
+ * spawns the process via the WMI service (outside the SSH session's job), so it survives.
+ *
+ * Creates a temporary .cmd wrapper that sets env vars, changes dir, and redirects output,
+ * then launches it via WMI. Falls back to regular spawn if WMI is unavailable.
+ */
+function spawnDetachedWin32(
+  command: string,
+  args: string[],
+  logFile: string,
+  env?: Record<string, string>,
+  cwd?: string,
+): ChildProcess {
+  const workDir = cwd || getRepoRoot();
+  const batchFile = path.join(getRuntimeDir(), `lm-start-${Date.now()}.cmd`);
+
+  // Build batch file: set env, cd, run command, self-delete
+  const lines: string[] = ['@echo off'];
+  if (env) {
+    for (const [key, val] of Object.entries(env)) {
+      lines.push(`set "${key}=${val}"`);
+    }
+  }
+  lines.push(`cd /d "${workDir}"`);
+  const cmdLine = `"${command}" ${args.map(a => `"${a}"`).join(' ')}`;
+  lines.push(`${cmdLine} >> "${logFile}" 2>&1`);
+  // Self-delete the batch file after the process exits
+  lines.push(`(goto) 2>nul & del "%~f0"`);
+  fs.writeFileSync(batchFile, lines.join('\r\n'), 'utf-8');
+
+  // Try WMI to spawn outside the SSH session's job object.
+  // All inputs are internal paths (getRuntimeDir, logFile, etc.) — not user-supplied.
+  try {
+    const escapedBatch = batchFile.replace(/\\/g, '\\\\').replace(/'/g, "''");
+    const psCmd = `$r = ([wmiclass]'Win32_Process').Create('cmd.exe /c ""${escapedBatch}""'); if($r.ReturnValue -eq 0){ $r.ProcessId } else { throw 'WMI Create failed' }`;
+    const output = execSync(`powershell -NoProfile -NonInteractive -Command "${psCmd}"`, {
+      encoding: 'utf-8',
+      windowsHide: true,
+      timeout: 15000,
+    });
+    const pid = parseInt(output.trim(), 10);
+    // Return a duck-typed object with pid (startCore/startWeb only use child.pid)
+    return { pid: isNaN(pid) ? undefined : pid } as any;
+  } catch {
+    // WMI unavailable — fall back to regular detached spawn (may not survive SSH close)
+    try { fs.unlinkSync(batchFile); } catch { /* ignore */ }
+    const logFd = fs.openSync(logFile, 'a');
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      windowsHide: true,
+      env: { ...process.env, ...env },
+      cwd: workDir,
+    });
+    child.on('error', () => {});
+    child.unref();
+    fs.closeSync(logFd);
+    return child;
+  }
 }
 
 // ─── Start Functions ──────────────────────────────────────────────────
@@ -346,6 +439,11 @@ export async function startCore(config?: ServiceConfig): Promise<{ success: bool
   // Poll for health
   const healthy = await waitForHealth(apiPort, 30_000);
   if (healthy) {
+    // On Windows WMI spawn, the initial PID is cmd.exe — resolve actual node PID by port
+    if (process.platform === 'win32') {
+      const nodePid = await findPidByPort(apiPort);
+      if (nodePid) writePid(getCorePidFile(), nodePid);
+    }
     return { success: true, message: `Core API started on port ${apiPort}` };
   }
   return { success: false, message: `Core API did not become healthy within 30s. Check ${getCoreLog()}` };
@@ -419,6 +517,11 @@ export async function startWeb(config?: ServiceConfig): Promise<{ success: boole
   // Poll for port
   const ready = await waitForPort(webPort, 30_000);
   if (ready) {
+    // On Windows WMI spawn, the initial PID is cmd.exe — resolve actual node PID by port
+    if (process.platform === 'win32') {
+      const nodePid = await findPidByPort(webPort);
+      if (nodePid) writePid(getWebPidFile(), nodePid);
+    }
     return { success: true, message: `Web started on port ${webPort}` };
   }
   return { success: false, message: `Web did not start within 30s. Check ${getWebLog()}` };
