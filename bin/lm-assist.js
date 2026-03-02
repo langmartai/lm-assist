@@ -9,6 +9,9 @@
  *   lm-assist restart         Restart services
  *   lm-assist status          Show service status
  *   lm-assist logs [core|web] View service logs
+ *   lm-assist version         Show version info
+ *   lm-assist storage         Show storage usage
+ *   lm-assist log             Show recent hook and MCP logs
  */
 
 const path = require('path');
@@ -77,7 +80,7 @@ function loadSm() {
 const command = process.argv[2] || 'help';
 const args = process.argv.slice(3);
 
-const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'help'];
+const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'version', 'storage', 'log', 'help'];
 
 if (command === 'help' || command === '--help' || command === '-h') {
   console.log(`
@@ -91,6 +94,9 @@ Commands:
   restart            Restart services
   status             Show service status and component locations
   logs [core|web]    View service logs (last 100 lines, --dev for dev logs)
+  log [context|mcp]  View hook and MCP logs (default: both)
+  version            Show installed, latest, and plugin versions
+  storage            Show storage usage (~/.lm-assist/)
   upgrade            Upgrade to latest version (npm + plugin + restart)
   help               Show this help message
 
@@ -98,6 +104,10 @@ Examples:
   lm-assist start
   lm-assist stop
   lm-assist status
+  lm-assist version
+  lm-assist storage
+  lm-assist log
+  lm-assist log mcp
   lm-assist logs core
   lm-assist logs core --dev
 
@@ -134,6 +144,197 @@ if (command === 'upgrade') {
   } catch (err) {
     process.exit(err.status || 1);
   }
+  process.exit(0);
+}
+
+// ─── Helper: format bytes as human-readable ───
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
+}
+
+// ─── Helper: recursively compute directory size ───
+function dirSize(dirPath) {
+  let total = 0;
+  try {
+    for (const entry of fs.readdirSync(dirPath)) {
+      const full = path.join(dirPath, entry);
+      try {
+        const st = fs.statSync(full);
+        total += st.isDirectory() ? dirSize(full) : st.size;
+      } catch { /* skip */ }
+    }
+  } catch { /* skip */ }
+  return total;
+}
+
+// ─── Helper: read last N lines of a file ───
+function tailFile(filePath, limit) {
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const lines = content.split('\n').filter(l => l.length > 0);
+    return lines.slice(-limit);
+  } catch {
+    return [];
+  }
+}
+
+// ─── Handle `version` — no service-manager needed ───
+if (command === 'version') {
+  // Installed version from package.json
+  const pkgJsonPath = path.join(path.dirname(path.dirname(__filename)), 'package.json');
+  let installedVersion = null;
+  try {
+    installedVersion = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8')).version;
+  } catch { /* not found */ }
+
+  console.log('lm-assist Version Info\n');
+  console.log(`  Installed:  ${installedVersion || 'unknown'}`);
+
+  // Latest version from npm registry
+  try {
+    const { execFileSync } = require('child_process');
+    const latest = execFileSync('npm', ['view', 'lm-assist', 'version'], {
+      encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    console.log(`  Latest:     ${latest}`);
+    if (installedVersion && latest && installedVersion !== latest) {
+      console.log(`  Update:     Run "lm-assist upgrade" to update`);
+    }
+  } catch {
+    console.log('  Latest:     (could not check)');
+  }
+
+  // Plugin version
+  try {
+    const pluginsFile = path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
+    const data = JSON.parse(fs.readFileSync(pluginsFile, 'utf-8'));
+    const entries = data?.plugins?.['lm-assist@langmartai'];
+    if (Array.isArray(entries) && entries.length > 0) {
+      const entry = entries[entries.length - 1];
+      console.log(`  Plugin:     ${entry.version || 'unknown'}`);
+    } else {
+      console.log('  Plugin:     (not installed)');
+    }
+  } catch {
+    console.log('  Plugin:     (not installed)');
+  }
+
+  // Node.js version
+  console.log(`  Node.js:    ${process.version}`);
+  console.log(`  Platform:   ${process.platform} ${os.arch()}`);
+
+  process.exit(0);
+}
+
+// ─── Handle `storage` — no service-manager needed ───
+if (command === 'storage') {
+  const dataDir = process.env.LM_ASSIST_DATA_DIR || path.join(os.homedir(), '.lm-assist');
+
+  if (!fs.existsSync(dataDir)) {
+    console.log(`lm-assist Storage\n`);
+    console.log(`  Data directory not found: ${dataDir}`);
+    process.exit(0);
+  }
+
+  console.log(`lm-assist Storage (${dataDir})\n`);
+
+  let totalSize = 0;
+  try {
+    const entries = fs.readdirSync(dataDir).sort();
+    for (const name of entries) {
+      const fullPath = path.join(dataDir, name);
+      try {
+        const st = fs.statSync(fullPath);
+        if (st.isDirectory()) {
+          const size = dirSize(fullPath);
+          totalSize += size;
+          let fileCount = 0;
+          try { fileCount = fs.readdirSync(fullPath).length; } catch {}
+          console.log(`  ${name}/`.padEnd(30) + `${formatBytes(size).padStart(10)}  (${fileCount} items)`);
+          // Show children one level deep (cap at 20 to avoid flooding)
+          try {
+            const children = fs.readdirSync(fullPath).sort();
+            const maxShow = 20;
+            const shown = children.slice(0, maxShow);
+            for (const child of shown) {
+              const childPath = path.join(fullPath, child);
+              try {
+                const cst = fs.statSync(childPath);
+                const csize = cst.isDirectory() ? dirSize(childPath) : cst.size;
+                const suffix = cst.isDirectory() ? '/' : '';
+                console.log(`    ${child}${suffix}`.padEnd(28) + `${formatBytes(csize).padStart(10)}`);
+              } catch { /* skip */ }
+            }
+            if (children.length > maxShow) {
+              console.log(`    ... and ${children.length - maxShow} more`);
+            }
+          } catch { /* skip */ }
+        } else {
+          totalSize += st.size;
+          console.log(`  ${name}`.padEnd(30) + `${formatBytes(st.size).padStart(10)}`);
+        }
+      } catch { /* skip */ }
+    }
+  } catch (e) {
+    console.error(`  Error reading directory: ${e.message}`);
+    process.exit(1);
+  }
+
+  console.log('  ' + '-'.repeat(38));
+  console.log(`  Total`.padEnd(30) + `${formatBytes(totalSize).padStart(10)}`);
+
+  process.exit(0);
+}
+
+// ─── Handle `log` — no service-manager needed ───
+if (command === 'log') {
+  const dataDir = process.env.LM_ASSIST_DATA_DIR || path.join(os.homedir(), '.lm-assist');
+  const contextLogPath = path.join(dataDir, 'logs', 'context-inject-hook.log');
+  const mcpLogPath = path.join(dataDir, 'logs', 'mcp-calls.jsonl');
+
+  const filter = args.find(a => ['context', 'mcp'].includes(a));
+  const limit = 50;
+
+  const showContext = !filter || filter === 'context';
+  const showMcp = !filter || filter === 'mcp';
+
+  if (showContext) {
+    console.log('=== Context Injection Log (last ' + limit + ' lines) ===\n');
+    const lines = tailFile(contextLogPath, limit);
+    if (lines.length === 0) {
+      console.log('  (no log entries found)');
+    } else {
+      for (const line of lines) {
+        console.log(line);
+      }
+    }
+    if (showMcp) console.log('');
+  }
+
+  if (showMcp) {
+    console.log('=== MCP Tool Calls (last ' + limit + ' entries) ===\n');
+    const lines = tailFile(mcpLogPath, limit);
+    if (lines.length === 0) {
+      console.log('  (no log entries found)');
+    } else {
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line);
+          const ts = (entry.ts || entry.timestamp) ? new Date(entry.ts || entry.timestamp).toLocaleString() : '';
+          const tool = entry.tool || entry.name || '?';
+          const dur = entry.durationMs != null ? ` (${entry.durationMs}ms)` : '';
+          const err = entry.error ? ` ERROR: ${entry.error}` : '';
+          console.log(`  ${ts}  ${tool}${dur}${err}`);
+        } catch {
+          console.log(`  ${line}`);
+        }
+      }
+    }
+  }
+
   process.exit(0);
 }
 
