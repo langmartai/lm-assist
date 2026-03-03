@@ -12,6 +12,7 @@
  *   lm-assist version         Show version info
  *   lm-assist storage         Show storage usage
  *   lm-assist log             Show recent hook and MCP logs
+ *   lm-assist setup --key KEY Connect to cloud with API key
  */
 
 const path = require('path');
@@ -80,7 +81,7 @@ function loadSm() {
 const command = process.argv[2] || 'help';
 const args = process.argv.slice(3);
 
-const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'version', 'storage', 'log', 'help'];
+const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'version', 'storage', 'log', 'setup', 'help'];
 
 if (command === 'help' || command === '--help' || command === '-h') {
   console.log(`
@@ -97,10 +98,12 @@ Commands:
   log [context|mcp]  View hook and MCP logs (default: both)
   version            Show installed, latest, and plugin versions
   storage            Show storage usage (~/.lm-assist/)
+  setup --key KEY    Connect to cloud with an API key
   upgrade            Upgrade to latest version (npm + plugin + restart)
   help               Show this help message
 
 Examples:
+  lm-assist setup --key sk-abc123
   lm-assist start
   lm-assist stop
   lm-assist status
@@ -336,6 +339,261 @@ if (command === 'log') {
   }
 
   process.exit(0);
+}
+
+// ─── Constants ───
+const DEFAULT_HUB_URL = 'wss://assist-api.langmart.ai';
+const PROD_API_PORT = 3100;
+const PROD_WEB_PORT = 3848;
+
+// ─── Helper: read hub.json config ───
+function readHubConfig() {
+  const dataDir = process.env.LM_ASSIST_DATA_DIR || path.join(os.homedir(), '.lm-assist');
+  const configFile = path.join(dataDir, 'hub.json');
+  try {
+    if (fs.existsSync(configFile)) {
+      return JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+    }
+  } catch { /* ignore */ }
+  return {};
+}
+
+// ─── Helper: write hub.json config ───
+function writeHubConfig(config) {
+  const dataDir = process.env.LM_ASSIST_DATA_DIR || path.join(os.homedir(), '.lm-assist');
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+  const configFile = path.join(dataDir, 'hub.json');
+  fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n');
+}
+
+// ─── Helper: check if API is healthy ───
+async function isApiHealthy(port) {
+  try {
+    const res = await fetch(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(3000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ─── Helper: validate API key against hub ───
+async function validateApiKey(apiKey, hubUrl) {
+  const httpUrl = (hubUrl || DEFAULT_HUB_URL).replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
+  try {
+    const res = await fetch(`${httpUrl}/auth/validate`, {
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return { valid: false, error: `Server returned ${res.status}` };
+    const json = await res.json();
+    return {
+      valid: !!json.valid,
+      user: json.user || null,
+      error: json.valid ? null : 'Invalid API key',
+    };
+  } catch (err) {
+    return { valid: false, error: err.message || 'Network error' };
+  }
+}
+
+// ─── Handle `setup` ───
+if (command === 'setup') {
+  const keyArg = args.find((a, i) => args[i - 1] === '--key') || (() => {
+    const kv = args.find(a => a.startsWith('--key='));
+    return kv ? kv.substring(kv.indexOf('=') + 1) : null;
+  })();
+
+  if (keyArg && keyArg.startsWith('--')) {
+    console.error(`Error: --key requires a value. Got flag instead: ${keyArg}`);
+    console.error('Usage: lm-assist setup --key YOUR_API_KEY');
+    process.exit(1);
+  }
+
+  if (!keyArg) {
+    console.log(`
+lm-assist Cloud Setup
+
+  Connect your local instance to LangMart Cloud for remote access.
+
+  1. Generate an API key at:
+
+     https://assist.langmart.ai/assist
+
+  2. Run setup with your key:
+
+     lm-assist setup --key YOUR_API_KEY
+`);
+    process.exit(0);
+  }
+
+  (async () => {
+    try {
+      const hubConfig = readHubConfig();
+      const hubUrl = hubConfig.hubUrl || process.env.TIER_AGENT_HUB_URL || DEFAULT_HUB_URL;
+      const oldKey = hubConfig.apiKey || process.env.TIER_AGENT_API_KEY || null;
+
+      // Check if services are running
+      const apiRunning = await isApiHealthy(PROD_API_PORT);
+
+      if (apiRunning) {
+        // ── Services running: use the API ──
+        // Check current hub status
+        try {
+          const statusRes = await fetch(`http://localhost:${PROD_API_PORT}/hub/status`, {
+            signal: AbortSignal.timeout(5000),
+          });
+          const statusJson = await statusRes.json();
+          const hubStatus = statusJson.data || statusJson;
+
+          // If already connected with same key, report and exit
+          // Best-effort check: compare first 12 chars (only for keys > 12 chars to avoid false positives)
+          if (hubStatus.connected && hubStatus.authenticated && keyArg.length > 12) {
+            const currentPrefix = hubStatus.apiKeyPrefix || '';
+            const newPrefix = keyArg.substring(0, 12) + '...';
+            if (currentPrefix === newPrefix) {
+              console.log(`Already connected to cloud (gateway: ${hubStatus.gatewayId})`);
+              process.exit(0);
+            }
+          }
+        } catch { /* status check failed, proceed with setup */ }
+
+        // Validate new key first
+        process.stdout.write('Validating API key... ');
+        const validation = await validateApiKey(keyArg, hubUrl);
+        if (!validation.valid) {
+          console.log('FAILED');
+          console.error(`  Authentication failed: ${validation.error}`);
+          console.log('  API key was not saved.');
+          process.exit(1);
+        }
+        const userName = validation.user?.displayName || validation.user?.display_name || validation.user?.email || '';
+        console.log(`OK${userName ? ` (${userName})` : ''}`);
+
+        // Save key via API (server owns hub.json writes when running)
+        process.stdout.write('Connecting to cloud... ');
+        try {
+          const configRes = await fetch(`http://localhost:${PROD_API_PORT}/hub/config`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ apiKey: keyArg, hubUrl, reconnect: true }),
+            signal: AbortSignal.timeout(15000),
+          });
+          const configJson = await configRes.json();
+
+          if (configJson.success && configJson.data) {
+            if (configJson.data.authenticated) {
+              console.log(`OK (gateway: ${configJson.data.gatewayId || 'pending'})`);
+            } else if (configJson.data.connected) {
+              console.log('connected (authenticating...)');
+            } else {
+              // Connection failed after validation succeeded — try rollback
+              console.log('FAILED');
+              console.error(`  ${configJson.data.message || 'Connection failed'}`);
+              if (oldKey && oldKey !== keyArg) {
+                process.stdout.write('  Rolling back to previous key... ');
+                try {
+                  const rollbackRes = await fetch(`http://localhost:${PROD_API_PORT}/hub/config`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ apiKey: oldKey, hubUrl, reconnect: false }),
+                    signal: AbortSignal.timeout(5000),
+                  });
+                  console.log(rollbackRes.ok ? 'done' : 'FAILED (could not restore previous key)');
+                } catch {
+                  console.log('FAILED (could not restore previous key)');
+                }
+              }
+              process.exit(1);
+            }
+          } else {
+            console.log('FAILED');
+            const errMsg = typeof configJson.error === 'string'
+              ? configJson.error
+              : configJson.error?.message || 'Unknown error';
+            console.error(`  ${errMsg}`);
+            process.exit(1);
+          }
+        } catch (err) {
+          console.log('FAILED');
+          console.error(`  ${err.message}`);
+          process.exit(1);
+        }
+
+      } else {
+        // ── Services NOT running: validate key directly, then start services ──
+
+        // Validate new key
+        process.stdout.write('Validating API key... ');
+        const validation = await validateApiKey(keyArg, hubUrl);
+        if (!validation.valid) {
+          console.log('FAILED');
+          console.error(`  Authentication failed: ${validation.error}`);
+          console.log('  API key was not saved.');
+          process.exit(1);
+        }
+        const userName = validation.user?.displayName || validation.user?.display_name || validation.user?.email || '';
+        console.log(`OK${userName ? ` (${userName})` : ''}`);
+
+        // Save key to hub.json (preserves existing fields like assistWebPort, apiPort)
+        const newConfig = { ...hubConfig, apiKey: keyArg, hubUrl };
+        writeHubConfig(newConfig);
+        console.log('  API key saved');
+
+        // Start services
+        console.log('\nStarting services...');
+        const svc = loadSm();
+        const result = await svc.startAll();
+        console.log(`  API: ${result.core.message}`);
+        console.log(`  Web: ${result.web.message}`);
+
+        if (!result.core.success || !result.web.success) {
+          console.error('\n  Services failed to start. Run "lm-assist logs core" for details.');
+          process.exit(1);
+        }
+
+        // Wait for hub to auto-connect (the server reads hub.json on startup)
+        process.stdout.write('\nConnecting to cloud... ');
+        let connected = false;
+        for (let i = 0; i < 10; i++) {
+          await new Promise(r => setTimeout(r, 1500));
+          try {
+            const statusRes = await fetch(`http://localhost:${PROD_API_PORT}/hub/status`, {
+              signal: AbortSignal.timeout(3000),
+            });
+            const statusJson = await statusRes.json();
+            const hubStatus = statusJson.data || statusJson;
+            if (hubStatus.authenticated) {
+              console.log(`OK (gateway: ${hubStatus.gatewayId})`);
+              connected = true;
+              break;
+            }
+            if (hubStatus.connected) {
+              console.log('connected (authenticating...)');
+              connected = true;
+              break;
+            }
+          } catch { /* retry */ }
+        }
+        if (!connected) {
+          console.log('pending');
+          console.log('  Hub connection is still establishing. Check with: lm-assist status');
+        }
+      }
+
+      console.log('');
+      console.log(`  Web UI: http://localhost:${PROD_WEB_PORT}`);
+      process.exit(0);
+
+    } catch (err) {
+      console.error(`Error: ${err.message || err}`);
+      process.exit(1);
+    }
+  })();
+
+  // Prevent falling through to main()
+  return;
 }
 
 /**
