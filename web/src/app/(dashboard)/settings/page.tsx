@@ -339,6 +339,13 @@ export default function SettingsPage() {
   const [isKnowledgeGenerating, setIsKnowledgeGenerating] = useState(false);
   const [knowledgeMessage, setKnowledgeMessage] = useState<{ text: string; type: 'ok' | 'error' } | null>(null);
 
+  // excluded projects state
+  const [excludedPaths, setExcludedPaths] = useState<string[]>([]);
+  const [allProjects, setAllProjects] = useState<{ path: string }[]>([]);
+  const [showAddProject, setShowAddProject] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [verifyResult, setVerifyResult] = useState<{ excluded: number; unexcluded: number } | null>(null);
+
   // LAN access state
   const [lanEnabled, setLanEnabled] = useState(false);
   const [lanAuthEnabled, setLanAuthEnabled] = useState(true);
@@ -1059,6 +1066,10 @@ export default function SettingsPage() {
       // Fetch scheduler status
       fetch(tierAgentUrl + '/knowledge/scheduler/status').then(r => r.json()).then(j => {
         if (j.success) setSchedulerStatus(j.data);
+      }).catch(() => {});
+      // Fetch project settings (excluded projects)
+      fetch(tierAgentUrl + '/project-settings').then(r => r.json()).then(j => {
+        if (j.success) setExcludedPaths(j.data.excludedPaths || []);
       }).catch(() => {});
     }
   }, [proxy.isProxied, localStatus?.healthy, activeTab, tierAgentUrl]);
@@ -4566,6 +4577,135 @@ export default function SettingsPage() {
                     <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5, margin: 0 }}>
                       Fetches knowledge generated on remote machines connected via Hub that share the same git repository. Synced knowledge appears in search results with origin metadata.
                     </p>
+                  </div>
+                </SectionCard>
+                )}
+
+                {/* Data Loading tab: Excluded Projects */}
+                {activeTab === 'data-loading' && (
+                <SectionCard title="Excluded Projects" icon={EyeOff}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <p style={{ fontSize: 11, color: 'var(--color-text-secondary)', margin: 0 }}>
+                      Excluded projects are hidden from session lists, project listings, and knowledge generation. Their knowledge entries are marked as excluded.
+                    </p>
+
+                    {/* List of excluded paths */}
+                    {excludedPaths.length > 0 ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {excludedPaths.map((p) => (
+                          <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', background: 'var(--color-bg-secondary)', borderRadius: 6, fontSize: 11 }}>
+                            <span style={{ flex: 1, fontFamily: 'var(--font-mono)', color: 'var(--color-text-secondary)' }}>{p}</span>
+                            <button
+                              className="btn"
+                              style={{ padding: 2, minWidth: 0, background: 'transparent' }}
+                              title="Remove from excluded"
+                              onClick={async () => {
+                                const updated = excludedPaths.filter(ep => ep !== p);
+                                setExcludedPaths(updated);
+                                setVerifyResult(null);
+                                try {
+                                  await fetch(tierAgentUrl + '/project-settings', {
+                                    method: 'PUT',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ excludedPaths: updated }),
+                                  });
+                                  // Verify knowledge state
+                                  setIsVerifying(true);
+                                  const r = await fetch(tierAgentUrl + '/knowledge/verify', { method: 'POST' });
+                                  const j = await r.json();
+                                  if (j.success) setVerifyResult(j.data);
+                                } catch (err) { console.error('Failed to update project settings:', err); } finally { setIsVerifying(false); }
+                              }}
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)', margin: 0, fontStyle: 'italic' }}>
+                        No projects excluded.
+                      </p>
+                    )}
+
+                    {/* Add Project button/dropdown */}
+                    {showAddProject ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                          <span style={{ fontSize: 11, fontWeight: 500 }}>Select a project to exclude:</span>
+                          <button className="btn" style={{ padding: '2px 6px', fontSize: 10, minWidth: 0, background: 'transparent' }} onClick={() => { setShowAddProject(false); setAllProjects([]); }}>Cancel</button>
+                        </div>
+                        {allProjects.length === 0 ? (
+                          <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <Loader2 size={11} className="spin" /> Loading projects...
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 200, overflow: 'auto' }}>
+                            {allProjects
+                              .filter(p => !excludedPaths.includes(p.path))
+                              .map(p => (
+                                <button
+                                  key={p.path}
+                                  className="btn"
+                                  style={{ textAlign: 'left', padding: '4px 8px', fontSize: 11, fontFamily: 'var(--font-mono)', background: 'var(--color-bg-secondary)', border: '1px solid var(--color-border)', borderRadius: 4, cursor: 'pointer' }}
+                                  onClick={async () => {
+                                    const updated = [...excludedPaths, p.path];
+                                    setExcludedPaths(updated);
+                                    setShowAddProject(false);
+                                    setAllProjects([]);
+                                    setVerifyResult(null);
+                                    try {
+                                      await fetch(tierAgentUrl + '/project-settings', {
+                                        method: 'PUT',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ excludedPaths: updated }),
+                                      });
+                                      // Verify knowledge state
+                                      setIsVerifying(true);
+                                      const r = await fetch(tierAgentUrl + '/knowledge/verify', { method: 'POST' });
+                                      const j = await r.json();
+                                      if (j.success) setVerifyResult(j.data);
+                                    } catch (err) { console.error('Failed to update project settings:', err); } finally { setIsVerifying(false); }
+                                  }}
+                                >
+                                  {p.path}
+                                </button>
+                              ))
+                            }
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <button
+                        className="btn btn-primary"
+                        style={{ padding: '6px 12px', fontSize: 11, alignSelf: 'flex-start', gap: 4 }}
+                        onClick={async () => {
+                          setShowAddProject(true);
+                          try {
+                            const r = await fetch(tierAgentUrl + '/projects?includeExcluded=true&includeSize=false');
+                            const j = await r.json();
+                            if (j.success) setAllProjects(j.data.projects || []);
+                          } catch (err) { console.error('Failed to load projects:', err); }
+                        }}
+                      >
+                        Add Project
+                      </button>
+                    )}
+
+                    {/* Verification result */}
+                    {isVerifying && (
+                      <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Loader2 size={11} className="spin" /> Verifying knowledge...
+                      </div>
+                    )}
+                    {verifyResult && !isVerifying && (
+                      <div style={{ fontSize: 10, color: 'var(--color-text-secondary)', background: 'var(--color-bg-secondary)', padding: '6px 10px', borderRadius: 6 }}>
+                        {verifyResult.excluded > 0 && <span>{verifyResult.excluded} entries excluded. </span>}
+                        {verifyResult.unexcluded > 0 && <span>{verifyResult.unexcluded} entries restored. </span>}
+                        {(verifyResult.excluded > 0 || verifyResult.unexcluded > 0) && <span>Vectors updating in background.</span>}
+                        {verifyResult.excluded === 0 && verifyResult.unexcluded === 0 && <span>No changes needed.</span>}
+                      </div>
+                    )}
                   </div>
                 </SectionCard>
                 )}

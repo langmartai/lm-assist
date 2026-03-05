@@ -217,7 +217,7 @@ async function handleHybridSearch(
       const kId = (r.knowledgeId || r.id || '').split('.')[0];
       if (!kId) return false;
       const knowledge = knowledgeStore.getKnowledge(kId, r.machineId);
-      return knowledge && knowledge.reviewRating !== 'bad';
+      return knowledge && knowledge.reviewRating !== 'bad' && knowledge.status !== 'excluded';
     }
     return true;
   });
@@ -250,7 +250,7 @@ async function handleHybridSearch(
     const injectionScore = Math.max(...resolvable.map(r => r.finalScore), 0.05);
     const allKnowledge = knowledgeStore.getAllKnowledge();
     for (const k of allKnowledge) {
-      if (k.reviewRating === 'bad') continue;
+      if (k.reviewRating === 'bad' || k.status === 'excluded') continue;
       if (!isWithinScope(k.sourceTimestamp || k.createdAt, scope)) continue;
       if (project && k.project !== project) continue;
       if (typeFilter !== 'all' && typeFilter !== 'knowledge') continue;

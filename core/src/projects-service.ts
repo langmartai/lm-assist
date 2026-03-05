@@ -29,6 +29,7 @@ import {
 } from './tasks-service';
 import { getSessionCache, isRealUserPrompt } from './session-cache';
 import { CostCalculator } from './cost-calculator';
+import { getProjectSettings } from './project-settings';
 
 // ============================================================================
 // Types
@@ -196,6 +197,8 @@ export interface ListProjectsOptions {
   encoded?: boolean;
   /** Include storage size calculation (default: true) */
   includeSize?: boolean;
+  /** Include excluded projects in results (default: false) */
+  includeExcluded?: boolean;
   /** Bypass cache and force a fresh load (default: false) */
   force?: boolean;
 }
@@ -269,7 +272,7 @@ export class ProjectsService {
    * List all Claude Code projects
    */
   listProjects(options: ListProjectsOptions = {}): Project[] {
-    const { encoded = false, includeSize = true, force = false } = options;
+    const { encoded = false, includeSize = true, force = false, includeExcluded = false } = options;
     const optionsKey = `${encoded}:${includeSize}`;
 
     // Return cached result if still valid (not dirty, within TTL, and not forced)
@@ -280,7 +283,15 @@ export class ProjectsService {
       this._projectListCache.optionsKey === optionsKey &&
       Date.now() - this._projectListCache.timestamp < ProjectsService.PROJECT_CACHE_TTL_MS
     ) {
-      return [...this._projectListCache.result];
+      const cached = [...this._projectListCache.result];
+      if (!includeExcluded) {
+        const { excludedPaths } = getProjectSettings();
+        if (excludedPaths.length > 0) {
+          const excludedSet = new Set(excludedPaths.map(p => path.normalize(p)));
+          return cached.filter(p => !excludedSet.has(path.normalize(p.path)));
+        }
+      }
+      return cached;
     }
 
     // Force also clears the git info cache so we get fresh git status
@@ -397,8 +408,17 @@ export class ProjectsService {
       return b.lastActivity.getTime() - a.lastActivity.getTime();
     });
 
-    // Cache the result
+    // Cache the full (unfiltered) result
     this._projectListCache = { result: projects, optionsKey, timestamp: Date.now() };
+
+    // Filter out excluded projects unless caller explicitly includes them
+    if (!includeExcluded) {
+      const { excludedPaths } = getProjectSettings();
+      if (excludedPaths.length > 0) {
+        const excludedSet = new Set(excludedPaths.map(p => path.normalize(p)));
+        return projects.filter(p => !excludedSet.has(path.normalize(p.path)));
+      }
+    }
 
     return projects;
   }

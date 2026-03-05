@@ -306,7 +306,7 @@ export class KnowledgeStore {
     type: KnowledgeType;
     project: string;
     parts: KnowledgePart[];
-    status?: 'active' | 'outdated' | 'archived';
+    status?: 'active' | 'outdated' | 'archived' | 'excluded';
     sourceSessionId?: string;
     sourceAgentId?: string;
     sourceTimestamp?: string;

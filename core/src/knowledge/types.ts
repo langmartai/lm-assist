@@ -10,7 +10,7 @@ export interface Knowledge {
   title: string;
   type: KnowledgeType;
   project: string;
-  status: 'active' | 'outdated' | 'archived';
+  status: 'active' | 'outdated' | 'archived' | 'excluded';
   createdAt: string;             // ISO timestamp
   updatedAt: string;             // ISO timestamp
   parts: KnowledgePart[];

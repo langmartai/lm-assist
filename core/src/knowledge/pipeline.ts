@@ -255,6 +255,7 @@ export class KnowledgePipeline {
           const allIds = store.getAllIds();
           const allVectors: Array<{ text: string; metadata: any }> = [];
           const badIds: string[] = [];
+          const excludedIds: string[] = [];
           for (const id of allIds) {
             const knowledge = store.getKnowledge(id);
             if (!knowledge) continue;
@@ -262,15 +263,18 @@ export class KnowledgePipeline {
               badIds.push(id);
               continue;
             }
+            if (knowledge.status === 'excluded') {
+              excludedIds.push(id);
+              continue;
+            }
             allVectors.push(...extractKnowledgeVectors(knowledge));
           }
 
-          // Remove BAD-rated entries from vector DB
-          for (const id of badIds) {
-            await vectra.deleteKnowledge(id).catch(() => {});
-          }
-          if (badIds.length > 0) {
-            console.log(`[KnowledgePipeline] Removed ${badIds.length} BAD-rated entries from vector DB`);
+          // Batch-remove BAD-rated and excluded entries from vector DB
+          const removeIds = [...badIds, ...excludedIds];
+          if (removeIds.length > 0) {
+            await vectra.deleteKnowledgeBatch(removeIds).catch(() => {});
+            console.log(`[KnowledgePipeline] Removed ${badIds.length} BAD-rated + ${excludedIds.length} excluded entries from vector DB`);
           }
 
           if (allVectors.length > 0) {

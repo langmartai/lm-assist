@@ -5,12 +5,14 @@
  * Endpoints: /projects
  */
 
+import * as path from 'path';
 import type { RouteHandler, RouteContext } from '../index';
 import {
   ProjectsService,
   createProjectsService,
 } from '../../projects-service';
 import { getSessionCache, isRealUserPrompt } from '../../session-cache';
+import { getProjectSettings, isProjectExcluded } from '../../project-settings';
 
 // Lazy-loaded service instance
 let projectsService: ProjectsService | null = null;
@@ -40,8 +42,9 @@ export function createSessionProjectsRoutes(ctx: RouteContext): RouteHandler[] {
         const encoded = req.query.encoded === 'true';
         const includeSize = req.query.includeSize !== 'false';
         const force = req.query.force === 'true';
+        const includeExcluded = req.query.includeExcluded === 'true';
 
-        const rawProjects = service.listProjects({ encoded, includeSize, force });
+        const rawProjects = service.listProjects({ encoded, includeSize, force, includeExcluded });
 
         // Build enriched copies without mutating the cached originals
         const cache = getSessionCache();
@@ -197,7 +200,14 @@ export function createSessionProjectsRoutes(ctx: RouteContext): RouteHandler[] {
 
         const limit = req.query.limit ? parseInt(req.query.limit, 10) : 0;
 
-        const sessions = service.getAllSessions({ active, activeThresholdMs });
+        const allSessions = service.getAllSessions({ active, activeThresholdMs });
+
+        // Filter out sessions from excluded projects (read settings once, not per-session)
+        const { excludedPaths } = getProjectSettings();
+        const excludedSet = new Set(excludedPaths.map(p => path.normalize(p)));
+        const sessions = excludedSet.size > 0
+          ? allSessions.filter(s => !excludedSet.has(path.normalize(s.projectPath)))
+          : allSessions;
 
         // Include lastModified so clients can use it for subsequent ifModifiedSince
         const lastModified = sessions.length > 0
@@ -286,6 +296,15 @@ export function createSessionProjectsRoutes(ctx: RouteContext): RouteHandler[] {
         const service = getService();
 
         const projectPathParam = decodeURIComponent(req.params.projectPath);
+
+        // Return empty if project is excluded
+        if (isProjectExcluded(projectPathParam)) {
+          return {
+            success: true,
+            data: { sessions: [], lastModified: null },
+            meta: { timestamp: new Date(), durationMs: Date.now() - start },
+          };
+        }
 
         // Fast not-modified check: only stat calls, no file reads
         const ifModifiedSince = req.query.ifModifiedSince;

@@ -157,8 +157,10 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
             // Collect all vector texts+metadata (cheap, no embedding yet), skip BAD-rated
             const allVectors: Array<{ text: string; metadata: any }> = [];
             let badSkipped = 0;
+            let excludedSkipped = 0;
             for (const knowledge of allKnowledge) {
               if (knowledge.reviewRating === 'bad') { badSkipped++; continue; }
+              if (knowledge.status === 'excluded') { excludedSkipped++; continue; }
               const remoteOrigin = knowledge.origin === 'remote' && knowledge.machineId
                 ? { machineId: knowledge.machineId, machineHostname: knowledge.machineHostname || '', machineOS: knowledge.machineOS || '' }
                 : undefined;
@@ -171,7 +173,7 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
             (async () => {
               try {
                 const startMs = Date.now();
-                console.log(`[Reindex] Starting knowledge: ${allVectors.length} vectors from ${allKnowledge.length} docs (${badSkipped} BAD skipped)`);
+                console.log(`[Reindex] Starting knowledge: ${allVectors.length} vectors from ${allKnowledge.length} docs (${badSkipped} BAD + ${excludedSkipped} excluded skipped)`);
                 // Full reindex: delete all knowledge vectors (local + remote) and re-add
                 await vectra.deleteAllByType('knowledge');
                 console.log(`[Reindex] Deleted old knowledge vectors in ${((Date.now() - startMs) / 1000).toFixed(1)}s`);
@@ -191,7 +193,7 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
 
             return {
               success: true,
-              data: { status: 'started', type, documentsToProcess: allKnowledge.length, vectorsToIndex: allVectors.length, badSkipped },
+              data: { status: 'started', type, documentsToProcess: allKnowledge.length, vectorsToIndex: allVectors.length, badSkipped, excludedSkipped },
             };
           }
 

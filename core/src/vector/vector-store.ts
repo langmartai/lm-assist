@@ -605,6 +605,23 @@ export class VectorStore {
   }
 
   /**
+   * Delete vectors for multiple knowledge documents in a single query.
+   */
+  async deleteKnowledgeBatch(knowledgeIds: string[]): Promise<number> {
+    if (knowledgeIds.length === 0) return 0;
+    await this.init();
+
+    const escaped = knowledgeIds.map(id => `'${id.replace(/'/g, "''")}'`).join(', ');
+    const where = `knowledgeId IN (${escaped}) AND type = 'knowledge'`;
+    const count = await this.countWhere(where);
+    if (count === 0) return 0;
+
+    await this.table.delete(where);
+
+    return count;
+  }
+
+  /**
    * Delete all vectors of a given type.
    */
   async deleteAllByType(type: 'session' | 'knowledge'): Promise<number> {

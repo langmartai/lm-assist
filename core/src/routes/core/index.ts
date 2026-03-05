@@ -28,6 +28,7 @@ import { createVectorRoutes } from './vector.routes';
 import { createAgentRoutes } from './agent.routes';
 import { createMcpApiRoutes } from './mcp-api.routes';
 import { createDevModeRoutes } from './dev-mode.routes';
+import { createProjectSettingsRoutes } from './project-settings.routes';
 
 /**
  * Create all core routes
@@ -55,5 +56,6 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createVectorRoutes(ctx),
     ...createMcpApiRoutes(ctx),
     ...createDevModeRoutes(ctx),
+    ...createProjectSettingsRoutes(ctx),
   ];
 }

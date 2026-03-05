@@ -19,10 +19,12 @@
  *   GET    /knowledge/search                  # Hybrid search (vector + FTS)
  */
 
+import * as path from 'path';
 import type { RouteHandler, RouteContext } from '../index';
 import { getKnowledgeStore } from '../../knowledge/store';
 import { KNOWLEDGE_TYPES, COMMENT_TYPES } from '../../knowledge/types';
 import type { KnowledgeType, KnowledgeCommentType } from '../../knowledge/types';
+import { getProjectSettings } from '../../project-settings';
 
 // File-change-invalidated cache for /knowledge/generate/stats
 let _statsCache: { candidates: number; generated: number } | null = null;
@@ -115,14 +117,14 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
             machineId: r.machineId || undefined,
           }));
 
-          // Filter orphaned vectors and bad-reviewed knowledge
+          // Filter orphaned vectors, bad-reviewed, and excluded knowledge
           const valid: any[] = merged.filter((r: any) => {
             const kId = (r.knowledgeId || r.id || '').split('.')[0];
             if (!kId) return false;
             const knowledge = r.machineId
               ? knowledgeStore.getKnowledge(kId, r.machineId)
               : knowledgeStore.getKnowledge(kId);
-            return knowledge && knowledge.reviewRating !== 'bad';
+            return knowledge && knowledge.reviewRating !== 'bad' && knowledge.status !== 'excluded';
           });
 
           // Content-match boost + supplementary knowledge scan
@@ -150,7 +152,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
             const injectionScore = Math.max(...valid.map((r: any) => r.score), 0.03);
             const allKnowledge = knowledgeStore.getAllKnowledge();
             for (const k of allKnowledge) {
-              if (k.reviewRating === 'bad') continue;
+              if (k.reviewRating === 'bad' || k.status === 'excluded') continue;
               for (const part of k.parts) {
                 if (existingIds.has(part.partId)) continue;
                 const haystack = [part.title, part.summary, part.content].join(' ').toLowerCase();
@@ -1055,6 +1057,92 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
         const reviewer = getKnowledgeLlmReviewer();
         const limit = req.query?.limit ? parseInt(String(req.query.limit), 10) : undefined;
         return { success: true, data: reviewer.getHistory(limit) };
+      },
+    },
+
+    // POST /knowledge/verify — Sync knowledge status with excluded projects
+    // Marks knowledge from excluded projects as 'excluded', un-excludes entries
+    // whose projects are no longer excluded, and removes excluded vectors.
+    {
+      method: 'POST',
+      pattern: /^\/knowledge\/verify$/,
+      handler: async () => {
+        const start = Date.now();
+        const { getVectorStore } = require('../../vector/vector-store');
+        const { extractKnowledgeVectors } = require('../../vector/indexer');
+
+        const store = getKnowledgeStore();
+        const settings = getProjectSettings();
+        const excludedSet = new Set(settings.excludedPaths.map((p: string) => path.normalize(p)));
+
+        let excludedCount = 0;
+        let unexcludedCount = 0;
+        const newlyExcludedIds: string[] = [];
+        const newlyUnexcludedIds: string[] = [];
+
+        const allKnowledge = store.getAllKnowledge();
+
+        for (const entry of allKnowledge) {
+          const normalizedProject = path.normalize(entry.project);
+          const isExcluded = excludedSet.has(normalizedProject);
+
+          if (isExcluded && entry.status !== 'excluded') {
+            store.updateKnowledge(entry.id, { status: 'excluded' });
+            newlyExcludedIds.push(entry.id);
+            excludedCount++;
+          } else if (!isExcluded && entry.status === 'excluded') {
+            store.updateKnowledge(entry.id, { status: 'active' });
+            newlyUnexcludedIds.push(entry.id);
+            unexcludedCount++;
+          }
+        }
+
+        // Update vectors in background
+        if (excludedCount > 0 || unexcludedCount > 0) {
+          (async () => {
+            try {
+              const vectra = getVectorStore();
+
+              // Batch-delete vectors for excluded entries (single SQL query)
+              if (newlyExcludedIds.length > 0) {
+                const removed = await vectra.deleteKnowledgeBatch(newlyExcludedIds).catch(() => 0);
+                console.log(`[knowledge/verify] Batch-removed ${removed} vectors for ${newlyExcludedIds.length} excluded entries`);
+              }
+
+              // Add vectors for un-excluded entries (additive, no delete-all)
+              if (newlyUnexcludedIds.length > 0) {
+                const unexcludedSet = new Set(newlyUnexcludedIds);
+                const toIndex = allKnowledge.filter(k =>
+                  unexcludedSet.has(k.id) && k.reviewRating !== 'bad'
+                );
+                const newVectors: Array<{ text: string; metadata: any }> = [];
+                for (const k of toIndex) {
+                  const remoteOrigin = k.origin === 'remote' && k.machineId
+                    ? { machineId: k.machineId, machineHostname: k.machineHostname || '', machineOS: k.machineOS || '' }
+                    : undefined;
+                  newVectors.push(...extractKnowledgeVectors(k, k.project, remoteOrigin));
+                }
+                if (newVectors.length > 0) {
+                  await vectra.addVectors(newVectors);
+                  console.log(`[knowledge/verify] Added ${newVectors.length} vectors for ${newlyUnexcludedIds.length} un-excluded entries`);
+                }
+              }
+
+              await vectra.rebuildFtsIndex();
+            } catch (err) {
+              console.warn('[knowledge/verify] Background vector update failed:', err);
+            }
+          })();
+        }
+
+        return {
+          success: true,
+          data: {
+            excluded: excludedCount,
+            unexcluded: unexcludedCount,
+          },
+          meta: { timestamp: new Date(), durationMs: Date.now() - start },
+        };
       },
     },
   ];

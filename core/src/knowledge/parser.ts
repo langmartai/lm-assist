@@ -29,7 +29,7 @@ interface Frontmatter {
   title: string;
   type: KnowledgeType;
   project: string;
-  status: 'active' | 'outdated' | 'archived';
+  status: 'active' | 'outdated' | 'archived' | 'excluded';
   createdAt: string;
   updatedAt: string;
   sourceSessionId?: string;
@@ -73,7 +73,7 @@ function parseFrontmatter(raw: string): Frontmatter | null {
     title: fm.title,
     type: KNOWLEDGE_TYPES.includes(fm.type as KnowledgeType) ? fm.type as KnowledgeType : 'algorithm',
     project: fm.project || '',
-    status: (['active', 'outdated', 'archived'].includes(fm.status) ? fm.status : 'active') as Frontmatter['status'],
+    status: (['active', 'outdated', 'archived', 'excluded'].includes(fm.status) ? fm.status : 'active') as Frontmatter['status'],
     createdAt: fm.createdAt || new Date().toISOString(),
     updatedAt: fm.updatedAt || new Date().toISOString(),
     sourceSessionId: fm.sourceSessionId || undefined,
