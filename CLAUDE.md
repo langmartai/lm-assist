@@ -150,9 +150,112 @@ Provides 3 tools via stdio transport (server name: `lm-assist`):
 | GET | `/sessions` | List Claude Code sessions |
 | GET | `/sessions/:id` | Get full session data |
 | GET | `/sessions/:id/conversation` | Get session conversation |
-| GET | `/sessions/:id/from/:lineIndex` | Get messages from position |
+| GET | `/sessions/:id/from/:lineIndex` | Delta fetch — messages from JSONL line position |
+| GET | `/sessions/:id/has-update` | Lightweight poll — check if session changed |
+| GET | `/sessions/:id/exists` | Check if session file exists |
+| GET | `/sessions/:id/messages/last/:count` | Last N messages (shorthand) |
+| GET | `/sessions/:id/compact-messages` | Continuation/compaction messages |
+| GET | `/sessions/:id/subagents` | All subagents spawned by session |
+| GET | `/sessions/:id/subagents/:agentId` | Specific subagent session |
+| GET | `/sessions/:id/forks` | Sessions forked from this one |
+| GET | `/sessions/:id/related` | All related sessions (parents, forks, subagents, siblings) |
 | GET | `/sessions/:id/dag` | Message DAG with branch info |
 | GET | `/sessions/:id/session-dag` | Cross-session DAG (subagents, teams) |
+| GET,POST | `/sessions/batch-check` | Check multiple sessions for updates in one request |
+| POST | `/session-cache/warm` | Pre-load sessions into memory cache |
+| POST | `/session-cache/clear` | Clear cache (specific session or all) |
+| GET | `/monitor/executions` | Currently running executions with live status |
+| GET | `/monitor/summary` | Aggregated execution counts by status/tier |
+| POST | `/monitor/abort/:executionId` | Abort a specific execution |
+
+### Querying Session Execution History
+
+Sessions are stored as JSONL files in `~/.claude/projects/*/sessions/*.jsonl`. Each line is a message. The API provides three indexing dimensions for slicing into a session:
+
+| Index | Type | Description |
+|-------|------|-------------|
+| `lineIndex` | 0-based | Raw JSONL line position in the file |
+| `turnIndex` | 1-based | Conversation turn number (each user msg and each assistant msg is a turn) |
+| `userPromptIndex` | 0-based | Sequential count of user messages only |
+
+#### Common query patterns
+
+**Get full session with all data:**
+```
+GET /sessions/:id?unlimited=true
+```
+
+**Get a specific user interaction (e.g., the 5th user prompt and its response):**
+```
+GET /sessions/:id?fromUserPromptIndex=4&toUserPromptIndex=4
+```
+
+**Get everything from turn 10 onwards:**
+```
+GET /sessions/:id?fromTurnIndex=10&unlimited=true
+```
+
+**Delta fetch — get only new messages since last poll:**
+```
+GET /sessions/:id/from/1523?limit=100
+```
+Use `fromLineIndex` alone (no other filters) for fast incremental updates via raw message cache.
+
+**Conditional request — skip re-parse if unchanged:**
+```
+GET /sessions/:id?ifModifiedSince=2026-03-10T12:00:00Z
+```
+Returns `notModified: true` if the session hasn't changed since the timestamp.
+
+**Formatted conversation (for display):**
+```
+GET /sessions/:id/conversation?toolDetail=summary&lastN=20
+```
+Query params: `lastN`, `beforeLine` (pagination), `toolDetail` (`none`|`summary`|`full`), `includeSystemPrompt`, `fromTurnIndex`/`toTurnIndex`.
+
+**Batch check many sessions at once:**
+```
+POST /sessions/batch-check
+Body: { "sessions": [{ "sessionId": "abc", "knownFileSize": 12345 }] }
+```
+Returns which sessions have changed, avoiding per-session polling.
+
+**Monitor live executions:**
+```
+GET /monitor/executions
+```
+Returns `executionId`, `sessionId`, `status`, `isRunning`, `turnCount`, `costUsd`, `elapsedMs`.
+
+**SSE stream for real-time updates:**
+```
+GET /stream?executionId=abc123
+```
+Server-sent events with `execution_update` events. Omit `executionId` for all events.
+
+#### Key response fields from `GET /sessions/:id`
+
+- **Metadata:** `sessionId`, `cwd`, `model`, `claudeCodeVersion`, `permissionMode`, `tools[]`, `mcpServers[]`
+- **Execution:** `numTurns`, `durationMs`, `totalCostUsd`, `usage`, `modelUsage`, `isActive`, `status` (`running`|`completed`|`error`|`interrupted`|`idle`|`stale`)
+- **Messages:** `userPrompts[]`, `toolUses[]`, `responses[]`, `thinkingBlocks[]`, `systemPrompt`
+- **Operations:** `fileChanges[]`, `gitOperations[]`, `fileSummary`
+- **Organization:** `todos[]`, `tasks[]`, `plans[]`, `subagents[]`
+- **Team:** `teamName`, `allTeams[]`, `teamOperations[]`, `teamMessages[]`
+- **Pagination:** `totalUserPrompts`, `totalTurns`, `lastLineIndex`, `lastTurnIndex`, `hasMore`
+- **Fork tracking:** `forkedFromSessionId`
+
+#### Additional query params for `GET /sessions/:id`
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `cwd` | default project | Project directory to search in |
+| `includeRawMessages` | false | Include raw JSONL lines |
+| `includeReads` | false | Include read-only file operations |
+| `fromLineIndex` / `toLineIndex` | — | Filter by JSONL line range |
+| `fromTurnIndex` / `toTurnIndex` | — | Filter by turn range |
+| `fromUserPromptIndex` / `toUserPromptIndex` | — | Filter by user prompt range |
+| `lastNUserPrompts` | 50 | Last N user prompts (default limit) |
+| `unlimited` | false | Return all data (no 50-message default limit) |
+| `ifModifiedSince` | — | ISO timestamp for conditional requests |
 
 ### Projects (12 endpoints)
 | Method | Endpoint | Description |

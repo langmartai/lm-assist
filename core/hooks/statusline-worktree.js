@@ -547,6 +547,7 @@ async function main() {
   );
   const model = (input.model && input.model.display_name) || '';
   const sessionCostUsd = (input.cost && input.cost.total_cost_usd) || 0;
+  const sessionId = input.session_id || '';
 
   // --- Load config ---
   const cfg = loadStatuslineConfig();
@@ -651,6 +652,9 @@ async function main() {
     if (procInfo.pid) line3Parts.push(`${DIM}pid:${procInfo.pid}${RESET}`);
     if (procInfo.tty) line3Parts.push(`${DIM}${procInfo.tty}${RESET}`);
     if (procInfo.age) line3Parts.push(`${DIM}up:${procInfo.age}${RESET}`);
+  }
+  if (sessionId) {
+    line3Parts.push(`${DIM}sid: ${sessionId}${RESET}`);
   }
   if (cfg.statuslineShowModel && model) {
     line3Parts.push(`${DIM}${model}${RESET}`);
