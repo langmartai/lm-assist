@@ -98,6 +98,7 @@ Commands:
   log [context|mcp]  View hook and MCP logs (default: both)
   version            Show installed, latest, and plugin versions
   storage            Show storage usage (~/.lm-assist/)
+  storage clean      Delete all lm-assist data and start fresh (-y to skip confirm)
   setup --key KEY    Connect to cloud with an API key
   upgrade            Upgrade to latest version (npm + plugin + restart)
   help               Show this help message
@@ -235,7 +236,72 @@ if (command === 'version') {
 // ─── Handle `storage` — no service-manager needed ───
 if (command === 'storage') {
   const dataDir = process.env.LM_ASSIST_DATA_DIR || path.join(os.homedir(), '.lm-assist');
+  const subCommand = args[0]; // 'clean' or undefined
 
+  // ─── storage clean: stop services and delete ~/.lm-assist ───
+  if (subCommand === 'clean') {
+    (async () => {
+      const autoConfirm = args.includes('-y') || args.includes('--yes');
+
+      if (!fs.existsSync(dataDir)) {
+        console.log(`Data directory not found: ${dataDir}`);
+        process.exit(0);
+      }
+
+      const totalSize = formatBytes(dirSize(dataDir));
+      console.log(`\nlm-assist Storage Clean\n`);
+      console.log(`  Data directory:  ${dataDir}`);
+      console.log(`  Total size:      ${totalSize}\n`);
+      console.log(`  WARNING: This will permanently delete all lm-assist data including:`);
+      console.log(`    - Session cache (LMDB)`);
+      console.log(`    - Knowledge documents and identifications`);
+      console.log(`    - Vector store (LanceDB index)`);
+      console.log(`    - Project settings and configuration`);
+      console.log(`    - Logs\n`);
+
+      if (!autoConfirm) {
+        const readline = require('readline');
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
+
+        const confirm1 = await ask(`Are you sure you want to delete ${dataDir}? Type 'yes' to confirm: `);
+        if (confirm1.trim() !== 'yes') {
+          console.log('Cancelled.');
+          rl.close();
+          process.exit(0);
+        }
+
+        const confirm2 = await ask(`Confirm again — type 'yes' to permanently delete all data: `);
+        if (confirm2.trim() !== 'yes') {
+          console.log('Cancelled.');
+          rl.close();
+          process.exit(0);
+        }
+        rl.close();
+      } else {
+        console.log(`Auto-confirming with -y flag`);
+      }
+
+      // Stop services on all known ports
+      console.log(`\nStopping services...`);
+      const { execFileSync } = require('child_process');
+      for (const p of ['3100', '3848', '3200', '3948']) {
+        try { execFileSync('fuser', ['-k', `${p}/tcp`], { stdio: 'ignore' }); } catch { /* ok */ }
+      }
+
+      // Brief wait for processes to exit
+      await new Promise(r => setTimeout(r, 1000));
+
+      console.log(`Deleting ${dataDir}...`);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+      console.log(`Done. All lm-assist data deleted. Services will rebuild on next start.\n`);
+
+      process.exit(0);
+    })();
+    return; // Prevent falling through to storage usage display
+  }
+
+  // ─── storage (no subcommand): show usage ───
   if (!fs.existsSync(dataDir)) {
     console.log(`lm-assist Storage\n`);
     console.log(`  Data directory not found: ${dataDir}`);

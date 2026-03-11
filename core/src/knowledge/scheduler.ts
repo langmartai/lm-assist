@@ -141,16 +141,30 @@ class KnowledgeScheduler {
     };
   }
 
+  /**
+   * Trigger immediate discovery + generation (bypasses interval check).
+   * Returns false if already running.
+   */
+  async runNow(): Promise<boolean> {
+    if (this.agentDiscoveryRunning || this.genericDiscoveryRunning || this.generationRunning) {
+      return false;
+    }
+    // Run both discoveries + generation without checking interval timers
+    await this.runAgentDiscoveryTick(true);
+    await this.runGenericDiscoveryTick(true);
+    return true;
+  }
+
   // ── Agent Discovery + Generation ──────────────────────────────
 
-  private async runAgentDiscoveryTick(): Promise<void> {
-    if (!this._running) return;
+  private async runAgentDiscoveryTick(force = false): Promise<void> {
+    if (!this._running && !force) return;
 
     const settings = getKnowledgeSettings();
-    if (settings.discoveryIntervalMinutes <= 0) return;
+    if (!force && settings.discoveryIntervalMinutes <= 0) return;
 
-    // Check if enough time has passed since last run
-    if (this.agentDiscoveryLastRunAt) {
+    // Check if enough time has passed since last run (skip when forced)
+    if (!force && this.agentDiscoveryLastRunAt) {
       const elapsed = Date.now() - new Date(this.agentDiscoveryLastRunAt).getTime();
       if (elapsed < settings.discoveryIntervalMinutes * 60_000) return;
     }
@@ -176,10 +190,12 @@ class KnowledgeScheduler {
         }
       }
 
-      // Check total pending candidates (including previously discovered)
+      // Check pending candidates for active (non-excluded) projects only
       const { getIdentificationStore } = require('./identification-store');
       const idStore = getIdentificationStore();
-      const pendingCandidates = idStore.list({ status: 'candidate', identifierType: 'explore-agent' });
+      const projectPaths = new Set(projects.map((p: any) => p.path));
+      const pendingCandidates = idStore.list({ status: 'candidate', identifierType: 'explore-agent' })
+        .filter((c: any) => projectPaths.has(c.projectPath));
 
       this.agentDiscoveryLastRunAt = new Date().toISOString();
       this.agentDiscoveryLastResult = `${totalDiscovered} new, ${pendingCandidates.length} pending across ${projects.length} projects`;
@@ -243,15 +259,15 @@ class KnowledgeScheduler {
 
   // ── Generic Content Discovery ──────────────────────────────
 
-  private async runGenericDiscoveryTick(): Promise<void> {
-    if (!this._running) return;
+  private async runGenericDiscoveryTick(force = false): Promise<void> {
+    if (!this._running && !force) return;
 
     const settings = getKnowledgeSettings();
-    if (!settings.autoGenericDiscovery) return;
-    if (settings.discoveryIntervalMinutes <= 0) return;
+    if (!force && !settings.autoGenericDiscovery) return;
+    if (!force && settings.discoveryIntervalMinutes <= 0) return;
 
-    // Check if enough time has passed since last run
-    if (this.genericDiscoveryLastRunAt) {
+    // Check if enough time has passed since last run (skip when forced)
+    if (!force && this.genericDiscoveryLastRunAt) {
       const elapsed = Date.now() - new Date(this.genericDiscoveryLastRunAt).getTime();
       if (elapsed < settings.discoveryIntervalMinutes * 60_000) return;
     }
@@ -279,7 +295,9 @@ class KnowledgeScheduler {
 
       const { getIdentificationStore } = require('./identification-store');
       const idStore = getIdentificationStore();
-      const pendingCandidates = idStore.list({ status: 'candidate', identifierType: 'generic-content' });
+      const projectPaths = new Set(projects.map((p: any) => p.path));
+      const pendingCandidates = idStore.list({ status: 'candidate', identifierType: 'generic-content' })
+        .filter((c: any) => projectPaths.has(c.projectPath));
 
       this.genericDiscoveryLastRunAt = new Date().toISOString();
       this.genericDiscoveryLastResult = `${totalDiscovered} new, ${pendingCandidates.length} pending across ${projects.length} projects`;

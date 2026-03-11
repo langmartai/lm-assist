@@ -53,7 +53,8 @@ export class ExploreAgentIdentifier implements KnowledgeIdentifier {
 
         for (const agent of data.subagents) {
           if (!agent.agentId) continue;
-          if (!agent.type || agent.type.toLowerCase() !== 'explore') continue;
+          const agentType = (agent.type || '').toLowerCase();
+          if (agentType !== 'explore' && agentType !== 'general-purpose') continue;
           if (agent.status !== 'completed') continue;
           if (!agent.result || agent.result.length < MIN_RESULT_LENGTH) continue;
           if (isJunkResult(agent.result.trim())) continue;

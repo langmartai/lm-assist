@@ -101,7 +101,8 @@ export class KnowledgeGenerator {
           if (!agent.agentId) continue;
 
           // Must be Explore type (case-insensitive) and completed
-          if (!agent.type || agent.type.toLowerCase() !== 'explore') continue;
+          const agentType = (agent.type || '').toLowerCase();
+          if (agentType !== 'explore' && agentType !== 'general-purpose') continue;
           if (agent.status !== 'completed') continue;
 
           // Must have substantial result that isn't junk

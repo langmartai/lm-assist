@@ -3088,8 +3088,9 @@ export class AgentSessionStore extends EventEmitter {
                 }
               }
 
-              // Extract Task tool calls (subagent invocations)
-              if (block.name === 'Task' && block.input) {
+              // Extract Task/Agent tool calls (subagent invocations)
+              // Claude Code renamed 'Task' → 'Agent' in newer versions
+              if ((block.name === 'Task' || block.name === 'Agent') && block.input) {
                 const input = block.input as any;
                 const subagentType = input.subagent_type || input.type || 'general-purpose';
                 const prompt = input.prompt || '';

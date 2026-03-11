@@ -276,6 +276,10 @@ lm-assist/
 
 The web UI is fully responsive — optimized for phone, tablet, and desktop viewports.
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
+
 ## Requirements
 
 - Node.js >= 18

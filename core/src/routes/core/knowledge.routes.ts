@@ -253,7 +253,10 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => {
         try {
           const store = getKnowledgeStore();
-          const generatedCount = store.getGeneratedAgentIds().size;
+          const generatedCount = store.getAllIds().filter(id => {
+            const k = store.getKnowledge(id);
+            return k && k.status === 'active';
+          }).length;
           const { getKnowledgePipeline } = require('../../knowledge/pipeline');
           const { getIdentificationStore } = require('../../knowledge/identification-store');
           const pipeline = getKnowledgePipeline();

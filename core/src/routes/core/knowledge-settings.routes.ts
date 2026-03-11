@@ -56,5 +56,23 @@ export function createKnowledgeSettingsRoutes(_ctx: RouteContext): RouteHandler[
         return { success: true, data: status };
       },
     },
+
+    // POST /knowledge/scheduler/run — Trigger immediate discovery + generation
+    {
+      method: 'POST',
+      pattern: /^\/knowledge\/scheduler\/run$/,
+      handler: async () => {
+        const scheduler = getKnowledgeScheduler();
+        const status = scheduler.getStatus();
+        if (status.agentDiscovery.isRunning || status.genericDiscovery.isRunning || status.generation.isRunning) {
+          return { success: false, error: 'Already running' };
+        }
+        // Run async — don't block the response
+        scheduler.runNow().catch((err: any) => {
+          console.error('[Scheduler] runNow failed:', err.message);
+        });
+        return { success: true, data: { message: 'Discovery + generation triggered' } };
+      },
+    },
   ];
 }

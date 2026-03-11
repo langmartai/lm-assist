@@ -348,8 +348,13 @@ export class KnowledgePipeline {
         try {
           await this.generate(candidate.id, project);
           generated++;
-        } catch (err) {
+        } catch (err: any) {
           errors++;
+          // Mark duplicates as skipped so they don't stay "pending" forever
+          const errMsg = err?.message || '';
+          if (errMsg.startsWith('Duplicate:') || errMsg.includes('already generated')) {
+            try { idStore.update(candidate.id, { status: 'skipped' }); } catch {}
+          }
           console.error(`[KnowledgePipeline] Failed to generate from ${candidate.id}:`, err);
         }
 

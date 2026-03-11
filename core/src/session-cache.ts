@@ -979,8 +979,9 @@ export class SessionCache {
                 }
               }
 
-              // Extract Task tool calls (subagents)
-              if (block.name === 'Task' && block.input) {
+              // Extract Task/Agent tool calls (subagents)
+              // Claude Code renamed 'Task' → 'Agent' in newer versions
+              if ((block.name === 'Task' || block.name === 'Agent') && block.input) {
                 const input = block.input;
                 updated.subagents.push({
                   agentId: '',
