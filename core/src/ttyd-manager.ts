@@ -1479,15 +1479,20 @@ export class TtydManager {
       // an unmanaged-tmux process already running for this project path — attach to it
       // instead of creating a new tmux session. No sessionId match needed; we just
       // attach ttyd to the existing tmux so the user can see what's running.
+      //
+      // Skip auto-detection when forking — forks must always create a new session.
       let resolvedExistingTmux = options?.existingTmuxSession;
       let resolvedExistingPane = options?.existingTmuxPane;
-      if (!resolvedExistingTmux && !options?.directMode && options?.resume !== false) {
+      if (!resolvedExistingTmux && !options?.directMode && options?.resume !== false && !options?.forkSession) {
         const allProcesses = this.getRunningClaudeProcesses();
-        // Find all unmanaged-tmux candidates: prefer sessionId match, fall back to projectPath
+        // Find unmanaged-tmux candidates matching this sessionId.
+        // Only fall back to projectPath match when the sessionId is a synthetic/unknown ID
+        // (e.g. "unknown", "unmanaged", "new-*") — not when the caller provided a real session ID.
         let candidates = allProcesses.filter(
           p => p.managedBy === 'unmanaged-tmux' && p.tmuxSessionName && p.sessionId === sessionId
         );
-        if (candidates.length === 0) {
+        const isSyntheticId = sessionId === 'unknown' || sessionId === 'unmanaged' || sessionId.startsWith('new-');
+        if (candidates.length === 0 && isSyntheticId) {
           candidates = allProcesses.filter(
             p => p.managedBy === 'unmanaged-tmux' && p.tmuxSessionName && p.projectPath === projectPath
           );

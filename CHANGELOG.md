@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.60] - 2026-03-13
+
+- fix: console tab connecting to wrong session when another Claude instance runs in same project
+- fix: fork session not working — auto-detection hijacked fork requests into existing tmux sessions
+
 ## [0.1.59] - 2026-03-11
 
 ### Knowledge Pipeline
