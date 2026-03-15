@@ -792,10 +792,20 @@ export class SessionCache {
 
               // Mark subagent as completed/error when we see the tool_result for its Task tool_use
               const subagent = updated.subagents.find(s => s.toolUseId === block.tool_use_id);
-              if (subagent && subagent.status !== 'completed' && resultText) {
-                subagent.status = block.is_error ? 'error' : 'completed';
-                subagent.result = resultText;
-                subagent.completedAt = msg.timestamp || new Date().toISOString();
+              if (subagent && resultText) {
+                if (subagent.status !== 'completed') {
+                  subagent.status = block.is_error ? 'error' : 'completed';
+                  subagent.result = resultText;
+                  subagent.completedAt = msg.timestamp || new Date().toISOString();
+                }
+                // Extract agentId from tool_result text (e.g., "agentId: a14dad1")
+                // This is the primary source when agent_progress messages are absent
+                if (!subagent.agentId) {
+                  const agentIdMatch = resultText.match(/agentId:\s*([a-f0-9]+)/);
+                  if (agentIdMatch) {
+                    subagent.agentId = agentIdMatch[1];
+                  }
+                }
               }
             }
           }
@@ -984,7 +994,7 @@ export class SessionCache {
               if ((block.name === 'Task' || block.name === 'Agent') && block.input) {
                 const input = block.input;
                 updated.subagents.push({
-                  agentId: '',
+                  agentId: '', // Will be populated from agent_progress or tool_result
                   toolUseId: block.id,
                   type: input.subagent_type || input.type || 'general-purpose',
                   prompt: input.prompt || '',
@@ -994,6 +1004,8 @@ export class SessionCache {
                   turnIndex,
                   lineIndex: msg.lineIndex,
                   userPromptIndex: Math.max(0, updated.userPrompts.length - 1),
+                  // Parent message UUID for linking to subagent's parentUuid
+                  parentUuid: msg.uuid,
                   // Status
                   startedAt: msg.timestamp,
                   status: 'pending',

@@ -3096,7 +3096,7 @@ export class AgentSessionStore extends EventEmitter {
                 const prompt = input.prompt || '';
                 // Use tool_use_id as temporary key until we get agentId from progress
                 subagentsMap.set(block.id, {
-                  agentId: '', // Will be populated from agent_progress
+                  agentId: '', // Will be populated from agent_progress or tool_result
                   toolUseId: block.id,
                   type: subagentType as SubagentType,
                   prompt,
@@ -3106,6 +3106,8 @@ export class AgentSessionStore extends EventEmitter {
                   turnIndex,
                   lineIndex: msg.lineIndex,
                   userPromptIndex: Math.max(0, currentUserPromptIndex),
+                  // Parent message UUID for linking to subagent's parentUuid
+                  parentUuid: assistantMsg.uuid,
                   // Status
                   startedAt: assistantMsg.timestamp,
                   status: 'pending',
@@ -3260,10 +3262,25 @@ export class AgentSessionStore extends EventEmitter {
                 // Extract result text if present
                 if (typeof block.content === 'string') {
                   subagent.result = block.content.slice(0, 2000); // Truncate long results
+                  // Extract agentId from tool_result text (e.g., "agentId: a14dad1")
+                  // This is the primary source when agent_progress messages are absent
+                  if (!subagent.agentId) {
+                    const agentIdMatch = block.content.match(/agentId:\s*([a-f0-9]+)/);
+                    if (agentIdMatch) {
+                      subagent.agentId = agentIdMatch[1];
+                    }
+                  }
                 } else if (Array.isArray(block.content)) {
                   const textContent = block.content.find((c: any) => c.type === 'text');
                   if (textContent?.text) {
                     subagent.result = textContent.text.slice(0, 2000);
+                    // Also try extracting agentId from array-style content
+                    if (!subagent.agentId) {
+                      const agentIdMatch = textContent.text.match(/agentId:\s*([a-f0-9]+)/);
+                      if (agentIdMatch) {
+                        subagent.agentId = agentIdMatch[1];
+                      }
+                    }
                   }
                 }
               }
@@ -4368,9 +4385,12 @@ export class AgentSessionStore extends EventEmitter {
     claudeCodeVersion: string;
   } | null {
     try {
+      // Read enough bytes for the first line — agent first lines can be very long
+      // (4KB+ when they include system prompts). Try JSON.parse first; if that fails
+      // (truncated line), fall back to regex extraction of the fields we need.
       const fd = fs.openSync(filePath, 'r');
-      const buffer = Buffer.alloc(4096);  // Read up to 4KB for first line
-      const bytesRead = fs.readSync(fd, buffer, 0, 4096, 0);
+      const buffer = Buffer.alloc(16384);  // Read up to 16KB for first line
+      const bytesRead = fs.readSync(fd, buffer, 0, 16384, 0);
       fs.closeSync(fd);
 
       if (bytesRead === 0) return null;
@@ -4379,13 +4399,28 @@ export class AgentSessionStore extends EventEmitter {
       const firstLine = content.split('\n')[0];
       if (!firstLine) return null;
 
-      const parsed = JSON.parse(firstLine);
-      return {
-        parentSessionId: parsed.sessionId || '',
-        parentUuid: parsed.parentUuid || '',
-        agentCwd: parsed.cwd || '',
-        claudeCodeVersion: parsed.version || '',
-      };
+      try {
+        const parsed = JSON.parse(firstLine);
+        return {
+          parentSessionId: parsed.sessionId || '',
+          parentUuid: parsed.parentUuid || '',
+          agentCwd: parsed.cwd || '',
+          claudeCodeVersion: parsed.version || '',
+        };
+      } catch {
+        // JSON.parse failed (truncated line) — extract fields via regex
+        const sessionIdMatch = content.match(/"sessionId"\s*:\s*"([^"]+)"/);
+        const parentUuidMatch = content.match(/"parentUuid"\s*:\s*"([^"]+)"/);
+        const cwdMatch = content.match(/"cwd"\s*:\s*"([^"]+)"/);
+        const versionMatch = content.match(/"version"\s*:\s*"([^"]+)"/);
+        if (!sessionIdMatch) return null;
+        return {
+          parentSessionId: sessionIdMatch[1] || '',
+          parentUuid: parentUuidMatch?.[1] || '',
+          agentCwd: cwdMatch?.[1] || '',
+          claudeCodeVersion: versionMatch?.[1] || '',
+        };
+      }
     } catch {
       return null;
     }
@@ -4401,7 +4436,9 @@ export class AgentSessionStore extends EventEmitter {
    */
   private getAgentParentSessionId(filePath: string): string | null {
     try {
-      // Read just enough bytes to get the first line (usually < 1KB)
+      // Read enough bytes to find sessionId — it appears early in the first line
+      // (~byte 100) but we need enough to cover variations. Use regex extraction
+      // instead of JSON.parse since first lines can exceed any reasonable buffer.
       const fd = fs.openSync(filePath, 'r');
       const buffer = Buffer.alloc(2048);
       const bytesRead = fs.readSync(fd, buffer, 0, 2048, 0);
@@ -4410,11 +4447,9 @@ export class AgentSessionStore extends EventEmitter {
       if (bytesRead === 0) return null;
 
       const content = buffer.toString('utf8', 0, bytesRead);
-      const firstLine = content.split('\n')[0];
-      if (!firstLine) return null;
-
-      const parsed = JSON.parse(firstLine);
-      return parsed.sessionId || null;
+      // Extract sessionId directly via regex — works even with truncated JSON
+      const match = content.match(/"sessionId"\s*:\s*"([^"]+)"/);
+      return match ? match[1] : null;
     } catch {
       return null;
     }
