@@ -3237,49 +3237,47 @@ export class AgentSessionStore extends EventEmitter {
                 timestamp: userMsg.timestamp,
               });
             }
-            // Extract TaskCreate results to get assigned task ID
-            // Format: "Task #11 created successfully: ..."
-            if (block.type === 'tool_result' && block.tool_use_id && typeof block.content === 'string') {
-              const taskCreateMatch = block.content.match(/Task #(\d+) created successfully/);
-              if (taskCreateMatch) {
-                const assignedId = taskCreateMatch[1];
-                const tempId = `temp-${block.tool_use_id}`;
-                const tempTask = allTasksMap.get(tempId);
-                if (tempTask) {
-                  // Update task with real ID
-                  allTasksMap.delete(tempId);
-                  tempTask.id = assignedId;
-                  allTasksMap.set(assignedId, tempTask);
+            if (block.type === 'tool_result' && block.tool_use_id) {
+              // Extract text from tool_result (may be string or array of text blocks)
+              let resultText = '';
+              if (typeof block.content === 'string') {
+                resultText = block.content;
+              } else if (Array.isArray(block.content)) {
+                resultText = block.content
+                  .filter((c: any) => c.type === 'text' && c.text)
+                  .map((c: any) => c.text)
+                  .join('\n');
+              }
+
+              // Extract TaskCreate results to get assigned task ID
+              // Format: "Task #11 created successfully: ..."
+              if (resultText) {
+                const taskCreateMatch = resultText.match(/Task #(\d+) created successfully/);
+                if (taskCreateMatch) {
+                  const assignedId = taskCreateMatch[1];
+                  const tempId = `temp-${block.tool_use_id}`;
+                  const tempTask = allTasksMap.get(tempId);
+                  if (tempTask) {
+                    allTasksMap.delete(tempId);
+                    tempTask.id = assignedId;
+                    allTasksMap.set(assignedId, tempTask);
+                  }
                 }
               }
 
-              // Extract Task tool results (subagent completion/error)
-              // Update subagent status when we get the tool_result
+              // Extract Task/Agent tool results (subagent completion/error)
               const subagent = subagentsMap.get(block.tool_use_id);
               if (subagent) {
                 subagent.status = block.is_error ? 'error' : 'completed';
                 subagent.completedAt = userMsg.timestamp;
-                // Extract result text if present
-                if (typeof block.content === 'string') {
-                  subagent.result = block.content.slice(0, 2000); // Truncate long results
+                if (resultText) {
+                  subagent.result = resultText.slice(0, 2000);
                   // Extract agentId from tool_result text (e.g., "agentId: a14dad1")
                   // This is the primary source when agent_progress messages are absent
                   if (!subagent.agentId) {
-                    const agentIdMatch = block.content.match(/agentId:\s*([a-f0-9]+)/);
+                    const agentIdMatch = resultText.match(/agentId:\s*([a-f0-9]+)/);
                     if (agentIdMatch) {
                       subagent.agentId = agentIdMatch[1];
-                    }
-                  }
-                } else if (Array.isArray(block.content)) {
-                  const textContent = block.content.find((c: any) => c.type === 'text');
-                  if (textContent?.text) {
-                    subagent.result = textContent.text.slice(0, 2000);
-                    // Also try extracting agentId from array-style content
-                    if (!subagent.agentId) {
-                      const agentIdMatch = textContent.text.match(/agentId:\s*([a-f0-9]+)/);
-                      if (agentIdMatch) {
-                        subagent.agentId = agentIdMatch[1];
-                      }
                     }
                   }
                 }
