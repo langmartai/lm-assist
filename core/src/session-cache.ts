@@ -116,6 +116,26 @@ export interface CachedPlan {
   lineIndex: number;
 }
 
+export interface CachedSkillInvocation {
+  skillName: string;
+  pluginName: string;
+  shortName: string;
+  args?: string;
+  toolUseId: string;
+  turnIndex: number;
+  lineIndex: number;
+  instructionsLineIndex?: number;
+  instructionsLength?: number;
+  spanStartLine: number;
+  spanEndLine?: number;
+  toolsCalled: string[];
+  toolUseCount: number;
+  filesRead: string[];
+  filesWritten: string[];
+  subagentIds: string[];
+  success?: boolean;
+  timestamp?: string;
+}
 
 export interface CachedSubagent {
   agentId: string;
@@ -189,6 +209,7 @@ export interface SessionCacheData {
   subagents: CachedSubagent[];
   subagentProgress: any[];
   plans: CachedPlan[];
+  skillInvocations: CachedSkillInvocation[];
 
   // Team data
   teamName?: string;
@@ -235,7 +256,58 @@ export interface RawMessagesCache {
 
 // ─── Constants ──────────────────────────────────────────────────
 
-const CACHE_VERSION = 9; // v9: Add promptType classification for system-injected messages
+const CACHE_VERSION = 10; // v10: Add CachedSkillInvocation extraction
+
+// ─── Skill Extraction Helpers ──────────────────────────────────────────────────
+
+function parseSkillName(raw: string): { skillName: string; pluginName: string; shortName: string } {
+  const colonIdx = raw.indexOf(':');
+  if (colonIdx > 0) {
+    return { skillName: raw, pluginName: raw.slice(0, colonIdx), shortName: raw.slice(colonIdx + 1) };
+  }
+  return { skillName: raw, pluginName: 'unknown', shortName: raw };
+}
+
+function attributeSkillSpans(data: SessionCacheData): void {
+  for (const skill of data.skillInvocations) {
+    const start = skill.spanStartLine;
+    const end = skill.spanEndLine;
+    // Degenerate span
+    if (end !== undefined && end < start) {
+      skill.toolsCalled = []; skill.toolUseCount = 0;
+      skill.filesRead = []; skill.filesWritten = [];
+      skill.subagentIds = [];
+      continue;
+    }
+    const toolNames = new Set<string>();
+    let toolCount = 0;
+    const reads = new Set<string>();
+    const writes = new Set<string>();
+    const agents: string[] = [];
+    for (const tu of data.toolUses) {
+      if (tu.lineIndex >= start && (end === undefined || tu.lineIndex <= end)) {
+        if (tu.name === 'Skill') continue;
+        toolNames.add(tu.name);
+        toolCount++;
+        const filePath = tu.input?.file_path || tu.input?.path;
+        if (filePath && typeof filePath === 'string') {
+          if (tu.name === 'Read' || tu.name === 'Glob' || tu.name === 'Grep') reads.add(filePath);
+          else if (tu.name === 'Write' || tu.name === 'Edit') writes.add(filePath);
+        }
+      }
+    }
+    for (const sa of data.subagents) {
+      if (sa.lineIndex >= start && (end === undefined || sa.lineIndex <= end)) {
+        if (sa.agentId) agents.push(sa.agentId);
+      }
+    }
+    skill.toolsCalled = Array.from(toolNames);
+    skill.toolUseCount = toolCount;
+    skill.filesRead = Array.from(reads);
+    skill.filesWritten = Array.from(writes);
+    skill.subagentIds = agents;
+  }
+}
 
 // ─── SessionCache Class ──────────────────────────────────────────────────
 
@@ -691,6 +763,7 @@ export class SessionCache {
     // Ensure new fields exist (backward compat with old LMDB cache entries)
     if (updated.cumulativeCostUsd === undefined) updated.cumulativeCostUsd = 0;
     if (!updated.modelUsage) updated.modelUsage = {};
+    if (!updated.skillInvocations) updated.skillInvocations = [];
 
     let turnIndex = cache.lastTurnIndex;
     let lastTimestamp: string | undefined = cache.lastTimestamp;
@@ -762,6 +835,38 @@ export class SessionCache {
             timestamp: msg.timestamp,
             promptType: promptType !== 'user' ? promptType : undefined,
           });
+
+          // Close open skill span on real user prompts
+          if (promptType === 'user') {
+            const lastSkill = updated.skillInvocations.length > 0
+              ? updated.skillInvocations[updated.skillInvocations.length - 1]
+              : undefined;
+            if (lastSkill && lastSkill.spanEndLine === undefined) {
+              lastSkill.spanEndLine = msg.lineIndex - 1;
+            }
+          }
+        }
+
+        // Skill instructions: isMeta message with sourceToolUseID contains loaded SKILL.md
+        if (msg.isMeta === true && msg.sourceToolUseID) {
+          const pendingSkill = updated.skillInvocations.find(
+            (s: CachedSkillInvocation) => s.toolUseId === msg.sourceToolUseID
+          );
+          if (pendingSkill) {
+            // Compute text length for instructions
+            let instrText = '';
+            const instrContent = msg.message?.content;
+            if (Array.isArray(instrContent)) {
+              for (const b of instrContent) {
+                if (b.type === 'text') instrText += b.text;
+              }
+            } else if (typeof instrContent === 'string') {
+              instrText = instrContent;
+            }
+            pendingSkill.instructionsLineIndex = msg.lineIndex;
+            pendingSkill.instructionsLength = instrText.length;
+            pendingSkill.spanStartLine = msg.lineIndex + 1;
+          }
         }
 
         // Extract tool_result blocks — handle both string and array content formats
@@ -806,6 +911,14 @@ export class SessionCache {
                     subagent.agentId = agentIdMatch[1];
                   }
                 }
+              }
+
+              // Skill tool_result: match by tool_use_id and capture success from message-level toolUseResult
+              const matchedSkill = updated.skillInvocations.find(
+                (s: CachedSkillInvocation) => s.toolUseId === block.tool_use_id
+              );
+              if (matchedSkill && msg.toolUseResult?.success !== undefined) {
+                matchedSkill.success = msg.toolUseResult.success;
               }
             }
           }
@@ -1010,6 +1123,33 @@ export class SessionCache {
                   startedAt: msg.timestamp,
                   status: 'pending',
                   runInBackground: input.run_in_background,
+                });
+              }
+
+              // Extract Skill invocations
+              if (block.name === 'Skill' && block.input) {
+                // Close previous skill's span if open
+                const lastSkill = updated.skillInvocations.length > 0
+                  ? updated.skillInvocations[updated.skillInvocations.length - 1]
+                  : undefined;
+                if (lastSkill && lastSkill.spanEndLine === undefined) {
+                  lastSkill.spanEndLine = msg.lineIndex - 1;
+                }
+
+                const parsed = parseSkillName(block.input.skill || '');
+                updated.skillInvocations.push({
+                  ...parsed,
+                  args: block.input.args,
+                  toolUseId: block.id,
+                  turnIndex,
+                  lineIndex: msg.lineIndex,
+                  spanStartLine: msg.lineIndex + 1, // Provisional; updated when isMeta arrives
+                  toolsCalled: [],
+                  toolUseCount: 0,
+                  filesRead: [],
+                  filesWritten: [],
+                  subagentIds: [],
+                  timestamp: msg.timestamp,
                 });
               }
 
@@ -1234,6 +1374,7 @@ export class SessionCache {
       subagents: [],
       subagentProgress: [],
       plans: [],
+      skillInvocations: [],
 
       allTeams: [],
       teamOperations: [],
@@ -1256,7 +1397,9 @@ export class SessionCache {
     };
 
     // Merge all messages into cache
-    return this.mergeNewMessages(cache, messages, stats);
+    const result = this.mergeNewMessages(cache, messages, stats);
+    attributeSkillSpans(result);
+    return result;
   }
 
   /**
@@ -1298,6 +1441,7 @@ export class SessionCache {
         cache.lastLineIndex = lastLineIndex;
         cache.lastTurnIndex = lastTurnIndex;
         cache.lastByteOffset = lastByteOffset;
+        attributeSkillSpans(cache);
 
         // Write to LMDB (async, auto-batched)
         await this.store.putSessionData(sessionPath, cache);
@@ -1586,6 +1730,7 @@ export class SessionCache {
         cache = this.mergeNewMessages(cache, newMessages, stats);
         cache.lastLineIndex = lines.length - 1;
         cache.lastTurnIndex = turnIndex;
+        attributeSkillSpans(cache);
 
         // Fire-and-forget async write to LMDB
         this.store.putSessionData(sessionPath, cache).catch(() => {});
@@ -1642,6 +1787,7 @@ export class SessionCache {
       subagents: [],
       subagentProgress: [],
       plans: [],
+      skillInvocations: [],
 
       allTeams: [],
       teamOperations: [],
@@ -1665,6 +1811,7 @@ export class SessionCache {
 
     // Merge all messages into cache
     cache = this.mergeNewMessages(cache, messages, stats);
+    attributeSkillSpans(cache);
 
     console.log(`[SessionCache] Parsed (sync) ${cache.lastLineIndex + 1} lines in ${Date.now() - startTime}ms`);
 
