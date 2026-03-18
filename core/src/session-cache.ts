@@ -49,7 +49,7 @@ export interface CachedUserPrompt {
 export function classifyUserPrompt(text: string, isMeta?: boolean): PromptType {
   const trimmed = text.trimStart();
   if (isMeta || trimmed.startsWith('<local-command-caveat>')) return 'system_caveat';
-  if (trimmed.startsWith('<command-name>')) return 'command';
+  if (trimmed.startsWith('<command-name>') || trimmed.startsWith('<command-message>')) return 'command';
   if (trimmed.startsWith('<local-command-stdout>')) return 'command_output';
   if (trimmed.startsWith('<user-prompt-submit-hook>')) return 'hook_result';
   return 'user';
@@ -265,7 +265,7 @@ export interface RawMessagesCache {
 
 // ─── Constants ──────────────────────────────────────────────────
 
-const CACHE_VERSION = 11; // v11: Add CachedCommandInvocation extraction
+const CACHE_VERSION = 12; // v12: Fix command-message detection in classifyUserPrompt
 
 // ─── Skill Extraction Helpers ──────────────────────────────────────────────────
 
