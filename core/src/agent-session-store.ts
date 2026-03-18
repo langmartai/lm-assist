@@ -198,6 +198,8 @@ function convertCacheToSessionData(
     taskSubjects: cache.tasks.length > 0
       ? Object.fromEntries(cache.tasks.filter(t => t.subject).map(t => [t.id, t.subject]))
       : undefined,
+    // Skill invocation count for tab badge
+    skillInvocationCount: cache.skillInvocations?.length || undefined,
   };
 
   // Calculate cost from tokens if no cost from result or per-message costUSD
@@ -958,6 +960,8 @@ export interface ClaudeSessionData {
   }>;
   /** Task ID -> subject mapping for resolving TaskUpdate references */
   taskSubjects?: Record<string, string>;
+  /** Number of skill invocations (Skill tool calls) */
+  skillInvocationCount?: number;
 }
 
 // ============================================================================

@@ -118,6 +118,7 @@ export interface SessionDetail {
   toolUses?: any[];
   running?: ProcessRunningInfo;
   forkedFromSessionId?: string;
+  skillInvocationCount?: number;
 }
 
 // ============================================

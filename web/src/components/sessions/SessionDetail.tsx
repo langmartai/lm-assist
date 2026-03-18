@@ -286,7 +286,7 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
     { id: 'tasks', label: 'Tasks', count: tasks.length || undefined },
     { id: 'plans', label: 'Plans', count: plans.length || undefined },
     { id: 'agents', label: 'Agents', count: subagents.length || undefined },
-    { id: 'skills', label: 'Skills' },
+    { id: 'skills', label: 'Skills', count: detail?.skillInvocationCount || undefined },
     { id: 'team', label: 'Team', count: teamEntryCount || undefined },
     ...(isExperiment ? [{ id: 'dag' as TabId, label: 'FlowGraph' }] : []),
     { id: 'files', label: 'Files', count: fileChanges.length || undefined },

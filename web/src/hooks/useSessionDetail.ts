@@ -358,6 +358,7 @@ export function useSessionDetail({
           outputTokens: delta.outputTokens ?? prev.outputTokens,
           lastModified: delta.lastModified ?? prev.lastModified,
           isActive: newIsActive,
+          skillInvocationCount: delta.skillInvocationCount ?? prev.skillInvocationCount,
         };
       });
 

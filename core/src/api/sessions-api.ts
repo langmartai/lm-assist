@@ -250,6 +250,8 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
             todos: cacheData?.todos || [],
             plans: cacheData?.plans || [],
             subagents: cacheData?.subagents || [],
+            // ─── Skill invocation count ───
+            skillInvocationCount: cacheData?.skillInvocations?.length || undefined,
             // ─── Team data ───
             teamName: cacheData?.teamName,
             allTeams: cacheData?.allTeams && cacheData.allTeams.length > 0 ? cacheData.allTeams : undefined,
@@ -461,6 +463,8 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
           totalSubagents,
           // ─── Plans (EnterPlanMode/ExitPlanMode) ───
           plans: data.plans,
+          // ─── Skill invocation count ───
+          skillInvocationCount: data.skillInvocationCount,
           // ─── Team data ───
           teamName: data.teamName,
           allTeams: data.allTeams,
