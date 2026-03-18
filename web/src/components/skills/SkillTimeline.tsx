@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Loader2, Zap, ChevronDown, ChevronRight, CheckCircle2, XCircle } from 'lucide-react';
+import { Loader2, Zap, ChevronDown, ChevronRight, FileText, PenTool, Bot } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { useMachineContext } from '@/contexts/MachineContext';
 
@@ -27,6 +27,25 @@ interface SkillInvocation {
 interface SkillTimelineProps {
   sessionId: string;
   machineId?: string;
+}
+
+// Deterministic color for a plugin name
+const PLUGIN_COLORS = [
+  'var(--color-accent)',
+  'var(--color-status-blue)',
+  'var(--color-status-green)',
+  'var(--color-status-purple)',
+  'var(--color-status-cyan)',
+  'var(--color-status-orange)',
+  'var(--color-status-pink)',
+];
+
+function pluginColor(pluginName: string): string {
+  let hash = 0;
+  for (let i = 0; i < pluginName.length; i++) {
+    hash = ((hash << 5) - hash + pluginName.charCodeAt(i)) | 0;
+  }
+  return PLUGIN_COLORS[Math.abs(hash) % PLUGIN_COLORS.length];
 }
 
 export function SkillTimeline({ sessionId, machineId }: SkillTimelineProps) {
@@ -88,8 +107,10 @@ export function SkillTimeline({ sessionId, machineId }: SkillTimelineProps) {
   if (skills.length === 0) {
     return (
       <div className="empty-state" style={{ height: '100%' }}>
-        <Zap size={28} className="empty-state-icon" />
-        <span style={{ fontSize: 13 }}>No skill invocations in this session</span>
+        <Zap size={32} style={{ color: 'var(--color-text-tertiary)', opacity: 0.5 }} />
+        <span style={{ fontSize: 13, color: 'var(--color-text-tertiary)', marginTop: 8 }}>
+          No skill invocations in this session
+        </span>
       </div>
     );
   }
@@ -102,214 +123,325 @@ export function SkillTimeline({ sessionId, machineId }: SkillTimelineProps) {
         borderBottom: '1px solid var(--color-border-default)',
         display: 'flex',
         alignItems: 'center',
-        gap: 8,
+        gap: 10,
         fontSize: 11,
         color: 'var(--color-text-tertiary)',
       }}>
-        <Zap size={12} />
-        <span>{skills.length} skill invocation{skills.length !== 1 ? 's' : ''}</span>
+        <Zap size={12} style={{ color: 'var(--color-accent)' }} />
+        <span style={{ fontFamily: 'var(--font-mono)' }}>
+          {skills.length} skill invocation{skills.length !== 1 ? 's' : ''}
+        </span>
 
-        {/* Chain flow */}
-        <div style={{ flex: 1 }} />
-        <SkillChainFlow skills={skills} />
+        {/* Chain flow (if 2+ skills) */}
+        {skills.length >= 2 && (
+          <>
+            <div style={{ flex: 1 }} />
+            <SkillChainFlow skills={skills} />
+          </>
+        )}
       </div>
 
       {/* Timeline */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '12px 16px', position: 'relative' }} className="scrollbar-thin">
-        {/* Vertical line */}
+      <div style={{ flex: 1, overflow: 'auto', padding: '16px 16px 16px 20px', position: 'relative' }} className="scrollbar-thin">
+        {/* Vertical connector line */}
         <div style={{
           position: 'absolute',
-          left: 31,
-          top: 12,
-          bottom: 12,
+          left: 29,
+          top: 16,
+          bottom: 16,
           width: 2,
           background: 'var(--color-border-default)',
+          borderRadius: 1,
         }} />
 
-        {skills.map((skill, i) => {
-          const isExpanded = expandedIndex === i;
-          return (
-            <div key={`${skill.toolUseId}-${i}`} style={{
-              display: 'flex',
-              alignItems: 'flex-start',
-              gap: 12,
-              padding: '6px 0',
-              position: 'relative',
-            }}>
-              {/* Node indicator */}
-              <div style={{
-                width: 24,
-                height: 24,
-                borderRadius: '50%',
-                background: 'var(--color-bg-surface)',
-                border: `2px solid ${skill.success === true ? 'var(--color-status-green)' : skill.success === false ? 'var(--color-status-red)' : 'var(--color-border-default)'}`,
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {skills.map((skill, i) => {
+            const isExpanded = expandedIndex === i;
+            const color = pluginColor(skill.pluginName);
+            return (
+              <div key={`${skill.toolUseId}-${i}`} style={{
                 display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-                zIndex: 1,
+                alignItems: 'flex-start',
+                gap: 14,
+                position: 'relative',
               }}>
-                {skill.success === true && <CheckCircle2 size={12} style={{ color: 'var(--color-status-green)' }} />}
-                {skill.success === false && <XCircle size={12} style={{ color: 'var(--color-status-red)' }} />}
-                {skill.success === undefined && <Zap size={10} style={{ color: 'var(--color-text-tertiary)' }} />}
-              </div>
-
-              {/* Card */}
-              <div
-                className="card"
-                style={{ flex: 1, padding: '8px 12px', cursor: 'pointer' }}
-                onClick={() => setExpandedIndex(isExpanded ? null : i)}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                  <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-text-primary)' }}>
-                    {skill.shortName}
-                  </span>
-                  <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-                    {skill.pluginName}
-                  </span>
-                  {isExpanded
-                    ? <ChevronDown size={12} style={{ marginLeft: 'auto', color: 'var(--color-text-tertiary)' }} />
-                    : <ChevronRight size={12} style={{ marginLeft: 'auto', color: 'var(--color-text-tertiary)' }} />
-                  }
-                </div>
-
-                {/* Summary stats */}
-                <div style={{ display: 'flex', gap: 8, fontSize: 10, color: 'var(--color-text-tertiary)' }}>
-                  <span>Lines {skill.spanStartLine}{skill.spanEndLine ? `-${skill.spanEndLine}` : ''}</span>
-                  <span>{skill.toolUseCount} tools</span>
-                  {skill.filesRead.length > 0 && <span>{skill.filesRead.length} reads</span>}
-                  {skill.filesWritten.length > 0 && <span>{skill.filesWritten.length} writes</span>}
-                  {skill.subagentIds.length > 0 && <span>{skill.subagentIds.length} agents</span>}
-                </div>
-
-                {/* Args */}
-                {skill.args && (
+                {/* Node indicator */}
+                <div style={{
+                  width: 20,
+                  height: 20,
+                  borderRadius: '50%',
+                  background: 'var(--color-bg-root)',
+                  border: `2px solid ${skill.success === true ? 'var(--color-status-green)' : skill.success === false ? 'var(--color-status-red)' : 'var(--color-border-strong)'}`,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                  zIndex: 1,
+                  marginTop: 8,
+                }}>
                   <div style={{
-                    fontSize: 11,
-                    color: 'var(--color-text-secondary)',
-                    marginTop: 4,
-                    fontFamily: 'var(--font-mono)',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: isExpanded ? 'pre-wrap' : 'nowrap',
-                    maxHeight: isExpanded ? undefined : 18,
-                  }}>
-                    {skill.args}
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    background: skill.success === true
+                      ? 'var(--color-status-green)'
+                      : skill.success === false
+                        ? 'var(--color-status-red)'
+                        : 'var(--color-text-tertiary)',
+                  }} />
+                </div>
+
+                {/* Card */}
+                <div
+                  style={{
+                    flex: 1,
+                    padding: '10px 14px',
+                    background: 'var(--color-bg-surface)',
+                    border: '1px solid var(--color-border-default)',
+                    borderLeft: `3px solid ${color}`,
+                    borderRadius: 'var(--radius-md)',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                  }}
+                  onClick={() => setExpandedIndex(isExpanded ? null : i)}
+                  onMouseEnter={e => {
+                    (e.currentTarget as HTMLElement).style.borderColor = 'var(--color-border-strong)';
+                    (e.currentTarget as HTMLElement).style.borderLeftColor = color;
+                  }}
+                  onMouseLeave={e => {
+                    (e.currentTarget as HTMLElement).style.borderColor = 'var(--color-border-default)';
+                    (e.currentTarget as HTMLElement).style.borderLeftColor = color;
+                  }}
+                >
+                  {/* Skill name + plugin + expand chevron */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                      {skill.shortName}
+                    </span>
+                    <span style={{
+                      fontSize: 10,
+                      color: 'var(--color-text-tertiary)',
+                      fontFamily: 'var(--font-mono)',
+                    }}>
+                      {skill.pluginName}
+                    </span>
+                    <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center' }}>
+                      {isExpanded
+                        ? <ChevronDown size={14} style={{ color: 'var(--color-text-tertiary)' }} />
+                        : <ChevronRight size={14} style={{ color: 'var(--color-text-tertiary)' }} />
+                      }
+                    </div>
                   </div>
-                )}
 
-                {/* Expanded details */}
-                {isExpanded && (
-                  <div style={{ marginTop: 8, borderTop: '1px solid var(--color-border-default)', paddingTop: 8 }}>
-                    {skill.toolsCalled.length > 0 && (
-                      <div style={{ marginBottom: 6 }}>
-                        <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--color-text-tertiary)', marginBottom: 4 }}>
-                          Tools Used
-                        </div>
-                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                          {skill.toolsCalled.map((tool, j) => (
-                            <span key={j} className="badge badge-default" style={{ fontSize: 9 }}>{tool}</span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
+                  {/* Summary stats as badges */}
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <span className="badge badge-default" style={{ fontSize: 9, padding: '1px 6px', fontFamily: 'var(--font-mono)' }}>
+                      L{skill.spanStartLine}{skill.spanEndLine ? `-${skill.spanEndLine}` : ''}
+                    </span>
+                    <span className="badge badge-default" style={{ fontSize: 9, padding: '1px 6px', fontFamily: 'var(--font-mono)' }}>
+                      {skill.toolUseCount} tools
+                    </span>
                     {skill.filesRead.length > 0 && (
-                      <div style={{ marginBottom: 6 }}>
-                        <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--color-text-tertiary)', marginBottom: 4 }}>
-                          Files Read
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                          {skill.filesRead.map((file, j) => (
-                            <span key={j} style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--color-text-secondary)' }}>
-                              {file}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
+                      <span className="badge badge-blue" style={{ fontSize: 9, padding: '1px 6px', fontFamily: 'var(--font-mono)' }}>
+                        {skill.filesRead.length} reads
+                      </span>
                     )}
-
                     {skill.filesWritten.length > 0 && (
-                      <div style={{ marginBottom: 6 }}>
-                        <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--color-text-tertiary)', marginBottom: 4 }}>
-                          Files Written
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                          {skill.filesWritten.map((file, j) => (
-                            <span key={j} style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--color-text-secondary)' }}>
-                              {file}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
+                      <span className="badge badge-amber" style={{ fontSize: 9, padding: '1px 6px', fontFamily: 'var(--font-mono)' }}>
+                        {skill.filesWritten.length} writes
+                      </span>
                     )}
-
                     {skill.subagentIds.length > 0 && (
-                      <div>
-                        <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--color-text-tertiary)', marginBottom: 4 }}>
-                          Subagents
-                        </div>
-                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                          {skill.subagentIds.map((id, j) => (
-                            <span key={j} className="badge" style={{
-                              fontSize: 9,
-                              background: 'rgba(139,92,246,0.15)',
-                              color: '#8b5cf6',
-                              border: '1px solid rgba(139,92,246,0.3)',
-                            }}>
-                              {id.slice(0, 12)}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
+                      <span className="badge badge-purple" style={{ fontSize: 9, padding: '1px 6px', fontFamily: 'var(--font-mono)' }}>
+                        {skill.subagentIds.length} agents
+                      </span>
                     )}
                   </div>
-                )}
+
+                  {/* Args preview */}
+                  {skill.args && (
+                    <div style={{
+                      fontSize: 11,
+                      color: 'var(--color-text-secondary)',
+                      marginTop: 6,
+                      fontFamily: 'var(--font-mono)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: isExpanded ? 'pre-wrap' : 'nowrap',
+                      maxHeight: isExpanded ? undefined : 18,
+                      lineHeight: '18px',
+                    }}>
+                      {skill.args}
+                    </div>
+                  )}
+
+                  {/* Expanded details */}
+                  {isExpanded && (
+                    <div style={{
+                      marginTop: 10,
+                      borderTop: '1px solid var(--color-border-subtle)',
+                      paddingTop: 10,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 10,
+                    }}>
+                      {skill.toolsCalled.length > 0 && (
+                        <div>
+                          <div style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            color: 'var(--color-text-tertiary)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.3px',
+                            marginBottom: 5,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4,
+                          }}>
+                            <Zap size={10} />
+                            Tools Used
+                          </div>
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            {skill.toolsCalled.map((tool, j) => (
+                              <span key={j} className="badge badge-default" style={{ fontSize: 9, padding: '1px 6px' }}>
+                                {tool}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {skill.filesRead.length > 0 && (
+                        <div>
+                          <div style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            color: 'var(--color-text-tertiary)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.3px',
+                            marginBottom: 5,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4,
+                          }}>
+                            <FileText size={10} />
+                            Files Read
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            {skill.filesRead.map((file, j) => (
+                              <span key={j} style={{
+                                fontSize: 10,
+                                fontFamily: 'var(--font-mono)',
+                                color: 'var(--color-text-secondary)',
+                                lineHeight: '16px',
+                              }}>
+                                {file}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {skill.filesWritten.length > 0 && (
+                        <div>
+                          <div style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            color: 'var(--color-text-tertiary)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.3px',
+                            marginBottom: 5,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4,
+                          }}>
+                            <PenTool size={10} />
+                            Files Written
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            {skill.filesWritten.map((file, j) => (
+                              <span key={j} style={{
+                                fontSize: 10,
+                                fontFamily: 'var(--font-mono)',
+                                color: 'var(--color-text-secondary)',
+                                lineHeight: '16px',
+                              }}>
+                                {file}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {skill.subagentIds.length > 0 && (
+                        <div>
+                          <div style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            color: 'var(--color-text-tertiary)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.3px',
+                            marginBottom: 5,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4,
+                          }}>
+                            <Bot size={10} />
+                            Subagents
+                          </div>
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            {skill.subagentIds.map((id, j) => (
+                              <span key={j} className="badge badge-purple" style={{
+                                fontSize: 9,
+                                padding: '1px 6px',
+                                fontFamily: 'var(--font-mono)',
+                              }}>
+                                {id.slice(0, 12)}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
     </div>
   );
 }
 
-// ─── Inline Chain Flow (horizontal pill view) ──────────────
+// ---- Chain Flow (horizontal connected pills) ----
 
 function SkillChainFlow({ skills }: { skills: SkillInvocation[] }) {
   if (skills.length === 0) return null;
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 4, overflow: 'hidden' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 0, overflow: 'hidden' }}>
       {skills.map((skill, i) => (
-        <span key={`${skill.toolUseId}-${i}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+        <span key={`${skill.toolUseId}-${i}`} style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0 }}>
           {i > 0 && (
-            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
+            <span style={{
+              fontSize: 10,
+              color: 'var(--color-text-tertiary)',
+              margin: '0 3px',
+              fontFamily: 'var(--font-mono)',
+            }}>
               {'\u2192'}
             </span>
           )}
           <span
-            className="badge"
+            className={`badge ${
+              skill.success === true ? 'badge-green' :
+              skill.success === false ? 'badge-red' :
+              'badge-default'
+            }`}
             style={{
               fontSize: 9,
-              padding: '1px 5px',
-              background: skill.success === true
-                ? 'rgba(34,197,94,0.15)'
-                : skill.success === false
-                  ? 'rgba(239,68,68,0.15)'
-                  : 'var(--color-bg-surface)',
-              color: skill.success === true
-                ? 'var(--color-status-green)'
-                : skill.success === false
-                  ? 'var(--color-status-red)'
-                  : 'var(--color-text-secondary)',
-              border: `1px solid ${
-                skill.success === true
-                  ? 'rgba(34,197,94,0.3)'
-                  : skill.success === false
-                    ? 'rgba(239,68,68,0.3)'
-                    : 'var(--color-border-default)'
-              }`,
+              padding: '1px 6px',
             }}
           >
             {skill.shortName}

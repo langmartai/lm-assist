@@ -25,7 +25,12 @@ export function SkillsPage() {
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
 
   return (
-    <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
+    <div style={{
+      display: 'flex',
+      height: '100%',
+      overflow: 'hidden',
+      background: 'var(--color-bg-root)',
+    }}>
       {/* Left panel: Skill inventory */}
       <div style={{
         width: 280,
@@ -34,6 +39,7 @@ export function SkillsPage() {
         overflow: 'hidden',
         display: 'flex',
         flexDirection: 'column',
+        background: 'var(--color-bg-surface)',
       }}>
         <SkillList
           apiFetch={apiFetch}
@@ -43,7 +49,13 @@ export function SkillsPage() {
       </div>
 
       {/* Center panel: Skill detail */}
-      <div style={{ flex: 1, overflow: 'hidden' }}>
+      <div style={{
+        flex: 1,
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+        background: 'var(--color-bg-root)',
+      }}>
         <SkillDetail
           apiFetch={apiFetch}
           skillName={selectedSkill}
@@ -56,6 +68,9 @@ export function SkillsPage() {
         flexShrink: 0,
         borderLeft: '1px solid var(--color-border-default)',
         overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+        background: 'var(--color-bg-surface)',
       }}>
         <SkillAnalytics apiFetch={apiFetch} />
       </div>
