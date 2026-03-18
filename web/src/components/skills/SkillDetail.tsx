@@ -96,8 +96,9 @@ export function SkillDetail({ apiFetch, skillName }: SkillDetailProps) {
 
   if (!detail) return null;
 
-  const successRate = detail.totalInvocations > 0
-    ? Math.round((detail.successCount / (detail.successCount + detail.failCount)) * 100)
+  const denominator = detail.successCount + detail.failCount;
+  const successRate = denominator > 0
+    ? Math.round((detail.successCount / denominator) * 100)
     : 0;
 
   return (

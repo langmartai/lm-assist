@@ -142,9 +142,18 @@ export class SkillIndex {
     const isSubagent = cacheData.filePath.includes('/subagents/');
     const project = cacheData.cwd || '';
 
-    // Remove old entries for this session from all skills
+    // Remove old entries for this session and recalculate aggregates
     for (const entry of Object.values(this.data.skills)) {
-      entry.sessions = entry.sessions.filter(s => s.sessionId !== sessionId);
+      const oldEntries = entry.sessions.filter(s => s.sessionId === sessionId);
+      if (oldEntries.length > 0) {
+        // Subtract old counts before removing
+        for (const old of oldEntries) {
+          entry.totalInvocations--;
+          if (old.success === true) entry.successCount--;
+          if (old.success === false) entry.failCount--;
+        }
+        entry.sessions = entry.sessions.filter(s => s.sessionId !== sessionId);
+      }
     }
 
     // Add new entries
@@ -224,8 +233,8 @@ export class SkillIndex {
   detectChains(): Array<{ sequence: string[]; occurrences: number; projects: string[] }> {
     const chainCounts = new Map<string, { count: number; projects: Set<string> }>();
 
-    // Group skill invocations by session
-    const sessionSkills = new Map<string, Array<{ shortName: string; project: string }>>();
+    // Group skill invocations by session, with timestamps for ordering
+    const sessionSkills = new Map<string, Array<{ shortName: string; project: string; timestamp: string }>>();
     for (const entry of Object.values(this.data.skills)) {
       for (const sess of entry.sessions) {
         if (!sessionSkills.has(sess.sessionId)) {
@@ -234,13 +243,16 @@ export class SkillIndex {
         sessionSkills.get(sess.sessionId)!.push({
           shortName: entry.shortName,
           project: sess.project,
+          timestamp: sess.timestamp,
         });
       }
     }
 
-    // For each session with 2+ skills, generate sliding windows
+    // For each session with 2+ skills, sort by timestamp then generate sliding windows
     for (const [_sessionId, skills] of sessionSkills) {
       if (skills.length < 2) continue;
+      // Sort chronologically to get correct invocation order
+      skills.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
       const names = skills.map(s => s.shortName);
       const project = skills[0]?.project || '';
 

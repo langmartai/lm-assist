@@ -269,6 +269,23 @@ function parseSkillName(raw: string): { skillName: string; pluginName: string; s
 }
 
 function attributeSkillSpans(data: SessionCacheData): void {
+  // Resolve non-namespaced skill names via installed skill inventory
+  try {
+    const { getSkillIndex } = require('./skill-index');
+    const skillIndex = getSkillIndex();
+    for (const skill of data.skillInvocations) {
+      if (skill.pluginName === 'unknown') {
+        const resolved = skillIndex.resolveSkillName(skill.shortName);
+        if (resolved) {
+          skill.pluginName = resolved.pluginName;
+          skill.skillName = resolved.skillName;
+        }
+      }
+    }
+  } catch {
+    // SkillIndex not ready yet — skip resolution
+  }
+
   for (const skill of data.skillInvocations) {
     const start = skill.spanStartLine;
     const end = skill.spanEndLine;

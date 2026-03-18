@@ -220,11 +220,18 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
         const sessionId = req.params.sessionId;
         const cache = getSessionCache();
 
-        // Find session across all cached sessions
-        const allSessions = cache.getAllSessionsFromCache();
-        const match = allSessions.find(s => s.sessionId === sessionId);
+        // Find session across ALL cached sessions (including subagent sessions)
+        let matchData: any = null;
+        for (const { key: filePath, value: cacheData } of (cache as any).store.allSessions()) {
+          const basename = require('path').basename(filePath, '.jsonl');
+          const effectiveId = basename.startsWith('agent-') ? cacheData.sessionId : basename;
+          if (effectiveId === sessionId) {
+            matchData = cacheData;
+            break;
+          }
+        }
 
-        if (!match) {
+        if (!matchData) {
           return { success: false, error: { code: 'NOT_FOUND', message: `Session '${sessionId}' not found in cache` } };
         }
 
@@ -232,8 +239,8 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
           success: true,
           data: {
             sessionId,
-            skillInvocations: match.cacheData.skillInvocations || [],
-            total: (match.cacheData.skillInvocations || []).length,
+            skillInvocations: matchData.skillInvocations || [],
+            total: (matchData.skillInvocations || []).length,
           },
         };
       },
@@ -250,15 +257,24 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
 
         const cache = getSessionCache();
 
-        // Find session across all cached sessions
-        const allSessions = cache.getAllSessionsFromCache();
-        const match = allSessions.find(s => s.sessionId === sessionId);
+        // Find session across ALL cached sessions (including subagent sessions)
+        let matchData: any = null;
+        let matchFilePath = '';
+        for (const { key: filePath, value: cacheData } of (cache as any).store.allSessions()) {
+          const basename = require('path').basename(filePath, '.jsonl');
+          const effectiveId = basename.startsWith('agent-') ? cacheData.sessionId : basename;
+          if (effectiveId === sessionId) {
+            matchData = cacheData;
+            matchFilePath = filePath;
+            break;
+          }
+        }
 
-        if (!match) {
+        if (!matchData) {
           return { success: false, error: { code: 'NOT_FOUND', message: `Session '${sessionId}' not found in cache` } };
         }
 
-        const skills = match.cacheData.skillInvocations || [];
+        const skills = matchData.skillInvocations || [];
         if (index < 0 || index >= skills.length) {
           return {
             success: false,
@@ -267,14 +283,19 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
         }
 
         const skill = skills[index];
-        const project = match.cacheData.cwd || '';
+        const project = matchData.cwd || '';
 
         // Build subagent path resolver using the session's project context
+        // Key by agentId extracted from filename (agent-<agentId>.jsonl), not by sessionId
         const subagentSessions = project
           ? cache.getSubagentSessionsFromCache(project, sessionId)
           : [];
         const subagentMap = new Map(
-          subagentSessions.map(s => [s.cacheData.sessionId, s.filePath])
+          subagentSessions.map(s => {
+            const basename = require('path').basename(s.filePath, '.jsonl');
+            const agentId = basename.startsWith('agent-') ? basename.slice(6) : basename;
+            return [agentId, s.filePath];
+          })
         );
 
         const findSubagentPath = (agentId: string): string | null => {
