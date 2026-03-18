@@ -71,7 +71,7 @@ export interface CachedSkillInvocation {
 
   // Outcome
   success?: boolean;          // From toolUseResult.success
-  timestamp?: string;         // When invoked
+  timestamp?: string;         // From the assistant message's msg.timestamp field
 }
 ```
 
@@ -101,7 +101,7 @@ Extraction happens in the existing `mergeNewMessages()` loop in `session-cache.t
 ### During assistant message content block loop
 
 When `block.name === 'Skill'`:
-- Parse `block.input.skill` by splitting on `:`. If colon present: `pluginName = parts[0]`, `shortName = parts[1]`. If no colon: `pluginName = "unknown"`, `shortName = block.input.skill`. Attempt to resolve `pluginName` later via installed skill inventory (best-effort).
+- Parse `block.input.skill` by splitting on `:`. If colon present: `pluginName = parts[0]`, `shortName = parts[1]`. If no colon: `pluginName = "unknown"`, `shortName = block.input.skill`.
 - Create a new `CachedSkillInvocation` and push to `updated.skillInvocations[]`
 - Close the previous skill's span: set `spanEndLine = msg.lineIndex - 1`
 
@@ -114,9 +114,16 @@ When `msg.isMeta === true` and `msg.sourceToolUseID` is present:
 
 ### During tool_result content block processing
 
-When a user message contains a `tool_result` block AND the raw message has a top-level `toolUseResult` object with `success` and `commandName` fields (Skill-specific shape):
-- Find the pending `CachedSkillInvocation` whose `toolUseId` matches `block.tool_use_id`
-- Set `success` from `msg.toolUseResult.success`
+For each `tool_result` block in a user message:
+1. First check if a pending `CachedSkillInvocation` exists with `toolUseId === block.tool_use_id`
+2. If matched, read `msg.toolUseResult.success` (the Skill-specific message-level field) and set it on the matched invocation
+3. Do NOT apply `msg.toolUseResult` to other `tool_result` blocks on the same message — the Skill-specific `toolUseResult` applies only to the block whose `tool_use_id` matches the skill's `toolUseId`
+
+This ordering (match by block ID first, then read message-level field) prevents misattribution when a message contains both a Skill `tool_result` and other tool results.
+
+### Non-namespaced skill resolution — during span attribution
+
+During the second pass, for each skill with `pluginName === "unknown"`, scan the `InstalledSkill[]` inventory (from `getSkillIndex()`) for a matching `shortName`. If exactly one match is found, update `pluginName` and `skillName` to the namespaced form (e.g., `"brainstorming"` → `"superpowers:brainstorming"`). If multiple matches or zero matches exist, keep `pluginName = "unknown"`. This ensures non-namespaced invocations are unified with their namespaced counterparts in the index.
 
 ### Span attribution — second pass after all messages parsed
 
@@ -130,6 +137,16 @@ For each skill invocation, scan `toolUses[]` and `subagents[]` within `[spanStar
 1. Skill span starts at `instructionsLineIndex + 1` (first action after instructions loaded)
 2. Skill span ends at: next `Skill` tool_use line, OR next real user prompt line (where `isRealUserPrompt()` returns true), OR end of session
 3. Subagent tool_uses within span are attributed to the skill
+4. **Degenerate span**: If `spanEndLine < spanStartLine`, the skill was loaded but immediately superseded by the next skill (common in back-to-back invocations like `fundamental-analysis` → `technical-analysis` fired consecutively). Set `spanEndLine = spanStartLine - 1` (empty span). All attribution arrays (`toolsCalled`, `filesRead`, `filesWritten`, `subagentIds`) will be empty. `toolUseCount = 0`. This is expected — the skill's real work happens in the subagent, not the parent session.
+
+**Real-world example** (from lm-unified-trade subagent sessions):
+```
+line 7:  assistant → Skill "fundamental-analysis"
+line 8:  user → tool_result (success)
+line 9:  user → isMeta (SKILL.md content)       ← spanStartLine = 10
+line 10: assistant → Skill "technical-analysis"  ← closes span: spanEndLine = 9
+```
+Result: fundamental-analysis gets `spanStartLine=10, spanEndLine=9` → degenerate span, empty attribution.
 
 ### Incremental parsing
 
@@ -147,13 +164,29 @@ Works with existing incremental model — skills are appended like toolUses. On 
 
 Lightweight persistent index that builds itself as sessions are loaded into cache.
 
+### Initialization and wiring
+
+`core/src/skill-index.ts` exports a `getSkillIndex(): SkillIndex` singleton factory, following the same pattern as `getSessionCache()` in `session-cache.ts`. On first access:
+
+1. Load `~/.lm-assist/skills/index.json` from disk (or create empty if not exists)
+2. Scan installed plugins to build `InstalledSkill[]` inventory
+3. Register `SessionCache.onSessionChange()` callback for lazy index population
+4. Register `process.on('SIGTERM')` and `process.on('SIGINT')` handlers to flush pending writes
+
+`skills.routes.ts` imports `getSkillIndex` directly (same pattern as `sessions.routes.ts` importing `getSessionCache`). No changes needed to `RouteContext`.
+
+The `createInitialCache()` method in `session-cache.ts` (which builds the empty `SessionCacheData` object) must include `skillInvocations: []` in the initial structure.
+
 ### Storage
 
 `~/.lm-assist/skills/index.json` — single JSON file. Skill analytics don't need LMDB-level performance since the dataset is small (hundreds of invocations, not millions of messages).
 
-**Crash safety**: Register a shutdown hook (`process.on('beforeExit')`) that flushes any pending debounced writes. Acceptable to lose at most 1 second of index updates on hard crash — the index self-heals on next session load since `indexedSessions` fileSize won't match.
+**Crash safety**: Register `process.on('SIGTERM')` and `process.on('SIGINT')` handlers that flush any pending debounced writes (note: `beforeExit` does not fire on SIGTERM/SIGKILL, and `./core.sh stop` sends SIGTERM via `fuser -k`). Acceptable to lose at most 1 second of index updates on hard crash — the index self-heals on next session load since `indexedSessions` fileSize won't match.
 
-**Pruning**: `indexedSessions` is pruned on each full reindex — entries for sessions whose JSONL files no longer exist are removed. This prevents unbounded growth over months of usage.
+**Pruning**: On each full reindex (`POST /skills/reindex`):
+- `indexedSessions` entries for sessions whose JSONL files no longer exist are removed
+- `SkillIndexEntry.sessions[]` entries referencing deleted sessions are also removed
+- `SkillIndexEntry.sessions[]` is capped at the 200 most recent entries per skill (older entries are dropped, aggregated counts remain accurate). The `GET /skills/detail/:skillName` endpoint supports `?limit=N&offset=M` pagination for the session list.
 
 ### Data structures
 
@@ -170,7 +203,7 @@ export interface SkillIndexEntry {
   lastUsed: string;           // ISO timestamp
   firstUsed: string;
 
-  // Per-session records (compact)
+  // Per-session records (compact, capped at 200 most recent)
   sessions: Array<{
     sessionId: string;
     project: string;          // Project path
@@ -178,6 +211,7 @@ export interface SkillIndexEntry {
     success?: boolean;
     toolUseCount: number;
     subagentCount: number;
+    isSubagentSession: boolean;  // true if this session is itself a subagent
   }>;
 }
 
@@ -197,8 +231,11 @@ Hooks into existing `SessionCache.onSessionChange()` callback:
 
 1. When a session is loaded/updated, check if `indexedSessions[sessionId]` matches current fileSize
 2. If not, read `skillInvocations[]` from the cached session data
-3. Upsert into `skills[skillName].sessions[]` and update aggregates
-4. Write index to disk (debounced, max once per second)
+3. Determine if the session is a subagent session (session file path contains `/subagents/`)
+4. Upsert into `skills[skillName].sessions[]` with `isSubagentSession` flag, and update aggregates
+5. Write index to disk (debounced, max once per second)
+
+**Subagent counting**: Both direct and subagent invocations are indexed (both appear in `sessions[]`). The `isSubagentSession` flag allows analytics endpoints to distinguish between them. `GET /skills` and `GET /skills/analytics` report `totalInvocations` as the total count, and `directInvocations` as the count excluding subagent sessions. The deep trace view provides the tree-structured attribution.
 
 ### Warm-up
 
@@ -214,11 +251,13 @@ Installed skill definitions (name, description, trigger text) come from scanning
 
 Example: `~/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.2/skills/brainstorming/SKILL.md`
 
-The scanner uses `~/.claude/plugins/installed_plugins.json` to find installed plugins, their `installPath`, and version. For each plugin, it reads `<installPath>/skills/*/SKILL.md` and parses the YAML frontmatter for name and description. This avoids blind directory traversal — only installed plugins are scanned.
+The scanner uses `~/.claude/plugins/installed_plugins.json` to find installed plugins, their `installPath`, and version. Plugin keys in this file are formatted as `pluginName@marketplace` (e.g., `"superpowers@claude-plugins-official"`, `"lm-assist@langmartai"`). Extract `pluginName` by splitting the key on `@` and taking the first segment.
+
+For each plugin entry, read `<installPath>/skills/*/SKILL.md` and parse the YAML frontmatter for `name` and `description`. Use a simple regex-based frontmatter parser (match between `---` delimiters, extract `name:` and `description:` lines) to avoid adding a YAML dependency. If a SKILL.md has no frontmatter, fall back to the directory name as `shortName` and empty string as `description`. Truncate `description` at 200 characters for the index.
 
 The `pluginVersion` for each `InstalledSkill` comes from the `version` field in `installed_plugins.json`.
 
-Static read done once on server start and refreshed on demand via `POST /skills/refresh-inventory`.
+Static read done once on server start (inside `getSkillIndex()` initialization) and refreshed on demand via `POST /skills/refresh-inventory`.
 
 ```typescript
 export interface InstalledSkill {
@@ -352,10 +391,10 @@ New route file: `core/src/routes/core/skills.routes.ts`
 
 ### Per-Session Skill View (2 endpoints)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/sessions/:id/skills` | All skill invocations in a session |
-| GET | `/sessions/:id/skills/:index/trace` | Deep trace for the Nth skill invocation |
+| Method | Endpoint | Regex Pattern | Description |
+|--------|----------|---------------|-------------|
+| GET | `/sessions/:id/skills` | `/^\/sessions\/([^/]+)\/skills$/` | All skill invocations in a session |
+| GET | `/sessions/:id/skills/:index/trace` | `/^\/sessions\/([^/]+)\/skills\/(\d+)\/trace$/` | Deep trace for the Nth skill invocation |
 
 `GET /sessions/:id/skills` returns `CachedSkillInvocation[]` from session cache.
 
@@ -363,10 +402,10 @@ New route file: `core/src/routes/core/skills.routes.ts`
 
 ### Index Management (2 endpoints)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/skills/reindex` | Force rebuild of skill index from all cached sessions |
-| POST | `/skills/refresh-inventory` | Rescan plugin cache for installed skills |
+| Method | Endpoint | Regex Pattern | Description |
+|--------|----------|---------------|-------------|
+| POST | `/skills/reindex` | `/^\/skills\/reindex$/` | Force rebuild of skill index from all cached sessions |
+| POST | `/skills/refresh-inventory` | `/^\/skills\/refresh-inventory$/` | Rescan plugin cache for installed skills |
 
 **Total: 8 new endpoints.** Follow the bare-object response pattern used by the majority of routes (e.g., `sessions.routes.ts`, `knowledge.routes.ts`): return `{ success: true, data: ... }` objects directly from handlers.
 
@@ -374,12 +413,14 @@ Registered via `createSkillRoutes(ctx: RouteContext)` in `core/src/routes/core/i
 
 ### Chain detection algorithm
 
-`GET /skills/analytics/chains` detects chains by scanning consecutive `CachedSkillInvocation` entries within the same session. Two skills are considered chained if they appear sequentially (the second skill's `lineIndex` follows the first skill's `spanEndLine`). The algorithm:
+`GET /skills/analytics/chains` detects recurring skill sequences across sessions:
 
-1. For each session with `skillInvocations.length >= 2`, extract the ordered sequence of `shortName` values
-2. Find all contiguous subsequences of length 2+
-3. Count occurrences of each unique subsequence across all sessions
-4. Return sorted by occurrence count, deduplicated
+1. For each session with `skillInvocations.length >= 2`, extract the full ordered sequence of `shortName` values (e.g., `["fundamental-analysis", "technical-analysis", "regime-analysis"]`)
+2. Generate sliding windows of length 2, 3, and 4 from each sequence (capped at 4 to avoid combinatorial explosion). For `[A, B, C, D]` this produces: `[A,B]`, `[B,C]`, `[C,D]`, `[A,B,C]`, `[B,C,D]`, `[A,B,C,D]`
+3. Count occurrences of each unique window across all sessions
+4. Return top 20 chains sorted by occurrence count, filtered to `occurrences >= 2`
+
+This is O(n) per session (max 3 windows per skill position) and bounded by the sliding window cap.
 
 ---
 
@@ -413,7 +454,7 @@ Top-level page in the sidebar, between Knowledge and Tasks.
 
 ### Session view enhancement: Skills tab
 
-Within the existing session detail page (`/session-dashboard`), add a Skills tab alongside existing tabs.
+Add a Skills panel to the session view. The current `/session-dashboard` page is a multi-session terminal dashboard (`TerminalsPage`). The Skills tab should be added to the per-session detail component (the panel that shows a single session's conversation, tools, and metadata). If no tab system exists in the per-session component, add one with tabs: Conversation | Skills | (future tabs).
 
 **Skills timeline:** Vertical timeline showing skill invocations in order within the session. Each skill node shows:
 - Skill name + args
@@ -439,7 +480,7 @@ web/src/components/skills/       <- New components
 
 Styling follows existing patterns: Tailwind v4, same color palette, same card/panel layout as knowledge and sessions pages.
 
-**Sidebar nav link**: Add to the navigation items array in the dashboard layout component (check `web/src/app/(dashboard)/layout.tsx` or the sidebar component it renders). Place between Knowledge and Tasks links.
+**Sidebar nav link**: Add to the navigation items array in `web/src/components/layout/Sidebar.tsx` (the `navItems` array). Current order is: Terminal Dashboard, Sessions, Process Dashboard, Search, Tasks, Projects, Knowledge, Assist Resources, Machines. Place Skills after Knowledge (before Assist Resources).
 
 ---
 
