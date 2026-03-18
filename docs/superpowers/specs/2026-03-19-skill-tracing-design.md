@@ -20,7 +20,7 @@ After step 3, Claude follows the skill instructions, producing tool calls, file 
 
 **Skill name formats**: Skills may appear namespaced (`lm-unified-trade:fundamental-analysis`, `superpowers:brainstorming`) or non-namespaced (`brainstorming`, `simplify`). Both forms must be handled.
 
-**Current state**: lm-assist's session cache extracts `CachedToolUse` with `name: "Skill"` and `input: {skill: "..."}`, but does not index skills separately or track their execution spans. The raw JSONL parser types (`RawSessionRecord` in `jsonl-parser.ts`) do not include `sourceToolUseID` or the Skill-specific `toolUseResult` shape — these fields are accessed dynamically from the raw parsed JSON in `parseMessages()`.
+**Current state**: lm-assist's session cache extracts `CachedToolUse` with `name: "Skill"` and `input: {skill: "..."}`, but does not index skills separately or track their execution spans. The raw JSONL parser types (`RawSessionRecord` in `jsonl-parser.ts`) do not include `sourceToolUseID` or the Skill-specific `toolUseResult` shape — these fields are accessed dynamically from the raw parsed JSON in `mergeNewMessages()`.
 
 ## Architecture: Hybrid with Lazy Materialization
 
@@ -96,7 +96,7 @@ export interface SessionCacheData {
 
 ## Section 2: Session Cache Parsing — Skill Extraction
 
-Extraction happens in the existing `parseMessages()` loop in `session-cache.ts`. The `parseMessages()` function reads raw JSON objects from JSONL lines — fields like `isMeta`, `sourceToolUseID`, and the Skill-specific `toolUseResult` are accessed dynamically from the raw parsed JSON (not from typed parser interfaces).
+Extraction happens in the existing `mergeNewMessages()` loop in `session-cache.ts`. The `mergeNewMessages()` function reads raw JSON objects from JSONL lines — fields like `isMeta`, `sourceToolUseID`, and the Skill-specific `toolUseResult` are accessed dynamically from the raw parsed JSON (not from typed parser interfaces).
 
 ### During assistant message content block loop
 
@@ -462,7 +462,7 @@ Styling follows existing patterns: Tailwind v4, same color palette, same card/pa
 
 | File | Change |
 |------|--------|
-| `core/src/session-cache.ts` | Add `CachedSkillInvocation` type, skill extraction in `parseMessages()`, bump CACHE_VERSION |
+| `core/src/session-cache.ts` | Add `CachedSkillInvocation` type, skill extraction in `mergeNewMessages()`, bump CACHE_VERSION |
 | `core/src/routes/core/index.ts` | Register `createSkillRoutes` |
 | `web/src/app/(dashboard)/layout.tsx` or sidebar component | Add Skills nav link between Knowledge and Tasks |
 | `web/src/app/session-dashboard/` | Add Skills tab |
