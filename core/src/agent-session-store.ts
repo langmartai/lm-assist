@@ -200,6 +200,11 @@ function convertCacheToSessionData(
       : undefined,
     // Skill invocation count for tab badge
     skillInvocationCount: cache.skillInvocations?.length || undefined,
+    // Command invocations
+    commandInvocations: cache.commandInvocations && cache.commandInvocations.length > 0
+      ? cache.commandInvocations
+      : undefined,
+    commandInvocationCount: cache.commandInvocations?.length || undefined,
   };
 
   // Calculate cost from tokens if no cost from result or per-message costUSD
@@ -962,6 +967,16 @@ export interface ClaudeSessionData {
   taskSubjects?: Record<string, string>;
   /** Number of skill invocations (Skill tool calls) */
   skillInvocationCount?: number;
+  /** Command invocations extracted from slash command messages */
+  commandInvocations?: Array<{
+    commandName: string;
+    args?: string;
+    turnIndex: number;
+    lineIndex: number;
+    timestamp?: string;
+  }>;
+  /** Number of command invocations for tab badge */
+  commandInvocationCount?: number;
 }
 
 // ============================================================================

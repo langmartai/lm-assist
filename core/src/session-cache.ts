@@ -116,6 +116,14 @@ export interface CachedPlan {
   lineIndex: number;
 }
 
+export interface CachedCommandInvocation {
+  commandName: string;    // "/trade-analyze" (with slash)
+  args?: string;          // "natural gas"
+  turnIndex: number;
+  lineIndex: number;
+  timestamp?: string;
+}
+
 export interface CachedSkillInvocation {
   skillName: string;
   pluginName: string;
@@ -210,6 +218,7 @@ export interface SessionCacheData {
   subagentProgress: any[];
   plans: CachedPlan[];
   skillInvocations: CachedSkillInvocation[];
+  commandInvocations: CachedCommandInvocation[];
 
   // Team data
   teamName?: string;
@@ -256,7 +265,7 @@ export interface RawMessagesCache {
 
 // ─── Constants ──────────────────────────────────────────────────
 
-const CACHE_VERSION = 10; // v10: Add CachedSkillInvocation extraction
+const CACHE_VERSION = 11; // v11: Add CachedCommandInvocation extraction
 
 // ─── Skill Extraction Helpers ──────────────────────────────────────────────────
 
@@ -781,6 +790,7 @@ export class SessionCache {
     if (updated.cumulativeCostUsd === undefined) updated.cumulativeCostUsd = 0;
     if (!updated.modelUsage) updated.modelUsage = {};
     if (!updated.skillInvocations) updated.skillInvocations = [];
+    if (!updated.commandInvocations) updated.commandInvocations = [];
 
     let turnIndex = cache.lastTurnIndex;
     let lastTimestamp: string | undefined = cache.lastTimestamp;
@@ -860,6 +870,21 @@ export class SessionCache {
               : undefined;
             if (lastSkill && lastSkill.spanEndLine === undefined) {
               lastSkill.spanEndLine = msg.lineIndex - 1;
+            }
+          }
+
+          // Extract command invocations from slash command messages
+          if (promptType === 'command') {
+            const cmdNameMatch = text.match(/<command-name>([^<]*)<\/command-name>/);
+            const cmdArgsMatch = text.match(/<command-args>([^<]*)<\/command-args>/);
+            if (cmdNameMatch) {
+              updated.commandInvocations.push({
+                commandName: cmdNameMatch[1].trim(),
+                args: cmdArgsMatch?.[1]?.trim() || undefined,
+                turnIndex,
+                lineIndex: msg.lineIndex,
+                timestamp: msg.timestamp,
+              });
             }
           }
         }
@@ -1392,6 +1417,7 @@ export class SessionCache {
       subagentProgress: [],
       plans: [],
       skillInvocations: [],
+      commandInvocations: [],
 
       allTeams: [],
       teamOperations: [],
@@ -1805,6 +1831,7 @@ export class SessionCache {
       subagentProgress: [],
       plans: [],
       skillInvocations: [],
+      commandInvocations: [],
 
       allTeams: [],
       teamOperations: [],

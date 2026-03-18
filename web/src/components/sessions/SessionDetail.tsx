@@ -22,6 +22,7 @@ import { JsonTab } from './tabs/JsonTab';
 import { TeamTab } from './tabs/TeamTab';
 import { DagTab } from './tabs/DagTab';
 import { SkillTimeline } from '../skills/SkillTimeline';
+import { CommandTimeline } from '../skills/CommandTimeline';
 import {
   RefreshCw,
   Copy,
@@ -70,7 +71,7 @@ interface SessionDetailProps {
   onSelectSession?: (sessionId: string, machineId?: string) => void;
 }
 
-type TabId = 'chat' | 'console' | 'tasks' | 'plans' | 'files' | 'thinking' | 'git' | 'agents' | 'team' | 'dag' | 'db' | 'json' | 'meta' | 'skills';
+type TabId = 'chat' | 'console' | 'tasks' | 'plans' | 'files' | 'thinking' | 'git' | 'agents' | 'team' | 'dag' | 'db' | 'json' | 'meta' | 'skills' | 'commands';
 
 // Session status badge config
 function getStatusBadge(detail: SessionDetailType | null): { label: string; className: string } | null {
@@ -287,6 +288,7 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
     { id: 'plans', label: 'Plans', count: plans.length || undefined },
     { id: 'agents', label: 'Agents', count: subagents.length || undefined },
     { id: 'skills', label: 'Skills', count: detail?.skillInvocationCount || undefined },
+    { id: 'commands', label: 'Commands', count: detail?.commandInvocationCount || undefined },
     { id: 'team', label: 'Team', count: teamEntryCount || undefined },
     ...(isExperiment ? [{ id: 'dag' as TabId, label: 'FlowGraph' }] : []),
     { id: 'files', label: 'Files', count: fileChanges.length || undefined },
@@ -672,6 +674,9 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
         )}
         {activeTab === 'skills' && (
           <SkillTimeline sessionId={sessionId} machineId={machineId} />
+        )}
+        {activeTab === 'commands' && (
+          <CommandTimeline commands={detail?.commandInvocations || []} />
         )}
         {activeTab === 'team' && detail && (
           <TeamTab messages={detail.messages} teamName={detail.teamName} allTeams={detail.allTeams} taskSubjects={detail.taskSubjects} />

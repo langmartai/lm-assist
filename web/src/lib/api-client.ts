@@ -1943,6 +1943,8 @@ function transformSessionResponse(raw: any, sessionId: string): SessionDetail {
     running: raw.running || undefined,
     forkedFromSessionId: raw.forkedFromSessionId,
     skillInvocationCount: raw.skillInvocationCount || undefined,
+    commandInvocations: raw.commandInvocations || undefined,
+    commandInvocationCount: raw.commandInvocationCount || undefined,
     lineCount: raw.lastLineIndex ?? allMessages.length,
     // Attach raw data for subagent UUID positioning (not part of SessionDetail type)
     _rawMessages: raw.rawMessages || [],

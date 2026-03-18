@@ -252,6 +252,10 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
             subagents: cacheData?.subagents || [],
             // ─── Skill invocation count ───
             skillInvocationCount: cacheData?.skillInvocations?.length || undefined,
+            // ─── Command invocations ───
+            commandInvocations: cacheData?.commandInvocations && cacheData.commandInvocations.length > 0
+              ? cacheData.commandInvocations : undefined,
+            commandInvocationCount: cacheData?.commandInvocations?.length || undefined,
             // ─── Team data ───
             teamName: cacheData?.teamName,
             allTeams: cacheData?.allTeams && cacheData.allTeams.length > 0 ? cacheData.allTeams : undefined,
@@ -465,6 +469,9 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
           plans: data.plans,
           // ─── Skill invocation count ───
           skillInvocationCount: data.skillInvocationCount,
+          // ─── Command invocations ───
+          commandInvocations: data.commandInvocations,
+          commandInvocationCount: data.commandInvocationCount,
           // ─── Team data ───
           teamName: data.teamName,
           allTeams: data.allTeams,

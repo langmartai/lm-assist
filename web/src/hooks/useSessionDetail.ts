@@ -359,6 +359,8 @@ export function useSessionDetail({
           lastModified: delta.lastModified ?? prev.lastModified,
           isActive: newIsActive,
           skillInvocationCount: delta.skillInvocationCount ?? prev.skillInvocationCount,
+          commandInvocations: delta.commandInvocations ?? prev.commandInvocations,
+          commandInvocationCount: delta.commandInvocationCount ?? prev.commandInvocationCount,
         };
       });
 

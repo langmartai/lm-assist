@@ -265,6 +265,40 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // GET /sessions/:id/commands - Command invocations (slash commands) for a session
+    {
+      method: 'GET',
+      pattern: /^\/sessions\/(?<sessionId>[^/]+)\/commands$/,
+      handler: async (req) => {
+        const sessionId = req.params.sessionId;
+        const cache = getSessionCache();
+
+        // Find session across ALL cached sessions (including subagent sessions)
+        let matchData: any = null;
+        for (const { key: filePath, value: cacheData } of cache.allSessionsIncludingSubagents()) {
+          const basename = require('path').basename(filePath, '.jsonl');
+          const effectiveId = basename.startsWith('agent-') ? cacheData.sessionId : basename;
+          if (effectiveId === sessionId) {
+            matchData = cacheData;
+            break;
+          }
+        }
+
+        if (!matchData) {
+          return { success: false, error: { code: 'NOT_FOUND', message: `Session '${sessionId}' not found in cache` } };
+        }
+
+        return {
+          success: true,
+          data: {
+            sessionId,
+            commandInvocations: matchData.commandInvocations || [],
+            total: (matchData.commandInvocations || []).length,
+          },
+        };
+      },
+    },
+
     // GET /sessions/:id/skills/:index/trace - Deep trace for Nth skill invocation
     {
       method: 'GET',

@@ -119,6 +119,14 @@ export interface SessionDetail {
   running?: ProcessRunningInfo;
   forkedFromSessionId?: string;
   skillInvocationCount?: number;
+  commandInvocations?: Array<{
+    commandName: string;
+    args?: string;
+    turnIndex: number;
+    lineIndex: number;
+    timestamp?: string;
+  }>;
+  commandInvocationCount?: number;
 }
 
 // ============================================
