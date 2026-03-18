@@ -166,7 +166,7 @@ Lightweight persistent index that builds itself as sessions are loaded into cach
 
 ### Initialization and wiring
 
-`core/src/skill-index.ts` exports a `getSkillIndex(): SkillIndex` singleton factory, following the same pattern as `getSessionCache()` in `session-cache.ts`. On first access:
+`core/src/skill-index.ts` exports a `SkillIndex` class and a `getSkillIndex(): SkillIndex` singleton factory, following the same pattern as `SessionCache`/`getSessionCache()`. The `SkillIndex` class manages the `SkillIndexData` JSON and provides query methods. On first access:
 
 1. Load `~/.lm-assist/skills/index.json` from disk (or create empty if not exists)
 2. Scan installed plugins to build `InstalledSkill[]` inventory
@@ -215,7 +215,7 @@ export interface SkillIndexEntry {
   }>;
 }
 
-export interface SkillIndex {
+export interface SkillIndexData {
   version: number;
   lastUpdated: string;
   // Keyed by full skillName
@@ -366,6 +366,7 @@ New route file: `core/src/routes/core/skills.routes.ts`
       "description": "Supply/demand decomposition with influence weights",
       "pluginVersion": "0.1.0",
       "totalInvocations": 34,
+      "directInvocations": 28,
       "successRate": 0.97,
       "lastUsed": "2026-03-19T01:20:00Z"
     }
@@ -428,7 +429,7 @@ This is O(n) per session (max 3 windows per skill position) and bounded by the s
 
 ### New page: Skills (`/skills`)
 
-Top-level page in the sidebar, between Knowledge and Tasks.
+Top-level page in the sidebar, after Knowledge (before Assist Resources).
 
 **Three-panel layout:**
 
@@ -505,8 +506,8 @@ Styling follows existing patterns: Tailwind v4, same color palette, same card/pa
 |------|--------|
 | `core/src/session-cache.ts` | Add `CachedSkillInvocation` type, skill extraction in `mergeNewMessages()`, bump CACHE_VERSION |
 | `core/src/routes/core/index.ts` | Register `createSkillRoutes` |
-| `web/src/app/(dashboard)/layout.tsx` or sidebar component | Add Skills nav link between Knowledge and Tasks |
-| `web/src/app/session-dashboard/` | Add Skills tab |
+| `web/src/components/layout/Sidebar.tsx` | Add Skills nav link to `baseNavItems` after Knowledge (before Assist Resources) |
+| `web/src/components/sessions/SessionDetail.tsx` | Add Skills tab to existing tab system (alongside chat, console, tasks, plans, etc.) |
 
 ### Data files (created at runtime)
 
