@@ -17,6 +17,7 @@
 import type { RouteHandler, RouteContext } from '../index';
 import { getSkillIndex } from '../../skill-index';
 import { getSessionCache } from '../../session-cache';
+import { getSessionFilePath } from '../../utils/path-utils';
 
 export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -184,6 +185,24 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
         const sortedSessions = [...entry.sessions].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
         const paginatedSessions = sortedSessions.slice(offset, offset + limit);
 
+        // Enrich paginated sessions with lastMessage from cache
+        const cache = getSessionCache();
+        const enrichedSessions = paginatedSessions.map(sess => {
+          let lastMessage: string | undefined;
+          try {
+            const filePath = getSessionFilePath(sess.project, sess.sessionId);
+            const cacheData = cache.getSessionDataSync(filePath);
+            if (cacheData && cacheData.userPrompts.length > 0) {
+              const lastPrompt = cacheData.userPrompts[cacheData.userPrompts.length - 1];
+              const text = lastPrompt.text || '';
+              lastMessage = text.length > 80 ? text.slice(0, 80) + '...' : text;
+            }
+          } catch {
+            // Ignore cache lookup failures
+          }
+          return { ...sess, lastMessage };
+        });
+
         return {
           success: true,
           data: {
@@ -198,7 +217,7 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
             failCount: entry.failCount,
             lastUsed: entry.lastUsed,
             firstUsed: entry.firstUsed,
-            sessions: paginatedSessions,
+            sessions: enrichedSessions,
             totalSessions: entry.sessions.length,
             limit,
             offset,

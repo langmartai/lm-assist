@@ -23,6 +23,7 @@ interface SkillDetailData {
     toolUseCount: number;
     subagentCount: number;
     isSubagentSession: boolean;
+    lastMessage?: string;
   }>;
   totalSessions: number;
 }
@@ -201,12 +202,15 @@ export function SkillDetail({ apiFetch, skillName }: SkillDetailProps) {
         {/* Session table */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {pagedSessions.map((sess, i) => (
-            <div
+            <a
               key={`${sess.sessionId}-${i}`}
+              href={`/sessions?id=${sess.sessionId}`}
+              target="_blank"
+              rel="noopener noreferrer"
               style={{
                 display: 'flex',
-                alignItems: 'center',
-                gap: 10,
+                flexDirection: 'column',
+                gap: 4,
                 padding: '8px 12px',
                 fontSize: 12,
                 background: 'var(--color-bg-surface)',
@@ -214,6 +218,8 @@ export function SkillDetail({ apiFetch, skillName }: SkillDetailProps) {
                 borderRadius: 'var(--radius-md)',
                 cursor: 'pointer',
                 transition: 'all 0.15s ease',
+                textDecoration: 'none',
+                color: 'inherit',
               }}
               onMouseEnter={e => {
                 (e.currentTarget as HTMLElement).style.background = 'var(--color-bg-hover)';
@@ -224,60 +230,77 @@ export function SkillDetail({ apiFetch, skillName }: SkillDetailProps) {
                 (e.currentTarget as HTMLElement).style.borderColor = 'var(--color-border-subtle)';
               }}
             >
-              {/* Success/fail indicator dot */}
-              <div style={{
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                flexShrink: 0,
-                background: sess.success === true
-                  ? 'var(--color-status-green)'
-                  : sess.success === false
-                    ? 'var(--color-status-red)'
-                    : 'var(--color-accent-dim)',
-              }} />
+              {/* Top row: status dot, timestamp, project, badges */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {/* Success/fail indicator dot */}
+                <div style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  flexShrink: 0,
+                  background: sess.success === true
+                    ? 'var(--color-status-green)'
+                    : sess.success === false
+                      ? 'var(--color-status-red)'
+                      : 'var(--color-accent-dim)',
+                }} />
 
-              {/* Timestamp */}
-              <span style={{
-                fontSize: 11,
-                color: 'var(--color-text-tertiary)',
-                fontFamily: 'var(--font-mono)',
-                flexShrink: 0,
-                minWidth: 100,
-              }}>
-                {formatDate(sess.timestamp)}
-              </span>
-
-              {/* Project */}
-              <span style={{
-                flex: 1,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                color: 'var(--color-text-secondary)',
-              }}>
-                {projectBasename(sess.project)}
-              </span>
-
-              {/* Tool count badge */}
-              <span className="badge badge-default" style={{ fontSize: 9, padding: '1px 6px', fontFamily: 'var(--font-mono)' }}>
-                {sess.toolUseCount} tools
-              </span>
-
-              {/* Agent count badge */}
-              {sess.subagentCount > 0 && (
-                <span className="badge badge-purple" style={{ fontSize: 9, padding: '1px 6px', fontFamily: 'var(--font-mono)' }}>
-                  {sess.subagentCount} agents
+                {/* Timestamp */}
+                <span style={{
+                  fontSize: 11,
+                  color: 'var(--color-text-tertiary)',
+                  fontFamily: 'var(--font-mono)',
+                  flexShrink: 0,
+                  minWidth: 100,
+                }}>
+                  {formatDate(sess.timestamp)}
                 </span>
-              )}
 
-              {/* Subagent session indicator */}
-              {sess.isSubagentSession && (
-                <span className="badge badge-purple" style={{ fontSize: 9, padding: '1px 6px' }}>
-                  sub
+                {/* Project */}
+                <span style={{
+                  flex: 1,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  color: 'var(--color-text-secondary)',
+                }}>
+                  {projectBasename(sess.project)}
                 </span>
+
+                {/* Tool count badge */}
+                <span className="badge badge-default" style={{ fontSize: 9, padding: '1px 6px', fontFamily: 'var(--font-mono)' }}>
+                  {sess.toolUseCount} tools
+                </span>
+
+                {/* Agent count badge */}
+                {sess.subagentCount > 0 && (
+                  <span className="badge badge-purple" style={{ fontSize: 9, padding: '1px 6px', fontFamily: 'var(--font-mono)' }}>
+                    {sess.subagentCount} agents
+                  </span>
+                )}
+
+                {/* Subagent session indicator */}
+                {sess.isSubagentSession && (
+                  <span className="badge badge-purple" style={{ fontSize: 9, padding: '1px 6px' }}>
+                    sub
+                  </span>
+                )}
+              </div>
+
+              {/* Last message preview */}
+              {sess.lastMessage && (
+                <div style={{
+                  fontSize: 11,
+                  color: 'var(--color-text-tertiary)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  paddingLeft: 18,
+                }}>
+                  {sess.lastMessage}
+                </div>
               )}
-            </div>
+            </a>
           ))}
         </div>
       </div>
