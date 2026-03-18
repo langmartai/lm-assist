@@ -21,6 +21,7 @@ import { DbTab } from './tabs/DbTab';
 import { JsonTab } from './tabs/JsonTab';
 import { TeamTab } from './tabs/TeamTab';
 import { DagTab } from './tabs/DagTab';
+import { SkillTimeline } from '../skills/SkillTimeline';
 import {
   RefreshCw,
   Copy,
@@ -69,7 +70,7 @@ interface SessionDetailProps {
   onSelectSession?: (sessionId: string, machineId?: string) => void;
 }
 
-type TabId = 'chat' | 'console' | 'tasks' | 'plans' | 'files' | 'thinking' | 'git' | 'agents' | 'team' | 'dag' | 'db' | 'json' | 'meta';
+type TabId = 'chat' | 'console' | 'tasks' | 'plans' | 'files' | 'thinking' | 'git' | 'agents' | 'team' | 'dag' | 'db' | 'json' | 'meta' | 'skills';
 
 // Session status badge config
 function getStatusBadge(detail: SessionDetailType | null): { label: string; className: string } | null {
@@ -285,6 +286,7 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
     { id: 'tasks', label: 'Tasks', count: tasks.length || undefined },
     { id: 'plans', label: 'Plans', count: plans.length || undefined },
     { id: 'agents', label: 'Agents', count: subagents.length || undefined },
+    { id: 'skills', label: 'Skills' },
     { id: 'team', label: 'Team', count: teamEntryCount || undefined },
     ...(isExperiment ? [{ id: 'dag' as TabId, label: 'FlowGraph' }] : []),
     { id: 'files', label: 'Files', count: fileChanges.length || undefined },
@@ -667,6 +669,9 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
         )}
         {activeTab === 'agents' && (
           <AgentsTab subagents={subagents} sessionId={sessionId} machineId={machineId} projectPath={projectPath || detail?.projectPath} />
+        )}
+        {activeTab === 'skills' && (
+          <SkillTimeline sessionId={sessionId} machineId={machineId} />
         )}
         {activeTab === 'team' && detail && (
           <TeamTab messages={detail.messages} teamName={detail.teamName} allTeams={detail.allTeams} taskSubjects={detail.taskSubjects} />
