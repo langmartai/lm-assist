@@ -222,7 +222,7 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
 
         // Find session across ALL cached sessions (including subagent sessions)
         let matchData: any = null;
-        for (const { key: filePath, value: cacheData } of (cache as any).store.allSessions()) {
+        for (const { key: filePath, value: cacheData } of cache.allSessionsIncludingSubagents()) {
           const basename = require('path').basename(filePath, '.jsonl');
           const effectiveId = basename.startsWith('agent-') ? cacheData.sessionId : basename;
           if (effectiveId === sessionId) {
@@ -260,7 +260,7 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
         // Find session across ALL cached sessions (including subagent sessions)
         let matchData: any = null;
         let matchFilePath = '';
-        for (const { key: filePath, value: cacheData } of (cache as any).store.allSessions()) {
+        for (const { key: filePath, value: cacheData } of cache.allSessionsIncludingSubagents()) {
           const basename = require('path').basename(filePath, '.jsonl');
           const effectiveId = basename.startsWith('agent-') ? cacheData.sessionId : basename;
           if (effectiveId === sessionId) {

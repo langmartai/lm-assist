@@ -153,6 +153,14 @@ export class SkillIndex {
           if (old.success === false) entry.failCount--;
         }
         entry.sessions = entry.sessions.filter(s => s.sessionId !== sessionId);
+        // Recompute firstUsed/lastUsed from remaining sessions
+        if (entry.sessions.length > 0) {
+          entry.firstUsed = entry.sessions.reduce((min, s) => s.timestamp < min ? s.timestamp : min, entry.sessions[0].timestamp);
+          entry.lastUsed = entry.sessions.reduce((max, s) => s.timestamp > max ? s.timestamp : max, entry.sessions[0].timestamp);
+        } else {
+          entry.firstUsed = '';
+          entry.lastUsed = '';
+        }
       }
     }
 

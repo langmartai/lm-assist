@@ -1941,6 +1941,15 @@ export class SessionCache {
   }
 
   /**
+   * Iterate ALL cached sessions including subagent sessions.
+   * Unlike getAllSessionsFromCache() which filters out subagents,
+   * this yields every entry in the LMDB store.
+   */
+  *allSessionsIncludingSubagents(): IterableIterator<{ key: string; value: SessionCacheData }> {
+    yield* this.store.allSessions();
+  }
+
+  /**
    * Get all cached sessions for a project (fast, LMDB-backed)
    * Returns sessions in cache for the given project path
    */
