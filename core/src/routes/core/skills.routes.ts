@@ -14,6 +14,7 @@
  *   POST   /skills/refresh-inventory                # Rescan plugin cache
  */
 
+import path from 'path';
 import type { RouteHandler, RouteContext } from '../index';
 import { getSkillIndex } from '../../skill-index';
 import { getSessionCache } from '../../session-cache';
@@ -195,6 +196,14 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
           let userPromptCount: number | undefined;
           let agentCount: number | undefined;
           let size: number | undefined;
+          let subagents: Array<{
+            agentId: string;
+            type: string;
+            description?: string;
+            status: string;
+            totalCostUsd?: number;
+            lastMessage?: string;
+          }> = [];
           try {
             const filePath = getSessionFilePath(sess.project, sess.sessionId);
             const cacheData = cache.getSessionDataSync(filePath);
@@ -210,11 +219,38 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
               userPromptCount = cacheData.userPrompts.length || undefined;
               agentCount = cacheData.subagents.length || undefined;
               size = cacheData.fileSize || undefined;
+
+              // Build subagent entries with cost and lastMessage from their session caches
+              subagents = cacheData.subagents.map(sa => {
+                let subCost: number | undefined;
+                let subLastMsg: string | undefined;
+                try {
+                  const subPath = path.join(path.dirname(filePath), sess.sessionId, 'subagents', `agent-${sa.agentId}.jsonl`);
+                  const subCache = cache.getSessionDataSync(subPath);
+                  if (subCache) {
+                    subCost = subCache.totalCostUsd || undefined;
+                    if (subCache.userPrompts.length > 0) {
+                      const lastP = subCache.userPrompts[subCache.userPrompts.length - 1];
+                      subLastMsg = (lastP.text || '').slice(0, 80) || undefined;
+                    }
+                  }
+                } catch {
+                  // Ignore subagent cache lookup failures
+                }
+                return {
+                  agentId: sa.agentId,
+                  type: sa.type,
+                  description: sa.description || sa.prompt?.slice(0, 80),
+                  status: sa.status,
+                  totalCostUsd: subCost,
+                  lastMessage: subLastMsg,
+                };
+              });
             }
           } catch {
             // Ignore cache lookup failures
           }
-          return { ...sess, lastMessage, model, totalCostUsd, numTurns, userPromptCount, agentCount, size };
+          return { ...sess, lastMessage, model, totalCostUsd, numTurns, userPromptCount, agentCount, size, subagents };
         });
 
         return {
@@ -224,6 +260,7 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
             pluginName: entry.pluginName,
             shortName: entry.shortName,
             description: installed?.description || '',
+            fullDescription: installed?.fullDescription || installed?.description || '',
             pluginVersion: installed?.pluginVersion || '',
             installPath: installed?.installPath || '',
             totalInvocations: entry.totalInvocations,
