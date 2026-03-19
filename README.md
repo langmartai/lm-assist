@@ -49,20 +49,22 @@ lm-assist runs a web server on your local network. Open any browser on any devic
 
 ### 2. Deep Insight Views
 
-Every session gets a full breakdown across **13 specialized tabs** — Chat, Thinking, Agents, Tasks, Plans, Team, Files, Git, Console, Summary, Meta, JSON, and DB.
+Every session gets a full breakdown across **15 specialized tabs** — Chat, Thinking, Agents, Skills, Commands, Tasks, Plans, Team, Files, Git, Console, Summary, Meta, JSON, and DB.
 
 <a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/deep-insight-views.gif"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/deep-insight-views.gif" alt="Deep Insight Views" width="700"></a>
 
 > *Click through Chat, Agents, Plans, Files, Thinking, and Git tabs — each surfaces a different dimension of the session*
 
 <details>
-<summary><strong>All 13 tabs at a glance</strong></summary>
+<summary><strong>All 15 tabs at a glance</strong></summary>
 
 | Tab | What You See |
 |-----|-------------|
 | **Chat** | Full conversation with syntax-highlighted code blocks |
 | **Thinking** | Claude's extended thinking / chain-of-thought |
 | **Agents** | Subagent tree — Explore, Plan, Bash, and custom agents |
+| **Skills** | Skill invocation timeline with chain flow, span attribution, and deep trace |
+| **Commands** | Slash command invocations (e.g., /trade-analyze) with args and timing |
 | **Tasks** | Todo lists created during the session |
 | **Plans** | Plan mode entries with approval status |
 | **Team** | Team/swarm coordination (Opus 4.6 multi-agent) |
