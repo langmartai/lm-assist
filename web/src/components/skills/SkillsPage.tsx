@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { useMachineContext } from '@/contexts/MachineContext';
 import { SkillList } from './SkillList';
@@ -22,7 +22,20 @@ export function SkillsPage() {
     });
   }, [proxy.machineId]);
 
-  const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
+  const [selectedSkill, setSelectedSkill] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('lm-assist:selectedSkill') || null;
+    }
+    return null;
+  });
+
+  useEffect(() => {
+    if (selectedSkill) {
+      localStorage.setItem('lm-assist:selectedSkill', selectedSkill);
+    } else {
+      localStorage.removeItem('lm-assist:selectedSkill');
+    }
+  }, [selectedSkill]);
 
   return (
     <div style={{
