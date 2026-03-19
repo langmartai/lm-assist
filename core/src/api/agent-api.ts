@@ -223,15 +223,15 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
             startedAt,
           });
 
-          const response: AgentBackgroundResponse = {
-            executionId,
-            status: 'started',
-            statusUrl: `/agent/execution/${executionId}`,
-            resultUrl: `/agent/execution/${executionId}/result`,
-          };
+          // Poll briefly for sessionId before returning (up to 5s)
+          let sessionId: string | undefined;
+          try {
+            const timeoutPromise = new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('timeout')), 5000)
+            );
+            sessionId = await Promise.race([handle.sessionReady, timeoutPromise]);
 
-          // Track session ID once available
-          handle.sessionReady.then(sessionId => {
+            // Update the handle's sessionId in the map
             const entry = backgroundExecutions.get(executionId);
             if (entry) {
               backgroundExecutions.set(executionId, {
@@ -239,7 +239,26 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
                 handle: { ...handle, sessionId },
               });
             }
-          }).catch(() => {});
+          } catch {
+            // Timeout or error — sessionId stays undefined, track it asynchronously
+            handle.sessionReady.then(sid => {
+              const entry = backgroundExecutions.get(executionId);
+              if (entry) {
+                backgroundExecutions.set(executionId, {
+                  ...entry,
+                  handle: { ...handle, sessionId: sid },
+                });
+              }
+            }).catch(() => {});
+          }
+
+          const response: AgentBackgroundResponse = {
+            executionId,
+            sessionId,
+            status: 'started',
+            statusUrl: `/agent/execution/${executionId}`,
+            resultUrl: `/agent/execution/${executionId}/result`,
+          };
 
           // Track completion and store result
           handle.result.then(result => {
