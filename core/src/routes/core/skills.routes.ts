@@ -185,22 +185,36 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
         const sortedSessions = [...entry.sessions].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
         const paginatedSessions = sortedSessions.slice(offset, offset + limit);
 
-        // Enrich paginated sessions with lastMessage from cache
+        // Enrich paginated sessions with rich info from cache
         const cache = getSessionCache();
         const enrichedSessions = paginatedSessions.map(sess => {
           let lastMessage: string | undefined;
+          let model: string | undefined;
+          let totalCostUsd: number | undefined;
+          let numTurns: number | undefined;
+          let userPromptCount: number | undefined;
+          let agentCount: number | undefined;
+          let size: number | undefined;
           try {
             const filePath = getSessionFilePath(sess.project, sess.sessionId);
             const cacheData = cache.getSessionDataSync(filePath);
-            if (cacheData && cacheData.userPrompts.length > 0) {
-              const lastPrompt = cacheData.userPrompts[cacheData.userPrompts.length - 1];
-              const text = lastPrompt.text || '';
-              lastMessage = text.length > 80 ? text.slice(0, 80) + '...' : text;
+            if (cacheData) {
+              if (cacheData.userPrompts.length > 0) {
+                const lastPrompt = cacheData.userPrompts[cacheData.userPrompts.length - 1];
+                const text = lastPrompt.text || '';
+                lastMessage = text.length > 100 ? text.slice(0, 100) + '...' : text || undefined;
+              }
+              model = cacheData.model || undefined;
+              totalCostUsd = cacheData.totalCostUsd || undefined;
+              numTurns = cacheData.numTurns || undefined;
+              userPromptCount = cacheData.userPrompts.length || undefined;
+              agentCount = cacheData.subagents.length || undefined;
+              size = cacheData.fileSize || undefined;
             }
           } catch {
             // Ignore cache lookup failures
           }
-          return { ...sess, lastMessage };
+          return { ...sess, lastMessage, model, totalCostUsd, numTurns, userPromptCount, agentCount, size };
         });
 
         return {

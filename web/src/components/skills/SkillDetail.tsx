@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Loader2, Zap, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Loader2, Zap, ChevronLeft, ChevronRight, Clock, User, Cpu } from 'lucide-react';
+import { formatTimeAgo, getSessionIdShort, formatCost, getModelShortName, formatBytes } from '@/lib/utils';
 
 interface SkillDetailData {
   skillName: string;
@@ -24,6 +25,12 @@ interface SkillDetailData {
     subagentCount: number;
     isSubagentSession: boolean;
     lastMessage?: string;
+    model?: string;
+    totalCostUsd?: number;
+    numTurns?: number;
+    userPromptCount?: number;
+    agentCount?: number;
+    size?: number;
   }>;
   totalSessions: number;
 }
@@ -34,11 +41,6 @@ interface SkillDetailProps {
 }
 
 const PAGE_SIZE = 20;
-
-function formatDate(dateStr: string): string {
-  const d = new Date(dateStr);
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
 
 function projectBasename(project: string): string {
   if (!project) return '';
@@ -199,7 +201,7 @@ export function SkillDetail({ apiFetch, skillName }: SkillDetailProps) {
           </div>
         )}
 
-        {/* Session table */}
+        {/* Session cards */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {pagedSessions.map((sess, i) => (
             <a
@@ -210,9 +212,7 @@ export function SkillDetail({ apiFetch, skillName }: SkillDetailProps) {
               style={{
                 display: 'flex',
                 flexDirection: 'column',
-                gap: 4,
-                padding: '8px 12px',
-                fontSize: 12,
+                padding: '10px 12px',
                 background: 'var(--color-bg-surface)',
                 border: '1px solid var(--color-border-subtle)',
                 borderRadius: 'var(--radius-md)',
@@ -230,9 +230,8 @@ export function SkillDetail({ apiFetch, skillName }: SkillDetailProps) {
                 (e.currentTarget as HTMLElement).style.borderColor = 'var(--color-border-subtle)';
               }}
             >
-              {/* Top row: status dot, timestamp, project, badges */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                {/* Success/fail indicator dot */}
+              {/* Top row: dot + project name + size + short ID */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
                 <div style={{
                   width: 8,
                   height: 8,
@@ -244,62 +243,66 @@ export function SkillDetail({ apiFetch, skillName }: SkillDetailProps) {
                       ? 'var(--color-status-red)'
                       : 'var(--color-accent-dim)',
                 }} />
-
-                {/* Timestamp */}
-                <span style={{
-                  fontSize: 11,
-                  color: 'var(--color-text-tertiary)',
-                  fontFamily: 'var(--font-mono)',
-                  flexShrink: 0,
-                  minWidth: 100,
-                }}>
-                  {formatDate(sess.timestamp)}
-                </span>
-
-                {/* Project */}
-                <span style={{
-                  flex: 1,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  color: 'var(--color-text-secondary)',
-                }}>
-                  {projectBasename(sess.project)}
-                </span>
-
-                {/* Tool count badge */}
-                <span className="badge badge-default" style={{ fontSize: 9, padding: '1px 6px', fontFamily: 'var(--font-mono)' }}>
-                  {sess.toolUseCount} tools
-                </span>
-
-                {/* Agent count badge */}
-                {sess.subagentCount > 0 && (
-                  <span className="badge badge-purple" style={{ fontSize: 9, padding: '1px 6px', fontFamily: 'var(--font-mono)' }}>
-                    {sess.subagentCount} agents
-                  </span>
-                )}
-
-                {/* Subagent session indicator */}
                 {sess.isSubagentSession && (
-                  <span className="badge badge-purple" style={{ fontSize: 9, padding: '1px 6px' }}>
+                  <span className="badge badge-purple" style={{ fontSize: 8, padding: '0 4px' }}>
                     sub
                   </span>
                 )}
+                <span style={{ fontSize: 13, fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {projectBasename(sess.project)}
+                </span>
+                {sess.size !== undefined && sess.size > 0 && (
+                  <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+                    {formatBytes(sess.size)}
+                  </span>
+                )}
+                <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+                  {getSessionIdShort(sess.sessionId)}
+                </span>
               </div>
 
-              {/* Last message preview */}
+              {/* Message preview */}
               {sess.lastMessage && (
-                <div style={{
-                  fontSize: 11,
-                  color: 'var(--color-text-tertiary)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  paddingLeft: 18,
-                }}>
+                <div
+                  className="line-clamp-2"
+                  style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginBottom: 6, lineHeight: 1.4 }}
+                >
                   {sess.lastMessage}
                 </div>
               )}
+
+              {/* Bottom row: time ago, model, cost, turns, user count, agent count */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', display: 'flex', alignItems: 'center', gap: 3 }}>
+                  <Clock size={10} />
+                  {formatTimeAgo(sess.timestamp)}
+                </span>
+                {sess.model && (
+                  <span className="badge badge-default" style={{ fontSize: 9, padding: '1px 5px' }}>
+                    {getModelShortName(sess.model)}
+                  </span>
+                )}
+                {sess.totalCostUsd !== undefined && sess.totalCostUsd > 0 && (
+                  <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+                    {formatCost(sess.totalCostUsd)}
+                  </span>
+                )}
+                {sess.numTurns !== undefined && (
+                  <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+                    T:{sess.numTurns}
+                  </span>
+                )}
+                {sess.userPromptCount !== undefined && sess.userPromptCount > 0 && (
+                  <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                    <User size={10} />{sess.userPromptCount}
+                  </span>
+                )}
+                {(sess.agentCount !== undefined && sess.agentCount > 0 || sess.subagentCount > 0) && (
+                  <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                    <Cpu size={10} />{sess.agentCount || sess.subagentCount}
+                  </span>
+                )}
+              </div>
             </a>
           ))}
         </div>
