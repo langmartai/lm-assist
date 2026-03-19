@@ -243,8 +243,10 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
         let matchData: any = null;
         for (const { key: filePath, value: cacheData } of cache.allSessionsIncludingSubagents()) {
           const basename = require('path').basename(filePath, '.jsonl');
-          const effectiveId = basename.startsWith('agent-') ? cacheData.sessionId : basename;
-          if (effectiveId === sessionId) {
+          const isAgent = basename.startsWith('agent-');
+          const agentId = isAgent ? basename.slice(6) : null;
+          // Match by: regular sessionId OR basename (without .jsonl) OR agentId
+          if (cacheData.sessionId === sessionId || basename === sessionId || agentId === sessionId) {
             matchData = cacheData;
             break;
           }
@@ -277,8 +279,10 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
         let matchData: any = null;
         for (const { key: filePath, value: cacheData } of cache.allSessionsIncludingSubagents()) {
           const basename = require('path').basename(filePath, '.jsonl');
-          const effectiveId = basename.startsWith('agent-') ? cacheData.sessionId : basename;
-          if (effectiveId === sessionId) {
+          const isAgent = basename.startsWith('agent-');
+          const agentId = isAgent ? basename.slice(6) : null;
+          // Match by: regular sessionId OR basename (without .jsonl) OR agentId
+          if (cacheData.sessionId === sessionId || basename === sessionId || agentId === sessionId) {
             matchData = cacheData;
             break;
           }
@@ -315,8 +319,10 @@ export function createSkillRoutes(_ctx: RouteContext): RouteHandler[] {
         let matchFilePath = '';
         for (const { key: filePath, value: cacheData } of cache.allSessionsIncludingSubagents()) {
           const basename = require('path').basename(filePath, '.jsonl');
-          const effectiveId = basename.startsWith('agent-') ? cacheData.sessionId : basename;
-          if (effectiveId === sessionId) {
+          const isAgent = basename.startsWith('agent-');
+          const agentId = isAgent ? basename.slice(6) : null;
+          // Match by: regular sessionId OR basename (without .jsonl) OR agentId
+          if (cacheData.sessionId === sessionId || basename === sessionId || agentId === sessionId) {
             matchData = cacheData;
             matchFilePath = filePath;
             break;
