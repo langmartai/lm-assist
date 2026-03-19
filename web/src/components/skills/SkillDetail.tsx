@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
 import { Loader2, Zap, ChevronLeft, ChevronRight, Clock, User, Cpu, ChevronDown, ChevronUp, ExternalLink } from 'lucide-react';
 import { formatTimeAgo, getSessionIdShort, formatCost, getModelShortName, formatBytes } from '@/lib/utils';
 
@@ -79,7 +78,6 @@ function groupByDate(sessions: SkillDetailData['sessions']): Array<{ date: strin
 }
 
 export function SkillDetail({ apiFetch, skillName }: SkillDetailProps) {
-  const router = useRouter();
   const [detail, setDetail] = useState<SkillDetailData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -285,7 +283,8 @@ export function SkillDetail({ apiFetch, skillName }: SkillDetailProps) {
                   <div key={`${sess.sessionId}-${i}`} style={{ display: 'flex', flexDirection: 'column' }}>
                     <a
                       href={`/sessions?id=${sess.sessionId}`}
-                      onClick={(e) => { e.preventDefault(); router.push(`/sessions?id=${sess.sessionId}`); }}
+                      target="_blank"
+                      rel="noopener noreferrer"
                       style={{
                         display: 'flex',
                         flexDirection: 'column',
@@ -430,7 +429,8 @@ export function SkillDetail({ apiFetch, skillName }: SkillDetailProps) {
                           <a
                             key={sa.agentId}
                             href={`/sessions?session=${encodeURIComponent(sa.agentId)}&parent=${encodeURIComponent(sess.sessionId)}`}
-                            onClick={(e) => { e.preventDefault(); router.push(`/sessions?session=${encodeURIComponent(sa.agentId)}&parent=${encodeURIComponent(sess.sessionId)}`); }}
+                            target="_blank"
+                            rel="noopener noreferrer"
                             style={{
                               display: 'flex',
                               alignItems: 'center',
@@ -583,7 +583,8 @@ export function SkillDetail({ apiFetch, skillName }: SkillDetailProps) {
                     <a
                       key={`${sess.sessionId}-${i}`}
                       href={`/sessions?id=${sess.sessionId}`}
-                      onClick={(e) => { e.preventDefault(); router.push(`/sessions?id=${sess.sessionId}`); }}
+                      target="_blank"
+                      rel="noopener noreferrer"
                       style={{
                         display: 'flex',
                         alignItems: 'center',

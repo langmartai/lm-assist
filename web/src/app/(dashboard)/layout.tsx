@@ -32,18 +32,22 @@ function useLanAuthGuard() {
 
       // Non-localhost — check if this is actually a local request via LAN IP
       // by asking the Core API (which can check the TCP connection's remote address)
-      try {
-        const { baseUrl } = detectAppMode();
-        const localRes = await fetch(`${baseUrl}/auth/is-local`, {
-          signal: AbortSignal.timeout(2000),
-        });
-        const localData = await localRes.json();
-        if (localData?.data?.isLocal === true) {
-          setChecked(true);
-          return;
+      // Retry once on failure (Core API may be cold-starting when a new tab opens)
+      const { baseUrl } = detectAppMode();
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const localRes = await fetch(`${baseUrl}/auth/is-local`, {
+            signal: AbortSignal.timeout(3000),
+          });
+          const localData = await localRes.json();
+          if (localData?.data?.isLocal === true) {
+            setChecked(true);
+            return;
+          }
+          break; // Got a response but isLocal=false, don't retry
+        } catch {
+          if (attempt === 0) await new Promise(r => setTimeout(r, 500)); // Wait before retry
         }
-      } catch {
-        // Core API unreachable — fall through to LAN auth check
       }
 
       // Truly remote — check if LAN auth is enabled
