@@ -19,6 +19,7 @@ export interface InstalledSkill {
   pluginName: string;
   shortName: string;
   description: string;
+  fullDescription: string;
   pluginVersion: string;
   installPath: string;
   hasUsage: boolean;
@@ -446,6 +447,7 @@ export class SkillIndex {
             pluginName,
             shortName,
             description: description.slice(0, 200),
+            fullDescription: description,
             pluginVersion: version,
             installPath: path.join(skillsDir, skillDir),
             hasUsage: !!this.data.skills[fullName],
