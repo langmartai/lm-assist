@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Search, X, Clock, MessageSquare, Cpu, ListChecks, User, Users, ExternalLink, GitFork, ChevronDown } from 'lucide-react';
+import { Search, X, Clock, MessageSquare, Cpu, ListChecks, User, Users, ExternalLink, GitFork, ChevronDown, Terminal } from 'lucide-react';
 import { useHighlight } from '@/hooks/useHighlight';
 import { useMachineContext } from '@/contexts/MachineContext';
 import { formatTimeAgo, getSessionIdShort, formatCost, getModelShortName, formatBytes } from '@/lib/utils';
@@ -193,6 +193,27 @@ export function SessionSidebar({
           <option value="week">This week</option>
           <option value="month">This month</option>
         </select>
+
+        {/* Command sessions toggle */}
+        <button
+          onClick={() => setFilters({ showCommands: !filters.showCommands })}
+          title={filters.showCommands ? 'Hide command sessions' : 'Show command sessions'}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 3,
+            fontSize: 11,
+            padding: '3px 6px',
+            borderRadius: 4,
+            border: '1px solid var(--color-border-subtle)',
+            background: filters.showCommands ? 'var(--color-bg-tertiary)' : 'transparent',
+            color: filters.showCommands ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
+            cursor: 'pointer',
+          }}
+        >
+          <Terminal size={11} />
+          Cmds
+        </button>
 
       </div>
 

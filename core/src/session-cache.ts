@@ -59,7 +59,7 @@ export function classifyUserPrompt(text: string, isMeta?: boolean): PromptType {
  * Returns true if the prompt is a real user prompt (not system-injected).
  */
 export function isRealUserPrompt(prompt: CachedUserPrompt): boolean {
-  return !prompt.promptType || prompt.promptType === 'user';
+  return !prompt.promptType || prompt.promptType === 'user' || prompt.promptType === 'command';
 }
 
 export interface CachedToolUse {

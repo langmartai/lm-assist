@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.64] - 2026-03-22
+
+### Session List
+
+- **New: Command session filter** — Toggle button ("Cmds") in the session sidebar filters to show/hide command-only sessions (slash command executions like `/trade-analyze`). Preference persists in localStorage.
+- **fix: command-only sessions missing from list** — Sessions where all user prompts are slash commands were excluded from the session list. `isRealUserPrompt` now treats `command` prompt type as a real prompt.
+
 ## [0.1.63] - 2026-03-19
 
 ### Skill & Command Tracing

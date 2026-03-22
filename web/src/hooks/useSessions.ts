@@ -13,6 +13,7 @@ export type SessionFilter = {
   timeRange: 'today' | 'week' | 'month' | 'all';
   search: string;
   sort: 'recent' | 'machine' | 'project';
+  showCommands: boolean;
 };
 
 const defaultFilter: SessionFilter = {
@@ -22,7 +23,13 @@ const defaultFilter: SessionFilter = {
   timeRange: 'all',
   search: '',
   sort: 'recent',
+  showCommands: true,
 };
+
+/** Returns true if the session's last user message indicates a command-only session */
+function isCommandSession(s: Session): boolean {
+  return !!s.lastUserMessage && s.lastUserMessage.trimStart().startsWith('<command-message>');
+}
 
 interface UseSessionsOptions {
   /** When true, disables internal polling -- caller manages polling externally */
@@ -58,8 +65,12 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
     if (typeof window !== 'undefined') {
       try {
         const savedProject = localStorage.getItem('session-filter-project');
-        if (savedProject) {
-          return { ...defaultFilter, projectName: savedProject };
+        const savedShowCmds = localStorage.getItem('session-filter-show-commands');
+        const overrides: Partial<SessionFilter> = {};
+        if (savedProject) overrides.projectName = savedProject;
+        if (savedShowCmds !== null) overrides.showCommands = savedShowCmds !== 'false';
+        if (Object.keys(overrides).length > 0) {
+          return { ...defaultFilter, ...overrides };
         }
       } catch { /* ignore */ }
     }
@@ -80,6 +91,11 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
         } else {
           localStorage.removeItem('session-filter-project');
         }
+      } catch { /* ignore */ }
+    }
+    if ('showCommands' in partial) {
+      try {
+        localStorage.setItem('session-filter-show-commands', String(partial.showCommands));
       } catch { /* ignore */ }
     }
   }, []);
@@ -125,8 +141,11 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
         sessions = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
       }
 
-      // Hide sessions with 0 user prompts (empty/no-interaction sessions)
-      sessions = sessions.filter(s => s.userPromptCount == null || s.userPromptCount > 0);
+      // Hide sessions with 0 user prompts AND no turns (truly empty sessions).
+      // Sessions with turns but 0 user prompts are SDK/programmatic executions — keep them.
+      sessions = sessions.filter(s =>
+        s.userPromptCount == null || s.userPromptCount > 0 || (s.numTurns != null && s.numTurns > 0)
+      );
 
       // Sort by lastModified descending
       sessions.sort((a, b) =>
@@ -179,6 +198,21 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
     return Array.from(names).sort();
   }, [allSessions]);
 
+  // Auto-clear project filter when the saved project no longer exists in available sessions.
+  // This happens when a project is excluded in settings or all its sessions are removed —
+  // the <select> dropdown shows "All projects" visually but the React state still holds the
+  // stale value, causing 0 results.
+  useEffect(() => {
+    if (filters.projectName && allSessions.length > 0 && projectNames.length > 0) {
+      const match = allSessions.some(
+        s => s.projectName === filters.projectName || s.projectPath === filters.projectName
+      );
+      if (!match) {
+        setFilters({ projectName: null });
+      }
+    }
+  }, [filters.projectName, allSessions, projectNames, setFilters]);
+
   // Apply client-side filters
   const sessions = useMemo(() => {
     let result = [...allSessions];
@@ -201,6 +235,11 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
       result = result.filter(s => s.isRunning);
     } else if (filters.status === 'completed') {
       result = result.filter(s => !s.isRunning);
+    }
+
+    // Command session filter
+    if (!filters.showCommands) {
+      result = result.filter(s => !isCommandSession(s));
     }
 
     // Time range filter
