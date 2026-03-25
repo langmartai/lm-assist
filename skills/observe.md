@@ -11,6 +11,78 @@ Query sessions, monitor executions, debug agent behavior, and control agent runs
 
 All commands use `curl -s` with `--max-time 5`. Parse JSON responses with `python3 -c "import sys,json; ..."`.
 
+## Project Context
+
+**Most prompts are for the current project.** Always start routing from the current project's sessions before looking at other projects.
+
+Routing priority:
+1. **Current session** — is the user's request a continuation of what we're already doing?
+2. **Current project sessions** — is there another session in this project that already did this work?
+3. **Other projects** — only if the user explicitly mentions another project or the task clearly belongs elsewhere
+
+### Project summaries
+
+Check what each project is about:
+
+```bash
+# Get all project summaries
+curl -s http://localhost:3100/projects/summaries | python3 -c "
+import sys,json
+summaries = json.load(sys.stdin).get('data',{}).get('summaries',[])
+for s in summaries:
+    print(f'{s[\"projectName\"]:20} {s.get(\"summary\",\"\")[:100]}')
+"
+```
+
+If project summaries don't exist yet, generate them:
+
+```bash
+# Get project list with session counts
+curl -s http://localhost:3100/projects | python3 -c "
+import sys,json
+projects = json.load(sys.stdin).get('data',{}).get('projects',[])
+for p in projects:
+    name = p.get('projectName','') or p.get('name','')
+    count = p.get('sessionCount',0)
+    key = p.get('projectKey','')
+    print(f'{name:20} {count:>4} sessions  key={key}')
+"
+```
+
+After understanding a project (from its files, CLAUDE.md, or session content), save the summary:
+
+```bash
+curl -s -X PUT http://localhost:3100/projects/summary \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "projectPath": "/home/ubuntu/lm-assist",
+    "projectName": "lm-assist",
+    "summary": "Observability platform for Claude Code and Agent SDK. REST API + Next.js web UI for session monitoring, debugging, and agent control.",
+    "stack": ["TypeScript", "Node.js", "Next.js", "React", "LMDB", "LanceDB"],
+    "areas": ["core API", "web UI", "hooks", "MCP server", "knowledge", "vector search"],
+    "recentFocus": "Session summaries, observability skill, prompt queue system"
+  }'
+```
+
+### Routing with project context
+
+When user asks to do something:
+
+```
+1. Is this about the CURRENT project?
+   → YES (most cases): check current project sessions first
+   → NO (user mentions another project): check that project
+
+2. Within the target project, find relevant sessions:
+   → GET /sessions/summaries — filter by projectPath
+   → Match task description against session summaries
+
+3. Recommend: RESUME / FORK / QUEUE / NEW
+   → Current session continuation? Just do it.
+   → Same project, different session? RESUME/FORK/QUEUE.
+   → Different project? Suggest switching: "This looks like it belongs in PROJECT_NAME."
+```
+
 ## Resolve Session ID
 
 When the user references a session by name, partial ID, or relative reference, resolve it:

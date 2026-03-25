@@ -11,6 +11,7 @@ import type { RouteHandler, RouteContext } from '../index';
 import { getSessionCache, isRealUserPrompt } from '../../session-cache';
 import { getSessionSummary, saveSessionSummary, getAllSessionSummaries, deleteSessionSummary, getSessionsNeedingSummaries } from '../../session-summary-store';
 import { enqueuePrompt, getSessionQueue, getAllPendingPrompts, getNextPrompt, markDispatched, markCompleted, cancelPrompt, cleanupQueue } from '../../prompt-queue-store';
+import { getProjectSummary, getAllProjectSummaries, saveProjectSummary, deleteProjectSummary } from '../../project-summary-store';
 
 export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
   return [
@@ -91,6 +92,54 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
         const sessionId = req.params.sessionId;
         const deleted = deleteSessionSummary(sessionId);
         return { success: true, data: { sessionId, deleted } };
+      },
+    },
+
+    // ========================================================================
+    // Project Summary Endpoints
+    // ========================================================================
+
+    // GET /projects/summaries — List all project summaries
+    {
+      method: 'GET',
+      pattern: /^\/projects\/summaries$/,
+      handler: async () => {
+        const summaries = getAllProjectSummaries();
+        return { success: true, data: { summaries, total: summaries.length } };
+      },
+    },
+
+    // GET /projects/summary/:path — Get summary for a project
+    {
+      method: 'GET',
+      pattern: /^\/projects\/summary\/(?<projectPath>.+)$/,
+      handler: async (req) => {
+        const projectPath = decodeURIComponent(req.params.projectPath);
+        const summary = getProjectSummary(projectPath);
+        return { success: true, data: summary };
+      },
+    },
+
+    // PUT /projects/summary — Save a project summary
+    {
+      method: 'PUT',
+      pattern: /^\/projects\/summary$/,
+      handler: async (req) => {
+        const body = req.body || {};
+        if (!body.projectPath || !body.summary) {
+          return { success: false, error: 'projectPath and summary fields are required' };
+        }
+        saveProjectSummary({
+          projectPath: body.projectPath,
+          projectName: body.projectName || body.projectPath.split('/').pop() || '',
+          summary: body.summary,
+          stack: body.stack,
+          areas: body.areas,
+          recentFocus: body.recentFocus,
+          sessionCount: body.sessionCount,
+          updatedAt: new Date().toISOString(),
+        });
+        return { success: true, data: { projectPath: body.projectPath, saved: true } };
       },
     },
 
