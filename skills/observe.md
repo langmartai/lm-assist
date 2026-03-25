@@ -34,35 +34,45 @@ for s in summaries:
 "
 ```
 
-If project summaries don't exist yet, generate them:
+If project summaries don't exist yet, generate them by dispatching a background agent **in each project's directory**. The agent reads that project's CLAUDE.md and codebase to understand it.
 
 ```bash
-# Get project list with session counts
+# Step 1: Get project list
 curl -s http://localhost:3100/projects | python3 -c "
 import sys,json
 projects = json.load(sys.stdin).get('data',{}).get('projects',[])
 for p in projects:
     name = p.get('projectName','') or p.get('name','')
     count = p.get('sessionCount',0)
-    key = p.get('projectKey','')
-    print(f'{name:20} {count:>4} sessions  key={key}')
+    path = p.get('path','')
+    print(f'{name:20} {count:>4} sessions  path={path}')
+"
+
+# Step 2: Check which projects need summaries
+curl -s http://localhost:3100/projects/summaries | python3 -c "
+import sys,json
+existing = {s['projectPath'] for s in json.load(sys.stdin).get('data',{}).get('summaries',[])}
+print(f'Have summaries: {existing}')
 "
 ```
 
-After understanding a project (from its files, CLAUDE.md, or session content), save the summary:
-
 ```bash
-curl -s -X PUT http://localhost:3100/projects/summary \
+# Step 3: For each project WITHOUT a summary, dispatch a background agent IN that project
+# The agent runs with cwd=PROJECT_PATH so it can read CLAUDE.md and explore the codebase
+curl -s -X POST http://localhost:3100/agent/execute \
   -H 'Content-Type: application/json' \
   -d '{
-    "projectPath": "/home/ubuntu/lm-assist",
-    "projectName": "lm-assist",
-    "summary": "Observability platform for Claude Code and Agent SDK. REST API + Next.js web UI for session monitoring, debugging, and agent control.",
-    "stack": ["TypeScript", "Node.js", "Next.js", "React", "LMDB", "LanceDB"],
-    "areas": ["core API", "web UI", "hooks", "MCP server", "knowledge", "vector search"],
-    "recentFocus": "Session summaries, observability skill, prompt queue system"
+    "prompt": "You are generating a project summary for the lm-assist observability system.\n\n1. Read CLAUDE.md in this project root — it describes the project structure, commands, and architecture\n2. Scan the top-level directories to understand the project layout\n3. Check package.json for dependencies and project name\n4. Generate a project summary and save it:\n\ncurl -s -X PUT http://localhost:3100/projects/summary -H \"Content-Type: application/json\" -d \"{\\\"projectPath\\\": \\\"$PWD\\\", \\\"projectName\\\": \\\"$(basename $PWD)\\\", \\\"summary\\\": \\\"YOUR_SUMMARY\\\", \\\"stack\\\": [\\\"tech1\\\", \\\"tech2\\\"], \\\"areas\\\": [\\\"area1\\\", \\\"area2\\\"], \\\"recentFocus\\\": \\\"RECENT_WORK\\\"}\"\\n\\nThe summary should answer: what is this project, what does it do, what stack does it use, what are its main areas, what has been worked on recently.\n\nKeep summary to 1-2 sentences. Keep stack/areas lists short (5-8 items max).",
+    "cwd": "PROJECT_PATH_HERE",
+    "permissionMode": "bypassPermissions",
+    "maxTurns": 8,
+    "background": true
   }'
 ```
+
+**IMPORTANT:** Each agent must run with `"cwd": "PROJECT_PATH"` — not the current project. The agent needs to be IN the target project to read its CLAUDE.md and files.
+
+For the current project, you can read CLAUDE.md directly without dispatching an agent.
 
 ### Routing with project context
 
