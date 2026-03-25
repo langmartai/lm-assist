@@ -1,0 +1,317 @@
+---
+description: "Use when the user asks about Claude Code sessions, running executions, agent status, session costs, token usage, subagent trees, or wants to run/monitor agent executions. Covers session browsing, cost tracking, execution management, and debugging across any project."
+allowed-tools: Bash
+---
+
+# lm-assist Observability
+
+Query sessions, monitor executions, debug agent behavior, and control agent runs through the lm-assist REST API.
+
+**API base:** `http://localhost:3100`
+
+All commands use `curl -s` with `--max-time 5`. Parse JSON responses with `python3 -c "import sys,json; ..."`.
+
+## Resolve Session ID
+
+When the user references a session by name, partial ID, or relative reference, resolve it:
+
+1. **Slug match** — if user says a slug name like "silly-plotting-parasol" or a prefix like "silly-plot":
+```bash
+curl -s http://localhost:3100/projects/sessions | python3 -c "
+import sys,json
+sessions = json.load(sys.stdin).get('data',{}).get('sessions',[])
+q = 'USER_QUERY'.lower()
+matches = [s for s in sessions if (s.get('slug') or '').lower().startswith(q) or s.get('sessionId','').startswith(q)]
+for s in matches[:5]:
+    print(f'{s[\"sessionId\"][:12]}  {s.get(\"slug\",\"-\")}  {s.get(\"customTitle\",\"-\")}')
+"
+```
+
+2. **"last session" / "most recent"** — take first from list (already sorted by lastModified desc).
+
+3. **"the running one"** — use `GET /monitor/executions` and take the matching execution's sessionId.
+
+4. **Ambiguous** — if multiple matches, list them and ask the user to pick.
+
+Once resolved, use the full session ID for all subsequent queries.
+
+---
+
+## 1. MONITOR — Session List, Costs, Running Executions
+
+### List recent sessions
+
+Show sessions for the current project or all projects:
+
+```bash
+# Current project sessions (replace CWD with actual working directory)
+curl -s "http://localhost:3100/projects/sessions" | python3 -c "
+import sys,json
+data = json.load(sys.stdin).get('data',{})
+sessions = data.get('sessions',[])[:15]
+print(f'Sessions ({len(sessions)} of {data.get(\"total\",len(sessions))})')
+print('─' * 90)
+print(f'{\"Status\":<8} {\"Slug\":<30} {\"Project\":<20} {\"Model\":<8} {\"Cost\":>8} {\"Turns\":>6} {\"Modified\":<10}')
+for s in sessions:
+    status = '[RUN]' if s.get('isRunning') else ''
+    slug = (s.get('customTitle') or s.get('slug') or s['sessionId'][:12])[:28]
+    project = (s.get('projectPath','').split('/')[-1] or '-')[:18]
+    model = (s.get('model','') or '-').replace('claude-','').replace('opus-4-6','opus').replace('sonnet-4-6','sonnet')[:7]
+    cost = f'\${s[\"totalCostUsd\"]:.2f}' if s.get('totalCostUsd') else '-'
+    turns = str(s.get('numTurns','')) or '-'
+    print(f'{status:<8} {slug:<30} {project:<20} {model:<8} {cost:>8} {turns:>6}')
+"
+```
+
+### List all projects
+
+```bash
+curl -s http://localhost:3100/projects | python3 -c "
+import sys,json
+projects = json.load(sys.stdin).get('data',{}).get('projects',[])
+for p in projects:
+    name = p.get('projectName','') or p.get('name','')
+    count = p.get('sessionCount',0)
+    print(f'  {count:>4} sessions  {name}')
+"
+```
+
+### Check running executions
+
+```bash
+curl -s http://localhost:3100/monitor/executions | python3 -c "
+import sys,json
+data = json.load(sys.stdin).get('data',{})
+execs = data.get('executions',[])
+if not execs:
+    print('No running executions.')
+else:
+    for e in execs:
+        eid = e.get('executionId','')[:12]
+        sid = e.get('sessionId','')[:12]
+        status = e.get('status','')
+        turns = e.get('turnCount',0)
+        cost = e.get('costUsd',0)
+        elapsed = e.get('elapsedMs',0) // 1000
+        mins = elapsed // 60
+        print(f'  {eid}  session:{sid}  {status}  T:{turns}  \${cost:.2f}  {mins}m')
+"
+```
+
+### Monitor summary
+
+```bash
+curl -s http://localhost:3100/monitor/summary | python3 -c "
+import sys,json; print(json.dumps(json.load(sys.stdin).get('data',{}), indent=2))
+"
+```
+
+---
+
+## 2. DEBUG — Session Detail, Subagents, DAG
+
+### Session detail
+
+Get full session data (replace SESSION_ID with the resolved ID):
+
+```bash
+curl -s "http://localhost:3100/sessions/SESSION_ID" | python3 -c "
+import sys,json
+d = json.load(sys.stdin).get('data',{})
+print(f'Session: {d.get(\"slug\") or d.get(\"sessionId\",\"\")[:12]}')
+print(f'  Custom Title: {d.get(\"customTitle\",\"-\")}')
+print(f'  Status: {d.get(\"status\",\"-\")}')
+print(f'  Model: {d.get(\"model\",\"-\")}')
+print(f'  Cost: \${d.get(\"totalCostUsd\",0):.4f}')
+print(f'  Turns: {d.get(\"numTurns\",0)}')
+print(f'  Duration: {(d.get(\"duration\",0) or 0)//1000}s')
+print(f'  Claude Code: {d.get(\"claudeCodeVersion\",\"-\")}')
+print(f'  Permission: {d.get(\"permissionMode\",\"-\")}')
+print(f'  Team: {d.get(\"teamName\",\"-\")}')
+print(f'  Forked from: {d.get(\"forkedFromSessionId\",\"-\")}')
+# Token breakdown
+u = d.get('usage') or d.get('inputTokens') and d
+if isinstance(u, dict):
+    print(f'  Tokens: in={u.get(\"inputTokens\",0):,} out={u.get(\"outputTokens\",0):,} cache_read={u.get(\"cacheReadInputTokens\",0):,} cache_create={u.get(\"cacheCreationInputTokens\",0):,}')
+# Subagent count
+subs = d.get('subagents',[])
+if subs:
+    print(f'  Subagents: {len(subs)}')
+# Plans
+plans = d.get('plans',[])
+if plans:
+    print(f'  Plans: {len(plans)}')
+"
+```
+
+### Session conversation
+
+```bash
+curl -s "http://localhost:3100/sessions/SESSION_ID/conversation?toolDetail=summary&lastN=20" | python3 -c "
+import sys,json
+d = json.load(sys.stdin).get('data',{})
+messages = d.get('messages',[])
+for m in messages[-20:]:
+    role = m.get('type','')
+    content = (m.get('content','') or '')[:200]
+    if role == 'human':
+        print(f'\n> USER: {content}')
+    elif role == 'assistant':
+        print(f'  CLAUDE: {content}')
+    elif role == 'tool':
+        tool = m.get('toolName','')
+        print(f'  [{tool}] {content[:100]}')
+"
+```
+
+### Subagent hierarchy
+
+```bash
+curl -s "http://localhost:3100/sessions/SESSION_ID/subagents" | python3 -c "
+import sys,json
+d = json.load(sys.stdin).get('data',{})
+agents = d.get('subagents') or d.get('invocations') or []
+if not agents:
+    print('No subagents in this session.')
+else:
+    for a in agents:
+        name = a.get('name') or a.get('agentName','?')
+        atype = a.get('type') or a.get('agentType','')
+        status = a.get('status','')
+        prompt = (a.get('prompt','') or '')[:80]
+        print(f'  {name} ({atype}) [{status}] — {prompt}')
+"
+```
+
+### Session DAG
+
+```bash
+curl -s "http://localhost:3100/sessions/SESSION_ID/session-dag" | python3 -c "
+import sys,json
+d = json.load(sys.stdin).get('data',{})
+nodes = d.get('nodes',[])
+edges = d.get('edges',[])
+print(f'Session DAG: {len(nodes)} nodes, {len(edges)} edges')
+for n in nodes[:20]:
+    ntype = n.get('type','')
+    label = n.get('label','')[:60]
+    meta = n.get('metadata',{})
+    slug = meta.get('slug','')
+    print(f'  [{ntype}] {label} {slug}')
+"
+```
+
+### Related sessions
+
+```bash
+curl -s "http://localhost:3100/sessions/SESSION_ID/related" | python3 -c "
+import sys,json
+d = json.load(sys.stdin).get('data',{})
+for key in ['parent','forks','subagents','siblings']:
+    items = d.get(key)
+    if items:
+        if isinstance(items, list):
+            print(f'{key}: {len(items)} sessions')
+            for s in items[:5]:
+                sid = s if isinstance(s,str) else s.get('sessionId','')[:12]
+                print(f'  {sid}')
+        else:
+            print(f'{key}: {items}')
+"
+```
+
+---
+
+## 3. CONTROL — Execute, Abort, Cache
+
+### Execute agent on project
+
+Before executing, ALWAYS check for running executions first:
+
+```bash
+# Step 1: Check running executions
+curl -s http://localhost:3100/monitor/executions | python3 -c "
+import sys,json
+execs = json.load(sys.stdin).get('data',{}).get('executions',[])
+running = [e for e in execs if e.get('isRunning')]
+if running:
+    print(f'WARNING: {len(running)} execution(s) already running:')
+    for e in running:
+        print(f'  {e.get(\"executionId\",\"\")[:12]} T:{e.get(\"turnCount\",0)} \${e.get(\"costUsd\",0):.2f}')
+    print('Ask user before proceeding.')
+else:
+    print('No running executions. Safe to proceed.')
+"
+```
+
+```bash
+# Step 2: Execute (replace PROMPT and CWD)
+curl -s -X POST http://localhost:3100/agent/execute \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"FORMATTED_PROMPT","cwd":"PROJECT_CWD"}' | python3 -c "
+import sys,json
+d = json.load(sys.stdin)
+if d.get('success'):
+    eid = d.get('data',{}).get('executionId','')
+    print(f'Execution started: {eid}')
+else:
+    print(f'Failed: {d.get(\"error\",{}).get(\"message\",\"unknown error\")}')
+"
+```
+
+```bash
+# Step 3: Confirm started (wait 3s, then check)
+sleep 3 && curl -s http://localhost:3100/monitor/executions | python3 -c "
+import sys,json
+execs = json.load(sys.stdin).get('data',{}).get('executions',[])
+for e in execs:
+    print(f'  {e.get(\"executionId\",\"\")[:12]}  {e.get(\"status\",\"\")}  T:{e.get(\"turnCount\",0)}')
+"
+```
+
+When formatting the prompt, expand the user's casual intent into clear, actionable instructions. Example:
+- User says: "review the auth module"
+- Format as: "Review the authentication module for security vulnerabilities, code quality issues, and test coverage gaps. Report findings with severity ratings and specific file/line references."
+
+### Abort execution
+
+```bash
+curl -s -X POST http://localhost:3100/monitor/abort/EXECUTION_ID | python3 -c "
+import sys,json; d=json.load(sys.stdin); print('Aborted' if d.get('success') else f'Failed: {d.get(\"error\",{}).get(\"message\",\"\")}')"
+```
+
+### Abort all executions
+
+```bash
+curl -s -X POST http://localhost:3100/monitor/abort-all | python3 -c "
+import sys,json; d=json.load(sys.stdin); print(json.dumps(d.get('data',{}), indent=2))"
+```
+
+### Cache management
+
+```bash
+# Warm session cache (pre-load for faster queries)
+curl -s -X POST http://localhost:3100/session-cache/warm | python3 -c "
+import sys,json; d=json.load(sys.stdin); print(f'Warmed: {json.dumps(d.get(\"data\",{}))}')"
+
+# Clear all caches
+curl -s -X POST http://localhost:3100/session-cache/clear | python3 -c "
+import sys,json; d=json.load(sys.stdin); print(f'Cleared: {json.dumps(d.get(\"data\",{}))}')"
+```
+
+---
+
+## Error Handling
+
+- **API not running** (connection refused): Tell user "lm-assist API is not running. Start with `lm-assist start` or `/assist-setup`."
+- **Session not found**: Suggest similar slugs from the session list.
+- **Execution already running**: Report it and ask user to abort first or run in parallel.
+- **Validation error**: Show the error message from the API response.
+
+## Output Guidelines
+
+- Format as clean tables, not raw JSON dumps
+- Show costs in `$X.XX` format
+- Truncate long slugs/paths to fit terminal width
+- Highlight running sessions with `[RUN]` status
+- Use `python3 -c` for inline JSON parsing (available on all platforms)
