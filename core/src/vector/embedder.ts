@@ -148,4 +148,20 @@ export function getEmbedder(): Embedder {
   return instance;
 }
 
+/** Destroy the embedder singleton and terminate the worker thread to free memory. */
+export function destroyEmbedder(): void {
+  if (instance) {
+    if (instance['worker']) {
+      try {
+        instance['worker'].terminate();
+      } catch {}
+    }
+    instance['ready'] = false;
+    instance['readyPromise'] = null;
+    instance['worker'] = null;
+    instance = null;
+    console.log('[Embedder] Destroyed — worker thread terminated');
+  }
+}
+
 export { VECTOR_DIM };

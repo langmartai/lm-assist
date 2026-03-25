@@ -26,6 +26,17 @@ import { KNOWLEDGE_TYPES, COMMENT_TYPES } from '../../knowledge/types';
 import type { KnowledgeType, KnowledgeCommentType } from '../../knowledge/types';
 import { getProjectSettings } from '../../project-settings';
 
+/** Return empty/disabled response when knowledge is turned off */
+function knowledgeDisabledResponse(type: 'list' | 'item' | 'search' | 'action' = 'list') {
+  const base = { success: true as const };
+  switch (type) {
+    case 'list': return { ...base, data: [] };
+    case 'item': return { ...base, data: null };
+    case 'search': return { ...base, data: [] };
+    case 'action': return { ...base, data: { knowledgeDisabled: true, message: 'Knowledge is disabled' } };
+  }
+}
+
 // File-change-invalidated cache for /knowledge/generate/stats
 let _statsCache: { candidates: number; generated: number } | null = null;
 let _statsCacheDirty = true;
@@ -60,6 +71,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'GET',
       pattern: /^\/knowledge$/,
       handler: async (req) => {
+        if (!getProjectSettings().knowledgeEnabled) return knowledgeDisabledResponse('list');
         const store = getKnowledgeStore();
         const project = req.query.project;
         const type = req.query.type as KnowledgeType | undefined;
@@ -86,6 +98,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'GET',
       pattern: /^\/knowledge\/search$/,
       handler: async (req) => {
+        if (!getProjectSettings().knowledgeEnabled) return knowledgeDisabledResponse('search');
         const query = req.query.query || req.query.q;
         if (!query) {
           return { success: false, error: 'query parameter is required' };
@@ -251,6 +264,7 @@ export function createKnowledgeRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'GET',
       pattern: /^\/knowledge\/generate\/stats$/,
       handler: async (req) => {
+        if (!getProjectSettings().knowledgeEnabled) return { success: true, data: { candidates: 0, generated: 0, knowledgeDisabled: true } };
         try {
           const store = getKnowledgeStore();
           const generatedCount = store.getAllIds().filter(id => {

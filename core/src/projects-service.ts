@@ -136,6 +136,10 @@ export interface ProjectSession {
   numTurns?: number;
   /** Session this was forked from */
   forkedFromSessionId?: string;
+  /** Human-readable session slug (e.g. "refactored-twirling-karp") */
+  slug?: string;
+  /** Custom session title set via /rename */
+  customTitle?: string;
 }
 
 export interface ProjectTask {
@@ -759,6 +763,8 @@ export class ProjectsService {
           session.model = cacheData.model;
           session.numTurns = cacheData.numTurns || undefined;
           session.forkedFromSessionId = cacheData.forkedFromSessionId;
+          session.slug = cacheData.slug;
+          session.customTitle = cacheData.customTitle;
 
           // Usage and cost data
           if (cacheData.usage && cacheData.usage.inputTokens > 0) {

@@ -93,18 +93,25 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
 
     // Pre-warm the embedder + vector store in the background (async, non-blocking)
     // This eliminates the cold-start delay on the first search request
-    try {
-      const { getEmbedder } = require('./vector/embedder');
-      const { getVectorStore } = require('./vector/vector-store');
-      // Warm embedder model (~2-3s) and LanceDB connection in parallel
-      Promise.all([
-        getEmbedder().load().then(() => console.log('Embedder model pre-warmed')),
-        getVectorStore().init().then(() => console.log('Vector store pre-warmed')),
-      ]).catch(() => {
-        // Silently ignore — will lazy-load on first use
-      });
-    } catch {
-      // Not available (e.g., missing dependencies)
+    // Skip if knowledge is disabled (kill switch) to save memory
+    const { getProjectSettings } = require('./project-settings');
+    const knowledgeEnabled = getProjectSettings().knowledgeEnabled;
+    if (knowledgeEnabled) {
+      try {
+        const { getEmbedder } = require('./vector/embedder');
+        const { getVectorStore } = require('./vector/vector-store');
+        // Warm embedder model (~2-3s) and LanceDB connection in parallel
+        Promise.all([
+          getEmbedder().load().then(() => console.log('Embedder model pre-warmed')),
+          getVectorStore().init().then(() => console.log('Vector store pre-warmed')),
+        ]).catch(() => {
+          // Silently ignore — will lazy-load on first use
+        });
+      } catch {
+        // Not available (e.g., missing dependencies)
+      }
+    } else {
+      console.log('Knowledge disabled — skipping embedder/vector pre-warm');
     }
 
     // Start hub client connection if configured
@@ -146,13 +153,18 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
     }
 
     // Start knowledge scheduler (discovery, generation, remote sync)
+    // Skip if knowledge is disabled (kill switch)
     let knowledgeScheduler: any = null;
-    try {
-      const { getKnowledgeScheduler } = require('./knowledge/scheduler');
-      knowledgeScheduler = getKnowledgeScheduler();
-      knowledgeScheduler.start();
-    } catch (err: any) {
-      console.error('Scheduler start failed:', err.message);
+    if (knowledgeEnabled) {
+      try {
+        const { getKnowledgeScheduler } = require('./knowledge/scheduler');
+        knowledgeScheduler = getKnowledgeScheduler();
+        knowledgeScheduler.start();
+      } catch (err: any) {
+        console.error('Scheduler start failed:', err.message);
+      }
+    } else {
+      console.log('Knowledge disabled — skipping scheduler');
     }
 
     profiler.end('total');

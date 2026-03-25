@@ -30,6 +30,7 @@ const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
 const BLUE = '\x1b[34m';
 const RED = '\x1b[31m';
+const MAGENTA = '\x1b[35m';
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
 const RESET = '\x1b[0m';
@@ -505,6 +506,7 @@ function loadStatuslineConfig() {
     statuslineShowProcess: true,
     statuslineShowModel: true,
     statuslineShowCost: true,
+    statuslineShowRateLimits: true,
     devModeEnabled: false,
   };
   try {
@@ -520,6 +522,7 @@ function loadStatuslineConfig() {
       statuslineShowProcess: typeof parsed.statuslineShowProcess === 'boolean' ? parsed.statuslineShowProcess : defaults.statuslineShowProcess,
       statuslineShowModel: typeof parsed.statuslineShowModel === 'boolean' ? parsed.statuslineShowModel : defaults.statuslineShowModel,
       statuslineShowCost: typeof parsed.statuslineShowCost === 'boolean' ? parsed.statuslineShowCost : defaults.statuslineShowCost,
+      statuslineShowRateLimits: typeof parsed.statuslineShowRateLimits === 'boolean' ? parsed.statuslineShowRateLimits : defaults.statuslineShowRateLimits,
       devModeEnabled: parsed.devModeEnabled === true,
     };
   } catch {
@@ -548,6 +551,7 @@ async function main() {
   const model = (input.model && input.model.display_name) || '';
   const sessionCostUsd = (input.cost && input.cost.total_cost_usd) || 0;
   const sessionId = input.session_id || '';
+  const rateLimits = input.rate_limits || null;
 
   // --- Load config ---
   const cfg = loadStatuslineConfig();
@@ -643,6 +647,28 @@ async function main() {
       ? `$${sessionCostUsd.toFixed(2)}`
       : `$${sessionCostUsd.toFixed(3)}`;
     line3Parts.push(`${YELLOW}${costStr}${RESET}`);
+  }
+  if (cfg.statuslineShowRateLimits && rateLimits) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const fiveH = rateLimits.five_hour;
+    const sevenD = rateLimits.seven_day;
+    if (fiveH && fiveH.used_percentage != null) {
+      const pct = Math.round(fiveH.used_percentage);
+      const color = pct >= 80 ? `${BOLD}${RED}` : pct >= 50 ? `${BOLD}${YELLOW}` : `${BOLD}${CYAN}`;
+      let remaining = '';
+      if (fiveH.resets_at && fiveH.resets_at > nowSec) {
+        const leftSec = fiveH.resets_at - nowSec;
+        const h = Math.floor(leftSec / 3600);
+        const m = Math.floor((leftSec % 3600) / 60);
+        remaining = h > 0 ? `${DIM}${h}h${m}m left${RESET}` : `${DIM}${m}m left${RESET}`;
+      }
+      line3Parts.push(`${color}5h:${pct}%${RESET}${remaining ? ' ' + remaining : ''}`);
+    }
+    if (sevenD && sevenD.used_percentage != null) {
+      const pct = Math.round(sevenD.used_percentage);
+      const color = pct >= 80 ? `${BOLD}${RED}` : pct >= 50 ? `${BOLD}${YELLOW}` : `${BOLD}${MAGENTA}`;
+      line3Parts.push(`${color}7d:${pct}%${RESET}`);
+    }
   }
   if (cfg.statuslineShowRam) {
     if (procInfo.mem) line3Parts.push(`${DIM}ram:${procInfo.mem}${RESET}`);

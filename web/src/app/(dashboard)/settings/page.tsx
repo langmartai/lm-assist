@@ -342,6 +342,7 @@ export default function SettingsPage() {
 
   // excluded projects state
   const [excludedPaths, setExcludedPaths] = useState<string[]>([]);
+  const [knowledgeEnabled, setKnowledgeEnabled] = useState(true);
   const [allProjects, setAllProjects] = useState<{ path: string }[]>([]);
   const [showAddProject, setShowAddProject] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
@@ -1070,7 +1071,10 @@ export default function SettingsPage() {
       }).catch(() => {});
       // Fetch project settings (excluded projects)
       fetch(tierAgentUrl + '/project-settings').then(r => r.json()).then(j => {
-        if (j.success) setExcludedPaths(j.data.excludedPaths || []);
+        if (j.success) {
+          setExcludedPaths(j.data.excludedPaths || []);
+          setKnowledgeEnabled(j.data.knowledgeEnabled !== false);
+        }
       }).catch(() => {});
     }
   }, [proxy.isProxied, localStatus?.healthy, activeTab, tierAgentUrl]);
@@ -4157,6 +4161,25 @@ export default function SettingsPage() {
 
                 {/* Data Loading tab: Knowledge Processing */}
                 {activeTab === 'data-loading' && (
+                <>
+                <SectionCard title="Knowledge System" icon={Code2}>
+                  <ToggleRow
+                    label="Enable Knowledge"
+                    description="Master switch for the entire knowledge system. When disabled: scheduler stops, vector store and embedder are unloaded from memory, all knowledge API endpoints return empty results. Toggle at runtime without restart."
+                    checked={knowledgeEnabled}
+                    onChange={async (checked) => {
+                      setKnowledgeEnabled(checked);
+                      try {
+                        await fetch(tierAgentUrl + '/project-settings', {
+                          method: 'PUT',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ knowledgeEnabled: checked }),
+                        });
+                      } catch {}
+                    }}
+                  />
+                </SectionCard>
+                {knowledgeEnabled && (
                 <SectionCard title="Knowledge Processing" icon={Code2}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                     {/* ── Auto Discovery ── */}
@@ -4523,11 +4546,12 @@ export default function SettingsPage() {
                     )}
                   </div>
                 </SectionCard>
-
+                )}
+                </>
                 )}
 
                 {/* Data Loading tab: Remote Knowledge */}
-                {activeTab === 'data-loading' && (
+                {activeTab === 'data-loading' && knowledgeEnabled && (
                 <SectionCard title="Remote Knowledge" icon={Cloud}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                     <ToggleRow

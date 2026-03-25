@@ -37,7 +37,7 @@ import {
   SquareTerminal,
   ChevronDown,
 } from 'lucide-react';
-import { formatCost } from '@/lib/utils';
+import { formatCost, getSessionDisplayName } from '@/lib/utils';
 import { useDeviceInfo } from '@/hooks/useDeviceInfo';
 import { extractFileChanges, extractThinkingBlocks, extractGitOperations, extractTasks, extractDbOperations, enrichSubagentStatus } from '@/lib/session-extractors';
 import type { SessionDetail as SessionDetailType } from '@/lib/types';
@@ -410,10 +410,15 @@ export function SessionDetail({ sessionId, machineId, onLastSuggestion, onSubage
               PID {detail.running.pid} · {managedByLabel(detail.running.managedBy)}
             </span>
           )}
-          <span style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600 }}>
-            {detail?.projectPath ? detail.projectPath.split('/').pop() : 'Session'}
+          <span style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600 }} title={detail ? getSessionDisplayName(detail) || undefined : undefined}>
+            {(detail ? getSessionDisplayName(detail) : null) || (detail?.projectPath ? detail.projectPath.split('/').pop() : 'Session')}
           </span>
-          {!isMobile && detail?.projectPath && (
+          {!isMobile && detail && getSessionDisplayName(detail) && detail?.projectPath && (
+            <span style={{ fontSize: 11, color: 'var(--color-text-quaternary, var(--color-text-tertiary))' }} title={detail.projectPath}>
+              {detail.projectPath.split('/').pop()}
+            </span>
+          )}
+          {!isMobile && !(detail && getSessionDisplayName(detail)) && detail?.projectPath && (
             <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }} title={detail.projectPath}>
               {truncateProjectPath(detail.projectPath)}
             </span>

@@ -8,7 +8,7 @@ import {
 import { CompactMessageFeed, inlineMarkdown } from './CompactMessageFeed';
 import type { ConvType } from './CompactMessageFeed';
 import type { Session, SessionDetail, SessionMessage } from '@/lib/types';
-import { formatTimeAgo, formatBytes, getModelShortName, getSessionIdShort } from '@/lib/utils';
+import { formatTimeAgo, formatBytes, getModelShortName, getSessionIdShort, getSessionDisplayName } from '@/lib/utils';
 import { MachineBadge } from '@/components/shared/MachineBadge';
 import { useAppMode } from '@/contexts/AppModeContext';
 
@@ -215,7 +215,7 @@ export function TerminalPanel({
             onMouseEnter={(e) => showTooltip(session.projectPath || '', e.currentTarget)}
             onMouseLeave={hideTooltip}
           >
-            {session.projectName || 'Session'}
+            {getSessionDisplayName(session) || session.projectName || 'Session'}
           </span>
 
           {/* File size */}

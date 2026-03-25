@@ -366,7 +366,10 @@ export type ClaudeSessionMessageType =
   | 'result'           // Execution results
   | 'progress'         // Progress updates during execution
   | 'summary'          // Context compaction summaries
-  | 'file-history-snapshot';  // File state snapshots
+  | 'file-history-snapshot'  // File state snapshots
+  | 'custom-title'    // Session title set via /rename
+  | 'last-prompt'     // Last prompt tracking
+  | 'queue-operation'; // Task queue operations
 
 /**
  * Known system message subtypes
@@ -940,6 +943,10 @@ export interface ClaudeSessionData {
     turnIndex: number;
     lineIndex: number;
   }>;
+  /** Human-readable session slug (e.g. "refactored-twirling-karp") */
+  slug?: string;
+  /** Custom session title set via /rename */
+  customTitle?: string;
   /** Team name if session is part of a team (first team for backward compat) */
   teamName?: string;
   /** All distinct team names in order of appearance */
@@ -2954,6 +2961,8 @@ export class AgentSessionStore extends EventEmitter {
     const subagentProgressList: SubagentProgressUpdate[] = [];
     // Track team data
     let teamName: string | undefined;
+    let slug: string | undefined;
+    let customTitle: string | undefined;
     const allTeams: string[] = [];
     const teamOperations: Array<{ operation: 'spawnTeam' | 'cleanup'; teamName?: string; description?: string; turnIndex: number; lineIndex: number }> = [];
     const teamMessages: Array<{ messageType: 'message' | 'broadcast' | 'shutdown_request' | 'shutdown_response' | 'plan_approval_response'; recipient?: string; content?: string; summary?: string; requestId?: string; approve?: boolean; turnIndex: number; lineIndex: number }> = [];
@@ -2984,6 +2993,14 @@ export class AgentSessionStore extends EventEmitter {
       }
       if (!claudeCodeVersion && (msg as any).version) {
         claudeCodeVersion = (msg as any).version;
+      }
+      // Track slug (last one wins, skip sidechain)
+      if ((msg as any).slug && !(msg as any).isSidechain) {
+        slug = (msg as any).slug;
+      }
+      // Custom title from /rename
+      if (msg.type === 'custom-title' && (msg as any).customTitle) {
+        customTitle = (msg as any).customTitle;
       }
 
       // System init message (SDK format)
@@ -3565,6 +3582,8 @@ export class AgentSessionStore extends EventEmitter {
       subagents: Array.from(subagentsMap.values()),
       subagentProgress: subagentProgressList.length > 0 ? subagentProgressList : undefined,
       teamName,
+      slug,
+      customTitle,
       allTeams: allTeams.length > 0 ? allTeams : undefined,
       teamOperations: teamOperations.length > 0 ? teamOperations : undefined,
       teamMessages: teamMessages.length > 0 ? teamMessages : undefined,
@@ -3778,6 +3797,8 @@ export class AgentSessionStore extends EventEmitter {
             teamName: s.cacheData.teamName,
             allTeams: s.cacheData.allTeams && s.cacheData.allTeams.length > 0 ? s.cacheData.allTeams : undefined,
             forkedFromSessionId: s.cacheData.forkedFromSessionId,
+            slug: s.cacheData.slug,
+            customTitle: s.cacheData.customTitle,
             totalCostUsd: costUsd && costUsd > 0 ? costUsd : undefined,
             subagentCostUsd: subagentCostUsd && subagentCostUsd > 0 ? subagentCostUsd : undefined,
             usage: mergedUsage,
@@ -4800,6 +4821,8 @@ export class AgentSessionStore extends EventEmitter {
             teamName: cacheData?.teamName,
             allTeams: cacheData?.allTeams && cacheData.allTeams.length > 0 ? cacheData.allTeams : undefined,
             forkedFromSessionId: cacheData?.forkedFromSessionId,
+            slug: cacheData?.slug,
+            customTitle: cacheData?.customTitle,
           };
         });
       }
@@ -4906,6 +4929,10 @@ export interface ConversationResult {
     lineIndex: number;
     thinking: string;
   }>;
+  /** Human-readable session slug */
+  slug?: string;
+  /** Custom session title set via /rename */
+  customTitle?: string;
   /** Team name if session is part of a team (first team for backward compat) */
   teamName?: string;
   /** All distinct team names in order of appearance */
@@ -5064,6 +5091,8 @@ function parseConversation(
   }>();
   const thinkingBlocks: Array<{ turnIndex: number; lineIndex: number; thinking: string }> = [];
   let teamName: string | undefined;
+  let slug: string | undefined;
+  let customTitle: string | undefined;
   const allTeams: string[] = [];
   const teamOperations: Array<{ operation: 'spawnTeam' | 'cleanup'; teamName?: string; description?: string; turnIndex: number; lineIndex: number }> = [];
   const teamMessages: Array<{ messageType: 'message' | 'broadcast' | 'shutdown_request' | 'shutdown_response' | 'plan_approval_response'; recipient?: string; content?: string; summary?: string; requestId?: string; approve?: boolean; turnIndex: number; lineIndex: number }> = [];
@@ -5079,6 +5108,14 @@ function parseConversation(
     // Extract teamName from root-level field
     if (!teamName && (msg as any).teamName) {
       teamName = (msg as any).teamName;
+    }
+    // Track slug (last one wins, skip sidechain)
+    if ((msg as any).slug && !(msg as any).isSidechain) {
+      slug = (msg as any).slug;
+    }
+    // Custom title from /rename
+    if (msg.type === 'custom-title' && (msg as any).customTitle) {
+      customTitle = (msg as any).customTitle;
     }
 
     // Extract system prompt from system content
@@ -5382,6 +5419,8 @@ function parseConversation(
     tasks: Array.from(allTasksMap.values()),
     thinkingBlocks,
     teamName,
+    slug,
+    customTitle,
     allTeams: allTeams.length > 0 ? allTeams : undefined,
     teamOperations: teamOperations.length > 0 ? teamOperations : undefined,
     teamMessages: teamMessages.length > 0 ? teamMessages : undefined,

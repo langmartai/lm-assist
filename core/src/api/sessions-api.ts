@@ -262,6 +262,8 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
             teamOperations: cacheData?.teamOperations && cacheData.teamOperations.length > 0 ? cacheData.teamOperations : undefined,
             teamMessages: cacheData?.teamMessages && cacheData.teamMessages.length > 0 ? cacheData.teamMessages : undefined,
             forkedFromSessionId: cacheData?.forkedFromSessionId,
+            slug: cacheData?.slug,
+            customTitle: cacheData?.customTitle,
             // Task ID -> subject map for resolving TaskUpdate references
             taskSubjects: cacheData?.tasks && cacheData.tasks.length > 0
               ? Object.fromEntries(cacheData.tasks.filter((t: any) => t.subject).map((t: any) => [t.id, t.subject]))
@@ -287,14 +289,18 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
         // Get file mtime for lastModified (enables ifModifiedSince on subsequent requests)
         let lastModified: string | undefined;
         let forkedFromSessionId: string | undefined;
+        let slug: string | undefined;
+        let customTitle: string | undefined;
         try {
           const sessionPath = sessionStore.getSessionPath(sessionId, options?.cwd);
           const fs = require('fs');
           lastModified = fs.statSync(sessionPath).mtime.toISOString();
-          // Get forkedFromSessionId from cache (not available in full-parse data)
+          // Get forkedFromSessionId, slug, customTitle from cache (not available in full-parse data)
           const { getSessionCache } = await import('../session-cache');
           const cacheData = await getSessionCache().getSessionData(sessionPath);
           forkedFromSessionId = cacheData?.forkedFromSessionId;
+          slug = cacheData?.slug;
+          customTitle = cacheData?.customTitle;
         } catch {
           // Non-critical — skip if stat fails
         }
@@ -478,6 +484,8 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
           teamOperations: data.teamOperations,
           teamMessages: data.teamMessages,
           forkedFromSessionId,
+          slug,
+          customTitle,
           // Task ID -> subject map for resolving TaskUpdate references
           taskSubjects: data.taskSubjects,
           // ─── Index Totals (for pagination/delta queries) ───

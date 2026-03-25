@@ -10,6 +10,7 @@
 import type { RouteHandler, RouteContext } from '../index';
 import { getKnowledgeSettings, saveKnowledgeSettings } from '../../knowledge/settings';
 import { getKnowledgeScheduler } from '../../knowledge/scheduler';
+import { getProjectSettings } from '../../project-settings';
 
 export function createKnowledgeSettingsRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -62,6 +63,7 @@ export function createKnowledgeSettingsRoutes(_ctx: RouteContext): RouteHandler[
       method: 'POST',
       pattern: /^\/knowledge\/scheduler\/run$/,
       handler: async () => {
+        if (!getProjectSettings().knowledgeEnabled) return { success: false, error: 'Knowledge is disabled' };
         const scheduler = getKnowledgeScheduler();
         const status = scheduler.getStatus();
         if (status.agentDiscovery.isRunning || status.genericDiscovery.isRunning || status.generation.isRunning) {

@@ -15,6 +15,8 @@ import { getDataDir } from './utils/path-utils';
 
 export interface ProjectSettings {
   excludedPaths: string[];
+  /** Kill switch: disable all knowledge features (scheduler, vector store, embedder, API) */
+  knowledgeEnabled: boolean;
 }
 
 // ── Constants ──────────────────────────────────────────
@@ -23,6 +25,7 @@ const SETTINGS_FILE = path.join(getDataDir(), 'project-settings.json');
 
 const DEFAULTS: ProjectSettings = {
   excludedPaths: [],
+  knowledgeEnabled: true,
 };
 
 // ── Mtime Cache ──────────────────────────────────────────
@@ -46,6 +49,7 @@ export function getProjectSettings(): ProjectSettings {
       excludedPaths: Array.isArray(data.excludedPaths)
         ? data.excludedPaths.filter((p: unknown) => typeof p === 'string')
         : DEFAULTS.excludedPaths,
+      knowledgeEnabled: typeof data.knowledgeEnabled === 'boolean' ? data.knowledgeEnabled : DEFAULTS.knowledgeEnabled,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -64,6 +68,7 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     excludedPaths: Array.isArray(partial.excludedPaths)
       ? partial.excludedPaths.filter((p: unknown) => typeof p === 'string')
       : current.excludedPaths,
+    knowledgeEnabled: typeof partial.knowledgeEnabled === 'boolean' ? partial.knowledgeEnabled : current.knowledgeEnabled,
   };
 
   // Ensure parent directory exists

@@ -787,6 +787,14 @@ export function getVectorStore(): VectorStore {
   return vectorStore;
 }
 
+/** Destroy the vector store singleton to free LanceDB memory. */
+export function destroyVectorStore(): void {
+  if (vectorStore) {
+    vectorStore = null;
+    console.log('[VectorStore] Destroyed — LanceDB connection released');
+  }
+}
+
 // Backward compatibility alias
 export { VectorStore as VectraStore };
 export const getVectraStore = getVectorStore;

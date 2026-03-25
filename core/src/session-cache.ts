@@ -204,6 +204,10 @@ export interface SessionCacheData {
   tools: string[];
   mcpServers: Array<{ name: string; status: string }>;
   systemPrompt?: string;
+  /** Human-readable session slug (e.g. "refactored-twirling-karp") */
+  slug?: string;
+  /** Custom session title set via /rename */
+  customTitle?: string;
 
   // Incremental arrays (with lineIndex for delta updates)
   userPrompts: CachedUserPrompt[];
@@ -824,6 +828,15 @@ export class SessionCache {
       }
       if (!updated.teamName && msg.teamName) {
         updated.teamName = msg.teamName;
+      }
+      // Track slug (last one wins — may change across forks/resumes)
+      if (msg.slug && !msg.isSidechain) {
+        updated.slug = msg.slug;
+      }
+
+      // Custom title message (from /rename)
+      if (msg.type === 'custom-title' && msg.customTitle) {
+        updated.customTitle = msg.customTitle;
       }
 
       // System init message

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Search, X, Clock, MessageSquare, Cpu, ListChecks, User, Users, ExternalLink, GitFork, ChevronDown, Terminal } from 'lucide-react';
 import { useHighlight } from '@/hooks/useHighlight';
 import { useMachineContext } from '@/contexts/MachineContext';
-import { formatTimeAgo, getSessionIdShort, formatCost, getModelShortName, formatBytes } from '@/lib/utils';
+import { formatTimeAgo, getSessionIdShort, formatCost, getModelShortName, formatBytes, getSessionDisplayName } from '@/lib/utils';
 import type { useSessions } from '@/hooks/useSessions';
 import type { SubagentSession } from '@/lib/types';
 import { isProcessManaged, managedByLabel } from '@/lib/types';
@@ -406,7 +406,7 @@ function SessionCard({ session, isSelected, showMachine, onClick }: SessionCardP
         if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = 'transparent';
       }}
     >
-      {/* Top row: project name + running indicator */}
+      {/* Top row: session name / project name + running indicator */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
         {session.isRunning && <span className="status-dot running" />}
         {session.running && (
@@ -420,21 +420,23 @@ function SessionCard({ session, isSelected, showMachine, onClick }: SessionCardP
           </span>
         )}
         <span style={{ fontSize: 13, fontWeight: 500, flex: 1 }} className="truncate">
-          {session.projectName}
+          {getSessionDisplayName(session) || session.projectName}
         </span>
+        {getSessionDisplayName(session) && (
+          <span style={{ fontSize: 9, color: 'var(--color-text-quaternary)', fontFamily: 'var(--font-mono)' }} className="truncate">
+            {session.projectName}
+          </span>
+        )}
         {session.machineStatus === 'offline' && (
           <span className="badge badge-default" style={{ fontSize: 8, padding: '0 4px', opacity: 0.7 }}>
             Cached
           </span>
         )}
-        {session.size !== undefined && session.size > 0 && (
-          <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-            {formatBytes(session.size)}
+        {!getSessionDisplayName(session) && (
+          <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+            {getSessionIdShort(session.sessionId)}
           </span>
         )}
-        <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-          {getSessionIdShort(session.sessionId)}
-        </span>
       </div>
 
       {/* Summary preview */}
@@ -456,11 +458,6 @@ function SessionCard({ session, isSelected, showMachine, onClick }: SessionCardP
         {session.model && (
           <span className="badge badge-default" style={{ fontSize: 9, padding: '1px 5px' }}>
             {getModelShortName(session.model)}
-          </span>
-        )}
-        {session.totalCostUsd !== undefined && session.totalCostUsd > 0 && (
-          <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-            {formatCost(session.totalCostUsd)}
           </span>
         )}
         {session.numTurns !== undefined && (
@@ -495,6 +492,16 @@ function SessionCard({ session, isSelected, showMachine, onClick }: SessionCardP
         {session.forkedFromSessionId && (
           <span style={{ fontSize: 9, padding: '0px 4px', background: 'rgba(6,182,212,0.15)', color: '#06b6d4', border: '1px solid rgba(6,182,212,0.3)', borderRadius: 3, display: 'inline-flex', alignItems: 'center', gap: 2 }}>
             <GitFork size={10} />Fork
+          </span>
+        )}
+        {session.size !== undefined && session.size > 0 && (
+          <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+            {formatBytes(session.size)}
+          </span>
+        )}
+        {session.totalCostUsd !== undefined && session.totalCostUsd > 0 && (
+          <span style={{ fontSize: 10, color: '#d4a017', fontFamily: 'var(--font-mono)', fontWeight: 500 }}>
+            {formatCost(session.totalCostUsd)}
           </span>
         )}
       </div>

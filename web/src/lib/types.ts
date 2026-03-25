@@ -74,6 +74,10 @@ export interface Session {
   allTeams?: string[];
   lastUserMessage?: string;
   running?: ProcessRunningInfo;
+  /** Human-readable session slug (e.g. "refactored-twirling-karp") */
+  slug?: string;
+  /** Custom session title set via /rename */
+  customTitle?: string;
   // Cross-reference
   machineId: string;
   machineHostname: string;
@@ -118,6 +122,8 @@ export interface SessionDetail {
   toolUses?: any[];
   running?: ProcessRunningInfo;
   forkedFromSessionId?: string;
+  slug?: string;
+  customTitle?: string;
   skillInvocationCount?: number;
   commandInvocations?: Array<{
     commandName: string;

@@ -13,6 +13,9 @@
  */
 
 import type { RouteHandler, RouteContext } from '../index';
+import { getProjectSettings } from '../../project-settings';
+
+const DISABLED_RESPONSE = { success: true as const, data: { knowledgeDisabled: true, totalVectors: 0 }, meta: { timestamp: new Date(), durationMs: 0 } };
 
 export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -21,6 +24,7 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'GET',
       pattern: /^\/vectors\/status$/,
       handler: async () => {
+        if (!getProjectSettings().knowledgeEnabled) return DISABLED_RESPONSE;
         try {
           const { getVectorStore } = require('../../vector/vector-store');
           const vectra = getVectorStore();
@@ -64,6 +68,7 @@ export function createVectorRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'GET',
       pattern: /^\/vectors\/search$/,
       handler: async (req) => {
+        if (!getProjectSettings().knowledgeEnabled) return { success: true, data: { results: [], knowledgeDisabled: true } };
         const query = req.query.q || req.query.query;
         if (!query) {
           return { success: false, error: 'q parameter is required' };
