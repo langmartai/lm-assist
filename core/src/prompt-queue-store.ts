@@ -18,13 +18,33 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getDataDir } from './utils/path-utils';
 
+/** Source context — where this queued prompt came from */
+export interface QueueSource {
+  /** Session ID that created this queue entry */
+  sessionId: string;
+  /** Display name of the source session */
+  sessionDisplayName?: string;
+  /** Slug of the source session */
+  sessionSlug?: string;
+  /** Project path of the source session */
+  projectPath?: string;
+  /** Project name of the source session */
+  projectName?: string;
+}
+
 export interface QueuedPrompt {
   /** Unique queue item ID */
   queueId: string;
-  /** Target session ID */
-  sessionId: string;
-  /** Session display name for quick reference */
-  sessionDisplayName?: string;
+  /** Target session ID — which session should process this */
+  targetSessionId: string;
+  /** Target session display name */
+  targetDisplayName?: string;
+  /** Target project path */
+  targetProjectPath?: string;
+  /** Target project name */
+  targetProjectName?: string;
+  /** Source — who queued this and from where */
+  source: QueueSource;
   /** Original user intent (what the user said) */
   originalIntent: string;
   /** Formatted actionable prompt (expanded, clear instructions) */
@@ -35,15 +55,21 @@ export interface QueuedPrompt {
   contextHint?: string;
   /** Priority: high (blocking other work), normal, low (nice to have) */
   priority: 'high' | 'normal' | 'low';
-  /** Project path */
-  projectPath?: string;
   /** When the prompt was queued */
   queuedAt: string;
   /** Status */
   status: 'pending' | 'dispatched' | 'completed' | 'cancelled';
   /** When dispatched (sent to session) */
   dispatchedAt?: string;
-  /** Who queued it (session ID of the requester, or 'user') */
+
+  // Legacy compat
+  /** @deprecated Use targetSessionId */
+  sessionId?: string;
+  /** @deprecated Use targetDisplayName */
+  sessionDisplayName?: string;
+  /** @deprecated Use targetProjectPath */
+  projectPath?: string;
+  /** @deprecated Use source.sessionId */
   queuedBy?: string;
 }
 
@@ -102,12 +128,33 @@ export function enqueuePrompt(prompt: Omit<QueuedPrompt, 'queueId' | 'queuedAt' 
 }
 
 /**
- * Get all queued prompts for a session (pending only by default).
+ * Get all queued prompts for a target session (pending only by default).
  */
 export function getSessionQueue(sessionId: string, includeAll = false): QueuedPrompt[] {
   const q = ensureLoaded();
   return q
-    .filter(p => p.sessionId === sessionId && (includeAll || p.status === 'pending'))
+    .filter(p => (p.targetSessionId === sessionId || p.sessionId === sessionId) && (includeAll || p.status === 'pending'))
+    .sort((a, b) => {
+      const pri = { high: 0, normal: 1, low: 2 };
+      return (pri[a.priority] - pri[b.priority]) || (new Date(a.queuedAt).getTime() - new Date(b.queuedAt).getTime());
+    });
+}
+
+/**
+ * Get all queued prompts FROM a source session (what did this session queue for others).
+ */
+export function getQueuedBySession(sourceSessionId: string): QueuedPrompt[] {
+  const q = ensureLoaded();
+  return q.filter(p => p.source?.sessionId === sourceSessionId || p.queuedBy === sourceSessionId);
+}
+
+/**
+ * Get all queued prompts for a project (any session in that project).
+ */
+export function getProjectQueue(projectPath: string, includeAll = false): QueuedPrompt[] {
+  const q = ensureLoaded();
+  return q
+    .filter(p => (p.targetProjectPath === projectPath || p.projectPath === projectPath) && (includeAll || p.status === 'pending'))
     .sort((a, b) => {
       const pri = { high: 0, normal: 1, low: 2 };
       return (pri[a.priority] - pri[b.priority]) || (new Date(a.queuedAt).getTime() - new Date(b.queuedAt).getTime());

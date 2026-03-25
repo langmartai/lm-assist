@@ -10,7 +10,7 @@
 import type { RouteHandler, RouteContext } from '../index';
 import { getSessionCache, isRealUserPrompt } from '../../session-cache';
 import { getSessionSummary, saveSessionSummary, getAllSessionSummaries, deleteSessionSummary, getSessionsNeedingSummaries } from '../../session-summary-store';
-import { enqueuePrompt, getSessionQueue, getAllPendingPrompts, getNextPrompt, markDispatched, markCompleted, cancelPrompt, cleanupQueue } from '../../prompt-queue-store';
+import { enqueuePrompt, getSessionQueue, getAllPendingPrompts, getNextPrompt, markDispatched, markCompleted, cancelPrompt, cleanupQueue, getQueuedBySession, getProjectQueue } from '../../prompt-queue-store';
 import { getProjectSummary, getAllProjectSummaries, saveProjectSummary, deleteProjectSummary } from '../../project-summary-store';
 
 export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
@@ -155,13 +155,55 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
     // Prompt Queue Endpoints
     // ========================================================================
 
-    // GET /sessions/queue — List all pending queued prompts across sessions
+    // GET /sessions/queue — List all pending queued prompts across all sessions and projects
+    // Universal view — any session can see the full queue to understand what's going on
     {
       method: 'GET',
       pattern: /^\/sessions\/queue$/,
-      handler: async () => {
+      handler: async (req) => {
         const pending = getAllPendingPrompts();
-        return { success: true, data: { prompts: pending, total: pending.length } };
+        // Group by target project for overview
+        const byProject = new Map<string, number>();
+        for (const p of pending) {
+          const proj = p.targetProjectName || p.targetProjectPath?.split('/').pop() || p.projectPath?.split('/').pop() || 'unknown';
+          byProject.set(proj, (byProject.get(proj) || 0) + 1);
+        }
+        return {
+          success: true,
+          data: {
+            prompts: pending,
+            total: pending.length,
+            byProject: Object.fromEntries(byProject),
+          },
+        };
+      },
+    },
+
+    // GET /projects/:path/queue — List queued prompts for a project (any session in that project)
+    {
+      method: 'GET',
+      pattern: /^\/projects\/(?<projectPath>[^/]+)\/queue$/,
+      handler: async (req) => {
+        const rawPath = decodeURIComponent(req.params.projectPath);
+        // Try both encoded and decoded paths
+        let prompts = getProjectQueue(rawPath);
+        if (prompts.length === 0) {
+          // Try with common path prefixes
+          const fullPath = rawPath.startsWith('/') ? rawPath : `/home/ubuntu/${rawPath}`;
+          prompts = getProjectQueue(fullPath);
+        }
+        return { success: true, data: { prompts, total: prompts.length } };
+      },
+    },
+
+    // GET /sessions/:id/queued-by — List prompts THIS session queued for others
+    {
+      method: 'GET',
+      pattern: /^\/sessions\/(?<sessionId>[a-f0-9-]+)\/queued-by$/,
+      handler: async (req) => {
+        const sessionId = req.params.sessionId;
+        const prompts = getQueuedBySession(sessionId);
+        return { success: true, data: { prompts, total: prompts.length } };
       },
     },
 
@@ -189,15 +231,27 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
           return { success: false, error: 'formattedPrompt field is required' };
         }
         const entry = enqueuePrompt({
-          sessionId,
-          sessionDisplayName: body.sessionDisplayName,
+          targetSessionId: sessionId,
+          targetDisplayName: body.targetDisplayName || body.sessionDisplayName,
+          targetProjectPath: body.targetProjectPath || body.projectPath,
+          targetProjectName: body.targetProjectName,
+          source: body.source || {
+            sessionId: body.queuedBy || 'unknown',
+            sessionDisplayName: body.sourceDisplayName,
+            sessionSlug: body.sourceSlug,
+            projectPath: body.sourceProjectPath,
+            projectName: body.sourceProjectName,
+          },
           originalIntent: body.originalIntent || body.formattedPrompt,
           formattedPrompt: body.formattedPrompt,
           routingReason: body.routingReason || '',
           contextHint: body.contextHint,
           priority: body.priority || 'normal',
+          // Legacy compat
+          sessionId,
+          sessionDisplayName: body.sessionDisplayName,
           projectPath: body.projectPath,
-          queuedBy: body.queuedBy,
+          queuedBy: body.source?.sessionId || body.queuedBy,
         });
         return { success: true, data: entry };
       },
