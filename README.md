@@ -46,9 +46,9 @@ Claude Code and the Agent SDK have no built-in dashboard. You get a terminal or 
 
 Real-time execution dashboard with live session tracking, cost analytics, and multi-machine fleet management.
 
-<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/session-browsing.gif"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/session-browsing.gif" alt="Session Monitoring" width="700"></a>
+<a href="https://langmart.ai/images/assist/session-browser.png"><img src="https://langmart.ai/images/assist/session-browser.png" alt="Session Browser — live sessions with cost and token tracking" width="700"></a>
 
-> *Terminal dashboard with live sessions, then browse into session detail — accessible from any browser, anywhere*
+> *Browse all sessions with human-readable names, live status, per-model cost breakdown — from any browser, anywhere*
 
 - Session list with human-readable names, live status, and running process detection
 - Per-model cost and token breakdown (input, output, cache read, cache creation)
@@ -62,9 +62,16 @@ Real-time execution dashboard with live session tracking, cost analytics, and mu
 
 15 specialized views per session. Trace any decision through conversation flow, extended thinking, subagent hierarchy, tool calls, file changes, and git operations.
 
-<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/deep-insight-views.gif"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/deep-insight-views.gif" alt="Deep Insight Views" width="700"></a>
-
-> *Click through Chat, Agents, Plans, Files, Thinking, and Git tabs — each surfaces a different dimension of the session*
+<table>
+  <tr>
+    <td><a href="https://langmart.ai/images/assist/agent-tree.png"><img src="https://langmart.ai/images/assist/agent-tree.png" alt="Agent Tree" width="340"></a><br><sub>Subagent hierarchy</sub></td>
+    <td><a href="https://langmart.ai/images/assist/plan-view.png"><img src="https://langmart.ai/images/assist/plan-view.png" alt="Plan View" width="340"></a><br><sub>Plan mode tracking</sub></td>
+  </tr>
+  <tr>
+    <td><a href="https://langmart.ai/images/assist/task-kanban.png"><img src="https://langmart.ai/images/assist/task-kanban.png" alt="Task Kanban" width="340"></a><br><sub>Task kanban board</sub></td>
+    <td><a href="https://langmart.ai/images/assist/team-view.png"><img src="https://langmart.ai/images/assist/team-view.png" alt="Team View" width="340"></a><br><sub>Multi-agent team coordination</sub></td>
+  </tr>
+</table>
 
 <details>
 <summary><strong>All 15 tabs at a glance</strong></summary>
@@ -98,6 +105,10 @@ Real-time execution dashboard with live session tracking, cost analytics, and mu
 ### 3. Control
 
 Full runtime management API. Start, stop, and monitor agent executions from any device. Web terminal access to running Claude Code sessions.
+
+<a href="https://langmart.ai/images/assist/session-terminal.png"><img src="https://langmart.ai/images/assist/session-terminal.png" alt="Web Terminal — control Claude Code from any browser" width="700"></a>
+
+> *Live terminal access to running Claude Code sessions — from any browser, anywhere*
 
 - Start and abort agent executions via REST API
 - Web terminal (ttyd) from any browser — control Claude Code remotely
