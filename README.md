@@ -50,11 +50,17 @@ Real-time execution dashboard with live session tracking, cost analytics, and mu
 
 > *Browse all sessions with human-readable names, live status, per-model cost breakdown — from any browser, anywhere*
 
-- Session list with human-readable names, live status, and running process detection
-- Per-model cost and token breakdown (input, output, cache read, cache creation)
+- Session list with human-readable slug names, live status, and running process detection
+- Per-session and per-project cost tracking — total cost in gold at a glance
+- Per-model token breakdown (input, output, cache read, cache creation) in Meta tab
 - SSE event stream for real-time updates
 - Multi-machine fleet dashboard via LangMart Hub
-- Rate limit tracking in statusline (5h/7d usage)
+
+**Statusline** — optional status bar showing context %, rate limits (5h/7d usage with time remaining), session cost, RAM, PID, and uptime. Color-coded: green < 50%, yellow 50-80%, red > 80%.
+
+```
+wt: no worktrees  ctx:42%  $12.34  5h:23% 2h14m left  7d:41%  ram:565M  free:6.1G  pid:12345  up:3h22m
+```
 
 **Key endpoints:** `GET /monitor/executions` · `GET /stream` · `GET /sessions` · `GET /projects/sessions`
 
