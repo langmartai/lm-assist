@@ -44,7 +44,7 @@ export function MetaTab({ detail, machineId }: MetaTabProps) {
         { label: 'Session ID', value: detail.sessionId, copyable: true, mono: true },
         ...(detail.customTitle ? [{ label: 'Session Name', value: detail.customTitle }] : []),
         ...(detail.slug ? [{ label: 'Slug', value: detail.slug, mono: true }] : []),
-        ...(detail.llmSummary ? [{ label: 'Summary', value: detail.llmSummary }] : detail.sessionSummary ? [{ label: 'Summary', value: detail.sessionSummary }] : []),
+        ...(detail.llmSummary ? [{ label: 'Summary', value: detail.llmSummary, highlight: true }] : detail.sessionSummary ? [{ label: 'Summary', value: detail.sessionSummary }] : []),
         ...(detail.status ? [{ label: 'Status', value: detail.isActive ? 'Active (Running)' : detail.status }] : []),
         ...(detail.lastModified ? [{ label: 'Last Modified', value: new Date(detail.lastModified).toLocaleString() }] : []),
         ...(detail.duration !== undefined ? [{ label: 'Duration', value: formatDuration(detail.duration) }] : []),
@@ -133,6 +133,7 @@ export function MetaTab({ detail, machineId }: MetaTabProps) {
                     value={item.value}
                     copyable={item.copyable}
                     mono={item.mono}
+                    highlight={(item as any).highlight}
                     copied={copiedField === item.label}
                     onCopy={() => handleCopy(item.value, item.label)}
                   />
@@ -154,6 +155,7 @@ function MetaRow({
   value,
   copyable,
   mono,
+  highlight,
   copied,
   onCopy,
 }: {
@@ -161,18 +163,30 @@ function MetaRow({
   value: string;
   copyable?: boolean;
   mono?: boolean;
+  highlight?: boolean;
   copied: boolean;
   onCopy: () => void;
 }) {
   return (
     <>
-      <span style={{ color: 'var(--color-text-tertiary)' }}>{label}</span>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ color: highlight ? '#34d399' : 'var(--color-text-tertiary)' }}>{label}</span>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 6,
+        ...(highlight ? {
+          borderLeft: '3px solid #34d399',
+          paddingLeft: 8,
+          paddingTop: 4,
+          paddingBottom: 4,
+          background: 'rgba(52, 211, 153, 0.06)',
+          borderRadius: 4,
+        } : {}),
+      }}>
         <span style={{
           fontFamily: mono ? 'var(--font-mono)' : 'var(--font-ui)',
-          fontSize: mono ? 11 : 12,
-          color: 'var(--color-text-secondary)',
+          fontSize: highlight ? 12 : mono ? 11 : 12,
+          color: highlight ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
           wordBreak: 'break-all',
+          lineHeight: highlight ? 1.5 : undefined,
         }}>
           {value}
         </span>
