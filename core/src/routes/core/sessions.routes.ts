@@ -10,6 +10,7 @@
 import type { RouteHandler, RouteContext } from '../index';
 import { getSessionCache, isRealUserPrompt } from '../../session-cache';
 import { getSessionSummary, saveSessionSummary, getAllSessionSummaries, deleteSessionSummary, getSessionsNeedingSummaries } from '../../session-summary-store';
+import { enqueuePrompt, getSessionQueue, getAllPendingPrompts, getNextPrompt, markDispatched, markCompleted, cancelPrompt, cleanupQueue } from '../../prompt-queue-store';
 
 export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
   return [
@@ -90,6 +91,109 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
         const sessionId = req.params.sessionId;
         const deleted = deleteSessionSummary(sessionId);
         return { success: true, data: { sessionId, deleted } };
+      },
+    },
+
+    // ========================================================================
+    // Prompt Queue Endpoints
+    // ========================================================================
+
+    // GET /sessions/queue — List all pending queued prompts across sessions
+    {
+      method: 'GET',
+      pattern: /^\/sessions\/queue$/,
+      handler: async () => {
+        const pending = getAllPendingPrompts();
+        return { success: true, data: { prompts: pending, total: pending.length } };
+      },
+    },
+
+    // GET /sessions/:id/queue — List queued prompts for a session
+    // ?all=true to include completed/cancelled
+    {
+      method: 'GET',
+      pattern: /^\/sessions\/(?<sessionId>[a-f0-9-]+)\/queue$/,
+      handler: async (req) => {
+        const sessionId = req.params.sessionId;
+        const includeAll = req.query.all === 'true';
+        const prompts = getSessionQueue(sessionId, includeAll);
+        return { success: true, data: { prompts, total: prompts.length } };
+      },
+    },
+
+    // POST /sessions/:id/queue — Add a prompt to a session's queue
+    {
+      method: 'POST',
+      pattern: /^\/sessions\/(?<sessionId>[a-f0-9-]+)\/queue$/,
+      handler: async (req) => {
+        const sessionId = req.params.sessionId;
+        const body = req.body || {};
+        if (!body.formattedPrompt || typeof body.formattedPrompt !== 'string') {
+          return { success: false, error: 'formattedPrompt field is required' };
+        }
+        const entry = enqueuePrompt({
+          sessionId,
+          sessionDisplayName: body.sessionDisplayName,
+          originalIntent: body.originalIntent || body.formattedPrompt,
+          formattedPrompt: body.formattedPrompt,
+          routingReason: body.routingReason || '',
+          contextHint: body.contextHint,
+          priority: body.priority || 'normal',
+          projectPath: body.projectPath,
+          queuedBy: body.queuedBy,
+        });
+        return { success: true, data: entry };
+      },
+    },
+
+    // GET /sessions/:id/queue/next — Get the next pending prompt for a session
+    {
+      method: 'GET',
+      pattern: /^\/sessions\/(?<sessionId>[a-f0-9-]+)\/queue\/next$/,
+      handler: async (req) => {
+        const sessionId = req.params.sessionId;
+        const next = getNextPrompt(sessionId);
+        return { success: true, data: next };
+      },
+    },
+
+    // POST /sessions/:id/queue/:queueId/dispatch — Mark prompt as dispatched
+    {
+      method: 'POST',
+      pattern: /^\/sessions\/(?<sessionId>[a-f0-9-]+)\/queue\/(?<queueId>[a-z0-9-]+)\/dispatch$/,
+      handler: async (req) => {
+        const dispatched = markDispatched(req.params.queueId);
+        return { success: true, data: { dispatched } };
+      },
+    },
+
+    // POST /sessions/:id/queue/:queueId/complete — Mark prompt as completed
+    {
+      method: 'POST',
+      pattern: /^\/sessions\/(?<sessionId>[a-f0-9-]+)\/queue\/(?<queueId>[a-z0-9-]+)\/complete$/,
+      handler: async (req) => {
+        const completed = markCompleted(req.params.queueId);
+        return { success: true, data: { completed } };
+      },
+    },
+
+    // DELETE /sessions/:id/queue/:queueId — Cancel a queued prompt
+    {
+      method: 'DELETE',
+      pattern: /^\/sessions\/(?<sessionId>[a-f0-9-]+)\/queue\/(?<queueId>[a-z0-9-]+)$/,
+      handler: async (req) => {
+        const cancelled = cancelPrompt(req.params.queueId);
+        return { success: true, data: { cancelled } };
+      },
+    },
+
+    // POST /sessions/queue/cleanup — Clean up old completed/cancelled entries
+    {
+      method: 'POST',
+      pattern: /^\/sessions\/queue\/cleanup$/,
+      handler: async () => {
+        const removed = cleanupQueue();
+        return { success: true, data: { removed } };
       },
     },
 

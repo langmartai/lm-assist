@@ -464,9 +464,10 @@ Read the summary and understand WHAT the session did, then decide:
 - The closest session worked in a completely different area of the codebase
 - Example: existing sessions are all about trading → new task is about auth. Start fresh.
 
-**WAIT** — when the most relevant session is currently running and the new task would conflict.
-- The session is actively modifying files the new task would also touch
-- Proceeding would cause merge conflicts or duplicate work
+**QUEUE** — when the most relevant session is currently running. Don't wait idly — queue the work.
+- The session is actively working and the new task belongs in the same session
+- Queue the prompt: it will be processed when the current work finishes
+- The prompt is stored as a structured entry (original intent + formatted prompt + routing reason)
 
 **Do NOT use turn count, session age, or cost as the primary factor.** A 2000-turn session that already built exactly the foundation you need is better to resume than a 5-turn session that happens to be recent. The question is always: **does resuming this session save real work?**
 
@@ -475,7 +476,7 @@ Present your recommendation to the user:
 Found relevant session: SESSION_DISPLAY_NAME (SESSION_ID)
 Summary: SESSION_SUMMARY
 Status: running/idle/completed
-Recommendation: RESUME/FORK/NEW/WAIT
+Recommendation: RESUME/FORK/NEW/QUEUE
 Reason: WHY this is the right choice
 
 To resume:  claude --resume SESSION_ID
@@ -483,6 +484,74 @@ To fork:    claude --resume SESSION_ID --fork
 ```
 
 Let the user decide — always present the option, never auto-resume without asking.
+
+### Queuing prompts for running sessions
+
+When the recommendation is QUEUE (session is running), store the prompt:
+
+```bash
+# Step 1: Format the user's intent into a clear, actionable prompt
+# (same as /run prompt formatting — expand casual intent into clear instructions)
+
+# Step 2: Queue it
+curl -s -X POST "http://localhost:3100/sessions/SESSION_ID/queue" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "originalIntent": "WHAT THE USER SAID",
+    "formattedPrompt": "EXPANDED ACTIONABLE PROMPT",
+    "routingReason": "WHY this session was chosen — what it already knows",
+    "contextHint": "WHAT the session should know about its state before processing this",
+    "sessionDisplayName": "SESSION_DISPLAY_NAME",
+    "priority": "normal",
+    "projectPath": "PROJECT_PATH"
+  }'
+```
+
+The `contextHint` is important — it tells the session what to be aware of when it picks up the queued work. Example: "You just finished implementing delta analysis for technical track. This queued task extends that to the fundamental track."
+
+### Checking and listing queued prompts
+
+```bash
+# List all pending prompts across all sessions
+curl -s http://localhost:3100/sessions/queue | python3 -c "
+import sys,json
+data = json.load(sys.stdin).get('data',{})
+prompts = data.get('prompts',[])
+if not prompts:
+    print('No queued prompts.')
+else:
+    print(f'{len(prompts)} queued prompt(s):')
+    for p in prompts:
+        name = p.get('sessionDisplayName') or p['sessionId'][:12]
+        intent = p.get('originalIntent','')[:80]
+        pri = p.get('priority','normal')
+        queued = p.get('queuedAt','')[:16]
+        print(f'  [{pri}] {name}: {intent} (queued {queued})')
+"
+
+# List queue for a specific session
+curl -s http://localhost:3100/sessions/SESSION_ID/queue | python3 -c "
+import sys,json
+data = json.load(sys.stdin).get('data',{})
+for p in data.get('prompts',[]):
+    print(f'  [{p[\"priority\"]}] {p[\"originalIntent\"][:100]}')
+    print(f'    Formatted: {p[\"formattedPrompt\"][:100]}')
+    print(f'    Reason: {p[\"routingReason\"][:80]}')
+    print()
+"
+
+# Get next prompt to process (when session finishes current work)
+curl -s http://localhost:3100/sessions/SESSION_ID/queue/next
+```
+
+### Processing queued prompts
+
+When a session finishes its current work and checks for queued prompts:
+
+1. Call `GET /sessions/SESSION_ID/queue/next` to get the next pending prompt
+2. If one exists, use the `formattedPrompt` as the next user prompt
+3. Mark it dispatched: `POST /sessions/SESSION_ID/queue/QUEUE_ID/dispatch`
+4. After completing the work, mark completed: `POST /sessions/SESSION_ID/queue/QUEUE_ID/complete`
 
 ### Summary generation priority
 
