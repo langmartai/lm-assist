@@ -9,9 +9,89 @@
 
 import type { RouteHandler, RouteContext } from '../index';
 import { getSessionCache, isRealUserPrompt } from '../../session-cache';
+import { getSessionSummary, saveSessionSummary, getAllSessionSummaries, deleteSessionSummary, getSessionsNeedingSummaries } from '../../session-summary-store';
 
 export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
   return [
+    // ========================================================================
+    // Session Summary Endpoints
+    // ========================================================================
+
+    // GET /sessions/summaries — List all stored summaries
+    {
+      method: 'GET',
+      pattern: /^\/sessions\/summaries$/,
+      handler: async () => {
+        const summaries = getAllSessionSummaries();
+        return { success: true, data: { summaries, total: summaries.length } };
+      },
+    },
+
+    // GET /sessions/summaries/needs-update — Check which sessions need summary generation
+    // ?maxAgeDays=5 (default 5)
+    {
+      method: 'GET',
+      pattern: /^\/sessions\/summaries\/needs-update$/,
+      handler: async (req) => {
+        const maxAgeDays = parseInt(req.query.maxAgeDays || '5', 10);
+        // Get all sessions from projects service
+        const { getProjectsService } = await import('../../projects-service');
+        const service = getProjectsService();
+        const sessions = service.getAllSessions({});
+        const needsUpdate = getSessionsNeedingSummaries(sessions, maxAgeDays);
+        return { success: true, data: { sessions: needsUpdate, total: needsUpdate.length } };
+      },
+    },
+
+    // GET /sessions/:id/summary — Get stored summary for a session
+    {
+      method: 'GET',
+      pattern: /^\/sessions\/(?<sessionId>[a-f0-9-]+)\/summary$/,
+      handler: async (req) => {
+        const sessionId = req.params.sessionId;
+        const summary = getSessionSummary(sessionId);
+        if (!summary) {
+          return { success: true, data: null };
+        }
+        return { success: true, data: summary };
+      },
+    },
+
+    // PUT /sessions/:id/summary — Save or update a session summary
+    {
+      method: 'PUT',
+      pattern: /^\/sessions\/(?<sessionId>[a-f0-9-]+)\/summary$/,
+      handler: async (req) => {
+        const sessionId = req.params.sessionId;
+        const body = req.body || {};
+        if (!body.summary || typeof body.summary !== 'string') {
+          return { success: false, error: 'summary field is required' };
+        }
+        saveSessionSummary({
+          sessionId,
+          slug: body.slug,
+          projectPath: body.projectPath,
+          summary: body.summary,
+          lastTurnIndex: body.lastTurnIndex || 0,
+          lastLineIndex: body.lastLineIndex || 0,
+          totalTurns: body.totalTurns || 0,
+          updatedAt: new Date().toISOString(),
+        });
+        return { success: true, data: { sessionId, saved: true } };
+      },
+    },
+
+    // DELETE /sessions/:id/summary — Delete a session summary
+    {
+      method: 'DELETE',
+      pattern: /^\/sessions\/(?<sessionId>[a-f0-9-]+)\/summary$/,
+      handler: async (req) => {
+        const sessionId = req.params.sessionId;
+        const deleted = deleteSessionSummary(sessionId);
+        return { success: true, data: { sessionId, deleted } };
+      },
+    },
+
     // ========================================================================
     // Monitor Endpoints
     // ========================================================================

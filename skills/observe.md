@@ -301,6 +301,126 @@ import sys,json; d=json.load(sys.stdin); print(f'Cleared: {json.dumps(d.get(\"da
 
 ---
 
+## 4. SESSION SUMMARIES — Understand What Each Session Does
+
+Session summaries are LLM-generated descriptions stored persistently with delta tracking.
+When you need to understand what sessions are doing (e.g., before deciding to resume vs create new), follow this flow:
+
+### Step 1: Check which sessions need summaries
+
+```bash
+curl -s http://localhost:3100/sessions/summaries/needs-update?maxAgeDays=5 | python3 -c "
+import sys,json
+data = json.load(sys.stdin).get('data',{})
+sessions = data.get('sessions',[])
+if not sessions:
+    print('All recent session summaries are up to date.')
+else:
+    print(f'{len(sessions)} session(s) need summary updates:')
+    for s in sessions[:10]:
+        slug = s.get('slug') or s['sessionId'][:12]
+        status = s['status']
+        current = s['currentTurns']
+        summarized = s['summarizedTurns']
+        delta = current - summarized
+        print(f'  {slug}  [{status}]  {summarized}/{current} turns  (+{delta} new)')
+"
+```
+
+### Step 2: Generate or update summaries
+
+For each session that needs a summary, read its conversation and write a summary:
+
+```bash
+# Read conversation for a session (new sessions: read all; stale: read from last summarized turn)
+# For NEW summary (no existing):
+curl -s "http://localhost:3100/sessions/SESSION_ID/conversation?toolDetail=summary&lastN=30" | python3 -c "
+import sys,json
+d = json.load(sys.stdin).get('data',{})
+messages = d.get('messages',[])
+for m in messages:
+    role = m.get('type','')
+    content = (m.get('content','') or '')[:300]
+    if role == 'human':
+        print(f'USER: {content}')
+    elif role == 'assistant':
+        print(f'CLAUDE: {content[:200]}')
+    elif role == 'tool':
+        print(f'  [{m.get(\"toolName\",\"\")}]')
+"
+```
+
+```bash
+# For STALE summary (update from turn N):
+curl -s "http://localhost:3100/sessions/SESSION_ID?fromTurnIndex=LAST_TURN&unlimited=true" | python3 -c "
+import sys,json
+d = json.load(sys.stdin).get('data',{})
+prompts = d.get('userPrompts',[])
+responses = d.get('responses',[])
+print(f'New turns since last summary:')
+for p in prompts:
+    print(f'  USER: {(p.get(\"text\",\"\") or \"\")[:200]}')
+for r in responses[-3:]:
+    print(f'  CLAUDE: {(r.get(\"text\",\"\") or \"\")[:200]}')
+"
+```
+
+After reading the conversation, write a summary that answers:
+1. **What is this session about?** (the goal/task)
+2. **What was accomplished?** (key actions, files changed, decisions made)
+3. **Current state?** (completed, in progress, blocked, abandoned)
+4. **Key context** (branch, project area, important decisions)
+
+Then save the summary:
+
+```bash
+curl -s -X PUT "http://localhost:3100/sessions/SESSION_ID/summary" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "summary": "YOUR_GENERATED_SUMMARY",
+    "slug": "SESSION_SLUG",
+    "projectPath": "PROJECT_PATH",
+    "lastTurnIndex": CURRENT_TURN_COUNT,
+    "lastLineIndex": 0,
+    "totalTurns": CURRENT_TURN_COUNT
+  }'
+```
+
+### Step 3: Read summaries for session routing
+
+When the user wants to run a new task, check existing summaries first:
+
+```bash
+curl -s http://localhost:3100/sessions/summaries | python3 -c "
+import sys,json
+summaries = json.load(sys.stdin).get('data',{}).get('summaries',[])
+for s in summaries[:10]:
+    slug = s.get('slug') or s['sessionId'][:12]
+    summary = s.get('summary','')[:150]
+    turns = s.get('totalTurns',0)
+    updated = s.get('updatedAt','')[:10]
+    print(f'{slug} ({turns}T, {updated})')
+    print(f'  {summary}')
+    print()
+"
+```
+
+Compare the user's new task against existing summaries. If a session already covers the same topic:
+- Tell the user: "Session X already covers this topic. Resume it with `claude --resume SESSION_ID` instead of starting fresh?"
+- Show the relevant summary so they can decide
+
+### Summary generation priority
+
+Process sessions in this order:
+1. **Currently running** — most urgent to understand
+2. **Last 24 hours** — recent context
+3. **2-3 days** — still relevant
+4. **4-5 days** — background context
+
+Only generate summaries for sessions with 3+ real user prompts (skip warmup/empty sessions).
+
+---
+
 ## Error Handling
 
 - **API not running** (connection refused): Tell user "lm-assist API is not running. Start with `lm-assist start` or `/assist-setup`."
