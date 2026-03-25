@@ -58,14 +58,20 @@ print(f'Have summaries: {existing}')
 
 For each project WITHOUT a summary, dispatch a background agent **IN that project's directory**. Use `POST /agent/execute` with `"cwd": "PROJECT_PATH"`.
 
-The agent prompt should instruct it to:
+The agent prompt should instruct it to explore the actual project — not just CLAUDE.md. CLAUDE.md may be incomplete or outdated. The source of truth is the code.
 
-1. **Read CLAUDE.md thoroughly** — this is the primary source of truth for the project
-2. **Read package.json** — name, version, scripts, dependencies
-3. **List top-level directories** — understand project layout
-4. **Check for service management scripts** — core.sh, start/stop/restart commands
-5. **Check deployment info** — any deploy scripts, remote hosts, prod/staging setup
-6. **Check recent git log** — what's been worked on lately
+The agent should:
+
+1. **Scan the project root** — `ls -la` to find key files (package.json, Makefile, Dockerfile, docker-compose.yml, core.sh, .env.example, tsconfig.json, pyproject.toml, Cargo.toml, go.mod, etc.)
+2. **Read package.json / pyproject.toml / Cargo.toml** — name, version, scripts, dependencies, workspaces
+3. **Read CLAUDE.md if it exists** — but treat as supplementary, not primary
+4. **Read service management scripts** — core.sh, start.sh, Makefile targets. Actually read the file to find ports, commands, service names
+5. **List directories** — `ls` to understand project structure, identify monorepo vs single project
+6. **Check .env.example** — find port numbers, API keys, database URLs, external service configs
+7. **Check deployment** — look for Dockerfile, docker-compose.yml, deploy.sh, CI/CD configs (.github/workflows/, .gitlab-ci.yml), Procfile, serverless.yml, terraform/
+8. **Check recent git log** — `git log --oneline -15` to see what's been worked on
+9. **Check running processes** — if services have ports, check what's actually running
+10. **Read key source files** — entry points (src/index.ts, src/main.py, main.go), route definitions, config files
 
 Then save a comprehensive summary via `PUT /projects/summary` with ALL these fields:
 
