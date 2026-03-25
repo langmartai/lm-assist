@@ -152,6 +152,28 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
         new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime()
       );
 
+      // Merge LLM summaries from session-summary-store (non-blocking)
+      try {
+        const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
+        const apiHost = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
+        const summariesRes = await fetch(`http://${apiHost}:${port}/sessions/summaries`, { signal: AbortSignal.timeout(3000) });
+        if (summariesRes.ok) {
+          const summariesData = await summariesRes.json();
+          const summaryMap = new Map<string, string>();
+          for (const s of summariesData?.data?.summaries || []) {
+            if (s.sessionId && s.summary) summaryMap.set(s.sessionId, s.summary);
+          }
+          if (summaryMap.size > 0) {
+            for (const session of sessions) {
+              const llm = summaryMap.get(session.sessionId);
+              if (llm) session.llmSummary = llm;
+            }
+          }
+        }
+      } catch {
+        // Non-critical — proceed without LLM summaries
+      }
+
       setAllSessions(sessions);
       setError(null);
     } catch (err) {

@@ -44,6 +44,7 @@ export function MetaTab({ detail, machineId }: MetaTabProps) {
         { label: 'Session ID', value: detail.sessionId, copyable: true, mono: true },
         ...(detail.customTitle ? [{ label: 'Session Name', value: detail.customTitle }] : []),
         ...(detail.slug ? [{ label: 'Slug', value: detail.slug, mono: true }] : []),
+        ...(detail.llmSummary ? [{ label: 'Summary', value: detail.llmSummary }] : detail.sessionSummary ? [{ label: 'Summary', value: detail.sessionSummary }] : []),
         ...(detail.status ? [{ label: 'Status', value: detail.isActive ? 'Active (Running)' : detail.status }] : []),
         ...(detail.lastModified ? [{ label: 'Last Modified', value: new Date(detail.lastModified).toLocaleString() }] : []),
         ...(detail.duration !== undefined ? [{ label: 'Duration', value: formatDuration(detail.duration) }] : []),

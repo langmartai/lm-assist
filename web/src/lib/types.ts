@@ -78,6 +78,10 @@ export interface Session {
   slug?: string;
   /** Custom session title set via /rename */
   customTitle?: string;
+  /** Auto-generated heuristic summary */
+  sessionSummary?: string;
+  /** LLM-generated persistent summary */
+  llmSummary?: string;
   // Cross-reference
   machineId: string;
   machineHostname: string;
@@ -124,6 +128,8 @@ export interface SessionDetail {
   forkedFromSessionId?: string;
   slug?: string;
   customTitle?: string;
+  sessionSummary?: string;
+  llmSummary?: string;
   skillInvocationCount?: number;
   commandInvocations?: Array<{
     commandName: string;

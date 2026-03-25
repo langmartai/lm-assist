@@ -214,6 +214,21 @@ export function useSessionDetail({
         result.subagents = subagentsData.sessions;
       }
 
+      // Merge LLM summary if available
+      try {
+        const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
+        const apiHost = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
+        const sumRes = await fetch(`http://${apiHost}:${port}/sessions/${sessionId}/summary`, { signal: AbortSignal.timeout(2000) });
+        if (sumRes.ok) {
+          const sumData = await sumRes.json();
+          if (sumData?.data?.summary) {
+            result.llmSummary = sumData.data.summary;
+          }
+        }
+      } catch {
+        // Non-critical
+      }
+
       setDetail(result);
       lastLineRef.current = result.lineCount || result.messages?.length || 0;
       isActiveRef.current = result.isActive || false;

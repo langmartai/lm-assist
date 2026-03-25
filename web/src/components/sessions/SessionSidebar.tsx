@@ -439,13 +439,13 @@ function SessionCard({ session, isSelected, showMachine, onClick }: SessionCardP
         )}
       </div>
 
-      {/* Summary preview */}
-      {(session.lastUserMessage || session.summary) && (
+      {/* Summary preview — prefer LLM summary > heuristic summary > last user message */}
+      {(session.llmSummary || session.sessionSummary || session.lastUserMessage || session.summary) && (
         <div
           className="line-clamp-2"
-          style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginBottom: 6, lineHeight: 1.4 }}
+          style={{ fontSize: 11, color: session.llmSummary ? 'var(--color-text-secondary)' : 'var(--color-text-tertiary)', marginBottom: 6, lineHeight: 1.4 }}
         >
-          {session.lastUserMessage || session.summary}
+          {session.llmSummary || session.sessionSummary || session.lastUserMessage || session.summary}
         </div>
       )}
 
