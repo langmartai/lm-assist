@@ -26,6 +26,22 @@ export interface ProjectSummary {
   recentFocus?: string;
   /** Total session count at time of summary */
   sessionCount?: number;
+  /** Service management — how to start/stop/restart/status */
+  services?: string;
+  /** Key commands — most frequently used commands and operations */
+  keyCommands?: string;
+  /** Project structure — key directories and their purpose */
+  structure?: string;
+  /** Key endpoints or APIs — most used entry points */
+  keyEndpoints?: string;
+  /** Common workflows — what users do most often */
+  commonWorkflows?: string;
+  /** Deployment — how to deploy, where it runs, prod/staging setup */
+  deployment?: string;
+  /** Important notes — gotchas, constraints, rules */
+  importantNotes?: string;
+  /** Full comprehensive reference (markdown) — everything the agent needs to know */
+  fullReference?: string;
   /** When the summary was last updated */
   updatedAt: string;
 }

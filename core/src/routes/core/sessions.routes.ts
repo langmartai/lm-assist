@@ -137,6 +137,14 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
           areas: body.areas,
           recentFocus: body.recentFocus,
           sessionCount: body.sessionCount,
+          services: body.services,
+          keyCommands: body.keyCommands,
+          structure: body.structure,
+          keyEndpoints: body.keyEndpoints,
+          commonWorkflows: body.commonWorkflows,
+          deployment: body.deployment,
+          importantNotes: body.importantNotes,
+          fullReference: body.fullReference,
           updatedAt: new Date().toISOString(),
         });
         return { success: true, data: { projectPath: body.projectPath, saved: true } };

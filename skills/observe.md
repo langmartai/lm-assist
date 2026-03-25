@@ -56,21 +56,41 @@ print(f'Have summaries: {existing}')
 "
 ```
 
-```bash
-# Step 3: For each project WITHOUT a summary, dispatch a background agent IN that project
-# The agent runs with cwd=PROJECT_PATH so it can read CLAUDE.md and explore the codebase
-curl -s -X POST http://localhost:3100/agent/execute \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "prompt": "You are generating a project summary for the lm-assist observability system.\n\n1. Read CLAUDE.md in this project root — it describes the project structure, commands, and architecture\n2. Scan the top-level directories to understand the project layout\n3. Check package.json for dependencies and project name\n4. Generate a project summary and save it:\n\ncurl -s -X PUT http://localhost:3100/projects/summary -H \"Content-Type: application/json\" -d \"{\\\"projectPath\\\": \\\"$PWD\\\", \\\"projectName\\\": \\\"$(basename $PWD)\\\", \\\"summary\\\": \\\"YOUR_SUMMARY\\\", \\\"stack\\\": [\\\"tech1\\\", \\\"tech2\\\"], \\\"areas\\\": [\\\"area1\\\", \\\"area2\\\"], \\\"recentFocus\\\": \\\"RECENT_WORK\\\"}\"\\n\\nThe summary should answer: what is this project, what does it do, what stack does it use, what are its main areas, what has been worked on recently.\n\nKeep summary to 1-2 sentences. Keep stack/areas lists short (5-8 items max).",
-    "cwd": "PROJECT_PATH_HERE",
-    "permissionMode": "bypassPermissions",
-    "maxTurns": 8,
-    "background": true
-  }'
+For each project WITHOUT a summary, dispatch a background agent **IN that project's directory**. Use `POST /agent/execute` with `"cwd": "PROJECT_PATH"`.
+
+The agent prompt should instruct it to:
+
+1. **Read CLAUDE.md thoroughly** — this is the primary source of truth for the project
+2. **Read package.json** — name, version, scripts, dependencies
+3. **List top-level directories** — understand project layout
+4. **Check for service management scripts** — core.sh, start/stop/restart commands
+5. **Check deployment info** — any deploy scripts, remote hosts, prod/staging setup
+6. **Check recent git log** — what's been worked on lately
+
+Then save a comprehensive summary via `PUT /projects/summary` with ALL these fields:
+
+```json
+{
+  "projectPath": "/path/to/project",
+  "projectName": "project-name",
+  "summary": "1-2 sentence description of what this project IS",
+  "stack": ["TypeScript", "Node.js", "..."],
+  "areas": ["core API", "web UI", "..."],
+  "recentFocus": "What's been worked on in the last few days",
+  "services": "How to start/stop/restart. e.g.: ./core.sh start, ./core.sh stop, ./core.sh status. Ports: API :3100, Web :3848",
+  "keyCommands": "Most used commands. e.g.: ./core.sh build, npm install, npm run dev, ./core.sh logs core",
+  "structure": "Key directories: core/ (backend API), web/ (Next.js UI), hooks/ (Claude Code hooks), commands/ (slash commands)",
+  "keyEndpoints": "Most important API endpoints. e.g.: GET /health, GET /sessions, GET /monitor/executions, POST /agent/execute",
+  "commonWorkflows": "What users do most: 1) Edit TypeScript → ./core.sh build → ./core.sh restart. 2) npm publish for releases. 3) lm-assist upgrade for prod updates",
+  "deployment": "How to deploy: npm publish → lm-assist upgrade on prod. SG instance: ssh opc@213.35.107.246, do NOT auto-deploy. Prod port :3100, dev port :3200",
+  "importantNotes": "Critical constraints: Always use ./core.sh, never direct npm/node. Dev/prod run on separate ports. Knowledge system has kill switch.",
+  "fullReference": "Complete markdown reference extracted from CLAUDE.md — include service management, port mapping, key API endpoints, deployment steps, and any operational constraints users need daily"
+}
 ```
 
-**IMPORTANT:** Each agent must run with `"cwd": "PROJECT_PATH"` — not the current project. The agent needs to be IN the target project to read its CLAUDE.md and files.
+The `fullReference` field should be a comprehensive markdown block (500-1000 words) that captures everything from CLAUDE.md that a user would need during daily work — not a summary but a practical reference card.
+
+**IMPORTANT:** Each agent must run with `"cwd": "PROJECT_PATH"`. The agent reads THAT project's CLAUDE.md and files, not the current one.
 
 For the current project, you can read CLAUDE.md directly without dispatching an agent.
 
