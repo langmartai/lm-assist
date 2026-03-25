@@ -441,9 +441,48 @@ for s in summaries[:10]:
 "
 ```
 
-Compare the user's new task against existing summaries. If a session already covers the same topic:
-- Tell the user: "Session X already covers this topic. Resume it with `claude --resume SESSION_ID` instead of starting fresh?"
-- Show the relevant summary so they can decide
+Compare the user's new task against existing summaries. If a relevant session exists, reason about what to do:
+
+#### Session Routing Decision
+
+Read the summary and understand WHAT the session did, then decide:
+
+**RESUME** — when the session's existing work directly continues into the new task.
+- The session explored or built something the new task needs to extend
+- The session's context (files read, decisions made, patterns understood) is valuable for the new task
+- Example: session explored API routes → new task adds an API endpoint. Resume: the session already knows the route structure.
+
+**FORK** — when the session is relevant but shouldn't be modified.
+- The session did related work but is being used by another workflow or the user wants to keep its history clean
+- The session's work is a reference but the new task diverges significantly
+- The session is still running — fork to work in parallel without interfering
+- Example: session implemented feature A → new task is feature B in same area. Fork: share context but don't mix histories.
+- Command: `claude --resume SESSION_ID --fork`
+
+**NEW** — when no session's work meaningfully overlaps with the new task.
+- The summaries don't match the new task's domain
+- The closest session worked in a completely different area of the codebase
+- Example: existing sessions are all about trading → new task is about auth. Start fresh.
+
+**WAIT** — when the most relevant session is currently running and the new task would conflict.
+- The session is actively modifying files the new task would also touch
+- Proceeding would cause merge conflicts or duplicate work
+
+**Do NOT use turn count, session age, or cost as the primary factor.** A 2000-turn session that already built exactly the foundation you need is better to resume than a 5-turn session that happens to be recent. The question is always: **does resuming this session save real work?**
+
+Present your recommendation to the user:
+```
+Found relevant session: SESSION_DISPLAY_NAME (SESSION_ID)
+Summary: SESSION_SUMMARY
+Status: running/idle/completed
+Recommendation: RESUME/FORK/NEW/WAIT
+Reason: WHY this is the right choice
+
+To resume:  claude --resume SESSION_ID
+To fork:    claude --resume SESSION_ID --fork
+```
+
+Let the user decide — always present the option, never auto-resume without asking.
 
 ### Summary generation priority
 
