@@ -1,30 +1,25 @@
 # lm-assist
 
-The observability platform for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and the [Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/sdk). Monitor, debug, and control AI coding agents with full session visibility, real-time execution tracking, and a complete REST API (155+ endpoints).
+## The Observability Platform for Claude Code & Agent SDK
+
+Monitor, debug, and control AI coding agents with full session visibility, real-time execution tracking, and 155+ REST API endpoints.
 
 [![Discord](https://img.shields.io/discord/1475647234669543558?logo=discord&label=Discord&color=5865F2)](https://discord.gg/xb2BNnk4)
 
-### Install
-
-In Claude Code, run:
-
-```
-/plugin marketplace add langmartai/lm-assist
-
-/plugin install lm-assist@langmartai
-```
-
-Then **open a new Claude Code session** and run:
-
-```
-/assist-setup
-```
-
-### Architecture
+- **Monitor** — real-time execution tracking, per-model cost & token breakdown, SSE event stream
+- **Debug** — 15 insight views per session: Chat, Thinking, Agents, Plans, Team, DAG, Files, Git & more
+- **Control** — web terminal from any browser, start/abort agents via API, remote access from anywhere
 
 <a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-observability.svg"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-observability.svg" alt="lm-assist Architecture — Observability Platform for Claude Code & Agent SDK" width="700"></a>
 
-> *Data flows from Claude Code sessions, Agent SDK executions, and headless CI runs into the Session Engine. Three pillars — Monitor, Debug, Control — expose everything through a web dashboard and REST API. Access from localhost, LAN, or langmart.ai.*
+### Install
+
+```
+/plugin marketplace add langmartai/lm-assist
+/plugin install lm-assist@langmartai
+```
+
+Then **open a new Claude Code session** and run `/assist-setup`.
 
 > **Read:** [Inside Claude Code: The Session File Format and How to Inspect It](https://databunny.medium.com/inside-claude-code-the-session-file-format-and-how-to-inspect-it-b9998e66d56b) — technical breakdown of the JSONL session format, message types, subagent trees, and how lm-assist surfaces it all.
 
@@ -32,9 +27,7 @@ Then **open a new Claude Code session** and run:
 
 ## Why lm-assist
 
-Claude Code and the Agent SDK have no built-in dashboard. You get a terminal or logs. When you're running multiple agents, debugging a failed execution, or tracking costs across a fleet of machines, you need full visibility.
-
-lm-assist gives you that visibility — for every session, every subagent, every tool call, every token spent.
+Claude Code and the Agent SDK have no built-in dashboard. You get a terminal or logs. When you're running multiple agents, debugging a failed execution, or tracking costs across a fleet of machines — you need full visibility into every session, every subagent, every tool call, every token spent.
 
 | Without lm-assist | With lm-assist |
 |-------------------|---------------|
