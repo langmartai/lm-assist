@@ -1,6 +1,6 @@
 # lm-assist
 
-Knowledge management, session inspector, and web terminal control for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Auto-build knowledge from your sessions and inject it as context. Inspect agents, tasks, teams, plans, and tool calls. Access and control all Claude Code terminals from any device via browser.
+The observability platform for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and the [Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/sdk). Monitor, debug, and control AI coding agents with full session visibility, real-time execution tracking, and a complete REST API (155+ endpoints).
 
 [![Discord](https://img.shields.io/discord/1475647234669543558?logo=discord&label=Discord&color=5865F2)](https://discord.gg/xb2BNnk4)
 
@@ -20,36 +20,54 @@ Then **open a new Claude Code session** and run:
 /assist-setup
 ```
 
-This automatically registers:
-- **MCP server** — `search`, `detail`, `feedback` tools available in Claude Code
-- **Context hook** — injects relevant knowledge into each prompt
-- **Slash commands** — 6 commands for managing lm-assist
+### Architecture
 
-### How It Works
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-observability.svg"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-observability.svg" alt="lm-assist Architecture — Observability Platform for Claude Code & Agent SDK" width="700"></a>
 
-<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-diagram.svg"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/architecture-diagram.svg" alt="How lm-assist Works — architecture diagram" width="700"></a>
-
-> *Left: Any MCP-compatible IDE (Claude Code, VS Code, Cursor, Codex CLI, Gemini CLI, Antigravity) accesses the knowledge base via MCP. Right: You access the Web UI from localhost, LAN, or langmart.ai for terminal management, session inspection, and more. [Full details →](docs/how-it-works.md)*
-
-> **Read:** [Your Claude Sessions Are Gold: Stop Paying Twice for the Same Knowledge](https://databunny.medium.com/your-claude-sessions-are-gold-stop-paying-twice-for-the-same-knowledge-7632ac6ddb88) — deep dive into session knowledge reuse, CLAUDE.md vs context injection, and token cost savings.
+> *Data flows from Claude Code sessions, Agent SDK executions, and headless CI runs into the Session Engine. Three pillars — Monitor, Debug, Control — expose everything through a web dashboard and REST API. Access from localhost, LAN, or langmart.ai.*
 
 > **Read:** [Inside Claude Code: The Session File Format and How to Inspect It](https://databunny.medium.com/inside-claude-code-the-session-file-format-and-how-to-inspect-it-b9998e66d56b) — technical breakdown of the JSONL session format, message types, subagent trees, and how lm-assist surfaces it all.
 
 ---
 
-## Three Core Features
+## Why lm-assist
 
-### 1. Access Your Sessions From Anywhere
+Claude Code and the Agent SDK have no built-in dashboard. You get a terminal or logs. When you're running multiple agents, debugging a failed execution, or tracking costs across a fleet of machines, you need full visibility.
 
-lm-assist runs a web server on your local network. Open any browser on any device — laptop, tablet, phone — and browse all your Claude Code sessions in real time.
+lm-assist gives you that visibility — for every session, every subagent, every tool call, every token spent.
 
-<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/session-browsing.gif"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/session-browsing.gif" alt="Session Browsing" width="700"></a>
+| Without lm-assist | With lm-assist |
+|-------------------|---------------|
+| Scroll through terminal output | 15 specialized views per session |
+| No cost visibility | Per-model token & cost breakdown |
+| Can't see what agents are doing | Real-time execution dashboard |
+| No way to inspect subagent trees | Full DAG visualization |
+| Terminal-only access | Web UI from any device, anywhere |
+| Agent SDK runs are black boxes | Same session inspection as CLI |
 
-> *Terminal dashboard with 4 live sessions via langmart.ai, then browse into session detail with rich chat history — accessible from any browser, anywhere*
+---
 
-### 2. Deep Insight Views
+## Three Pillars
 
-Every session gets a full breakdown across **15 specialized tabs** — Chat, Thinking, Agents, Skills, Commands, Tasks, Plans, Team, Files, Git, Console, Summary, Meta, JSON, and DB.
+### 1. Monitor
+
+Real-time execution dashboard with live session tracking, cost analytics, and multi-machine fleet management.
+
+<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/session-browsing.gif"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/session-browsing.gif" alt="Session Monitoring" width="700"></a>
+
+> *Terminal dashboard with live sessions, then browse into session detail — accessible from any browser, anywhere*
+
+- Session list with human-readable names, live status, and running process detection
+- Per-model cost and token breakdown (input, output, cache read, cache creation)
+- SSE event stream for real-time updates
+- Multi-machine fleet dashboard via LangMart Hub
+- Rate limit tracking in statusline (5h/7d usage)
+
+**Key endpoints:** `GET /monitor/executions` · `GET /stream` · `GET /sessions` · `GET /projects/sessions`
+
+### 2. Debug
+
+15 specialized views per session. Trace any decision through conversation flow, extended thinking, subagent hierarchy, tool calls, file changes, and git operations.
 
 <a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/deep-insight-views.gif"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/deep-insight-views.gif" alt="Deep Insight Views" width="700"></a>
 
@@ -64,72 +82,79 @@ Every session gets a full breakdown across **15 specialized tabs** — Chat, Thi
 | **Thinking** | Claude's extended thinking / chain-of-thought |
 | **Agents** | Subagent tree — Explore, Plan, Bash, and custom agents |
 | **Skills** | Skill invocation timeline with chain flow, span attribution, and deep trace |
-| **Commands** | Slash command invocations (e.g., /trade-analyze) with args and timing |
-| **Tasks** | Todo lists created during the session |
+| **Commands** | Slash command invocations with args and timing |
+| **Tasks** | Task lists with dependency tracking |
 | **Plans** | Plan mode entries with approval status |
-| **Team** | Team/swarm coordination (Opus 4.6 multi-agent) |
+| **Team** | Team/swarm coordination (multi-agent teams) |
 | **Files** | All files read, written, or edited during the session |
 | **Git** | Commits, pushes, and diffs from the session |
 | **Console** | Terminal output and process management |
 | **Summary** | AI-generated session summary |
-| **Meta** | Session metadata — timing, model, token usage |
+| **Meta** | Session metadata — slug, timing, model, token usage |
 | **JSON** | Raw session JSONL data |
 | **DB** | Internal cache and index data |
 
 </details>
 
-### 3. Auto-Built Knowledge Base
+- Session DAG visualization (message graph + cross-session subagent/team graph)
+- Fork tracking and branch visualization
+- Tool call traces with full inputs and results
 
-lm-assist automatically generates knowledge from your Claude Code sessions, then injects it back into future prompts — giving Claude Code memory of what you've worked on before.
+**Key endpoints:** `GET /sessions/:id` · `GET /sessions/:id/dag` · `GET /sessions/:id/subagents` · `GET /sessions/:id/conversation`
 
-<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/knowledge-base.gif"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/knowledge-base.gif" alt="Knowledge Base" width="700"></a>
+### 3. Control
 
-> *Browse 667 knowledge entries, expand details with code snippets and file references, inspect context injection logs showing exactly what knowledge gets injected into each prompt*
+Full runtime management API. Start, stop, and monitor agent executions from any device. Web terminal access to running Claude Code sessions.
 
-**How it works:**
-1. **Generate** — Analyzes your sessions and extracts reusable knowledge (patterns, decisions, debugging insights)
-2. **Search** — Indexed with BM25 + vector similarity for fast retrieval
-3. **Inject** — On every prompt, the context-injection hook finds relevant knowledge and injects it as context
-4. **MCP tools** — Claude Code can also actively search and retrieve knowledge using `search`, `detail`, and `feedback` tools
+- Start and abort agent executions via REST API
+- Web terminal (ttyd) from any browser — control Claude Code remotely
+- SDK runner for programmatic headless execution
+- Session cache warm/clear for performance tuning
+- Remote access via LangMart Hub — no VPN or port forwarding needed
 
-<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/context-injection-cli.png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/context-injection-cli.png" alt="Context Injection in Claude Code CLI" width="700"></a>
-
-> *Claude Code CLI — MCP tools search and inject knowledge before Claude responds*
+**Key endpoints:** `POST /monitor/abort/:executionId` · `POST /ttyd/start` · `POST /agent/execute` · `POST /hub/connect`
 
 ### Settings
 
 <a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/settings.png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/settings.png" alt="Settings" width="700"></a>
 
-> *Settings — cloud sign-in, LAN access, connection status, and more*
+> *Settings — connection status, Claude Code config, knowledge kill switch, and more*
 
 ### Mobile & Tablet Support
 
-The web UI is fully responsive. Access everything from your phone or tablet — control terminals, browse sessions, review knowledge, and manage tasks on the go.
+The web UI is fully responsive. Monitor sessions, debug agents, and control terminals from your phone or tablet.
 
 <table>
   <tr>
     <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/session-terminal%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/session-terminal%20(mobile).png" alt="Terminal on mobile" width="180"></a><br><sub>Live Terminal</sub></td>
     <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/session-detail-chat%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/session-detail-chat%20(mobile).png" alt="Session detail on mobile" width="180"></a><br><sub>Session Detail</sub></td>
     <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/task-kanban%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/task-kanban%20(mobile).png" alt="Task kanban on mobile" width="180"></a><br><sub>Task Kanban</sub></td>
-    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/knowledge-list%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/knowledge-list%20(mobile).png" alt="Knowledge list on mobile" width="180"></a><br><sub>Knowledge Base</sub></td>
-  </tr>
-  <tr>
-    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/knowledge-detail-full%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/knowledge-detail-full%20(mobile).png" alt="Knowledge detail on mobile" width="180"></a><br><sub>Knowledge Detail</sub></td>
-    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/context-hook-logs%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/context-hook-logs%20(mobile).png" alt="Context hook logs on mobile" width="180"></a><br><sub>Context Injection Logs</sub></td>
     <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/settings-connection%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/settings-connection%20(mobile).png" alt="Settings on mobile" width="180"></a><br><sub>Settings</sub></td>
-    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/settings-claude-code%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/settings-claude-code%20(mobile).png" alt="Claude Code settings on mobile" width="180"></a><br><sub>Claude Code Config</sub></td>
   </tr>
 </table>
 
-### Bring Your Knowledge to Every IDE
+---
 
-lm-assist builds knowledge from your Claude Code sessions — but that knowledge isn't locked to Claude Code. Any MCP-compatible IDE can connect to the lm-assist MCP server and access the same knowledge base: search entries, view details, and provide feedback.
+## Data Sources
 
-One-click activation from the Settings page:
+lm-assist reads the same JSONL session files regardless of how they were created:
 
-<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/settings-ide-mcp%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/settings-ide-mcp%20(mobile).png" alt="IDE MCP Integration" width="280"></a>
+| Source | What It Produces | lm-assist Coverage |
+|--------|-----------------|-------------------|
+| **Claude Code CLI** | Interactive sessions with subagents, teams, worktrees | Full parsing — all message types, tool calls, metadata |
+| **Agent SDK** (Python/TypeScript) | Programmatic agent executions | Same JSONL format — full session inspection |
+| **Headless mode** (`claude -p`) | Background/CI runs | Detected via process status store |
+| **Running processes** | Live PID, tmux, terminal state | Real-time monitoring with zero polling overhead |
 
-**Supported IDEs:**
+---
+
+## Knowledge (Optional)
+
+lm-assist includes an optional knowledge subsystem that auto-extracts reusable knowledge from your sessions and injects it into future prompts via MCP tools and a context hook. Enable or disable it at runtime from Settings — the kill switch unloads the embedder and vector store to save ~100MB of memory.
+
+> **Read:** [Your Claude Sessions Are Gold: Stop Paying Twice for the Same Knowledge](https://databunny.medium.com/your-claude-sessions-are-gold-stop-paying-twice-for-the-same-knowledge-7632ac6ddb88)
+
+When enabled, any MCP-compatible IDE can access the knowledge base:
 
 | IDE | MCP Config |
 |-----|-----------|
@@ -139,9 +164,6 @@ One-click activation from the Settings page:
 | **Windsurf** | `~/.windsurf/mcp.json` |
 | **Codex CLI** (OpenAI) | `~/.codex/config.toml` |
 | **Gemini CLI** (Google) | `~/.gemini/settings.json` |
-| **Google Antigravity** | `~/.gemini/antigravity/settings.json` |
-
-All IDEs get access to the same 3 MCP tools (`search`, `detail`, `feedback`) and the same knowledge base. Generate knowledge once in Claude Code, use it everywhere.
 
 ---
 
@@ -153,22 +175,7 @@ All IDEs get access to the same 3 MCP tools (`search`, `detail`, `feedback`) and
 curl -fsSL https://raw.githubusercontent.com/langmartai/lm-assist/main/install.sh | bash
 ```
 
-This clones the repo, builds, adds the marketplace, and installs the plugin. Then **open a new Claude Code session** and run:
-
-```
-/assist-setup
-```
-
-### Install from source
-
-```bash
-git clone https://github.com/langmartai/lm-assist.git
-cd lm-assist
-npm install && npm run build
-./core.sh start
-```
-
-Then in Claude Code, run `/plugin install .` to register the plugin. **Open a new Claude Code session** and run `/assist-setup`.
+Then **open a new Claude Code session** and run `/assist-setup`.
 
 ### Install via npm
 
@@ -179,20 +186,56 @@ lm-assist start
 
 Then in Claude Code, run `/assist-setup`.
 
+### Install from source
+
+```bash
+git clone https://github.com/langmartai/lm-assist.git
+cd lm-assist
+npm install && npm run build
+./core.sh start
+```
+
+Then in Claude Code, run `/plugin install .` and `/assist-setup`.
+
 ### What gets installed
 
-| Component | Auto-installed by plugin | Purpose |
-|-----------|-------------------------|---------|
-| MCP server | Yes | `search`, `detail`, `feedback` tools in Claude Code |
-| Context hook (Node.js) | Yes | Injects relevant knowledge into each prompt |
-| Slash commands | Yes | 6 `/assist-*` commands |
-| Statusline | No (optional) | Git branch, context %, process stats in status bar |
+| Component | Auto-installed | Purpose |
+|-----------|---------------|---------|
+| Core API + Web UI | Yes (via npm/source) | 155+ endpoint REST API + Next.js dashboard |
+| MCP server | Yes (via plugin) | `search`, `detail`, `feedback` tools |
+| Context hook | Yes (via plugin) | Knowledge injection (optional) |
+| Slash commands | Yes (via plugin) | 6 `/assist-*` commands |
+| Statusline | Optional | Git branch, context %, rate limits, process stats |
 
-The context hook uses Node.js for cross-platform support (Windows, macOS, Linux). The statusline is optional — install via `/assist-setup --statusline` or the web UI settings page.
+## Services
+
+| Service | Port | Description |
+|---------|------|-------------|
+| Core API | 3100 | REST API — sessions, monitor, agents, tasks, knowledge |
+| Web UI | 3848 | Next.js dashboard — 15 insight tabs, terminal, settings |
+
+```bash
+lm-assist start       # Start both services
+lm-assist stop        # Stop all services
+lm-assist status      # Health check + process info
+lm-assist upgrade     # Upgrade to latest version
+```
+
+## Key API Endpoints
+
+| Category | Endpoints | Highlights |
+|----------|-----------|------------|
+| **Sessions** | 27 | List, detail, delta fetch, batch-check, conversation, subagents, forks, DAG |
+| **Monitor** | 6 | Running executions, summary, abort, SSE stream |
+| **Projects** | 12 | List projects, sessions per project, git info, worktree detection |
+| **Terminal** | 13 | ttyd start/stop/status, WebSocket proxy, tmux attach |
+| **Tasks** | 22 | Task lists, aggregated tasks, ready tasks, dependency tracking |
+| **Knowledge** | 21 | List, search, generate, review (optional — can be disabled) |
+| **Vectors** | 6 | Semantic search, index, reindex (optional) |
+
+All endpoints support `ifModifiedSince` for efficient polling. Session data supports three indexing dimensions: `lineIndex` (JSONL position), `turnIndex` (conversation turn), and `userPromptIndex` (user message count).
 
 ## Slash Commands
-
-Use these from within any Claude Code session:
 
 | Command | Description |
 |---------|-------------|
@@ -203,68 +246,13 @@ Use these from within any Claude Code session:
 | `/assist-logs` | View context-inject hook logs |
 | `/assist-mcp-logs` | View MCP tool call logs |
 
-## MCP Server
-
-The MCP server (`lm-assist`) provides 3 tools that any MCP-compatible IDE can use directly (Claude Code, VS Code, Cursor, Codex CLI, Gemini CLI, Antigravity):
-
-| Tool | Description |
-|------|-------------|
-| `search` | Unified search across knowledge and file history |
-| `detail` | Progressive disclosure — expand any item by ID (e.g., `K001`, `arch:component`) |
-| `feedback` | Flag context as outdated, wrong, irrelevant, or useful |
-
-When installed as a plugin, the MCP server is registered automatically. For non-plugin installs:
-
-```bash
-curl -X POST http://localhost:3100/claude-code/mcp/install
-```
-
-## Services
-
-lm-assist runs two services:
-
-| Service | Port | Description |
-|---------|------|-------------|
-| Core API | 3100 | REST API — sessions, knowledge, tasks |
-| Web UI | 3848 | Next.js dashboard — accessible from any device on your network |
-
-```bash
-./core.sh start        # Start both services
-./core.sh stop         # Stop all services
-./core.sh restart      # Restart (auto-rebuilds if TypeScript changed)
-./core.sh status       # Health check
-./core.sh logs core    # View API logs
-./core.sh logs web     # View web logs
-```
-
 ## Configuration
 
-No API key is needed — lm-assist works entirely with your local Claude Code session data. Optionally copy `.env.example` to `.env` to customize ports:
+No API key needed — lm-assist works entirely with your local Claude Code session data. Optionally copy `.env.example` to `.env`:
 
 ```bash
 API_PORT=3100                    # Core API port (default: 3100)
 WEB_PORT=3848                    # Web UI port (default: 3848)
-```
-
-## Project Structure
-
-```
-lm-assist/
-├── core/                    ← Backend API (TypeScript)
-│   ├── src/
-│   │   ├── mcp-server/      ← MCP server (search, detail, feedback tools)
-│   │   ├── routes/core/     ← REST API routes (155 endpoints)
-│   │   ├── knowledge/       ← Knowledge generation pipeline
-│   │   └── vector/          ← Embeddings + vector store
-│   └── hooks/               ← Claude Code hook scripts (Node.js, cross-platform)
-├── web/                     ← Web UI (Next.js, React 19)
-├── commands/                ← Slash command definitions
-├── hooks/                   ← Plugin hook registration
-├── docs/screenshots/        ← Product screenshots
-├── .claude-plugin/          ← Claude Code plugin metadata
-├── .mcp.json                ← MCP server auto-registration
-├── core.sh                  ← Service manager
-└── bin/lm-assist.js         ← CLI entry point
 ```
 
 ## Platform Support
@@ -274,9 +262,14 @@ lm-assist/
 | Linux | Full | All features including web terminal |
 | macOS | Full | All features including web terminal |
 | Windows | Partial | Everything except console/terminal access (ttyd not available) |
-| Mobile / Tablet | Web UI | Browse sessions, tasks, knowledge from any device on your network |
+| Mobile / Tablet | Web UI | Monitor, debug, and control from any device on your network |
 
-The web UI is fully responsive — optimized for phone, tablet, and desktop viewports.
+## Who It's For
+
+- **Solo developers** using Claude Code — see what's happening across all your sessions
+- **Teams building with Agent SDK** — observability for your agent pipelines
+- **DevOps managing agent fleets** — multi-machine dashboard, cost tracking, process management
+- **AI product builders** — debug agent behavior with 15 insight views
 
 ## Changelog
 
