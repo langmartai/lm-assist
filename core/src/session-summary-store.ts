@@ -20,6 +20,8 @@ export interface SessionSummary {
   projectPath?: string;
   /** The summary text */
   summary: string;
+  /** Generated descriptive name (3 words, kebab-case, e.g. "auth-module-review") */
+  displayName?: string;
   /** Turn index this summary was built up to */
   lastTurnIndex: number;
   /** Line index this summary was built up to */

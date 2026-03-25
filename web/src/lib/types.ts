@@ -82,6 +82,8 @@ export interface Session {
   sessionSummary?: string;
   /** LLM-generated persistent summary */
   llmSummary?: string;
+  /** Generated descriptive name from summary (e.g. "auth-module-review") */
+  displayName?: string;
   // Cross-reference
   machineId: string;
   machineHostname: string;

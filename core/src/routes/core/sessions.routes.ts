@@ -72,6 +72,7 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
           slug: body.slug,
           projectPath: body.projectPath,
           summary: body.summary,
+          displayName: body.displayName,
           lastTurnIndex: body.lastTurnIndex || 0,
           lastLineIndex: body.lastLineIndex || 0,
           totalTurns: body.totalTurns || 0,

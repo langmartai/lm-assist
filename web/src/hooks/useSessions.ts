@@ -159,14 +159,19 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
         const summariesRes = await fetch(`http://${apiHost}:${port}/sessions/summaries`, { signal: AbortSignal.timeout(3000) });
         if (summariesRes.ok) {
           const summariesData = await summariesRes.json();
-          const summaryMap = new Map<string, string>();
+          const summaryMap = new Map<string, { summary: string; displayName?: string }>();
           for (const s of summariesData?.data?.summaries || []) {
-            if (s.sessionId && s.summary) summaryMap.set(s.sessionId, s.summary);
+            if (s.sessionId && s.summary) summaryMap.set(s.sessionId, { summary: s.summary, displayName: s.displayName });
           }
           if (summaryMap.size > 0) {
             for (const session of sessions) {
-              const llm = summaryMap.get(session.sessionId);
-              if (llm) session.llmSummary = llm;
+              const entry = summaryMap.get(session.sessionId);
+              if (entry) {
+                session.llmSummary = entry.summary;
+                if (entry.displayName && !session.customTitle) {
+                  session.displayName = entry.displayName;
+                }
+              }
             }
           }
         }

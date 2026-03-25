@@ -94,12 +94,14 @@ export function getSessionIdShort(sessionId: string): string {
   return sessionId?.slice(0, 8) || '';
 }
 
-/** Get a clean display name for a session (customTitle > slug > null) */
-export function getSessionDisplayName(session: { customTitle?: string; slug?: string }): string | null {
+/** Get a clean display name for a session (customTitle > displayName > slug > null) */
+export function getSessionDisplayName(session: { customTitle?: string; displayName?: string; slug?: string }): string | null {
   if (session.customTitle) {
     // Strip XML tags that may appear in forked session titles
     const cleaned = session.customTitle.replace(/<[^>]+>/g, '').replace(/\s*\(Fork\)\s*$/, '').trim();
     return cleaned || null;
   }
+  // displayName from summary generation (descriptive, e.g. "auth-module-review")
+  if ((session as any).displayName) return (session as any).displayName;
   return session.slug || null;
 }

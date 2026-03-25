@@ -365,25 +365,61 @@ for r in responses[-3:]:
 "
 ```
 
-After reading the conversation, write a summary that answers:
-1. **What is this session about?** (the goal/task)
-2. **What was accomplished?** (key actions, files changed, decisions made)
-3. **Current state?** (completed, in progress, blocked, abandoned)
-4. **Key context** (branch, project area, important decisions)
+After reading the conversation, generate TWO things:
 
-Then save the summary:
+**1. Summary** (2-3 sentences) answering:
+- What is this session about? (the goal/task)
+- What was accomplished? (key actions, files changed, decisions made)
+- Current state? (completed, in progress, blocked, abandoned)
+
+**2. Display Name** (kebab-case, 2-4 words) — a descriptive name for the session.
+Only generate if the session has NO `customTitle` (user hasn't renamed it via /rename).
+Follow Claude Code's naming style but make it meaningful instead of random:
+
+| Random slug (Claude Code default) | Descriptive displayName (what we generate) |
+|-----------------------------------|---------------------------------------------|
+| silly-plotting-parasol | trade-delta-analysis |
+| refactored-twirling-karp | observability-skill-impl |
+| toasty-dancing-teapot | skill-validation-test |
+| warm-herding-bubble | xeenhub-review |
+
+Rules for displayName:
+- 2-4 words, kebab-case (lowercase, hyphens)
+- Describe WHAT the session does, not random words
+- Keep it short enough to scan in a sidebar
+- Skip if session has `customTitle` — the user already named it
+
+### Saving: current session vs other sessions
+
+**For the CURRENT session** (the one you're running in right now):
+- Call `/rename <displayName>` directly to update the session name in Claude Code
+- This writes a `custom-title` message to the JSONL and the name appears immediately everywhere
+- Only do this if the session doesn't already have a customTitle
+
+**For OTHER sessions** (summarizing sessions you're not running in):
+- Store the `displayName` in the summary API only
+- Do NOT try to rename them — they'll get renamed when the skill runs in their own session
+- The web UI will show the stored displayName from the summary
+
+Save the summary (for both current and other sessions):
 
 ```bash
 curl -s -X PUT "http://localhost:3100/sessions/SESSION_ID/summary" \
   -H 'Content-Type: application/json' \
   -d '{
     "summary": "YOUR_GENERATED_SUMMARY",
+    "displayName": "GENERATED_DISPLAY_NAME",
     "slug": "SESSION_SLUG",
     "projectPath": "PROJECT_PATH",
     "lastTurnIndex": CURRENT_TURN_COUNT,
     "lastLineIndex": 0,
     "totalTurns": CURRENT_TURN_COUNT
   }'
+```
+
+For the current session only, also rename it:
+```
+/rename GENERATED_DISPLAY_NAME
 ```
 
 ### Step 3: Read summaries for session routing
