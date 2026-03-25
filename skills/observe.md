@@ -96,9 +96,12 @@ Then save a comprehensive summary via `PUT /projects/summary` with ALL these fie
 
 The `fullReference` field should be a comprehensive markdown block (500-1000 words) that captures everything from CLAUDE.md that a user would need during daily work — not a summary but a practical reference card.
 
-**IMPORTANT:** Each agent must run with `"cwd": "PROJECT_PATH"`. The agent reads THAT project's CLAUDE.md and files, not the current one.
-
-For the current project, you can read CLAUDE.md directly without dispatching an agent.
+**CRITICAL: Project folder context rules:**
+- Each agent MUST run with `"cwd": "PROJECT_PATH"` — this ensures all file reads, `ls`, `git log`, and scripts execute in the correct project
+- The `projectPath` saved in the summary MUST be the absolute path (e.g. `/home/ubuntu/lm-assist`, not `~/lm-assist` or `lm-assist`)
+- All commands in `services`, `keyCommands`, `commonWorkflows`, `deployment` must be written relative to the project root (e.g. `./core.sh start`, not `/home/ubuntu/lm-assist/core.sh start`) — because they will be run from inside that project directory
+- When another session later uses this summary to run commands, it must `cd` to `projectPath` first or use `--cwd`
+- For the current project, you can read files and run commands directly — no need to dispatch an agent
 
 ### Routing with project context
 
