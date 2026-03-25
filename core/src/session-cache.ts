@@ -253,6 +253,9 @@ export interface SessionCacheData {
   // Timestamps
   firstTimestamp?: string;
   lastTimestamp?: string;
+
+  /** Auto-generated session summary for quick understanding of what the session does */
+  sessionSummary?: string;
 }
 
 // Separate cache for raw messages (large, optional)
@@ -279,6 +282,78 @@ function parseSkillName(raw: string): { skillName: string; pluginName: string; s
     return { skillName: raw, pluginName: raw.slice(0, colonIdx), shortName: raw.slice(colonIdx + 1) };
   }
   return { skillName: raw, pluginName: 'unknown', shortName: raw };
+}
+
+/**
+ * Generate a concise session summary from parsed session data.
+ * Used for quick understanding of what the session does and for session routing
+ * (deciding whether to resume an existing session vs start a new one).
+ *
+ * Format: "TOPIC — what was done. KEY_DETAILS."
+ */
+function generateSessionSummary(data: SessionCacheData): string {
+  const realPrompts = data.userPrompts.filter(isRealUserPrompt);
+  if (realPrompts.length === 0) return '';
+
+  const parts: string[] = [];
+
+  // First real prompt = the "what" (truncated)
+  const firstPrompt = realPrompts[0].text.replace(/\s+/g, ' ').trim();
+  const topic = firstPrompt.length > 120 ? firstPrompt.slice(0, 117) + '...' : firstPrompt;
+  parts.push(topic);
+
+  // Key stats
+  const stats: string[] = [];
+  if (data.numTurns > 0) stats.push(`${data.numTurns}T`);
+  if (data.totalCostUsd > 0) stats.push(`$${data.totalCostUsd.toFixed(2)}`);
+
+  // Tools used (unique, top 5 most frequent)
+  const toolCounts = new Map<string, number>();
+  for (const t of data.toolUses) {
+    const name = t.name;
+    if (name && !['Read', 'Glob', 'Grep', 'ToolSearch'].includes(name)) {
+      toolCounts.set(name, (toolCounts.get(name) || 0) + 1);
+    }
+  }
+  const topTools = [...toolCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([name]) => name);
+  if (topTools.length > 0) stats.push(topTools.join(', '));
+
+  // Files touched (count only)
+  const filesWritten = new Set<string>();
+  for (const t of data.toolUses) {
+    if ((t.name === 'Write' || t.name === 'Edit') && t.input?.file_path) {
+      filesWritten.add(t.input.file_path);
+    }
+  }
+  if (filesWritten.size > 0) stats.push(`${filesWritten.size} files changed`);
+
+  // Subagent count
+  if (data.subagents.length > 0) stats.push(`${data.subagents.length} agents`);
+
+  // Team info
+  if (data.teamName) stats.push(`team:${data.teamName}`);
+
+  // Commands/skills used
+  if (data.commandInvocations.length > 0) {
+    const cmds = [...new Set(data.commandInvocations.map(c => c.commandName))].slice(0, 3);
+    stats.push(cmds.join(', '));
+  }
+
+  if (stats.length > 0) parts.push(stats.join(' | '));
+
+  // Last prompt if different from first (shows where the session ended up)
+  if (realPrompts.length > 3) {
+    const lastPrompt = realPrompts[realPrompts.length - 1].text.replace(/\s+/g, ' ').trim();
+    if (lastPrompt !== firstPrompt && lastPrompt.length > 10) {
+      const lastTopic = lastPrompt.length > 80 ? lastPrompt.slice(0, 77) + '...' : lastPrompt;
+      parts.push(`Last: ${lastTopic}`);
+    }
+  }
+
+  return parts.join(' — ');
 }
 
 function attributeSkillSpans(data: SessionCacheData): void {
@@ -1455,6 +1530,7 @@ export class SessionCache {
     // Merge all messages into cache
     const result = this.mergeNewMessages(cache, messages, stats);
     attributeSkillSpans(result);
+    result.sessionSummary = generateSessionSummary(result);
     return result;
   }
 
@@ -1498,6 +1574,7 @@ export class SessionCache {
         cache.lastTurnIndex = lastTurnIndex;
         cache.lastByteOffset = lastByteOffset;
         attributeSkillSpans(cache);
+        cache.sessionSummary = generateSessionSummary(cache);
 
         // Write to LMDB (async, auto-batched)
         await this.store.putSessionData(sessionPath, cache);
@@ -1787,6 +1864,7 @@ export class SessionCache {
         cache.lastLineIndex = lines.length - 1;
         cache.lastTurnIndex = turnIndex;
         attributeSkillSpans(cache);
+        cache.sessionSummary = generateSessionSummary(cache);
 
         // Fire-and-forget async write to LMDB
         this.store.putSessionData(sessionPath, cache).catch(() => {});
@@ -1869,6 +1947,7 @@ export class SessionCache {
     // Merge all messages into cache
     cache = this.mergeNewMessages(cache, messages, stats);
     attributeSkillSpans(cache);
+    cache.sessionSummary = generateSessionSummary(cache);
 
     console.log(`[SessionCache] Parsed (sync) ${cache.lastLineIndex + 1} lines in ${Date.now() - startTime}ms`);
 

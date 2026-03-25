@@ -264,6 +264,7 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
             forkedFromSessionId: cacheData?.forkedFromSessionId,
             slug: cacheData?.slug,
             customTitle: cacheData?.customTitle,
+            sessionSummary: cacheData?.sessionSummary,
             // Task ID -> subject map for resolving TaskUpdate references
             taskSubjects: cacheData?.tasks && cacheData.tasks.length > 0
               ? Object.fromEntries(cacheData.tasks.filter((t: any) => t.subject).map((t: any) => [t.id, t.subject]))
@@ -291,16 +292,18 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
         let forkedFromSessionId: string | undefined;
         let slug: string | undefined;
         let customTitle: string | undefined;
+        let sessionSummary: string | undefined;
         try {
           const sessionPath = sessionStore.getSessionPath(sessionId, options?.cwd);
           const fs = require('fs');
           lastModified = fs.statSync(sessionPath).mtime.toISOString();
-          // Get forkedFromSessionId, slug, customTitle from cache (not available in full-parse data)
+          // Get forkedFromSessionId, slug, customTitle, sessionSummary from cache
           const { getSessionCache } = await import('../session-cache');
           const cacheData = await getSessionCache().getSessionData(sessionPath);
           forkedFromSessionId = cacheData?.forkedFromSessionId;
           slug = cacheData?.slug;
           customTitle = cacheData?.customTitle;
+          sessionSummary = cacheData?.sessionSummary;
         } catch {
           // Non-critical — skip if stat fails
         }
@@ -486,6 +489,7 @@ export function createSessionsApiImpl(deps: SessionsApiDeps): SessionsApi {
           forkedFromSessionId,
           slug,
           customTitle,
+          sessionSummary,
           // Task ID -> subject map for resolving TaskUpdate references
           taskSubjects: data.taskSubjects,
           // ─── Index Totals (for pagination/delta queries) ───

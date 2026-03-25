@@ -140,6 +140,8 @@ export interface ProjectSession {
   slug?: string;
   /** Custom session title set via /rename */
   customTitle?: string;
+  /** Auto-generated session summary */
+  sessionSummary?: string;
 }
 
 export interface ProjectTask {
@@ -765,6 +767,7 @@ export class ProjectsService {
           session.forkedFromSessionId = cacheData.forkedFromSessionId;
           session.slug = cacheData.slug;
           session.customTitle = cacheData.customTitle;
+          session.sessionSummary = cacheData.sessionSummary;
 
           // Usage and cost data
           if (cacheData.usage && cacheData.usage.inputTokens > 0) {

@@ -3799,6 +3799,7 @@ export class AgentSessionStore extends EventEmitter {
             forkedFromSessionId: s.cacheData.forkedFromSessionId,
             slug: s.cacheData.slug,
             customTitle: s.cacheData.customTitle,
+            sessionSummary: s.cacheData.sessionSummary,
             totalCostUsd: costUsd && costUsd > 0 ? costUsd : undefined,
             subagentCostUsd: subagentCostUsd && subagentCostUsd > 0 ? subagentCostUsd : undefined,
             usage: mergedUsage,
@@ -4823,6 +4824,7 @@ export class AgentSessionStore extends EventEmitter {
             forkedFromSessionId: cacheData?.forkedFromSessionId,
             slug: cacheData?.slug,
             customTitle: cacheData?.customTitle,
+            sessionSummary: cacheData?.sessionSummary,
           };
         });
       }
