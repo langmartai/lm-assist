@@ -1,20 +1,28 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "langmartai",
-  "description": "LM Assist — observability platform for Claude Code and Agent SDK",
+  "description": "Claude One & LM Assist — observability platform for Claude Code and Agent SDK",
   "owner": {
     "name": "langmartai"
   },
   "metadata": {
     "description": "Plugins by langmartai",
-    "homepage": "https://github.com/langmartai/lm-assist"
+    "homepage": "https://github.com/langmartai/claude-one"
   },
   "plugins": [
+    {
+      "name": "claude-one",
+      "version": "0.1.0",
+      "source": "github:langmartai/claude-one",
+      "description": "One prompt to control all your Claude Code sessions. Monitor costs, debug agents, route work across projects, queue prompts, auto-learn routing. Powered by lm-assist.",
+      "category": "productivity",
+      "homepage": "https://github.com/langmartai/claude-one"
+    },
     {
       "name": "lm-assist",
       "version": "0.1.69",
       "source": "./",
-      "description": "Monitor, debug, and control AI coding agents. Skills for session intelligence (observe, route), commands (/sessions, /summary, /run), 15 insight views per session, web terminal, project/session summaries, cross-project routing, prompt queue, auto-learning. Optional: MCP knowledge tools, context-injection hook.",
+      "description": "Observability platform for Claude Code and Agent SDK. 155+ API endpoints, 15 insight views, web terminal, session/project summaries, prompt queue, auto-learning.",
       "category": "productivity",
       "homepage": "https://github.com/langmartai/lm-assist"
     }
