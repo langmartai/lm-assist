@@ -8,7 +8,7 @@
     {
       "name": "claude-code-multisession",
       "version": "0.1.0",
-      "source": { "source": "url", "url": "https://github.com/langmartai/claude-code-multisession.git" },
+      "source": { "source": "url", "url": "https://github.com/langmartai/claude-code-multisession.git", "sha": "579392f284c63d84401e48ed10027932c975b77f" },
       "description": "One prompt to control all your Claude Code sessions. Monitor costs, debug agents, route work across projects, queue prompts, auto-learn routing.",
       "category": "productivity",
       "homepage": "https://github.com/langmartai/claude-code-multisession"
@@ -16,7 +16,7 @@
     {
       "name": "claude-code-webui",
       "version": "0.1.0",
-      "source": { "source": "url", "url": "https://github.com/langmartai/claude-code-webui.git" },
+      "source": { "source": "url", "url": "https://github.com/langmartai/claude-code-webui.git", "sha": "8ca70261cfce0da3abe4723c01b1e9c8ef2ef23f" },
       "description": "Web dashboard for Claude Code. Browse sessions with 15 insight views, debug subagent trees, control terminals from any browser.",
       "category": "productivity",
       "homepage": "https://github.com/langmartai/claude-code-webui"
@@ -24,7 +24,7 @@
     {
       "name": "lm-assist",
       "version": "0.1.69",
-      "source": { "source": "url", "url": "https://github.com/langmartai/lm-assist.git" },
+      "source": "./",
       "description": "Observability platform for Claude Code and Agent SDK. 155+ API endpoints, 15 insight views, web terminal, session/project summaries, prompt queue, auto-learning.",
       "category": "productivity",
       "homepage": "https://github.com/langmartai/lm-assist"
