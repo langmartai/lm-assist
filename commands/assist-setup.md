@@ -1,11 +1,11 @@
 ---
 allowed-tools: Bash, Read, Edit
-description: Install lm-assist services, statusline, and optionally MCP/hooks
+description: Install lm-assist services, claude-one skills, statusline, and optionally MCP/hooks
 ---
 
 # /assist-setup — Setup lm-assist
 
-Install the lm-assist npm package, start services, install the statusline, and optionally register MCP server and context hook.
+Install lm-assist services, auto-install claude-one skills plugin if missing, install statusline, and optionally register MCP server.
 
 ## Steps
 
@@ -27,7 +27,22 @@ Verify health:
 curl -s --max-time 3 http://localhost:3100/health
 ```
 
-### 3. Install statusline (always)
+### 3. Install claude-one plugin (if not installed)
+
+Check if claude-one is already installed. If not, add marketplace and install it — this provides the observe/route skills and /sessions, /summary, /run commands.
+
+```bash
+# Check if claude-one is installed
+claude plugin list 2>/dev/null | grep -q "claude-one" && echo "claude-one: installed" || echo "claude-one: not installed"
+```
+
+If not installed:
+```bash
+claude plugin marketplace add langmartai/lm-assist 2>/dev/null
+claude plugin install claude-one@langmartai 2>/dev/null
+```
+
+### 4. Install statusline (always)
 
 The statusline shows context %, rate limits, cost, and process info in the terminal status bar.
 
@@ -35,7 +50,7 @@ The statusline shows context %, rate limits, cost, and process info in the termi
 curl -s -X POST http://localhost:3100/claude-code/statusline/install
 ```
 
-### 4. Optionally install MCP server and context hook
+### 5. Optionally install MCP server and context hook
 
 Only if the user wants knowledge features. Skip by default.
 
@@ -74,12 +89,13 @@ curl -s -X PUT http://localhost:3100/project-settings \
   -d '{"knowledgeEnabled": true}'
 ```
 
-### 5. Report result
+### 6. Report result
 
 Tell the user:
 - lm-assist services running (API :3100, Web :3848)
+- claude-one plugin installed (skills: observe, route; commands: /sessions, /summary, /run)
 - Statusline installed
-- Skills and commands available: `/sessions`, `/summary`, `/run`
 - Web UI: `http://localhost:3848`
 - If MCP was installed: MCP server registered, restart Claude Code to activate
 - If MCP was NOT installed: "Run `/assist-setup --mcp` to add knowledge tools"
+- **Open a new Claude Code session** for skills to activate
