@@ -201,7 +201,7 @@ Three plugins available:
 
 | Install command | What you get |
 |----------------|-------------|
-| `/plugin install claude-code-multisession@langmartai` | Skills (observe, route) + commands (`/sessions`, `/summary`, `/run`) — cross-project session management |
+| `/plugin install claude-code-multisession@langmartai` | Skills (observe, route) + commands (`/projects`, `/sessions`, `/summary`, `/run`) — cross-project session management |
 | `/plugin install claude-code-webui@langmartai` | Skill (dashboard) + commands (`/web`, `/web-sessions`, `/web-tasks`) — web dashboard access |
 | `/plugin install lm-assist@langmartai` | Commands (`/assist`, `/assist-setup`, `/assist-status`, `/assist-search`, `/assist-logs`) — setup and diagnostics |
 
