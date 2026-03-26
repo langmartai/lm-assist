@@ -44,104 +44,43 @@ Claude Code and the Agent SDK have no built-in dashboard. You get a terminal or 
 
 ### 1. Monitor
 
-Real-time execution dashboard with live session tracking, cost analytics, and multi-machine fleet management.
+Real-time execution tracking via REST API.
 
-<a href="https://langmart.ai/images/assist/session-browser.png"><img src="https://langmart.ai/images/assist/session-browser.png" alt="Session Browser — live sessions with cost and token tracking" width="700"></a>
-
-> *Browse all sessions with human-readable names, live status, per-model cost breakdown — from any browser, anywhere*
-
-- Session list with human-readable slug names, live status, and running process detection
-- Per-session and per-project cost tracking — total cost in gold at a glance
-- Per-model token breakdown (input, output, cache read, cache creation) in Meta tab
-- SSE event stream for real-time updates
+- Session list with slug names, live status, running process detection
+- Per-session and per-project cost tracking with per-model token breakdown
+- SSE event stream for real-time updates (`GET /stream`)
 - Multi-machine fleet dashboard via LangMart Hub
-
-**Statusline** — optional status bar showing context %, rate limits (5h/7d usage with time remaining), session cost, RAM, PID, and uptime. Color-coded: green < 50%, yellow 50-80%, red > 80%.
-
-```
-wt: no worktrees  ctx:42%  $12.34  5h:23% 2h14m left  7d:41%  ram:565M  free:6.1G  pid:12345  up:3h22m
-```
+- Statusline: context %, rate limits (5h/7d), cost, RAM, PID
 
 **Key endpoints:** `GET /monitor/executions` · `GET /stream` · `GET /sessions` · `GET /projects/sessions`
 
 ### 2. Debug
 
-15 specialized views per session. Trace any decision through conversation flow, extended thinking, subagent hierarchy, tool calls, file changes, and git operations.
+15 data dimensions per session, all accessible via API.
 
-<table>
-  <tr>
-    <td><a href="https://langmart.ai/images/assist/agent-tree.png"><img src="https://langmart.ai/images/assist/agent-tree.png" alt="Agent Tree" width="340"></a><br><sub>Subagent hierarchy</sub></td>
-    <td><a href="https://langmart.ai/images/assist/plan-view.png"><img src="https://langmart.ai/images/assist/plan-view.png" alt="Plan View" width="340"></a><br><sub>Plan mode tracking</sub></td>
-  </tr>
-  <tr>
-    <td><a href="https://langmart.ai/images/assist/task-kanban.png"><img src="https://langmart.ai/images/assist/task-kanban.png" alt="Task Kanban" width="340"></a><br><sub>Task kanban board</sub></td>
-    <td><a href="https://langmart.ai/images/assist/team-view.png"><img src="https://langmart.ai/images/assist/team-view.png" alt="Team View" width="340"></a><br><sub>Multi-agent team coordination</sub></td>
-  </tr>
-</table>
-
-<details>
-<summary><strong>All 15 tabs at a glance</strong></summary>
-
-| Tab | What You See |
-|-----|-------------|
-| **Chat** | Full conversation with syntax-highlighted code blocks |
-| **Thinking** | Claude's extended thinking / chain-of-thought |
-| **Agents** | Subagent tree — Explore, Plan, Bash, and custom agents |
-| **Skills** | Skill invocation timeline with chain flow, span attribution, and deep trace |
-| **Commands** | Slash command invocations with args and timing |
-| **Tasks** | Task lists with dependency tracking |
-| **Plans** | Plan mode entries with approval status |
-| **Team** | Team/swarm coordination (multi-agent teams) |
-| **Files** | All files read, written, or edited during the session |
-| **Git** | Commits, pushes, and diffs from the session |
-| **Console** | Terminal output and process management |
-| **Summary** | AI-generated session summary |
-| **Meta** | Session metadata — slug, timing, model, token usage |
-| **JSON** | Raw session JSONL data |
-| **DB** | Internal cache and index data |
-
-</details>
-
-- Session DAG visualization (message graph + cross-session subagent/team graph)
-- Fork tracking and branch visualization
-- Tool call traces with full inputs and results
+- Conversation, thinking blocks, tool calls, subagent hierarchy, DAG
+- File changes, git operations, plans, tasks, team coordination
+- Fork tracking, session summaries, skill traces
 
 **Key endpoints:** `GET /sessions/:id` · `GET /sessions/:id/dag` · `GET /sessions/:id/subagents` · `GET /sessions/:id/conversation`
 
 ### 3. Control
 
-Full runtime management API. Start, stop, and monitor agent executions from any device. Web terminal access to running Claude Code sessions.
+Full runtime management API.
 
-<a href="https://langmart.ai/images/assist/session-terminal.png"><img src="https://langmart.ai/images/assist/session-terminal.png" alt="Web Terminal — control Claude Code from any browser" width="700"></a>
-
-> *Live terminal access to running Claude Code sessions — from any browser, anywhere*
-
-- Start and abort agent executions via REST API
-- Web terminal (ttyd) from any browser — control Claude Code remotely
+- Start and abort agent executions
 - SDK runner for programmatic headless execution
-- Session cache warm/clear for performance tuning
-- Remote access via LangMart Hub — no VPN or port forwarding needed
+- Session cache warm/clear
+- Web terminal (ttyd) from any browser
+- Remote access via LangMart Hub
 
 **Key endpoints:** `POST /monitor/abort/:executionId` · `POST /ttyd/start` · `POST /agent/execute` · `POST /hub/connect`
 
-### Settings
+### Web Dashboard
 
-<a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/settings.png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshots/preview/settings.png" alt="Settings" width="700"></a>
+See [claude-code-webui](https://github.com/langmartai/claude-code-webui) for the full web dashboard with 15 insight tabs, web terminal, task kanban, and mobile support.
 
-> *Settings — connection status, Claude Code config, knowledge kill switch, and more*
-
-### Mobile & Tablet Support
-
-The web UI is fully responsive. Monitor sessions, debug agents, and control terminals from your phone or tablet.
-
-<table>
-  <tr>
-    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/session-terminal%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/session-terminal%20(mobile).png" alt="Terminal on mobile" width="180"></a><br><sub>Live Terminal</sub></td>
-    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/session-detail-chat%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/session-detail-chat%20(mobile).png" alt="Session detail on mobile" width="180"></a><br><sub>Session Detail</sub></td>
-    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/task-kanban%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/task-kanban%20(mobile).png" alt="Task kanban on mobile" width="180"></a><br><sub>Task Kanban</sub></td>
-    <td align="center"><a href="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/settings-connection%20(mobile).png"><img src="https://raw.githubusercontent.com/langmartai/lm-assist/main/docs/screenshot/settings-connection%20(mobile).png" alt="Settings on mobile" width="180"></a><br><sub>Settings</sub></td>
-  </tr>
-</table>
+<a href="https://langmart.ai/images/assist/session-browser.png"><img src="https://langmart.ai/images/assist/session-browser.png" alt="Session Browser" width="700"></a>
 
 ---
 
