@@ -478,6 +478,11 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 - Node.js >= 18
 - Claude Code (for slash commands and MCP integration)
 
+## Related
+
+- [claude-code-multisession](https://github.com/langmartai/claude-code-multisession) — Skills plugin: cross-project session routing, `/projects`, `/sessions`, `/summary`, `/run`
+- [claude-code-webui](https://github.com/langmartai/claude-code-webui) — Web dashboard plugin: 15 insight tabs, web terminal, `/web`, `/web-sessions`, `/web-tasks`
+
 ## License
 
 [AGPL-3.0-or-later](LICENSE)
