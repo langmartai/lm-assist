@@ -97,23 +97,6 @@ lm-assist reads the same JSONL session files regardless of how they were created
 
 ---
 
-## Knowledge (Off by Default)
-
-lm-assist includes an optional knowledge subsystem that auto-extracts reusable knowledge from your sessions and injects it into future prompts via MCP tools and a context hook. **Disabled by default** to save ~100MB of memory. Enable it in Settings > Data Loading, then run `/assist-setup` to register the MCP server and context hook.
-
-> **Read:** [Your Claude Sessions Are Gold: Stop Paying Twice for the Same Knowledge](https://databunny.medium.com/your-claude-sessions-are-gold-stop-paying-twice-for-the-same-knowledge-7632ac6ddb88)
-
-When enabled, any MCP-compatible IDE can access the knowledge base:
-
-| IDE | MCP Config |
-|-----|-----------|
-| **Claude Code** | Auto-registered via plugin install |
-| **VS Code** (Copilot) | `settings.json` — MCP server entry |
-| **Cursor** | `.cursor/mcp.json` |
-| **Windsurf** | `~/.windsurf/mcp.json` |
-| **Codex CLI** (OpenAI) | `~/.codex/config.toml` |
-| **Gemini CLI** (Google) | `~/.gemini/settings.json` |
-
 ---
 
 ## Install
@@ -482,6 +465,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 - [claude-code-multisession](https://github.com/langmartai/claude-code-multisession) — Skills plugin: cross-project session routing, `/projects`, `/sessions`, `/summary`, `/run`
 - [claude-code-webui](https://github.com/langmartai/claude-code-webui) — Web dashboard plugin: 15 insight tabs, web terminal, `/web`, `/web-sessions`, `/web-tasks`
+- [Knowledge system](https://databunny.medium.com/your-claude-sessions-are-gold-stop-paying-twice-for-the-same-knowledge-7632ac6ddb88) — Optional: auto-extract knowledge from sessions, MCP tools, context injection. Off by default, enable in Settings > Data Loading
 
 ## License
 
