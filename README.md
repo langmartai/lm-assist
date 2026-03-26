@@ -158,9 +158,9 @@ lm-assist reads the same JSONL session files regardless of how they were created
 
 ---
 
-## Knowledge (Optional)
+## Knowledge (Off by Default)
 
-lm-assist includes an optional knowledge subsystem that auto-extracts reusable knowledge from your sessions and injects it into future prompts via MCP tools and a context hook. Enable or disable it at runtime from Settings — the kill switch unloads the embedder and vector store to save ~100MB of memory.
+lm-assist includes an optional knowledge subsystem that auto-extracts reusable knowledge from your sessions and injects it into future prompts via MCP tools and a context hook. **Disabled by default** to save ~100MB of memory. Enable it in Settings > Data Loading, then run `/assist-setup` to register the MCP server and context hook.
 
 > **Read:** [Your Claude Sessions Are Gold: Stop Paying Twice for the Same Knowledge](https://databunny.medium.com/your-claude-sessions-are-gold-stop-paying-twice-for-the-same-knowledge-7632ac6ddb88)
 
@@ -226,9 +226,10 @@ Then in Claude Code, run `/plugin install .` to register from source.
 | Skills | Yes (via plugin) | `observe` (session intelligence) + `route` (cross-project routing) |
 | Commands | Yes (via plugin) | `/sessions`, `/summary`, `/run` + 6 `/assist-*` commands |
 | Core API + Web UI | Yes (via npm/source) | 155+ endpoint REST API + Next.js dashboard |
-| MCP server | Optional (via plugin) | `search`, `detail`, `feedback` knowledge tools |
-| Context hook | Optional (via plugin) | Knowledge injection into prompts |
-| Statusline | Optional | Git branch, context %, rate limits, cost, process stats |
+| MCP server | Optional (via `/assist-setup`) | `search`, `detail`, `feedback` knowledge tools |
+| Context hook | Optional (via `/assist-setup`) | Knowledge injection into prompts |
+| Knowledge system | Off by default | Enable in Settings > Data Loading. Saves ~100MB when disabled |
+| Statusline | Optional (via `/assist-setup --statusline`) | Git branch, context %, rate limits, cost, process stats |
 
 ## Services
 

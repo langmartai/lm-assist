@@ -12,7 +12,7 @@
   "plugins": [
     {
       "name": "lm-assist",
-      "version": "0.1.68",
+      "version": "0.1.69",
       "source": "./",
       "description": "Monitor, debug, and control AI coding agents. Skills for session intelligence (observe, route), commands (/sessions, /summary, /run), 15 insight views per session, web terminal, project/session summaries, cross-project routing, prompt queue, auto-learning. Optional: MCP knowledge tools, context-injection hook.",
       "category": "productivity",

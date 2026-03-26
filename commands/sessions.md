@@ -12,76 +12,91 @@ Show recent Claude Code sessions with costs, turns, model, and running status.
 - No arguments: show sessions across all projects
 - `$ARGUMENTS[0]`: filter by project name (partial match)
 
-## Steps
+## Execution
 
-1. **Check API health:**
+Run this single script. It handles health check, session fetch, and execution monitoring in one call:
+
 ```bash
-curl -s --max-time 2 http://localhost:3100/health
-```
-If not healthy, tell the user to start lm-assist with `lm-assist start` or `/assist-setup`.
+node -e "
+const http = require('http');
+const filter = process.argv[1] || '';
 
-2. **Fetch sessions:**
-```bash
-curl -s --max-time 5 http://localhost:3100/projects/sessions | python3 -c "
-import sys,json
-data = json.load(sys.stdin).get('data',{})
-sessions = data.get('sessions',[])
-total = data.get('total', len(sessions))
+function api(path) {
+  return new Promise((resolve) => {
+    const req = http.get('http://localhost:3100' + path, { timeout: 5000 }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+  });
+}
 
-# Filter by project if argument provided
-project_filter = '''$ARGUMENTS[0]'''.strip()
-if project_filter:
-    sessions = [s for s in sessions if project_filter.lower() in (s.get('projectPath','') + s.get('projectName','')).lower()]
+(async () => {
+  const health = await api('/health');
+  if (!health?.success) {
+    console.log('lm-assist API is not running.\nStart with: lm-assist start\nOr run: /assist-setup');
+    return;
+  }
 
-# Separate running from completed
-running = [s for s in sessions if s.get('isRunning')]
-rest = [s for s in sessions if not s.get('isRunning')][:10 - len(running)]
-show = running + rest
+  const data = await api('/projects/sessions');
+  if (!data?.data?.sessions) { console.log('Failed to fetch sessions.'); return; }
 
-print(f'Sessions ({len(show)} of {total})')
-if project_filter:
-    print(f'Filtered: {project_filter}')
-print('─' * 95)
-fmt = '{:<7} {:<28} {:<18} {:<8} {:>8} {:>6}'
-print(fmt.format('Status', 'Name', 'Project', 'Model', 'Cost', 'Turns'))
-print('─' * 95)
-for s in show:
-    status = '[RUN]' if s.get('isRunning') else ''
-    name = (s.get('customTitle') or s.get('slug') or s['sessionId'][:12])[:26]
-    project = (s.get('projectPath','').split('/')[-1] or '-')[:16]
-    model = (s.get('model','') or '-').replace('claude-','').replace('opus-4-6','opus').replace('sonnet-4-6','sonnet')[:7]
-    cost = f'\${s[\"totalCostUsd\"]:.2f}' if s.get('totalCostUsd') else '-'
-    turns = str(s.get('numTurns','')) or '-'
-    print(fmt.format(status, name, project, model, cost, turns))
-"
-```
+  let sessions = data.data.sessions;
+  const total = data.data.total || sessions.length;
 
-3. **Check running executions:**
-```bash
-curl -s --max-time 3 http://localhost:3100/monitor/executions | python3 -c "
-import sys,json
-execs = json.load(sys.stdin).get('data',{}).get('executions',[])
-running = [e for e in execs if e.get('isRunning')]
-if running:
-    print(f'\nRunning Executions ({len(running)}):')
-    for e in running:
-        eid = e.get('executionId','')[:12]
-        turns = e.get('turnCount',0)
-        cost = e.get('costUsd',0)
-        elapsed = (e.get('elapsedMs',0) or 0) // 1000
-        mins = elapsed // 60
-        secs = elapsed % 60
-        print(f'  {eid}  T:{turns}  \${cost:.2f}  {mins}m{secs}s')
-"
+  if (filter) {
+    sessions = sessions.filter(s => ((s.projectPath || '') + (s.projectName || '')).toLowerCase().includes(filter.toLowerCase()));
+  }
+
+  const running = sessions.filter(s => s.isRunning);
+  const rest = sessions.filter(s => !s.isRunning).slice(0, 15);
+  const show = [...running, ...rest];
+
+  console.log('Sessions (' + running.length + ' running, ' + total + ' total)');
+  if (filter) console.log('Filtered: ' + filter);
+  console.log('\u2500'.repeat(95));
+  const hdr = (s,n) => (s + ' '.repeat(n)).slice(0,n);
+  const rgt = (s,n) => (' '.repeat(n) + s).slice(-n);
+  console.log(hdr('Status',7) + hdr('Name',28) + hdr('Project',18) + hdr('Model',8) + rgt('Cost',8) + rgt('Turns',6));
+  console.log('\u2500'.repeat(95));
+
+  for (const s of show) {
+    const status = s.isRunning ? '[RUN]' : '';
+    const name = (s.customTitle || s.slug || s.sessionId.slice(0,12)).slice(0,26);
+    const project = ((s.projectPath || '').split('/').pop() || '-').slice(0,16);
+    const model = (s.model || '-').replace('claude-','').replace('opus-4-6','opus').replace('sonnet-4-6','sonnet').slice(0,7);
+    const cost = s.totalCostUsd ? '\$' + s.totalCostUsd.toFixed(2) : '-';
+    const turns = String(s.numTurns || '-');
+    console.log(hdr(status,7) + hdr(name,28) + hdr(project,18) + hdr(model,8) + rgt(cost,8) + rgt(turns,6));
+  }
+
+  // Running executions
+  const exData = await api('/monitor/executions');
+  if (exData?.data?.executions) {
+    const re = exData.data.executions.filter(e => e.isRunning);
+    if (re.length) {
+      console.log('\nRunning Executions (' + re.length + '):');
+      for (const e of re) {
+        const eid = (e.executionId || '').slice(0,12);
+        const t = e.turnCount || 0;
+        const c = (e.costUsd || 0).toFixed(2);
+        const elapsed = Math.floor((e.elapsedMs || 0) / 1000);
+        const mins = Math.floor(elapsed / 60);
+        const secs = elapsed % 60;
+        console.log('  ' + eid + '  T:' + t + '  \$' + c + '  ' + mins + 'm' + secs + 's');
+      }
+    }
+  }
+
+  const totalCost = sessions.reduce((a, s) => a + (s.totalCostUsd || 0), 0);
+  console.log('\u2500'.repeat(95));
+  console.log('Total cost: \$' + totalCost.toFixed(2));
+})();
+" -- "$ARGUMENTS[0]"
 ```
 
 ## Output
 
-Present the table output from the python script directly. Do NOT reformat as markdown — show it as-is from the terminal output.
-
-If the API is not running, show:
-```
-lm-assist API is not running.
-Start with: lm-assist start
-Or run: /assist-setup
-```
+Present the script output directly. Do NOT reformat as markdown — show it as-is from the terminal.

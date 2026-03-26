@@ -25,7 +25,7 @@ const SETTINGS_FILE = path.join(getDataDir(), 'project-settings.json');
 
 const DEFAULTS: ProjectSettings = {
   excludedPaths: [],
-  knowledgeEnabled: true,
+  knowledgeEnabled: false,
 };
 
 // ── Mtime Cache ──────────────────────────────────────────
