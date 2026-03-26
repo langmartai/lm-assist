@@ -226,10 +226,10 @@ Then in Claude Code, run `/plugin install .` to register from source.
 | Skills | Yes (via plugin) | `observe` (session intelligence) + `route` (cross-project routing) |
 | Commands | Yes (via plugin) | `/sessions`, `/summary`, `/run` + 6 `/assist-*` commands |
 | Core API + Web UI | Yes (via npm/source) | 155+ endpoint REST API + Next.js dashboard |
-| MCP server | Optional (via `/assist-setup`) | `search`, `detail`, `feedback` knowledge tools |
-| Context hook | Optional (via `/assist-setup`) | Knowledge injection into prompts |
+| Statusline | Yes (via `/assist-setup`) | Context %, rate limits (5h/7d), cost, process stats |
+| MCP server | Optional (`/assist-setup --mcp`) | `search`, `detail`, `feedback` knowledge tools |
+| Context hook | Optional (`/assist-setup --mcp`) | Knowledge injection into prompts |
 | Knowledge system | Off by default | Enable in Settings > Data Loading. Saves ~100MB when disabled |
-| Statusline | Optional (via `/assist-setup --statusline`) | Git branch, context %, rate limits, cost, process stats |
 
 ## Services
 

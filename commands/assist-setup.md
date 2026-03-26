@@ -1,43 +1,56 @@
 ---
 allowed-tools: Bash, Read, Edit
-description: Install lm-assist npm package and register MCP server
+description: Install lm-assist services, statusline, and optionally MCP/hooks
 ---
 
-# /assist-setup — Install lm-assist
+# /assist-setup — Setup lm-assist
 
-Install the lm-assist npm package globally and register the MCP server in the plugin config.
+Install the lm-assist npm package, start services, install the statusline, and optionally register MCP server and context hook.
 
 ## Steps
 
 ### 1. Install the npm package
 
-Check if already installed, then install or update:
 ```bash
 npm list -g lm-assist --depth=0 2>/dev/null
 npm install -g lm-assist
 ```
 
-### 2. Find the install path
+### 2. Start services
 
-Get the npm global prefix to build the MCP server path:
 ```bash
-npm prefix -g
+lm-assist start
 ```
 
-The MCP server entry point is at:
-- **Linux/macOS**: `<npm-prefix>/lib/node_modules/lm-assist/core/dist/mcp-server/index.js`
-- **Windows**: `<npm-prefix>/node_modules/lm-assist/core/dist/mcp-server/index.js`
-
-Verify the file exists:
+Verify health:
 ```bash
-ls "<computed-path>" 2>/dev/null
+curl -s --max-time 3 http://localhost:3100/health
 ```
 
-### 3. Register MCP server in the plugin
+### 3. Install statusline (always)
 
-Read and update the plugin's `.mcp.json` file at `~/.claude/plugins/cache/langmartai/lm-assist/<version>/.mcp.json`.
+The statusline shows context %, rate limits, cost, and process info in the terminal status bar.
 
-Find the correct path:
+```bash
+curl -s -X POST http://localhost:3100/claude-code/statusline/install
+```
+
+### 4. Optionally install MCP server and context hook
+
+Only if the user wants knowledge features. Skip by default.
+
+If `$ARGUMENTS` contains `--mcp` or `--knowledge` or `--all`:
+
+```bash
+# Find the install path
+NPM_PREFIX=$(npm prefix -g)
+# MCP server path
+MCP_PATH="$NPM_PREFIX/lib/node_modules/lm-assist/core/dist/mcp-server/index.js"
+# On Windows: $NPM_PREFIX/node_modules/lm-assist/core/dist/mcp-server/index.js
+ls "$MCP_PATH" 2>/dev/null
+```
+
+Register MCP server in the plugin's `.mcp.json`:
 ```bash
 ls ~/.claude/plugins/cache/langmartai/lm-assist/
 ```
@@ -54,12 +67,19 @@ Then use the Edit tool to update the `.mcp.json` to:
 }
 ```
 
-Also update `~/.claude/plugins/marketplaces/langmartai/.mcp.json` with the same content.
+Also enable knowledge in project settings:
+```bash
+curl -s -X PUT http://localhost:3100/project-settings \
+  -H 'Content-Type: application/json' \
+  -d '{"knowledgeEnabled": true}'
+```
 
-### 4. Report result
+### 5. Report result
 
 Tell the user:
-- Installation complete
-- MCP server registered in plugin
-- Restart Claude Code to load the MCP server
-- Then type `/assist` to open the web UI
+- lm-assist services running (API :3100, Web :3848)
+- Statusline installed
+- Skills and commands available: `/sessions`, `/summary`, `/run`
+- Web UI: `http://localhost:3848`
+- If MCP was installed: MCP server registered, restart Claude Code to activate
+- If MCP was NOT installed: "Run `/assist-setup --mcp` to add knowledge tools"
