@@ -2,6 +2,9 @@
  * Agent API Implementation
  *
  * Extracted from control-api.ts - direct Claude Agent SDK access with full options.
+ *
+ * Background executions use detached CLI processes that survive lm-assist restarts.
+ * On startup, recoverExecutions() re-attaches to any still-running detached processes.
  */
 
 import type {
@@ -20,6 +23,7 @@ import type {
 import type { PermissionResponse, UserQuestionResponse } from '../types/sdk-event-handlers';
 import type { ClaudeSdkRunner, SdkExecuteOptions, SdkExecuteResult, SdkExecutionHandle } from '../sdk-runner';
 import type { AgentSessionStore } from '../agent-session-store';
+import { spawnDetached, recoverExecutions, cleanupOldExecutions } from '../detached-runner';
 
 export interface AgentApiDeps {
   sdkRunner: ClaudeSdkRunner;
@@ -185,6 +189,50 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
   // Map for tracking background executions with results
   const backgroundExecutions = new Map<string, BackgroundExecution>();
 
+  // Recover detached executions from previous lm-assist runs
+  try {
+    const recovered = recoverExecutions();
+    for (const [execId, handle] of recovered) {
+      backgroundExecutions.set(execId, {
+        handle,
+        request: { prompt: '', background: true } as AgentExecuteRequest,
+        startedAt: new Date(),
+      });
+
+      // Track completion
+      handle.result.then(result => {
+        const entry = backgroundExecutions.get(execId);
+        if (entry) {
+          backgroundExecutions.set(execId, {
+            ...entry,
+            completedAt: new Date(),
+            result: convertResult(result, execId),
+          });
+        }
+      }).catch(err => {
+        const entry = backgroundExecutions.get(execId);
+        if (entry) {
+          backgroundExecutions.set(execId, {
+            ...entry,
+            completedAt: new Date(),
+            error: String(err),
+          });
+        }
+      });
+    }
+    if (recovered.size > 0) {
+      console.log(`[agent-api] Recovered ${recovered.size} detached execution(s) from previous run`);
+    }
+
+    // Clean up old logs on startup
+    const cleaned = cleanupOldExecutions(7);
+    if (cleaned > 0) {
+      console.log(`[agent-api] Cleaned up ${cleaned} old detached execution log(s)`);
+    }
+  } catch (err) {
+    console.error('[agent-api] Failed to recover detached executions:', err);
+  }
+
   // Helper to find execution by executionId or sessionId
   const findExecution = (id: string): { executionId: string; entry: BackgroundExecution } | null => {
     // First try direct lookup by executionId
@@ -212,9 +260,10 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
         // Convert request to SDK options
         const sdkOptions = convertToSdkOptions(request, executionId, projectPath);
 
-        // Handle background execution
+        // Handle background execution — use detached CLI process
+        // so execution survives lm-assist restarts
         if (request.background) {
-          const handle = sdkRunner.executeAsync(request.prompt, sdkOptions);
+          const handle = spawnDetached(request.prompt, sdkOptions);
           const startedAt = new Date();
 
           backgroundExecutions.set(executionId, {
@@ -322,9 +371,9 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
         sdkOptions.resume = true;
         sdkOptions.sessionId = request.sessionId;
 
-        // Handle background execution
+        // Handle background resume — use detached CLI process
         if (request.background) {
-          const handle = sdkRunner.executeAsync(request.prompt, sdkOptions);
+          const handle = spawnDetached(request.prompt, sdkOptions);
           const startedAt = new Date();
 
           backgroundExecutions.set(executionId, {
