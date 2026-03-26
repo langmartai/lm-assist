@@ -282,9 +282,9 @@ Sessions (3 running, 415 total)
 Status  Name                         Project            Model      Cost  Turns
 ───────────────────────────────────────────────────────────────────────
 [RUN]   observability-platform-build  lm-assist          opus    $307.66  1462
-[RUN]   trade-delta-analysis          lm-unified-trade   opus    $153.20   822
-[RUN]   anti-kelly-system             lm-unified-trade   opus     $35.49   433
-        two-track-dashboard           lm-unified-trade   opus    $107.43   516
+[RUN]   trade-delta-analysis          my-trading-app   opus    $153.20   822
+[RUN]   anti-kelly-system             my-trading-app   opus     $35.49   433
+        two-track-dashboard           my-trading-app   opus    $107.43   516
         skill-validation-test         lm-assist          opus      $0.63    11
 ───────────────────────────────────────────────────────────────────────
 Total cost: $604.41
@@ -317,17 +317,17 @@ What was accomplished:
 
 The route skill auto-detects this belongs to another project:
 ```
-This task appears to belong to lm-unified-trade, not the current project.
+This task appears to belong to my-trading-app, not the current project.
 
 Relevant session found: trade-delta-analysis
-Summary: Implemented delta analysis mode for /trade-analyze command...
+Summary: Implemented delta analysis mode for /analyze command...
 Status: idle (not running)
 
 Recommendation: RESUME
 Reason: This session built all existing delta modes and knows the spec,
 flag table, and pre-launch copy patterns.
 
-To resume:  claude --resume 36a30ba6-4bd1-4587-8bb3-c1d21a2ab616
+To resume:  claude --resume def67890-session-id
 ```
 
 **"Run a security review on this project"**
@@ -348,9 +348,9 @@ The observe skill activates:
 ```
 Project costs:
   lm-assist              $308.29  (80 sessions)
-  lm-unified-trade       $892.15  (440 sessions)
-  LangMartDesign          $45.20  (12 sessions)
-  tier-agent              $23.50  (15 sessions)
+  my-trading-app       $892.15  (440 sessions)
+  my-web-platform          $45.20  (12 sessions)
+  my-agent-framework              $23.50  (15 sessions)
 ```
 
 ### Session Intelligence
@@ -363,7 +363,7 @@ lm-assist learns from every interaction to route prompts smarter over time:
 - **Auto-learning** — Keywords, commands, and routing patterns accumulate with frequency counts. After a few interactions, routing skips deep scans entirely.
 
 ```
-Learning context for lm-unified-trade:
+Learning context for my-trading-app:
   Frequently mentioned: delta analysis(3x), anti-kelly(2x), regime analysis(1x)
   Areas worked in: analysis pipeline(1x)
   Routing patterns: delta analysis → trade-delta-analysis session
@@ -383,10 +383,10 @@ Sessions (5 running, 547 total)
 Status  Name                         Project            Model      Cost  Turns
 ───────────────────────────────────────────────────────────────────
 [RUN]   observability-platform-build  lm-assist          opus    $355.84  1573
-[RUN]   trade-delta-analysis          lm-unified-trade   opus    $153.20   843
-[RUN]   anti-kelly-system             lm-unified-trade   opus     $35.49   433
-        two-track-dashboard           lm-unified-trade   opus    $107.43   516
-        gateway-ssl-upgrade           LangMartDesign     opus     $12.30    85
+[RUN]   trade-delta-analysis          my-trading-app   opus    $153.20   843
+[RUN]   anti-kelly-system             my-trading-app   opus     $35.49   433
+        two-track-dashboard           my-trading-app   opus    $107.43   516
+        gateway-ssl-upgrade           my-web-platform     opus     $12.30    85
 ───────────────────────────────────────────────────────────────────
 Total cost: $664.26
 ```
@@ -395,10 +395,10 @@ Total cost: $664.26
 
 The route skill detects this belongs to another project:
 ```
-This task belongs to lm-unified-trade (regime analysis is part of the trading pipeline).
+This task belongs to my-trading-app (regime analysis is part of the trading pipeline).
 
 Relevant session: trade-delta-analysis
-Summary: Implemented delta analysis mode for /trade-analyze. Knows all delta
+Summary: Implemented delta analysis mode for /analyze. Knows all delta
 patterns, flag tables, and pre-launch copy rules.
 Status: running (T:843, $153.20)
 
@@ -423,10 +423,10 @@ No routing. Work continues in the current session.
 
 The route skill identifies this as a simple remote operation:
 ```
-This involves LangMartDesign (gateway) on the SG server.
+This involves my-web-platform (gateway) on the SG server.
 But it's a simple operations task — can handle from here via SSH.
 
-Running: ssh opc@213.35.107.246 'sudo certbot renew'
+Running: ssh user@prod-server 'sudo certbot renew'
 ```
 No project switch needed.
 
@@ -434,7 +434,7 @@ No project switch needed.
 
 Route skill identifies the target:
 ```
-This belongs to lm-unified-trade (trading dashboard).
+This belongs to my-trading-app (trading dashboard).
 
 Relevant session: two-track-dashboard (completed, 516 turns)
 Summary: Built two-track cross-product trading dashboard with spread
@@ -443,7 +443,7 @@ and cross-product opportunity tables.
 Recommendation: RESUME
 Reason: This session built the dashboard and knows the deployment process.
 
-To resume: claude --resume 54aa962c-d156-4d12-ac23-cdd0e75e9fe6
+To resume: claude --resume abc12345-session-id
 ```
 
 **6. End of day — summarize what happened:**
@@ -453,7 +453,7 @@ Session Summary: observability-platform-build
   Today: added error handling to learning store, fixed 3 bugs,
   queued 2 tasks for trade-delta-analysis, deployed gateway cert.
 
-> /sessions lm-unified-trade
+> /sessions my-trading-app
   trade-delta-analysis: processed 2 queued prompts (regime fix, S/R delta)
   two-track-dashboard: deployed to production
   anti-kelly-system: idle since yesterday
@@ -472,9 +472,9 @@ Session Summary: observability-platform-build
 
 **How learning makes it faster over time:**
 
-First time: "fix delta analysis" → scan all project summaries → find lm-unified-trade → 4 API calls
+First time: "fix delta analysis" → scan all project summaries → find my-trading-app → 4 API calls
 
-After learning: "fix delta analysis" → signal says `delta analysis(5x) → lm-unified-trade` → 1 API call
+After learning: "fix delta analysis" → signal says `delta analysis(5x) → my-trading-app` → 1 API call
 
 The more you work across projects, the smarter routing gets. Keywords, commands, and routing patterns accumulate automatically.
 
