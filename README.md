@@ -186,12 +186,12 @@ In Claude Code, run:
 ```
 /plugin marketplace add langmartai/lm-assist
 
-/plugin install lm-assist@langmartai
+/plugin install claude-one@langmartai
 ```
 
 Then **open a new Claude Code session** and run `/assist-setup`.
 
-This registers skills, commands, MCP tools, and hooks automatically.
+This installs the [Claude One](https://github.com/langmartai/claude-one) skills plugin and sets up lm-assist services automatically.
 
 ### Install via npm (for the API + Web services)
 
@@ -221,15 +221,16 @@ Then in Claude Code, run `/plugin install .` to register from source.
 
 ### What gets installed
 
-| Component | Auto-installed | Purpose |
-|-----------|---------------|---------|
-| Skills | Yes (via plugin) | `observe` (session intelligence) + `route` (cross-project routing) |
-| Commands | Yes (via plugin) | `/sessions`, `/summary`, `/run` + 6 `/assist-*` commands |
-| Core API + Web UI | Yes (via npm/source) | 155+ endpoint REST API + Next.js dashboard |
-| Statusline | Yes (via `/assist-setup`) | Context %, rate limits (5h/7d), cost, process stats |
-| MCP server | Optional (`/assist-setup --mcp`) | `search`, `detail`, `feedback` knowledge tools |
-| Context hook | Optional (`/assist-setup --mcp`) | Knowledge injection into prompts |
-| Knowledge system | Off by default | Enable in Settings > Data Loading. Saves ~100MB when disabled |
+| Component | Auto-installed | Source | Purpose |
+|-----------|---------------|--------|---------|
+| Skills (observe, route) | Yes | [Claude One](https://github.com/langmartai/claude-one) plugin | Session intelligence + cross-project routing |
+| Commands (/sessions, /summary, /run) | Yes | Claude One plugin | Quick session list, summarize, execute |
+| Commands (/assist-*) | Yes | lm-assist plugin | Setup, status, search, logs |
+| Core API + Web UI | Yes | npm package | 155+ endpoint REST API + Next.js dashboard |
+| Statusline | Yes | `/assist-setup` | Context %, rate limits, cost, process stats |
+| MCP server | Optional | `/assist-setup --mcp` | Knowledge tools (search, detail, feedback) |
+| Context hook | Optional | `/assist-setup --mcp` | Knowledge injection into prompts |
+| Knowledge system | Off by default | Settings > Data Loading | Saves ~100MB when disabled |
 
 ## Services
 
@@ -247,9 +248,9 @@ lm-assist upgrade     # Upgrade to latest version
 
 ## Skills & Commands
 
-lm-assist ships with **2 auto-triggered skills** and **9 slash commands** that work inside Claude Code.
+Skills and commands are provided by the [Claude One](https://github.com/langmartai/claude-one) plugin — installed automatically via `/assist-setup`.
 
-### Skills (auto-triggered)
+### Skills (auto-triggered via Claude One)
 
 Skills activate automatically when Claude detects relevant intent — no slash command needed.
 
