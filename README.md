@@ -179,33 +179,26 @@ When enabled, any MCP-compatible IDE can access the knowledge base:
 
 ## Install
 
-### Plugin install (recommended)
-
-In Claude Code, run:
-
-```
-/plugin marketplace add langmartai/lm-assist
-
-/plugin install claude-one@langmartai
-```
-
-Then **open a new Claude Code session** and run `/assist-setup`.
-
-This installs the [Claude One](https://github.com/langmartai/claude-one) skills plugin and sets up lm-assist services automatically.
-
-### Install via npm (for the API + Web services)
+### Install
 
 ```bash
 npm install -g lm-assist
-lm-assist start
 ```
 
-Then in Claude Code, install the plugin as above.
+That's it. The postinstall script automatically:
+- Starts API (:3100) and Web UI (:3848)
+- Installs the statusline
+- Installs the [Claude One](https://github.com/langmartai/claude-one) plugin (skills + commands)
 
-### One-line install (clone + build + plugin)
+**Open a new Claude Code session** and type `/sessions` to verify.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/langmartai/lm-assist/main/install.sh | bash
+### Alternative: plugin-only install
+
+If you already have lm-assist running and just want the skills:
+
+```
+/plugin marketplace add langmartai/lm-assist
+/plugin install claude-one@langmartai
 ```
 
 ### Install from source
@@ -217,7 +210,7 @@ npm install && npm run build
 ./core.sh start
 ```
 
-Then in Claude Code, run `/plugin install .` to register from source.
+Then in Claude Code: `/plugin install .`
 
 ### What gets installed
 
