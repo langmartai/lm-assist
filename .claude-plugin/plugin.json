@@ -1,7 +1,7 @@
 {
   "name": "lm-assist",
-  "version": "0.1.67",
-  "description": "Knowledge management, session inspector, and web terminal control for Claude Code",
+  "version": "0.1.68",
+  "description": "Observability platform for Claude Code and Agent SDK — monitor, debug, and control AI coding agents",
   "author": {
     "name": "langmartai"
   },

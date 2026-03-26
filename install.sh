@@ -6,7 +6,7 @@
 #
 # What it does:
 #   1. Adds langmartai marketplace to Claude Code
-#   2. Installs the lm-assist plugin (MCP server, hooks, slash commands)
+#   2. Installs the lm-assist plugin (skills, commands, MCP, hooks)
 #   3. Clones the repo and builds (for the API + Web services)
 #   4. Prints next steps
 #
@@ -57,7 +57,7 @@ fi
 
 info "Installing lm-assist plugin..."
 if claude plugin install lm-assist@langmartai 2>&1; then
-  ok "Plugin installed (MCP server, hooks, slash commands)"
+  ok "Plugin installed (skills, commands, MCP, hooks)"
 else
   warn "Plugin install returned non-zero (may already be installed)"
 fi
@@ -96,7 +96,7 @@ echo -e "${GREEN}╔════════════════════
 echo -e "${GREEN}║          lm-assist installed successfully        ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════╝${NC}"
 echo ""
-echo "  Plugin:  MCP server + hooks + slash commands registered"
+echo "  Plugin:  Skills + commands + MCP + hooks registered"
 echo "  Source:  $INSTALL_DIR"
 echo ""
 echo "  Next steps:"

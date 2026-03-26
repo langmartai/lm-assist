@@ -179,22 +179,34 @@ When enabled, any MCP-compatible IDE can access the knowledge base:
 
 ## Install
 
-### One-line install
+### Plugin install (recommended)
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/langmartai/lm-assist/main/install.sh | bash
+In Claude Code, run:
+
+```
+/plugin marketplace add langmartai/lm-assist
+
+/plugin install lm-assist@langmartai
 ```
 
 Then **open a new Claude Code session** and run `/assist-setup`.
 
-### Install via npm
+This registers skills, commands, MCP tools, and hooks automatically.
+
+### Install via npm (for the API + Web services)
 
 ```bash
 npm install -g lm-assist
 lm-assist start
 ```
 
-Then in Claude Code, run `/assist-setup`.
+Then in Claude Code, install the plugin as above.
+
+### One-line install (clone + build + plugin)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/langmartai/lm-assist/main/install.sh | bash
+```
 
 ### Install from source
 
@@ -205,19 +217,18 @@ npm install && npm run build
 ./core.sh start
 ```
 
-Then in Claude Code, run `/plugin install .` and `/assist-setup`.
+Then in Claude Code, run `/plugin install .` to register from source.
 
 ### What gets installed
 
 | Component | Auto-installed | Purpose |
 |-----------|---------------|---------|
+| Skills | Yes (via plugin) | `observe` (session intelligence) + `route` (cross-project routing) |
+| Commands | Yes (via plugin) | `/sessions`, `/summary`, `/run` + 6 `/assist-*` commands |
 | Core API + Web UI | Yes (via npm/source) | 155+ endpoint REST API + Next.js dashboard |
-| MCP server | Yes (via plugin) | `search`, `detail`, `feedback` tools |
-| Context hook | Yes (via plugin) | Knowledge injection (optional) |
-| Slash commands | Yes (via plugin) | 6 `/assist-*` commands |
-| Skills | Yes (via plugin) | `observe` (auto-triggered observability) + `route` (cross-project routing) |
-| Slash commands | Yes (via plugin) | 9 commands: `/sessions`, `/summary`, `/run` + 6 `/assist-*` |
-| Statusline | Optional | Git branch, context %, rate limits, process stats |
+| MCP server | Optional (via plugin) | `search`, `detail`, `feedback` knowledge tools |
+| Context hook | Optional (via plugin) | Knowledge injection into prompts |
+| Statusline | Optional | Git branch, context %, rate limits, cost, process stats |
 
 ## Services
 
