@@ -151,3 +151,37 @@ What would you like to do?
 | "deploy web to SG" | lm-assist | LangMartDesign | Handle locally with ssh+git pull |
 | "check trade session costs" | any | lm-assist (observability) | Handle locally via API |
 | "fix the CSS on this page" | lm-assist | lm-assist | Stay here, current project |
+
+## Auto-Learning After Every Route
+
+After making a routing decision, emit learning signals so future routing gets smarter:
+
+```bash
+curl -s -X POST http://localhost:3100/learn \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "signals": [
+      {"type": "keyword", "value": "KEYWORD_FROM_PROMPT", "projectPath": "MATCHED_PROJECT_PATH", "projectName": "MATCHED_PROJECT"},
+      {"type": "routing", "value": "ROUTING_DECISION_SUMMARY", "projectPath": "TARGET_PROJECT_PATH"}
+    ]
+  }'
+```
+
+If the user corrects a routing decision ("no, that's not for that project"), record a correction:
+```bash
+curl -s -X POST http://localhost:3100/learn \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "correction", "value": "WHAT_WAS_WRONG → WHAT_IS_RIGHT", "projectPath": "CORRECT_PROJECT_PATH"}'
+```
+
+Before routing, check if accumulated signals can shortcut the decision:
+```bash
+curl -s "http://localhost:3100/learn/project/$(python3 -c 'import urllib.parse; print(urllib.parse.quote(\"/home/ubuntu/PROJECT\"))')" | python3 -c "
+import sys,json
+data = json.load(sys.stdin).get('data',{})
+if data.get('total',0) > 0:
+    print(data.get('context',''))
+"
+```
+
+If learning signals already tell you which project owns a keyword (e.g., "delta analysis" → lm-unified-trade with 5x count), skip the deep scan — route directly.

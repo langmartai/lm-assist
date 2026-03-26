@@ -12,6 +12,7 @@ import { getSessionCache, isRealUserPrompt } from '../../session-cache';
 import { getSessionSummary, saveSessionSummary, getAllSessionSummaries, deleteSessionSummary, getSessionsNeedingSummaries } from '../../session-summary-store';
 import { enqueuePrompt, getSessionQueue, getAllPendingPrompts, getNextPrompt, markDispatched, markCompleted, cancelPrompt, cleanupQueue, getQueuedBySession, getProjectQueue } from '../../prompt-queue-store';
 import { getProjectSummary, getAllProjectSummaries, saveProjectSummary, deleteProjectSummary } from '../../project-summary-store';
+import { recordSignal, recordSignals, getProjectSignals, getAllSignals, getProjectLearningContext, cleanupSignals } from '../../learning-store';
 
 export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
   return [
@@ -148,6 +149,59 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
           updatedAt: new Date().toISOString(),
         });
         return { success: true, data: { projectPath: body.projectPath, saved: true } };
+      },
+    },
+
+    // ========================================================================
+    // Learning Signal Endpoints
+    // ========================================================================
+
+    // POST /learn — Record learning signals (batch)
+    {
+      method: 'POST',
+      pattern: /^\/learn$/,
+      handler: async (req) => {
+        const body = req.body || {};
+        if (Array.isArray(body.signals)) {
+          const count = recordSignals(body.signals);
+          return { success: true, data: { recorded: count } };
+        }
+        if (body.type && body.value) {
+          const signal = recordSignal(body);
+          return { success: true, data: signal };
+        }
+        return { success: false, error: 'Provide {type, value, ...} or {signals: [...]}' };
+      },
+    },
+
+    // GET /learn — Get all learning signals
+    {
+      method: 'GET',
+      pattern: /^\/learn$/,
+      handler: async () => {
+        return { success: true, data: getAllSignals() };
+      },
+    },
+
+    // GET /learn/project/:path — Get signals for a project + learning context string
+    {
+      method: 'GET',
+      pattern: /^\/learn\/project\/(?<projectPath>.+)$/,
+      handler: async (req) => {
+        const projectPath = decodeURIComponent(req.params.projectPath);
+        const signals = getProjectSignals(projectPath);
+        const context = getProjectLearningContext(projectPath);
+        return { success: true, data: { signals, total: signals.length, context } };
+      },
+    },
+
+    // POST /learn/cleanup — Remove old low-frequency signals
+    {
+      method: 'POST',
+      pattern: /^\/learn\/cleanup$/,
+      handler: async () => {
+        const removed = cleanupSignals();
+        return { success: true, data: { removed } };
       },
     },
 

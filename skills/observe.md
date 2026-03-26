@@ -676,6 +676,65 @@ Only generate summaries for sessions with 3+ real user prompts (skip warmup/empt
 
 ---
 
+## 5. AUTO-LEARNING — Evolve Summaries From Every Interaction
+
+After EVERY routing decision or session query, emit learning signals so summaries improve over time.
+
+```bash
+# Record what was learned from this interaction
+curl -s -X POST http://localhost:3100/learn \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "signals": [
+      {"type": "keyword", "value": "FEATURE_OR_TERM_MENTIONED", "projectPath": "PROJECT_PATH", "projectName": "PROJECT_NAME"},
+      {"type": "area", "value": "AREA_OF_PROJECT_WORKED_IN", "projectPath": "PROJECT_PATH"},
+      {"type": "command", "value": "COMMAND_USER_RAN_OR_ASKED_ABOUT", "projectPath": "PROJECT_PATH"},
+      {"type": "routing", "value": "Routed FROM_SESSION to TO_SESSION because REASON", "projectPath": "TARGET_PROJECT"}
+    ]
+  }'
+```
+
+**What to record after each interaction:**
+
+| Situation | Signals to emit |
+|-----------|----------------|
+| User asks about a feature | `keyword: "feature name"` for the project |
+| User runs a command | `command: "./core.sh build"` for the project |
+| User queries an endpoint | `endpoint: "GET /sessions"` for the project |
+| Routing decision made | `routing: "delta analysis → trade-delta-analysis session"` |
+| User says "no, wrong project" | `correction: "regime analysis is NOT lm-assist, IS lm-unified-trade"` |
+| User works in a specific area | `area: "web UI"` or `area: "analysis pipeline"` |
+
+**How learning improves routing over time:**
+
+When regenerating project summaries, include accumulated signals:
+
+```bash
+# Get learning context for a project before regenerating its summary
+curl -s "http://localhost:3100/learn/project/$(python3 -c 'import urllib.parse; print(urllib.parse.quote("/home/ubuntu/lm-assist"))')" | python3 -c "
+import sys,json
+data = json.load(sys.stdin).get('data',{})
+print(f'Signals: {data.get(\"total\",0)}')
+print(f'Context:\n{data.get(\"context\",\"(none)\")}')"
+```
+
+The `context` string can be included in the project summary agent's prompt so it knows:
+- Which features users mention most → prioritize in summary
+- Which commands are used most → put in keyCommands
+- Which areas are worked in most → highlight in areas
+- Routing corrections → fix misclassifications
+
+**The learning loop:**
+1. User prompts → skill extracts signals → `POST /learn`
+2. Signals accumulate per project (with frequency counts)
+3. When project summary is regenerated, `GET /learn/project/:path` provides context
+4. New summary includes top signals → routing becomes more accurate
+5. Eventually summaries are comprehensive enough that deep scans are rarely needed
+
+**Emit signals lazily** — don't block the user's workflow. A single `POST /learn` with 2-5 signals per interaction is enough. Let frequency counts do the heavy lifting.
+
+---
+
 ## Error Handling
 
 - **API not running** (connection refused): Tell user "lm-assist API is not running. Start with `lm-assist start` or `/assist-setup`."
