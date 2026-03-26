@@ -76,7 +76,8 @@
     "stop": "node bin/lm-assist.js stop",
     "restart": "node bin/lm-assist.js restart",
     "prepublishOnly": "npm run build:core",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "postinstall": "node bin/postinstall.js"
   },
   "overrides": {
     "global-agent": "^4.1.2"
