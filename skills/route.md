@@ -53,11 +53,35 @@ User prompt arrives
    → NEW: no matching session, start fresh in target project
 ```
 
+## Step 0: Know What THIS Session Is Doing
+
+**Before ANY routing, understand the current session.** This is the anchor that prevents wrong routing.
+
+```bash
+# Check current session summary
+curl -s --max-time 2 "http://localhost:3100/sessions/$CLAUDE_SESSION_ID/summary" | python3 -c "
+import sys,json
+d = json.load(sys.stdin).get('data')
+if d:
+    print(f'This session: {d.get(\"displayName\",\"\")} — {d.get(\"summary\",\"\")[:200]}')
+else:
+    print('No session summary yet. Use /summary to generate one.')
+"
+```
+
+If the current session has a summary, compare the user's new prompt against it:
+- **Matches current session work?** → STAY. This is a continuation.
+- **Related to current session's project but different area?** → STAY. Same project, different task.
+- **Clearly about a different project?** → Continue to routing steps below.
+
+**The current session gets priority.** Only route away when the prompt is clearly unrelated to what this session is doing AND what this project is about.
+
 ## Step 1: Quick Check — Is This For the Current Project?
 
-Before doing any API calls, reason about the prompt:
+Before doing external API calls, reason about the prompt:
 
 - What is the current project? (check `$PWD` or the project context)
+- What is this session doing? (from the session summary above)
 - Does the prompt mention specific files, features, or patterns that clearly belong here?
 - If YES → stop, don't route, just do the work
 
