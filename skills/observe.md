@@ -1,5 +1,5 @@
 ---
-description: "Use when the user asks about Claude Code sessions, running executions, agent status, session costs, token usage, subagent trees, or wants to run/monitor agent executions. Covers session browsing, cost tracking, execution management, and debugging across any project."
+description: "Use when the user asks about Claude Code sessions, running executions, agent status, session costs, token usage, subagent trees, project costs, task status, skill analytics, plans, session search, or wants to run/monitor agent executions. Covers session browsing, cost tracking, execution management, debugging, project summaries, and aggregated insights across any project."
 allowed-tools: Bash
 ---
 
@@ -732,6 +732,129 @@ The `context` string can be included in the project summary agent's prompt so it
 5. Eventually summaries are comprehensive enough that deep scans are rarely needed
 
 **Emit signals lazily** — don't block the user's workflow. A single `POST /learn` with 2-5 signals per interaction is enough. Let frequency counts do the heavy lifting.
+
+---
+
+## 6. ADDITIONAL INSIGHTS
+
+### Project costs
+
+```bash
+# Cost breakdown across all projects
+curl -s http://localhost:3100/projects/costs | python3 -c "
+import sys,json
+data = json.load(sys.stdin).get('data',{})
+for p in data.get('projects',[]):
+    name = p.get('projectName','')
+    cost = p.get('totalCostUsd',0)
+    sessions = p.get('sessionCount',0)
+    print(f'  {name:20} \${cost:>8.2f}  ({sessions} sessions)')
+"
+```
+
+### Search sessions by content
+
+```bash
+# Find sessions mentioning a specific topic
+curl -s "http://localhost:3100/session-search?q=SEARCH_TERM&limit=10" | python3 -c "
+import sys,json
+results = json.load(sys.stdin).get('data',{}).get('results',[])
+for r in results:
+    sid = r.get('sessionId','')[:12]
+    score = r.get('score',0)
+    snippet = r.get('snippet','')[:100]
+    print(f'  {sid} (score:{score:.2f}) {snippet}')
+"
+
+# Recent sessions (last N days)
+curl -s "http://localhost:3100/session-search/recent?days=3" | python3 -c "
+import sys,json
+sessions = json.load(sys.stdin).get('data',{}).get('sessions',[])
+print(f'{len(sessions)} sessions in last 3 days')
+"
+```
+
+### Skills analytics — which skills/commands are used most
+
+```bash
+curl -s http://localhost:3100/skills/analytics | python3 -c "
+import sys,json
+data = json.load(sys.stdin).get('data',{})
+for s in data.get('skills',[])[:10]:
+    name = s.get('name','')
+    count = s.get('count',0)
+    print(f'  {name:30} {count}x')
+"
+```
+
+### Aggregated tasks across all sessions
+
+```bash
+# All tasks with status
+curl -s http://localhost:3100/task-store/tasks | python3 -c "
+import sys,json
+tasks = json.load(sys.stdin).get('data',{}).get('tasks',[])
+for t in tasks[:15]:
+    status = t.get('status','')
+    subject = t.get('subject','')[:60]
+    owner = t.get('owner','')
+    print(f'  [{status:12}] {subject}  {owner}')
+"
+
+# Ready tasks (unblocked, actionable)
+curl -s http://localhost:3100/task-store/tasks/ready | python3 -c "
+import sys,json
+tasks = json.load(sys.stdin).get('data',{}).get('tasks',[])
+print(f'{len(tasks)} ready tasks')
+for t in tasks[:10]:
+    print(f'  {t.get(\"subject\",\"\")[:70]}')
+"
+```
+
+### Plans
+
+```bash
+curl -s http://localhost:3100/plans | python3 -c "
+import sys,json
+plans = json.load(sys.stdin).get('data',{}).get('plans',[])
+for p in plans:
+    name = p.get('name','')
+    print(f'  {name}')
+"
+```
+
+### Session conversation search
+
+```bash
+# Search within a specific session's conversation
+curl -s "http://localhost:3100/sessions/SESSION_ID/conversation?toolDetail=summary&lastN=50" | python3 -c "
+import sys,json
+msgs = json.load(sys.stdin).get('data',{}).get('messages',[])
+term = 'SEARCH_TERM'.lower()
+for m in msgs:
+    content = (m.get('content','') or '').lower()
+    if term in content:
+        role = m.get('type','')
+        text = m.get('content','')[:200]
+        print(f'  [{role}] {text}')
+"
+```
+
+### Project summaries (comprehensive reference)
+
+```bash
+# Get full project reference including services, commands, deployment
+curl -s "http://localhost:3100/projects/summaries" | python3 -c "
+import sys,json
+for s in json.load(sys.stdin).get('data',{}).get('summaries',[]):
+    print(f'=== {s[\"projectName\"]} ===')
+    print(f'  {s.get(\"summary\",\"\")}')
+    if s.get('services'): print(f'  Services: {str(s[\"services\"])[:150]}')
+    if s.get('keyCommands'): print(f'  Commands: {str(s[\"keyCommands\"])[:150]}')
+    if s.get('deployment'): print(f'  Deploy: {str(s[\"deployment\"])[:150]}')
+    print()
+"
+```
 
 ---
 
