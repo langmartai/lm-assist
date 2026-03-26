@@ -2,13 +2,8 @@
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "langmartai",
   "description": "Claude Code plugins — multi-session management, web dashboard, and observability platform",
-  "owner": {
-    "name": "langmartai"
-  },
-  "metadata": {
-    "description": "Plugins by langmartai",
-    "homepage": "https://github.com/langmartai/lm-assist"
-  },
+  "owner": { "name": "langmartai" },
+  "metadata": { "description": "Plugins by langmartai", "homepage": "https://github.com/langmartai/lm-assist" },
   "plugins": [
     {
       "name": "claude-code-multisession",
@@ -29,7 +24,7 @@
     {
       "name": "lm-assist",
       "version": "0.1.69",
-      "source": "./",
+      "source": { "source": "url", "url": "https://github.com/langmartai/lm-assist.git" },
       "description": "Observability platform for Claude Code and Agent SDK. 155+ API endpoints, 15 insight views, web terminal, session/project summaries, prompt queue, auto-learning.",
       "category": "productivity",
       "homepage": "https://github.com/langmartai/lm-assist"
