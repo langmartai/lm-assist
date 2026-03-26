@@ -369,6 +369,117 @@ Learning context for lm-unified-trade:
   Routing patterns: delta analysis → trade-delta-analysis session
 ```
 
+### Multi-Project Concurrent Development
+
+lm-assist shines when you're working across multiple projects simultaneously. The routing skill, session summaries, and prompt queue work together to keep context organized.
+
+**Scenario: You're building lm-assist while also maintaining a trading platform and a web gateway.**
+
+**1. Start your day — see everything at a glance:**
+```
+> /sessions
+Sessions (5 running, 547 total)
+───────────────────────────────────────────────────────────────────
+Status  Name                         Project            Model      Cost  Turns
+───────────────────────────────────────────────────────────────────
+[RUN]   observability-platform-build  lm-assist          opus    $355.84  1573
+[RUN]   trade-delta-analysis          lm-unified-trade   opus    $153.20   843
+[RUN]   anti-kelly-system             lm-unified-trade   opus     $35.49   433
+        two-track-dashboard           lm-unified-trade   opus    $107.43   516
+        gateway-ssl-upgrade           LangMartDesign     opus     $12.30    85
+───────────────────────────────────────────────────────────────────
+Total cost: $664.26
+```
+
+**2. You're in lm-assist and say "fix the regime analysis stale data bug"**
+
+The route skill detects this belongs to another project:
+```
+This task belongs to lm-unified-trade (regime analysis is part of the trading pipeline).
+
+Relevant session: trade-delta-analysis
+Summary: Implemented delta analysis mode for /trade-analyze. Knows all delta
+patterns, flag tables, and pre-launch copy rules.
+Status: running (T:843, $153.20)
+
+Recommendation: QUEUE (session is running)
+Queued as high priority. Will process when current work completes.
+
+Queue for trade-delta-analysis (2 pending):
+  [high]   fix the regime analysis stale data bug
+  [normal] add S/R interaction delta mode
+```
+
+**3. Back in lm-assist, you say "add error handling to the learning store"**
+
+The route skill checks the current session summary:
+```
+STAY — "learning store" matches current session work (observability-platform-build).
+The session summary mentions auto-learning, learning signals, and learning store.
+```
+No routing. Work continues in the current session.
+
+**4. You say "the gateway SSL cert is expiring, renew it on SG"**
+
+The route skill identifies this as a simple remote operation:
+```
+This involves LangMartDesign (gateway) on the SG server.
+But it's a simple operations task — can handle from here via SSH.
+
+Running: ssh opc@213.35.107.246 'sudo certbot renew'
+```
+No project switch needed.
+
+**5. You say "deploy the trading dashboard changes to production"**
+
+Route skill identifies the target:
+```
+This belongs to lm-unified-trade (trading dashboard).
+
+Relevant session: two-track-dashboard (completed, 516 turns)
+Summary: Built two-track cross-product trading dashboard with spread
+and cross-product opportunity tables.
+
+Recommendation: RESUME
+Reason: This session built the dashboard and knows the deployment process.
+
+To resume: claude --resume 54aa962c-d156-4d12-ac23-cdd0e75e9fe6
+```
+
+**6. End of day — summarize what happened:**
+```
+> /summary
+Session Summary: observability-platform-build
+  Today: added error handling to learning store, fixed 3 bugs,
+  queued 2 tasks for trade-delta-analysis, deployed gateway cert.
+
+> /sessions lm-unified-trade
+  trade-delta-analysis: processed 2 queued prompts (regime fix, S/R delta)
+  two-track-dashboard: deployed to production
+  anti-kelly-system: idle since yesterday
+```
+
+**Key patterns for multi-project work:**
+
+| Situation | What happens |
+|-----------|-------------|
+| Task for current project | Route skill says STAY — no context switch |
+| Task for another project, relevant session running | QUEUE — prompt waits, processes when session is free |
+| Task for another project, session idle | RESUME — switch to that session with full context |
+| Simple cross-project operation (ssh, curl, read) | Handle locally — no project switch |
+| Task for unknown project | Route skill asks for clarification |
+| Same task mentioned again | Learning signals shortcut the routing — instant match |
+
+**How learning makes it faster over time:**
+
+First time: "fix delta analysis" → scan all project summaries → find lm-unified-trade → 4 API calls
+
+After learning: "fix delta analysis" → signal says `delta analysis(5x) → lm-unified-trade` → 1 API call
+
+The more you work across projects, the smarter routing gets. Keywords, commands, and routing patterns accumulate automatically.
+
+---
+
 ## Key API Endpoints
 
 | Category | Endpoints | Highlights |
