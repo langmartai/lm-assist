@@ -1,22 +1,30 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "langmartai",
-  "description": "Claude One & LM Assist — observability platform for Claude Code and Agent SDK",
+  "description": "Claude Code plugins — multi-session management, web dashboard, and observability platform",
   "owner": {
     "name": "langmartai"
   },
   "metadata": {
     "description": "Plugins by langmartai",
-    "homepage": "https://github.com/langmartai/claude-one"
+    "homepage": "https://github.com/langmartai/lm-assist"
   },
   "plugins": [
     {
-      "name": "claude-one",
+      "name": "claude-code-multisession",
       "version": "0.1.0",
-      "source": "github:langmartai/claude-one",
-      "description": "One prompt to control all your Claude Code sessions. Monitor costs, debug agents, route work across projects, queue prompts, auto-learn routing. Powered by lm-assist.",
+      "source": "github:langmartai/claude-code-multisession",
+      "description": "One prompt to control all your Claude Code sessions. Monitor costs, debug agents, route work across projects, queue prompts, auto-learn routing.",
       "category": "productivity",
-      "homepage": "https://github.com/langmartai/claude-one"
+      "homepage": "https://github.com/langmartai/claude-code-multisession"
+    },
+    {
+      "name": "claude-code-webui",
+      "version": "0.1.0",
+      "source": "github:langmartai/claude-code-webui",
+      "description": "Web dashboard for Claude Code. Browse sessions with 15 insight views, debug subagent trees, control terminals from any browser.",
+      "category": "productivity",
+      "homepage": "https://github.com/langmartai/claude-code-webui"
     },
     {
       "name": "lm-assist",
