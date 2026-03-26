@@ -70,33 +70,33 @@ try {
   dim('Statusline: will install on next /assist-setup');
 }
 
-// 3. Check if claude-one plugin is installed
+// 3. Check if claude-code-multisession plugin is installed
 try {
   const result = execFileSync('claude', ['plugin', 'list'], {
     encoding: 'utf-8',
     timeout: 10000,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
-  if (!result.includes('claude-one')) {
-    log('Installing claude-one plugin (skills + commands)...');
+  if (!result.includes('claude-code-multisession')) {
+    log('Installing claude-code-multisession plugin (skills + commands)...');
     try {
       execFileSync('claude', ['plugin', 'marketplace', 'add', 'langmartai/lm-assist'], {
         stdio: 'pipe', timeout: 30000,
       });
     } catch { /* marketplace may already exist */ }
     try {
-      execFileSync('claude', ['plugin', 'install', 'claude-one@langmartai'], {
+      execFileSync('claude', ['plugin', 'install', 'claude-code-multisession@langmartai'], {
         stdio: 'pipe', timeout: 60000,
       });
-      log('claude-one plugin installed');
+      log('claude-code-multisession plugin installed');
     } catch {
-      warn('Could not auto-install claude-one. Run in Claude Code: /plugin install claude-one@langmartai');
+      warn('Could not auto-install claude-code-multisession. Run in Claude Code: /plugin install claude-code-multisession@langmartai');
     }
   } else {
-    dim('claude-one plugin already installed');
+    dim('claude-code-multisession plugin already installed');
   }
 } catch {
-  dim('Claude Code CLI not found — install claude-one plugin manually in Claude Code');
+  dim('Claude Code CLI not found — install claude-code-multisession plugin manually in Claude Code');
 }
 
 log('Setup complete. Open a new Claude Code session and try /sessions');

@@ -1,11 +1,11 @@
 ---
 allowed-tools: Bash, Read, Edit
-description: Install lm-assist services, claude-one skills, statusline, and optionally MCP/hooks
+description: Install lm-assist services, claude-code-multisession skills, statusline, and optionally MCP/hooks
 ---
 
 # /assist-setup — Setup lm-assist
 
-Install lm-assist services, auto-install claude-one skills plugin if missing, install statusline, and optionally register MCP server.
+Install lm-assist services, auto-install claude-code-multisession skills plugin if missing, install statusline, and optionally register MCP server.
 
 ## Steps
 
@@ -27,19 +27,19 @@ Verify health:
 curl -s --max-time 3 http://localhost:3100/health
 ```
 
-### 3. Install claude-one plugin (if not installed)
+### 3. Install claude-code-multisession plugin (if not installed)
 
-Check if claude-one is already installed. If not, add marketplace and install it — this provides the observe/route skills and /sessions, /summary, /run commands.
+Check if claude-code-multisession is already installed. If not, add marketplace and install it — this provides the observe/route skills and /sessions, /summary, /run commands.
 
 ```bash
-# Check if claude-one is installed
-claude plugin list 2>/dev/null | grep -q "claude-one" && echo "claude-one: installed" || echo "claude-one: not installed"
+# Check if claude-code-multisession is installed
+claude plugin list 2>/dev/null | grep -q "claude-code-multisession" && echo "claude-code-multisession: installed" || echo "claude-code-multisession: not installed"
 ```
 
 If not installed:
 ```bash
 claude plugin marketplace add langmartai/lm-assist 2>/dev/null
-claude plugin install claude-one@langmartai 2>/dev/null
+claude plugin install claude-code-multisession@langmartai 2>/dev/null
 ```
 
 ### 4. Install statusline (always)
@@ -93,7 +93,7 @@ curl -s -X PUT http://localhost:3100/project-settings \
 
 Tell the user:
 - lm-assist services running (API :3100, Web :3848)
-- claude-one plugin installed (skills: observe, route; commands: /sessions, /summary, /run)
+- claude-code-multisession plugin installed (skills: observe, route; commands: /sessions, /summary, /run)
 - Statusline installed
 - Web UI: `http://localhost:3848`
 - If MCP was installed: MCP server registered, restart Claude Code to activate

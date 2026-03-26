@@ -1,5 +1,5 @@
 ---
-description: "Use when the user's prompt mentions a project name, service, API endpoint, feature, or codebase area that might belong to a different project than the current one. Triggers when prompt references known projects (lm-assist, lm-unified-trade, LangMartDesign, tier-agent) or their features (trading, analysis, gateway, marketplace, knowledge, sessions, hooks, dashboard). Also triggers when the prompt seems unrelated to the current project's domain. Evaluates whether to handle locally, dispatch to the right project, or queue for an existing session."
+description: "Use when the user's prompt mentions a project name, service, API endpoint, feature, or codebase area that might belong to a different project than the current one. Triggers when prompt references features from other known projects, or when the prompt seems unrelated to the current project's domain. Evaluates whether to handle locally, dispatch to the right project, or queue for an existing session."
 allowed-tools: Bash
 ---
 
@@ -8,6 +8,27 @@ allowed-tools: Bash
 Evaluate whether the user's prompt belongs to the current session/project or should be routed elsewhere.
 
 **API base:** `http://localhost:3100`
+
+## Pre-flight: Ensure lm-assist is running
+
+Before routing, check if the API is reachable. If not, auto-install and start.
+
+```bash
+curl -s --max-time 2 http://localhost:3100/health | python3 -c "
+import sys,json
+try:
+    d = json.load(sys.stdin)
+    if d.get('success'): print('API: healthy')
+    else: print('API: unhealthy')
+except: print('API: not running')
+"
+```
+
+If not running:
+```bash
+npm list -g lm-assist --depth=0 2>/dev/null || npm install -g lm-assist
+lm-assist start
+```
 
 ## When This Skill Triggers
 

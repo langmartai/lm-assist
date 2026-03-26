@@ -11,6 +11,36 @@ Query sessions, monitor executions, debug agent behavior, and control agent runs
 
 All commands use `curl -s` with `--max-time 5`. Parse JSON responses with `python3 -c "import sys,json; ..."`.
 
+## Pre-flight: Ensure lm-assist is running
+
+Before ANY operation, check if the API is reachable. If not, auto-install and start.
+
+```bash
+curl -s --max-time 2 http://localhost:3100/health | python3 -c "
+import sys,json
+try:
+    d = json.load(sys.stdin)
+    if d.get('success'): print('API: healthy')
+    else: print('API: unhealthy')
+except: print('API: not running')
+"
+```
+
+If the output is "API: not running" or "API: unhealthy":
+
+```bash
+# Check if lm-assist is installed
+npm list -g lm-assist --depth=0 2>/dev/null || npm install -g lm-assist
+
+# Start services
+lm-assist start
+
+# Verify
+curl -s --max-time 5 http://localhost:3100/health
+```
+
+Only proceed with the user's request after the API is confirmed healthy.
+
 ## Project Context
 
 **Most prompts are for the current project.** Always start routing from the current project's sessions before looking at other projects.
