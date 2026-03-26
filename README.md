@@ -179,27 +179,33 @@ When enabled, any MCP-compatible IDE can access the knowledge base:
 
 ## Install
 
-### Install
+### Quick start
 
 ```bash
 npm install -g lm-assist
 ```
 
-That's it. The postinstall script automatically:
-- Starts API (:3100) and Web UI (:3848)
-- Installs the statusline
-- Installs the [Claude One](https://github.com/langmartai/claude-one) plugin (skills + commands)
+The postinstall script automatically starts services, installs the statusline, and installs the [Claude Code Multisession](https://github.com/langmartai/claude-code-multisession) plugin.
 
 **Open a new Claude Code session** and type `/sessions` to verify.
 
-### Alternative: plugin-only install
+### Plugin marketplace
 
-If you already have lm-assist running and just want the skills:
+Add the marketplace once — then install any combination of plugins:
 
 ```
 /plugin marketplace add langmartai/lm-assist
-/plugin install claude-one@langmartai
 ```
+
+Three plugins available:
+
+| Install command | What you get |
+|----------------|-------------|
+| `/plugin install claude-code-multisession@langmartai` | Skills (observe, route) + commands (`/sessions`, `/summary`, `/run`) — cross-project session management |
+| `/plugin install claude-code-webui@langmartai` | Skill (dashboard) + commands (`/web`, `/web-sessions`, `/web-tasks`) — web dashboard access |
+| `/plugin install lm-assist@langmartai` | Commands (`/assist`, `/assist-setup`, `/assist-status`, `/assist-search`, `/assist-logs`) — setup and diagnostics |
+
+Install all three for the full experience, or pick what you need.
 
 ### Install from source
 
@@ -216,8 +222,8 @@ Then in Claude Code: `/plugin install .`
 
 | Component | Auto-installed | Source | Purpose |
 |-----------|---------------|--------|---------|
-| Skills (observe, route) | Yes | [Claude One](https://github.com/langmartai/claude-one) plugin | Session intelligence + cross-project routing |
-| Commands (/sessions, /summary, /run) | Yes | Claude One plugin | Quick session list, summarize, execute |
+| Skills (observe, route) | Yes | [Claude Code Multisession](https://github.com/langmartai/claude-code-multisession) plugin | Session intelligence + cross-project routing |
+| Commands (/sessions, /summary, /run) | Yes | Claude Code Multisession plugin | Quick session list, summarize, execute |
 | Commands (/assist-*) | Yes | lm-assist plugin | Setup, status, search, logs |
 | Core API + Web UI | Yes | npm package | 155+ endpoint REST API + Next.js dashboard |
 | Statusline | Yes | `/assist-setup` | Context %, rate limits, cost, process stats |
@@ -241,9 +247,9 @@ lm-assist upgrade     # Upgrade to latest version
 
 ## Skills & Commands
 
-Skills and commands are provided by the [Claude One](https://github.com/langmartai/claude-one) plugin — installed automatically via `/assist-setup`.
+Skills and commands are provided by the [Claude Code Multisession](https://github.com/langmartai/claude-code-multisession) plugin — installed automatically via `/assist-setup`.
 
-### Skills (auto-triggered via Claude One)
+### Skills (auto-triggered via Claude Code Multisession)
 
 Skills activate automatically when Claude detects relevant intent — no slash command needed.
 
