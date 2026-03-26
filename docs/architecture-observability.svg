@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 820" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 900" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
   <defs>
     <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#0f172a"/>
@@ -201,73 +201,92 @@
   <text x="728" y="554" fill="#64748b" font-size="7.5">Phone · Tablet · Desktop · Any browser</text>
 
   <!-- ================================================================ -->
-  <!-- OPTIONAL SUBSYSTEM: Knowledge (small, de-emphasized) -->
+  <!-- SESSION INTELLIGENCE LAYER -->
   <!-- ================================================================ -->
-  <rect x="30" y="580" width="420" height="50" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1" opacity="0.6"/>
-  <rect x="38" y="586" width="58" height="14" rx="4" fill="#f59e0b" opacity="0.15"/>
-  <text x="67" y="596" text-anchor="middle" fill="#f59e0b" font-size="7" font-weight="600">OPTIONAL</text>
-  <text x="108" y="596" fill="#94a3b8" font-size="9" font-weight="600">Knowledge Subsystem</text>
-  <text x="48" y="614" fill="#64748b" font-size="8">Auto-extract knowledge from sessions · BM25 + vector search · MCP tools · context injection hook</text>
-  <text x="48" y="624" fill="#64748b" font-size="7.5">Enable/disable at runtime via Settings kill switch — unloads embedder + LanceDB to save ~100MB memory</text>
+  <rect x="30" y="580" width="900" height="72" rx="10" fill="#1e293b" stroke="#a78bfa" stroke-width="1.5" filter="url(#shadow)" opacity="0.9"/>
+  <text x="50" y="598" fill="#c4b5fd" font-size="9" font-weight="600" letter-spacing="0.5">SESSION INTELLIGENCE</text>
+  <text x="280" y="598" fill="#94a3b8" font-size="8">Skills: observe · route  |  Commands: /sessions · /summary · /run</text>
+
+  <!-- 4 intelligence boxes -->
+  <rect x="44" y="606" width="200" height="38" rx="6" fill="#4c1d95" opacity="0.4"/>
+  <text x="144" y="620" text-anchor="middle" fill="#c4b5fd" font-size="8.5" font-weight="600">Session Summaries</text>
+  <text x="144" y="634" text-anchor="middle" fill="#94a3b8" font-size="7">LLM-generated · delta tracking · displayNames</text>
+
+  <rect x="254" y="606" width="200" height="38" rx="6" fill="#4c1d95" opacity="0.4"/>
+  <text x="354" y="620" text-anchor="middle" fill="#c4b5fd" font-size="8.5" font-weight="600">Project Summaries</text>
+  <text x="354" y="634" text-anchor="middle" fill="#94a3b8" font-size="7">From CLAUDE.md + codebase · services · deploy</text>
+
+  <rect x="464" y="606" width="200" height="38" rx="6" fill="#4c1d95" opacity="0.4"/>
+  <text x="564" y="620" text-anchor="middle" fill="#c4b5fd" font-size="8.5" font-weight="600">Prompt Queue</text>
+  <text x="564" y="634" text-anchor="middle" fill="#94a3b8" font-size="7">Source/target context · priority · cross-project</text>
+
+  <rect x="674" y="606" width="245" height="38" rx="6" fill="#4c1d95" opacity="0.4"/>
+  <text x="796" y="620" text-anchor="middle" fill="#c4b5fd" font-size="8.5" font-weight="600">Auto-Learning</text>
+  <text x="796" y="634" text-anchor="middle" fill="#94a3b8" font-size="7">Keywords · routing patterns · evolving summaries</text>
 
   <!-- ================================================================ -->
-  <!-- MULTI-MACHINE (compact) -->
+  <!-- OPTIONAL + MULTI-MACHINE (compact row) -->
   <!-- ================================================================ -->
-  <rect x="470" y="580" width="460" height="50" rx="8" fill="#1e293b" stroke="#059669" stroke-width="1" opacity="0.7"/>
-  <text x="488" y="596" fill="#34d399" font-size="9" font-weight="600">Multi-Machine Fleet via LangMart Hub</text>
-  <text x="488" y="614" fill="#94a3b8" font-size="8">Connect multiple dev machines · browse sessions across all hosts · unified cost tracking</text>
-  <text x="488" y="624" fill="#64748b" font-size="7.5">WebSocket relay — your data stays on your machines · no data stored in cloud</text>
+  <rect x="30" y="664" width="420" height="44" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1" opacity="0.6"/>
+  <rect x="38" y="670" width="58" height="14" rx="4" fill="#f59e0b" opacity="0.15"/>
+  <text x="67" y="680" text-anchor="middle" fill="#f59e0b" font-size="7" font-weight="600">OPTIONAL</text>
+  <text x="108" y="680" fill="#94a3b8" font-size="9" font-weight="600">Knowledge Subsystem</text>
+  <text x="48" y="698" fill="#64748b" font-size="7.5">BM25 + vector search · MCP tools · context injection · runtime kill switch (~100MB saved)</text>
+
+  <rect x="470" y="664" width="460" height="44" rx="8" fill="#1e293b" stroke="#059669" stroke-width="1" opacity="0.7"/>
+  <text x="488" y="680" fill="#34d399" font-size="9" font-weight="600">Multi-Machine Fleet via LangMart Hub</text>
+  <text x="488" y="698" fill="#94a3b8" font-size="7.5">Connect dev machines · browse sessions across hosts · WebSocket relay · data stays on your machines</text>
 
   <!-- ================================================================ -->
   <!-- BOTTOM: KEY APIS + WHO IT'S FOR -->
   <!-- ================================================================ -->
-  <line x1="40" y1="648" x2="920" y2="648" stroke="#334155" stroke-width="1" stroke-dasharray="3 4" opacity="0.4"/>
+  <line x1="40" y1="726" x2="920" y2="726" stroke="#334155" stroke-width="1" stroke-dasharray="3 4" opacity="0.4"/>
 
-  <text x="40" y="670" fill="#94a3b8" font-size="9" font-weight="600" letter-spacing="1">KEY API SURFACE</text>
+  <text x="40" y="748" fill="#94a3b8" font-size="9" font-weight="600" letter-spacing="1">KEY API SURFACE</text>
 
   <!-- API categories -->
-  <rect x="30" y="680" width="220" height="56" rx="8" fill="#1e293b" stroke="#0ea5e9" stroke-width="1" opacity="0.7"/>
-  <text x="48" y="696" fill="#0ea5e9" font-size="9" font-weight="700">Sessions (27 endpoints)</text>
-  <text x="48" y="710" fill="#94a3b8" font-size="7.5">List · detail · delta · batch-check</text>
-  <text x="48" y="722" fill="#94a3b8" font-size="7.5">conversation · subagents · forks · DAG</text>
-  <text x="48" y="730" fill="#64748b" font-size="7">ifModifiedSince · SSE stream · cache warm</text>
+  <rect x="30" y="758" width="220" height="56" rx="8" fill="#1e293b" stroke="#0ea5e9" stroke-width="1" opacity="0.7"/>
+  <text x="48" y="774" fill="#0ea5e9" font-size="9" font-weight="700">Sessions (27)</text>
+  <text x="48" y="788" fill="#94a3b8" font-size="7.5">List · detail · delta · batch-check</text>
+  <text x="48" y="800" fill="#94a3b8" font-size="7.5">conversation · subagents · forks · DAG</text>
+  <text x="48" y="808" fill="#64748b" font-size="7">summaries · queue · search · learning</text>
 
-  <rect x="260" y="680" width="220" height="56" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="1" opacity="0.7"/>
-  <text x="278" y="696" fill="#f59e0b" font-size="9" font-weight="700">Monitor (6 endpoints)</text>
-  <text x="278" y="710" fill="#94a3b8" font-size="7.5">executions · summary · abort</text>
-  <text x="278" y="722" fill="#94a3b8" font-size="7.5">Real-time status · cost · turn count</text>
-  <text x="278" y="730" fill="#64748b" font-size="7">Detects claude-native / claude PIDs</text>
+  <rect x="260" y="758" width="220" height="56" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="1" opacity="0.7"/>
+  <text x="278" y="774" fill="#f59e0b" font-size="9" font-weight="700">Monitor (6)</text>
+  <text x="278" y="788" fill="#94a3b8" font-size="7.5">executions · summary · abort</text>
+  <text x="278" y="800" fill="#94a3b8" font-size="7.5">Real-time status · cost · turn count</text>
+  <text x="278" y="808" fill="#64748b" font-size="7">SSE stream · process detection</text>
 
-  <rect x="490" y="680" width="220" height="56" rx="8" fill="#1e293b" stroke="#10b981" stroke-width="1" opacity="0.7"/>
-  <text x="508" y="696" fill="#10b981" font-size="9" font-weight="700">Projects (12 endpoints)</text>
-  <text x="508" y="710" fill="#94a3b8" font-size="7.5">List projects · sessions per project</text>
-  <text x="508" y="722" fill="#94a3b8" font-size="7.5">Git info · worktree detection</text>
-  <text x="508" y="730" fill="#64748b" font-size="7">Tasks · settings · excluded paths</text>
+  <rect x="490" y="758" width="220" height="56" rx="8" fill="#1e293b" stroke="#10b981" stroke-width="1" opacity="0.7"/>
+  <text x="508" y="774" fill="#10b981" font-size="9" font-weight="700">Projects (12) + Intelligence</text>
+  <text x="508" y="788" fill="#94a3b8" font-size="7.5">Project summaries · costs · routing</text>
+  <text x="508" y="800" fill="#94a3b8" font-size="7.5">Skills analytics · tasks · plans</text>
+  <text x="508" y="808" fill="#64748b" font-size="7">Learning signals · prompt queue</text>
 
-  <rect x="720" y="680" width="210" height="56" rx="8" fill="#1e293b" stroke="#a78bfa" stroke-width="1" opacity="0.7"/>
-  <text x="738" y="696" fill="#a78bfa" font-size="9" font-weight="700">Terminal (13 endpoints)</text>
-  <text x="738" y="710" fill="#94a3b8" font-size="7.5">ttyd start / stop / status</text>
-  <text x="738" y="722" fill="#94a3b8" font-size="7.5">WebSocket proxy · process list</text>
-  <text x="738" y="730" fill="#64748b" font-size="7">tmux attach · remote relay via Hub</text>
+  <rect x="720" y="758" width="210" height="56" rx="8" fill="#1e293b" stroke="#a78bfa" stroke-width="1" opacity="0.7"/>
+  <text x="738" y="774" fill="#a78bfa" font-size="9" font-weight="700">Terminal (13)</text>
+  <text x="738" y="788" fill="#94a3b8" font-size="7.5">ttyd start / stop / status</text>
+  <text x="738" y="800" fill="#94a3b8" font-size="7.5">WebSocket proxy · process list</text>
+  <text x="738" y="808" fill="#64748b" font-size="7">tmux attach · remote relay via Hub</text>
 
   <!-- ================================================================ -->
   <!-- LEGEND -->
   <!-- ================================================================ -->
-  <rect x="30" y="754" width="900" height="52" rx="8" fill="#0f172a" opacity="0.6"/>
-  <text x="50" y="772" fill="#94a3b8" font-size="9" font-weight="600">WHO IT'S FOR</text>
+  <rect x="30" y="832" width="900" height="52" rx="8" fill="#0f172a" opacity="0.6"/>
+  <text x="50" y="850" fill="#94a3b8" font-size="9" font-weight="600">WHO IT'S FOR</text>
 
-  <circle cx="50" cy="792" r="4" fill="#d97706"/>
-  <text x="62" y="796" fill="#94a3b8" font-size="8.5">Solo developers using Claude Code</text>
+  <circle cx="50" cy="870" r="4" fill="#d97706"/>
+  <text x="62" y="874" fill="#94a3b8" font-size="8.5">Solo developers using Claude Code</text>
 
-  <circle cx="280" cy="792" r="4" fill="#a78bfa"/>
-  <text x="292" y="796" fill="#94a3b8" font-size="8.5">Teams building with Agent SDK</text>
+  <circle cx="280" cy="870" r="4" fill="#a78bfa"/>
+  <text x="292" y="874" fill="#94a3b8" font-size="8.5">Teams building with Agent SDK</text>
 
-  <circle cx="500" cy="792" r="4" fill="#10b981"/>
-  <text x="512" y="796" fill="#94a3b8" font-size="8.5">DevOps managing agent fleets</text>
+  <circle cx="500" cy="870" r="4" fill="#10b981"/>
+  <text x="512" y="874" fill="#94a3b8" font-size="8.5">DevOps managing agent fleets</text>
 
-  <circle cx="720" cy="792" r="4" fill="#0ea5e9"/>
-  <text x="732" y="796" fill="#94a3b8" font-size="8.5">AI product builders debugging agents</text>
+  <circle cx="720" cy="870" r="4" fill="#0ea5e9"/>
+  <text x="732" y="874" fill="#94a3b8" font-size="8.5">AI product builders debugging agents</text>
 
   <!-- Tagline -->
-  <text x="480" y="818" text-anchor="middle" fill="#64748b" font-size="8">Core API :3100 · Web UI :3848 · npm install -g lm-assist · github.com/langmartai/lm-assist</text>
+  <text x="480" y="898" text-anchor="middle" fill="#64748b" font-size="8">Core API :3100 · Web UI :3848 · npm install -g lm-assist · github.com/langmartai/lm-assist</text>
 </svg>

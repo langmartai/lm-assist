@@ -215,6 +215,8 @@ Then in Claude Code, run `/plugin install .` and `/assist-setup`.
 | MCP server | Yes (via plugin) | `search`, `detail`, `feedback` tools |
 | Context hook | Yes (via plugin) | Knowledge injection (optional) |
 | Slash commands | Yes (via plugin) | 6 `/assist-*` commands |
+| Skills | Yes (via plugin) | `observe` (auto-triggered observability) + `route` (cross-project routing) |
+| Slash commands | Yes (via plugin) | 9 commands: `/sessions`, `/summary`, `/run` + 6 `/assist-*` |
 | Statusline | Optional | Git branch, context %, rate limits, process stats |
 
 ## Services
@@ -231,30 +233,147 @@ lm-assist status      # Health check + process info
 lm-assist upgrade     # Upgrade to latest version
 ```
 
+## Skills & Commands
+
+lm-assist ships with **2 auto-triggered skills** and **9 slash commands** that work inside Claude Code.
+
+### Skills (auto-triggered)
+
+Skills activate automatically when Claude detects relevant intent — no slash command needed.
+
+| Skill | Triggers on | What it does |
+|-------|------------|--------------|
+| **observe** | "what's running?", "session costs", "show subagents", "run this on project X" | Full observability — monitor sessions, debug agents, control executions, manage summaries |
+| **route** | Prompt mentions another project's features or codebase | Cross-project routing — evaluates whether to stay, resume, fork, queue, or start new |
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/sessions` | Session list with costs, turns, running status |
+| `/summary` | Summarize current session, generate display name, record learning |
+| `/run <prompt>` | Execute an agent with pre-flight checks |
+| `/assist` | Open the web UI in your browser |
+| `/assist-status` | Show status of all components |
+| `/assist-setup` | Start services and verify integrations |
+| `/assist-search` | Search the knowledge base |
+| `/assist-logs` | View context-inject hook logs |
+| `/assist-mcp-logs` | View MCP tool call logs |
+
+### Use Cases with Examples
+
+**"What sessions are running and how much have they cost?"**
+```
+> /sessions
+Sessions (3 running, 415 total)
+───────────────────────────────────────────────────────────────────────
+Status  Name                         Project            Model      Cost  Turns
+───────────────────────────────────────────────────────────────────────
+[RUN]   observability-platform-build  lm-assist          opus    $307.66  1462
+[RUN]   trade-delta-analysis          lm-unified-trade   opus    $153.20   822
+[RUN]   anti-kelly-system             lm-unified-trade   opus     $35.49   433
+        two-track-dashboard           lm-unified-trade   opus    $107.43   516
+        skill-validation-test         lm-assist          opus      $0.63    11
+───────────────────────────────────────────────────────────────────────
+Total cost: $604.41
+```
+
+**"Summarize what this session has been doing"**
+```
+> /summary
+Session Summary
+═══════════════
+Name:    observability-platform-build
+Project: lm-assist
+Turns:   1462 | Cost: $307.66
+Status:  in progress
+
+What this session is about:
+  Building the lm-assist observability platform — session summaries,
+  cross-project routing, prompt queue, auto-learning.
+
+What was accomplished:
+  • Session slug/customTitle parsing from Claude Code JSONL
+  • Knowledge system kill switch (saves ~100MB)
+  • Observability skill + routing skill + 3 new commands
+  • Persistent session summaries with delta tracking
+  • Universal prompt queue with source/target context
+  • Auto-learning signals that evolve routing over time
+```
+
+**"Fix the delta analysis bug in the trading pipeline"**
+
+The route skill auto-detects this belongs to another project:
+```
+This task appears to belong to lm-unified-trade, not the current project.
+
+Relevant session found: trade-delta-analysis
+Summary: Implemented delta analysis mode for /trade-analyze command...
+Status: idle (not running)
+
+Recommendation: RESUME
+Reason: This session built all existing delta modes and knows the spec,
+flag table, and pre-launch copy patterns.
+
+To resume:  claude --resume 36a30ba6-4bd1-4587-8bb3-c1d21a2ab616
+```
+
+**"Run a security review on this project"**
+```
+> /run review all API endpoints for security vulnerabilities
+Checking running executions... OK: none running.
+
+Execution started: agent-1774468578687-1p2cnh
+  Session: nifty-wishing-boole
+  Status: running
+  Monitor with: /sessions
+  Web UI: http://localhost:3848
+```
+
+**"What's the cost breakdown by project?"**
+
+The observe skill activates:
+```
+Project costs:
+  lm-assist              $308.29  (80 sessions)
+  lm-unified-trade       $892.15  (440 sessions)
+  LangMartDesign          $45.20  (12 sessions)
+  tier-agent              $23.50  (15 sessions)
+```
+
+### Session Intelligence
+
+lm-assist learns from every interaction to route prompts smarter over time:
+
+- **Session summaries** — LLM-generated descriptions stored with delta tracking. Updated incrementally as sessions grow.
+- **Project summaries** — Comprehensive reference generated by agents that explore each project's CLAUDE.md, scripts, configs, and codebase.
+- **Prompt queue** — When a session is busy, new work is queued with full context (original intent, formatted prompt, routing reason, context hint).
+- **Auto-learning** — Keywords, commands, and routing patterns accumulate with frequency counts. After a few interactions, routing skips deep scans entirely.
+
+```
+Learning context for lm-unified-trade:
+  Frequently mentioned: delta analysis(3x), anti-kelly(2x), regime analysis(1x)
+  Areas worked in: analysis pipeline(1x)
+  Routing patterns: delta analysis → trade-delta-analysis session
+```
+
 ## Key API Endpoints
 
 | Category | Endpoints | Highlights |
 |----------|-----------|------------|
 | **Sessions** | 27 | List, detail, delta fetch, batch-check, conversation, subagents, forks, DAG |
 | **Monitor** | 6 | Running executions, summary, abort, SSE stream |
-| **Projects** | 12 | List projects, sessions per project, git info, worktree detection |
+| **Projects** | 12 | List projects, sessions per project, git info, worktree detection, costs |
 | **Terminal** | 13 | ttyd start/stop/status, WebSocket proxy, tmux attach |
 | **Tasks** | 22 | Task lists, aggregated tasks, ready tasks, dependency tracking |
+| **Summaries** | 10 | Session summaries, project summaries, needs-update check |
+| **Queue** | 10 | Prompt queue with source/target, priority, dispatch/complete lifecycle |
+| **Learning** | 4 | Record signals, query by project, learning context generation |
+| **Search** | 4 | Session content search, recent sessions, vector search |
+| **Skills** | 9 | Skills analytics, chains, traces, per-session breakdown |
 | **Knowledge** | 21 | List, search, generate, review (optional — can be disabled) |
-| **Vectors** | 6 | Semantic search, index, reindex (optional) |
 
 All endpoints support `ifModifiedSince` for efficient polling. Session data supports three indexing dimensions: `lineIndex` (JSONL position), `turnIndex` (conversation turn), and `userPromptIndex` (user message count).
-
-## Slash Commands
-
-| Command | Description |
-|---------|-------------|
-| `/assist` | Open the web UI in your browser |
-| `/assist-status` | Show status of all components |
-| `/assist-setup` | Start services and verify integrations |
-| `/assist-search <query>` | Search the knowledge base |
-| `/assist-logs` | View context-inject hook logs |
-| `/assist-mcp-logs` | View MCP tool call logs |
 
 ## Configuration
 
