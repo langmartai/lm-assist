@@ -197,13 +197,33 @@ Add the marketplace once — then install any combination of plugins:
 /plugin marketplace add langmartai/lm-assist
 ```
 
-Three plugins available:
+Three packages work together:
 
-| Install command | What you get |
-|----------------|-------------|
-| `/plugin install claude-code-multisession@langmartai` | Skills (observe, route) + commands (`/projects`, `/sessions`, `/summary`, `/run`) — cross-project session management |
-| `/plugin install claude-code-webui@langmartai` | Skill (dashboard) + commands (`/web`, `/web-sessions`, `/web-tasks`) — web dashboard access |
-| `/plugin install lm-assist@langmartai` | Commands (`/assist`, `/assist-setup`, `/assist-status`, `/assist-search`, `/assist-logs`) — setup and diagnostics |
+```
+┌─────────────────────────────────────────────────────────┐
+│  claude-code-multisession          (Claude Code plugin) │
+│  Skills: observe, route                                 │
+│  Commands: /projects /sessions /summary /run            │
+├─────────────────────────────────────────────────────────┤
+│  claude-code-webui                 (Claude Code plugin) │
+│  Skill: dashboard                                       │
+│  Commands: /web /web-sessions /web-tasks                │
+├─────────────────────────────────────────────────────────┤
+│  lm-assist                              (npm package)   │
+│  Foundation: 155+ API endpoints, Next.js web dashboard, │
+│  session engine, cost tracking, statusline              │
+│  Commands: /assist /assist-setup /assist-status ...     │
+└─────────────────────────────────────────────────────────┘
+```
+
+**lm-assist** is the foundation — the API server and web dashboard that powers everything. The plugins add skills and commands on top.
+
+| Install command | Layer | What you get |
+|----------------|-------|-------------|
+| `npm install -g lm-assist` | Foundation | API server (:3100), web dashboard (:3848), statusline, 155+ endpoints |
+| `/plugin install claude-code-multisession@langmartai` | Skills | observe + route skills, `/projects` `/sessions` `/summary` `/run` |
+| `/plugin install claude-code-webui@langmartai` | Web access | dashboard skill, `/web` `/web-sessions` `/web-tasks` |
+| `/plugin install lm-assist@langmartai` | Setup & diagnostics | `/assist-setup` `/assist-status` `/assist-search` `/assist-logs` |
 
 Install all three for the full experience, or pick what you need.
 
@@ -217,19 +237,6 @@ npm install && npm run build
 ```
 
 Then in Claude Code: `/plugin install .`
-
-### What gets installed
-
-| Component | Auto-installed | Source | Purpose |
-|-----------|---------------|--------|---------|
-| Skills (observe, route) | Yes | [Claude Code Multisession](https://github.com/langmartai/claude-code-multisession) plugin | Session intelligence + cross-project routing |
-| Commands (/sessions, /summary, /run) | Yes | Claude Code Multisession plugin | Quick session list, summarize, execute |
-| Commands (/assist-*) | Yes | lm-assist plugin | Setup, status, search, logs |
-| Core API + Web UI | Yes | npm package | 155+ endpoint REST API + Next.js dashboard |
-| Statusline | Yes | `/assist-setup` | Context %, rate limits, cost, process stats |
-| MCP server | Optional | `/assist-setup --mcp` | Knowledge tools (search, detail, feedback) |
-| Context hook | Optional | `/assist-setup --mcp` | Knowledge injection into prompts |
-| Knowledge system | Off by default | Settings > Data Loading | Saves ~100MB when disabled |
 
 ## Services
 
