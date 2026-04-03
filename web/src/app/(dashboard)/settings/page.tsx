@@ -190,7 +190,7 @@ interface StatuslineStatus {
 
 /** Known platform domains and their hub WS URLs */
 const PLATFORM_DOMAINS: Record<string, string> = {
-  'langmart.ai': 'wss://api.langmart.ai',
+  'langmart.ai': 'wss://assist-api.langmart.ai',
   'xeenhub.com': 'wss://assist-api.xeenhub.com',
 };
 
@@ -215,7 +215,7 @@ function getDefaultHubUrl(currentHubUrl?: string | null): string {
       if (host.endsWith(domain)) return wsUrl;
     }
   }
-  return 'wss://api.langmart.ai';
+  return 'wss://assist-api.langmart.ai';
 }
 
 // ============================================

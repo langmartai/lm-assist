@@ -23,7 +23,7 @@
     },
     {
       "name": "lm-assist",
-      "version": "0.1.69",
+      "version": "0.1.70",
       "source": "./",
       "description": "Observability platform for Claude Code and Agent SDK. 155+ API endpoints, 15 insight views, web terminal, session/project summaries, prompt queue, auto-learning.",
       "category": "productivity",

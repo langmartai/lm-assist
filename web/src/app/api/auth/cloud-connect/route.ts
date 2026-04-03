@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
   const hubUrl = searchParams.get('hubUrl') || (() => {
     const host = request.nextUrl.hostname;
     if (host.includes('xeenhub')) return 'wss://assist-api.xeenhub.com';
-    return 'wss://api.langmart.ai';
+    return 'wss://assist-api.langmart.ai';
   })();
 
   if (!key) {
