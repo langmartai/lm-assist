@@ -30,6 +30,8 @@ import { createMcpApiRoutes } from './mcp-api.routes';
 import { createDevModeRoutes } from './dev-mode.routes';
 import { createProjectSettingsRoutes } from './project-settings.routes';
 import { createSkillRoutes } from './skills.routes';
+import { createTerminalRoutes } from './terminal.routes';
+import { createAnnotationRoutes } from './annotation.routes';
 
 /**
  * Create all core routes
@@ -59,5 +61,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createDevModeRoutes(ctx),
     ...createProjectSettingsRoutes(ctx),
     ...createSkillRoutes(ctx),
+    ...createTerminalRoutes(ctx),
+    ...createAnnotationRoutes(ctx),
   ];
 }

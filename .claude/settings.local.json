@@ -9,7 +9,11 @@
       "Bash(git pull:*)",
       "Bash(./core.sh build:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(cp ~/.claude/settings.json.bak-pivot-test ~/.claude/settings.json)",
+      "Bash(rm ~/.claude/settings.json.bak-pivot-test)",
+      "Bash(tmux kill-session:*)",
+      "Read(//home/ubuntu/.claude/**)"
     ]
   },
   "enableAllProjectMcpServers": true,
