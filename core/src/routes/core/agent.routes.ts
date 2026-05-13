@@ -13,7 +13,7 @@
  */
 
 import type { RouteHandler, RouteContext } from '../index';
-import type { AgentExecuteRequest } from '../../types/agent-api';
+import type { AgentExecuteRequest, AgentResumeRequest } from '../../types/agent-api';
 
 export function createAgentRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -72,6 +72,24 @@ export function createAgentRoutes(_ctx: RouteContext): RouteHandler[] {
         const wait = req.query.wait !== 'false';
         const timeout = req.query.timeout ? parseInt(req.query.timeout, 10) : undefined;
         const result = await api.agent.getExecutionResult(id, wait, timeout);
+        return { success: true, data: result };
+      },
+    },
+
+    // POST /agent/session/:sessionId/resume — resume an existing Claude Code session with a new prompt
+    {
+      method: 'POST',
+      pattern: /^\/agent\/session\/(?<sessionId>[^/]+)\/resume$/,
+      handler: async (req, api) => {
+        const body = (req.body || {}) as Omit<AgentResumeRequest, 'sessionId'>;
+        if (!body.prompt) {
+          return {
+            success: false,
+            error: { code: 'MISSING_PROMPT', message: 'prompt is required' },
+          };
+        }
+        const sessionId = req.params.sessionId;
+        const result = await api.agent.resume({ ...body, sessionId } as AgentResumeRequest);
         return { success: true, data: result };
       },
     },
