@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Agent API
+
+- **New: `POST /agent/session/:sessionId/resume`** — Resume an existing Claude Code session with a new prompt. Wraps `api.agent.resume()` so callers don't need to re-supply full session state.
+
+### Cross-Platform
+
+- **fix: detached-runner Windows support** — `spawnDetached()` now branches on platform. On Windows it resolves `claude.cmd` from the npm prefix, spawns with `shell: true` and explicit stdio fds (cmd.exe drops inherited fds when detached), and pipes the prompt through stdin instead of `-p <text>` (cmd.exe mangles large or special-char prompts). Unix path keeps the `setsid + nohup` double-fork unchanged.
+
 ## [0.1.64] - 2026-03-22
 
 ### Session List

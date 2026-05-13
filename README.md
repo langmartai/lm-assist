@@ -74,7 +74,7 @@ Full runtime management API.
 - Web terminal (ttyd) from any browser
 - Remote access via LangMart Hub
 
-**Key endpoints:** `POST /monitor/abort/:executionId` · `POST /ttyd/start` · `POST /agent/execute` · `POST /hub/connect`
+**Key endpoints:** `POST /monitor/abort/:executionId` · `POST /ttyd/start` · `POST /agent/execute` · `POST /agent/session/:sessionId/resume` · `POST /hub/connect`
 
 ### Web Dashboard
 
