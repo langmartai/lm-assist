@@ -247,53 +247,104 @@ export function spawnDetached(
   const args = buildCliArgs(prompt, options);
   const cwd = options.cwd || process.cwd();
 
-  // Resolve claude binary
-  const claudeBin = process.env.CLAUDE_BIN || path.join(os.homedir(), '.local', 'bin', 'claude');
+  const isWindows = process.platform === 'win32';
 
-  // Build the shell command that double-forks:
-  // 1. setsid creates a new session (escapes process group)
-  // 2. nohup prevents SIGHUP on parent exit
-  // 3. & backgrounds the process
-  // 4. echo $! writes the PID to pidfile
-  // The wrapper shell exits immediately; claude is reparented to init.
-  const escapedArgs = args.map(shellEscape).join(' ');
-  const shellCmd = `cd ${shellEscape(cwd)} && setsid nohup ${shellEscape(claudeBin)} ${escapedArgs} > ${shellEscape(logFile)} 2> ${shellEscape(errFile)} & echo $! > ${shellEscape(pidFile)}`;
-
-  // Spawn the wrapper shell — it exits immediately after backgrounding claude
-  const proc = spawn('sh', ['-c', shellCmd], {
-    cwd,
-    detached: true,
-    stdio: 'ignore',
-    env: {
-      ...process.env,
-      FORCE_COLOR: '0',
-      ...(options.env || {}),
-    },
-  });
-  proc.unref();
-
-  // Wait briefly for pidfile to appear, then read the real PID
-  let pid = 0;
-  const pidWaitStart = Date.now();
-  const pidWaitTimeout = 3000; // 3 seconds
-
-  // Synchronous wait for PID file (shell is very fast)
-  while (Date.now() - pidWaitStart < pidWaitTimeout) {
-    try {
-      if (fs.existsSync(pidFile)) {
-        const pidStr = fs.readFileSync(pidFile, 'utf-8').trim();
-        pid = parseInt(pidStr, 10);
-        if (pid > 0) break;
-      }
-    } catch {}
-    // Busy-wait in small increments (shell completes in <100ms typically)
-    const waitUntil = Date.now() + 50;
-    while (Date.now() < waitUntil) { /* spin */ }
+  // Resolve claude binary — platform-specific defaults
+  let claudeBin = process.env.CLAUDE_BIN;
+  if (!claudeBin) {
+    if (isWindows) {
+      // Windows: claude.cmd wrapper lives in the npm prefix (next to node.exe)
+      const candidates = [
+        path.join(path.dirname(process.execPath), 'claude.cmd'),
+        process.env.APPDATA ? path.join(process.env.APPDATA, 'npm', 'claude.cmd') : '',
+        path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'claude.cmd'),
+      ].filter(Boolean);
+      claudeBin = candidates.find((p) => fs.existsSync(p)) || candidates[0];
+    } else {
+      claudeBin = path.join(os.homedir(), '.local', 'bin', 'claude');
+    }
   }
 
-  if (pid === 0) {
-    // Fallback: try shell PID (less reliable but better than nothing)
-    pid = proc.pid || 0;
+  const childEnv = {
+    ...process.env,
+    FORCE_COLOR: '0',
+    ...(options.env || {}),
+  };
+
+  let pid = 0;
+
+  if (isWindows) {
+    // Windows path:
+    //  1. We can't use `detached: true` + `shell: true` + fd stdio together
+    //     — cmd.exe silently drops the inherited file descriptors when run
+    //     detached, so stdout/stderr capture is lost. Use shell + unref()
+    //     only; on Windows the child survives a normal parent exit anyway.
+    //  2. We can't pass the prompt as a `-p <text>` arg through `shell: true`
+    //     when the prompt is large or contains special chars (newlines,
+    //     quotes, `&`, `|`) — cmd.exe mangles it. Strip the prompt from
+    //     argv and pipe it through stdin instead (claude reads stdin when
+    //     `-p` has no following arg).
+    let spawnArgs = args.slice();
+    const pIdx = spawnArgs.indexOf('-p');
+    if (pIdx >= 0 && pIdx + 1 < spawnArgs.length) {
+      spawnArgs = [...spawnArgs.slice(0, pIdx + 1), ...spawnArgs.slice(pIdx + 2)];
+    }
+    const logFd = fs.openSync(logFile, 'w');
+    const errFd = fs.openSync(errFile, 'w');
+    try {
+      const proc = spawn(claudeBin!, spawnArgs, {
+        cwd,
+        stdio: ['pipe', logFd, errFd],
+        windowsHide: true,
+        shell: true,
+        env: childEnv,
+      });
+      pid = proc.pid || 0;
+      if (proc.stdin) {
+        proc.stdin.write(prompt);
+        proc.stdin.end();
+      }
+      proc.unref();
+      if (pid > 0) {
+        try { fs.writeFileSync(pidFile, String(pid)); } catch {}
+      }
+    } finally {
+      try { fs.closeSync(logFd); } catch {}
+      try { fs.closeSync(errFd); } catch {}
+    }
+  } else {
+    // Unix path: double-fork via sh + setsid + nohup so the child is
+    // reparented to init and survives lm-assist restart.
+    const escapedArgs = args.map(shellEscape).join(' ');
+    const shellCmd = `cd ${shellEscape(cwd)} && setsid nohup ${shellEscape(claudeBin!)} ${escapedArgs} > ${shellEscape(logFile)} 2> ${shellEscape(errFile)} & echo $! > ${shellEscape(pidFile)}`;
+
+    const proc = spawn('sh', ['-c', shellCmd], {
+      cwd,
+      detached: true,
+      stdio: 'ignore',
+      env: childEnv,
+    });
+    proc.unref();
+
+    // Wait briefly for pidfile to appear, then read the real PID
+    const pidWaitStart = Date.now();
+    const pidWaitTimeout = 3000;
+    while (Date.now() - pidWaitStart < pidWaitTimeout) {
+      try {
+        if (fs.existsSync(pidFile)) {
+          const pidStr = fs.readFileSync(pidFile, 'utf-8').trim();
+          pid = parseInt(pidStr, 10);
+          if (pid > 0) break;
+        }
+      } catch {}
+      const waitUntil = Date.now() + 50;
+      while (Date.now() < waitUntil) { /* spin */ }
+    }
+
+    if (pid === 0) {
+      // Fallback: try shell PID (less reliable but better than nothing)
+      pid = proc.pid || 0;
+    }
   }
   let running = true;
   let cachedSessionId: string | undefined;
