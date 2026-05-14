@@ -144,6 +144,104 @@ export function getClaudeAISessionStatus(): ClaudeAISessionStatus {
   };
 }
 
+export interface ClaudeAIProbeResult {
+  /** Probe verdict — true when account_profile returned 200. */
+  ok: boolean;
+  /** HTTP status from the probe call (0 if the fetch itself errored). */
+  status: number;
+  /** Coarse reason code. */
+  reason:
+    | 'ok'
+    | 'session_not_configured'
+    | 'session_expired'         // 401
+    | 'cloudflare_blocked'      // 403 (usually) or 503
+    | 'network_error'           // fetch threw
+    | 'upstream_error'          // 4xx/5xx other
+    | 'unknown';
+  /** Human-readable hint about what to do next. */
+  hint: string;
+  /** Lower-cased account/org metadata from the probe (if ok). */
+  accountUuid?: string;
+  organizationName?: string;
+  emailHash?: string;
+}
+
+/**
+ * Actively probe whether the configured cookie still authenticates by
+ * hitting /api/account_profile. Cheap (returns a small JSON) and uses
+ * the same fingerprint as every other request.
+ *
+ * Distinct from getClaudeAISessionStatus() which only inspects the
+ * config file — this one actually talks to claude.ai.
+ */
+export async function probeClaudeAISession(timeoutMs = 8000): Promise<ClaudeAIProbeResult> {
+  const cfg = readClaudeAISession();
+  if (!cfg) {
+    return {
+      ok: false,
+      status: 0,
+      reason: 'session_not_configured',
+      hint: `Create ${SESSION_PATH} with at minimum {"cookie": "<paste browser Cookie header>"}. See docs/claude-ai-routes.md.`,
+    };
+  }
+  let resp;
+  try {
+    resp = await claudeaiGet('/api/account_profile', { timeoutMs, referer: 'https://claude.ai/' });
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      reason: 'network_error',
+      hint: `Could not reach claude.ai: ${(err as Error).message}`,
+    };
+  }
+  if (resp.status === 200) {
+    const b: any = resp.body || {};
+    // Lightly hash the email so we don't return raw PII.
+    const email: string | undefined = b.account?.email;
+    let emailHash: string | undefined;
+    if (email) {
+      // Cheap djb2-style hash, just for display correlation
+      let h = 5381;
+      for (let i = 0; i < email.length; i++) h = (h * 33 + email.charCodeAt(i)) >>> 0;
+      emailHash = h.toString(16);
+    }
+    return {
+      ok: true,
+      status: 200,
+      reason: 'ok',
+      hint: 'claude.ai session is valid.',
+      accountUuid: b.account?.uuid,
+      organizationName: b.organization?.name,
+      emailHash,
+    };
+  }
+  if (resp.status === 401) {
+    return {
+      ok: false,
+      status: 401,
+      reason: 'session_expired',
+      hint:
+        'sessionKey is expired or invalid. Capture a fresh Cookie header from a logged-in claude.ai tab (DevTools → Network → Copy as cURL → paste the Cookie value).',
+    };
+  }
+  if (resp.status === 403 || resp.status === 503) {
+    return {
+      ok: false,
+      status: resp.status,
+      reason: 'cloudflare_blocked',
+      hint:
+        'Cloudflare blocked the request. Likely causes: cf_clearance / __cf_bm expired, source IP changed since cookies were captured, or rate-limited. Refresh from the browser on the same machine.',
+    };
+  }
+  return {
+    ok: false,
+    status: resp.status,
+    reason: 'upstream_error',
+    hint: `claude.ai responded ${resp.status} ${resp.statusText}.`,
+  };
+}
+
 export interface ClaudeAIGetOpts {
   /** Override Referer (e.g. https://claude.ai/chat/{conv_uuid}). Default https://claude.ai/. */
   referer?: string;

@@ -39,7 +39,8 @@ How to capture the cookie:
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/claude-ai/session-status` | Presence/identity (no secret values). Reports `hasSessionKey`, `hasCfClearance`, `hasCfBm` so callers can prompt for refresh. |
+| `GET` | `/claude-ai/healthz` | **One-glance health check.** File-based status + active probe of `/api/account_profile`. Returns `{ ok, reason, hint, sessionConfigured, identity, cookieFreshness, probe }`. Call this before driving any other route. |
+| `GET` | `/claude-ai/session-status[?probe=true]` | Presence/identity (no secret values). With `?probe=true`, also actively hits `/api/account_profile` to verify the session is live. |
 | `GET` | `/claude-ai/conversations?limit=&starred=&consistency=&project_uuid=` | List conversations. |
 | `GET` | `/claude-ai/conversations/:uuid?tree=&rendering_mode=&render_all_tools=` | Read one conversation (full message tree). |
 | `GET` | `/claude-ai/projects?limit=&include_harmony_projects=&creator_filter=` | List projects. |
@@ -124,6 +125,7 @@ All accept a JSON body. All return `{ success: true, data: { snippet, descriptio
 | `POST` | `/claude-ai/via-chrome/memory` | `{}` |
 | `POST` | `/claude-ai/via-chrome/bootstrap` | `{}` |
 | `POST` | `/claude-ai/via-chrome/artifacts/:uuid/versions` | `{}` |
+| `POST` | `/claude-ai/via-chrome/health-check` | `{}` — **Call this first.** Returns a snippet that verifies the active tab is `claude.ai`, identity cookies are present, and `/api/account_profile` returns 200. Snippet returns `{ ok, reason, hint, pageUrl, identity, account? }`. |
 | `POST` | `/claude-ai/via-chrome/conversations/:uuid/completion` | `{ prompt, model?, timezone?, locale?, parentMessageUuid? }` — **WRITE** snippet that reads `current_leaf_message_uuid`, POSTs `/completion`, drains the SSE stream in-page, and returns `{ status, text, events, eventTypes, eventCount, humanMessageUuid, assistantMessageUuid }`. |
 
 ### Snippet shape
@@ -221,6 +223,66 @@ If no claude.ai tab is open, use `mcp__claude-in-chrome__tabs_create_mcp` + `mcp
 | `via-chrome/account_profile` with full `baseHeaders` | 200 | All 6 `anthropic-*` headers attached on the wire |
 
 ---
+
+## Pre-flight: is the integration healthy?
+
+Both families expose a structured health check that returns a stable `reason` code the calling UI/script can branch on.
+
+### Cookie-file path: `GET /claude-ai/healthz`
+
+```bash
+curl -s http://localhost:3100/claude-ai/healthz
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "ok": false,
+    "reason": "session_not_configured",
+    "hint": "Create ~/.claude/claudeai-session.json with at minimum {\"cookie\": \"...\"}",
+    "sessionConfigured": false,
+    "sessionPath": "/home/yi/.claude/claudeai-session.json",
+    "cookieFreshness": {},
+    "probe": { "ok": false, "status": 0, "reason": "session_not_configured", "hint": "..." }
+  }
+}
+```
+
+Possible `reason` values:
+
+| `reason` | What it means | What to do |
+|---|---|---|
+| `ok` | Probe of `/api/account_profile` returned 200 | Proceed |
+| `session_not_configured` | No file at `~/.claude/claudeai-session.json` | Create the file |
+| `session_expired` | Probe got `401` — `sessionKey` invalid | Re-capture Cookie header from a logged-in claude.ai tab |
+| `cloudflare_blocked` | Probe got `403`/`503` | Refresh `cf_clearance`/`__cf_bm` (reload claude.ai in the browser on the same source IP) |
+| `network_error` | `fetch` itself threw | Check network / DNS / proxy |
+| `upstream_error` | Other 4xx/5xx | Inspect `probe.status` for the upstream code |
+
+For the diagnostic without the active probe, use `GET /claude-ai/session-status` (file-only) or `?probe=true` (file + probe).
+
+When any other claude.ai route fails because no session is configured, it returns `{ code: 'CLAUDEAI_SESSION_NOT_CONFIGURED', message, hint }` so the same diagnosis is reachable from the failure path too.
+
+### Via-chrome path: `POST /claude-ai/via-chrome/health-check`
+
+lm-assist can't reach Chrome MCP itself (MCP is only available to the agent driving the session). Instead, this route returns a snippet the agent runs through `mcp__claude-in-chrome__javascript_tool`. The snippet returns the same `reason` codes plus a couple specific to the browser side:
+
+| `reason` | What it means | What to do |
+|---|---|---|
+| `ok` | Tab is on `claude.ai`, logged in, probe 200 | Proceed |
+| `wrong_tab` | Active tab isn't `claude.ai` | Use `mcp__claude-in-chrome__navigate` to https://claude.ai/ first |
+| `not_logged_in` | `lastActiveOrg` cookie absent | User must log in to claude.ai in this browser |
+| `session_expired`, `cloudflare_blocked`, `network_error`, `upstream_error` | same semantics as above | Same remediation as cookie-file path |
+
+The agent loop is:
+
+```
+1. POST /claude-ai/via-chrome/health-check → snippet
+2. javascript_tool(snippet) → { ok, reason, hint, identity, account }
+3. If ok === false: surface the hint and stop; do NOT drive other routes
+4. If ok === true: proceed with read / write routes
+```
 
 ## When to use which
 

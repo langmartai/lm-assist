@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### claude.ai web-session integration — health-check interface
+
+Adds a uniform "is the integration ready?" surface so callers don't have to discover failure mode by failure mode. All claude.ai routes can now be preceded by a single health check that distinguishes config errors, expired sessions, Cloudflare blocks, and network problems.
+
+**New routes:**
+
+- `GET /claude-ai/healthz` — one-glance verdict. Combines file-based status with an active `/api/account_profile` probe. Returns `{ ok, reason, hint, sessionConfigured, identity, cookieFreshness, probe }`.
+- `GET /claude-ai/session-status?probe=true` — opt-in active probe attached to the existing file-based status.
+- `POST /claude-ai/via-chrome/health-check` — returns a snippet the agent runs in any tab. Verifies the active tab is `claude.ai`, identity cookies are present, and `/api/account_profile` returns 200. Returns `{ ok, reason, hint, pageUrl, identity, account? }`.
+
+**Stable `reason` codes** the UI can branch on:
+
+| Code | Both paths | Meaning |
+|---|---|---|
+| `ok` | ✓ | Ready to proceed |
+| `session_not_configured` | cookie-file | No `~/.claude/claudeai-session.json` |
+| `session_expired` | both | `sessionKey` invalid (401) |
+| `cloudflare_blocked` | both | `cf_clearance`/`__cf_bm` expired or IP mismatch (403/503) |
+| `network_error` | both | `fetch` threw |
+| `upstream_error` | both | other 4xx/5xx |
+| `wrong_tab` | via-chrome | active tab isn't `claude.ai` |
+| `not_logged_in` | via-chrome | `lastActiveOrg` cookie absent |
+
+**Better failure responses** on existing routes: distinguishes `CLAUDEAI_SESSION_NOT_CONFIGURED` (with a hint pointing at `/claude-ai/healthz`) from generic `CLAUDEAI_SESSION_UNAVAILABLE`. Live-tested against the Windows host (no config file) and the real claude.ai tab (returns `ok: true` with identity).
+
 ### claude.ai web-session integration — via-chrome header fingerprint hardening
 
 Bare `fetch()` inside the claude.ai page bypasses claude.ai's own fetch interceptor — so the application-level headers its web app normally adds were missing from our via-chrome snippets. The browser was only filling transport-level headers (UA, `Accept-Encoding`, `sec-ch-ua-*`, `Sec-Fetch-*`, `Origin`, `Referer`, `Cookie`).

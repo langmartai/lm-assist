@@ -74,7 +74,7 @@ Full runtime management API.
 - Web terminal (ttyd) from any browser
 - Remote access via LangMart Hub
 
-**Key endpoints:** `POST /monitor/abort/:executionId` · `POST /ttyd/start` · `POST /agent/execute` · `POST /agent/session/:sessionId/resume` · `POST /hub/connect` · `GET /claude-code/usage` · `GET /claude-code/profile` · `GET /claude-code/oauth-status` · `GET /claude-ai/{conversations,projects,memory,bootstrap,artifacts/:uuid/versions}` · `POST /claude-ai/via-chrome[/...]` — see [`docs/claude-ai-routes.md`](./docs/claude-ai-routes.md) for both integration paths.
+**Key endpoints:** `POST /monitor/abort/:executionId` · `POST /ttyd/start` · `POST /agent/execute` · `POST /agent/session/:sessionId/resume` · `POST /hub/connect` · `GET /claude-code/{usage,profile,oauth-status}` · `GET /claude-ai/healthz` · `GET /claude-ai/{conversations,conversations/:uuid,projects,memory,bootstrap,artifacts/:uuid/versions}` · `POST /claude-ai/conversations/:uuid/completion` · `POST /claude-ai/via-chrome[/...]` — see [`docs/claude-ai-routes.md`](./docs/claude-ai-routes.md) for both integration paths and the structured health-check interface.
 
 ### Web Dashboard
 

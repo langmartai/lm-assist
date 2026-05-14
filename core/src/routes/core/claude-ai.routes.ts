@@ -29,6 +29,7 @@
 import type { RouteHandler, RouteContext } from '../index';
 import {
   getClaudeAISessionStatus,
+  probeClaudeAISession,
   listConversations,
   readConversation,
   listProjects,
@@ -46,6 +47,7 @@ import {
   snippetBootstrapAppStart,
   snippetArtifactVersions,
   snippetSendMessage,
+  snippetHealthCheck,
 } from '../../utils/claudeai-via-chrome';
 
 const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -65,19 +67,89 @@ function upstreamWrap<T>(r: { status: number; statusText: string; body: T }) {
 }
 
 function catchOAuth(err: unknown) {
+  const msg = (err as Error).message || String(err);
+  // Differentiate "no session file" from other failures so the UI can
+  // route the right action (paste cookies vs. refresh cookies vs. fix
+  // the network).
+  if (/No claude\.ai session/.test(msg)) {
+    return {
+      success: false,
+      error: {
+        code: 'CLAUDEAI_SESSION_NOT_CONFIGURED',
+        message: msg,
+        hint: 'Call GET /claude-ai/session-status?probe=true (or /claude-ai/healthz) for a structured diagnosis, then create ~/.claude/claudeai-session.json per docs/claude-ai-routes.md.',
+      },
+    };
+  }
   return {
     success: false,
-    error: { code: 'CLAUDEAI_SESSION_UNAVAILABLE', message: (err as Error).message },
+    error: { code: 'CLAUDEAI_SESSION_UNAVAILABLE', message: msg },
   };
 }
 
 export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
-    // GET /claude-ai/session-status
+    // GET /claude-ai/session-status[?probe=true]
+    //
+    //   Without ?probe: file-based check only (presence of config, cookie
+    //   shape, identity values).
+    //   With ?probe=true: actively call /api/account_profile and report
+    //   whether the session is live. Distinguishes session_expired,
+    //   cloudflare_blocked, network_error, upstream_error.
     {
       method: 'GET',
       pattern: /^\/claude-ai\/session-status$/,
-      handler: async () => ({ success: true, data: getClaudeAISessionStatus() }),
+      handler: async (req) => {
+        const status = getClaudeAISessionStatus();
+        const wantProbe = (req.query || {}).probe === 'true';
+        if (!wantProbe) return { success: true, data: status };
+        const probe = await probeClaudeAISession();
+        return { success: true, data: { ...status, probe } };
+      },
+    },
+
+    // GET /claude-ai/healthz
+    //   Convenience shortcut for the cookie-file health check.
+    //   Equivalent to GET /claude-ai/session-status?probe=true with the
+    //   probe verdict hoisted to the top level for a one-glance check.
+    {
+      method: 'GET',
+      pattern: /^\/claude-ai\/healthz$/,
+      handler: async () => {
+        const status = getClaudeAISessionStatus();
+        const probe = await probeClaudeAISession();
+        return {
+          success: true,
+          data: {
+            ok: probe.ok,
+            reason: probe.reason,
+            hint: probe.hint,
+            sessionConfigured: status.present,
+            sessionPath: status.sessionPath,
+            identity: status.identity,
+            cookieFreshness: {
+              hasSessionKey: status.hasSessionKey,
+              hasCfClearance: status.hasCfClearance,
+              hasCfBm: status.hasCfBm,
+            },
+            probe,
+          },
+        };
+      },
+    },
+
+    // POST /claude-ai/via-chrome/health-check
+    //   Returns a snippet the agent runs in any tab. The snippet checks
+    //   that the tab is on claude.ai, the user is logged in, and
+    //   /api/account_profile returns 200. Designed to be the first call
+    //   before driving any other via-chrome route.
+    //
+    //   (Cannot be checked directly from lm-assist because Chrome MCP is
+    //   only reachable from the agent side.)
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/health-check$/,
+      handler: async () => ({ success: true, data: snippetHealthCheck() }),
     },
 
     // GET /claude-ai/conversations?limit=30&starred=false&project_uuid=...

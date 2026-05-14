@@ -219,6 +219,85 @@ export function snippetBootstrapAppStart(): ViaChromeSnippet {
   });
 }
 
+/**
+ * Snippet that checks whether everything is in place to operate the
+ * via-chrome path:
+ *   - the current tab is on https://claude.ai/*
+ *   - identity cookies (lastActiveOrg, anthropic-device-id) are present
+ *   - GET /api/account_profile returns 200 with `account` populated
+ *
+ * Designed to be the FIRST call an agent makes before driving any other
+ * via-chrome operation. Returns a structured verdict the agent can
+ * branch on, plus a `hint` for what to do if anything's wrong.
+ */
+export function snippetHealthCheck(): ViaChromeSnippet {
+  const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}
+  const onClaudeAi = location.hostname === 'claude.ai';
+  if (!onClaudeAi) {
+    return {
+      ok: false,
+      reason: 'wrong_tab',
+      pageUrl: location.href,
+      hint: 'Open https://claude.ai/ in this tab (use mcp__claude-in-chrome__navigate) before calling via-chrome endpoints.',
+    };
+  }
+  const orgUuid = cookies['lastActiveOrg'];
+  const deviceId = cookies['anthropic-device-id'];
+  if (!orgUuid) {
+    return {
+      ok: false,
+      reason: 'not_logged_in',
+      pageUrl: location.href,
+      hint: 'lastActiveOrg cookie not present — log in to claude.ai in this browser first.',
+    };
+  }
+  // Active probe — same call /claude-ai/session-status?probe=true does
+  let r;
+  try {
+    r = await fetch('/api/account_profile', {
+      credentials: 'include',
+      headers: { ...baseHeaders, 'Accept': '*/*' },
+    });
+  } catch (e) {
+    return { ok: false, reason: 'network_error', pageUrl: location.href, hint: 'Network error reaching claude.ai: ' + (e && e.message || String(e)) };
+  }
+  if (r.status === 401) return { ok: false, reason: 'session_expired', status: 401, pageUrl: location.href, hint: 'Session expired — sign back in to claude.ai in this browser.' };
+  if (r.status === 403 || r.status === 503) return { ok: false, reason: 'cloudflare_blocked', status: r.status, pageUrl: location.href, hint: 'Cloudflare blocked the request. Reload claude.ai/ in this tab to refresh cf_clearance / __cf_bm.' };
+  if (!r.ok) return { ok: false, reason: 'upstream_error', status: r.status, pageUrl: location.href, hint: 'claude.ai responded ' + r.status };
+  const j = await r.json();
+  return {
+    ok: true,
+    reason: 'ok',
+    pageUrl: location.href,
+    identity: {
+      orgUuid,
+      deviceId: deviceId || null,
+      anonymousId: cookies['ajs_anonymous_id'] || null,
+      activitySessionId: cookies['activitySessionId'] || null,
+    },
+    account: {
+      // Surface non-sensitive bits only — UUID + org name; suppress email/name
+      uuid: j && j.account && j.account.uuid,
+      hasMax: !!(j && j.account && j.account.has_claude_max),
+      hasPro: !!(j && j.account && j.account.has_claude_pro),
+      organizationName: j && j.organization && j.organization.name,
+      organizationType: j && j.organization && j.organization.organization_type,
+      rateLimitTier: j && j.organization && j.organization.rate_limit_tier,
+    },
+    hint: 'claude.ai accessible and logged in; via-chrome routes are ready to use.',
+  };
+})()`;
+  return {
+    snippet,
+    description: 'Health check: verify the active tab is on claude.ai, the user is logged in, and the session can talk to /api/account_profile.',
+    url: 'https://claude.ai/api/account_profile',
+    method: 'GET',
+    instructions:
+      INSTRUCTIONS +
+      ' Call this BEFORE any other via-chrome route to confirm the integration is healthy. Branch on `ok`; if false, `reason` and `hint` describe what to do.',
+  };
+}
+
 /** Snippet for reading an artifact's version history. */
 export function snippetArtifactVersions(artifactUuid: string): ViaChromeSnippet {
   if (!UUID_RE.test(artifactUuid)) throw new Error(`Invalid artifact UUID: ${artifactUuid}`);
