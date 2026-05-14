@@ -314,3 +314,48 @@ export async function listProjects(opts: {
     { referer: 'https://claude.ai/new' },
   );
 }
+
+/** GET /api/organizations/{org_uuid}/memory — Claude's persistent memory. */
+export async function getMemory(opts: { orgUuid?: string } = {}) {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  const orgUuid = opts.orgUuid || deriveIdentity(cfg).orgUuid;
+  if (!orgUuid) throw new Error('No org_uuid');
+  return claudeaiGet(`/api/organizations/${orgUuid}/memory`, {
+    referer: 'https://claude.ai/',
+  });
+}
+
+/**
+ * GET /edge-api/bootstrap/{org_uuid}/app_start — single call that returns
+ * account info, feature flags, recent conversations, and capability flags.
+ * By far the highest-frequency endpoint in real traffic; useful for warming
+ * a UI state in one shot.
+ *
+ * Note: the path UUID is the **org_uuid**, NOT the user uuid. Verified
+ * against the live endpoint — the user-uuid path returns 404.
+ */
+export async function getBootstrapAppStart(opts: { orgUuid?: string } = {}) {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  const orgUuid = opts.orgUuid || deriveIdentity(cfg).orgUuid;
+  if (!orgUuid) throw new Error('No org_uuid (ensure lastActiveOrg cookie is present)');
+  return claudeaiGet(`/edge-api/bootstrap/${orgUuid}/app_start`, {
+    referer: 'https://claude.ai/',
+  });
+}
+
+/** GET /api/organizations/{org_uuid}/artifacts/{artifact_uuid}/versions */
+export async function getArtifactVersions(artifactUuid: string, opts: { orgUuid?: string } = {}) {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  const orgUuid = opts.orgUuid || deriveIdentity(cfg).orgUuid;
+  if (!orgUuid) throw new Error('No org_uuid');
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(artifactUuid)) {
+    throw new Error(`Invalid artifact UUID: ${artifactUuid}`);
+  }
+  return claudeaiGet(
+    `/api/organizations/${orgUuid}/artifacts/${artifactUuid}/versions`,
+    { referer: 'https://claude.ai/' },
+  );
+}

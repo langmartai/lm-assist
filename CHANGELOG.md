@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### claude.ai web-session integration — via-chrome path + additional read endpoints
+
+Adds a second route family `/claude-ai/via-chrome/*` that returns ready-to-paste JS snippets for `mcp__claude-in-chrome__javascript_tool`. Snippets run inside an authenticated `claude.ai` tab, so the browser auto-attaches every cookie (including HttpOnly `sessionKey` / `cf_clearance` / `__cf_bm` that page JS can't read). No cookie file, no refresh chore, real-Chrome TLS fingerprint. Full design notes in [`docs/claude-ai-routes.md`](./docs/claude-ai-routes.md).
+
+New routes (cookie-file path):
+- `GET /claude-ai/memory` — Claude's persistent memory for the org
+- `GET /claude-ai/bootstrap` — `/edge-api/bootstrap/{org_uuid}/app_start`, the highest-leverage single call (≈500 KB: account, feature flags, recent conversations, system prompts, user access in one shot)
+- `GET /claude-ai/artifacts/:uuid/versions` — artifact version history
+
+New routes (via-chrome path):
+- `POST /claude-ai/via-chrome` — generic snippet generator for any `/api/`, `/edge-api/`, `/v1/` path. Path whitelist blocks other prefixes.
+- `POST /claude-ai/via-chrome/conversations`, `…/conversations/:uuid`, `…/projects` — mirrors of the cookie-file convenience routes
+- `POST /claude-ai/via-chrome/memory`, `…/bootstrap`, `…/artifacts/:uuid/versions` — same for the new endpoints
+
+End-to-end verified against a real Chrome tab via Chrome MCP:
+- `via-chrome/conversations` (limit 3) → **200**, 3 conversations
+- `via-chrome/conversations/36a5ab7b-…` → **200**, full transcript, 38 messages
+- `via-chrome/bootstrap` → **200**, 516 KB JSON with 10 top-level keys (`account`, `org_statsig`, `org_growthbook`, `system_prompts`, `current_user_access`, etc.)
+
+Bug fix during testing: the `bootstrap` path takes the **org_uuid** (`lastActiveOrg`), not the user uuid (`ajs_user_id`) — the user-uuid form returns 404. Initial snippet helper guessed wrong; corrected in both helpers (`getBootstrapAppStart`, `snippetBootstrapAppStart`).
+
+New helper module: `core/src/utils/claudeai-via-chrome.ts` — `buildViaChromeSnippet`, `snippetListConversations`, `snippetReadConversation`, `snippetListProjects`, `snippetGetMemory`, `snippetBootstrapAppStart`, `snippetArtifactVersions`.
+
 ### claude.ai web-session integration
 
 Four new routes that operate on claude.ai's web backend — the cookie-authenticated API behind `claude.ai/chat/...`. Endpoint inventory in [`lm-claude-endpoint:pages/claude-ai/`](https://github.com/langmartai/lm-claude-endpoint/tree/main/pages/claude-ai).
