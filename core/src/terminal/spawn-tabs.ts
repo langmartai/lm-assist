@@ -160,24 +160,41 @@ function shellQuote(s: string): string {
 }
 
 /**
- * Find an existing gnome-terminal window whose title starts with
- * `<windowGroup>: ` so we can add a tab to it. Returns the X11 window
- * id (hex string) or null.
+ * Find an existing gnome-terminal window of this windowGroup so we can
+ * add a tab to it. Returns the X11 window id (hex string) or null.
  *
- * Strategy: list with wmctrl, prefer the *most recent* match. We can't
- * tell "most recent" from wmctrl alone — use stacking order (last in
- * `wmctrl -l` output is top of stack on most WMs).
+ * Why we use WM_WINDOW_ROLE (not the title): gnome-terminal mirrors the
+ * ACTIVE tab's title to the X11 window title. Once a non-tmux tab is
+ * activated, the window title becomes "ubuntu@host: cwd" (VTE's default)
+ * and no longer starts with "<group>:". A title-based lookup would then
+ * miss the window and we'd open N separate windows for N tabs.
+ *
+ * Set --role=lm-assist-<group> when creating the first window of a group;
+ * xdotool's `search --classname` doesn't match role, but it accepts
+ * search filters. Easier path: read WM_WINDOW_ROLE on each window from
+ * `xprop`. Linear scan of all top-level windows — cheap, deterministic.
  */
 function findExistingGroupWindow(windowGroup: string, env: Record<string, string>): string | null {
   try {
+    const role = `lm-assist-${windowGroup}`;
     const stdout = execFileSync('wmctrl', ['-l'], { encoding: 'utf-8', env, timeout: 2000 });
-    const prefix = `${windowGroup}: `;
-    let last: string | null = null;
+    // Collect window ids from wmctrl (skips off-screen / decoration windows
+    // that xprop sometimes errors on).
+    const ids: string[] = [];
     for (const line of stdout.split('\n')) {
-      const m = line.match(/^(\S+)\s+\S+\s+\S+\s+(.*)$/);
-      if (!m) continue;
-      const [, winId, title] = m;
-      if (title.startsWith(prefix)) last = winId;
+      const m = line.match(/^(\S+)\s/);
+      if (m) ids.push(m[1]);
+    }
+    // For each, query WM_WINDOW_ROLE. Last match wins (most recently
+    // created tends to be highest WID under standard X11 stacking).
+    let last: string | null = null;
+    for (const id of ids) {
+      try {
+        const out = execFileSync('xprop', ['-id', id, 'WM_WINDOW_ROLE'], { encoding: 'utf-8', env, timeout: 1000 });
+        // Format: `WM_WINDOW_ROLE(STRING) = "lm-assist-foo"`
+        const m = out.match(/=\s*"([^"]*)"/);
+        if (m && m[1] === role) last = id;
+      } catch { /* xprop may not have WM_WINDOW_ROLE on some windows */ }
     }
     return last;
   } catch {
@@ -242,7 +259,13 @@ async function openTabInExistingWindow(
   //    syntax and PROMPT_COMMAND assignments are ugly when typed visibly.
   //    Write a tiny helper script to /tmp and `source` it; then `clear`
   //    erases the visible noise within ~1 second.
-  await sleep(250);
+  //
+  //    750ms wait so bash has fully sourced ~/.bashrc (which on this
+  //    user's box loads atuin + bash-preexec, both of which install DEBUG
+  //    traps; sourcing during that window can lose keystrokes). Earlier
+  //    test runs with 250ms left tabs 2/3 with their `exec tmux attach`
+  //    silently failing — bash had received only part of the source line.
+  await sleep(750);
 
   const setupLines: string[] = [];
   if (groupedTitle) {
@@ -318,8 +341,13 @@ async function openTabInExistingWindow(
     // then `clear` runs and the screen is clean.
     const cmd = `source "${helperPath}"\n`;
     try {
-      execFileSync('xdotool', ['type', '--delay', '5', '--clearmodifiers', cmd], {
-        encoding: 'utf-8', env, timeout: 5000,
+      // --delay 25 (was 5) — gives the receiving pty time to process each
+      // keypress through bash-preexec's DEBUG trap chain. At --delay 5 on
+      // this box, the source command would arrive partially-typed (e.g.
+      // "souce /tmp/...") and bash would error out, leaving the user with
+      // a bare prompt that never exec'd tmux.
+      execFileSync('xdotool', ['type', '--delay', '25', '--clearmodifiers', cmd], {
+        encoding: 'utf-8', env, timeout: 10000,
       });
     } catch (e: unknown) {
       try { fs.unlinkSync(helperPath); } catch { /* ignore */ }
@@ -395,10 +423,14 @@ export async function openGnomeTab(opts: OpenGnomeTabOptions): Promise<OpenGnome
   // (legacy 1-tab-per-window since user's gsettings opens new --tab as
   // new windows on this version anyway).
   // For grouped windows, also pass --maximize so the user gets a
-  // full-screen terminal by default rather than a small floating window.
+  // full-screen terminal by default, AND --role=lm-assist-<group> so
+  // findExistingGroupWindow can locate this window later regardless of
+  // which tab is active (title-based lookup would fail once a non-
+  // titled tab becomes active).
   const args: string[] = [];
   if (opts.windowGroup) {
     args.push('--maximize');
+    args.push(`--role=lm-assist-${opts.windowGroup}`);
     args.push('--window');
   } else {
     args.push('--tab');
