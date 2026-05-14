@@ -16,6 +16,7 @@ import { createTtydRoutes } from './ttyd.routes';
 import { createHubRoutes } from './hub.routes';
 import { createTmuxRoutes } from './tmux.routes';
 import { createClaudeCodeRoutes } from './claude-code.routes';
+import { createClaudeAIRoutes } from './claude-ai.routes';
 import { createKnowledgeRoutes } from './knowledge.routes';
 import { createKnowledgeSettingsRoutes } from './knowledge-settings.routes';
 import { createSessionSearchRoutes } from './session-search.routes';
@@ -48,6 +49,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createHubRoutes(ctx),
     ...createTmuxRoutes(ctx),
     ...createClaudeCodeRoutes(ctx),
+    ...createClaudeAIRoutes(ctx),
     ...createKnowledgeRoutes(ctx),
     ...createKnowledgeSettingsRoutes(ctx),
     ...createSessionSearchRoutes(ctx),

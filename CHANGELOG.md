@@ -2,6 +2,61 @@
 
 ## [Unreleased]
 
+### claude.ai web-session integration
+
+Four new routes that operate on claude.ai's web backend — the cookie-authenticated API behind `claude.ai/chat/...`. Endpoint inventory in [`lm-claude-endpoint:pages/claude-ai/`](https://github.com/langmartai/lm-claude-endpoint/tree/main/pages/claude-ai).
+
+- **New: `GET /claude-ai/session-status`** — reports presence of `~/.claude/claudeai-session.json`, validates that the cookie string contains `sessionKey`, `cf_clearance`, `__cf_bm`, and surfaces the auto-derived identity (`org_uuid`, `anthropic-device-id`, `anonymous-id`, `activity-session-id`, `user_id`). No raw cookie values returned.
+- **New: `GET /claude-ai/conversations`** — proxies `GET claude.ai/api/organizations/{org_uuid}/chat_conversations_v2`. Supports `?limit=`, `?starred=true|false`, `?consistency=eventual|strong`, `?project_uuid=`.
+- **New: `GET /claude-ai/conversations/:uuid`** — proxies `GET claude.ai/api/organizations/{org_uuid}/chat_conversations/{conv_uuid}` with the same default query the web app sends (`tree=True`, `rendering_mode=messages`, `render_all_tools=true`). Returns the full message tree with `chat_messages[]` (`content` blocks: `text`, `tool_use`, `tool_result`, attachments).
+- **New: `GET /claude-ai/projects`** — proxies `GET claude.ai/api/organizations/{org_uuid}/projects`.
+- **New helper: `core/src/utils/claudeai-session.ts`** — `readClaudeAISession()`, `getClaudeAISessionStatus()`, `parseCookieString()`, `deriveIdentity()`, `claudeaiGet()`, plus per-endpoint wrappers (`listConversations`, `readConversation`, `listProjects`).
+
+#### Configuration
+
+User pastes their browser Cookie header once into `~/.claude/claudeai-session.json` (mode 0o600 enforced on write):
+
+```json
+{
+  "cookie": "<paste full Cookie: header from a captured claude.ai request>",
+  "userAgent": "Mozilla/5.0 ... (optional — defaults to observed Chrome 146 Linux)"
+}
+```
+
+`orgUuid`, `anthropic-device-id`, `anonymous-id`, `activity-session-id`, `user_id` are auto-derived from the cookie itself (claude.ai stores them as cookies *and* sends them as headers). The user shouldn't need to maintain those separately.
+
+Why config-file rather than auto-extract from Chrome / Claude Desktop:
+- Browser cookie stores are encrypted per platform (DPAPI on Windows, libsecret on Linux, Keychain on macOS). Decryption is fragile and fights with the browser's own write locks.
+- `cf_clearance` / `__cf_bm` rotate every ~30 min and are IP-bound — auto-extraction wouldn't keep them fresh anyway.
+
+#### Wire-fingerprint hardening
+
+`claudeaiGet()` sends the same header set captured from real claude.ai web traffic (lm-proxy capture, 2026-05-10..2026-05-14):
+
+- `Host`, `Connection: keep-alive`
+- `anthropic-anonymous-id`, `x-activity-session-id`, `anthropic-device-id` — derived from cookies
+- `sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-platform` — pinned to observed Chrome 146 Linux values (overridable)
+- `anthropic-client-sha`, `anthropic-client-platform: web_claude_ai`, `anthropic-client-version: 1.0.0`
+- `content-type: application/json`, `Accept: */*`
+- `Sec-Fetch-{Site,Mode,Dest}: same-origin, cors, empty`
+- `Referer` set per operation: `https://claude.ai/` for list, `https://claude.ai/chat/{conv_uuid}` for read, `https://claude.ai/new` for projects
+- `Accept-Encoding: gzip, deflate, br` — note: real Chrome 146 sends `..., zstd` but Node's `fetch` can't decode zstd responses, so we drop it. Still matches older Chrome / Edge fingerprints.
+
+Headers intentionally omitted: `x-datadog-{origin,trace-id,parent-id,sampling-priority}`, `traceparent`, `tracestate`. They're random per request and easier to forge wrongly than to skip. claude.ai accepts the request without them.
+
+**Caveats** (documented in the helper):
+- `cf_clearance` and `__cf_bm` are tied to the source IP and expire (~30 min for `__cf_bm`). When they expire, requests get 403 / interstitial — the user must refresh the cookie from a fresh browser request.
+- Node's TLS fingerprint (JA3/JA4) differs from Chrome's. Cloudflare can detect this. Low-frequency reads on a fresh `cf_clearance` succeed; tight polling will trip detection regardless of header correctness.
+- macOS Keychain note doesn't apply here — this is a config-file integration on all platforms.
+
+#### Live test (2026-05-14, against yi@10.0.1.123's captured cookie)
+
+| Call | Status | Result |
+|---|---|---|
+| `listConversations({ limit: 5 })` | 200 | 5 conversations: "Weekly trading insights summary", "Deepgram speech-to-text pricing", ... |
+| `readConversation("36a5ab7b-…")` | 200 | `name: "Weekly trading insights summary"`, `model: claude-opus-4-7`, `chat_messages: 38` |
+| `listProjects({ limit: 5 })` | 200 | 0 items (no projects shared with this account) |
+
 ### Claude Code OAuth integration
 
 Three new routes that let any local caller — UI dashboard, CLI tool, scheduled job — read the same usage and profile data Claude Code itself reads, without re-implementing the OAuth dance.
