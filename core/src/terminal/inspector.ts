@@ -51,18 +51,25 @@ export async function awaitScreenChange(
   return { changed: false, elapsedMs: Date.now() - start, latest };
 }
 
+/**
+ * Known POSIX shell names — if the pane is running one of these AND there
+ * are no CC markers on screen, CC truly isn't running here.
+ */
+const KNOWN_SHELLS = new Set(['bash', 'sh', 'zsh', 'fish', 'dash', 'ksh']);
+
 /** Derive CCPhase from the pane's program + screen text. */
 export function derivePhase(paneCommand: string | null, screen: string): CCPhase {
   if (paneCommand === null) return 'dead';
-  // CC TUI runs as 'node' (or 'claude' on some installs). Heuristic: trust
-  // text content, not the process name, because CC runs as `node` from npm.
-  const looksLikeCC = screen.includes(PROMPT_INDICATOR)
+  const hasMarkers = screen.includes(PROMPT_INDICATOR)
     || TRUST_INDICATORS.some((s) => screen.includes(s))
     || READY_FOOTER_INDICATORS.some((s) => screen.includes(s))
     || PERMISSION_INDICATORS.some((s) => screen.includes(s));
-  if (!looksLikeCC) {
-    // Pane has a program (probably bash) but no CC TUI markers → CC not running.
-    return 'dead';
+  if (!hasMarkers) {
+    // No CC markers yet. Two cases:
+    //   - pane runs a known shell → CC is not here (dead)
+    //   - pane runs something else (typically 'node' for the npm-installed
+    //     claude) → CC is initializing its TUI (launching)
+    return KNOWN_SHELLS.has(paneCommand) ? 'dead' : 'launching';
   }
   if (TRUST_INDICATORS.some((s) => screen.includes(s))) return 'trust-prompt';
   if (PERMISSION_INDICATORS.some((s) => screen.includes(s))) return 'permission';
@@ -95,6 +102,11 @@ export async function awaitPhase(
   const pollMs = opts.pollMs ?? 200;
   const start = Date.now();
   let finalPhase: CCPhase = 'unknown';
+  // Allow a few consecutive 'dead' polls before bailing — CC can momentarily
+  // appear dead between the bash spawn and the node process taking over the
+  // pane (paneCommand may still be 'bash' for a tick).
+  const DEAD_THRESHOLD = 5;
+  let consecutiveDead = 0;
   while (Date.now() - start < opts.timeoutMs) {
     const state = getCCState(name);
     finalPhase = state.phase;
@@ -102,8 +114,12 @@ export async function awaitPhase(
       return { reached: true, elapsedMs: Date.now() - start, finalPhase };
     }
     if (state.phase === 'dead' && desired !== 'dead') {
-      // No point waiting; the pane has no CC.
-      return { reached: false, elapsedMs: Date.now() - start, finalPhase };
+      consecutiveDead++;
+      if (consecutiveDead >= DEAD_THRESHOLD) {
+        return { reached: false, elapsedMs: Date.now() - start, finalPhase };
+      }
+    } else {
+      consecutiveDead = 0;
     }
     await new Promise((r) => setTimeout(r, pollMs));
   }

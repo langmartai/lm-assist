@@ -33,3 +33,4 @@ nul
 
 # Temporary Claude files
 tmpclaude-*
+core/dist-test/
