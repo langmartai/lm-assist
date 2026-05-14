@@ -499,21 +499,24 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
       const { done, value } = await reader.read();
       if (done) break;
       buf += dec.decode(value, { stream: true });
-      let idx;
-      while ((idx = buf.indexOf('\n\n')) !== -1) {
-        const chunk = buf.slice(0, idx);
-        buf = buf.slice(idx + 2);
-        const evMatch = chunk.match(/^event:\s*(.+)$/m);
-        const dataMatch = chunk.match(/^data:\s*([\s\S]+)$/m);
+      // claude.ai uses CRLF event separators (\r\n\r\n) — observed live
+      // 2026-05-14. SSE spec allows either CRLF or LF, so accept both.
+      const SEP = /\r\n\r\n|\n\n/;
+      let m: RegExpExecArray | null;
+      while ((m = SEP.exec(buf)) !== null) {
+        const chunk = buf.slice(0, m.index);
+        buf = buf.slice(m.index + m[0].length);
+        const evMatch = chunk.match(/^event:\s*(.+?)\r?$/m);
+        const dataMatch = chunk.match(/^data:\s*([\s\S]+?)\r?$/m);
         if (!evMatch || !dataMatch) continue;
         let parsed: any = dataMatch[1].trim();
         try { parsed = JSON.parse(parsed); } catch {}
         events.push({ type: evMatch[1].trim(), data: parsed });
         // Aggregate any text delta we can find.
         if (parsed && typeof parsed === 'object') {
-          // Anthropic-style content_block_delta
+          // Anthropic-style content_block_delta — { delta: { text: "..." } }
           if (parsed.delta?.text) text += parsed.delta.text;
-          // claude.ai uses `completion` events with a string in some flows
+          // claude.ai sometimes uses `completion` events with a string
           else if (typeof parsed.completion === 'string') text += parsed.completion;
         }
       }

@@ -290,16 +290,18 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
   const events = [];
   let text = '';
   let buf = '';
+  // claude.ai sends event separators as CRLF (\\r\\n\\r\\n). Accept LF too.
+  const SEP = /\\r\\n\\r\\n|\\n\\n/;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buf += dec.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf('\\n\\n')) !== -1) {
-      const chunk = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      const evM = chunk.match(/^event:\\s*(.+)$/m);
-      const dM = chunk.match(/^data:\\s*([\\s\\S]+)$/m);
+    let m;
+    while ((m = SEP.exec(buf)) !== null) {
+      const chunk = buf.slice(0, m.index);
+      buf = buf.slice(m.index + m[0].length);
+      const evM = chunk.match(/^event:\\s*(.+?)\\r?$/m);
+      const dM = chunk.match(/^data:\\s*([\\s\\S]+?)\\r?$/m);
       if (!evM || !dM) continue;
       let parsed = dM[1].trim();
       try { parsed = JSON.parse(parsed); } catch {}

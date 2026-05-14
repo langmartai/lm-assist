@@ -242,16 +242,35 @@ The route consumes the entire SSE stream and returns an aggregated object:
   "success": true,
   "data": {
     "status": 200,
-    "text": "...",                       // concatenated assistant text deltas
-    "humanMessageUuid": "...",
-    "assistantMessageUuid": "...",
-    "eventCount": 42,
-    "eventTypes": ["completion","message_start","content_block_delta", ...]
+    "text": " PARSER_OK",                   // concatenated assistant text deltas
+    "humanMessageUuid": "...",              // client-generated UUIDv4
+    "assistantMessageUuid": "...",          // client-generated UUIDv4
+    "eventCount": 7,
+    "eventTypes": [
+      "message_start", "content_block_start", "content_block_delta",
+      "content_block_stop", "message_delta", "message_limit", "message_stop"
+    ]
   }
 }
 ```
 
 Pass `?events=full` to also receive the raw event list.
+
+**Observed event types** (live test 2026-05-14):
+
+| Event | Purpose |
+|---|---|
+| `message_start` | Carries the **server-assigned** `message.uuid` and `parent_uuid` (UUIDv7s, time-ordered) and the model name. |
+| `content_block_start` | Opens a content block. |
+| `content_block_delta` | Streamed text deltas — `{ delta: { text: "..." } }`. The `text` field in the response sums these. |
+| `content_block_stop` | Closes a content block. |
+| `message_delta` | Final delta with `stop_reason`, `stop_sequence`, output token usage. |
+| `message_limit` | Carries `{ rateLimit: { representativeClaim, windows: { "5h": {...}, "7d": {...} } } }`. |
+| `message_stop` | Terminal event. |
+
+**SSE separator note.** claude.ai uses `\r\n\r\n` (CRLF), not the bare `\n\n` of some SSE implementations. The parser accepts both.
+
+**`turn_message_uuids` is advisory.** The body field `turn_message_uuids: { human_message_uuid, assistant_message_uuid }` is sent with client-generated UUIDv4s, but the server assigns its own UUIDv7s (encoded in the `message_start` event and visible in the conversation history). Treat the client UUIDs as request-correlation handles, not authoritative IDs.
 
 ### Safety notes
 

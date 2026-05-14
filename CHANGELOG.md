@@ -11,7 +11,16 @@ Both families now support sending messages:
 
 Request body shape mirrors a captured browser call: `prompt`, `timezone`, `personalized_styles`, `locale`, `model`, `tools`, fresh client-generated `turn_message_uuids` (UUIDv4), `attachments`/`files`/`sync_sources` empty, `rendering_mode: 'messages'`, `parent_message_uuid` from the conversation's leaf.
 
-`POST /completion` is the only **write** in the current surface — it creates real message history in the user's claude.ai account and consumes tokens. The via-chrome snippet's `instructions` field warns explicitly; the cookie-path handler validates `prompt` and rejects empty values.
+**Live-tested end-to-end** against the "Greeting" thread on 2026-05-14:
+- `prompt: "Reply with exactly: PARSER_OK"` → `text: " PARSER_OK"`, 7 events drained
+- Observed event types: `message_start`, `content_block_start`, `content_block_delta`, `content_block_stop`, `message_delta`, `message_limit`, `message_stop`
+- The `message_limit` event carries `{ representativeClaim, windows: { '5h': {...}, '7d': {...} } }` — useful for surfacing rate-limit headroom
+
+**Discoveries during the live test** (folded into the SSE parser):
+1. claude.ai uses **CRLF separators** (`\r\n\r\n`), not bare `\n\n`. First attempt returned `eventCount: 0` despite a successful 200 because the parser only looked for LF. Parser now accepts both. Documented in `docs/claude-ai-routes.md`.
+2. **`turn_message_uuids` is advisory.** The server assigns its own UUIDv7s (visible in `message_start.message.uuid`) and ignores the client UUIDv4s we sent. The client UUIDs are useful only as request-correlation handles. Doc updated.
+
+`POST /completion` is the only **write** in the current surface — creates real message history and consumes tokens. The via-chrome snippet's `instructions` warns explicitly; the cookie-path handler validates `prompt` presence.
 
 The other observed write endpoint (`POST .../title`) remains unimplemented.
 
