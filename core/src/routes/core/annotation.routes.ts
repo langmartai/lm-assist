@@ -25,7 +25,7 @@ import {
   expand, detectSessionCacheState, type CompactAnnotation,
   type AnnotateOptions, type BuildOptions, type MatchResult,
 } from '../../annotation';
-import { getTerminalManager } from '../../terminal-manager';
+import * as cc from '../../terminal/cc';
 
 function ok<T>(data: T) {
   return { success: true, data };
@@ -328,12 +328,11 @@ export function createAnnotationRoutes(_ctx: RouteContext): RouteHandler[] {
         let pivot: any = null;
         if (body.tmuxSession) {
           try {
-            pivot = await getTerminalManager().ccPivot({
-              tmuxSession: body.tmuxSession,
+            pivot = await cc.pivot(String(body.tmuxSession), {
               newSessionId: buildRes.newSessionId,
               prompt: String(body.prompt),
-              promptPattern: body.promptPattern,
-              timeoutMs: body.pivotTimeoutMs,
+              promptPattern: body.promptPattern || '❯',
+              timeoutMs: body.pivotTimeoutMs || 15000,
             });
           } catch (e: any) {
             pivot = { pivoted: false, error: e?.message || String(e) };
