@@ -18,7 +18,7 @@ import { execFileSync } from '../utils/exec';
 import { IS_POSIX } from '../utils/process-utils';
 import { TerminalError } from './errors';
 import { withSessionLock } from './mutex';
-import type { TmuxSessionState, SendKeysInput, WaitForInput, CaptureInput } from './types';
+import type { TmuxSessionState, TmuxWindowState, SendKeysInput, WaitForInput, CaptureInput, CreateWindowInput } from './types';
 
 const TMUX = 'tmux';
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -224,6 +224,100 @@ export function sendKeysUnlocked(name: string, opts: SendKeysInput): void {
 
 export async function sendKeys(name: string, opts: SendKeysInput): Promise<void> {
   return await withSessionLock(name, async () => sendKeysUnlocked(name, opts));
+}
+
+// ---------- multi-window support -----------------------------------------
+
+/** List all windows in a session. */
+export function listWindows(name: string): TmuxWindowState[] {
+  assertPosix();
+  if (!exists(name)) throw new TerminalError('SESSION_NOT_FOUND', `tmux session not found: ${name}`);
+  const SEP = '\x1f';
+  const stdout = tmuxCmd([
+    'list-windows', '-t', `=${name}`, '-F',
+    `#{window_index}${SEP}#{window_name}${SEP}#{window_active}${SEP}#{pane_current_command}${SEP}#{pane_pid}`,
+  ]).stdout;
+  const out: TmuxWindowState[] = [];
+  for (const line of stdout.trim().split('\n')) {
+    if (!line) continue;
+    const parts = line.split(SEP);
+    out.push({
+      index: parseInt(parts[0], 10) || 0,
+      name: parts[1] || '',
+      active: parts[2] === '1',
+      paneCommand: parts[3] || null,
+      panePid: parseInt(parts[4], 10) || null,
+    });
+  }
+  out.sort((a, b) => a.index - b.index);
+  return out;
+}
+
+/** Add a new window to a session. Returns its index. */
+export async function createWindow(name: string, opts: CreateWindowInput): Promise<{ index: number }> {
+  assertPosix();
+  return await withSessionLock(name, async () => {
+    if (!exists(name)) throw new TerminalError('SESSION_NOT_FOUND', `tmux session not found: ${name}`);
+    // Verify cwd if given (mirrors createUnlocked's defensive check).
+    if (opts.cwd) {
+      try {
+        const stat = fs.statSync(opts.cwd);
+        if (!stat.isDirectory()) throw new TerminalError('INVALID_INPUT', `cwd is not a directory: ${opts.cwd}`);
+      } catch (e: unknown) {
+        if (e instanceof TerminalError) throw e;
+        throw new TerminalError('INVALID_INPUT', `cwd does not exist: ${opts.cwd}`, { cwd: opts.cwd });
+      }
+    }
+    const before = new Set(listWindows(name).map((w) => w.index));
+    const args = ['new-window', '-t', `=${name}`, '-P', '-F', '#{window_index}'];
+    if (opts.cwd) args.push('-c', opts.cwd);
+    if (opts.name) args.push('-n', opts.name);
+    // Don't pass command via -- so we get default shell; send-keys after for
+    // consistency with how createUnlocked treats the session shell.
+    const stdout = tmuxCmd(args).stdout.trim();
+    const newIndex = parseInt(stdout, 10);
+    if (!Number.isFinite(newIndex) || before.has(newIndex)) {
+      // Fallback: query and pick the highest new index.
+      const after = listWindows(name).map((w) => w.index);
+      const fresh = after.filter((i) => !before.has(i));
+      if (fresh.length === 0) {
+        throw new TerminalError('POSTCONDITION_FAILED', `new-window reported success but no new window appeared`);
+      }
+      return { index: fresh[fresh.length - 1] };
+    }
+    if (opts.command) {
+      tmuxCmd(['send-keys', '-t', `${name}:${newIndex}`, opts.command, 'Enter']);
+    }
+    return { index: newIndex };
+  });
+}
+
+/** Select (focus) a window in the session by index or name. */
+export async function selectWindow(name: string, target: string): Promise<void> {
+  assertPosix();
+  return await withSessionLock(name, async () => {
+    if (!exists(name)) throw new TerminalError('SESSION_NOT_FOUND', `tmux session not found: ${name}`);
+    tmuxCmd(['select-window', '-t', `${name}:${target}`]);
+  });
+}
+
+/** Kill a specific window in the session. The last window's kill also kills the session. */
+export async function killWindow(name: string, target: string): Promise<{ killed: boolean; sessionGone: boolean }> {
+  assertPosix();
+  return await withSessionLock(name, async () => {
+    if (!exists(name)) return { killed: false, sessionGone: true };
+    try {
+      tmuxCmd(['kill-window', '-t', `${name}:${target}`]);
+    } catch (e: unknown) {
+      // tmux returns error if window doesn't exist; treat as not-killed.
+      if (e instanceof TerminalError && /can't find window/i.test((e.details.stderr as string) || '')) {
+        return { killed: false, sessionGone: !exists(name) };
+      }
+      throw e;
+    }
+    // Session may have ended if that was the last window.
+    return { killed: true, sessionGone: !exists(name) };
+  });
 }
 
 export type WaitOutcome = 'matched' | 'timeout' | 'session-gone';

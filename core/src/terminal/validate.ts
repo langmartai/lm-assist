@@ -16,7 +16,8 @@ import { TerminalError } from './errors';
 import type {
   SendKeysInput, WaitForInput, CaptureInput,
   CCLaunchInput, CCPromptInput, CCPivotInput,
-  SlashCommandInput, SelectChoiceInput,
+  SlashCommandInput, SelectChoiceInput, AwaitIdleInput,
+  CreateWindowInput,
   TabKind,
 } from './types';
 
@@ -199,6 +200,32 @@ export function parseSlash(body: unknown): SlashCommandInput {
 export function parseSelectChoice(body: unknown): SelectChoiceInput {
   const b = (body || {}) as Record<string, unknown>;
   return { n: asInt(b.n, 'n', 1, { min: 1, max: 9 }) };
+}
+
+export function parseAwaitIdle(body: unknown): AwaitIdleInput {
+  const b = (body || {}) as Record<string, unknown>;
+  return {
+    timeoutMs: asInt(b.timeoutMs, 'timeoutMs', 30000, { min: 1, max: 600000 }),
+    pollMs: asInt(b.pollMs, 'pollMs', 200, { min: 50, max: 10000 }),
+  };
+}
+
+/** Window target: numeric index `0` / `3`, or a window name like `editor`. */
+const WINDOW_TARGET_RE = /^[A-Za-z0-9_][A-Za-z0-9_.\-+ ]{0,127}$/;
+export function parseWindowTarget(s: string): string {
+  return matchRegex(asString(s, 'target', { maxLen: 128 }), WINDOW_TARGET_RE, 'target', 'index or window name');
+}
+
+/** Window name (tmux -n): same shape as session name. */
+const WINDOW_NAME_RE = /^[A-Za-z0-9_-][A-Za-z0-9_.\-+ ]{0,63}$/;
+export function parseCreateWindow(body: unknown): CreateWindowInput {
+  const b = (body || {}) as Record<string, unknown>;
+  return {
+    cwd: parseOptAbsPath(b.cwd, 'cwd'),
+    command: asOptString(b.command, 'command', { maxLen: 4096 }),
+    name: b.name === undefined || b.name === null ? null
+      : matchRegex(asString(b.name, 'name', { maxLen: 64 }), WINDOW_NAME_RE, 'name', 'window name'),
+  };
 }
 
 export function parseCCPivot(body: unknown): CCPivotInput {

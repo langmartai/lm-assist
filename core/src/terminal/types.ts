@@ -20,6 +20,20 @@ export interface TmuxSessionState {
   paneCommand: string | null;
 }
 
+/** A single window inside a tmux session (tmux's native multiplexing unit). */
+export interface TmuxWindowState {
+  /** Numeric index within the session (tmux's default identifier). */
+  index: number;
+  /** User-facing name. Defaults to the program name (e.g. "bash"). */
+  name: string;
+  /** Whether this is the active window in the session. */
+  active: boolean;
+  /** Command of the program in the window's first pane. */
+  paneCommand: string | null;
+  /** PID of that program. */
+  panePid: number | null;
+}
+
 /**
  * Phase of a Claude Code session inside a tmux session.
  *
@@ -80,6 +94,20 @@ export interface SlashCommandInput {
 export interface SelectChoiceInput {
   /** 1–9. CC's numbered menus accept the digit as a hotkey. */
   n: number;
+}
+
+export interface AwaitIdleInput {
+  timeoutMs: number;
+  pollMs: number;
+}
+
+export interface CreateWindowInput {
+  /** Working directory for the new window's shell. */
+  cwd: string | null;
+  /** Command to run in the new window. Goes via tmux send-keys after create. */
+  command: string | null;
+  /** Optional human-readable name (tmux -n). */
+  name: string | null;
 }
 
 /** Persisted tab record. Stored in registry, written atomically. */

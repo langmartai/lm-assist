@@ -197,6 +197,54 @@ export function createTerminalRoutes(_ctx: RouteContext): RouteHandler[] {
       }),
     },
 
+    // GET /terminal/tmux/:name/windows — list windows in session
+    {
+      method: 'GET',
+      pattern: /^\/terminal\/tmux\/(?<name>[^/]+)\/windows$/,
+      handler: async (req) => envelope(() => {
+        const name = validate.parseSessionName(req.params.name);
+        return { windows: tmux.listWindows(name) };
+      }),
+    },
+
+    // POST /terminal/tmux/:name/windows — create new window
+    {
+      method: 'POST',
+      pattern: /^\/terminal\/tmux\/(?<name>[^/]+)\/windows$/,
+      handler: async (req) => envelope(async () => {
+        const name = validate.parseSessionName(req.params.name);
+        const p = validate.parseCreateWindow(req.body);
+        return await withAudit({ op: 'tmux.newWindow', session: name, caller: callerFromReq(req), details: { name: p.name } }, async () => {
+          return await tmux.createWindow(name, p);
+        });
+      }),
+    },
+
+    // POST /terminal/tmux/:name/windows/:target/select — focus window
+    {
+      method: 'POST',
+      pattern: /^\/terminal\/tmux\/(?<name>[^/]+)\/windows\/(?<target>[^/]+)\/select$/,
+      handler: async (req) => envelope(async () => {
+        const name = validate.parseSessionName(req.params.name);
+        const target = validate.parseWindowTarget(req.params.target);
+        await tmux.selectWindow(name, target);
+        return { selected: target };
+      }),
+    },
+
+    // DELETE /terminal/tmux/:name/windows/:target — kill specific window
+    {
+      method: 'DELETE',
+      pattern: /^\/terminal\/tmux\/(?<name>[^/]+)\/windows\/(?<target>[^/]+)$/,
+      handler: async (req) => envelope(async () => {
+        const name = validate.parseSessionName(req.params.name);
+        const target = validate.parseWindowTarget(req.params.target);
+        return await withAudit({ op: 'tmux.killWindow', session: name, caller: callerFromReq(req), details: { target } }, async () => {
+          return await tmux.killWindow(name, target);
+        });
+      }),
+    },
+
     // --------- Claude Code wrappers ------------------------------------
 
     // POST /terminal/cc/:name/launch
@@ -246,6 +294,17 @@ export function createTerminalRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => envelope(() => {
         const name = validate.parseSessionName(req.params.name);
         return cc.status(name);
+      }),
+    },
+
+    // POST /terminal/cc/:name/await-idle — block until phase=idle
+    {
+      method: 'POST',
+      pattern: /^\/terminal\/cc\/(?<name>[^/]+)\/await-idle$/,
+      handler: async (req) => envelope(async () => {
+        const name = validate.parseSessionName(req.params.name);
+        const p = validate.parseAwaitIdle(req.body);
+        return await cc.awaitIdle(name, p);
       }),
     },
 

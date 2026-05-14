@@ -732,6 +732,121 @@ test('T5b — select-choice on pane with no dialog rejected (PRECONDITION_FAILED
   assert.equal(r.error?.code, 'PRECONDITION_FAILED');
 });
 
+test('T6 — await-idle on dead/non-CC pane returns reached=false (no spinning)', async () => {
+  const name = track(uniqName('t6'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  const start = Date.now();
+  const r = await call<{ reached: boolean; finalPhase: string; elapsedMs: number }>('POST', `/terminal/cc/${name}/await-idle`, { timeoutMs: 5000, pollMs: 100 });
+  assert.equal(r.success, true);
+  assert.equal(r.data?.reached, false, 'should not reach idle on a bash-only pane');
+  assert.ok(r.data?.finalPhase === 'dead', `expected finalPhase=dead, got ${r.data?.finalPhase}`);
+  assert.ok(Date.now() - start < 4000, 'should bail out fast (DEAD_THRESHOLD), not wait full 5s');
+});
+
+test('T6b — await-idle on live CC returns reached=true quickly (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const name = track(uniqName('t6b'));
+  const launch = await call<{ ready: boolean }>('POST', `/terminal/cc/${name}/launch`, {
+    cwd: '/tmp', readyTimeoutMs: 45000, autoAcceptTrust: true,
+  });
+  assert.equal(launch.data?.ready, true);
+
+  const r = await call<{ reached: boolean; finalPhase: string }>('POST', `/terminal/cc/${name}/await-idle`, { timeoutMs: 5000, pollMs: 200 });
+  assert.equal(r.data?.reached, true);
+  assert.equal(r.data?.finalPhase, 'idle');
+});
+
+// ===========================================================================
+// SECTION H — tmux multi-window endpoints
+// ===========================================================================
+
+test('H1 — listWindows on fresh session returns the default 1 window', async () => {
+  const name = track(uniqName('h1'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  const r = await call<{ windows: Array<{ index: number; active: boolean; paneCommand: string | null }> }>('GET', `/terminal/tmux/${name}/windows`);
+  assert.equal(r.success, true);
+  assert.equal(r.data?.windows.length, 1);
+  assert.equal(r.data?.windows[0].active, true);
+  assert.ok(r.data?.windows[0].paneCommand === 'bash' || r.data?.windows[0].paneCommand === 'sh');
+});
+
+test('H2 — createWindow returns new index, listWindows shows it', async () => {
+  const name = track(uniqName('h2'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  const create = await call<{ index: number }>('POST', `/terminal/tmux/${name}/windows`, { cwd: '/tmp', name: 'second' });
+  assert.equal(create.success, true);
+  assert.ok(create.data?.index !== undefined && create.data.index > 0);
+
+  const list = await call<{ windows: Array<{ index: number; name: string }> }>('GET', `/terminal/tmux/${name}/windows`);
+  assert.equal(list.data?.windows.length, 2);
+  const newWin = list.data?.windows.find((w) => w.index === create.data!.index);
+  assert.ok(newWin);
+  assert.equal(newWin?.name, 'second');
+});
+
+test('H3 — selectWindow makes the target active', async () => {
+  const name = track(uniqName('h3'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  await call('POST', `/terminal/tmux/${name}/windows`, { cwd: '/tmp' });
+  // Window 1 is now newly created and presumably active. Switch to 0.
+  const sel = await call('POST', `/terminal/tmux/${name}/windows/0/select`, {});
+  assert.equal(sel.success, true);
+  const list = await call<{ windows: Array<{ index: number; active: boolean }> }>('GET', `/terminal/tmux/${name}/windows`);
+  const w0 = list.data?.windows.find((w) => w.index === 0);
+  assert.equal(w0?.active, true);
+});
+
+test('H4 — killWindow removes from list, session lives', async () => {
+  const name = track(uniqName('h4'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  const created = await call<{ index: number }>('POST', `/terminal/tmux/${name}/windows`, { cwd: '/tmp' });
+  const idx = created.data!.index;
+
+  const kill = await call<{ killed: boolean; sessionGone: boolean }>('DELETE', `/terminal/tmux/${name}/windows/${idx}`);
+  assert.equal(kill.data?.killed, true);
+  assert.equal(kill.data?.sessionGone, false, 'session should still exist (other window remains)');
+
+  const list = await call<{ windows: unknown[] }>('GET', `/terminal/tmux/${name}/windows`);
+  assert.equal(list.data?.windows.length, 1);
+});
+
+test('H5 — killing the last window kills the session', async () => {
+  const name = track(uniqName('h5'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  const kill = await call<{ killed: boolean; sessionGone: boolean }>('DELETE', `/terminal/tmux/${name}/windows/0`);
+  assert.equal(kill.data?.killed, true);
+  assert.equal(kill.data?.sessionGone, true);
+  // Session should be unfindable.
+  const list = await call('GET', `/terminal/tmux/${name}/windows`);
+  assert.equal(list.success, false);
+  assert.equal(list.error?.code, 'SESSION_NOT_FOUND');
+  tracked.delete(name);
+});
+
+test('H6 — createWindow with bad cwd rejected', async () => {
+  const name = track(uniqName('h6'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  const r = await call('POST', `/terminal/tmux/${name}/windows`, { cwd: '/does/not/exist/h6' });
+  assert.equal(r.success, false);
+  assert.equal(r.error?.code, 'INVALID_INPUT');
+});
+
+test('H7 — createWindow with command runs it in the new window (visible via send-keys)', async () => {
+  const name = track(uniqName('h7'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  const fs = await import('node:fs');
+  const marker = `/tmp/.lm-h7-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    const created = await call<{ index: number }>('POST', `/terminal/tmux/${name}/windows`, {
+      cwd: '/tmp', command: `touch ${marker}`,
+    });
+    await sleep(500);
+    assert.ok(fs.existsSync(marker), `command should have run; marker file ${marker} not created`);
+    assert.ok(created.data?.index);
+  } finally {
+    try { fs.unlinkSync(marker); } catch { /* ignore */ }
+  }
+});
+
 // ===========================================================================
 // SECTION G — visible GUI tabs (gnome on Linux with a logged-in desktop)
 //

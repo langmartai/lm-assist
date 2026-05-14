@@ -16,7 +16,7 @@ import * as tmux from './tmux';
 import * as inspector from './inspector';
 import { withSessionLock } from './mutex';
 import { TerminalError } from './errors';
-import type { CCLaunchInput, CCPivotInput, CCPromptInput, CCSessionState, CCPhase, SlashCommandInput, SelectChoiceInput } from './types';
+import type { CCLaunchInput, CCPivotInput, CCPromptInput, CCSessionState, CCPhase, SlashCommandInput, SelectChoiceInput, AwaitIdleInput } from './types';
 
 function assertPosix(): void {
   if (!IS_POSIX) throw new TerminalError('PLATFORM_UNSUPPORTED', 'CC control requires a POSIX host');
@@ -146,6 +146,21 @@ export async function prompt(session: string, opts: CCPromptInput): Promise<void
 export function status(session: string): CCSessionState {
   assertPosix();
   return inspector.getCCState(session);
+}
+
+/**
+ * Block until CC is idle (i.e. ready for the next prompt). Cheap wrapper
+ * over `inspector.awaitPhase` that callers can use instead of polling
+ * status or watching for the `ctx:` footer. Returns the final phase if
+ * the wait expires.
+ */
+export async function awaitIdle(session: string, opts: AwaitIdleInput): Promise<{
+  reached: boolean;
+  elapsedMs: number;
+  finalPhase: CCPhase;
+}> {
+  assertPosix();
+  return await inspector.awaitPhase(session, 'idle', { timeoutMs: opts.timeoutMs, pollMs: opts.pollMs });
 }
 
 /**
