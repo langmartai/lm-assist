@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Terminal API
+
+- **refactor: `core/src/terminal-manager.ts` (536 LOC, monolithic) → `core/src/terminal/` (10 modules, ~1830 LOC, layered)** — types / errors / validate / mutex / audit / tmux / inspector / registry / cc / spawn-tabs / manager. Each layer addresses a class of bugs from the post-merge review (22 bugs in the original). See `docs/terminal-refactor.md` for the full record.
+- **fix: 22 bugs structurally prevented** — flag-merge in `ccLaunch`, pivot race against pre-pivot `❯`, target-body-bypass on send-keys, sshTarget shell injection on wt-ssh, gnome command injection, idempotency drift on `tmuxCreate`, empty wait-for pattern matching anything, `lines=0` returning full screen, no post-create cwd verification, no per-session mutex, no registry reconciliation, in-memory cache never reloaded, non-atomic registry write, `tmuxList` parser corrupted on `\t` in names, and others. Full list in `docs/terminal-refactor.md` §3.
+- **New: typed error union** — `TerminalError` with 11 codes (`INVALID_INPUT`, `SESSION_NOT_FOUND`, `PRECONDITION_FAILED`, `POSTCONDITION_FAILED`, `TIMEOUT`, etc.) and per-code HTTP status mapping. Replaces the previous flat `TERMINAL_ERROR(string)`.
+- **New: 5 endpoints for CC interactive control** — `POST /terminal/cc/:name/interrupt` (Ctrl-C), `/slash` (typed slash commands like `/clear`, `/agents`, `/logout`, `/config`), `/accept-dialog`, `/reject-dialog`, `/select-choice` (numbered menu picker). Plus `POST /terminal/tabs/prune-dead` to clean stale registry entries.
+- **New: `GET /terminal/cc/:name/status` enriched** — returns `currentMode` (normal/plan/bash), `pendingDialog` (trust/permission/compact/choice), `authState` (authenticated/unauthenticated/unknown — read from `~/.claude.json` with screen fallback), `contextPct` (0–100 from footer), `authEmail`.
+- **New: `wait-for` outcome enum** — `{ outcome: 'matched' \| 'timeout' \| 'session-gone' }` instead of just `{ matched: boolean }`. Callers can distinguish "still working" from "session crashed".
+- **New: every mutation produces an audit log line** at `~/.cache/lm-assist/terminal-audit-{date}.jsonl` with op, session, outcome, elapsedMs, caller (from `X-LM-Caller` header).
+- **New: 64-test integration + unit suite** under `core/src/__tests__/terminal/`. 38 integration tests (13 against live CC, gated by `RUN_LIVE_CC=1`), 26 inspector unit tests. Runs in ~10s without live CC, ~47s with. Wired via `npm test` and `npm run test:live`.
+
 ### Agent API
 
 - **New: `POST /agent/session/:sessionId/resume`** — Resume an existing Claude Code session with a new prompt. Wraps `api.agent.resume()` so callers don't need to re-supply full session state.

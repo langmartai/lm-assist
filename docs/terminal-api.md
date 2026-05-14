@@ -1,19 +1,48 @@
 # Terminal API
 
-REST endpoints for creating and controlling terminal tabs across platforms,
-with `tmux` as the uniform control surface.
+REST endpoints for creating and controlling terminal tabs, tmux sessions, and
+Claude Code instances running inside them. tmux is the uniform control
+surface; GUI viewers (gnome-terminal, Windows Terminal over SSH) are optional.
 
-All endpoints are served by the core API (dev `:3200`, prod `:3100`) and are
-reachable cross-machine via the Hub API relay — the caller just targets the
-host where the tab needs to open or where the tmux session actually runs.
+Served by the core API (dev `:3200`, prod `:3100`). Reachable cross-machine
+via the Hub API relay — callers target the host where the session actually
+lives.
+
+For the architecture and design rationale, see [terminal-refactor.md](./terminal-refactor.md).
 
 ## Tab kinds
 
 | Kind | Where | What it does |
 |------|-------|--------------|
-| `gnome` | Linux host | Opens a new `gnome-terminal --tab`. Propagates the logged-in user's `DISPLAY`/D-Bus env so it works even when the request came in over SSH. |
-| `wt-ssh` | Windows host | Opens a new Windows Terminal tab via a scheduled task, running `ssh -t <target> tmux attach -t <session>`. The scheduled task bridges SSH session 0 → interactive console session 1. |
-| `tmux` | any POSIX host | Creates a detached tmux session only — no GUI viewer. Any number of tabs, `ttyd` web terminals, or SSH clients can attach separately. |
+| `gnome` | Linux host | Opens `gnome-terminal --tab`. Propagates the logged-in user's display env so it works over SSH. |
+| `wt-ssh` | Windows host | Opens a Windows Terminal tab via a per-call scheduled task, running `ssh -t <target> tmux attach -t <session>`. |
+| `tmux` | any POSIX host | Creates a detached tmux session only — no GUI viewer. Multiple viewers can attach separately. |
+
+## Common response shape
+
+```json
+{ "success": true, "data": { ... } }
+{ "success": false, "error": { "code": "<TerminalErrorCode>", "message": "...", "details": {...} } }
+```
+
+Error codes (typed union, see `core/src/terminal/errors.ts`):
+
+| Code | HTTP | When |
+|---|---|---|
+| `INVALID_INPUT` | 400 | DTO validation failed (regex mismatch, out-of-range int, missing required field) |
+| `SESSION_NOT_FOUND` | 404 | Named tmux session or tab id doesn't exist |
+| `PRECONDITION_FAILED` | 409 | Operation requires a specific CC phase / dialog state that isn't current |
+| `POSTCONDITION_FAILED` | 500 | tmux reported success but the state didn't actually transition |
+| `PLATFORM_UNSUPPORTED` | 501 | Endpoint requires a platform this host doesn't have |
+| `TMUX_NOT_INSTALLED` | 503 | tmux binary not on PATH |
+| `TIMEOUT` | 504 | `wait-for` exceeded `timeoutMs` |
+| `TMUX_ERROR` | 500 | Underlying tmux command failed |
+| `SPAWN_FAILED` | 500 | gnome-terminal / wt.exe spawn rejected |
+| `REGISTRY_ERROR` | 500 | Tab registry lock / IO failure |
+| `SESSION_DIED` | 500 | tmux session disappeared mid-operation |
+
+Header `X-LM-Caller: <name>` (optional) tags audit log entries with the
+caller identity (e.g. `engine-v6`, `manual-test`).
 
 ## Endpoints
 
@@ -22,161 +51,229 @@ host where the tab needs to open or where the tmux session actually runs.
 | Method | Path | Body |
 |--------|------|------|
 | POST | `/terminal/tabs` | `{ kind, title?, cwd?, command?, tmuxSession?, sshTarget?, env?, cols?, rows? }` |
-| GET  | `/terminal/tabs` | — |
+| GET  | `/terminal/tabs` | — (returns `{ tabs: TabRecord[] }`, each with `alive: boolean`) |
 | GET  | `/terminal/tabs/:id` | — |
-| DELETE | `/terminal/tabs/:id` | — |
+| DELETE | `/terminal/tabs/:id` | — (kills tmux session if any; returns `{ removed, killedTmux }`) |
+| POST | `/terminal/tabs/prune-dead` | — (removes registry entries whose tmux session is gone; returns `{ pruned: string[] }`) |
 
-Deleting a tab kills its tmux session (if any) which in turn closes the GUI
-viewer. The registry is persisted at `~/.cache/lm-assist/terminal-tabs.json`.
+Tab ids are `tab-xxxxxxxx`. Registry persisted at
+`~/.cache/lm-assist/terminal-tabs.json` with atomic writes (tmp + rename),
+file lock, and mtime-based reload.
 
-### tmux control (this host's tmux server)
+### tmux control
+
+All operate on the tmux server local to the request handler.
 
 | Method | Path | Body / Query |
 |--------|------|--------------|
-| GET    | `/terminal/tmux` | list sessions |
-| POST   | `/terminal/tmux` | `{ name, cwd?, cols?, rows?, command? }` — create detached |
-| DELETE | `/terminal/tmux/:name` | kill-session |
-| POST   | `/terminal/tmux/:name/send-keys` | `{ keys, literal?, enter?, target? }` |
-| GET    | `/terminal/tmux/:name/capture`   | `?lines=N&target=name:win.pane` |
-| POST   | `/terminal/tmux/:name/wait-for`  | `{ pattern, literal?, flags?, timeoutMs?, pollMs?, lines? }` |
+| GET    | `/terminal/tmux` | list sessions, returns `{ sessions: TmuxSessionState[], platformSupported }` |
+| POST   | `/terminal/tmux` | `{ name, cwd?, cols?, rows?, command? }` — create detached. Returns `{ name, existed }` |
+| DELETE | `/terminal/tmux/:name` | kill-session, returns `{ killed: boolean }` |
+| POST   | `/terminal/tmux/:name/send-keys` | `{ keys, literal?, enter?, paneQualifier? }` |
+| GET    | `/terminal/tmux/:name/capture`   | `?lines=N&start=-N&paneQualifier=W.P` |
+| POST   | `/terminal/tmux/:name/wait-for`  | `{ pattern, literal?, flags?, timeoutMs?, pollMs?, lines?, paneQualifier? }` |
 
-`send-keys` flags map directly to `tmux send-keys` — `literal: true` adds
-`-l` (text as typed, no key-name interpretation), `enter: true` appends an
-`Enter` key after.
+**Important — `paneQualifier`, not session override.** The body field
+`paneQualifier` (or legacy alias `target`) accepts only `N` or `N.M`
+(window or window.pane). It is combined with the URL `:name` to form
+`session:N.M`. It cannot be used to redirect to a different session — that
+would defeat the URL-as-routing-key contract.
 
-`wait-for` polls `capture-pane` until `pattern` matches (regex by default,
-substring when `literal: true`). Returns `{ matched, elapsedMs, screen }`.
+`send-keys` semantics:
+- `literal: true` → tmux `-l` flag, characters typed verbatim (key names not interpreted)
+- `enter: true` → append an Enter key. Combined into the same tmux call when `literal: false` (no race); separate call when `literal: true` (cannot mix `-l` with key names).
+- All operations on the same session are serialized by a per-session async mutex; parallel callers cannot interleave keystrokes.
 
-### Claude Code wrappers (tmux-pivot pattern)
+`wait-for` returns `{ outcome: 'matched' | 'timeout' | 'session-gone', elapsedMs, screen }`. Patterns must be non-empty; invalid regexes are rejected at the validation boundary, not at runtime.
 
-Thin convenience layer for the pattern documented in
-[lm-claude-endpoint: custom-synthetic-session.md](https://github.com/langmartai/lm-claude-endpoint/blob/main/compaction/custom-synthetic-session.md).
+`capture` `start` may be negative to reach into scrollback (tmux `-S`).
+`lines` filters to the last N lines after trimming trailing blanks.
+
+### Claude Code adapter
+
+State-aware operations. Every mutation asserts a phase precondition.
 
 | Method | Path | Body |
 |--------|------|------|
-| POST | `/terminal/cc/:name/launch` | `{ cwd, model?, flags?, readyPattern?, readyTimeoutMs? }` |
+| POST | `/terminal/cc/:name/launch` | `{ cwd, model?, extraFlags?, skipPermissions?, cols?, rows?, readyPattern?, readyTimeoutMs?, autoAcceptTrust? }` |
 | POST | `/terminal/cc/:name/pivot`  | `{ newSessionId, prompt, promptPattern?, timeoutMs? }` |
-| POST | `/terminal/cc/:name/prompt` | `{ text }` |
+| POST | `/terminal/cc/:name/prompt` | `{ text, allowNewlines? }` |
+| GET  | `/terminal/cc/:name/status` | — (returns `CCSessionState`) |
+| POST | `/terminal/cc/:name/interrupt` | — (sends Ctrl-C) |
+| POST | `/terminal/cc/:name/slash` | `{ cmd, args? }` (sends `/cmd args` + Enter; precondition: phase=idle) |
+| POST | `/terminal/cc/:name/accept-dialog` | — (Enter; precondition: pendingDialog != null) |
+| POST | `/terminal/cc/:name/reject-dialog` | — (Esc; precondition: pendingDialog != null) |
+| POST | `/terminal/cc/:name/select-choice` | `{ n }` (digit 1–9; precondition: dialog accepting numbered choice) |
 
-`launch` creates the tmux session, runs `claude <flags> --model <model>`,
-and waits for the ready indicator (default substring `ctx:`). `pivot`
-sends `/resume <id>` then re-sends the prompt literally after the `❯`
-prompt reappears. `prompt` just sends literal text + Enter.
+#### `launch`
+Creates the tmux session if needed, sends `claude <flags>`, waits for idle.
+Defaults: `skipPermissions: true`, `autoAcceptTrust: true`, `cols: 220`,
+`rows: 60`, `readyPattern: 'ctx:'`, `readyTimeoutMs: 30000`.
 
-## Usage patterns
+`extraFlags` is MERGED with the default `--dangerously-skip-permissions`
+(set `skipPermissions: false` to opt out). Passing `flags: []` or
+`flags: ['--model', 'haiku']` no longer silently drops the dangerous flag —
+that was the bug that caused CC to hang on the trust prompt in earlier
+versions.
 
-### Open a local gnome tab attached to a tmux session
+If the trust prompt appears before `ctx:` and `autoAcceptTrust: true`,
+launch sends Enter to accept and re-waits for idle. Returns
+`{ ready, finalPhase, trustPromptHandled, elapsedMs }`.
 
-```bash
-# Create tmux, attach a visible gnome tab, drive from the API
-curl -s http://localhost:3100/terminal/tabs \
-  -H 'content-type: application/json' \
-  -d '{"kind":"gnome","title":"work","tmuxSession":"work","cwd":"/home/ubuntu"}'
+Resolves the `claude` binary via `getClaudeBinaryPath()` (POSIX:
+`~/.local/bin/claude`), not raw PATH lookup — works under restricted
+service environments.
 
-curl -s http://localhost:3100/terminal/tmux/work/send-keys \
-  -H 'content-type: application/json' \
-  -d '{"keys":"htop","enter":true}'
+#### `pivot`
+Race-safe `/resume <id>` followed by re-sending the prompt. Snapshots the
+screen pre-resume, waits for the screen to materially change (proving the
+resume started loading), THEN waits for the new idle phase. Without this,
+the wait would match the pre-pivot `❯` instantly and send the prompt during
+the resume's loading screen — that was the original Bug 2.
+
+#### `prompt`
+Precondition: phase=idle. Rejects newlines by default
+(`allowNewlines: false`) — CC submits on Enter, so a multi-line string
+would split into multiple prompts. Pass `allowNewlines: true` to override
+(useful for paste-mode workflows).
+
+#### `status`
+Returns the full `CCSessionState`:
+
+```ts
+{
+  phase: 'unknown' | 'launching' | 'trust-prompt' | 'idle' | 'busy' | 'plan-mode' | 'permission' | 'dead',
+  model: string | null,            // e.g. 'Opus 4.7', parsed from TUI footer
+  lastSnapshot: { text, capturedAt } | null,
+  currentMode: 'normal' | 'plan' | 'bash' | 'unknown',
+  pendingDialog: 'trust' | 'permission' | 'compact' | 'choice' | null,
+  authState: 'authenticated' | 'unauthenticated' | 'unknown',
+  contextPct: number | null,       // 0-100, parsed from `ctx: NN%` footer
+  authEmail: string | null,        // from ~/.claude.json oauthAccount
+}
 ```
 
-### Cross-machine: Windows tab viewing a Linux tmux session
+Auth detection is layered:
+1. Read `~/.claude.json` `oauthAccount.accountUuid` (primary, file-based)
+2. Fallback: scan screen for "Please log in", OAuth URL, etc.
+3. Otherwise: `'unknown'`
 
-```bash
-LINUX=http://10.0.1.117:3100     # lm-assist on Linux box
-WIN=http://10.0.1.107:3100       # lm-assist on Windows box
+#### `interrupt`
+Sends Ctrl-C to cancel a running CC operation. No phase precondition — by
+design callable when CC is busy or wedged.
 
-# 1. Create the tmux session on Linux
-curl -s $LINUX/terminal/tmux \
-  -H 'content-type: application/json' \
-  -d '{"name":"build","cols":180,"rows":50}'
+#### `slash`
+Sends `/cmd args` + Enter. Precondition: phase=idle (a slash command issued
+while CC is busy is undefined behavior). `cmd` must match
+`/^[a-z][a-z0-9_-]{0,31}$/i` (covers all built-in CC commands). `args` is
+sent literally; newlines rejected.
 
-# 2. Open a Windows Terminal tab that SSHes in and attaches
-curl -s $WIN/terminal/tabs \
-  -H 'content-type: application/json' \
-  -d '{"kind":"wt-ssh","title":"build","sshTarget":"ubuntu@10.0.1.117","tmuxSession":"build"}'
+Useful for: `/clear`, `/agents`, `/logout`, `/config`, `/export`, `/compact`, `/help`, `/init`, `/release-notes`, plugin commands, etc.
 
-# 3. Drive from anywhere — output appears in the Windows tab
-curl -s $LINUX/terminal/tmux/build/send-keys \
-  -H 'content-type: application/json' \
-  -d '{"keys":"npm run build","enter":true}'
-```
+#### `accept-dialog` / `reject-dialog`
+Confirm/cancel any pending dialog (trust, permission, compact, choice).
+Returns `{ dialog }` so the caller knows which dialog was answered.
+`PRECONDITION_FAILED` if no dialog is pending — protects against stray
+Enter/Esc keystrokes leaking into the prompt buffer.
 
-The same flow works over the Hub — if both hosts are connected,
-replace the direct `10.0.1.107:3100` URL with the Hub relay URL for that
-machine and everything tunnels through the cloud.
+#### `select-choice`
+Press a digit key 1–9 for numbered menus. Precondition: a numbered-menu
+dialog is pending (`trust`/`permission`/`compact`/`choice`).
 
-### Claude Code runtime pivoting (documented use case)
+## Examples
 
-Runs Claude Code under tmux and pivots it to a freshly-built session in
-response to a user prompt — same pattern as
-`https://github.com/langmartai/lm-claude-endpoint/blob/main/compaction/custom-synthetic-session.md:322`,
-but exposed as API.
+### Launch CC and send a prompt
 
 ```bash
 API=http://localhost:3100
 
-# 1. Launch CC in a tmux session (waits for the ready indicator)
-curl -s $API/terminal/cc/cc-main/launch \
+# Launch
+curl -s $API/terminal/cc/my-cc/launch \
   -H 'content-type: application/json' \
-  -d '{"cwd":"/home/ubuntu/project","model":"haiku"}'
+  -d '{"cwd":"/home/ubuntu/my-project","readyTimeoutMs":45000}'
+# → { ready: true, finalPhase: "idle", trustPromptHandled: false, elapsedMs: 4321 }
 
-# 2. User prompt arrives. Your controller has built a synthetic session
-#    with the right context. Pivot CC to it and re-send the prompt.
-curl -s $API/terminal/cc/cc-main/pivot \
-  -H 'content-type: application/json' \
-  -d '{
-    "newSessionId":"abc123-...",
-    "prompt":"explain the auth middleware changes"
-  }'
+# Status
+curl -s $API/terminal/cc/my-cc/status
+# → phase, model, contextPct, authEmail, ...
 
-# 3. Or just send a prompt to the currently-loaded session
-curl -s $API/terminal/cc/cc-main/prompt \
+# Prompt
+curl -s $API/terminal/cc/my-cc/prompt \
   -H 'content-type: application/json' \
-  -d '{"text":"run the tests"}'
+  -d '{"text":"List the files in this directory"}'
+
+# Poll for completion via the footer's idle marker
+curl -s $API/terminal/tmux/my-cc/wait-for \
+  -H 'content-type: application/json' \
+  -d '{"pattern":"ctx:","literal":true,"timeoutMs":60000}'
 ```
 
-To make this visible, open a tab attached to the same tmux session — the
-CC TUI will render in real time:
+### Handle a permission dialog
 
 ```bash
-# Linux-side viewer
-curl -s $API/terminal/tabs -d '{"kind":"gnome","tmuxSession":"cc-main"}' -H 'content-type: application/json'
-# Or Windows-side viewer
-curl -s http://win-host:3100/terminal/tabs -d '{"kind":"wt-ssh","sshTarget":"ubuntu@linux-host","tmuxSession":"cc-main"}' -H 'content-type: application/json'
+# If CC pauses on "Allow this action?"
+curl -s $API/terminal/cc/my-cc/status \
+  | jq '.data.pendingDialog'
+# → "permission"
+
+curl -s -X POST $API/terminal/cc/my-cc/accept-dialog
+# → { dialog: "permission" }
 ```
+
+### Interrupt + clear
+
+```bash
+curl -s -X POST $API/terminal/cc/my-cc/interrupt
+# Ctrl-C → CC returns to idle within a few seconds
+
+curl -s $API/terminal/cc/my-cc/slash \
+  -H 'content-type: application/json' \
+  -d '{"cmd":"clear"}'
+```
+
+### Cross-machine via Hub relay
+
+Same as before — replace `localhost:3100` with the Hub relay URL for the
+target machine. The Hub forwards request bodies and headers unchanged.
+
+## Audit log
+
+Every mutation produces a JSONL line at
+`~/.cache/lm-assist/terminal-audit-{YYYY-MM-DD}.jsonl`:
+
+```json
+{"ts":"2026-05-14T06:42:17.123Z","op":"cc.prompt","session":"my-cc","outcome":"ok","elapsedMs":47,"caller":"engine-v6","details":{}}
+```
+
+Failures include `errorCode` and `errorMessage` fields.
 
 ## Prerequisites
 
-### Linux (for `gnome` tabs)
-- `gnome-terminal` installed (default on Ubuntu desktop).
-- A logged-in desktop session owned by the same user running lm-assist. If
-  the API is reached over SSH, the manager finds the desktop env vars
-  (`DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`) by scanning
-  `/proc/<pid>/environ` of the running `gnome-terminal-server` /
-  `gnome-shell`.
+- **POSIX:** tmux installed (`/tmux/install` endpoint helps with first-time setup). For `gnome` tabs also requires `gnome-terminal` and a logged-in desktop session.
+- **Windows:** Windows Terminal (`wt.exe`), OpenSSH client, an SSH key registered with the target Linux host.
+- **CC adapter:** `claude` resolvable via `getClaudeBinaryPath()` (POSIX: `~/.local/bin/claude` or PATH; Windows: PATH).
 
-### Windows (for `wt-ssh` tabs)
-- Windows Terminal (`wt.exe`) installed — comes preinstalled on Windows 11.
-- OpenSSH client installed (standard on modern Windows) and an SSH key
-  registered with the target Linux host so `ssh -t <target>` works
-  non-interactively.
-- A user logged in to the console session. The manager creates a scheduled
-  task `LmAssistOpenWtTab` on first use and triggers it with
-  `schtasks /run`; Task Scheduler routes the invocation to the interactive
-  user session so the tab becomes visible.
+## Validation reference
 
-### tmux (any POSIX host in the control path)
-- `tmux` installed. On Linux, see `/tmux/status` endpoint for auto-install
-  helpers.
+All caller-supplied strings are allowlisted at the route boundary:
 
-## Implementation notes
+| Field | Regex | Notes |
+|---|---|---|
+| `name` (session) | `/^[A-Za-z0-9_-][A-Za-z0-9_.\-+ ]{0,127}$/` | tmux rejects `:` `.` in session names anyway |
+| `paneQualifier` | `/^\d+(\.\d+)?$/` | window or window.pane only — NEVER a session |
+| `sshTarget` | `/^[A-Za-z0-9_]+(@[A-Za-z0-9_.\-]+)?$/` | rejects `&`, `;`, `\|`, etc. |
+| `cwd` | `/^[\/A-Za-z][^\0;&\|\`$<>(){}*?"'\\]*$/` | absolute, no shell metachars |
+| `id` (tab) | `/^tab-[a-z0-9]{8}$/` | generated by registry |
+| `cmd` (slash) | `/^[a-z][a-z0-9_-]{0,31}$/i` | covers all built-in CC commands |
+| `n` (choice) | integer 1–9 |  |
+| `cols` | integer 20–1000 |  |
+| `rows` | integer 5–500 |  |
+| `timeoutMs` | integer 1–600000 |  |
+| `pollMs` | integer 50–10000 |  |
+| `lines` | integer 1–10000 | 0 explicitly rejected |
+| `keys` | non-empty string, ≤64 KB |  |
+| `text` (prompt) | non-empty string, ≤64 KB; `allowNewlines:false` rejects `\r\n` |  |
+| env var name | `/^[A-Z_][A-Z0-9_]*$/i` |  |
 
-- Each lm-assist handles only the tab kinds its OS supports. A
-  cross-platform controller can discover capabilities via `GET /health`
-  (`platform` field) and dispatch to the appropriate host.
-- Tab deletion kills the tmux session, which closes any attached viewers
-  transitively. The tab entry is always removed from the registry even if
-  the tmux kill fails.
-- All `tmux` control endpoints operate on the tmux server local to the
-  lm-assist handling the request. There is no remote tmux control — to
-  drive a session on another host, call that host's lm-assist (directly
-  or via the Hub relay).
+Unknown fields in request bodies are ignored (not rejected); use the schemas
+in `core/src/terminal/validate.ts` as the source of truth.
