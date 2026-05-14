@@ -321,6 +321,26 @@ export interface AgentExecuteRequest {
   /** Run in background (returns immediately) */
   background?: boolean;
 
+  /**
+   * Which runner to use:
+   *   - 'sdk' (default): execute via @anthropic-ai/claude-agent-sdk.
+   *     Stateless, full cost/usage telemetry, no interactive surface.
+   *   - 'tmux': execute via a long-lived Claude Code TUI inside a tmux
+   *     session. Sessions stay warm for 2h of idleness, giving multi-call
+   *     workflows ~50ms latency instead of the SDK's ~3s cold start.
+   *     Cost/usage fields are 0 (no telemetry from the TUI). Pairs with
+   *     `tmuxSession` to share a session across calls.
+   */
+  runner?: 'sdk' | 'tmux';
+
+  /**
+   * For runner:'tmux' only — name of the tmux session to host CC in.
+   * If absent, a session named after the executionId is auto-created
+   * (and reaped after 2h of idleness). Provide the same name across
+   * calls to reuse a warm CC instance.
+   */
+  tmuxSession?: string;
+
   /** Additional context to append to prompt */
   context?: string;
 

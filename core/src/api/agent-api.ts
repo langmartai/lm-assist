@@ -24,6 +24,7 @@ import type { PermissionResponse, UserQuestionResponse } from '../types/sdk-even
 import type { ClaudeSdkRunner, SdkExecuteOptions, SdkExecuteResult, SdkExecutionHandle } from '../sdk-runner';
 import type { AgentSessionStore } from '../agent-session-store';
 import { spawnDetached, recoverExecutions, cleanupOldExecutions } from '../detached-runner';
+import { createTmuxRunner } from '../runners/tmux-runner';
 
 export interface AgentApiDeps {
   sdkRunner: ClaudeSdkRunner;
@@ -186,6 +187,11 @@ export function convertToSdkOptions(
 export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
   const { sdkRunner, sessionStore, projectPath } = deps;
 
+  // Tmux-CC runner — stateful, sessions kept warm for 2h between calls.
+  // Created once per AgentApi instance so the in-memory session map +
+  // reaper survive across requests.
+  const tmuxRunner = createTmuxRunner();
+
   // Map for tracking background executions with results
   const backgroundExecutions = new Map<string, BackgroundExecution>();
 
@@ -333,7 +339,12 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
           return response;
         }
 
-        // Synchronous execution
+        // Tmux runner — long-lived CC TUI, session stays warm.
+        if (request.runner === 'tmux') {
+          return await tmuxRunner.execute(request, executionId);
+        }
+
+        // Synchronous execution (SDK)
         const result = await sdkRunner.execute(request.prompt, sdkOptions);
         return convertResult(result, executionId);
       } catch (e) {
