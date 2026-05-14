@@ -830,6 +830,146 @@ test('H6 — createWindow with bad cwd rejected', async () => {
   assert.equal(r.error?.code, 'INVALID_INPUT');
 });
 
+// ===========================================================================
+// SECTION R — /agent/execute runner dispatch (SDK vs tmux)
+//
+// The agent-api accepts a `runner: 'sdk' | 'tmux'` field. Default is 'sdk'
+// for back-compat. The tmux runner shares a long-lived CC TUI hosted in
+// a tmux session, exposed via the same response shape so callers can
+// switch backends transparently. Section verifies parity, warm reuse,
+// and additive fields.
+// ===========================================================================
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+interface AgentResponse {
+  success: boolean;
+  result: string;
+  sessionId: string;
+  executionId: string;
+  durationMs: number;
+  durationApiMs: number;
+  numTurns: number;
+  totalCostUsd: number;
+  usage: Record<string, number>;
+  modelUsage: Record<string, unknown>;
+  error?: string;
+  tmuxSession?: string;
+  runner?: string;
+}
+
+test('R1 — SDK runner: back-compat (no runner field), real cost, no tmuxSession (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const r = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: 'Reply with exactly: SDK_R1_OK',
+    cwd: '/tmp',
+    permissionMode: 'bypassPermissions',
+    settingSources: ['project', 'user'],
+  });
+  assert.equal(r.success, true);
+  assert.equal(r.data?.success, true);
+  assert.ok(UUID_RE.test(r.data?.sessionId ?? ''), `sessionId should be UUID, got ${r.data?.sessionId}`);
+  assert.equal(r.data?.tmuxSession, undefined, 'SDK runner must not set tmuxSession');
+  assert.equal(r.data?.runner, undefined, 'SDK runner must not set runner field');
+  assert.ok((r.data?.totalCostUsd ?? 0) > 0, 'SDK runner reports real cost');
+  assert.ok(r.data?.result.includes('SDK_R1_OK'));
+});
+
+test('R2 — Tmux runner: sessionId is CC UUID, tmuxSession + runner set (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const sess = uniqName('r2');
+  track(sess);
+  const r = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: 'Reply with exactly the digits for 5 plus 3, nothing else.',
+    cwd: '/tmp',
+    runner: 'tmux',
+    tmuxSession: sess,
+  });
+  assert.equal(r.success, true);
+  assert.equal(r.data?.success, true, `error: ${r.data?.error}`);
+  // sessionId is CC's REAL conversation UUID (parsed from `sid:` in footer),
+  // NOT the tmux session name.
+  assert.ok(UUID_RE.test(r.data?.sessionId ?? ''), `sessionId should be a CC UUID, got ${r.data?.sessionId}`);
+  assert.notEqual(r.data?.sessionId, sess, 'sessionId must NOT be the tmux session name');
+  assert.equal(r.data?.tmuxSession, sess, 'tmuxSession should echo back the supplied name');
+  assert.equal(r.data?.runner, 'tmux');
+  assert.equal(r.data?.totalCostUsd, 0, 'tmux runner has no cost telemetry');
+  assert.equal(r.data?.usage.totalTokens, 0);
+  assert.ok(r.data?.result.includes('8'), `expected response containing 8 (5+3), got: ${r.data?.result}`);
+});
+
+test('R3 — Tmux runner warm: 2 calls to same tmuxSession share the CC sessionId (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const sess = uniqName('r3');
+  track(sess);
+
+  const r1 = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: 'Reply with exactly: FIRST_CALL',
+    cwd: '/tmp', runner: 'tmux', tmuxSession: sess,
+  });
+  assert.equal(r1.data?.success, true);
+  const sid1 = r1.data?.sessionId;
+  assert.ok(UUID_RE.test(sid1 ?? ''));
+
+  const r2 = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: 'Reply with exactly: SECOND_CALL',
+    cwd: '/tmp', runner: 'tmux', tmuxSession: sess,
+  });
+  assert.equal(r2.data?.success, true);
+  assert.equal(r2.data?.sessionId, sid1, 'same tmuxSession must keep the same CC conversation UUID');
+});
+
+test('R4 — Tmux runner: omitting tmuxSession auto-names a session (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const r = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: 'Reply with: AUTO_OK',
+    cwd: '/tmp', runner: 'tmux',
+  });
+  assert.equal(r.data?.success, true);
+  // tmuxSession should be auto-derived from the executionId.
+  assert.ok(typeof r.data?.tmuxSession === 'string' && r.data!.tmuxSession.length > 0);
+  assert.ok(r.data!.tmuxSession.startsWith('agent-'), `auto-named session should start with agent-, got ${r.data?.tmuxSession}`);
+  assert.ok(UUID_RE.test(r.data?.sessionId ?? ''));
+  // Clean up — the auto-named session needs explicit kill since track() can't predict the name.
+  if (r.data?.tmuxSession) {
+    await call('DELETE', `/terminal/tmux/${encodeURIComponent(r.data.tmuxSession)}`);
+  }
+});
+
+test('R5 — Tmux runner: response extraction returns CC answer (not the prompt echo) (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const sess = uniqName('r5');
+  track(sess);
+  // Use a question whose answer is a unique token NOT present in the prompt.
+  // If the response extractor regresses to "everything after the typed
+  // prompt in the footer", we'd see prompt fragments in the result.
+  const r = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: 'What is 13 multiplied by 7? Reply with only the digits.',
+    cwd: '/tmp', runner: 'tmux', tmuxSession: sess,
+  });
+  assert.equal(r.data?.success, true);
+  const result = r.data?.result ?? '';
+  assert.ok(result.includes('91'), `expected result to contain 91, got ${result}`);
+  // Sanity: the prompt text shouldn't dominate the result.
+  assert.ok(!result.includes('multiplied by'), 'extractor leaked prompt text into result');
+  assert.ok(!result.includes('Reply with only the digits'), 'extractor leaked prompt text');
+  // Sanity: CC's TUI footer keywords should be stripped.
+  assert.ok(!result.includes('ctx:') && !result.includes('bypass permissions'), 'TUI scaffolding leaked');
+});
+
+test('R6 — Tmux runner: launch failure (bad cwd) returned as failure response, NOT a 500', async () => {
+  // Bad cwd → cc.launch's tmux.createUnlocked pre-checks fs.statSync and
+  // throws INVALID_INPUT. The runner should catch and return an error
+  // AgentExecuteResponse with success:false (envelope still 200).
+  // Doesn't need RUN_LIVE_CC — fails before CC is even attempted.
+  const r = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: 'should not run',
+    cwd: '/this/path/does/not/exist/r6',
+    runner: 'tmux',
+    tmuxSession: uniqName('r6'),
+  });
+  assert.equal(r.success, true, 'API envelope should still be success-shaped');
+  assert.equal(r.data?.success, false, 'data.success should reflect the runner failure');
+  assert.ok(r.data?.error && r.data.error.length > 0, `expected error message, got: ${JSON.stringify(r.data)}`);
+  assert.ok(r.data!.error!.includes('cwd') || r.data!.error!.includes('INVALID_INPUT') || r.data!.error!.includes('does not exist'),
+    `error should mention cwd issue, got: ${r.data?.error}`);
+});
+
 test('H7 — createWindow with command runs it in the new window (visible via send-keys)', async () => {
   const name = track(uniqName('h7'));
   await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
