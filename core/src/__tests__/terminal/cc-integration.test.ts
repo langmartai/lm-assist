@@ -871,6 +871,90 @@ test('G5 — gnome tab with non-existent cwd rejected (INVALID_INPUT, no tab spa
   assert.equal(gnomeChildPids().length, before, 'no tab should have spawned');
 });
 
+function ccPidCount(): number {
+  try {
+    const out = execFileSync('pgrep', ['-f', '\\.local/bin/claude'], { encoding: 'utf-8' });
+    return out.trim().split('\n').filter(Boolean).length;
+  } catch { return 0; }
+}
+
+test('G6 — END-TO-END: visible gnome tab + tmux + Claude Code, prompts, interrupt, /clear, clean teardown (SLOW, live CC + GUI)', { skip: !GNOME_AVAILABLE || !LIVE_CC }, async () => {
+  const sessName = uniqName('g6-cc');
+  const gnomeBaseline = gnomeChildPids().length;
+  const claudeBaseline = ccPidCount();
+
+  // Step 1: open gnome tab attached to a tmux session.
+  const tab = await call<{ id: string; tmuxSession: string }>('POST', '/terminal/tabs', {
+    kind: 'gnome', title: 'g6', tmuxSession: sessName, cwd: '/tmp',
+  });
+  assert.equal(tab.success, true, JSON.stringify(tab));
+  assert.equal(tab.data?.tmuxSession, sessName);
+  assert.equal(gnomeChildPids().length, gnomeBaseline + 1, 'gnome tab count should have grown by 1');
+
+  // Step 2: launch Claude Code INSIDE the same tmux session.
+  const launch = await call<{ ready: boolean; finalPhase: string }>('POST', `/terminal/cc/${sessName}/launch`, {
+    cwd: '/tmp', readyTimeoutMs: 45000, autoAcceptTrust: true,
+  });
+  assert.equal(launch.success, true, JSON.stringify(launch));
+  assert.equal(launch.data?.ready, true, `not ready, phase=${launch.data?.finalPhase}`);
+  assert.ok(ccPidCount() > claudeBaseline, `expected +1 claude process; before=${claudeBaseline} now=${ccPidCount()}`);
+
+  // Step 3: status confirms CC is alive inside the gnome-attached tmux.
+  const stat = await call<{ phase: string; currentMode: string; contextPct: number | null }>('GET', `/terminal/cc/${sessName}/status`);
+  assert.equal(stat.data?.phase, 'idle');
+  assert.equal(stat.data?.currentMode, 'normal');
+  assert.ok(stat.data?.contextPct !== null);
+
+  // Step 4: prompt A — distinct computed answer.
+  await call('POST', `/terminal/cc/${sessName}/prompt`, {
+    text: 'What is 17 + 25? Reply only with the digits, no other text.',
+  });
+  const wA = await call<{ outcome: string }>('POST', `/terminal/tmux/${sessName}/wait-for`, {
+    pattern: '\\b42\\b', literal: false, timeoutMs: 60000, pollMs: 500,
+  });
+  assert.equal(wA.data?.outcome, 'matched', `CC didn't produce 42 for prompt A`);
+
+  // Step 5: prompt B — DIFFERENT computed answer (proves multi-turn works
+  // and we're not matching stale screen from prompt A).
+  await call('POST', `/terminal/cc/${sessName}/prompt`, {
+    text: 'What is 200 - 47? Reply only with the digits.',
+  });
+  const wB = await call<{ outcome: string }>('POST', `/terminal/tmux/${sessName}/wait-for`, {
+    pattern: '\\b153\\b', literal: false, timeoutMs: 60000, pollMs: 500,
+  });
+  assert.equal(wB.data?.outcome, 'matched', `CC didn't produce 153 for prompt B`);
+
+  // Step 6: interrupt a long-running task.
+  await call('POST', `/terminal/cc/${sessName}/prompt`, {
+    text: 'Count from 1 to 30, one number per line, with no other text.',
+  });
+  await sleep(2000);
+  const intr = await call('POST', `/terminal/cc/${sessName}/interrupt`, {});
+  assert.equal(intr.success, true);
+  await sleep(3000);
+  const statAfterIntr = await call<{ phase: string }>('GET', `/terminal/cc/${sessName}/status`);
+  assert.equal(statAfterIntr.data?.phase, 'idle', `not idle after interrupt; phase=${statAfterIntr.data?.phase}`);
+
+  // Step 7: /clear via slash endpoint.
+  const clr = await call('POST', `/terminal/cc/${sessName}/slash`, { cmd: 'clear' });
+  assert.equal(clr.success, true);
+  await sleep(1500);
+
+  // Step 8: DELETE tab → cascade cleanup. Verify everything returns to
+  // baseline: tab gone, tmux gone, gnome tab count restored, no
+  // CC-process leak.
+  const del = await call<{ removed: boolean; killedTmux: boolean }>('DELETE', `/terminal/tabs/${tab.data!.id}`);
+  assert.equal(del.data?.removed, true);
+  assert.equal(del.data?.killedTmux, true);
+
+  await sleep(3000);
+
+  const list = await call<{ sessions: Array<{ name?: string }> }>('GET', '/terminal/tmux');
+  assert.ok(!list.data?.sessions.some((s) => (s as { name?: string }).name === sessName), 'tmux session should be gone');
+  assert.equal(gnomeChildPids().length, gnomeBaseline, `gnome tab leak: ${gnomeChildPids().length} vs baseline ${gnomeBaseline}`);
+  assert.equal(ccPidCount(), claudeBaseline, `claude process leak: ${ccPidCount()} vs baseline ${claudeBaseline}`);
+});
+
 // ===========================================================================
 // SECTION W — Windows wt-ssh tabs (cannot live-test from Linux)
 //

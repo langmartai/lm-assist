@@ -80,6 +80,12 @@ export interface OpenGnomeTabOptions {
   cols: number | null;
   rows: number | null;
   env: Record<string, string>;
+  /**
+   * If non-empty, all tabs with the same windowGroup land in the same
+   * gnome-terminal window (title prefix + wmctrl raise-before-spawn).
+   * Empty string disables grouping (legacy: each tab → own window).
+   */
+  windowGroup: string;
 }
 
 export interface OpenGnomeTabResult {
@@ -148,6 +154,163 @@ function getGnomeServerChildren(): number[] {
 
 function sleep(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)); }
 
+function shellQuote(s: string): string {
+  if (/^[A-Za-z0-9_./:=-]+$/.test(s)) return s;
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Find an existing gnome-terminal window whose title starts with
+ * `<windowGroup>: ` so we can add a tab to it. Returns the X11 window
+ * id (hex string) or null.
+ *
+ * Strategy: list with wmctrl, prefer the *most recent* match. We can't
+ * tell "most recent" from wmctrl alone — use stacking order (last in
+ * `wmctrl -l` output is top of stack on most WMs).
+ */
+function findExistingGroupWindow(windowGroup: string, env: Record<string, string>): string | null {
+  try {
+    const stdout = execFileSync('wmctrl', ['-l'], { encoding: 'utf-8', env, timeout: 2000 });
+    const prefix = `${windowGroup}: `;
+    let last: string | null = null;
+    for (const line of stdout.split('\n')) {
+      const m = line.match(/^(\S+)\s+\S+\s+\S+\s+(.*)$/);
+      if (!m) continue;
+      const [, winId, title] = m;
+      if (title.startsWith(prefix)) last = winId;
+    }
+    return last;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Add a tab to an existing gnome-terminal window via the Ctrl+Shift+T
+ * keyboard shortcut, then inject cwd/title/command via xdotool type.
+ *
+ * Requires xdotool and the GNOME Terminal new-tab keybinding to be the
+ * default Ctrl+Shift+T. If the user changed the binding, this won't work.
+ */
+async function openTabInExistingWindow(
+  windowId: string,
+  opts: OpenGnomeTabOptions,
+  groupedTitle: string | null,
+  env: Record<string, string>,
+): Promise<OpenGnomeTabResult> {
+  // Snapshot before, so we can identify the new bash.
+  const before = new Set(getGnomeServerChildren());
+
+  // 1. Focus the target window. Use both windowactivate AND windowfocus
+  //    because some compositors decouple them; the keystroke needs both.
+  try {
+    execFileSync('xdotool', ['windowactivate', '--sync', windowId], { encoding: 'utf-8', env, timeout: 2000 });
+    execFileSync('xdotool', ['windowfocus', '--sync', windowId], { encoding: 'utf-8', env, timeout: 2000 });
+  } catch (e: unknown) {
+    throw new TerminalError('SPAWN_FAILED', `xdotool windowactivate/focus failed (is xdotool installed?): ${(e as Error).message}`);
+  }
+  await sleep(200);
+
+  // 2. Send Ctrl+Shift+T to the focused window. Don't use `--window <id>`
+  //    here — that puts the keystroke in the X11 window's queue without
+  //    changing keyboard focus, and gnome-terminal ignores it. The
+  //    keystroke must be delivered to the currently-focused window we
+  //    just activated above. --clearmodifiers releases any held keys
+  //    (caps, shift, etc.) before sending so the chord is clean.
+  try {
+    execFileSync('xdotool', ['key', '--clearmodifiers', 'ctrl+shift+t'], { encoding: 'utf-8', env, timeout: 2000 });
+  } catch (e: unknown) {
+    throw new TerminalError('SPAWN_FAILED', `xdotool key ctrl+shift+t failed: ${(e as Error).message}`);
+  }
+
+  // 3. Wait for the new bash to appear in the server's children.
+  let tabPid: number | null = null;
+  for (let i = 0; i < 25 && tabPid === null; i++) {
+    await sleep(80);
+    const after = getGnomeServerChildren();
+    const newOnes = after.filter((p) => !before.has(p));
+    if (newOnes.length > 0) tabPid = newOnes[newOnes.length - 1];
+  }
+  if (tabPid === null) {
+    throw new TerminalError(
+      'SPAWN_FAILED',
+      'Ctrl+Shift+T did not produce a new tab in the target window. Check that the new-tab keybinding is still <Ctrl><Shift>t.',
+    );
+  }
+
+  // 4. Inject setup commands. Don't type them directly — escape-sequence
+  //    syntax and PROMPT_COMMAND assignments are ugly when typed visibly.
+  //    Write a tiny helper script to /tmp and `source` it; then `clear`
+  //    erases the visible noise within ~1 second.
+  await sleep(250);
+
+  const setupLines: string[] = [];
+  if (groupedTitle) {
+    // Set the tab title persistently. We have to handle three layers that
+    // would otherwise clobber it on every prompt redraw:
+    //   - Ubuntu's default PROMPT_COMMAND ("\033]0;\u@\h:\w\a")
+    //   - VTE's __vte_prompt_command (added via /etc/profile.d/vte*.sh)
+    //   - bash-preexec's precmd_functions array (if user sources it)
+    // The reliable cross-config approach: define a title-setter function,
+    // append to precmd_functions if it exists, ALSO override PROMPT_COMMAND
+    // (covers shells without bash-preexec).
+    const titleQuoted = groupedTitle.replace(/'/g, `'\\''`);
+    setupLines.push(`__lm_assist_set_title() { printf '\\033]0;${titleQuoted}\\007'; }`);
+    setupLines.push(`PROMPT_COMMAND='__lm_assist_set_title'`);
+    setupLines.push(`if declare -p precmd_functions >/dev/null 2>&1; then precmd_functions+=(__lm_assist_set_title); fi`);
+  }
+  if (opts.tmuxSession) {
+    tmux.createUnlocked(opts.tmuxSession, { cwd: opts.cwd, cols: opts.cols, rows: opts.rows });
+    if (opts.command) {
+      tmux.sendKeysUnlocked(opts.tmuxSession, {
+        keys: opts.command, literal: false, enter: true, paneQualifier: null,
+      });
+    }
+    // Note: exec replaces the bash, so PROMPT_COMMAND won't survive — but
+    // that's fine because tmux owns the title from inside.
+    setupLines.push(`clear; exec tmux attach -t ${shellQuote(opts.tmuxSession)}`);
+  } else if (opts.cwd && opts.command) {
+    setupLines.push(`cd ${shellQuote(opts.cwd)}`);
+    setupLines.push('clear');
+    setupLines.push(`(${opts.command})`);
+  } else if (opts.cwd) {
+    setupLines.push(`cd ${shellQuote(opts.cwd)}`);
+    setupLines.push('clear');
+  } else if (opts.command) {
+    setupLines.push('clear');
+    setupLines.push(`(${opts.command})`);
+  } else {
+    setupLines.push('clear');
+  }
+
+  if (setupLines.length > 0) {
+    const helperPath = `/tmp/lm-assist-tab-setup-${Math.random().toString(36).slice(2, 10)}.sh`;
+    // Self-deleting script: removes itself after sourcing so /tmp doesn't
+    // accumulate, and so a curious user `cat`-ing it won't see secrets
+    // long after the tab closes.
+    const script = `#!/bin/bash\n${setupLines.join('\n')}\nrm -f "${helperPath}"\n`;
+    try {
+      fs.writeFileSync(helperPath, script, { mode: 0o600 });
+    } catch (e: unknown) {
+      return { pid: null, tabPid, displayAvailable: true, stderr: `helper script write failed: ${(e as Error).message}` };
+    }
+    // Type a SINGLE short line. The user briefly sees:
+    //   $ source /tmp/lm-assist-tab-setup-XXXXXX.sh
+    // then `clear` runs and the screen is clean.
+    const cmd = `source "${helperPath}"\n`;
+    try {
+      execFileSync('xdotool', ['type', '--delay', '5', '--clearmodifiers', cmd], {
+        encoding: 'utf-8', env, timeout: 5000,
+      });
+    } catch (e: unknown) {
+      try { fs.unlinkSync(helperPath); } catch { /* ignore */ }
+      return { pid: null, tabPid, displayAvailable: true, stderr: `xdotool type failed: ${(e as Error).message}` };
+    }
+  }
+
+  return { pid: null, tabPid, displayAvailable: true, stderr: '' };
+}
+
 export async function openGnomeTab(opts: OpenGnomeTabOptions): Promise<OpenGnomeTabResult> {
   if (!IS_POSIX) throw new TerminalError('PLATFORM_UNSUPPORTED', 'gnome-terminal is only available on POSIX');
   const desk = findDesktopEnv();
@@ -184,8 +347,44 @@ export async function openGnomeTab(opts: OpenGnomeTabOptions): Promise<OpenGnome
   }
   for (const [k, v] of Object.entries(opts.env)) env[k] = v;
 
-  const args: string[] = ['--tab'];
-  if (opts.title) args.push(`--title=${opts.title}`);
+  // Window-grouping: try to add this tab to an EXISTING gnome-terminal
+  // window with the same windowGroup. gnome-terminal CLI's `--tab` flag
+  // doesn't work for this (its "last-opened window" tracking is scoped to
+  // a single CLI invocation; back-to-back CLI calls each create new
+  // windows). The reliable way is to find our window via xdotool and send
+  // Ctrl+Shift+T (the new-tab keyboard shortcut). After that we inject
+  // the cwd, title, and command via xdotool type into the focused tab.
+  //
+  // Requires `xdotool` installed; falls back to a fresh `--window` spawn
+  // if not. The first tab of a windowGroup always spawns a new window
+  // anyway.
+  const groupedTitle = opts.windowGroup
+    ? `${opts.windowGroup}: ${opts.title ?? 'tab'}`
+    : (opts.title ?? null);
+
+  if (opts.windowGroup) {
+    const existing = findExistingGroupWindow(opts.windowGroup, env);
+    if (existing) {
+      return await openTabInExistingWindow(existing, opts, groupedTitle, env);
+    }
+    // Fall through: open as a fresh window (will be reused by future calls).
+  }
+
+  // Fresh-window spawn (first of group, or no group).
+  // Use --window for grouped tabs so the WM sees a real top-level window
+  // we can target later. Use --tab for ungrouped — keeps old semantics
+  // (legacy 1-tab-per-window since user's gsettings opens new --tab as
+  // new windows on this version anyway).
+  // For grouped windows, also pass --maximize so the user gets a
+  // full-screen terminal by default rather than a small floating window.
+  const args: string[] = [];
+  if (opts.windowGroup) {
+    args.push('--maximize');
+    args.push('--window');
+  } else {
+    args.push('--tab');
+  }
+  if (groupedTitle) args.push(`--title=${groupedTitle}`);
   if (opts.cwd) args.push(`--working-directory=${opts.cwd}`);
 
   if (opts.tmuxSession) {
@@ -197,11 +396,6 @@ export async function openGnomeTab(opts: OpenGnomeTabOptions): Promise<OpenGnome
     }
     args.push('--', 'bash', '-c', 'tmux attach -t "$1"', 'lm-assist', opts.tmuxSession);
   } else if (opts.command) {
-    // `eval "$1"` re-parses $1 as shell so `cd /foo && tail -f log` works as
-    // a user types it. The command itself comes via argv (not interpolated
-    // into the bash source), so quoting bugs at the lm-assist layer can't
-    // produce stray code. Shell evaluation of the COMMAND CONTENT is by
-    // design — that's what "open a tab and run X" means.
     args.push('--', 'bash', '-c', 'eval "$1"; exec bash', 'lm-assist', opts.command);
   }
 

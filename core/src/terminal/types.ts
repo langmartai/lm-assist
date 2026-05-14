@@ -160,3 +160,15 @@ export interface CCPivotInput {
   promptPattern: string;
   timeoutMs: number;
 }
+
+/**
+ * Window-group label for gnome tabs. All tabs created with the same
+ * `windowGroup` value land in the same gnome-terminal window (so the user
+ * gets a tab-stripe view instead of N separate floating windows).
+ *
+ * Mechanism: window title is prefixed with `<windowGroup>: ` so the OS
+ * window manager can identify it. Before each spawn we activate any
+ * existing window whose title starts with the prefix; gnome-terminal's
+ * `--tab` then attaches to that activated window.
+ */
+export type WindowGroup = string;

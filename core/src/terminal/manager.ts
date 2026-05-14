@@ -23,6 +23,7 @@ export interface CreateTabInput {
   env: Record<string, string>;
   cols: number | null;
   rows: number | null;
+  windowGroup: string;
 }
 
 export async function createTab(input: CreateTabInput, caller?: string): Promise<TabRecord> {
@@ -40,10 +41,12 @@ export async function createTab(input: CreateTabInput, caller?: string): Promise
         cols: input.cols,
         rows: input.rows,
         env: input.env,
+        windowGroup: input.windowGroup,
       });
       meta.pid = res.pid;
       meta.tabPid = res.tabPid;
       meta.displayAvailable = res.displayAvailable;
+      meta.windowGroup = input.windowGroup;
       if (res.stderr) meta.spawnStderr = res.stderr;
     } else if (input.kind === 'wt-ssh') {
       if (!IS_WINDOWS) throw new TerminalError('PLATFORM_UNSUPPORTED', 'wt-ssh tabs require a Windows lm-assist host');

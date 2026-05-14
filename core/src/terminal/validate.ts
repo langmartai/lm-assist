@@ -215,6 +215,9 @@ export function parseCCPivot(body: unknown): CCPivotInput {
   };
 }
 
+/** Window-group label: must be a safe-for-title identifier. */
+const WINDOW_GROUP_RE = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
+
 export function parseCreateTab(body: unknown): {
   kind: TabKind;
   title: string | null;
@@ -225,6 +228,7 @@ export function parseCreateTab(body: unknown): {
   env: Record<string, string>;
   cols: number | null;
   rows: number | null;
+  windowGroup: string;
 } {
   const b = (body || {}) as Record<string, unknown>;
   const env: Record<string, string> = {};
@@ -233,6 +237,19 @@ export function parseCreateTab(body: unknown): {
     for (const [k, v] of Object.entries(b.env as Record<string, unknown>)) {
       if (!/^[A-Z_][A-Z0-9_]*$/i.test(k)) bad(`env key ${k} invalid`);
       env[k] = asString(v, `env.${k}`, { maxLen: 4096 });
+    }
+  }
+  // Default windowGroup = 'lm-assist'. All tabs sharing the same group
+  // are forced into the same gnome-terminal window (see spawn-tabs.ts).
+  // Pass a different value to open in a separate window (e.g. one group
+  // for engines, one for monitoring), or pass null/empty to disable
+  // grouping (each tab gets its own window — legacy behavior).
+  let windowGroup = 'lm-assist';
+  if (b.windowGroup !== undefined && b.windowGroup !== null) {
+    if (b.windowGroup === '') {
+      windowGroup = '';
+    } else {
+      windowGroup = matchRegex(asString(b.windowGroup, 'windowGroup', { maxLen: 32 }), WINDOW_GROUP_RE, 'windowGroup', 'identifier');
     }
   }
   return {
@@ -245,6 +262,7 @@ export function parseCreateTab(body: unknown): {
     env,
     cols: b.cols === undefined || b.cols === null ? null : asInt(b.cols, 'cols', 0, { min: 20, max: 1000 }),
     rows: b.rows === undefined || b.rows === null ? null : asInt(b.rows, 'rows', 0, { min: 5, max: 500 }),
+    windowGroup,
   };
 }
 
