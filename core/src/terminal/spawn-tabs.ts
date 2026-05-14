@@ -354,9 +354,17 @@ async function openTabInExistingWindow(
         keys: opts.command, literal: false, enter: true, paneQualifier: null,
       });
     }
-    // Note: exec replaces the bash, so PROMPT_COMMAND won't survive — but
-    // that's fine because tmux owns the title from inside.
-    setupLines.push(`clear; exec tmux attach -t ${shellQuote(opts.tmuxSession)}`);
+    // `unset TMUX` is REQUIRED here. New gnome-terminal tabs spawned via
+    // Ctrl+Shift+T from an already-tmux-attached tab inherit the parent
+    // tab's environment, including $TMUX. tmux refuses to attach when
+    // $TMUX is set ("sessions should be nested with care") because it
+    // sees a nested-tmux setup. Unset it so the attach succeeds.
+    //
+    // Use `exec` so when the user detaches/exits tmux, the bash exits
+    // too and gnome closes the tab (matches the first-tab behavior).
+    const sessQuoted = shellQuote(opts.tmuxSession);
+    setupLines.push(`unset TMUX`);
+    setupLines.push(`clear; exec tmux attach -t ${sessQuoted}`);
   } else if (opts.cwd && opts.command) {
     setupLines.push(`cd ${shellQuote(opts.cwd)}`);
     setupLines.push('clear');
