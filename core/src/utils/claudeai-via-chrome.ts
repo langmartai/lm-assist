@@ -25,8 +25,12 @@ export interface ViaChromeSnippet {
   description: string;
   /** Expected URL pattern the snippet hits (with {org} placeholder). */
   url: string;
-  /** Method (always GET in v1). */
-  method: 'GET';
+  /**
+   * The HTTP method the snippet actually performs (GET or POST). The
+   * snippet itself dispatches via `fetch()`, so this is informational
+   * only — useful for logging and UI display.
+   */
+  method: 'GET' | 'POST';
   /** Instructions for the caller. */
   instructions: string;
 }
@@ -197,4 +201,122 @@ export function snippetArtifactVersions(artifactUuid: string): ViaChromeSnippet 
     path: `/api/organizations/{org}/artifacts/${artifactUuid}/versions`,
     description: `Read versions of artifact ${artifactUuid}`,
   });
+}
+
+/**
+ * Snippet that sends a new message to an existing conversation and
+ * consumes the SSE stream in-page. Two-step inside the snippet:
+ *   1. GET conversation → read current_leaf_message_uuid
+ *   2. POST /completion → drain SSE
+ *
+ * Returns `{ status, events, text, humanMessageUuid, assistantMessageUuid }`.
+ *
+ * SAFETY: this is a real WRITE that creates message history in the user's
+ * claude.ai account, costs tokens, and may trigger any attached tools.
+ */
+export function snippetSendMessage(convUuid: string, prompt: string, opts: {
+  model?: string;
+  timezone?: string;
+  locale?: string;
+  parentMessageUuid?: string;
+} = {}): ViaChromeSnippet {
+  if (!UUID_RE.test(convUuid)) throw new Error(`Invalid conversation UUID: ${convUuid}`);
+  const model = opts.model ?? 'claude-opus-4-7';
+  const timezone = opts.timezone ?? 'UTC';
+  const locale = opts.locale ?? 'en-US';
+  // Stringify all caller-controlled values via JSON.stringify so they're
+  // safely embedded in the snippet (handles quotes, newlines, unicode).
+  const snippet = `(async () => {
+  const orgMatch = document.cookie.match(/lastActiveOrg=(${UUID_RE_STR})/i);
+  if (!orgMatch) return { error: 'no_org' };
+  const org = orgMatch[1];
+  const conv = ${JSON.stringify(convUuid)};
+
+  // 1. Resolve parent_message_uuid (or use the caller-supplied one)
+  let parent = ${opts.parentMessageUuid ? JSON.stringify(opts.parentMessageUuid) : 'null'};
+  if (!parent) {
+    const cr = await fetch('/api/organizations/' + org + '/chat_conversations/' + conv + '?tree=True&rendering_mode=messages&render_all_tools=true', { credentials: 'include' });
+    if (!cr.ok) return { error: 'read_conv_failed', status: cr.status };
+    const cj = await cr.json();
+    parent = cj.current_leaf_message_uuid;
+    if (!parent) return { error: 'no_leaf_message_uuid' };
+  }
+
+  // 2. Generate UUIDs for this turn (UUIDv4)
+  const newUuid = () => {
+    const b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    const h = Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+    return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);
+  };
+  const humanMessageUuid = newUuid();
+  const assistantMessageUuid = newUuid();
+
+  const body = {
+    prompt: ${JSON.stringify(prompt)},
+    timezone: ${JSON.stringify(timezone)},
+    personalized_styles: [{ type: 'default', key: 'Default', name: 'Normal', nameKey: 'normal_style_name', prompt: 'Normal\\n', summary: 'Default responses from Claude', summaryKey: 'normal_style_summary', isDefault: true }],
+    locale: ${JSON.stringify(locale)},
+    model: ${JSON.stringify(model)},
+    tools: [],
+    turn_message_uuids: { human_message_uuid: humanMessageUuid, assistant_message_uuid: assistantMessageUuid },
+    attachments: [],
+    files: [],
+    sync_sources: [],
+    rendering_mode: 'messages',
+    parent_message_uuid: parent,
+  };
+
+  // 3. POST /completion and drain the SSE stream
+  const url = '/api/organizations/' + org + '/chat_conversations/' + conv + '/completion';
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'accept': 'text/event-stream', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    return { error: 'fetch_failed', message: String(e && e.message || e) };
+  }
+  if (!res.ok || !res.body) {
+    const text = await res.text();
+    return { error: 'http_error', status: res.status, statusText: res.statusText, body: text };
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  const events = [];
+  let text = '';
+  let buf = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\\n\\n')) !== -1) {
+      const chunk = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const evM = chunk.match(/^event:\\s*(.+)$/m);
+      const dM = chunk.match(/^data:\\s*([\\s\\S]+)$/m);
+      if (!evM || !dM) continue;
+      let parsed = dM[1].trim();
+      try { parsed = JSON.parse(parsed); } catch {}
+      events.push({ type: evM[1].trim(), data: parsed });
+      if (parsed && typeof parsed === 'object') {
+        if (parsed.delta && typeof parsed.delta.text === 'string') text += parsed.delta.text;
+        else if (typeof parsed.completion === 'string') text += parsed.completion;
+      }
+    }
+  }
+  return { status: res.status, statusText: res.statusText, eventCount: events.length, eventTypes: [...new Set(events.map(e => e.type))], text, humanMessageUuid, assistantMessageUuid };
+})()`;
+  return {
+    snippet,
+    description: `Send message to claude.ai conversation ${convUuid} (WRITE; real account history)`,
+    url: `https://claude.ai/api/organizations/{org}/chat_conversations/${convUuid}/completion`,
+    method: 'POST',
+    instructions: INSTRUCTIONS + ' This snippet is a WRITE — it creates real message history in the user\'s claude.ai account and consumes tokens. Verify intent before running.',
+  };
 }

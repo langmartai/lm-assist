@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### claude.ai web-session integration — POST /completion (write op)
+
+Both families now support sending messages:
+
+- `POST /claude-ai/conversations/:uuid/completion` (cookie-file path) — Node `fetch` posts the message with `Accept: text/event-stream`, the helper drains the SSE stream and returns aggregated `{ status, text, events, eventTypes, humanMessageUuid, assistantMessageUuid }`. Auto-resolves `parent_message_uuid` from the conversation's `current_leaf_message_uuid`.
+- `POST /claude-ai/via-chrome/conversations/:uuid/completion` (via-chrome path) — returns a JS snippet that does the read-conv + POST + stream-drain inside the page, returning the same aggregated result via `mcp__claude-in-chrome__javascript_tool`.
+
+Request body shape mirrors a captured browser call: `prompt`, `timezone`, `personalized_styles`, `locale`, `model`, `tools`, fresh client-generated `turn_message_uuids` (UUIDv4), `attachments`/`files`/`sync_sources` empty, `rendering_mode: 'messages'`, `parent_message_uuid` from the conversation's leaf.
+
+`POST /completion` is the only **write** in the current surface — it creates real message history in the user's claude.ai account and consumes tokens. The via-chrome snippet's `instructions` field warns explicitly; the cookie-path handler validates `prompt` and rejects empty values.
+
+The other observed write endpoint (`POST .../title`) remains unimplemented.
+
 ### claude.ai web-session integration — via-chrome path + additional read endpoints
 
 Adds a second route family `/claude-ai/via-chrome/*` that returns ready-to-paste JS snippets for `mcp__claude-in-chrome__javascript_tool`. Snippets run inside an authenticated `claude.ai` tab, so the browser auto-attaches every cookie (including HttpOnly `sessionKey` / `cf_clearance` / `__cf_bm` that page JS can't read). No cookie file, no refresh chore, real-Chrome TLS fingerprint. Full design notes in [`docs/claude-ai-routes.md`](./docs/claude-ai-routes.md).

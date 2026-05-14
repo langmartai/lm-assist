@@ -345,6 +345,186 @@ export async function getBootstrapAppStart(opts: { orgUuid?: string } = {}) {
   });
 }
 
+/**
+ * POST /api/organizations/{org_uuid}/chat_conversations/{conv_uuid}/completion
+ *
+ * Send a new message to an existing conversation and consume the streamed
+ * SSE response. Auto-fetches `current_leaf_message_uuid` from the
+ * conversation if `parentMessageUuid` is not supplied.
+ *
+ * Returns `{ status, events, text, humanMessageUuid, assistantMessageUuid }`:
+ *  - events: every parsed SSE event in order
+ *  - text:   concatenated text-delta content from the assistant's reply
+ *  - humanMessageUuid / assistantMessageUuid: client-generated UUIDs the
+ *    server now treats as the canonical IDs for this turn
+ *
+ * SAFETY: this is a real write to the user's claude.ai account — it
+ * creates real message history, costs real tokens, and may trigger any
+ * tools attached to the conversation. Use with care.
+ */
+export async function sendMessage(convUuid: string, prompt: string, opts: {
+  orgUuid?: string;
+  parentMessageUuid?: string;
+  model?: string;
+  timezone?: string;
+  locale?: string;
+  /** Personalized style override. Defaults to the "Normal" style. */
+  style?: any;
+  /** Pass-through tools array. Defaults to []. */
+  tools?: any[];
+  /** Max time to wait for the stream to complete. Default 120s. */
+  timeoutMs?: number;
+} = {}): Promise<{
+  status: number;
+  statusText: string;
+  events: Array<{ type: string; data: any }>;
+  text: string;
+  humanMessageUuid: string;
+  assistantMessageUuid: string;
+}> {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  const orgUuid = opts.orgUuid || deriveIdentity(cfg).orgUuid;
+  if (!orgUuid) throw new Error('No org_uuid');
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(convUuid)) {
+    throw new Error(`Invalid conversation UUID: ${convUuid}`);
+  }
+
+  // Resolve parent_message_uuid by fetching the conversation if needed.
+  let parent = opts.parentMessageUuid;
+  if (!parent) {
+    const conv = await readConversation(convUuid, { orgUuid });
+    if (conv.status >= 400) {
+      throw new Error(`Failed to read conversation for current_leaf_message_uuid: ${conv.status}`);
+    }
+    parent = (conv.body as any)?.current_leaf_message_uuid;
+    if (!parent) throw new Error('Conversation has no current_leaf_message_uuid (empty thread?)');
+  }
+
+  // Generate client-side UUIDs for this turn. Real Chrome uses UUIDv7
+  // (time-ordered) — we use UUIDv4 which the server accepts.
+  const newUuid = () => {
+    const b = new Uint8Array(16);
+    if (typeof crypto !== 'undefined' && (crypto as any).getRandomValues) {
+      (crypto as any).getRandomValues(b);
+    } else {
+      for (let i = 0; i < 16; i++) b[i] = Math.floor(Math.random() * 256);
+    }
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  };
+  const humanMessageUuid = newUuid();
+  const assistantMessageUuid = newUuid();
+
+  const body = {
+    prompt,
+    timezone: opts.timezone ?? 'UTC',
+    personalized_styles: [opts.style ?? {
+      type: 'default',
+      key: 'Default',
+      name: 'Normal',
+      nameKey: 'normal_style_name',
+      prompt: 'Normal\n',
+      summary: 'Default responses from Claude',
+      summaryKey: 'normal_style_summary',
+      isDefault: true,
+    }],
+    locale: opts.locale ?? 'en-US',
+    model: opts.model ?? 'claude-opus-4-7',
+    tools: opts.tools ?? [],
+    turn_message_uuids: { human_message_uuid: humanMessageUuid, assistant_message_uuid: assistantMessageUuid },
+    attachments: [],
+    files: [],
+    sync_sources: [],
+    rendering_mode: 'messages',
+    parent_message_uuid: parent,
+  };
+
+  const url = `https://claude.ai/api/organizations/${orgUuid}/chat_conversations/${convUuid}/completion`;
+  const id = deriveIdentity(cfg);
+  const referer = `https://claude.ai/chat/${convUuid}`;
+
+  const headers: Record<string, string> = {
+    Host: 'claude.ai',
+    Connection: 'keep-alive',
+    accept: 'text/event-stream',
+    'Content-Type': 'application/json',
+    'anthropic-client-platform': 'web_claude_ai',
+    'anthropic-client-version': '1.0.0',
+    'anthropic-client-sha': '8a753cbf88e19be0f5f67efefb1b07840b6402e9',
+    'User-Agent': cfg.userAgent ||
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+    Origin: 'https://claude.ai',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty',
+    Referer: referer,
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept-Language': 'en-US,en;q=0.9',
+    Cookie: cfg.cookie,
+  };
+  if (id.anonymousId) headers['anthropic-anonymous-id'] = id.anonymousId;
+  if (id.activitySessionId) headers['x-activity-session-id'] = id.activitySessionId;
+  if (id.deviceId) headers['anthropic-device-id'] = id.deviceId;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 120_000);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    throw new Error(`POST /completion failed: ${(err as Error).message}`);
+  }
+
+  // Drain SSE stream. Each event is "event: TYPE\ndata: JSON\n\n".
+  const events: Array<{ type: string; data: any }> = [];
+  let text = '';
+  if (!res.body) {
+    clearTimeout(timer);
+    return { status: res.status, statusText: res.statusText, events, text, humanMessageUuid, assistantMessageUuid };
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const chunk = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const evMatch = chunk.match(/^event:\s*(.+)$/m);
+        const dataMatch = chunk.match(/^data:\s*([\s\S]+)$/m);
+        if (!evMatch || !dataMatch) continue;
+        let parsed: any = dataMatch[1].trim();
+        try { parsed = JSON.parse(parsed); } catch {}
+        events.push({ type: evMatch[1].trim(), data: parsed });
+        // Aggregate any text delta we can find.
+        if (parsed && typeof parsed === 'object') {
+          // Anthropic-style content_block_delta
+          if (parsed.delta?.text) text += parsed.delta.text;
+          // claude.ai uses `completion` events with a string in some flows
+          else if (typeof parsed.completion === 'string') text += parsed.completion;
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+
+  return { status: res.status, statusText: res.statusText, events, text, humanMessageUuid, assistantMessageUuid };
+}
+
 /** GET /api/organizations/{org_uuid}/artifacts/{artifact_uuid}/versions */
 export async function getArtifactVersions(artifactUuid: string, opts: { orgUuid?: string } = {}) {
   const cfg = readClaudeAISession();

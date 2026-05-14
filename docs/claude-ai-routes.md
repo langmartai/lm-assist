@@ -46,6 +46,7 @@ How to capture the cookie:
 | `GET` | `/claude-ai/memory` | Claude's persistent memory for the org. |
 | `GET` | `/claude-ai/bootstrap` | `/edge-api/bootstrap/{org_uuid}/app_start` — high-leverage page-load endpoint (≈500 KB; account + flags + recent conversations in one call). |
 | `GET` | `/claude-ai/artifacts/:uuid/versions` | Version history for an artifact (code/doc blocks Claude generated). |
+| `POST` | `/claude-ai/conversations/:uuid/completion` | **WRITE** — send a new message to an existing conversation, drain the SSE stream, return aggregated `{ text, events, humanMessageUuid, assistantMessageUuid }`. |
 
 ### Header fingerprint
 
@@ -123,6 +124,7 @@ All accept a JSON body. All return `{ success: true, data: { snippet, descriptio
 | `POST` | `/claude-ai/via-chrome/memory` | `{}` |
 | `POST` | `/claude-ai/via-chrome/bootstrap` | `{}` |
 | `POST` | `/claude-ai/via-chrome/artifacts/:uuid/versions` | `{}` |
+| `POST` | `/claude-ai/via-chrome/conversations/:uuid/completion` | `{ prompt, model?, timezone?, locale?, parentMessageUuid? }` — **WRITE** snippet that reads `current_leaf_message_uuid`, POSTs `/completion`, drains the SSE stream in-page, and returns `{ status, text, events, eventTypes, eventCount, humanMessageUuid, assistantMessageUuid }`. |
 
 ### Snippet shape
 
@@ -205,7 +207,54 @@ From the lm-proxy capture, these read endpoints work in the browser context but 
 - `/api/organizations/{org}/subscription_details`, `/api/organizations/{org}/usage`
 - `/api/accounts/{account_uuid}/invites`, `/api/account_profile`
 
-Write endpoints observed but **not implemented** (need careful design, especially for SSE streaming):
+Write endpoints observed but **not implemented**:
 
-- `POST /api/organizations/{org}/chat_conversations/{conv}/completion` — send a message; receives streaming SSE response
 - `POST /api/organizations/{org}/chat_conversations/{conv}/title` — auto-title / rename
+
+---
+
+## Write op: `POST /completion`
+
+Both families expose the completion endpoint. This is the only **write** in the current surface — it adds real message history to your claude.ai account and consumes tokens. Treat with the same care as any "send email" or "post message" API.
+
+### Body shape
+
+```json
+{
+  "prompt": "Hello!",            // required
+  "model": "claude-opus-4-7",    // optional, defaults to opus-4-7
+  "timezone": "UTC",             // optional
+  "locale": "en-US",             // optional
+  "parentMessageUuid": "...",    // optional — auto-resolved from
+                                 //   current_leaf_message_uuid if omitted
+  "tools": []                    // optional pass-through (cookie path only)
+}
+```
+
+The full body the helper sends to claude.ai (built from the above) mirrors the captured browser request: `prompt`, `timezone`, `personalized_styles: [Normal]`, `locale`, `model`, `tools`, `turn_message_uuids: { human_message_uuid, assistant_message_uuid }`, `attachments: []`, `files: []`, `sync_sources: []`, `rendering_mode: 'messages'`, `parent_message_uuid`. The two `turn_message_uuids` are freshly generated UUIDv4s — the server uses them as the canonical IDs of the new turn.
+
+### Response
+
+The route consumes the entire SSE stream and returns an aggregated object:
+
+```json
+{
+  "success": true,
+  "data": {
+    "status": 200,
+    "text": "...",                       // concatenated assistant text deltas
+    "humanMessageUuid": "...",
+    "assistantMessageUuid": "...",
+    "eventCount": 42,
+    "eventTypes": ["completion","message_start","content_block_delta", ...]
+  }
+}
+```
+
+Pass `?events=full` to also receive the raw event list.
+
+### Safety notes
+
+- The conversation must already exist. The route does not create new conversations.
+- `parentMessageUuid` is auto-fetched from `chat_conversations/:uuid`. If the conversation is empty, the call errors with `no_leaf_message_uuid`.
+- The via-chrome snippet warns explicitly in its `instructions` field: *"This snippet is a WRITE — it creates real message history in the user's claude.ai account and consumes tokens. Verify intent before running."*

@@ -35,6 +35,7 @@ import {
   getMemory,
   getBootstrapAppStart,
   getArtifactVersions,
+  sendMessage,
 } from '../../utils/claudeai-session';
 import {
   buildViaChromeSnippet,
@@ -44,6 +45,7 @@ import {
   snippetGetMemory,
   snippetBootstrapAppStart,
   snippetArtifactVersions,
+  snippetSendMessage,
 } from '../../utils/claudeai-via-chrome';
 
 const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -194,6 +196,69 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // POST /claude-ai/conversations/:uuid/completion
+    //   Body: { prompt: string, model?, timezone?, locale?, parentMessageUuid? }
+    //
+    //   WRITE OPERATION — creates real message history in the user's
+    //   claude.ai account and consumes tokens. Auto-resolves
+    //   current_leaf_message_uuid by pre-reading the conversation.
+    //   Returns aggregated SSE result: { events, text, ...uuids }.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/conversations\/(?<uuid>[^/?]+)\/completion$/,
+      handler: async (req) => {
+        const uuid = req.params.uuid;
+        if (!UUID_RE.test(uuid)) {
+          return {
+            success: false,
+            error: { code: 'INVALID_UUID', message: `Conversation UUID must be a UUIDv4: got ${uuid}` },
+          };
+        }
+        const body = req.body || {};
+        if (typeof body.prompt !== 'string' || !body.prompt) {
+          return {
+            success: false,
+            error: { code: 'MISSING_PROMPT', message: 'body.prompt is required (non-empty string)' },
+          };
+        }
+        try {
+          const r = await sendMessage(uuid, body.prompt, {
+            model: typeof body.model === 'string' ? body.model : undefined,
+            timezone: typeof body.timezone === 'string' ? body.timezone : undefined,
+            locale: typeof body.locale === 'string' ? body.locale : undefined,
+            parentMessageUuid: typeof body.parentMessageUuid === 'string' ? body.parentMessageUuid : undefined,
+            tools: Array.isArray(body.tools) ? body.tools : undefined,
+            timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
+          });
+          if (r.status >= 400) {
+            return {
+              success: false,
+              error: { code: `UPSTREAM_${r.status}`, message: `claude.ai responded ${r.status} ${r.statusText}` },
+              data: r,
+            };
+          }
+          // Compact response: don't dump every SSE event by default; caller
+          // can ask for events via ?events=full if they need them.
+          const eventTypes = Array.from(new Set(r.events.map((e) => e.type))).sort();
+          const compact = (req.query || {}).events !== 'full';
+          return {
+            success: true,
+            data: {
+              status: r.status,
+              text: r.text,
+              humanMessageUuid: r.humanMessageUuid,
+              assistantMessageUuid: r.assistantMessageUuid,
+              eventCount: r.events.length,
+              eventTypes,
+              events: compact ? undefined : r.events,
+            },
+          };
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
     // ---- Via-Chrome path (returns JS snippets for javascript_tool) ----
     //
     // These don't actually call claude.ai. They emit a JS snippet meant to
@@ -333,6 +398,49 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
         }
         try {
           return { success: true, data: snippetArtifactVersions(uuid) };
+        } catch (err) {
+          return {
+            success: false,
+            error: { code: 'INVALID_REQUEST', message: (err as Error).message },
+          };
+        }
+      },
+    },
+
+    // POST /claude-ai/via-chrome/conversations/:uuid/completion
+    //   Body: { prompt, model?, timezone?, locale?, parentMessageUuid? }
+    //   Returns a snippet that, when run in an authenticated claude.ai
+    //   tab, (1) reads current_leaf_message_uuid, (2) POSTs /completion
+    //   with proper turn UUIDs, (3) drains the SSE stream, (4) returns
+    //   the aggregated assistant text + event metadata.
+    //
+    //   WRITE — running the snippet creates real message history.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/conversations\/(?<uuid>[^/?]+)\/completion$/,
+      handler: async (req) => {
+        const uuid = req.params.uuid;
+        if (!UUID_RE.test(uuid)) {
+          return {
+            success: false,
+            error: { code: 'INVALID_UUID', message: `Conversation UUID must be a UUIDv4: got ${uuid}` },
+          };
+        }
+        const b = req.body || {};
+        if (typeof b.prompt !== 'string' || !b.prompt) {
+          return {
+            success: false,
+            error: { code: 'MISSING_PROMPT', message: 'body.prompt is required (non-empty string)' },
+          };
+        }
+        try {
+          const out = snippetSendMessage(uuid, b.prompt, {
+            model: typeof b.model === 'string' ? b.model : undefined,
+            timezone: typeof b.timezone === 'string' ? b.timezone : undefined,
+            locale: typeof b.locale === 'string' ? b.locale : undefined,
+            parentMessageUuid: typeof b.parentMessageUuid === 'string' ? b.parentMessageUuid : undefined,
+          });
+          return { success: true, data: out };
         } catch (err) {
           return {
             success: false,
