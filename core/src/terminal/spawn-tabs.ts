@@ -248,20 +248,31 @@ async function openTabInExistingWindow(
   if (groupedTitle) {
     // Set the gnome-terminal tab title via OSC 0 from PROMPT_COMMAND.
     //
-    // KNOWN LIMITATION (verified on GNOME Terminal 3.44 / Ubuntu 22.04):
-    // OSC 0 dynamic-title is not applied by gnome-terminal on this build
-    // — confirmed even from a brand-new untouched window with no --title
-    // arg, both BEL (`\\007`) and ST (`\\033\\`) terminators tested. The
-    // function fires (marker file confirms) and printf emits the bytes
-    // (verified with `od -c`), but the tab title stays at "Terminal".
+    // KNOWN LIMITATION (confirmed on GNOME Terminal 3.44 / Ubuntu 22.04):
+    // OSC 0 dynamic-title is not applied for plain-bash tabs on this
+    // platform. Verified end-to-end:
+    //   - PROMPT_COMMAND fires every prompt (marker file logged 3 calls
+    //     on 3 prompt redraws)
+    //   - printf emits the right bytes (od -c confirmed
+    //     `033 ] 0 ; TITLE \a`)
+    //   - Even bypassing bash with `printf '...' > /dev/tty` directly
+    //     in a fresh untouched gnome-terminal window — no effect
+    //   - Both `\\007` (BEL) and `\\033\\` (ST) terminators tested
+    //   - D-Bus approach is unavailable: gnome-terminal 3.44 exposes
+    //     only app-level actions (preferences/help/about/quit) via
+    //     org.gtk.Actions; per-tab/per-window paths exist but are
+    //     empty nodes with no SetTitle methods. ObjectManager only
+    //     reports /org/gnome/Terminal/Factory0 (CreateInstance only).
     //
-    // For TMUX-attached tabs the title works correctly because tmux owns
-    // the title and sends its own OSC sequences from inside the pane.
+    // gnome-terminal seems to suppress OSC 0 on this build (likely an
+    // Ubuntu hardening patch against terminal-spoofing). Nothing we can
+    // do from outside the terminal.
     //
-    // Workaround for callers who need a visible tab label: use
-    // `tmuxSession` instead of plain `command`. Real fix would be to call
-    // gnome-terminal-server's D-Bus `SetTitle` method on the Terminal
-    // object that owns the new tab — deferred.
+    // For TMUX-attached tabs the title works correctly because tmux
+    // owns the title from inside the pane and uses its own mechanism
+    // (set-titles-string + set-titles on). Workaround: use
+    // `tmuxSession` instead of plain `command` if you need visible
+    // per-tab labels.
     const titleQuoted = groupedTitle.replace(/'/g, `'\\''`);
     setupLines.push(`__lm_assist_set_title() { printf '\\033]0;${titleQuoted}\\007'; }`);
     setupLines.push(`PROMPT_COMMAND='__lm_assist_set_title'`);
