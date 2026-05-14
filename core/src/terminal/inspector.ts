@@ -46,6 +46,8 @@ const LOGGED_OUT_INDICATORS = [
 const READY_FOOTER_INDICATORS = ['ctx:'];
 // e.g. "ctx: 42%" or "ctx: 100%"
 const CONTEXT_PCT_RE = /ctx:\s*(\d{1,3})\s*%/i;
+// Footer format: "...sid: a6baec94-91ba-4af8-b1dc-e7af98ac16f5..."
+const SESSION_ID_RE = /sid:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
 /** Snapshot the current pane screen with timestamp — used for delta-waits. */
 export function snapshot(name: string): { text: string; capturedAt: number } {
@@ -131,6 +133,17 @@ export function parseContextPct(screen: string): number | null {
   return Number.isFinite(n) && n >= 0 && n <= 100 ? n : null;
 }
 
+/**
+ * Parse the Claude Code session UUID from the footer's `sid: <uuid>` field.
+ * This is CC's CONVERSATION identifier (matches what the SDK returns and
+ * what `/resume <uuid>` accepts), distinct from any tmux session name
+ * hosting the TUI.
+ */
+export function parseSessionId(screen: string): string | null {
+  const m = screen.match(SESSION_ID_RE);
+  return m ? m[1] : null;
+}
+
 interface AuthInfo {
   state: CCAuthState;
   email: string | null;
@@ -168,6 +181,7 @@ export function getCCState(name: string): CCSessionState {
       phase: 'dead', model: null, lastSnapshot: null,
       currentMode: 'unknown', pendingDialog: null,
       authState: 'unknown', contextPct: null, authEmail: null,
+      sessionId: null,
     };
   }
   const tstate = tmux.getState(name);
@@ -179,10 +193,12 @@ export function getCCState(name: string): CCSessionState {
   const pendingDialog = deriveDialog(snap.text);
   const contextPct = parseContextPct(snap.text);
   const auth = getAuthInfo(snap.text);
+  const sessionId = parseSessionId(snap.text);
   return {
     phase, model, lastSnapshot: snap,
     currentMode, pendingDialog,
     authState: auth.state, contextPct, authEmail: auth.email,
+    sessionId,
   };
 }
 

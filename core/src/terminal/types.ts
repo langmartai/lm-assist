@@ -82,6 +82,12 @@ export interface CCSessionState {
   contextPct: number | null;
   /** Email of the authenticated user, if any (from ~/.claude.json). */
   authEmail: string | null;
+  /**
+   * Claude Code conversation UUID (parsed from the TUI footer's `sid:`
+   * field). Matches the sessionId the SDK returns and what `/resume`
+   * accepts. Null if CC hasn't drawn its footer yet.
+   */
+  sessionId: string | null;
 }
 
 export interface SlashCommandInput {

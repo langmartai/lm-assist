@@ -230,12 +230,18 @@ export function createTmuxRunner(opts: TmuxRunnerOptions = {}) {
       });
       const result = extractResponse(beforeCapture, afterCapture, request.prompt);
 
+      // 7. Extract CC's CONVERSATION sessionId from the footer (sid: <uuid>).
+      //    This is what the SDK returns and what /resume accepts. Falls
+      //    back to the tmux session name if the footer isn't parseable
+      //    (shouldn't happen at idle but defensive).
+      const ccSessionId = inspector.parseSessionId(afterCapture) ?? sessionName;
+
       touch(sessionName, cwd);
 
-      return {
+      const response: AgentExecuteResponse & { tmuxSession?: string; runner?: string } = {
         success: true,
         result,
-        sessionId: sessionName,
+        sessionId: ccSessionId,
         executionId,
         durationMs: Date.now() - start,
         durationApiMs: promptElapsed,
@@ -249,7 +255,11 @@ export function createTmuxRunner(opts: TmuxRunnerOptions = {}) {
           totalTokens: 0,
         },
         modelUsage: {},
+        // tmux-runner-specific fields (additive, ignored by SDK consumers).
+        tmuxSession: sessionName,
+        runner: 'tmux',
       };
+      return response;
     } catch (e: unknown) {
       const msg = e instanceof TerminalError ? `${e.code}: ${e.message}` : String(e);
       return errorResponse(executionId, start, msg, sessionName);

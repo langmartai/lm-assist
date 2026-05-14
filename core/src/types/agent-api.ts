@@ -428,8 +428,32 @@ export interface AgentExecuteResponse {
   /** Result text from the agent */
   result: string;
 
-  /** Session ID (for resuming) */
+  /**
+   * CC conversation session ID (UUID).
+   *
+   * - SDK runner: returned by the SDK; usable with /agent/session/:id/resume.
+   * - tmux runner: parsed from CC's TUI footer (`sid: <uuid>`); the same
+   *   UUID accepted by `claude --resume <uuid>` or the in-TUI `/resume`
+   *   command. Falls back to the tmux session name if the footer isn't
+   *   parseable.
+   *
+   * Use this to identify the conversation. Use `tmuxSession` (set only
+   * by the tmux runner) to identify the transport/multiplexer instance.
+   */
   sessionId: string;
+
+  /**
+   * tmux session name hosting the CC TUI. Only present when the runner
+   * was 'tmux'. Pass it to a subsequent /agent/execute call (or to
+   * /terminal/cc/:tmuxSession/* endpoints) to reuse the warm CC instance.
+   */
+  tmuxSession?: string;
+
+  /**
+   * Which runner produced this response. Only set when the runner was
+   * 'tmux' (callers who don't pass `runner` get the SDK and can ignore).
+   */
+  runner?: 'sdk' | 'tmux';
 
   /** Execution ID */
   executionId: string;
