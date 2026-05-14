@@ -18,6 +18,28 @@
 const UUID_RE_STR = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
 const UUID_RE = new RegExp(`^${UUID_RE_STR}$`, 'i');
 
+// claude.ai's web app installs a fetch interceptor that adds these
+// application-level headers to every /api/* call. Bare `fetch()` in our
+// snippet bypasses that interceptor, so we have to re-inject them.
+// Values match the observed wire fingerprint (lm-proxy 2026-05-10..14).
+const CLAUDEAI_HEADER_SNIPPET = `
+  // Build the same header set claude.ai's web app sends on every call.
+  // Cookies supply per-session identity (anthropic-device-id, anonymous-id,
+  // x-activity-session-id); the rest are pinned to observed values.
+  const cookies = Object.fromEntries(document.cookie.split(';').map(p => {
+    const i = p.indexOf('='); if (i < 0) return [p.trim(), ''];
+    return [p.slice(0, i).trim(), p.slice(i + 1).trim()];
+  }));
+  const baseHeaders = {
+    'anthropic-client-platform': 'web_claude_ai',
+    'anthropic-client-version': '1.0.0',
+    'anthropic-client-sha': '8a753cbf88e19be0f5f67efefb1b07840b6402e9',
+  };
+  if (cookies['anthropic-device-id']) baseHeaders['anthropic-device-id'] = cookies['anthropic-device-id'];
+  if (cookies['ajs_anonymous_id']) baseHeaders['anthropic-anonymous-id'] = cookies['ajs_anonymous_id'];
+  if (cookies['activitySessionId']) baseHeaders['x-activity-session-id'] = cookies['activitySessionId'];
+`;
+
 export interface ViaChromeSnippet {
   /** JS code suitable for mcp__claude-in-chrome__javascript_tool. */
   snippet: string;
@@ -76,12 +98,12 @@ export function buildViaChromeSnippet(opts: {
   const qs = buildQuery(opts.query);
   const fullPath = `${path}${qs}`;
 
-  // Snippet returns { status, statusText, body } from the page context.
-  // We do not attempt to forge anthropic-client-* headers here — the
-  // page is real Chrome, so its outbound fingerprint already matches.
-  // Browser auto-includes all cookies because credentials:'include' on
-  // a same-origin URL.
-  const snippet = `(async () => {
+  // Snippet runs inside an authenticated claude.ai tab. The browser
+  // attaches cookies + per-page headers (User-Agent, Accept-Encoding,
+  // sec-ch-ua-*, Sec-Fetch-*, Origin, Referer) automatically; we add
+  // back the application-level anthropic-client-* headers that
+  // claude.ai's own fetch interceptor would have added.
+  const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}
   const orgMatch = document.cookie.match(/lastActiveOrg=(${UUID_RE_STR})/i);
   if (!orgMatch && ${JSON.stringify(fullPath).includes('{org}') ? 'true' : 'false'}) {
     return { error: 'no_org', message: 'lastActiveOrg cookie not present; are you logged in to claude.ai?' };
@@ -89,7 +111,10 @@ export function buildViaChromeSnippet(opts: {
   const org = orgMatch ? orgMatch[1] : '';
   const url = ${JSON.stringify(fullPath)}.replace('{org}', org);
   try {
-    const r = await fetch(url, { credentials: 'include', headers: { 'Accept': '*/*' } });
+    const r = await fetch(url, {
+      credentials: 'include',
+      headers: { ...baseHeaders, 'Accept': '*/*' },
+    });
     const text = await r.text();
     let body; try { body = text ? JSON.parse(text) : null; } catch { body = text; }
     return { status: r.status, statusText: r.statusText, url, body };
@@ -226,7 +251,7 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
   const locale = opts.locale ?? 'en-US';
   // Stringify all caller-controlled values via JSON.stringify so they're
   // safely embedded in the snippet (handles quotes, newlines, unicode).
-  const snippet = `(async () => {
+  const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}
   const orgMatch = document.cookie.match(/lastActiveOrg=(${UUID_RE_STR})/i);
   if (!orgMatch) return { error: 'no_org' };
   const org = orgMatch[1];
@@ -235,7 +260,10 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
   // 1. Resolve parent_message_uuid (or use the caller-supplied one)
   let parent = ${opts.parentMessageUuid ? JSON.stringify(opts.parentMessageUuid) : 'null'};
   if (!parent) {
-    const cr = await fetch('/api/organizations/' + org + '/chat_conversations/' + conv + '?tree=True&rendering_mode=messages&render_all_tools=true', { credentials: 'include' });
+    const cr = await fetch('/api/organizations/' + org + '/chat_conversations/' + conv + '?tree=True&rendering_mode=messages&render_all_tools=true', {
+      credentials: 'include',
+      headers: { ...baseHeaders, 'Accept': '*/*' },
+    });
     if (!cr.ok) return { error: 'read_conv_failed', status: cr.status };
     const cj = await cr.json();
     parent = cj.current_leaf_message_uuid;
@@ -275,7 +303,7 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
     res = await fetch(url, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'accept': 'text/event-stream', 'content-type': 'application/json' },
+      headers: { ...baseHeaders, 'accept': 'text/event-stream', 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
   } catch (e) {
