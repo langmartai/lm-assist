@@ -50,7 +50,7 @@ substring when `literal: true`). Returns `{ matched, elapsedMs, screen }`.
 ### Claude Code wrappers (tmux-pivot pattern)
 
 Thin convenience layer for the pattern documented in
-[docs/claude-code-internals/compaction/custom-synthetic-session.md](./claude-code-internals/compaction/custom-synthetic-session.md).
+[lm-claude-endpoint: custom-synthetic-session.md](https://github.com/langmartai/lm-claude-endpoint/blob/main/compaction/custom-synthetic-session.md).
 
 | Method | Path | Body |
 |--------|------|------|
@@ -108,7 +108,7 @@ machine and everything tunnels through the cloud.
 
 Runs Claude Code under tmux and pivots it to a freshly-built session in
 response to a user prompt — same pattern as
-`docs/claude-code-internals/compaction/custom-synthetic-session.md:322`,
+`https://github.com/langmartai/lm-claude-endpoint/blob/main/compaction/custom-synthetic-session.md:322`,
 but exposed as API.
 
 ```bash
