@@ -4,13 +4,33 @@
 
 ### Claude Code OAuth integration
 
+Three new routes that let any local caller — UI dashboard, CLI tool, scheduled job — read the same usage and profile data Claude Code itself reads, without re-implementing the OAuth dance.
+
 - **New: `GET /claude-code/oauth-status`** — surfaces presence and expiry of Claude Code's OAuth credentials (`~/.claude/.credentials.json`) without exposing the tokens. Reports platform, storage backend, scopes, subscription type, rate limit tier, and ms-until-expiry.
-- **New: `GET /claude-code/usage`** — proxies `GET https://api.anthropic.com/api/oauth/usage` using Claude Code's OAuth access token. Returns the `Utilization` payload (rate-limit windows: 5-hour, 7-day, 7-day-opus, 7-day-sonnet, plus `extra_usage`). Auto-refreshes the access token via `platform.claude.com/v1/oauth/token` when expired and persists the new token atomically back to the credentials file.
+- **New: `GET /claude-code/usage`** — proxies `GET https://api.anthropic.com/api/oauth/usage` using Claude Code's OAuth access token. Returns the `Utilization` payload (rate-limit windows: 5-hour, 7-day, 7-day-opus, 7-day-sonnet, plus `extra_usage`). Auto-refreshes the access token via `POST platform.claude.com/v1/oauth/token` when within 5 minutes of expiry and persists the new token atomically back to the credentials file.
 - **New: `GET /claude-code/profile`** — proxies `GET https://api.anthropic.com/api/oauth/profile`. Returns account / organization / application info.
-- **New: `core/src/utils/claude-oauth.ts`** — reusable helper: `readClaudeOAuth()`, `getValidAccessToken()` (refresh-when-needed), `anthropicOAuthGet(path)` (auth + single 401 retry), `getOAuthStatus()`, `detectClaudeCodeVersion()`, `getClaudeCodeUserAgent()`.
-- **Outbound header fingerprint matches Claude Code.** `anthropicOAuthGet()` sends exactly the 8 headers real Claude Code uses on these endpoints (verified against lm-proxy captures): `Accept`, `Accept-Encoding: gzip, compress, deflate, br`, `Authorization`, `Content-Type`, `User-Agent: claude-code/<detected-version>`, `Connection: keep-alive`, `anthropic-beta: oauth-2025-04-20`, and `Host` (set by fetch). No `anthropic-client-platform`/`anthropic-version`/`x-organization-uuid` — those appear on other endpoints and adding them here would itself be a tell. `detectClaudeCodeVersion()` reads the installed `@anthropic-ai/claude-code` package; falls back to `2.1.137`.
-- **Polling note.** Real Claude Code hits `/api/oauth/usage` only on the user's `/usage` command — observed cadence is roughly one call every several days. Callers of this lm-assist route should not poll faster than ~5 minutes; a UI watcher polling on a tight interval would be the loudest abnormal signal.
-- macOS is not yet supported (credentials live in Keychain rather than the plain file used on Linux/Windows).
+- **New helper: `core/src/utils/claude-oauth.ts`** — `readClaudeOAuth()`, `getValidAccessToken()` (refresh-when-needed), `anthropicOAuthGet(path)` (auth + single 401 retry), `getOAuthStatus()`, `detectClaudeCodeVersion()`, `getClaudeCodeUserAgent()`.
+- **Limitation:** macOS is not yet supported — Claude Code stores credentials in the Keychain rather than the plain file used on Linux/Windows. `getOAuthStatus()` reports `storage: 'keychain'` and `present: false` on Darwin.
+
+#### Wire-fingerprint hardening
+
+`anthropicOAuthGet()` was originally sending the fetch defaults plus a `lm-assist/0.1` User-Agent. A review of real Claude Code traffic captured by `lm-proxy` (see [`lm-claude-endpoint:get-api-oauth-usage.md`](https://github.com/langmartai/lm-claude-endpoint/blob/main/pages/api-anthropic-com/get-api-oauth-usage.md)) showed three deviations from the real-client pattern; all are fixed:
+
+| Header | Before | After |
+|---|---|---|
+| `User-Agent` | `lm-assist/0.1 (claude-code-oauth-proxy)` | `claude-code/<version>` from `detectClaudeCodeVersion()`, fallback `2.1.137` |
+| `Accept-Encoding` | fetch default (`gzip, deflate, br`) | `gzip, compress, deflate, br` (axios pattern Claude Code inherits) |
+| `Connection` | fetch default | `keep-alive` (explicit) |
+
+Other Claude Code endpoints carry `anthropic-client-platform`, `anthropic-client-version`, `anthropic-version`, and `x-organization-uuid` headers, but `/api/oauth/usage` does **not**. We deliberately omit them — adding them here would itself be a deviation from the observed fingerprint.
+
+`detectClaudeCodeVersion()` reads the installed `@anthropic-ai/claude-code` package by scanning common install locations (Windows: nvm4w `node_modules`, `%APPDATA%\npm`; Unix: `/usr/lib/node_modules`, `/usr/local/lib/node_modules`, `~/.local`). The result is memoized for the process lifetime.
+
+`anthropicOAuthGet()` gains an optional `betaHeader: null` opt-out for endpoints (such as the initial post-login `/api/oauth/profile` fetch) that Claude Code calls without `anthropic-beta`.
+
+#### Polling recommendation
+
+Real Claude Code hits `/api/oauth/usage` only on the user's `/usage` command and from the `useRateLimitWarningNotification` hook — observed cadence in 5 days of captured traffic is roughly one call. Automated callers of this lm-assist route should cache responses and poll no faster than every ~5 minutes; a tight-loop watcher would be the loudest abnormal-traffic signal regardless of header correctness.
 
 ### Agent API
 
