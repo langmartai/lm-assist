@@ -83,22 +83,104 @@ export interface OpenGnomeTabOptions {
 }
 
 export interface OpenGnomeTabResult {
+  /** PID of the gnome-terminal CLI client (exits after dispatching to the server). */
   pid: number | null;
   /** True if we found a usable desktop env; false → tab probably won't render. */
   displayAvailable: boolean;
+  /**
+   * PID of the bash process running INSIDE the new tab (child of
+   * gnome-terminal-server). Used by `deleteTab` to close non-tmux gnome
+   * tabs. Null if the server child couldn't be identified or there's
+   * already a tmuxSession (which provides its own teardown path).
+   */
+  tabPid: number | null;
   /** Captured stderr from gnome-terminal (small; truncated at 4 KiB). */
   stderr: string;
 }
 
-export function openGnomeTab(opts: OpenGnomeTabOptions): OpenGnomeTabResult {
+/**
+ * Find gnome-terminal-server's PID by reading /proc cmdlines directly.
+ *
+ * Can't use `pgrep -x gnome-terminal-server` here because the Linux
+ * kernel truncates `/proc/PID/comm` to 15 chars ("gnome-terminal-"),
+ * and pgrep -x compares against comm. `pgrep -f` would match our own
+ * search processes. Reading /proc is unambiguous.
+ */
+function findGnomeTerminalServerPid(): number | null {
+  try {
+    const dirs = fs.readdirSync('/proc');
+    for (const d of dirs) {
+      if (!/^\d+$/.test(d)) continue;
+      let cmdline: string;
+      try {
+        cmdline = fs.readFileSync(`/proc/${d}/cmdline`, 'utf-8');
+      } catch { continue; }
+      // /proc/PID/cmdline is NUL-separated argv. argv[0] for the server is
+      // "/usr/libexec/gnome-terminal-server" (Ubuntu) or similar paths on
+      // other distros.
+      const argv0 = cmdline.split('\0')[0];
+      if (/(?:^|\/)gnome-terminal-server$/.test(argv0)) {
+        return parseInt(d, 10);
+      }
+    }
+  } catch { /* /proc unreadable */ }
+  return null;
+}
+
+/**
+ * Snapshot the children of gnome-terminal-server. Each child PID is a bash
+ * running inside one open tab. We diff before-vs-after the spawn to find
+ * the bash we just created.
+ *
+ * Returns [] if gnome-terminal-server isn't running. Callers must treat
+ * null tabPid as "tracking unavailable", not "tab not opened".
+ */
+function getGnomeServerChildren(): number[] {
+  const serverPid = findGnomeTerminalServerPid();
+  if (serverPid === null) return [];
+  try {
+    const childOut = execFileSync('pgrep', ['-P', String(serverPid)], { encoding: 'utf-8', timeout: 2000 }).trim();
+    return childOut.split('\n').filter(Boolean).map(Number).filter(Number.isFinite);
+  } catch {
+    return [];
+  }
+}
+
+function sleep(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)); }
+
+export async function openGnomeTab(opts: OpenGnomeTabOptions): Promise<OpenGnomeTabResult> {
   if (!IS_POSIX) throw new TerminalError('PLATFORM_UNSUPPORTED', 'gnome-terminal is only available on POSIX');
   const desk = findDesktopEnv();
+  // Fail loudly when no display env can be propagated. Without DISPLAY/
+  // WAYLAND_DISPLAY the spawn would silently no-op (gnome-terminal exits
+  // with "Failed to parse arguments" or similar that we'd never see).
+  if (!desk) {
+    throw new TerminalError(
+      'SPAWN_FAILED',
+      'no logged-in desktop session found for gnome-terminal — DISPLAY/WAYLAND_DISPLAY not available on this host',
+    );
+  }
+
+  // Pre-check the cwd exists; gnome-terminal silently falls back to its
+  // own cwd otherwise, leaving the caller confused about where the tab
+  // actually opened.
+  if (opts.cwd) {
+    try {
+      const stat = fs.statSync(opts.cwd);
+      if (!stat.isDirectory()) {
+        throw new TerminalError('INVALID_INPUT', `cwd is not a directory: ${opts.cwd}`);
+      }
+    } catch (e: unknown) {
+      if (e instanceof TerminalError) throw e;
+      throw new TerminalError('INVALID_INPUT', `cwd does not exist or is not accessible: ${opts.cwd}`, {
+        cwd: opts.cwd, error: (e as Error).message,
+      });
+    }
+  }
 
   const env: Record<string, string> = { ...(process.env as Record<string, string>) };
-  if (desk) {
-    for (const k of ['DISPLAY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'XAUTHORITY']) {
-      if (desk[k]) env[k] = desk[k];
-    }
+  for (const k of ['DISPLAY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'XAUTHORITY']) {
+    if (desk[k]) env[k] = desk[k];
   }
   for (const [k, v] of Object.entries(opts.env)) env[k] = v;
 
@@ -107,23 +189,27 @@ export function openGnomeTab(opts: OpenGnomeTabOptions): OpenGnomeTabResult {
   if (opts.cwd) args.push(`--working-directory=${opts.cwd}`);
 
   if (opts.tmuxSession) {
-    // Make sure the session exists before we attach.
     tmux.createUnlocked(opts.tmuxSession, { cwd: opts.cwd, cols: opts.cols, rows: opts.rows });
     if (opts.command) {
       tmux.sendKeysUnlocked(opts.tmuxSession, {
         keys: opts.command, literal: false, enter: true, paneQualifier: null,
       });
     }
-    // Attach via bash -c '$0' so the session name is a positional arg, not
-    // interpolated into a shell string.
     args.push('--', 'bash', '-c', 'tmux attach -t "$1"', 'lm-assist', opts.tmuxSession);
   } else if (opts.command) {
-    // Run command via positional arg, then drop to interactive bash.
-    args.push('--', 'bash', '-c', '"$1"; exec bash', 'lm-assist', opts.command);
+    // `eval "$1"` re-parses $1 as shell so `cd /foo && tail -f log` works as
+    // a user types it. The command itself comes via argv (not interpolated
+    // into the bash source), so quoting bugs at the lm-assist layer can't
+    // produce stray code. Shell evaluation of the COMMAND CONTENT is by
+    // design — that's what "open a tab and run X" means.
+    args.push('--', 'bash', '-c', 'eval "$1"; exec bash', 'lm-assist', opts.command);
   }
 
-  // Capture stderr instead of stdio:'ignore' so silent failures surface.
+  // Snapshot server children before spawn so we can identify the new tab.
+  const before = new Set(getGnomeServerChildren());
+
   let capturedStderr = '';
+  let clientPid: number | null = null;
   try {
     const child = spawn('gnome-terminal', args, { env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     if (child.stderr) {
@@ -132,14 +218,31 @@ export function openGnomeTab(opts: OpenGnomeTabOptions): OpenGnomeTabResult {
       });
     }
     child.unref();
-    return {
-      pid: child.pid ?? null,
-      displayAvailable: !!desk,
-      stderr: capturedStderr,
-    };
+    clientPid = child.pid ?? null;
   } catch (e: unknown) {
     throw new TerminalError('SPAWN_FAILED', `gnome-terminal spawn failed: ${(e as Error).message}`);
   }
+
+  // Wait briefly for gnome-terminal-server to spawn the new pane's bash.
+  // 800ms is enough on a healthy session; the test suite verifies this.
+  let tabPid: number | null = null;
+  for (let attempt = 0; attempt < 8 && tabPid === null; attempt++) {
+    await sleep(100);
+    const after = getGnomeServerChildren();
+    const newOnes = after.filter((p) => !before.has(p));
+    // If multiple tabs opened concurrently, take the youngest one that's
+    // still alive (we can't disambiguate further without a marker).
+    if (newOnes.length > 0) {
+      tabPid = newOnes[newOnes.length - 1];
+    }
+  }
+
+  return {
+    pid: clientPid,
+    displayAvailable: true,
+    tabPid,
+    stderr: capturedStderr,
+  };
 }
 
 // ---------- Windows wt-ssh -----------------------------------------------

@@ -731,3 +731,180 @@ test('T5b — select-choice on pane with no dialog rejected (PRECONDITION_FAILED
   assert.equal(r.success, false);
   assert.equal(r.error?.code, 'PRECONDITION_FAILED');
 });
+
+// ===========================================================================
+// SECTION G — visible GUI tabs (gnome on Linux with a logged-in desktop)
+//
+// These tests require a GNOME desktop session running on this host. They're
+// auto-skipped when no display env is available (CI, headless servers).
+// ===========================================================================
+
+/** Returns true if a gnome-terminal-server is reachable from this host. */
+function gnomeAvailable(): boolean {
+  try {
+    // Read /proc directly — `pgrep -x gnome-terminal-server` doesn't work
+    // because /proc/PID/comm truncates to 15 chars.
+    const fs = require('node:fs') as typeof import('node:fs');
+    const dirs = fs.readdirSync('/proc');
+    for (const d of dirs) {
+      if (!/^\d+$/.test(d)) continue;
+      let cmdline: string;
+      try { cmdline = fs.readFileSync(`/proc/${d}/cmdline`, 'utf-8'); }
+      catch { continue; }
+      const argv0 = cmdline.split('\0')[0];
+      if (/(?:^|\/)gnome-terminal-server$/.test(argv0)) return true;
+    }
+  } catch { /* /proc unreadable */ }
+  return false;
+}
+
+function gnomeChildPids(): number[] {
+  try {
+    const fs = require('node:fs') as typeof import('node:fs');
+    const dirs = fs.readdirSync('/proc');
+    for (const d of dirs) {
+      if (!/^\d+$/.test(d)) continue;
+      let cmdline: string;
+      try { cmdline = fs.readFileSync(`/proc/${d}/cmdline`, 'utf-8'); } catch { continue; }
+      const argv0 = cmdline.split('\0')[0];
+      if (/(?:^|\/)gnome-terminal-server$/.test(argv0)) {
+        const serverPid = parseInt(d, 10);
+        try {
+          const out = execFileSync('pgrep', ['-P', String(serverPid)], { encoding: 'utf-8', timeout: 2000 }).trim();
+          return out.split('\n').filter(Boolean).map(Number).filter(Number.isFinite);
+        } catch { return []; }
+      }
+    }
+  } catch { /* ignore */ }
+  return [];
+}
+
+const GNOME_AVAILABLE = gnomeAvailable();
+
+test('G1 — gnome tab opens, tabPid tracked + alive, count increments', { skip: !GNOME_AVAILABLE }, async () => {
+  const before = gnomeChildPids().length;
+  const create = await call<{ id: string; meta: { tabPid: number | null; displayAvailable: boolean } }>('POST', '/terminal/tabs', {
+    kind: 'gnome', title: 'g1', cwd: '/tmp',
+  });
+  assert.equal(create.success, true, JSON.stringify(create));
+  assert.equal(create.data?.meta.displayAvailable, true);
+  const tabPid = create.data!.meta.tabPid;
+  assert.ok(typeof tabPid === 'number' && tabPid > 0, `expected tabPid, got ${tabPid}`);
+  assert.ok(processAlive(tabPid as number), 'tabPid should be alive');
+  const after = gnomeChildPids().length;
+  assert.equal(after, before + 1, `tab count should have grown by 1: before=${before} after=${after}`);
+
+  // Clean up.
+  await call('DELETE', `/terminal/tabs/${create.data!.id}`);
+  await sleep(1500);
+  assert.equal(processAlive(tabPid as number), false, 'tabPid should be gone after DELETE');
+  assert.equal(gnomeChildPids().length, before, 'tab count should return to baseline');
+});
+
+test('G2 — DELETE non-tmux gnome tab uses SIGHUP and actually closes the window', { skip: !GNOME_AVAILABLE }, async () => {
+  const baseline = gnomeChildPids().length;
+  const create = await call<{ id: string; meta: { tabPid: number } }>('POST', '/terminal/tabs', {
+    kind: 'gnome', title: 'g2', cwd: '/tmp',
+  });
+  const pid = create.data!.meta.tabPid;
+  await sleep(300);
+  assert.ok(processAlive(pid), 'tab bash should be alive before DELETE');
+
+  const del = await call<{ removed: boolean; killedTmux: boolean; closedTab: boolean }>('DELETE', `/terminal/tabs/${create.data!.id}`);
+  assert.equal(del.data?.closedTab, true);
+
+  await sleep(1500);
+  assert.equal(processAlive(pid), false, `pid ${pid} should be gone (SIGHUP propagated)`);
+  assert.equal(gnomeChildPids().length, baseline, 'gnome tab count should return to baseline');
+});
+
+test('G3 — tmux-linked gnome tab: DELETE kills tmux + tab closes via tmux death', { skip: !GNOME_AVAILABLE }, async () => {
+  const sessName = uniqName('g3-sess');
+  const baseline = gnomeChildPids().length;
+  const create = await call<{ id: string; tmuxSession: string }>('POST', '/terminal/tabs', {
+    kind: 'gnome', title: 'g3', tmuxSession: sessName, cwd: '/tmp',
+  });
+  assert.equal(create.data?.tmuxSession, sessName);
+  // tmux session must exist.
+  const list = await call<{ sessions: Array<{ name?: string }> }>('GET', '/terminal/tmux');
+  assert.ok(list.data?.sessions.some((s) => (s as { name?: string }).name === sessName));
+
+  const del = await call<{ killedTmux: boolean }>('DELETE', `/terminal/tabs/${create.data!.id}`);
+  assert.equal(del.data?.killedTmux, true);
+
+  await sleep(1500);
+  const list2 = await call<{ sessions: Array<{ name?: string }> }>('GET', '/terminal/tmux');
+  assert.ok(!list2.data?.sessions.some((s) => (s as { name?: string }).name === sessName), 'tmux session should be gone');
+  assert.equal(gnomeChildPids().length, baseline, 'gnome tab count should return to baseline (bash exited when tmux attach ended)');
+});
+
+test('G4 — gnome tab with command actually runs the command (eval-based shell parsing)', { skip: !GNOME_AVAILABLE }, async () => {
+  const fs = await import('node:fs');
+  const marker = `/tmp/.lm-g4-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    const create = await call<{ id: string; meta: { tabPid: number } }>('POST', '/terminal/tabs', {
+      kind: 'gnome', title: 'g4', cwd: '/tmp',
+      // Shell expression — `eval "$1"` re-parses this as shell, so && and > work.
+      command: `echo MARKER_G4 > ${marker} && exec sleep 600`,
+    });
+    await sleep(1500);
+    assert.ok(fs.existsSync(marker), `marker file ${marker} not created — command did not run`);
+    assert.equal(fs.readFileSync(marker, 'utf-8').trim(), 'MARKER_G4');
+
+    // DELETE should also kill the `sleep 600`.
+    const pid = create.data!.meta.tabPid;
+    await call('DELETE', `/terminal/tabs/${create.data!.id}`);
+    await sleep(1500);
+    assert.equal(processAlive(pid), false, 'tab bash gone');
+  } finally {
+    try { fs.unlinkSync(marker); } catch { /* ignore */ }
+  }
+});
+
+test('G5 — gnome tab with non-existent cwd rejected (INVALID_INPUT, no tab spawned)', { skip: !GNOME_AVAILABLE }, async () => {
+  const before = gnomeChildPids().length;
+  const r = await call('POST', '/terminal/tabs', {
+    kind: 'gnome', cwd: '/this/does/not/exist/g5',
+  });
+  assert.equal(r.success, false);
+  assert.equal(r.error?.code, 'INVALID_INPUT');
+  assert.equal(gnomeChildPids().length, before, 'no tab should have spawned');
+});
+
+// ===========================================================================
+// SECTION W — Windows wt-ssh tabs (cannot live-test from Linux)
+//
+// These verify the bat-file content and platform gating. They're pure unit
+// checks that don't depend on a Windows host. The actual schtasks + wt.exe
+// flow is documented but untested here.
+// ===========================================================================
+
+test('W1 — wt-ssh kind from non-Windows host returns PLATFORM_UNSUPPORTED', async () => {
+  const r = await call('POST', '/terminal/tabs', {
+    kind: 'wt-ssh', sshTarget: 'user@host', tmuxSession: 'sess',
+  });
+  assert.equal(r.success, false);
+  // From Linux this fails at the manager layer with PLATFORM_UNSUPPORTED.
+  assert.equal(r.error?.code, 'PLATFORM_UNSUPPORTED');
+});
+
+test('W2 — wt-ssh validates sshTarget regex (no shell metachars)', async () => {
+  for (const bad of ['user@host & calc', 'user@host;ls', 'user@host|cat', '`whoami`@host']) {
+    const r = await call('POST', '/terminal/tabs', {
+      kind: 'wt-ssh', sshTarget: bad, tmuxSession: 'sess',
+    });
+    assert.equal(r.success, false, `should reject sshTarget=${bad}`);
+    assert.equal(r.error?.code, 'INVALID_INPUT');
+  }
+});
+
+test('W3 — wt-ssh requires sshTarget', async () => {
+  const r = await call('POST', '/terminal/tabs', {
+    kind: 'wt-ssh', tmuxSession: 'sess',
+  });
+  assert.equal(r.success, false);
+  // No sshTarget at all — caught at validate.parseCreateTab (sshTarget is optional in the schema but required by kind:wt-ssh in manager).
+  // The current behavior may be either INVALID_INPUT (validate) or PLATFORM_UNSUPPORTED (manager on non-Windows). Either is acceptable.
+  assert.ok(['INVALID_INPUT', 'PLATFORM_UNSUPPORTED'].includes(r.error?.code ?? ''),
+    `unexpected code: ${r.error?.code}`);
+});

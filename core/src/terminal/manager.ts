@@ -32,7 +32,7 @@ export async function createTab(input: CreateTabInput, caller?: string): Promise
 
     if (input.kind === 'gnome') {
       if (!IS_POSIX) throw new TerminalError('PLATFORM_UNSUPPORTED', 'gnome tabs require a POSIX host');
-      const res = openGnomeTab({
+      const res = await openGnomeTab({
         title: input.title,
         cwd: input.cwd,
         command: input.command,
@@ -42,6 +42,7 @@ export async function createTab(input: CreateTabInput, caller?: string): Promise
         env: input.env,
       });
       meta.pid = res.pid;
+      meta.tabPid = res.tabPid;
       meta.displayAvailable = res.displayAvailable;
       if (res.stderr) meta.spawnStderr = res.stderr;
     } else if (input.kind === 'wt-ssh') {
@@ -83,10 +84,11 @@ export async function createTab(input: CreateTabInput, caller?: string): Promise
   });
 }
 
-export async function deleteTab(id: string, caller?: string): Promise<{ removed: boolean; killedTmux: boolean }> {
+export async function deleteTab(id: string, caller?: string): Promise<{ removed: boolean; killedTmux: boolean; closedTab: boolean }> {
   return await withAudit({ op: 'deleteTab', caller, details: { id } }, async () => {
     const rec = registry.get(id);
     if (!rec) throw new TerminalError('SESSION_NOT_FOUND', `tab not found: ${id}`);
+
     let killedTmux = false;
     if (rec.tmuxSession && IS_POSIX) {
       try {
@@ -96,8 +98,32 @@ export async function deleteTab(id: string, caller?: string): Promise<{ removed:
         if (!(e instanceof TerminalError && e.code === 'SESSION_NOT_FOUND')) throw e;
       }
     }
+
+    // Close the visible tab too. For tmux-linked tabs the tmux kill above
+    // already terminated the bash inside the gnome tab (`tmux attach`
+    // returns when the session dies, and the bash spawned with `bash -c
+    // 'tmux attach -t X'` then exits, which closes the gnome tab). For
+    // non-tmux gnome tabs we have to kill the tab's bash explicitly using
+    // the pid we captured at spawn time.
+    //
+    // SIGHUP, not SIGTERM: interactive bash ignores SIGTERM (signal 15
+    // disposition is "ignored" for interactive shells with job control).
+    // SIGHUP simulates the controlling terminal going away — bash exits
+    // cleanly, any running foreground job receives SIGHUP from the
+    // dying shell, and gnome-terminal closes the empty pane.
+    let closedTab = false;
+    const tabPid = (rec.meta as { tabPid?: number | null })?.tabPid ?? null;
+    if (rec.kind === 'gnome' && !rec.tmuxSession && typeof tabPid === 'number' && tabPid > 0) {
+      try {
+        process.kill(tabPid, 'SIGHUP');
+        closedTab = true;
+      } catch {
+        // already exited
+      }
+    }
+
     await registry.remove(id);
-    return { removed: true, killedTmux };
+    return { removed: true, killedTmux, closedTab };
   });
 }
 

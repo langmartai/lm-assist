@@ -53,12 +53,48 @@ caller identity (e.g. `engine-v6`, `manual-test`).
 | POST | `/terminal/tabs` | `{ kind, title?, cwd?, command?, tmuxSession?, sshTarget?, env?, cols?, rows? }` |
 | GET  | `/terminal/tabs` | — (returns `{ tabs: TabRecord[] }`, each with `alive: boolean`) |
 | GET  | `/terminal/tabs/:id` | — |
-| DELETE | `/terminal/tabs/:id` | — (kills tmux session if any; returns `{ removed, killedTmux }`) |
+| DELETE | `/terminal/tabs/:id` | — (kills tmux session if any, sends SIGHUP to the visible gnome tab's bash if no tmux is linked; returns `{ removed, killedTmux, closedTab }`) |
 | POST | `/terminal/tabs/prune-dead` | — (removes registry entries whose tmux session is gone; returns `{ pruned: string[] }`) |
 
 Tab ids are `tab-xxxxxxxx`. Registry persisted at
 `~/.cache/lm-assist/terminal-tabs.json` with atomic writes (tmp + rename),
 file lock, and mtime-based reload.
+
+### Gnome tab specifics (Linux)
+
+- Requires a logged-in GNOME desktop session on the host (X or Wayland).
+  `findDesktopEnv` reads the env of a running `gnome-terminal-server` /
+  `gnome-shell` / KDE / Sway / Xorg process to propagate `DISPLAY`,
+  `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`,
+  `XAUTHORITY`. If none is found the API returns `SPAWN_FAILED`.
+- `cwd` is pre-checked via `fs.statSync`; non-existent paths return
+  `INVALID_INPUT` (gnome-terminal would silently fall back to its own cwd).
+- `command` is run inside the new tab via `bash -c 'eval "$1"; exec bash'`
+  with the command passed as a positional argv, NOT interpolated into the
+  bash source. The shell evaluation of the command CONTENT is by design
+  (so `cd /foo && tail -f log` works as a caller types it).
+- The PID of the bash running inside the new tab is captured via a
+  pre/post diff of `gnome-terminal-server`'s children and stored as
+  `meta.tabPid`. `DELETE` sends `SIGHUP` to that PID (interactive bash
+  ignores `SIGTERM`; `SIGHUP` simulates the controlling terminal going
+  away, so bash exits and gnome-terminal closes the empty pane).
+
+### wt-ssh tab specifics (Windows)
+
+- Requires a Windows lm-assist host (`PLATFORM_UNSUPPORTED` from any other
+  OS). Untested in CI (no Windows runner); the validation surface (W1–W3
+  tests) verifies platform gating and input sanitization.
+- Per-call bat file at `~/.lm-assist/wt-tabs/wt-<id>.bat` and per-call
+  scheduled task `LmAssistOpenWtTab-<id>` — no shared resource race
+  between concurrent `openWtSshTab` calls (was a real bug in earlier
+  implementations).
+- `sshTarget` allowlist `^[A-Za-z0-9_]+(@[A-Za-z0-9_.\-]+)?$` rejects
+  `&`, `|`, `;`, `^`, backticks at the validation boundary. Even past
+  the allowlist, `windowsEscape` wraps the value in CMD double quotes
+  with caret-escapes for `& | < > ^`.
+- Per-call cleanup runs after 5 minutes (deletes the scheduled task +
+  bat file). If lm-assist crashes mid-call, the next `schtasks /run`
+  attempt may surface a stale-task warning.
 
 ### tmux control
 

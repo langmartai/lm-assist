@@ -14,11 +14,12 @@ surface for handling CC's interactive prompts.
 
 | Metric | Before | After |
 |---|---|---|
-| Source LOC (`core/src/terminal*`) | 536 | ~1,830 |
-| Test LOC | 0 | ~1,000 |
-| Test count | 0 | 64 |
-| Test pass rate | n/a | 64 / 64 |
+| Source LOC (`core/src/terminal*`) | 536 | ~1,940 |
+| Test LOC | 0 | ~1,250 |
+| Test count | 0 | 72 |
+| Test pass rate | n/a | 72 / 72 |
 | Live-CC integration | none | 13 tests |
+| Live-GUI integration (gnome tabs) | none | 5 tests |
 | Bug classes structurally prevented | n/a | 6 (see §3) |
 | API endpoints | 13 | 18 (5 new) |
 | Typed error codes | 1 (string) | 11 (discriminated union) |
@@ -106,7 +107,7 @@ npm run test:live   # full suite incl. real CC, ~47s, uses credits
 | `/agents` content shape | Depends on installed plugins. | LOW — `/slash` mechanism covered by T3c (`/clear`). |
 | Long-running CC (10+ min) session health | Excluded as a fast-feedback test (would inflate `npm test:live` runtime); covered indirectly by D3+F3 timing. | LOW — no known leak path. |
 | Multi-instance concurrent CC sessions | Each session has its own mutex; no cross-session interaction. Test would be O(N) launches. | LOW — tested at primitive level via A5 + E1. |
-| `wt-ssh` Windows path | No Windows test runner available. | MEDIUM — validation covered (`C7`), but the actual schtasks + bat orchestration is untested in CI. |
+| `wt-ssh` Windows path | No Windows test runner. W1–W3 verify platform gating + sshTarget regex; the actual schtasks + bat orchestration is untested in CI. | MEDIUM — code reviewed, validation covered; lack of live test means a Windows-specific regression could slip through. |
 | Auth state during real logout/login flow | Would require modifying `~/.claude.json` mid-run. | LOW — config-file read path covered by `getAuthInfo` shape test; screen-fallback path covered by unit. |
 
 ### 2.3 Trust prompt behavior (CC v2.1.x)
@@ -176,6 +177,22 @@ structurally:
 | E — concurrency | E1 (1, live) | Two parallel prompts both succeed, both seen by CC |
 | F — gap coverage | F1, F3–F5 (4, all live) | Pivot race regression, multi-turn, capture-during-busy, trust-prompt conditional |
 | T — new API | T1a, T1b, T2, T2b, T3a–T3c, T4a, T4b, T5a, T5b (11, 3 live) | Status enrichment, interrupt (incl. cancel), slash (validate+precondition+`/clear`), dialog accept/reject preconditions, select-choice validation |
+
+### 4.1b GUI tab tests (in `cc-integration.test.ts`)
+
+| Test | Coverage |
+|---|---|
+| G1 | gnome tab opens, `meta.tabPid` tracks the new bash, count increments by 1, DELETE drops it back |
+| G2 | DELETE on non-tmux gnome tab sends SIGHUP (interactive bash ignores SIGTERM) and the window actually closes |
+| G3 | tmux-linked gnome tab: DELETE kills tmux session, bash exits when `tmux attach` returns, gnome closes the pane |
+| G4 | `command` field runs via `bash -c 'eval "$1"; exec bash'` so shell operators like `&&` and `>` work as users expect |
+| G5 | non-existent cwd rejected with INVALID_INPUT at validation boundary; no tab spawned |
+| W1 | wt-ssh kind from non-Windows host → PLATFORM_UNSUPPORTED |
+| W2 | sshTarget with `&`/`;`/`\|`/backticks rejected at validate layer |
+| W3 | wt-ssh without sshTarget rejected (PLATFORM_UNSUPPORTED on Linux; INVALID_INPUT on Windows) |
+
+GUI tests auto-skip when no `gnome-terminal-server` is reachable (CI,
+headless runners). W tests are pure unit-style — no Windows host required.
 
 ### 4.2 `inspector.test.ts` (26 unit tests)
 
