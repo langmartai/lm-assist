@@ -25,6 +25,59 @@ const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const REFRESH_BUFFER_MS = 5 * 60 * 1000;
 const REFRESH_TIMEOUT_MS = 15_000;
 
+// Fallback Claude Code version if local detection fails. Update periodically.
+// Observed in the wild on 2026-05-09 / 2026-05-14: claude-code/2.1.137.
+const FALLBACK_CLAUDE_CODE_VERSION = '2.1.137';
+
+let cachedClaudeCodeVersion: string | null | undefined;
+
+/**
+ * Locate the installed `@anthropic-ai/claude-code` package and return its
+ * version. Tries the common Windows (nvm4w, %APPDATA%\npm) and Unix
+ * (`/usr/lib/node_modules`, `~/.nvm/...`) locations. Result is memoized.
+ */
+export function detectClaudeCodeVersion(): string {
+  if (typeof cachedClaudeCodeVersion === 'string') {
+    return cachedClaudeCodeVersion;
+  }
+  const home = os.homedir();
+  const nodeDir = path.dirname(process.execPath);
+  const candidates: string[] = [];
+  if (process.platform === 'win32') {
+    candidates.push(
+      path.join(nodeDir, 'node_modules', '@anthropic-ai', 'claude-code', 'package.json'),
+      process.env.APPDATA
+        ? path.join(process.env.APPDATA, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'package.json')
+        : '',
+      path.join(home, 'AppData', 'Roaming', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'package.json'),
+    );
+  } else {
+    candidates.push(
+      '/usr/lib/node_modules/@anthropic-ai/claude-code/package.json',
+      '/usr/local/lib/node_modules/@anthropic-ai/claude-code/package.json',
+      path.join(home, '.nvm', 'versions', 'node', '*', 'lib', 'node_modules', '@anthropic-ai', 'claude-code', 'package.json'),
+      path.join(home, '.local', 'lib', 'node_modules', '@anthropic-ai', 'claude-code', 'package.json'),
+    );
+  }
+  for (const c of candidates.filter(Boolean)) {
+    if (c.includes('*')) continue; // skip glob entries (would need a sync glob; not worth it for one tier)
+    try {
+      const pkg = JSON.parse(fs.readFileSync(c, 'utf-8'));
+      if (typeof pkg.version === 'string' && pkg.version) {
+        cachedClaudeCodeVersion = pkg.version;
+        return pkg.version;
+      }
+    } catch { /* not present */ }
+  }
+  cachedClaudeCodeVersion = FALLBACK_CLAUDE_CODE_VERSION;
+  return cachedClaudeCodeVersion;
+}
+
+/** Build the exact User-Agent Claude Code sends. */
+export function getClaudeCodeUserAgent(): string {
+  return `claude-code/${detectClaudeCodeVersion()}`;
+}
+
 const CLAUDE_AI_OAUTH_SCOPES = [
   'user:profile',
   'user:inference',
@@ -211,33 +264,50 @@ export function getOAuthStatus(): OAuthStatus {
  * Make an authenticated GET to api.anthropic.com using the Claude Code
  * OAuth token. Adds Bearer + anthropic-beta + Claude Code user-agent.
  * Handles the single-retry-on-401 pattern (force refresh, retry once).
+ *
+ * Header fingerprint matches what Claude Code itself sends on these
+ * OAuth endpoints (observed via lm-proxy): same 8 headers, same values,
+ * impersonated User-Agent (`claude-code/<detected-version>`). Avoids
+ * extra `anthropic-client-*` / `anthropic-version` headers — those
+ * appear on other endpoints and adding them here would itself be a tell.
+ *
+ * Callers should NOT poll these endpoints rapidly. Real Claude Code
+ * hits /api/oauth/usage only on the user's /usage command (observed
+ * cadence: ~1 call every several days). Recommended minimum polling
+ * interval from automated callers: 5 minutes.
  */
 export async function anthropicOAuthGet(
   pathname: string,
-  opts: { timeoutMs?: number; userAgent?: string } = {},
+  opts: { timeoutMs?: number; userAgent?: string; betaHeader?: string | null } = {},
 ): Promise<{ status: number; statusText: string; body: any; headers: Record<string, string> }> {
   const url = `https://api.anthropic.com${pathname}`;
   const timeoutMs = opts.timeoutMs ?? 10_000;
-  const ua = opts.userAgent ?? 'lm-assist/0.1 (claude-code-oauth-proxy)';
+  const ua = opts.userAgent ?? getClaudeCodeUserAgent();
+  const betaHeader = opts.betaHeader === null ? null : (opts.betaHeader ?? 'oauth-2025-04-20');
 
   async function call(token: string) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
+      // Header order/values mirror real Claude Code traffic for OAuth
+      // endpoints. fetch will set `Host` itself.
+      const reqHeaders: Record<string, string> = {
+        Accept: 'application/json, text/plain, */*',
+        'Accept-Encoding': 'gzip, compress, deflate, br',
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'User-Agent': ua,
+        Connection: 'keep-alive',
+      };
+      if (betaHeader) reqHeaders['anthropic-beta'] = betaHeader;
       const res = await fetch(url, {
         method: 'GET',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'anthropic-beta': 'oauth-2025-04-20',
-          'Content-Type': 'application/json',
-          'User-Agent': ua,
-          Accept: 'application/json, text/plain, */*',
-        },
+        headers: reqHeaders,
         signal: ctrl.signal,
       });
-      const headers: Record<string, string> = {};
+      const respHeaders: Record<string, string> = {};
       res.headers.forEach((v, k) => {
-        headers[k] = v;
+        respHeaders[k] = v;
       });
       const text = await res.text();
       let body: any;
@@ -246,7 +316,7 @@ export async function anthropicOAuthGet(
       } catch {
         body = text;
       }
-      return { status: res.status, statusText: res.statusText, headers, body };
+      return { status: res.status, statusText: res.statusText, headers: respHeaders, body };
     } finally {
       clearTimeout(timer);
     }
