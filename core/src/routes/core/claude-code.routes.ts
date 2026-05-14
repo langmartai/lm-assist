@@ -37,6 +37,9 @@
  *   POST /claude-code/context-hook/uninstall    Remove context-inject hook from ~/.claude/settings.json
  *   GET  /claude-code/settings                  Read Claude settings (~/.claude/settings.json)
  *   PUT  /claude-code/settings                  Update Claude settings (cleanupPeriodDays)
+ *   GET  /claude-code/oauth-status              Claude Code OAuth credential status (no secrets)
+ *   GET  /claude-code/usage                     Proxy GET api.anthropic.com/api/oauth/usage
+ *   GET  /claude-code/profile                   Proxy GET api.anthropic.com/api/oauth/profile
  */
 
 import type { RouteHandler, RouteContext } from '../index';
@@ -44,6 +47,7 @@ import { execFileSync } from '../../utils/exec';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import { getOAuthStatus, anthropicOAuthGet } from '../../utils/claude-oauth';
 
 const IS_WINDOWS = process.platform === 'win32';
 const CLAUDE_CODE_CONFIG_FILE = path.join(os.homedir(), '.claude-code-config.json');
@@ -1681,6 +1685,71 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
             },
           },
         };
+      },
+    },
+
+    // GET /claude-code/oauth-status — surface OAuth credential presence/expiry
+    // without exposing tokens. Useful for the UI to know whether /usage and
+    // /profile will work, and for diagnostics.
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/oauth-status$/,
+      handler: async () => ({ success: true, data: getOAuthStatus() }),
+    },
+
+    // GET /claude-code/usage — proxies GET https://api.anthropic.com/api/oauth/usage
+    // using Claude Code's OAuth access token (refreshed if expired). Returns
+    // the Utilization object: rate-limit windows + extra-usage state.
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/usage$/,
+      handler: async () => {
+        try {
+          const r = await anthropicOAuthGet('/api/oauth/usage');
+          if (r.status >= 400) {
+            return {
+              success: false,
+              error: {
+                code: `UPSTREAM_${r.status}`,
+                message: `api.anthropic.com responded ${r.status} ${r.statusText}`,
+              },
+              data: r.body,
+            };
+          }
+          return { success: true, data: r.body };
+        } catch (err) {
+          return {
+            success: false,
+            error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message },
+          };
+        }
+      },
+    },
+
+    // GET /claude-code/profile — proxies GET https://api.anthropic.com/api/oauth/profile
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/profile$/,
+      handler: async () => {
+        try {
+          const r = await anthropicOAuthGet('/api/oauth/profile');
+          if (r.status >= 400) {
+            return {
+              success: false,
+              error: {
+                code: `UPSTREAM_${r.status}`,
+                message: `api.anthropic.com responded ${r.status} ${r.statusText}`,
+              },
+              data: r.body,
+            };
+          }
+          return { success: true, data: r.body };
+        } catch (err) {
+          return {
+            success: false,
+            error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message },
+          };
+        }
       },
     },
   ];
