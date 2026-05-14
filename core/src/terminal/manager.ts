@@ -10,7 +10,7 @@ import { TerminalError } from './errors';
 import { withAudit } from './audit';
 import * as tmux from './tmux';
 import * as registry from './registry';
-import { openGnomeTab, openWtSshTab } from './spawn-tabs';
+import { openGnomeTab, openWtSshTab, closeWindowsByGroup } from './spawn-tabs';
 import type { TabRecord, TabKind } from './types';
 
 export interface CreateTabInput {
@@ -153,5 +153,35 @@ export async function pruneDead(caller?: string): Promise<{ pruned: string[] }> 
   return await withAudit({ op: 'pruneDead', caller }, async () => {
     const pruned = await registry.pruneDead();
     return { pruned };
+  });
+}
+
+/**
+ * Close every gnome-terminal window in the given windowGroup, including
+ * orphan tabs that aren't in the registry (e.g. tabs whose helper-script
+ * bash exited and gnome restarted a fresh bash that we can't track).
+ *
+ * Also removes any tracked tab records whose tmuxSession belongs to a
+ * window we just closed — keeps the registry consistent.
+ */
+export async function closeWindows(windowGroup: string, caller?: string): Promise<{ closedWindows: string[]; removedTabs: string[]; displayAvailable: boolean }> {
+  if (!IS_POSIX) throw new TerminalError('PLATFORM_UNSUPPORTED', 'closeWindows requires a POSIX host');
+  return await withAudit({ op: 'closeWindows', caller, details: { windowGroup } }, async () => {
+    const { closed, displayAvailable } = closeWindowsByGroup(windowGroup);
+
+    // Sweep registry for any tabs of this group — they're gone regardless
+    // of whether wmctrl found a window to close (DELETE may have already
+    // removed the registry rows; we keep it consistent).
+    const removedTabs: string[] = [];
+    const all = registry.load();
+    for (const [id, rec] of Object.entries(all)) {
+      const recMeta = rec.meta as { windowGroup?: string };
+      if (rec.kind === 'gnome' && recMeta.windowGroup === windowGroup) {
+        await registry.remove(id);
+        removedTabs.push(id);
+      }
+    }
+
+    return { closedWindows: closed, removedTabs, displayAvailable };
   });
 }

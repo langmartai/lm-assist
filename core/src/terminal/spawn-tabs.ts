@@ -112,6 +112,52 @@ export interface OpenGnomeTabResult {
  * and pgrep -x compares against comm. `pgrep -f` would match our own
  * search processes. Reading /proc is unambiguous.
  */
+/**
+ * Close every gnome-terminal window whose WM_WINDOW_ROLE matches our
+ * pattern. Useful for cleaning up orphan tabs / windows that no longer
+ * appear in the tab registry (e.g. after `exec tmux attach` failed and
+ * gnome-terminal restarted bash, severing the link to `meta.tabPid`).
+ *
+ * Returns the list of X11 window IDs that were closed.
+ *
+ * The wmctrl `-c` request gracefully asks the WM to close the window;
+ * gnome-terminal closes all tabs in it, terminating their bashes.
+ *
+ * Auto-resolves DISPLAY/XAUTHORITY from the running desktop session
+ * (same probe `openGnomeTab` uses) so this works when lm-assist runs
+ * over SSH with no X env.
+ */
+export function closeWindowsByGroup(windowGroup: string): { closed: string[]; displayAvailable: boolean } {
+  const desk = findDesktopEnv();
+  if (!desk) return { closed: [], displayAvailable: false };
+  const env: Record<string, string> = { ...(process.env as Record<string, string>) };
+  for (const k of ['DISPLAY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'XAUTHORITY']) {
+    if (desk[k]) env[k] = desk[k];
+  }
+
+  const closed: string[] = [];
+  try {
+    const targetRole = `lm-assist-${windowGroup}`;
+    const stdout = execFileSync('wmctrl', ['-l'], { encoding: 'utf-8', env, timeout: 2000 });
+    for (const line of stdout.split('\n')) {
+      const m = line.match(/^(\S+)\s/);
+      if (!m) continue;
+      const id = m[1];
+      try {
+        const r = execFileSync('xprop', ['-id', id, 'WM_WINDOW_ROLE'], { encoding: 'utf-8', env, timeout: 1000 });
+        const rm = r.match(/=\s*"([^"]*)"/);
+        if (rm && rm[1] === targetRole) {
+          try {
+            execFileSync('wmctrl', ['-i', '-c', id], { encoding: 'utf-8', env, timeout: 2000 });
+            closed.push(id);
+          } catch { /* close request failed; window may already be gone */ }
+        }
+      } catch { /* xprop miss */ }
+    }
+  } catch { /* wmctrl not installed, no windows to close */ }
+  return { closed, displayAvailable: true };
+}
+
 function findGnomeTerminalServerPid(): number | null {
   try {
     const dirs = fs.readdirSync('/proc');

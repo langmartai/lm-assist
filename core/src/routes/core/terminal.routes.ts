@@ -107,6 +107,20 @@ export function createTerminalRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => envelope(async () => await manager.pruneDead(callerFromReq(req))),
     },
 
+    // POST /terminal/windows/close — close all gnome-terminal windows in a
+    // windowGroup (closes orphan tabs the registry can no longer reach).
+    {
+      method: 'POST',
+      pattern: /^\/terminal\/windows\/close$/,
+      handler: async (req) => envelope(async () => {
+        const body = (req.body || {}) as { windowGroup?: unknown };
+        const group = typeof body.windowGroup === 'string' && body.windowGroup.length > 0
+          ? body.windowGroup
+          : 'lm-assist';
+        return await manager.closeWindows(group, callerFromReq(req));
+      }),
+    },
+
     // --------- tmux sessions -------------------------------------------
 
     // GET /terminal/tmux
