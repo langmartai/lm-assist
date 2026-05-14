@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### claude.ai web-session integration — via-chrome header fingerprint hardening
+
+Bare `fetch()` inside the claude.ai page bypasses claude.ai's own fetch interceptor — so the application-level headers its web app normally adds were missing from our via-chrome snippets. The browser was only filling transport-level headers (UA, `Accept-Encoding`, `sec-ch-ua-*`, `Sec-Fetch-*`, `Origin`, `Referer`, `Cookie`).
+
+`buildViaChromeSnippet` and `snippetSendMessage` now emit a `baseHeaders` block at the top of every snippet and spread it into every `fetch()`:
+
+| Header | Source | Value |
+|---|---|---|
+| `anthropic-client-platform` | pinned | `web_claude_ai` |
+| `anthropic-client-version` | pinned | `1.0.0` |
+| `anthropic-client-sha` | pinned (observed) | `8a753cbf88e19be0f5f67efefb1b07840b6402e9` |
+| `anthropic-device-id` | from cookie `anthropic-device-id` | per-session UUID |
+| `anthropic-anonymous-id` | from cookie `ajs_anonymous_id` | `claudeai.v1.<uuid>` |
+| `x-activity-session-id` | from cookie `activitySessionId` | per-session UUID |
+
+Identity values are extracted from non-HttpOnly cookies, so callers don't need to supply anything extra. `x-datadog-*` and `traceparent` remain intentionally omitted (random per-request, easier to skip than to forge wrongly).
+
+Affected snippet generators: list/read/projects/memory/bootstrap/artifacts (via `buildViaChromeSnippet`) **and** `snippetSendMessage`'s two inner fetches (the read pre-flight and the actual `/completion` POST).
+
+Live-tested through Chrome MCP:
+- `GET /api/account_profile` with full `baseHeaders` → 200
+- `POST /completion` with full `baseHeaders` → 200, 7 events, text `" HDR_OK"`
+
 ### claude.ai web-session integration — POST /completion (write op)
 
 Both families now support sending messages:

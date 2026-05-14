@@ -128,18 +128,33 @@ All accept a JSON body. All return `{ success: true, data: { snippet, descriptio
 
 ### Snippet shape
 
-The returned snippet is a standalone async IIFE:
+The returned snippet is a standalone async IIFE. Every snippet starts with a `baseHeaders` block that re-injects the application-level headers claude.ai's web app normally adds via a fetch interceptor:
 
 ```js
 (async () => {
+  // Parse cookies once so per-session identity values are available.
+  const cookies = Object.fromEntries(document.cookie.split(';').map(p => {
+    const i = p.indexOf('='); if (i < 0) return [p.trim(), ''];
+    return [p.slice(0, i).trim(), p.slice(i + 1).trim()];
+  }));
+  // Same header set claude.ai's web app sends on every /api/* call.
+  const baseHeaders = {
+    'anthropic-client-platform': 'web_claude_ai',
+    'anthropic-client-version': '1.0.0',
+    'anthropic-client-sha':      '8a753cbf88e19be0f5f67efefb1b07840b6402e9',
+  };
+  if (cookies['anthropic-device-id']) baseHeaders['anthropic-device-id']     = cookies['anthropic-device-id'];
+  if (cookies['ajs_anonymous_id'])    baseHeaders['anthropic-anonymous-id']  = cookies['ajs_anonymous_id'];
+  if (cookies['activitySessionId'])   baseHeaders['x-activity-session-id']   = cookies['activitySessionId'];
+
   const orgMatch = document.cookie.match(/lastActiveOrg=(...)/i);
-  if (!orgMatch && true) {
-    return { error: 'no_org', message: '...' };
-  }
   const org = orgMatch ? orgMatch[1] : '';
   const url = "/api/organizations/{org}/...".replace('{org}', org);
   try {
-    const r = await fetch(url, { credentials: 'include', headers: { 'Accept': '*/*' } });
+    const r = await fetch(url, {
+      credentials: 'include',
+      headers: { ...baseHeaders, 'Accept': '*/*' },
+    });
     const text = await r.text();
     let body; try { body = text ? JSON.parse(text) : null; } catch { body = text; }
     return { status: r.status, statusText: r.statusText, url, body };
@@ -149,7 +164,24 @@ The returned snippet is a standalone async IIFE:
 })()
 ```
 
-`mcp__claude-in-chrome__javascript_tool` will return the value of that IIFE — `{ status, statusText, url, body }` — directly.
+`mcp__claude-in-chrome__javascript_tool` returns the value of that IIFE — `{ status, statusText, url, body }` — directly.
+
+### Via-chrome header fingerprint
+
+Bare `fetch()` inside the page bypasses claude.ai's own fetch interceptor, so application-level headers must be re-injected explicitly. The browser still attaches transport-level headers (UA, `Accept-Encoding`, `sec-ch-ua-*`, `Sec-Fetch-*`, `Origin`, `Referer`, `Cookie`) for us — those we cannot forge and don't need to.
+
+| Header | Source | Value |
+|---|---|---|
+| `anthropic-client-platform` | pinned | `web_claude_ai` |
+| `anthropic-client-version` | pinned | `1.0.0` |
+| `anthropic-client-sha` | pinned (observed 2026-05-14) | `8a753cbf88e19be0f5f67efefb1b07840b6402e9` |
+| `anthropic-device-id` | cookie `anthropic-device-id` | per-session UUID |
+| `anthropic-anonymous-id` | cookie `ajs_anonymous_id` | `claudeai.v1.<uuid>` |
+| `x-activity-session-id` | cookie `activitySessionId` | per-session UUID |
+
+`x-datadog-*` and `traceparent` are intentionally omitted — they're per-request random IDs that claude.ai's Datadog RUM SDK adds, not load-bearing for the API, and easier to skip than to forge incorrectly.
+
+Verified end-to-end: `GET /api/account_profile` and `POST /completion` both return 200 with the full header set attached.
 
 ### Caller workflow
 
@@ -185,6 +217,8 @@ If no claude.ai tab is open, use `mcp__claude-in-chrome__tabs_create_mcp` + `mcp
 | `via-chrome/conversations/36a5ab7b-…` | 200 | name, model, 38 chat_messages |
 | `via-chrome/bootstrap` | 200 | 516 KB, 10 top-level keys: `account`, `org_statsig`, `org_growthbook`, `system_prompts`, `current_user_access`, … |
 | `via-chrome` with `path: /etc/passwd` | rejected | `INVALID_REQUEST: path must start with /api/, /edge-api/ or /v1/` |
+| `via-chrome/conversations/{uuid}/completion` (write) | 200 | prompt `"Reply with exactly: PARSER_OK"` → `text: " PARSER_OK"`, 7 SSE events drained |
+| `via-chrome/account_profile` with full `baseHeaders` | 200 | All 6 `anthropic-*` headers attached on the wire |
 
 ---
 
