@@ -739,20 +739,33 @@ test('T5b — select-choice on pane with no dialog rejected (PRECONDITION_FAILED
 // auto-skipped when no display env is available (CI, headless servers).
 // ===========================================================================
 
-/** Returns true if a gnome-terminal-server is reachable from this host. */
+/**
+ * Returns true if gnome-terminal can be spawned here:
+ *   - gnome-terminal binary present, AND
+ *   - a desktop session is running (gnome-shell, kwin, sway, Xorg…)
+ *
+ * Doesn't require gnome-terminal-server to be ALREADY running — the
+ * server is dbus-activated on first `gnome-terminal` call.
+ */
 function gnomeAvailable(): boolean {
   try {
-    // Read /proc directly — `pgrep -x gnome-terminal-server` doesn't work
-    // because /proc/PID/comm truncates to 15 chars.
-    const fs = require('node:fs') as typeof import('node:fs');
+    // Probe for the CLI.
+    execFileSync('which', ['gnome-terminal'], { stdio: 'ignore', timeout: 1500 });
+  } catch { return false; }
+  // Probe /proc for any X11/Wayland compositor or gnome-shell that
+  // findDesktopEnv() would also find — that's all openGnomeTab needs.
+  const fs = require('node:fs') as typeof import('node:fs');
+  const wmNames = ['gnome-shell', 'gnome-terminal-server', 'kwin_x11', 'kwin_wayland', 'sway', 'Xorg', 'Xwayland'];
+  try {
     const dirs = fs.readdirSync('/proc');
     for (const d of dirs) {
       if (!/^\d+$/.test(d)) continue;
       let cmdline: string;
-      try { cmdline = fs.readFileSync(`/proc/${d}/cmdline`, 'utf-8'); }
-      catch { continue; }
+      try { cmdline = fs.readFileSync(`/proc/${d}/cmdline`, 'utf-8'); } catch { continue; }
       const argv0 = cmdline.split('\0')[0];
-      if (/(?:^|\/)gnome-terminal-server$/.test(argv0)) return true;
+      for (const name of wmNames) {
+        if (argv0.endsWith(`/${name}`) || argv0 === name) return true;
+      }
     }
   } catch { /* /proc unreadable */ }
   return false;
