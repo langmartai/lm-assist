@@ -234,5 +234,69 @@ export function createTerminalRoutes(_ctx: RouteContext): RouteHandler[] {
         return cc.status(name);
       }),
     },
+
+    // POST /terminal/cc/:name/interrupt — send Ctrl-C
+    {
+      method: 'POST',
+      pattern: /^\/terminal\/cc\/(?<name>[^/]+)\/interrupt$/,
+      handler: async (req) => envelope(async () => {
+        const name = validate.parseSessionName(req.params.name);
+        return await withAudit({ op: 'cc.interrupt', session: name, caller: callerFromReq(req) }, async () => {
+          await cc.interrupt(name);
+          return { interrupted: true };
+        });
+      }),
+    },
+
+    // POST /terminal/cc/:name/slash — send /cmd args
+    {
+      method: 'POST',
+      pattern: /^\/terminal\/cc\/(?<name>[^/]+)\/slash$/,
+      handler: async (req) => envelope(async () => {
+        const name = validate.parseSessionName(req.params.name);
+        const p = validate.parseSlash(req.body);
+        return await withAudit({ op: 'cc.slash', session: name, caller: callerFromReq(req), details: { cmd: p.cmd } }, async () => {
+          await cc.slash(name, p);
+          return { sent: `/${p.cmd}` };
+        });
+      }),
+    },
+
+    // POST /terminal/cc/:name/accept-dialog — Enter on default option
+    {
+      method: 'POST',
+      pattern: /^\/terminal\/cc\/(?<name>[^/]+)\/accept-dialog$/,
+      handler: async (req) => envelope(async () => {
+        const name = validate.parseSessionName(req.params.name);
+        return await withAudit({ op: 'cc.acceptDialog', session: name, caller: callerFromReq(req) }, async () => {
+          return await cc.acceptDialog(name);
+        });
+      }),
+    },
+
+    // POST /terminal/cc/:name/reject-dialog — Esc
+    {
+      method: 'POST',
+      pattern: /^\/terminal\/cc\/(?<name>[^/]+)\/reject-dialog$/,
+      handler: async (req) => envelope(async () => {
+        const name = validate.parseSessionName(req.params.name);
+        return await withAudit({ op: 'cc.rejectDialog', session: name, caller: callerFromReq(req) }, async () => {
+          return await cc.rejectDialog(name);
+        });
+      }),
+    },
+
+    // POST /terminal/cc/:name/select-choice — press digit 1..9
+    {
+      method: 'POST',
+      pattern: /^\/terminal\/cc\/(?<name>[^/]+)\/select-choice$/,
+      handler: async (req) => envelope(async () => {
+        const name = validate.parseSessionName(req.params.name);
+        const p = validate.parseSelectChoice(req.body);
+        return await withAudit({ op: 'cc.selectChoice', session: name, caller: callerFromReq(req), details: { n: p.n } }, async () => {
+          return await cc.selectChoice(name, p);
+        });
+      }),
+    },
   ];
 }

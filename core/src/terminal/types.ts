@@ -43,12 +43,43 @@ export type CCPhase =
   | 'permission'
   | 'dead';
 
+/** Interaction mode of the CC TUI. */
+export type CCMode = 'normal' | 'plan' | 'bash' | 'unknown';
+
+/** What dialog (if any) CC is currently asking about. */
+export type CCDialog = 'trust' | 'permission' | 'compact' | 'choice' | null;
+
+/** Auth state, derived from ~/.claude.json oauthAccount field (primary) or screen text (fallback). */
+export type CCAuthState = 'authenticated' | 'unauthenticated' | 'unknown';
+
 export interface CCSessionState {
   phase: CCPhase;
   /** Best-effort model name parsed from TUI footer; null if not visible. */
   model: string | null;
   /** Last screen capture used to derive the phase, kept for diff-based waits. */
   lastSnapshot: { text: string; capturedAt: number } | null;
+  /** Current interaction mode (plan/bash/normal). */
+  currentMode: CCMode;
+  /** Active dialog awaiting an answer, or null. */
+  pendingDialog: CCDialog;
+  /** Auth state of the CC binary as a whole (not per-session — CC is single-user). */
+  authState: CCAuthState;
+  /** Context usage 0–100 from `ctx: NN%` footer; null if not parseable. */
+  contextPct: number | null;
+  /** Email of the authenticated user, if any (from ~/.claude.json). */
+  authEmail: string | null;
+}
+
+export interface SlashCommandInput {
+  /** The command WITHOUT leading slash, e.g. 'clear', 'agents', 'export'. */
+  cmd: string;
+  /** Optional space-separated args, sent literally. */
+  args: string | null;
+}
+
+export interface SelectChoiceInput {
+  /** 1–9. CC's numbered menus accept the digit as a hotkey. */
+  n: number;
 }
 
 /** Persisted tab record. Stored in registry, written atomically. */

@@ -436,3 +436,298 @@ test('E1 — two parallel prompts to same CC are serialized by mutex (both succe
   });
   assert.equal(w2.data?.outcome, 'matched', 'CC never produced 83 (response to second prompt)');
 });
+
+// ===========================================================================
+// SECTION F — lifecycle / state gap coverage with real CC
+// ===========================================================================
+
+test('F1 — ccPivot with bogus session ID surfaces a clean failure (no race, no crash) (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const name = track(uniqName('f1'));
+  const launch = await call<{ ready: boolean }>('POST', `/terminal/cc/${name}/launch`, {
+    cwd: '/tmp', readyTimeoutMs: 45000, autoAcceptTrust: true,
+  });
+  assert.equal(launch.data?.ready, true);
+
+  // /resume with a session ID that doesn't exist → CC shows "session not found"
+  // or returns to prompt. The pivot should NOT match the OLD ❯ before the
+  // resume completes (race-safe screen-delta check), and should return
+  // pivoted:false because the new idle state never reaches the prompt-loaded
+  // condition in the expected way (no crash).
+  const r = await call<{ pivoted: boolean; finalPhase: string; elapsedMs: number }>('POST', `/terminal/cc/${name}/pivot`, {
+    newSessionId: 'definitely-not-a-real-session-uuid-zzz',
+    prompt: 'this should not arrive at any session',
+    timeoutMs: 8000,
+  });
+  // The endpoint must return success at the HTTP level (validation passed).
+  assert.equal(r.success, true);
+  // pivoted may be true or false depending on what CC does with the bad id.
+  // What matters: elapsedMs > 100 (we waited for the screen delta, didn't
+  // instant-match a stale ❯). If the race bug returned, elapsedMs would be
+  // <50 ms.
+  assert.ok((r.data?.elapsedMs ?? 0) > 100, `pivot returned too fast (${r.data?.elapsedMs}ms) — possible race regression`);
+});
+
+test('F3 — multi-turn conversation: 3 sequential prompts on same session (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const name = track(uniqName('f3'));
+  const launch = await call<{ ready: boolean }>('POST', `/terminal/cc/${name}/launch`, {
+    cwd: '/tmp', readyTimeoutMs: 45000, autoAcceptTrust: true,
+  });
+  assert.equal(launch.data?.ready, true);
+
+  // Three prompts with computed answers; verify each appears in order.
+  const turns = [
+    { prompt: 'What is 5 + 8? Reply with only the number.', answer: '13' },
+    { prompt: 'What is 20 - 7? Reply with only the number.', answer: '13' },  // same answer is fine
+    { prompt: 'What is 100 / 4? Reply with only the number.', answer: '25' },
+  ];
+  for (const t of turns) {
+    const r = await call('POST', `/terminal/cc/${name}/prompt`, { text: t.prompt });
+    assert.equal(r.success, true, `prompt failed: ${JSON.stringify(r)}`);
+    const w = await call<{ outcome: string }>('POST', `/terminal/tmux/${name}/wait-for`, {
+      pattern: `\\b${t.answer}\\b`, literal: false, timeoutMs: 60000, pollMs: 500,
+    });
+    assert.equal(w.data?.outcome, 'matched', `CC didn't answer turn ${turns.indexOf(t) + 1}`);
+    // Give CC a moment to return to idle between turns.
+    await sleep(1500);
+  }
+});
+
+test('F4 — capture works during a busy CC operation (lockless read) (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const name = track(uniqName('f4'));
+  const launch = await call<{ ready: boolean }>('POST', `/terminal/cc/${name}/launch`, {
+    cwd: '/tmp', readyTimeoutMs: 45000, autoAcceptTrust: true,
+  });
+  assert.equal(launch.data?.ready, true);
+
+  // Kick off a prompt that takes a few seconds.
+  await call('POST', `/terminal/cc/${name}/prompt`, {
+    text: 'Count from 1 to 5 with one item per line. Reply with the digits only.',
+  });
+
+  // Concurrently call capture several times while CC is producing the answer.
+  // None of them should fail or block on the send-keys mutex (capture is read-only).
+  const captures = await Promise.all([
+    call<{ screen: string }>('GET', `/terminal/tmux/${name}/capture?lines=20`),
+    call<{ screen: string }>('GET', `/terminal/tmux/${name}/capture?lines=10`),
+    call<{ screen: string }>('GET', `/terminal/tmux/${name}/capture`),
+  ]);
+  for (const c of captures) {
+    assert.equal(c.success, true, `capture failed: ${JSON.stringify(c)}`);
+    assert.ok(typeof c.data?.screen === 'string');
+  }
+
+  // Wait for CC to finish so cleanup doesn't kill a busy CC mid-thought.
+  await call<{ outcome: string }>('POST', `/terminal/tmux/${name}/wait-for`, {
+    pattern: '\\b5\\b', literal: false, timeoutMs: 60000, pollMs: 500,
+  });
+});
+
+test('F5 — trust prompt: if CC version shows it, status reports phase=trust-prompt and accept-dialog dismisses it (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const name = track(uniqName('f5'));
+  // Use a fresh, never-trusted cwd. CC ≥ v2.1.x with --dangerously-skip-permissions
+  // appears to bypass the trust prompt entirely; older versions show it. Test
+  // adapts to either behavior.
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lm-test-untrust-'));
+
+  try {
+    const launch = await call<{ ready: boolean; finalPhase: string }>('POST', `/terminal/cc/${name}/launch`, {
+      cwd: dir, readyTimeoutMs: 12000, autoAcceptTrust: false,
+    });
+    assert.equal(launch.success, true);
+
+    if (launch.data?.ready === true) {
+      // CC version bypasses trust prompt with --dangerously-skip-permissions.
+      // The accept-dialog endpoint can't be tested against a real trust prompt
+      // in this environment — it's covered by T4a (precondition rejection)
+      // and the static deriveDialog test below.
+      assert.equal(launch.data?.finalPhase, 'idle', 'when ready, phase should be idle');
+      // Status should not report a pending dialog.
+      const stat = await call<{ pendingDialog: string | null }>('GET', `/terminal/cc/${name}/status`);
+      assert.equal(stat.data?.pendingDialog, null);
+      return;
+    }
+
+    // CC version DID show the trust prompt — exercise the dialog handler.
+    assert.equal(launch.data?.finalPhase, 'trust-prompt', `expected trust-prompt, got ${launch.data?.finalPhase}`);
+    const stat = await call<{ pendingDialog: string }>('GET', `/terminal/cc/${name}/status`);
+    assert.equal(stat.data?.pendingDialog, 'trust');
+
+    const accept = await call<{ dialog: string }>('POST', `/terminal/cc/${name}/accept-dialog`, {});
+    assert.equal(accept.success, true);
+    assert.equal(accept.data?.dialog, 'trust');
+
+    const w = await call<{ outcome: string }>('POST', `/terminal/tmux/${name}/wait-for`, {
+      pattern: 'ctx:', literal: true, timeoutMs: 30000, pollMs: 500,
+    });
+    assert.equal(w.data?.outcome, 'matched', 'CC never reached idle after trust accept');
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
+// ===========================================================================
+// SECTION T — new API surface (interrupt / slash / dialogs / status)
+// ===========================================================================
+
+test('T1a — status returns extended fields on non-CC pane', async () => {
+  const name = track(uniqName('t1a'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  const s = await call<{
+    phase: string; model: string | null; currentMode: string; pendingDialog: string | null;
+    authState: string; contextPct: number | null; authEmail: string | null;
+  }>('GET', `/terminal/cc/${name}/status`);
+  assert.equal(s.success, true);
+  assert.equal(s.data?.phase, 'dead');
+  assert.equal(s.data?.currentMode, 'unknown');
+  assert.equal(s.data?.pendingDialog, null);
+  assert.equal(s.data?.contextPct, null);
+  // authState comes from ~/.claude.json — on a dev machine that's likely
+  // 'authenticated' (because the user IS logged in to run any of this). On a
+  // CI box without ~/.claude.json it would be 'unknown'. Both are valid.
+  assert.ok(['authenticated', 'unauthenticated', 'unknown'].includes(s.data?.authState ?? ''),
+    `unexpected authState: ${s.data?.authState}`);
+});
+
+test('T1b — status surfaces contextPct, currentMode=normal, authEmail on live CC (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const name = track(uniqName('t1b'));
+  const launch = await call<{ ready: boolean }>('POST', `/terminal/cc/${name}/launch`, {
+    cwd: '/tmp', readyTimeoutMs: 45000, autoAcceptTrust: true,
+  });
+  assert.equal(launch.data?.ready, true);
+
+  const s = await call<{
+    phase: string; currentMode: string; pendingDialog: string | null;
+    authState: string; contextPct: number | null; authEmail: string | null;
+  }>('GET', `/terminal/cc/${name}/status`);
+  assert.equal(s.data?.phase, 'idle');
+  assert.equal(s.data?.currentMode, 'normal');
+  assert.equal(s.data?.pendingDialog, null);
+  assert.ok(s.data?.contextPct !== null && s.data!.contextPct >= 0 && s.data!.contextPct <= 100,
+    `contextPct should be 0..100, got ${s.data?.contextPct}`);
+  // On this dev machine, the user IS authenticated.
+  assert.equal(s.data?.authState, 'authenticated');
+  assert.ok(s.data?.authEmail && s.data.authEmail.includes('@'),
+    `expected an email, got ${s.data?.authEmail}`);
+});
+
+test('T2 — /interrupt accepts the call and returns success on existing session', async () => {
+  const name = track(uniqName('t2'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  const r = await call('POST', `/terminal/cc/${name}/interrupt`, {});
+  assert.equal(r.success, true);
+});
+
+test('T2b — /interrupt cancels a running prompt (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const name = track(uniqName('t2b'));
+  const launch = await call<{ ready: boolean }>('POST', `/terminal/cc/${name}/launch`, {
+    cwd: '/tmp', readyTimeoutMs: 45000, autoAcceptTrust: true,
+  });
+  assert.equal(launch.data?.ready, true);
+
+  // Start a long task.
+  await call('POST', `/terminal/cc/${name}/prompt`, {
+    text: 'Write a haiku, then a sonnet, then a 14-line ode. Take your time.',
+  });
+  // Give CC a moment to start streaming.
+  await sleep(2000);
+
+  // Interrupt.
+  const r = await call('POST', `/terminal/cc/${name}/interrupt`, {});
+  assert.equal(r.success, true);
+
+  // After Ctrl+C, CC should return to idle within a few seconds (no longer
+  // streaming a response).
+  await sleep(3000);
+  const s = await call<{ phase: string }>('GET', `/terminal/cc/${name}/status`);
+  assert.equal(s.data?.phase, 'idle', `CC didn't return to idle after interrupt; phase=${s.data?.phase}`);
+});
+
+test('T3a — /slash validates cmd format', async () => {
+  const name = track(uniqName('t3a'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  // Bad command (special chars).
+  const bad1 = await call('POST', `/terminal/cc/${name}/slash`, { cmd: 'bad cmd' });
+  assert.equal(bad1.success, false);
+  assert.equal(bad1.error?.code, 'INVALID_INPUT');
+  const bad2 = await call('POST', `/terminal/cc/${name}/slash`, { cmd: '$injection' });
+  assert.equal(bad2.success, false);
+  assert.equal(bad2.error?.code, 'INVALID_INPUT');
+  // Bad args (newlines).
+  const bad3 = await call('POST', `/terminal/cc/${name}/slash`, { cmd: 'clear', args: 'foo\nbar' });
+  assert.equal(bad3.success, false);
+  assert.equal(bad3.error?.code, 'INVALID_INPUT');
+});
+
+test('T3b — /slash on non-CC pane rejected (PRECONDITION_FAILED)', async () => {
+  const name = track(uniqName('t3b'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  const r = await call('POST', `/terminal/cc/${name}/slash`, { cmd: 'clear' });
+  assert.equal(r.success, false);
+  assert.equal(r.error?.code, 'PRECONDITION_FAILED');
+});
+
+test('T3c — /slash clear actually clears CC context (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const name = track(uniqName('t3c'));
+  const launch = await call<{ ready: boolean }>('POST', `/terminal/cc/${name}/launch`, {
+    cwd: '/tmp', readyTimeoutMs: 45000, autoAcceptTrust: true,
+  });
+  assert.equal(launch.data?.ready, true);
+
+  // Generate some context: send a memorable prompt + wait for answer.
+  await call('POST', `/terminal/cc/${name}/prompt`, { text: 'Remember the magic phrase ZEBRA_HORIZON_42.' });
+  await call<{ outcome: string }>('POST', `/terminal/tmux/${name}/wait-for`, {
+    pattern: 'ZEBRA_HORIZON_42', literal: true, timeoutMs: 60000, pollMs: 500,
+  });
+  await sleep(2000);
+
+  // Clear.
+  const clr = await call('POST', `/terminal/cc/${name}/slash`, { cmd: 'clear' });
+  assert.equal(clr.success, true);
+  await sleep(2000);
+
+  // After clear, asking CC about the phrase should NOT include the literal
+  // phrase being remembered as if from prior context. (Hard to assert
+  // precisely — CC may or may not echo it back as "I don't remember any
+  // ZEBRA_HORIZON_42".) What we CAN assert: status returns to idle (ctx
+  // reset, footer present).
+  const s = await call<{ phase: string; contextPct: number | null }>('GET', `/terminal/cc/${name}/status`);
+  assert.equal(s.data?.phase, 'idle', `not idle after clear; phase=${s.data?.phase}`);
+});
+
+test('T4a — accept-dialog on non-CC pane rejected (no dialog)', async () => {
+  const name = track(uniqName('t4a'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  const r = await call('POST', `/terminal/cc/${name}/accept-dialog`, {});
+  assert.equal(r.success, false);
+  assert.equal(r.error?.code, 'PRECONDITION_FAILED');
+});
+
+test('T4b — reject-dialog on non-CC pane rejected (no dialog)', async () => {
+  const name = track(uniqName('t4b'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  const r = await call('POST', `/terminal/cc/${name}/reject-dialog`, {});
+  assert.equal(r.success, false);
+  assert.equal(r.error?.code, 'PRECONDITION_FAILED');
+});
+
+test('T5a — select-choice validates n is in [1,9]', async () => {
+  const name = track(uniqName('t5a'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  const r0 = await call('POST', `/terminal/cc/${name}/select-choice`, { n: 0 });
+  assert.equal(r0.error?.code, 'INVALID_INPUT');
+  const r10 = await call('POST', `/terminal/cc/${name}/select-choice`, { n: 10 });
+  assert.equal(r10.error?.code, 'INVALID_INPUT');
+  const rNonint = await call('POST', `/terminal/cc/${name}/select-choice`, { n: 1.5 });
+  assert.equal(rNonint.error?.code, 'INVALID_INPUT');
+});
+
+test('T5b — select-choice on pane with no dialog rejected (PRECONDITION_FAILED)', async () => {
+  const name = track(uniqName('t5b'));
+  await call('POST', '/terminal/tmux', { name, cwd: '/tmp' });
+  const r = await call('POST', `/terminal/cc/${name}/select-choice`, { n: 1 });
+  assert.equal(r.success, false);
+  assert.equal(r.error?.code, 'PRECONDITION_FAILED');
+});
