@@ -246,14 +246,22 @@ async function openTabInExistingWindow(
 
   const setupLines: string[] = [];
   if (groupedTitle) {
-    // Set the tab title persistently. We have to handle three layers that
-    // would otherwise clobber it on every prompt redraw:
-    //   - Ubuntu's default PROMPT_COMMAND ("\033]0;\u@\h:\w\a")
-    //   - VTE's __vte_prompt_command (added via /etc/profile.d/vte*.sh)
-    //   - bash-preexec's precmd_functions array (if user sources it)
-    // The reliable cross-config approach: define a title-setter function,
-    // append to precmd_functions if it exists, ALSO override PROMPT_COMMAND
-    // (covers shells without bash-preexec).
+    // Set the gnome-terminal tab title via OSC 0 from PROMPT_COMMAND.
+    //
+    // KNOWN LIMITATION (verified on GNOME Terminal 3.44 / Ubuntu 22.04):
+    // OSC 0 dynamic-title is not applied by gnome-terminal on this build
+    // — confirmed even from a brand-new untouched window with no --title
+    // arg, both BEL (`\\007`) and ST (`\\033\\`) terminators tested. The
+    // function fires (marker file confirms) and printf emits the bytes
+    // (verified with `od -c`), but the tab title stays at "Terminal".
+    //
+    // For TMUX-attached tabs the title works correctly because tmux owns
+    // the title and sends its own OSC sequences from inside the pane.
+    //
+    // Workaround for callers who need a visible tab label: use
+    // `tmuxSession` instead of plain `command`. Real fix would be to call
+    // gnome-terminal-server's D-Bus `SetTitle` method on the Terminal
+    // object that owns the new tab — deferred.
     const titleQuoted = groupedTitle.replace(/'/g, `'\\''`);
     setupLines.push(`__lm_assist_set_title() { printf '\\033]0;${titleQuoted}\\007'; }`);
     setupLines.push(`PROMPT_COMMAND='__lm_assist_set_title'`);

@@ -78,6 +78,12 @@ file lock, and mtime-based reload.
   `meta.tabPid`. `DELETE` sends `SIGHUP` to that PID (interactive bash
   ignores `SIGTERM`; `SIGHUP` simulates the controlling terminal going
   away, so bash exits and gnome-terminal closes the empty pane).
+- **Per-tab title limitation** on gnome-terminal 3.44 (Ubuntu 22.04):
+  OSC 0 dynamic title is not applied for plain-bash tabs even though
+  the helper script sends it correctly (verified at the byte level).
+  TMUX-attached tabs work because tmux owns the title from inside the
+  pane. Workaround: use `tmuxSession` instead of plain `command` if
+  you need a visible per-tab label.
 
 ### wt-ssh tab specifics (Windows)
 
