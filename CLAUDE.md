@@ -295,6 +295,49 @@ Server-sent events with `execution_update` events. Omit `executionId` for all ev
 | POST | `/hub/disconnect` | Disconnect from Hub |
 | PUT | `/hub/config` | Update Hub config (persists to .env) |
 
+### Claude Code OAuth (3 endpoints)
+
+Proxies `api.anthropic.com` endpoints that use Claude Code's OAuth token (from `~/.claude/.credentials.json`). Outbound headers match the real `claude-code/<version>` fingerprint observed in lm-proxy captures.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/claude-code/oauth-status` | Token presence + expiry (no secrets) |
+| GET | `/claude-code/usage` | Live `Utilization` payload (rate-limit windows) |
+| GET | `/claude-code/profile` | Account / org / application info |
+
+### claude.ai Web Integration (15 endpoints)
+
+**lm-assist can introspect and operate on the user's claude.ai web account** — list conversations, read full message trees, list projects, read memory and artifacts, AND send new messages to existing conversations. Two parallel families:
+
+| Path | Auth | Best for |
+|---|---|---|
+| `/claude-ai/...` | `~/.claude/claudeai-session.json` (cookie file) | Headless callers (cron, dashboards, scheduled jobs) |
+| `/claude-ai/via-chrome/...` | Real Chrome via MCP | Interactive agents driven by Claude Code with Chrome MCP loaded |
+
+**ALWAYS pre-flight with the health check** before driving these routes. Both families share a stable `reason` vocabulary (`ok`, `session_not_configured`, `session_expired`, `cloudflare_blocked`, `wrong_tab`, `not_logged_in`, `network_error`, `upstream_error`).
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/claude-ai/healthz` | One-glance verdict (file status + live `/api/account_profile` probe) |
+| GET | `/claude-ai/session-status[?probe=true]` | File status; optional active probe |
+| POST | `/claude-ai/via-chrome/health-check` | Snippet the agent runs in a tab to verify it's on `claude.ai`, logged in, and reachable |
+| GET | `/claude-ai/conversations` | List conversations |
+| GET | `/claude-ai/conversations/:uuid` | Read full message tree of one conversation |
+| GET | `/claude-ai/projects` | List Projects |
+| GET | `/claude-ai/memory` | Claude's persistent memory for the org |
+| GET | `/claude-ai/bootstrap` | High-leverage page-load: account + flags + recent conversations |
+| GET | `/claude-ai/artifacts/:uuid/versions` | Artifact version history |
+| POST | `/claude-ai/conversations/:uuid/completion` | **WRITE** — send a message, drain SSE, return aggregated text + events |
+| POST | `/claude-ai/via-chrome` | Generic snippet generator (path whitelist: `/api/`, `/edge-api/`, `/v1/`) |
+| POST | `/claude-ai/via-chrome/{conversations,projects,memory,bootstrap,artifacts/:uuid/versions}` | Convenience snippet generators |
+| POST | `/claude-ai/via-chrome/conversations/:uuid/completion` | **WRITE** snippet |
+
+**Header fingerprint** — both paths re-inject the application-level headers claude.ai's web app normally adds (`anthropic-client-platform`, `anthropic-client-version`, `anthropic-client-sha`, `anthropic-device-id`, `anthropic-anonymous-id`, `x-activity-session-id`). Identity values come from non-HttpOnly cookies. `x-datadog-*` and `traceparent` are intentionally omitted (random per request, not load-bearing).
+
+**Full integration guide:** [`docs/claude-ai-routes.md`](./docs/claude-ai-routes.md) — covers cookie capture workflow, the via-chrome agent loop pattern, the SSE response shape, the reason-code table, and verified end-to-end test results.
+
+**Endpoint inventory** (independent of lm-assist's wrapper): [`lm-claude-endpoint`](https://github.com/langmartai/lm-claude-endpoint).
+
 ### SSE Streams
 | Method | Endpoint | Description |
 |--------|----------|-------------|
