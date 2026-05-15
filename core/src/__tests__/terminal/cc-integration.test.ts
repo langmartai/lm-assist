@@ -22,6 +22,7 @@
 import { test, before, after, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
+import { buildLaunchFlags } from '../../runners/tmux-runner';
 
 const API = process.env.TEST_API ?? 'http://localhost:3201';
 const LIVE_CC = process.env.RUN_LIVE_CC === '1';
@@ -968,6 +969,118 @@ test('R6 — Tmux runner: launch failure (bad cwd) returned as failure response,
   assert.ok(r.data?.error && r.data.error.length > 0, `expected error message, got: ${JSON.stringify(r.data)}`);
   assert.ok(r.data!.error!.includes('cwd') || r.data!.error!.includes('INVALID_INPUT') || r.data!.error!.includes('does not exist'),
     `error should mention cwd issue, got: ${r.data?.error}`);
+});
+
+// --- R7–R10: SDK-parity gaps (background+abort, tool/effort passthrough) ---
+
+interface BackgroundResp { executionId: string; sessionId?: string; status: string; statusUrl: string; resultUrl: string; }
+interface ExecResult { executionId: string; completed: boolean; result?: AgentResponse; error?: string; }
+type FlagReq = Parameters<typeof buildLaunchFlags>[0];
+
+test('R7 — Tmux runner background: returns executionId immediately, pollable to completion (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const sess = uniqName('r7');
+  track(sess);
+  const r = await call<BackgroundResp>('POST', '/agent/execute', {
+    prompt: 'Reply with exactly: BG_R7_OK',
+    cwd: '/tmp', runner: 'tmux', tmuxSession: sess, background: true,
+  });
+  assert.equal(r.success, true);
+  assert.equal(r.data?.status, 'started', 'background tmux returns started immediately');
+  assert.ok(r.data?.executionId && r.data.executionId.length > 0);
+  const execId = r.data!.executionId;
+
+  // Poll status until it leaves the running state (cap ~120s).
+  let isRunning = true;
+  for (let i = 0; i < 120; i++) {
+    const s = await call<{ status: string; isRunning: boolean }>('GET', `/agent/execution/${encodeURIComponent(execId)}`);
+    if (s.data && s.data.isRunning === false) { isRunning = false; break; }
+    await sleep(1000);
+  }
+  assert.equal(isRunning, false, 'execution should leave the running state');
+
+  // Result must be the real AgentExecuteResponse with the tmux additive
+  // fields preserved (NOT stripped by convertResult).
+  const res = await call<ExecResult>('GET', `/agent/execution/${encodeURIComponent(execId)}/result?wait=true&timeout=120000`);
+  assert.equal(res.data?.completed, true);
+  assert.equal(res.data?.result?.success, true, `bg tmux error: ${res.data?.result?.error ?? res.data?.error}`);
+  assert.equal(res.data?.result?.runner, 'tmux', 'runner field must survive the background round-trip');
+  assert.equal(res.data?.result?.tmuxSession, sess, 'tmuxSession field must survive the background round-trip');
+  assert.ok(UUID_RE.test(res.data?.result?.sessionId ?? ''), 'sessionId is the CC UUID');
+  assert.ok(res.data?.result?.result.includes('BG_R7_OK'), `expected BG_R7_OK, got: ${res.data?.result?.result}`);
+});
+
+test('R8 — Tmux runner background: abort interrupts the in-flight run, session survives (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const sess = uniqName('r8');
+  track(sess);
+  const r = await call<BackgroundResp>('POST', '/agent/execute', {
+    prompt: 'Count slowly from 1 to 40, one number per line, pausing to think between each.',
+    cwd: '/tmp', runner: 'tmux', tmuxSession: sess, background: true,
+  });
+  assert.equal(r.data?.status, 'started');
+  const execId = r.data!.executionId;
+
+  // Let CC actually start processing, then abort.
+  await sleep(4000);
+  const ab = await call<{ success: boolean }>('POST', `/agent/execution/${encodeURIComponent(execId)}/abort`);
+  assert.equal(ab.success, true, `abort should succeed: ${JSON.stringify(ab)}`);
+  assert.equal(ab.data?.success, true);
+
+  // isRunning should go false within a few seconds (Ctrl+C settles the
+  // TUI; the runner's stable-screen wait returns). The abort path also
+  // drops the entry from tracking → NOT_FOUND is an acceptable terminal.
+  let stillRunning = true;
+  for (let i = 0; i < 30; i++) {
+    const s = await call<{ isRunning: boolean }>('GET', `/agent/execution/${encodeURIComponent(execId)}`);
+    if (!s.success || s.data?.isRunning === false) { stillRunning = false; break; }
+    await sleep(1000);
+  }
+  assert.equal(stillRunning, false, 'aborted background tmux run should stop (or be dropped from tracking)');
+
+  // Abort interrupts the PROMPT, not the CC session — the warm session
+  // must still accept a fresh prompt.
+  const follow = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: 'Reply with exactly: ALIVE_AFTER_ABORT',
+    cwd: '/tmp', runner: 'tmux', tmuxSession: sess,
+  });
+  assert.equal(follow.data?.success, true, `session should survive abort: ${follow.data?.error}`);
+  assert.ok(follow.data?.result.includes('ALIVE_AFTER_ABORT'));
+});
+
+test('R9 — buildLaunchFlags maps allowed/disallowed tools to CC CLI flags (pure)', () => {
+  const flags = buildLaunchFlags({
+    prompt: 'x', allowedTools: ['Read', 'Edit'], disallowedTools: ['Bash'],
+  } as FlagReq);
+  const i = flags.indexOf('--allowedTools');
+  assert.ok(i >= 0, `--allowedTools missing in ${JSON.stringify(flags)}`);
+  assert.equal(flags[i + 1], 'Read');
+  assert.equal(flags[i + 2], 'Edit');
+  const d = flags.indexOf('--disallowedTools');
+  assert.ok(d >= 0, `--disallowedTools missing in ${JSON.stringify(flags)}`);
+  assert.equal(flags[d + 1], 'Bash');
+  // model is NOT a launch flag here — cc.launch emits --model itself.
+  assert.equal(flags.includes('--model'), false);
+  // No tools → empty.
+  assert.deepEqual(buildLaunchFlags({ prompt: 'x' } as FlagReq), []);
+});
+
+test('R10 — buildLaunchFlags maps effort + extendedThinking to --effort (pure)', () => {
+  // Explicit effort.
+  const a = buildLaunchFlags({ prompt: 'x', outputConfig: { effort: 'medium' } } as FlagReq);
+  const ai = a.indexOf('--effort');
+  assert.ok(ai >= 0 && a[ai + 1] === 'medium', `expected --effort medium, got ${JSON.stringify(a)}`);
+
+  // extendedThinking.enabled with no explicit effort ⇒ --effort high.
+  const b = buildLaunchFlags({ prompt: 'x', extendedThinking: { enabled: true, type: 'adaptive' } } as FlagReq);
+  const bi = b.indexOf('--effort');
+  assert.ok(bi >= 0 && b[bi + 1] === 'high', `expected --effort high, got ${JSON.stringify(b)}`);
+
+  // Explicit effort beats the thinking-implied default.
+  const c = buildLaunchFlags({ prompt: 'x', outputConfig: { effort: 'low' }, extendedThinking: { enabled: true } } as FlagReq);
+  const ci = c.indexOf('--effort');
+  assert.ok(ci >= 0 && c[ci + 1] === 'low', `explicit effort should win, got ${JSON.stringify(c)}`);
+
+  // Thinking disabled, no effort ⇒ no --effort.
+  assert.equal(buildLaunchFlags({ prompt: 'x', extendedThinking: { enabled: false } } as FlagReq).includes('--effort'), false);
 });
 
 test('H7 — createWindow with command runs it in the new window (visible via send-keys)', async () => {

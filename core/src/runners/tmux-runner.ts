@@ -135,6 +135,45 @@ function extractResponse(_beforeText: string, afterText: string, _prompt: string
   return block.join('\n').trim();
 }
 
+// ---------- Launch-flag mapping (SDK parity) -----------------------------
+
+/**
+ * Map SDK-parity request fields onto Claude Code CLI flags for the
+ * interactive TUI launch. Flag names mirror detached-runner.ts exactly
+ * (the canonical SDK→CLI mapping) so tmux-runner behaviour matches the
+ * SDK runner:
+ *
+ *   allowedTools          → --allowedTools <t> <t> ...
+ *   disallowedTools       → --disallowedTools <t> <t> ...
+ *   outputConfig.effort   → --effort <level>
+ *   extendedThinking.enabled (no explicit effort) → --effort high
+ *
+ * `model` is intentionally NOT here — cc.launch takes it as a dedicated
+ * option and emits `--model` itself (see buildLaunchCmd in cc.ts), so
+ * adding it here would double the flag.
+ *
+ * The interactive `claude` binary accepts these as global session-config
+ * flags (the same way cc.ts already passes `--model` to the TUI launch).
+ */
+export function buildLaunchFlags(request: AgentExecuteRequest): string[] {
+  const flags: string[] = [];
+  if (request.allowedTools && request.allowedTools.length > 0) {
+    flags.push('--allowedTools', ...request.allowedTools);
+  }
+  if (request.disallowedTools && request.disallowedTools.length > 0) {
+    flags.push('--disallowedTools', ...request.disallowedTools);
+  }
+  // Effort is the only TUI lever for thinking depth. An explicit
+  // outputConfig.effort wins; otherwise extendedThinking.enabled implies
+  // 'high' (adaptive/enabled thinking ≈ high effort on Opus 4.6).
+  const effort = request.outputConfig?.effort
+    ?? (request.extendedThinking?.enabled ? 'high' : undefined);
+  if (effort) {
+    flags.push('--effort', effort);
+  }
+  return flags;
+}
+
 // ---------- Public: execute ----------------------------------------------
 
 export interface TmuxRunnerOptions {
@@ -176,7 +215,7 @@ export function createTmuxRunner(opts: TmuxRunnerOptions = {}) {
         const launchResult = await cc.launch(sessionName, {
           cwd,
           model: request.model ? String(request.model) : null,
-          extraFlags: [],
+          extraFlags: buildLaunchFlags(request),
           skipPermissions: true,
           cols: 220,
           rows: 60,

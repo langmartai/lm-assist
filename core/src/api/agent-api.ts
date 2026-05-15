@@ -25,6 +25,7 @@ import type { ClaudeSdkRunner, SdkExecuteOptions, SdkExecuteResult, SdkExecution
 import type { AgentSessionStore } from '../agent-session-store';
 import { spawnDetached, recoverExecutions, cleanupOldExecutions } from '../detached-runner';
 import { createTmuxRunner } from '../runners/tmux-runner';
+import * as cc from '../terminal/cc';
 
 export interface AgentApiDeps {
   sdkRunner: ClaudeSdkRunner;
@@ -257,6 +258,86 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
     return null;
   };
 
+  /**
+   * Background execution for the tmux runner.
+   *
+   * The tmux runner has no detached CLI process (it drives a long-lived
+   * CC TUI in this process), so `spawnDetached` doesn't apply. Instead we
+   * kick off `tmuxRunner.execute()` unawaited and wrap it in a synthetic
+   * `SdkExecutionHandle` so the existing poll/list/abort/result machinery
+   * works unchanged. The work runs in-process but returns to the caller
+   * immediately (non-blocking), matching the SDK background contract.
+   *
+   * abort() is a cooperative cancel: Ctrl+C into the CC TUI. The runner's
+   * stable-screen wait then settles and returns a (partial) response.
+   */
+  const startTmuxBackground = (
+    request: AgentExecuteRequest,
+    executionId: string,
+  ): AgentBackgroundResponse => {
+    // Resolve the tmux session name up front (mirror tmux-runner's own
+    // derivation) and pin it onto the request so abort() targets exactly
+    // the session the runner uses.
+    const sessionName = request.tmuxSession
+      ?? `agent-${executionId.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 64)}`;
+    const pinned: AgentExecuteRequest = { ...request, tmuxSession: sessionName };
+
+    let running = true;
+    const execP = tmuxRunner.execute(pinned, executionId);
+
+    const handle: SdkExecutionHandle = {
+      executionId,
+      sessionId: '',
+      sessionReady: execP.then(r => r.sessionId).catch(() => ''),
+      // Nothing on the tmux path awaits this (completion is tracked below
+      // and getExecutionResult short-circuits on the stored result), but
+      // the type contract requires a Promise<SdkExecuteResult>.
+      result: execP.then(r => r as unknown as SdkExecuteResult),
+      abort: () => {
+        running = false;
+        cc.interrupt(sessionName).catch(() => { /* best-effort */ });
+      },
+      isRunning: () => running,
+    };
+
+    backgroundExecutions.set(executionId, {
+      handle,
+      request: pinned,
+      startedAt: new Date(),
+    });
+
+    execP.then(result => {
+      running = false;
+      const entry = backgroundExecutions.get(executionId);
+      if (entry) {
+        backgroundExecutions.set(executionId, {
+          ...entry,
+          completedAt: new Date(),
+          result,
+          handle: { ...entry.handle, sessionId: result.sessionId },
+        });
+      }
+    }).catch(err => {
+      running = false;
+      const entry = backgroundExecutions.get(executionId);
+      if (entry) {
+        backgroundExecutions.set(executionId, {
+          ...entry,
+          completedAt: new Date(),
+          error: String(err),
+        });
+      }
+    });
+
+    return {
+      executionId,
+      sessionId: undefined,
+      status: 'started',
+      statusUrl: `/agent/execution/${executionId}`,
+      resultUrl: `/agent/execution/${executionId}/result`,
+    };
+  };
+
   return {
     execute: async (request: AgentExecuteRequest) => {
       const start = Date.now();
@@ -265,6 +346,13 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
       try {
         // Convert request to SDK options
         const sdkOptions = convertToSdkOptions(request, executionId, projectPath);
+
+        // Background + tmux runner — handled in-process via the warm-CC
+        // runner (no detached CLI). Must intercept BEFORE the SDK
+        // detached path below, which assumes an SDK CLI process.
+        if (request.background && request.runner === 'tmux') {
+          return startTmuxBackground(request, executionId);
+        }
 
         // Handle background execution — use detached CLI process
         // so execution survives lm-assist restarts
@@ -524,6 +612,48 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
           executionId,
           completed: false,
         };
+      }
+
+      // Already finished — return the stored result/error verbatim.
+      // tmux entries store the real AgentExecuteResponse (with the
+      // additive tmuxSession/runner fields), so don't re-derive it.
+      if (entry.result) {
+        return { executionId, completed: true, result: entry.result };
+      }
+      if (entry.error) {
+        return { executionId, completed: true, error: entry.error };
+      }
+
+      // tmux runner, still in flight: handle.result already resolves to
+      // an AgentExecuteResponse — await it directly and skip
+      // convertResult so the tmux-only fields aren't stripped.
+      if ((entry.request as AgentExecuteRequest).runner === 'tmux') {
+        try {
+          let rp = entry.handle.result as unknown as Promise<AgentExecuteResponse>;
+          if (timeoutMs) {
+            const t = new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error('Timeout waiting for execution result')), timeoutMs);
+            });
+            rp = Promise.race([rp, t]);
+          }
+          const resp = await rp;
+          backgroundExecutions.set(executionId, {
+            ...entry,
+            completedAt: new Date(),
+            result: resp,
+          });
+          return { executionId, completed: true, result: resp };
+        } catch (err) {
+          const msg = String(err);
+          if (!entry.completedAt) {
+            backgroundExecutions.set(executionId, {
+              ...entry,
+              completedAt: new Date(),
+              error: msg,
+            });
+          }
+          return { executionId, completed: true, error: msg };
+        }
       }
 
       // Wait for completion with optional timeout
