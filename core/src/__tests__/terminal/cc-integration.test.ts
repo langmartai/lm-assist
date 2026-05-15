@@ -22,8 +22,8 @@
 import { test, before, after, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
-import { buildLaunchFlags } from '../../runners/tmux-runner';
-import { extractLastTurnFromJsonl } from '../../runners/cc-transcript';
+import { buildLaunchFlags, classifyNoTurn } from '../../runners/tmux-runner';
+import { extractLastTurnFromJsonl, countUserPrompts } from '../../runners/cc-transcript';
 
 const API = process.env.TEST_API ?? 'http://localhost:3201';
 const LIVE_CC = process.env.RUN_LIVE_CC === '1';
@@ -1162,6 +1162,67 @@ test('R13 — extractLastTurnFromJsonl: last turn only, full text, thinking/tool
     JSON.stringify({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'only thinking' }] } }),
   ]);
   assert.equal(none.text, '');
+});
+
+// --- R14–R16: freshness gate (warm staleness) + blocked-state surfacing ---
+
+test('R14 — Tmux runner warm: 2nd prompt returns the 2ND answer, not the previous one (freshness gate) (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const sess = uniqName('r14');
+  track(sess);
+  const r1 = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: 'Reply with exactly: APPLE_47', cwd: '/tmp', runner: 'tmux', tmuxSession: sess,
+  });
+  assert.equal(r1.data?.success, true, `r1 err: ${r1.data?.error}`);
+  assert.ok((r1.data?.result ?? '').includes('APPLE_47'), `r1 should be APPLE_47, got: ${r1.data?.result}`);
+
+  const r2 = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: 'Reply with exactly: BANANA_88', cwd: '/tmp', runner: 'tmux', tmuxSession: sess,
+  });
+  assert.equal(r2.data?.success, true, `r2 err: ${r2.data?.error}`);
+  // The bug this guards: without the freshness gate the 2nd call returns
+  // the PREVIOUS answer (APPLE_47) because BANANA_88's turn isn't flushed
+  // when the screen first goes stable.
+  assert.ok((r2.data?.result ?? '').includes('BANANA_88'), `2nd call must return the 2nd answer, got: ${r2.data?.result}`);
+  assert.ok(!(r2.data?.result ?? '').includes('APPLE_47'), `stale previous answer leaked into 2nd call: ${r2.data?.result}`);
+  assert.equal(r2.data?.sessionId, r1.data?.sessionId, 'same warm CC conversation');
+});
+
+test('R15 — countUserPrompts counts only real string-content user prompts (pure)', () => {
+  const lines = [
+    JSON.stringify({ type: 'user', message: { content: 'first prompt' } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'a' }] } }),
+    JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result' }] } }), // not a prompt
+    JSON.stringify({ type: 'user', message: { content: [{ type: 'text' }] } }),         // not a prompt (array)
+    '',                                                                                 // tolerated
+    'garbage not json',                                                                 // tolerated
+    JSON.stringify({ type: 'user', message: { content: 'second prompt' } }),
+    JSON.stringify({ type: 'system', subtype: 'turn_duration' }),
+  ];
+  assert.equal(countUserPrompts(lines), 2);
+  assert.equal(countUserPrompts([]), 0);
+  // empty-string content is not a real prompt
+  assert.equal(countUserPrompts([JSON.stringify({ type: 'user', message: { content: '' } })]), 0);
+});
+
+test('R16 — classifyNoTurn surfaces blocked/dead, else falls back to scrape (pure)', () => {
+  assert.equal(classifyNoTurn({ phase: 'permission', pendingDialog: null }, 's').kind, 'blocked');
+  assert.equal(classifyNoTurn({ phase: 'trust-prompt', pendingDialog: null }, 's').kind, 'blocked');
+  assert.equal(classifyNoTurn({ phase: 'plan-mode', pendingDialog: null }, 's').kind, 'blocked');
+  // A dialog is authoritative even if the phase still looks idle.
+  assert.equal(classifyNoTurn({ phase: 'idle', pendingDialog: 'choice' }, 's').kind, 'blocked');
+
+  const dead = classifyNoTurn({ phase: 'dead', pendingDialog: null }, 'sess9');
+  assert.equal(dead.kind, 'dead');
+  assert.ok(dead.kind === 'dead' && dead.message.includes('sess9'));
+
+  // Genuine "no completed turn but not blocked" → screen-scrape fallback.
+  assert.equal(classifyNoTurn({ phase: 'idle', pendingDialog: null }, 's').kind, 'scrape');
+  assert.equal(classifyNoTurn(null, 's').kind, 'scrape');
+
+  // Blocked message must point the caller at the interactive endpoints.
+  const b = classifyNoTurn({ phase: 'permission', pendingDialog: 'permission' }, 'mysess');
+  assert.ok(b.kind === 'blocked' && b.message.includes('/terminal/cc/mysess/'),
+    `blocked message should reference the cc endpoints`);
 });
 
 test('H7 — createWindow with command runs it in the new window (visible via send-keys)', async () => {

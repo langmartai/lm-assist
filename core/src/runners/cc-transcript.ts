@@ -107,22 +107,63 @@ export function extractLastTurnFromJsonl(lines: string[]): TranscriptTurn {
 }
 
 /**
+ * Pure: count the real (string-content) user prompts in the transcript.
+ * This is the freshness yardstick — the number grows by exactly one each
+ * time CC records a typed prompt, so a caller that knows the pre-prompt
+ * count can tell whether THEIR prompt has been written yet (vs. seeing a
+ * stale previous turn).
+ */
+export function countUserPrompts(lines: string[]): number {
+  let n = 0;
+  for (const ln of lines) {
+    const s = ln.trim();
+    if (!s) continue;
+    let rec: JsonlRecord;
+    try { rec = JSON.parse(s) as JsonlRecord; } catch { continue; }
+    if (isUserPrompt(rec)) n++;
+  }
+  return n;
+}
+
+/**
+ * IO helper: how many user prompts the on-disk transcript for `sessionId`
+ * (project keyed by `cwd`) currently has. Returns 0 if the file can't be
+ * located/read (e.g. cold session — no transcript yet), which makes the
+ * freshness gate degrade safely to "require at least one prompt".
+ */
+export function countUserPromptsInTranscript(sessionId: string, cwd: string): number {
+  try {
+    const file = new SessionReader().getSessionFilePath(sessionId, cwd);
+    return countUserPrompts(fs.readFileSync(file, 'utf-8').split('\n'));
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Locate and read CC's transcript for `sessionId` (project keyed by
  * `cwd`) and return its last assistant turn. Retries briefly to absorb
  * the small lag between the TUI finishing a turn on screen and the JSONL
  * flush hitting disk.
  *
- * Returns null when the transcript can't be located/read, or has no
+ * FRESHNESS GATE: a turn is only accepted once the transcript holds at
+ * least `minUserPrompts` real user prompts AND has assistant text after
+ * the last one. The caller passes (pre-prompt prompt count + 1), so a
+ * warm session can never return the PREVIOUS turn's answer just because
+ * the new turn hasn't flushed yet.
+ *
+ * Returns null when the transcript can't be located/read, or has no fresh
  * assistant text after the retry budget — the caller should fall back to
- * screen extraction in that case.
+ * screen extraction (or blocked-state surfacing) in that case.
  */
 export async function readLastAssistantTurn(
   sessionId: string,
   cwd: string,
-  opts: { retries?: number; retryDelayMs?: number } = {},
+  opts: { retries?: number; retryDelayMs?: number; minUserPrompts?: number } = {},
 ): Promise<TranscriptTurn | null> {
   const retries = opts.retries ?? 16;
   const delay = opts.retryDelayMs ?? 250;
+  const minUserPrompts = opts.minUserPrompts ?? 1;
 
   let file: string;
   try {
@@ -133,9 +174,12 @@ export async function readLastAssistantTurn(
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const raw = fs.readFileSync(file, 'utf-8');
-      const turn = extractLastTurnFromJsonl(raw.split('\n'));
-      if (turn.text.length > 0) return turn;
+      const lines = fs.readFileSync(file, 'utf-8').split('\n');
+      // Freshness: OUR prompt must be on disk before we trust a turn.
+      if (countUserPrompts(lines) >= minUserPrompts) {
+        const turn = extractLastTurnFromJsonl(lines);
+        if (turn.text.length > 0) return turn;
+      }
     } catch { /* not flushed yet / mid-write — retry */ }
     if (attempt < retries) await new Promise((r) => setTimeout(r, delay));
   }

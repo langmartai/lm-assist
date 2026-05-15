@@ -17,7 +17,7 @@
 import * as cc from '../terminal/cc';
 import * as tmux from '../terminal/tmux';
 import * as inspector from '../terminal/inspector';
-import { readLastAssistantTurn } from './cc-transcript';
+import { readLastAssistantTurn, countUserPromptsInTranscript } from './cc-transcript';
 import { TerminalError } from '../terminal/errors';
 import { IS_POSIX } from '../utils/process-utils';
 import type {
@@ -175,6 +175,42 @@ export function buildLaunchFlags(request: AgentExecuteRequest): string[] {
   return flags;
 }
 
+// ---------- No-turn classification (screen is the only source) -----------
+
+export type NoTurnClassification =
+  | { kind: 'blocked'; message: string }
+  | { kind: 'dead'; message: string }
+  | { kind: 'scrape' };
+
+/**
+ * When the freshness-gated transcript read found NO completed turn, decide
+ * how to respond from the post-stable CC screen state. A permission /
+ * trust / plan / choice dialog only ever exists on the screen (the SDK
+ * gets it as a structured permission callback; we read it off the TUI) and
+ * is never written to the transcript — so without this it would be
+ * scraped and returned as if it were CC's answer.
+ *
+ * Pure so the decision is unit-testable without coercing a real dialog.
+ */
+export function classifyNoTurn(
+  state: { phase: string; pendingDialog: string | null } | null,
+  sessionName: string,
+): NoTurnClassification {
+  if (state && (state.pendingDialog !== null
+      || state.phase === 'permission'
+      || state.phase === 'trust-prompt'
+      || state.phase === 'plan-mode')) {
+    return {
+      kind: 'blocked',
+      message: `CC is blocked awaiting input (phase=${state.phase}, dialog=${state.pendingDialog ?? 'none'}) — no completed turn was produced. Inspect/answer via the /terminal/cc/${sessionName}/* endpoints.`,
+    };
+  }
+  if (state && state.phase === 'dead') {
+    return { kind: 'dead', message: `CC process is dead in session ${sessionName} — no completed turn was produced` };
+  }
+  return { kind: 'scrape' };
+}
+
 // ---------- Public: execute ----------------------------------------------
 
 export interface TmuxRunnerOptions {
@@ -229,6 +265,18 @@ export function createTmuxRunner(opts: TmuxRunnerOptions = {}) {
         }
       }
 
+      // 1b. FRESHNESS BASELINE. Count how many real user prompts the
+      //     conversation transcript already has BEFORE we send ours. For a
+      //     warm session this is >0; for a fresh launch it's 0 (no prior
+      //     turns, sessionId not knowable until CC responds). We later
+      //     require the count to grow past this before trusting a
+      //     transcript read — otherwise a warm session returns the
+      //     PREVIOUS turn's answer (ours isn't flushed yet). This is the
+      //     hand-built equivalent of the SDK's per-call delimited stream.
+      const baselinePrompts = (!needsLaunch && status?.sessionId)
+        ? countUserPromptsInTranscript(status.sessionId, cwd)
+        : 0;
+
       // 2. Snapshot the screen before sending the prompt — we'll use it
       //    both to detect "CC has started processing" (screen changed)
       //    and to extract the response (diff after).
@@ -276,22 +324,43 @@ export function createTmuxRunner(opts: TmuxRunnerOptions = {}) {
       //    (shouldn't happen at idle but defensive).
       const ccSessionId = inspector.parseSessionId(afterCapture) ?? sessionName;
 
-      // 8. AUTHORITATIVE OUTPUT: read CC's structured JSONL transcript for
-      //    this conversation. CC's TUI persists the exact same message
-      //    stream the SDK consumes, so this is byte-accurate and complete
-      //    (no terminal width-wrap, no blank-line truncation, no ANSI) and
-      //    directly comparable to the SDK runner's `result`. Screen-scrape
-      //    is the fallback only (transcript not yet flushed / unreadable,
-      //    or sessionId not parseable so we have no file to read).
+      // 8. AUTHORITATIVE OUTPUT — freshness-gated transcript read. CC's
+      //    TUI persists the exact same message stream the SDK consumes, so
+      //    this is byte-accurate and complete (no width-wrap, no blank-line
+      //    truncation, no ANSI). The `minUserPrompts` gate only accepts a
+      //    turn once OUR prompt is recorded (prompt count past the
+      //    pre-prompt baseline) AND it has assistant text — so a warm
+      //    session never returns the PREVIOUS turn's answer. This is the
+      //    hand-built substitute for the SDK's explicit `result` message.
       let result: string;
       let txUsage: import('./cc-transcript').TranscriptUsage | null = null;
       const turn = ccSessionId !== sessionName
-        ? await readLastAssistantTurn(ccSessionId, cwd, { retries: 16, retryDelayMs: 250 })
+        ? await readLastAssistantTurn(ccSessionId, cwd, {
+            retries: 16,
+            retryDelayMs: 250,
+            minUserPrompts: baselinePrompts + 1,
+          })
         : null;
+
       if (turn && turn.text.length > 0) {
+        // CC produced a real, fresh answer — this always wins.
         result = turn.text;
         txUsage = turn.usage;
       } else {
+        // 9. NO fresh completed turn. Distinguish "CC is blocked on a
+        //    dialog the transcript never records" from "unknown — scrape".
+        //    Without this, a permission / trust / plan / choice dialog
+        //    would be scraped off the screen and returned as if it were
+        //    CC's answer. The screen is the ONLY place this state exists
+        //    (the SDK gets it as a structured permission callback; we have
+        //    to read it off the TUI).
+        const post = (() => { try { return cc.status(sessionName); } catch { return null; } })();
+        const cls = classifyNoTurn(post, sessionName);
+        if (cls.kind === 'blocked' || cls.kind === 'dead') {
+          return errorResponse(executionId, start, cls.message, sessionName);
+        }
+        // Not a recognized blocked state and no transcript turn — fall
+        // back to a best-effort screen scrape (legacy behaviour).
         result = extractResponse(beforeCapture, afterCapture, request.prompt);
       }
 
