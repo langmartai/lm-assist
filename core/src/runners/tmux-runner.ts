@@ -17,6 +17,7 @@
 import * as cc from '../terminal/cc';
 import * as tmux from '../terminal/tmux';
 import * as inspector from '../terminal/inspector';
+import { readLastAssistantTurn } from './cc-transcript';
 import { TerminalError } from '../terminal/errors';
 import { IS_POSIX } from '../utils/process-utils';
 import type {
@@ -263,17 +264,36 @@ export function createTmuxRunner(opts: TmuxRunnerOptions = {}) {
         return errorResponse(executionId, start, `screen never stabilized within ${awaitMs}ms (CC may still be processing)`, sessionName);
       }
 
-      // 6. Capture the after-screen and extract the response.
+      // 6. Capture the after-screen — used to parse the sessionId and as
+      //    the fallback output source if the transcript can't be read.
       const afterCapture = tmux.capture(sessionName, {
         paneQualifier: null, lines: null, start: -500,
       });
-      const result = extractResponse(beforeCapture, afterCapture, request.prompt);
 
       // 7. Extract CC's CONVERSATION sessionId from the footer (sid: <uuid>).
       //    This is what the SDK returns and what /resume accepts. Falls
       //    back to the tmux session name if the footer isn't parseable
       //    (shouldn't happen at idle but defensive).
       const ccSessionId = inspector.parseSessionId(afterCapture) ?? sessionName;
+
+      // 8. AUTHORITATIVE OUTPUT: read CC's structured JSONL transcript for
+      //    this conversation. CC's TUI persists the exact same message
+      //    stream the SDK consumes, so this is byte-accurate and complete
+      //    (no terminal width-wrap, no blank-line truncation, no ANSI) and
+      //    directly comparable to the SDK runner's `result`. Screen-scrape
+      //    is the fallback only (transcript not yet flushed / unreadable,
+      //    or sessionId not parseable so we have no file to read).
+      let result: string;
+      let txUsage: import('./cc-transcript').TranscriptUsage | null = null;
+      const turn = ccSessionId !== sessionName
+        ? await readLastAssistantTurn(ccSessionId, cwd, { retries: 16, retryDelayMs: 250 })
+        : null;
+      if (turn && turn.text.length > 0) {
+        result = turn.text;
+        txUsage = turn.usage;
+      } else {
+        result = extractResponse(beforeCapture, afterCapture, request.prompt);
+      }
 
       touch(sessionName, cwd);
 
@@ -287,11 +307,11 @@ export function createTmuxRunner(opts: TmuxRunnerOptions = {}) {
         numTurns: 1,
         totalCostUsd: 0,
         usage: {
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheCreationInputTokens: 0,
-          cacheReadInputTokens: 0,
-          totalTokens: 0,
+          inputTokens: txUsage?.inputTokens ?? 0,
+          outputTokens: txUsage?.outputTokens ?? 0,
+          cacheCreationInputTokens: txUsage?.cacheCreationInputTokens ?? 0,
+          cacheReadInputTokens: txUsage?.cacheReadInputTokens ?? 0,
+          totalTokens: (txUsage?.inputTokens ?? 0) + (txUsage?.outputTokens ?? 0),
         },
         modelUsage: {},
         // tmux-runner-specific fields (additive, ignored by SDK consumers).

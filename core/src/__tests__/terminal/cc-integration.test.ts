@@ -23,6 +23,7 @@ import { test, before, after, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
 import { buildLaunchFlags } from '../../runners/tmux-runner';
+import { extractLastTurnFromJsonl } from '../../runners/cc-transcript';
 
 const API = process.env.TEST_API ?? 'http://localhost:3201';
 const LIVE_CC = process.env.RUN_LIVE_CC === '1';
@@ -892,8 +893,11 @@ test('R2 — Tmux runner: sessionId is CC UUID, tmuxSession + runner set (SLOW, 
   assert.notEqual(r.data?.sessionId, sess, 'sessionId must NOT be the tmux session name');
   assert.equal(r.data?.tmuxSession, sess, 'tmuxSession should echo back the supplied name');
   assert.equal(r.data?.runner, 'tmux');
-  assert.equal(r.data?.totalCostUsd, 0, 'tmux runner has no cost telemetry');
-  assert.equal(r.data?.usage.totalTokens, 0);
+  // No USD pricing calc on the tmux path, so cost stays 0 — but token
+  // usage IS now sourced from CC's structured transcript (the runner no
+  // longer hard-zeros it; see R11).
+  assert.equal(r.data?.totalCostUsd, 0, 'tmux runner reports no USD cost (no pricing calc)');
+  assert.ok((r.data?.usage.totalTokens ?? 0) > 0, `usage now from CC transcript, got ${JSON.stringify(r.data?.usage)}`);
   assert.ok(r.data?.result.includes('8'), `expected response containing 8 (5+3), got: ${r.data?.result}`);
 });
 
@@ -1081,6 +1085,83 @@ test('R10 — buildLaunchFlags maps effort + extendedThinking to --effort (pure)
 
   // Thinking disabled, no effort ⇒ no --effort.
   assert.equal(buildLaunchFlags({ prompt: 'x', extendedThinking: { enabled: false } } as FlagReq).includes('--effort'), false);
+});
+
+// --- R11–R13: transcript-authoritative output (complete, SDK-comparable) ---
+
+const MULTI_PROMPT =
+  'Reply with EXACTLY the following three paragraphs, separated by one ' +
+  'blank line, and nothing else:\n\n' +
+  'PARA_ONE alpha\n\nPARA_TWO beta\n\nPARA_THREE gamma';
+
+test('R11 — Tmux runner: multi-paragraph response is COMPLETE, not truncated at the first blank line (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const sess = uniqName('r11');
+  track(sess);
+  const r = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: MULTI_PROMPT, cwd: '/tmp', runner: 'tmux', tmuxSession: sess,
+  });
+  assert.equal(r.data?.success, true, `error: ${r.data?.error}`);
+  const out = r.data?.result ?? '';
+  // The old screen-scraper stopped at the first blank line after the last
+  // `●`, so it returned only "PARA_ONE alpha". The transcript path returns
+  // every paragraph.
+  assert.ok(out.includes('PARA_ONE') && out.includes('alpha'), `missing para 1: ${out}`);
+  assert.ok(out.includes('PARA_TWO') && out.includes('beta'), `para 2 dropped (blank-line truncation regressed): ${out}`);
+  assert.ok(out.includes('PARA_THREE') && out.includes('gamma'), `para 3 dropped: ${out}`);
+  // Usage now comes from the structured transcript (was hard-zero before).
+  assert.ok((r.data?.usage.outputTokens ?? 0) > 0, `expected real outputTokens from transcript, got ${JSON.stringify(r.data?.usage)}`);
+});
+
+test('R12 — SDK vs tmux: both runners return the full multi-paragraph answer (parity) (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const sdk = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: MULTI_PROMPT, cwd: '/tmp',
+    permissionMode: 'bypassPermissions', settingSources: ['project', 'user'],
+  });
+  const sess = uniqName('r12');
+  track(sess);
+  const tmx = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: MULTI_PROMPT, cwd: '/tmp', runner: 'tmux', tmuxSession: sess,
+  });
+  assert.equal(sdk.data?.success, true, `sdk error: ${sdk.data?.error}`);
+  assert.equal(tmx.data?.success, true, `tmux error: ${tmx.data?.error}`);
+  // Can't assert byte-equality (model is non-deterministic), but the
+  // completeness guarantee must hold for BOTH runners identically.
+  for (const [name, res] of [['SDK', sdk.data?.result ?? ''], ['TMUX', tmx.data?.result ?? '']] as const) {
+    assert.ok(res.includes('PARA_ONE'), `${name} missing PARA_ONE: ${res}`);
+    assert.ok(res.includes('PARA_TWO'), `${name} missing PARA_TWO: ${res}`);
+    assert.ok(res.includes('PARA_THREE'), `${name} missing PARA_THREE: ${res}`);
+  }
+});
+
+test('R13 — extractLastTurnFromJsonl: last turn only, full text, thinking/tool_use excluded (pure)', () => {
+  const tx = [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: 'first prompt' } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'x' }], usage: { input_tokens: 10, output_tokens: 1 } } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'FIRST ANSWER' }], usage: { input_tokens: 0, output_tokens: 5 } } }),
+    JSON.stringify({ type: 'user', message: { content: 'second prompt' } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'hmm' }], usage: { input_tokens: 20, output_tokens: 2 } } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash' }], usage: { input_tokens: 0, output_tokens: 3 } } }),
+    JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result' }] } }), // NOT a prompt
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Para one.' }, { type: 'text', text: '\n\nPara two.' }], usage: { input_tokens: 0, output_tokens: 7 } } }),
+    '',                                                  // blank line tolerated
+    'not json at all',                                   // garbage tolerated
+    JSON.stringify({ type: 'system', subtype: 'turn_duration' }),
+  ];
+  const turn = extractLastTurnFromJsonl(tx);
+  // Only the LAST turn — "FIRST ANSWER" must NOT leak in.
+  assert.equal(turn.text, 'Para one.\n\nPara two.', `got: ${JSON.stringify(turn.text)}`);
+  assert.ok(!turn.text.includes('FIRST ANSWER'), 'older turn leaked');
+  // thinking + tool_use excluded; internal blank line preserved.
+  assert.ok(turn.text.includes('\n\n'), 'paragraph break must survive');
+  // Usage summed across the LAST turn only (20+0+0 in, 2+3+7 out).
+  assert.deepEqual(turn.usage, { inputTokens: 20, outputTokens: 12, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 });
+
+  // No assistant text after the last prompt → empty (caller falls back).
+  const none = extractLastTurnFromJsonl([
+    JSON.stringify({ type: 'user', message: { content: 'q' } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'only thinking' }] } }),
+  ]);
+  assert.equal(none.text, '');
 });
 
 test('H7 — createWindow with command runs it in the new window (visible via send-keys)', async () => {
