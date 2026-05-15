@@ -37,17 +37,51 @@ How to capture the cookie:
 
 ### Routes
 
+#### Diagnostics
+
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/claude-ai/healthz` | **One-glance health check.** File-based status + active probe of `/api/account_profile`. Returns `{ ok, reason, hint, sessionConfigured, identity, cookieFreshness, probe }`. Call this before driving any other route. |
 | `GET` | `/claude-ai/session-status[?probe=true]` | Presence/identity (no secret values). With `?probe=true`, also actively hits `/api/account_profile` to verify the session is live. |
-| `GET` | `/claude-ai/conversations?limit=&starred=&consistency=&project_uuid=` | List conversations. |
+
+#### Conversations & projects
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/claude-ai/conversations?limit=&starred=&consistency=&project_uuid=` | List conversations (`chat_conversations_v2`). |
 | `GET` | `/claude-ai/conversations/:uuid?tree=&rendering_mode=&render_all_tools=` | Read one conversation (full message tree). |
+| `POST` | `/claude-ai/conversations/:uuid/completion` | **WRITE** — send a message, drain SSE, return `{ text, events, humanMessageUuid, assistantMessageUuid }`. Body: `{ prompt, model?, timezone?, locale?, parentMessageUuid?, tools? }`. |
+| `POST` | `/claude-ai/conversations/:uuid/title` | **WRITE** — rename / auto-title. Body: `{ title? }` (omit `title` → server auto-generates). |
 | `GET` | `/claude-ai/projects?limit=&include_harmony_projects=&creator_filter=` | List projects. |
-| `GET` | `/claude-ai/memory` | Claude's persistent memory for the org. |
+| `GET` | `/claude-ai/artifacts/:uuid/versions` | Artifact version history. |
+
+#### Account / identity
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/claude-ai/account-profile` | Standalone account profile (mirrors the call `healthz` uses internally). |
+| `GET` | `/claude-ai/account/invites` | Pending org invites. |
+| `GET` | `/claude-ai/user-access` | Per-user permissions / roles for the active org. |
+| `GET` | `/claude-ai/sessions-active?page=&per_page=&application_slug=` | **Live sessions across all devices** — useful "where am I signed in?" security view. |
+
+#### Org configuration
+
+| Method | Path | Description |
+|---|---|---|
 | `GET` | `/claude-ai/bootstrap` | `/edge-api/bootstrap/{org_uuid}/app_start` — high-leverage page-load endpoint (≈500 KB; account + flags + recent conversations in one call). |
-| `GET` | `/claude-ai/artifacts/:uuid/versions` | Version history for an artifact (code/doc blocks Claude generated). |
-| `POST` | `/claude-ai/conversations/:uuid/completion` | **WRITE** — send a new message to an existing conversation, drain the SSE stream, return aggregated `{ text, events, humanMessageUuid, assistantMessageUuid }`. |
+| `GET` | `/claude-ai/org` | Org metadata. |
+| `GET` | `/claude-ai/org/subscription[?cached=false]` | Subscription plan, billing cycle, status. |
+| `GET` | `/claude-ai/org/usage` | claude.ai-side usage view (distinct from `/claude-code/usage`). |
+| `GET` | `/claude-ai/org/skills` | Custom skills installed in the org. |
+| `GET` | `/claude-ai/org/mcp-bootstrap` | Connected MCP servers + auth status. **Response is SSE** — helper buffers the stream and returns `{ events, eventCount, eventTypes }`. |
+| `GET` | `/claude-ai/org/styles` | Chat styles (formal, concise, etc.). |
+| `GET` | `/claude-ai/org/model-config/:model` | Per-model capabilities & beta flags (`:model` e.g. `claude-opus-4-7`). |
+| `GET` | `/claude-ai/org/memory-settings` | Memory feature flags + retention. |
+| `GET` | `/claude-ai/org/cowork-settings` | Team / cowork mode toggles. |
+| `GET` | `/claude-ai/org/sync-settings` | Drive / external-source sync config. |
+| `GET` | `/claude-ai/org/sync/gdrive-progress` | Google Drive ingestion status. |
+| `GET` | `/claude-ai/org/notifications` | Email / push notification preferences. |
+| `GET` | `/claude-ai/memory` | Claude's persistent memory entries for the org. |
 
 ### Header fingerprint
 
@@ -114,19 +148,58 @@ No cookie file. No refresh chore. TLS fingerprint is real Chrome. Cloudflare see
 
 ### Routes
 
-All accept a JSON body. All return `{ success: true, data: { snippet, description, url, method, instructions } }`.
+All accept a JSON body. All return `{ success: true, data: { snippet, description, url, method, instructions } }`. Every cookie-file route has a matching via-chrome variant.
+
+#### Diagnostics
+
+| Method | Path | Body |
+|---|---|---|
+| `POST` | `/claude-ai/via-chrome/health-check` | `{}` — **Call this first.** Returns a snippet that verifies the active tab is `claude.ai`, identity cookies are present, and `/api/account_profile` returns 200. Snippet returns `{ ok, reason, hint, pageUrl, identity, account? }`. |
+
+#### Generic
 
 | Method | Path | Body |
 |---|---|---|
 | `POST` | `/claude-ai/via-chrome` | `{ path: "/api/...", query?: {...}, description? }` — generic; path must start with `/api/`, `/edge-api/`, or `/v1/` |
+
+#### Conversations & projects
+
+| Method | Path | Body |
+|---|---|---|
 | `POST` | `/claude-ai/via-chrome/conversations` | `{ limit?, starred?, consistency?, projectUuid? }` |
 | `POST` | `/claude-ai/via-chrome/conversations/:uuid` | `{ tree?, renderingMode?, renderAllTools? }` |
-| `POST` | `/claude-ai/via-chrome/projects` | `{ limit?, includeHarmonyProjects?, creatorFilter? }` |
-| `POST` | `/claude-ai/via-chrome/memory` | `{}` |
-| `POST` | `/claude-ai/via-chrome/bootstrap` | `{}` |
-| `POST` | `/claude-ai/via-chrome/artifacts/:uuid/versions` | `{}` |
-| `POST` | `/claude-ai/via-chrome/health-check` | `{}` — **Call this first.** Returns a snippet that verifies the active tab is `claude.ai`, identity cookies are present, and `/api/account_profile` returns 200. Snippet returns `{ ok, reason, hint, pageUrl, identity, account? }`. |
 | `POST` | `/claude-ai/via-chrome/conversations/:uuid/completion` | `{ prompt, model?, timezone?, locale?, parentMessageUuid? }` — **WRITE** snippet that reads `current_leaf_message_uuid`, POSTs `/completion`, drains the SSE stream in-page, and returns `{ status, text, events, eventTypes, eventCount, humanMessageUuid, assistantMessageUuid }`. |
+| `POST` | `/claude-ai/via-chrome/conversations/:uuid/title` | `{ title? }` — **WRITE** snippet (omit `title` for auto-title). |
+| `POST` | `/claude-ai/via-chrome/projects` | `{ limit?, includeHarmonyProjects?, creatorFilter? }` |
+| `POST` | `/claude-ai/via-chrome/artifacts/:uuid/versions` | `{}` |
+
+#### Account / identity
+
+| Method | Path | Body |
+|---|---|---|
+| `POST` | `/claude-ai/via-chrome/account-profile` | `{}` |
+| `POST` | `/claude-ai/via-chrome/account/invites` | `{}` |
+| `POST` | `/claude-ai/via-chrome/user-access` | `{}` |
+| `POST` | `/claude-ai/via-chrome/sessions-active` | `{ page?, perPage?, applicationSlug? }` |
+
+#### Org configuration
+
+| Method | Path | Body |
+|---|---|---|
+| `POST` | `/claude-ai/via-chrome/bootstrap` | `{}` |
+| `POST` | `/claude-ai/via-chrome/org` | `{}` |
+| `POST` | `/claude-ai/via-chrome/org/subscription` | `{ cached? }` |
+| `POST` | `/claude-ai/via-chrome/org/usage` | `{}` |
+| `POST` | `/claude-ai/via-chrome/org/skills` | `{}` |
+| `POST` | `/claude-ai/via-chrome/org/mcp-bootstrap` | `{}` — snippet handles SSE in-page and returns `{ events, eventCount, eventTypes }` |
+| `POST` | `/claude-ai/via-chrome/org/styles` | `{}` |
+| `POST` | `/claude-ai/via-chrome/org/model-config/:model` | `{}` |
+| `POST` | `/claude-ai/via-chrome/org/memory-settings` | `{}` |
+| `POST` | `/claude-ai/via-chrome/org/cowork-settings` | `{}` |
+| `POST` | `/claude-ai/via-chrome/org/sync-settings` | `{}` |
+| `POST` | `/claude-ai/via-chrome/org/sync/gdrive-progress` | `{}` |
+| `POST` | `/claude-ai/via-chrome/org/notifications` | `{}` |
+| `POST` | `/claude-ai/via-chrome/memory` | `{}` |
 
 ### Snippet shape
 
@@ -292,20 +365,17 @@ The agent loop is:
 
 ## Endpoints not yet wired
 
-From the lm-proxy capture, these read endpoints work in the browser context but aren't wrapped by lm-assist yet. Add convenience routes as you need them, or call them via `POST /claude-ai/via-chrome` with the path verbatim:
+The previously-listed claude.ai reads (`memory/settings`, `cowork_settings`, `sync/settings`, `list_styles`, `model_configs/{model}`, `skills/list-skills`, `mcp/v2/bootstrap`, `subscription_details`, `usage`, `invites`, `account_profile`) and the `POST .../title` write have all been wired in [the 2026-05-15 batch](../CHANGELOG.md). The current remaining gaps:
 
-- `/api/organizations/{org}/memory/settings`
-- `/api/organizations/{org}/cowork_settings`
-- `/api/organizations/{org}/sync/settings`, `/api/organizations/{org}/sync/ingestion/gdrive/progress`
-- `/api/organizations/{org}/list_styles`, `/api/organizations/{org}/model_configs/{model}`
-- `/api/organizations/{org}/skills/list-skills`, `/api/organizations/{org}/marketplaces/list-default-marketplaces`
-- `/api/organizations/{org}/mcp/v2/bootstrap`
-- `/api/organizations/{org}/subscription_details`, `/api/organizations/{org}/usage`
-- `/api/accounts/{account_uuid}/invites`, `/api/account_profile`
+| Observed in capture | Why not wired |
+|---|---|
+| `/api/organizations/{org}/marketplaces/list-default-marketplaces` | Low value (returns hardcoded marketplace list). Easy to wire via generic `/claude-ai/via-chrome` if needed. |
+| `/api/organizations/{org}/{kyc_status,payment_method,prepaid/*,overage_credit_grant,paused_subscription_details,hipaa/status,shares}` | Billing / compliance reads — out of scope for a session-management tool. |
+| `/api/organizations/discoverable`, `/api/organizations/{org}/{experiences/claude_web,pending_domain_claim,referral/*,overage_spend_limit}` | Web-app-only UI affordances; no programmatic value. |
+| `/api/account/{domain_density,deletion-allowed}` | One-off account-state reads. |
+| `/api/ws/voice/organizations/{org}/chat_conversations/{conv}` | **WebSocket** — needs a different streaming-aware design (separate ticket). |
 
-Write endpoints observed but **not implemented**:
-
-- `POST /api/organizations/{org}/chat_conversations/{conv}/title` — auto-title / rename
+Anything in the catalog can be hit through `POST /claude-ai/via-chrome` with `{ path }` matching `/api/`, `/edge-api/`, or `/v1/` — that's the escape hatch for one-offs without writing a dedicated route.
 
 ---
 

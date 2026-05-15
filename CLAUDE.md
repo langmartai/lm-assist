@@ -297,6 +297,8 @@ Server-sent events with `execution_update` events. Omit `executionId` for all ev
 
 ### Claude Code OAuth (14 endpoints)
 
+**Full guide:** [`docs/claude-code-routes.md`](./docs/claude-code-routes.md).
+
 Proxies `api.anthropic.com` endpoints that use Claude Code's OAuth token (from `~/.claude/.credentials.json`). Outbound headers match the real `claude-code/<version>` fingerprint observed in lm-proxy captures, with the appropriate `anthropic-beta` value per endpoint (source-verified against the leaked Claude Code source).
 
 | Method | Endpoint | Description |
