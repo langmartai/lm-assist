@@ -47,7 +47,21 @@ import { execFileSync } from '../../utils/exec';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { getOAuthStatus, anthropicOAuthGet } from '../../utils/claude-oauth';
+import {
+  getOAuthStatus,
+  anthropicOAuthGet,
+  getOauthCliRoles,
+  getOauthAccountSettings,
+  getClaudeCliBootstrap,
+  getClaudeCodeGrove,
+  getClaudeCodePenguinMode,
+  getClaudeCodePolicyLimits,
+  getClaudeCodeSettings,
+  getClaudeCodeUserSettings,
+  getClaudeCodeTeamMemory,
+  getV1McpServers,
+  getMcpRegistry,
+} from '../../utils/claude-oauth';
 
 const IS_WINDOWS = process.platform === 'win32';
 const CLAUDE_CODE_CONFIG_FILE = path.join(os.homedir(), '.claude-code-config.json');
@@ -1722,6 +1736,173 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
             success: false,
             error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message },
           };
+        }
+      },
+    },
+
+    // ─── Additional api.anthropic.com endpoints ───
+    // Fingerprints sourced from claude-code-leak/2.1.88 source code +
+    // lm-proxy captures. All use OAuth bearer + anthropic-beta:
+    // oauth-2025-04-20 unless noted (roles: no beta; mcp_servers:
+    // mcp-servers-2025-12-04; mcp-registry: no auth at all).
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/roles$/,
+      handler: async () => {
+        try {
+          const r = await getOauthCliRoles();
+          if (r.status >= 400) return { success: false, error: { code: `UPSTREAM_${r.status}`, message: r.statusText }, data: r.body };
+          return { success: true, data: r.body };
+        } catch (err) {
+          return { success: false, error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message } };
+        }
+      },
+    },
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/account-settings$/,
+      handler: async () => {
+        try {
+          const r = await getOauthAccountSettings();
+          if (r.status >= 400) return { success: false, error: { code: `UPSTREAM_${r.status}`, message: r.statusText }, data: r.body };
+          return { success: true, data: r.body };
+        } catch (err) {
+          return { success: false, error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message } };
+        }
+      },
+    },
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/cli-bootstrap$/,
+      handler: async (req) => {
+        try {
+          const q = req.query || {};
+          const r = await getClaudeCliBootstrap({
+            entrypoint: typeof q.entrypoint === 'string' ? q.entrypoint : undefined,
+            model: typeof q.model === 'string' ? q.model : undefined,
+          });
+          if (r.status >= 400) return { success: false, error: { code: `UPSTREAM_${r.status}`, message: r.statusText }, data: r.body };
+          return { success: true, data: r.body };
+        } catch (err) {
+          return { success: false, error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message } };
+        }
+      },
+    },
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/grove$/,
+      handler: async () => {
+        try {
+          const r = await getClaudeCodeGrove();
+          if (r.status >= 400) return { success: false, error: { code: `UPSTREAM_${r.status}`, message: r.statusText }, data: r.body };
+          return { success: true, data: r.body };
+        } catch (err) {
+          return { success: false, error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message } };
+        }
+      },
+    },
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/penguin$/,
+      handler: async () => {
+        try {
+          const r = await getClaudeCodePenguinMode();
+          if (r.status >= 400) return { success: false, error: { code: `UPSTREAM_${r.status}`, message: r.statusText }, data: r.body };
+          return { success: true, data: r.body };
+        } catch (err) {
+          return { success: false, error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message } };
+        }
+      },
+    },
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/policy-limits$/,
+      handler: async () => {
+        try {
+          const r = await getClaudeCodePolicyLimits();
+          if (r.status >= 400) return { success: false, error: { code: `UPSTREAM_${r.status}`, message: r.statusText }, data: r.body };
+          return { success: true, data: r.body };
+        } catch (err) {
+          return { success: false, error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message } };
+        }
+      },
+    },
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/settings$/,
+      handler: async () => {
+        try {
+          const r = await getClaudeCodeSettings();
+          if (r.status >= 400) return { success: false, error: { code: `UPSTREAM_${r.status}`, message: r.statusText }, data: r.body };
+          return { success: true, data: r.body };
+        } catch (err) {
+          return { success: false, error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message } };
+        }
+      },
+    },
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/user-settings$/,
+      handler: async () => {
+        try {
+          const r = await getClaudeCodeUserSettings();
+          if (r.status >= 400) return { success: false, error: { code: `UPSTREAM_${r.status}`, message: r.statusText }, data: r.body };
+          return { success: true, data: r.body };
+        } catch (err) {
+          return { success: false, error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message } };
+        }
+      },
+    },
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/team-memory$/,
+      handler: async (req) => {
+        const q = req.query || {};
+        const repo = typeof q.repo === 'string' ? q.repo : '';
+        if (!repo) return { success: false, error: { code: 'MISSING_REPO', message: '?repo=owner/repo required' } };
+        try {
+          const r = await getClaudeCodeTeamMemory(repo, {
+            view: q.view === 'hashes' ? 'hashes' : undefined,
+          });
+          if (r.status >= 400) return { success: false, error: { code: `UPSTREAM_${r.status}`, message: r.statusText }, data: r.body };
+          return { success: true, data: r.body };
+        } catch (err) {
+          return { success: false, error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message } };
+        }
+      },
+    },
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/mcp-servers$/,
+      handler: async (req) => {
+        try {
+          const q = req.query || {};
+          const r = await getV1McpServers({
+            limit: typeof q.limit === 'string' ? parseInt(q.limit, 10) || undefined : undefined,
+          });
+          if (r.status >= 400) return { success: false, error: { code: `UPSTREAM_${r.status}`, message: r.statusText }, data: r.body };
+          return { success: true, data: r.body };
+        } catch (err) {
+          return { success: false, error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message } };
+        }
+      },
+    },
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/mcp-registry$/,
+      handler: async (req) => {
+        try {
+          const q = req.query || {};
+          const r = await getMcpRegistry({
+            limit: typeof q.limit === 'string' ? parseInt(q.limit, 10) || undefined : undefined,
+            version: typeof q.version === 'string' ? q.version : undefined,
+            visibility: typeof q.visibility === 'string' ? q.visibility : undefined,
+            cursor: typeof q.cursor === 'string' ? q.cursor : undefined,
+          });
+          if (r.status >= 400) return { success: false, error: { code: `UPSTREAM_${r.status}`, message: r.statusText }, data: r.body };
+          return { success: true, data: r.body };
+        } catch (err) {
+          return { success: false, error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message } };
         }
       },
     },

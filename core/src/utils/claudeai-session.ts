@@ -626,6 +626,234 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
   return { status: res.status, statusText: res.statusText, events, text, humanMessageUuid, assistantMessageUuid };
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Additional read helpers — fingerprints verified against lm-proxy captures
+// 2026-05-10..14 on yi@10.0.1.123. All claude.ai web reads share the
+// baseHeaders set claudeaiGet() emits; only the path, query, and Referer
+// vary per endpoint.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** GET /api/account_profile — standalone account profile read. */
+export async function getAccountProfile() {
+  return claudeaiGet('/api/account_profile', { referer: 'https://claude.ai/' });
+}
+
+function _org(opts: { orgUuid?: string } = {}): string {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  const orgUuid = opts.orgUuid || deriveIdentity(cfg).orgUuid;
+  if (!orgUuid) throw new Error('No org_uuid');
+  return orgUuid;
+}
+
+/** GET /api/organizations/{org} — org metadata. */
+export async function getOrgInfo(opts: { orgUuid?: string } = {}) {
+  return claudeaiGet(`/api/organizations/${_org(opts)}`, { referer: 'https://claude.ai/' });
+}
+
+/** GET /api/organizations/{org}/subscription_details[?cached=true]. */
+export async function getSubscriptionDetails(opts: { orgUuid?: string; cached?: boolean } = {}) {
+  const qs = opts.cached === false ? '' : '?cached=true';
+  return claudeaiGet(`/api/organizations/${_org(opts)}/subscription_details${qs}`, { referer: 'https://claude.ai/' });
+}
+
+/** GET /api/organizations/{org}/usage — claude.ai-side usage view. */
+export async function getOrgUsage(opts: { orgUuid?: string } = {}) {
+  return claudeaiGet(`/api/organizations/${_org(opts)}/usage`, { referer: 'https://claude.ai/settings/usage' });
+}
+
+/** GET /api/organizations/{org}/skills/list-skills. */
+export async function listOrgSkills(opts: { orgUuid?: string } = {}) {
+  return claudeaiGet(`/api/organizations/${_org(opts)}/skills/list-skills`, { referer: 'https://claude.ai/' });
+}
+
+/**
+ * GET /api/organizations/{org}/mcp/v2/bootstrap — connected MCP servers.
+ * NOTE: response is `text/event-stream` not JSON; helper buffers the
+ * stream and returns the parsed events array under `body.events`.
+ */
+export async function getOrgMcpBootstrap(opts: { orgUuid?: string } = {}): Promise<ClaudeAIResponse<any>> {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  const orgUuid = _org(opts);
+  const id = deriveIdentity(cfg);
+
+  // Custom request — Accept: text/event-stream
+  const url = `https://claude.ai/api/organizations/${orgUuid}/mcp/v2/bootstrap`;
+  const headers: Record<string, string> = {
+    Host: 'claude.ai',
+    Connection: 'keep-alive',
+    'anthropic-client-platform': 'web_claude_ai',
+    'anthropic-client-version': '1.0.0',
+    'anthropic-client-sha': '8a753cbf88e19be0f5f67efefb1b07840b6402e9',
+    'User-Agent': cfg.userAgent ||
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+    Accept: 'text/event-stream',
+    Referer: 'https://claude.ai/new',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept-Language': 'en-US,en;q=0.9',
+    Cookie: cfg.cookie,
+  };
+  if (id.anonymousId) headers['anthropic-anonymous-id'] = id.anonymousId;
+  if (id.activitySessionId) headers['x-activity-session-id'] = id.activitySessionId;
+  if (id.deviceId) headers['anthropic-device-id'] = id.deviceId;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30_000);
+  try {
+    const res = await fetch(url, { method: 'GET', headers, signal: ctrl.signal });
+    const respHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => (respHeaders[k] = v));
+    if (!res.body) {
+      return { status: res.status, statusText: res.statusText, headers: respHeaders, body: { events: [] } as any };
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    const events: Array<{ type: string; data: any }> = [];
+    let buf = '';
+    const SEP = /\r\n\r\n|\n\n/;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let m: RegExpExecArray | null;
+      while ((m = SEP.exec(buf)) !== null) {
+        const chunk = buf.slice(0, m.index);
+        buf = buf.slice(m.index + m[0].length);
+        const evMatch = chunk.match(/^event:\s*(.+?)\r?$/m);
+        const dataMatch = chunk.match(/^data:\s*([\s\S]+?)\r?$/m);
+        if (!evMatch || !dataMatch) continue;
+        let parsed: any = dataMatch[1].trim();
+        try { parsed = JSON.parse(parsed); } catch {}
+        events.push({ type: evMatch[1].trim(), data: parsed });
+      }
+    }
+    return { status: res.status, statusText: res.statusText, headers: respHeaders, body: { events } as any };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** GET /api/organizations/{org}/list_styles — chat styles. */
+export async function listOrgStyles(opts: { orgUuid?: string } = {}) {
+  return claudeaiGet(`/api/organizations/${_org(opts)}/list_styles`, { referer: 'https://claude.ai/' });
+}
+
+/** GET /api/organizations/{org}/model_configs/{model} — per-model capabilities. */
+export async function getModelConfig(modelId: string, opts: { orgUuid?: string } = {}) {
+  if (!/^[a-z0-9-]+$/i.test(modelId)) throw new Error(`Invalid modelId: ${modelId}`);
+  return claudeaiGet(`/api/organizations/${_org(opts)}/model_configs/${modelId}`, { referer: 'https://claude.ai/' });
+}
+
+/** GET /api/organizations/{org}/memory/settings. */
+export async function getMemorySettings(opts: { orgUuid?: string } = {}) {
+  return claudeaiGet(`/api/organizations/${_org(opts)}/memory/settings`, { referer: 'https://claude.ai/' });
+}
+
+/** GET /api/organizations/{org}/cowork_settings. */
+export async function getCoworkSettings(opts: { orgUuid?: string } = {}) {
+  return claudeaiGet(`/api/organizations/${_org(opts)}/cowork_settings`, { referer: 'https://claude.ai/' });
+}
+
+/** GET /api/organizations/{org}/sync/settings. */
+export async function getSyncSettings(opts: { orgUuid?: string } = {}) {
+  return claudeaiGet(`/api/organizations/${_org(opts)}/sync/settings`, { referer: 'https://claude.ai/' });
+}
+
+/** GET /api/organizations/{org}/sync/ingestion/gdrive/progress. */
+export async function getGdriveProgress(opts: { orgUuid?: string } = {}) {
+  return claudeaiGet(`/api/organizations/${_org(opts)}/sync/ingestion/gdrive/progress`, { referer: 'https://claude.ai/' });
+}
+
+/** GET /api/organizations/{org}/notification/preferences. */
+export async function getNotificationPreferences(opts: { orgUuid?: string } = {}) {
+  return claudeaiGet(`/api/organizations/${_org(opts)}/notification/preferences`, { referer: 'https://claude.ai/' });
+}
+
+/** GET /api/accounts/{account_uuid}/invites. */
+export async function listInvites(opts: { accountUuid?: string } = {}) {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  const accountUuid = opts.accountUuid || deriveIdentity(cfg).userId;
+  if (!accountUuid) throw new Error('No account uuid (ensure ajs_user_id cookie is present)');
+  return claudeaiGet(`/api/accounts/${accountUuid}/invites`, { referer: 'https://claude.ai/' });
+}
+
+/** GET /api/bootstrap/{org_uuid}/current_user_access — per-user permissions. */
+export async function getCurrentUserAccess(opts: { orgUuid?: string } = {}) {
+  return claudeaiGet(`/api/bootstrap/${_org(opts)}/current_user_access`, { referer: 'https://claude.ai/' });
+}
+
+/**
+ * GET /api/auth/sessions/list-active — live sessions across devices.
+ * Useful for surfacing "where am I signed in?" in a UI.
+ */
+export async function listActiveSessions(opts: { page?: number; perPage?: number; applicationSlug?: string } = {}) {
+  const params = new URLSearchParams();
+  params.set('page', String(opts.page ?? 1));
+  params.set('per_page', String(opts.perPage ?? 10));
+  params.set('application_slug', opts.applicationSlug ?? 'claude-ai');
+  return claudeaiGet(`/api/auth/sessions/list-active?${params}`, { referer: 'https://claude.ai/settings/account' });
+}
+
+/**
+ * POST /api/organizations/{org}/chat_conversations/{conv}/title — WRITE.
+ * If `title` is omitted, claude.ai auto-generates one from the conversation
+ * content. Pass an explicit `title` to rename.
+ */
+export async function setConversationTitle(convUuid: string, opts: { title?: string; orgUuid?: string } = {}) {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(convUuid)) {
+    throw new Error(`Invalid conversation UUID: ${convUuid}`);
+  }
+  const orgUuid = _org(opts);
+  const url = `https://claude.ai/api/organizations/${orgUuid}/chat_conversations/${convUuid}/title`;
+  const id = deriveIdentity(cfg);
+  const body = opts.title !== undefined ? { title: opts.title } : {};
+  const headers: Record<string, string> = {
+    Host: 'claude.ai',
+    Connection: 'keep-alive',
+    'anthropic-client-platform': 'web_claude_ai',
+    'anthropic-client-version': '1.0.0',
+    'anthropic-client-sha': '8a753cbf88e19be0f5f67efefb1b07840b6402e9',
+    'content-type': 'application/json',
+    Accept: '*/*',
+    'User-Agent': cfg.userAgent ||
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+    Origin: 'https://claude.ai',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty',
+    Referer: `https://claude.ai/chat/${convUuid}`,
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept-Language': 'en-US,en;q=0.9',
+    Cookie: cfg.cookie,
+  };
+  if (id.anonymousId) headers['anthropic-anonymous-id'] = id.anonymousId;
+  if (id.activitySessionId) headers['x-activity-session-id'] = id.activitySessionId;
+  if (id.deviceId) headers['anthropic-device-id'] = id.deviceId;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15_000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    const respHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => (respHeaders[k] = v));
+    const text = await res.text();
+    let parsed: any;
+    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+    return { status: res.status, statusText: res.statusText, headers: respHeaders, body: parsed };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** GET /api/organizations/{org_uuid}/artifacts/{artifact_uuid}/versions */
 export async function getArtifactVersions(artifactUuid: string, opts: { orgUuid?: string } = {}) {
   const cfg = readClaudeAISession();

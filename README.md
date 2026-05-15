@@ -74,7 +74,7 @@ Full runtime management API.
 - Web terminal (ttyd) from any browser
 - Remote access via LangMart Hub
 
-**Key endpoints:** `POST /monitor/abort/:executionId` · `POST /ttyd/start` · `POST /agent/execute` · `POST /agent/session/:sessionId/resume` · `POST /hub/connect` · `GET /claude-code/{usage,profile,oauth-status}` · `GET /claude-ai/healthz` · `GET /claude-ai/{conversations,conversations/:uuid,projects,memory,bootstrap,artifacts/:uuid/versions}` · `POST /claude-ai/conversations/:uuid/completion` · `POST /claude-ai/via-chrome[/...]` — see [`docs/claude-ai-routes.md`](./docs/claude-ai-routes.md) for both integration paths and the structured health-check interface.
+**Key endpoints:** `POST /monitor/abort/:executionId` · `POST /ttyd/start` · `POST /agent/execute` · `POST /agent/session/:sessionId/resume` · `POST /hub/connect` · `GET /claude-code/{usage,profile,oauth-status,roles,account-settings,cli-bootstrap,grove,penguin,policy-limits,settings,user-settings,team-memory,mcp-servers,mcp-registry}` · `GET /claude-ai/healthz` · `GET /claude-ai/{account-profile,conversations,conversations/:uuid,projects,memory,bootstrap,artifacts/:uuid/versions,org,org/subscription,org/usage,org/skills,org/mcp-bootstrap,org/styles,org/model-config/:model,org/memory-settings,org/cowork-settings,org/sync-settings,org/sync/gdrive-progress,org/notifications,account/invites,user-access,sessions-active}` · `POST /claude-ai/conversations/:uuid/{completion,title}` · `POST /claude-ai/via-chrome[/...]` — see [`docs/claude-ai-routes.md`](./docs/claude-ai-routes.md) for both integration paths and the structured health-check interface.
 
 ### Web Dashboard
 

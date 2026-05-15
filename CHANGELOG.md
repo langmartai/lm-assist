@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+### Endpoint expansion — 28 new routes across Claude Code OAuth + claude.ai
+
+A batched expansion of the catalog-backed endpoints. Each fingerprint was either captured live via `lm-proxy` (2026-05-10..14) or extracted from the leaked Claude Code source (`claude-code-2.1.88/source/src/`), so every new route ships with a verified header/auth/body shape rather than a guess.
+
+**New Claude Code OAuth routes** (all `GET`, OAuth bearer with the appropriate `anthropic-beta`):
+
+| Route | Anthropic path | Fingerprint source |
+|---|---|---|
+| `/claude-code/roles` | `/api/oauth/claude_cli/roles` | source: `services/oauth/client.ts` — Bearer **without** `anthropic-beta` |
+| `/claude-code/account-settings` | `/api/oauth/account/settings` | live capture |
+| `/claude-code/cli-bootstrap` | `/api/claude_cli/bootstrap?entrypoint=&model=` | live capture |
+| `/claude-code/grove` | `/api/claude_code_grove` | live capture |
+| `/claude-code/penguin` | `/api/claude_code_penguin_mode` | live capture |
+| `/claude-code/policy-limits` | `/api/claude_code/policy_limits` | source: `services/policyLimits/index.ts` |
+| `/claude-code/settings` | `/api/claude_code/settings` | source: `services/remoteManagedSettings/index.ts` |
+| `/claude-code/user-settings` | `/api/claude_code/user_settings` | source: `services/settingsSync/index.ts` |
+| `/claude-code/team-memory?repo=` | `/api/claude_code/team_memory` | source: `services/teamMemorySync/index.ts` (`?repo=owner/repo[&view=hashes]`) |
+| `/claude-code/mcp-servers` | `/v1/mcp_servers` | live capture — uses `anthropic-beta: mcp-servers-2025-12-04` + `anthropic-version: 2023-06-01` |
+| `/claude-code/mcp-registry` | `/mcp-registry/v0/servers` | live capture — **no auth** (public) |
+
+`anthropicOAuthGet()` extended with `extraHeaders`, `query`, and `skipAuth` to support the per-endpoint header variations (alternative `anthropic-beta` values, the no-auth `mcp-registry` case, etc.).
+
+**New claude.ai cookie-file + via-chrome routes** (all read-only `GET` except where noted):
+
+| Route | claude.ai path | Notes |
+|---|---|---|
+| `/claude-ai/account-profile` | `/api/account_profile` | Standalone (was internal to healthz) |
+| `/claude-ai/org` | `/api/organizations/{org}` | Org metadata |
+| `/claude-ai/org/subscription` | `…/subscription_details?cached=true` | |
+| `/claude-ai/org/usage` | `…/usage` | claude.ai-side usage (differs from `/claude-code/usage`) |
+| `/claude-ai/org/skills` | `…/skills/list-skills` | |
+| `/claude-ai/org/mcp-bootstrap` | `…/mcp/v2/bootstrap` | **SSE response** — helper drains stream, returns parsed events |
+| `/claude-ai/org/styles` | `…/list_styles` | |
+| `/claude-ai/org/model-config/:model` | `…/model_configs/{model}` | |
+| `/claude-ai/org/memory-settings` | `…/memory/settings` | |
+| `/claude-ai/org/cowork-settings` | `…/cowork_settings` | |
+| `/claude-ai/org/sync-settings` | `…/sync/settings` | |
+| `/claude-ai/org/sync/gdrive-progress` | `…/sync/ingestion/gdrive/progress` | |
+| `/claude-ai/org/notifications` | `…/notification/preferences` | |
+| `/claude-ai/account/invites` | `/api/accounts/{account}/invites` | |
+| `/claude-ai/user-access` | `/api/bootstrap/{org}/current_user_access` | Per-user permissions/roles |
+| `/claude-ai/sessions-active` | `/api/auth/sessions/list-active` | **Live sessions across devices** — useful security view |
+| **`POST /claude-ai/conversations/:uuid/title`** | POST `…/title` | **WRITE** — rename/auto-title (omit body for auto-title) |
+
+Each cookie-file route has a matching `POST /claude-ai/via-chrome/...` variant that returns the equivalent JS snippet for `mcp__claude-in-chrome__javascript_tool`. The via-chrome snippets reuse the existing `baseHeaders` block (full claude.ai fingerprint).
+
+**Smoke-tested live** against the OAuth-authenticated account:
+- 10/11 Claude Code routes → 200 (only `grove` returned 403, which is the server denying Grove access for this Max account — call shape verified correct)
+- Each returns the expected data: roles (admin), account-settings (onboarding flags), cli-bootstrap (full org config), penguin (fast mode disabled), policy-limits (restrictions), settings, user-settings (with checksum), mcp-servers (Google Drive entry), mcp-registry (public, no auth)
+
 ### claude.ai web-session integration — health-check interface
 
 Adds a uniform "is the integration ready?" surface so callers don't have to discover failure mode by failure mode. All claude.ai routes can now be preceded by a single health check that distinguishes config errors, expired sessions, Cloudflare blocks, and network problems.

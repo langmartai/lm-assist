@@ -295,15 +295,26 @@ Server-sent events with `execution_update` events. Omit `executionId` for all ev
 | POST | `/hub/disconnect` | Disconnect from Hub |
 | PUT | `/hub/config` | Update Hub config (persists to .env) |
 
-### Claude Code OAuth (3 endpoints)
+### Claude Code OAuth (14 endpoints)
 
-Proxies `api.anthropic.com` endpoints that use Claude Code's OAuth token (from `~/.claude/.credentials.json`). Outbound headers match the real `claude-code/<version>` fingerprint observed in lm-proxy captures.
+Proxies `api.anthropic.com` endpoints that use Claude Code's OAuth token (from `~/.claude/.credentials.json`). Outbound headers match the real `claude-code/<version>` fingerprint observed in lm-proxy captures, with the appropriate `anthropic-beta` value per endpoint (source-verified against the leaked Claude Code source).
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/claude-code/oauth-status` | Token presence + expiry (no secrets) |
 | GET | `/claude-code/usage` | Live `Utilization` payload (rate-limit windows) |
 | GET | `/claude-code/profile` | Account / org / application info |
+| GET | `/claude-code/roles` | Org + workspace role for current OAuth (no beta header) |
+| GET | `/claude-code/account-settings` | OAuth account settings (onboarding flags, dismissed banners) |
+| GET | `/claude-code/cli-bootstrap?entrypoint=&model=` | Full CLI bootstrap config (account/org/model bundle) |
+| GET | `/claude-code/grove` | Extended-thinking grove config |
+| GET | `/claude-code/penguin` | Fast-mode config |
+| GET | `/claude-code/policy-limits` | Org-level usage caps + compliance taints |
+| GET | `/claude-code/settings` | Remote-managed Claude Code settings |
+| GET | `/claude-code/user-settings` | User state with checksum |
+| GET | `/claude-code/team-memory?repo=owner/repo[&view=hashes]` | Team-scoped memory |
+| GET | `/claude-code/mcp-servers` | Anthropic-managed MCP servers (`anthropic-beta: mcp-servers-2025-12-04`) |
+| GET | `/claude-code/mcp-registry` | Public MCP marketplace catalog (no auth) |
 
 ### claude.ai Web Integration (15 endpoints)
 
@@ -321,16 +332,31 @@ Proxies `api.anthropic.com` endpoints that use Claude Code's OAuth token (from `
 | GET | `/claude-ai/healthz` | One-glance verdict (file status + live `/api/account_profile` probe) |
 | GET | `/claude-ai/session-status[?probe=true]` | File status; optional active probe |
 | POST | `/claude-ai/via-chrome/health-check` | Snippet the agent runs in a tab to verify it's on `claude.ai`, logged in, and reachable |
+| GET | `/claude-ai/account-profile` | Standalone account profile read |
 | GET | `/claude-ai/conversations` | List conversations |
 | GET | `/claude-ai/conversations/:uuid` | Read full message tree of one conversation |
 | GET | `/claude-ai/projects` | List Projects |
 | GET | `/claude-ai/memory` | Claude's persistent memory for the org |
 | GET | `/claude-ai/bootstrap` | High-leverage page-load: account + flags + recent conversations |
 | GET | `/claude-ai/artifacts/:uuid/versions` | Artifact version history |
+| GET | `/claude-ai/org` | Org metadata |
+| GET | `/claude-ai/org/subscription` | Subscription details (`?cached=true` by default) |
+| GET | `/claude-ai/org/usage` | claude.ai-side usage |
+| GET | `/claude-ai/org/skills` | Installed skills |
+| GET | `/claude-ai/org/mcp-bootstrap` | Connected MCP servers (**SSE** — events drained server-side) |
+| GET | `/claude-ai/org/styles` | Chat styles |
+| GET | `/claude-ai/org/model-config/:model` | Per-model capabilities |
+| GET | `/claude-ai/org/memory-settings` | Memory feature flags + retention |
+| GET | `/claude-ai/org/cowork-settings` | Team/cowork mode toggles |
+| GET | `/claude-ai/org/sync-settings` + `/claude-ai/org/sync/gdrive-progress` | Drive sync config + ingestion status |
+| GET | `/claude-ai/org/notifications` | Email/push prefs |
+| GET | `/claude-ai/account/invites` | Pending org invites |
+| GET | `/claude-ai/user-access` | Per-user permissions/roles |
+| GET | `/claude-ai/sessions-active` | **Live sessions across devices** — security view |
 | POST | `/claude-ai/conversations/:uuid/completion` | **WRITE** — send a message, drain SSE, return aggregated text + events |
+| POST | `/claude-ai/conversations/:uuid/title` | **WRITE** — rename / auto-title (omit body for auto-title) |
 | POST | `/claude-ai/via-chrome` | Generic snippet generator (path whitelist: `/api/`, `/edge-api/`, `/v1/`) |
-| POST | `/claude-ai/via-chrome/{conversations,projects,memory,bootstrap,artifacts/:uuid/versions}` | Convenience snippet generators |
-| POST | `/claude-ai/via-chrome/conversations/:uuid/completion` | **WRITE** snippet |
+| POST | `/claude-ai/via-chrome/...` | Convenience snippet generators mirroring every cookie-file route above |
 
 **Header fingerprint** — both paths re-inject the application-level headers claude.ai's web app normally adds (`anthropic-client-platform`, `anthropic-client-version`, `anthropic-client-sha`, `anthropic-device-id`, `anthropic-anonymous-id`, `x-activity-session-id`). Identity values come from non-HttpOnly cookies. `x-datadog-*` and `traceparent` are intentionally omitted (random per request, not load-bearing).
 

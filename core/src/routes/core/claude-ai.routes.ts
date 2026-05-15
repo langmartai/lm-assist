@@ -37,6 +37,23 @@ import {
   getBootstrapAppStart,
   getArtifactVersions,
   sendMessage,
+  getAccountProfile,
+  getOrgInfo,
+  getSubscriptionDetails,
+  getOrgUsage,
+  listOrgSkills,
+  getOrgMcpBootstrap,
+  listOrgStyles,
+  getModelConfig,
+  getMemorySettings,
+  getCoworkSettings,
+  getSyncSettings,
+  getGdriveProgress,
+  getNotificationPreferences,
+  listInvites,
+  getCurrentUserAccess,
+  listActiveSessions,
+  setConversationTitle,
 } from '../../utils/claudeai-session';
 import {
   buildViaChromeSnippet,
@@ -48,6 +65,23 @@ import {
   snippetArtifactVersions,
   snippetSendMessage,
   snippetHealthCheck,
+  snippetAccountProfile,
+  snippetOrgInfo,
+  snippetSubscriptionDetails,
+  snippetOrgUsage,
+  snippetListOrgSkills,
+  snippetListOrgStyles,
+  snippetModelConfig,
+  snippetMemorySettings,
+  snippetCoworkSettings,
+  snippetSyncSettings,
+  snippetGdriveProgress,
+  snippetNotificationPreferences,
+  snippetCurrentUserAccess,
+  snippetListInvites,
+  snippetListActiveSessions,
+  snippetMcpBootstrap,
+  snippetSetConversationTitle,
 } from '../../utils/claudeai-via-chrome';
 
 const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -267,6 +301,137 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
         }
       },
     },
+
+    // ─── Additional read routes (cookie-file path) ───
+    // Fingerprints verified against lm-proxy captures 2026-05-10..14.
+
+    { method: 'GET', pattern: /^\/claude-ai\/account-profile$/,
+      handler: async () => { try { return upstreamWrap(await getAccountProfile()); } catch (err) { return catchOAuth(err); } } },
+
+    { method: 'GET', pattern: /^\/claude-ai\/org$/,
+      handler: async () => { try { return upstreamWrap(await getOrgInfo()); } catch (err) { return catchOAuth(err); } } },
+
+    { method: 'GET', pattern: /^\/claude-ai\/org\/subscription$/,
+      handler: async (req) => { try {
+        const cached = (req.query || {}).cached !== 'false';
+        return upstreamWrap(await getSubscriptionDetails({ cached }));
+      } catch (err) { return catchOAuth(err); } } },
+
+    { method: 'GET', pattern: /^\/claude-ai\/org\/usage$/,
+      handler: async () => { try { return upstreamWrap(await getOrgUsage()); } catch (err) { return catchOAuth(err); } } },
+
+    { method: 'GET', pattern: /^\/claude-ai\/org\/skills$/,
+      handler: async () => { try { return upstreamWrap(await listOrgSkills()); } catch (err) { return catchOAuth(err); } } },
+
+    { method: 'GET', pattern: /^\/claude-ai\/org\/mcp-bootstrap$/,
+      handler: async () => { try { return upstreamWrap(await getOrgMcpBootstrap()); } catch (err) { return catchOAuth(err); } } },
+
+    { method: 'GET', pattern: /^\/claude-ai\/org\/styles$/,
+      handler: async () => { try { return upstreamWrap(await listOrgStyles()); } catch (err) { return catchOAuth(err); } } },
+
+    { method: 'GET', pattern: /^\/claude-ai\/org\/model-config\/(?<model>[^/?]+)$/,
+      handler: async (req) => { try { return upstreamWrap(await getModelConfig(req.params.model)); } catch (err) { return catchOAuth(err); } } },
+
+    { method: 'GET', pattern: /^\/claude-ai\/org\/memory-settings$/,
+      handler: async () => { try { return upstreamWrap(await getMemorySettings()); } catch (err) { return catchOAuth(err); } } },
+
+    { method: 'GET', pattern: /^\/claude-ai\/org\/cowork-settings$/,
+      handler: async () => { try { return upstreamWrap(await getCoworkSettings()); } catch (err) { return catchOAuth(err); } } },
+
+    { method: 'GET', pattern: /^\/claude-ai\/org\/sync-settings$/,
+      handler: async () => { try { return upstreamWrap(await getSyncSettings()); } catch (err) { return catchOAuth(err); } } },
+
+    { method: 'GET', pattern: /^\/claude-ai\/org\/sync\/gdrive-progress$/,
+      handler: async () => { try { return upstreamWrap(await getGdriveProgress()); } catch (err) { return catchOAuth(err); } } },
+
+    { method: 'GET', pattern: /^\/claude-ai\/org\/notifications$/,
+      handler: async () => { try { return upstreamWrap(await getNotificationPreferences()); } catch (err) { return catchOAuth(err); } } },
+
+    { method: 'GET', pattern: /^\/claude-ai\/account\/invites$/,
+      handler: async () => { try { return upstreamWrap(await listInvites()); } catch (err) { return catchOAuth(err); } } },
+
+    { method: 'GET', pattern: /^\/claude-ai\/user-access$/,
+      handler: async () => { try { return upstreamWrap(await getCurrentUserAccess()); } catch (err) { return catchOAuth(err); } } },
+
+    { method: 'GET', pattern: /^\/claude-ai\/sessions-active$/,
+      handler: async (req) => { try {
+        const q = req.query || {};
+        return upstreamWrap(await listActiveSessions({
+          page: typeof q.page === 'string' ? parseInt(q.page, 10) : undefined,
+          perPage: typeof q.per_page === 'string' ? parseInt(q.per_page, 10) : undefined,
+          applicationSlug: typeof q.application_slug === 'string' ? q.application_slug : undefined,
+        }));
+      } catch (err) { return catchOAuth(err); } } },
+
+    // WRITE — rename / auto-title a conversation
+    { method: 'POST', pattern: /^\/claude-ai\/conversations\/(?<uuid>[^/?]+)\/title$/,
+      handler: async (req) => {
+        const uuid = req.params.uuid;
+        if (!UUID_RE.test(uuid)) return { success: false, error: { code: 'INVALID_UUID', message: `got ${uuid}` } };
+        try {
+          const b = req.body || {};
+          const title = typeof b.title === 'string' ? b.title : undefined;
+          return upstreamWrap(await setConversationTitle(uuid, { title }));
+        } catch (err) { return catchOAuth(err); }
+      } },
+
+    // ─── Additional via-chrome snippet routes ───
+
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/account-profile$/,
+      handler: async () => ({ success: true, data: snippetAccountProfile() }) },
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/org$/,
+      handler: async () => ({ success: true, data: snippetOrgInfo() }) },
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/org\/subscription$/,
+      handler: async (req) => ({ success: true, data: snippetSubscriptionDetails({ cached: (req.body || {}).cached }) }) },
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/org\/usage$/,
+      handler: async () => ({ success: true, data: snippetOrgUsage() }) },
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/org\/skills$/,
+      handler: async () => ({ success: true, data: snippetListOrgSkills() }) },
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/org\/mcp-bootstrap$/,
+      handler: async () => ({ success: true, data: snippetMcpBootstrap() }) },
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/org\/styles$/,
+      handler: async () => ({ success: true, data: snippetListOrgStyles() }) },
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/org\/model-config\/(?<model>[^/?]+)$/,
+      handler: async (req) => {
+        try { return { success: true, data: snippetModelConfig(req.params.model) }; }
+        catch (err) { return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } }; }
+      } },
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/org\/memory-settings$/,
+      handler: async () => ({ success: true, data: snippetMemorySettings() }) },
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/org\/cowork-settings$/,
+      handler: async () => ({ success: true, data: snippetCoworkSettings() }) },
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/org\/sync-settings$/,
+      handler: async () => ({ success: true, data: snippetSyncSettings() }) },
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/org\/sync\/gdrive-progress$/,
+      handler: async () => ({ success: true, data: snippetGdriveProgress() }) },
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/org\/notifications$/,
+      handler: async () => ({ success: true, data: snippetNotificationPreferences() }) },
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/account\/invites$/,
+      handler: async () => ({ success: true, data: snippetListInvites() }) },
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/user-access$/,
+      handler: async () => ({ success: true, data: snippetCurrentUserAccess() }) },
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/sessions-active$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        return { success: true, data: snippetListActiveSessions({
+          page: typeof b.page === 'number' ? b.page : undefined,
+          perPage: typeof b.perPage === 'number' ? b.perPage : undefined,
+          applicationSlug: typeof b.applicationSlug === 'string' ? b.applicationSlug : undefined,
+        }) };
+      } },
+    // WRITE
+    { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/conversations\/(?<uuid>[^/?]+)\/title$/,
+      handler: async (req) => {
+        const uuid = req.params.uuid;
+        if (!UUID_RE.test(uuid)) return { success: false, error: { code: 'INVALID_UUID', message: `got ${uuid}` } };
+        try {
+          const b = req.body || {};
+          const title = typeof b.title === 'string' ? b.title : undefined;
+          return { success: true, data: snippetSetConversationTitle(uuid, { title }) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      } },
 
     // POST /claude-ai/conversations/:uuid/completion
     //   Body: { prompt: string, model?, timezone?, locale?, parentMessageUuid? }

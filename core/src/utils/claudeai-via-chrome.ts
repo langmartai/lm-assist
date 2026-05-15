@@ -307,6 +307,178 @@ export function snippetArtifactVersions(artifactUuid: string): ViaChromeSnippet 
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Snippet generators for the additional claude.ai reads. Fingerprints
+// verified against lm-proxy captures 2026-05-10..14.
+// ─────────────────────────────────────────────────────────────────────────
+
+export const snippetAccountProfile = () =>
+  buildViaChromeSnippet({ path: '/api/account_profile', description: 'Read account profile' });
+
+export const snippetOrgInfo = () =>
+  buildViaChromeSnippet({ path: '/api/organizations/{org}', description: 'Read org metadata' });
+
+export const snippetSubscriptionDetails = (opts: { cached?: boolean } = {}) =>
+  buildViaChromeSnippet({
+    path: '/api/organizations/{org}/subscription_details',
+    query: opts.cached === false ? undefined : { cached: 'true' },
+    description: 'Read subscription details',
+  });
+
+export const snippetOrgUsage = () =>
+  buildViaChromeSnippet({ path: '/api/organizations/{org}/usage', description: 'Read claude.ai org usage' });
+
+export const snippetListOrgSkills = () =>
+  buildViaChromeSnippet({ path: '/api/organizations/{org}/skills/list-skills', description: 'List installed skills' });
+
+export const snippetListOrgStyles = () =>
+  buildViaChromeSnippet({ path: '/api/organizations/{org}/list_styles', description: 'List chat styles' });
+
+export const snippetModelConfig = (modelId: string) => {
+  if (!/^[a-z0-9-]+$/i.test(modelId)) throw new Error(`Invalid modelId: ${modelId}`);
+  return buildViaChromeSnippet({
+    path: `/api/organizations/{org}/model_configs/${modelId}`,
+    description: `Read model config for ${modelId}`,
+  });
+};
+
+export const snippetMemorySettings = () =>
+  buildViaChromeSnippet({ path: '/api/organizations/{org}/memory/settings', description: 'Read memory settings' });
+
+export const snippetCoworkSettings = () =>
+  buildViaChromeSnippet({ path: '/api/organizations/{org}/cowork_settings', description: 'Read cowork settings' });
+
+export const snippetSyncSettings = () =>
+  buildViaChromeSnippet({ path: '/api/organizations/{org}/sync/settings', description: 'Read sync settings' });
+
+export const snippetGdriveProgress = () =>
+  buildViaChromeSnippet({
+    path: '/api/organizations/{org}/sync/ingestion/gdrive/progress',
+    description: 'Read Google Drive ingestion progress',
+  });
+
+export const snippetNotificationPreferences = () =>
+  buildViaChromeSnippet({
+    path: '/api/organizations/{org}/notification/preferences',
+    description: 'Read notification preferences',
+  });
+
+export const snippetCurrentUserAccess = () =>
+  buildViaChromeSnippet({
+    path: '/api/bootstrap/{org}/current_user_access',
+    description: 'Read per-user permissions / roles',
+  });
+
+export const snippetListInvites = (): ViaChromeSnippet => {
+  // account_uuid placeholder replaced from ajs_user_id cookie at runtime
+  const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}
+  const userMatch = document.cookie.match(/ajs_user_id=(${UUID_RE_STR})/i);
+  if (!userMatch) return { error: 'no_account', message: 'ajs_user_id cookie not present' };
+  const account = userMatch[1];
+  const url = '/api/accounts/' + account + '/invites';
+  try {
+    const r = await fetch(url, { credentials: 'include', headers: { ...baseHeaders, 'Accept': '*/*' } });
+    const text = await r.text();
+    let body; try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+    return { status: r.status, statusText: r.statusText, url, body };
+  } catch (e) {
+    return { error: 'fetch_failed', message: String(e && e.message || e), url };
+  }
+})()`;
+  return { snippet, description: 'List pending org invites for current account', url: 'https://claude.ai/api/accounts/{account_uuid}/invites', method: 'GET', instructions: INSTRUCTIONS };
+};
+
+export const snippetListActiveSessions = (opts: { page?: number; perPage?: number; applicationSlug?: string } = {}) =>
+  buildViaChromeSnippet({
+    path: '/api/auth/sessions/list-active',
+    query: {
+      page: opts.page ?? 1,
+      per_page: opts.perPage ?? 10,
+      application_slug: opts.applicationSlug ?? 'claude-ai',
+    },
+    description: 'List active sessions across devices',
+  });
+
+/**
+ * Snippet for /api/organizations/{org}/mcp/v2/bootstrap. Server emits SSE
+ * (text/event-stream), so the snippet drains the stream in-page and
+ * returns the parsed events array.
+ */
+export const snippetMcpBootstrap = (): ViaChromeSnippet => {
+  const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}
+  const orgMatch = document.cookie.match(/lastActiveOrg=(${UUID_RE_STR})/i);
+  if (!orgMatch) return { error: 'no_org' };
+  const url = '/api/organizations/' + orgMatch[1] + '/mcp/v2/bootstrap';
+  let res;
+  try {
+    res = await fetch(url, { credentials: 'include', headers: { ...baseHeaders, 'Accept': 'text/event-stream' } });
+  } catch (e) {
+    return { error: 'fetch_failed', message: String(e && e.message || e), url };
+  }
+  if (!res.ok || !res.body) {
+    const text = await res.text();
+    return { status: res.status, statusText: res.statusText, url, body: text };
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  const events = [];
+  let buf = '';
+  const SEP = /\\r\\n\\r\\n|\\n\\n/;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let m;
+    while ((m = SEP.exec(buf)) !== null) {
+      const chunk = buf.slice(0, m.index);
+      buf = buf.slice(m.index + m[0].length);
+      const evM = chunk.match(/^event:\\s*(.+?)\\r?$/m);
+      const dM = chunk.match(/^data:\\s*([\\s\\S]+?)\\r?$/m);
+      if (!evM || !dM) continue;
+      let parsed = dM[1].trim();
+      try { parsed = JSON.parse(parsed); } catch {}
+      events.push({ type: evM[1].trim(), data: parsed });
+    }
+  }
+  return { status: res.status, statusText: res.statusText, url, body: { events, eventCount: events.length, eventTypes: [...new Set(events.map(e => e.type))] } };
+})()`;
+  return { snippet, description: 'Read MCP bootstrap (SSE response)', url: 'https://claude.ai/api/organizations/{org}/mcp/v2/bootstrap', method: 'GET', instructions: INSTRUCTIONS };
+};
+
+/**
+ * POST snippet — rename / auto-title a conversation. If `title` is null,
+ * server generates one from conversation content. Returns the new title.
+ */
+export const snippetSetConversationTitle = (convUuid: string, opts: { title?: string } = {}): ViaChromeSnippet => {
+  if (!UUID_RE.test(convUuid)) throw new Error(`Invalid conversation UUID: ${convUuid}`);
+  const body = opts.title !== undefined ? { title: opts.title } : {};
+  const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}
+  const orgMatch = document.cookie.match(/lastActiveOrg=(${UUID_RE_STR})/i);
+  if (!orgMatch) return { error: 'no_org' };
+  const url = '/api/organizations/' + orgMatch[1] + '/chat_conversations/${convUuid}/title';
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { ...baseHeaders, 'content-type': 'application/json', 'Accept': '*/*' },
+      body: ${JSON.stringify(JSON.stringify(body))},
+    });
+    const text = await r.text();
+    let body; try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+    return { status: r.status, statusText: r.statusText, url, body };
+  } catch (e) {
+    return { error: 'fetch_failed', message: String(e && e.message || e), url };
+  }
+})()`;
+  return {
+    snippet,
+    description: `Set / regenerate title for conversation ${convUuid}`,
+    url: `https://claude.ai/api/organizations/{org}/chat_conversations/${convUuid}/title`,
+    method: 'POST',
+    instructions: INSTRUCTIONS + ' WRITE — changes the conversation title visible in the sidebar.',
+  };
+};
+
 /**
  * Snippet that sends a new message to an existing conversation and
  * consumes the SSE stream in-page. Two-step inside the snippet:

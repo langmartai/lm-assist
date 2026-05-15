@@ -278,9 +278,19 @@ export function getOAuthStatus(): OAuthStatus {
  */
 export async function anthropicOAuthGet(
   pathname: string,
-  opts: { timeoutMs?: number; userAgent?: string; betaHeader?: string | null } = {},
+  opts: {
+    timeoutMs?: number;
+    userAgent?: string;
+    betaHeader?: string | null;
+    /** Extra headers to include (e.g. anthropic-version, x-organization-uuid). */
+    extraHeaders?: Record<string, string>;
+    /** Override query string (already URL-encoded). */
+    query?: string;
+    /** Skip auth — for public endpoints like /mcp-registry/v0/servers. */
+    skipAuth?: boolean;
+  } = {},
 ): Promise<{ status: number; statusText: string; body: any; headers: Record<string, string> }> {
-  const url = `https://api.anthropic.com${pathname}`;
+  const url = `https://api.anthropic.com${pathname}${opts.query ? (pathname.includes('?') ? '&' : '?') + opts.query : ''}`;
   const timeoutMs = opts.timeoutMs ?? 10_000;
   const ua = opts.userAgent ?? getClaudeCodeUserAgent();
   const betaHeader = opts.betaHeader === null ? null : (opts.betaHeader ?? 'oauth-2025-04-20');
@@ -294,12 +304,13 @@ export async function anthropicOAuthGet(
       const reqHeaders: Record<string, string> = {
         Accept: 'application/json, text/plain, */*',
         'Accept-Encoding': 'gzip, compress, deflate, br',
-        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
         'User-Agent': ua,
         Connection: 'keep-alive',
       };
+      if (!opts.skipAuth) reqHeaders.Authorization = `Bearer ${token}`;
       if (betaHeader) reqHeaders['anthropic-beta'] = betaHeader;
+      if (opts.extraHeaders) Object.assign(reqHeaders, opts.extraHeaders);
       const res = await fetch(url, {
         method: 'GET',
         headers: reqHeaders,
@@ -322,6 +333,10 @@ export async function anthropicOAuthGet(
     }
   }
 
+  // Public endpoints (skipAuth) don't need a token; call with empty.
+  if (opts.skipAuth) {
+    return await call('');
+  }
   const creds = await getValidAccessToken();
   let result = await call(creds.accessToken);
   if (result.status === 401 || result.status === 403) {
@@ -349,4 +364,115 @@ export async function anthropicOAuthGet(
     }
   }
   return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Claude Code endpoint helpers — fingerprints sourced from
+// claude-code-leak/claude-code-2.1.88/source/src/ (Anthropic's own call
+// sites). All use the OAuth bearer + `anthropic-beta: oauth-2025-04-20`
+// pattern via `auth.headers`, except where noted.
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/oauth/claude_cli/roles — role data for the current OAuth user.
+ * Source: services/oauth/client.ts:279 (`fetchAndStoreUserRoles`).
+ * NOTE: this endpoint is called with `Authorization` ONLY — no
+ * `anthropic-beta` header. Sending one would be a fingerprint deviation.
+ */
+export function getOauthCliRoles() {
+  return anthropicOAuthGet('/api/oauth/claude_cli/roles', { betaHeader: null });
+}
+
+/** GET /api/oauth/account/settings. Source: observed live + sources/services. */
+export function getOauthAccountSettings() {
+  return anthropicOAuthGet('/api/oauth/account/settings');
+}
+
+/** GET /api/claude_cli/bootstrap?entrypoint=&model= */
+export function getClaudeCliBootstrap(opts: { entrypoint?: string; model?: string } = {}) {
+  const params = new URLSearchParams();
+  if (opts.entrypoint) params.set('entrypoint', opts.entrypoint);
+  if (opts.model) params.set('model', opts.model);
+  const qs = params.toString();
+  return anthropicOAuthGet(`/api/claude_cli/bootstrap${qs ? '?' + qs : ''}`);
+}
+
+/** GET /api/claude_code_grove — extended-thinking grove config. */
+export function getClaudeCodeGrove() {
+  return anthropicOAuthGet('/api/claude_code_grove');
+}
+
+/** GET /api/claude_code_penguin_mode — fast-mode config. */
+export function getClaudeCodePenguinMode() {
+  return anthropicOAuthGet('/api/claude_code_penguin_mode');
+}
+
+/**
+ * GET /api/claude_code/policy_limits.
+ * Source: services/policyLimits/index.ts (Bearer + oauth-2025-04-20).
+ */
+export function getClaudeCodePolicyLimits() {
+  return anthropicOAuthGet('/api/claude_code/policy_limits');
+}
+
+/**
+ * GET /api/claude_code/settings — server-managed Claude Code settings.
+ * Source: services/remoteManagedSettings/index.ts.
+ */
+export function getClaudeCodeSettings() {
+  return anthropicOAuthGet('/api/claude_code/settings');
+}
+
+/**
+ * GET /api/claude_code/user_settings — user-level settings (PUT supported
+ * for updates in source, not yet exposed here).
+ * Source: services/settingsSync/index.ts.
+ */
+export function getClaudeCodeUserSettings() {
+  return anthropicOAuthGet('/api/claude_code/user_settings');
+}
+
+/**
+ * GET /api/claude_code/team_memory?repo=<owner/repo>[&view=hashes]
+ * Source: services/teamMemorySync/index.ts. Returns either the full
+ * memory data or just the entry checksums when `view=hashes`.
+ */
+export function getClaudeCodeTeamMemory(repo: string, opts: { view?: 'hashes' } = {}) {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+    throw new Error(`Invalid repo slug: expected owner/repo, got ${repo}`);
+  }
+  const params = new URLSearchParams();
+  params.set('repo', repo);
+  if (opts.view === 'hashes') params.set('view', 'hashes');
+  return anthropicOAuthGet(`/api/claude_code/team_memory?${params}`);
+}
+
+/**
+ * GET /v1/mcp_servers — Anthropic-managed MCP servers.
+ * Fingerprint differs from the OAuth-beta family: uses
+ * `anthropic-beta: mcp-servers-2025-12-04` + `anthropic-version: 2023-06-01`.
+ */
+export function getV1McpServers(opts: { limit?: number } = {}) {
+  const params = new URLSearchParams();
+  params.set('limit', String(opts.limit ?? 1000));
+  return anthropicOAuthGet(`/v1/mcp_servers?${params}`, {
+    betaHeader: 'mcp-servers-2025-12-04',
+    extraHeaders: { 'anthropic-version': '2023-06-01' },
+  });
+}
+
+/**
+ * GET /mcp-registry/v0/servers — public MCP marketplace catalog.
+ * Public endpoint (no Authorization header).
+ */
+export function getMcpRegistry(opts: { limit?: number; version?: string; visibility?: string; cursor?: string } = {}) {
+  const params = new URLSearchParams();
+  params.set('version', opts.version ?? 'latest');
+  params.set('limit', String(opts.limit ?? 100));
+  if (opts.visibility) params.set('visibility', opts.visibility);
+  if (opts.cursor) params.set('cursor', opts.cursor);
+  return anthropicOAuthGet(`/mcp-registry/v0/servers?${params}`, {
+    skipAuth: true,
+    betaHeader: null,
+  });
 }
