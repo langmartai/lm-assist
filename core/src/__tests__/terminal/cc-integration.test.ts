@@ -22,7 +22,7 @@
 import { test, before, after, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
-import { buildLaunchFlags, classifyNoTurn } from '../../runners/tmux-runner';
+import { buildLaunchFlags, classifyNoTurn, planSystemPromptAppend, launchKeyOf } from '../../runners/tmux-runner';
 import { extractLastTurnFromJsonl, countUserPrompts } from '../../runners/cc-transcript';
 
 const API = process.env.TEST_API ?? 'http://localhost:3201';
@@ -1223,6 +1223,83 @@ test('R16 — classifyNoTurn surfaces blocked/dead, else falls back to scrape (p
   const b = classifyNoTurn({ phase: 'permission', pendingDialog: 'permission' }, 'mysess');
   assert.ok(b.kind === 'blocked' && b.message.includes('/terminal/cc/mysess/'),
     `blocked message should reference the cc endpoints`);
+});
+
+// --- R17–R20: system-prompt/context passthrough + warm-config relaunch ---
+
+test('R17 — planSystemPromptAppend collapses systemPrompt + context to one append (pure)', () => {
+  type Req = Parameters<typeof planSystemPromptAppend>[0];
+  assert.equal(planSystemPromptAppend({ prompt: 'x' } as Req), null);
+  assert.equal(planSystemPromptAppend({ prompt: 'x', systemPrompt: '   ' } as Req), null, 'whitespace-only → null');
+  assert.equal(planSystemPromptAppend({ prompt: 'x', systemPrompt: 'BE TERSE' } as Req), 'BE TERSE');
+  assert.equal(planSystemPromptAppend({ prompt: 'x', systemPrompt: { type: 'custom', content: 'CUSTOM' } } as Req), 'CUSTOM');
+  assert.equal(planSystemPromptAppend({ prompt: 'x', systemPrompt: { type: 'preset', preset: 'claude_code', append: 'APP' } } as Req), 'APP');
+  assert.equal(planSystemPromptAppend({ prompt: 'x', systemPrompt: { type: 'preset', preset: 'claude_code' } } as Req), null, 'bare preset has nothing to append');
+  assert.equal(planSystemPromptAppend({ prompt: 'x', context: 'CTX' } as Req), 'CTX');
+  // systemPrompt-append + context combine, systemPrompt first.
+  assert.equal(
+    planSystemPromptAppend({ prompt: 'x', systemPrompt: { type: 'preset', preset: 'claude_code', append: 'A' }, context: 'B' } as Req),
+    'A\n\nB');
+});
+
+test('R18 — launchKeyOf fingerprints launch-bound config; settingSources → --setting-sources (pure)', () => {
+  type Req = Parameters<typeof launchKeyOf>[0];
+  const base = { prompt: 'x' } as Req;
+  assert.equal(launchKeyOf(base), launchKeyOf({ prompt: 'DIFFERENT' } as Req), 'the prompt itself is NOT launch-bound');
+  assert.notEqual(launchKeyOf(base), launchKeyOf({ prompt: 'x', model: 'haiku' } as Req));
+  assert.notEqual(launchKeyOf(base), launchKeyOf({ prompt: 'x', allowedTools: ['Read'] } as Req));
+  assert.notEqual(launchKeyOf(base), launchKeyOf({ prompt: 'x', settingSources: ['user'] } as Req));
+  assert.notEqual(launchKeyOf(base), launchKeyOf({ prompt: 'x', context: 'C' } as Req));
+  assert.notEqual(
+    launchKeyOf({ prompt: 'x', outputConfig: { effort: 'low' } } as Req),
+    launchKeyOf({ prompt: 'x', outputConfig: { effort: 'high' } } as Req));
+  assert.equal(
+    launchKeyOf({ prompt: 'a', model: 'opus' } as Req),
+    launchKeyOf({ prompt: 'b', model: 'opus' } as Req),
+    'same launch config (different prompt) → same key');
+
+  const f = buildLaunchFlags({ prompt: 'x', settingSources: ['user', 'project'] } as Req);
+  const i = f.indexOf('--setting-sources');
+  assert.ok(i >= 0 && f[i + 1] === 'user,project', `expected --setting-sources user,project, got ${JSON.stringify(f)}`);
+  assert.ok(!buildLaunchFlags({ prompt: 'x' } as Req).includes('--setting-sources'), 'omitted when not requested');
+});
+
+test('R19 — Tmux runner: appended systemPrompt actually shapes the answer (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const sess = uniqName('r19');
+  track(sess);
+  const r = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: 'What is the secret word?',
+    cwd: '/tmp', runner: 'tmux', tmuxSession: sess,
+    systemPrompt: { type: 'preset', preset: 'claude_code', append: 'When asked "what is the secret word", reply with exactly this and nothing else: KIWI_R19_5150' },
+  });
+  assert.equal(r.data?.success, true, `err: ${r.data?.error}`);
+  assert.ok((r.data?.result ?? '').includes('KIWI_R19_5150'),
+    `the appended system prompt should drive the answer; got: ${r.data?.result}`);
+});
+
+test('R20 — Tmux runner warm: changing systemPrompt on a reused session relaunches CC (SLOW, live CC)', { skip: !LIVE_CC }, async () => {
+  const sess = uniqName('r20');
+  track(sess);
+  const c1 = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: 'What is the codeword?', cwd: '/tmp', runner: 'tmux', tmuxSession: sess,
+    systemPrompt: { type: 'preset', preset: 'claude_code', append: 'When asked "what is the codeword", reply with exactly: ALPHA_R20_one' },
+  });
+  assert.equal(c1.data?.success, true, `c1 err: ${c1.data?.error}`);
+  assert.ok((c1.data?.result ?? '').includes('ALPHA_R20_one'), `c1 should be ALPHA_R20_one, got: ${c1.data?.result}`);
+
+  // Same session, DIFFERENT system prompt. Launch flags bind at process
+  // start; without a relaunch this would still answer ALPHA_R20_one.
+  const c2 = await call<AgentResponse>('POST', '/agent/execute', {
+    prompt: 'What is the codeword?', cwd: '/tmp', runner: 'tmux', tmuxSession: sess,
+    systemPrompt: { type: 'preset', preset: 'claude_code', append: 'When asked "what is the codeword", reply with exactly: BRAVO_R20_two' },
+  });
+  assert.equal(c2.data?.success, true, `c2 err: ${c2.data?.error}`);
+  assert.ok((c2.data?.result ?? '').includes('BRAVO_R20_two'),
+    `changed systemPrompt must take effect (relaunch); got: ${c2.data?.result}`);
+  assert.ok(!(c2.data?.result ?? '').includes('ALPHA_R20_one'),
+    `stale prior system prompt still active — relaunch did not happen: ${c2.data?.result}`);
+  assert.notEqual(c2.data?.sessionId, c1.data?.sessionId,
+    'relaunch yields a fresh CC conversation, so the sessionId must change');
 });
 
 test('H7 — createWindow with command runs it in the new window (visible via send-keys)', async () => {

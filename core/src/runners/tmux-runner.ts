@@ -14,6 +14,9 @@
  * structurally, the TUI doesn't.
  */
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as cc from '../terminal/cc';
 import * as tmux from '../terminal/tmux';
 import * as inspector from '../terminal/inspector';
@@ -37,6 +40,14 @@ interface SessionMeta {
   lastUsedAt: number;
   /** cwd CC was launched in (for cache-key style validation) */
   cwd: string;
+  /**
+   * Fingerprint of the launch-bound config (model/tools/effort/
+   * settingSources/system-prompt) the CC process in this session was
+   * started with. If a later call's fingerprint differs, the session is
+   * relaunched so the new config takes effect. Undefined = session not
+   * started by us / config unknown (never force-relaunch on unknown).
+   */
+  launchKey?: string;
 }
 
 const SESSIONS = new Map<string, SessionMeta>();
@@ -64,13 +75,14 @@ function ensureReaper(): void {
   if (typeof reaperTimer.unref === 'function') reaperTimer.unref();
 }
 
-function touch(name: string, cwd: string): void {
+function touch(name: string, cwd: string, launchKey?: string): void {
   const existing = SESSIONS.get(name);
   if (existing) {
     existing.lastUsedAt = Date.now();
+    if (launchKey !== undefined) existing.launchKey = launchKey;
   } else {
     const now = Date.now();
-    SESSIONS.set(name, { name, createdAt: now, lastUsedAt: now, cwd });
+    SESSIONS.set(name, { name, createdAt: now, lastUsedAt: now, cwd, launchKey });
   }
   ensureReaper();
 }
@@ -148,13 +160,19 @@ function extractResponse(_beforeText: string, afterText: string, _prompt: string
  *   disallowedTools       → --disallowedTools <t> <t> ...
  *   outputConfig.effort   → --effort <level>
  *   extendedThinking.enabled (no explicit effort) → --effort high
+ *   settingSources        → --setting-sources <a,b,c>
  *
  * `model` is intentionally NOT here — cc.launch takes it as a dedicated
  * option and emits `--model` itself (see buildLaunchCmd in cc.ts), so
- * adding it here would double the flag.
+ * adding it here would double the flag. System-prompt flags are added
+ * separately (they need temp files) — see materializeAppendSystemPrompt.
  *
- * The interactive `claude` binary accepts these as global session-config
- * flags (the same way cc.ts already passes `--model` to the TUI launch).
+ * All of these were empirically validated to take effect in the
+ * INTERACTIVE `claude` launch (not just `-p`). NOTE: `--bare` is
+ * deliberately NOT used to gate CLAUDE.md — it disables OAuth/keychain
+ * auth, which breaks this deployment (no ANTHROPIC_API_KEY; "Not logged
+ * in"). `--setting-sources` is the auth-safe lever and was verified to
+ * gate project CLAUDE.md/settings.
  */
 export function buildLaunchFlags(request: AgentExecuteRequest): string[] {
   const flags: string[] = [];
@@ -172,7 +190,85 @@ export function buildLaunchFlags(request: AgentExecuteRequest): string[] {
   if (effort) {
     flags.push('--effort', effort);
   }
+  // settingSources: SDK parity for which settings/CLAUDE.md load. The
+  // interactive TUI auto-discovers project+user CLAUDE.md by DEFAULT
+  // (unlike the SDK, which is lean unless asked) — passing this lets a
+  // caller opt out of that (e.g. ['user'] to skip project CLAUDE.md).
+  if (request.settingSources && request.settingSources.length > 0) {
+    flags.push('--setting-sources', request.settingSources.join(','));
+  }
   return flags;
+}
+
+/**
+ * Collapse `request.systemPrompt` + `request.context` into a single
+ * APPEND string for the interactive TUI.
+ *
+ * Why append-only (deliberate divergence from the SDK's replace
+ * semantics): only the append variants were validated to work in
+ * interactive launch. `--system-prompt-file` (full replace) was tested
+ * and does NOT work — it strips Claude Code's agent scaffolding and the
+ * TUI stops answering. So a custom/string systemPrompt is APPENDED to
+ * CC's default rather than replacing it: the caller's instructions are
+ * still injected, and CC stays a functioning agent. The SDK itself
+ * defaults to preset+append anyway (see sdk-runner.ts), so for the common
+ * path this is faithful; only the rare full-replace case differs, by
+ * design.
+ */
+export function planSystemPromptAppend(request: AgentExecuteRequest): string | null {
+  const parts: string[] = [];
+  const sp = request.systemPrompt;
+  if (typeof sp === 'string') {
+    if (sp.trim()) parts.push(sp);
+  } else if (sp && typeof sp === 'object') {
+    if (sp.type === 'custom' && typeof sp.content === 'string' && sp.content.trim()) {
+      parts.push(sp.content);
+    } else if (sp.type === 'preset' && typeof sp.append === 'string' && sp.append.trim()) {
+      parts.push(sp.append);
+    }
+  }
+  if (typeof request.context === 'string' && request.context.trim()) {
+    parts.push(request.context);
+  }
+  return parts.length > 0 ? parts.join('\n\n') : null;
+}
+
+/**
+ * Write the append-system-prompt to a temp file and return the
+ * `--append-system-prompt-file <path>` flag plus the temp paths to clean
+ * up. File (not argv string) because the content can be large/multiline —
+ * the `-file` variant was the one empirically validated and sidesteps
+ * argv-length and shell-quoting limits entirely.
+ */
+function materializeAppendSystemPrompt(request: AgentExecuteRequest): { flags: string[]; tmpFiles: string[] } {
+  const append = planSystemPromptAppend(request);
+  if (!append) return { flags: [], tmpFiles: [] };
+  const file = path.join(
+    os.tmpdir(),
+    `lm-assist-sysprompt-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`,
+  );
+  fs.writeFileSync(file, append, 'utf-8');
+  return { flags: ['--append-system-prompt-file', file], tmpFiles: [file] };
+}
+
+/**
+ * Stable fingerprint of every launch-bound parameter. Launch flags are
+ * fixed when the CC process starts; a warm session can't change them
+ * mid-life (the SDK varies them per call — we can't). If a reused
+ * session's fingerprint changes, the runner relaunches a fresh CC so the
+ * new config actually takes effect instead of being silently ignored.
+ */
+export function launchKeyOf(request: AgentExecuteRequest): string {
+  const effort = request.outputConfig?.effort
+    ?? (request.extendedThinking?.enabled ? 'high' : null);
+  return JSON.stringify({
+    model: request.model ?? null,
+    allowedTools: request.allowedTools ?? null,
+    disallowedTools: request.disallowedTools ?? null,
+    effort,
+    settingSources: request.settingSources ?? null,
+    append: planSystemPromptAppend(request),
+  });
 }
 
 // ---------- No-turn classification (screen is the only source) -----------
@@ -237,6 +333,8 @@ export function createTmuxRunner(opts: TmuxRunnerOptions = {}) {
       ?? `agent-${executionId.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 64)}`;
 
     const cwd = request.cwd ?? process.cwd();
+    const launchKey = launchKeyOf(request);
+    let tmpFiles: string[] = [];
 
     try {
       // 1. Launch CC if not already idle in this session. cc.launch is
@@ -247,12 +345,31 @@ export function createTmuxRunner(opts: TmuxRunnerOptions = {}) {
         try { return cc.status(sessionName); } catch { return null; }
       })();
 
-      const needsLaunch = !status || (status.phase !== 'idle' && status.phase !== 'busy' && status.phase !== 'plan-mode');
+      let needsLaunch = !status || (status.phase !== 'idle' && status.phase !== 'busy' && status.phase !== 'plan-mode');
+
+      // Warm-session config change. Launch flags (model / tools / effort /
+      // settingSources / system-prompt) bind once when the CC process
+      // starts and CANNOT change mid-life — the SDK varies them per call;
+      // we can't. If this reused session was started with a different
+      // config, relaunch a fresh CC so the new config actually takes
+      // effect instead of being silently ignored. priorKey===undefined
+      // means we didn't start it (or don't know) → never force-relaunch.
+      if (!needsLaunch) {
+        const priorKey = SESSIONS.get(sessionName)?.launchKey;
+        if (priorKey !== undefined && priorKey !== launchKey) {
+          try { await tmux.kill(sessionName); } catch { /* best-effort */ }
+          SESSIONS.delete(sessionName);
+          needsLaunch = true;
+        }
+      }
+
       if (needsLaunch) {
+        const sp = materializeAppendSystemPrompt(request);
+        tmpFiles = sp.tmpFiles;
         const launchResult = await cc.launch(sessionName, {
           cwd,
           model: request.model ? String(request.model) : null,
-          extraFlags: buildLaunchFlags(request),
+          extraFlags: [...buildLaunchFlags(request), ...sp.flags],
           skipPermissions: true,
           cols: 220,
           rows: 60,
@@ -263,6 +380,9 @@ export function createTmuxRunner(opts: TmuxRunnerOptions = {}) {
         if (!launchResult.ready) {
           return errorResponse(executionId, start, `cc.launch did not reach idle: phase=${launchResult.finalPhase}`);
         }
+        // Record the config this CC process was started with, so a later
+        // call with a different fingerprint triggers a relaunch.
+        touch(sessionName, cwd, launchKey);
       }
 
       // 1b. FRESHNESS BASELINE. Count how many real user prompts the
@@ -364,7 +484,7 @@ export function createTmuxRunner(opts: TmuxRunnerOptions = {}) {
         result = extractResponse(beforeCapture, afterCapture, request.prompt);
       }
 
-      touch(sessionName, cwd);
+      touch(sessionName, cwd, launchKey);
 
       const response: AgentExecuteResponse & { tmuxSession?: string; runner?: string } = {
         success: true,
@@ -391,6 +511,10 @@ export function createTmuxRunner(opts: TmuxRunnerOptions = {}) {
     } catch (e: unknown) {
       const msg = e instanceof TerminalError ? `${e.code}: ${e.message}` : String(e);
       return errorResponse(executionId, start, msg, sessionName);
+    } finally {
+      // CC reads --append-system-prompt-file at startup; once launched the
+      // temp file is no longer needed regardless of how the turn went.
+      for (const f of tmpFiles) { try { fs.unlinkSync(f); } catch { /* ignore */ } }
     }
   }
 
