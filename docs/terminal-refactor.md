@@ -24,7 +24,10 @@ surface for handling CC's interactive prompts.
 | API endpoints | 13 | 18 (5 new) |
 | Typed error codes | 1 (string) | 11 (discriminated union) |
 
-Branch: `feat/terminal-refactor` (local, not pushed).
+The original refactor (§1–§8) is on `main`. A later body of work built
+the **`/agent/execute` tmux runner** on top of this subsystem and closed
+its parity gaps with the SDK runner — see **§9** for the runner
+comparison and closed-gap record.
 
 ## 1. What was done
 
@@ -320,3 +323,86 @@ core/tsconfig.test.json                            |   11 +
 7664672 test(terminal): integration test suite for tmux + Claude Code control
 47ecf9b refactor(terminal): layered architecture with verification + validation
 ```
+
+Later, on `main` — the `/agent/execute` tmux runner and its SDK-parity
+closures (see §9):
+
+```
+7472ce3 feat(agent-api): close SDK-parity gaps in tmux runner (background+abort, tools/effort)
+f79539e fix(tmux-runner): read CC's structured transcript as authoritative output
+867d924 fix(tmux-runner): freshness gate for warm sessions + blocked-state surfacing
+249a306 feat(tmux-runner): systemPrompt/context + settingSources passthrough; relaunch on config change
+```
+
+## 9. Agent runner — SDK vs tmux parity (closed gaps)
+
+`POST /agent/execute` can run on either runner:
+
+- **SDK runner** (`sdk-runner.ts`, default) — drives
+  `@anthropic-ai/claude-agent-sdk`. One typed, self-delimited message
+  stream with an explicit terminal `result` message. Stateless per call.
+- **tmux runner** (`runners/tmux-runner.ts`, `runner:'tmux'`) — drives a
+  long-lived Claude Code TUI in a tmux session. Reuses a warm CC across
+  calls (2 h idle TTL) and exposes the interactive surface.
+
+### The two-signal model
+
+The SDK has one source of truth (its stream). The tmux runner has to
+reconstruct that from **two lossy proxies**, and both must be handled:
+
+| SDK (native) | tmux equivalent |
+|---|---|
+| `init.session_id` | TUI footer `sid:` scrape |
+| permission callback / "stream open" | **screen** phase machine + dialogs (only place this state exists) |
+| `assistant`/`result` content + usage | **JSONL transcript** (`~/.claude/projects/{cwd-key}/{sid}.jsonl`) |
+| explicit `result` message = "done, canonical" | screen-stability **+ transcript freshness gate** (hand-built) |
+
+Division of responsibility: **screen** = state / liveness / dialogs /
+sessionId + the human-watchable gnome tab; **JSONL** = authoritative
+content + token usage; the freshness gate + `classifyNoTurn` are the
+coordination layer.
+
+### Closed gaps
+
+| # | Gap (tmux was…) | Fix | Commit | Tests |
+|---|---|---|---|---|
+| 1 | no `background`/`abort` | in-process bg via synthetic handle; abort = cooperative Ctrl+C, session survives | `7472ce3` | R7, R8 |
+| 2 | dropped `allowedTools`/`disallowedTools`/`model` | `--allowedTools`/`--disallowedTools` launch flags; model via `cc.launch` | `7472ce3` | R9 |
+| 3 | dropped `extendedThinking`/effort | `outputConfig.effort` → `--effort`; enabled thinking ⇒ `--effort high` | `7472ce3` | R10 |
+| 4 | screen-scrape truncated multi-paragraph output | read CC's structured JSONL transcript as authoritative output | `f79539e` | R11, R12, R13 |
+| 5 | token usage hard-zero | usage summed from the transcript's assistant records | `f79539e` | R2 |
+| 6 | warm session returned the **previous** answer | freshness gate: require the prompt-count to grow past a pre-prompt baseline before trusting a turn | `867d924` | R14, R15 |
+| 7 | a dialog was scraped and returned as the answer | `classifyNoTurn` surfaces blocked/dead distinctly instead of scraping | `867d924` | R16, R6 |
+| 8 | dropped `systemPrompt`/`context` | collapsed into one append → `--append-system-prompt-file` (temp file) | `249a306` | R17, R19 |
+| 9 | no `settingSources` control (always loaded project CLAUDE.md) | `--setting-sources` passthrough | `249a306` | R18 |
+| 10 | warm session pinned call #1's launch config | `launchKeyOf()` fingerprint → relaunch fresh CC when it changes | `249a306` | R20 |
+
+Tests R1–R20 live in `cc-integration.test.ts` (pure ones ungated; live
+ones gated by `RUN_LIVE_CC=1`). Full suite at the time of §9: **102
+tests, 0 fail** (24 skipped = live-CC/GUI gated).
+
+### Remaining intentional non-parity
+
+- **System-prompt *replace*** — unsupported. `--system-prompt-file` was
+  empirically tested and breaks the interactive TUI (strips CC's agent
+  scaffolding → no answers). A custom/string `systemPrompt` is therefore
+  **appended**, not replaced. The SDK itself defaults to preset+append,
+  so the common path is faithful; only full-replace differs, by design.
+- **USD cost** — `totalCostUsd` is `0` on the tmux path (no pricing
+  calculation). Token *usage* is populated from the transcript.
+- **Completion signal** — the SDK has an explicit `result` message; the
+  tmux runner reconstructs that boundary from screen-stability + the
+  transcript freshness gate. Residual edge: a >3 s mid-turn pause with
+  no screen redraw is rare but not provably impossible.
+- **`--bare`** is deliberately **not** used to gate CLAUDE.md — it
+  disables OAuth/keychain auth, which breaks this deployment (no
+  `ANTHROPIC_API_KEY`; "Not logged in"). `--setting-sources` is the
+  auth-safe lever.
+
+### Validation discipline
+
+Every CLI-flag mechanism was empirically validated against the actual
+interactive `claude` (2.1.143) via the real `cc.launch` path **before**
+implementation. This caught two footguns that the naïve design would
+have shipped: `--system-prompt-file` (replace) not working in the TUI,
+and `--bare` breaking OAuth auth.
