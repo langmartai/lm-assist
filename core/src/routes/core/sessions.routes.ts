@@ -13,6 +13,66 @@ import { getSessionSummary, saveSessionSummary, getAllSessionSummaries, deleteSe
 import { enqueuePrompt, getSessionQueue, getAllPendingPrompts, getNextPrompt, markDispatched, markCompleted, cancelPrompt, cleanupQueue, getQueuedBySession, getProjectQueue } from '../../prompt-queue-store';
 import { getProjectSummary, getAllProjectSummaries, saveProjectSummary, deleteProjectSummary } from '../../project-summary-store';
 import { recordSignal, recordSignals, getProjectSignals, getAllSignals, getProjectLearningContext, cleanupSignals } from '../../learning-store';
+import { createMemoryApiImpl, MemoryDetail } from '../../api/memory-api';
+
+// Lazy memory-api singleton — used for the optional `?includeMemory=true` join.
+// Kept module-local so we don't have to thread it through TierControlApiImpl just yet.
+let _memoryApiSingleton: ReturnType<typeof createMemoryApiImpl> | null = null;
+function getMemoryApi() {
+  if (!_memoryApiSingleton) _memoryApiSingleton = createMemoryApiImpl();
+  return _memoryApiSingleton;
+}
+
+function parseMemoryDetail(v: string | undefined): MemoryDetail {
+  if (v === 'index' || v === 'list' || v === 'full' || v === 'relevant') return v;
+  return 'list';
+}
+function parseMemorySources(v: string | undefined): 'all' | 'live' | 'repo' {
+  if (v === 'live' || v === 'repo') return v;
+  return 'all';
+}
+function parseHostFilter(v: string | undefined): string[] | undefined {
+  if (!v) return undefined;
+  return v.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+/**
+ * If the request opted in via `?includeMemory=true`, fetch the memory
+ * payload for the session's project and attach it as `.data.memory`.
+ * Failures are non-fatal — memory is attached as null in that case.
+ */
+async function attachMemoryIfRequested(
+  sessionId: string,
+  query: Record<string, string>,
+  baseResponse: any,
+): Promise<any> {
+  if (query.includeMemory !== 'true' && query.includeMemory !== '1') return baseResponse;
+  if (!baseResponse || baseResponse.success === false || !baseResponse.data) return baseResponse;
+  try {
+    const detail = parseMemoryDetail(query.memoryDetail);
+    let relevanceQuery: string | undefined = query.memoryQuery;
+    // Auto-derive query from the last user prompt when detail=relevant and no
+    // explicit ?memoryQuery= was provided
+    if (detail === 'relevant' && !relevanceQuery) {
+      const prompts = (baseResponse.data && (baseResponse.data.userPrompts as any[])) || [];
+      const lastReal = [...prompts].reverse().find(p => !p.promptType || p.promptType === 'user' || p.promptType === 'command');
+      if (lastReal && typeof lastReal.text === 'string') {
+        relevanceQuery = lastReal.text.slice(0, 4000);
+      }
+    }
+    const memResp = await getMemoryApi().getForSession(sessionId, {
+      detail,
+      sources: parseMemorySources(query.memorySources),
+      hostFilter: parseHostFilter(query.memoryHosts),
+      relevanceQuery,
+      limit: query.memoryLimit ? parseInt(query.memoryLimit, 10) : undefined,
+    });
+    baseResponse.data.memory = memResp.success ? memResp.data : null;
+  } catch {
+    baseResponse.data.memory = null;
+  }
+  return baseResponse;
+}
 
 export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
   return [
@@ -514,30 +574,36 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
     {
       method: 'GET',
       pattern: /^\/sessions\/(?<sessionId>[^/]+)$/,
-      handler: async (req, api) => api.sessions.getSession(
-        req.params.sessionId,
-        {
-          cwd: req.query.cwd,
-          includeRawMessages: req.query.includeRawMessages === 'true',
-          // Line index filters (accept both fromLineIndex and fromLine aliases)
-          fromLineIndex: (req.query.fromLineIndex || req.query.fromLine) ? parseInt(req.query.fromLineIndex || req.query.fromLine, 10) : undefined,
-          toLineIndex: (req.query.toLineIndex || req.query.toLine) ? parseInt(req.query.toLineIndex || req.query.toLine, 10) : undefined,
-          // Turn index filters
-          fromTurnIndex: req.query.fromTurnIndex ? parseInt(req.query.fromTurnIndex, 10) : undefined,
-          toTurnIndex: req.query.toTurnIndex ? parseInt(req.query.toTurnIndex, 10) : undefined,
-          // User prompt index filters
-          fromUserPromptIndex: req.query.fromUserPromptIndex ? parseInt(req.query.fromUserPromptIndex, 10) : undefined,
-          toUserPromptIndex: req.query.toUserPromptIndex ? parseInt(req.query.toUserPromptIndex, 10) : undefined,
-          // Deprecated
-          lastNUserPrompts: req.query.lastNUserPrompts ? parseInt(req.query.lastNUserPrompts, 10) : undefined,
-          // Skip default limit
-          unlimited: req.query.unlimited === 'true',
-          // Include read-only file operations in fileChanges (excluded by default)
-          includeReads: req.query.includeReads === 'true',
-          // Conditional fetch — return notModified if session unchanged since this timestamp
-          ifModifiedSince: req.query.ifModifiedSince,
-        }
-      ),
+      handler: async (req, api) => {
+        const sessionId = req.params.sessionId;
+        const base = await api.sessions.getSession(
+          sessionId,
+          {
+            cwd: req.query.cwd,
+            includeRawMessages: req.query.includeRawMessages === 'true',
+            // Line index filters (accept both fromLineIndex and fromLine aliases)
+            fromLineIndex: (req.query.fromLineIndex || req.query.fromLine) ? parseInt(req.query.fromLineIndex || req.query.fromLine, 10) : undefined,
+            toLineIndex: (req.query.toLineIndex || req.query.toLine) ? parseInt(req.query.toLineIndex || req.query.toLine, 10) : undefined,
+            // Turn index filters
+            fromTurnIndex: req.query.fromTurnIndex ? parseInt(req.query.fromTurnIndex, 10) : undefined,
+            toTurnIndex: req.query.toTurnIndex ? parseInt(req.query.toTurnIndex, 10) : undefined,
+            // User prompt index filters
+            fromUserPromptIndex: req.query.fromUserPromptIndex ? parseInt(req.query.fromUserPromptIndex, 10) : undefined,
+            toUserPromptIndex: req.query.toUserPromptIndex ? parseInt(req.query.toUserPromptIndex, 10) : undefined,
+            // Deprecated
+            lastNUserPrompts: req.query.lastNUserPrompts ? parseInt(req.query.lastNUserPrompts, 10) : undefined,
+            // Skip default limit
+            unlimited: req.query.unlimited === 'true',
+            // Include read-only file operations in fileChanges (excluded by default)
+            includeReads: req.query.includeReads === 'true',
+            // Conditional fetch — return notModified if session unchanged since this timestamp
+            ifModifiedSince: req.query.ifModifiedSince,
+          }
+        );
+        // Optional memory join — controlled by ?includeMemory=true plus
+        // ?memoryDetail, ?memorySources, ?memoryHosts query params.
+        return await attachMemoryIfRequested(sessionId, req.query, base);
+      },
     },
 
     // GET /sessions/:sessionId/exists - Check if session exists
@@ -560,16 +626,20 @@ export function createSessionsRoutes(ctx: RouteContext): RouteHandler[] {
     {
       method: 'GET',
       pattern: /^\/sessions\/(?<sessionId>[^/]+)\/conversation$/,
-      handler: async (req, api) => api.sessions.getConversation({
-        sessionId: req.params.sessionId,
-        cwd: req.query.cwd,
-        toolDetail: req.query.toolDetail as 'none' | 'summary' | 'full' | undefined,
-        lastN: req.query.lastN ? parseInt(req.query.lastN) : (req.query.fromTurnIndex || req.query.toTurnIndex ? undefined : 50),
-        beforeLine: req.query.beforeLine ? parseInt(req.query.beforeLine) : undefined,
-        includeSystemPrompt: req.query.includeSystemPrompt === 'true',
-        fromTurnIndex: req.query.fromTurnIndex ? parseInt(req.query.fromTurnIndex) : undefined,
-        toTurnIndex: req.query.toTurnIndex ? parseInt(req.query.toTurnIndex) : undefined,
-      }),
+      handler: async (req, api) => {
+        const sessionId = req.params.sessionId;
+        const base = await api.sessions.getConversation({
+          sessionId,
+          cwd: req.query.cwd,
+          toolDetail: req.query.toolDetail as 'none' | 'summary' | 'full' | undefined,
+          lastN: req.query.lastN ? parseInt(req.query.lastN) : (req.query.fromTurnIndex || req.query.toTurnIndex ? undefined : 50),
+          beforeLine: req.query.beforeLine ? parseInt(req.query.beforeLine) : undefined,
+          includeSystemPrompt: req.query.includeSystemPrompt === 'true',
+          fromTurnIndex: req.query.fromTurnIndex ? parseInt(req.query.fromTurnIndex) : undefined,
+          toTurnIndex: req.query.toTurnIndex ? parseInt(req.query.toTurnIndex) : undefined,
+        });
+        return await attachMemoryIfRequested(sessionId, req.query, base);
+      },
     },
 
     // GET /sessions/:sessionId/messages/last/:count - Get last N messages

@@ -106,7 +106,44 @@ export class TierRestServer {
     this.initSessionCacheEvents();
     profiler.end('sessionEvents');
 
+    // Initialize memory cache singleton — auto-starts the chokidar watcher
+    // and wires file-change events into the SSE broadcast.
+    profiler.start('memoryCache', 'MemoryCache', 'Server Constructor');
+    this.initMemoryCacheEvents();
+    profiler.end('memoryCache');
+
     profiler.end('constructor');
+  }
+
+  /**
+   * Wire memory cache file events to SSE broadcast.
+   */
+  private initMemoryCacheEvents(): void {
+    try {
+      const { getMemoryCache } = require('./memory-cache');
+      const memCache = getMemoryCache();
+      memCache.onMemoryChange((dirPath: string, data: any) => {
+        // Broadcast as a generic TierEvent-shaped payload — clients that
+        // subscribe to /stream without an executionId filter will receive it.
+        try {
+          this.broadcastEvent({
+            type: 'memory_file_changed',
+            timestamp: new Date(),
+            tier: 'system',
+            data: {
+              dirPath,
+              source: data.source,
+              fileCount: data.files.length,
+              maxMtimeMs: data.maxMtimeMs,
+            },
+          } as any);
+        } catch {
+          /* swallow */
+        }
+      });
+    } catch (err) {
+      console.warn('[Server] MemoryCache init failed:', err);
+    }
   }
 
   /**

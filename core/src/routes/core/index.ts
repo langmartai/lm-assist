@@ -33,6 +33,7 @@ import { createProjectSettingsRoutes } from './project-settings.routes';
 import { createSkillRoutes } from './skills.routes';
 import { createTerminalRoutes } from './terminal.routes';
 import { createAnnotationRoutes } from './annotation.routes';
+import { createMemoryRoutes } from './memory.routes';
 
 /**
  * Create all core routes
@@ -65,5 +66,6 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createSkillRoutes(ctx),
     ...createTerminalRoutes(ctx),
     ...createAnnotationRoutes(ctx),
+    ...createMemoryRoutes(ctx),
   ];
 }
