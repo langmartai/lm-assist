@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### claude.ai conversation create + delete (2026-05-19)
+
+The claude.ai surface could list/read conversations and write (completion, title) but had no way to **create** or **delete** a conversation. The generic via-chrome escape hatch (`POST /claude-ai/via-chrome` `{path}`) is GET-only — `buildViaChromeSnippet` hardcodes a GET fetch with no method/body — so it could not substitute. Both operations are now first-class across both families.
+
+| Route | claude.ai path | Notes |
+|---|---|---|
+| **`POST /claude-ai/conversations`** | POST `…/chat_conversations` | **WRITE** — create empty conversation; body `{name?,uuid?}`; client-generated UUIDv4 (server echoes it); returns `{…conversation, uuid}`; HTTP 201 |
+| **`DELETE /claude-ai/conversations/:uuid`** | DELETE `…/chat_conversations/{uuid}` | **WRITE (destructive)** — UUID validated host-side; HTTP 204 |
+| **`POST /claude-ai/via-chrome/conversations/create`** | POST `…/chat_conversations` | snippet generates the UUID in-page and returns it; WRITE note in `instructions` |
+| **`POST /claude-ai/via-chrome/conversations/:uuid/delete`** | DELETE `…/chat_conversations/{uuid}` | UUID validated host-side; destructive-WRITE note in `instructions` |
+
+`createConversation()` / `deleteConversation()` model the existing `setConversationTitle` write (same header fingerprint, timeout, return shape). The via-chrome `create` route is registered **before** the `/conversations/:uuid` read route — the rest-server router is first-match-wins and the literal `create` would otherwise be captured as a `:uuid` (the old server returned `INVALID_REQUEST` for that path because the read route's UUID check rejected `"create"`).
+
+**Verified end-to-end** against real claude.ai with the exact route-emitted snippets: create 201 → query 200 → delete 204 → readback 404, with a pre/post safety baseline (all 62 existing conversation UUIDs) confirming zero collateral change. Deployed live to `:3100`.
+
 ### Endpoint expansion — 28 new routes across Claude Code OAuth + claude.ai
 
 A batched expansion of the catalog-backed endpoints. Each fingerprint was either captured live via `lm-proxy` (2026-05-10..14) or extracted from the leaked Claude Code source (`claude-code-2.1.88/source/src/`), so every new route ships with a verified header/auth/body shape rather than a guess.

@@ -54,6 +54,8 @@ import {
   getCurrentUserAccess,
   listActiveSessions,
   setConversationTitle,
+  createConversation,
+  deleteConversation,
 } from '../../utils/claudeai-session';
 import {
   buildViaChromeSnippet,
@@ -82,6 +84,8 @@ import {
   snippetListActiveSessions,
   snippetMcpBootstrap,
   snippetSetConversationTitle,
+  snippetCreateConversation,
+  snippetDeleteConversation,
 } from '../../utils/claudeai-via-chrome';
 
 const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -208,6 +212,32 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // POST /claude-ai/conversations
+    //   Body: { name?, uuid? }
+    //
+    //   WRITE — creates a new, empty conversation. Method differs from the
+    //   GET list route above (same pattern), so the router's method check
+    //   keeps them distinct. Returns { ...upstream, uuid } so the caller
+    //   knows the new conversation id even on a 204/empty body.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/conversations$/,
+      handler: async (req) => {
+        try {
+          const b = req.body || {};
+          const r = await createConversation({
+            name: typeof b.name === 'string' ? b.name : undefined,
+            uuid: typeof b.uuid === 'string' ? b.uuid : undefined,
+          });
+          const wrapped = upstreamWrap(r);
+          if (wrapped.success) (wrapped as { data: unknown }).data = { ...r.body, uuid: r.uuid };
+          return wrapped;
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
     // GET /claude-ai/conversations/:uuid
     {
       method: 'GET',
@@ -228,6 +258,30 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
             renderingMode: typeof q.rendering_mode === 'string' ? q.rendering_mode : undefined,
           });
           return upstreamWrap(r);
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // DELETE /claude-ai/conversations/:uuid
+    //
+    //   WRITE (destructive) — permanently deletes one conversation. Same
+    //   pattern as the GET read route; the DELETE method disambiguates.
+    //   UUID is validated so a malformed value can't widen the path.
+    {
+      method: 'DELETE',
+      pattern: /^\/claude-ai\/conversations\/(?<uuid>[^/?]+)$/,
+      handler: async (req) => {
+        const uuid = req.params.uuid;
+        if (!UUID_RE.test(uuid)) {
+          return {
+            success: false,
+            error: { code: 'INVALID_UUID', message: `Conversation UUID must be a UUIDv4: got ${uuid}` },
+          };
+        }
+        try {
+          return upstreamWrap(await deleteConversation(uuid));
         } catch (err) {
           return catchOAuth(err);
         }
@@ -554,6 +608,57 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
             success: false,
             error: { code: 'INVALID_REQUEST', message: (err as Error).message },
           };
+        }
+      },
+    },
+
+    // POST /claude-ai/via-chrome/conversations/create
+    //   Body: { name? }
+    //
+    //   WRITE snippet — creates a new empty conversation; the snippet
+    //   returns the new `uuid`. MUST stay registered BEFORE the
+    //   `/conversations/:uuid` read route below: the router is
+    //   first-match-wins and the literal "create" would otherwise be
+    //   captured as a :uuid by that route's `[^/?]+` group.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/conversations\/create$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        try {
+          return {
+            success: true,
+            data: snippetCreateConversation({
+              name: typeof b.name === 'string' ? b.name : undefined,
+            }),
+          };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      },
+    },
+
+    // POST /claude-ai/via-chrome/conversations/:uuid/delete
+    //
+    //   WRITE (destructive) snippet — permanently deletes the conversation.
+    //   The `/delete` suffix means this never collides with the read route
+    //   (which ends right after :uuid), so order is not significant here —
+    //   it is grouped with create only for readability.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/conversations\/(?<uuid>[^/?]+)\/delete$/,
+      handler: async (req) => {
+        const uuid = req.params.uuid;
+        if (!UUID_RE.test(uuid)) {
+          return {
+            success: false,
+            error: { code: 'INVALID_UUID', message: `Conversation UUID must be a UUIDv4: got ${uuid}` },
+          };
+        }
+        try {
+          return { success: true, data: snippetDeleteConversation(uuid) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
         }
       },
     },
