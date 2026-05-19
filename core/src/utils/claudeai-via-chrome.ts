@@ -480,6 +480,84 @@ export const snippetSetConversationTitle = (convUuid: string, opts: { title?: st
 };
 
 /**
+ * POST snippet — create a new, empty conversation. The conversation UUID
+ * is generated in-page (UUIDv4 via crypto.randomUUID) and sent in the
+ * body, mirroring the web app; the snippet returns it as `uuid` so the
+ * caller can immediately read or delete it without parsing the body.
+ *
+ * WRITE — adds a real (empty) conversation to the user's claude.ai account.
+ */
+export const snippetCreateConversation = (opts: { name?: string } = {}): ViaChromeSnippet => {
+  const name = opts.name ?? '';
+  const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}
+  const orgMatch = document.cookie.match(/lastActiveOrg=(${UUID_RE_STR})/i);
+  if (!orgMatch) return { error: 'no_org' };
+  const convUuid = (crypto && crypto.randomUUID) ? crypto.randomUUID() : (() => {
+    const b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    const h = Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+    return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);
+  })();
+  const url = '/api/organizations/' + orgMatch[1] + '/chat_conversations';
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { ...baseHeaders, 'content-type': 'application/json', 'Accept': '*/*' },
+      body: JSON.stringify({ uuid: convUuid, name: ${JSON.stringify(name)} }),
+    });
+    const text = await r.text();
+    let body; try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+    return { status: r.status, statusText: r.statusText, url, uuid: convUuid, body };
+  } catch (e) {
+    return { error: 'fetch_failed', message: String(e && e.message || e), url };
+  }
+})()`;
+  return {
+    snippet,
+    description: 'Create a new empty claude.ai conversation',
+    url: 'https://claude.ai/api/organizations/{org}/chat_conversations',
+    method: 'POST',
+    instructions: INSTRUCTIONS + ' WRITE — creates a real (empty) conversation in the user\'s claude.ai account. The new conversation UUID is returned as `uuid`.',
+  };
+};
+
+/**
+ * DELETE snippet — permanently delete a single conversation by UUID.
+ * The UUID is validated host-side (must be a real UUIDv4) so a
+ * malformed/empty value can't widen the request path.
+ *
+ * WRITE (destructive) — removes the conversation from the user's account.
+ */
+export const snippetDeleteConversation = (convUuid: string): ViaChromeSnippet => {
+  if (!UUID_RE.test(convUuid)) throw new Error(`Invalid conversation UUID: ${convUuid}`);
+  const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}
+  const orgMatch = document.cookie.match(/lastActiveOrg=(${UUID_RE_STR})/i);
+  if (!orgMatch) return { error: 'no_org' };
+  const url = '/api/organizations/' + orgMatch[1] + '/chat_conversations/${convUuid}';
+  try {
+    const r = await fetch(url, {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: { ...baseHeaders, 'Accept': '*/*' },
+    });
+    const text = await r.text();
+    let body; try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+    return { status: r.status, statusText: r.statusText, url, body };
+  } catch (e) {
+    return { error: 'fetch_failed', message: String(e && e.message || e), url };
+  }
+})()`;
+  return {
+    snippet,
+    description: `Delete claude.ai conversation ${convUuid}`,
+    url: `https://claude.ai/api/organizations/{org}/chat_conversations/${convUuid}`,
+    method: 'POST',
+    instructions: INSTRUCTIONS + ' WRITE (DESTRUCTIVE) — permanently deletes this conversation. Verify the UUID is the intended one before running.',
+  };
+};
+
+/**
  * Snippet that sends a new message to an existing conversation and
  * consumes the SSE stream in-page. Two-step inside the snippet:
  *   1. GET conversation → read current_leaf_message_uuid

@@ -30,6 +30,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 
 const SESSION_PATH = path.join(os.homedir(), '.claude', 'claudeai-session.json');
 
@@ -843,6 +844,128 @@ export async function setConversationTitle(convUuid: string, opts: { title?: str
       body: JSON.stringify(body),
       signal: ctrl.signal,
     });
+    const respHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => (respHeaders[k] = v));
+    const text = await res.text();
+    let parsed: any;
+    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+    return { status: res.status, statusText: res.statusText, headers: respHeaders, body: parsed };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * POST /api/organizations/{org_uuid}/chat_conversations — create a new,
+ * empty conversation.
+ *
+ * WRITE. The web app generates the conversation UUID client-side and sends
+ * it in the body; the server echoes it back. We mirror that: a UUIDv4 is
+ * generated here (or taken from `opts.uuid`) so the caller knows the id
+ * without having to parse the response. `name` defaults to "" (claude.ai
+ * shows "New chat" and auto-titles after the first message).
+ *
+ * Returns the usual { status, statusText, headers, body }; on success
+ * (HTTP 201) `body.uuid` equals the uuid we sent.
+ */
+export async function createConversation(opts: { name?: string; uuid?: string; orgUuid?: string } = {}) {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  const convUuid = opts.uuid ?? randomUUID();
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(convUuid)) {
+    throw new Error(`Invalid conversation UUID: ${convUuid}`);
+  }
+  const orgUuid = _org(opts);
+  const url = `https://claude.ai/api/organizations/${orgUuid}/chat_conversations`;
+  const id = deriveIdentity(cfg);
+  const body = { uuid: convUuid, name: opts.name ?? '' };
+  const headers: Record<string, string> = {
+    Host: 'claude.ai',
+    Connection: 'keep-alive',
+    'anthropic-client-platform': 'web_claude_ai',
+    'anthropic-client-version': '1.0.0',
+    'anthropic-client-sha': '8a753cbf88e19be0f5f67efefb1b07840b6402e9',
+    'content-type': 'application/json',
+    Accept: '*/*',
+    'User-Agent': cfg.userAgent ||
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+    Origin: 'https://claude.ai',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty',
+    Referer: 'https://claude.ai/new',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept-Language': 'en-US,en;q=0.9',
+    Cookie: cfg.cookie,
+  };
+  if (id.anonymousId) headers['anthropic-anonymous-id'] = id.anonymousId;
+  if (id.activitySessionId) headers['x-activity-session-id'] = id.activitySessionId;
+  if (id.deviceId) headers['anthropic-device-id'] = id.deviceId;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15_000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    const respHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => (respHeaders[k] = v));
+    const text = await res.text();
+    let parsed: any;
+    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+    return { status: res.status, statusText: res.statusText, headers: respHeaders, body: parsed, uuid: convUuid };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * DELETE /api/organizations/{org_uuid}/chat_conversations/{conv_uuid} —
+ * permanently delete a single conversation.
+ *
+ * WRITE (destructive). The UUID is validated to be a real UUIDv4 so a
+ * malformed/empty value can't widen the path. Returns the usual shape;
+ * claude.ai responds 204 (no body) on success.
+ */
+export async function deleteConversation(convUuid: string, opts: { orgUuid?: string } = {}) {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(convUuid)) {
+    throw new Error(`Invalid conversation UUID: ${convUuid}`);
+  }
+  const orgUuid = _org(opts);
+  const url = `https://claude.ai/api/organizations/${orgUuid}/chat_conversations/${convUuid}`;
+  const id = deriveIdentity(cfg);
+  const headers: Record<string, string> = {
+    Host: 'claude.ai',
+    Connection: 'keep-alive',
+    'anthropic-client-platform': 'web_claude_ai',
+    'anthropic-client-version': '1.0.0',
+    'anthropic-client-sha': '8a753cbf88e19be0f5f67efefb1b07840b6402e9',
+    'content-type': 'application/json',
+    Accept: '*/*',
+    'User-Agent': cfg.userAgent ||
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+    Origin: 'https://claude.ai',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty',
+    Referer: 'https://claude.ai/recents',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept-Language': 'en-US,en;q=0.9',
+    Cookie: cfg.cookie,
+  };
+  if (id.anonymousId) headers['anthropic-anonymous-id'] = id.anonymousId;
+  if (id.activitySessionId) headers['x-activity-session-id'] = id.activitySessionId;
+  if (id.deviceId) headers['anthropic-device-id'] = id.deviceId;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15_000);
+  try {
+    const res = await fetch(url, { method: 'DELETE', headers, signal: ctrl.signal });
     const respHeaders: Record<string, string> = {};
     res.headers.forEach((v, k) => (respHeaders[k] = v));
     const text = await res.text();

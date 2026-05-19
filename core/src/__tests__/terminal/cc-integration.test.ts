@@ -22,7 +22,7 @@
 import { test, before, after, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
-import { buildLaunchFlags, classifyNoTurn, planSystemPromptAppend, launchKeyOf } from '../../runners/tmux-runner';
+import { buildLaunchFlags, classifyNoTurn, classifyStabilizeTimeout, planSystemPromptAppend, launchKeyOf } from '../../runners/tmux-runner';
 import { extractLastTurnFromJsonl, countUserPrompts } from '../../runners/cc-transcript';
 
 const API = process.env.TEST_API ?? 'http://localhost:3201';
@@ -1223,6 +1223,29 @@ test('R16 — classifyNoTurn surfaces blocked/dead, else falls back to scrape (p
   const b = classifyNoTurn({ phase: 'permission', pendingDialog: 'permission' }, 'mysess');
   assert.ok(b.kind === 'blocked' && b.message.includes('/terminal/cc/mysess/'),
     `blocked message should reference the cc endpoints`);
+});
+
+test('R16b — classifyStabilizeTimeout: dead is failure, alive long job is non-terminal (pure)', () => {
+  // Genuine death: tmux session/pane vanished → real failure.
+  const gone = classifyStabilizeTimeout(true, 'busy', 'sessG', 300000);
+  assert.equal(gone.kind, 'dead');
+  assert.ok(gone.message.includes('sessG') && gone.message.includes('300000'));
+
+  // CC process dead (phase='dead') even though capture still worked → failure.
+  assert.equal(classifyStabilizeTimeout(false, 'dead', 's', 1000).kind, 'dead');
+  // Unknown phase (status threw → null) is treated as dead, not "running".
+  assert.equal(classifyStabilizeTimeout(false, null, 's', 1000).kind, 'dead');
+
+  // The bug case: CC alive and still actively working when the watch
+  // window elapsed — NOT a failure, must be classified 'incomplete'.
+  const busy = classifyStabilizeTimeout(false, 'busy', 'natgas', 5400000);
+  assert.equal(busy.kind, 'incomplete');
+  assert.ok(busy.message.includes('NOT a failure'), 'must state this is not a failure');
+  assert.ok(busy.message.includes('/terminal/cc/natgas/'), 'must point at the cc endpoints to observe');
+  assert.ok(/do not relaunch/i.test(busy.message), 'must warn against relaunch');
+
+  // sessionGone wins even if a stale phase still looks busy.
+  assert.equal(classifyStabilizeTimeout(true, 'busy', 's', 1).kind, 'dead');
 });
 
 // --- R17–R20: system-prompt/context passthrough + warm-config relaunch ---

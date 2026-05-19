@@ -49,7 +49,9 @@ How to capture the cookie:
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/claude-ai/conversations?limit=&starred=&consistency=&project_uuid=` | List conversations (`chat_conversations_v2`). |
+| `POST` | `/claude-ai/conversations` | **WRITE** — create a new empty conversation. Body: `{ name?, uuid? }` (UUID auto-generated if omitted). Returns `{ ...conversation, uuid }`. |
 | `GET` | `/claude-ai/conversations/:uuid?tree=&rendering_mode=&render_all_tools=` | Read one conversation (full message tree). |
+| `DELETE` | `/claude-ai/conversations/:uuid` | **WRITE (destructive)** — permanently delete one conversation. UUID validated. claude.ai responds 204. |
 | `POST` | `/claude-ai/conversations/:uuid/completion` | **WRITE** — send a message, drain SSE, return `{ text, events, humanMessageUuid, assistantMessageUuid }`. Body: `{ prompt, model?, timezone?, locale?, parentMessageUuid?, tools? }`. |
 | `POST` | `/claude-ai/conversations/:uuid/title` | **WRITE** — rename / auto-title. Body: `{ title? }` (omit `title` → server auto-generates). |
 | `GET` | `/claude-ai/projects?limit=&include_harmony_projects=&creator_filter=` | List projects. |
@@ -167,6 +169,8 @@ All accept a JSON body. All return `{ success: true, data: { snippet, descriptio
 | Method | Path | Body |
 |---|---|---|
 | `POST` | `/claude-ai/via-chrome/conversations` | `{ limit?, starred?, consistency?, projectUuid? }` |
+| `POST` | `/claude-ai/via-chrome/conversations/create` | `{ name? }` — **WRITE** snippet; creates an empty conversation and returns the new `uuid`. (Registered before `/:uuid` — the literal `create` is not a UUID.) |
+| `POST` | `/claude-ai/via-chrome/conversations/:uuid/delete` | `{}` — **WRITE (destructive)** snippet; UUID validated host-side. |
 | `POST` | `/claude-ai/via-chrome/conversations/:uuid` | `{ tree?, renderingMode?, renderAllTools? }` |
 | `POST` | `/claude-ai/via-chrome/conversations/:uuid/completion` | `{ prompt, model?, timezone?, locale?, parentMessageUuid? }` — **WRITE** snippet that reads `current_leaf_message_uuid`, POSTs `/completion`, drains the SSE stream in-page, and returns `{ status, text, events, eventTypes, eventCount, humanMessageUuid, assistantMessageUuid }`. |
 | `POST` | `/claude-ai/via-chrome/conversations/:uuid/title` | `{ title? }` — **WRITE** snippet (omit `title` for auto-title). |
@@ -295,6 +299,18 @@ If no claude.ai tab is open, use `mcp__claude-in-chrome__tabs_create_mcp` + `mcp
 | `via-chrome/conversations/{uuid}/completion` (write) | 200 | prompt `"Reply with exactly: PARSER_OK"` → `text: " PARSER_OK"`, 7 SSE events drained |
 | `via-chrome/account_profile` with full `baseHeaders` | 200 | All 6 `anthropic-*` headers attached on the wire |
 
+### Verified end-to-end (2026-05-19) — create / query / delete
+
+Full lifecycle of the new conversation create + delete routes, exercised with the exact route-emitted snippets against real claude.ai. Safety baseline of all pre-existing conversation UUIDs captured before and re-checked after.
+
+| Snippet | HTTP status | Notes |
+|---|---|---|
+| `via-chrome/conversations/create` (write) | 201 | Server echoed the client-generated UUID; UUID confirmed absent from the 62-conversation baseline. |
+| `via-chrome/conversations/{uuid}` (read-back) | 200 | New conversation queryable by UUID immediately after create. |
+| `via-chrome/conversations/{uuid}/delete` (destructive write) | 204 | Targeted only the just-created UUID (two host-side guards: equals created UUID, not in baseline). |
+| read-back after delete | 404 | Conversation gone; absent from re-listed conversations. |
+| baseline integrity | — | After-count == baseline count (62); every pre-existing conversation still present. Net account change: zero. |
+
 ---
 
 ## Pre-flight: is the integration healthy?
@@ -381,7 +397,7 @@ Anything in the catalog can be hit through `POST /claude-ai/via-chrome` with `{ 
 
 ## Write op: `POST /completion`
 
-Both families expose the completion endpoint. This is the only **write** in the current surface — it adds real message history to your claude.ai account and consumes tokens. Treat with the same care as any "send email" or "post message" API.
+Both families expose the completion endpoint. It is one of the **write** operations in the surface (alongside `title`, conversation `create`, and conversation `delete`) — it adds real message history to your claude.ai account and consumes tokens. Treat with the same care as any "send email" or "post message" API.
 
 ### Body shape
 
@@ -440,6 +456,6 @@ Pass `?events=full` to also receive the raw event list.
 
 ### Safety notes
 
-- The conversation must already exist. The route does not create new conversations.
+- The conversation must already exist — the completion route itself does not create one. Use `POST /claude-ai/conversations` (cookie-file) or `POST /claude-ai/via-chrome/conversations/create` (via-chrome) first, then send a completion to the returned `uuid`. Clean up test conversations with `DELETE /claude-ai/conversations/:uuid` or `POST /claude-ai/via-chrome/conversations/:uuid/delete`.
 - `parentMessageUuid` is auto-fetched from `chat_conversations/:uuid`. If the conversation is empty, the call errors with `no_leaf_message_uuid`.
 - The via-chrome snippet warns explicitly in its `instructions` field: *"This snippet is a WRITE — it creates real message history in the user's claude.ai account and consumes tokens. Verify intent before running."*

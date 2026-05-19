@@ -54,6 +54,24 @@ const SESSIONS = new Map<string, SessionMeta>();
 const TTL_MS = 2 * 60 * 60 * 1000;        // 2 hours of idleness → reap
 const REAPER_INTERVAL_MS = 5 * 60 * 1000; // check every 5 minutes
 
+/**
+ * Background-path safety ceiling for the stable-screen wait.
+ *
+ * The runner detects "turn complete" by the CC TUI screen going quiet
+ * (waitForStableScreen). A long autonomous job (analysis pipeline,
+ * workflow) keeps the screen redrawing for 20-40+ min, so it only goes
+ * quiet when the turn TRULY ends. A *foreground* tmux call holds an HTTP
+ * connection, so it keeps the caller's `timeout` (or 300s) as a hard
+ * bound. A *background* execution holds NO connection (startTmuxBackground
+ * runs execute() unawaited), so it can — and must — wait the job out and
+ * let the freshness-gated transcript read capture the REAL result, bounded
+ * only by this generous ceiling that guards a genuinely wedged TUI. 90 min
+ * comfortably covers worst-case real pipelines while still bounding a hung
+ * TUI to finite time. Historically this was a flat 300s for ALL paths,
+ * which made every healthy long background job false-fail at ~5 min.
+ */
+const BACKGROUND_SAFETY_CEILING_MS = 90 * 60 * 1000;
+
 let reaperTimer: NodeJS.Timeout | null = null;
 
 function ensureReaper(): void {
@@ -307,6 +325,49 @@ export function classifyNoTurn(
   return { kind: 'scrape' };
 }
 
+// ---------- Stable-screen timeout classification -------------------------
+
+export type StabilizeTimeoutOutcome =
+  | { kind: 'dead'; message: string }
+  | { kind: 'incomplete'; message: string };
+
+/**
+ * When waitForStableScreen returns NOT-stable, decide whether that's a
+ * genuine failure or a healthy long job that merely outran the
+ * synchronous watch window.
+ *
+ * waitForStableScreen stops watching for two structurally different
+ * reasons and ONLY ONE is a failure:
+ *
+ *   - the tmux session/pane vanished (capture threw) OR CC's process is
+ *     dead → genuine failure ('dead').
+ *   - the watch ceiling elapsed while the screen was STILL changing — i.e.
+ *     CC is alive and actively working (that's literally WHY it never went
+ *     quiet). The runner only stopped polling; it killed nothing, so the
+ *     job continues to completion. This is NOT a failure ('incomplete') —
+ *     reporting it as success:false is the long-job "false-fail" bug.
+ *
+ * Pure so the decision is unit-testable without coercing a real wedged
+ * TUI (mirrors classifyNoTurn's design).
+ */
+export function classifyStabilizeTimeout(
+  sessionGone: boolean,
+  phase: string | null,
+  sessionName: string,
+  awaitMs: number,
+): StabilizeTimeoutOutcome {
+  if (sessionGone || phase === null || phase === 'dead') {
+    return {
+      kind: 'dead',
+      message: `CC session ${sessionName} ended before producing a completed turn (waited ${awaitMs}ms)`,
+    };
+  }
+  return {
+    kind: 'incomplete',
+    message: `CC in session ${sessionName} is still actively processing after ${awaitMs}ms — this is NOT a failure; the job is running headless and was not killed. Observe via /terminal/cc/${sessionName}/* or the job's own status file; do not relaunch.`,
+  };
+}
+
 // ---------- Public: execute ----------------------------------------------
 
 export interface TmuxRunnerOptions {
@@ -425,11 +486,40 @@ export function createTmuxRunner(opts: TmuxRunnerOptions = {}) {
       //    CC's `❯` prompt indicator stays visible even mid-response, so
       //    `derivePhase` returns 'idle' immediately. Stability detection
       //    is slower-by-3s but immune to TUI quirks.
-      const awaitMs = Math.max(60000, (request as AgentExecuteRequest & { timeout?: number }).timeout ?? 300000);
+      //    Watch-window policy: an EXPLICIT caller `timeout` always wins
+      //    (caller intent). Otherwise a FOREGROUND tmux call holds an HTTP
+      //    connection so it keeps the 300s default as a hard bound; a
+      //    BACKGROUND execution holds no connection (startTmuxBackground
+      //    runs this unawaited) so it waits the job out under the generous
+      //    safety ceiling and lets the freshness-gated transcript read
+      //    below capture the REAL result. A flat 300s for the background
+      //    path was the long-job false-fail bug.
+      const explicitTimeout = (request as AgentExecuteRequest & { timeout?: number }).timeout;
+      const isBackground = (request as AgentExecuteRequest).background === true;
+      const awaitMs = explicitTimeout
+        ? Math.max(60000, explicitTimeout)
+        : (isBackground ? BACKGROUND_SAFETY_CEILING_MS : 300000);
       const stable = await waitForStableScreen(sessionName, { timeoutMs: awaitMs, stableMs: 3000, pollMs: 400 });
       const promptElapsed = Date.now() - promptStart;
       if (!stable.stable) {
-        return errorResponse(executionId, start, `screen never stabilized within ${awaitMs}ms (CC may still be processing)`, sessionName);
+        // Reason from CC's ACTUAL state, not from "we stopped polling".
+        const post = (() => { try { return cc.status(sessionName); } catch { return null; } })();
+        const outcome = classifyStabilizeTimeout(
+          stable.sessionGone, post?.phase ?? null, sessionName, awaitMs,
+        );
+        if (outcome.kind === 'dead') {
+          // Session/pane gone or CC process dead → genuine failure.
+          return errorResponse(executionId, start, outcome.message, sessionName);
+        }
+        // CC alive and was still actively redrawing when the watch window
+        // elapsed — a long job that outran the synchronous watch, NOT a
+        // failure. Nothing was killed; the job continues headless. Return
+        // a NON-terminal marker so the background wrapper keeps the
+        // execution 'running' (honest) instead of recording a false
+        // 'failed', and a foreground caller can tell this apart from a
+        // real failure and observe it via the terminal API.
+        const liveSid = inspector.parseSessionId(stable.screen) ?? sessionName;
+        return incompleteResponse(executionId, start, sessionName, liveSid, outcome.message);
       }
 
       // 6. Capture the after-screen — used to parse the sessionId and as
@@ -561,7 +651,7 @@ export function createTmuxRunner(opts: TmuxRunnerOptions = {}) {
 async function waitForStableScreen(
   session: string,
   opts: { timeoutMs: number; stableMs: number; pollMs: number },
-): Promise<{ stable: boolean; screen: string }> {
+): Promise<{ stable: boolean; screen: string; sessionGone: boolean }> {
   const start = Date.now();
   let last = '';
   let lastChangeAt = start;
@@ -570,18 +660,22 @@ async function waitForStableScreen(
     try {
       cur = tmux.capture(session, { paneQualifier: null, lines: null, start: -200 });
     } catch {
-      // Session went away — return what we have.
-      return { stable: false, screen: last };
+      // Session/pane vanished — CC genuinely died. Distinct from a
+      // watch-window overflow: the caller MUST treat this as a real
+      // failure (sessionGone), never as "still running".
+      return { stable: false, screen: last, sessionGone: true };
     }
     if (cur !== last) {
       last = cur;
       lastChangeAt = Date.now();
     } else if (Date.now() - lastChangeAt >= opts.stableMs) {
-      return { stable: true, screen: cur };
+      return { stable: true, screen: cur, sessionGone: false };
     }
     await new Promise((r) => setTimeout(r, opts.pollMs));
   }
-  return { stable: false, screen: last };
+  // Ceiling elapsed while the screen was still changing — CC is alive and
+  // actively working (that is WHY it never went quiet). Not a death.
+  return { stable: false, screen: last, sessionGone: false };
 }
 
 function errorResponse(executionId: string, startMs: number, message: string, sessionId = ''): AgentExecuteResponse {
@@ -589,6 +683,49 @@ function errorResponse(executionId: string, startMs: number, message: string, se
     success: false,
     result: '',
     sessionId,
+    executionId,
+    durationMs: Date.now() - startMs,
+    durationApiMs: 0,
+    numTurns: 0,
+    totalCostUsd: 0,
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      totalTokens: 0,
+    },
+    modelUsage: {},
+    error: message,
+  };
+}
+
+/**
+ * Non-terminal outcome: the synchronous watch window elapsed but CC is
+ * alive and was still actively working (a long job that outran the
+ * watch). Shaped like errorResponse (no result yet, success:false) but
+ * carries `incomplete:true` so:
+ *   - the background wrapper keeps the execution 'running' (honest)
+ *     instead of recording a false 'failed', and
+ *   - a foreground caller can tell this apart from a real failure.
+ * `sessionId` is the live CC conversation UUID (or the tmux session name
+ * fallback) so the caller can immediately observe the still-running job
+ * via /terminal/cc/:session/* without another round-trip.
+ */
+function incompleteResponse(
+  executionId: string,
+  startMs: number,
+  tmuxSession: string,
+  sessionId: string,
+  message: string,
+): AgentExecuteResponse {
+  return {
+    success: false,
+    incomplete: true,
+    result: '',
+    sessionId,
+    tmuxSession,
+    runner: 'tmux',
     executionId,
     durationMs: Date.now() - startMs,
     durationApiMs: 0,
