@@ -404,39 +404,30 @@ export function spawnDetached(
         cachedSessionId = parsed.sessionId;
       }
 
-      if (parsed.isComplete && parsed.result) {
-        clearInterval(interval);
-        running = false;
-        cachedResult = parsed.result;
-
-        // Update persisted state
-        const st = loadState();
-        if (st.executions[executionId]) {
-          st.executions[executionId].status = parsed.result.success ? 'completed' : 'failed';
-          st.executions[executionId].completedAt = new Date().toISOString();
-          st.executions[executionId].sessionId = parsed.sessionId || cachedSessionId;
-          st.executions[executionId].result = parsed.result;
-          if (parsed.result.error) {
-            st.executions[executionId].error = parsed.result.error;
-          }
-          saveState(st);
-        }
-
-        resolve(parsed.result);
-      } else if (!isPidAlive(pid)) {
+      // Terminal ONLY when the spawned process has exited. While it is alive
+      // the execution is still running even if the log already contains one
+      // or more `result` events: an orchestrator agent emits an interim
+      // `result` when it yields to background sub-agents and then resumes for
+      // many more turns. Resolving on the first `result` marked long pipelines
+      // "completed" 20+ minutes early (Bug B). parseLogFile already returns the
+      // LAST result in the file, so on exit we finalize from the true result.
+      if (!isPidAlive(pid)) {
         clearInterval(interval);
         running = false;
 
-        // Process died without result — check log one more time
         const finalParsed = parseLogFile(logFile);
-        if (finalParsed.isComplete && finalParsed.result) {
+        if (finalParsed.result) {
           cachedResult = finalParsed.result;
 
           const st = loadState();
           if (st.executions[executionId]) {
             st.executions[executionId].status = finalParsed.result.success ? 'completed' : 'failed';
             st.executions[executionId].completedAt = new Date().toISOString();
+            st.executions[executionId].sessionId = finalParsed.sessionId || cachedSessionId;
             st.executions[executionId].result = finalParsed.result;
+            if (finalParsed.result.error) {
+              st.executions[executionId].error = finalParsed.result.error;
+            }
             saveState(st);
           }
 
@@ -509,24 +500,26 @@ export function recoverExecutions(): Map<string, SdkExecutionHandle> {
     const alive = isPidAlive(exec.pid);
     const parsed = parseLogFile(exec.logFile);
 
-    if (parsed.isComplete && parsed.result) {
-      // Process finished while we were down
-      exec.status = parsed.result.success ? 'completed' : 'failed';
-      exec.completedAt = new Date().toISOString();
-      exec.result = parsed.result;
-      exec.sessionId = parsed.sessionId || exec.sessionId;
+    if (!alive) {
+      // Process is gone — finalize from the LAST result in the log. A result
+      // event alone does NOT mean finished (orchestrators emit interim
+      // results then keep running); only the process having exited does.
+      if (parsed.result) {
+        exec.status = parsed.result.success ? 'completed' : 'failed';
+        exec.completedAt = new Date().toISOString();
+        exec.result = parsed.result;
+        exec.sessionId = parsed.sessionId || exec.sessionId;
+      } else {
+        exec.status = 'failed';
+        exec.completedAt = new Date().toISOString();
+        exec.error = 'Process died during lm-assist restart';
+      }
       changed = true;
       continue;
     }
 
-    if (!alive) {
-      // Process died without result
-      exec.status = 'failed';
-      exec.completedAt = new Date().toISOString();
-      exec.error = 'Process died during lm-assist restart';
-      changed = true;
-      continue;
-    }
+    // Still alive — fall through to create a monitoring handle even if the
+    // log already contains an interim `result`.
 
     // Still alive — create a handle for monitoring
     let running = true;
@@ -569,27 +562,21 @@ export function recoverExecutions(): Map<string, SdkExecutionHandle> {
         const p = parseLogFile(logFile);
         if (p.sessionId && !cachedSessionId) cachedSessionId = p.sessionId;
 
-        if (p.isComplete && p.result) {
-          clearInterval(interval);
-          running = false;
-          const st = loadState();
-          if (st.executions[executionId]) {
-            st.executions[executionId].status = p.result.success ? 'completed' : 'failed';
-            st.executions[executionId].completedAt = new Date().toISOString();
-            st.executions[executionId].result = p.result;
-            saveState(st);
-          }
-          resolve(p.result);
-        } else if (!isPidAlive(pid)) {
+        // Terminal ONLY when the process has exited (see the Bug B note in
+        // the primary result loop). parseLogFile returns the LAST result, so
+        // an interim `result` from an orchestrator yield no longer ends it.
+        if (!isPidAlive(pid)) {
           clearInterval(interval);
           running = false;
           const finalP = parseLogFile(logFile);
-          if (finalP.isComplete && finalP.result) {
+          if (finalP.result) {
             const st = loadState();
             if (st.executions[executionId]) {
               st.executions[executionId].status = finalP.result.success ? 'completed' : 'failed';
               st.executions[executionId].completedAt = new Date().toISOString();
+              st.executions[executionId].sessionId = finalP.sessionId || cachedSessionId;
               st.executions[executionId].result = finalP.result;
+              if (finalP.result.error) st.executions[executionId].error = finalP.result.error;
               saveState(st);
             }
             resolve(finalP.result);
@@ -653,15 +640,20 @@ export function getDetachedStatus(executionId: string): DetachedExecution | null
     if (parsed.sessionId && !exec.sessionId) {
       exec.sessionId = parsed.sessionId;
     }
-    if (parsed.isComplete && parsed.result) {
-      exec.status = parsed.result.success ? 'completed' : 'failed';
-      exec.completedAt = new Date().toISOString();
-      exec.result = parsed.result;
-      saveState(state);
-    } else if (!isPidAlive(exec.pid)) {
-      exec.status = 'failed';
-      exec.completedAt = new Date().toISOString();
-      exec.error = 'Process exited without result';
+    // Terminal ONLY when the process has exited (Bug B): an interim `result`
+    // from an orchestrator yield does not mean finished. parseLogFile already
+    // holds the LAST result, so on exit we finalize from the true result.
+    if (!isPidAlive(exec.pid)) {
+      if (parsed.result) {
+        exec.status = parsed.result.success ? 'completed' : 'failed';
+        exec.completedAt = new Date().toISOString();
+        exec.result = parsed.result;
+        exec.sessionId = parsed.sessionId || exec.sessionId;
+      } else {
+        exec.status = 'failed';
+        exec.completedAt = new Date().toISOString();
+        exec.error = 'Process exited without result';
+      }
       saveState(state);
     }
   }

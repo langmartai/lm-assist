@@ -307,8 +307,24 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
     });
 
     execP.then(result => {
-      running = false;
       const entry = backgroundExecutions.get(executionId);
+      // Non-terminal: the tmux runner's synchronous watch window elapsed
+      // but CC is alive and still working (a long autonomous job that
+      // outran the watch). The runner killed nothing — the job is
+      // genuinely still running headless. Keep the execution 'running'
+      // (honest) instead of recording the historical false 'failed';
+      // surface the live CC sessionId so the caller can observe it via
+      // the terminal API / the job's own status file.
+      if ((result as AgentExecuteResponse & { incomplete?: boolean }).incomplete) {
+        if (entry) {
+          backgroundExecutions.set(executionId, {
+            ...entry,
+            handle: { ...entry.handle, sessionId: result.sessionId },
+          });
+        }
+        return; // running stays true → getExecution() reports 'running'
+      }
+      running = false;
       if (entry) {
         backgroundExecutions.set(executionId, {
           ...entry,

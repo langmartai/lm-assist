@@ -425,6 +425,19 @@ export interface AgentExecuteResponse {
   /** Whether execution succeeded */
   success: boolean;
 
+  /**
+   * Non-terminal marker (tmux runner only). True when the synchronous
+   * stable-screen watch window elapsed while CC was still alive and
+   * actively working — i.e. a long job that outran the watch, NOT a
+   * failure (nothing was killed; the job continues headless). When set,
+   * `success` is false (there is no result yet) but callers must NOT
+   * treat this as a failed execution: the background wrapper keeps the
+   * execution 'running', and a foreground caller should observe the job
+   * via /terminal/cc/:session/* rather than relaunch. Absent/false on the
+   * SDK runner and on genuine failures.
+   */
+  incomplete?: boolean;
+
   /** Result text from the agent */
   result: string;
 
