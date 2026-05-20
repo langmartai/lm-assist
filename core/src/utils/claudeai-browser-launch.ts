@@ -364,13 +364,15 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<LaunchResu
   try {
     await waitForDebugPort(port);
   } catch (e) {
-    // Try to clean up.
     try { treeKill(child.pid!, 'SIGKILL', () => undefined); } catch { /* ignore */ }
+    const isFirefox = browser.family === 'firefox';
     return {
       ok: false,
       code: 'spawn_failed',
       message: (e as Error).message,
-      hint: 'Chrome started but didn\'t bring up the debug port. Common cause: enterprise policy disables remote debugging.',
+      hint: isFirefox
+        ? 'Firefox exposes WebDriver-BiDi (not CDP) on --remote-debugging-port by default. CDP requires `about:config remote.active-protocols=2`, and snap-packaged Firefox often can\'t bind custom profile dirs. Use Chrome/Edge/Brave for full support.'
+        : `${browser.label} started but didn't bring up the debug port. Common causes: enterprise policy disables remote debugging; sandboxed install (snap, App Store) blocks custom user-data-dir; arg quoting issues on Windows with spaces in path.`,
     };
   }
 
