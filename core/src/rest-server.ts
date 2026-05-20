@@ -508,7 +508,9 @@ export class TierRestServer {
 
   private parseBody(req: http.IncomingMessage): Promise<any> {
     return new Promise((resolve) => {
-      if (req.method === 'GET' || req.method === 'DELETE') {
+      // GET has no body. DELETE *can* have one per RFC 7231 §4.3.5 and is
+      // commonly used (e.g. cookie/storage filters); parse it like POST/PUT.
+      if (req.method === 'GET') {
         resolve({});
         return;
       }
