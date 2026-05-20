@@ -87,6 +87,16 @@ import {
   snippetCreateConversation,
   snippetDeleteConversation,
 } from '../../utils/claudeai-via-chrome';
+import {
+  listChromeProfiles,
+  resolveProfile,
+} from '../../utils/claudeai-browser-profile';
+import {
+  launchChrome,
+  captureSession,
+  closeChrome,
+  launchAndCapture,
+} from '../../utils/claudeai-browser-launch';
 
 const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
@@ -789,6 +799,189 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
             error: { code: 'INVALID_REQUEST', message: (err as Error).message },
           };
         }
+      },
+    },
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Browser-profile family — discovery, identify, launch+capture+close
+    // ─────────────────────────────────────────────────────────────────────
+
+    // GET /claude-ai/browser/profiles
+    //   List Chrome profiles on this host with their lm-assist per-profile
+    //   session paths. Read-only; doesn't spawn anything.
+    {
+      method: 'GET',
+      pattern: /^\/claude-ai\/browser\/profiles$/,
+      handler: async () => {
+        const result = listChromeProfiles();
+        return { success: true, data: result };
+      },
+    },
+
+    // POST /claude-ai/browser/via-chrome/identify
+    //   Returns a snippet that fetches /api/organizations from the running
+    //   claude.ai tab. The snippet's response leaks the logged-in email via
+    //   the org name ("<email>'s Organization"). The route also returns the
+    //   profile list so the caller can match email → profile id.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/browser\/via-chrome\/identify$/,
+      handler: async () => {
+        try {
+          const snippet = buildViaChromeSnippet({
+            path: '/api/organizations',
+            description: 'Identify which Chrome profile the MCP tab is using (via logged-in email)',
+          });
+          return {
+            success: true,
+            data: {
+              snippet,
+              profiles: listChromeProfiles().profiles,
+              note: "Run the snippet via mcp__claude-in-chrome__javascript_tool. The first org's name typically contains the logged-in email (\"<email>'s Organization\"); match that email against profiles[].userName.",
+            },
+          };
+        } catch (err) {
+          return {
+            success: false,
+            error: { code: 'INVALID_REQUEST', message: (err as Error).message },
+          };
+        }
+      },
+    },
+
+    // POST /claude-ai/browser/launch
+    //   Body: { profile?: 'isolated' | <profile-id>, port?: number, headless?: boolean }
+    //   Spawns a Chrome instance with --remote-debugging-port. Returns
+    //   { pid, port, userDataDir, profileDirectory, devtoolsUrl }. Refuses
+    //   if Chrome is already running against the requested profile dir
+    //   (Windows file lock); use 'isolated' or close other Chrome windows.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/browser\/launch$/,
+      handler: async (req) => {
+        const b = (req.body || {}) as { profile?: string; port?: number; headless?: boolean };
+        const result = await launchChrome({
+          profile: typeof b.profile === 'string' ? b.profile : undefined,
+          port: typeof b.port === 'number' ? b.port : undefined,
+          headless: typeof b.headless === 'boolean' ? b.headless : undefined,
+        });
+        if (!result.ok) {
+          return {
+            success: false,
+            error: { code: result.code.toUpperCase(), message: result.message, hint: result.hint },
+          };
+        }
+        return { success: true, data: result };
+      },
+    },
+
+    // POST /claude-ai/browser/capture-session
+    //   Body: { port?: number, profile?: <profile-id>, setCanonical?: boolean }
+    //   Attaches to the debug-port Chrome via CDP, dumps cookies for
+    //   claude.ai, writes ~/.claude/claudeai-session.<profile>.json and
+    //   (default true) ~/.claude/claudeai-session.json. Returns metadata
+    //   only — never the cookie value itself.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/browser\/capture-session$/,
+      handler: async (req) => {
+        const b = (req.body || {}) as { port?: number; profile?: string; setCanonical?: boolean };
+        // If a named profile is given, validate it exists so the caller gets
+        // a clear error before any CDP work. 'isolated' is always allowed.
+        if (b.profile && b.profile !== 'isolated') {
+          const p = resolveProfile(b.profile);
+          if (!p) {
+            return {
+              success: false,
+              error: {
+                code: 'PROFILE_NOT_FOUND',
+                message: `No Chrome profile matches '${b.profile}'. See GET /claude-ai/browser/profiles.`,
+              },
+            };
+          }
+        }
+        const result = await captureSession({
+          port: typeof b.port === 'number' ? b.port : undefined,
+          profileId: typeof b.profile === 'string' ? b.profile : undefined,
+          setCanonical: typeof b.setCanonical === 'boolean' ? b.setCanonical : undefined,
+        });
+        if (!result.ok) {
+          return {
+            success: false,
+            error: { code: result.code.toUpperCase(), message: result.message, hint: result.hint },
+          };
+        }
+        return { success: true, data: result };
+      },
+    },
+
+    // POST /claude-ai/browser/launch-and-capture
+    //   Body: { profile?, port?, headless?, loginTimeoutMs?, setCanonical? }
+    //
+    //   One-shot composite: launches Chrome (default isolated), injects a
+    //   user-facing overlay explaining what to do, polls Chrome's cookie
+    //   store until `sessionKey` appears, then captures + writes session
+    //   files. Long-running — caller should set request timeout to at
+    //   least loginTimeoutMs (default 180_000).
+    //
+    //   If the spawned profile dir already has a valid session (returning
+    //   user), the login wait is skipped and capture happens immediately.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/browser\/launch-and-capture$/,
+      handler: async (req) => {
+        const b = (req.body || {}) as {
+          profile?: string;
+          port?: number;
+          headless?: boolean;
+          loginTimeoutMs?: number;
+          pollIntervalMs?: number;
+          setCanonical?: boolean;
+        };
+        const result = await launchAndCapture({
+          profile: typeof b.profile === 'string' ? b.profile : undefined,
+          port: typeof b.port === 'number' ? b.port : undefined,
+          headless: typeof b.headless === 'boolean' ? b.headless : undefined,
+          loginTimeoutMs: typeof b.loginTimeoutMs === 'number' ? b.loginTimeoutMs : undefined,
+          pollIntervalMs: typeof b.pollIntervalMs === 'number' ? b.pollIntervalMs : undefined,
+          setCanonical: typeof b.setCanonical === 'boolean' ? b.setCanonical : undefined,
+        });
+        if (!result.ok) {
+          const errCode = 'code' in result ? result.code : 'launch_failed';
+          const message = 'message' in result ? result.message : 'Unknown launch error';
+          const hint = 'hint' in result ? result.hint : undefined;
+          // Surface partial state so caller can call /close on the pid if launch succeeded but a later step failed.
+          const partial = 'launch' in result ? { launch: (result as { launch?: unknown }).launch } : undefined;
+          return {
+            success: false,
+            error: { code: errCode.toUpperCase(), message, hint },
+            data: partial,
+          };
+        }
+        return { success: true, data: result };
+      },
+    },
+
+    // POST /claude-ai/browser/close
+    //   Body: { pid: number }
+    //   Tree-kills the spawned Chrome. Only kill the pid you launched —
+    //   this can take down user's real Chrome windows if you pass the
+    //   wrong one.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/browser\/close$/,
+      handler: async (req) => {
+        const b = (req.body || {}) as { pid?: number };
+        if (typeof b.pid !== 'number' || b.pid <= 0) {
+          return {
+            success: false,
+            error: { code: 'INVALID_REQUEST', message: 'Body must include numeric { pid }.' },
+          };
+        }
+        const result = await closeChrome(b.pid);
+        return result.ok
+          ? { success: true, data: result }
+          : { success: false, error: { code: 'CLOSE_FAILED', message: result.message } };
       },
     },
   ];
