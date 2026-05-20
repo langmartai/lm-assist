@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Browser control surface — generic CDP + claude.ai cookie capture (2026-05-20)
+
+Two coupled additions that turn lm-assist into a Chrome DevTools Protocol fallback for environments where claude-in-chrome MCP isn't loaded.
+
+**`/browser/*` family — 24 generic browser-control endpoints.** Tabs CRUD, navigate, JS eval, cookies (read/write/delete), text/HTML inspection, click/type/hover/wait-for/find, storage (local/session), viewport, key dispatch, screenshots, plus page-script-injection taps for console messages and network requests. Targets any browser launched with `--remote-debugging-port` (default 9222). Mirrors most of claude-in-chrome MCP's surface so the same workflows can run without MCP.
+
+**`/claude-ai/browser/*` family — 6 composite endpoints for cookie-file capture.** `launch-and-capture` (the headline) spawns Chrome with an isolated profile dir (`~/.claude/claudeai-browser-profile/`), injects a persistent in-page overlay explaining what the user must do and why, polls Chrome's cookie store until `sessionKey` appears, then writes both the per-profile session file (`~/.claude/claudeai-session.<profile>.json`) and the canonical `~/.claude/claudeai-session.json` so the existing cookie-file routes can pick it up without further setup. Stage-aware overlay messages ("Sign in with Google", "Approve OAuth", "Returning to claude.ai") drive the overlay text via per-target persistent CDP sessions, so hard navigations within the login flow (e.g. `/` → `/login` → `accounts.google.com` → `/new`) don't reset the status banner.
+
+**Multi-browser detection + Firefox best-effort.** `GET /claude-ai/browser/installed` enumerates Chrome, Edge, Brave, Vivaldi, Chromium, Opera, and Firefox across Windows/macOS/Linux. `POST /claude-ai/browser/launch` accepts `{"browser": "<kind>"}` to pick which to launch. Firefox launches with `--remote-debugging-port` but uses WebDriver-BiDi internally; only a subset of CDP methods are honored — caller should treat Firefox as best-effort. Chromium-family browsers (Chrome/Edge/Brave/Vivaldi/Chromium/Opera) all share the full CDP feature set.
+
+**Linux GUI autodetect.** When `headless` is false on Linux and lm-assist's process env has no `DISPLAY`, the launcher probes `/tmp/.X11-unix/X0` and auto-sets `DISPLAY=:0` so Chrome can render on the user's running X session. If no display is reachable at all, returns a structured error pointing the caller to `{"headless": true}`.
+
+**Implementation notes worth flagging:**
+- The overlay's status text is preserved across hard navigations by re-registering `Page.addScriptToEvaluateOnNewDocument` on every status update (a new registration carries the latest initial-render text). Without this, claude.ai's `/` → `/new` redirect resets the banner to "Waiting for sign-in" even after capture completes.
+- `Storage.getCookies` is the browser-level cookie dump (works on Chrome 115+); `Network.getAllCookies` is the fallback for older Chromes. `Network.deleteCookies` is page-level only — the delete route routes through any open page target.
+- The `CDPSession` primitive (one WebSocket, many commands) is required for `Page.addScriptToEvaluateOnNewDocument` — Chrome auto-removes the registration when the registering client disconnects, so the open-and-close `sendCDP` helper is unsafe for that command.
+
+### `parseBody` reads DELETE bodies (2026-05-20)
+
+`rest-server.ts#parseBody` previously returned `{}` for any DELETE request, dropping JSON bodies silently. RFC 7231 §4.3.5 allows DELETE bodies and the new `/browser/*` cookie/storage filtered-delete routes need them. No existing handlers read `req.body` on DELETE, so the change is additive.
+
 ### claude.ai conversation create + delete (2026-05-19)
 
 The claude.ai surface could list/read conversations and write (completion, title) but had no way to **create** or **delete** a conversation. The generic via-chrome escape hatch (`POST /claude-ai/via-chrome` `{path}`) is GET-only — `buildViaChromeSnippet` hardcodes a GET fetch with no method/body — so it could not substitute. Both operations are now first-class across both families.

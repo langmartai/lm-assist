@@ -42,8 +42,16 @@ export interface LaunchOptions {
   port?: number;
   /** Run hidden (no window). Useful for CI; humans want headless=false. */
   headless?: boolean;
-  /** Extra Chrome flags. */
+  /** Extra browser flags. */
   extraArgs?: string[];
+  /**
+   * Which browser to launch. 'chrome' / 'edge' / 'brave' / 'chromium' /
+   * 'vivaldi' / 'opera' are Chromium-based — same CDP feature set.
+   * 'firefox' launches Firefox with --remote-debugging-port, which uses
+   * WebDriver-BiDi internally; only a subset of CDP methods works.
+   * Defaults to the first available Chromium browser.
+   */
+  browser?: BrowserKind | 'any-chromium';
 }
 
 export interface LaunchResult {
@@ -54,6 +62,10 @@ export interface LaunchResult {
   profileDirectory: string | null;
   profileSource: 'isolated' | 'existing';
   chromeBinary: string;
+  /** Which browser was launched. */
+  browser: BrowserKind;
+  /** chromium = full CDP. firefox = WebDriver-BiDi + partial CDP shim. */
+  browserFamily: 'chromium' | 'firefox';
   /** chrome://inspect URL the user can paste to inspect targets. */
   devtoolsUrl: string;
   /** Where the captured session file would land. */
@@ -73,33 +85,97 @@ export interface LaunchError {
   hint?: string;
 }
 
-/** Best-effort Chrome executable discovery, per platform. */
-export function findChromeBinary(): string | null {
+export type BrowserKind = 'chrome' | 'edge' | 'brave' | 'vivaldi' | 'chromium' | 'firefox' | 'opera';
+
+export interface BrowserInfo {
+  kind: BrowserKind;
+  /** Family: 'chromium' (CDP-compatible) or 'firefox' (WebDriver-BiDi, partial CDP shim). */
+  family: 'chromium' | 'firefox';
+  binary: string;
+  /** Optional human label. */
+  label: string;
+}
+
+/** Find ALL installed CDP-capable + Firefox browsers on this host. */
+export function findInstalledBrowsers(): BrowserInfo[] {
+  const out: BrowserInfo[] = [];
+  const add = (kind: BrowserKind, family: 'chromium' | 'firefox', binary: string, label: string) => {
+    if (fs.existsSync(binary)) out.push({ kind, family, binary, label });
+  };
+
   if (process.platform === 'win32') {
-    const candidates = [
-      process.env['PROGRAMFILES'] && path.join(process.env['PROGRAMFILES']!, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-      process.env['PROGRAMFILES(X86)'] && path.join(process.env['PROGRAMFILES(X86)']!, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-      process.env['LOCALAPPDATA'] && path.join(process.env['LOCALAPPDATA']!, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-    ].filter((s): s is string => !!s);
-    for (const c of candidates) {
-      if (fs.existsSync(c)) return c;
-    }
-    return null;
-  }
-  if (process.platform === 'darwin') {
-    const c = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-    return fs.existsSync(c) ? c : null;
-  }
-  // Linux: rely on PATH discovery via `which` semantics; many distros use
-  // different names. Caller can override via Chrome binary env if needed.
-  for (const name of ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']) {
+    const pf = process.env['PROGRAMFILES'] || 'C:\\Program Files';
+    const pfx86 = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
+    const lad = process.env['LOCALAPPDATA'] || '';
+    add('chrome',  'chromium', path.join(pf,    'Google', 'Chrome', 'Application', 'chrome.exe'), 'Google Chrome');
+    add('chrome',  'chromium', path.join(pfx86, 'Google', 'Chrome', 'Application', 'chrome.exe'), 'Google Chrome (x86)');
+    if (lad) add('chrome', 'chromium', path.join(lad, 'Google', 'Chrome', 'Application', 'chrome.exe'), 'Google Chrome (user)');
+    add('edge',    'chromium', path.join(pf,    'Microsoft', 'Edge', 'Application', 'msedge.exe'), 'Microsoft Edge');
+    add('edge',    'chromium', path.join(pfx86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'), 'Microsoft Edge (x86)');
+    add('brave',   'chromium', path.join(pf,    'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'), 'Brave');
+    add('brave',   'chromium', path.join(pfx86, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'), 'Brave (x86)');
+    add('vivaldi', 'chromium', path.join(pf,    'Vivaldi', 'Application', 'vivaldi.exe'), 'Vivaldi');
+    add('opera',   'chromium', path.join(pf,    'Opera', 'launcher.exe'), 'Opera');
+    add('firefox', 'firefox',  path.join(pf,    'Mozilla Firefox', 'firefox.exe'), 'Mozilla Firefox');
+    add('firefox', 'firefox',  path.join(pfx86, 'Mozilla Firefox', 'firefox.exe'), 'Mozilla Firefox (x86)');
+  } else if (process.platform === 'darwin') {
+    add('chrome',   'chromium', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', 'Google Chrome');
+    add('edge',     'chromium', '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge', 'Microsoft Edge');
+    add('brave',    'chromium', '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser', 'Brave');
+    add('chromium', 'chromium', '/Applications/Chromium.app/Contents/MacOS/Chromium', 'Chromium');
+    add('firefox',  'firefox',  '/Applications/Firefox.app/Contents/MacOS/firefox', 'Firefox');
+  } else {
+    // Linux: PATH discovery.
     const dirs = (process.env.PATH || '').split(path.delimiter);
-    for (const d of dirs) {
-      const p = path.join(d, name);
-      if (fs.existsSync(p)) return p;
-    }
+    const tryPath = (kind: BrowserKind, family: 'chromium' | 'firefox', name: string, label: string) => {
+      for (const d of dirs) {
+        const p = path.join(d, name);
+        if (fs.existsSync(p)) { out.push({ kind, family, binary: p, label }); return true; }
+      }
+      return false;
+    };
+    tryPath('chrome',   'chromium', 'google-chrome', 'Google Chrome') ||
+      tryPath('chrome', 'chromium', 'google-chrome-stable', 'Google Chrome');
+    tryPath('chromium', 'chromium', 'chromium-browser', 'Chromium') ||
+      tryPath('chromium', 'chromium', 'chromium', 'Chromium');
+    tryPath('edge',     'chromium', 'microsoft-edge', 'Microsoft Edge') ||
+      tryPath('edge',  'chromium', 'microsoft-edge-stable', 'Microsoft Edge');
+    tryPath('brave',    'chromium', 'brave-browser', 'Brave');
+    tryPath('vivaldi',  'chromium', 'vivaldi', 'Vivaldi');
+    tryPath('opera',    'chromium', 'opera', 'Opera');
+    tryPath('firefox',  'firefox',  'firefox', 'Firefox') ||
+      tryPath('firefox', 'firefox', 'firefox-esr', 'Firefox ESR');
   }
-  return null;
+  return out;
+}
+
+/** Back-compat: legacy single-binary Chrome finder. */
+export function findChromeBinary(): string | null {
+  const chrome = findInstalledBrowsers().find((b) => b.kind === 'chrome');
+  return chrome?.binary || null;
+}
+
+/** Find a browser by kind/family. */
+export function findBrowser(kind: BrowserKind | 'any-chromium'): BrowserInfo | null {
+  const list = findInstalledBrowsers();
+  if (kind === 'any-chromium') return list.find((b) => b.family === 'chromium') || null;
+  return list.find((b) => b.kind === kind) || null;
+}
+
+/**
+ * Detect if a usable X display is available on Linux for GUI Chrome.
+ * On Windows/macOS this returns true unconditionally.
+ */
+function hasUsableDisplay(): { ok: boolean; display?: string; reason?: string } {
+  if (process.platform !== 'linux') return { ok: true };
+  if (process.env.DISPLAY) return { ok: true, display: process.env.DISPLAY };
+  if (process.env.WAYLAND_DISPLAY) return { ok: true, display: process.env.WAYLAND_DISPLAY };
+  // Common fallback: X server at :0 with a Unix socket. We can auto-set
+  // DISPLAY=:0 if /tmp/.X11-unix/X0 exists. Chrome inherits it via env.
+  try {
+    if (fs.existsSync('/tmp/.X11-unix/X0')) return { ok: true, display: ':0' };
+  } catch { /* ignore */ }
+  return { ok: false, reason: 'no DISPLAY env and no /tmp/.X11-unix/X0 socket; pass {"headless": true} or set DISPLAY before starting lm-assist' };
 }
 
 /**
@@ -148,18 +224,20 @@ async function waitForDebugPort(port: number, timeoutMs = 10000): Promise<void> 
 export async function launchChrome(opts: LaunchOptions = {}): Promise<LaunchResult | LaunchError> {
   const port = opts.port ?? DEFAULT_DEBUG_PORT;
   const profileChoice = opts.profile || 'isolated';
+  const browserChoice: BrowserKind | 'any-chromium' = opts.browser || 'any-chromium';
 
-  const chromeBinary = findChromeBinary();
-  if (!chromeBinary) {
+  // Pick the actual binary.
+  const browser = findBrowser(browserChoice);
+  if (!browser) {
+    const installed = findInstalledBrowsers().map((b) => b.kind).join(', ') || '(none)';
     return {
       ok: false,
       code: 'chrome_not_found',
-      message: 'Could not locate a Chrome/Chromium executable on this host.',
-      hint: process.platform === 'linux'
-        ? 'Install google-chrome-stable or chromium-browser, or run on a desktop OS.'
-        : 'Install Google Chrome from https://www.google.com/chrome/.',
+      message: `Browser '${browserChoice}' not found. Installed on this host: ${installed}.`,
+      hint: 'Pass {"browser": "<one-of-installed>"} or install the requested browser.',
     };
   }
+  const chromeBinary = browser.binary;
 
   // Resolve user-data-dir and profile-directory.
   let userDataDir: string;
@@ -216,17 +294,51 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<LaunchResu
     // expected — port is free
   }
 
-  const args = [
-    `--remote-debugging-port=${port}`,
-    `--user-data-dir=${userDataDir}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-features=ChromeWhatsNewUI,PrivacySandboxSettings4',
-    'https://claude.ai/',
-  ];
-  if (profileDirectory) args.unshift(`--profile-directory=${profileDirectory}`);
-  if (opts.headless) args.push('--headless=new');
+  // Build args. Chromium and Firefox use different syntaxes.
+  let args: string[];
+  if (browser.family === 'firefox') {
+    // Firefox: --remote-debugging-port is supported but only exposes
+    // WebDriver-BiDi by default. CDP support is partial and varies by
+    // version; many endpoints (Storage.getCookies, Page.addScriptToEvalu-
+    // ateOnNewDocument) are not implemented. Caller should treat this
+    // as best-effort.
+    args = [
+      '--remote-debugging-port', String(port),
+      '--profile', userDataDir,
+      '--no-remote',
+    ];
+    if (opts.headless) args.push('--headless');
+    args.push('https://claude.ai/');
+  } else {
+    args = [
+      `--remote-debugging-port=${port}`,
+      `--user-data-dir=${userDataDir}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-features=ChromeWhatsNewUI,PrivacySandboxSettings4',
+      'https://claude.ai/',
+    ];
+    if (profileDirectory) args.unshift(`--profile-directory=${profileDirectory}`);
+    if (opts.headless) args.push('--headless=new');
+  }
   if (opts.extraArgs) args.push(...opts.extraArgs);
+
+  // GUI mode on Linux needs DISPLAY. lm-assist's daemon process often has
+  // no DISPLAY (started before X server / from systemd). If we're going
+  // GUI on Linux and lack DISPLAY, try /tmp/.X11-unix/X0 → DISPLAY=:0.
+  const spawnEnv: NodeJS.ProcessEnv = { ...process.env };
+  if (!opts.headless && process.platform === 'linux') {
+    const disp = hasUsableDisplay();
+    if (!disp.ok) {
+      return {
+        ok: false,
+        code: 'spawn_failed',
+        message: `Cannot launch GUI browser: ${disp.reason}.`,
+        hint: 'Pass {"headless": true} for headless mode, or set DISPLAY in lm-assist\'s environment before starting it.',
+      };
+    }
+    if (!spawnEnv.DISPLAY && disp.display) spawnEnv.DISPLAY = disp.display;
+  }
 
   let child: ChildProcess;
   try {
@@ -234,14 +346,14 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<LaunchResu
       detached: true,
       stdio: 'ignore',
       windowsHide: false,
+      env: spawnEnv,
     });
-    // unref so lm-assist doesn't wait on it.
     child.unref();
   } catch (e) {
     return {
       ok: false,
       code: 'spawn_failed',
-      message: `Failed to spawn Chrome: ${(e as Error).message}`,
+      message: `Failed to spawn browser: ${(e as Error).message}`,
     };
   }
 
@@ -286,6 +398,8 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<LaunchResu
     profileDirectory,
     profileSource,
     chromeBinary,
+    browser: browser.kind,
+    browserFamily: browser.family,
     devtoolsUrl: `http://127.0.0.1:${port}/`,
     expectedSessionPath,
   };

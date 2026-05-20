@@ -96,6 +96,8 @@ import {
   captureSession,
   closeChrome,
   launchAndCapture,
+  findInstalledBrowsers,
+  type BrowserKind,
 } from '../../utils/claudeai-browser-launch';
 
 const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -849,21 +851,31 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // GET /claude-ai/browser/installed
+    //   Enumerate CDP-capable + Firefox browsers on this host.
+    {
+      method: 'GET',
+      pattern: /^\/claude-ai\/browser\/installed$/,
+      handler: async () => ({ success: true, data: { browsers: findInstalledBrowsers() } }),
+    },
+
     // POST /claude-ai/browser/launch
-    //   Body: { profile?: 'isolated' | <profile-id>, port?: number, headless?: boolean }
-    //   Spawns a Chrome instance with --remote-debugging-port. Returns
-    //   { pid, port, userDataDir, profileDirectory, devtoolsUrl }. Refuses
-    //   if Chrome is already running against the requested profile dir
-    //   (Windows file lock); use 'isolated' or close other Chrome windows.
+    //   Body: { profile?: 'isolated' | <profile-id>, port?: number, headless?: boolean, browser? }
+    //   Spawns a browser with --remote-debugging-port. Returns
+    //   { pid, port, userDataDir, profileDirectory, browser, browserFamily,
+    //     devtoolsUrl }. Refuses if Chrome is already running against the
+    //   requested profile dir (Windows file lock); use 'isolated' or close
+    //   other Chrome windows. browser defaults to 'any-chromium'.
     {
       method: 'POST',
       pattern: /^\/claude-ai\/browser\/launch$/,
       handler: async (req) => {
-        const b = (req.body || {}) as { profile?: string; port?: number; headless?: boolean };
+        const b = (req.body || {}) as { profile?: string; port?: number; headless?: boolean; browser?: BrowserKind | 'any-chromium' };
         const result = await launchChrome({
           profile: typeof b.profile === 'string' ? b.profile : undefined,
           port: typeof b.port === 'number' ? b.port : undefined,
           headless: typeof b.headless === 'boolean' ? b.headless : undefined,
+          browser: typeof b.browser === 'string' ? b.browser : undefined,
         });
         if (!result.ok) {
           return {
@@ -934,6 +946,7 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
           profile?: string;
           port?: number;
           headless?: boolean;
+          browser?: BrowserKind | 'any-chromium';
           loginTimeoutMs?: number;
           pollIntervalMs?: number;
           setCanonical?: boolean;
@@ -942,6 +955,7 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
           profile: typeof b.profile === 'string' ? b.profile : undefined,
           port: typeof b.port === 'number' ? b.port : undefined,
           headless: typeof b.headless === 'boolean' ? b.headless : undefined,
+          browser: typeof b.browser === 'string' ? b.browser : undefined,
           loginTimeoutMs: typeof b.loginTimeoutMs === 'number' ? b.loginTimeoutMs : undefined,
           pollIntervalMs: typeof b.pollIntervalMs === 'number' ? b.pollIntervalMs : undefined,
           setCanonical: typeof b.setCanonical === 'boolean' ? b.setCanonical : undefined,
