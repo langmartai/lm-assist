@@ -408,12 +408,36 @@ Both families expose the completion endpoint. It is one of the **write** operati
   "timezone": "UTC",             // optional
   "locale": "en-US",             // optional
   "parentMessageUuid": "...",    // optional — auto-resolved from
-                                 //   current_leaf_message_uuid if omitted
-  "tools": []                    // optional pass-through (cookie path only)
+                                 //   current_leaf_message_uuid if omitted.
+                                 //   For an empty thread, pass the canonical
+                                 //   null UUID "00000000-0000-4000-8000-000000000000".
+  "tools": [],                   // optional pass-through (cookie path only)
+  "attachments": [...],          // optional — text-channel attachments (see below)
+  "files": [...],                // optional — file_uuid strings (see below)
+  "syncSources": [...]           // optional — sync_source uuids (URL ingestion)
 }
 ```
 
-The full body the helper sends to claude.ai (built from the above) mirrors the captured browser request: `prompt`, `timezone`, `personalized_styles: [Normal]`, `locale`, `model`, `tools`, `turn_message_uuids: { human_message_uuid, assistant_message_uuid }`, `attachments: []`, `files: []`, `sync_sources: []`, `rendering_mode: 'messages'`, `parent_message_uuid`. The two `turn_message_uuids` are freshly generated UUIDv4s — the server uses them as the canonical IDs of the new turn.
+**`attachments` (text channel) — RECOMMENDED for any text content.** Pass full attachment objects:
+
+```json
+{
+  "file_name": "transcript.md",
+  "file_type": "text/markdown",
+  "file_size": 169531,
+  "extracted_content": "...the actual file text...",
+  "origin": "user_upload",
+  "kind": "file"
+}
+```
+
+`extracted_content` is sent inline and the assistant sees it in context immediately. This is the right channel for markdown, source code, transcripts, anything the model should read directly.
+
+**`files` (file_uuid channel) — for binaries.** Pass an array of `file_uuid` strings returned by `POST /api/{org_uuid}/upload` on claude.ai (lm-assist does not currently expose that upload route — call claude.ai directly with the cookie, or use the lm-voice webapp upload to get the uuid). Files land in the assistant's sandbox at `/mnt/user-data/uploads/<file_name>` as `file_kind:"blob"`. **Text content via this channel is unreliable** — blob extraction often surfaces as "the file came through empty" to the assistant even when the bytes are on the server. Use `attachments` for text and reserve `files` for images / actual binary blobs.
+
+**`syncSources`** — array of sync_source uuids (URL ingestion sources). Both `syncSources` (camelCase) and `sync_sources` (snake_case) are accepted in the request body and forwarded as `sync_sources` to claude.ai.
+
+The full body the helper sends to claude.ai (built from the above) mirrors the captured browser request: `prompt`, `timezone`, `personalized_styles: [Normal]`, `locale`, `model`, `tools`, `turn_message_uuids: { human_message_uuid, assistant_message_uuid }`, `attachments`, `files`, `sync_sources`, `rendering_mode: 'messages'`, `parent_message_uuid`. The two `turn_message_uuids` are freshly generated UUIDv4s — the server uses them as the canonical IDs of the new turn.
 
 ### Response
 

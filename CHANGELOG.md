@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### claude.ai completion — attachments / files / sync_sources pass-through (2026-05-23)
+
+The completion routes on both paths (`/claude-ai/conversations/:uuid/completion` and `/claude-ai/via-chrome/conversations/:uuid/completion`) previously hardcoded `attachments: []`, `files: []`, `sync_sources: []` in the body sent to claude.ai. Callers could not attach anything; the only workaround was to bypass lm-assist and call claude.ai directly with the cookie. These three fields are now pass-throughs from the request body.
+
+**Text content goes via `attachments`, not `files`.** The two channels are not interchangeable:
+
+- `attachments: [{file_name, file_type, file_size, extracted_content, origin:"user_upload", kind:"file"}]` — sent inline with the prompt. The assistant sees `extracted_content` in context immediately. This is the right channel for markdown, source code, transcripts.
+- `files: ["<file_uuid>"]` — file_uuid strings from `POST /api/{org}/upload` on claude.ai. Files land in the sandbox at `/mnt/user-data/uploads/` as `file_kind:"blob"`. Text extraction from blob uploads is unreliable — the assistant often reports "the file came through empty" even when the bytes are on the server. Use this only for binaries.
+
+A separate session attached a 169 KB transcript via `files: [uuid]` and saw the assistant report empty content; re-sending the same bytes via `attachments` with `extracted_content` inline worked immediately. The documentation in `docs/claude-ai-routes.md` now spells out the distinction.
+
+**No upload route added in this change.** Getting a `file_uuid` still requires calling `POST /api/{org}/upload` on claude.ai directly (the lm-voice webapp does this for images; markdown/source doesn't need it). Adding an upload route to lm-assist is a separate piece of work.
+
+**Body field naming.** Accepts both `syncSources` (camelCase, matches the existing `parentMessageUuid` style) and `sync_sources` (snake_case, matches the wire format). Forwards as `sync_sources`. `attachments` and `files` are the same name in both directions.
+
 ### Browser control surface — generic CDP + claude.ai cookie capture (2026-05-20)
 
 Two coupled additions that turn lm-assist into a Chrome DevTools Protocol fallback for environments where claude-in-chrome MCP isn't loaded.

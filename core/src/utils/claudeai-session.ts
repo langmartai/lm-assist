@@ -471,6 +471,24 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
   style?: any;
   /** Pass-through tools array. Defaults to []. */
   tools?: any[];
+  /**
+   * Text-channel attachments — sent inline with the prompt as
+   * `{file_name, file_type, file_size, extracted_content, origin, kind}`
+   * objects. This is the right channel for markdown / source code / any
+   * text content you want the assistant to see directly. NOT for binaries.
+   */
+  attachments?: any[];
+  /**
+   * File-channel attachments — array of `file_uuid` strings returned from
+   * `POST /api/{org}/upload` (lm-assist does not currently expose that
+   * upload route — call claude.ai directly with the cookie for the upload,
+   * then pass the resulting uuids here). Files land in the assistant's
+   * sandbox at `/mnt/user-data/uploads/`. Text content via this channel
+   * is unreliable (often not auto-extracted); prefer `attachments` for text.
+   */
+  files?: string[];
+  /** Pass-through sync_sources array (URL ingestion sources). Defaults to []. */
+  syncSources?: string[];
   /** Max time to wait for the stream to complete. Default 120s. */
   timeoutMs?: number;
 } = {}): Promise<{
@@ -534,9 +552,9 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
     model: opts.model ?? 'claude-opus-4-7',
     tools: opts.tools ?? [],
     turn_message_uuids: { human_message_uuid: humanMessageUuid, assistant_message_uuid: assistantMessageUuid },
-    attachments: [],
-    files: [],
-    sync_sources: [],
+    attachments: opts.attachments ?? [],
+    files: opts.files ?? [],
+    sync_sources: opts.syncSources ?? [],
     rendering_mode: 'messages',
     parent_message_uuid: parent,
   };

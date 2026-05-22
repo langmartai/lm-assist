@@ -500,12 +500,24 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
       } },
 
     // POST /claude-ai/conversations/:uuid/completion
-    //   Body: { prompt: string, model?, timezone?, locale?, parentMessageUuid? }
+    //   Body: { prompt: string, model?, timezone?, locale?, parentMessageUuid?,
+    //           attachments?, files?, syncSources?, tools? }
     //
     //   WRITE OPERATION — creates real message history in the user's
     //   claude.ai account and consumes tokens. Auto-resolves
     //   current_leaf_message_uuid by pre-reading the conversation.
     //   Returns aggregated SSE result: { events, text, ...uuids }.
+    //
+    //   `attachments` is the text channel — pass full
+    //   `{file_name, file_type, file_size, extracted_content, origin:"user_upload", kind:"file"}`
+    //   objects with the markdown/source text inline. The assistant sees
+    //   it directly in context. Use this for any text content.
+    //
+    //   `files` is the file-uuid channel — pass uuids returned by
+    //   `POST /api/{org}/upload` on claude.ai (no lm-assist upload route
+    //   yet). Files land in the assistant's sandbox at
+    //   `/mnt/user-data/uploads/`; text extraction from blob uploads is
+    //   unreliable, so prefer `attachments` for text.
     {
       method: 'POST',
       pattern: /^\/claude-ai\/conversations\/(?<uuid>[^/?]+)\/completion$/,
@@ -531,6 +543,10 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
             locale: typeof body.locale === 'string' ? body.locale : undefined,
             parentMessageUuid: typeof body.parentMessageUuid === 'string' ? body.parentMessageUuid : undefined,
             tools: Array.isArray(body.tools) ? body.tools : undefined,
+            attachments: Array.isArray(body.attachments) ? body.attachments : undefined,
+            files: Array.isArray(body.files) ? body.files : undefined,
+            syncSources: Array.isArray(body.syncSources) ? body.syncSources
+              : Array.isArray(body.sync_sources) ? body.sync_sources : undefined,
             timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
           });
           if (r.status >= 400) {
@@ -762,11 +778,18 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // POST /claude-ai/via-chrome/conversations/:uuid/completion
-    //   Body: { prompt, model?, timezone?, locale?, parentMessageUuid? }
+    //   Body: { prompt, model?, timezone?, locale?, parentMessageUuid?,
+    //           attachments?, files?, syncSources? }
     //   Returns a snippet that, when run in an authenticated claude.ai
     //   tab, (1) reads current_leaf_message_uuid, (2) POSTs /completion
     //   with proper turn UUIDs, (3) drains the SSE stream, (4) returns
     //   the aggregated assistant text + event metadata.
+    //
+    //   `attachments` / `files` / `syncSources` are embedded into the
+    //   snippet via JSON.stringify. Large `attachments` (e.g. a 169 KB
+    //   markdown transcript inlined as extracted_content) make the
+    //   snippet correspondingly large; CDP can handle multi-MB scripts
+    //   but expect proportional transfer time.
     //
     //   WRITE — running the snippet creates real message history.
     {
@@ -793,6 +816,10 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
             timezone: typeof b.timezone === 'string' ? b.timezone : undefined,
             locale: typeof b.locale === 'string' ? b.locale : undefined,
             parentMessageUuid: typeof b.parentMessageUuid === 'string' ? b.parentMessageUuid : undefined,
+            attachments: Array.isArray(b.attachments) ? b.attachments : undefined,
+            files: Array.isArray(b.files) ? b.files : undefined,
+            syncSources: Array.isArray(b.syncSources) ? b.syncSources
+              : Array.isArray(b.sync_sources) ? b.sync_sources : undefined,
           });
           return { success: true, data: out };
         } catch (err) {

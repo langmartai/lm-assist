@@ -573,11 +573,30 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
   timezone?: string;
   locale?: string;
   parentMessageUuid?: string;
+  /**
+   * Text-channel attachments — full
+   * `{file_name, file_type, file_size, extracted_content, origin, kind}`
+   * objects with the markdown/source text inline. The assistant sees it
+   * directly in context. Use this for any text content. JSON-embedded
+   * into the snippet, so large payloads grow the snippet size accordingly.
+   */
+  attachments?: any[];
+  /**
+   * file_uuid strings from `POST /api/{org}/upload`. Files land in the
+   * assistant's sandbox at `/mnt/user-data/uploads/`. Text extraction
+   * from blob uploads is unreliable; prefer `attachments` for text.
+   */
+  files?: string[];
+  /** sync_source uuids (URL ingestion sources). */
+  syncSources?: string[];
 } = {}): ViaChromeSnippet {
   if (!UUID_RE.test(convUuid)) throw new Error(`Invalid conversation UUID: ${convUuid}`);
   const model = opts.model ?? 'claude-opus-4-7';
   const timezone = opts.timezone ?? 'UTC';
   const locale = opts.locale ?? 'en-US';
+  const attachments = Array.isArray(opts.attachments) ? opts.attachments : [];
+  const files = Array.isArray(opts.files) ? opts.files : [];
+  const syncSources = Array.isArray(opts.syncSources) ? opts.syncSources : [];
   // Stringify all caller-controlled values via JSON.stringify so they're
   // safely embedded in the snippet (handles quotes, newlines, unicode).
   const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}
@@ -618,9 +637,9 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
     model: ${JSON.stringify(model)},
     tools: [],
     turn_message_uuids: { human_message_uuid: humanMessageUuid, assistant_message_uuid: assistantMessageUuid },
-    attachments: [],
-    files: [],
-    sync_sources: [],
+    attachments: ${JSON.stringify(attachments)},
+    files: ${JSON.stringify(files)},
+    sync_sources: ${JSON.stringify(syncSources)},
     rendering_mode: 'messages',
     parent_message_uuid: parent,
   };
