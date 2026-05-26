@@ -152,12 +152,13 @@ export const listRecentSessionsToolDef = {
   name: 'list_recent_sessions',
   description:
     'List the user\'s recent CODE SESSIONS (Claude Code terminal sessions on their ' +
-    'machine), most-recent first. Trigger words: "recent sessions", "recent code ' +
-    'sessions", "what code sessions did I have", "what local sessions", "what was I ' +
-    'working on in Claude Code", "yesterday\'s sessions". Each entry includes the ' +
-    'session UUID, project path, last-activity time, model, turn count. Follow up with ' +
-    '`detail(<code-session-uuid>)`.\n\n' +
-    'For claude.ai web conversations (the user\'s chats at claude.ai/chat/*), use ' +
+    'machine), most-recent first. For each session returns the UUID + last-activity ' +
+    'time + the LAST ~20 real user prompts so you have enough context to know what ' +
+    'each session is about. Trigger words: "recent sessions", "recent code sessions", ' +
+    '"what code sessions did I have", "what local sessions", "what was I working on ' +
+    'in Claude Code", "yesterday\'s sessions". Follow up with `detail(<uuid>)` for the ' +
+    'full transcript.\n\n' +
+    'For claude.ai web conversations (chats at claude.ai/chat/*), use ' +
     '`list_claudeai_conversations` instead.',
   inputSchema: {
     type: 'object' as const,
@@ -172,7 +173,20 @@ export const listRecentSessionsToolDef = {
         description:
           'Filter to code sessions in a specific project directory. Omit to see all projects.',
       },
-      limit: { type: 'number', description: 'Max sessions to return (default 10, max 50).' },
+      limit: {
+        type: 'number',
+        description: 'Max sessions to return (default 5, max 20). Each session can be sizeable.',
+      },
+      prompts_per_session: {
+        type: 'number',
+        description:
+          'How many of the most-recent user prompts to include per session ' +
+          '(default 20, max 50). Lower if you want a tighter overview.',
+      },
+      prompt_char_limit: {
+        type: 'number',
+        description: 'Truncate each prompt at this many characters (default 120, max 500).',
+      },
     },
   },
 };
@@ -244,21 +258,45 @@ export const searchMemoryToolDef = {
 export const listClaudeaiConversationsToolDef = {
   name: 'list_claudeai_conversations',
   description:
-    'List the user\'s claude.ai web CONVERSATIONS (the chats they have at ' +
-    'claude.ai/chat/*), most-recent first. Trigger words: "my conversations", "claude.ai ' +
-    'conversations", "my web chats", "recent conversations", "find that chat about X", ' +
-    '"what conversations did I have". Each entry shows the conversation UUID, name, ' +
-    'timestamps, and project_uuid (if any). Follow up with `read_conversation(uuid)` to ' +
-    'read one in full.\n\n' +
-    'Does NOT list Claude Code terminal sessions — for those, use `list_recent_sessions` ' +
-    '(different store, different UUID space, different verb).\n\n' +
+    'List the user\'s claude.ai web CONVERSATIONS (chats at claude.ai/chat/*), ' +
+    'most-recent first. For each conversation returns the UUID + name + summary + ' +
+    'the LAST ~20 user/assistant messages so you have context to know what each chat ' +
+    'is about. Trigger words: "my conversations", "claude.ai conversations", "my web ' +
+    'chats", "recent conversations", "find that chat about X", "what conversations ' +
+    'did I have". Follow up with `read_conversation(conversation_uuid=...)` for full ' +
+    'message history.\n\n' +
+    'Does NOT list Claude Code terminal sessions — use `list_recent_sessions` for those. ' +
+    'Different store, different UUID space, different verb.\n\n' +
+    'Default limit is 5 (low because each conversation costs a per-item read against ' +
+    'claude.ai). Set `include_messages: false` for a fast metadata-only list.\n\n' +
     'Requires a configured claude.ai session — returns a clear error otherwise. Read-only.',
   inputSchema: {
     type: 'object' as const,
     properties: {
-      limit: { type: 'number', description: 'Max conversations (default 20, max 100).' },
+      limit: {
+        type: 'number',
+        description:
+          'Max conversations (default 5, max 20). Keep low when including messages — each ' +
+          'item requires a separate API call to fetch its message tail.',
+      },
       starred: { type: 'boolean', description: 'If true, only starred conversations.' },
       project_uuid: { type: 'string', description: 'Filter to a specific claude.ai project UUID.' },
+      include_messages: {
+        type: 'boolean',
+        description:
+          'Include the last few messages of each conversation (default true). Set false ' +
+          'for a fast metadata-only listing.',
+      },
+      messages_per_conv: {
+        type: 'number',
+        description:
+          'How many of the most-recent messages to include per conversation (default 20, ' +
+          'max 50). Ignored when include_messages is false.',
+      },
+      message_char_limit: {
+        type: 'number',
+        description: 'Truncate each message body at this many characters (default 120, max 500).',
+      },
     },
   },
 };

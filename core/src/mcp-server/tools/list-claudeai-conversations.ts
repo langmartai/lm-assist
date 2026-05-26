@@ -1,12 +1,14 @@
 /**
  * list_claudeai_conversations tool — claude.ai web conversations.
  *
- * Surfaces what the user actually cares about: the name (which is
- * the auto-generated title — that IS content) + the summary if any.
- * Metadata like model and project_uuid is intentionally dropped.
+ * Includes the LAST ~20 user/assistant messages per conversation so the
+ * model has context to know which conv is which. This requires a
+ * per-conversation read against claude.ai, so default limit is small
+ * (5 convs). Heavy mode (`include_messages: false`) returns the cheap
+ * list-only view.
  */
 
-import { listConversations } from '../../utils/claudeai-session';
+import { listConversations, readConversation } from '../../utils/claudeai-session';
 
 export { listClaudeaiConversationsToolDef } from './definitions';
 
@@ -28,13 +30,48 @@ function clip(s: string | undefined, n: number): string {
   return oneLine.length > n ? oneLine.slice(0, n - 1) + '…' : oneLine;
 }
 
+function messageText(block: Record<string, unknown>): string {
+  const type = block.type as string;
+  if (type === 'text') return String(block.text || '');
+  if (type === 'tool_use') return `[tool_use ${block.name || ''}]`;
+  if (type === 'tool_result') {
+    const c = block.content;
+    const txt = Array.isArray(c) ? c.map((x) => (x as Record<string, unknown>).text || '').join('') : '';
+    return `[tool_result] ${String(txt).slice(0, 120)}`;
+  }
+  return '';
+}
+
+async function tailMessages(uuid: string, n: number, charLimit: number): Promise<string[]> {
+  try {
+    const resp = (await readConversation(uuid, {
+      tree: true,
+      renderingMode: 'messages',
+      renderAllTools: true,
+    })) as unknown as Record<string, unknown>;
+    const msgs = (resp.chat_messages || []) as Array<Record<string, unknown>>;
+    const tail = msgs.slice(-n);
+    return tail.map((m) => {
+      const sender = String(m.sender || '?');
+      const blocks = (m.content || []) as Array<Record<string, unknown>>;
+      const text = blocks.map(messageText).join(' ').trim();
+      return `    ${sender}: ${clip(text, charLimit)}`;
+    });
+  } catch (e) {
+    return [`    (failed to read messages: ${e instanceof Error ? e.message : String(e)})`];
+  }
+}
+
 export async function handleListClaudeaiConversations(args: Record<string, unknown>): Promise<{
   content: Array<{ type: string; text: string }>;
   isError?: boolean;
 }> {
-  const limit = Math.min(Math.max(Number(args.limit) || 20, 1), 100);
+  const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 20);
   const starred = Boolean(args.starred);
   const projectUuid = args.project_uuid as string | undefined;
+  const includeMessages = args.include_messages !== false; // default true
+  const messagesPerConv = Math.min(Math.max(Number(args.messages_per_conv) || 20, 1), 50);
+  const charLimit = Math.min(Math.max(Number(args.message_char_limit) || 120, 40), 500);
 
   const extraQuery: Record<string, string | number | boolean> = {};
   if (projectUuid) extraQuery.project_uuid = projectUuid;
@@ -61,33 +98,45 @@ export async function handleListClaudeaiConversations(args: Record<string, unkno
     return { content: [{ type: 'text', text: `Error: ${msg}` }], isError: true };
   }
 
-  const list = Array.isArray(resp) ? resp : (resp as { data?: unknown[] })?.data;
+  const list = (Array.isArray(resp) ? resp : (resp as { data?: unknown[] })?.data) as
+    | Array<Record<string, unknown>>
+    | undefined;
   if (!Array.isArray(list)) {
     return {
       content: [{ type: 'text', text: 'Unexpected response shape from claude.ai.' }],
       isError: true,
     };
   }
-
   if (list.length === 0) {
     return { content: [{ type: 'text', text: 'No claude.ai conversations match.' }] };
   }
 
   const lines: string[] = [
-    `Conversations (${list.length}${starred ? ', starred' : ''}):`,
+    `Conversations (${list.length}${starred ? ', starred' : ''}, last ${
+      includeMessages ? messagesPerConv : 0
+    } msgs each):`,
     '',
   ];
-  for (const c of list as Array<Record<string, unknown>>) {
+
+  // Fetch tail messages in parallel for the convs that need them
+  const tails = includeMessages
+    ? await Promise.all(list.map((c) => tailMessages(String(c.uuid || ''), messagesPerConv, charLimit)))
+    : list.map(() => [] as string[]);
+
+  for (let i = 0; i < list.length; i++) {
+    const c = list[i];
     const uuid = String(c.uuid || '');
     const name = String(c.name || '(untitled)');
-    const summary = clip(c.summary as string | undefined, 240);
+    const summary = clip(c.summary as string | undefined, 200);
     const updated = fmtRelative(c.updated_at as string | undefined);
     const star = c.is_starred ? ' ★' : '';
 
-    lines.push(`${uuid}${star}  ·  ${updated}`);
+    lines.push(`━━━ ${uuid}${star}  ·  ${updated} ━━━`);
     lines.push(`  ${name}`);
-    if (summary) {
-      lines.push(`  ${summary}`);
+    if (summary) lines.push(`  ${summary}`);
+    if (includeMessages && tails[i].length > 0) {
+      lines.push('  recent messages:');
+      lines.push(...tails[i]);
     }
     lines.push(`  → read_conversation(conversation_uuid="${uuid}")`);
     lines.push('');

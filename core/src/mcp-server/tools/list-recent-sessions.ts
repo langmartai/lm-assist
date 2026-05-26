@@ -1,10 +1,9 @@
 /**
  * list_recent_sessions tool — recent Claude Code sessions, newest first.
  *
- * Surfaces what the user actually cares about: WHAT the session was
- * about (first + last real user prompt). The "metadata" (cwd, model,
- * turn count) is intentionally suppressed — it's not what makes a
- * session findable to the user.
+ * Returns the LAST ~20 real user prompts per session so the model has
+ * enough context to know which session is which. Drops metadata noise
+ * (cwd, model, turn count) entirely.
  */
 
 import { getSessionCache, isRealUserPrompt } from '../../session-cache';
@@ -41,7 +40,9 @@ export async function handleListRecentSessions(args: Record<string, unknown>): P
   const rawScope = (args.scope as string) || '7d';
   const scope: Scope = rawScope in SCOPE_MS ? (rawScope as Scope) : '7d';
   const project = args.project as string | undefined;
-  const limit = Math.min(Math.max(Number(args.limit) || 10, 1), 50);
+  const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 20);
+  const promptsPerSession = Math.min(Math.max(Number(args.prompts_per_session) || 20, 1), 50);
+  const promptCharLimit = Math.min(Math.max(Number(args.prompt_char_limit) || 120, 40), 500);
 
   const cache = getSessionCache();
   const all = cache.getAllSessionsFromCache();
@@ -64,24 +65,31 @@ export async function handleListRecentSessions(args: Record<string, unknown>): P
     };
   }
 
-  const lines: string[] = [`Recent code sessions (${filtered.length}, scope=${scope}):`, ''];
+  const lines: string[] = [
+    `Recent code sessions (${filtered.length}, scope=${scope}, last ${promptsPerSession} prompts per session):`,
+    '',
+  ];
   for (const s of filtered) {
     const sid = s.sessionId;
     const cd = s.cacheData;
     const when = cd?.fileMtime ? fmtRelative(cd.fileMtime) : '?';
+    const allPrompts = (cd?.userPrompts || []).filter(isRealUserPrompt);
 
-    const prompts = (cd?.userPrompts || []).filter(isRealUserPrompt);
-    const first = prompts[0];
-    const last = prompts.length > 1 ? prompts[prompts.length - 1] : undefined;
-
-    lines.push(`${sid}  ·  ${when}`);
-    if (first) {
-      lines.push(`  opening: ${clip(first.text, 200)}`);
+    lines.push(`━━━ ${sid}  ·  ${when}  ·  ${allPrompts.length} user prompts ━━━`);
+    if (allPrompts.length === 0) {
+      lines.push('  (no real user prompts in cache)');
     } else {
-      lines.push('  (no user prompts captured)');
-    }
-    if (last && last.turnIndex !== first?.turnIndex) {
-      lines.push(`  latest:  ${clip(last.text, 200)}`);
+      // Newest first: take the last N, but render with the OLDEST of those first
+      // so the reader sees chronological context flowing into the latest.
+      const tail = allPrompts.slice(-promptsPerSession);
+      for (let i = 0; i < tail.length; i++) {
+        const p = tail[i];
+        const idx = allPrompts.length - tail.length + i;
+        lines.push(`  [${idx}] ${clip(p.text, promptCharLimit)}`);
+      }
+      if (allPrompts.length > tail.length) {
+        lines.push(`  (${allPrompts.length - tail.length} earlier prompts omitted — use detail("${sid}", section="conversation") for the full thread)`);
+      }
     }
     lines.push(`  → detail("${sid}")`);
     lines.push('');
