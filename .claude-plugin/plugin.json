@@ -6,5 +6,7 @@
     "name": "langmartai"
   },
   "repository": "https://github.com/langmartai/lm-assist",
-  "license": "AGPL-3.0-or-later"
+  "license": "AGPL-3.0-or-later",
+  "commands": "./commands",
+  "skills": "./skills"
 }
