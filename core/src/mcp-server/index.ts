@@ -36,6 +36,7 @@ import {
   listProjectsToolDef,
   searchMemoryToolDef,
   listClaudeaiConversationsToolDef,
+  readConversationToolDef,
 } from './tools/definitions';
 import { logToolCall } from './mcp-logger';
 import {
@@ -47,6 +48,7 @@ import {
   mcpListProjects,
   mcpSearchMemory,
   mcpListClaudeaiConversations,
+  mcpReadConversation,
 } from './api-client';
 
 // ─── Server Setup ──────────────────────────────────────────────────
@@ -75,6 +77,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       listProjectsToolDef,
       searchMemoryToolDef,
       listClaudeaiConversationsToolDef,
+      readConversationToolDef,
     ],
   };
 });
@@ -107,6 +110,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case 'list_claudeai_conversations':
         result = await mcpListClaudeaiConversations(args || {});
+        break;
+      case 'read_conversation':
+        result = await mcpReadConversation(args || {});
         break;
       default:
         result = {

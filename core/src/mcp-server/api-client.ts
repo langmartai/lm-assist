@@ -102,6 +102,10 @@ export async function mcpListClaudeaiConversations(args: Record<string, unknown>
   return post<McpToolResult>('/mcp/list_claudeai_conversations', args);
 }
 
+export async function mcpReadConversation(args: Record<string, unknown>): Promise<McpToolResult> {
+  return post<McpToolResult>('/mcp/read_conversation', args);
+}
+
 // ─── Core API + Web Auto-Start ──────────────────────────────────────────────────
 
 async function isApiRunning(): Promise<boolean> {

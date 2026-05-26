@@ -38,6 +38,7 @@ import {
   listProjectsToolDef,
   searchMemoryToolDef,
   listClaudeaiConversationsToolDef,
+  readConversationToolDef,
 } from '../../mcp-server/tools/definitions';
 import { handleSearch } from '../../mcp-server/tools/search';
 import { handleDetail } from '../../mcp-server/tools/detail';
@@ -46,6 +47,7 @@ import { handleListRecentSessions } from '../../mcp-server/tools/list-recent-ses
 import { handleListProjects } from '../../mcp-server/tools/list-projects';
 import { handleSearchMemory } from '../../mcp-server/tools/search-memory';
 import { handleListClaudeaiConversations } from '../../mcp-server/tools/list-claudeai-conversations';
+import { handleReadConversation } from '../../mcp-server/tools/read-conversation';
 import { logToolCall } from '../../mcp-server/mcp-logger';
 
 // Fresh Server per request (stateless mode). The SDK errors with
@@ -68,6 +70,7 @@ function buildServer(): Server {
       listProjectsToolDef,
       searchMemoryToolDef,
       listClaudeaiConversationsToolDef,
+      readConversationToolDef,
     ],
   }));
 
@@ -99,6 +102,9 @@ function buildServer(): Server {
           break;
         case 'list_claudeai_conversations':
           result = await handleListClaudeaiConversations(args || {});
+          break;
+        case 'read_conversation':
+          result = await handleReadConversation(args || {});
           break;
         default:
           result = {

@@ -20,6 +20,7 @@ import { handleListRecentSessions } from '../../mcp-server/tools/list-recent-ses
 import { handleListProjects } from '../../mcp-server/tools/list-projects';
 import { handleSearchMemory } from '../../mcp-server/tools/search-memory';
 import { handleListClaudeaiConversations } from '../../mcp-server/tools/list-claudeai-conversations';
+import { handleReadConversation } from '../../mcp-server/tools/read-conversation';
 
 export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -126,6 +127,20 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
           return wrapResponse(await handleListClaudeaiConversations(req.body || {}), start);
         } catch (err) {
           return wrapError('MCP_LIST_CLAUDEAI_CONV_ERROR', err instanceof Error ? err.message : String(err), start);
+        }
+      },
+    },
+
+    // POST /mcp/read_conversation
+    {
+      method: 'POST',
+      pattern: /^\/mcp\/read_conversation$/,
+      handler: async (req) => {
+        const start = Date.now();
+        try {
+          return wrapResponse(await handleReadConversation(req.body || {}), start);
+        } catch (err) {
+          return wrapError('MCP_READ_CONV_ERROR', err instanceof Error ? err.message : String(err), start);
         }
       },
     },
