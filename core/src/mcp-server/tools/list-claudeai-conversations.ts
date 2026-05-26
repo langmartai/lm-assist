@@ -1,10 +1,9 @@
 /**
- * list_claudeai_conversations tool — read-only listing of the user's
- * claude.ai web conversations. Uses the in-process listConversations()
- * helper which reads `~/.claude/claudeai-session.json` for the cookie.
+ * list_claudeai_conversations tool — claude.ai web conversations.
  *
- * If the session is not configured, returns a clear error pointing the
- * user at the setup. The model should NOT keep retrying after that.
+ * Surfaces what the user actually cares about: the name (which is
+ * the auto-generated title — that IS content) + the summary if any.
+ * Metadata like model and project_uuid is intentionally dropped.
  */
 
 import { listConversations } from '../../utils/claudeai-session';
@@ -21,6 +20,12 @@ function fmtRelative(iso: string | undefined): string {
   if (age < 86400_000) return `${Math.floor(age / 3600_000)}h ago`;
   if (age < 30 * 86400_000) return `${Math.floor(age / 86400_000)}d ago`;
   return iso.slice(0, 10);
+}
+
+function clip(s: string | undefined, n: number): string {
+  if (!s) return '';
+  const oneLine = s.replace(/\s+/g, ' ').trim();
+  return oneLine.length > n ? oneLine.slice(0, n - 1) + '…' : oneLine;
 }
 
 export async function handleListClaudeaiConversations(args: Record<string, unknown>): Promise<{
@@ -45,10 +50,9 @@ export async function handleListClaudeaiConversations(args: Record<string, unkno
           {
             type: 'text',
             text:
-              'claude.ai session not configured. The user needs to write ' +
-              '`~/.claude/claudeai-session.json` containing `{ "cookie": "<full Cookie ' +
-              'header from a logged-in claude.ai web request>" }`. Capture via DevTools ' +
-              '→ Network → any /api/... → Copy as cURL → grab the Cookie header.',
+              'claude.ai session not configured. Write `~/.claude/claudeai-session.json` ' +
+              'with `{ "cookie": "<full Cookie header from a logged-in claude.ai web request>" }`. ' +
+              'Capture via DevTools → Network → any /api/... → Copy as cURL → grab the Cookie header.',
           },
         ],
         isError: true,
@@ -57,7 +61,6 @@ export async function handleListClaudeaiConversations(args: Record<string, unkno
     return { content: [{ type: 'text', text: `Error: ${msg}` }], isError: true };
   }
 
-  // claude.ai returns an array of conversation summaries
   const list = Array.isArray(resp) ? resp : (resp as { data?: unknown[] })?.data;
   if (!Array.isArray(list)) {
     return {
@@ -71,19 +74,22 @@ export async function handleListClaudeaiConversations(args: Record<string, unkno
   }
 
   const lines: string[] = [
-    `claude.ai conversations (${list.length}, limit=${limit}${starred ? ', starred' : ''}):`,
+    `Conversations (${list.length}${starred ? ', starred' : ''}):`,
     '',
   ];
   for (const c of list as Array<Record<string, unknown>>) {
     const uuid = String(c.uuid || '');
     const name = String(c.name || '(untitled)');
+    const summary = clip(c.summary as string | undefined, 240);
     const updated = fmtRelative(c.updated_at as string | undefined);
-    const created = fmtRelative(c.created_at as string | undefined);
-    const proj = (c.project_uuid as string | undefined) || '';
     const star = c.is_starred ? ' ★' : '';
-    lines.push(`${uuid}${star}`);
+
+    lines.push(`${uuid}${star}  ·  ${updated}`);
     lines.push(`  ${name}`);
-    lines.push(`  updated ${updated}  ·  created ${created}${proj ? `  ·  project ${proj}` : ''}`);
+    if (summary) {
+      lines.push(`  ${summary}`);
+    }
+    lines.push(`  → read_conversation(conversation_uuid="${uuid}")`);
     lines.push('');
   }
 

@@ -1,8 +1,13 @@
 /**
  * list_recent_sessions tool — recent Claude Code sessions, newest first.
+ *
+ * Surfaces what the user actually cares about: WHAT the session was
+ * about (first + last real user prompt). The "metadata" (cwd, model,
+ * turn count) is intentionally suppressed — it's not what makes a
+ * session findable to the user.
  */
 
-import { getSessionCache } from '../../session-cache';
+import { getSessionCache, isRealUserPrompt } from '../../session-cache';
 
 export { listRecentSessionsToolDef } from './definitions';
 
@@ -22,6 +27,12 @@ function fmtRelative(ms: number): string {
   if (age < 86400_000) return `${Math.floor(age / 3600_000)}h ago`;
   if (age < 30 * 86400_000) return `${Math.floor(age / 86400_000)}d ago`;
   return new Date(ms).toISOString().slice(0, 10);
+}
+
+function clip(s: string | undefined, n: number): string {
+  if (!s) return '';
+  const oneLine = s.replace(/\s+/g, ' ').trim();
+  return oneLine.length > n ? oneLine.slice(0, n - 1) + '…' : oneLine;
 }
 
 export async function handleListRecentSessions(args: Record<string, unknown>): Promise<{
@@ -49,20 +60,31 @@ export async function handleListRecentSessions(args: Record<string, unknown>): P
   if (filtered.length === 0) {
     const where = project ? ` in ${project}` : '';
     return {
-      content: [{ type: 'text', text: `No sessions${where} within scope=${scope}.` }],
+      content: [{ type: 'text', text: `No code sessions${where} within scope=${scope}.` }],
     };
   }
 
-  const lines: string[] = [`Recent sessions (${filtered.length}, scope=${scope}):`, ''];
+  const lines: string[] = [`Recent code sessions (${filtered.length}, scope=${scope}):`, ''];
   for (const s of filtered) {
     const sid = s.sessionId;
     const cd = s.cacheData;
-    const cwd = cd?.cwd || '?';
-    const model = cd?.model || '?';
-    const turns = cd?.lastTurnIndex ?? 0;
     const when = cd?.fileMtime ? fmtRelative(cd.fileMtime) : '?';
-    lines.push(`${sid.slice(0, 8)}…  ${when}  ${cwd}  [${model}]  turns=${turns}`);
+
+    const prompts = (cd?.userPrompts || []).filter(isRealUserPrompt);
+    const first = prompts[0];
+    const last = prompts.length > 1 ? prompts[prompts.length - 1] : undefined;
+
+    lines.push(`${sid}  ·  ${when}`);
+    if (first) {
+      lines.push(`  opening: ${clip(first.text, 200)}`);
+    } else {
+      lines.push('  (no user prompts captured)');
+    }
+    if (last && last.turnIndex !== first?.turnIndex) {
+      lines.push(`  latest:  ${clip(last.text, 200)}`);
+    }
     lines.push(`  → detail("${sid}")`);
+    lines.push('');
   }
 
   return { content: [{ type: 'text', text: lines.join('\n') }] };
