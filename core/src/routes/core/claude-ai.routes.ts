@@ -26,6 +26,24 @@
  * fingerprint because the request is made by the page itself.
  */
 
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { createClaudeAiCache, type ClaudeAiCache } from '../../claudeai-cache';
+
+const CACHE_DIR = process.env.LM_ASSIST_CLAUDEAI_CACHE_DIR
+  || path.join(os.homedir(), '.lm-assist', 'claudeai-cache');
+const CACHE_TTL_SEC = Number(process.env.LM_ASSIST_CLAUDEAI_CACHE_TTL_SEC || 60);
+const CACHE_EVICT_DAYS = Number(process.env.LM_ASSIST_CLAUDEAI_CACHE_EVICT_DAYS || 30);
+
+const claudeAiCache: ClaudeAiCache = createClaudeAiCache({
+  cacheDir: CACHE_DIR,
+  ttlSec: CACHE_TTL_SEC,
+  evictAfterDays: CACHE_EVICT_DAYS,
+});
+
+// Daily eviction sweep — best-effort, does not block server startup.
+setInterval(() => { claudeAiCache.sweep().catch(() => {}); }, 24 * 60 * 60 * 1000).unref();
+
 import type { RouteHandler, RouteContext } from '../index';
 import {
   getClaudeAISessionStatus,
@@ -203,12 +221,20 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // GET /claude-ai/conversations?limit=30&starred=false&project_uuid=...
+    //   Cache: served from index on hit (fast list). Bypass with ?refresh=true.
     {
       method: 'GET',
       pattern: /^\/claude-ai\/conversations$/,
       handler: async (req) => {
         try {
           const q = req.query || {};
+          const forceRefresh = q.refresh === 'true';
+          if (!forceRefresh) {
+            const indexEntries = await claudeAiCache.listIndex();
+            if (indexEntries.length > 0) {
+              return { success: true, data: indexEntries, _cached: true };
+            }
+          }
           const extraQuery: Record<string, string> = {};
           if (typeof q.project_uuid === 'string') extraQuery.project_uuid = q.project_uuid;
           const r = await listConversations({
@@ -251,6 +277,7 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // GET /claude-ai/conversations/:uuid
+    //   Cache: served from disk on hit. Bypass with ?refresh=true.
     {
       method: 'GET',
       pattern: /^\/claude-ai\/conversations\/(?<uuid>[^/?]+)$/,
@@ -264,11 +291,21 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
         }
         try {
           const q = req.query || {};
+          const forceRefresh = q.refresh === 'true';
+          if (!forceRefresh) {
+            const cached = await claudeAiCache.get(uuid);
+            if (cached) {
+              return { success: true, data: cached, _cached: true };
+            }
+          }
           const r = await readConversation(uuid, {
             tree: q.tree === 'false' ? false : true,
             renderAllTools: q.render_all_tools === 'false' ? false : true,
             renderingMode: typeof q.rendering_mode === 'string' ? q.rendering_mode : undefined,
           });
+          if (r.status < 400 && r.body != null) {
+            await claudeAiCache.set(uuid, r.body as Record<string, unknown> & { uuid: string }).catch(() => {});
+          }
           return upstreamWrap(r);
         } catch (err) {
           return catchOAuth(err);
