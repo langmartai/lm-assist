@@ -425,6 +425,19 @@ export class TierRestServer {
       return;
     }
 
+    // MCP Protocol endpoint (POST/GET/DELETE /mcp).
+    // StreamableHTTPServerTransport needs raw req/res to drive both
+    // single-response and SSE flows. Match exact `/mcp` (with optional
+    // query string) so `/mcp/search` etc. continue through normal dispatch.
+    {
+      const url = (req.url || '').split('?')[0];
+      if (url === '/mcp' && (req.method === 'POST' || req.method === 'GET' || req.method === 'DELETE')) {
+        const { handleMcpRequest } = await import('./routes/core/mcp.routes');
+        await handleMcpRequest(req, res);
+        return;
+      }
+    }
+
     // Parse request
     const parsed = await this.parseRequest(req);
 
