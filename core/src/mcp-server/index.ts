@@ -32,9 +32,22 @@ import {
   searchToolDef,
   detailToolDef,
   feedbackToolDef,
+  listRecentSessionsToolDef,
+  listProjectsToolDef,
+  searchMemoryToolDef,
+  listClaudeaiConversationsToolDef,
 } from './tools/definitions';
 import { logToolCall } from './mcp-logger';
-import { ensureCoreApi, mcpSearch, mcpDetail, mcpFeedback } from './api-client';
+import {
+  ensureCoreApi,
+  mcpSearch,
+  mcpDetail,
+  mcpFeedback,
+  mcpListRecentSessions,
+  mcpListProjects,
+  mcpSearchMemory,
+  mcpListClaudeaiConversations,
+} from './api-client';
 
 // ─── Server Setup ──────────────────────────────────────────────────
 
@@ -58,6 +71,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       searchToolDef,
       detailToolDef,
       feedbackToolDef,
+      listRecentSessionsToolDef,
+      listProjectsToolDef,
+      searchMemoryToolDef,
+      listClaudeaiConversationsToolDef,
     ],
   };
 });
@@ -78,6 +95,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case 'feedback':
         result = await mcpFeedback(args || {});
+        break;
+      case 'list_recent_sessions':
+        result = await mcpListRecentSessions(args || {});
+        break;
+      case 'list_projects':
+        result = await mcpListProjects(args || {});
+        break;
+      case 'search_memory':
+        result = await mcpSearchMemory(args || {});
+        break;
+      case 'list_claudeai_conversations':
+        result = await mcpListClaudeaiConversations(args || {});
         break;
       default:
         result = {

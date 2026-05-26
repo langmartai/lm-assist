@@ -16,6 +16,10 @@ import { wrapResponse, wrapError } from '../../api/helpers';
 import { handleSearch } from '../../mcp-server/tools/search';
 import { handleDetail } from '../../mcp-server/tools/detail';
 import { handleFeedback } from '../../mcp-server/tools/feedback';
+import { handleListRecentSessions } from '../../mcp-server/tools/list-recent-sessions';
+import { handleListProjects } from '../../mcp-server/tools/list-projects';
+import { handleSearchMemory } from '../../mcp-server/tools/search-memory';
+import { handleListClaudeaiConversations } from '../../mcp-server/tools/list-claudeai-conversations';
 
 export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -66,6 +70,62 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return wrapError('MCP_FEEDBACK_ERROR', msg, start);
+        }
+      },
+    },
+
+    // POST /mcp/list_recent_sessions
+    {
+      method: 'POST',
+      pattern: /^\/mcp\/list_recent_sessions$/,
+      handler: async (req) => {
+        const start = Date.now();
+        try {
+          return wrapResponse(await handleListRecentSessions(req.body || {}), start);
+        } catch (err) {
+          return wrapError('MCP_LIST_SESSIONS_ERROR', err instanceof Error ? err.message : String(err), start);
+        }
+      },
+    },
+
+    // POST /mcp/list_projects
+    {
+      method: 'POST',
+      pattern: /^\/mcp\/list_projects$/,
+      handler: async (req) => {
+        const start = Date.now();
+        try {
+          return wrapResponse(await handleListProjects(req.body || {}), start);
+        } catch (err) {
+          return wrapError('MCP_LIST_PROJECTS_ERROR', err instanceof Error ? err.message : String(err), start);
+        }
+      },
+    },
+
+    // POST /mcp/search_memory
+    {
+      method: 'POST',
+      pattern: /^\/mcp\/search_memory$/,
+      handler: async (req) => {
+        const start = Date.now();
+        try {
+          return wrapResponse(await handleSearchMemory(req.body || {}), start);
+        } catch (err) {
+          return wrapError('MCP_SEARCH_MEMORY_ERROR', err instanceof Error ? err.message : String(err), start);
+        }
+      },
+    },
+
+    // POST /mcp/list_claudeai_conversations
+    {
+      method: 'POST',
+      pattern: /^\/mcp\/list_claudeai_conversations$/,
+      handler: async (req) => {
+        const start = Date.now();
+        try {
+          return wrapResponse(await handleListClaudeaiConversations(req.body || {}), start);
+        } catch (err) {
+          return wrapError('MCP_LIST_CLAUDEAI_CONV_ERROR', err instanceof Error ? err.message : String(err), start);
         }
       },
     },

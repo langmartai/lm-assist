@@ -34,10 +34,18 @@ import {
   searchToolDef,
   detailToolDef,
   feedbackToolDef,
+  listRecentSessionsToolDef,
+  listProjectsToolDef,
+  searchMemoryToolDef,
+  listClaudeaiConversationsToolDef,
 } from '../../mcp-server/tools/definitions';
 import { handleSearch } from '../../mcp-server/tools/search';
 import { handleDetail } from '../../mcp-server/tools/detail';
 import { handleFeedback } from '../../mcp-server/tools/feedback';
+import { handleListRecentSessions } from '../../mcp-server/tools/list-recent-sessions';
+import { handleListProjects } from '../../mcp-server/tools/list-projects';
+import { handleSearchMemory } from '../../mcp-server/tools/search-memory';
+import { handleListClaudeaiConversations } from '../../mcp-server/tools/list-claudeai-conversations';
 import { logToolCall } from '../../mcp-server/mcp-logger';
 
 // Fresh Server per request (stateless mode). The SDK errors with
@@ -52,7 +60,15 @@ function buildServer(): Server {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [searchToolDef, detailToolDef, feedbackToolDef],
+    tools: [
+      searchToolDef,
+      detailToolDef,
+      feedbackToolDef,
+      listRecentSessionsToolDef,
+      listProjectsToolDef,
+      searchMemoryToolDef,
+      listClaudeaiConversationsToolDef,
+    ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -71,6 +87,18 @@ function buildServer(): Server {
           break;
         case 'feedback':
           result = await handleFeedback(args || {});
+          break;
+        case 'list_recent_sessions':
+          result = await handleListRecentSessions(args || {});
+          break;
+        case 'list_projects':
+          result = await handleListProjects(args || {});
+          break;
+        case 'search_memory':
+          result = await handleSearchMemory(args || {});
+          break;
+        case 'list_claudeai_conversations':
+          result = await handleListClaudeaiConversations(args || {});
           break;
         default:
           result = {

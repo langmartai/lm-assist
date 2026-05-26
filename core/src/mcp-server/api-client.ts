@@ -86,6 +86,22 @@ export async function mcpFeedback(args: Record<string, unknown>): Promise<McpToo
   return post<McpToolResult>('/mcp/feedback', args);
 }
 
+export async function mcpListRecentSessions(args: Record<string, unknown>): Promise<McpToolResult> {
+  return post<McpToolResult>('/mcp/list_recent_sessions', args);
+}
+
+export async function mcpListProjects(args: Record<string, unknown>): Promise<McpToolResult> {
+  return post<McpToolResult>('/mcp/list_projects', args);
+}
+
+export async function mcpSearchMemory(args: Record<string, unknown>): Promise<McpToolResult> {
+  return post<McpToolResult>('/mcp/search_memory', args);
+}
+
+export async function mcpListClaudeaiConversations(args: Record<string, unknown>): Promise<McpToolResult> {
+  return post<McpToolResult>('/mcp/list_claudeai_conversations', args);
+}
+
 // ─── Core API + Web Auto-Start ──────────────────────────────────────────────────
 
 async function isApiRunning(): Promise<boolean> {
