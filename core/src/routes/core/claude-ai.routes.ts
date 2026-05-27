@@ -1021,7 +1021,7 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
               success: false,
               error: {
                 code: 'PROFILE_NOT_FOUND',
-                message: `No Chrome profile matches '${b.profile}'. See GET /claude-ai/browser/profiles.`,
+                message: `No Chrome profile matches '${b.profile}'. See GET /browser/profiles.`,
               },
             };
           }
