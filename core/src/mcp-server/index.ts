@@ -23,22 +23,8 @@ console.info = console.error.bind(console);
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
 
-import {
-  searchToolDef,
-  detailToolDef,
-  feedbackToolDef,
-  listRecentSessionsToolDef,
-  listProjectsToolDef,
-  searchMemoryToolDef,
-  listClaudeaiConversationsToolDef,
-  readConversationToolDef,
-} from './tools/definitions';
-import { logToolCall } from './mcp-logger';
+import { configureMcpServer, type McpToolDispatcher } from './configure';
 import {
   ensureCoreApi,
   mcpSearch,
@@ -54,85 +40,29 @@ import {
 // ─── Server Setup ──────────────────────────────────────────────────
 
 const server = new Server(
-  {
-    name: 'lm-assist',
-    version: '2.0.0',
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  }
+  { name: 'lm-assist', version: '2.0.0' },
+  { capabilities: { tools: {} } }
 );
 
-// ─── Tool Registration ──────────────────────────────────────────────────
-
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      searchToolDef,
-      detailToolDef,
-      feedbackToolDef,
-      listRecentSessionsToolDef,
-      listProjectsToolDef,
-      searchMemoryToolDef,
-      listClaudeaiConversationsToolDef,
-      readConversationToolDef,
-    ],
-  };
-});
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-  const t0 = Date.now();
-
-  try {
-    let result: { content: Array<{ type: string; text: string }>; isError?: boolean };
-
-    switch (name) {
-      case 'search':
-        result = await mcpSearch(args || {});
-        break;
-      case 'detail':
-        result = await mcpDetail(args || {});
-        break;
-      case 'feedback':
-        result = await mcpFeedback(args || {});
-        break;
-      case 'list_recent_sessions':
-        result = await mcpListRecentSessions(args || {});
-        break;
-      case 'list_projects':
-        result = await mcpListProjects(args || {});
-        break;
-      case 'search_memory':
-        result = await mcpSearchMemory(args || {});
-        break;
-      case 'list_claudeai_conversations':
-        result = await mcpListClaudeaiConversations(args || {});
-        break;
-      case 'read_conversation':
-        result = await mcpReadConversation(args || {});
-        break;
-      default:
-        result = {
-          content: [{ type: 'text', text: `Unknown tool: ${name}` }],
-          isError: true,
-        };
-    }
-
-    logToolCall(name, (args || {}) as Record<string, unknown>, Date.now() - t0, result);
-    return result;
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    const errResult = {
-      content: [{ type: 'text', text: `Error: ${msg}` }],
-      isError: true as const,
-    };
-    logToolCall(name, (args || {}) as Record<string, unknown>, Date.now() - t0, errResult);
-    return errResult;
+// Dispatcher for stdio mode — forwards each tool call to the running core
+// API over HTTP. The actual data stores (LMDB, LanceDB, embedder) live in
+// the core API process; this module is a thin client.
+const dispatch: McpToolDispatcher = async (name, args) => {
+  switch (name) {
+    case 'search':                       return mcpSearch(args);
+    case 'detail':                       return mcpDetail(args);
+    case 'feedback':                     return mcpFeedback(args);
+    case 'list_recent_sessions':         return mcpListRecentSessions(args);
+    case 'list_projects':                return mcpListProjects(args);
+    case 'search_memory':                return mcpSearchMemory(args);
+    case 'list_claudeai_conversations':  return mcpListClaudeaiConversations(args);
+    case 'read_conversation':            return mcpReadConversation(args);
+    default:
+      return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
   }
-});
+};
+
+configureMcpServer(server, dispatch);
 
 // ─── Main ──────────────────────────────────────────────────
 

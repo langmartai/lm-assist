@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### MCP server — single source of truth for both transports (2026-05-28)
+
+lm-assist's MCP server is exposed via two transports: **stdio** (spawned by Claude Code / Claude Desktop as a subprocess; forwards each tool call over HTTP to the running core API) and **StreamableHTTP** (`POST /mcp` on the core API itself; runs tool handlers in-process). Until now, the MCP protocol wiring — the tool list, the `ListToolsRequestSchema` registration, the `CallToolRequestSchema` switch + try/catch + `logToolCall` plumbing — was duplicated in both transport entry files. Adding or modifying a tool meant editing two places.
+
+This refactor extracts the shared protocol surface into a single helper:
+
+- New module: `core/src/mcp-server/configure.ts`
+  - `LM_ASSIST_TOOL_DEFS`: the canonical 8-tool array (search, detail, feedback, list_recent_sessions, list_projects, search_memory, list_claudeai_conversations, read_conversation)
+  - `LM_ASSIST_TOOL_NAMES`: their names in the same order
+  - `configureMcpServer(server, dispatch)`: wires `ListTools` (returns the array) and `CallTool` (calls `dispatch(name, args)` with the standard try/catch + `logToolCall` envelope)
+  - `McpToolDispatcher`: caller-supplied `(toolName, args) => Promise<McpToolResult>`
+  - `McpToolResult`: the `{content, isError?}` shape every handler returns
+
+Each transport keeps its own dispatcher (the architectural difference is intentional):
+
+- **stdio** dispatches over HTTP via `api-client.ts` (`mcpSearch`, `mcpDetail`, …) — the stdio entry stays a thin client, the heavy work runs in the core API.
+- **StreamableHTTP** dispatches in-process directly to the handlers in `mcp-server/tools/*.ts` (`handleSearch`, `handleDetail`, …) — no HTTP hop.
+
+After the refactor each transport file is ~30 lines of "build server + provide dispatcher + connect transport"; the protocol wiring is in one place.
+
+**Verified end-to-end** by running both transports against the same prompt:
+- `POST /mcp` `tools/list` → 8 tools in canonical order.
+- Subprocess `node mcp-server/index.js` initialize + `tools/list` → identical 8 tools, same order.
+- `tools/call list_recent_sessions` against both → byte-identical results (same `isError`, same content, same 472-char text).
+- `tools/call does_not_exist` against both → identical `{isError: true, content: [{type:'text', text:'Unknown tool: does_not_exist'}]}`.
+
+Adding a 9th tool now means: write the handler, add the def to `definitions.ts`, append both to `LM_ASSIST_TOOL_DEFS` in `configure.ts`, add the case to each transport's dispatcher (different impl, same name). The protocol wiring stays untouched.
+
 ### Browser endpoint reorganization — generic primitives moved out of `/claude-ai/*` (2026-05-27)
 
 Followup to the banner generalization. Promotes browser-agnostic primitives from `/claude-ai/browser/*` to `/browser/*` so they're available as a first-class generic surface — claude.ai use is one case among many. Pure rename; old paths no longer exist (callers were on `[Unreleased]` and warned).

@@ -25,21 +25,8 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
 
-import {
-  searchToolDef,
-  detailToolDef,
-  feedbackToolDef,
-  listRecentSessionsToolDef,
-  listProjectsToolDef,
-  searchMemoryToolDef,
-  listClaudeaiConversationsToolDef,
-  readConversationToolDef,
-} from '../../mcp-server/tools/definitions';
+import { configureMcpServer, type McpToolDispatcher } from '../../mcp-server/configure';
 import { handleSearch } from '../../mcp-server/tools/search';
 import { handleDetail } from '../../mcp-server/tools/detail';
 import { handleFeedback } from '../../mcp-server/tools/feedback';
@@ -48,79 +35,37 @@ import { handleListProjects } from '../../mcp-server/tools/list-projects';
 import { handleSearchMemory } from '../../mcp-server/tools/search-memory';
 import { handleListClaudeaiConversations } from '../../mcp-server/tools/list-claudeai-conversations';
 import { handleReadConversation } from '../../mcp-server/tools/read-conversation';
-import { logToolCall } from '../../mcp-server/mcp-logger';
+
+// Dispatcher for StreamableHTTP mode — runs each tool in-process against
+// the data stores that already live in this core API process. No HTTP
+// hop, no client. Mirror of the stdio dispatcher's shape; only the
+// per-tool implementation differs.
+const dispatch: McpToolDispatcher = async (name, args) => {
+  switch (name) {
+    case 'search':                       return handleSearch(args);
+    case 'detail':                       return handleDetail(args);
+    case 'feedback':                     return handleFeedback(args);
+    case 'list_recent_sessions':         return handleListRecentSessions(args);
+    case 'list_projects':                return handleListProjects(args);
+    case 'search_memory':                return handleSearchMemory(args);
+    case 'list_claudeai_conversations':  return handleListClaudeaiConversations(args);
+    case 'read_conversation':            return handleReadConversation(args);
+    default:
+      return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
+  }
+};
 
 // Fresh Server per request (stateless mode). The SDK errors with
-// "Already connected to a transport" if a Server is `.connect()`'d
-// more than once — caching breaks the second call. A new Server is
-// cheap; all expensive work (vector store, session cache, etc.) lives
-// in module-level singletons that the handlers reach through.
+// "Already connected to a transport" if a Server is `.connect()`'d more
+// than once — caching breaks the second call. A new Server is cheap;
+// all expensive work (vector store, session cache, etc.) lives in
+// module-level singletons that the handlers reach through.
 function buildServer(): Server {
   const server = new Server(
     { name: 'lm-assist', version: '2.0.0' },
     { capabilities: { tools: {} } },
   );
-
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      searchToolDef,
-      detailToolDef,
-      feedbackToolDef,
-      listRecentSessionsToolDef,
-      listProjectsToolDef,
-      searchMemoryToolDef,
-      listClaudeaiConversationsToolDef,
-      readConversationToolDef,
-    ],
-  }));
-
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-    const t0 = Date.now();
-
-    let result: { content: Array<{ type: string; text: string }>; isError?: boolean };
-
-    try {
-      switch (name) {
-        case 'search':
-          result = await handleSearch(args || {});
-          break;
-        case 'detail':
-          result = await handleDetail(args || {});
-          break;
-        case 'feedback':
-          result = await handleFeedback(args || {});
-          break;
-        case 'list_recent_sessions':
-          result = await handleListRecentSessions(args || {});
-          break;
-        case 'list_projects':
-          result = await handleListProjects(args || {});
-          break;
-        case 'search_memory':
-          result = await handleSearchMemory(args || {});
-          break;
-        case 'list_claudeai_conversations':
-          result = await handleListClaudeaiConversations(args || {});
-          break;
-        case 'read_conversation':
-          result = await handleReadConversation(args || {});
-          break;
-        default:
-          result = {
-            content: [{ type: 'text', text: `Unknown tool: ${name}` }],
-            isError: true,
-          };
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      result = { content: [{ type: 'text', text: `Error: ${msg}` }], isError: true };
-    }
-
-    logToolCall(name, (args || {}) as Record<string, unknown>, Date.now() - t0, result);
-    return result;
-  });
-
+  configureMcpServer(server, dispatch);
   return server;
 }
 
