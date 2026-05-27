@@ -491,6 +491,28 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
   syncSources?: string[];
   /** Max time to wait for the stream to complete. Default 120s. */
   timeoutMs?: number;
+  /**
+   * Auto-approve MCP tool calls during the streamed response.
+   *
+   * When the model invokes a connector tool that's gated by claude.ai's
+   * per-conv approval gate (i.e. `enabled_mcp_tools` for the conv has only
+   * the bare `<srv>:<tool>` enabledKey but not the hash-suffixed
+   * `alwaysApprovedKey`), the upstream SSE stream ends with
+   * `message_delta { stop_reason: "tool_use" }` and the model pauses
+   * server-side waiting for human approval.
+   *
+   * With `autoApproveTools: true`, lm-assist discovers each invoked tool's
+   * current content-hash via a one-time probe conversation (cached 5 min
+   * per orgUuid), POSTs `/tool_approval` upstream for every gated
+   * tool_use_id, then waits for the assistant message to extend with the
+   * tool_result + continuation, and merges that into the returned `text`.
+   *
+   * Tools without a discoverable approval_key (e.g. SPA-internal
+   * `tool_search`) are skipped silently — those don't gate through this
+   * mechanism. Default false to preserve old behavior; callers that want
+   * the new flow must opt in.
+   */
+  autoApproveTools?: boolean;
 } = {}): Promise<{
   status: number;
   statusText: string;
@@ -498,6 +520,8 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
   text: string;
   humanMessageUuid: string;
   assistantMessageUuid: string;
+  /** When autoApproveTools fired, what was approved (one entry per call). */
+  approvals?: Array<{ toolUseId: string; toolName: string; status: number; ok: boolean; error?: string }>;
 }> {
   const cfg = readClaudeAISession();
   if (!cfg) throw new Error('No claude.ai session configured');
@@ -604,6 +628,14 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
   // Drain SSE stream. Each event is "event: TYPE\ndata: JSON\n\n".
   const events: Array<{ type: string; data: any }> = [];
   let text = '';
+  // Track tool_use content_blocks as they stream. Each tool_use block
+  // arrives as: content_block_start (with id+name) → content_block_delta
+  // (input_json_delta partial JSON) → content_block_stop. The id and name
+  // are on the START event — capture them so we can POST /tool_approval
+  // when the model pauses at the gate.
+  const toolUseBlocks: Array<{ id: string; name: string; index: number }> = [];
+  const approvalPromises: Array<Promise<{ toolUseId: string; toolName: string; status: number; ok: boolean; error?: string }>> = [];
+  const fired = new Set<string>();
   if (!res.body) {
     clearTimeout(timer);
     return { status: res.status, statusText: res.statusText, events, text, humanMessageUuid, assistantMessageUuid };
@@ -616,8 +648,6 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
       const { done, value } = await reader.read();
       if (done) break;
       buf += dec.decode(value, { stream: true });
-      // claude.ai uses CRLF event separators (\r\n\r\n) — observed live
-      // 2026-05-14. SSE spec allows either CRLF or LF, so accept both.
       const SEP = /\r\n\r\n|\n\n/;
       let m: RegExpExecArray | null;
       while ((m = SEP.exec(buf)) !== null) {
@@ -629,12 +659,49 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
         let parsed: any = dataMatch[1].trim();
         try { parsed = JSON.parse(parsed); } catch {}
         events.push({ type: evMatch[1].trim(), data: parsed });
-        // Aggregate any text delta we can find.
         if (parsed && typeof parsed === 'object') {
-          // Anthropic-style content_block_delta — { delta: { text: "..." } }
           if (parsed.delta?.text) text += parsed.delta.text;
-          // claude.ai sometimes uses `completion` events with a string
           else if (typeof parsed.completion === 'string') text += parsed.completion;
+          // Track tool_use block creation. We have to capture id+name from
+          // content_block_start because the stop event only carries `index`.
+          if (parsed.type === 'content_block_start' && parsed.content_block?.type === 'tool_use') {
+            const id = String(parsed.content_block.id || '');
+            const name = String(parsed.content_block.name || '');
+            const index = typeof parsed.index === 'number' ? parsed.index : toolUseBlocks.length;
+            if (id && name) toolUseBlocks.push({ id, name, index });
+          }
+          // Fire approval the MOMENT a tool_use content_block ends — DON'T
+          // wait for message_delta. claude.ai's backend holds the /completion
+          // SSE open after the gated tool_use block is emitted, waiting for
+          // /tool_approval. If we wait for message_delta { stop_reason }, we
+          // deadlock — that event never arrives until after approval lands.
+          if (opts.autoApproveTools && parsed.type === 'content_block_stop') {
+            const stoppedIndex = typeof parsed.index === 'number' ? parsed.index : -1;
+            const tu = toolUseBlocks.find((t) => t.index === stoppedIndex);
+            if (tu && !fired.has(tu.id)) {
+              fired.add(tu.id);
+              const tApproveStart = Date.now();
+              debugAA(`tool_use block ended: ${tu.name} (${tu.id.slice(0,16)}...) — firing approval`);
+              approvalPromises.push(
+                approveToolUse({
+                  orgUuid,
+                  convUuid,
+                  toolUseId: tu.id,
+                  toolName: tu.name,
+                  approvalOption: 'once',
+                }).then(
+                  (r) => {
+                    debugAA(`approval ${tu.name} → HTTP ${r.status} (${Date.now() - tApproveStart}ms)`);
+                    return { toolUseId: tu.id, toolName: tu.name, status: r.status, ok: r.status < 400 };
+                  },
+                  (err: Error) => {
+                    debugAA(`approval ${tu.name} → ERROR (${Date.now() - tApproveStart}ms): ${err.message}`);
+                    return { toolUseId: tu.id, toolName: tu.name, status: 0, ok: false, error: err.message };
+                  },
+                ),
+              );
+            }
+          }
         }
       }
     }
@@ -642,7 +709,63 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
     clearTimeout(timer);
   }
 
-  return { status: res.status, statusText: res.statusText, events, text, humanMessageUuid, assistantMessageUuid };
+  // If auto-approve fired, wait for all approvals to complete, then poll
+  // the conversation until the assistant message has been extended with
+  // the tool_result + post-tool continuation text (claude.ai's backend
+  // appends to the SAME assistant message; the original SSE closed at
+  // message_stop with stop_reason=tool_use and the continuation does NOT
+  // arrive on a new SSE — it arrives via conversation state).
+  let approvals: Array<{ toolUseId: string; toolName: string; status: number; ok: boolean; error?: string }> | undefined;
+  debugAA(`SSE drained: ${events.length} events, ${approvalPromises.length} approvals queued`);
+  if (approvalPromises.length > 0) {
+    approvals = await Promise.all(approvalPromises);
+    debugAA(`approvals done: ${approvals.map(a => `${a.toolName}=${a.status}`).join(', ')}`);
+    const POLL_INTERVAL = 1500;
+    const POLL_MAX_MS = Math.min(opts.timeoutMs ?? 120_000, 60_000);
+    const pollStart = Date.now();
+    let lastLen = 0;
+    let stable = 0;
+    let pollIter = 0;
+    while (Date.now() - pollStart < POLL_MAX_MS) {
+      pollIter++;
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+      try {
+        const conv = await readConversation(convUuid, { orgUuid, tree: true, renderingMode: 'messages', renderAllTools: true });
+        if (conv.status >= 400) break;
+        const msgs = ((conv.body as any)?.chat_messages || []) as Array<any>;
+        const last = msgs[msgs.length - 1];
+        if (last?.sender !== 'assistant') continue;
+        const blocks = (last.content || []) as Array<any>;
+        const hasToolResult = blocks.some((b) => b?.type === 'tool_result');
+        const finalText = blocks
+          .filter((b) => b?.type === 'text')
+          .map((b) => String(b.text || ''))
+          .join('');
+        const stopReason = String(last.stop_reason || '');
+        debugAA(`poll iter=${pollIter} stop_reason=${stopReason} blocks=${blocks.length} hasToolResult=${hasToolResult} textLen=${finalText.length}`);
+        if (hasToolResult && finalText.length > 0 && stopReason && stopReason !== 'tool_use') {
+          if (finalText.length > text.length) text = finalText;
+          break;
+        }
+        if (finalText.length === lastLen) {
+          stable++;
+          if (stable >= 2 && finalText.length > 0) {
+            if (finalText.length > text.length) text = finalText;
+            break;
+          }
+        } else {
+          stable = 0;
+          lastLen = finalText.length;
+        }
+      } catch (e) {
+        debugAA(`poll error: ${(e as Error).message}`);
+        break;
+      }
+    }
+    debugAA(`poll exit after ${pollIter} iter`);
+  }
+
+  return { status: res.status, statusText: res.statusText, events, text, humanMessageUuid, assistantMessageUuid, approvals };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -886,7 +1009,23 @@ export async function setConversationTitle(convUuid: string, opts: { title?: str
  * Returns the usual { status, statusText, headers, body }; on success
  * (HTTP 201) `body.uuid` equals the uuid we sent.
  */
-export async function createConversation(opts: { name?: string; uuid?: string; orgUuid?: string } = {}) {
+export async function createConversation(opts: {
+  name?: string;
+  uuid?: string;
+  orgUuid?: string;
+  /** Optional model override; defaults to whatever claude.ai picks (currently claude-opus-4-7). */
+  model?: string;
+  /**
+   * Optional explicit `settings.enabled_mcp_tools` map. When passed, REPLACES
+   * the conversation's inherited account-level settings — useful for forcing
+   * the per-call approval gate to fire on a known tool by passing only the
+   * bare `<srv>:<tool>` key (no hash-suffixed alwaysApprovedKey).
+   * Format: `{ "<srv_uuid>:<tool_name>": true, ... }`.
+   */
+  enabledMcpTools?: Record<string, boolean>;
+  /** Optional `settings.tool_search_mode` override. Pass 'off' to suppress the SPA's tool_search meta-tool. */
+  toolSearchMode?: 'on' | 'off' | string;
+} = {}) {
   const cfg = readClaudeAISession();
   if (!cfg) throw new Error('No claude.ai session configured');
   const convUuid = opts.uuid ?? randomUUID();
@@ -896,7 +1035,14 @@ export async function createConversation(opts: { name?: string; uuid?: string; o
   const orgUuid = _org(opts);
   const url = `https://claude.ai/api/organizations/${orgUuid}/chat_conversations`;
   const id = deriveIdentity(cfg);
-  const body = { uuid: convUuid, name: opts.name ?? '' };
+  const body: Record<string, unknown> = { uuid: convUuid, name: opts.name ?? '' };
+  if (opts.model) body.model = opts.model;
+  if (opts.enabledMcpTools || opts.toolSearchMode) {
+    const settings: Record<string, unknown> = {};
+    if (opts.enabledMcpTools) settings.enabled_mcp_tools = opts.enabledMcpTools;
+    if (opts.toolSearchMode) settings.tool_search_mode = opts.toolSearchMode;
+    body.settings = settings;
+  }
   const headers: Record<string, string> = {
     Host: 'claude.ai',
     Connection: 'keep-alive',
@@ -1008,4 +1154,205 @@ export async function getArtifactVersions(artifactUuid: string, opts: { orgUuid?
     `/api/organizations/${orgUuid}/artifacts/${artifactUuid}/versions`,
     { referer: 'https://claude.ai/' },
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Tool approval support (auto-approval inside sendMessage)
+// ─────────────────────────────────────────────────────────────────────────
+//
+// claude.ai gates MCP connector tools via per-conv `enabled_mcp_tools`:
+//   - bare `<srv>:<tool>` = enabled (tool is callable)
+//   - `<srv>:<tool>-<contentHash>` = always-approved (no per-call gate)
+//
+// When only the bare enabledKey is set, the model invokes the tool and the
+// /completion SSE pauses with `message_delta { stop_reason: "tool_use" }`.
+// The browser SPA then POSTs `/tool_approval` with the constructed
+// `approval_key` (`<srv>:<tool>-<contentHash>`) to release the gate, and
+// the backend appends the tool_result + the model's continuation onto the
+// SAME assistant message in the conversation.
+//
+// `discoverApprovalKeys()` finds the current `approval_key` for every
+// installed MCP tool by creating a one-off probe conversation (which
+// inherits `account.settings.enabled_mcp_tools` including hash suffixes)
+// and reading its settings back. The result is cached for 5 minutes per
+// orgUuid. The hash changes when the connector's tool descriptions change;
+// a stale cache yields a 4xx from `/tool_approval` and the caller can
+// invalidate via `clearApprovalKeyCache(orgUuid)`.
+
+const APPROVAL_KEY_TTL_MS = 5 * 60 * 1000;
+
+// Enable the per-event auto-approval debug log by exporting
+// LM_ASSIST_DEBUG_AUTOAPPROVE=1 (or =true) in lm-assist's process env. Off
+// by default so production logs stay clean; flip on while investigating
+// gated-tool flows that aren't completing as expected.
+const DEBUG_AUTOAPPROVE =
+  process.env.LM_ASSIST_DEBUG_AUTOAPPROVE === '1' ||
+  process.env.LM_ASSIST_DEBUG_AUTOAPPROVE === 'true';
+function debugAA(msg: string): void {
+  if (DEBUG_AUTOAPPROVE) console.error(`[autoApprove] ${msg}`);
+}
+
+interface ApprovalKeyCacheEntry {
+  /** tool_name -> hash-suffixed approval_key (only for tools with alwaysApprovedKey set on account). */
+  hashKeys: Record<string, string>;
+  /** tool_name -> bare `<srv>:<tool>` key (present for every MCP tool the connector exposes). */
+  bareKeys: Record<string, string>;
+  expiresAt: number;
+}
+const approvalKeyCache = new Map<string, ApprovalKeyCacheEntry>();
+
+export function clearApprovalKeyCache(orgUuid?: string): void {
+  if (orgUuid) approvalKeyCache.delete(orgUuid);
+  else approvalKeyCache.clear();
+}
+
+/**
+ * Discover the per-tool approval_keys claude.ai expects on `/tool_approval`.
+ *
+ * Returns both flavors of keys:
+ *   - `hashKeys[tool_name]` — the full hash-suffixed key (`<srv>:<tool>-<hash>`),
+ *     only present for tools that have already been approved with
+ *     `approval_option: 'always'` (the hash is on `account.settings`).
+ *   - `bareKeys[tool_name]` — the bare prefix (`<srv>:<tool>`), present for every
+ *     MCP tool the connector currently exposes. Useful as a fallback when
+ *     `hashKeys` doesn't have the tool (first-time approval).
+ *
+ * Cached per `orgUuid` for {@link APPROVAL_KEY_TTL_MS}. Stale on 4xx from a
+ * follow-up `/tool_approval` POST → call {@link clearApprovalKeyCache} to
+ * force a re-probe (the connector tools may have been re-registered with
+ * different hashes after a description edit).
+ */
+export async function discoverApprovalKeys(orgUuidArg?: string): Promise<ApprovalKeyCacheEntry> {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  const orgUuid = orgUuidArg || deriveIdentity(cfg).orgUuid;
+  if (!orgUuid) throw new Error('No org_uuid');
+  const cached = approvalKeyCache.get(orgUuid);
+  if (cached && cached.expiresAt > Date.now()) return cached;
+
+  // Create probe conv WITHOUT explicit settings so it inherits
+  // account.settings.enabled_mcp_tools (bare keys for every installed tool
+  // plus hash keys for tools previously always-approved).
+  const probe = await createConversation({ orgUuid, name: 'lm-assist-approval-probe' });
+  if (probe.status >= 400) {
+    throw new Error(`probe conversation create failed: ${probe.status} ${probe.statusText}`);
+  }
+  const settings = (probe.body as any)?.settings?.enabled_mcp_tools || {};
+  const hashKeys: Record<string, string> = {};
+  const bareKeys: Record<string, string> = {};
+  const HASH_KEY_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):([a-zA-Z0-9_]+)-([0-9a-f]{32})$/;
+  const BARE_KEY_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):([a-zA-Z0-9_]+)$/;
+  for (const k of Object.keys(settings)) {
+    const mh = k.match(HASH_KEY_RE);
+    if (mh) {
+      hashKeys[mh[2]] = k;
+      continue;
+    }
+    const mb = k.match(BARE_KEY_RE);
+    if (mb) bareKeys[mb[2]] = k;
+  }
+  // Cleanup probe conv (best-effort — failure here doesn't affect caller)
+  if (probe.uuid) {
+    deleteConversation(probe.uuid, { orgUuid }).catch(() => { /* ignore */ });
+  }
+  const entry: ApprovalKeyCacheEntry = { hashKeys, bareKeys, expiresAt: Date.now() + APPROVAL_KEY_TTL_MS };
+  approvalKeyCache.set(orgUuid, entry);
+  return entry;
+}
+
+export async function approveToolUse(opts: {
+  orgUuid?: string;
+  convUuid: string;
+  toolUseId: string;
+  toolName: string;
+  /** 'once' = approve this call only; 'always' = add hash key to account.settings. Default 'once'. */
+  approvalOption?: 'once' | 'always';
+  /** Override the approval_key lookup (e.g. if you already know the hash). */
+  approvalKey?: string;
+  timeoutMs?: number;
+}): Promise<{ status: number; statusText: string; body: any }> {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  const orgUuid = opts.orgUuid || deriveIdentity(cfg).orgUuid;
+  if (!orgUuid) throw new Error('No org_uuid');
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(opts.convUuid)) {
+    throw new Error(`Invalid conversation UUID: ${opts.convUuid}`);
+  }
+  if (!opts.toolUseId || typeof opts.toolUseId !== 'string') {
+    throw new Error('toolUseId is required');
+  }
+  let approvalKey = opts.approvalKey;
+  // Lookup order:
+  //   1) explicit caller-provided approval_key (highest priority)
+  //   2) hash-suffixed key learned from probe-conv (only present for tools
+  //      previously approved with approval_option:'always')
+  //   3) bare `<srv>:<tool>` key — present for every MCP tool the connector
+  //      exposes; usable for first-time approval where claude.ai will
+  //      compute/return the correct hash on its own.
+  //   4) tool not exposed via this connector at all → synthetic 204
+  //      (e.g. SPA-internal `tool_search`).
+  if (!approvalKey) {
+    const entry = await discoverApprovalKeys(orgUuid);
+    // claude.ai's SSE delivers MCP tool names as `<integration>:<tool>`
+    // (e.g. `lm-assist:search_memory`). The probe conv's
+    // enabled_mcp_tools indexes by bare `<tool>` only. Try both shapes.
+    const fullName = opts.toolName;
+    const strippedName = fullName.includes(':') ? fullName.split(':').pop() || fullName : fullName;
+    approvalKey = entry.hashKeys[fullName] || entry.hashKeys[strippedName] ||
+                  entry.bareKeys[fullName] || entry.bareKeys[strippedName];
+    if (!approvalKey) {
+      return { status: 204, statusText: 'No Content (tool not exposed by any connector)', body: null };
+    }
+  }
+  const url = `https://claude.ai/api/organizations/${orgUuid}/chat_conversations/${opts.convUuid}/tool_approval`;
+  const id = deriveIdentity(cfg);
+  const headers: Record<string, string> = {
+    Host: 'claude.ai',
+    Connection: 'keep-alive',
+    'anthropic-client-platform': 'web_claude_ai',
+    'anthropic-client-version': '1.0.0',
+    'anthropic-client-sha': '8a753cbf88e19be0f5f67efefb1b07840b6402e9',
+    'content-type': 'application/json',
+    Accept: '*/*',
+    'User-Agent': cfg.userAgent ||
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+    Origin: 'https://claude.ai',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty',
+    Referer: `https://claude.ai/chat/${opts.convUuid}`,
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept-Language': 'en-US,en;q=0.9',
+    Cookie: cfg.cookie,
+  };
+  if (id.anonymousId) headers['anthropic-anonymous-id'] = id.anonymousId;
+  if (id.activitySessionId) headers['x-activity-session-id'] = id.activitySessionId;
+  if (id.deviceId) headers['anthropic-device-id'] = id.deviceId;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 15_000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        tool_use_id: opts.toolUseId,
+        is_approved: true,
+        approval_key: approvalKey,
+        approval_option: opts.approvalOption ?? 'once',
+      }),
+      signal: ctrl.signal,
+    });
+    const text = await res.text();
+    let parsed: any;
+    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+    // If a 4xx came back, the cached hash may be stale (tool description changed)
+    // — invalidate so the next call re-probes.
+    if (res.status >= 400 && res.status < 500) {
+      approvalKeyCache.delete(orgUuid);
+    }
+    return { status: res.status, statusText: res.statusText, body: parsed };
+  } finally {
+    clearTimeout(timer);
+  }
 }

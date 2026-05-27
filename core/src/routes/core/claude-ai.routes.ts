@@ -251,21 +251,38 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // POST /claude-ai/conversations
-    //   Body: { name?, uuid? }
+    //   Body: { name?, uuid?, model?, enabledMcpTools?, toolSearchMode? }
     //
     //   WRITE — creates a new, empty conversation. Method differs from the
     //   GET list route above (same pattern), so the router's method check
     //   keeps them distinct. Returns { ...upstream, uuid } so the caller
     //   knows the new conversation id even on a 204/empty body.
+    //
+    //   `enabledMcpTools` (object) REPLACES the conv's inherited
+    //   `settings.enabled_mcp_tools`. Pass only the bare `<srv>:<tool>` key
+    //   (no hash-suffixed alwaysApprovedKey) to FORCE the per-call approval
+    //   gate to fire for that tool — handy for testing autoApproveTools
+    //   without account-level changes. Example:
+    //   `{"<srv_uuid>:list_recent_sessions": true}`.
+    //
+    //   `toolSearchMode` is `'on' | 'off'`. Pass `'off'` to suppress the
+    //   SPA's `tool_search` meta-tool (the in-page tool-catalog search the
+    //   model runs first before invoking real connector tools).
     {
       method: 'POST',
       pattern: /^\/claude-ai\/conversations$/,
       handler: async (req) => {
         try {
           const b = req.body || {};
+          const enabledMcpTools = (b.enabledMcpTools && typeof b.enabledMcpTools === 'object' && !Array.isArray(b.enabledMcpTools))
+            ? b.enabledMcpTools as Record<string, boolean>
+            : undefined;
           const r = await createConversation({
             name: typeof b.name === 'string' ? b.name : undefined,
             uuid: typeof b.uuid === 'string' ? b.uuid : undefined,
+            model: typeof b.model === 'string' ? b.model : undefined,
+            enabledMcpTools,
+            toolSearchMode: typeof b.toolSearchMode === 'string' ? b.toolSearchMode : undefined,
           });
           const wrapped = upstreamWrap(r);
           if (wrapped.success) (wrapped as { data: unknown }).data = { ...r.body, uuid: r.uuid };
@@ -538,12 +555,23 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
 
     // POST /claude-ai/conversations/:uuid/completion
     //   Body: { prompt: string, model?, timezone?, locale?, parentMessageUuid?,
-    //           attachments?, files?, syncSources?, tools? }
+    //           attachments?, files?, syncSources?, tools?,
+    //           autoApproveTools? }
     //
     //   WRITE OPERATION — creates real message history in the user's
     //   claude.ai account and consumes tokens. Auto-resolves
     //   current_leaf_message_uuid by pre-reading the conversation.
-    //   Returns aggregated SSE result: { events, text, ...uuids }.
+    //   Returns aggregated SSE result: { events, text, ...uuids, approvals? }.
+    //
+    //   `autoApproveTools` (default false): when true, lm-assist watches
+    //   the SSE stream and POSTs /tool_approval for every MCP tool the
+    //   model invokes whose approval gate is set on this conv. It then
+    //   polls the conversation until the model's post-tool continuation
+    //   text appears, and returns that merged into `text`. Per-call
+    //   approval log returned as `approvals: [{toolUseId, toolName,
+    //   status, ok}, ...]`. See discoverApprovalKeys / approveToolUse for
+    //   the underlying mechanism. Stale hash (tool description edited
+    //   after cache populated) → cache auto-invalidates on 4xx.
     //
     //   `attachments` is the text channel — pass full
     //   `{file_name, file_type, file_size, extracted_content, origin:"user_upload", kind:"file"}`
@@ -585,6 +613,9 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
             syncSources: Array.isArray(body.syncSources) ? body.syncSources
               : Array.isArray(body.sync_sources) ? body.sync_sources : undefined,
             timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
+            autoApproveTools: typeof body.autoApproveTools === 'boolean'
+              ? body.autoApproveTools
+              : (typeof body.auto_approve_tools === 'boolean' ? body.auto_approve_tools : undefined),
           });
           if (r.status >= 400) {
             return {
@@ -607,6 +638,7 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
               eventCount: r.events.length,
               eventTypes,
               events: compact ? undefined : r.events,
+              approvals: r.approvals,
             },
           };
         } catch (err) {

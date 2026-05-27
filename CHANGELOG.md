@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### claude.ai completion — server-side MCP tool-approval (`autoApproveTools`) (2026-05-27)
+
+`POST /claude-ai/conversations/:uuid/completion` now accepts an `autoApproveTools` body field. When `true`, lm-assist intercepts the per-call approval gate that claude.ai's SPA normally shows the user ("Claude wants to use *foo* from *bar*") and resolves it automatically server-side. Caller gets a single response with `text`, `events`, `approvals: [{toolUseId, toolName, status, ok}, ...]`, and the post-tool continuation merged in. Default `false` — opt-in only, no behavior change for existing callers.
+
+**Why this is a thing.** When a connector's tool doesn't have `account.settings.enabled_mcp_tools["<srv>:<tool>-<hash>"]` set (i.e. never previously `approval_option:'always'`-approved on this account), claude.ai's `/completion` SSE pauses after the model emits the `tool_use` block and waits for the SPA to `POST /tool_approval`. Without an interactive SPA, the SSE just hangs until timeout. The autoApprove path closes that loop: detect, approve, wait for continuation, return one merged response.
+
+**Trigger point is non-obvious.** The first attempt waited for `message_delta { stop_reason: 'tool_use' }`. That event never arrives during the pause — claude.ai backend holds the SSE open BEFORE the message_delta, waiting for approval first. Fix: fire approval the moment `content_block_stop` arrives for a tool_use block. Verified against a live capture: backend resumes within ~500ms of the approval landing, then emits `tool_result` + post-tool text + `message_delta` + `message_stop` in that order on the same SSE.
+
+**`approval_key` construction is three-tier.** claude.ai's `/tool_approval` body wants `approval_key: "<srv_uuid>:<tool>-<contentHash>"`. The hash is a content hash of the tool's current name + description + input_schema. Each conv's `settings.enabled_mcp_tools` carries any always-approved tools as `<srv>:<tool>-<hash>` keys; tools that have never been always-approved are only present as the bare `<srv>:<tool>` form. lm-assist now resolves in this order:
+
+  1. Explicit `approvalKey` from the caller (highest priority, escape hatch).
+  2. Hash-suffixed key learned from a one-off probe conversation that inherits `account.settings.enabled_mcp_tools` (cached 5 min per orgUuid).
+  3. **Bare `<srv>:<tool>` key** as a fallback — claude.ai accepts this on first-time approval and computes the current hash server-side. This is what makes new tools work without a manual `always-allow` setup first.
+  4. Tool not exposed by any connector (e.g. the SPA's internal `tool_search`) → synthetic 204; caller moves on.
+
+**Integration-prefix stripping.** claude.ai's SSE delivers tool names as `<integration>:<tool>` (e.g. `lm-assist:search_memory`), but the conv's `enabled_mcp_tools` indexes by bare `<tool>` only. Lookup tries both shapes — `entry.hashKeys[fullName] || entry.hashKeys[strippedName] || entry.bareKeys[fullName] || entry.bareKeys[strippedName]` where `strippedName = fullName.split(':').pop()`. Forgetting this step costs about 90 seconds per failed test run before the SSE aborts.
+
+**Post-SSE conv poll.** After approval, the model's continuation arrives by extending the SAME assistant message on claude.ai's side — not on a new SSE stream. The /completion stream closes with `message_stop`; lm-assist then polls `GET /chat_conversations/{uuid}?tree=True&rendering_mode=messages&render_all_tools=true` every 1500ms (up to `min(timeoutMs, 60s)`) until the assistant message has both a `tool_result` block AND non-empty final text AND a non-`tool_use` `stop_reason` — at which point `text` in the response is the model's post-tool message (not just the pre-tool intro that the SSE captured). End-to-end wall time: ~9-10s for `search_memory` against the lm-assist MCP connector.
+
+**Companion endpoint additions on `POST /claude-ai/conversations`** (so the gate can be FORCED for testing without changing account settings): `enabledMcpTools: {"<srv>:<tool>": true}` REPLACES inherited account settings on that conv — pass only the bare key to ensure no `alwaysApprovedKey` slips in via inheritance and the gate must fire. `toolSearchMode: "off"` is also passed through (advisory — claude.ai backend sometimes overrides).
+
+**New exports in `core/src/utils/claudeai-session.ts`:** `discoverApprovalKeys(orgUuid?) → {hashKeys, bareKeys, expiresAt}`, `approveToolUse({orgUuid, convUuid, toolUseId, toolName, approvalOption?, approvalKey?, timeoutMs?})`, `clearApprovalKeyCache(orgUuid?)`. The first two are also reachable indirectly via `/completion?autoApproveTools=true`; the third is for tests + post-deploy hash-invalidation after the connector's tool descriptions are edited.
+
+**Debug logging gated.** The per-stage `[autoApprove] ...` console traces (tool_use detection, approval HTTP result + latency, SSE-drained event count, conv-poll iterations) are off by default. Export `LM_ASSIST_DEBUG_AUTOAPPROVE=1` (or `=true`) to enable when investigating a gated flow that isn't completing as expected. ~8 log lines per /completion call when on.
+
+**Validated end-to-end on 2026-05-27** — 9-10s round-trip for a gated `lm-assist:search_memory` invocation. Stock `undici`-backed `fetch` in lm-assist passes Cloudflare's bot scoring on every endpoint in the flow; no TLS-impersonation client is needed for this surface.
+
 ### claude.ai completion — attachments / files / sync_sources pass-through (2026-05-23)
 
 The completion routes on both paths (`/claude-ai/conversations/:uuid/completion` and `/claude-ai/via-chrome/conversations/:uuid/completion`) previously hardcoded `attachments: []`, `files: []`, `sync_sources: []` in the body sent to claude.ai. Callers could not attach anything; the only workaround was to bypass lm-assist and call claude.ai directly with the cookie. These three fields are now pass-throughs from the request body.
