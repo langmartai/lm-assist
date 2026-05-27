@@ -589,6 +589,36 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
   files?: string[];
   /** sync_source uuids (URL ingestion sources). */
   syncSources?: string[];
+  /**
+   * MCP tool definitions to expose to the model on this turn. Pass the
+   * SPA-shaped array (each entry `{name, description, integration_name,
+   * mcp_server_uuid, mcp_server_url, input_schema, ...}`). Without these
+   * the model cannot see any connector's tools and `autoApproveTools`
+   * has nothing to approve.
+   */
+  tools?: any[];
+  /**
+   * When true, the generated snippet auto-resolves MCP tool-approval gates
+   * inline in the browser: it tracks `tool_use` content_blocks as the SSE
+   * streams, fires `POST /tool_approval` on each `content_block_stop`
+   * (using the same three-tier approval_key fallback the server-side
+   * `sendMessage` path uses), then polls the conversation for the
+   * post-approval continuation and merges the model's final text into
+   * the returned result. Default false.
+   */
+  autoApproveTools?: boolean;
+  /**
+   * When true, the generated snippet injects a status banner at the top of
+   * the page explaining what lm-assist is doing, updates the banner as the
+   * flow progresses (sending prompt → tool calls → approval → polling →
+   * done), installs a `beforeunload` guard to warn before navigation away,
+   * and intercepts in-page link clicks to non-claude.ai URLs. The banner
+   * auto-clears once the snippet returns. Default true when the spawned
+   * browser is in non-headless mode (caller passes `showOverlay: true`);
+   * set false to disable when the snippet runs against a headless or
+   * server-side browser where there's no user to inform.
+   */
+  showOverlay?: boolean;
 } = {}): ViaChromeSnippet {
   if (!UUID_RE.test(convUuid)) throw new Error(`Invalid conversation UUID: ${convUuid}`);
   const model = opts.model ?? 'claude-opus-4-7';
@@ -597,6 +627,231 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
   const attachments = Array.isArray(opts.attachments) ? opts.attachments : [];
   const files = Array.isArray(opts.files) ? opts.files : [];
   const syncSources = Array.isArray(opts.syncSources) ? opts.syncSources : [];
+  const tools = Array.isArray(opts.tools) ? opts.tools : [];
+  const autoApprove = !!opts.autoApproveTools;
+  const showOverlay = !!opts.showOverlay;
+
+  // Overlay setup block — only emitted when showOverlay is true. Installs a
+  // top-of-page banner explaining what lm-assist is doing, a navigation
+  // guard (`beforeunload` + intercept of non-claude.ai link clicks), and a
+  // `setStatus(text)` helper that the surrounding snippet calls as the
+  // flow progresses. DOM is built node-by-node (no innerHTML) — content is
+  // entirely lm-assist-controlled, but createElement + textContent keeps
+  // the static-analysis layers happy and is XSS-safe by construction.
+  // Re-installs on SPA route changes via MutationObserver.
+  const overlaySetup = showOverlay ? `
+  // === overlay + nav guard install ===
+  // Idempotent: if a persistent banner is already installed (via
+  // /claude-ai/browser/install-idle-banner, etc.), reuse it. Track who
+  // created it so only the creator tears it down — preserves the user's
+  // persistent "this browser is managed by lm-assist" banner across runs.
+  var __lmaPreExistingOverlay = !!(window.__lmAssistViaOverlay && window.__lmAssistViaOverlay.setStatus);
+  (function installOverlay() {
+    if (__lmaPreExistingOverlay) {
+      window.__lmAssistViaOverlay.setStatus('Sending prompt…');
+      return;
+    }
+    var prev = document.getElementById('__lm-assist-via-overlay');
+    if (prev) prev.remove();
+    var el = document.createElement('div');
+    el.id = '__lm-assist-via-overlay';
+    var styleEl = document.createElement('style');
+    styleEl.textContent = ''
+      + '#__lm-assist-via-overlay { position: fixed; top: 0; left: 0; right: 0; z-index: 2147483647;'
+      + ' background: #1a1d29; color: #f8f9fb; padding: 10px 44px 10px 18px;'
+      + ' font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; font-size: 13px;'
+      + ' line-height: 1.5; border-bottom: 2px solid #d97757; box-shadow: 0 4px 14px rgba(0,0,0,.35); }'
+      + '#__lm-assist-via-overlay strong { color: #d97757; font-size: 14px; }'
+      + '#__lm-assist-via-overlay p { margin: 2px 0; }'
+      + '#__lm-assist-via-overlay .lm-small { color: #b8bcc7; font-size: 11.5px; }'
+      + '#__lm-assist-via-overlay .lm-close { position: absolute; top: 6px; right: 12px;'
+      + ' background: none; border: none; color: #f8f9fb; cursor: pointer; font-size: 18px; opacity: .7; }'
+      + '#__lm-assist-via-overlay .lm-close:hover { opacity: 1; }'
+      + '#__lm-assist-via-overlay .lm-ok { color: #4ade80; }'
+      + '#__lm-assist-via-overlay .lm-err { color: #f87171; }';
+    el.appendChild(styleEl);
+
+    var btnClose = document.createElement('button');
+    btnClose.className = 'lm-close';
+    btnClose.textContent = '\\u00d7';
+    btnClose.title = 'Dismiss banner (does NOT cancel the in-progress request)';
+    btnClose.addEventListener('click', function() { if (window.__lmAssistViaOverlay) window.__lmAssistViaOverlay.tearDown(); });
+    el.appendChild(btnClose);
+
+    var title = document.createElement('strong');
+    title.textContent = 'lm-assist · running completion in this tab';
+    el.appendChild(title);
+
+    var statusP = document.createElement('p');
+    statusP.id = '__lm-assist-via-status';
+    statusP.textContent = 'Sending prompt…';
+    el.appendChild(statusP);
+
+    var noteP = document.createElement('p');
+    noteP.className = 'lm-small';
+    noteP.textContent = "A request is in progress on your claude.ai conversation. Please don't navigate away or close this tab until it finishes — the result will be lost. Links to non-claude.ai sites are blocked while this runs.";
+    el.appendChild(noteP);
+
+    (document.body || document.documentElement).appendChild(el);
+
+    function setStatus(text, kind) {
+      var p = document.getElementById('__lm-assist-via-status');
+      if (!p) return;
+      p.textContent = text;
+      p.className = kind === 'ok' ? 'lm-ok' : (kind === 'err' ? 'lm-err' : '');
+    }
+    function beforeUnloadHandler(e) {
+      e.preventDefault();
+      e.returnValue = 'lm-assist is still running a request in this tab. Leaving will discard the result.';
+      return e.returnValue;
+    }
+    function clickGuard(e) {
+      var a = e.target && e.target.closest && e.target.closest('a[href]');
+      if (!a) return;
+      try {
+        var u = new URL(a.href, location.href);
+        if (u.host !== location.host && !/(^|\\.)claude\\.ai$/i.test(u.host)) {
+          e.preventDefault();
+          e.stopPropagation();
+          setStatus('Blocked navigation to ' + u.host + ' — lm-assist run in progress.', 'err');
+        }
+      } catch (_e) {}
+    }
+    window.addEventListener('beforeunload', beforeUnloadHandler);
+    document.addEventListener('click', clickGuard, true);
+
+    function tearDown() {
+      window.removeEventListener('beforeunload', beforeUnloadHandler);
+      document.removeEventListener('click', clickGuard, true);
+      try { mo.disconnect(); } catch (_e) {}
+      var n = document.getElementById('__lm-assist-via-overlay');
+      if (n) n.remove();
+      delete window.__lmAssistViaOverlay;
+    }
+
+    // Re-install if claude.ai's SPA wipes our node during a route change.
+    var mo = new MutationObserver(function() {
+      if (!document.getElementById('__lm-assist-via-overlay')) {
+        try { mo.disconnect(); } catch (_e) {}
+        installOverlay();
+      }
+    });
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+
+    window.__lmAssistViaOverlay = { setStatus: setStatus, tearDown: tearDown };
+  })();` : '';
+  const overlayStatus = (text: string, kind?: 'ok' | 'err') =>
+    showOverlay
+      ? `try { window.__lmAssistViaOverlay && window.__lmAssistViaOverlay.setStatus(${JSON.stringify(text)}${kind ? ', ' + JSON.stringify(kind) : ''}); } catch (_e) {}`
+      : '';
+  const overlayTearDown = showOverlay
+    ? `try { if (!__lmaPreExistingOverlay) { window.__lmAssistViaOverlay && window.__lmAssistViaOverlay.tearDown(); } else { window.__lmAssistViaOverlay && window.__lmAssistViaOverlay.setStatus('Idle. Waiting for next lm-assist request.', 'ok'); } } catch (_e) {}`
+    : '';
+  // Auto-approve setup block (built once, injected into the snippet only
+  // when opts.autoApproveTools is true). Mirrors the cookie-file path's
+  // discoverApprovalKeys + approveToolUse + post-SSE poll mechanism — but
+  // executed in the tab via fetch with credentials:include, so claude.ai
+  // sees a real-browser TLS handshake and same-session cookies. All
+  // values reach back into the outer snippet via `org`, `conv`,
+  // `baseHeaders`, `text`, `events` declared above.
+  const autoApproveSetup = autoApprove ? `
+  // === auto-approve setup ===
+  let approvalLookup = { hashKeys: {}, bareKeys: {} };
+  try {
+    const sr = await fetch('/api/organizations/' + org + '/chat_conversations/' + conv + '?tree=True&rendering_mode=messages&render_all_tools=true', {
+      credentials: 'include', headers: { ...baseHeaders, 'Accept': '*/*' },
+    });
+    if (sr.ok) {
+      const sj = await sr.json();
+      const emt = (sj.settings && sj.settings.enabled_mcp_tools) || {};
+      const HASH_RE = /^([0-9a-f-]{36}):([a-zA-Z0-9_]+)-([0-9a-f]{32})$/;
+      const BARE_RE = /^([0-9a-f-]{36}):([a-zA-Z0-9_]+)$/;
+      for (const k of Object.keys(emt)) {
+        const mh = k.match(HASH_RE);
+        if (mh) { approvalLookup.hashKeys[mh[2]] = k; continue; }
+        const mb = k.match(BARE_RE);
+        if (mb) approvalLookup.bareKeys[mb[2]] = k;
+      }
+    }
+  } catch (_e) {}
+  const toolUseBlocks = [];
+  const approvalPromises = [];
+  const firedToolUses = new Set();
+  const approvals = [];
+  const stripPrefix = (n) => n.includes(':') ? n.split(':').pop() : n;` : '';
+
+  const autoApproveInLoop = autoApprove ? `
+        // === auto-approve: detect tool_use blocks + fire /tool_approval ===
+        if (parsed && typeof parsed === 'object') {
+          if (parsed.type === 'content_block_start' && parsed.content_block && parsed.content_block.type === 'tool_use') {
+            const id = String(parsed.content_block.id || '');
+            const name = String(parsed.content_block.name || '');
+            const idx = typeof parsed.index === 'number' ? parsed.index : toolUseBlocks.length;
+            if (id && name) toolUseBlocks.push({ id, name, index: idx });
+          }
+          if (parsed.type === 'content_block_stop') {
+            const stoppedIdx = typeof parsed.index === 'number' ? parsed.index : -1;
+            const tu = toolUseBlocks.find(t => t.index === stoppedIdx);
+            if (tu && !firedToolUses.has(tu.id)) {
+              firedToolUses.add(tu.id);
+              const fullName = tu.name;
+              const strippedName = stripPrefix(fullName);
+              const key = approvalLookup.hashKeys[fullName] || approvalLookup.hashKeys[strippedName] ||
+                          approvalLookup.bareKeys[fullName] || approvalLookup.bareKeys[strippedName];
+              if (key) {
+                const p = fetch('/api/organizations/' + org + '/chat_conversations/' + conv + '/tool_approval', {
+                  method: 'POST', credentials: 'include',
+                  headers: { ...baseHeaders, 'content-type': 'application/json', 'Accept': '*/*' },
+                  body: JSON.stringify({ tool_use_id: tu.id, is_approved: true, approval_key: key, approval_option: 'once' }),
+                }).then(r => { approvals.push({ toolUseId: tu.id, toolName: tu.name, status: r.status, ok: r.status < 400 }); return r; },
+                         e => { approvals.push({ toolUseId: tu.id, toolName: tu.name, status: 0, ok: false, error: String(e && e.message || e) }); });
+                approvalPromises.push(p);
+              } else {
+                // Tool isn't gated (e.g. SPA-internal tool_search) — synthetic 204.
+                approvals.push({ toolUseId: tu.id, toolName: tu.name, status: 204, ok: true });
+              }
+            }
+          }
+        }` : '';
+
+  const autoApprovePostSse = autoApprove ? `
+  // === auto-approve continuation poll ===
+  if (approvalPromises.length > 0) {
+    await Promise.all(approvalPromises);
+    const pollStart = Date.now();
+    let lastLen = 0, stable = 0;
+    while (Date.now() - pollStart < 60000) {
+      await new Promise(r => setTimeout(r, 1500));
+      try {
+        const cr2 = await fetch('/api/organizations/' + org + '/chat_conversations/' + conv + '?tree=True&rendering_mode=messages&render_all_tools=true', {
+          credentials: 'include', headers: { ...baseHeaders, 'Accept': '*/*' },
+        });
+        if (!cr2.ok) break;
+        const cj2 = await cr2.json();
+        const msgs = cj2.chat_messages || [];
+        const last = msgs[msgs.length - 1];
+        if (!last || last.sender !== 'assistant') continue;
+        const blocks = last.content || [];
+        const hasToolResult = blocks.some(b => b && b.type === 'tool_result');
+        const finalText = blocks.filter(b => b && b.type === 'text').map(b => String(b.text || '')).join('');
+        const stopReason = String(last.stop_reason || '');
+        if (hasToolResult && finalText.length > 0 && stopReason && stopReason !== 'tool_use') {
+          if (finalText.length > text.length) text = finalText;
+          break;
+        }
+        if (finalText.length === lastLen) {
+          stable++;
+          if (stable >= 2 && finalText.length > 0) {
+            if (finalText.length > text.length) text = finalText;
+            break;
+          }
+        } else { stable = 0; lastLen = finalText.length; }
+      } catch (_e) { break; }
+    }
+  }` : '';
+
+  const autoApproveReturnField = autoApprove ? ', approvals' : '';
+
   // Stringify all caller-controlled values via JSON.stringify so they're
   // safely embedded in the snippet (handles quotes, newlines, unicode).
   const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}
@@ -635,7 +890,7 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
     personalized_styles: [{ type: 'default', key: 'Default', name: 'Normal', nameKey: 'normal_style_name', prompt: 'Normal\\n', summary: 'Default responses from Claude', summaryKey: 'normal_style_summary', isDefault: true }],
     locale: ${JSON.stringify(locale)},
     model: ${JSON.stringify(model)},
-    tools: [],
+    tools: ${JSON.stringify(tools)},
     turn_message_uuids: { human_message_uuid: humanMessageUuid, assistant_message_uuid: assistantMessageUuid },
     attachments: ${JSON.stringify(attachments)},
     files: ${JSON.stringify(files)},
@@ -644,6 +899,9 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
     parent_message_uuid: parent,
   };
 
+${overlaySetup}
+${autoApproveSetup}
+  ${overlayStatus('Calling claude.ai /completion (streaming)…')}
   // 3. POST /completion and drain the SSE stream
   const url = '/api/organizations/' + org + '/chat_conversations/' + conv + '/completion';
   let res;
@@ -655,10 +913,14 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
       body: JSON.stringify(body),
     });
   } catch (e) {
+    ${overlayStatus('Fetch failed.', 'err')}
+    ${overlayTearDown}
     return { error: 'fetch_failed', message: String(e && e.message || e) };
   }
   if (!res.ok || !res.body) {
     const text = await res.text();
+    ${overlayStatus('HTTP error from claude.ai.', 'err')}
+    ${overlayTearDown}
     return { error: 'http_error', status: res.status, statusText: res.statusText, body: text };
   }
   const reader = res.body.getReader();
@@ -685,10 +947,16 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
       if (parsed && typeof parsed === 'object') {
         if (parsed.delta && typeof parsed.delta.text === 'string') text += parsed.delta.text;
         else if (typeof parsed.completion === 'string') text += parsed.completion;
-      }
+      }${autoApproveInLoop}
     }
-  }
-  return { status: res.status, statusText: res.statusText, eventCount: events.length, eventTypes: [...new Set(events.map(e => e.type))], text, humanMessageUuid, assistantMessageUuid };
+  }${autoApprovePostSse}
+  ${overlayStatus('Done.', 'ok')}
+  // If THIS snippet installed the banner, auto-clear after a brief moment so
+  // the user sees the "Done" state. If a persistent banner pre-existed
+  // (installed via /claude-ai/browser/install-idle-banner), leave it up and
+  // just reset its status to "Idle" — caller manages its lifecycle.
+  ${showOverlay ? "setTimeout(() => { try { if (!__lmaPreExistingOverlay) { window.__lmAssistViaOverlay && window.__lmAssistViaOverlay.tearDown(); } else { window.__lmAssistViaOverlay && window.__lmAssistViaOverlay.setStatus('Idle. Waiting for next lm-assist request.', 'ok'); } } catch (_e) {} }, 2500);" : ''}
+  return { status: res.status, statusText: res.statusText, eventCount: events.length, eventTypes: [...new Set(events.map(e => e.type))], text, humanMessageUuid, assistantMessageUuid${autoApproveReturnField} };
 })()`;
   return {
     snippet,

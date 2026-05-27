@@ -117,8 +117,19 @@ import {
   findInstalledBrowsers,
   type BrowserKind,
 } from '../../utils/claudeai-browser-launch';
+import { CDPSession, httpGetJSON } from '../../utils/browser-control';
 
 const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+
+// Module-level Map keyed by debug-port → live CDP sessions holding the
+// idle-banner `Page.addScriptToEvaluateOnNewDocument` registration alive.
+// CDP clears registrations when the session disconnects, so we MUST keep
+// these sockets open for the banner to survive subsequent navigations.
+// Cleared when install-idle-banner is called again on the same port (we
+// close the prior sessions first), or when the browser process exits
+// (sockets error out and we let them be garbage-collected).
+const idleBannerSessions: Map<number, CDPSession[]> = new Map();
+const idleBannerPollers: Map<number, NodeJS.Timeout> = new Map();
 
 function upstreamWrap<T>(r: { status: number; statusText: string; body: T }) {
   if (r.status >= 400) {
@@ -848,15 +859,24 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
 
     // POST /claude-ai/via-chrome/conversations/:uuid/completion
     //   Body: { prompt, model?, timezone?, locale?, parentMessageUuid?,
-    //           attachments?, files?, syncSources? }
+    //           attachments?, files?, syncSources?, tools?, autoApproveTools? }
     //   Returns a snippet that, when run in an authenticated claude.ai
     //   tab, (1) reads current_leaf_message_uuid, (2) POSTs /completion
     //   with proper turn UUIDs, (3) drains the SSE stream, (4) returns
     //   the aggregated assistant text + event metadata.
     //
-    //   `attachments` / `files` / `syncSources` are embedded into the
-    //   snippet via JSON.stringify. Large `attachments` (e.g. a 169 KB
-    //   markdown transcript inlined as extracted_content) make the
+    //   `tools` is the SPA-shaped MCP tool definitions array — without it
+    //   the model can't invoke any connector's tools.
+    //
+    //   `autoApproveTools: true` extends the generated snippet with the
+    //   same auto-approval mechanism the cookie-file `/completion` route
+    //   uses: track tool_use blocks during SSE drain, POST /tool_approval
+    //   on each content_block_stop, then poll the conv for the
+    //   post-approval continuation. The returned envelope includes an
+    //   `approvals: [{toolUseId, toolName, status, ok}, ...]` field.
+    //
+    //   `attachments` / `files` / `syncSources` / `tools` are embedded
+    //   into the snippet via JSON.stringify. Large payloads make the
     //   snippet correspondingly large; CDP can handle multi-MB scripts
     //   but expect proportional transfer time.
     //
@@ -889,6 +909,13 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
             files: Array.isArray(b.files) ? b.files : undefined,
             syncSources: Array.isArray(b.syncSources) ? b.syncSources
               : Array.isArray(b.sync_sources) ? b.sync_sources : undefined,
+            tools: Array.isArray(b.tools) ? b.tools : undefined,
+            autoApproveTools: typeof b.autoApproveTools === 'boolean'
+              ? b.autoApproveTools
+              : (typeof b.auto_approve_tools === 'boolean' ? b.auto_approve_tools : undefined),
+            showOverlay: typeof b.showOverlay === 'boolean'
+              ? b.showOverlay
+              : (typeof b.show_overlay === 'boolean' ? b.show_overlay : undefined),
           });
           return { success: true, data: out };
         } catch (err) {
@@ -980,6 +1007,302 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
           };
         }
         return { success: true, data: result };
+      },
+    },
+
+    // POST /claude-ai/browser/switch-to-headless
+    //   Body: { pid: number, profile?: string, port?: number, browser? }
+    //   Closes the currently-running visible Chrome (must pass its pid)
+    //   and re-launches it against the SAME profile directory in headless
+    //   mode. Cookies + login state survive because Chrome's profile
+    //   storage (cookies, localStorage, IndexedDB, etc.) lives on disk in
+    //   the profile dir, not in the running process — closing and
+    //   re-launching against the same dir preserves the session.
+    //
+    //   Caller workflow:
+    //     1. POST /claude-ai/browser/launch {headless:false, profile:'isolated'}
+    //     2. (optional) POST /claude-ai/browser/install-idle-banner
+    //     3. user logs in claude.ai inside the visible window
+    //     4. POST /claude-ai/browser/capture-session  (proves session is live)
+    //     5. POST /claude-ai/browser/switch-to-headless {pid: <from launch>}
+    //        ↳ visible Chrome closed; new headless Chrome spawned against
+    //          the same profile; subsequent via-chrome /completion calls
+    //          run silently against the same logged-in session.
+    //
+    //   Defaults: same profile as the closed pid (must be passed via body if
+    //   the launch used a non-default profile); port = caller's choice or
+    //   9333; browser = 'chrome'.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/browser\/switch-to-headless$/,
+      handler: async (req) => {
+        const b = (req.body || {}) as {
+          pid?: number;
+          profile?: string;
+          port?: number;
+          browser?: BrowserKind | 'any-chromium';
+          oldPort?: number;
+        };
+        if (typeof b.pid !== 'number' || b.pid <= 0) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: 'Body must include numeric { pid } of the visible Chrome to close.' } };
+        }
+        try {
+          // Clean up any idle-banner state for the old port (CDP sessions
+          // are about to die anyway when we kill the process).
+          if (typeof b.oldPort === 'number') {
+            const oldSessions = idleBannerSessions.get(b.oldPort);
+            if (oldSessions) {
+              for (const s of oldSessions) { try { s.close(); } catch { /* ignore */ } }
+              idleBannerSessions.delete(b.oldPort);
+            }
+            const oldPoller = idleBannerPollers.get(b.oldPort);
+            if (oldPoller) { clearInterval(oldPoller); idleBannerPollers.delete(b.oldPort); }
+          }
+          // Close the visible Chrome.
+          const closeResult = await closeChrome(b.pid);
+          // Give Chrome ~1s to release the profile dir's SingletonLock.
+          // The profile dir is at ~/.claude/claudeai-browser-profile for
+          // profile='isolated' or at Chrome's standard path for a named
+          // profile; in both cases the lock is per-dir and releases on
+          // tree-kill.
+          await new Promise((r) => setTimeout(r, 1000));
+          // Re-launch in headless mode against the same profile. Cloudflare
+          // blocks the default `HeadlessChrome/...` user-agent with a
+          // "Just a moment…" challenge — claude.ai is on Cloudflare and
+          // this would 403 every request despite the cookies being valid.
+          // Force a normal Chrome UA via --user-agent so requests look
+          // identical to the visible-mode session that originally got
+          // those cookies issued.
+          const headlessChromeUA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
+          const launch = await launchChrome({
+            profile: typeof b.profile === 'string' ? b.profile : 'isolated',
+            port: typeof b.port === 'number' ? b.port : 9333,
+            headless: true,
+            browser: typeof b.browser === 'string' ? b.browser : undefined,
+            extraArgs: [`--user-agent=${headlessChromeUA}`],
+          });
+          if (!launch.ok) {
+            return {
+              success: false,
+              error: { code: launch.code.toUpperCase(), message: 'Re-launch in headless failed: ' + launch.message, hint: launch.hint },
+              data: { closeResult },
+            };
+          }
+          return { success: true, data: { ok: true, closeResult, launch } };
+        } catch (e) {
+          return { success: false, error: { code: 'INTERNAL_ERROR', message: (e as Error).message } };
+        }
+      },
+    },
+
+    // POST /claude-ai/browser/install-idle-banner
+    //   Body: { port?: number, baseText?: string, noteText?: string }
+    //   Attaches via CDP to every page target on the spawned browser and
+    //   installs the lm-assist banner with an "Idle" status. The banner
+    //   persists across navigations (registered as a doc-init script) and
+    //   is re-used by subsequent via-chrome /completion snippets that pass
+    //   `showOverlay: true` — those will update the banner's status during
+    //   the request, then reset it to "Idle" instead of removing the
+    //   banner. Call once after `launch` when you want the user to always
+    //   see what the browser is for.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/browser\/install-idle-banner$/,
+      handler: async (req) => {
+        const b = (req.body || {}) as { port?: number; baseText?: string; noteText?: string };
+        const port = typeof b.port === 'number' && b.port > 0 ? b.port : 9222;
+        const baseText = typeof b.baseText === 'string' && b.baseText.length > 0
+          ? b.baseText : 'lm-assist · managed browser';
+        const noteText = typeof b.noteText === 'string' && b.noteText.length > 0
+          ? b.noteText
+          : "This browser was opened by lm-assist for claude.ai API access. Don't navigate away or close — incoming lm-assist requests run inside this tab and the result is reported back to whoever asked.";
+        try {
+          // Build the same overlay DOM the via-chrome snippet builds, but
+          // with persistent flag set and "Idle" initial status.
+          const installerScript = `(function() {
+  // If user navigated to a non-claude.ai host (typed URL in address bar,
+  // followed a bookmark, JS-driven nav, history button), put up a red
+  // redirect banner and bounce back to claude.ai after a short pause so
+  // the user sees what happened. /accounts.google.com is allowed because
+  // SSO flows during login legitimately leave claude.ai temporarily.
+  var __lmaHost = location.hostname;
+  var __lmaOnClaudeOrSSO = /(^|\\.)claude\\.ai$/i.test(__lmaHost)
+    || /(^|\\.)anthropic\\.com$/i.test(__lmaHost)
+    || /(^|\\.)accounts\\.google\\.com$/i.test(__lmaHost);
+  if (!__lmaOnClaudeOrSSO) {
+    // Off-site: install a redirect banner and bounce.
+    function installRedirectBanner() {
+      var prev = document.getElementById('__lm-assist-via-overlay');
+      if (prev) prev.remove();
+      var el = document.createElement('div');
+      el.id = '__lm-assist-via-overlay';
+      el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;'
+        + 'background:#3a1010;color:#fff5f5;padding:10px 44px 10px 18px;'
+        + 'font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;font-size:13px;'
+        + 'line-height:1.5;border-bottom:2px solid #f87171;box-shadow:0 4px 14px rgba(0,0,0,.35);';
+      var title = document.createElement('strong');
+      title.style.cssText = 'color:#f87171;font-size:14px;';
+      title.textContent = ${JSON.stringify(baseText)};
+      el.appendChild(title);
+      var statusP = document.createElement('p');
+      statusP.style.cssText = 'margin:2px 0;color:#fecaca;';
+      statusP.textContent = 'You navigated to ' + __lmaHost + ' — this browser is reserved for claude.ai. Returning…';
+      el.appendChild(statusP);
+      var noteP = document.createElement('p');
+      noteP.style.cssText = 'margin:2px 0;color:#fca5a5;font-size:11.5px;';
+      noteP.textContent = ${JSON.stringify(noteText)};
+      el.appendChild(noteP);
+      (document.body || document.documentElement).appendChild(el);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', installRedirectBanner);
+    } else {
+      installRedirectBanner();
+    }
+    // Give the user ~1.8s to see the message, then bounce.
+    setTimeout(function() { try { location.replace('https://claude.ai/'); } catch (_e) {} }, 1800);
+    return;
+  }
+
+  // On-site: install the normal idle banner.
+  if (window.__lmAssistViaOverlay && window.__lmAssistViaOverlay.setStatus) {
+    window.__lmAssistViaOverlay.setStatus('Idle. Waiting for next lm-assist request.', 'ok');
+    return;
+  }
+  function installNow() {
+    var prev = document.getElementById('__lm-assist-via-overlay');
+    if (prev) prev.remove();
+    var el = document.createElement('div');
+    el.id = '__lm-assist-via-overlay';
+    var styleEl = document.createElement('style');
+    styleEl.textContent = ''
+      + '#__lm-assist-via-overlay { position: fixed; top: 0; left: 0; right: 0; z-index: 2147483647;'
+      + ' background: #1a1d29; color: #f8f9fb; padding: 10px 44px 10px 18px;'
+      + ' font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; font-size: 13px;'
+      + ' line-height: 1.5; border-bottom: 2px solid #d97757; box-shadow: 0 4px 14px rgba(0,0,0,.35); }'
+      + '#__lm-assist-via-overlay strong { color: #d97757; font-size: 14px; }'
+      + '#__lm-assist-via-overlay p { margin: 2px 0; }'
+      + '#__lm-assist-via-overlay .lm-small { color: #b8bcc7; font-size: 11.5px; }'
+      + '#__lm-assist-via-overlay .lm-close { position: absolute; top: 6px; right: 12px;'
+      + ' background: none; border: none; color: #f8f9fb; cursor: pointer; font-size: 18px; opacity: .7; }'
+      + '#__lm-assist-via-overlay .lm-close:hover { opacity: 1; }'
+      + '#__lm-assist-via-overlay .lm-ok { color: #4ade80; }'
+      + '#__lm-assist-via-overlay .lm-err { color: #f87171; }';
+    el.appendChild(styleEl);
+    var btnClose = document.createElement('button');
+    btnClose.className = 'lm-close';
+    btnClose.textContent = '\\u00d7';
+    btnClose.title = 'Dismiss banner (browser stays managed)';
+    btnClose.addEventListener('click', function() { if (window.__lmAssistViaOverlay) window.__lmAssistViaOverlay.tearDown(); });
+    el.appendChild(btnClose);
+    var title = document.createElement('strong');
+    title.textContent = ${JSON.stringify(baseText)};
+    el.appendChild(title);
+    var statusP = document.createElement('p');
+    statusP.id = '__lm-assist-via-status';
+    statusP.className = 'lm-ok';
+    statusP.textContent = 'Idle. Waiting for next lm-assist request.';
+    el.appendChild(statusP);
+    var noteP = document.createElement('p');
+    noteP.className = 'lm-small';
+    noteP.textContent = ${JSON.stringify(noteText)};
+    el.appendChild(noteP);
+    (document.body || document.documentElement).appendChild(el);
+    function setStatus(text, kind) {
+      var p = document.getElementById('__lm-assist-via-status');
+      if (!p) return;
+      p.textContent = text;
+      p.className = kind === 'ok' ? 'lm-ok' : (kind === 'err' ? 'lm-err' : '');
+    }
+    function tearDown() {
+      try { mo.disconnect(); } catch (_e) {}
+      var n = document.getElementById('__lm-assist-via-overlay');
+      if (n) n.remove();
+      delete window.__lmAssistViaOverlay;
+    }
+    var mo = new MutationObserver(function() {
+      if (!document.getElementById('__lm-assist-via-overlay')) {
+        try { mo.disconnect(); } catch (_e) {}
+        installNow();
+      }
+    });
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+    window.__lmAssistViaOverlay = { setStatus: setStatus, tearDown: tearDown };
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', installNow);
+  } else {
+    installNow();
+  }
+})();`;
+          // Close any prior sessions for this port (caller is replacing).
+          const prior = idleBannerSessions.get(port);
+          if (prior) {
+            for (const s of prior) { try { s.close(); } catch { /* ignore */ } }
+            idleBannerSessions.delete(port);
+          }
+          const priorPoller = idleBannerPollers.get(port);
+          if (priorPoller) { clearInterval(priorPoller); idleBannerPollers.delete(port); }
+
+          // Fetch all page targets
+          const targets = await httpGetJSON(`http://127.0.0.1:${port}/json/list`) as Array<{ id: string; type: string; webSocketDebuggerUrl: string; url?: string }>;
+          const pageTargets = (Array.isArray(targets) ? targets : []).filter((t) => t.type === 'page');
+          if (pageTargets.length === 0) {
+            return { success: false, error: { code: 'NO_PAGE_TARGETS', message: `No page targets on port ${port}.` } };
+          }
+          const liveSessions: CDPSession[] = [];
+          const installs: Array<{ targetId: string; url?: string; ok: boolean; error?: string }> = [];
+          for (const t of pageTargets) {
+            try {
+              const sess = new CDPSession(t.webSocketDebuggerUrl);
+              await sess.ready();
+              await sess.send('Page.enable');
+              // doc-init script — survives navigations as long as the CDP
+              // session stays open (which we ensure by stashing `sess` in
+              // idleBannerSessions; do NOT call sess.close() here).
+              await sess.send('Page.addScriptToEvaluateOnNewDocument', { source: installerScript });
+              // immediate inject for the currently-loaded doc
+              await sess.send('Runtime.evaluate', { expression: installerScript, awaitPromise: false });
+              liveSessions.push(sess);
+              installs.push({ targetId: t.id, url: t.url, ok: true });
+            } catch (e) {
+              installs.push({ targetId: t.id, url: t.url, ok: false, error: (e as Error).message });
+            }
+          }
+          idleBannerSessions.set(port, liveSessions);
+
+          // Poll every 3s for newly-opened tabs so the banner also installs
+          // on tabs the user creates after this call. Polling is cheap (one
+          // GET to /json/list); stops when the browser process dies (fetch
+          // throws → poller catches and continues; if Chrome is fully gone
+          // we'll get repeated ECONNREFUSED — caller's responsibility to
+          // either restart install or accept the noise).
+          const seenTargetIds = new Set(pageTargets.map((t) => t.id));
+          const poller = setInterval(async () => {
+            try {
+              const ts = await httpGetJSON(`http://127.0.0.1:${port}/json/list`) as Array<{ id: string; type: string; webSocketDebuggerUrl: string; url?: string }>;
+              for (const t of ts) {
+                if (t.type !== 'page' || seenTargetIds.has(t.id)) continue;
+                seenTargetIds.add(t.id);
+                try {
+                  const sess = new CDPSession(t.webSocketDebuggerUrl);
+                  await sess.ready();
+                  await sess.send('Page.enable');
+                  await sess.send('Page.addScriptToEvaluateOnNewDocument', { source: installerScript });
+                  await sess.send('Runtime.evaluate', { expression: installerScript, awaitPromise: false });
+                  const arr = idleBannerSessions.get(port) || [];
+                  arr.push(sess);
+                  idleBannerSessions.set(port, arr);
+                } catch { /* skip — tab may have closed */ }
+              }
+            } catch { /* browser likely gone; let next interval try again */ }
+          }, 3000);
+          idleBannerPollers.set(port, poller);
+
+          return { success: true, data: { ok: true, port, installs, banner: { baseText, noteText }, sessionsKept: liveSessions.length } };
+        } catch (e) {
+          return { success: false, error: { code: 'INTERNAL_ERROR', message: (e as Error).message } };
+        }
       },
     },
 

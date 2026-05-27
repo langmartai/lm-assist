@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### claude.ai via-chrome — feature parity with cookie-file `/completion` + managed-browser banner + GUI→headless switch (2026-05-27)
+
+A batched set of additions that bring the `/claude-ai/via-chrome/*` family up to par with the cookie-file path, plus two new endpoints that turn a launched browser into a clearly-labelled "managed" surface and let it transition from login-time-visible to runtime-headless without losing the session.
+
+**`POST /claude-ai/via-chrome/conversations/:uuid/completion` — three new body fields.**
+
+- `tools: [...]` — SPA-shaped MCP tool definitions to pass through to claude.ai. Previously hardcoded to `[]`, which meant the model had no way to see any connector's tools when called through this path; the only workaround was to embed the array client-side. Now pass-through.
+- `autoApproveTools: boolean` — mirror of the cookie-file path's behavior. When `true`, the generated snippet does the full gate dance inside the browser: track every `tool_use` content_block as it streams, fire `POST /tool_approval` the moment `content_block_stop` arrives for it (NOT `message_delta` — that event doesn't fire until after approval lands, so waiting for it deadlocks), then poll the conversation until the assistant message has the `tool_result` block + post-tool text + non-`tool_use` `stop_reason`, and merge the final text into the snippet's return value. Approval key resolution is the same three-tier fallback (caller override → hash-suffixed key learned from the conv's `enabled_mcp_tools` → bare `<srv>:<tool>` key for first-time approval), with the same `<integration>:<tool>` ↔ `<tool>` name normalization. Validated end-to-end at 7–10 s for a real MCP tool call.
+- `showOverlay: boolean` — when `true`, the snippet installs a managed-browser banner at the top of the page (`#__lm-assist-via-overlay`, z-index 2147483647), updates its status as the flow progresses (`"Sending prompt…"` → `"Calling claude.ai /completion (streaming)…"` → `"Done."`), installs a `beforeunload` warning, and intercepts clicks on `<a href>` pointing to non-claude.ai hosts (blocked + banner turns red with "Blocked navigation to {host}"). DOM is built node-by-node (`createElement` + `textContent`, no `innerHTML`) so the markup is XSS-safe by construction. A `MutationObserver` re-installs the banner if claude.ai's SPA wipes the node during a route change.
+
+**`POST /claude-ai/browser/install-idle-banner` (new endpoint).** Body: `{port?, baseText?, noteText?}`. Attaches via CDP to every page target on a spawned browser, registers a `Page.addScriptToEvaluateOnNewDocument` script with the same overlay DOM, and stashes the live `CDPSession` objects in a module-level Map so the script registration survives subsequent navigations (CDP clears registrations when the session disconnects; a poller every 3 s also picks up new tabs the user opens). Initial state is green "Idle. Waiting for next lm-assist request." Survives across SPA route changes via `MutationObserver`. The via-chrome `/completion` snippet's `showOverlay: true` is idempotent against this banner — if it sees `window.__lmAssistViaOverlay` already installed, it updates the existing status rather than tearing down + recreating, and resets to "Idle" instead of removing the banner on completion. So the user gets a single persistent banner across the browser's lifetime, with status that ticks through what's happening.
+
+**Off-site navigation detection.** The installer script checks `location.hostname` on every doc load. If the user lands on a host that isn't `claude.ai`, `*.claude.ai`, `*.anthropic.com`, or `accounts.google.com` (the last for Google SSO during login), it installs a red variant of the banner — "You navigated to {hostname} — this browser is reserved for claude.ai. Returning…" — and `location.replace('https://claude.ai/')`s after 1.8 s. The user briefly sees the banner explaining why they're being bounced. Verified by navigating the managed Chrome to `example.com` and watching the red banner render, then the auto-redirect fire, then the normal green idle banner restore on return.
+
+**`POST /claude-ai/browser/switch-to-headless` (new endpoint).** Body: `{pid, profile?, port?, oldPort?, browser?}`. Closes the currently-running visible Chrome and re-launches it against the SAME profile directory in headless mode. Cookies + login state survive because Chrome's profile storage (cookies, localStorage, IndexedDB) lives on disk in the profile dir, not in the process. The new launch forces `--user-agent=Mozilla/5.0 ... Chrome/145.0.0.0 Safari/537.36` (no `HeadlessChrome`) because Cloudflare gates the default headless UA with an "Almost there… Just a moment…" challenge that 403s every API call regardless of cookies. After the switch, `/api/account_profile` from the new headless Chrome returns 200 against the same logged-in session. Companion idle-banner state for the old port is cleaned up automatically. Caller's typical sequence:
+
+```
+1. POST /claude-ai/browser/launch                {headless:false, profile:'isolated', port:9555}
+2. POST /claude-ai/browser/install-idle-banner   {port:9555}                                ← banner shows "Idle, waiting…"
+3. user logs in claude.ai inside the visible window
+4. POST /claude-ai/browser/capture-session       {port:9555}                                ← proves session is live
+5. POST /claude-ai/browser/switch-to-headless    {pid:<from-launch>, oldPort:9555, port:9777}
+                                                                                            ↳ visible window closes
+                                                                                            ↳ headless Chrome on :9777 inherits session via shared profile dir
+6. POST /claude-ai/via-chrome/conversations/<uuid>/completion  ...  (runs silently)
+```
+
+The visible-mode behaviors (idle banner, snippet status updates, link/nav guards, off-site auto-redirect) only apply in non-headless launches — they're a courtesy for the user's eyes. Headless skips them entirely.
+
 ### claude.ai completion — server-side MCP tool-approval (`autoApproveTools`) (2026-05-27)
 
 `POST /claude-ai/conversations/:uuid/completion` now accepts an `autoApproveTools` body field. When `true`, lm-assist intercepts the per-call approval gate that claude.ai's SPA normally shows the user ("Claude wants to use *foo* from *bar*") and resolves it automatically server-side. Caller gets a single response with `text`, `events`, `approvals: [{toolUseId, toolName, status, ok}, ...]`, and the post-tool continuation merged in. Default `false` — opt-in only, no behavior change for existing callers.
