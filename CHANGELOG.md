@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Browser banners — generic on-page banner system with URL matching (2026-05-27)
+
+Promotes the lm-assist managed-browser banner from a single-purpose CDP injection (`/claude-ai/browser/install-idle-banner`) to a first-class endpoint family that can install any caller-defined banner on any spawned browser:
+
+- `POST /browser/banners` — body `{port, id, title, status, statusKind?, note?, theme?, closable?, match?, onMismatch?}`. Adds (or replaces by `id`) a banner that survives navigations and re-installs on new tabs the user opens. `theme` is `'dark'` (default, claude-orange accent), `'warning'` (red), or `'info'` (blue). DOM is built node-by-node (createElement + textContent, no innerHTML) so caller-supplied text can't inject markup.
+- `GET /browser/banners?port=N` — lists currently-registered banner configs for a port.
+- `DELETE /browser/banners/:id?port=N` — drops a single banner (removes the `Page.addScriptToEvaluateOnNewDocument` registration on every target + cleans up the DOM node).
+
+**Per-banner URL matching.** `match: { include: [<hostPattern>, …] }` gates rendering by `location.hostname`. Patterns:
+- `claude.ai` — exact host
+- `*.claude.ai` — host or any subdomain
+- `*` — wildcard (no gating)
+
+`onMismatch.action`:
+- `'hide'` (default for new banners) — render nothing when host doesn't match
+- `'redirect'` (default for the lm-assist-idle preset) — show a brief warning banner with the off-target host name, then `location.replace(redirectTo)` after `redirectAfterMs` (default 1800)
+- `'warn'` — render the banner with `err` styling but don't redirect
+
+Multiple banners coexist on the same page (each gets its own `#__lm-assist-banner-<id>` div). They stack at `top:0` by document order — caller's responsibility to use a single active banner if visual stacking would be confusing.
+
+`POST /claude-ai/browser/install-idle-banner` is now a thin convenience wrapper that calls `installBanner()` with the "managed-browser idle" preset (id `lm-assist-idle`, host match `[claude.ai, *.claude.ai, *.anthropic.com, accounts.google.com]`, `onMismatch: redirect → https://claude.ai/`). All previous behavior preserved.
+
+CDP session-management state moved from per-route module-level Maps into `claudeai-banner.ts`. `switch-to-headless` now calls `closeAllBanners(oldPort)` for cleanup instead of poking at internal Maps. New file: `core/src/utils/claudeai-banner.ts` (~350 lines) houses the banner script generator + CDP attach/poller/teardown lifecycle.
+
 ### claude.ai via-chrome — feature parity with cookie-file `/completion` + managed-browser banner + GUI→headless switch (2026-05-27)
 
 A batched set of additions that bring the `/claude-ai/via-chrome/*` family up to par with the cookie-file path, plus two new endpoints that turn a launched browser into a clearly-labelled "managed" surface and let it transition from login-time-visible to runtime-headless without losing the session.
