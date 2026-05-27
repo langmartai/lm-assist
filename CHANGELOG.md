@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### Browser endpoint reorganization — generic primitives moved out of `/claude-ai/*` (2026-05-27)
+
+Followup to the banner generalization. Promotes browser-agnostic primitives from `/claude-ai/browser/*` to `/browser/*` so they're available as a first-class generic surface — claude.ai use is one case among many. Pure rename; old paths no longer exist (callers were on `[Unreleased]` and warned).
+
+**Moved (path rename only — request/response shape unchanged):**
+
+| Before | After |
+|---|---|
+| `GET  /claude-ai/browser/installed`         | `GET  /browser/installed` |
+| `GET  /claude-ai/browser/profiles`          | `GET  /browser/profiles` |
+| `POST /claude-ai/browser/launch`            | `POST /browser/launch` |
+| `POST /claude-ai/browser/close`             | `POST /browser/close` |
+| `POST /claude-ai/browser/switch-to-headless`| `POST /browser/switch-to-headless` |
+
+**File-relocated (path was already `/browser/banners`, handler moved out of `claude-ai.routes.ts` into `browser.routes.ts`):**
+
+- `POST /browser/banners`
+- `GET  /browser/banners`
+- `DELETE /browser/banners/:id`
+
+**Stays under `/claude-ai/*`** (genuinely claude.ai-specific):
+
+- `POST /claude-ai/browser/capture-session` — writes `~/.claude/claudeai-session.json`
+- `POST /claude-ai/browser/launch-and-capture` — composite for the claude.ai login flow
+- `POST /claude-ai/browser/install-idle-banner` — thin preset over `POST /browser/banners` with claude.ai host match + redirect-back-to-claude.ai on mismatch
+- `POST /claude-ai/browser/via-chrome/identify` — fetches `/api/organizations` from claude.ai to identify the logged-in org
+
+Internal references (doc comments in `browser-control.ts`, error message hints in `claudeai-browser-launch.ts`, CHANGELOG entries from earlier today) updated to the new paths.
+
 ### Browser banners — generic on-page banner system with URL matching (2026-05-27)
 
 Promotes the lm-assist managed-browser banner from a single-purpose CDP injection (`/claude-ai/browser/install-idle-banner`) to a first-class endpoint family that can install any caller-defined banner on any spawned browser:
@@ -40,14 +69,14 @@ A batched set of additions that bring the `/claude-ai/via-chrome/*` family up to
 
 **Off-site navigation detection.** The installer script checks `location.hostname` on every doc load. If the user lands on a host that isn't `claude.ai`, `*.claude.ai`, `*.anthropic.com`, or `accounts.google.com` (the last for Google SSO during login), it installs a red variant of the banner — "You navigated to {hostname} — this browser is reserved for claude.ai. Returning…" — and `location.replace('https://claude.ai/')`s after 1.8 s. The user briefly sees the banner explaining why they're being bounced. Verified by navigating the managed Chrome to `example.com` and watching the red banner render, then the auto-redirect fire, then the normal green idle banner restore on return.
 
-**`POST /claude-ai/browser/switch-to-headless` (new endpoint).** Body: `{pid, profile?, port?, oldPort?, browser?}`. Closes the currently-running visible Chrome and re-launches it against the SAME profile directory in headless mode. Cookies + login state survive because Chrome's profile storage (cookies, localStorage, IndexedDB) lives on disk in the profile dir, not in the process. The new launch forces `--user-agent=Mozilla/5.0 ... Chrome/145.0.0.0 Safari/537.36` (no `HeadlessChrome`) because Cloudflare gates the default headless UA with an "Almost there… Just a moment…" challenge that 403s every API call regardless of cookies. After the switch, `/api/account_profile` from the new headless Chrome returns 200 against the same logged-in session. Companion idle-banner state for the old port is cleaned up automatically. Caller's typical sequence:
+**`POST /browser/switch-to-headless` (new endpoint).** Body: `{pid, profile?, port?, oldPort?, browser?}`. Closes the currently-running visible Chrome and re-launches it against the SAME profile directory in headless mode. Cookies + login state survive because Chrome's profile storage (cookies, localStorage, IndexedDB) lives on disk in the profile dir, not in the process. The new launch forces `--user-agent=Mozilla/5.0 ... Chrome/145.0.0.0 Safari/537.36` (no `HeadlessChrome`) because Cloudflare gates the default headless UA with an "Almost there… Just a moment…" challenge that 403s every API call regardless of cookies. After the switch, `/api/account_profile` from the new headless Chrome returns 200 against the same logged-in session. Companion idle-banner state for the old port is cleaned up automatically. Caller's typical sequence:
 
 ```
-1. POST /claude-ai/browser/launch                {headless:false, profile:'isolated', port:9555}
+1. POST /browser/launch                {headless:false, profile:'isolated', port:9555}
 2. POST /claude-ai/browser/install-idle-banner   {port:9555}                                ← banner shows "Idle, waiting…"
 3. user logs in claude.ai inside the visible window
 4. POST /claude-ai/browser/capture-session       {port:9555}                                ← proves session is live
-5. POST /claude-ai/browser/switch-to-headless    {pid:<from-launch>, oldPort:9555, port:9777}
+5. POST /browser/switch-to-headless    {pid:<from-launch>, oldPort:9555, port:9777}
                                                                                             ↳ visible window closes
                                                                                             ↳ headless Chrome on :9777 inherits session via shared profile dir
 6. POST /claude-ai/via-chrome/conversations/<uuid>/completion  ...  (runs silently)
@@ -105,7 +134,7 @@ Two coupled additions that turn lm-assist into a Chrome DevTools Protocol fallba
 
 **`/claude-ai/browser/*` family — 6 composite endpoints for cookie-file capture.** `launch-and-capture` (the headline) spawns Chrome with an isolated profile dir (`~/.claude/claudeai-browser-profile/`), injects a persistent in-page overlay explaining what the user must do and why, polls Chrome's cookie store until `sessionKey` appears, then writes both the per-profile session file (`~/.claude/claudeai-session.<profile>.json`) and the canonical `~/.claude/claudeai-session.json` so the existing cookie-file routes can pick it up without further setup. Stage-aware overlay messages ("Sign in with Google", "Approve OAuth", "Returning to claude.ai") drive the overlay text via per-target persistent CDP sessions, so hard navigations within the login flow (e.g. `/` → `/login` → `accounts.google.com` → `/new`) don't reset the status banner.
 
-**Multi-browser detection + Firefox best-effort.** `GET /claude-ai/browser/installed` enumerates Chrome, Edge, Brave, Vivaldi, Chromium, Opera, and Firefox across Windows/macOS/Linux. `POST /claude-ai/browser/launch` accepts `{"browser": "<kind>"}` to pick which to launch. Firefox launches with `--remote-debugging-port` but uses WebDriver-BiDi internally; only a subset of CDP methods are honored — caller should treat Firefox as best-effort. Chromium-family browsers (Chrome/Edge/Brave/Vivaldi/Chromium/Opera) all share the full CDP feature set.
+**Multi-browser detection + Firefox best-effort.** `GET /browser/installed` enumerates Chrome, Edge, Brave, Vivaldi, Chromium, Opera, and Firefox across Windows/macOS/Linux. `POST /browser/launch` accepts `{"browser": "<kind>"}` to pick which to launch. Firefox launches with `--remote-debugging-port` but uses WebDriver-BiDi internally; only a subset of CDP methods are honored — caller should treat Firefox as best-effort. Chromium-family browsers (Chrome/Edge/Brave/Vivaldi/Chromium/Opera) all share the full CDP feature set.
 
 **Linux GUI autodetect.** When `headless` is false on Linux and lm-assist's process env has no `DISPLAY`, the launcher probes `/tmp/.X11-unix/X0` and auto-sets `DISPLAY=:0` so Chrome can render on the user's running X session. If no display is reachable at all, returns a structured error pointing the caller to `{"headless": true}`.
 

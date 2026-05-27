@@ -110,20 +110,11 @@ import {
   resolveProfile,
 } from '../../utils/claudeai-browser-profile';
 import {
-  launchChrome,
   captureSession,
-  closeChrome,
   launchAndCapture,
-  findInstalledBrowsers,
   type BrowserKind,
 } from '../../utils/claudeai-browser-launch';
-import {
-  installBanner,
-  removeBanner,
-  listBanners,
-  closeAllBanners,
-  type BannerConfig,
-} from '../../utils/claudeai-banner';
+import { installBanner } from '../../utils/claudeai-banner';
 
 const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
@@ -923,22 +914,7 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // ─────────────────────────────────────────────────────────────────────
-    // Browser-profile family — discovery, identify, launch+capture+close
-    // ─────────────────────────────────────────────────────────────────────
-
-    // GET /claude-ai/browser/profiles
-    //   List Chrome profiles on this host with their lm-assist per-profile
-    //   session paths. Read-only; doesn't spawn anything.
-    {
-      method: 'GET',
-      pattern: /^\/claude-ai\/browser\/profiles$/,
-      handler: async () => {
-        const result = listChromeProfiles();
-        return { success: true, data: result };
-      },
-    },
-
+    
     // POST /claude-ai/browser/via-chrome/identify
     //   Returns a snippet that fetches /api/organizations from the running
     //   claude.ai tab. The snippet's response leaks the logged-in email via
@@ -970,121 +946,9 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // GET /claude-ai/browser/installed
-    //   Enumerate CDP-capable + Firefox browsers on this host.
-    {
-      method: 'GET',
-      pattern: /^\/claude-ai\/browser\/installed$/,
-      handler: async () => ({ success: true, data: { browsers: findInstalledBrowsers() } }),
-    },
-
-    // POST /claude-ai/browser/launch
-    //   Body: { profile?: 'isolated' | <profile-id>, port?: number, headless?: boolean, browser? }
-    //   Spawns a browser with --remote-debugging-port. Returns
-    //   { pid, port, userDataDir, profileDirectory, browser, browserFamily,
-    //     devtoolsUrl }. Refuses if Chrome is already running against the
-    //   requested profile dir (Windows file lock); use 'isolated' or close
-    //   other Chrome windows. browser defaults to 'any-chromium'.
-    {
-      method: 'POST',
-      pattern: /^\/claude-ai\/browser\/launch$/,
-      handler: async (req) => {
-        const b = (req.body || {}) as { profile?: string; port?: number; headless?: boolean; browser?: BrowserKind | 'any-chromium' };
-        const result = await launchChrome({
-          profile: typeof b.profile === 'string' ? b.profile : undefined,
-          port: typeof b.port === 'number' ? b.port : undefined,
-          headless: typeof b.headless === 'boolean' ? b.headless : undefined,
-          browser: typeof b.browser === 'string' ? b.browser : undefined,
-        });
-        if (!result.ok) {
-          return {
-            success: false,
-            error: { code: result.code.toUpperCase(), message: result.message, hint: result.hint },
-          };
-        }
-        return { success: true, data: result };
-      },
-    },
-
-    // POST /claude-ai/browser/switch-to-headless
-    //   Body: { pid: number, profile?: string, port?: number, browser? }
-    //   Closes the currently-running visible Chrome (must pass its pid)
-    //   and re-launches it against the SAME profile directory in headless
-    //   mode. Cookies + login state survive because Chrome's profile
-    //   storage (cookies, localStorage, IndexedDB, etc.) lives on disk in
-    //   the profile dir, not in the running process — closing and
-    //   re-launching against the same dir preserves the session.
-    //
-    //   Caller workflow:
-    //     1. POST /claude-ai/browser/launch {headless:false, profile:'isolated'}
-    //     2. (optional) POST /claude-ai/browser/install-idle-banner
-    //     3. user logs in claude.ai inside the visible window
-    //     4. POST /claude-ai/browser/capture-session  (proves session is live)
-    //     5. POST /claude-ai/browser/switch-to-headless {pid: <from launch>}
-    //        ↳ visible Chrome closed; new headless Chrome spawned against
-    //          the same profile; subsequent via-chrome /completion calls
-    //          run silently against the same logged-in session.
-    //
-    //   Defaults: same profile as the closed pid (must be passed via body if
-    //   the launch used a non-default profile); port = caller's choice or
-    //   9333; browser = 'chrome'.
-    {
-      method: 'POST',
-      pattern: /^\/claude-ai\/browser\/switch-to-headless$/,
-      handler: async (req) => {
-        const b = (req.body || {}) as {
-          pid?: number;
-          profile?: string;
-          port?: number;
-          browser?: BrowserKind | 'any-chromium';
-          oldPort?: number;
-        };
-        if (typeof b.pid !== 'number' || b.pid <= 0) {
-          return { success: false, error: { code: 'INVALID_REQUEST', message: 'Body must include numeric { pid } of the visible Chrome to close.' } };
-        }
-        try {
-          // Clean up any banner state for the old port (CDP sessions
-          // are about to die anyway when we kill the process).
-          if (typeof b.oldPort === 'number') {
-            await closeAllBanners(b.oldPort);
-          }
-          // Close the visible Chrome.
-          const closeResult = await closeChrome(b.pid);
-          // Give Chrome ~1s to release the profile dir's SingletonLock.
-          // The profile dir is at ~/.claude/claudeai-browser-profile for
-          // profile='isolated' or at Chrome's standard path for a named
-          // profile; in both cases the lock is per-dir and releases on
-          // tree-kill.
-          await new Promise((r) => setTimeout(r, 1000));
-          // Re-launch in headless mode against the same profile. Cloudflare
-          // blocks the default `HeadlessChrome/...` user-agent with a
-          // "Just a moment…" challenge — claude.ai is on Cloudflare and
-          // this would 403 every request despite the cookies being valid.
-          // Force a normal Chrome UA via --user-agent so requests look
-          // identical to the visible-mode session that originally got
-          // those cookies issued.
-          const headlessChromeUA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
-          const launch = await launchChrome({
-            profile: typeof b.profile === 'string' ? b.profile : 'isolated',
-            port: typeof b.port === 'number' ? b.port : 9333,
-            headless: true,
-            browser: typeof b.browser === 'string' ? b.browser : undefined,
-            extraArgs: [`--user-agent=${headlessChromeUA}`],
-          });
-          if (!launch.ok) {
-            return {
-              success: false,
-              error: { code: launch.code.toUpperCase(), message: 'Re-launch in headless failed: ' + launch.message, hint: launch.hint },
-              data: { closeResult },
-            };
-          }
-          return { success: true, data: { ok: true, closeResult, launch } };
-        } catch (e) {
-          return { success: false, error: { code: 'INTERNAL_ERROR', message: (e as Error).message } };
-        }
-      },
-    },
-
+    
+    
+    
     // POST /claude-ai/browser/install-idle-banner
     //   Body: { port?: number, baseText?: string, noteText?: string }
     //   Attaches via CDP to every page target on the spawned browser and
@@ -1133,91 +997,9 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // POST /browser/banners
-    //   Body: BannerConfig + { port: number }
-    //     id, title, status, statusKind?, note?, theme?, closable?,
-    //     match: { include: [<hostPattern>, …] },
-    //     onMismatch: { action: 'redirect'|'hide'|'warn', redirectTo?, redirectAfterMs? }
-    //
-    //   Adds (or replaces, by `id`) a banner on every page target of the
-    //   debug-port browser. Banner persists across navigations (registered
-    //   as a `Page.addScriptToEvaluateOnNewDocument` doc-init script with
-    //   the CDP session kept alive in lm-assist's module-level state). New
-    //   tabs picked up via a 3s poller. Host pattern shapes:
-    //     - "claude.ai"         exact match
-    //     - "*.claude.ai"       host or any subdomain
-    //     - "*"                 any host (no gating)
-    //   `onMismatch.action`:
-    //     - 'redirect' (default for the lm-assist-idle preset): show a brief
-    //                  warning banner, then location.replace(redirectTo).
-    //     - 'hide'     (default for new banners): render nothing on
-    //                  mismatched hosts.
-    //     - 'warn'     render the banner with err styling, no redirect.
-    //
-    //   The DOM is built node-by-node (createElement + textContent, no
-    //   innerHTML) so caller-supplied text can't inject markup.
-    //
-    //   See also POST /claude-ai/browser/install-idle-banner — that's a
-    //   convenience wrapper around this endpoint with the standard
-    //   "managed browser" preset.
-    {
-      method: 'POST',
-      pattern: /^\/browser\/banners$/,
-      handler: async (req) => {
-        const b = (req.body || {}) as Partial<BannerConfig> & { port?: number };
-        const port = typeof b.port === 'number' && b.port > 0 ? b.port : 9222;
-        if (typeof b.id !== 'string' || !b.id) {
-          return { success: false, error: { code: 'INVALID_REQUEST', message: 'Body must include a string `id`.' } };
-        }
-        if (typeof b.title !== 'string' || typeof b.status !== 'string') {
-          return { success: false, error: { code: 'INVALID_REQUEST', message: 'Body must include string `title` and `status`.' } };
-        }
-        try {
-          const result = await installBanner(port, b as BannerConfig);
-          return { success: true, data: result };
-        } catch (e) {
-          return { success: false, error: { code: 'INTERNAL_ERROR', message: (e as Error).message } };
-        }
-      },
-    },
-
-    // GET /browser/banners?port=N
-    //   List banner configs currently registered for this port. Returns
-    //   only the configs lm-assist holds — does NOT reach into the page
-    //   DOM. If a banner was dismissed in the page (close button), this
-    //   endpoint still lists it as registered (the registration would
-    //   re-install on next navigation).
-    {
-      method: 'GET',
-      pattern: /^\/browser\/banners$/,
-      handler: async (req) => {
-        const q = (req.query || {}) as { port?: string };
-        const port = q.port ? parseInt(q.port, 10) : 9222;
-        const result = listBanners(port);
-        return { success: true, data: result };
-      },
-    },
-
-    // DELETE /browser/banners/:id?port=N
-    //   Drop a single banner (by id). Sends `Page.removeScriptToEvaluateOnNewDocument`
-    //   on every CDP session for the port + removes the banner's DOM node
-    //   from the currently-loaded doc on every target.
-    {
-      method: 'DELETE',
-      pattern: /^\/browser\/banners\/(?<id>[^/?]+)$/,
-      handler: async (req) => {
-        const id = req.params.id;
-        const q = (req.query || {}) as { port?: string };
-        const port = q.port ? parseInt(q.port, 10) : 9222;
-        try {
-          const result = await removeBanner(port, id);
-          return { success: true, data: result };
-        } catch (e) {
-          return { success: false, error: { code: 'INTERNAL_ERROR', message: (e as Error).message } };
-        }
-      },
-    },
-
+    
+    
+    
 
     // POST /claude-ai/browser/capture-session
     //   Body: { port?: number, profile?: <profile-id>, setCanonical?: boolean }
@@ -1308,27 +1090,5 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // POST /claude-ai/browser/close
-    //   Body: { pid: number }
-    //   Tree-kills the spawned Chrome. Only kill the pid you launched —
-    //   this can take down user's real Chrome windows if you pass the
-    //   wrong one.
-    {
-      method: 'POST',
-      pattern: /^\/claude-ai\/browser\/close$/,
-      handler: async (req) => {
-        const b = (req.body || {}) as { pid?: number };
-        if (typeof b.pid !== 'number' || b.pid <= 0) {
-          return {
-            success: false,
-            error: { code: 'INVALID_REQUEST', message: 'Body must include numeric { pid }.' },
-          };
-        }
-        const result = await closeChrome(b.pid);
-        return result.ok
-          ? { success: true, data: result }
-          : { success: false, error: { code: 'CLOSE_FAILED', message: result.message } };
-      },
-    },
-  ];
+      ];
 }

@@ -1,13 +1,14 @@
 /**
  * Generic browser control routes.
  *
- * Targets any Chrome that was started with `--remote-debugging-port`.
- * Useful both as a fallback when claude-in-chrome MCP isn't loaded, and
- * as a programmatic surface for automation / debugging tools that need
- * the same primitives MCP provides.
- *
- * The /claude-ai/browser/* family composes these primitives for the
- * specific cookie-capture flow; this family stays domain-agnostic.
+ * Targets any Chrome started with `--remote-debugging-port`. lm-assist's
+ * full browser surface lives here — discovery (installed/profiles),
+ * lifecycle (launch/close/switch-to-headless), tab primitives (CRUD,
+ * navigate, eval, cookies, click, type, etc.), and the in-page banner
+ * system. Claude.ai-specific composites (`/claude-ai/browser/capture-session`,
+ * `/claude-ai/browser/launch-and-capture`, `/claude-ai/browser/install-idle-banner`,
+ * `/claude-ai/browser/via-chrome/identify`) build on top of these
+ * primitives and live in `claude-ai.routes.ts`.
  */
 
 import type { RouteHandler, RouteContext } from '../index';
@@ -37,6 +38,20 @@ import {
   installNetworkTap,
   readNetworkRequests,
 } from '../../utils/browser-control';
+import {
+  launchChrome,
+  closeChrome,
+  findInstalledBrowsers,
+  type BrowserKind,
+} from '../../utils/claudeai-browser-launch';
+import { listChromeProfiles } from '../../utils/claudeai-browser-profile';
+import {
+  installBanner,
+  removeBanner,
+  listBanners,
+  closeAllBanners,
+  type BannerConfig,
+} from '../../utils/claudeai-banner';
 
 /** Pick port from query (?port=) or body (.port), default 9222. */
 function pickPort(q: Record<string, unknown>, body: Record<string, unknown>): number {
@@ -327,6 +342,192 @@ export function createBrowserRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => {
         const b = (req.body || {}) as { port?: number; format?: 'png' | 'jpeg'; quality?: number; fullPage?: boolean };
         return wrap(await screenshot(pickPort({}, b), req.params.id, { format: b.format, quality: b.quality, fullPage: b.fullPage }));
+      },
+    },
+
+    // ─── Browser discovery + lifecycle ──────────────────────────────────
+
+    // GET /browser/installed
+    //   Enumerate CDP-capable + Firefox browsers on this host.
+    {
+      method: 'GET',
+      pattern: /^\/browser\/installed$/,
+      handler: async () => ({ success: true, data: { browsers: findInstalledBrowsers() } }),
+    },
+
+    // GET /browser/profiles
+    //   List Chrome profiles on this host with their per-profile session
+    //   file paths. Read-only; doesn't spawn anything.
+    {
+      method: 'GET',
+      pattern: /^\/browser\/profiles$/,
+      handler: async () => {
+        const result = listChromeProfiles();
+        return { success: true, data: result };
+      },
+    },
+
+    // POST /browser/launch
+    //   Body: { profile?: 'isolated' | <profile-id>, port?, headless?, browser? }
+    //   Spawns a browser with --remote-debugging-port. Returns
+    //   { pid, port, userDataDir, profileDirectory, browser, browserFamily,
+    //     devtoolsUrl }. Refuses if Chrome is already running against the
+    //   requested profile dir (per-dir SingletonLock); use 'isolated' or
+    //   close other Chrome windows. `browser` defaults to 'any-chromium'.
+    {
+      method: 'POST',
+      pattern: /^\/browser\/launch$/,
+      handler: async (req) => {
+        const b = (req.body || {}) as { profile?: string; port?: number; headless?: boolean; browser?: BrowserKind | 'any-chromium' };
+        const result = await launchChrome({
+          profile: typeof b.profile === 'string' ? b.profile : undefined,
+          port: typeof b.port === 'number' ? b.port : undefined,
+          headless: typeof b.headless === 'boolean' ? b.headless : undefined,
+          browser: typeof b.browser === 'string' ? b.browser : undefined,
+        });
+        if (!result.ok) {
+          return { success: false, error: { code: result.code.toUpperCase(), message: result.message, hint: result.hint } };
+        }
+        return { success: true, data: result };
+      },
+    },
+
+    // POST /browser/close
+    //   Body: { pid: number }
+    //   Tree-kills the spawned browser. Only kill the pid you launched —
+    //   passing the wrong pid can take down the user's real Chrome windows.
+    {
+      method: 'POST',
+      pattern: /^\/browser\/close$/,
+      handler: async (req) => {
+        const b = (req.body || {}) as { pid?: number };
+        if (typeof b.pid !== 'number' || b.pid <= 0) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: 'Body must include numeric { pid }.' } };
+        }
+        const result = await closeChrome(b.pid);
+        return result.ok
+          ? { success: true, data: result }
+          : { success: false, error: { code: 'CLOSE_FAILED', message: result.message } };
+      },
+    },
+
+    // POST /browser/switch-to-headless
+    //   Body: { pid: number, profile?: string, port?: number, browser?, oldPort? }
+    //   Closes the currently-running visible Chrome (pass its pid) and
+    //   re-launches it against the SAME profile directory in headless
+    //   mode. Cookies + login state survive because Chrome's profile
+    //   storage lives on disk in the profile dir, not in the process.
+    //   The new launch forces `--user-agent=` to a normal Chrome UA
+    //   because Cloudflare gates the default `HeadlessChrome/...` UA with
+    //   a challenge that 403s most API calls regardless of cookies.
+    //   `oldPort` (optional): the debug port of the closed Chrome — used
+    //   to tear down any banners that were installed there.
+    {
+      method: 'POST',
+      pattern: /^\/browser\/switch-to-headless$/,
+      handler: async (req) => {
+        const b = (req.body || {}) as {
+          pid?: number; profile?: string; port?: number;
+          browser?: BrowserKind | 'any-chromium'; oldPort?: number;
+        };
+        if (typeof b.pid !== 'number' || b.pid <= 0) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: 'Body must include numeric { pid } of the visible Chrome to close.' } };
+        }
+        try {
+          if (typeof b.oldPort === 'number') {
+            await closeAllBanners(b.oldPort);
+          }
+          const closeResult = await closeChrome(b.pid);
+          await new Promise((r) => setTimeout(r, 1000));
+          const headlessChromeUA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
+          const launch = await launchChrome({
+            profile: typeof b.profile === 'string' ? b.profile : 'isolated',
+            port: typeof b.port === 'number' ? b.port : 9333,
+            headless: true,
+            browser: typeof b.browser === 'string' ? b.browser : undefined,
+            extraArgs: [`--user-agent=${headlessChromeUA}`],
+          });
+          if (!launch.ok) {
+            return {
+              success: false,
+              error: { code: launch.code.toUpperCase(), message: 'Re-launch in headless failed: ' + launch.message, hint: launch.hint },
+              data: { closeResult },
+            };
+          }
+          return { success: true, data: { ok: true, closeResult, launch } };
+        } catch (e) {
+          return { success: false, error: { code: 'INTERNAL_ERROR', message: (e as Error).message } };
+        }
+      },
+    },
+
+    // ─── Banner endpoints ───────────────────────────────────────────────
+
+    // POST /browser/banners
+    //   Body: BannerConfig + { port: number }
+    //     id, title, status, statusKind?, note?, theme?, closable?,
+    //     match: { include: [<hostPattern>, …] },
+    //     onMismatch: { action: 'redirect'|'hide'|'warn', redirectTo?, redirectAfterMs? }
+    //   Adds (or replaces, by `id`) a banner on every page target of the
+    //   debug-port browser. Banner persists across navigations (registered
+    //   as a `Page.addScriptToEvaluateOnNewDocument` doc-init script with
+    //   the CDP session kept alive). New tabs picked up via a 3s poller.
+    //   Host pattern shapes: "claude.ai" exact, "*.claude.ai" host or
+    //   subdomain, "*" any host. `onMismatch.action`: 'redirect' (warning
+    //   banner then location.replace), 'hide' (default), or 'warn' (err
+    //   styling, no redirect).
+    {
+      method: 'POST',
+      pattern: /^\/browser\/banners$/,
+      handler: async (req) => {
+        const b = (req.body || {}) as Partial<BannerConfig> & { port?: number };
+        const port = typeof b.port === 'number' && b.port > 0 ? b.port : 9222;
+        if (typeof b.id !== 'string' || !b.id) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: 'Body must include a string `id`.' } };
+        }
+        if (typeof b.title !== 'string' || typeof b.status !== 'string') {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: 'Body must include string `title` and `status`.' } };
+        }
+        try {
+          const result = await installBanner(port, b as BannerConfig);
+          return { success: true, data: result };
+        } catch (e) {
+          return { success: false, error: { code: 'INTERNAL_ERROR', message: (e as Error).message } };
+        }
+      },
+    },
+
+    // GET /browser/banners?port=N
+    //   List banner configs currently registered for this port (state
+    //   only — does not query the page DOM).
+    {
+      method: 'GET',
+      pattern: /^\/browser\/banners$/,
+      handler: async (req) => {
+        const q = (req.query || {}) as { port?: string };
+        const port = q.port ? parseInt(q.port, 10) : 9222;
+        const result = listBanners(port);
+        return { success: true, data: result };
+      },
+    },
+
+    // DELETE /browser/banners/:id?port=N
+    //   Drop a single banner (by id). Removes the doc-init script
+    //   registration on every CDP session + the banner's DOM node from
+    //   each loaded doc.
+    {
+      method: 'DELETE',
+      pattern: /^\/browser\/banners\/(?<id>[^/?]+)$/,
+      handler: async (req) => {
+        const id = req.params.id;
+        const q = (req.query || {}) as { port?: string };
+        const port = q.port ? parseInt(q.port, 10) : 9222;
+        try {
+          const result = await removeBanner(port, id);
+          return { success: true, data: result };
+        } catch (e) {
+          return { success: false, error: { code: 'INTERNAL_ERROR', message: (e as Error).message } };
+        }
       },
     },
   ];

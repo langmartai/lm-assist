@@ -5,10 +5,10 @@
  *
  * Lifecycle:
  *
- *   1. POST /claude-ai/browser/launch          → spawn chrome.exe (or equivalent)
+ *   1. POST /browser/launch          → spawn chrome.exe (or equivalent)
  *   2. user (or test) logs into claude.ai in the spawned window
  *   3. POST /claude-ai/browser/capture-session → CDP dump cookies → session file
- *   4. POST /claude-ai/browser/close           → tree-kill the spawned pid
+ *   4. POST /browser/close           → tree-kill the spawned pid
  *
  * Why CDP instead of reading Chrome's Cookies SQLite db directly: the db is
  * (a) locked while Chrome is running, (b) encrypted with DPAPI on Windows /
@@ -262,7 +262,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<LaunchResu
       return {
         ok: false,
         code: 'profile_not_found',
-        message: `No Chrome profile matches '${profileChoice}'. See GET /claude-ai/browser/profiles.`,
+        message: `No Chrome profile matches '${profileChoice}'. See GET /browser/profiles.`,
       };
     }
     // Use the existing User Data dir + --profile-directory to select inside it.
@@ -546,7 +546,7 @@ export async function captureSession(opts: {
       code: fetched.code,
       message: fetched.message,
       hint: fetched.code === 'debug_port_unreachable'
-        ? 'Call POST /claude-ai/browser/launch first, or check that Chrome is still running.'
+        ? 'Call POST /browser/launch first, or check that Chrome is still running.'
         : undefined,
     };
   }

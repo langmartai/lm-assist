@@ -2,7 +2,7 @@
  * Generic browser control via Chrome DevTools Protocol.
  *
  * Targets any Chrome that was started with `--remote-debugging-port=<n>`,
- * including the one spawned by /claude-ai/browser/launch (port 9222 by
+ * including the one spawned by /browser/launch (port 9222 by
  * default). Provides a thin, typed surface over CDP for tab management,
  * navigation, JS evaluation, cookie + DOM inspection, and screenshots.
  *
