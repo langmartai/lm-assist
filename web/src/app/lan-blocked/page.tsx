@@ -94,7 +94,12 @@ export default function LanBlockedPage() {
 
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, [router]);
+    // NOTE: must depend on hubDomain — the handler validates event.origin against
+    // it, and hubDomain is set asynchronously from /hub/status (e.g. 'xeenhub.com'
+    // for the dev hub). Without this dep the handler keeps the initial
+    // 'langmart.ai' value, rejects the popup's postMessage from xeenhub.com, and
+    // the page hangs on "Waiting for sign in...".
+  }, [router, hubDomain]);
 
   // Open the OAuth popup in verify mode
   const handleSignIn = useCallback(() => {

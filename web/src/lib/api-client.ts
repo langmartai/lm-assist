@@ -1483,8 +1483,9 @@ export function createHybridClient(options: HybridClientOptions): ApiClient {
 
 export function detectAppMode(): { mode: AppMode; baseUrl: string } {
   if (typeof window === 'undefined') {
-    // SSR — default to local (use runtime env var for correct port)
-    const ssrPort = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
+    // SSR — read the runtime port (LM_LOCAL_API_PORT, not inlined) so one build
+    // serves prod (:3100) and dev (:3200); fall back to the baked NEXT_PUBLIC then 3100.
+    const ssrPort = process.env.LM_LOCAL_API_PORT || process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
     return { mode: 'local', baseUrl: `http://localhost:${ssrPort}` };
   }
 
@@ -1496,8 +1497,11 @@ export function detectAppMode(): { mode: AppMode; baseUrl: string } {
   }
 
   // Local mode: localhost or local IP
-  // The local tier-agent API port — configurable via env or default
-  const localPort = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
+  // Core API port: prefer the runtime value injected by the server layout
+  // (window.__LM_LOCAL_API_PORT__) so one build serves prod (:3100) and dev (:3200);
+  // fall back to the build-time NEXT_PUBLIC value, then 3100.
+  const injected = (window as unknown as { __LM_LOCAL_API_PORT__?: string }).__LM_LOCAL_API_PORT__;
+  const localPort = injected || process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
   // Use 127.0.0.1 instead of 'localhost' to avoid IPv6 resolution issues on Windows
   // where browsers may resolve localhost to ::1 but the API only listens on IPv4
   const apiHost = (hostname === 'localhost' || hostname === '127.0.0.1') ? '127.0.0.1' : hostname;
