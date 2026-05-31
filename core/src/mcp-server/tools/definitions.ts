@@ -33,6 +33,7 @@ export const searchToolDef = {
     'IDs, jumps straight to the item. Returns ranked results with `→ detail(id)` hints.\n\n' +
     'Does NOT search claude.ai web conversations — for those, use ' +
     '`list_claudeai_conversations` then `read_conversation`.',
+  annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -81,6 +82,7 @@ export const detailToolDef = {
     'to drill into a part.\n\n' +
     'Does NOT read claude.ai web conversations — for those, use `read_conversation` ' +
     '(which expects a claude.ai conversation UUID, not a code session UUID).',
+  annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -118,6 +120,7 @@ export const feedbackToolDef = {
     '"useful, save it", "irrelevant". The feedback flows into the knowledge store and ' +
     'influences future ranking.\n\n' +
     'Does NOT apply to claude.ai conversations.',
+  annotations: { readOnlyHint: false },
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -160,6 +163,7 @@ export const listRecentSessionsToolDef = {
     'full transcript.\n\n' +
     'For claude.ai web conversations (chats at claude.ai/chat/*), use ' +
     '`list_claudeai_conversations` instead.',
+  annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -203,6 +207,7 @@ export const listProjectsToolDef = {
     '`list_recent_sessions(project="...")` or `search(..., project="...")`.\n\n' +
     'Aggregates only LOCAL code sessions. claude.ai web conversations have their own ' +
     'project concept; use `list_claudeai_conversations` for those.',
+  annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -228,6 +233,7 @@ export const searchMemoryToolDef = {
     'and project notes — distinct from the knowledge store (which `search` covers, ' +
     'auto-extracted from code sessions) and distinct from claude.ai conversations.\n\n' +
     'Returns matching files with title, description, and a snippet around the match.',
+  annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -270,6 +276,7 @@ export const listClaudeaiConversationsToolDef = {
     'Default limit is 5 (low because each conversation costs a per-item read against ' +
     'claude.ai). Set `include_messages: false` for a fast metadata-only list.\n\n' +
     'Requires a configured claude.ai session — returns a clear error otherwise. Read-only.',
+  annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -316,6 +323,7 @@ export const readConversationToolDef = {
     'Even though both use UUIDs, they index different stores; passing a code session UUID ' +
     'here will fail at claude.ai\'s API.\n\n' +
     'Read-only. Does NOT cost tokens (it just fetches stored message history).',
+  annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,
     properties: {

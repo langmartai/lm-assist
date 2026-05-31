@@ -35,6 +35,9 @@ import { handleListProjects } from '../../mcp-server/tools/list-projects';
 import { handleSearchMemory } from '../../mcp-server/tools/search-memory';
 import { handleListClaudeaiConversations } from '../../mcp-server/tools/list-claudeai-conversations';
 import { handleReadConversation } from '../../mcp-server/tools/read-conversation';
+import { EXPANDED_HANDLERS } from '../../mcp-server/tools/expanded';
+import { evaluateAccess, type McpSubject } from '../../mcp-server/access-control';
+import { createPending } from '../../mcp-server/mcp-pending';
 
 // Dispatcher for StreamableHTTP mode — runs each tool in-process against
 // the data stores that already live in this core API process. No HTTP
@@ -50,8 +53,11 @@ const dispatch: McpToolDispatcher = async (name, args) => {
     case 'search_memory':                return handleSearchMemory(args);
     case 'list_claudeai_conversations':  return handleListClaudeaiConversations(args);
     case 'read_conversation':            return handleReadConversation(args);
-    default:
+    default: {
+      const expanded = EXPANDED_HANDLERS[name];
+      if (expanded) return expanded(args);
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
+    }
   }
 };
 
@@ -74,6 +80,28 @@ function buildServer(): Server {
  * bodies (the SDK transport tolerates `body=undefined` and parses fresh
  * from the request stream in that case).
  */
+/** Read a single request header as a trimmed string (undefined if absent). */
+function headerStr(req: IncomingMessage, name: string): string | undefined {
+  const v = req.headers[name];
+  const s = Array.isArray(v) ? v[0] : v;
+  const t = (s || '').trim();
+  return t || undefined;
+}
+
+/**
+ * Send one MCP message as the StreamableHTTP transport would — a single SSE
+ * `event: message` frame. Used to short-circuit deny/pending decisions before
+ * the transport runs, while staying wire-compatible with the MCP client.
+ */
+function sendMcpMessage(res: ServerResponse, payload: unknown): void {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+  });
+  res.end(`event: message\ndata: ${JSON.stringify(payload)}\n\n`);
+}
+
 async function readJsonBody(req: IncomingMessage): Promise<unknown | undefined> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -114,6 +142,66 @@ export async function handleMcpRequest(
       id: null,
     }));
     return;
+  }
+
+  // Authorization (lm-assist-owned): scope-gate `tools/call` against the local
+  // access config. The gateway/hub authenticated + routed us here and forwards
+  // the caller identity via x-mcp-* headers; we decide allow/deny/pending.
+  // Other JSON-RPC methods (initialize, tools/list, ping) need no scope.
+  if (body && typeof body === 'object' && (body as Record<string, unknown>).method === 'tools/call') {
+    const b = body as { id?: unknown; params?: { name?: unknown; arguments?: unknown } };
+    const toolName = String(b.params?.name || '');
+    // Trust the gateway-asserted identity only when it carries the shared
+    // secret (so a direct LAN caller can't spoof x-mcp-* to self-elevate). If
+    // no secret is configured (dev), trust the headers as-is. An untrusted
+    // caller is anonymous → default scopes (read-only).
+    const gatewaySecret = process.env.MCP_GATEWAY_SECRET || '';
+    const identityTrusted = !gatewaySecret || headerStr(req, 'x-mcp-gateway-secret') === gatewaySecret;
+    const subject: McpSubject = identityTrusted
+      ? {
+          clientId: headerStr(req, 'x-mcp-client-id'),
+          email: headerStr(req, 'x-mcp-user-email'),
+          userId: headerStr(req, 'x-mcp-user-id'),
+        }
+      : {};
+    const verdict = evaluateAccess(subject, toolName);
+    const reqId = b.id ?? null;
+    if (verdict.decision === 'deny') {
+      sendMcpMessage(res, {
+        jsonrpc: '2.0',
+        id: reqId,
+        error: {
+          code: -32001,
+          message: `forbidden: tool "${toolName}" requires scope "${verdict.required}"; caller holds [${verdict.granted.join(', ')}]`,
+        },
+      });
+      return;
+    }
+    if (verdict.decision === 'pending') {
+      const p = createPending(
+        toolName,
+        (b.params?.arguments as Record<string, unknown>) || {},
+        subject,
+        toolName,
+      );
+      sendMcpMessage(res, {
+        jsonrpc: '2.0',
+        id: reqId,
+        result: {
+          content: [
+            {
+              type: 'text',
+              text:
+                `⏸ pending_confirmation\n\nThe admin tool "${toolName}" was NOT executed — it needs ` +
+                `out-of-band confirmation.\n\npendingId: ${p.id}\n\nConfirm or deny it in the lm-assist ` +
+                `MCP settings tab, or POST /mcp/pending/${p.id}/confirm . Expires in 10 minutes.`,
+            },
+          ],
+        },
+      });
+      return;
+    }
+    // allow → fall through to normal dispatch
   }
 
   const server = buildServer();

@@ -35,7 +35,9 @@ import {
   mcpSearchMemory,
   mcpListClaudeaiConversations,
   mcpReadConversation,
+  mcpGenericCall,
 } from './api-client';
+import { EXPANDED_HANDLERS } from './tools/expanded';
 
 // ─── Server Setup ──────────────────────────────────────────────────
 
@@ -58,6 +60,7 @@ const dispatch: McpToolDispatcher = async (name, args) => {
     case 'list_claudeai_conversations':  return mcpListClaudeaiConversations(args);
     case 'read_conversation':            return mcpReadConversation(args);
     default:
+      if (name in EXPANDED_HANDLERS) return mcpGenericCall(name, args);
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
   }
 };

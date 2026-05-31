@@ -106,6 +106,18 @@ export async function mcpReadConversation(args: Record<string, unknown>): Promis
   return post<McpToolResult>('/mcp/read_conversation', args);
 }
 
+/**
+ * Generic call for expanded-catalog tools — forwards {tool, args} to the
+ * single `/mcp-call` shim, which dispatches via EXPANDED_HANDLERS. Lets new
+ * read/write tools work over stdio without a per-tool endpoint + method.
+ */
+export async function mcpGenericCall(
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<McpToolResult> {
+  return post<McpToolResult>('/mcp-call', { tool, args });
+}
+
 // ─── Core API + Web Auto-Start ──────────────────────────────────────────────────
 
 async function isApiRunning(): Promise<boolean> {

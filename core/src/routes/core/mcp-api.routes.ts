@@ -21,6 +21,26 @@ import { handleListProjects } from '../../mcp-server/tools/list-projects';
 import { handleSearchMemory } from '../../mcp-server/tools/search-memory';
 import { handleListClaudeaiConversations } from '../../mcp-server/tools/list-claudeai-conversations';
 import { handleReadConversation } from '../../mcp-server/tools/read-conversation';
+import { EXPANDED_HANDLERS } from '../../mcp-server/tools/expanded';
+import { TOOL_SCOPES, type ToolScope } from '../../mcp-server/configure';
+import {
+  loadAccessConfig,
+  upsertGrant,
+  removeGrant,
+  setDefaultScopes,
+  toolCatalog,
+} from '../../mcp-server/access-control';
+import { listPending, takePending } from '../../mcp-server/mcp-pending';
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function asScopes(v: unknown): ToolScope[] {
+  return Array.isArray(v)
+    ? (v.filter((x) => x === 'read' || x === 'write' || x === 'admin') as ToolScope[])
+    : [];
+}
 
 export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -141,6 +161,171 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
           return wrapResponse(await handleReadConversation(req.body || {}), start);
         } catch (err) {
           return wrapError('MCP_READ_CONV_ERROR', err instanceof Error ? err.message : String(err), start);
+        }
+      },
+    },
+
+    // GET /mcp/tool-scopes — canonical tool→scope map (read|write|admin).
+    // The upstream langmart gateway fetches + caches this to decide which
+    // Bearer keys may invoke which tool (403 before forwarding). Keeping it
+    // served from the worker means one source of truth, no map drift.
+    {
+      method: 'GET',
+      pattern: /^\/mcp\/tool-scopes$/,
+      handler: async () => {
+        const start = Date.now();
+        return wrapResponse({ scopes: TOOL_SCOPES }, start);
+      },
+    },
+
+    // ── MCP access control (authorization, lm-assist-owned) ──────────────
+
+    // GET /mcp/access — full config for the settings UI: defaults, grants,
+    // and the tool→scope catalog.
+    {
+      method: 'GET',
+      pattern: /^\/mcp\/access$/,
+      handler: async () => {
+        const start = Date.now();
+        const cfg = loadAccessConfig();
+        return wrapResponse(
+          { defaultScopes: cfg.defaultScopes, grants: cfg.grants, tools: toolCatalog() },
+          start,
+        );
+      },
+    },
+
+    // POST /mcp/access/grant — add or update a grant.
+    // Body: { id?, clientId?, email?, userId?, scopes:[], note? }
+    {
+      method: 'POST',
+      pattern: /^\/mcp\/access\/grant$/,
+      handler: async (req) => {
+        const start = Date.now();
+        try {
+          const b = (req.body || {}) as Record<string, unknown>;
+          const scopes = asScopes(b.scopes);
+          if (!b.clientId && !b.email && !b.userId) {
+            return wrapError('MCP_ACCESS_BAD', 'one of clientId, email, userId is required', start);
+          }
+          if (scopes.length === 0) {
+            return wrapError('MCP_ACCESS_BAD', 'scopes must be a non-empty subset of read/write/admin', start);
+          }
+          const row = upsertGrant(
+            {
+              id: b.id ? String(b.id) : undefined,
+              clientId: b.clientId ? String(b.clientId) : undefined,
+              email: b.email ? String(b.email) : undefined,
+              userId: b.userId ? String(b.userId) : undefined,
+              scopes,
+              note: b.note ? String(b.note) : undefined,
+            },
+            nowIso(),
+          );
+          return wrapResponse(row, start);
+        } catch (err) {
+          return wrapError('MCP_ACCESS_ERROR', err instanceof Error ? err.message : String(err), start);
+        }
+      },
+    },
+
+    // DELETE /mcp/access/grant/:id — remove a grant.
+    {
+      method: 'DELETE',
+      pattern: /^\/mcp\/access\/grant\/(?<id>[^/]+)$/,
+      handler: async (req) => {
+        const start = Date.now();
+        const ok = removeGrant(req.params.id);
+        return ok
+          ? wrapResponse({ removed: req.params.id }, start)
+          : wrapError('MCP_ACCESS_NOT_FOUND', `no grant ${req.params.id}`, start);
+      },
+    },
+
+    // PUT /mcp/access/defaults — set the default scopes for unmatched callers.
+    {
+      method: 'PUT',
+      pattern: /^\/mcp\/access\/defaults$/,
+      handler: async (req) => {
+        const start = Date.now();
+        const scopes = asScopes((req.body as Record<string, unknown>)?.scopes);
+        if (scopes.length === 0) {
+          return wrapError('MCP_ACCESS_BAD', 'scopes must be a non-empty subset of read/write/admin', start);
+        }
+        return wrapResponse(setDefaultScopes(scopes, nowIso()), start);
+      },
+    },
+
+    // GET /mcp/pending — list parked admin actions (for the confirm UI).
+    {
+      method: 'GET',
+      pattern: /^\/mcp\/pending$/,
+      handler: async () => {
+        const start = Date.now();
+        const items = listPending().map((p) => ({
+          id: p.id,
+          tool: p.tool,
+          summary: p.summary,
+          subject: p.subject,
+          createdAt: p.createdAt,
+          expiresAt: p.expiresAt,
+        }));
+        return wrapResponse({ pending: items }, start);
+      },
+    },
+
+    // POST /mcp/pending/:id/confirm — execute a parked admin action now.
+    // This is the ONLY path that runs an admin tool, reached out-of-band.
+    {
+      method: 'POST',
+      pattern: /^\/mcp\/pending\/(?<id>[^/]+)\/confirm$/,
+      handler: async (req) => {
+        const start = Date.now();
+        const p = takePending(req.params.id);
+        if (!p) return wrapError('MCP_PENDING_NOT_FOUND', 'pending not found or expired', start);
+        const handler = EXPANDED_HANDLERS[p.tool];
+        if (!handler) return wrapError('MCP_UNKNOWN_TOOL', `no handler for ${p.tool}`, start);
+        try {
+          const result = await handler(p.args);
+          return wrapResponse({ status: 'executed', tool: p.tool, result }, start);
+        } catch (err) {
+          return wrapError('MCP_EXEC_ERROR', err instanceof Error ? err.message : String(err), start);
+        }
+      },
+    },
+
+    // POST /mcp/pending/:id/deny — drop a parked admin action without running it.
+    {
+      method: 'POST',
+      pattern: /^\/mcp\/pending\/(?<id>[^/]+)\/deny$/,
+      handler: async (req) => {
+        const start = Date.now();
+        const p = takePending(req.params.id);
+        return p
+          ? wrapResponse({ status: 'denied', id: p.id, tool: p.tool }, start)
+          : wrapError('MCP_PENDING_NOT_FOUND', 'pending not found or expired', start);
+      },
+    },
+
+    // POST /mcp-call — generic shim for expanded-catalog tools (stdio transport).
+    // Body: { tool, args }. Dispatches via EXPANDED_HANDLERS so new read/write
+    // tools need no per-tool route. The StreamableHTTP transport reaches the
+    // same handlers in-process and does not use this route.
+    {
+      method: 'POST',
+      pattern: /^\/mcp-call$/,
+      handler: async (req) => {
+        const start = Date.now();
+        try {
+          const body = (req.body || {}) as { tool?: string; args?: Record<string, unknown> };
+          const tool = String(body.tool || '');
+          const handler = EXPANDED_HANDLERS[tool];
+          if (!handler) {
+            return wrapError('MCP_UNKNOWN_TOOL', `Unknown expanded tool: ${tool}`, start);
+          }
+          return wrapResponse(await handler(body.args || {}), start);
+        } catch (err) {
+          return wrapError('MCP_CALL_ERROR', err instanceof Error ? err.message : String(err), start);
         }
       },
     },

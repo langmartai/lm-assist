@@ -5,6 +5,7 @@ import { useAppMode } from '@/contexts/AppModeContext';
 import { detectAppMode } from '@/lib/api-client';
 import { useExperiment } from '@/hooks/useExperiment';
 import { usePlatform } from '@/hooks/usePlatform';
+import McpAccessTab from './McpAccessTab';
 import {
   Settings,
   Globe,
@@ -52,7 +53,7 @@ import {
 // Types
 // ============================================
 
-type SettingsTab = 'connection' | 'terminal' | 'claude-code' | 'data-loading' | 'experiment';
+type SettingsTab = 'connection' | 'terminal' | 'claude-code' | 'data-loading' | 'experiment' | 'mcp';
 
 interface HubStatusData {
   configured: boolean;
@@ -1661,10 +1662,17 @@ export default function SettingsPage() {
           icon={<FlaskConical size={13} />}
           label="Experiment"
         />
+        <TabButton
+          active={activeTab === 'mcp'}
+          onClick={() => handleSetActiveTab('mcp')}
+          icon={<FlaskConical size={13} />}
+          label="MCP"
+        />
       </div>
 
       {/* ──────────── Tab Content ──────────── */}
       <div style={{ maxWidth: 640 }}>
+        {activeTab === 'mcp' && <McpAccessTab baseUrl={tierAgentUrl} />}
 
         {/* ═══════════════ CONNECTION TAB ═══════════════ */}
         {activeTab === 'connection' && (

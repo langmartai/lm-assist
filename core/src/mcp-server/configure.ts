@@ -35,6 +35,7 @@ import {
   listClaudeaiConversationsToolDef,
   readConversationToolDef,
 } from './tools/definitions';
+import { EXPANDED_TOOL_DEFS } from './tools/expanded';
 import { logToolCall } from './mcp-logger';
 
 export interface McpToolResult {
@@ -67,10 +68,76 @@ export const LM_ASSIST_TOOL_DEFS = [
   searchMemoryToolDef,
   listClaudeaiConversationsToolDef,
   readConversationToolDef,
+  ...EXPANDED_TOOL_DEFS,
 ] as const;
 
 /** Names of every tool advertised by lm-assist's MCP server. */
 export const LM_ASSIST_TOOL_NAMES: ReadonlyArray<string> = LM_ASSIST_TOOL_DEFS.map((t) => t.name);
+
+/**
+ * Capability scope required to call each tool.
+ *
+ *   read  — pure data fetch, no state change. Auto-approved.
+ *   write — mutates lm-assist / claude.ai state or spends tokens. Must
+ *           prompt for approval on every call; never "always allow".
+ *   admin — host-control / irreversible (agent execution, terminal drive,
+ *           conversation delete). Approval + out-of-band confirm + audit.
+ *
+ * This is the single source of truth the upstream langmart gateway reads to
+ * decide whether a Bearer key may invoke a given tool (403 before forwarding)
+ * — see docs/plans `mcp-full-exposure`. Keep every advertised tool mapped;
+ * `assertScopesCoverTools()` fails the build/boot if one is missing.
+ */
+export type ToolScope = 'read' | 'write' | 'admin';
+
+export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
+  search: 'read',
+  detail: 'read',
+  feedback: 'write',
+  list_recent_sessions: 'read',
+  list_projects: 'read',
+  search_memory: 'read',
+  list_claudeai_conversations: 'read',
+  read_conversation: 'read',
+  // expanded read tier
+  list_executions: 'read',
+  get_execution: 'read',
+  memory_projects: 'read',
+  memory_cross_host: 'read',
+  memory_import_candidates: 'read',
+  terminal_list: 'read',
+  terminal_capture: 'read',
+  // expanded write tier
+  claudeai_create_conversation: 'write',
+  claudeai_completion: 'write',
+  agent_abort: 'write',
+  agent_resume: 'write',
+  terminal_prompt: 'write',
+  terminal_slash: 'write',
+  // expanded admin tier
+  agent_execute: 'admin',
+  terminal_interrupt: 'admin',
+  terminal_open_tab: 'admin',
+  delete_conversation: 'admin',
+};
+
+/** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */
+export function requiredScope(name: string): ToolScope {
+  return TOOL_SCOPES[name] ?? 'admin';
+}
+
+/**
+ * Guard invoked at boot: every advertised tool must have an explicit scope.
+ * A new tool added to LM_ASSIST_TOOL_DEFS without a TOOL_SCOPES entry would
+ * otherwise silently inherit the `admin` deny-default and be uncallable —
+ * fail loudly instead so the omission is caught immediately.
+ */
+export function assertScopesCoverTools(): void {
+  const missing = LM_ASSIST_TOOL_NAMES.filter((n) => !(n in TOOL_SCOPES));
+  if (missing.length > 0) {
+    throw new Error(`TOOL_SCOPES missing entries for: ${missing.join(', ')}`);
+  }
+}
 
 /**
  * Wire the ListTools + CallTool request handlers on the given Server using
@@ -88,6 +155,8 @@ export const LM_ASSIST_TOOL_NAMES: ReadonlyArray<string> = LM_ASSIST_TOOL_DEFS.m
  * plumbing itself.
  */
 export function configureMcpServer(server: Server, dispatch: McpToolDispatcher): void {
+  assertScopesCoverTools();
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [...LM_ASSIST_TOOL_DEFS],
   }));
