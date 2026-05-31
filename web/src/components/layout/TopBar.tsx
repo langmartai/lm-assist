@@ -88,11 +88,29 @@ export function TopBar() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showUserMenu]);
 
-  const handleLogout = useCallback(() => {
-    localStorage.removeItem('assist_access_key');
+  const handleLogout = useCallback(async () => {
     setShowUserMenu(false);
+    if (isLocalhost) {
+      // On localhost, LAN access is permanent — so "Sign Out" means disconnect
+      // the hub ACCOUNT (clear the api key, which also drops the node's gateway-id)
+      // so a different user can sign in. Then send them to Settings to re-connect.
+      try {
+        const { baseUrl } = detectAppMode();
+        await fetch(`${baseUrl}/hub/config`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKey: '', reconnect: false }),
+        });
+      } catch {
+        /* ignore — still navigate */
+      }
+      router.push('/settings');
+      return;
+    }
+    // LAN / cloud: clear the LAN access token and re-gate at the sign-in page.
+    localStorage.removeItem('assist_access_key');
     router.push('/lan-blocked');
-  }, [router]);
+  }, [router, isLocalhost]);
 
   const isCloud = proxy.isProxied;
   // Use the selected machine's gatewayId for the cloud URL so "Cloud" opens the correct machine
@@ -344,23 +362,11 @@ export function TopBar() {
               {!isCloud && (
                 <button
                   className="topbar-user-menu-item"
-                  disabled={isLocalhost}
-                  onClick={isLocalhost ? undefined : handleLogout}
+                  onClick={handleLogout}
                 >
                   <LogOut size={14} />
-                  <span>Sign Out</span>
-                  {isLocalhost && (
-                    <span className="topbar-user-menu-info-icon" title="Localhost always has access. Go to Settings to disconnect from cloud.">
-                      <Info size={12} />
-                    </span>
-                  )}
+                  <span>{isLocalhost ? 'Sign Out (switch account)' : 'Sign Out'}</span>
                 </button>
-              )}
-              {isLocalhost && (
-                <div className="topbar-user-menu-info">
-                  Localhost has permanent access.{' '}
-                  <Link href="/settings" onClick={() => setShowUserMenu(false)}>Disconnect in Settings</Link>
-                </div>
               )}
             </div>
           )}

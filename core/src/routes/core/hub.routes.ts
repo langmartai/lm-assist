@@ -6,6 +6,7 @@
 
 import type { RouteContext, RouteHandler, ParsedRequest } from '../index';
 import { getHubClient, resetHubClient, reconnectHubClient, isHubConfigured, getHubConfig, saveHubConnectionConfig } from '../../hub-client';
+import { clearGatewayId } from '../../hub-client/hub-config';
 
 export function createHubRoutes(ctx: RouteContext): RouteHandler[] {
   return [
@@ -140,6 +141,15 @@ export function createHubRoutes(ctx: RouteContext): RouteHandler[] {
         }
 
         try {
+          // The gateway-id is the node's hub identity and is machine-persisted.
+          // When the api key changes (i.e. a different user signs in, or the key
+          // is removed), the node must NOT keep the previous user's gateway-id —
+          // otherwise the hub keeps associating this node with the old user and a
+          // re-sign-in "sticks" on the previous account. Clear it so the next
+          // connect mints a fresh node identity bound to the new user.
+          const currentKey = getHubConfig().apiKey || '';
+          const keyChanged = apiKey !== undefined && apiKey !== currentKey;
+
           const configUpdates: { apiKey?: string; hubUrl?: string } = {};
 
           if (apiKey !== undefined) {
@@ -156,6 +166,11 @@ export function createHubRoutes(ctx: RouteContext): RouteHandler[] {
           // Persist to ~/.lm-assist/hub.json
           if (Object.keys(configUpdates).length > 0) {
             saveHubConnectionConfig(configUpdates);
+          }
+
+          // On a user switch (or removal), drop the old node identity.
+          if (keyChanged) {
+            clearGatewayId();
           }
 
           // If API key was cleared, disconnect
