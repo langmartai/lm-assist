@@ -61,6 +61,9 @@ import {
   getOrgUsage,
   listOrgSkills,
   getOrgMcpBootstrap,
+  createMcpRemoteServer,
+  deleteMcpRemoteServer,
+  listMcpRemoteServers,
   listOrgStyles,
   getModelConfig,
   getMemorySettings,
@@ -443,6 +446,53 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
 
     { method: 'GET', pattern: /^\/claude-ai\/org\/mcp-bootstrap$/,
       handler: async () => { try { return upstreamWrap(await getOrgMcpBootstrap()); } catch (err) { return catchOAuth(err); } } },
+
+    // ─── MCP remote-connector lifecycle (register / delete / list+status) ───
+
+    // GET /claude-ai/mcp/servers — list registered MCP connectors with status
+    //   (uuid, name, url, connected, authStatus, customOauthClientId, tools).
+    //   Distilled from mcp/v2/bootstrap. Read-only.
+    { method: 'GET', pattern: /^\/claude-ai\/mcp\/servers$/,
+      handler: async () => { try { return upstreamWrap(await listMcpRemoteServers()); } catch (err) { return catchOAuth(err); } } },
+
+    // POST /claude-ai/mcp/servers — register an MCP connector.
+    //   Body: { url, name, customOauthClientId?, customOauthClientSecret? }.
+    //   Pass the custom OAuth client pair to pre-bind (no DCR/browser SSO); omit
+    //   for a plain connector claude.ai will DCR + OAuth on Connect.
+    { method: 'POST', pattern: /^\/claude-ai\/mcp\/servers$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        if (typeof b.url !== 'string' || !b.url) {
+          return { success: false, error: { code: 'MISSING_URL', message: 'body.url is required' } };
+        }
+        if (typeof b.name !== 'string' || !b.name) {
+          return { success: false, error: { code: 'MISSING_NAME', message: 'body.name is required' } };
+        }
+        try {
+          return upstreamWrap(await createMcpRemoteServer({
+            url: b.url,
+            name: b.name,
+            customOauthClientId: typeof b.customOauthClientId === 'string' ? b.customOauthClientId : undefined,
+            customOauthClientSecret: typeof b.customOauthClientSecret === 'string' ? b.customOauthClientSecret : undefined,
+          }));
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      } },
+
+    // DELETE /claude-ai/mcp/servers/:uuid — remove a connector by its server UUID.
+    { method: 'DELETE', pattern: /^\/claude-ai\/mcp\/servers\/(?<uuid>[^/?]+)$/,
+      handler: async (req) => {
+        const uuid = req.params.uuid;
+        if (!UUID_RE.test(uuid)) {
+          return { success: false, error: { code: 'INVALID_UUID', message: `MCP server UUID must be a UUIDv4: got ${uuid}` } };
+        }
+        try {
+          return upstreamWrap(await deleteMcpRemoteServer(uuid));
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      } },
 
     { method: 'GET', pattern: /^\/claude-ai\/org\/styles$/,
       handler: async () => { try { return upstreamWrap(await listOrgStyles()); } catch (err) { return catchOAuth(err); } } },

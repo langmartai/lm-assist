@@ -34,6 +34,8 @@ import {
   searchMemoryToolDef,
   listClaudeaiConversationsToolDef,
   readConversationToolDef,
+  listNodesToolDef,
+  NODE_PARAM,
 } from './tools/definitions';
 import { EXPANDED_TOOL_DEFS } from './tools/expanded';
 import { logToolCall } from './mcp-logger';
@@ -59,7 +61,7 @@ export type McpToolDispatcher = (
  * The canonical tool list. Both transports advertise these in response to
  * `tools/list`. Order is preserved; clients may rely on it for stable UX.
  */
-export const LM_ASSIST_TOOL_DEFS = [
+const BASE_TOOL_DEFS = [
   searchToolDef,
   detailToolDef,
   feedbackToolDef,
@@ -69,7 +71,35 @@ export const LM_ASSIST_TOOL_DEFS = [
   listClaudeaiConversationsToolDef,
   readConversationToolDef,
   ...EXPANDED_TOOL_DEFS,
+  listNodesToolDef,
 ] as const;
+
+/**
+ * Inject the optional `node` selector into a tool's inputSchema so claude.ai
+ * can target a specific host when the user has several lm-assist nodes
+ * connected. Applied to every advertised tool EXCEPT `list_nodes` itself
+ * (which enumerates nodes and is never node-targeted). Pure — returns a new
+ * def, never mutates the source.
+ */
+function withNodeParam<T extends { name: string; inputSchema: { properties?: Record<string, unknown> } }>(def: T): T {
+  if (def.name === 'list_nodes') return def;
+  const schema = def.inputSchema || ({ type: 'object', properties: {} } as typeof def.inputSchema);
+  return {
+    ...def,
+    inputSchema: {
+      ...schema,
+      properties: { ...(schema.properties || {}), node: NODE_PARAM },
+    },
+  };
+}
+
+/**
+ * The canonical tool list. Both transports advertise these in response to
+ * `tools/list`. Order is preserved; clients may rely on it for stable UX.
+ * Every tool carries the optional `node` selector (see withNodeParam) so the
+ * connector is multi-node aware end-to-end.
+ */
+export const LM_ASSIST_TOOL_DEFS = BASE_TOOL_DEFS.map(withNodeParam);
 
 /** Names of every tool advertised by lm-assist's MCP server. */
 export const LM_ASSIST_TOOL_NAMES: ReadonlyArray<string> = LM_ASSIST_TOOL_DEFS.map((t) => t.name);
@@ -119,6 +149,8 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   terminal_interrupt: 'admin',
   terminal_open_tab: 'admin',
   delete_conversation: 'admin',
+  // multi-node
+  list_nodes: 'read',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */

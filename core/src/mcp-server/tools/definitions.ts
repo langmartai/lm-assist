@@ -354,3 +354,48 @@ export const readConversationToolDef = {
     required: ['conversation_uuid'],
   },
 };
+
+// ─── multi-node support ──────────────────────────────────────
+//
+// A single user can have several lm-assist nodes connected at once (a laptop,
+// a workstation, a server). They all reach claude.ai through the same MCP
+// connector. Two pieces make that usable:
+//
+//   1. NODE_PARAM — an optional `node` selector injected into EVERY tool
+//      (done in configure.ts). The hub routes the call to that node; once a
+//      call lands on a worker it is already on the right node, so the worker
+//      ignores the field.
+//   2. listNodesToolDef — a `list_nodes` tool so the model can discover which
+//      nodes exist before targeting one. The hub answers it from its live
+//      registry of the user's connected workers; a lone worker answers with
+//      just itself (fallback in tools/list-nodes.ts).
+
+/** Optional per-tool node selector. Injected into every tool's inputSchema. */
+export const NODE_PARAM = {
+  type: 'string' as const,
+  description:
+    'Target a specific lm-assist node/host when the user has more than one connected ' +
+    '(e.g. a laptop and a server, or two machines). Pass the node\'s hostId or hostname ' +
+    'as returned by `list_nodes`. Omit to use the default (most-recently-connected) ' +
+    'node — correct for the common single-node case. Use this when the user says "on my ' +
+    'server", "the other machine", "node X", etc.',
+};
+
+export const listNodesToolDef = {
+  name: 'list_nodes',
+  description:
+    'List the lm-assist NODES/HOSTS connected for this user. Each node is a separate ' +
+    'machine (laptop, workstation, server) running an lm-assist worker behind this one ' +
+    'MCP connector. Trigger words: "which machine", "which host", "my other node", "the ' +
+    'server", "list nodes", "what hosts are connected". Also call this BEFORE targeting a ' +
+    'tool at a specific node via the `node` parameter, so you know the valid hostIds. ' +
+    'Returns each node\'s hostId, hostname, platform, and online status.\n\n' +
+    'This is about PHYSICAL HOSTS behind the connector — not Claude Code code sessions ' +
+    '(`list_recent_sessions`) and not claude.ai web conversations ' +
+    '(`list_claudeai_conversations`).',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {},
+  },
+};

@@ -24,6 +24,7 @@ import {
   isCwdAllowed,
   type McpToolResult,
 } from './_passthrough';
+import { handleListNodes } from './list-nodes';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -554,4 +555,6 @@ export const EXPANDED_HANDLERS: Record<
   terminal_interrupt: handleTerminalInterrupt,
   terminal_open_tab: handleTerminalOpenTab,
   delete_conversation: handleDeleteConversation,
+  // multi-node (worker-side fallback; hub answers the full list when connected)
+  list_nodes: async () => handleListNodes(),
 };

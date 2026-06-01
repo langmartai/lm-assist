@@ -876,6 +876,167 @@ export async function getOrgMcpBootstrap(opts: { orgUuid?: string } = {}): Promi
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// MCP remote-connector lifecycle (register / delete / list+status)
+//
+// claude.ai stores "custom connectors" as `mcp/remote_servers`. The web UI's
+// Add / Remove buttons hit these endpoints; we mirror them so a headless caller
+// can manage the lm-assist connector without driving a browser. Endpoint shapes
+// captured from real browser traffic:
+//   POST   /api/organizations/{org}/mcp/remote_servers          {url,name,custom_oauth_client_id?,custom_oauth_client_secret?,attestations:[]}
+//   DELETE /api/organizations/{org}/mcp/remote_servers/{uuid}
+//   GET    /api/organizations/{org}/mcp/v2/bootstrap            (auth status + tools; via getOrgMcpBootstrap)
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Shared header block for claude.ai mutating requests (same shape as deleteConversation). */
+function _mcpHeaders(cfg: ClaudeAISessionConfig, referer: string): Record<string, string> {
+  const id = deriveIdentity(cfg);
+  const headers: Record<string, string> = {
+    Host: 'claude.ai',
+    Connection: 'keep-alive',
+    'anthropic-client-platform': 'web_claude_ai',
+    'anthropic-client-version': '1.0.0',
+    'anthropic-client-sha': '8a753cbf88e19be0f5f67efefb1b07840b6402e9',
+    'content-type': 'application/json',
+    Accept: '*/*',
+    'User-Agent': cfg.userAgent ||
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+    Origin: 'https://claude.ai',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty',
+    Referer: referer,
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept-Language': 'en-US,en;q=0.9',
+    Cookie: cfg.cookie,
+  };
+  if (id.anonymousId) headers['anthropic-anonymous-id'] = id.anonymousId;
+  if (id.activitySessionId) headers['x-activity-session-id'] = id.activitySessionId;
+  if (id.deviceId) headers['anthropic-device-id'] = id.deviceId;
+  return headers;
+}
+
+/**
+ * POST /api/organizations/{org}/mcp/remote_servers — register an MCP connector.
+ *
+ * `customOauthClientId`/`Secret` are optional: pass them to pre-bind the
+ * connector to a specific OAuth client (so claude.ai skips its own DCR — the
+ * connector resolves to the bound user with no browser SSO bounce). Omit both
+ * for a plain connector that claude.ai will DCR + OAuth on Connect.
+ */
+export async function createMcpRemoteServer(opts: {
+  url: string;
+  name: string;
+  customOauthClientId?: string;
+  customOauthClientSecret?: string;
+  orgUuid?: string;
+}): Promise<ClaudeAIResponse<any>> {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!opts.url || !/^https?:\/\//.test(opts.url)) throw new Error(`Invalid url: ${opts.url}`);
+  if (!opts.name) throw new Error('name required');
+  const orgUuid = _org(opts);
+  const url = `https://claude.ai/api/organizations/${orgUuid}/mcp/remote_servers`;
+  const headers = _mcpHeaders(cfg, 'https://claude.ai/customize/connectors');
+  const payload: Record<string, unknown> = { url: opts.url, name: opts.name, attestations: [] };
+  if (opts.customOauthClientId) payload.custom_oauth_client_id = opts.customOauthClientId;
+  if (opts.customOauthClientSecret) payload.custom_oauth_client_secret = opts.customOauthClientSecret;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20_000);
+  try {
+    const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal: ctrl.signal });
+    const respHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => (respHeaders[k] = v));
+    const text = await res.text();
+    let parsed: any;
+    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+    return { status: res.status, statusText: res.statusText, headers: respHeaders, body: parsed };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** DELETE /api/organizations/{org}/mcp/remote_servers/{uuid} — remove a connector. */
+export async function deleteMcpRemoteServer(serverUuid: string, opts: { orgUuid?: string } = {}): Promise<ClaudeAIResponse<any>> {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(serverUuid)) {
+    throw new Error(`Invalid MCP server UUID: ${serverUuid}`);
+  }
+  const orgUuid = _org(opts);
+  const url = `https://claude.ai/api/organizations/${orgUuid}/mcp/remote_servers/${serverUuid}`;
+  const headers = _mcpHeaders(cfg, 'https://claude.ai/customize/connectors');
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15_000);
+  try {
+    const res = await fetch(url, { method: 'DELETE', headers, signal: ctrl.signal });
+    const respHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => (respHeaders[k] = v));
+    const text = await res.text();
+    let parsed: any;
+    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+    return { status: res.status, statusText: res.statusText, headers: respHeaders, body: parsed };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * List MCP connectors with status, distilled from the `mcp/v2/bootstrap` SSE.
+ *
+ * Returns one entry per registered connector: uuid, name, url, connected flag,
+ * authStatus (`authenticated` | `auth_required` | …), customOauthClientId, and
+ * the tool names claude.ai loaded (only present once connected). This is the
+ * "list + status" view a caller needs to decide whether to (re)connect.
+ */
+export async function listMcpRemoteServers(opts: { orgUuid?: string } = {}): Promise<ClaudeAIResponse<{
+  servers: Array<{
+    uuid: string;
+    name: string;
+    url: string;
+    connected: boolean;
+    authStatus: string | null;
+    customOauthClientId: string | null;
+    toolCount: number;
+    tools: string[];
+  }>;
+}>> {
+  const boot = await getOrgMcpBootstrap(opts);
+  const events: Array<{ type: string; data: any }> = boot.body?.events || [];
+
+  // server_base events carry status; tools events carry the per-server tool list.
+  const byUuid = new Map<string, any>();
+  const toolsByUuid = new Map<string, string[]>();
+  for (const e of events) {
+    if (e.type === 'server_base' && e.data?.uuid) {
+      byUuid.set(e.data.uuid, e.data);
+    } else if (e.type === 'tools' && e.data?.server_uuid) {
+      toolsByUuid.set(e.data.server_uuid, (e.data.tools || []).map((t: any) => t.name));
+    } else if (e.type === 'server_list' && Array.isArray(e.data?.servers)) {
+      // server_list is the lightweight roster — seed any server not yet seen.
+      for (const s of e.data.servers) if (s?.uuid && !byUuid.has(s.uuid)) byUuid.set(s.uuid, s);
+    }
+  }
+
+  const servers = Array.from(byUuid.values()).map((d: any) => {
+    const tools = toolsByUuid.get(d.uuid) || [];
+    return {
+      uuid: d.uuid,
+      name: d.name ?? '',
+      url: d.url ?? '',
+      connected: !!d.connected,
+      authStatus: d.authStatus ?? null,
+      customOauthClientId: d.custom_oauth_client_id ?? null,
+      toolCount: tools.length,
+      tools,
+    };
+  });
+
+  return { status: boot.status, statusText: boot.statusText, headers: boot.headers, body: { servers } };
+}
+
 /** GET /api/organizations/{org}/list_styles — chat styles. */
 export async function listOrgStyles(opts: { orgUuid?: string } = {}) {
   return claudeaiGet(`/api/organizations/${_org(opts)}/list_styles`, { referer: 'https://claude.ai/' });
