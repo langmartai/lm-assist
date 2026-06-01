@@ -364,6 +364,13 @@ export default function SettingsPage() {
     ? detectAppMode().baseUrl || `http://${window.location.hostname}:3100`
     : 'http://localhost:3100';
 
+  // Base URL for the worker's own REST routes (e.g. /mcp/access) reached from the
+  // settings UI. In proxy mode (cloud-routed /w/:machineId/assist/...), bare paths
+  // resolve to the platform origin and 404 — they must carry the proxy basePath so
+  // the web-proxy relays them to the worker (non-/api/tier-agent/ paths go straight
+  // to the machine). In local/hybrid mode this is just the local tier-agent URL.
+  const workerBaseUrl = proxy.isProxied ? proxy.basePath : tierAgentUrl;
+
   useEffect(() => { setMounted(true); }, []);
 
   // Fetch status (local mode only)
@@ -1672,7 +1679,7 @@ export default function SettingsPage() {
 
       {/* ──────────── Tab Content ──────────── */}
       <div style={{ maxWidth: 640 }}>
-        {activeTab === 'mcp' && <McpAccessTab baseUrl={tierAgentUrl} />}
+        {activeTab === 'mcp' && <McpAccessTab baseUrl={workerBaseUrl} />}
 
         {/* ═══════════════ CONNECTION TAB ═══════════════ */}
         {activeTab === 'connection' && (
