@@ -9,8 +9,8 @@ GET  /github                 → { ok, data: { actions: [...] } }   (list availa
 POST /github/<action>        body = action params → { ok, backend, data } | { ok:false, error }
 ```
 
-`<action>` ∈ `auth/status accounts/list whoami repo/get pr/list pr/create pr/close issue/create
-issue/close branch/delete file/put git/clone git/commit-push gh api`.
+`<action>` ∈ `auth/status accounts/list whoami repo/get repo/list pr/list pr/create pr/close
+issue/create issue/close branch/delete file/put fork git/clone git/commit-push gh api`.
 
 ## Multiple accounts
 
@@ -42,6 +42,24 @@ account-scoped writes use a per-account token (api or git https-token), not `acc
 Routing: actions prefer `api` when a token is present, fall back to `gh`; `git/*` actions use the git
 backend (token-https, or `ssh:true` for SSH keys). Each response reports the `backend` that served it.
 
+## Repos, forks, and directory-aware git
+
+- `repo/list` — repos. No `owner` → the **account's own** repos (`/user/repos`, includes private;
+  optional `visibility` all|public|private). With `owner` → that user/org's repos
+  (`/users/{owner}/repos`). Optional `sort` (default `pushed`), `per_page`, `page`. Returns a compact
+  list (`full_name, private, default_branch, pushed_at, html_url`) so responses stay small.
+- `fork` — `POST /repos/{owner}/{repo}/forks` (optional `organization` to fork into an org). GitHub
+  forks are asynchronous: the call returns before the fork is fully ready.
+- **Directory-aware git** — `git/clone` and `git/commit-push` accept an optional `dir` that targets a
+  **real directory** instead of the default managed scratch dir (`~/.lm-assist/github-workdirs/{owner}/{repo}`,
+  which is shallow and wiped+re-cloned each call). A `dir` is gated by the **shared lm-assist allowlist**
+  (`/home/ubuntu/*`, the same gate `agent_execute` uses — `core/src/utils/cwd-allowlist.ts`). Safety:
+  - only the managed scratch dir is ever wiped; a caller `dir` is **never clobbered**;
+  - `git/clone dir=…` refuses a non-empty directory (`DIR_NOT_EMPTY`); `depth` controls shallowness (0 = full);
+  - `git/commit-push dir=…` requires an existing `.git` checkout (`NOT_A_REPO`) and operates **in place**
+    (writes `files`, optional `branch` via `checkout -b` falling back to `checkout`, commit, push HEAD/branch);
+  - a `dir` outside the allowlist → `FORBIDDEN_DIR`.
+
 ## Credential safety (enforced)
 
 - The token is resolved + injected **inside the service** and is **never logged or returned**.
@@ -65,14 +83,34 @@ backend (token-https, or `ssh:true` for SSH keys). Each response reports the `ba
 `AUTH_MISSING` (401) · `AUTH_INVALID` (401) · `FORBIDDEN` (403, scope/permission) · `NOT_FOUND` (404) ·
 `RATE_LIMITED` (429) · `CONFLICT` · `GONE` (410) · `VALIDATION` (422) · `PUSH_REJECTED` ·
 `BACKEND_UNAVAILABLE` (503) · `NETWORK` · `SERVER` · `COMMIT_FAILED` · `FORBIDDEN_PASSTHROUGH` ·
-`UNKNOWN_ACTION`. No throw escapes the handler.
+`FORBIDDEN_DIR` · `DIR_NOT_EMPTY` · `NOT_A_REPO` · `UNKNOWN_ACTION`. No throw escapes the handler.
+
+## MCP tools (`github_query` / `github_mutate`)
+
+The endpoint is exposed over MCP as two scope-classified tools (lm-assist's expanded-catalog framework —
+def in `EXPANDED_TOOL_DEFS`, scope in `TOOL_SCOPES`, handler in `EXPANDED_HANDLERS`; both the
+StreamableHTTP `/mcp` and stdio `/mcp-call` transports advertise + dispatch them). Each handler POSTs to
+`/github/<action>` on loopback (`workerPostRaw`), so every guarantee above — multi-account, fail-closed,
+deep-redaction, dir allowlist — applies unchanged.
+
+- **`github_query`** (scope `read`, auto-approved): `auth/status`, `accounts/list`, `whoami`, `repo/get`,
+  `repo/list`, `pr/list`. Params: `account, owner, repo, state, visibility, sort, per_page`.
+- **`github_mutate`** (scope `write`, per-call approval): `pr/create`, `pr/close`, `issue/create`,
+  `issue/close`, `branch/delete`, `file/put`, `fork`, `git/clone`, `git/commit-push`. Params:
+  `account, owner, repo, branch, title, body, head, base, number, path, content, message, files[],
+  ssh, organization, dir, depth`.
+
+The raw `gh` / `api` passthrough actions are **not** exposed over MCP (HTTP endpoint only). Files:
+`core/src/mcp-server/tools/github.ts`, wired in `tools/expanded.ts`, scopes in `configure.ts`.
 
 ## Files
 
 - `core/src/github/github-service.ts` — resolver + 3 backend adapters + workdir manager + actions.
 - `core/src/routes/core/github.routes.ts` — the route (registered in `routes/core/index.ts`).
-- Compiles clean (`tsc` exit 0). **LIVE on 117 `:3100`** (and on Windows when lm-assist is started — dist
-  patched, core left stopped). Multi-account source committed on branch `feat/github-multi-account` (2ac7b1e).
+- Compiles clean (`tsc` exit 0). **LIVE on 117 + 123 `:3100`** (and on Windows when lm-assist is started —
+  dist patched, core left stopped). All of this (multi-account, credential hardening, MCP tools, repo/list +
+  fork + dir-aware git) is merged to `origin/main` and tracked under CHANGELOG `[Unreleased]` — **not yet
+  npm-published**, so the live installed dists stay patched until a release is cut.
 
 ## Validated (cross-host, 2026-06-02)
 
