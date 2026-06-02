@@ -25,6 +25,7 @@ import {
   type McpToolResult,
 } from './_passthrough';
 import { handleListNodes } from './list-nodes';
+import { GITHUB_TOOL_DEFS, GITHUB_HANDLERS } from './github';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -314,6 +315,8 @@ export const EXPANDED_TOOL_DEFS = [
   terminalInterruptToolDef,
   terminalOpenTabToolDef,
   deleteConversationToolDef,
+  // github (read: github_query, write: github_mutate)
+  ...GITHUB_TOOL_DEFS,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -557,4 +560,6 @@ export const EXPANDED_HANDLERS: Record<
   delete_conversation: handleDeleteConversation,
   // multi-node (worker-side fallback; hub answers the full list when connected)
   list_nodes: async () => handleListNodes(),
+  // github (read: github_query, write: github_mutate) — dispatch to /github/<action>
+  ...GITHUB_HANDLERS,
 };

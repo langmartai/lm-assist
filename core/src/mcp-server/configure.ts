@@ -151,6 +151,9 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   delete_conversation: 'admin',
   // multi-node
   list_nodes: 'read',
+  // github endpoint (read = query, write = mutate)
+  github_query: 'read',
+  github_mutate: 'write',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */
