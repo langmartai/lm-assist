@@ -1,8 +1,8 @@
 // @ts-nocheck
 // core/src/github/github-service.ts
-// Multi-backend GitHub action service (api / gh / git) for lm-assist.
-// CREDENTIAL-SAFE: the token is resolved + injected INTERNALLY and is NEVER logged or returned.
-// Debug logs (stderr) carry only non-secret info (presence, source, masked length).
+// Multi-backend, MULTI-ACCOUNT GitHub action service (api / gh / git) for lm-assist.
+// CREDENTIAL-SAFE: tokens are resolved + injected INTERNALLY and are NEVER logged or returned.
+// Debug logs (stderr) carry only non-secret info (account, presence, source, masked length).
 import { spawn } from 'node:child_process';
 import { readFile, mkdir, writeFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -12,6 +12,7 @@ import * as path from 'node:path';
 const GH_API = 'https://api.github.com';
 const log = (...a: any[]) => console.error('[gh-svc]', ...a);
 const mask = (t: any) => (t ? `present(len=${t.length})` : 'absent');
+const envSuffix = (acct: any) => String(acct).toUpperCase().replace(/[^A-Z0-9]/g, '_');
 
 function exec(cmd: string, args: string[], { env, cwd, input, timeout = 90000 }: any = {}): Promise<any> {
   return new Promise((resolve) => {
@@ -28,23 +29,111 @@ function exec(cmd: string, args: string[], { env, cwd, input, timeout = 90000 }:
   });
 }
 
-async function resolveToken() {
-  for (const k of ['LM_ASSIST_GITHUB_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN'])
-    if (process.env[k]) return { token: process.env[k], source: `env:${k}` };
-  const f = path.join(os.homedir(), '.lm-assist', 'github-token');
-  if (existsSync(f)) { const t = (await readFile(f, 'utf8')).trim(); if (t) return { token: t, source: 'file:~/.lm-assist/github-token' }; }
-  const g = await exec('gh', ['auth', 'token']);
-  if (g.code === 0 && g.out.trim()) return { token: g.out.trim(), source: 'gh:auth-token' };
-  const hy = path.join(os.homedir(), '.config', 'gh', 'hosts.yml');
-  if (existsSync(hy)) { const m = (await readFile(hy, 'utf8')).match(/oauth_token:\s*(\S+)/); if (m) return { token: m[1], source: 'gh:hosts.yml' }; }
-  return { token: null, source: null };
+// ---- accounts config file (~/.lm-assist/github-accounts.json), never logged ----
+async function readAccountsFile(): Promise<{ map: Record<string, any>, default: string | null }> {
+  const f = path.join(os.homedir(), '.lm-assist', 'github-accounts.json');
+  if (!existsSync(f)) return { map: {}, default: null };
+  try {
+    const j: any = JSON.parse(await readFile(f, 'utf8'));
+    const raw = j.accounts && typeof j.accounts === 'object' ? j.accounts : j;
+    const map: Record<string, any> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (k === 'accounts' || k === 'default') continue;
+      map[k] = typeof v === 'string' ? { token: v } : (v || {});
+    }
+    return { map, default: j.default || null };
+  } catch (e: any) { log(`accounts-file parse error: ${String(e.message || e)}`); return { map: {}, default: null }; }
+}
+function findAcct(map: Record<string, any>, account: string) {
+  if (map[account]) return { name: account, cfg: map[account] };
+  const lc = String(account).toLowerCase();
+  for (const k of Object.keys(map)) if (k.toLowerCase() === lc) return { name: k, cfg: map[k] };
+  return null;
 }
 
-async function which(bin: string) { return (await exec('bash', ['-lc', `command -v ${bin} || true`])).out.trim(); }
+// ---- gh hosts.yml parse (both formats), token values stay in-process ----
+async function readHostsYml(): Promise<{ users: Record<string, string | null>, active: string | null, top: any }> {
+  const hy = path.join(os.homedir(), '.config', 'gh', 'hosts.yml');
+  const win = process.env.APPDATA ? path.join(process.env.APPDATA, 'GitHub CLI', 'hosts.yml') : null;
+  const file = existsSync(hy) ? hy : (win && existsSync(win) ? win : null);
+  if (!file) return { users: {}, active: null, top: null };
+  const txt = await readFile(file, 'utf8');
+  const users: Record<string, string | null> = {};
+  const um = txt.match(/^\s*users:\s*$([\s\S]*?)(?=^\S|\Z)/m);
+  if (um) {
+    const re = /^( {4,8})([A-Za-z0-9-]+):\s*$([\s\S]*?)(?=^\1\S|^ {0,4}\S|\Z)/gm;
+    let m: any; while ((m = re.exec(um[1])) !== null) {
+      const name = m[2]; const tm = m[3].match(/oauth_token:\s*(\S+)/);
+      users[name] = tm ? tm[1] : null;
+    }
+  }
+  const topTok = txt.match(/^\s{2,4}oauth_token:\s*(\S+)/m);
+  const topUser = txt.match(/^\s{2,4}user:\s*(\S+)/m);
+  const active = topUser ? topUser[1] : ((txt.match(/^\s*user:\s*(\S+)/m) || [])[1] || null);
+  return { users, active, top: topTok ? { user: topUser ? topUser[1] : active, token: topTok[1] } : null };
+}
 
-export async function probeBackends() {
-  const { token, source } = await resolveToken();
-  const api = { available: !!token, source: token ? source : null, reason: token ? null : 'no_token_source' };
+// ---- token resolver: account-aware, multi-source, never logs the value ----
+async function resolveToken(account?: string): Promise<any> {
+  if (account) {
+    const ev = process.env[`LM_ASSIST_GITHUB_TOKEN_${envSuffix(account)}`];
+    if (ev) return { token: ev, source: `env:LM_ASSIST_GITHUB_TOKEN_${envSuffix(account)}`, account };
+    const { map } = await readAccountsFile();
+    const hit = findAcct(map, account);
+    if (hit && hit.cfg.token) return { token: hit.cfg.token, source: 'file:github-accounts.json', account: hit.name, cfg: hit.cfg };
+    const g = await exec('gh', ['auth', 'token', '--user', account]);
+    if (g.code === 0 && g.out.trim()) return { token: g.out.trim(), source: 'gh:auth-token --user', account };
+    const hy = await readHostsYml();
+    if (hy.users[account]) return { token: hy.users[account], source: 'gh:hosts.yml users', account };
+    const lc = account.toLowerCase();
+    for (const [k, v] of Object.entries(hy.users)) if (k.toLowerCase() === lc && v) return { token: v, source: 'gh:hosts.yml users', account: k };
+    if (hy.top && hy.top.user && String(hy.top.user).toLowerCase() === lc) return { token: hy.top.token, source: 'gh:hosts.yml', account: hy.top.user };
+    return { token: null, source: null, account, reason: 'account_not_resolved' };
+  }
+  for (const k of ['LM_ASSIST_GITHUB_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN'])
+    if (process.env[k]) return { token: process.env[k], source: `env:${k}`, account: null };
+  const f = path.join(os.homedir(), '.lm-assist', 'github-token');
+  if (existsSync(f)) { const t = (await readFile(f, 'utf8')).trim(); if (t) return { token: t, source: 'file:~/.lm-assist/github-token', account: null }; }
+  const g = await exec('gh', ['auth', 'token']);
+  if (g.code === 0 && g.out.trim()) return { token: g.out.trim(), source: 'gh:auth-token', account: null };
+  const hy = await readHostsYml();
+  if (hy.top && hy.top.token) return { token: hy.top.token, source: 'gh:hosts.yml', account: hy.top.user };
+  for (const [k, v] of Object.entries(hy.users)) if (v) return { token: v, source: 'gh:hosts.yml users', account: k };
+  return { token: null, source: null, account: null };
+}
+
+// ---- enumerate available accounts (NO tokens ever) ----
+export async function listAccounts(): Promise<any> {
+  const accounts: Record<string, any> = {};
+  const add = (name: string, src: string) => { if (!name) return; (accounts[name] ||= { account: name, sources: [] }); if (!accounts[name].sources.includes(src)) accounts[name].sources.push(src); };
+  for (const k of Object.keys(process.env)) { const m = k.match(/^LM_ASSIST_GITHUB_TOKEN_(.+)$/); if (m) add(m[1], 'env'); }
+  const { map, default: fileDefault } = await readAccountsFile();
+  for (const k of Object.keys(map)) add(k, 'file');
+  let ghActive: string | null = null;
+  const st = await exec('gh', ['auth', 'status']);
+  if (st.code === 0 || st.out || st.err) {
+    const text = (st.out || '') + '\n' + (st.err || '');
+    let last: string | null = null;
+    for (const ln of text.split('\n')) {
+      const m = ln.match(/(?:account|as) ([A-Za-z0-9][A-Za-z0-9-]*)/);
+      if (m) { last = m[1]; add(last, 'gh'); }
+      if (/Active account:\s*true/i.test(ln) && last) ghActive = last;
+    }
+    if (!ghActive && last) ghActive = last;
+  }
+  const hy = await readHostsYml();
+  for (const k of Object.keys(hy.users)) add(k, 'hosts.yml');
+  if (hy.top && hy.top.user) add(hy.top.user, 'hosts.yml');
+  const activeDefault = fileDefault || ghActive || hy.active || null;
+  const list = Object.values(accounts).map((a: any) => ({ ...a, active: a.account === activeDefault }));
+  return { accounts: list, default: activeDefault };
+}
+
+async function which(bin: string) { return (await exec('bash', ['-lc', `command -v ${bin} || true`])).out.trim() || (await exec(process.platform === 'win32' ? 'where' : 'which', [bin])).out.trim(); }
+
+export async function probeBackends(account?: string) {
+  const { token, source, account: acct } = await resolveToken(account);
+  const api = { available: !!token, source: token ? source : null, reason: token ? null : (account ? 'account_not_resolved' : 'no_token_source') };
   let gh: any = { available: false, reason: 'not_installed' };
   if (await which('gh')) { const st = await exec('gh', ['auth', 'status']); gh = st.code === 0 ? { available: true, reason: null } : { available: false, reason: 'not_authenticated' }; }
   let git: any = { available: false, reason: 'not_installed' };
@@ -54,7 +143,7 @@ export async function probeBackends() {
     const id = (await exec('bash', ['-lc', 'git config --global user.email || true'])).out.trim();
     git = { available: true, auth: token ? 'https-token' : (hasSsh ? 'ssh' : 'none'), hasIdentity: !!id, reason: (token || hasSsh) ? null : 'no_git_credential' };
   }
-  return { tokenPresent: !!token, tokenSource: source, api, gh, git };
+  return { account: acct || account || null, tokenPresent: !!token, tokenSource: source, api, gh, git };
 }
 
 function classifyHttp(status: number, body: string) {
@@ -62,6 +151,7 @@ function classifyHttp(status: number, body: string) {
   if (status === 403) return /rate limit/i.test(body) ? { code: 'RATE_LIMITED', message: 'rate limited' } : { code: 'FORBIDDEN', message: 'forbidden (scope/permission/installation)' };
   if (status === 404) return { code: 'NOT_FOUND', message: 'not found (repo missing or no access)' };
   if (status === 409) return { code: 'CONFLICT', message: 'conflict' };
+  if (status === 410) return { code: 'GONE', message: 'gone (feature disabled on repo)' };
   if (status === 422) return { code: 'VALIDATION', message: 'validation failed' };
   if (status >= 500) return { code: 'SERVER', message: `github ${status}` };
   return { code: 'HTTP', message: `http ${status}` };
@@ -96,20 +186,20 @@ async function ghCall(args: string[], token: any) {
 
 const WORKDIR_ROOT = path.join(os.homedir(), '.lm-assist', 'github-workdirs');
 function httpsHeaderEnv(token: string) { return { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader', GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from('x-access-token:' + token).toString('base64')}` }; }
-async function gitClone(owner: string, repo: string, token: any, { ssh = false }: any = {}) {
+async function gitClone(owner: string, repo: string, token: any, { ssh = false, sshHost = 'github.com' }: any = {}) {
   if (!(await which('git'))) return { ok: false, error: { code: 'BACKEND_UNAVAILABLE', message: 'git not installed', backend: 'git' } };
   const dir = path.join(WORKDIR_ROOT, owner, repo);
   await rm(dir, { recursive: true, force: true }); await mkdir(path.dirname(dir), { recursive: true });
   let url: string, env: any = {};
-  if (ssh) url = `git@github.com:${owner}/${repo}.git`;
+  if (ssh) url = `git@${sshHost}:${owner}/${repo}.git`;
   else if (token) { url = `https://github.com/${owner}/${repo}.git`; env = httpsHeaderEnv(token); }
   else return { ok: false, error: { code: 'AUTH_MISSING', message: 'no token/ssh for git clone', backend: 'git' } };
   const r = await exec('git', ['clone', '--depth', '1', url, dir], { env });
   if (r.code !== 0) { let code = 'GIT_ERROR'; if (/Authentication failed|403|denied/i.test(r.err)) code = 'AUTH_INVALID'; else if (/not found|Repository not found/i.test(r.err)) code = 'NOT_FOUND'; return { ok: false, error: { code, message: r.err.trim().slice(0, 300), backend: 'git' } }; }
   return { ok: true, backend: 'git', data: { dir } };
 }
-async function gitCommitPush(owner: string, repo: string, token: any, { branch, files, message, ssh = false, name = 'lm-assist', email = 'lm-assist@local' }: any) {
-  const cl: any = await gitClone(owner, repo, token, { ssh }); if (!cl.ok) return cl;
+async function gitCommitPush(owner: string, repo: string, token: any, { branch, files, message, ssh = false, sshHost = 'github.com', name = 'lm-assist', email = 'lm-assist@local' }: any) {
+  const cl: any = await gitClone(owner, repo, token, { ssh, sshHost }); if (!cl.ok) return cl;
   const dir = cl.data.dir; const env = ssh ? {} : httpsHeaderEnv(token);
   await exec('git', ['config', 'user.name', name], { cwd: dir });
   await exec('git', ['config', 'user.email', email], { cwd: dir });
@@ -123,29 +213,58 @@ async function gitCommitPush(owner: string, repo: string, token: any, { branch, 
   return { ok: true, backend: 'git', data: { branch, pushed: true } };
 }
 
+// Defense-in-depth: scrub any credential-shaped value (or known secret-bearing key) from EVERY
+// response, so the endpoint can never emit a token even if a backend or GitHub field leaks one.
+const SECRET_KEY_RE = /^(temp_clone_token|clone_token|oauth_token|access_token|refresh_token|client_secret|authorization|token)$/i;
+const TOKENISH_RE = /(gh[oprsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g;
+export function redactDeep(v: any): any {
+  if (v == null) return v;
+  if (typeof v === 'string') return v.replace(TOKENISH_RE, '<REDACTED>');
+  if (Array.isArray(v)) return v.map(redactDeep);
+  if (typeof v === 'object') {
+    const o: any = {};
+    for (const [k, val] of Object.entries(v)) o[k] = SECRET_KEY_RE.test(k) ? '<REDACTED>' : redactDeep(val);
+    return o;
+  }
+  return v;
+}
+
 const ACTIONS: Record<string, (p: any, t: any) => Promise<any>> = {
-  'auth/status': async () => ({ ok: true, data: await probeBackends() }),
-  whoami: async (_p, t) => (t.token ? apiCall('GET', '/user', null, t.token) : ghCall(['api', 'user'], null)),
-  'repo/get': async ({ owner, repo }, t) => (t.token ? apiCall('GET', `/repos/${owner}/${repo}`, null, t.token) : ghCall(['api', `repos/${owner}/${repo}`], null)),
-  'pr/list': async ({ owner, repo, state = 'open' }, t) => (t.token ? apiCall('GET', `/repos/${owner}/${repo}/pulls?state=${state}`, null, t.token) : ghCall(['pr', 'list', '-R', `${owner}/${repo}`, '--json', 'number,title,state'], null)),
-  'issue/create': async ({ owner, repo, title, body }, t) => (t.token ? apiCall('POST', `/repos/${owner}/${repo}/issues`, { title, body }, t.token) : ghCall(['issue', 'create', '-R', `${owner}/${repo}`, '-t', title, '-b', body || ''], null)),
+  'auth/status': async (p) => ({ ok: true, data: await probeBackends(p.account) }),
+  'accounts/list': async () => ({ ok: true, data: await listAccounts() }),
+  whoami: async (_p, t) => (t.token ? apiCall('GET', '/user', null, t.token) : ghCall(['api', 'user'], t.token)),
+  'repo/get': async ({ owner, repo }, t) => (t.token ? apiCall('GET', `/repos/${owner}/${repo}`, null, t.token) : ghCall(['api', `repos/${owner}/${repo}`], t.token)),
+  'pr/list': async ({ owner, repo, state = 'open' }, t) => (t.token ? apiCall('GET', `/repos/${owner}/${repo}/pulls?state=${state}`, null, t.token) : ghCall(['pr', 'list', '-R', `${owner}/${repo}`, '--json', 'number,title,state'], t.token)),
+  'issue/create': async ({ owner, repo, title, body }, t) => (t.token ? apiCall('POST', `/repos/${owner}/${repo}/issues`, { title, body }, t.token) : ghCall(['issue', 'create', '-R', `${owner}/${repo}`, '-t', title, '-b', body || ''], t.token)),
   'issue/close': async ({ owner, repo, number }, t) => apiCall('PATCH', `/repos/${owner}/${repo}/issues/${number}`, { state: 'closed' }, t.token),
-  'pr/create': async ({ owner, repo, title, head, base = 'main', body }, t) => (t.token ? apiCall('POST', `/repos/${owner}/${repo}/pulls`, { title, head, base, body }, t.token) : ghCall(['pr', 'create', '-R', `${owner}/${repo}`, '-t', title, '-B', base, '-H', head, '-b', body || ''], null)),
+  'pr/create': async ({ owner, repo, title, head, base = 'main', body }, t) => (t.token ? apiCall('POST', `/repos/${owner}/${repo}/pulls`, { title, head, base, body }, t.token) : ghCall(['pr', 'create', '-R', `${owner}/${repo}`, '-t', title, '-B', base, '-H', head, '-b', body || ''], t.token)),
   'pr/close': async ({ owner, repo, number }, t) => apiCall('PATCH', `/repos/${owner}/${repo}/pulls/${number}`, { state: 'closed' }, t.token),
   'branch/delete': async ({ owner, repo, branch }, t) => apiCall('DELETE', `/repos/${owner}/${repo}/git/refs/heads/${branch}`, null, t.token),
   'file/put': async ({ owner, repo, path: fp, content, message, branch }, t) => apiCall('PUT', `/repos/${owner}/${repo}/contents/${fp}`, { message, content: Buffer.from(content).toString('base64'), branch }, t.token),
-  'git/clone': async ({ owner, repo, ssh }, t) => gitClone(owner, repo, t.token, { ssh }),
+  'git/clone': async ({ owner, repo, ssh, sshHost }, t) => gitClone(owner, repo, t.token, { ssh, sshHost }),
   'git/commit-push': async (p, t) => gitCommitPush(p.owner, p.repo, t.token, p),
-  gh: async ({ args }, t) => ghCall(args, t.token),
+  gh: async ({ args }, t) => {
+    const a = (args || []).map(String);
+    // the gh passthrough must never be usable to READ a credential out of the host
+    if (a[0] === 'auth' || (a[0] === 'config' && a[1] === 'get' && a.join(' ').toLowerCase().includes('token'))) {
+      return { ok: false, error: { code: 'FORBIDDEN_PASSTHROUGH', message: 'gh passthrough may not read credentials (gh auth / config-get token are blocked)', backend: 'gh' } };
+    }
+    return ghCall(a, t.token);
+  },
   api: async ({ method = 'GET', path: ap, body }, t) => apiCall(method, ap, body, t.token),
 };
 
 export async function runAction(action: string, params: any = {}) {
   const fn = ACTIONS[action];
   if (!fn) return { ok: false, error: { code: 'UNKNOWN_ACTION', message: `no action ${action}` } };
-  const t = await resolveToken();
-  log(`action=${action} token=${mask(t.token)} source=${t.source || 'none'}`);
-  try { return await fn(params, t); } catch (e: any) { return { ok: false, error: { code: 'INTERNAL', message: String(e.message || e) } }; }
+  const t = await resolveToken(params.account);
+  log(`action=${action} account=${t.account || params.account || 'default'} token=${mask(t.token)} source=${t.source || 'none'}`);
+  // multi-account safety: an explicitly requested account that can't be resolved must NOT silently
+  // fall back to ambient gh/SSH auth (which would act as a DIFFERENT account). Fail closed instead.
+  if (params.account && !t.token && action !== 'auth/status' && action !== 'accounts/list') {
+    return { ok: false, error: { code: 'AUTH_MISSING', message: `account "${params.account}" not resolved on this host (no env/file/gh/hosts.yml credential)`, backend: 'api', account: params.account } };
+  }
+  try { const r = await fn(params, t); return redactDeep(r); } catch (e: any) { return { ok: false, error: { code: 'INTERNAL', message: String(e.message || e) } }; }
 }
 
 export const GITHUB_ACTIONS = Object.keys(ACTIONS);

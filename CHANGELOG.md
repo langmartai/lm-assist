@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### GitHub endpoint — multi-account + credential-exposure hardening (2026-06-03)
+
+The `/github/*` action endpoint (api/gh/git backends) gained multi-account support and a hard guarantee
+that no credential can leave the endpoint.
+
+- **Multiple accounts.** Every action takes an optional `"account": "<login>"`; new `accounts/list`
+  enumerates the accounts available on the host (names + sources, never tokens). Per-account resolver
+  (first hit wins, portable across gh versions): env `LM_ASSIST_GITHUB_TOKEN_<ACCOUNT>` →
+  `~/.lm-assist/github-accounts.json` → `gh auth token --user <account>` (modern gh) → `hosts.yml`
+  (new multi-user `users:` block or old single-user `user:`). `auth/status` takes an optional `account`.
+- **Fail-closed.** A requested account with no resolvable credential returns `AUTH_MISSING` — it never
+  silently falls back to the host's ambient gh/SSH auth (which would act as a *different* account).
+- **No credential leaves the endpoint.** `runAction` deep-redacts every response (HTTP endpoint + CLI):
+  token-shaped values (`gh*_…`, `github_pat_…`) and secret-bearing keys (`temp_clone_token`,
+  `oauth_token`, `access_token`, `refresh_token`, `client_secret`, `authorization`, `token`) become
+  `<REDACTED>`. The `gh` passthrough is blocked from *reading* credentials (`gh auth …` /
+  `gh config get … token` → `FORBIDDEN_PASSTHROUGH`). Tokens are used only to authenticate inside the service.
+
+**Verified end-to-end** on two hosts: Windows (gh keyring with two accounts → distinct identities +
+private-repo access differentiation) and 117 (single-account `hosts.yml` + a second account supplied via
+`github-accounts.json`). `gh auth token` blocked, GitHub's `temp_clone_token` redacted, zero token-shaped
+strings in any response, core logs show only `token=present(len=N)`.
+
+Files: `core/src/github/github-service.ts`, `core/src/routes/core/github.routes.ts` (registered in
+`routes/core/index.ts`). Full reference: `docs/github-routes.md`.
+
 ### MCP server — single source of truth for both transports (2026-05-28)
 
 lm-assist's MCP server is exposed via two transports: **stdio** (spawned by Claude Code / Claude Desktop as a subprocess; forwards each tool call over HTTP to the running core API) and **StreamableHTTP** (`POST /mcp` on the core API itself; runs tool handlers in-process). Until now, the MCP protocol wiring — the tool list, the `ListToolsRequestSchema` registration, the `CallToolRequestSchema` switch + try/catch + `logToolCall` plumbing — was duplicated in both transport entry files. Adding or modifying a tool meant editing two places.
