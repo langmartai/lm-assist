@@ -16,7 +16,8 @@ export type TerminalErrorCode =
   | 'TIMEOUT'
   | 'TMUX_ERROR'
   | 'SPAWN_FAILED'
-  | 'REGISTRY_ERROR';
+  | 'REGISTRY_ERROR'
+  | 'CONFLICT';
 
 export class TerminalError extends Error {
   readonly code: TerminalErrorCode;
@@ -39,6 +40,7 @@ export function httpStatusFor(code: TerminalErrorCode): number {
   switch (code) {
     case 'INVALID_INPUT': return 400;
     case 'PRECONDITION_FAILED': return 409;
+    case 'CONFLICT': return 409;
     case 'SESSION_NOT_FOUND': return 404;
     case 'PLATFORM_UNSUPPORTED': return 501;
     case 'TMUX_NOT_INSTALLED': return 503;
