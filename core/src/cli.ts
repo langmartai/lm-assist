@@ -47,6 +47,11 @@ function getArg(names: string[], defaultValue?: string): string | undefined {
 const projectPath = getArg(['--project', '-d'], os.homedir())!;
 const port = parseInt(getArg(['--port', '-p'], process.env.API_PORT || DEFAULT_API_PORT)!);
 const host = getArg(['--host', '-h'], '0.0.0.0')!;
+// Extra CA bundle for outbound TLS from spawned helpers (e.g. CCR scripts behind an
+// MITM proxy). Honors --extra-ca or the LM_ASSIST_EXTRA_CA env; exported so child
+// processes inherit it as NODE_EXTRA_CA_CERTS when one isn't already set.
+const extraCa = getArg(['--extra-ca'], process.env.LM_ASSIST_EXTRA_CA);
+if (extraCa) process.env.LM_ASSIST_EXTRA_CA = extraCa;
 
 async function main() {
   switch (command) {
@@ -213,6 +218,8 @@ Options:
   --port, -p        Server port (default: ${DEFAULT_API_PORT} — ${IS_DEV_REPO ? 'dev repo' : 'npm package'})
   --host, -h        Server host (default: 0.0.0.0)
   --project, -d     Project directory (default: current)
+  --extra-ca        Extra CA cert path for outbound TLS from spawned helpers
+                    (or set LM_ASSIST_EXTRA_CA); used behind an MITM proxy
 
 Examples:
   lm-assist serve --port 8080
