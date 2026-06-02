@@ -23,9 +23,10 @@
 
 import { ok, err, workerPostRaw, type McpToolResult } from './_passthrough';
 
-const READ_ACTIONS = ['auth/status', 'accounts/list', 'whoami', 'repo/get', 'pr/list'] as const;
+const READ_ACTIONS = ['auth/status', 'accounts/list', 'whoami', 'repo/get', 'repo/list', 'pr/list'] as const;
 const WRITE_ACTIONS = [
-  'pr/create', 'pr/close', 'issue/create', 'issue/close', 'branch/delete', 'file/put', 'git/commit-push',
+  'pr/create', 'pr/close', 'issue/create', 'issue/close', 'branch/delete', 'file/put',
+  'fork', 'git/clone', 'git/commit-push',
 ] as const;
 
 function pretty(data: unknown): string {
@@ -70,9 +71,10 @@ export const githubQueryToolDef = {
     'account", "list my PRs", "repo info", "github accounts". `action` selects the operation: ' +
     '`accounts/list` (which GitHub accounts this host can act as — names + sources, never tokens), ' +
     '`auth/status` (per-backend availability, optional `account`), `whoami` (the authenticated ' +
-    'login), `repo/get` (repo metadata; needs owner+repo), `pr/list` (open PRs; needs owner+repo). ' +
-    'Pass `account="<login>"` to act as a specific account; if that account has no credential on ' +
-    'this host the call fails closed (AUTH_MISSING) rather than acting as someone else. Read-only.',
+    'login), `repo/get` (repo metadata; needs owner+repo), `repo/list` (repos — no owner = the ' +
+    'account\'s own repos incl. private; with owner = that user/org\'s repos), `pr/list` (open PRs; ' +
+    'needs owner+repo). Pass `account="<login>"` to act as a specific account; if that account has no ' +
+    'credential on this host the call fails closed (AUTH_MISSING) rather than acting as someone else. Read-only.',
   annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,
@@ -83,9 +85,12 @@ export const githubQueryToolDef = {
         description: 'Which read operation to run.',
       },
       account: { type: 'string', description: 'GitHub login to act as (optional; default = host default credential).' },
-      owner: { type: 'string', description: 'Repo owner (for repo/get, pr/list).' },
+      owner: { type: 'string', description: 'Repo owner (repo/get, pr/list; repo/list: a user/org to list).' },
       repo: { type: 'string', description: 'Repo name (for repo/get, pr/list).' },
       state: { type: 'string', description: 'pr/list state filter: open | closed | all (default open).' },
+      visibility: { type: 'string', description: 'repo/list (own repos): all | public | private.' },
+      sort: { type: 'string', description: 'repo/list sort: created | updated | pushed | full_name (default pushed).' },
+      per_page: { type: 'number', description: 'repo/list page size (default 30, max 100).' },
     },
     required: ['action'],
   },
@@ -97,11 +102,14 @@ export const githubMutateToolDef = {
     'Mutating GitHub operations, multi-account aware. WRITE — prompts for approval on every call. ' +
     '`action`: `pr/create` (owner,repo,title,head,base,body), `pr/close` (owner,repo,number), ' +
     '`issue/create` (owner,repo,title,body), `issue/close` (owner,repo,number), `branch/delete` ' +
-    '(owner,repo,branch), `file/put` (owner,repo,path,content,message,branch), `git/commit-push` ' +
+    '(owner,repo,branch), `file/put` (owner,repo,path,content,message,branch), `fork` ' +
+    '(owner,repo,organization?), `git/clone` (owner,repo,dir?,depth?,ssh?), `git/commit-push` ' +
     '(owner,repo,branch,message,files[]; set ssh=true to push with the host SSH key instead of a ' +
-    'token). Pass `account="<login>"` to act as a specific account — a credential for it must exist ' +
-    'on the host (else AUTH_MISSING). API writes need a write-scoped token for that account; the ' +
-    'git backend can push over SSH. No credential is ever returned.',
+    'token). `dir` (git/clone, git/commit-push) targets a real directory and is gated by the ' +
+    'lm-assist allowlist (/home/ubuntu/*) — clone refuses a non-empty dir; commit-push operates in ' +
+    'place on an existing checkout there. Pass `account="<login>"` to act as a specific account — a ' +
+    'credential for it must exist on the host (else AUTH_MISSING). API writes need a write-scoped ' +
+    'token; the git backend can push over SSH. No credential is ever returned.',
   annotations: { readOnlyHint: false },
   inputSchema: {
     type: 'object' as const,
@@ -135,7 +143,10 @@ export const githubMutateToolDef = {
           required: ['path', 'content'],
         },
       },
-      ssh: { type: 'boolean', description: 'git/commit-push: push over the host SSH key instead of an https token.' },
+      ssh: { type: 'boolean', description: 'git/clone, git/commit-push: use the host SSH key instead of an https token.' },
+      organization: { type: 'string', description: 'fork: target org to fork into (default = your account).' },
+      dir: { type: 'string', description: 'git/clone, git/commit-push: target directory — gated by the lm-assist allowlist (/home/ubuntu/*).' },
+      depth: { type: 'number', description: 'git/clone: shallow depth (default 1; 0 = full clone).' },
     },
     required: ['action'],
   },
@@ -150,7 +161,7 @@ async function handleGithubQuery(args: Record<string, unknown>): Promise<McpTool
   if (!(READ_ACTIONS as readonly string[]).includes(action)) {
     return err(`github_query action must be one of: ${READ_ACTIONS.join(', ')}`);
   }
-  return githubAction(action, pick(args, ['account', 'owner', 'repo', 'state']));
+  return githubAction(action, pick(args, ['account', 'owner', 'repo', 'state', 'visibility', 'sort', 'per_page', 'page']));
 }
 
 async function handleGithubMutate(args: Record<string, unknown>): Promise<McpToolResult> {
@@ -160,7 +171,7 @@ async function handleGithubMutate(args: Record<string, unknown>): Promise<McpToo
   }
   return githubAction(
     action,
-    pick(args, ['account', 'owner', 'repo', 'branch', 'title', 'body', 'head', 'base', 'number', 'path', 'content', 'message', 'files', 'ssh', 'sshHost']),
+    pick(args, ['account', 'owner', 'repo', 'branch', 'title', 'body', 'head', 'base', 'number', 'path', 'content', 'message', 'files', 'ssh', 'sshHost', 'organization', 'dir', 'depth']),
   );
 }
 

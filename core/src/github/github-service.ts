@@ -4,10 +4,11 @@
 // CREDENTIAL-SAFE: tokens are resolved + injected INTERNALLY and are NEVER logged or returned.
 // Debug logs (stderr) carry only non-secret info (account, presence, source, masked length).
 import { spawn } from 'node:child_process';
-import { readFile, mkdir, writeFile, rm } from 'node:fs/promises';
+import { readFile, mkdir, writeFile, rm, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { isCwdAllowed } from '../utils/cwd-allowlist';
 
 const GH_API = 'https://api.github.com';
 const log = (...a: any[]) => console.error('[gh-svc]', ...a);
@@ -186,31 +187,65 @@ async function ghCall(args: string[], token: any) {
 
 const WORKDIR_ROOT = path.join(os.homedir(), '.lm-assist', 'github-workdirs');
 function httpsHeaderEnv(token: string) { return { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader', GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from('x-access-token:' + token).toString('base64')}` }; }
-async function gitClone(owner: string, repo: string, token: any, { ssh = false, sshHost = 'github.com' }: any = {}) {
+// Resolve the working directory for a git op. A caller-supplied `dir` is gated by the lm-assist
+// allowlist (same gate as agent_execute, /home/ubuntu/*). The default managed scratch dir is the
+// ONLY one ever wiped; a caller dir is never clobbered.
+async function gitClone(owner: string, repo: string, token: any, { ssh = false, sshHost = 'github.com', dir: targetDir, depth = 1 }: any = {}) {
   if (!(await which('git'))) return { ok: false, error: { code: 'BACKEND_UNAVAILABLE', message: 'git not installed', backend: 'git' } };
-  const dir = path.join(WORKDIR_ROOT, owner, repo);
-  await rm(dir, { recursive: true, force: true }); await mkdir(path.dirname(dir), { recursive: true });
+  let dir: string, managed = false;
+  if (targetDir) {
+    if (!isCwdAllowed(String(targetDir))) return { ok: false, error: { code: 'FORBIDDEN_DIR', message: `dir "${targetDir}" is outside the lm-assist allowlist (/home/ubuntu/*)`, backend: 'git' } };
+    dir = path.resolve(String(targetDir));
+    if (existsSync(dir)) {
+      const entries = await readdir(dir).catch(() => [] as string[]);
+      if (entries.length) return { ok: false, error: { code: 'DIR_NOT_EMPTY', message: `dir "${dir}" exists and is not empty; refusing to clobber`, backend: 'git' } };
+    }
+    await mkdir(dir, { recursive: true });
+  } else {
+    dir = path.join(WORKDIR_ROOT, owner, repo); managed = true;
+    await rm(dir, { recursive: true, force: true }); await mkdir(path.dirname(dir), { recursive: true });
+  }
   let url: string, env: any = {};
   if (ssh) url = `git@${sshHost}:${owner}/${repo}.git`;
   else if (token) { url = `https://github.com/${owner}/${repo}.git`; env = httpsHeaderEnv(token); }
   else return { ok: false, error: { code: 'AUTH_MISSING', message: 'no token/ssh for git clone', backend: 'git' } };
-  const r = await exec('git', ['clone', '--depth', '1', url, dir], { env });
+  const args = ['clone'];
+  if (depth && Number(depth) > 0) args.push('--depth', String(depth));
+  args.push(url, dir);
+  const r = await exec('git', args, { env });
   if (r.code !== 0) { let code = 'GIT_ERROR'; if (/Authentication failed|403|denied/i.test(r.err)) code = 'AUTH_INVALID'; else if (/not found|Repository not found/i.test(r.err)) code = 'NOT_FOUND'; return { ok: false, error: { code, message: r.err.trim().slice(0, 300), backend: 'git' } }; }
-  return { ok: true, backend: 'git', data: { dir } };
+  return { ok: true, backend: 'git', data: { dir, managed } };
 }
-async function gitCommitPush(owner: string, repo: string, token: any, { branch, files, message, ssh = false, sshHost = 'github.com', name = 'lm-assist', email = 'lm-assist@local' }: any) {
-  const cl: any = await gitClone(owner, repo, token, { ssh, sshHost }); if (!cl.ok) return cl;
-  const dir = cl.data.dir; const env = ssh ? {} : httpsHeaderEnv(token);
+async function gitCommitPush(owner: string, repo: string, token: any, { branch, files = [], message, ssh = false, sshHost = 'github.com', name = 'lm-assist', email = 'lm-assist@local', dir: targetDir }: any) {
+  const env = ssh ? {} : httpsHeaderEnv(token);
+  let dir: string;
+  if (targetDir) {
+    // operate IN PLACE on an existing allowlisted checkout — no clone, no wipe.
+    if (!isCwdAllowed(String(targetDir))) return { ok: false, error: { code: 'FORBIDDEN_DIR', message: `dir "${targetDir}" is outside the lm-assist allowlist (/home/ubuntu/*)`, backend: 'git' } };
+    dir = path.resolve(String(targetDir));
+    if (!existsSync(path.join(dir, '.git'))) return { ok: false, error: { code: 'NOT_A_REPO', message: `dir "${dir}" is not a git repository (clone it first)`, backend: 'git' } };
+  } else {
+    if (!branch) return { ok: false, error: { code: 'VALIDATION', message: 'branch is required for a managed-scratch commit-push', backend: 'git' } };
+    const cl: any = await gitClone(owner, repo, token, { ssh, sshHost }); if (!cl.ok) return cl;
+    dir = cl.data.dir;
+  }
   await exec('git', ['config', 'user.name', name], { cwd: dir });
   await exec('git', ['config', 'user.email', email], { cwd: dir });
-  await exec('git', ['checkout', '-b', branch], { cwd: dir });
+  if (branch) {
+    const co = await exec('git', ['checkout', '-b', branch], { cwd: dir });
+    if (co.code !== 0) {
+      const co2 = await exec('git', ['checkout', branch], { cwd: dir }); // branch may already exist in a real checkout
+      if (co2.code !== 0) return { ok: false, error: { code: 'CHECKOUT_FAILED', message: co.err.trim().slice(0, 200), backend: 'git' } };
+    }
+  }
   for (const f of files) await writeFile(path.join(dir, f.path), f.content);
   await exec('git', ['add', '-A'], { cwd: dir });
   const cm = await exec('git', ['commit', '-m', message], { cwd: dir });
   if (cm.code !== 0) return { ok: false, error: { code: 'COMMIT_FAILED', message: cm.err.trim().slice(0, 200), backend: 'git' } };
-  const ps = await exec('git', ['push', '-u', 'origin', branch], { cwd: dir, env });
+  const pushRef = branch || 'HEAD';
+  const ps = await exec('git', ['push', '-u', 'origin', pushRef], { cwd: dir, env });
   if (ps.code !== 0) { let code = 'PUSH_FAILED'; if (/denied|403|Authentication/i.test(ps.err)) code = 'AUTH_INVALID'; else if (/rejected|non-fast-forward/i.test(ps.err)) code = 'PUSH_REJECTED'; return { ok: false, error: { code, message: ps.err.trim().slice(0, 300), backend: 'git' } }; }
-  return { ok: true, backend: 'git', data: { branch, pushed: true } };
+  return { ok: true, backend: 'git', data: { branch: branch || null, dir, pushed: true } };
 }
 
 // Defense-in-depth: scrub any credential-shaped value (or known secret-bearing key) from EVERY
@@ -235,13 +270,27 @@ const ACTIONS: Record<string, (p: any, t: any) => Promise<any>> = {
   whoami: async (_p, t) => (t.token ? apiCall('GET', '/user', null, t.token) : ghCall(['api', 'user'], t.token)),
   'repo/get': async ({ owner, repo }, t) => (t.token ? apiCall('GET', `/repos/${owner}/${repo}`, null, t.token) : ghCall(['api', `repos/${owner}/${repo}`], t.token)),
   'pr/list': async ({ owner, repo, state = 'open' }, t) => (t.token ? apiCall('GET', `/repos/${owner}/${repo}/pulls?state=${state}`, null, t.token) : ghCall(['pr', 'list', '-R', `${owner}/${repo}`, '--json', 'number,title,state'], t.token)),
+  'repo/list': async ({ owner, visibility, sort = 'pushed', per_page = 30, page = 1 }, t) => {
+    if (!t.token) return { ok: false, error: { code: 'AUTH_MISSING', message: 'repo/list needs a token', backend: 'api' } };
+    const qs = new URLSearchParams({ sort: String(sort), per_page: String(per_page), page: String(page) });
+    let p: string;
+    if (owner) { p = `/users/${owner}/repos?${qs.toString()}`; }               // a specific user/org's repos
+    else { if (visibility) qs.set('visibility', String(visibility)); p = `/user/repos?${qs.toString()}`; } // the account's own repos
+    const r: any = await apiCall('GET', p, null, t.token);
+    if (!r.ok) return r;
+    const list = Array.isArray(r.data)
+      ? r.data.map((x: any) => ({ full_name: x.full_name, private: x.private, default_branch: x.default_branch, pushed_at: x.pushed_at, html_url: x.html_url }))
+      : r.data;
+    return { ok: true, backend: 'api', data: { count: Array.isArray(list) ? list.length : 0, repos: list } };
+  },
   'issue/create': async ({ owner, repo, title, body }, t) => (t.token ? apiCall('POST', `/repos/${owner}/${repo}/issues`, { title, body }, t.token) : ghCall(['issue', 'create', '-R', `${owner}/${repo}`, '-t', title, '-b', body || ''], t.token)),
   'issue/close': async ({ owner, repo, number }, t) => apiCall('PATCH', `/repos/${owner}/${repo}/issues/${number}`, { state: 'closed' }, t.token),
   'pr/create': async ({ owner, repo, title, head, base = 'main', body }, t) => (t.token ? apiCall('POST', `/repos/${owner}/${repo}/pulls`, { title, head, base, body }, t.token) : ghCall(['pr', 'create', '-R', `${owner}/${repo}`, '-t', title, '-B', base, '-H', head, '-b', body || ''], t.token)),
   'pr/close': async ({ owner, repo, number }, t) => apiCall('PATCH', `/repos/${owner}/${repo}/pulls/${number}`, { state: 'closed' }, t.token),
   'branch/delete': async ({ owner, repo, branch }, t) => apiCall('DELETE', `/repos/${owner}/${repo}/git/refs/heads/${branch}`, null, t.token),
   'file/put': async ({ owner, repo, path: fp, content, message, branch }, t) => apiCall('PUT', `/repos/${owner}/${repo}/contents/${fp}`, { message, content: Buffer.from(content).toString('base64'), branch }, t.token),
-  'git/clone': async ({ owner, repo, ssh, sshHost }, t) => gitClone(owner, repo, t.token, { ssh, sshHost }),
+  fork: async ({ owner, repo, organization }, t) => apiCall('POST', `/repos/${owner}/${repo}/forks`, organization ? { organization } : {}, t.token),
+  'git/clone': async ({ owner, repo, ssh, sshHost, dir, depth }, t) => gitClone(owner, repo, t.token, { ssh, sshHost, dir, depth }),
   'git/commit-push': async (p, t) => gitCommitPush(p.owner, p.repo, t.token, p),
   gh: async ({ args }, t) => {
     const a = (args || []).map(String);

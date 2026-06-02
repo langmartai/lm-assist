@@ -120,12 +120,10 @@ export async function workerDelete<T = unknown>(
 }
 
 /**
- * cwd allowlist for agent_execute (defense-in-depth layer 6 — the gateway's
- * pending-confirm is the primary gate; this is a second wall at the worker).
- * Per operator decision: any directory under /home/ubuntu is permitted.
+ * cwd allowlist for agent_execute / terminal_open_tab (defense-in-depth layer 6 — the
+ * gateway's pending-confirm is the primary gate; this is a second wall at the worker).
+ * Re-exported from the shared single-source util so the github git backend's
+ * directory-targeted ops use the exact same gate. Per operator decision: any
+ * directory under /home/ubuntu is permitted.
  */
-export function isCwdAllowed(cwd: string): boolean {
-  if (!cwd) return false;
-  const norm = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
-  return norm === '/home/ubuntu' || norm.startsWith('/home/ubuntu/');
-}
+export { isCwdAllowed } from '../../utils/cwd-allowlist';
