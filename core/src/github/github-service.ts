@@ -213,6 +213,22 @@ async function gitCommitPush(owner: string, repo: string, token: any, { branch, 
   return { ok: true, backend: 'git', data: { branch, pushed: true } };
 }
 
+// Defense-in-depth: scrub any credential-shaped value (or known secret-bearing key) from EVERY
+// response, so the endpoint can never emit a token even if a backend or GitHub field leaks one.
+const SECRET_KEY_RE = /^(temp_clone_token|clone_token|oauth_token|access_token|refresh_token|client_secret|authorization|token)$/i;
+const TOKENISH_RE = /(gh[oprsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g;
+export function redactDeep(v: any): any {
+  if (v == null) return v;
+  if (typeof v === 'string') return v.replace(TOKENISH_RE, '<REDACTED>');
+  if (Array.isArray(v)) return v.map(redactDeep);
+  if (typeof v === 'object') {
+    const o: any = {};
+    for (const [k, val] of Object.entries(v)) o[k] = SECRET_KEY_RE.test(k) ? '<REDACTED>' : redactDeep(val);
+    return o;
+  }
+  return v;
+}
+
 const ACTIONS: Record<string, (p: any, t: any) => Promise<any>> = {
   'auth/status': async (p) => ({ ok: true, data: await probeBackends(p.account) }),
   'accounts/list': async () => ({ ok: true, data: await listAccounts() }),
@@ -227,7 +243,14 @@ const ACTIONS: Record<string, (p: any, t: any) => Promise<any>> = {
   'file/put': async ({ owner, repo, path: fp, content, message, branch }, t) => apiCall('PUT', `/repos/${owner}/${repo}/contents/${fp}`, { message, content: Buffer.from(content).toString('base64'), branch }, t.token),
   'git/clone': async ({ owner, repo, ssh, sshHost }, t) => gitClone(owner, repo, t.token, { ssh, sshHost }),
   'git/commit-push': async (p, t) => gitCommitPush(p.owner, p.repo, t.token, p),
-  gh: async ({ args }, t) => ghCall(args, t.token),
+  gh: async ({ args }, t) => {
+    const a = (args || []).map(String);
+    // the gh passthrough must never be usable to READ a credential out of the host
+    if (a[0] === 'auth' || (a[0] === 'config' && a[1] === 'get' && a.join(' ').toLowerCase().includes('token'))) {
+      return { ok: false, error: { code: 'FORBIDDEN_PASSTHROUGH', message: 'gh passthrough may not read credentials (gh auth / config-get token are blocked)', backend: 'gh' } };
+    }
+    return ghCall(a, t.token);
+  },
   api: async ({ method = 'GET', path: ap, body }, t) => apiCall(method, ap, body, t.token),
 };
 
@@ -241,7 +264,7 @@ export async function runAction(action: string, params: any = {}) {
   if (params.account && !t.token && action !== 'auth/status' && action !== 'accounts/list') {
     return { ok: false, error: { code: 'AUTH_MISSING', message: `account "${params.account}" not resolved on this host (no env/file/gh/hosts.yml credential)`, backend: 'api', account: params.account } };
   }
-  try { return await fn(params, t); } catch (e: any) { return { ok: false, error: { code: 'INTERNAL', message: String(e.message || e) } }; }
+  try { const r = await fn(params, t); return redactDeep(r); } catch (e: any) { return { ok: false, error: { code: 'INTERNAL', message: String(e.message || e) } }; }
 }
 
 export const GITHUB_ACTIONS = Object.keys(ACTIONS);
