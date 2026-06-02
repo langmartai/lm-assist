@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### GitHub repo/list + fork + directory-aware git ops (2026-06-03)
+
+Follow-up to the github endpoint + MCP tools. Adds three capabilities and makes the git backend
+directory-aware under the existing operator allowlist.
+
+- New actions: `repo/list` (read — the account's own repos via `/user/repos`, or a user/org's via
+  `/users/{owner}/repos`; returns compact fields), `fork` (write — `POST /repos/{owner}/{repo}/forks`).
+- `git/clone` and `git/commit-push` gain an optional `dir` parameter that targets a **real directory**,
+  gated by the **shared lm-assist allowlist** (`/home/ubuntu/*` — the same gate `agent_execute` uses,
+  extracted to `core/src/utils/cwd-allowlist.ts`, re-exported from `mcp-server/tools/_passthrough.ts`).
+  Safety: only the default managed scratch dir is ever wiped; a caller `dir` is refused if non-empty
+  (clone) and must be an existing `.git` checkout operated in place (commit-push). New error codes
+  `FORBIDDEN_DIR`, `DIR_NOT_EMPTY`, `NOT_A_REPO`.
+- MCP: `github_query` gains `repo/list` (+`visibility`/`sort`/`per_page`); `github_mutate` gains
+  `fork`, `git/clone` (+`organization`/`dir`/`depth`).
+
+Verified on 117: allowlisted clone into `/home/ubuntu/*` succeeds; `/tmp/*` is refused (`FORBIDDEN_DIR`,
+directory never created); `repo/list` returns a compact list. Deployed to 117 + 123, synced to Windows.
+
 ### GitHub MCP tools — `github_query` / `github_mutate` (2026-06-03)
 
 The `/github/*` action endpoint is now exposed over MCP via two scope-classified tools, added through the
