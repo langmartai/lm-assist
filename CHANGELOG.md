@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### GitHub MCP tools — `github_query` / `github_mutate` (2026-06-03)
+
+The `/github/*` action endpoint is now exposed over MCP via two scope-classified tools, added through the
+existing expanded-catalog framework (def in `EXPANDED_TOOL_DEFS`, scope in `TOOL_SCOPES`, handler in
+`EXPANDED_HANDLERS`) — no new transport or protocol plumbing.
+
+- `github_query` (read tier — auto-approved): `auth/status`, `accounts/list`, `whoami`, `repo/get`, `pr/list`.
+- `github_mutate` (write tier — per-call approval): `pr/create`, `pr/close`, `issue/create`, `issue/close`,
+  `branch/delete`, `file/put`, `git/commit-push`.
+
+Both dispatch to `POST /github/<action>` on loopback (new `workerPostRaw` preserves the structured
+`{ok, backend, data|error}` envelope), so the endpoint's guarantees carry over for free: multi-account
+(`account` param), fail-closed on an unresolved account, and deep-redaction — no credential crosses the
+MCP boundary, and `accounts/list` returns names + sources, never tokens. The raw `gh`/`api` passthrough
+actions are intentionally NOT exposed over MCP (structured, scope-classified actions only). Both transports
+(StreamableHTTP `/mcp` and stdio `/mcp-call`) advertise + dispatch them via the shared `configureMcpServer`.
+
+Files: `core/src/mcp-server/tools/github.ts` (defs + handlers), wired in `tools/expanded.ts`, scopes in
+`configure.ts`, helper in `tools/_passthrough.ts`.
+
+**Verified** on 117: `tools/list` advertises both (28 tools total); real `tools/call`
+`github_query(whoami, account=YiHuangDB)` → YiHuangDB via the api backend; access differentiation
+(private `YiHuangDB/lm-unified-trade` → `NOT_FOUND` as `langmartai`); `github_mutate` rejects read actions;
+scopes resolve to read / write.
+
 ### GitHub endpoint — multi-account + credential-exposure hardening (2026-06-03)
 
 The `/github/*` action endpoint (api/gh/git backends) gained multi-account support and a hard guarantee

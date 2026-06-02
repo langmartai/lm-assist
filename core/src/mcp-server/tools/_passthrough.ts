@@ -81,6 +81,26 @@ export async function workerPost<T = unknown>(
   return (json.data ?? (json as unknown)) as T;
 }
 
+/**
+ * POST an lm-assist route on loopback and return the FULL response body
+ * verbatim (no `{success,data,error}` unwrapping, no throw on `success:false`).
+ * Used by tools (e.g. github_*) that need the structured envelope — backend
+ * served, typed error code — rather than just the unwrapped `data`. Longer
+ * timeout covers git clone/push. Still throws on transport failure.
+ */
+export async function workerPostRaw(
+  routePath: string,
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${BASE_URL}${routePath}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120000),
+  });
+  return (await res.json()) as Record<string, unknown>;
+}
+
 /** DELETE an lm-assist route on loopback. Same envelope handling as workerGet. */
 export async function workerDelete<T = unknown>(
   routePath: string,
