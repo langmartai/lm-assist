@@ -92,13 +92,13 @@ function isAlive(pid: number | null): boolean {
 /** Build spawn env — always pass NODE_EXTRA_CA_CERTS through if set (for lm-proxy). */
 function buildEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  // On hosts that MITM api.anthropic.com (e.g. lm-proxy on 123), the spawned ccr
-  // scripts need the proxy CA or every fetch fails TLS. Pass through the service env
-  // if set, else auto-detect a known lm-proxy CA. No-op where neither exists.
+  // On hosts that MITM api.anthropic.com (e.g. an lm-proxy), the spawned ccr scripts
+  // need the proxy CA or every fetch fails TLS. Honor an explicitly-configured extra
+  // CA (`lm-assist serve --extra-ca <path>` / LM_ASSIST_EXTRA_CA) when the service env
+  // doesn't already set NODE_EXTRA_CA_CERTS. No-op when neither is configured.
   if (!env.NODE_EXTRA_CA_CERTS) {
-    for (const ca of [process.env.LM_ASSIST_EXTRA_CA, '/home/yi/lm-proxy/ca/ca.crt']) {
-      if (ca && fs.existsSync(ca)) { env.NODE_EXTRA_CA_CERTS = ca; break; }
-    }
+    const ca = process.env.LM_ASSIST_EXTRA_CA;
+    if (ca && fs.existsSync(ca)) env.NODE_EXTRA_CA_CERTS = ca;
   }
   return env;
 }
