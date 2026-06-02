@@ -30,6 +30,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as zlib from 'zlib';
 import { randomUUID } from 'crypto';
 
 const SESSION_PATH = path.join(os.homedir(), '.claude', 'claudeai-session.json');
@@ -1315,6 +1316,853 @@ export async function getArtifactVersions(artifactUuid: string, opts: { orgUuid?
     `/api/organizations/${orgUuid}/artifacts/${artifactUuid}/versions`,
     { referer: 'https://claude.ai/' },
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Personal Agent Skills (skills CRUD)
+//
+// claude.ai stores the user's personal Agent Skills under
+// /api/organizations/{org}/skills/*. The Settings UI drives these endpoints;
+// we mirror them so a headless caller can list, inspect, download, create,
+// edit, upload, enable/disable, and delete skills without a browser. Endpoint
+// shapes (captured from the web app):
+//   GET  skills/list-skills
+//   GET  skills/list-skill-files?skill_id=ID
+//   GET  skills/download-dot-skill-file?skill_id=ID          (application/zip)
+//   POST skills/create-simple-skill        {name,description,instructions}
+//   POST skills/edit-simple-skill          {skill_id,description,instructions}
+//   POST skills/upload-skill?overwrite=&check_skill_name=    multipart "file"
+//   POST skills/delete-skill               {skill_id}
+//   POST skills/enable-skill               {skill_id}
+//   POST skills/disable-skill              {skill_id}
+//
+// Semantics:
+//   - source: 'custom' | 'anthropic-example' | 'plugin'. list-skill-files only
+//     returns paths for source=custom; built-in 'anthropic-example' skills
+//     return [].
+//   - edit-simple-skill is VERSIONED — it returns a NEW skill id on every edit
+//     (the old id is superseded; `name` is not editable). enable-skill /
+//     disable-skill PRESERVE the id.
+//   - upload-skill enforces a hard 30 MiB (31457280 byte) zip ceiling upstream;
+//     we guard locally with the same limit.
+//
+// This is the SAME `list-skills` upstream endpoint as listOrgSkills() above;
+// the two are intentionally separate so the personal-skills CRUD family can
+// evolve independently of the org-scoped read.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** claude.ai's hard ceiling for an uploaded skill bundle (30 MiB). Must be `< this`. */
+export const MAX_SKILL_BUNDLE_BYTES = 31457280;
+
+/**
+ * Standard mutating-request header block for skills writes. Same fingerprint as
+ * the conversation/connector writes. Pass `multipart: true` to OMIT content-type
+ * so undici sets `multipart/form-data; boundary=...` from the FormData itself
+ * (the boundary is generated per-request and can't be known in advance).
+ */
+function _skillHeaders(cfg: ClaudeAISessionConfig, opts: { multipart?: boolean } = {}): Record<string, string> {
+  const id = deriveIdentity(cfg);
+  const headers: Record<string, string> = {
+    Host: 'claude.ai',
+    Connection: 'keep-alive',
+    'anthropic-client-platform': 'web_claude_ai',
+    'anthropic-client-version': '1.0.0',
+    'anthropic-client-sha': '8a753cbf88e19be0f5f67efefb1b07840b6402e9',
+    Accept: '*/*',
+    'User-Agent': cfg.userAgent ||
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+    Origin: 'https://claude.ai',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty',
+    Referer: 'https://claude.ai/',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept-Language': 'en-US,en;q=0.9',
+    Cookie: cfg.cookie,
+  };
+  if (!opts.multipart) headers['content-type'] = 'application/json';
+  if (id.anonymousId) headers['anthropic-anonymous-id'] = id.anonymousId;
+  if (id.activitySessionId) headers['x-activity-session-id'] = id.activitySessionId;
+  if (id.deviceId) headers['anthropic-device-id'] = id.deviceId;
+  return headers;
+}
+
+/** Shared fetch + JSON-parse wrapper for skills writes. Returns the usual shape. */
+async function _skillsRequest(
+  url: string,
+  init: { method: string; headers: Record<string, string>; body?: unknown },
+  timeoutMs = 20_000,
+): Promise<ClaudeAIResponse<any>> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...init, signal: ctrl.signal } as any);
+    const respHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => (respHeaders[k] = v));
+    const text = await res.text();
+    let parsed: any;
+    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+    return { status: res.status, statusText: res.statusText, headers: respHeaders, body: parsed };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function _guessSkillContentType(filename: string): string {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith('.zip') || lower.endsWith('.skill')) return 'application/zip';
+  if (lower.endsWith('.md')) return 'text/markdown';
+  return 'application/octet-stream';
+}
+
+/** GET skills/list-skills — list the account's personal Agent Skills. */
+export async function listSkills(opts: { orgUuid?: string } = {}) {
+  return claudeaiGet(`/api/organizations/${_org(opts)}/skills/list-skills`, { referer: 'https://claude.ai/' });
+}
+
+/**
+ * GET skills/list-skill-files?skill_id=ID — file paths inside a skill.
+ * Works for source=custom; built-in (anthropic-example) skills return [].
+ */
+export async function listSkillFiles(skillId: string, opts: { orgUuid?: string } = {}) {
+  if (!skillId) throw new Error('skillId required');
+  const params = new URLSearchParams({ skill_id: skillId });
+  return claudeaiGet(`/api/organizations/${_org(opts)}/skills/list-skill-files?${params}`, { referer: 'https://claude.ai/' });
+}
+
+export interface SkillBundleDownload {
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+  /** Raw .skill (zip) bytes. On an upstream error this holds the error body bytes. */
+  buffer: Buffer;
+  contentType: string;
+  /** Filename from Content-Disposition, or `<skillId>.skill` if not supplied. */
+  filename: string;
+}
+
+/**
+ * GET skills/download-dot-skill-file?skill_id=ID — the .skill bundle (a zip).
+ *
+ * Unlike the JSON reads, this returns binary, so it bypasses claudeaiGet's
+ * JSON parsing and buffers the raw bytes. The caller decides whether to stream
+ * them (application/zip) or base64-encode for a JSON transport. Header
+ * fingerprint mirrors claudeaiGet's proven GET set.
+ */
+export async function downloadSkillBundle(skillId: string, opts: { orgUuid?: string } = {}): Promise<SkillBundleDownload> {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!skillId) throw new Error('skillId required');
+  const orgUuid = _org(opts);
+  const params = new URLSearchParams({ skill_id: skillId });
+  const url = `https://claude.ai/api/organizations/${orgUuid}/skills/download-dot-skill-file?${params}`;
+  const id = deriveIdentity(cfg);
+  const headers: Record<string, string> = {
+    Host: 'claude.ai',
+    Connection: 'keep-alive',
+  };
+  if (id.anonymousId) headers['anthropic-anonymous-id'] = id.anonymousId;
+  if (id.activitySessionId) headers['x-activity-session-id'] = id.activitySessionId;
+  headers['sec-ch-ua-platform'] = cfg.secChUaPlatform || DEFAULTS.secChUaPlatform;
+  headers['sec-ch-ua'] = cfg.secChUa || DEFAULTS.secChUa;
+  headers['sec-ch-ua-mobile'] = cfg.secChUaMobile || DEFAULTS.secChUaMobile;
+  headers['anthropic-client-sha'] = cfg.anthropicClientSha || DEFAULTS.anthropicClientSha;
+  headers['anthropic-client-platform'] = cfg.anthropicClientPlatform || DEFAULTS.anthropicClientPlatform;
+  if (id.deviceId) headers['anthropic-device-id'] = id.deviceId;
+  headers['anthropic-client-version'] = cfg.anthropicClientVersion || DEFAULTS.anthropicClientVersion;
+  headers['User-Agent'] = cfg.userAgent || DEFAULTS.userAgent;
+  headers['Accept'] = '*/*';
+  headers['Sec-Fetch-Site'] = 'same-origin';
+  headers['Sec-Fetch-Mode'] = 'cors';
+  headers['Sec-Fetch-Dest'] = 'empty';
+  headers['Referer'] = 'https://claude.ai/';
+  headers['Accept-Encoding'] = 'gzip, deflate, br';
+  headers['Accept-Language'] = 'en-US,en;q=0.9';
+  headers['Cookie'] = cfg.cookie;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30_000);
+  try {
+    const res = await fetch(url, { method: 'GET', headers, signal: ctrl.signal });
+    const respHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => (respHeaders[k] = v));
+    const buffer = Buffer.from(await res.arrayBuffer());
+    const contentType = respHeaders['content-type'] || 'application/zip';
+    let filename = `${skillId}.skill`;
+    const cd = respHeaders['content-disposition'];
+    if (cd) {
+      const m = cd.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i);
+      if (m && m[1]) {
+        const raw = m[1].replace(/"$/, '');
+        try { filename = decodeURIComponent(raw); } catch { filename = raw; }
+      }
+    }
+    return { status: res.status, statusText: res.statusText, headers: respHeaders, buffer, contentType, filename };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** POST skills/create-simple-skill {name,description,instructions} — WRITE (single SKILL.md). */
+export async function createSimpleSkill(opts: { name: string; description?: string; instructions?: string; orgUuid?: string }) {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!opts.name) throw new Error('name required');
+  const url = `https://claude.ai/api/organizations/${_org(opts)}/skills/create-simple-skill`;
+  return _skillsRequest(url, {
+    method: 'POST',
+    headers: _skillHeaders(cfg),
+    body: JSON.stringify({ name: opts.name, description: opts.description ?? '', instructions: opts.instructions ?? '' }),
+  });
+}
+
+/**
+ * POST skills/edit-simple-skill {skill_id,description,instructions} — WRITE.
+ * VERSIONED: the response carries a NEW skill id (the old one is superseded).
+ * `name` is not editable.
+ */
+export async function editSimpleSkill(opts: { skillId: string; description?: string; instructions?: string; orgUuid?: string }) {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!opts.skillId) throw new Error('skillId required');
+  const url = `https://claude.ai/api/organizations/${_org(opts)}/skills/edit-simple-skill`;
+  return _skillsRequest(url, {
+    method: 'POST',
+    headers: _skillHeaders(cfg),
+    body: JSON.stringify({ skill_id: opts.skillId, description: opts.description ?? '', instructions: opts.instructions ?? '' }),
+  });
+}
+
+/**
+ * POST skills/upload-skill?overwrite=&check_skill_name= — upload a skill bundle. WRITE.
+ *
+ * `content` is the raw bundle bytes (.zip / .skill sent as-is; a bare .md is
+ * auto-wrapped by claude.ai). Sent as multipart/form-data with the single part
+ * key "file". Enforces claude.ai's hard 30 MiB ceiling locally before sending.
+ */
+export async function uploadSkill(opts: {
+  filename: string;
+  content: Buffer | Uint8Array;
+  overwrite?: boolean;
+  checkSkillName?: string;
+  contentType?: string;
+  orgUuid?: string;
+}): Promise<ClaudeAIResponse<any>> {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!opts.filename) throw new Error('filename required');
+  const bytes = Buffer.isBuffer(opts.content) ? opts.content : Buffer.from(opts.content);
+  if (bytes.length === 0) throw new Error('content is empty');
+  if (bytes.length >= MAX_SKILL_BUNDLE_BYTES) {
+    throw new Error(`Skill bundle is ${bytes.length} bytes; claude.ai's hard limit is < ${MAX_SKILL_BUNDLE_BYTES} bytes (30 MiB).`);
+  }
+  const orgUuid = _org(opts);
+  const params = new URLSearchParams();
+  params.set('overwrite', String(opts.overwrite ?? false));
+  if (opts.checkSkillName) params.set('check_skill_name', opts.checkSkillName);
+  const url = `https://claude.ai/api/organizations/${orgUuid}/skills/upload-skill?${params}`;
+
+  const form = new FormData();
+  const type = opts.contentType || _guessSkillContentType(opts.filename);
+  form.append('file', new Blob([bytes], { type }), opts.filename);
+
+  return _skillsRequest(url, {
+    method: 'POST',
+    headers: _skillHeaders(cfg, { multipart: true }),
+    body: form,
+  }, 60_000);
+}
+
+/** POST skills/delete-skill {skill_id} — WRITE (destructive). claude.ai responds 200 (null body). */
+export async function deleteSkill(opts: { skillId: string; orgUuid?: string }) {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!opts.skillId) throw new Error('skillId required');
+  const url = `https://claude.ai/api/organizations/${_org(opts)}/skills/delete-skill`;
+  return _skillsRequest(url, {
+    method: 'POST',
+    headers: _skillHeaders(cfg),
+    body: JSON.stringify({ skill_id: opts.skillId }),
+  });
+}
+
+/** POST skills/enable-skill {skill_id} — WRITE. Returns the full skill record (id preserved). */
+export async function enableSkill(opts: { skillId: string; orgUuid?: string }) {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!opts.skillId) throw new Error('skillId required');
+  const url = `https://claude.ai/api/organizations/${_org(opts)}/skills/enable-skill`;
+  return _skillsRequest(url, {
+    method: 'POST',
+    headers: _skillHeaders(cfg),
+    body: JSON.stringify({ skill_id: opts.skillId }),
+  });
+}
+
+/** POST skills/disable-skill {skill_id} — WRITE. Returns the full skill record (id preserved). */
+export async function disableSkill(opts: { skillId: string; orgUuid?: string }) {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!opts.skillId) throw new Error('skillId required');
+  const url = `https://claude.ai/api/organizations/${_org(opts)}/skills/disable-skill`;
+  return _skillsRequest(url, {
+    method: 'POST',
+    headers: _skillHeaders(cfg),
+    body: JSON.stringify({ skill_id: opts.skillId }),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Native skill passthroughs — rename / duplicate / delete-org
+//
+// claude.ai has these three additional skill endpoints (confirmed from the web
+// SPA bundle, index-<hash>.js):
+//   POST skills/rename-skill     {skill_id, new_name}   → renamed skill record
+//   POST skills/duplicate-skill  {skill_id, new_name}   → new (copied) skill record
+//   POST skills/delete-org-skill {skill_id}             → ORG-scoped delete
+// rename/duplicate share the {skill_id, new_name} body the SPA sends from its
+// rename/duplicate dialog; delete-org-skill mirrors delete-skill's {skill_id}
+// but removes an organization-shared skill (distinct from the personal
+// delete-skill). All three are WRITES and invalidate the skills-list cache.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** POST skills/rename-skill {skill_id,new_name} — WRITE. Returns the renamed skill record. */
+export async function renameSkill(opts: { skillId: string; newName: string; orgUuid?: string }) {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!opts.skillId) throw new Error('skillId required');
+  if (!opts.newName) throw new Error('newName required');
+  const url = `https://claude.ai/api/organizations/${_org(opts)}/skills/rename-skill`;
+  return _skillsRequest(url, {
+    method: 'POST',
+    headers: _skillHeaders(cfg),
+    body: JSON.stringify({ skill_id: opts.skillId, new_name: opts.newName }),
+  });
+}
+
+/**
+ * POST skills/duplicate-skill {skill_id,new_name} — WRITE. Returns the new
+ * (duplicated) skill record. The web SPA always supplies `new_name` from its
+ * duplicate dialog; `newName` is accepted optionally here and only sent when
+ * provided (claude.ai assigns the copy's name otherwise).
+ */
+export async function duplicateSkill(opts: { skillId: string; newName?: string; orgUuid?: string }) {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!opts.skillId) throw new Error('skillId required');
+  const url = `https://claude.ai/api/organizations/${_org(opts)}/skills/duplicate-skill`;
+  const body: Record<string, unknown> = { skill_id: opts.skillId };
+  if (opts.newName) body.new_name = opts.newName;
+  return _skillsRequest(url, {
+    method: 'POST',
+    headers: _skillHeaders(cfg),
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * POST skills/delete-org-skill {skill_id} — WRITE (destructive, ORG-SCOPED).
+ * Distinct from the personal `delete-skill`: this removes an organization-shared
+ * skill. Same `{skill_id}` body shape (confirmed from the SPA).
+ */
+export async function deleteOrgSkill(opts: { skillId: string; orgUuid?: string }) {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!opts.skillId) throw new Error('skillId required');
+  const url = `https://claude.ai/api/organizations/${_org(opts)}/skills/delete-org-skill`;
+  return _skillsRequest(url, {
+    method: 'POST',
+    headers: _skillHeaders(cfg),
+    body: JSON.stringify({ skill_id: opts.skillId }),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Per-file skill CRUD (synthesized read-modify-write over the whole bundle)
+//
+// claude.ai has NO native per-file write endpoint, so a single-file
+// read/update/delete is synthesized as a read-modify-write of the entire
+// `.skill` bundle:
+//   1. downloadSkillBundle()  → the current zip
+//   2. unzip                  → entries (DEFLATE-aware; see codec below)
+//   3. add / replace / remove the target entry
+//   4. rezip                  → new bundle
+//   5. uploadSkill({overwrite:true, checkSkillName})  → mints a NEW skill id
+//
+// Invariants this preserves:
+//   - The bundle's top-level folder and SKILL.md frontmatter `name` are kept
+//     intact, so `upload-skill?overwrite` replaces the SAME skill by name
+//     (never creating a duplicate). `check_skill_name` is sent as a server-side
+//     guard — claude.ai re-parses the rebuilt SKILL.md's name and rejects the
+//     upload if it drifted.
+//   - Existing entries are carried over byte-for-byte (re-compressed).
+//   - The enabled/disabled state is re-applied after the upload (overwrite
+//     re-enables) so a disabled skill stays disabled.
+//
+// Caveats (documented in docs/claude-ai-routes.md): the operation is NON-ATOMIC
+// (download → upload) and mints a NEW skill id each write, so callers chaining
+// writes must use the returned `newSkillId`. Concurrent writes to one skill are
+// serialized in-process by the mutex below so they can't clobber each other.
+// ─────────────────────────────────────────────────────────────────────────
+
+// ── ZIP codec (zlib-backed; no third-party dependency) ──
+// claude.ai `.skill` bundles are standard ZIPs with DEFLATE-compressed entries
+// (method 8), so a store-only reader can't open them. We parse the central
+// directory and inflate each entry with zlib.inflateRawSync; we rebuild with
+// zlib.deflateRawSync + a hand-built central directory.
+
+interface ZipEntry {
+  /** Full path within the archive, e.g. "skill-creator/SKILL.md". */
+  name: string;
+  /** Uncompressed bytes (empty for directory entries). */
+  data: Buffer;
+  /** True for explicit directory entries (name ends with "/"). */
+  isDirectory: boolean;
+}
+
+// CRC-32 (IEEE 802.3) lookup table, built once.
+const _CRC32_TABLE: Int32Array = (() => {
+  const t = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c;
+  }
+  return t;
+})();
+
+function _crc32(buf: Buffer): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) c = (_CRC32_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8)) >>> 0;
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+const _ZIP_LFH_SIG = 0x04034b50;  // local file header
+const _ZIP_CDH_SIG = 0x02014b50;  // central directory header
+const _ZIP_EOCD_SIG = 0x06054b50; // end of central directory record
+
+/** Parse a ZIP buffer into entries, inflating DEFLATE (method 8) and copying STORE (method 0). */
+function unzipBundle(zip: Buffer): ZipEntry[] {
+  if (zip.length < 22) throw new Error('Not a zip archive (too small)');
+  // Locate the EOCD by scanning backwards (a trailing comment may be up to 64 KiB).
+  let eocd = -1;
+  const minStart = Math.max(0, zip.length - 22 - 0xffff);
+  for (let i = zip.length - 22; i >= minStart; i--) {
+    if (zip.readUInt32LE(i) === _ZIP_EOCD_SIG) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('Zip end-of-central-directory record not found');
+  const cdCount = zip.readUInt16LE(eocd + 10);
+  const cdOffset = zip.readUInt32LE(eocd + 16);
+
+  const entries: ZipEntry[] = [];
+  let p = cdOffset;
+  for (let i = 0; i < cdCount; i++) {
+    if (p + 46 > zip.length || zip.readUInt32LE(p) !== _ZIP_CDH_SIG) {
+      throw new Error(`Malformed central directory header at offset ${p}`);
+    }
+    const method = zip.readUInt16LE(p + 10);
+    const compSize = zip.readUInt32LE(p + 20);
+    const nameLen = zip.readUInt16LE(p + 28);
+    const extraLen = zip.readUInt16LE(p + 30);
+    const commentLen = zip.readUInt16LE(p + 32);
+    const localOff = zip.readUInt32LE(p + 42);
+    const name = zip.toString('utf8', p + 46, p + 46 + nameLen);
+
+    // The local header's name/extra lengths can differ from the central
+    // directory's, so re-read them to find where this entry's data starts.
+    if (zip.readUInt32LE(localOff) !== _ZIP_LFH_SIG) throw new Error(`Malformed local header for ${name}`);
+    const lNameLen = zip.readUInt16LE(localOff + 26);
+    const lExtraLen = zip.readUInt16LE(localOff + 28);
+    const dataStart = localOff + 30 + lNameLen + lExtraLen;
+    const comp = zip.subarray(dataStart, dataStart + compSize);
+
+    let data: Buffer;
+    if (method === 0) data = Buffer.from(comp);
+    else if (method === 8) data = zlib.inflateRawSync(comp);
+    else throw new Error(`Unsupported zip compression method ${method} for ${name}`);
+
+    entries.push({ name, data, isDirectory: name.endsWith('/') });
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
+}
+
+/** Build a ZIP from entries. Files are DEFLATE-compressed (method 8) unless that grows them. */
+function zipBundle(entries: ZipEntry[]): Buffer {
+  const localParts: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const e of entries) {
+    const nameBuf = Buffer.from(e.name, 'utf8');
+    // UTF-8 name flag (general-purpose bit 11) when the name isn't pure ASCII.
+    const flags = nameBuf.length !== e.name.length ? 0x0800 : 0;
+    let method: number;
+    let stored: Buffer;
+    let crc: number;
+    let uncompSize: number;
+    if (e.isDirectory) {
+      method = 0; stored = Buffer.alloc(0); crc = 0; uncompSize = 0;
+    } else {
+      uncompSize = e.data.length;
+      crc = _crc32(e.data);
+      const deflated = zlib.deflateRawSync(e.data);
+      if (deflated.length < e.data.length) { method = 8; stored = deflated; }
+      else { method = 0; stored = Buffer.from(e.data); } // store when deflate doesn't help (tiny/empty)
+    }
+    const lfh = Buffer.alloc(30);
+    lfh.writeUInt32LE(_ZIP_LFH_SIG, 0);
+    lfh.writeUInt16LE(20, 4);              // version needed to extract
+    lfh.writeUInt16LE(flags, 6);
+    lfh.writeUInt16LE(method, 8);
+    lfh.writeUInt16LE(0, 10);              // mod time
+    lfh.writeUInt16LE(0x21, 12);           // mod date = 1980-01-01 (valid, deterministic)
+    lfh.writeUInt32LE(crc, 14);
+    lfh.writeUInt32LE(stored.length, 18);  // compressed size
+    lfh.writeUInt32LE(uncompSize, 22);     // uncompressed size
+    lfh.writeUInt16LE(nameBuf.length, 26);
+    lfh.writeUInt16LE(0, 28);              // extra field length
+    localParts.push(lfh, nameBuf, stored);
+
+    const cdh = Buffer.alloc(46);
+    cdh.writeUInt32LE(_ZIP_CDH_SIG, 0);
+    cdh.writeUInt16LE(20, 4);              // version made by
+    cdh.writeUInt16LE(20, 6);              // version needed
+    cdh.writeUInt16LE(flags, 8);
+    cdh.writeUInt16LE(method, 10);
+    cdh.writeUInt16LE(0, 12);              // mod time
+    cdh.writeUInt16LE(0x21, 14);           // mod date
+    cdh.writeUInt32LE(crc, 16);
+    cdh.writeUInt32LE(stored.length, 20);  // compressed size
+    cdh.writeUInt32LE(uncompSize, 24);     // uncompressed size
+    cdh.writeUInt16LE(nameBuf.length, 28);
+    cdh.writeUInt16LE(0, 30);              // extra field length
+    cdh.writeUInt16LE(0, 32);              // comment length
+    cdh.writeUInt16LE(0, 34);              // disk number start
+    cdh.writeUInt16LE(0, 36);              // internal attrs
+    cdh.writeUInt32LE(e.isDirectory ? 0x10 : 0, 38); // external attrs (0x10 = MS-DOS directory)
+    cdh.writeUInt32LE(offset, 42);         // relative offset of local header
+    central.push(cdh, nameBuf);
+
+    offset += lfh.length + nameBuf.length + stored.length;
+  }
+  const localBuf = Buffer.concat(localParts);
+  const centralBuf = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(_ZIP_EOCD_SIG, 0);
+  eocd.writeUInt16LE(0, 4);                  // this disk
+  eocd.writeUInt16LE(0, 6);                  // disk with CD start
+  eocd.writeUInt16LE(entries.length, 8);     // CD records on this disk
+  eocd.writeUInt16LE(entries.length, 10);    // total CD records
+  eocd.writeUInt32LE(centralBuf.length, 12); // CD size
+  eocd.writeUInt32LE(localBuf.length, 16);   // CD offset
+  eocd.writeUInt16LE(0, 20);                 // comment length
+  return Buffer.concat([localBuf, centralBuf, eocd]);
+}
+
+// ── Bundle path helpers ──
+
+function _guessSkillFileContentType(filePath: string): string {
+  const lower = filePath.toLowerCase();
+  const ext = lower.includes('.') ? lower.slice(lower.lastIndexOf('.') + 1) : '';
+  const map: Record<string, string> = {
+    md: 'text/markdown', markdown: 'text/markdown', txt: 'text/plain', text: 'text/plain',
+    json: 'application/json', js: 'text/javascript', mjs: 'text/javascript', cjs: 'text/javascript',
+    ts: 'text/plain', py: 'text/x-python', sh: 'text/x-shellscript', bash: 'text/x-shellscript',
+    yaml: 'text/yaml', yml: 'text/yaml', toml: 'text/plain', ini: 'text/plain', cfg: 'text/plain',
+    csv: 'text/csv', tsv: 'text/tab-separated-values', html: 'text/html', htm: 'text/html',
+    css: 'text/css', xml: 'application/xml', svg: 'image/svg+xml',
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+    pdf: 'application/pdf', zip: 'application/zip', skill: 'application/zip',
+  };
+  return map[ext] || 'application/octet-stream';
+}
+
+/** Normalize a caller-supplied bundle path; reject absolute paths and ".." traversal. */
+function _normalizeBundlePath(p: string): string {
+  const s = String(p || '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+  if (!s) throw new Error('path is required');
+  if (s.split('/').some((seg) => seg === '..')) throw new Error(`path must not contain ".." segments: ${p}`);
+  return s;
+}
+
+/** The bundle's top-level folder (the SKILL.md's parent dir), or '' for a flat bundle. */
+function _bundleTopFolder(entries: ZipEntry[]): string {
+  const skillMd = entries.find((e) => !e.isDirectory && e.name.split('/').pop() === 'SKILL.md');
+  if (skillMd) {
+    const slash = skillMd.name.lastIndexOf('/');
+    return slash >= 0 ? skillMd.name.slice(0, slash) : '';
+  }
+  const firsts = new Set(entries.filter((e) => e.name.includes('/')).map((e) => e.name.split('/')[0]));
+  return firsts.size === 1 ? [...firsts][0] : '';
+}
+
+/**
+ * Resolve a caller path against the bundle. An exact match to an existing entry
+ * wins; otherwise the path is qualified with the bundle's top-level folder (so a
+ * caller can pass either `SKILL.md` or `skill-creator/SKILL.md`).
+ */
+function _resolveBundlePath(entries: ZipEntry[], rawPath: string): { full: string; top: string } {
+  const norm = _normalizeBundlePath(rawPath);
+  const top = _bundleTopFolder(entries);
+  if (entries.some((e) => e.name === norm)) return { full: norm, top };
+  if (top && (norm === top || norm.startsWith(top + '/'))) return { full: norm, top };
+  return { full: top ? `${top}/${norm}` : norm, top };
+}
+
+/** Extract the YAML frontmatter `name:` from a SKILL.md string (mirrors claude.ai's parser). */
+function _skillMdName(md: string): string | null {
+  const fm = md.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!fm) return null;
+  const m = fm[1].match(/^name:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\n]|'')*)'|([^"\n]+?))\s*(?:#.*)?$/m);
+  if (!m) return null;
+  if (m[1] !== undefined) return m[1].replace(/\\(.)/g, (_s, c) => (({ n: '\n', r: '\r', t: '\t' } as Record<string, string>)[c] ?? c));
+  if (m[2] !== undefined) return m[2].replace(/''/g, "'");
+  if (m[3] !== undefined) return m[3];
+  return null;
+}
+
+/** Pin a SKILL.md's frontmatter `name:` to `name` (preserve identity on a SKILL.md write). */
+function _setSkillMdName(md: string, name: string): string {
+  const fm = md.match(/^(---\r?\n)([\s\S]*?)(\r?\n---)/);
+  if (!fm || fm.index === undefined) return md; // no frontmatter — leave as-is (claude.ai validates)
+  const quoted = JSON.stringify(name); // safe double-quoted YAML scalar
+  let block = fm[2];
+  if (/^name:[ \t]*.*$/m.test(block)) block = block.replace(/^name:[ \t]*.*$/m, `name: ${quoted}`);
+  else block = `name: ${quoted}\n${block}`;
+  return md.slice(0, fm.index) + fm[1] + block + fm[3] + md.slice(fm.index + fm[0].length);
+}
+
+// ── Skill-record field plumbing (defensive against minor shape drift) ──
+
+function _skillsArray(body: unknown): any[] {
+  if (Array.isArray(body)) return body;
+  const b = body as any;
+  if (b && Array.isArray(b.skills)) return b.skills;
+  return [];
+}
+
+function _skillRecordId(rec: any): string | undefined {
+  return rec?.id ?? rec?.skill_id ?? rec?.skillId;
+}
+
+function _extractNewSkillId(uploadBody: unknown): string | null {
+  const b = uploadBody as any;
+  return _skillRecordId(b?.skill) ?? _skillRecordId(b) ?? null;
+}
+
+/** Whether the given skill is currently disabled (best-effort via list-skills). */
+async function _isSkillDisabled(skillId: string, orgUuid?: string): Promise<boolean> {
+  const r = await listSkills({ orgUuid });
+  if (r.status >= 400) return false;
+  const rec = _skillsArray(r.body).find((s) => _skillRecordId(s) === skillId);
+  return rec?.enabled === false;
+}
+
+// ── Per-skill write mutex (serialize concurrent RMW so they can't clobber) ──
+const _skillWriteChains = new Map<string, Promise<unknown>>();
+function _withSkillLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = _skillWriteChains.get(key) || Promise.resolve();
+  const run = prev.then(fn, fn); // run regardless of the prior call's outcome
+  const guard = run.then(() => {}, () => {});
+  _skillWriteChains.set(key, guard);
+  void guard.then(() => { if (_skillWriteChains.get(key) === guard) _skillWriteChains.delete(key); });
+  return run;
+}
+
+/** Thrown by deleteSkillFile when the target path isn't present in the bundle. */
+export class SkillFileNotFoundError extends Error {
+  readonly code = 'SKILL_FILE_NOT_FOUND';
+  constructor(public readonly skillFilePath: string) {
+    super(`File not found in skill bundle: ${skillFilePath}`);
+    this.name = 'SkillFileNotFoundError';
+  }
+}
+
+export interface SkillFileReadResult {
+  /** Status from the bundle download (200 when fetched). */
+  status: number;
+  statusText: string;
+  /** True when the requested path existed in the bundle. */
+  found: boolean;
+  /** The resolved (top-folder-qualified) path looked up. */
+  resolvedPath: string;
+  /** File bytes (only when found). */
+  buffer?: Buffer;
+  /** Guessed content-type from the extension (only when found). */
+  contentType?: string;
+  /** Upstream error body when the download itself failed (status >= 400). */
+  upstreamError?: unknown;
+}
+
+export interface SkillFileWriteResult {
+  /** The raw upload response from claude.ai (the NEW skill record lives in its body). */
+  upload: ClaudeAIResponse<any>;
+  /** The new skill id minted by the overwrite upload (best-effort extracted). */
+  newSkillId: string | null;
+  /** The top-folder-qualified path that was written / removed. */
+  resolvedPath: string;
+  /** The skill name the rebuilt bundle was pinned to (the check_skill_name guard value). */
+  skillName: string | null;
+  /** Number of entries in the rebuilt bundle. */
+  entryCount: number;
+  /** Size of the rebuilt bundle in bytes. */
+  bundleBytes: number;
+  /** True when the skill was disabled before the write and was re-disabled after. */
+  reDisabled: boolean;
+}
+
+/**
+ * Read a single file out of a skill's bundle: downloadSkillBundle → unzip →
+ * return that entry's bytes (+ guessed content-type). `found:false` when the
+ * path isn't in the bundle; `upstreamError` set when the download failed.
+ */
+export async function readSkillFile(
+  skillId: string,
+  filePath: string,
+  opts: { orgUuid?: string } = {},
+): Promise<SkillFileReadResult> {
+  if (!skillId) throw new Error('skillId required');
+  const norm = _normalizeBundlePath(filePath);
+  const dl = await downloadSkillBundle(skillId, opts);
+  if (dl.status >= 400) {
+    let body: unknown = dl.buffer.toString('utf8');
+    try { body = JSON.parse(body as string); } catch { /* leave as text */ }
+    return { status: dl.status, statusText: dl.statusText, found: false, resolvedPath: norm, upstreamError: body };
+  }
+  const entries = unzipBundle(dl.buffer);
+  const { full } = _resolveBundlePath(entries, filePath);
+  const entry = entries.find((e) => e.name === full && !e.isDirectory);
+  if (!entry) return { status: dl.status, statusText: dl.statusText, found: false, resolvedPath: full };
+  return {
+    status: dl.status,
+    statusText: dl.statusText,
+    found: true,
+    resolvedPath: full,
+    buffer: entry.data,
+    contentType: _guessSkillFileContentType(full),
+  };
+}
+
+/**
+ * Add or replace a single file in a skill's bundle (read-modify-write):
+ * download → unzip → add/replace the entry → rezip → uploadSkill({overwrite}).
+ * Returns the NEW skill record/id. Preserves the bundle's top folder, the
+ * SKILL.md name (pinned on a SKILL.md write), and the disabled state.
+ * Serialized per skill id so concurrent writes can't clobber.
+ */
+export async function putSkillFile(
+  skillId: string,
+  filePath: string,
+  content: Buffer | Uint8Array,
+  opts: { orgUuid?: string } = {},
+): Promise<SkillFileWriteResult> {
+  if (!skillId) throw new Error('skillId required');
+  _normalizeBundlePath(filePath); // validate early (before taking the lock)
+  const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content);
+  return _withSkillLock(skillId, async () => {
+    const dl = await downloadSkillBundle(skillId, opts);
+    if (dl.status >= 400) {
+      let body: unknown = dl.buffer.toString('utf8');
+      try { body = JSON.parse(body as string); } catch { /* text */ }
+      throw new Error(`Failed to download skill bundle (${dl.status} ${dl.statusText}): ${typeof body === 'string' ? body : JSON.stringify(body)}`);
+    }
+    const entries = unzipBundle(dl.buffer);
+    const { full } = _resolveBundlePath(entries, filePath);
+
+    const skillMdEntry = entries.find((e) => !e.isDirectory && e.name.split('/').pop() === 'SKILL.md');
+    const skillName = skillMdEntry ? _skillMdName(skillMdEntry.data.toString('utf8')) : null;
+
+    // Writing SKILL.md? Pin its frontmatter name to the original so identity
+    // (and the overwrite-by-name match) is preserved.
+    let newData = bytes;
+    if (full.split('/').pop() === 'SKILL.md' && skillName) {
+      newData = Buffer.from(_setSkillMdName(bytes.toString('utf8'), skillName), 'utf8');
+    }
+
+    const idx = entries.findIndex((e) => e.name === full);
+    if (idx >= 0) entries[idx] = { name: full, data: newData, isDirectory: false };
+    else entries.push({ name: full, data: newData, isDirectory: false });
+
+    return _rebuildAndUpload(entries, full, skillName, skillId, dl.filename, opts.orgUuid);
+  });
+}
+
+/**
+ * Remove a single file from a skill's bundle (read-modify-write). Throws
+ * {@link SkillFileNotFoundError} if the path isn't present. Refuses to delete
+ * SKILL.md (that would orphan the bundle — delete the whole skill instead).
+ * Returns the NEW skill record/id. Serialized per skill id.
+ */
+export async function deleteSkillFile(
+  skillId: string,
+  filePath: string,
+  opts: { orgUuid?: string } = {},
+): Promise<SkillFileWriteResult> {
+  if (!skillId) throw new Error('skillId required');
+  _normalizeBundlePath(filePath);
+  return _withSkillLock(skillId, async () => {
+    const dl = await downloadSkillBundle(skillId, opts);
+    if (dl.status >= 400) {
+      let body: unknown = dl.buffer.toString('utf8');
+      try { body = JSON.parse(body as string); } catch { /* text */ }
+      throw new Error(`Failed to download skill bundle (${dl.status} ${dl.statusText}): ${typeof body === 'string' ? body : JSON.stringify(body)}`);
+    }
+    const entries = unzipBundle(dl.buffer);
+    const { full } = _resolveBundlePath(entries, filePath);
+    const idx = entries.findIndex((e) => e.name === full && !e.isDirectory);
+    if (idx < 0) throw new SkillFileNotFoundError(full);
+    if (full.split('/').pop() === 'SKILL.md') {
+      throw new Error('Refusing to delete SKILL.md (the bundle manifest); delete the whole skill instead.');
+    }
+    const skillMdEntry = entries.find((e) => !e.isDirectory && e.name.split('/').pop() === 'SKILL.md');
+    const skillName = skillMdEntry ? _skillMdName(skillMdEntry.data.toString('utf8')) : null;
+    entries.splice(idx, 1);
+    return _rebuildAndUpload(entries, full, skillName, skillId, dl.filename, opts.orgUuid);
+  });
+}
+
+/** Shared tail of put/deleteSkillFile: enforce ceiling, upload overwrite, preserve disabled state. */
+async function _rebuildAndUpload(
+  entries: ZipEntry[],
+  resolvedPath: string,
+  skillName: string | null,
+  oldSkillId: string,
+  downloadFilename: string,
+  orgUuid?: string,
+): Promise<SkillFileWriteResult> {
+  const rebuilt = zipBundle(entries);
+  if (rebuilt.length >= MAX_SKILL_BUNDLE_BYTES) {
+    throw new Error(`Rebuilt skill bundle is ${rebuilt.length} bytes; claude.ai's hard limit is < ${MAX_SKILL_BUNDLE_BYTES} bytes (30 MiB).`);
+  }
+  // Preserve disabled state: overwrite re-enables, so re-disable afterwards.
+  const wasDisabled = await _isSkillDisabled(oldSkillId, orgUuid).catch(() => false);
+
+  const filename = downloadFilename && /\.(zip|skill)$/i.test(downloadFilename)
+    ? downloadFilename
+    : `${skillName || 'skill'}.zip`;
+  const upload = await uploadSkill({
+    filename,
+    content: rebuilt,
+    overwrite: true,
+    checkSkillName: skillName || undefined,
+    orgUuid,
+  });
+  const newSkillId = _extractNewSkillId(upload.body);
+
+  let reDisabled = false;
+  if (upload.status < 400 && wasDisabled && newSkillId) {
+    const dis = await disableSkill({ skillId: newSkillId, orgUuid }).catch(() => null);
+    reDisabled = !!(dis && dis.status < 400);
+  }
+  return {
+    upload,
+    newSkillId,
+    resolvedPath,
+    skillName,
+    entryCount: entries.length,
+    bundleBytes: rebuilt.length,
+    reDisabled,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────

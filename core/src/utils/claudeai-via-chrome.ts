@@ -966,3 +966,479 @@ ${autoApproveSetup}
     instructions: INSTRUCTIONS + ' This snippet is a WRITE — it creates real message history in the user\'s claude.ai account and consumes tokens. Verify intent before running.',
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Personal Agent Skills (skills CRUD) — via-chrome snippets
+//
+// Mirror of the cookie-file skills helpers in claudeai-session.ts. All hit
+// /api/organizations/{org}/skills/* in the authenticated tab. Mutating ones
+// carry the WRITE warning in `instructions`.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** claude.ai's hard ceiling for an uploaded skill bundle (30 MiB). Must be `< this`. */
+const MAX_SKILL_BUNDLE_BYTES = 31457280;
+
+/**
+ * Internal: build a JSON-POST snippet against a `/skills/<suffix>` endpoint.
+ * Mirrors the body-embedding of snippetSetConversationTitle / snippetCreateConversation.
+ */
+function buildSkillsPostSnippet(opts: {
+  suffix: string;
+  query?: Record<string, string | number | boolean>;
+  body: Record<string, unknown>;
+  description: string;
+  write?: boolean;
+  destructive?: boolean;
+}): ViaChromeSnippet {
+  const qs = buildQuery(opts.query);
+  const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}
+  const orgMatch = document.cookie.match(/lastActiveOrg=(${UUID_RE_STR})/i);
+  if (!orgMatch) return { error: 'no_org' };
+  const url = '/api/organizations/' + orgMatch[1] + '/skills/${opts.suffix}${qs}';
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { ...baseHeaders, 'content-type': 'application/json', 'Accept': '*/*' },
+      body: ${JSON.stringify(JSON.stringify(opts.body))},
+    });
+    const text = await r.text();
+    let body; try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+    return { status: r.status, statusText: r.statusText, url, body };
+  } catch (e) {
+    return { error: 'fetch_failed', message: String(e && e.message || e), url };
+  }
+})()`;
+  let instructions = INSTRUCTIONS;
+  if (opts.destructive) instructions += ' WRITE (DESTRUCTIVE) — permanently changes the user\'s claude.ai skills. Verify intent before running.';
+  else if (opts.write) instructions += ' WRITE — modifies the user\'s claude.ai skills.';
+  return {
+    snippet,
+    description: opts.description,
+    url: `https://claude.ai/api/organizations/{org}/skills/${opts.suffix}${qs}`,
+    method: 'POST',
+    instructions,
+  };
+}
+
+/** Snippet for listing the account's personal skills. */
+export const snippetListSkills = (): ViaChromeSnippet =>
+  buildViaChromeSnippet({ path: '/api/organizations/{org}/skills/list-skills', description: 'List personal claude.ai skills' });
+
+/** Snippet for listing the file paths inside a skill (custom skills only; built-ins return []). */
+export const snippetListSkillFiles = (skillId: string): ViaChromeSnippet => {
+  if (!skillId) throw new Error('skillId required');
+  return buildViaChromeSnippet({
+    path: '/api/organizations/{org}/skills/list-skill-files',
+    query: { skill_id: skillId },
+    description: `List files in skill ${skillId}`,
+  });
+};
+
+/**
+ * Snippet that downloads a skill's `.skill` (zip) bundle and returns it as
+ * base64.
+ *
+ * CRITICAL GOTCHA: Chrome MCP's content filter frequently blocks long base64
+ * payloads, so the snippet's result may be dropped at the `javascript_tool`
+ * boundary. For binary downloads prefer the cookie-file route
+ * `GET /claude-ai/skills/:id/download`, which streams `application/zip`.
+ */
+export const snippetDownloadSkillBundle = (skillId: string): ViaChromeSnippet => {
+  if (!skillId) throw new Error('skillId required');
+  const qs = buildQuery({ skill_id: skillId });
+  const fallbackName = JSON.stringify(`${skillId}.skill`);
+  const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}
+  const orgMatch = document.cookie.match(/lastActiveOrg=(${UUID_RE_STR})/i);
+  if (!orgMatch) return { error: 'no_org' };
+  const url = '/api/organizations/' + orgMatch[1] + '/skills/download-dot-skill-file${qs}';
+  try {
+    const r = await fetch(url, { credentials: 'include', headers: { ...baseHeaders, 'Accept': '*/*' } });
+    if (!r.ok) {
+      const text = await r.text();
+      return { status: r.status, statusText: r.statusText, url, body: text };
+    }
+    const buf = new Uint8Array(await r.arrayBuffer());
+    // base64-encode in-page. WARNING: long base64 strings are often blocked by
+    // Chrome MCP's content filter — prefer the cookie-file download route.
+    let bin = '';
+    for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+    const base64 = btoa(bin);
+    const cd = r.headers.get('content-disposition') || '';
+    const m = cd.match(/filename\\*?=(?:UTF-8''|")?([^";]+)/i);
+    let filename = ${fallbackName};
+    if (m && m[1]) { try { filename = decodeURIComponent(m[1].replace(/"$/, '')); } catch (_e) { filename = m[1].replace(/"$/, ''); } }
+    return { status: r.status, statusText: r.statusText, url, filename, contentType: r.headers.get('content-type') || 'application/zip', size: buf.length, base64 };
+  } catch (e) {
+    return { error: 'fetch_failed', message: String(e && e.message || e), url };
+  }
+})()`;
+  return {
+    snippet,
+    description: `Download .skill bundle for ${skillId} (base64)`,
+    url: `https://claude.ai/api/organizations/{org}/skills/download-dot-skill-file${qs}`,
+    method: 'GET',
+    instructions: INSTRUCTIONS + ' Returns the .skill (zip) as base64. CRITICAL GOTCHA: Chrome MCP\'s content filter frequently blocks long base64 payloads, so this snippet\'s result may be dropped at the tool boundary — for binary downloads prefer the cookie-file route GET /claude-ai/skills/:id/download (streams application/zip).',
+  };
+};
+
+/** WRITE snippet — create a simple (single SKILL.md) skill. */
+export const snippetCreateSkill = (opts: { name: string; description?: string; instructions?: string }): ViaChromeSnippet => {
+  if (!opts.name) throw new Error('name required');
+  return buildSkillsPostSnippet({
+    suffix: 'create-simple-skill',
+    body: { name: opts.name, description: opts.description ?? '', instructions: opts.instructions ?? '' },
+    description: `Create skill "${opts.name}"`,
+    write: true,
+  });
+};
+
+/** WRITE snippet — edit a simple skill (VERSIONED: response carries a NEW id; name not editable). */
+export const snippetEditSkill = (skillId: string, opts: { description?: string; instructions?: string } = {}): ViaChromeSnippet => {
+  if (!skillId) throw new Error('skillId required');
+  return buildSkillsPostSnippet({
+    suffix: 'edit-simple-skill',
+    body: { skill_id: skillId, description: opts.description ?? '', instructions: opts.instructions ?? '' },
+    description: `Edit skill ${skillId} (versioned — returns a new id)`,
+    write: true,
+  });
+};
+
+/** WRITE snippet — enable a skill (id preserved). */
+export const snippetEnableSkill = (skillId: string): ViaChromeSnippet => {
+  if (!skillId) throw new Error('skillId required');
+  return buildSkillsPostSnippet({ suffix: 'enable-skill', body: { skill_id: skillId }, description: `Enable skill ${skillId}`, write: true });
+};
+
+/** WRITE snippet — disable a skill (id preserved). */
+export const snippetDisableSkill = (skillId: string): ViaChromeSnippet => {
+  if (!skillId) throw new Error('skillId required');
+  return buildSkillsPostSnippet({ suffix: 'disable-skill', body: { skill_id: skillId }, description: `Disable skill ${skillId}`, write: true });
+};
+
+/** WRITE (destructive) snippet — delete a skill. */
+export const snippetDeleteSkill = (skillId: string): ViaChromeSnippet => {
+  if (!skillId) throw new Error('skillId required');
+  return buildSkillsPostSnippet({ suffix: 'delete-skill', body: { skill_id: skillId }, description: `Delete skill ${skillId}`, write: true, destructive: true });
+};
+
+/**
+ * WRITE snippet — upload a skill bundle. Decodes the embedded base64 bundle
+ * in-page, wraps it in a Blob, and POSTs it as multipart/form-data (part key
+ * "file"). The bundle is embedded as base64, so large bundles produce a large
+ * snippet; claude.ai hard-limits the zip to < 30 MiB.
+ */
+export const snippetUploadSkill = (opts: {
+  filename: string;
+  contentBase64: string;
+  overwrite?: boolean;
+  checkSkillName?: string;
+  contentType?: string;
+}): ViaChromeSnippet => {
+  if (!opts.filename) throw new Error('filename required');
+  if (!opts.contentBase64) throw new Error('contentBase64 required');
+  const approxBytes = Math.floor((opts.contentBase64.length * 3) / 4);
+  if (approxBytes >= MAX_SKILL_BUNDLE_BYTES) {
+    throw new Error(`Skill bundle is ~${approxBytes} bytes; claude.ai's hard limit is < ${MAX_SKILL_BUNDLE_BYTES} bytes (30 MiB).`);
+  }
+  const query: Record<string, string | number | boolean> = { overwrite: opts.overwrite ?? false };
+  if (opts.checkSkillName) query.check_skill_name = opts.checkSkillName;
+  const qs = buildQuery(query);
+  const contentType = opts.contentType
+    || (/\.(zip|skill)$/i.test(opts.filename) ? 'application/zip' : /\.md$/i.test(opts.filename) ? 'text/markdown' : 'application/octet-stream');
+  const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}
+  const orgMatch = document.cookie.match(/lastActiveOrg=(${UUID_RE_STR})/i);
+  if (!orgMatch) return { error: 'no_org' };
+  const url = '/api/organizations/' + orgMatch[1] + '/skills/upload-skill${qs}';
+  // Decode the embedded base64 bundle into bytes and post as multipart "file".
+  const bin = atob(${JSON.stringify(opts.contentBase64)});
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const form = new FormData();
+  form.append('file', new Blob([bytes], { type: ${JSON.stringify(contentType)} }), ${JSON.stringify(opts.filename)});
+  try {
+    // No 'content-type' header — the browser sets multipart/form-data + boundary.
+    const r = await fetch(url, { method: 'POST', credentials: 'include', headers: { ...baseHeaders, 'Accept': '*/*' }, body: form });
+    const text = await r.text();
+    let body; try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+    return { status: r.status, statusText: r.statusText, url, body };
+  } catch (e) {
+    return { error: 'fetch_failed', message: String(e && e.message || e), url };
+  }
+})()`;
+  return {
+    snippet,
+    description: `Upload skill bundle ${opts.filename}`,
+    url: `https://claude.ai/api/organizations/{org}/skills/upload-skill${qs}`,
+    method: 'POST',
+    instructions: INSTRUCTIONS + ' WRITE — uploads a skill bundle to the user\'s claude.ai account. The bundle is embedded as base64, so large bundles make a large snippet (claude.ai hard-limits the zip to < 30 MiB).',
+  };
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// Native skill passthroughs — rename / duplicate / delete-org (via-chrome)
+//
+// Body shapes confirmed from the web SPA bundle:
+//   rename-skill     {skill_id, new_name}
+//   duplicate-skill  {skill_id, new_name}
+//   delete-org-skill {skill_id}
+// ─────────────────────────────────────────────────────────────────────────
+
+/** WRITE snippet — rename a skill (in place; id preserved). */
+export const snippetRenameSkill = (skillId: string, newName: string): ViaChromeSnippet => {
+  if (!skillId) throw new Error('skillId required');
+  if (!newName) throw new Error('newName required');
+  return buildSkillsPostSnippet({
+    suffix: 'rename-skill',
+    body: { skill_id: skillId, new_name: newName },
+    description: `Rename skill ${skillId} to "${newName}"`,
+    write: true,
+  });
+};
+
+/** WRITE snippet — duplicate a skill. `new_name` is sent only when provided (the SPA always sends it). */
+export const snippetDuplicateSkill = (skillId: string, newName?: string): ViaChromeSnippet => {
+  if (!skillId) throw new Error('skillId required');
+  const body: Record<string, unknown> = { skill_id: skillId };
+  if (newName) body.new_name = newName;
+  return buildSkillsPostSnippet({
+    suffix: 'duplicate-skill',
+    body,
+    description: `Duplicate skill ${skillId}${newName ? ` as "${newName}"` : ''}`,
+    write: true,
+  });
+};
+
+/** WRITE (destructive) snippet — delete an ORG-shared skill (distinct from the personal delete-skill). */
+export const snippetDeleteOrgSkill = (skillId: string): ViaChromeSnippet => {
+  if (!skillId) throw new Error('skillId required');
+  return buildSkillsPostSnippet({
+    suffix: 'delete-org-skill',
+    body: { skill_id: skillId },
+    description: `Delete ORG skill ${skillId}`,
+    write: true,
+    destructive: true,
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// Per-file skill CRUD (via-chrome) — synthesized read-modify-write in-page
+//
+// claude.ai has NO native per-file write endpoint, so these snippets do the
+// whole read-modify-write inside the tab: download the `.skill` bundle, unzip
+// it, add/replace/remove one entry, rezip, and re-upload with overwrite. ZIP
+// codec uses the browser-native DecompressionStream / CompressionStream
+// ('deflate-raw') plus a small CRC-32 — the same scheme as the cookie-file
+// helpers in claudeai-session.ts. Identity is preserved (top folder, SKILL.md
+// name, disabled state), so overwrite replaces the SAME skill.
+//
+// NOTE: the READ snippet returns the file as base64 (Chrome MCP's content
+// filter frequently blocks long base64 payloads — prefer the cookie-file
+// GET /claude-ai/skills/:id/file for reads).
+// ─────────────────────────────────────────────────────────────────────────
+
+// In-page ZIP codec + bundle helpers, shared by the read/put/delete snippets.
+// Defined as plain functions so they don't capture outer scope; the upload
+// helper takes `org` + `baseHeaders` as parameters.
+const SKILL_FILE_CODEC_JS = `
+  const lmCrcTable = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; } return t; })();
+  function lmCrc32(u8) { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = (lmCrcTable[(c ^ u8[i]) & 0xFF] ^ (c >>> 8)) >>> 0; return (c ^ 0xFFFFFFFF) >>> 0; }
+  async function lmInflateRaw(u8) { if (!u8.length) return new Uint8Array(0); const s = new Blob([u8]).stream().pipeThrough(new DecompressionStream('deflate-raw')); return new Uint8Array(await new Response(s).arrayBuffer()); }
+  async function lmDeflateRaw(u8) { if (!u8.length) return new Uint8Array(0); const s = new Blob([u8]).stream().pipeThrough(new CompressionStream('deflate-raw')); return new Uint8Array(await new Response(s).arrayBuffer()); }
+  function lmConcat(arrs) { let len = 0; for (const a of arrs) len += a.length; const out = new Uint8Array(len); let o = 0; for (const a of arrs) { out.set(a, o); o += a.length; } return out; }
+  async function lmUnzip(bytes) {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const u16 = (o) => dv.getUint16(o, true), u32 = (o) => dv.getUint32(o, true);
+    let eocd = -1; const minStart = Math.max(0, bytes.length - 22 - 0xffff);
+    for (let i = bytes.length - 22; i >= minStart; i--) { if (u32(i) === 0x06054b50) { eocd = i; break; } }
+    if (eocd < 0) throw new Error('EOCD not found');
+    const cdCount = u16(eocd + 10), cdOffset = u32(eocd + 16);
+    const entries = []; let p = cdOffset; const dec = new TextDecoder();
+    for (let i = 0; i < cdCount; i++) {
+      if (u32(p) !== 0x02014b50) throw new Error('bad central header @' + p);
+      const method = u16(p + 10), compSize = u32(p + 20), nameLen = u16(p + 28), extraLen = u16(p + 30), commentLen = u16(p + 32), localOff = u32(p + 42);
+      const name = dec.decode(bytes.subarray(p + 46, p + 46 + nameLen));
+      if (u32(localOff) !== 0x04034b50) throw new Error('bad local header for ' + name);
+      const dataStart = localOff + 30 + u16(localOff + 26) + u16(localOff + 28);
+      const comp = bytes.subarray(dataStart, dataStart + compSize);
+      let data; if (method === 0) data = comp.slice(); else if (method === 8) data = await lmInflateRaw(comp); else throw new Error('unsupported method ' + method + ' for ' + name);
+      entries.push({ name: name, data: data, isDirectory: name.endsWith('/') });
+      p += 46 + nameLen + extraLen + commentLen;
+    }
+    return entries;
+  }
+  async function lmZip(entries) {
+    const enc = new TextEncoder(); const locals = [], centrals = []; let offset = 0;
+    for (const e of entries) {
+      const nameBuf = enc.encode(e.name); const flags = 0x0800;
+      let method, stored, crc, uncomp;
+      if (e.isDirectory) { method = 0; stored = new Uint8Array(0); crc = 0; uncomp = 0; }
+      else { uncomp = e.data.length; crc = lmCrc32(e.data); const def = await lmDeflateRaw(e.data); if (def.length < e.data.length) { method = 8; stored = def; } else { method = 0; stored = e.data; } }
+      const lfh = new Uint8Array(30); const ld = new DataView(lfh.buffer);
+      ld.setUint32(0, 0x04034b50, true); ld.setUint16(4, 20, true); ld.setUint16(6, flags, true); ld.setUint16(8, method, true); ld.setUint16(10, 0, true); ld.setUint16(12, 0x21, true); ld.setUint32(14, crc, true); ld.setUint32(18, stored.length, true); ld.setUint32(22, uncomp, true); ld.setUint16(26, nameBuf.length, true); ld.setUint16(28, 0, true);
+      locals.push(lfh, nameBuf, stored);
+      const cdh = new Uint8Array(46); const cd = new DataView(cdh.buffer);
+      cd.setUint32(0, 0x02014b50, true); cd.setUint16(4, 20, true); cd.setUint16(6, 20, true); cd.setUint16(8, flags, true); cd.setUint16(10, method, true); cd.setUint16(12, 0, true); cd.setUint16(14, 0x21, true); cd.setUint32(16, crc, true); cd.setUint32(20, stored.length, true); cd.setUint32(24, uncomp, true); cd.setUint16(28, nameBuf.length, true); cd.setUint16(30, 0, true); cd.setUint16(32, 0, true); cd.setUint16(34, 0, true); cd.setUint16(36, 0, true); cd.setUint32(38, e.isDirectory ? 0x10 : 0, true); cd.setUint32(42, offset, true);
+      centrals.push(cdh, nameBuf); offset += lfh.length + nameBuf.length + stored.length;
+    }
+    const localBuf = lmConcat(locals), centralBuf = lmConcat(centrals);
+    const eocd = new Uint8Array(22); const ed = new DataView(eocd.buffer);
+    ed.setUint32(0, 0x06054b50, true); ed.setUint16(8, entries.length, true); ed.setUint16(10, entries.length, true); ed.setUint32(12, centralBuf.length, true); ed.setUint32(16, localBuf.length, true); ed.setUint16(20, 0, true);
+    return lmConcat([localBuf, centralBuf, eocd]);
+  }
+  function lmTopFolder(entries) {
+    const sm = entries.find((e) => !e.isDirectory && e.name.split('/').pop() === 'SKILL.md');
+    if (sm) { const i = sm.name.lastIndexOf('/'); return i >= 0 ? sm.name.slice(0, i) : ''; }
+    const firsts = new Set(entries.filter((e) => e.name.includes('/')).map((e) => e.name.split('/')[0]));
+    return firsts.size === 1 ? Array.from(firsts)[0] : '';
+  }
+  function lmNormPath(p) { return String(p || '').replace(/^[.][/]/, '').replace(/^[/]+/, ''); }
+  function lmResolve(entries, wantPath) {
+    const norm = lmNormPath(wantPath), top = lmTopFolder(entries);
+    if (entries.some((e) => e.name === norm)) return { full: norm, top: top };
+    if (top && (norm === top || norm.indexOf(top + '/') === 0)) return { full: norm, top: top };
+    return { full: top ? (top + '/' + norm) : norm, top: top };
+  }
+  function lmSkillMdName(md) {
+    const lines = md.split('\\n').map((l) => l.replace(/\\r$/, ''));
+    if (lines[0] !== '---') return null;
+    for (let i = 1; i < lines.length; i++) { if (lines[i] === '---') break; const m = lines[i].match(/^name:\\s*(.*)$/); if (m) { let v = m[1].trim(); if (v.length >= 2 && ((v[0] === '"' && v[v.length-1] === '"') || (v[0] === "'" && v[v.length-1] === "'"))) v = v.slice(1, -1); return v; } }
+    return null;
+  }
+  function lmSetSkillMdName(md, name) {
+    const lines = md.split('\\n'); if (lines[0].replace(/\\r$/, '') !== '---') return md;
+    const q = JSON.stringify(name); let replaced = false;
+    for (let i = 1; i < lines.length; i++) { const bare = lines[i].replace(/\\r$/, ''); if (bare === '---') break; if (/^name:/.test(bare)) { lines[i] = 'name: ' + q; replaced = true; break; } }
+    if (!replaced) lines.splice(1, 0, 'name: ' + q);
+    return lines.join('\\n');
+  }
+  async function lmRebuildUpload(org, baseHeaders, entries, skillName, oldSkillId) {
+    const rebuilt = await lmZip(entries);
+    if (rebuilt.length >= 31457280) return { error: 'bundle_too_large', size: rebuilt.length };
+    let wasDisabled = false;
+    try { const lr = await fetch('/api/organizations/' + org + '/skills/list-skills', { credentials: 'include', headers: { ...baseHeaders, 'Accept': '*/*' } }); if (lr.ok) { const lj = await lr.json(); const arr = Array.isArray(lj) ? lj : ((lj && lj.skills) || []); const rec = arr.find((s) => (s.id || s.skill_id || s.skillId) === oldSkillId); wasDisabled = !!(rec && rec.enabled === false); } } catch (e) {}
+    const q = new URLSearchParams({ overwrite: 'true' }); if (skillName) q.append('check_skill_name', skillName);
+    const upUrl = '/api/organizations/' + org + '/skills/upload-skill?' + q;
+    const form = new FormData(); form.append('file', new Blob([rebuilt], { type: 'application/zip' }), (skillName || 'skill') + '.zip');
+    const ur = await fetch(upUrl, { method: 'POST', credentials: 'include', headers: { ...baseHeaders, 'Accept': '*/*' }, body: form });
+    const ut = await ur.text(); let ub; try { ub = ut ? JSON.parse(ut) : null; } catch (e) { ub = ut; }
+    let newSkillId = null; if (ub && ub.skill) newSkillId = ub.skill.id || ub.skill.skill_id || ub.skill.skillId || null; if (!newSkillId && ub) newSkillId = ub.id || ub.skill_id || ub.skillId || null;
+    let reDisabled = false;
+    if (ur.ok && wasDisabled && newSkillId) { try { const dr = await fetch('/api/organizations/' + org + '/skills/disable-skill', { method: 'POST', credentials: 'include', headers: { ...baseHeaders, 'content-type': 'application/json', 'Accept': '*/*' }, body: JSON.stringify({ skill_id: newSkillId }) }); reDisabled = dr.ok; } catch (e) {} }
+    return { status: ur.status, statusText: ur.statusText, url: upUrl, newSkillId: newSkillId, skillName: skillName, entryCount: entries.length, bundleBytes: rebuilt.length, reDisabled: reDisabled, body: ub };
+  }
+`;
+
+/**
+ * READ snippet — extract one file from a skill bundle (in-page download +
+ * unzip), returning it as base64. CRITICAL GOTCHA: Chrome MCP's content filter
+ * frequently blocks long base64 payloads, so the result may be dropped at the
+ * `javascript_tool` boundary — prefer the cookie-file GET /claude-ai/skills/:id/file.
+ */
+export const snippetReadSkillFile = (skillId: string, filePath: string): ViaChromeSnippet => {
+  if (!skillId) throw new Error('skillId required');
+  if (!filePath) throw new Error('path required');
+  const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}${SKILL_FILE_CODEC_JS}
+  const orgMatch = document.cookie.match(/lastActiveOrg=(${UUID_RE_STR})/i);
+  if (!orgMatch) return { error: 'no_org' };
+  const org = orgMatch[1];
+  const skillId = ${JSON.stringify(skillId)};
+  const wantPath = ${JSON.stringify(filePath)};
+  const dlUrl = '/api/organizations/' + org + '/skills/download-dot-skill-file?skill_id=' + encodeURIComponent(skillId);
+  let r; try { r = await fetch(dlUrl, { credentials: 'include', headers: { ...baseHeaders, 'Accept': '*/*' } }); } catch (e) { return { error: 'fetch_failed', message: String(e && e.message || e), url: dlUrl }; }
+  if (!r.ok) { const t = await r.text(); return { status: r.status, statusText: r.statusText, url: dlUrl, body: t }; }
+  const bytes = new Uint8Array(await r.arrayBuffer());
+  let entries; try { entries = await lmUnzip(bytes); } catch (e) { return { error: 'unzip_failed', message: String(e && e.message || e) }; }
+  const res = lmResolve(entries, wantPath);
+  const entry = entries.find((e) => e.name === res.full && !e.isDirectory);
+  if (!entry) return { found: false, resolvedPath: res.full, files: entries.filter((e) => !e.isDirectory).map((e) => e.name) };
+  let bin = ''; for (let i = 0; i < entry.data.length; i++) bin += String.fromCharCode(entry.data[i]);
+  return { found: true, resolvedPath: res.full, size: entry.data.length, base64: btoa(bin) };
+})()`;
+  return {
+    snippet,
+    description: `Read file "${filePath}" from skill ${skillId} (base64)`,
+    url: `https://claude.ai/api/organizations/{org}/skills/download-dot-skill-file?skill_id=${encodeURIComponent(skillId)}`,
+    method: 'GET',
+    instructions: INSTRUCTIONS + ' Returns the file as base64. CRITICAL GOTCHA: Chrome MCP\'s content filter frequently blocks long base64 — for file reads prefer the cookie-file route GET /claude-ai/skills/:id/file (streams the bytes with a detected content-type).',
+  };
+};
+
+/**
+ * WRITE snippet — add/replace one file in a skill bundle via in-page
+ * read-modify-write (download → unzip → set entry → rezip → upload overwrite).
+ * `contentBase64` carries the new file bytes. Mints a NEW skill id; preserves
+ * the top folder, SKILL.md name (pinned on a SKILL.md write), and disabled state.
+ */
+export const snippetPutSkillFile = (skillId: string, filePath: string, contentBase64: string): ViaChromeSnippet => {
+  if (!skillId) throw new Error('skillId required');
+  if (!filePath) throw new Error('path required');
+  if (typeof contentBase64 !== 'string') throw new Error('contentBase64 required');
+  const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}${SKILL_FILE_CODEC_JS}
+  const orgMatch = document.cookie.match(/lastActiveOrg=(${UUID_RE_STR})/i);
+  if (!orgMatch) return { error: 'no_org' };
+  const org = orgMatch[1];
+  const skillId = ${JSON.stringify(skillId)};
+  const wantPath = ${JSON.stringify(filePath)};
+  const cbin = atob(${JSON.stringify(contentBase64)}); const content = new Uint8Array(cbin.length); for (let i = 0; i < cbin.length; i++) content[i] = cbin.charCodeAt(i);
+  const dlUrl = '/api/organizations/' + org + '/skills/download-dot-skill-file?skill_id=' + encodeURIComponent(skillId);
+  let r; try { r = await fetch(dlUrl, { credentials: 'include', headers: { ...baseHeaders, 'Accept': '*/*' } }); } catch (e) { return { error: 'fetch_failed', message: String(e && e.message || e), url: dlUrl }; }
+  if (!r.ok) { const t = await r.text(); return { error: 'download_failed', status: r.status, statusText: r.statusText, url: dlUrl, body: t }; }
+  const bytes = new Uint8Array(await r.arrayBuffer());
+  let entries; try { entries = await lmUnzip(bytes); } catch (e) { return { error: 'unzip_failed', message: String(e && e.message || e) }; }
+  const res = lmResolve(entries, wantPath);
+  const smEntry = entries.find((e) => !e.isDirectory && e.name.split('/').pop() === 'SKILL.md');
+  const skillName = smEntry ? lmSkillMdName(new TextDecoder().decode(smEntry.data)) : null;
+  let newData = content;
+  if (res.full.split('/').pop() === 'SKILL.md' && skillName) newData = new TextEncoder().encode(lmSetSkillMdName(new TextDecoder().decode(content), skillName));
+  const idx = entries.findIndex((e) => e.name === res.full);
+  if (idx >= 0) entries[idx] = { name: res.full, data: newData, isDirectory: false }; else entries.push({ name: res.full, data: newData, isDirectory: false });
+  const out = await lmRebuildUpload(org, baseHeaders, entries, skillName, skillId);
+  return { ...out, resolvedPath: res.full };
+})()`;
+  return {
+    snippet,
+    description: `Put file "${filePath}" into skill ${skillId} (read-modify-write)`,
+    url: `https://claude.ai/api/organizations/{org}/skills/upload-skill?overwrite=true`,
+    method: 'POST',
+    instructions: INSTRUCTIONS + ' WRITE — read-modify-write of the whole skill bundle (download → unzip → set file → rezip → upload overwrite). Mints a NEW skill id (returned as `newSkillId`); the content is embedded as base64 so a large file makes a large snippet (the rebuilt zip must stay < 30 MiB).',
+  };
+};
+
+/**
+ * WRITE (destructive) snippet — remove one file from a skill bundle via in-page
+ * read-modify-write. Errors if the path is absent; refuses to delete SKILL.md.
+ * Mints a NEW skill id; preserves the top folder, SKILL.md name, and disabled state.
+ */
+export const snippetDeleteSkillFile = (skillId: string, filePath: string): ViaChromeSnippet => {
+  if (!skillId) throw new Error('skillId required');
+  if (!filePath) throw new Error('path required');
+  const snippet = `(async () => {${CLAUDEAI_HEADER_SNIPPET}${SKILL_FILE_CODEC_JS}
+  const orgMatch = document.cookie.match(/lastActiveOrg=(${UUID_RE_STR})/i);
+  if (!orgMatch) return { error: 'no_org' };
+  const org = orgMatch[1];
+  const skillId = ${JSON.stringify(skillId)};
+  const wantPath = ${JSON.stringify(filePath)};
+  const dlUrl = '/api/organizations/' + org + '/skills/download-dot-skill-file?skill_id=' + encodeURIComponent(skillId);
+  let r; try { r = await fetch(dlUrl, { credentials: 'include', headers: { ...baseHeaders, 'Accept': '*/*' } }); } catch (e) { return { error: 'fetch_failed', message: String(e && e.message || e), url: dlUrl }; }
+  if (!r.ok) { const t = await r.text(); return { error: 'download_failed', status: r.status, statusText: r.statusText, url: dlUrl, body: t }; }
+  const bytes = new Uint8Array(await r.arrayBuffer());
+  let entries; try { entries = await lmUnzip(bytes); } catch (e) { return { error: 'unzip_failed', message: String(e && e.message || e) }; }
+  const res = lmResolve(entries, wantPath);
+  const idx = entries.findIndex((e) => e.name === res.full && !e.isDirectory);
+  if (idx < 0) return { error: 'file_not_found', resolvedPath: res.full, files: entries.filter((e) => !e.isDirectory).map((e) => e.name) };
+  if (res.full.split('/').pop() === 'SKILL.md') return { error: 'refusing_to_delete_skill_md', resolvedPath: res.full };
+  const smEntry = entries.find((e) => !e.isDirectory && e.name.split('/').pop() === 'SKILL.md');
+  const skillName = smEntry ? lmSkillMdName(new TextDecoder().decode(smEntry.data)) : null;
+  entries.splice(idx, 1);
+  const out = await lmRebuildUpload(org, baseHeaders, entries, skillName, skillId);
+  return { ...out, resolvedPath: res.full };
+})()`;
+  return {
+    snippet,
+    description: `Delete file "${filePath}" from skill ${skillId} (read-modify-write)`,
+    url: `https://claude.ai/api/organizations/{org}/skills/upload-skill?overwrite=true`,
+    method: 'POST',
+    instructions: INSTRUCTIONS + ' WRITE (DESTRUCTIVE) — read-modify-write removing one file from the bundle, then upload overwrite. Mints a NEW skill id (returned as `newSkillId`). Refuses to delete SKILL.md.',
+  };
+};

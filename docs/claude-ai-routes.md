@@ -57,6 +57,28 @@ How to capture the cookie:
 | `GET` | `/claude-ai/projects?limit=&include_harmony_projects=&creator_filter=` | List projects. |
 | `GET` | `/claude-ai/artifacts/:uuid/versions` | Artifact version history. |
 
+#### Personal Agent Skills
+
+CRUD for your claude.ai **personal Agent Skills**. Distinct from the org-scoped `GET /claude-ai/org/skills` read above — same `list-skills` upstream endpoint, but this is the full personal-skills CRUD family. Mutating routes are **WRITES** against your real account and invalidate the short-TTL skills-list cache. (See [Personal Agent Skills](#personal-agent-skills) below for semantics: `source`/`enabled`, versioned edits, the 30 MiB upload ceiling, and the download channels.)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/claude-ai/skills?refresh=true` | List personal skills (`list-skills`). Short-TTL in-memory cache; `?refresh=true` bypasses it. Each entry: `{ id, name, description, source, enabled, partition_by, user_invocable, … }`. |
+| `GET` | `/claude-ai/skills/:id/files` | File paths inside a skill (`list-skill-files`). Returns paths for `source=custom`; built-in (`anthropic-example`) skills return `[]`. |
+| `GET` | `/claude-ai/skills/:id/download[?format=base64]` | Download the `.skill` (zip) bundle (`download-dot-skill-file`). **Default streams `application/zip`**; `?format=base64` returns JSON `{ filename, contentType, size, base64 }` for JSON-only transports. |
+| `POST` | `/claude-ai/skills` | **WRITE** — create a simple (single `SKILL.md`) skill. Body: `{ name, description?, instructions? }`. |
+| `POST` | `/claude-ai/skills/upload` | **WRITE** — upload a skill bundle. Body: `{ filename, contentBase64, overwrite?, checkSkillName?, contentType? }`. Sent as multipart `file` (built server-side). Hard limit: zip `< 30 MiB` (31457280 bytes). Registered **before** `/skills/:id` so the literal `upload` isn't captured as an `:id`. |
+| `POST` | `/claude-ai/skills/:id` | **WRITE** — edit a simple skill. Body: `{ description?, instructions? }`. **Versioned** — returns a NEW skill id each edit; `name` is not editable. |
+| `POST` | `/claude-ai/skills/:id/enable` | **WRITE** — enable a skill (id preserved). |
+| `POST` | `/claude-ai/skills/:id/disable` | **WRITE** — disable a skill (id preserved). |
+| `DELETE` | `/claude-ai/skills/:id` | **WRITE (destructive)** — delete a (personal) skill. |
+| `GET` | `/claude-ai/skills/:id/file?path=ENC[&format=base64]` | Read one file out of the bundle (synthesized — see [Per-file CRUD](#per-file-crud-synthesized) below). Default **streams the bytes** with a content-type detected from the extension; `?format=base64` → JSON `{ path, contentType, size, base64 }`. `path` is URL-encoded and resolved against the bundle's top-level folder. |
+| `PUT` | `/claude-ai/skills/:id/file` | **WRITE** — add or replace one file (read-modify-write of the whole bundle). Body: `{ path, content? \| contentBase64? }` (`content` = utf-8 text; `contentBase64` = base64 bytes). Returns the **NEW skill id**. |
+| `DELETE` | `/claude-ai/skills/:id/file?path=ENC` | **WRITE (destructive)** — remove one file (RMW). `404 SKILL_FILE_NOT_FOUND` if absent; refuses to delete `SKILL.md`. |
+| `POST` | `/claude-ai/skills/:id/rename` | **WRITE** — rename in place. Body: `{ name }` (alias `newName`). Native (`rename-skill` → `{ skill_id, new_name }`). |
+| `POST` | `/claude-ai/skills/:id/duplicate` | **WRITE** — duplicate the skill. Body: `{ name? }` (alias `newName`). Native (`duplicate-skill` → `{ skill_id, new_name }`). |
+| `POST` | `/claude-ai/skills/:id/delete-org` | **WRITE (destructive)** — delete an **org-shared** skill (native `delete-org-skill` → `{ skill_id }`); distinct from the personal `DELETE /claude-ai/skills/:id`. |
+
 #### Account / identity
 
 | Method | Path | Description |
@@ -176,6 +198,28 @@ All accept a JSON body. All return `{ success: true, data: { snippet, descriptio
 | `POST` | `/claude-ai/via-chrome/conversations/:uuid/title` | `{ title? }` — **WRITE** snippet (omit `title` for auto-title). |
 | `POST` | `/claude-ai/via-chrome/projects` | `{ limit?, includeHarmonyProjects?, creatorFilter? }` |
 | `POST` | `/claude-ai/via-chrome/artifacts/:uuid/versions` | `{}` |
+
+#### Personal Agent Skills
+
+Snippet mirrors of the cookie-file skills routes. Mutating snippets carry the WRITE warning in their `instructions`.
+
+| Method | Path | Body |
+|---|---|---|
+| `POST` | `/claude-ai/via-chrome/skills` | `{}` — list personal skills |
+| `POST` | `/claude-ai/via-chrome/skills/create` | `{ name, description?, instructions? }` — **WRITE** snippet |
+| `POST` | `/claude-ai/via-chrome/skills/upload` | `{ filename, contentBase64, overwrite?, checkSkillName?, contentType? }` — **WRITE** snippet; decodes the base64 bundle in-page → multipart `file`. Zip `< 30 MiB`. Large bundles make a large snippet. |
+| `POST` | `/claude-ai/via-chrome/skills/:id/files` | `{}` |
+| `POST` | `/claude-ai/via-chrome/skills/:id/download` | `{}` — snippet returns the `.skill` (zip) as base64. **CRITICAL GOTCHA: Chrome MCP's content filter frequently blocks long base64 payloads, so the result may be dropped at the `javascript_tool` boundary — for binary downloads prefer the cookie-file `GET /claude-ai/skills/:id/download` (streams `application/zip`).** |
+| `POST` | `/claude-ai/via-chrome/skills/:id/edit` | `{ description?, instructions? }` — **WRITE** snippet (versioned — returns a new id) |
+| `POST` | `/claude-ai/via-chrome/skills/:id/enable` | `{}` — **WRITE** snippet |
+| `POST` | `/claude-ai/via-chrome/skills/:id/disable` | `{}` — **WRITE** snippet |
+| `POST` | `/claude-ai/via-chrome/skills/:id/delete` | `{}` — **WRITE (destructive)** snippet (personal `delete-skill`) |
+| `POST` | `/claude-ai/via-chrome/skills/:id/file/read` | `{ path }` — snippet does an in-page download+unzip and returns the file as base64. **Same base64 gotcha — for reads prefer the cookie-file `GET /claude-ai/skills/:id/file`.** |
+| `POST` | `/claude-ai/via-chrome/skills/:id/file/put` | `{ path, content? \| contentBase64? }` — **WRITE** snippet; whole-bundle read-modify-write **in-page** (download → unzip → set file → rezip → upload overwrite) using the browser-native `DecompressionStream`/`CompressionStream`. Returns the NEW skill id. |
+| `POST` | `/claude-ai/via-chrome/skills/:id/file/delete` | `{ path }` — **WRITE (destructive)** snippet; in-page RMW. |
+| `POST` | `/claude-ai/via-chrome/skills/:id/rename` | `{ name }` (alias `newName`) — **WRITE** snippet |
+| `POST` | `/claude-ai/via-chrome/skills/:id/duplicate` | `{ name? }` (alias `newName`) — **WRITE** snippet |
+| `POST` | `/claude-ai/via-chrome/skills/:id/delete-org` | `{}` — **WRITE (destructive)** snippet (org-shared `delete-org-skill`) |
 
 #### Account / identity
 
@@ -483,3 +527,155 @@ Pass `?events=full` to also receive the raw event list.
 - The conversation must already exist — the completion route itself does not create one. Use `POST /claude-ai/conversations` (cookie-file) or `POST /claude-ai/via-chrome/conversations/create` (via-chrome) first, then send a completion to the returned `uuid`. Clean up test conversations with `DELETE /claude-ai/conversations/:uuid` or `POST /claude-ai/via-chrome/conversations/:uuid/delete`.
 - `parentMessageUuid` is auto-fetched from `chat_conversations/:uuid`. If the conversation is empty, the call errors with `no_leaf_message_uuid`.
 - The via-chrome snippet warns explicitly in its `instructions` field: *"This snippet is a WRITE — it creates real message history in the user's claude.ai account and consumes tokens. Verify intent before running."*
+
+---
+
+## Personal Agent Skills
+
+CRUD for your claude.ai **personal Agent Skills** — wraps `/api/organizations/{org}/skills/*`. Both families expose it (cookie-file `/claude-ai/skills/...` and via-chrome `/claude-ai/via-chrome/skills/...`). The reads are safe; **create / upload / edit / enable / disable / delete are WRITES** against your real account.
+
+### Semantics
+
+- **`source`** — `'custom'` (you authored it), `'anthropic-example'` (built-in template), or `'plugin'`. Built-ins are read-only: `list-skill-files` returns `[]` for them.
+- **`enabled`** — whether the skill is active. Toggle with `enable` / `disable`; these **preserve the skill id**.
+- **Versioned edits** — `POST /claude-ai/skills/:id` (edit-simple-skill) returns a **NEW skill id every time**; the old id is superseded. `name` is not editable (create a new skill to rename). Re-read the list after an edit to pick up the new id.
+- **Simple vs uploaded skills** — `create-simple-skill` / `edit-simple-skill` manage a single `SKILL.md` (name + description + instructions). `upload-skill` takes a full bundle (multiple files, scripts, resources) as a zip.
+- **Upload size** — the bundle (zip) must be **`< 30 MiB` (31457280 bytes)**. lm-assist rejects oversized bundles locally (`BUNDLE_TOO_LARGE`) before hitting claude.ai.
+- **Writes invalidate the cache** — the `GET /claude-ai/skills` list is cached in-memory with a short TTL (default 60 s). Every write clears it; `?refresh=true` forces a fresh read.
+
+### Download channels
+
+`GET /claude-ai/skills/:id/download` returns the `.skill` bundle (a zip):
+
+- **Default** — streams `application/zip` (binary). The hub relay base64-encodes it transparently by content-type, so it's relay-safe.
+- **`?format=base64`** — returns JSON `{ filename, contentType, size, base64 }` for callers that can't accept a binary body.
+- **via-chrome** — `POST /claude-ai/via-chrome/skills/:id/download` produces a snippet that returns the zip as base64. **CRITICAL GOTCHA:** Chrome MCP's content filter frequently blocks long base64 payloads, so the snippet's result may be dropped at the `javascript_tool` boundary. **For binary downloads prefer the cookie-file route** — it streams `application/zip` with no such limit.
+
+### Per-file CRUD (synthesized)
+
+claude.ai has **no native per-file write endpoint** — the confirmed skill set is `create-simple-skill`, `edit-simple-skill`, `rename-skill`, `duplicate-skill`, `upload-skill`, `download-dot-skill-file`, `list-skills`, `list-org-skills`, `delete-skill`, `delete-org-skill`, `enable-skill`, `disable-skill`, and `list-skill-files`. So lm-assist synthesizes single-file read / update / delete as a **read-modify-write (RMW) of the entire `.skill` bundle**:
+
+```
+download-dot-skill-file → unzip → add/replace/remove one entry → rezip → upload-skill?overwrite=true
+```
+
+The ZIP codec uses Node's built-in `zlib` (`inflateRaw`/`deflateRaw`) with a hand-parsed/-built central directory — claude.ai bundles are real DEFLATE-compressed zips, so a store-only reader can't open them. (The via-chrome mirror does the same RMW **in-page** with the browser-native `DecompressionStream`/`CompressionStream`.)
+
+**Path resolution.** `path` is matched against the bundle entries: an exact match wins, otherwise it's qualified with the bundle's top-level folder. So for a `skill-creator/…` bundle you can pass either `scripts/foo.py` or `skill-creator/scripts/foo.py`. Absolute paths and `..` segments are rejected.
+
+**Caveats — read these before chaining writes:**
+
+- **Versioned / new id on every write.** Like `edit-simple-skill`, `upload-skill?overwrite` mints a **NEW skill id** each call and supersedes the old one. Every write route returns `newSkillId` — chain subsequent writes against *that*, not the original id.
+- **Non-atomic + serialized.** RMW is download-then-upload (not atomic). Concurrent file writes to one skill are **serialized in-process** by a per-skill mutex so they can't clobber each other; cross-process/cross-host concurrency is still last-writer-wins.
+- **Identity preserved.** The bundle's top-level folder and the `SKILL.md` frontmatter `name` are kept intact, and `check_skill_name` is sent as a server-side guard so `overwrite` replaces the **same** skill (never creating a duplicate). Writing `SKILL.md` itself pins the `name` back to the original (a per-file write never renames — use `/rename` for that).
+- **Disabled state preserved.** `overwrite` re-enables a skill, so if it was disabled the RMW re-applies `disable-skill` afterwards (reported as `reDisabled: true`).
+- **30 MiB ceiling.** The rebuilt bundle is rejected locally (`BUNDLE_TOO_LARGE` / error) if it reaches claude.ai's `< 31457280`-byte limit.
+- **Cache.** Every write invalidates the short-TTL skills-list cache.
+- **`SKILL.md` is protected** from `DELETE .../file` (deleting it would orphan the bundle) — delete the whole skill instead.
+- **via-chrome file read** returns the file as **base64**, which Chrome MCP's content filter frequently blocks — prefer the cookie-file `GET /claude-ai/skills/:id/file` (it streams the bytes with a detected content-type).
+
+### Native passthroughs (rename / duplicate / delete-org)
+
+Three additional **native** claude.ai skill endpoints, with request bodies confirmed by reading the web SPA bundle (`index-<hash>.js`):
+
+| Route | Upstream | Confirmed body |
+|---|---|---|
+| `POST /claude-ai/skills/:id/rename` | `skills/rename-skill` | `{ skill_id, new_name }` |
+| `POST /claude-ai/skills/:id/duplicate` | `skills/duplicate-skill` | `{ skill_id, new_name }` (the SPA always sends `new_name`; lm-assist sends it only when a `name`/`newName` is provided) |
+| `POST /claude-ai/skills/:id/delete-org` | `skills/delete-org-skill` | `{ skill_id }` (org-shared twin of the personal `delete-skill`) |
+
+`rename` preserves the skill id; `duplicate` creates a **new** skill (its own id). All three are WRITES and invalidate the skills-list cache.
+
+### Examples (cookie-file path)
+
+```bash
+# List personal skills (cached; ?refresh=true bypasses)
+curl -s http://localhost:3100/claude-ai/skills | jq '.data.skills[] | {id, name, source, enabled}'
+
+# Files inside a custom skill (built-ins return [])
+curl -s http://localhost:3100/claude-ai/skills/<skill_id>/files | jq '.data.file_paths'
+
+# Download the .skill bundle (streams application/zip)
+curl -s http://localhost:3100/claude-ai/skills/<skill_id>/download -o skill.zip
+
+# …or as base64 JSON
+curl -s 'http://localhost:3100/claude-ai/skills/<skill_id>/download?format=base64' | jq -r '.data.base64' | base64 -d > skill.zip
+
+# Create a simple skill (WRITE)
+curl -s -X POST http://localhost:3100/claude-ai/skills \
+  -H 'content-type: application/json' \
+  -d '{"name":"my-skill","description":"What it does and when to use it","instructions":"Step-by-step instructions for Claude."}'
+
+# Upload a skill bundle (WRITE) — base64-encode the zip first
+curl -s -X POST http://localhost:3100/claude-ai/skills/upload \
+  -H 'content-type: application/json' \
+  -d "{\"filename\":\"my-skill.zip\",\"contentBase64\":\"$(base64 -w0 my-skill.zip)\",\"overwrite\":false}"
+
+# Edit a simple skill (WRITE; returns a NEW id)
+curl -s -X POST http://localhost:3100/claude-ai/skills/<skill_id> \
+  -H 'content-type: application/json' \
+  -d '{"description":"Updated description","instructions":"Updated instructions."}'
+
+# Enable / disable (WRITE; id preserved)
+curl -s -X POST http://localhost:3100/claude-ai/skills/<skill_id>/enable
+curl -s -X POST http://localhost:3100/claude-ai/skills/<skill_id>/disable
+
+# Delete (WRITE; destructive)
+curl -s -X DELETE http://localhost:3100/claude-ai/skills/<skill_id>
+
+# ── Per-file CRUD (synthesized read-modify-write) ──
+
+# Read one file (streams bytes; ?format=base64 for JSON). path is URL-encoded.
+curl -s 'http://localhost:3100/claude-ai/skills/<skill_id>/file?path=scripts%2Fhello.py' -o hello.py
+
+# Add / replace a text file (WRITE; returns the NEW skill id in data.newSkillId)
+curl -s -X PUT http://localhost:3100/claude-ai/skills/<skill_id>/file \
+  -H 'content-type: application/json' \
+  -d '{"path":"scripts/hello.py","content":"print(\"hi\")\n"}'
+
+# Add / replace a binary file (base64)
+curl -s -X PUT http://localhost:3100/claude-ai/skills/<skill_id>/file \
+  -H 'content-type: application/json' \
+  -d "{\"path\":\"assets/logo.png\",\"contentBase64\":\"$(base64 -w0 logo.png)\"}"
+
+# Remove a file (WRITE; destructive) — use the latest id from the previous write
+curl -s -X DELETE 'http://localhost:3100/claude-ai/skills/<skill_id>/file?path=scripts%2Fhello.py'
+
+# ── Native passthroughs ──
+
+# Rename in place (WRITE)
+curl -s -X POST http://localhost:3100/claude-ai/skills/<skill_id>/rename \
+  -H 'content-type: application/json' -d '{"name":"my-renamed-skill"}'
+
+# Duplicate (WRITE; creates a new skill)
+curl -s -X POST http://localhost:3100/claude-ai/skills/<skill_id>/duplicate \
+  -H 'content-type: application/json' -d '{"name":"my-skill-copy"}'
+
+# Delete an ORG-shared skill (WRITE; destructive) — distinct from the personal delete above
+curl -s -X POST http://localhost:3100/claude-ai/skills/<skill_id>/delete-org
+```
+
+### Examples (via-chrome path)
+
+Each returns a `{ snippet, … }`; pass `snippet` to `mcp__claude-in-chrome__javascript_tool` in an authenticated claude.ai tab (see the via-chrome workflow above).
+
+```bash
+# List skills
+curl -s -X POST http://localhost:3100/claude-ai/via-chrome/skills -d '{}' | jq -r '.data.snippet'
+
+# Create (WRITE)
+curl -s -X POST http://localhost:3100/claude-ai/via-chrome/skills/create \
+  -H 'content-type: application/json' \
+  -d '{"name":"my-skill","description":"…","instructions":"…"}' | jq -r '.data.snippet'
+
+# Enable / delete (WRITE)
+curl -s -X POST http://localhost:3100/claude-ai/via-chrome/skills/<skill_id>/enable -d '{}' | jq -r '.data.snippet'
+curl -s -X POST http://localhost:3100/claude-ai/via-chrome/skills/<skill_id>/delete -d '{}' | jq -r '.data.snippet'
+
+# Per-file put (WRITE; in-page read-modify-write) and rename
+curl -s -X POST http://localhost:3100/claude-ai/via-chrome/skills/<skill_id>/file/put \
+  -H 'content-type: application/json' \
+  -d '{"path":"scripts/hello.py","content":"print(\"hi\")\n"}' | jq -r '.data.snippet'
+curl -s -X POST http://localhost:3100/claude-ai/via-chrome/skills/<skill_id>/rename \
+  -H 'content-type: application/json' -d '{"name":"my-renamed-skill"}' | jq -r '.data.snippet'
+```

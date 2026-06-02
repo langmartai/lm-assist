@@ -44,6 +44,14 @@ const claudeAiCache: ClaudeAiCache = createClaudeAiCache({
 // Daily eviction sweep — best-effort, does not block server startup.
 setInterval(() => { claudeAiCache.sweep().catch(() => {}); }, 24 * 60 * 60 * 1000).unref();
 
+// Short-TTL in-memory cache for the personal skills list (mirrors the
+// conversations-list cache behavior). Writes invalidate it; `?refresh=true`
+// bypasses it. Kept in-memory (not on the conversation disk cache) since the
+// shape is different and the list is small.
+const SKILLS_LIST_TTL_MS = CACHE_TTL_SEC * 1000;
+let skillsListCache: { data: unknown; expiresAt: number } | null = null;
+function invalidateSkillsListCache(): void { skillsListCache = null; }
+
 import type { RouteHandler, RouteContext } from '../index';
 import {
   getClaudeAISessionStatus,
@@ -77,6 +85,22 @@ import {
   setConversationTitle,
   createConversation,
   deleteConversation,
+  listSkills,
+  listSkillFiles,
+  downloadSkillBundle,
+  createSimpleSkill,
+  editSimpleSkill,
+  uploadSkill,
+  deleteSkill,
+  enableSkill,
+  disableSkill,
+  readSkillFile,
+  putSkillFile,
+  deleteSkillFile,
+  renameSkill,
+  duplicateSkill,
+  deleteOrgSkill,
+  SkillFileNotFoundError,
 } from '../../utils/claudeai-session';
 import {
   buildViaChromeSnippet,
@@ -107,6 +131,21 @@ import {
   snippetSetConversationTitle,
   snippetCreateConversation,
   snippetDeleteConversation,
+  snippetListSkills,
+  snippetListSkillFiles,
+  snippetDownloadSkillBundle,
+  snippetCreateSkill,
+  snippetEditSkill,
+  snippetEnableSkill,
+  snippetDisableSkill,
+  snippetDeleteSkill,
+  snippetUploadSkill,
+  snippetReadSkillFile,
+  snippetPutSkillFile,
+  snippetDeleteSkillFile,
+  snippetRenameSkill,
+  snippetDuplicateSkill,
+  snippetDeleteOrgSkill,
 } from '../../utils/claudeai-via-chrome';
 import {
   listChromeProfiles,
@@ -543,6 +582,442 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
         } catch (err) { return catchOAuth(err); }
       } },
 
+    // ─── Personal Agent Skills (cookie-file path) ───
+    //
+    //   CRUD for the user's claude.ai personal skills. Distinct from the
+    //   org-scoped GET /claude-ai/org/skills above (same upstream list-skills
+    //   endpoint, separate family). Mutating routes (POST/DELETE) are WRITES
+    //   against the real account and invalidate the skills-list cache.
+    //
+    //   ROUTE ORDER (first-match-wins): POST /skills/upload MUST precede
+    //   POST /skills/:id, or the literal "upload" is captured as :id by that
+    //   route's [^/?]+ group. enable/disable/files/download have distinct
+    //   suffixes so they never collide with the bare :id route.
+
+    // GET /claude-ai/skills — list personal skills (short-TTL cache; ?refresh=true bypasses).
+    {
+      method: 'GET',
+      pattern: /^\/claude-ai\/skills$/,
+      handler: async (req) => {
+        try {
+          const forceRefresh = (req.query || {}).refresh === 'true';
+          if (!forceRefresh && skillsListCache && skillsListCache.expiresAt > Date.now()) {
+            return { success: true, data: skillsListCache.data, _cached: true };
+          }
+          const r = await listSkills();
+          const wrapped = upstreamWrap(r);
+          if (wrapped.success) {
+            skillsListCache = { data: (wrapped as { data: unknown }).data, expiresAt: Date.now() + SKILLS_LIST_TTL_MS };
+          }
+          return wrapped;
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // GET /claude-ai/skills/:id/files — file paths inside a (custom) skill.
+    {
+      method: 'GET',
+      pattern: /^\/claude-ai\/skills\/(?<id>[^/?]+)\/files$/,
+      handler: async (req) => {
+        try {
+          return upstreamWrap(await listSkillFiles(req.params.id));
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // GET /claude-ai/skills/:id/download — the .skill (zip) bundle.
+    //   Default: streams application/zip (repo binary convention).
+    //   ?format=base64 → JSON { filename, contentType, size, base64 } for
+    //   JSON-only transports (e.g. a caller that can't accept a binary body).
+    {
+      method: 'GET',
+      pattern: /^\/claude-ai\/skills\/(?<id>[^/?]+)\/download$/,
+      handler: async (req) => {
+        try {
+          const dl = await downloadSkillBundle(req.params.id);
+          if (dl.status >= 400) {
+            // Error body is text/JSON, not a zip — surface it as a normal error.
+            let body: unknown = dl.buffer.toString('utf8');
+            try { body = JSON.parse(body as string); } catch { /* leave as text */ }
+            return {
+              success: false,
+              error: { code: `UPSTREAM_${dl.status}`, message: `claude.ai responded ${dl.status} ${dl.statusText}` },
+              data: body,
+            };
+          }
+          if ((req.query || {}).format === 'base64') {
+            return {
+              success: true,
+              data: {
+                filename: dl.filename,
+                contentType: dl.contentType,
+                size: dl.buffer.length,
+                base64: dl.buffer.toString('base64'),
+              },
+            };
+          }
+          // Stream the bytes (rest-server serves result.binary + Buffer as-is;
+          // the hub relay base64-encodes application/zip by content-type).
+          return {
+            success: true,
+            binary: true,
+            data: dl.buffer,
+            headers: {
+              'Content-Type': dl.contentType || 'application/zip',
+              'Content-Disposition': `attachment; filename="${dl.filename.replace(/"/g, '')}"`,
+              'Content-Length': String(dl.buffer.length),
+            },
+          };
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // POST /claude-ai/skills — create a simple (single SKILL.md) skill.
+    //   Body: { name, description?, instructions? }
+    //   WRITE.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/skills$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        if (typeof b.name !== 'string' || !b.name) {
+          return { success: false, error: { code: 'MISSING_NAME', message: 'body.name is required' } };
+        }
+        try {
+          const r = await createSimpleSkill({
+            name: b.name,
+            description: typeof b.description === 'string' ? b.description : '',
+            instructions: typeof b.instructions === 'string' ? b.instructions : '',
+          });
+          invalidateSkillsListCache();
+          return upstreamWrap(r);
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // POST /claude-ai/skills/upload — upload a skill bundle (.zip/.skill/.md).
+    //   Body: { filename, contentBase64, overwrite?, checkSkillName?, contentType? }
+    //   WRITE. MUST stay registered BEFORE POST /claude-ai/skills/:id below —
+    //   the router is first-match-wins and the literal "upload" would otherwise
+    //   be captured as a :id. Enforces claude.ai's 30 MiB ceiling.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/skills\/upload$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        if (typeof b.filename !== 'string' || !b.filename) {
+          return { success: false, error: { code: 'MISSING_FILENAME', message: 'body.filename is required' } };
+        }
+        if (typeof b.contentBase64 !== 'string' || !b.contentBase64) {
+          return { success: false, error: { code: 'MISSING_CONTENT', message: 'body.contentBase64 is required (base64-encoded bundle bytes)' } };
+        }
+        const bytes = Buffer.from(b.contentBase64, 'base64');
+        if (bytes.length === 0) {
+          return { success: false, error: { code: 'EMPTY_CONTENT', message: 'Decoded bundle is empty (invalid base64?)' } };
+        }
+        if (bytes.length >= 31457280) {
+          return { success: false, error: { code: 'BUNDLE_TOO_LARGE', message: `Bundle is ${bytes.length} bytes; claude.ai's hard limit is < 31457280 bytes (30 MiB).` } };
+        }
+        try {
+          const r = await uploadSkill({
+            filename: b.filename,
+            content: bytes,
+            overwrite: b.overwrite === true || b.overwrite === 'true',
+            checkSkillName: typeof b.checkSkillName === 'string' ? b.checkSkillName : undefined,
+            contentType: typeof b.contentType === 'string' ? b.contentType : undefined,
+          });
+          invalidateSkillsListCache();
+          return upstreamWrap(r);
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // POST /claude-ai/skills/:id/enable — enable a skill (id preserved). WRITE.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/skills\/(?<id>[^/?]+)\/enable$/,
+      handler: async (req) => {
+        try {
+          const r = await enableSkill({ skillId: req.params.id });
+          invalidateSkillsListCache();
+          return upstreamWrap(r);
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // POST /claude-ai/skills/:id/disable — disable a skill (id preserved). WRITE.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/skills\/(?<id>[^/?]+)\/disable$/,
+      handler: async (req) => {
+        try {
+          const r = await disableSkill({ skillId: req.params.id });
+          invalidateSkillsListCache();
+          return upstreamWrap(r);
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // ─── Per-file skill CRUD (synthesized read-modify-write over the bundle) ───
+    //
+    //   claude.ai has NO native per-file write endpoint, so these synthesize a
+    //   single-file read/update/delete as a read-modify-write of the entire
+    //   `.skill` bundle (download → unzip → mutate → rezip → upload overwrite).
+    //   Non-atomic and VERSIONED: each write mints a NEW skill id (returned as
+    //   `newSkillId`) — chain further writes against that. Writes are serialized
+    //   per skill id (so concurrent file writes can't clobber) and invalidate
+    //   the skills-list cache. The 30 MiB ceiling is enforced on the rebuilt
+    //   bundle. These `:id/file` patterns carry a `/file` suffix so they never
+    //   collide with the bare `:id` edit/delete routes below; they are
+    //   nonetheless kept ahead of those (matching the upload-before-:id order).
+
+    // GET /claude-ai/skills/:id/file?path=ENC[&format=base64]
+    //   Read one file out of the bundle. Default: streams the bytes with a
+    //   content-type detected from the extension. ?format=base64 → JSON
+    //   { path, contentType, size, base64 } for JSON-only transports.
+    {
+      method: 'GET',
+      pattern: /^\/claude-ai\/skills\/(?<id>[^/?]+)\/file$/,
+      handler: async (req) => {
+        const q = req.query || {};
+        const filePath = typeof q.path === 'string' ? q.path : '';
+        if (!filePath) {
+          return { success: false, error: { code: 'MISSING_PATH', message: 'query ?path= is required (the file path inside the bundle)' } };
+        }
+        try {
+          const r = await readSkillFile(req.params.id, filePath);
+          if (r.upstreamError !== undefined || r.status >= 400) {
+            return {
+              success: false,
+              error: { code: `UPSTREAM_${r.status}`, message: `claude.ai responded ${r.status} ${r.statusText}` },
+              data: r.upstreamError,
+            };
+          }
+          if (!r.found || !r.buffer) {
+            return { success: false, error: { code: 'SKILL_FILE_NOT_FOUND', message: `File not found in skill bundle: ${r.resolvedPath}` } };
+          }
+          if (q.format === 'base64') {
+            return {
+              success: true,
+              data: { path: r.resolvedPath, contentType: r.contentType, size: r.buffer.length, base64: r.buffer.toString('base64') },
+            };
+          }
+          const base = r.resolvedPath.split('/').pop() || 'file';
+          return {
+            success: true,
+            binary: true,
+            data: r.buffer,
+            headers: {
+              'Content-Type': r.contentType || 'application/octet-stream',
+              'Content-Length': String(r.buffer.length),
+              'Content-Disposition': `inline; filename="${base.replace(/"/g, '')}"`,
+            },
+          };
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // PUT /claude-ai/skills/:id/file — add or replace one file in the bundle.
+    //   Body: { path, content? | contentBase64? }  (content = utf-8 text;
+    //   contentBase64 = base64 bytes for binaries). WRITE. Returns the NEW
+    //   skill id + record. Preserves the top folder, SKILL.md name, and the
+    //   disabled state.
+    {
+      method: 'PUT',
+      pattern: /^\/claude-ai\/skills\/(?<id>[^/?]+)\/file$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        const filePath = typeof b.path === 'string' ? b.path : '';
+        if (!filePath) {
+          return { success: false, error: { code: 'MISSING_PATH', message: 'body.path is required (the file path inside the bundle)' } };
+        }
+        let bytes: Buffer;
+        if (typeof b.contentBase64 === 'string') bytes = Buffer.from(b.contentBase64, 'base64');
+        else if (typeof b.content === 'string') bytes = Buffer.from(b.content, 'utf8');
+        else return { success: false, error: { code: 'MISSING_CONTENT', message: 'body.content (utf-8 string) or body.contentBase64 (base64 bytes) is required' } };
+        try {
+          const r = await putSkillFile(req.params.id, filePath, bytes);
+          invalidateSkillsListCache();
+          if (r.upload.status >= 400) {
+            return {
+              success: false,
+              error: { code: `UPSTREAM_${r.upload.status}`, message: `claude.ai responded ${r.upload.status} ${r.upload.statusText}` },
+              data: r.upload.body,
+            };
+          }
+          return {
+            success: true,
+            data: {
+              path: r.resolvedPath,
+              skillName: r.skillName,
+              newSkillId: r.newSkillId,
+              entryCount: r.entryCount,
+              bundleBytes: r.bundleBytes,
+              reDisabled: r.reDisabled,
+              skill: r.upload.body,
+            },
+          };
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // DELETE /claude-ai/skills/:id/file?path=ENC — remove one file from the
+    //   bundle. WRITE (destructive). Path comes from ?path= (or body.path).
+    //   404s if the path is absent; refuses to delete SKILL.md.
+    {
+      method: 'DELETE',
+      pattern: /^\/claude-ai\/skills\/(?<id>[^/?]+)\/file$/,
+      handler: async (req) => {
+        const q = req.query || {};
+        const b = req.body || {};
+        const filePath = (typeof q.path === 'string' && q.path) ? q.path : (typeof b.path === 'string' ? b.path : '');
+        if (!filePath) {
+          return { success: false, error: { code: 'MISSING_PATH', message: 'query ?path= (or body.path) is required (the file path inside the bundle)' } };
+        }
+        try {
+          const r = await deleteSkillFile(req.params.id, filePath);
+          invalidateSkillsListCache();
+          if (r.upload.status >= 400) {
+            return {
+              success: false,
+              error: { code: `UPSTREAM_${r.upload.status}`, message: `claude.ai responded ${r.upload.status} ${r.upload.statusText}` },
+              data: r.upload.body,
+            };
+          }
+          return {
+            success: true,
+            data: {
+              path: r.resolvedPath,
+              skillName: r.skillName,
+              newSkillId: r.newSkillId,
+              entryCount: r.entryCount,
+              bundleBytes: r.bundleBytes,
+              reDisabled: r.reDisabled,
+              skill: r.upload.body,
+            },
+          };
+        } catch (err) {
+          if (err instanceof SkillFileNotFoundError) {
+            return { success: false, error: { code: 'SKILL_FILE_NOT_FOUND', message: err.message } };
+          }
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // POST /claude-ai/skills/:id/rename — rename a skill in place. WRITE.
+    //   Body: { name } (alias: newName). Confirmed body: { skill_id, new_name }.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/skills\/(?<id>[^/?]+)\/rename$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        const newName = typeof b.newName === 'string' ? b.newName : (typeof b.name === 'string' ? b.name : '');
+        if (!newName) {
+          return { success: false, error: { code: 'MISSING_NAME', message: 'body.name (or body.newName) is required' } };
+        }
+        try {
+          const r = await renameSkill({ skillId: req.params.id, newName });
+          invalidateSkillsListCache();
+          return upstreamWrap(r);
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // POST /claude-ai/skills/:id/duplicate — duplicate a skill. WRITE.
+    //   Body: { name? } (alias: newName). Confirmed body: { skill_id, new_name }
+    //   (the web app always sends new_name; sent here only when provided).
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/skills\/(?<id>[^/?]+)\/duplicate$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        const newName = typeof b.newName === 'string' ? b.newName : (typeof b.name === 'string' ? b.name : undefined);
+        try {
+          const r = await duplicateSkill({ skillId: req.params.id, newName });
+          invalidateSkillsListCache();
+          return upstreamWrap(r);
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // POST /claude-ai/skills/:id/delete-org — delete an ORG-shared skill. WRITE
+    //   (destructive). Distinct from the personal DELETE /claude-ai/skills/:id.
+    //   Confirmed body: { skill_id }.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/skills\/(?<id>[^/?]+)\/delete-org$/,
+      handler: async (req) => {
+        try {
+          const r = await deleteOrgSkill({ skillId: req.params.id });
+          invalidateSkillsListCache();
+          return upstreamWrap(r);
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // POST /claude-ai/skills/:id — edit a simple skill.
+    //   Body: { description?, instructions? }
+    //   WRITE. VERSIONED — claude.ai returns a NEW skill id on every edit
+    //   (the old id is superseded). `name` is not editable.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/skills\/(?<id>[^/?]+)$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        try {
+          const r = await editSimpleSkill({
+            skillId: req.params.id,
+            description: typeof b.description === 'string' ? b.description : '',
+            instructions: typeof b.instructions === 'string' ? b.instructions : '',
+          });
+          invalidateSkillsListCache();
+          return upstreamWrap(r);
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // DELETE /claude-ai/skills/:id — delete a skill. WRITE (destructive).
+    {
+      method: 'DELETE',
+      pattern: /^\/claude-ai\/skills\/(?<id>[^/?]+)$/,
+      handler: async (req) => {
+        try {
+          const r = await deleteSkill({ skillId: req.params.id });
+          invalidateSkillsListCache();
+          return upstreamWrap(r);
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
     // ─── Additional via-chrome snippet routes ───
 
     { method: 'POST', pattern: /^\/claude-ai\/via-chrome\/account-profile$/,
@@ -964,7 +1439,272 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    
+    // ─── Personal Agent Skills (via-chrome path) ───
+    //
+    //   Snippet mirrors of the cookie-file skills routes. Mutating snippets
+    //   carry the WRITE warning in their `instructions`. No bare
+    //   via-chrome/skills/:id route exists, and create/upload are literals,
+    //   so none of these patterns collide regardless of registration order.
+
+    // POST /claude-ai/via-chrome/skills — list personal skills.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/skills$/,
+      handler: async () => ({ success: true, data: snippetListSkills() }),
+    },
+
+    // POST /claude-ai/via-chrome/skills/create — WRITE snippet (create-simple-skill).
+    //   Body: { name, description?, instructions? }
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/skills\/create$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        if (typeof b.name !== 'string' || !b.name) {
+          return { success: false, error: { code: 'MISSING_NAME', message: 'body.name is required' } };
+        }
+        try {
+          return { success: true, data: snippetCreateSkill({
+            name: b.name,
+            description: typeof b.description === 'string' ? b.description : undefined,
+            instructions: typeof b.instructions === 'string' ? b.instructions : undefined,
+          }) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      },
+    },
+
+    // POST /claude-ai/via-chrome/skills/upload — WRITE snippet (upload-skill, multipart).
+    //   Body: { filename, contentBase64, overwrite?, checkSkillName?, contentType? }
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/skills\/upload$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        if (typeof b.filename !== 'string' || !b.filename) {
+          return { success: false, error: { code: 'MISSING_FILENAME', message: 'body.filename is required' } };
+        }
+        if (typeof b.contentBase64 !== 'string' || !b.contentBase64) {
+          return { success: false, error: { code: 'MISSING_CONTENT', message: 'body.contentBase64 is required (base64-encoded bundle bytes)' } };
+        }
+        try {
+          return { success: true, data: snippetUploadSkill({
+            filename: b.filename,
+            contentBase64: b.contentBase64,
+            overwrite: b.overwrite === true || b.overwrite === 'true',
+            checkSkillName: typeof b.checkSkillName === 'string' ? b.checkSkillName : undefined,
+            contentType: typeof b.contentType === 'string' ? b.contentType : undefined,
+          }) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      },
+    },
+
+    // POST /claude-ai/via-chrome/skills/:id/files — list files in a (custom) skill.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/skills\/(?<id>[^/?]+)\/files$/,
+      handler: async (req) => {
+        try {
+          return { success: true, data: snippetListSkillFiles(req.params.id) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      },
+    },
+
+    // POST /claude-ai/via-chrome/skills/:id/download — snippet returns the
+    //   .skill (zip) as base64. NOTE: Chrome MCP's content filter often blocks
+    //   base64 — prefer the cookie-file GET /claude-ai/skills/:id/download.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/skills\/(?<id>[^/?]+)\/download$/,
+      handler: async (req) => {
+        try {
+          return { success: true, data: snippetDownloadSkillBundle(req.params.id) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      },
+    },
+
+    // POST /claude-ai/via-chrome/skills/:id/edit — WRITE snippet (edit-simple-skill).
+    //   Body: { description?, instructions? }. Versioned — returns a new id.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/skills\/(?<id>[^/?]+)\/edit$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        try {
+          return { success: true, data: snippetEditSkill(req.params.id, {
+            description: typeof b.description === 'string' ? b.description : undefined,
+            instructions: typeof b.instructions === 'string' ? b.instructions : undefined,
+          }) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      },
+    },
+
+    // POST /claude-ai/via-chrome/skills/:id/enable — WRITE snippet (enable-skill).
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/skills\/(?<id>[^/?]+)\/enable$/,
+      handler: async (req) => {
+        try {
+          return { success: true, data: snippetEnableSkill(req.params.id) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      },
+    },
+
+    // POST /claude-ai/via-chrome/skills/:id/disable — WRITE snippet (disable-skill).
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/skills\/(?<id>[^/?]+)\/disable$/,
+      handler: async (req) => {
+        try {
+          return { success: true, data: snippetDisableSkill(req.params.id) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      },
+    },
+
+    // POST /claude-ai/via-chrome/skills/:id/delete — WRITE (destructive) snippet (delete-skill).
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/skills\/(?<id>[^/?]+)\/delete$/,
+      handler: async (req) => {
+        try {
+          return { success: true, data: snippetDeleteSkill(req.params.id) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      },
+    },
+
+    // ─── Per-file skill CRUD + native passthroughs (via-chrome mirrors) ───
+    //
+    //   File read/put/delete generate snippets that do the whole read-modify-
+    //   write in-page (download → unzip → mutate → rezip → upload overwrite)
+    //   using the browser-native DecompressionStream / CompressionStream. The
+    //   `/file/*` and `/rename|/duplicate|/delete-org` suffixes never collide
+    //   with the other via-chrome skills patterns, so order isn't significant.
+
+    // POST /claude-ai/via-chrome/skills/:id/file/read — Body: { path }.
+    //   Snippet returns the file as base64. CRITICAL GOTCHA: Chrome MCP's
+    //   content filter frequently blocks long base64 — prefer the cookie-file
+    //   GET /claude-ai/skills/:id/file for reads.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/skills\/(?<id>[^/?]+)\/file\/read$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        if (typeof b.path !== 'string' || !b.path) {
+          return { success: false, error: { code: 'MISSING_PATH', message: 'body.path is required' } };
+        }
+        try {
+          return { success: true, data: snippetReadSkillFile(req.params.id, b.path) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      },
+    },
+
+    // POST /claude-ai/via-chrome/skills/:id/file/put — WRITE snippet (in-page RMW).
+    //   Body: { path, content? | contentBase64? } (content = utf-8 text).
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/skills\/(?<id>[^/?]+)\/file\/put$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        if (typeof b.path !== 'string' || !b.path) {
+          return { success: false, error: { code: 'MISSING_PATH', message: 'body.path is required' } };
+        }
+        let contentBase64: string;
+        if (typeof b.contentBase64 === 'string') contentBase64 = b.contentBase64;
+        else if (typeof b.content === 'string') contentBase64 = Buffer.from(b.content, 'utf8').toString('base64');
+        else return { success: false, error: { code: 'MISSING_CONTENT', message: 'body.content (utf-8 string) or body.contentBase64 (base64 bytes) is required' } };
+        try {
+          return { success: true, data: snippetPutSkillFile(req.params.id, b.path, contentBase64) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      },
+    },
+
+    // POST /claude-ai/via-chrome/skills/:id/file/delete — WRITE (destructive)
+    //   snippet (in-page RMW). Body: { path }.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/skills\/(?<id>[^/?]+)\/file\/delete$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        if (typeof b.path !== 'string' || !b.path) {
+          return { success: false, error: { code: 'MISSING_PATH', message: 'body.path is required' } };
+        }
+        try {
+          return { success: true, data: snippetDeleteSkillFile(req.params.id, b.path) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      },
+    },
+
+    // POST /claude-ai/via-chrome/skills/:id/rename — WRITE snippet (rename-skill).
+    //   Body: { name } (alias: newName).
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/skills\/(?<id>[^/?]+)\/rename$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        const newName = typeof b.newName === 'string' ? b.newName : (typeof b.name === 'string' ? b.name : '');
+        if (!newName) {
+          return { success: false, error: { code: 'MISSING_NAME', message: 'body.name (or body.newName) is required' } };
+        }
+        try {
+          return { success: true, data: snippetRenameSkill(req.params.id, newName) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      },
+    },
+
+    // POST /claude-ai/via-chrome/skills/:id/duplicate — WRITE snippet (duplicate-skill).
+    //   Body: { name? } (alias: newName).
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/skills\/(?<id>[^/?]+)\/duplicate$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        const newName = typeof b.newName === 'string' ? b.newName : (typeof b.name === 'string' ? b.name : undefined);
+        try {
+          return { success: true, data: snippetDuplicateSkill(req.params.id, newName) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      },
+    },
+
+    // POST /claude-ai/via-chrome/skills/:id/delete-org — WRITE (destructive)
+    //   snippet (delete-org-skill). ORG-scoped; distinct from .../delete.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/via-chrome\/skills\/(?<id>[^/?]+)\/delete-org$/,
+      handler: async (req) => {
+        try {
+          return { success: true, data: snippetDeleteOrgSkill(req.params.id) };
+        } catch (err) {
+          return { success: false, error: { code: 'INVALID_REQUEST', message: (err as Error).message } };
+        }
+      },
+    },
+
+
     // POST /claude-ai/browser/via-chrome/identify
     //   Returns a snippet that fetches /api/organizations from the running
     //   claude.ai tab. The snippet's response leaks the logged-in email via
