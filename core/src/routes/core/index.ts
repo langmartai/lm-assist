@@ -27,6 +27,7 @@ import { createSessionDagRoutes } from './session-dag.routes';
 import { createContextRoutes } from './context.routes';
 import { createVectorRoutes } from './vector.routes';
 import { createAgentRoutes } from './agent.routes';
+import { createGithubRoutes } from './github.routes';
 import { createMcpApiRoutes } from './mcp-api.routes';
 import { createDevModeRoutes } from './dev-mode.routes';
 import { createProjectSettingsRoutes } from './project-settings.routes';
@@ -42,6 +43,7 @@ import { createBrowserRoutes } from './browser.routes';
 export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
   return [
     ...createAgentRoutes(ctx),
+    ...createGithubRoutes(ctx),
     ...createHealthRoutes(ctx),
     ...createSessionsRoutes(ctx),
     ...createSessionProjectsRoutes(ctx),
