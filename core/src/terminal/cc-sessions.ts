@@ -105,6 +105,19 @@ function ppidOf(pid: number): number {
   }
 }
 
+/** Read process start-time (field 22 of /proc/<pid>/stat, jiffies since boot; Linux only). */
+function procStartOf(pid: number): string | null {
+  if (!IS_LINUX) return null;
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    // After the last ')' the fields are state(3), ppid(4), ... starttime(22) → index 19.
+    const post = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    return post[19] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Walk the ppid chain upward from pid, returning all ancestor PIDs. */
 function ancestorPids(pid: number): number[] {
   const ancestors: number[] = [];
@@ -137,6 +150,18 @@ function readLiveRegistry(): Map<string, { sessionId: string } & OwnerInfo> {
     const sessionId = typeof rec.sessionId === 'string' ? rec.sessionId : '';
     const pid = typeof rec.pid === 'number' ? rec.pid : 0;
     if (!sessionId || !pid || !isProcessAlive(pid)) continue;
+    // PID-reuse guard: if the registry recorded the process start-time, it must match
+    // the live process — else this is a stale pid-file whose pid was recycled (e.g.
+    // after a reboot). Without this, a dead session could be reported live and even
+    // mis-mapped onto an unrelated tmux pane. Best-effort: only skip on a real mismatch.
+    const procStart =
+      typeof rec.procStart === 'string' ? rec.procStart
+      : typeof rec.procStart === 'number' ? String(rec.procStart)
+      : '';
+    if (procStart && IS_LINUX) {
+      const actual = procStartOf(pid);
+      if (actual && actual !== procStart) continue;
+    }
     out.set(sessionId, {
       sessionId,
       pid,
