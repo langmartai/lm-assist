@@ -20,6 +20,7 @@ import {
   err,
   workerGet,
   workerPost,
+  workerPostRaw,
   workerDelete,
   isCwdAllowed,
   type McpToolResult,
@@ -294,6 +295,70 @@ export const deleteConversationToolDef = {
   },
 };
 
+// ─── ccr: Claude Code remote support ─────────────────────────────
+export const ccSessionsToolDef = {
+  name: 'cc_sessions',
+  description:
+    'List the live Claude Code sessions on this host (from the ~/.claude/sessions registry), each with an ownership verdict (connectStrategy: attach-existing | create-tmux | refuse | none, plus safeToCreateTmux). Read-only.',
+  inputSchema: { type: 'object' as const, properties: {} },
+};
+export const ccrPreflightToolDef = {
+  name: 'ccr_preflight',
+  description:
+    'Ownership verdict for one Claude Code session id, WITHOUT side effects — is it live, in a tmux, and is it safe to spawn a new `claude --resume` tmux. Call before ccr_connect.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: { session_id: { type: 'string', description: 'Claude Code session UUID.' } },
+    required: ['session_id'],
+  },
+};
+export const ccrRemoteListToolDef = {
+  name: 'ccr_remote_list',
+  description: 'List running CCR remotes (load/mirror/connect bridges started via ccr_*), with liveness.',
+  inputSchema: { type: 'object' as const, properties: {} },
+};
+export const ccrLoadToolDef = {
+  name: 'ccr_load',
+  description:
+    'Load an existing Claude Code session into a fresh claude.ai/code session as a READ-ONLY replay (disconnected). Returns the web URL. Provide session_id (resolves the transcript) or an explicit jsonl path.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      session_id: { type: 'string', description: 'Claude Code session UUID (transcript resolved automatically).' },
+      jsonl: { type: 'string', description: 'Explicit transcript .jsonl path (alternative to session_id).' },
+    },
+  },
+};
+export const ccrMirrorToolDef = {
+  name: 'ccr_mirror',
+  description:
+    'Start a ONE-WAY live mirror of a Claude Code session to claude.ai/code (updates as the session grows; not drivable). Returns the web URL.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: { session_id: { type: 'string', description: 'Claude Code session UUID.' } },
+    required: ['session_id'],
+  },
+};
+export const ccrConnectToolDef = {
+  name: 'ccr_connect',
+  description:
+    'Connect a Claude Code session for TWO-WAY remote control via claude.ai/code. Enforces the safety gate: attaches an existing tmux, or spawns a new `claude --resume` tmux ONLY when no live process owns the session storage; refuses (CONFLICT) otherwise to avoid corrupting the append-only transcript. Returns the web URL.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: { session_id: { type: 'string', description: 'Claude Code session UUID.' } },
+    required: ['session_id'],
+  },
+};
+export const ccrRemoteStopToolDef = {
+  name: 'ccr_remote_stop',
+  description: 'Stop a running CCR remote by id (from ccr_remote_list or a ccr_* result).',
+  inputSchema: {
+    type: 'object' as const,
+    properties: { id: { type: 'string', description: 'CCR remote id, e.g. ccr-xxxxxxxx.' } },
+    required: ['id'],
+  },
+};
+
 export const EXPANDED_TOOL_DEFS = [
   // read
   listExecutionsToolDef,
@@ -317,6 +382,14 @@ export const EXPANDED_TOOL_DEFS = [
   deleteConversationToolDef,
   // github (read: github_query, write: github_mutate)
   ...GITHUB_TOOL_DEFS,
+  // ccr — Claude Code remote support
+  ccSessionsToolDef,
+  ccrPreflightToolDef,
+  ccrRemoteListToolDef,
+  ccrLoadToolDef,
+  ccrMirrorToolDef,
+  ccrConnectToolDef,
+  ccrRemoteStopToolDef,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -530,6 +603,51 @@ async function handleDeleteConversation(args: Record<string, unknown>): Promise<
   }
 }
 
+// ─── ccr handlers ────────────────────────────────────────────────
+async function handleCcSessions(): Promise<McpToolResult> {
+  try { return ok(pretty(await workerGet('/terminal/cc-sessions'))); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+async function handleCcrPreflight(args: Record<string, unknown>): Promise<McpToolResult> {
+  const sid = String(args.session_id || '').trim();
+  if (!sid) return err('session_id is required.');
+  try { return ok(pretty(await workerGet(`/ccr/preflight/${enc(sid)}`))); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+async function handleCcrRemoteList(): Promise<McpToolResult> {
+  try { return ok(pretty(await workerGet('/ccr/remote'))); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+// load/mirror/connect spawn processes and can poll up to ~90s, so use the
+// raw helper (120s timeout, full envelope) — a refuse surfaces as the body's
+// error.code=CONFLICT rather than a transport timeout.
+async function handleCcrLoad(args: Record<string, unknown>): Promise<McpToolResult> {
+  const body: Record<string, unknown> = {};
+  if (args.session_id) body.sessionId = String(args.session_id);
+  if (args.jsonl) body.jsonl = String(args.jsonl);
+  if (!body.sessionId && !body.jsonl) return err('session_id or jsonl is required.');
+  try { return ok(pretty(await workerPostRaw('/ccr/load', body))); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+async function handleCcrMirror(args: Record<string, unknown>): Promise<McpToolResult> {
+  const sid = String(args.session_id || '').trim();
+  if (!sid) return err('session_id is required.');
+  try { return ok(pretty(await workerPostRaw('/ccr/mirror', { sessionId: sid }))); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+async function handleCcrConnect(args: Record<string, unknown>): Promise<McpToolResult> {
+  const sid = String(args.session_id || '').trim();
+  if (!sid) return err('session_id is required.');
+  try { return ok(pretty(await workerPostRaw('/ccr/connect', { sessionId: sid }))); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+async function handleCcrRemoteStop(args: Record<string, unknown>): Promise<McpToolResult> {
+  const id = String(args.id || '').trim();
+  if (!id) return err('id is required.');
+  try { return ok(pretty(await workerPost(`/ccr/remote/${enc(id)}/stop`, {}))); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+
 /**
  * Name → handler for every expanded tool. Both transports consult this map
  * as a fallback for tool names not in their explicit switch.
@@ -562,4 +680,12 @@ export const EXPANDED_HANDLERS: Record<
   list_nodes: async () => handleListNodes(),
   // github (read: github_query, write: github_mutate) — dispatch to /github/<action>
   ...GITHUB_HANDLERS,
+  // ccr — Claude Code remote support
+  cc_sessions: () => handleCcSessions(),
+  ccr_preflight: handleCcrPreflight,
+  ccr_remote_list: () => handleCcrRemoteList(),
+  ccr_load: handleCcrLoad,
+  ccr_mirror: handleCcrMirror,
+  ccr_connect: handleCcrConnect,
+  ccr_remote_stop: handleCcrRemoteStop,
 };
