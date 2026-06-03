@@ -42,6 +42,10 @@ export interface CcrRecord {
   pid: number | null;
   webUrl: string | null;
   strategy?: ConnectStrategy;
+  /** tmux session backing a `connect`; set for both attach-existing and create-tmux. */
+  tmuxSession?: string;
+  /** true only when WE created the tmux (create-tmux) — stop() may kill it. Never kill a user's existing tmux. */
+  ownsTmux?: boolean;
   logFile: string | null;
   startedAt: string;
 }
@@ -296,7 +300,7 @@ export async function connect({ sessionId }: { sessionId: string }): Promise<Ccr
   child.unref();
   try { fs.closeSync(fd); } catch { /* ignore */ }
 
-  // Bridge writes URL to its own /tmp/ccr-bridge.log via its log() function
+  // The bridge prints its URL to stdout (captured in the per-run logFile).
   const webUrl = await pollForUrl(logFile, 30_000);
 
   const rec: CcrRecord = {
@@ -307,6 +311,8 @@ export async function connect({ sessionId }: { sessionId: string }): Promise<Ccr
     pid: child.pid ?? null,
     webUrl,
     strategy: v.connectStrategy,
+    tmuxSession,
+    ownsTmux: v.connectStrategy === 'create-tmux',
     logFile,
     startedAt: new Date().toISOString(),
   };
@@ -337,6 +343,12 @@ export async function stop(id: string): Promise<{ stopped: boolean; wasAlive: bo
   let wasAlive = false;
   if (rec.pid) {
     try { process.kill(rec.pid, 'SIGTERM'); wasAlive = true; } catch { /* already gone */ }
+  }
+  // For a create-tmux connect WE own the tmux (running `claude --resume`); kill it too,
+  // else the resumed claude leaks and the session stays "live". NEVER kill the tmux for
+  // attach-existing — that is the user's own session.
+  if (rec.ownsTmux && rec.tmuxSession) {
+    try { execFileSync('tmux', ['kill-session', '-t', rec.tmuxSession], { encoding: 'utf-8', timeout: 5000 }); } catch { /* already gone */ }
   }
   delete data[id];
   saveRegistry(data);

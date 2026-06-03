@@ -23,10 +23,12 @@ const PROJ_DIR=path.join(os.homedir(),'.claude','projects');
 
 function alive(pid){try{process.kill(pid,0);return true}catch(e){return e.code==='EPERM'}}
 function ppidOf(pid){try{const s=fs.readFileSync(`/proc/${pid}/stat`,'utf8');const rp=s.lastIndexOf(')');return parseInt(s.slice(rp+2).split(' ')[1],10)||0}catch{return 0}}
+function procStartOf(pid){try{const s=fs.readFileSync(`/proc/${pid}/stat`,'utf8');return s.slice(s.lastIndexOf(')')+2).split(' ')[19]||null}catch{return null}} // field 22 = starttime
 function ancestors(pid){const a=[];let p=pid,g=0;while(p>1&&g++<40){p=ppidOf(p);if(p>0)a.push(p)}return a}
 function liveRegistry(){const out={};let files=[];try{files=fs.readdirSync(SESS_DIR)}catch{}
   for(const f of files){if(!f.endsWith('.json'))continue;let r;try{r=JSON.parse(fs.readFileSync(path.join(SESS_DIR,f),'utf8'))}catch{continue}
     if(!r.sessionId||!r.pid||!alive(r.pid))continue;
+    if(r.procStart){const ps=procStartOf(r.pid);if(ps&&String(ps)!==String(r.procStart))continue} // pid-reuse guard
     out[r.sessionId]={pid:r.pid,cwd:r.cwd,kind:r.kind,entrypoint:r.entrypoint,status:r.status,updatedAt:r.updatedAt,version:r.version}}
   return out}
 function tmuxPanes(){try{const o=cp.execSync("tmux list-panes -a -F '#{session_name}|#{window_index}.#{pane_index}|#{pane_pid}|#{pane_current_command}' 2>/dev/null",{encoding:'utf8'});
