@@ -37,6 +37,7 @@ import { createAnnotationRoutes } from './annotation.routes';
 import { createMemoryRoutes } from './memory.routes';
 import { createBrowserRoutes } from './browser.routes';
 import { createCcrRoutes } from './ccr.routes';
+import { createWindowsTerminalRoutes } from './windows-terminal.routes';
 
 /**
  * Create all core routes
@@ -73,5 +74,6 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createMemoryRoutes(ctx),
     ...createBrowserRoutes(ctx),
     ...createCcrRoutes(ctx),
+    ...createWindowsTerminalRoutes(ctx),
   ];
 }
