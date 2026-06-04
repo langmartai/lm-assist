@@ -126,6 +126,8 @@ The backend is a raw Node.js HTTP server (no Express/Hono runtime — Hono is a 
 
 Next.js 16 with Turbopack, React 19, Zustand for state, Tailwind CSS v4 for styling. Renders sessions, terminals, tasks, knowledge, and settings pages. Communicates with the core API (dev :3200 / prod :3100).
 
+**Deployment + hub auth state:** see [`docs/web-deployment-and-hub-auth.md`](docs/web-deployment-and-hub-auth.md) — one build serves prod (3848→3100→langmart) and dev (3948→3200→xeenhub) but ONLY if `LM_LOCAL_API_PORT` is set at launch (else dev silently hits the prod core); plus how the nav + settings must `refreshHubConnection()` after logout and why account switch clears the gateway-id.
+
 ### MCP Server (`core/src/mcp-server/`)
 
 Provides 3 tools via stdio transport (server name: `lm-assist`):

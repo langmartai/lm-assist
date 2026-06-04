@@ -420,6 +420,15 @@ export default function SettingsPage() {
     }
   }, [fetchStatus, proxy.isProxied]);
 
+  // Re-fetch the local hub status whenever the shared connection state changes
+  // (e.g. after the nav-bar Sign Out clears the api key + calls
+  // refreshHubConnection). Without this, signing out while already on this page
+  // leaves the sign-in panel stale until the 30s poll or a manual reload.
+  useEffect(() => {
+    if (proxy.isProxied) return;
+    fetchStatus();
+  }, [hubConnected, hubUser, proxy.isProxied, fetchStatus]);
+
   // Fetch LAN config from local Next.js API
   const fetchLanConfig = useCallback(async () => {
     try {
