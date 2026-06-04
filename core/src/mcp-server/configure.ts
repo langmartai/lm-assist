@@ -137,9 +137,16 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   memory_import_candidates: 'read',
   terminal_list: 'read',
   terminal_capture: 'read',
+  // claude.ai marketplaces + plugins (read)
+  claudeai_list_marketplaces: 'read',
+  claudeai_list_marketplace_plugins: 'read',
+  claudeai_list_plugins: 'read',
   // expanded write tier
   claudeai_create_conversation: 'write',
   claudeai_completion: 'write',
+  claudeai_add_marketplace: 'write',
+  claudeai_remove_marketplace: 'write',
+  claudeai_set_plugin_enabled: 'write',
   agent_abort: 'write',
   agent_resume: 'write',
   terminal_prompt: 'write',

@@ -61,6 +61,14 @@ import {
   getClaudeCodeTeamMemory,
   getV1McpServers,
   getMcpRegistry,
+  getClaudeCodeRoutineRunBudget,
+  listRoutines,
+  getRoutine,
+  createRoutine,
+  updateRoutine,
+  runRoutine,
+  deleteRoutine,
+  listRoutineEnvironments,
 } from '../../utils/claude-oauth';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -1914,6 +1922,249 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async () => {
         try {
           const r = await anthropicOAuthGet('/api/oauth/profile');
+          if (r.status >= 400) {
+            return {
+              success: false,
+              error: {
+                code: `UPSTREAM_${r.status}`,
+                message: `api.anthropic.com responded ${r.status} ${r.statusText}`,
+              },
+              data: r.body,
+            };
+          }
+          return { success: true, data: r.body };
+        } catch (err) {
+          return {
+            success: false,
+            error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message },
+          };
+        }
+      },
+    },
+
+    // GET /claude-code/routines/run-budget — proxies GET
+    // https://api.anthropic.com/v1/code/routines/run-budget. Returns the org's
+    // per-rolling-24h routine RUN quota: { limit, used, unified_billing_enabled }
+    // (limit/used are STRINGS upstream). Requires anthropic-beta:
+    // ccr-triggers-2026-01-30 (the endpoint 404s without it) + x-organization-uuid.
+    // Adds a clearly-derived integer `remaining` = Number(limit) - Number(used)
+    // while keeping the raw upstream fields intact.
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/routines\/run-budget$/,
+      handler: async () => {
+        try {
+          const r = await getClaudeCodeRoutineRunBudget();
+          if (r.status >= 400) {
+            return {
+              success: false,
+              error: {
+                code: `UPSTREAM_${r.status}`,
+                message: `api.anthropic.com responded ${r.status} ${r.statusText}`,
+              },
+              data: r.body,
+            };
+          }
+          const limit = Number(r.body?.limit);
+          const used = Number(r.body?.used);
+          const remaining = Number.isFinite(limit) && Number.isFinite(used) ? limit - used : null;
+          return { success: true, data: { ...r.body, remaining } };
+        } catch (err) {
+          return {
+            success: false,
+            error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message },
+          };
+        }
+      },
+    },
+
+    // ─── Claude Code Routines / Triggers (CCR) CRUD ───
+    // Proxies the /v1/code/triggers surface using the OAuth bearer +
+    // anthropic-beta: ccr-triggers-2026-01-30 + anthropic-version +
+    // x-organization-uuid fingerprint (same as /routines/run-budget above).
+    // ORDERING: the specific GET /routines/run-budget route (above) and the
+    // static GET /routines (list) MUST precede the GET /routines/:id catch-all,
+    // and POST /routines/:id/run MUST precede POST /routines/:id.
+
+    // GET /claude-code/routines — list routines/triggers ({ data: [...], has_more }).
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/routines$/,
+      handler: async () => {
+        try {
+          const r = await listRoutines();
+          if (r.status >= 400) {
+            return {
+              success: false,
+              error: {
+                code: `UPSTREAM_${r.status}`,
+                message: `api.anthropic.com responded ${r.status} ${r.statusText}`,
+              },
+              data: r.body,
+            };
+          }
+          return { success: true, data: r.body };
+        } catch (err) {
+          return {
+            success: false,
+            error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message },
+          };
+        }
+      },
+    },
+
+    // POST /claude-code/routines — create a routine/trigger (JSON body passthrough).
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/routines$/,
+      handler: async (req) => {
+        const body = req.body;
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          return { success: false, error: { code: 'INVALID_BODY', message: 'JSON object body required' } };
+        }
+        try {
+          const r = await createRoutine(body);
+          if (r.status >= 400) {
+            return {
+              success: false,
+              error: {
+                code: `UPSTREAM_${r.status}`,
+                message: `api.anthropic.com responded ${r.status} ${r.statusText}`,
+              },
+              data: r.body,
+            };
+          }
+          return { success: true, data: r.body };
+        } catch (err) {
+          return {
+            success: false,
+            error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message },
+          };
+        }
+      },
+    },
+
+    // GET /claude-code/environments — list routine environments (for create bodies).
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/environments$/,
+      handler: async () => {
+        try {
+          const r = await listRoutineEnvironments();
+          if (r.status >= 400) {
+            return {
+              success: false,
+              error: {
+                code: `UPSTREAM_${r.status}`,
+                message: `api.anthropic.com responded ${r.status} ${r.statusText}`,
+              },
+              data: r.body,
+            };
+          }
+          return { success: true, data: r.body };
+        } catch (err) {
+          return {
+            success: false,
+            error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message },
+          };
+        }
+      },
+    },
+
+    // POST /claude-code/routines/:id/run — fire a routine now (CCR cloud session).
+    // MUST be registered before POST /claude-code/routines/:id (the update route).
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/routines\/(?<id>[^/]+)\/run$/,
+      handler: async (req) => {
+        try {
+          const r = await runRoutine(req.params.id);
+          if (r.status >= 400) {
+            return {
+              success: false,
+              error: {
+                code: `UPSTREAM_${r.status}`,
+                message: `api.anthropic.com responded ${r.status} ${r.statusText}`,
+              },
+              data: r.body,
+            };
+          }
+          return { success: true, data: r.body };
+        } catch (err) {
+          return {
+            success: false,
+            error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message },
+          };
+        }
+      },
+    },
+
+    // POST /claude-code/routines/:id — partial update of a routine/trigger (JSON body).
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/routines\/(?<id>[^/]+)$/,
+      handler: async (req) => {
+        const body = req.body;
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          return { success: false, error: { code: 'INVALID_BODY', message: 'JSON object body required' } };
+        }
+        try {
+          const r = await updateRoutine(req.params.id, body);
+          if (r.status >= 400) {
+            return {
+              success: false,
+              error: {
+                code: `UPSTREAM_${r.status}`,
+                message: `api.anthropic.com responded ${r.status} ${r.statusText}`,
+              },
+              data: r.body,
+            };
+          }
+          return { success: true, data: r.body };
+        } catch (err) {
+          return {
+            success: false,
+            error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message },
+          };
+        }
+      },
+    },
+
+    // DELETE /claude-code/routines/:id — delete a routine/trigger ({ deleted_session_count }).
+    {
+      method: 'DELETE',
+      pattern: /^\/claude-code\/routines\/(?<id>[^/]+)$/,
+      handler: async (req) => {
+        try {
+          const r = await deleteRoutine(req.params.id);
+          if (r.status >= 400) {
+            return {
+              success: false,
+              error: {
+                code: `UPSTREAM_${r.status}`,
+                message: `api.anthropic.com responded ${r.status} ${r.statusText}`,
+              },
+              data: r.body,
+            };
+          }
+          return { success: true, data: r.body };
+        } catch (err) {
+          return {
+            success: false,
+            error: { code: 'OAUTH_UNAVAILABLE', message: (err as Error).message },
+          };
+        }
+      },
+    },
+
+    // GET /claude-code/routines/:id — read a single routine/trigger.
+    // MUST be registered after GET /claude-code/routines/run-budget (above).
+    {
+      method: 'GET',
+      pattern: /^\/claude-code\/routines\/(?<id>[^/]+)$/,
+      handler: async (req) => {
+        try {
+          const r = await getRoutine(req.params.id);
           if (r.status >= 400) {
             return {
               success: false,

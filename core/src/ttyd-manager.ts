@@ -12,6 +12,7 @@ import * as path from 'path';
 import * as os from 'os';
 import WebSocket from 'ws';
 import { getDataDir, legacyEncodeProjectPath } from './utils/path-utils';
+import { findLiveNonTmuxSession } from './terminal-attach-policy';
 import {
   IS_WINDOWS,
   IS_POSIX,
@@ -20,6 +21,7 @@ import {
   killProcessTree as killProcessTreeXPlat,
   findProcessesByNameSync,
   getProcessCwd,
+  isProcessAlive,
   isBinaryInstalled,
   getDiskStatsSync,
   getDiskStats,
@@ -83,6 +85,7 @@ export interface TtydStartResult {
   pid?: number;
   error?: string;
   warning?: string;  // Non-blocking warnings (e.g., external session, no content yet)
+  code?: string;     // Typed error code (e.g. 'SESSION_NOT_IN_TMUX') for blocked starts
 }
 
 export interface TtydInstanceRecord {
@@ -1220,8 +1223,10 @@ export class TtydManager {
     // Only set activeInstance if the process is NOT managed by our ttyd
     // (ttyd-managed sessions are safe to connect to)
     if (sessionProcesses.length > 0 && !ttydProcess) {
-      // Check if any process is NOT ttyd-managed
-      const nonTtydProcess = sessionProcesses.find(p => p.managedBy !== 'ttyd' && p.managedBy !== 'ttyd-tmux');
+      // Check if any process is NOT ttyd-managed. Re-verify liveness: a dead/zombie
+      // process must never set activeInstance, otherwise a session that already
+      // exited would keep blocking a fresh start ("dead external session never blocks").
+      const nonTtydProcess = sessionProcesses.find(p => p.managedBy !== 'ttyd' && p.managedBy !== 'ttyd-tmux' && isProcessAlive(p.pid));
       if (nonTtydProcess) {
         const sourceLabel = nonTtydProcess.managedBy === 'unmanaged-tmux'
           ? `User Tmux (${nonTtydProcess.tmuxSessionName || 'unknown'})`
@@ -1276,7 +1281,7 @@ export class TtydManager {
 
     // Check for unmanaged processes (excluding those already identified as running this session)
     const unmanagedProcesses = relevantProcesses.filter(
-      p => p.managedBy === 'unknown' && p.sessionId !== sessionId
+      p => p.managedBy === 'unknown' && p.sessionId !== sessionId && isProcessAlive(p.pid)
     );
     if (unmanagedProcesses.length > 0) {
       warnings.push(
@@ -1525,6 +1530,27 @@ export class TtydManager {
               // Non-fatal — proceed without identified sessionId
             }
           }
+        }
+      }
+
+      // ── SAFETY: never start a writable duplicate of a NON-tmux live session ──
+      // A Claude process running outside tmux (plain terminal / --chrome window) has
+      // no tmux pane to attach to. The only thing we could do is launch a second
+      // `claude --resume <sessionId>` — two live processes writing the same session
+      // JSONL corrupts it. Refuse regardless of `force`. RECONNECT (resolvedExistingTmux
+      // set) and fork (--fork-session, new session file) are exempt — they do not
+      // duplicate. Detection uses the live PID list (fresh ps + tmux pane map).
+      if (!resolvedExistingTmux && !options?.forkSession && options?.resume !== false) {
+        const liveNonTmux = findLiveNonTmuxSession(this.getRunningClaudeProcesses(), sessionId);
+        if (liveNonTmux) {
+          return {
+            success: false,
+            code: 'SESSION_NOT_IN_TMUX',
+            error: `Session ${sessionId} is already running outside tmux (PID ${liveNonTmux.pid}, `
+              + `${liveNonTmux.source || 'external terminal'}). A shared writable console can only attach to a `
+              + `tmux-backed session. Terminate it first (POST /ttyd/process/${liveNonTmux.pid}/kill) and retry, `
+              + `or fork a new session (forkSession: true).`,
+          };
         }
       }
 
@@ -2010,12 +2036,23 @@ export class TtydManager {
   /**
    * Kill a specific process by PID (with safety checks)
    */
-  async killProcess(pid: number): Promise<{ success: boolean; error?: string }> {
+  async killProcess(pid: number): Promise<{ success: boolean; error?: string; alreadyDead?: boolean }> {
     // Verify this is a claude-related process
     const allProcesses = this.getRunningClaudeProcesses();
     const proc = allProcesses.find(p => p.pid === pid);
 
     if (!proc) {
+      // Not in the live Claude list. If the PID is already dead, treat it as
+      // already-terminated: clean up any stale tracking and report success, so a
+      // dead external session can't keep blocking a fresh start. Only refuse when
+      // the PID is genuinely alive but not Claude-related (no arbitrary-kill).
+      if (!isProcessAlive(pid)) {
+        const stale = this.store.getAll().filter(
+          r => (r.status === 'starting' || r.status === 'running') && (r.pid === pid || r.claudePid === pid)
+        );
+        for (const record of stale) this.store.markStopped(record.id);
+        return { success: true, alreadyDead: true };
+      }
       return { success: false, error: `PID ${pid} is not a Claude-related process` };
     }
 

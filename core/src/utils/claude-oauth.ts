@@ -260,10 +260,24 @@ export function getOAuthStatus(): OAuthStatus {
   };
 }
 
+/** Shared option bag for the OAuth request helpers. */
+export interface AnthropicOAuthRequestOpts {
+  timeoutMs?: number;
+  userAgent?: string;
+  betaHeader?: string | null;
+  /** Extra headers to include (e.g. anthropic-version, x-organization-uuid). */
+  extraHeaders?: Record<string, string>;
+  /** Override query string (already URL-encoded). */
+  query?: string;
+  /** Skip auth — for public endpoints like /mcp-registry/v0/servers. */
+  skipAuth?: boolean;
+}
+
 /**
- * Make an authenticated GET to api.anthropic.com using the Claude Code
- * OAuth token. Adds Bearer + anthropic-beta + Claude Code user-agent.
- * Handles the single-retry-on-401 pattern (force refresh, retry once).
+ * Make an authenticated request to api.anthropic.com using the Claude Code
+ * OAuth token. Adds Bearer + anthropic-beta + Claude Code user-agent, sends
+ * an optional JSON body (POST/PUT), and handles the single-retry-on-401
+ * pattern (force refresh, retry once).
  *
  * Header fingerprint matches what Claude Code itself sends on these
  * OAuth endpoints (observed via lm-proxy): same 8 headers, same values,
@@ -275,25 +289,24 @@ export function getOAuthStatus(): OAuthStatus {
  * hits /api/oauth/usage only on the user's /usage command (observed
  * cadence: ~1 call every several days). Recommended minimum polling
  * interval from automated callers: 5 minutes.
+ *
+ * Retrying a 401/403 after a forced refresh is safe for writes too: an
+ * auth-rejected request never reached the upstream mutation, so re-issuing
+ * it with a fresh token cannot double-apply the change.
  */
-export async function anthropicOAuthGet(
+export async function anthropicOAuthRequest(
+  method: string,
   pathname: string,
-  opts: {
-    timeoutMs?: number;
-    userAgent?: string;
-    betaHeader?: string | null;
-    /** Extra headers to include (e.g. anthropic-version, x-organization-uuid). */
-    extraHeaders?: Record<string, string>;
-    /** Override query string (already URL-encoded). */
-    query?: string;
-    /** Skip auth — for public endpoints like /mcp-registry/v0/servers. */
-    skipAuth?: boolean;
+  opts: AnthropicOAuthRequestOpts & {
+    /** JSON request body (POST/PUT). Omitted from the wire when undefined. */
+    body?: any;
   } = {},
 ): Promise<{ status: number; statusText: string; body: any; headers: Record<string, string> }> {
   const url = `https://api.anthropic.com${pathname}${opts.query ? (pathname.includes('?') ? '&' : '?') + opts.query : ''}`;
   const timeoutMs = opts.timeoutMs ?? 10_000;
   const ua = opts.userAgent ?? getClaudeCodeUserAgent();
   const betaHeader = opts.betaHeader === null ? null : (opts.betaHeader ?? 'oauth-2025-04-20');
+  const hasBody = opts.body !== undefined;
 
   async function call(token: string) {
     const ctrl = new AbortController();
@@ -312,8 +325,9 @@ export async function anthropicOAuthGet(
       if (betaHeader) reqHeaders['anthropic-beta'] = betaHeader;
       if (opts.extraHeaders) Object.assign(reqHeaders, opts.extraHeaders);
       const res = await fetch(url, {
-        method: 'GET',
+        method,
         headers: reqHeaders,
+        ...(hasBody ? { body: JSON.stringify(opts.body) } : {}),
         signal: ctrl.signal,
       });
       const respHeaders: Record<string, string> = {};
@@ -364,6 +378,25 @@ export async function anthropicOAuthGet(
     }
   }
   return result;
+}
+
+/** Authenticated GET. Thin wrapper over {@link anthropicOAuthRequest}. */
+export async function anthropicOAuthGet(pathname: string, opts: AnthropicOAuthRequestOpts = {}) {
+  return anthropicOAuthRequest('GET', pathname, opts);
+}
+
+/**
+ * Authenticated POST with an optional JSON body. Thin wrapper over
+ * {@link anthropicOAuthRequest}. Pass `body: undefined` for body-less POSTs
+ * (e.g. trigger `/run`) — no body bytes are sent in that case.
+ */
+export async function anthropicOAuthPost(pathname: string, body?: any, opts: AnthropicOAuthRequestOpts = {}) {
+  return anthropicOAuthRequest('POST', pathname, { ...opts, body });
+}
+
+/** Authenticated DELETE. Thin wrapper over {@link anthropicOAuthRequest}. */
+export async function anthropicOAuthDelete(pathname: string, opts: AnthropicOAuthRequestOpts = {}) {
+  return anthropicOAuthRequest('DELETE', pathname, opts);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -475,4 +508,111 @@ export function getMcpRegistry(opts: { limit?: number; version?: string; visibil
     skipAuth: true,
     betaHeader: null,
   });
+}
+
+let cachedOrganizationUuid: string | null | undefined;
+
+/**
+ * Resolve the organization UUID for the current OAuth identity.
+ *
+ * Sourced from GET /api/oauth/profile → `organization.uuid` (the same payload
+ * `/claude-code/profile` surfaces). Memoized for the process lifetime — the
+ * org binding is stable per credentials file — mirroring `detectClaudeCodeVersion`.
+ * Throws if the profile can't be read or carries no org uuid; callers in the
+ * route layer turn that into the standard `OAUTH_UNAVAILABLE` error shape.
+ */
+export async function getOrganizationUuid(): Promise<string> {
+  if (typeof cachedOrganizationUuid === 'string' && cachedOrganizationUuid) {
+    return cachedOrganizationUuid;
+  }
+  const r = await anthropicOAuthGet('/api/oauth/profile');
+  if (r.status >= 400) {
+    throw new Error(`organization uuid lookup failed: /api/oauth/profile responded ${r.status} ${r.statusText}`);
+  }
+  const uuid = r.body?.organization?.uuid;
+  if (typeof uuid !== 'string' || !uuid) {
+    throw new Error('organization uuid missing from /api/oauth/profile response');
+  }
+  cachedOrganizationUuid = uuid;
+  return uuid;
+}
+
+/**
+ * GET /v1/code/routines/run-budget — the organization's per-rolling-24h
+ * routine RUN quota (plan tiers: Pro 5 / Max 15 / Team-Enterprise 25; overage
+ * via Extra Usage when `unified_billing_enabled`).
+ *
+ * Fingerprint differs from the OAuth-beta family: OAuth bearer +
+ * `anthropic-version: 2023-06-01` + `anthropic-beta: ccr-triggers-2026-01-30`
+ * (REQUIRED — the endpoint 404s without it) + `x-organization-uuid`. Upstream
+ * returns `{ limit, used, unified_billing_enabled }` where `limit`/`used` are
+ * STRINGS.
+ */
+export async function getClaudeCodeRoutineRunBudget() {
+  const orgUuid = await getOrganizationUuid();
+  return anthropicOAuthGet('/v1/code/routines/run-budget', {
+    betaHeader: 'ccr-triggers-2026-01-30',
+    extraHeaders: {
+      'anthropic-version': '2023-06-01',
+      'x-organization-uuid': orgUuid,
+    },
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Claude Code Routines / Triggers (CCR) CRUD — the `/v1/code/triggers`
+// surface (plus `/v1/environment_providers` for building create bodies).
+//
+// Every call carries the same fingerprint as getClaudeCodeRoutineRunBudget
+// above: OAuth bearer + `anthropic-version: 2023-06-01` + `anthropic-beta:
+// ccr-triggers-2026-01-30` (REQUIRED — the surface 404s without it) +
+// `x-organization-uuid` (resolved from /api/oauth/profile, memoized per
+// process). Validated live against api.anthropic.com on 2026-06-03.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Build the shared CCR-triggers request opts (beta header + version + org uuid). */
+async function claudeCodeTriggerOpts(): Promise<AnthropicOAuthRequestOpts> {
+  const orgUuid = await getOrganizationUuid();
+  return {
+    betaHeader: 'ccr-triggers-2026-01-30',
+    extraHeaders: {
+      'anthropic-version': '2023-06-01',
+      'x-organization-uuid': orgUuid,
+    },
+  };
+}
+
+/** GET /v1/code/triggers — list routines/triggers. Returns `{ data: [...], has_more }`. */
+export async function listRoutines() {
+  return anthropicOAuthGet('/v1/code/triggers', await claudeCodeTriggerOpts());
+}
+
+/** GET /v1/code/triggers/{id} — read a single routine/trigger. */
+export async function getRoutine(id: string) {
+  return anthropicOAuthGet(`/v1/code/triggers/${encodeURIComponent(id)}`, await claudeCodeTriggerOpts());
+}
+
+/** POST /v1/code/triggers — create a routine/trigger (body passthrough). */
+export async function createRoutine(body: any) {
+  return anthropicOAuthPost('/v1/code/triggers', body, await claudeCodeTriggerOpts());
+}
+
+/** POST /v1/code/triggers/{id} — partial update of a routine/trigger. */
+export async function updateRoutine(id: string, body: any) {
+  return anthropicOAuthPost(`/v1/code/triggers/${encodeURIComponent(id)}`, body, await claudeCodeTriggerOpts());
+}
+
+/** POST /v1/code/triggers/{id}/run — fire a routine/trigger now (a CCR cloud session). Body-less. */
+export async function runRoutine(id: string) {
+  return anthropicOAuthPost(`/v1/code/triggers/${encodeURIComponent(id)}/run`, undefined, await claudeCodeTriggerOpts());
+}
+
+/** DELETE /v1/code/triggers/{id} — delete a routine/trigger. Returns `{ deleted_session_count }`. */
+export async function deleteRoutine(id: string) {
+  return anthropicOAuthDelete(`/v1/code/triggers/${encodeURIComponent(id)}`, await claudeCodeTriggerOpts());
+}
+
+/** GET /v1/environment_providers — environments available for routine `job_config.ccr.environment_id`. */
+export async function listRoutineEnvironments() {
+  return anthropicOAuthGet('/v1/environment_providers', await claudeCodeTriggerOpts());
 }

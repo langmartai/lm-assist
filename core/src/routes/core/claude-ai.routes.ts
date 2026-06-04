@@ -101,6 +101,14 @@ import {
   duplicateSkill,
   deleteOrgSkill,
   SkillFileNotFoundError,
+  listMarketplaces,
+  createAccountMarketplace,
+  deleteAccountMarketplace,
+  listAccountMarketplacePlugins,
+  listPlugins,
+  setPluginEnabled,
+  deleteMarketplacePlugin,
+  type MarketplaceScope,
 } from '../../utils/claudeai-session';
 import {
   buildViaChromeSnippet,
@@ -1012,6 +1020,137 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
           const r = await deleteSkill({ skillId: req.params.id });
           invalidateSkillsListCache();
           return upstreamWrap(r);
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // ─── Marketplaces + plugins (cookie-file path) ───
+    //
+    //   Manage the account's claude.ai plugin marketplaces (each a git repo
+    //   with a .claude-plugin/marketplace.json at its root) and the plugins
+    //   within them. Mirrors the web UI's marketplace screen. Mutating routes
+    //   (POST/PUT/DELETE) are WRITES against the real account.
+    //
+    //   ROUTE ORDER (first-match-wins): the /:id/plugins/:pid and /:id/plugins
+    //   routes MUST precede the bare DELETE /:id, or "plugins" would be captured
+    //   as the :id group.
+
+    // GET /claude-ai/marketplaces[?scope=account|default|org] — list marketplaces.
+    //   Maps to marketplaces/list-{account,default,org}-marketplaces (default account).
+    {
+      method: 'GET',
+      pattern: /^\/claude-ai\/marketplaces$/,
+      handler: async (req) => {
+        try {
+          const raw = (req.query || {}).scope;
+          const scope = (raw === 'default' || raw === 'org' ? raw : 'account') as MarketplaceScope;
+          return upstreamWrap(await listMarketplaces({ scope }));
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // POST /claude-ai/marketplaces — create an account marketplace. WRITE.
+    //   Body: { name, source_url, source?='github' }. source_url accepts
+    //   "owner/repo" or a full github.com URL; normalized to
+    //   https://github.com/owner/repo. claude.ai clones the repo's DEFAULT
+    //   branch and requires .claude-plugin/marketplace.json at its root.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/marketplaces$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        if (typeof b.name !== 'string' || !b.name) {
+          return { success: false, error: { code: 'MISSING_NAME', message: 'body.name is required' } };
+        }
+        if (typeof b.source_url !== 'string' || !b.source_url) {
+          return { success: false, error: { code: 'MISSING_SOURCE_URL', message: 'body.source_url is required ("owner/repo" or a github.com URL)' } };
+        }
+        try {
+          return upstreamWrap(await createAccountMarketplace({
+            name: b.name,
+            sourceUrl: b.source_url,
+            source: typeof b.source === 'string' ? b.source : undefined,
+          }));
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // GET /claude-ai/marketplaces/:id/plugins — plugins in an account marketplace.
+    //   Maps to marketplaces/{id}/plugins/account-list-plugins?limit=100.
+    {
+      method: 'GET',
+      pattern: /^\/claude-ai\/marketplaces\/(?<id>[^/?]+)\/plugins$/,
+      handler: async (req) => {
+        try {
+          const limit = Number((req.query || {}).limit) || 100;
+          return upstreamWrap(await listAccountMarketplacePlugins({ marketplaceId: req.params.id, limit }));
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // DELETE /claude-ai/marketplaces/:id/plugins/:pid — remove a plugin from a
+    //   marketplace. WRITE. (Registered before the bare DELETE /:id.)
+    {
+      method: 'DELETE',
+      pattern: /^\/claude-ai\/marketplaces\/(?<id>[^/?]+)\/plugins\/(?<pid>[^/?]+)$/,
+      handler: async (req) => {
+        try {
+          return upstreamWrap(await deleteMarketplacePlugin({ marketplaceId: req.params.id, pluginId: req.params.pid }));
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // DELETE /claude-ai/marketplaces/:id — remove an account marketplace. WRITE.
+    //   Maps to marketplaces/{id}/account-delete. Verify by re-listing.
+    {
+      method: 'DELETE',
+      pattern: /^\/claude-ai\/marketplaces\/(?<id>[^/?]+)$/,
+      handler: async (req) => {
+        try {
+          return upstreamWrap(await deleteAccountMarketplace({ marketplaceId: req.params.id }));
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // GET /claude-ai/plugins[?enabled_only=true] — DEFAULT-marketplace plugins.
+    //   (Account-marketplace plugins are under /marketplaces/:id/plugins.)
+    {
+      method: 'GET',
+      pattern: /^\/claude-ai\/plugins$/,
+      handler: async (req) => {
+        try {
+          const enabledOnly = (req.query || {}).enabled_only === 'true';
+          return upstreamWrap(await listPlugins({ enabledOnly }));
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // PUT /claude-ai/plugins/:id/enabled — enable/disable a plugin. WRITE.
+    //   Body: { enabled: boolean }.
+    {
+      method: 'PUT',
+      pattern: /^\/claude-ai\/plugins\/(?<id>[^/?]+)\/enabled$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        if (typeof b.enabled !== 'boolean') {
+          return { success: false, error: { code: 'MISSING_ENABLED', message: 'body.enabled (boolean) is required' } };
+        }
+        try {
+          return upstreamWrap(await setPluginEnabled({ pluginId: req.params.id, enabled: b.enabled }));
         } catch (err) {
           return catchOAuth(err);
         }

@@ -20,6 +20,7 @@ import {
   err,
   workerGet,
   workerPost,
+  workerPut,
   workerDelete,
   isCwdAllowed,
   type McpToolResult,
@@ -294,6 +295,111 @@ export const deleteConversationToolDef = {
   },
 };
 
+// ─── claude.ai marketplace + plugin management ───────────────────────────
+//
+// Mirror the cookie-path /claude-ai/marketplaces + /claude-ai/plugins routes
+// (loopback). list_* are reads; add/remove/set are writes against the account.
+
+export const claudeaiListMarketplacesToolDef = {
+  name: 'claudeai_list_marketplaces',
+  description:
+    'List the plugin marketplaces registered on the user\'s claude.ai account. A marketplace ' +
+    'is a GitHub repo (with .claude-plugin/marketplace.json) that publishes plugins. ' +
+    'scope="account" (default) lists the user\'s added marketplaces; "default" the built-in ' +
+    'one; "org" the organization\'s. Each entry has id, name, source, source_url, sync_status. ' +
+    'Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      scope: { type: 'string', enum: ['account', 'default', 'org'], description: 'Which marketplace set to list (default "account").' },
+    },
+  },
+};
+
+export const claudeaiAddMarketplaceToolDef = {
+  name: 'claudeai_add_marketplace',
+  description:
+    'Register a new plugin marketplace on the user\'s claude.ai account from a public GitHub ' +
+    'repo. source_url accepts "owner/repo" or a full github.com URL (normalized to ' +
+    'https://github.com/owner/repo). claude.ai git-clones the repo\'s default branch and ' +
+    'requires .claude-plugin/marketplace.json at its root; the clone+sync is async (poll ' +
+    '`claudeai_list_marketplaces` for sync_status="success"). WRITE — changes account state.',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      name: { type: 'string', description: 'Display name for the marketplace.' },
+      source_url: { type: 'string', description: 'GitHub "owner/repo" or full github.com URL.' },
+    },
+    required: ['name', 'source_url'],
+  },
+};
+
+export const claudeaiRemoveMarketplaceToolDef = {
+  name: 'claudeai_remove_marketplace',
+  description:
+    'Remove a plugin marketplace from the user\'s claude.ai account by its marketplace id ' +
+    '(from `claudeai_list_marketplaces`). WRITE — unregisters the marketplace and its plugins. ' +
+    'Verify removal by re-listing (the upstream 200 alone is unreliable).',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      marketplace_id: { type: 'string', description: 'Marketplace id from claudeai_list_marketplaces.' },
+    },
+    required: ['marketplace_id'],
+  },
+};
+
+export const claudeaiListMarketplacePluginsToolDef = {
+  name: 'claudeai_list_marketplace_plugins',
+  description:
+    'List the plugins published by one ACCOUNT marketplace (by marketplace id from ' +
+    '`claudeai_list_marketplaces`). Account-marketplace plugins are NOT returned by ' +
+    '`claudeai_list_plugins` (which only covers the default marketplace). Each entry has ' +
+    'id, name, enabled, skills. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      marketplace_id: { type: 'string', description: 'Marketplace id from claudeai_list_marketplaces.' },
+    },
+    required: ['marketplace_id'],
+  },
+};
+
+export const claudeaiListPluginsToolDef = {
+  name: 'claudeai_list_plugins',
+  description:
+    'List the plugins in the user\'s claude.ai DEFAULT marketplace, with each plugin\'s id, ' +
+    'name, and enabled state. Pass enabled_only=true to return only enabled plugins. For ' +
+    'account-marketplace plugins use `claudeai_list_marketplace_plugins` instead. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      enabled_only: { type: 'boolean', description: 'Return only enabled plugins (default false).' },
+    },
+  },
+};
+
+export const claudeaiSetPluginEnabledToolDef = {
+  name: 'claudeai_set_plugin_enabled',
+  description:
+    'Enable or disable a claude.ai plugin by its plugin id (from a list_*_plugins tool). ' +
+    'WRITE — toggles whether the plugin\'s skills/tools are active on the account.',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      plugin_id: { type: 'string', description: 'Plugin id (from claudeai_list_plugins or claudeai_list_marketplace_plugins).' },
+      enabled: { type: 'boolean', description: 'true to enable, false to disable.' },
+    },
+    required: ['plugin_id', 'enabled'],
+  },
+};
+
 export const EXPANDED_TOOL_DEFS = [
   // read
   listExecutionsToolDef,
@@ -303,9 +409,15 @@ export const EXPANDED_TOOL_DEFS = [
   memoryImportCandidatesToolDef,
   terminalListToolDef,
   terminalCaptureToolDef,
+  claudeaiListMarketplacesToolDef,
+  claudeaiListMarketplacePluginsToolDef,
+  claudeaiListPluginsToolDef,
   // write
   claudeaiCreateConversationToolDef,
   claudeaiCompletionToolDef,
+  claudeaiAddMarketplaceToolDef,
+  claudeaiRemoveMarketplaceToolDef,
+  claudeaiSetPluginEnabledToolDef,
   agentAbortToolDef,
   agentResumeToolDef,
   terminalPromptToolDef,
@@ -530,6 +642,69 @@ async function handleDeleteConversation(args: Record<string, unknown>): Promise<
   }
 }
 
+// ─── claude.ai marketplace + plugin handlers ─────────────────────────────
+
+async function handleClaudeaiListMarketplaces(args: Record<string, unknown>): Promise<McpToolResult> {
+  const scope = args.scope ? String(args.scope) : '';
+  const qs = scope ? `?scope=${enc(scope)}` : '';
+  try {
+    return ok(pretty(await workerGet(`/claude-ai/marketplaces${qs}`)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleClaudeaiAddMarketplace(args: Record<string, unknown>): Promise<McpToolResult> {
+  const name = String(args.name || '').trim();
+  const sourceUrl = String(args.source_url || '').trim();
+  if (!name || !sourceUrl) return err('name and source_url are required.');
+  try {
+    return ok(pretty(await workerPost('/claude-ai/marketplaces', { name, source_url: sourceUrl })));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleClaudeaiRemoveMarketplace(args: Record<string, unknown>): Promise<McpToolResult> {
+  const id = String(args.marketplace_id || '').trim();
+  if (!id) return err('marketplace_id is required.');
+  try {
+    return ok(pretty(await workerDelete(`/claude-ai/marketplaces/${enc(id)}`)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleClaudeaiListMarketplacePlugins(args: Record<string, unknown>): Promise<McpToolResult> {
+  const id = String(args.marketplace_id || '').trim();
+  if (!id) return err('marketplace_id is required.');
+  try {
+    return ok(pretty(await workerGet(`/claude-ai/marketplaces/${enc(id)}/plugins`)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleClaudeaiListPlugins(args: Record<string, unknown>): Promise<McpToolResult> {
+  const qs = args.enabled_only ? '?enabled_only=true' : '';
+  try {
+    return ok(pretty(await workerGet(`/claude-ai/plugins${qs}`)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleClaudeaiSetPluginEnabled(args: Record<string, unknown>): Promise<McpToolResult> {
+  const id = String(args.plugin_id || '').trim();
+  if (!id) return err('plugin_id is required.');
+  if (typeof args.enabled !== 'boolean') return err('enabled (boolean) is required.');
+  try {
+    return ok(pretty(await workerPut(`/claude-ai/plugins/${enc(id)}/enabled`, { enabled: args.enabled })));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 /**
  * Name → handler for every expanded tool. Both transports consult this map
  * as a fallback for tool names not in their explicit switch.
@@ -546,9 +721,16 @@ export const EXPANDED_HANDLERS: Record<
   memory_import_candidates: handleMemoryImportCandidates,
   terminal_list: () => handleTerminalList(),
   terminal_capture: handleTerminalCapture,
+  // claude.ai marketplaces + plugins (read)
+  claudeai_list_marketplaces: handleClaudeaiListMarketplaces,
+  claudeai_list_marketplace_plugins: handleClaudeaiListMarketplacePlugins,
+  claudeai_list_plugins: handleClaudeaiListPlugins,
   // write
   claudeai_create_conversation: handleClaudeaiCreateConversation,
   claudeai_completion: handleClaudeaiCompletion,
+  claudeai_add_marketplace: handleClaudeaiAddMarketplace,
+  claudeai_remove_marketplace: handleClaudeaiRemoveMarketplace,
+  claudeai_set_plugin_enabled: handleClaudeaiSetPluginEnabled,
   agent_abort: handleAgentAbort,
   agent_resume: handleAgentResume,
   terminal_prompt: handleTerminalPrompt,

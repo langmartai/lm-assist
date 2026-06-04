@@ -14,6 +14,13 @@
  *   POST /ttyd/session/identify              Identify session for unmanaged tmux
  *   POST /ttyd/session/:sessionId/input     Send input (text/keys) to a session's terminal
  *   GET  /ttyd/session/:sessionId/screen    Capture terminal screen from a session
+ *
+ * Safety rule (see terminal-attach-policy.ts): a writable console may only attach
+ * to a Claude session hosted INSIDE tmux. A live session running outside tmux
+ * cannot be attached/duplicated — `/start` (incl. force and connectPid) returns
+ * `SESSION_NOT_IN_TMUX`, and `/start-all` skips it (reported in `skipped[]`). A
+ * DEAD external session never blocks and `/process/:pid/kill` cleans it up
+ * (`alreadyDead:true`). The tmux/non-tmux split comes from live-PID detection.
  */
 
 import type { RouteHandler, RouteContext } from '../index';
@@ -22,7 +29,8 @@ import { getTtydProxyUrl } from '../../ttyd-proxy';
 import { execFileSync } from '../../utils/exec';
 import * as path from 'path';
 import * as os from 'os';
-import { IS_WINDOWS, IS_POSIX, isBinaryInstalled } from '../../utils/process-utils';
+import { IS_WINDOWS, IS_POSIX, isBinaryInstalled, isProcessAlive } from '../../utils/process-utils';
+import { isNonTmuxProcess } from '../../terminal-attach-policy';
 
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude/projects');
 import * as fs from 'fs';
@@ -294,6 +302,25 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
           }
         }
 
+        // connectPid was given but did NOT resolve to a tmux session → the target
+        // Claude process is running OUTSIDE tmux. A shared writable console cannot
+        // attach to a non-tmux process, so refuse explicitly rather than silently
+        // falling through to a fresh (duplicate) start. If the PID is already dead,
+        // there is nothing to attach to — fall through to a clean start instead.
+        if (IS_POSIX && connectPid && !resolvedTmuxSession) {
+          if (isProcessAlive(connectPid)) {
+            return {
+              success: false,
+              code: 'SESSION_NOT_IN_TMUX',
+              error: `PID ${connectPid} is a Claude session running outside tmux; a shared writable console `
+                + `cannot attach to it. Terminate it (POST /ttyd/process/${connectPid}/kill) and start fresh, `
+                + `or fork a new session (forkSession: true).`,
+              data: { connectPid, killUrl: `/ttyd/process/${connectPid}/kill`, canFork: true },
+            };
+          }
+          // Dead PID — nothing to attach to; fall through to a clean fresh start.
+        }
+
         // Try to get projectPath from: request body > session lookup > context
         // Session lookup is preferred over ctx.projectPath because ctx.projectPath
         // is the server's startup project, which may differ from the session's project.
@@ -329,13 +356,43 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
         // and attach to the existing tmux session rather than creating a new one.
         const hasUnmanagedTmuxActive = status.activeInstance &&
           status.activeInstance.message?.includes('User Tmux');
+        // A writable console can only attach to a tmux-backed session. If the blocking
+        // instance is a live NON-tmux session, `force` must NOT bypass it — there is
+        // nothing to attach to, so bypassing would launch a duplicate `claude --resume`
+        // and corrupt the session file. force may still bypass a reconnectable tmux
+        // instance or plain unmanaged-process warnings.
+        const activeIsReconnectableTmux = !!resolvedTmuxSession || !!hasUnmanagedTmuxActive ||
+          status.activeInstance?.canConnect === true;
+        const activeIsNonTmuxLive = !!status.activeInstance && !activeIsReconnectableTmux;
         const effectiveForce = force || !!resolvedTmuxSession || !!hasUnmanagedTmuxActive;
         // Determine if we can bypass blocking conditions with force
-        const canBypassWithForce = effectiveForce && (hasUnmanagedProcesses || status.activeInstance);
+        const canBypassWithForce = effectiveForce && !activeIsNonTmuxLive &&
+          (hasUnmanagedProcesses || status.activeInstance);
 
         if (!status.canStartTtyd && !status.ttydProcess && !canBypassWithForce) {
           // Session already running elsewhere - block unless force=true
           if (status.activeInstance) {
+            // Live NON-tmux session: hard block. A console cannot attach (no tmux pane)
+            // and force must not launch a duplicate `claude --resume`. Offer terminate
+            // (the external PID) or fork as the safe paths.
+            if (activeIsNonTmuxLive) {
+              const blockingPid = status.activeInstance.pid;
+              return {
+                success: false,
+                error: `${status.activeInstance.message} It is running outside tmux, so a shared `
+                  + `writable console cannot attach. Terminate it or fork instead.`,
+                code: 'SESSION_NOT_IN_TMUX',
+                data: {
+                  activeInstance: status.activeInstance,
+                  canForce: false,
+                  killUrl: `/ttyd/process/${blockingPid}/kill`,
+                  canFork: true,
+                  userMessage: `This session is live in an external terminal (PID ${blockingPid}) outside tmux. `
+                    + `A console can't attach to it. Terminate it and retry, or fork a new session.`,
+                  action: 'Terminate the external session and retry, or fork.',
+                },
+              };
+            }
             return {
               success: false,
               error: status.activeInstance.message,
@@ -427,6 +484,7 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
           return {
             success: false,
             error: result.error,
+            code: result.code,
           };
         }
 
@@ -475,6 +533,7 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
         // Collect all running Claude processes and filter out subagents and chrome sessions
         const allProcesses = cached.allClaudeProcesses || [];
         const sessionsToStart: Array<{ sessionId: string; projectPath?: string; tmuxSessionName?: string; pid?: number }> = [];
+        const skipped: Array<{ sessionId: string; pid?: number; reason: string }> = [];
         const seenSessionIds = new Set<string>();
 
         for (const proc of allProcesses) {
@@ -484,6 +543,19 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
           // Deduplicate
           if (seenSessionIds.has(proc.sessionId)) continue;
           seenSessionIds.add(proc.sessionId);
+
+          // A console can only attach to a tmux-backed session. Skip sessions running
+          // OUTSIDE tmux (plain terminal / --chrome window): force-starting them would
+          // launch a duplicate `claude --resume` and corrupt the session file. Surface
+          // them so the caller can terminate-and-retry or fork.
+          if (isNonTmuxProcess(proc)) {
+            skipped.push({
+              sessionId: proc.sessionId,
+              pid: proc.pid,
+              reason: 'running outside tmux — terminate to view in a console, or fork',
+            });
+            continue;
+          }
 
           sessionsToStart.push({
             sessionId: proc.sessionId,
@@ -580,11 +652,13 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
           success: true,
           data: {
             results,
+            skipped,
             summary: {
               total: sessionsToStart.length,
               started,
               alreadyRunning,
               failed,
+              skipped: skipped.length,
             },
           },
         };
@@ -666,8 +740,11 @@ export function createTtydRoutes(ctx: RouteContext): RouteHandler[] {
         return {
           success: true,
           data: {
-            message: `Process ${pidNum} killed`,
+            message: result.alreadyDead
+              ? `Process ${pidNum} was already dead — cleaned up stale tracking`
+              : `Process ${pidNum} killed`,
             pid: pidNum,
+            alreadyDead: result.alreadyDead ?? false,
           },
         };
       },

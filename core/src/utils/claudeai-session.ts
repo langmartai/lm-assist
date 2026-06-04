@@ -261,30 +261,22 @@ export interface ClaudeAIResponse<T = any> {
 }
 
 /**
- * Make a GET request to claude.ai using the configured session. Sends the
- * full header set a real Chrome session would send. Throws if no session
- * config is present.
+ * Build the exact browser-fingerprint header set every claude.ai cookie-path
+ * request sends. Factored out of claudeaiGet so the write helpers
+ * (claudeaiPost/Put/Delete) carry an IDENTICAL fingerprint — same Host,
+ * identity headers, sec-ch-ua*, anthropic-client-*, User-Agent, Accept,
+ * Sec-Fetch-*, Referer, Accept-Encoding, Accept-Language, Cookie, and
+ * content-type — and only differ by HTTP method + JSON body. Header insertion
+ * order is load-bearing (it mirrors the captured browser); keep it. Identity
+ * headers are emitted only when present — an empty string would itself be a tell.
  */
-export async function claudeaiGet<T = any>(
-  pathname: string,
-  opts: ClaudeAIGetOpts = {},
-): Promise<ClaudeAIResponse<T>> {
-  const cfg = readClaudeAISession();
-  if (!cfg) {
-    throw new Error(
-      `No claude.ai session at ${SESSION_PATH}. Create the file with at minimum {"cookie": "<paste browser Cookie header>"}.`,
-    );
-  }
-
-  const url = `https://claude.ai${pathname}`;
+function buildBrowserHeaders(
+  cfg: ClaudeAISessionConfig,
+  opts: { referer?: string; secFetchDest?: 'empty' | 'document' } = {},
+): Record<string, string> {
   const id = deriveIdentity(cfg);
-  const timeoutMs = opts.timeoutMs ?? 15_000;
   const referer = opts.referer ?? 'https://claude.ai/';
   const secFetchDest = opts.secFetchDest ?? 'empty';
-
-  // Header order/values mirror the captured browser fingerprint. We only
-  // include identity headers when we actually have the value — sending
-  // empty strings would itself be a tell.
   const headers: Record<string, string> = {
     Host: 'claude.ai',
     Connection: 'keep-alive',
@@ -311,6 +303,28 @@ export async function claudeaiGet<T = any>(
   headers['Accept-Encoding'] = 'gzip, deflate, br';
   headers['Accept-Language'] = 'en-US,en;q=0.9';
   headers['Cookie'] = cfg.cookie;
+  return headers;
+}
+
+/**
+ * Make a GET request to claude.ai using the configured session. Sends the
+ * full header set a real Chrome session would send. Throws if no session
+ * config is present.
+ */
+export async function claudeaiGet<T = any>(
+  pathname: string,
+  opts: ClaudeAIGetOpts = {},
+): Promise<ClaudeAIResponse<T>> {
+  const cfg = readClaudeAISession();
+  if (!cfg) {
+    throw new Error(
+      `No claude.ai session at ${SESSION_PATH}. Create the file with at minimum {"cookie": "<paste browser Cookie header>"}.`,
+    );
+  }
+
+  const url = `https://claude.ai${pathname}`;
+  const timeoutMs = opts.timeoutMs ?? 15_000;
+  const headers = buildBrowserHeaders(cfg, { referer: opts.referer, secFetchDest: opts.secFetchDest });
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -329,6 +343,79 @@ export async function claudeaiGet<T = any>(
   } finally {
     clearTimeout(timer);
   }
+}
+
+export interface ClaudeAIWriteOpts {
+  /** Override Referer (e.g. https://claude.ai/settings/...). Default https://claude.ai/. */
+  referer?: string;
+  /** Override timeout. Default 20s. */
+  timeoutMs?: number;
+  /** Sec-Fetch-Dest. Defaults to 'empty' (XHR/fetch). */
+  secFetchDest?: 'empty' | 'document';
+}
+
+/**
+ * Shared method+body fetch for the cookie-path write helpers. Uses the EXACT
+ * same fingerprint as claudeaiGet (buildBrowserHeaders) — which already
+ * includes `content-type: application/json` — and adds a JSON-stringified body
+ * for POST/PUT (DELETE sends none). Returns the same {status,statusText,
+ * headers,body} shape claudeaiGet returns. Throws if no session is configured.
+ */
+async function claudeaiSend<T = any>(
+  method: 'POST' | 'PUT' | 'DELETE',
+  pathname: string,
+  body: unknown,
+  opts: ClaudeAIWriteOpts = {},
+): Promise<ClaudeAIResponse<T>> {
+  const cfg = readClaudeAISession();
+  if (!cfg) {
+    throw new Error(
+      `No claude.ai session at ${SESSION_PATH}. Create the file with at minimum {"cookie": "<paste browser Cookie header>"}.`,
+    );
+  }
+  const url = `https://claude.ai${pathname}`;
+  const timeoutMs = opts.timeoutMs ?? 20_000;
+  const headers = buildBrowserHeaders(cfg, { referer: opts.referer, secFetchDest: opts.secFetchDest });
+
+  const init: { method: string; headers: Record<string, string>; signal: AbortSignal; body?: string } = {
+    method,
+    headers,
+    signal: undefined as unknown as AbortSignal,
+  };
+  if (body !== undefined && body !== null) init.body = JSON.stringify(body);
+
+  const ctrl = new AbortController();
+  init.signal = ctrl.signal;
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, init);
+    const respHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => (respHeaders[k] = v));
+    const text = await res.text();
+    let parsed: any;
+    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+    return { status: res.status, statusText: res.statusText, headers: respHeaders, body: parsed };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * POST a JSON body to claude.ai using the configured session. Same
+ * browser-fingerprint header set as claudeaiGet, plus the JSON body.
+ */
+export async function claudeaiPost<T = any>(pathname: string, body: unknown, opts: ClaudeAIWriteOpts = {}): Promise<ClaudeAIResponse<T>> {
+  return claudeaiSend<T>('POST', pathname, body, opts);
+}
+
+/** PUT a JSON body to claude.ai using the configured session. */
+export async function claudeaiPut<T = any>(pathname: string, body: unknown, opts: ClaudeAIWriteOpts = {}): Promise<ClaudeAIResponse<T>> {
+  return claudeaiSend<T>('PUT', pathname, body, opts);
+}
+
+/** DELETE a claude.ai resource using the configured session (no request body). */
+export async function claudeaiDelete<T = any>(pathname: string, opts: ClaudeAIWriteOpts = {}): Promise<ClaudeAIResponse<T>> {
+  return claudeaiSend<T>('DELETE', pathname, undefined, opts);
 }
 
 /**
@@ -1036,6 +1123,132 @@ export async function listMcpRemoteServers(opts: { orgUuid?: string } = {}): Pro
   });
 
   return { status: boot.status, statusText: boot.statusText, headers: boot.headers, body: { servers } };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Marketplace + plugin management (cookie path)
+//
+// claude.ai lets an account register plugin "marketplaces" (each a git repo
+// with a .claude-plugin/marketplace.json at its root) and enable individual
+// plugins from them. The web UI's marketplace/plugin screens hit the endpoints
+// below; we mirror them so a headless caller can manage marketplaces + plugins
+// without a browser. All shapes verified against live claude.ai (cookie auth):
+//
+//   GET    marketplaces/list-{account,default,org}-marketplaces  -> {marketplaces:[...]}
+//   POST   marketplaces/create-account-marketplace {name,source,source_url} -> {marketplace:{...}}
+//   DELETE marketplaces/{id}/account-delete
+//   GET    marketplaces/{id}/plugins/account-list-plugins?limit=100 -> {plugins:[...]}
+//   GET    plugins/list-plugins[?enabled_only=true]              -> {plugins:[...]}  (DEFAULT marketplace)
+//   PUT    plugins/{id}/enabled {enabled}                        -> {...,enabled}
+//   DELETE marketplaces/{id}/plugins/{plugin_id}
+//
+// NOTE: account-marketplace plugins live under the per-marketplace
+// account-list-plugins endpoint; plugins/list-plugins only returns the DEFAULT
+// marketplace's plugins. Mutating calls are WRITES against the real account.
+// ─────────────────────────────────────────────────────────────────────────
+
+export type MarketplaceScope = 'account' | 'default' | 'org';
+
+/**
+ * Normalize a marketplace source into the canonical
+ * `https://github.com/owner/repo` URL claude.ai expects. Accepts a bare
+ * "owner/repo", a full GitHub URL (any protocol, optional `.git`, optional
+ * trailing path/query), or an `git@github.com:owner/repo` SSH form.
+ */
+export function normalizeGithubSourceUrl(input: string): string {
+  const raw = String(input || '').trim();
+  if (!raw) throw new Error('source_url required');
+  // Full URL or github.com/owner/repo (with or without protocol/.git/extra path).
+  const m = raw.match(/github\.com[/:]+([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:[/?#].*)?$/i);
+  if (m) return `https://github.com/${m[1]}/${m[2]}`;
+  // Bare "owner/repo" (no host, no protocol).
+  const bare = raw.match(/^([\w.-]+)\/([\w.-]+?)(?:\.git)?$/);
+  if (bare && !raw.includes('://')) return `https://github.com/${bare[1]}/${bare[2]}`;
+  throw new Error(`Unrecognized GitHub source: ${input} (use "owner/repo" or a github.com URL)`);
+}
+
+/** GET marketplaces/list-{scope}-marketplaces — list registered marketplaces. */
+export async function listMarketplaces(opts: { scope?: MarketplaceScope; orgUuid?: string } = {}) {
+  const scope = opts.scope ?? 'account';
+  if (scope !== 'account' && scope !== 'default' && scope !== 'org') throw new Error(`Invalid scope: ${scope}`);
+  return claudeaiGet(`/api/organizations/${_org(opts)}/marketplaces/list-${scope}-marketplaces`, {
+    referer: 'https://claude.ai/',
+  });
+}
+
+/**
+ * POST marketplaces/create-account-marketplace {name,source,source_url} — WRITE.
+ * claude.ai git-clones the repo's DEFAULT branch and requires
+ * `.claude-plugin/marketplace.json` at its root. `source_url` is normalized to
+ * `https://github.com/owner/repo`. 400 "marketplace_already_default" for the
+ * default repo.
+ */
+export async function createAccountMarketplace(opts: {
+  name: string;
+  sourceUrl: string;
+  source?: string;
+  orgUuid?: string;
+}) {
+  if (!opts.name) throw new Error('name required');
+  const sourceUrl = normalizeGithubSourceUrl(opts.sourceUrl);
+  return claudeaiPost(`/api/organizations/${_org(opts)}/marketplaces/create-account-marketplace`, {
+    name: opts.name,
+    source: opts.source ?? 'github',
+    source_url: sourceUrl,
+  }, { referer: 'https://claude.ai/' });
+}
+
+/**
+ * DELETE marketplaces/{id}/account-delete — WRITE. claude.ai may answer 200
+ * even when the delete is async/unreliable; callers should VERIFY by re-listing.
+ */
+export async function deleteAccountMarketplace(opts: { marketplaceId: string; orgUuid?: string }) {
+  if (!opts.marketplaceId) throw new Error('marketplaceId required');
+  return claudeaiDelete(
+    `/api/organizations/${_org(opts)}/marketplaces/${encodeURIComponent(opts.marketplaceId)}/account-delete`,
+    { referer: 'https://claude.ai/' },
+  );
+}
+
+/**
+ * GET marketplaces/{id}/plugins/account-list-plugins?limit=N — plugins in an
+ * ACCOUNT marketplace. (These are NOT returned by plugins/list-plugins, which
+ * only covers the default marketplace.)
+ */
+export async function listAccountMarketplacePlugins(opts: { marketplaceId: string; limit?: number; orgUuid?: string }) {
+  if (!opts.marketplaceId) throw new Error('marketplaceId required');
+  const params = new URLSearchParams({ limit: String(opts.limit ?? 100) });
+  return claudeaiGet(
+    `/api/organizations/${_org(opts)}/marketplaces/${encodeURIComponent(opts.marketplaceId)}/plugins/account-list-plugins?${params}`,
+    { referer: 'https://claude.ai/' },
+  );
+}
+
+/** GET plugins/list-plugins[?enabled_only=true] — DEFAULT-marketplace plugins. */
+export async function listPlugins(opts: { enabledOnly?: boolean; orgUuid?: string } = {}) {
+  const qs = opts.enabledOnly ? '?enabled_only=true' : '';
+  return claudeaiGet(`/api/organizations/${_org(opts)}/plugins/list-plugins${qs}`, {
+    referer: 'https://claude.ai/',
+  });
+}
+
+/** PUT plugins/{id}/enabled {enabled} — enable/disable a plugin. WRITE. */
+export async function setPluginEnabled(opts: { pluginId: string; enabled: boolean; orgUuid?: string }) {
+  if (!opts.pluginId) throw new Error('pluginId required');
+  return claudeaiPut(
+    `/api/organizations/${_org(opts)}/plugins/${encodeURIComponent(opts.pluginId)}/enabled`,
+    { enabled: !!opts.enabled },
+    { referer: 'https://claude.ai/' },
+  );
+}
+
+/** DELETE marketplaces/{id}/plugins/{plugin_id} — remove a plugin from a marketplace. WRITE. */
+export async function deleteMarketplacePlugin(opts: { marketplaceId: string; pluginId: string; orgUuid?: string }) {
+  if (!opts.marketplaceId || !opts.pluginId) throw new Error('marketplaceId and pluginId required');
+  return claudeaiDelete(
+    `/api/organizations/${_org(opts)}/marketplaces/${encodeURIComponent(opts.marketplaceId)}/plugins/${encodeURIComponent(opts.pluginId)}`,
+    { referer: 'https://claude.ai/' },
+  );
 }
 
 /** GET /api/organizations/{org}/list_styles — chat styles. */

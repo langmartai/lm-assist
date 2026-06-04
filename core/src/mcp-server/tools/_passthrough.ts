@@ -101,6 +101,24 @@ export async function workerPostRaw(
   return (await res.json()) as Record<string, unknown>;
 }
 
+/** PUT an lm-assist route on loopback. Same envelope handling as workerGet. */
+export async function workerPut<T = unknown>(
+  routePath: string,
+  body: Record<string, unknown>,
+): Promise<T> {
+  const res = await fetch(`${BASE_URL}${routePath}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30000),
+  });
+  const json = (await res.json()) as { success?: boolean; data?: T; error?: { message?: string } };
+  if (!res.ok || json.success === false) {
+    throw new Error(json.error?.message || `${routePath} returned ${res.status}`);
+  }
+  return (json.data ?? (json as unknown)) as T;
+}
+
 /** DELETE an lm-assist route on loopback. Same envelope handling as workerGet. */
 export async function workerDelete<T = unknown>(
   routePath: string,
