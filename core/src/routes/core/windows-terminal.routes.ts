@@ -80,7 +80,7 @@ export function createWindowsTerminalRoutes(_ctx: RouteContext): RouteHandler[] 
           const verdict = sessionVerdict(sessionId);
           const pid = verdict.owner?.pid ?? pidForSession(sessionId);
           const win = pid ? (await mapPidsToWindows([pid]))[0] ?? null : null;
-          return ok({ sessionId, verdict, win, driveable: !!(win && win.focusable) });
+          return ok({ sessionId, verdict, win, driveable: !!(win && win.driveable) });
         } catch (e) {
           return fail('INTERNAL_ERROR', (e as Error).message);
         }
@@ -98,7 +98,7 @@ export function createWindowsTerminalRoutes(_ctx: RouteContext): RouteHandler[] 
         if (!pid) return fail('SESSION_NOT_LIVE', `no live session ${sessionId} on this host`);
         try {
           const res = await focusAndSend({ pid });
-          return res.ok ? ok(res) : fail('NOT_FOCUSABLE', res.error || 'could not focus', res.detail);
+          return res.ok ? ok(res) : fail('NOT_LOCATABLE', res.error || 'could not focus', { origTitle: res.origTitle });
         } catch (e) {
           return fail('INTERNAL_ERROR', (e as Error).message);
         }
@@ -120,7 +120,7 @@ export function createWindowsTerminalRoutes(_ctx: RouteContext): RouteHandler[] 
         if (!pid) return fail('SESSION_NOT_LIVE', `no live session ${sessionId} on this host`);
         try {
           const res = await focusAndSend({ pid, text: body.text, submit: !!body.submit });
-          return res.ok ? ok(res) : fail('NOT_FOCUSABLE', res.error || 'could not send', res.detail);
+          return res.ok ? ok(res) : fail('NOT_LOCATABLE', res.error || 'could not send', { origTitle: res.origTitle });
         } catch (e) {
           return fail('INTERNAL_ERROR', (e as Error).message);
         }

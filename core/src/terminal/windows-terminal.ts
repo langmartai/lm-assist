@@ -5,28 +5,31 @@
  * Linux maps a live Claude Code session's pid to a tmux pane (so it can
  * send-keys to it). Windows has no tmux: interactive Claude sessions run
  * directly in Windows Terminal tabs (or conhost windows). This module maps a
- * live session's pid to the exact WT window + tab (or conhost window) that
- * hosts it, and drives it by bringing that window/tab to the front and pasting
- * text — the Windows equivalent of "attach + send-keys".
+ * live session's pid to the exact WT window + tab and drives it by bringing
+ * that window/tab to the front and pasting text — the Windows equivalent of
+ * "attach + send-keys".
  *
  * The pid -> window/tab bridge cannot be done from Node alone (tabs are not
  * windows and carry no pid), so the heavy lifting runs in a bundled PowerShell
- * engine that:
- *   - walks the parent-process chain (Toolhelp32) to the terminal host process
- *   - reads each pid's console title via AttachConsole + GetConsoleTitle
- *     (non-destructive: attaches the reader, never detaches the target;
- *      child/subagent claude processes inherit the hosting tab's console, so a
- *      child pid still resolves to its tab)
- *   - enumerates ALL top-level windows of the host process (EnumWindows by pid;
- *     MainWindowHandle is unreliable — WT puts many windows in one process)
- *   - matches the console title against each window's tab titles via UI
- *     Automation, then selects that tab and foregrounds the window
+ * engine. The hard part is identifying which tab hosts a pid. Rather than
+ * READING the tab title (which Claude Code owns and rewrites as the
+ * conversation summary evolves — it drifts and races), the engine takes
+ * OWNERSHIP of the matching key at drive time:
  *
- * Caveat (honest): the only pid->tab key is the console/tab TITLE. If two
- * sessions share a title, or the live title has drifted from what the WT tab
- * strip currently shows, the match can miss — in which case the session is
- * reported focusable:false and we refuse to drive it (rather than risk typing
- * into the wrong tab).
+ *   1. AttachConsole(pid) + GetConsoleTitle to snapshot the current title
+ *   2. SetConsoleTitle(pid, "LMASSIST::<pid>::<nonce>") — a unique marker we
+ *      control. SetConsoleTitle on an externally-attached ConPTY console
+ *      propagates through to the WT tab strip (verified on windows-desk).
+ *   3. UI-Automation finds the tab whose title contains our marker -> exact
+ *      (window handle, tab index). Re-asserted across a short poll loop to beat
+ *      the app's own title updates.
+ *   4. Restore the original title.
+ *
+ * This is deterministic: the match key is a string WE wrote, not Claude's
+ * drifting summary. Listing (query) stays passive and non-intrusive (it does
+ * not touch titles); `driveable` there means "hosted in a real terminal with a
+ * readable console", because the exact tab is resolved authoritatively at drive
+ * time regardless of passive title drift.
  *
  * Everything here is a no-op (returns not-supported) on non-Windows.
  */
@@ -46,7 +49,7 @@ import { listLiveSessions, LiveSession } from './cc-sessions';
 // ---------------------------------------------------------------------------
 const ENGINE_PS1 = String.raw`
 param(
-  [Parameter(Mandatory)][ValidateSet('query','send')][string]$Action,
+  [Parameter(Mandatory)][ValidateSet('query','locate','send')][string]$Action,
   [string]$PidList = '',
   [int]$ClaudePid = 0,
   [string]$MessageB64 = '',
@@ -73,30 +76,19 @@ public class WT {
   [DllImport("kernel32.dll")] public static extern bool FreeConsole();
   [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AttachConsole(uint pid);
   [DllImport("kernel32.dll")] public static extern int GetConsoleTitle(StringBuilder sb, int n);
-
-  public delegate bool EnumProc(IntPtr h, IntPtr l);
-  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
-  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
-  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
-  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
-  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h);
-  public static List<IntPtr> WindowsByPid(uint target) {
-    var res = new List<IntPtr>();
-    EnumWindows((h,l)=>{ uint p; GetWindowThreadProcessId(h, out p);
-      if(p==target && IsWindowVisible(h) && GetWindowTextLength(h)>0) res.Add(h); return true; }, IntPtr.Zero);
-    return res;
-  }
-  public static string WinText(IntPtr h){ var sb=new StringBuilder(1024); GetWindowText(h,sb,1024); return sb.ToString(); }
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetConsoleTitle(string t);
 
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
   [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
 }
 "@
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 
 $TERMS = @('WindowsTerminal.exe','conhost.exe','OpenConsole.exe')
 
@@ -110,19 +102,6 @@ function Get-ParentMap {
 }
 function Normalize-Title([string]$t){ if(-not $t){return ""}; return ($t -replace '^\s*\S+\s+','').Trim() }
 function Is-Alive([int]$p){ try{ $null=Get-Process -Id $p -ErrorAction Stop; return $true }catch{ return $false } }
-
-function Read-ConsoleTitle([int]$p){
-  [WT]::FreeConsole()|Out-Null
-  $title=""
-  if([WT]::AttachConsole([uint32]$p)){
-    $sb=New-Object System.Text.StringBuilder 1024
-    $null=[WT]::GetConsoleTitle($sb,1024)
-    $title=$sb.ToString()
-  }
-  [WT]::FreeConsole()|Out-Null
-  return $title
-}
-
 function Resolve-Host([int]$startPid,$map){
   $cur=$startPid
   while($cur -and $map.parent.ContainsKey($cur)){
@@ -131,44 +110,59 @@ function Resolve-Host([int]$startPid,$map){
   }
   return $null
 }
-
-function Get-TabItems([IntPtr]$hwnd){
-  $root=[System.Windows.Automation.AutomationElement]::RootElement
-  $cond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NativeWindowHandleProperty,[int]$hwnd)
-  $w=$root.FindFirst([System.Windows.Automation.TreeScope]::Children,$cond)
-  if(-not $w){ return @() }
-  $tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::TabItem)
-  return @($w.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc))
+function Read-ConsoleTitle([int]$p){
+  [WT]::FreeConsole()|Out-Null; $t=""
+  if([WT]::AttachConsole([uint32]$p)){ $sb=New-Object System.Text.StringBuilder 1024; $null=[WT]::GetConsoleTitle($sb,1024); $t=$sb.ToString() }
+  [WT]::FreeConsole()|Out-Null; return $t
+}
+function Write-ConsoleTitle([int]$p,[string]$v){
+  [WT]::FreeConsole()|Out-Null; $ok=$false
+  if([WT]::AttachConsole([uint32]$p)){ $ok=[WT]::SetConsoleTitle($v) }
+  [WT]::FreeConsole()|Out-Null; return $ok
 }
 
-Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+function Get-TerminalWindows {
+  $root=[System.Windows.Automation.AutomationElement]::RootElement
+  $orCond=New-Object System.Windows.Automation.OrCondition(
+    (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty,"CASCADIA_HOSTING_WINDOW_CLASS")),
+    (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty,"ConsoleWindowClass"))
+  )
+  return @($root.FindAll([System.Windows.Automation.TreeScope]::Children,$orCond))
+}
+function Get-TabItems($win){
+  $tc=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::TabItem)
+  return @($win.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc))
+}
 
-function Locate-WindowTab([int]$claudePid,$map){
-  $r=@{ hostPid=0; hostName=$null; kind='unknown'; windowHandle=$null; tabTitle=$null; tabIndex=-1; windowCount=0; focusable=$false; consoleTitle=$null }
-  $h=Resolve-Host $claudePid $map
-  if(-not $h){ return $r }
-  $r.hostPid=$h.pid; $r.hostName=$h.name
-  $r.kind = if($h.name -eq 'WindowsTerminal.exe'){'windows-terminal'} elseif($h.name -eq 'conhost.exe' -or $h.name -eq 'OpenConsole.exe'){'conhost'} else {'unknown'}
-  $title = Normalize-Title (Read-ConsoleTitle $claudePid)
-  $r.consoleTitle = $title
-  $wins = [WT]::WindowsByPid([uint32]$h.pid)
-  $r.windowCount = $wins.Count
-  foreach($wh in $wins){
-    $tabs = Get-TabItems $wh
-    if($tabs.Count -eq 0){
-      if((Normalize-Title ([WT]::WinText($wh))) -eq $title -or $wins.Count -eq 1){
-        $r.windowHandle=[int64]$wh; $r.tabTitle=([WT]::WinText($wh)); $r.focusable=$true; break
-      }
-    } else {
-      $idx=0
-      foreach($t in $tabs){
-        if((Normalize-Title $t.Current.Name) -eq $title){
-          $r.windowHandle=[int64]$wh; $r.tabTitle=$t.Current.Name; $r.tabIndex=$idx; $r.focusable=$true; break
+# Authoritative: write a unique marker to the pid's console title, find the tab
+# showing it (re-asserting across a short poll loop), restore the title.
+function Locate-Authoritative([int]$p){
+  $r=@{ found=$false; hwnd=$null; tabIndex=-1; tabElement=$null; origTitle=$null; kind='unknown' }
+  $orig = Read-ConsoleTitle $p
+  if(-not $orig){ return $r }
+  $r.origTitle = $orig
+  $marker = "LMASSIST::" + $p + "::" + ([guid]::NewGuid().ToString('N').Substring(0,8))
+  try {
+    for($i=0; $i -lt 10 -and -not $r.found; $i++){
+      Write-ConsoleTitle $p $marker | Out-Null
+      Start-Sleep -Milliseconds 120
+      foreach($win in (Get-TerminalWindows)){
+        $hwnd=[int64]$win.Current.NativeWindowHandle
+        $tabs=Get-TabItems $win
+        if($tabs.Count -eq 0){
+          if($win.Current.Name -like "*$marker*"){ $r.found=$true; $r.hwnd=$hwnd; $r.kind='conhost'; break }
+        } else {
+          $idx=0
+          foreach($t in $tabs){
+            if($t.Current.Name -like "*$marker*"){ $r.found=$true; $r.hwnd=$hwnd; $r.tabIndex=$idx; $r.tabElement=$t; $r.kind='windows-terminal'; break }
+            $idx++
+          }
+          if($r.found){ break }
         }
-        $idx++
       }
-      if($r.focusable){ break }
     }
+  } finally {
+    Write-ConsoleTitle $p $orig | Out-Null
   }
   return $r
 }
@@ -190,31 +184,31 @@ if($Action -eq 'query'){
   $out=@()
   foreach($s in ($PidList -split ',')){
     $p=0; if(-not [int]::TryParse($s.Trim(),[ref]$p)){ continue }
-    $alive = Is-Alive $p
-    if(-not $alive){ $out += [ordered]@{ pid=$p; alive=$false; focusable=$false }; continue }
-    $loc = Locate-WindowTab $p $map
-    $out += [ordered]@{
-      pid=$p; alive=$true;
-      hostPid=$loc.hostPid; hostName=$loc.hostName; kind=$loc.kind;
-      windowHandle=$loc.windowHandle; tabTitle=$loc.tabTitle; tabIndex=$loc.tabIndex;
-      windowCount=$loc.windowCount; focusable=$loc.focusable; consoleTitle=$loc.consoleTitle
-    }
+    if(-not (Is-Alive $p)){ $out += [ordered]@{ pid=$p; alive=$false; driveable=$false }; continue }
+    $h=Resolve-Host $p $map
+    $title=Normalize-Title (Read-ConsoleTitle $p)
+    $kind = if($h){ if($h.name -eq 'WindowsTerminal.exe'){'windows-terminal'}elseif($h.name -eq 'conhost.exe' -or $h.name -eq 'OpenConsole.exe'){'conhost'}else{'unknown'} } else {'unknown'}
+    $driveable = ($h -ne $null) -and ($title -ne '')
+    $out += [ordered]@{ pid=$p; alive=$true; hostPid=($(if($h){$h.pid}else{0})); hostName=($(if($h){$h.name}else{$null})); kind=$kind; consoleTitle=$title; driveable=$driveable }
   }
   ConvertTo-Json @{ sessions=@($out) } -Depth 6 -Compress
   exit 0
 }
 
+if($Action -eq 'locate'){
+  if($ClaudePid -le 0){ ConvertTo-Json @{ ok=$false; error='ClaudePid required' } -Compress; exit 1 }
+  $loc = Locate-Authoritative $ClaudePid
+  ConvertTo-Json @{ ok=$loc.found; pid=$ClaudePid; windowHandle=$loc.hwnd; tabIndex=$loc.tabIndex; kind=$loc.kind; origTitle=$loc.origTitle } -Depth 6 -Compress
+  exit 0
+}
+
 if($Action -eq 'send'){
   if($ClaudePid -le 0){ ConvertTo-Json @{ ok=$false; error='ClaudePid required' } -Compress; exit 1 }
-  $loc = Locate-WindowTab $ClaudePid $map
-  if(-not $loc.focusable -or -not $loc.windowHandle){ ConvertTo-Json @{ ok=$false; error='not focusable'; detail=$loc } -Depth 6 -Compress; exit 2 }
-  $hwnd=[IntPtr][int64]$loc.windowHandle
-  if($loc.tabIndex -ge 0){
-    $tabs = Get-TabItems $hwnd
-    if($loc.tabIndex -lt $tabs.Count){
-      $si=$tabs[$loc.tabIndex].GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
-      $si.Select(); Start-Sleep -Milliseconds 200
-    }
+  $loc = Locate-Authoritative $ClaudePid
+  if(-not $loc.found -or -not $loc.hwnd){ ConvertTo-Json @{ ok=$false; error='could not locate window/tab for pid'; origTitle=$loc.origTitle } -Compress; exit 2 }
+  $hwnd=[IntPtr][int64]$loc.hwnd
+  if($loc.tabElement){
+    try { $loc.tabElement.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select(); Start-Sleep -Milliseconds 180 } catch {}
   }
   Set-Foreground $hwnd
   Start-Sleep -Milliseconds 250
@@ -225,7 +219,7 @@ if($Action -eq 'send'){
     $sh.SendKeys("^v")
     if($Submit){ Start-Sleep -Milliseconds 150; $sh.SendKeys("{ENTER}") }
   }
-  ConvertTo-Json @{ ok=$true; windowHandle=$loc.windowHandle; tabTitle=$loc.tabTitle; tabIndex=$loc.tabIndex; submitted=[bool]$Submit } -Depth 6 -Compress
+  ConvertTo-Json @{ ok=$true; windowHandle=$loc.hwnd; tabIndex=$loc.tabIndex; kind=$loc.kind; submitted=[bool]$Submit } -Depth 6 -Compress
   exit 0
 }
 `;
@@ -241,24 +235,32 @@ export interface WinMapping {
   hostName?: string | null;
   /** 'windows-terminal' | 'conhost' | 'unknown' */
   kind?: string;
-  windowHandle?: number | null;
-  tabTitle?: string | null;
-  /** tab position within the WT window; -1 for conhost / single-window */
-  tabIndex?: number;
-  windowCount?: number;
-  /** true when we located an exact window+tab we can safely drive */
-  focusable: boolean;
+  /** spinner-stripped console title, for display (best-effort, may drift) */
   consoleTitle?: string | null;
+  /** hosted in a real terminal with a readable console — the exact tab is
+   *  resolved authoritatively (marker) at drive time, so this is NOT gated on
+   *  passive title matching. */
+  driveable: boolean;
+}
+
+export interface LocateResult {
+  ok: boolean;
+  pid: number;
+  windowHandle?: number | null;
+  tabIndex?: number;
+  kind?: string;
+  origTitle?: string | null;
+  error?: string;
 }
 
 export interface SendResult {
   ok: boolean;
   error?: string;
   windowHandle?: number;
-  tabTitle?: string | null;
   tabIndex?: number;
+  kind?: string;
   submitted?: boolean;
-  detail?: unknown;
+  origTitle?: string | null;
 }
 
 /** A live Claude Code session enriched with its Windows window/tab mapping. */
@@ -282,7 +284,7 @@ function enginePath(): string {
   return p;
 }
 
-function runEngine(args: string[], timeoutMs = 20000): Promise<any> {
+function runEngine(args: string[], timeoutMs = 25000): Promise<any> {
   return new Promise((resolve, reject) => {
     execFile(
       'powershell.exe',
@@ -314,12 +316,18 @@ export function isWindowsTerminalControlSupported(): boolean {
   return IS_WINDOWS;
 }
 
-/** Map a set of pids to their hosting WT window/tab (or conhost window). */
+/** Map a set of pids to their terminal host + driveability (passive, non-intrusive). */
 export async function mapPidsToWindows(pids: number[]): Promise<WinMapping[]> {
-  if (!IS_WINDOWS) return pids.map((p) => ({ pid: p, alive: false, focusable: false }));
+  if (!IS_WINDOWS) return pids.map((p) => ({ pid: p, alive: false, driveable: false }));
   if (pids.length === 0) return [];
   const res = await runEngine(['-Action', 'query', '-PidList', pids.join(',')]);
   return (res?.sessions ?? []) as WinMapping[];
+}
+
+/** Authoritatively resolve which WT window+tab hosts a pid (marker method). Read-only. */
+export async function locateWindow(pid: number): Promise<LocateResult> {
+  if (!IS_WINDOWS) return { ok: false, pid, error: 'windows-only' };
+  return (await runEngine(['-Action', 'locate', '-ClaudePid', String(pid)])) as LocateResult;
 }
 
 /** List all live Claude Code sessions on this host, enriched with window/tab mapping. */
@@ -331,14 +339,15 @@ export async function listWindowsSessions(): Promise<WinLiveSession[]> {
   const byPid = new Map<number, WinMapping>(maps.map((m) => [m.pid, m]));
   return live.map((s) => {
     const win = byPid.get(s.owner.pid) ?? null;
-    return { ...s, win, driveable: !!(win && win.focusable) };
+    return { ...s, win, driveable: !!(win && win.driveable) };
   });
 }
 
 /**
  * Bring the window/tab hosting `pid` to the front and (optionally) paste text.
- * With `submit:true`, also presses Enter. Returns ok:false if the session could
- * not be located to an exact tab (title drift / not in a terminal window).
+ * Locates the tab authoritatively via a unique console-title marker (drift-proof),
+ * selects it, restores the title, then foregrounds + pastes. With `submit:true`
+ * also presses Enter.
  */
 export async function focusAndSend(opts: {
   pid: number;

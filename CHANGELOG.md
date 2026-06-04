@@ -9,25 +9,29 @@ Code sessions run directly in Windows Terminal tabs. This lets lm-assist enumera
 and drive a specific one by PID — bringing its window/tab to the front and pasting text.
 
 - New module `core/src/terminal/windows-terminal.ts`: maps a live session's pid to the exact WT window
-  + tab (or conhost window) and drives it (focus + paste). Bridges pid → tab via a bundled PowerShell
-  engine: parent-chain walk (Toolhelp32) to the terminal host, console-title read via
-  `AttachConsole`/`GetConsoleTitle` (non-destructive; child/subagent pids inherit the hosting tab's
-  console), `EnumWindows`-by-pid (not `MainWindowHandle` — WT puts many windows in one process), and
-  UI-Automation tab-title match → `SelectionItem.Select`. Foreground preserves maximized state
-  (`IsIconic`-gated `SW_RESTORE`).
+  + tab (or conhost window) and drives it (focus + paste). The pid→tab match is **authoritative, not a
+  guess**: rather than reading the tab title (which Claude Code owns and rewrites as the conversation
+  summary — it drifts and races), the engine WRITES a unique marker into the target pid's console title
+  (`AttachConsole` + `SetConsoleTitle` — verified to propagate through ConPTY to the WT tab strip),
+  finds the tab showing that marker via UI Automation, selects it, and restores the original title.
+  Drive-time resolution is therefore drift-proof. Supporting pieces: parent-chain walk (Toolhelp32) to
+  the terminal host for `kind`/`driveable`; non-destructive console-title read for listing
+  (child/subagent pids inherit the hosting tab's console); UIA window enumeration by class
+  (`CASCADIA_HOSTING_WINDOW_CLASS`/`ConsoleWindowClass`), not `MainWindowHandle` (WT puts many windows
+  in one process); foreground preserves maximized state (`IsIconic`-gated `SW_RESTORE`).
 - New routes `core/src/routes/core/windows-terminal.routes.ts`:
-  - `GET  /terminal/windows/sessions` — live CC sessions + window/tab mapping + `driveable` verdict
+  - `GET  /terminal/windows/sessions` — live CC sessions + window mapping + `driveable` verdict
+    (`driveable` = hosted in a real terminal; the exact tab is resolved authoritatively at drive time)
   - `GET  /terminal/windows/sessions/:sessionId` — one session (Linux verdict + Windows window mapping)
   - `POST /terminal/windows/sessions/:sessionId/focus` — bring its window/tab to the front
   - `POST /terminal/windows/sessions/:sessionId/send` — focus + paste `{ text, submit? }`
   - Non-Windows hosts return `NOT_SUPPORTED` (use the tmux API there).
 - Reuses the cross-platform `listLiveSessions`/`sessionVerdict` from `cc-sessions.ts`.
-- Honest limit: the only pid→tab key is the console/tab TITLE; if titles collide or the live title has
-  drifted from the WT tab strip, the session reports `driveable:false` rather than risk the wrong tab.
 
-Verified e2e on windows-desk (lm-assist :3199): listed 12 live sessions (6 driveable WT tabs, subagent/SDK
-sessions correctly excluded); `send` routed PID-exact to the target tab (focus + tab-select + paste, no
-submit); `focus` and single-session GET both 200.
+Verified e2e on windows-desk (lm-assist :3199): listed 13 live sessions, 8 driveable WT tabs (subagent/SDK
+sessions correctly excluded); the marker method located even a session whose summary had drifted (which
+passive title-matching had missed); `send` routed PID-exact (focus + tab-select + paste, no submit) via
+`SetConsoleTitle` marker; `focus` and single-session GET both 200.
 
 ### GitHub repo/list + fork + directory-aware git ops (2026-06-03)
 
