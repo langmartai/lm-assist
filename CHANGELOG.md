@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Windows terminal control — query + drive Claude Code sessions (2026-06-05)
+
+The Windows substitute for the Linux tmux send-keys API. Windows has no tmux, so interactive Claude
+Code sessions run directly in Windows Terminal tabs. This lets lm-assist enumerate those live sessions
+and drive a specific one by PID — bringing its window/tab to the front and pasting text.
+
+- New module `core/src/terminal/windows-terminal.ts`: maps a live session's pid to the exact WT window
+  + tab (or conhost window) and drives it (focus + paste). Bridges pid → tab via a bundled PowerShell
+  engine: parent-chain walk (Toolhelp32) to the terminal host, console-title read via
+  `AttachConsole`/`GetConsoleTitle` (non-destructive; child/subagent pids inherit the hosting tab's
+  console), `EnumWindows`-by-pid (not `MainWindowHandle` — WT puts many windows in one process), and
+  UI-Automation tab-title match → `SelectionItem.Select`. Foreground preserves maximized state
+  (`IsIconic`-gated `SW_RESTORE`).
+- New routes `core/src/routes/core/windows-terminal.routes.ts`:
+  - `GET  /terminal/windows/sessions` — live CC sessions + window/tab mapping + `driveable` verdict
+  - `GET  /terminal/windows/sessions/:sessionId` — one session (Linux verdict + Windows window mapping)
+  - `POST /terminal/windows/sessions/:sessionId/focus` — bring its window/tab to the front
+  - `POST /terminal/windows/sessions/:sessionId/send` — focus + paste `{ text, submit? }`
+  - Non-Windows hosts return `NOT_SUPPORTED` (use the tmux API there).
+- Reuses the cross-platform `listLiveSessions`/`sessionVerdict` from `cc-sessions.ts`.
+- Honest limit: the only pid→tab key is the console/tab TITLE; if titles collide or the live title has
+  drifted from the WT tab strip, the session reports `driveable:false` rather than risk the wrong tab.
+
+Verified e2e on windows-desk (lm-assist :3199): listed 12 live sessions (6 driveable WT tabs, subagent/SDK
+sessions correctly excluded); `send` routed PID-exact to the target tab (focus + tab-select + paste, no
+submit); `focus` and single-session GET both 200.
+
 ### GitHub repo/list + fork + directory-aware git ops (2026-06-03)
 
 Follow-up to the github endpoint + MCP tools. Adds three capabilities and makes the git backend
