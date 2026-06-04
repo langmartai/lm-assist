@@ -24,6 +24,10 @@ import {
   listWindowsSessions,
   mapPidsToWindows,
   focusAndSend,
+  launchSession,
+  closeSession,
+  getTabRid,
+  forgetTabRid,
 } from '../../terminal/windows-terminal';
 
 interface Envelope {
@@ -69,6 +73,53 @@ export function createWindowsTerminalRoutes(_ctx: RouteContext): RouteHandler[] 
       },
     },
 
+    // POST /terminal/windows/sessions  { cwd?, mode?: 'window'|'tab', resume?, waitMs? }
+    // Create: launch a new Claude Code session in a WT window (default) or tab.
+    {
+      method: 'POST',
+      pattern: /^\/terminal\/windows\/sessions$/,
+      handler: async (req: ParsedRequest): Promise<Envelope> => {
+        if (!IS_WINDOWS) return notSupported();
+        const body = (req.body ?? {}) as {
+          cwd?: string;
+          mode?: 'window' | 'tab';
+          resume?: string;
+          waitMs?: number;
+        };
+        if (body.mode && body.mode !== 'window' && body.mode !== 'tab') {
+          return fail('INVALID_BODY', "mode must be 'window' or 'tab'");
+        }
+        try {
+          const res = await launchSession(body);
+          return ok(res);
+        } catch (e) {
+          return fail('INTERNAL_ERROR', (e as Error).message);
+        }
+      },
+    },
+
+    // DELETE /terminal/windows/sessions/:sessionId  ?closeTab=true | { closeTab? }
+    // Delete: terminate the session (optionally close its tab/window).
+    {
+      method: 'DELETE',
+      pattern: /^\/terminal\/windows\/sessions\/(?<sessionId>[^/]+)$/,
+      handler: async (req: ParsedRequest): Promise<Envelope> => {
+        if (!IS_WINDOWS) return notSupported();
+        const sessionId = req.params.sessionId;
+        const closeTab =
+          req.query?.closeTab === 'true' || (req.body && (req.body as { closeTab?: boolean }).closeTab === true);
+        const pid = pidForSession(sessionId);
+        if (!pid) return fail('SESSION_NOT_LIVE', `no live session ${sessionId} on this host`);
+        try {
+          const res = await closeSession(pid, !!closeTab);
+          if (res.ok) forgetTabRid(sessionId);
+          return res.ok ? ok({ sessionId, ...res }) : fail('CLOSE_FAILED', res.error || 'close failed', res);
+        } catch (e) {
+          return fail('INTERNAL_ERROR', (e as Error).message);
+        }
+      },
+    },
+
     // GET /terminal/windows/sessions/:sessionId
     {
       method: 'GET',
@@ -97,7 +148,7 @@ export function createWindowsTerminalRoutes(_ctx: RouteContext): RouteHandler[] 
         const pid = pidForSession(sessionId);
         if (!pid) return fail('SESSION_NOT_LIVE', `no live session ${sessionId} on this host`);
         try {
-          const res = await focusAndSend({ pid });
+          const res = await focusAndSend({ pid, rid: getTabRid(sessionId) });
           return res.ok ? ok(res) : fail('NOT_LOCATABLE', res.error || 'could not focus', { origTitle: res.origTitle });
         } catch (e) {
           return fail('INTERNAL_ERROR', (e as Error).message);
@@ -119,7 +170,7 @@ export function createWindowsTerminalRoutes(_ctx: RouteContext): RouteHandler[] 
         const pid = pidForSession(sessionId);
         if (!pid) return fail('SESSION_NOT_LIVE', `no live session ${sessionId} on this host`);
         try {
-          const res = await focusAndSend({ pid, text: body.text, submit: !!body.submit });
+          const res = await focusAndSend({ pid, rid: getTabRid(sessionId), text: body.text, submit: !!body.submit });
           return res.ok ? ok(res) : fail('NOT_LOCATABLE', res.error || 'could not send', { origTitle: res.origTitle });
         } catch (e) {
           return fail('INTERNAL_ERROR', (e as Error).message);

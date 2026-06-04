@@ -19,19 +19,38 @@ and drive a specific one by PID — bringing its window/tab to the front and pas
   (child/subagent pids inherit the hosting tab's console); UIA window enumeration by class
   (`CASCADIA_HOSTING_WINDOW_CLASS`/`ConsoleWindowClass`), not `MainWindowHandle` (WT puts many windows
   in one process); foreground preserves maximized state (`IsIconic`-gated `SW_RESTORE`).
-- New routes `core/src/routes/core/windows-terminal.routes.ts`:
-  - `GET  /terminal/windows/sessions` — live CC sessions + window mapping + `driveable` verdict
-    (`driveable` = hosted in a real terminal; the exact tab is resolved authoritatively at drive time)
-  - `GET  /terminal/windows/sessions/:sessionId` — one session (Linux verdict + Windows window mapping)
-  - `POST /terminal/windows/sessions/:sessionId/focus` — bring its window/tab to the front
-  - `POST /terminal/windows/sessions/:sessionId/send` — focus + paste `{ text, submit? }`
+- Full CRUD over WT tab sessions via `core/src/routes/core/windows-terminal.routes.ts`:
+  - `POST   /terminal/windows/sessions` — **create**: launch a new Claude session in a WT window
+    (`mode:'window'|'tab'`, optional `cwd`, `resume`); correlates the new sessionId from the registry
+  - `GET    /terminal/windows/sessions` — **read** all: live CC sessions + window mapping + `driveable`
+  - `GET    /terminal/windows/sessions/:sessionId` — **read** one (Linux verdict + Windows window mapping)
+  - `POST   /terminal/windows/sessions/:sessionId/focus` — bring its window/tab to the front
+  - `POST   /terminal/windows/sessions/:sessionId/send` — **update**: focus + paste `{ text, submit? }`
+  - `DELETE /terminal/windows/sessions/:sessionId` — **delete**: terminate the session
+    (`?closeTab=true` also closes the tab/window; WMI-free process-tree kill via the parent map +
+    `Stop-Process`, since `taskkill` is unreliable on this host)
   - Non-Windows hosts return `NOT_SUPPORTED` (use the tmux API there).
+- Two-tier tab targeting: for sessions we **create**, the new tab's UIA `RuntimeId` is captured at launch
+  (diff the tab set) and cached — a title-independent handle that drives even a freshly-launched session
+  whose title is still animating. For pre-existing sessions, the console-title **marker** method
+  (`AttachConsole`+`SetConsoleTitle` → propagates through ConPTY to the WT tab strip → UIA match →
+  select → restore) is the drift-proof fallback. Foreground preserves maximized state
+  (`IsIconic`-gated `SW_RESTORE`).
+- **Gotcha fixed:** the launch must pass `windowsHide:false` — the shared `spawn` wrapper defaults
+  `windowsHide:true`, which opens the terminal window hidden (`IsWindowVisible=false`) so it never enters
+  the UIA tree and can't be located/driven.
+- Supporting pieces: parent-chain walk (Toolhelp32) to the terminal host for `kind`/`driveable`;
+  non-destructive console-title read for listing (child/subagent pids inherit the hosting tab's console);
+  UIA window enumeration by class (`CASCADIA_HOSTING_WINDOW_CLASS`/`ConsoleWindowClass`), not
+  `MainWindowHandle` (WT puts many windows in one process).
 - Reuses the cross-platform `listLiveSessions`/`sessionVerdict` from `cc-sessions.ts`.
 
-Verified e2e on windows-desk (lm-assist :3199): listed 13 live sessions, 8 driveable WT tabs (subagent/SDK
-sessions correctly excluded); the marker method located even a session whose summary had drifted (which
-passive title-matching had missed); `send` routed PID-exact (focus + tab-select + paste, no submit) via
-`SetConsoleTitle` marker; `focus` and single-session GET both 200.
+Verified e2e on windows-desk (lm-assist :3199): full CRUD cycle — **create** a session (new WT window,
+sessionId + RuntimeId captured), **read** it in the list (driveable), **update** it immediately via the
+captured RuntimeId while its title was still animating (HTTP 200, title-independent), **delete** it with
+`closeTab` (whole subtree killed, window closed, session GONE). Separately: the marker method drives
+pre-existing sessions including one whose summary had drifted (which passive title-matching had missed);
+8 driveable WT tabs listed (subagent/SDK sessions correctly excluded).
 
 ### GitHub repo/list + fork + directory-aware git ops (2026-06-03)
 

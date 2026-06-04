@@ -34,7 +34,7 @@
  * Everything here is a no-op (returns not-supported) on non-Windows.
  */
 
-import { execFile } from '../utils/exec';
+import { execFile, spawn } from '../utils/exec';
 import { IS_WINDOWS } from '../utils/process-utils';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -49,11 +49,13 @@ import { listLiveSessions, LiveSession } from './cc-sessions';
 // ---------------------------------------------------------------------------
 const ENGINE_PS1 = String.raw`
 param(
-  [Parameter(Mandatory)][ValidateSet('query','locate','send')][string]$Action,
+  [Parameter(Mandatory)][ValidateSet('query','locate','send','close','tabids')][string]$Action,
   [string]$PidList = '',
   [int]$ClaudePid = 0,
   [string]$MessageB64 = '',
-  [switch]$Submit
+  [switch]$Submit,
+  [switch]$CloseTab,
+  [string]$RuntimeId = ''
 )
 $ErrorActionPreference = 'Stop'
 
@@ -134,6 +136,22 @@ function Get-TabItems($win){
   return @($win.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc))
 }
 
+# Locate a tab by its UIA RuntimeId — stable across processes and INDEPENDENT of
+# title, so it works even while the session is actively animating its title.
+function Locate-ByRid([string]$rid){
+  $r=@{ found=$false; hwnd=$null; tabIndex=-1; tabElement=$null; kind='windows-terminal' }
+  foreach($win in (Get-TerminalWindows)){
+    $hwnd=[int64]$win.Current.NativeWindowHandle
+    $tabs=Get-TabItems $win
+    $idx=0
+    foreach($t in $tabs){
+      if((($t.GetRuntimeId()) -join '.') -eq $rid){ $r.found=$true; $r.hwnd=$hwnd; $r.tabIndex=$idx; $r.tabElement=$t; return $r }
+      $idx++
+    }
+  }
+  return $r
+}
+
 # Authoritative: write a unique marker to the pid's console title, find the tab
 # showing it (re-asserting across a short poll loop), restore the title.
 function Locate-Authoritative([int]$p){
@@ -143,9 +161,12 @@ function Locate-Authoritative([int]$p){
   $r.origTitle = $orig
   $marker = "LMASSIST::" + $p + "::" + ([guid]::NewGuid().ToString('N').Substring(0,8))
   try {
-    for($i=0; $i -lt 10 -and -not $r.found; $i++){
+    # Poll generously: a busy session (spinner) rewrites its own title each frame
+    # and overwrites our marker, but once it settles to idle the marker sticks.
+    # ~25 x 100ms spans the busy->idle transition of a freshly-launched session.
+    for($i=0; $i -lt 25 -and -not $r.found; $i++){
       Write-ConsoleTitle $p $marker | Out-Null
-      Start-Sleep -Milliseconds 120
+      Start-Sleep -Milliseconds 100
       foreach($win in (Get-TerminalWindows)){
         $hwnd=[int64]$win.Current.NativeWindowHandle
         $tabs=Get-TabItems $win
@@ -202,10 +223,29 @@ if($Action -eq 'locate'){
   exit 0
 }
 
+if($Action -eq 'tabids'){
+  $out=@()
+  foreach($win in (Get-TerminalWindows)){
+    $hwnd=[int64]$win.Current.NativeWindowHandle
+    $tabs=Get-TabItems $win
+    $idx=0
+    foreach($t in $tabs){ $out += [ordered]@{ rid=(($t.GetRuntimeId()) -join '.'); hwnd=$hwnd; tabIndex=$idx; name=$t.Current.Name }; $idx++ }
+    if($tabs.Count -eq 0){ $out += [ordered]@{ rid=("win." + $hwnd); hwnd=$hwnd; tabIndex=-1; name=$win.Current.Name } }
+  }
+  ConvertTo-Json @{ tabs=@($out) } -Depth 6 -Compress
+  exit 0
+}
+
 if($Action -eq 'send'){
-  if($ClaudePid -le 0){ ConvertTo-Json @{ ok=$false; error='ClaudePid required' } -Compress; exit 1 }
-  $loc = Locate-Authoritative $ClaudePid
-  if(-not $loc.found -or -not $loc.hwnd){ ConvertTo-Json @{ ok=$false; error='could not locate window/tab for pid'; origTitle=$loc.origTitle } -Compress; exit 2 }
+  # Prefer RuntimeId (title-independent, robust even while the session animates);
+  # fall back to the console-title marker when no rid is supplied.
+  if($RuntimeId){
+    $loc = Locate-ByRid $RuntimeId
+  } else {
+    if($ClaudePid -le 0){ ConvertTo-Json @{ ok=$false; error='ClaudePid or RuntimeId required' } -Compress; exit 1 }
+    $loc = Locate-Authoritative $ClaudePid
+  }
+  if(-not $loc.found -or -not $loc.hwnd){ ConvertTo-Json @{ ok=$false; error='could not locate window/tab'; origTitle=$loc.origTitle } -Compress; exit 2 }
   $hwnd=[IntPtr][int64]$loc.hwnd
   if($loc.tabElement){
     try { $loc.tabElement.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select(); Start-Sleep -Milliseconds 180 } catch {}
@@ -220,6 +260,32 @@ if($Action -eq 'send'){
     if($Submit){ Start-Sleep -Milliseconds 150; $sh.SendKeys("{ENTER}") }
   }
   ConvertTo-Json @{ ok=$true; windowHandle=$loc.hwnd; tabIndex=$loc.tabIndex; kind=$loc.kind; submitted=[bool]$Submit } -Depth 6 -Compress
+  exit 0
+}
+
+if($Action -eq 'close'){
+  if($ClaudePid -le 0){ ConvertTo-Json @{ ok=$false; error='ClaudePid required' } -Compress; exit 1 }
+  # Target: with -CloseTab, the tab's top shell (the ancestor whose parent IS a
+  # terminal host) so killing its subtree closes the tab; else just the claude pid.
+  $target = $ClaudePid
+  if($CloseTab){
+    $cur=$ClaudePid
+    while($cur -and $map.parent.ContainsKey($cur)){
+      $par=$map.parent[$cur]
+      if($par -and ($TERMS -contains $map.name[$par])){ $target=$cur; break }
+      $cur=$par; if($cur -eq 0){break}
+    }
+  }
+  # Descendants of target via the parent map (taskkill is broken on this host —
+  # WMI/RPC critical error — so enumerate the tree ourselves + Stop-Process).
+  $kids=@{}
+  foreach($k in $map.parent.Keys){ $p=$map.parent[$k]; if(-not $kids.ContainsKey($p)){ $kids[$p]=New-Object System.Collections.Generic.List[int] }; $kids[$p].Add($k) }
+  $order=New-Object System.Collections.Generic.List[int]
+  $stack=New-Object System.Collections.Generic.Stack[int]; $stack.Push($target); $seen=@{}
+  while($stack.Count -gt 0){ $n=$stack.Pop(); if($seen.ContainsKey($n)){continue}; $seen[$n]=$true; $order.Add($n); if($kids.ContainsKey($n)){ foreach($c in $kids[$n]){ $stack.Push($c) } } }
+  $killed=@()
+  for($i=$order.Count-1; $i -ge 0; $i--){ try{ Stop-Process -Id $order[$i] -Force -ErrorAction Stop; $killed+=$order[$i] }catch{} }
+  ConvertTo-Json @{ ok=$true; target=$target; killed=@($killed); closedTab=[bool]$CloseTab } -Depth 6 -Compress
   exit 0
 }
 `;
@@ -350,13 +416,161 @@ export async function listWindowsSessions(): Promise<WinLiveSession[]> {
  * also presses Enter.
  */
 export async function focusAndSend(opts: {
-  pid: number;
+  pid?: number;
+  rid?: string;
   text?: string;
   submit?: boolean;
 }): Promise<SendResult> {
   if (!IS_WINDOWS) return { ok: false, error: 'windows-only' };
-  const args = ['-Action', 'send', '-ClaudePid', String(opts.pid)];
+  const args = ['-Action', 'send'];
+  if (opts.rid) args.push('-RuntimeId', opts.rid); // title-independent, robust
+  if (opts.pid) args.push('-ClaudePid', String(opts.pid)); // marker fallback
   if (opts.text) args.push('-MessageB64', Buffer.from(opts.text, 'utf8').toString('base64'));
   if (opts.submit) args.push('-Submit');
   return (await runEngine(args)) as SendResult;
+}
+
+// ---------------------------------------------------------------------------
+// Tab RuntimeId cache — stable, title-independent tab handle. Populated when we
+// CREATE a session (diff the tab set before/after launch). Lets us drive a
+// freshly-created session whose title is still animating (marker can't win then).
+// ---------------------------------------------------------------------------
+const tabRidBySession = new Map<string, string>();
+
+export function getTabRid(sessionId: string): string | undefined {
+  return tabRidBySession.get(sessionId);
+}
+export function forgetTabRid(sessionId: string): void {
+  tabRidBySession.delete(sessionId);
+}
+
+interface TabId { rid: string; hwnd: number; tabIndex: number; name: string }
+
+export async function listTabIds(): Promise<TabId[]> {
+  if (!IS_WINDOWS) return [];
+  const r = await runEngine(['-Action', 'tabids']);
+  return (r?.tabs ?? []) as TabId[];
+}
+
+// ---------------------------------------------------------------------------
+// Create / Delete
+// ---------------------------------------------------------------------------
+
+export interface LaunchResult {
+  launched: boolean;
+  sessionId: string | null;
+  win?: WinMapping | null;
+  pid?: number;
+  /** stable, title-independent tab handle captured at create (for robust drive) */
+  tabRid?: string | null;
+  mode: string;
+  cwd: string;
+  note?: string;
+}
+
+export interface CloseResult {
+  ok: boolean;
+  target?: number;
+  killed?: number[];
+  closedTab?: boolean;
+  error?: string;
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+function samePath(a: string, b: string): boolean {
+  const norm = (s: string) => (s || '').replace(/[\\/]+/g, '\\').replace(/\\+$/, '').toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/**
+ * Launch a new Claude Code session in a Windows Terminal window (default) or tab,
+ * then poll the live-session registry for the newly-registered sessionId (matched
+ * by cwd). Returns the new session + its window mapping once it registers.
+ *
+ * Note: if the target cwd is not yet folder-trusted, Claude shows a trust prompt
+ * and does not register until accepted — `sessionId` comes back null with a note.
+ */
+export async function launchSession(opts: {
+  cwd?: string;
+  mode?: 'window' | 'tab';
+  resume?: string;
+  waitMs?: number;
+} = {}): Promise<LaunchResult> {
+  if (!IS_WINDOWS) return { launched: false, sessionId: null, mode: '', cwd: '', note: 'windows-only' };
+  const cwd = opts.cwd || os.homedir();
+  const mode = opts.mode || 'window';
+  const before = new Set(listLiveSessions().map((s) => s.sessionId));
+  const beforeRids = new Set((await listTabIds()).map((t) => t.rid));
+  const claudeCmd = opts.resume ? `claude --resume ${opts.resume}` : 'claude';
+  const wtArgs =
+    mode === 'tab'
+      ? ['-w', '0', 'nt', '-d', cwd, 'cmd', '/k', claudeCmd]
+      : ['-w', 'new', '-d', cwd, 'cmd', '/k', claudeCmd];
+  // windowsHide:false is REQUIRED — the spawn wrapper defaults windowsHide:true,
+  // which opens the terminal window HIDDEN (IsWindowVisible=false) so it never
+  // appears in the UIA tab tree and can't be located/driven. Force it visible.
+  const child = spawn('wt.exe', wtArgs, { detached: true, stdio: 'ignore', windowsHide: false } as any);
+  child.unref();
+
+  const deadline = Date.now() + (opts.waitMs ?? 9000);
+  let sid: string | null = null;
+  let pid: number | undefined;
+  while (Date.now() < deadline) {
+    await sleep(400);
+    for (const s of listLiveSessions()) {
+      if (!before.has(s.sessionId) && samePath(s.owner.cwd, cwd)) {
+        sid = s.sessionId;
+        pid = s.owner.pid;
+        break;
+      }
+    }
+    if (sid) break;
+  }
+
+  // Capture the new tab's RuntimeId by diffing the tab set — a title-independent
+  // handle so we can drive this session even while its title is still animating.
+  // The new WT window can lag the registry by a few seconds, so poll for it.
+  // The new WT window can lag the registry by a few seconds, so poll for it.
+  let tabRid: string | null = null;
+  if (sid) {
+    for (let i = 0; i < 14 && !tabRid; i++) {
+      await sleep(500);
+      const newTabs = (await listTabIds()).filter((t) => !beforeRids.has(t.rid));
+      if (newTabs.length === 1) {
+        tabRid = newTabs[0].rid;
+        tabRidBySession.set(sid, tabRid);
+      } else if (newTabs.length > 1) {
+        break; // ambiguous (concurrent launches) — leave uncached, marker fallback
+      }
+    }
+  }
+
+  let win: WinMapping | null = null;
+  if (pid) win = (await mapPidsToWindows([pid]))[0] ?? null;
+  return {
+    launched: true,
+    sessionId: sid,
+    pid,
+    win,
+    tabRid,
+    mode,
+    cwd,
+    note: sid
+      ? undefined
+      : 'launched, but no new session registered within the wait window — the folder-trust prompt may be pending in the new tab; accept it, then GET /terminal/windows/sessions',
+  };
+}
+
+/**
+ * Terminate a session by killing its process subtree (WMI-free — enumerates the
+ * tree via the engine's parent map + Stop-Process, since taskkill is unreliable).
+ * With `closeTab`, kills the tab's host shell subtree so the WT tab/window closes;
+ * otherwise kills just the claude process (the tab may remain at a shell prompt).
+ */
+export async function closeSession(pid: number, closeTab = false): Promise<CloseResult> {
+  if (!IS_WINDOWS) return { ok: false, error: 'windows-only' };
+  const args = ['-Action', 'close', '-ClaudePid', String(pid)];
+  if (closeTab) args.push('-CloseTab');
+  return (await runEngine(args)) as CloseResult;
 }
