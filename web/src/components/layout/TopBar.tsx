@@ -31,7 +31,7 @@ function getInitials(name?: string, email?: string): string {
 export function TopBar() {
   const pathname = usePathname();
   const router = useRouter();
-  const { proxy, hubUser, localGatewayId, hubConnected, hubUrl } = useAppMode();
+  const { proxy, hubUser, localGatewayId, hubConnected, hubUrl, refreshHubConnection } = useAppMode();
   const { selectedMachine } = useMachineContext();
   const { theme, toggleTheme } = useTheme();
   const { open: openSearch } = useSearch();
@@ -104,13 +104,18 @@ export function TopBar() {
       } catch {
         /* ignore — still navigate */
       }
+      // Reset the cached hub state so the nav + settings page reflect the
+      // signed-out state immediately, without a manual reload. Otherwise the
+      // module-level _persistedHubState in AppModeContext keeps showing the
+      // previous user until the page is hard-reloaded.
+      try { await refreshHubConnection(); } catch { /* ignore */ }
       router.push('/settings');
       return;
     }
     // LAN / cloud: clear the LAN access token and re-gate at the sign-in page.
     localStorage.removeItem('assist_access_key');
     router.push('/lan-blocked');
-  }, [router, isLocalhost]);
+  }, [router, isLocalhost, refreshHubConnection]);
 
   const isCloud = proxy.isProxied;
   // Use the selected machine's gatewayId for the cloud URL so "Cloud" opens the correct machine

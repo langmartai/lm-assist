@@ -589,9 +589,9 @@ start_web() {
         if [ ! -e "$WEB_DIR/.next/standalone/web/public" ] && [ -d "$WEB_DIR/public" ]; then
             ln -s "$WEB_DIR/public" "$WEB_DIR/.next/standalone/web/public" 2>/dev/null || true
         fi
-        nohup env HOSTNAME="0.0.0.0" PORT=$WEB_PORT NEXT_PUBLIC_LOCAL_API_PORT=$API_PORT node "$standalone_server" > "$WEB_LOG" 2>&1 &
+        nohup env HOSTNAME="0.0.0.0" PORT=$WEB_PORT NEXT_PUBLIC_LOCAL_API_PORT=$API_PORT LM_LOCAL_API_PORT=$API_PORT node "$standalone_server" > "$WEB_LOG" 2>&1 &
     else
-        nohup env NEXT_PUBLIC_LOCAL_API_PORT=$API_PORT npx next start -p $WEB_PORT > "$WEB_LOG" 2>&1 &
+        nohup env NEXT_PUBLIC_LOCAL_API_PORT=$API_PORT LM_LOCAL_API_PORT=$API_PORT npx next start -p $WEB_PORT > "$WEB_LOG" 2>&1 &
     fi
 
     local pid=$!

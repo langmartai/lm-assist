@@ -471,6 +471,12 @@ export async function startWeb(config?: ServiceConfig): Promise<{ success: boole
     PORT: String(webPort),
     HOSTNAME: '0.0.0.0',
     NEXT_PUBLIC_LOCAL_API_PORT: String(apiPort),
+    // Read at REQUEST time by web/src/app/layout.tsx and injected as
+    // window.__LM_LOCAL_API_PORT__ so one build can serve both prod (:3100)
+    // and dev (:3200). Without this the client falls back to the BUILD-time
+    // baked NEXT_PUBLIC_LOCAL_API_PORT and a dev web would talk to the prod
+    // core (wrong platform). Must be set per-instance.
+    LM_LOCAL_API_PORT: String(apiPort),
   };
   // Forward relevant env vars
   for (const key of ['NEXT_PUBLIC_LOCAL_API_PORT', 'GATEWAY_TYPE1_URL']) {

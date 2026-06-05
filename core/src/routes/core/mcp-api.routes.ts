@@ -31,6 +31,7 @@ import {
   toolCatalog,
 } from '../../mcp-server/access-control';
 import { listPending, takePending } from '../../mcp-server/mcp-pending';
+import { listConnectors, deleteConnector, setConnectorEnabled } from '../../mcp-server/connectors';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -179,6 +180,50 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // ── MCP access control (authorization, lm-assist-owned) ──────────────
+
+    // ── MCP connectors (settings UI): list/disable/delete the node's
+    //    OAuth connectors on the gateway + their claude.ai registration status.
+
+    // GET /mcp/connectors — the node's connectors + claude.ai status.
+    {
+      method: 'GET',
+      pattern: /^\/mcp\/connectors$/,
+      handler: async () => {
+        const start = Date.now();
+        try {
+          return wrapResponse(await listConnectors(), start);
+        } catch (err) {
+          return wrapError('MCP_CONNECTORS_ERROR', err instanceof Error ? err.message : String(err), start);
+        }
+      },
+    },
+
+    // DELETE /mcp/connectors/:clientId — remove a connector.
+    {
+      method: 'DELETE',
+      pattern: /^\/mcp\/connectors\/(?<clientId>[^/]+)$/,
+      handler: async (req) => {
+        const start = Date.now();
+        const ok = await deleteConnector(req.params.clientId);
+        return ok
+          ? wrapResponse({ removed: req.params.clientId }, start)
+          : wrapError('MCP_CONNECTORS_DELETE_FAILED', 'gateway rejected delete', start);
+      },
+    },
+
+    // PATCH /mcp/connectors/:clientId — enable/disable. Body: { enabled }.
+    {
+      method: 'PATCH',
+      pattern: /^\/mcp\/connectors\/(?<clientId>[^/]+)$/,
+      handler: async (req) => {
+        const start = Date.now();
+        const enabled = (req.body as { enabled?: boolean })?.enabled !== false;
+        const ok = await setConnectorEnabled(req.params.clientId, enabled);
+        return ok
+          ? wrapResponse({ clientId: req.params.clientId, enabled }, start)
+          : wrapError('MCP_CONNECTORS_PATCH_FAILED', 'gateway rejected update', start);
+      },
+    },
 
     // GET /mcp/access — full config for the settings UI: defaults, grants,
     // and the tool→scope catalog.
