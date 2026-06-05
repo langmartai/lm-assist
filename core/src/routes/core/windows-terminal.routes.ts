@@ -111,7 +111,7 @@ export function createWindowsTerminalRoutes(_ctx: RouteContext): RouteHandler[] 
         const pid = pidForSession(sessionId);
         if (!pid) return fail('SESSION_NOT_LIVE', `no live session ${sessionId} on this host`);
         try {
-          const res = await closeSession(pid, !!closeTab);
+          const res = await closeSession(pid, !!closeTab, getTabRid(sessionId));
           if (res.ok) forgetTabRid(sessionId);
           return res.ok ? ok({ sessionId, ...res }) : fail('CLOSE_FAILED', res.error || 'close failed', res);
         } catch (e) {

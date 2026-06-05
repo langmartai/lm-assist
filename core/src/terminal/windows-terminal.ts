@@ -84,6 +84,7 @@ public class WT {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
   [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
@@ -265,8 +266,34 @@ if($Action -eq 'send'){
 
 if($Action -eq 'close'){
   if($ClaudePid -le 0){ ConvertTo-Json @{ ok=$false; error='ClaudePid required' } -Compress; exit 1 }
-  # Target: with -CloseTab, the tab's top shell (the ancestor whose parent IS a
-  # terminal host) so killing its subtree closes the tab; else just the claude pid.
+  $windowClosed=$false
+  if($CloseTab){
+    # Close the tab through the WT UI. Just killing the process leaves the tab
+    # open as "[process exited]" (WT closeOnExit:graceful keeps abnormally-exited
+    # panes). Locate the window/tab (RuntimeId preferred, else marker), then:
+    #   single-tab window -> WM_CLOSE the window (no keybinding dependency)
+    #   multi-tab window  -> select the tab + Ctrl+Shift+W (close just that tab)
+    $loc = if($RuntimeId){ Locate-ByRid $RuntimeId } else { Locate-Authoritative $ClaudePid }
+    if($loc.found -and $loc.hwnd){
+      $hwnd=[IntPtr][int64]$loc.hwnd
+      $tabCount=0
+      foreach($w in (Get-TerminalWindows)){ if([int64]$w.Current.NativeWindowHandle -eq [int64]$loc.hwnd){ $tabCount=(Get-TabItems $w).Count; break } }
+      if($tabCount -le 1){
+        [WT]::PostMessage($hwnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null  # WM_CLOSE
+        $windowClosed=$true
+      } else {
+        if($loc.tabElement){ try{ $loc.tabElement.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select(); Start-Sleep -Milliseconds 150 }catch{} }
+        Set-Foreground $hwnd
+        Start-Sleep -Milliseconds 150
+        (New-Object -ComObject WScript.Shell).SendKeys("^+w")  # WT default: close focused tab
+        $windowClosed=$true
+      }
+      Start-Sleep -Milliseconds 500
+    }
+  }
+  # Kill the process subtree as a backstop (and the only action when not CloseTab).
+  # Target = tab's host shell for CloseTab, else just claude. taskkill is broken on
+  # this host (WMI/RPC critical error) so enumerate the tree ourselves + Stop-Process.
   $target = $ClaudePid
   if($CloseTab){
     $cur=$ClaudePid
@@ -276,8 +303,6 @@ if($Action -eq 'close'){
       $cur=$par; if($cur -eq 0){break}
     }
   }
-  # Descendants of target via the parent map (taskkill is broken on this host —
-  # WMI/RPC critical error — so enumerate the tree ourselves + Stop-Process).
   $kids=@{}
   foreach($k in $map.parent.Keys){ $p=$map.parent[$k]; if(-not $kids.ContainsKey($p)){ $kids[$p]=New-Object System.Collections.Generic.List[int] }; $kids[$p].Add($k) }
   $order=New-Object System.Collections.Generic.List[int]
@@ -285,7 +310,7 @@ if($Action -eq 'close'){
   while($stack.Count -gt 0){ $n=$stack.Pop(); if($seen.ContainsKey($n)){continue}; $seen[$n]=$true; $order.Add($n); if($kids.ContainsKey($n)){ foreach($c in $kids[$n]){ $stack.Push($c) } } }
   $killed=@()
   for($i=$order.Count-1; $i -ge 0; $i--){ try{ Stop-Process -Id $order[$i] -Force -ErrorAction Stop; $killed+=$order[$i] }catch{} }
-  ConvertTo-Json @{ ok=$true; target=$target; killed=@($killed); closedTab=[bool]$CloseTab } -Depth 6 -Compress
+  ConvertTo-Json @{ ok=$true; target=$target; killed=@($killed); closedTab=[bool]$CloseTab; windowClosed=$windowClosed } -Depth 6 -Compress
   exit 0
 }
 `;
@@ -568,9 +593,10 @@ export async function launchSession(opts: {
  * With `closeTab`, kills the tab's host shell subtree so the WT tab/window closes;
  * otherwise kills just the claude process (the tab may remain at a shell prompt).
  */
-export async function closeSession(pid: number, closeTab = false): Promise<CloseResult> {
+export async function closeSession(pid: number, closeTab = false, rid?: string): Promise<CloseResult> {
   if (!IS_WINDOWS) return { ok: false, error: 'windows-only' };
   const args = ['-Action', 'close', '-ClaudePid', String(pid)];
+  if (rid) args.push('-RuntimeId', rid); // precise tab in a multi-tab window
   if (closeTab) args.push('-CloseTab');
   return (await runEngine(args)) as CloseResult;
 }

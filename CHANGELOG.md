@@ -27,8 +27,11 @@ and drive a specific one by PID — bringing its window/tab to the front and pas
   - `POST   /terminal/windows/sessions/:sessionId/focus` — bring its window/tab to the front
   - `POST   /terminal/windows/sessions/:sessionId/send` — **update**: focus + paste `{ text, submit? }`
   - `DELETE /terminal/windows/sessions/:sessionId` — **delete**: terminate the session
-    (`?closeTab=true` also closes the tab/window; WMI-free process-tree kill via the parent map +
-    `Stop-Process`, since `taskkill` is unreliable on this host)
+    (`?closeTab=true` also closes the tab/window). Closes through the WT UI — `WM_CLOSE` for a
+    single-tab window, select-tab + `Ctrl+Shift+W` for a multi-tab window (closes only that tab,
+    siblings survive) — then a WMI-free process-tree kill (parent map + `Stop-Process`) as a backstop.
+    Just killing the process is NOT enough: WT's default `closeOnExit:graceful` keeps an
+    abnormally-exited pane on screen as "[process exited]", so the window must be closed via the UI.
   - Non-Windows hosts return `NOT_SUPPORTED` (use the tmux API there).
 - Two-tier tab targeting: for sessions we **create**, the new tab's UIA `RuntimeId` is captured at launch
   (diff the tab set) and cached — a title-independent handle that drives even a freshly-launched session
