@@ -544,7 +544,13 @@ export async function launchSession(opts: {
   while (Date.now() < deadline) {
     await sleep(400);
     for (const s of listLiveSessions()) {
-      if (!before.has(s.sessionId) && samePath(s.owner.cwd, cwd)) {
+      // On resume, `claude --resume <id>` briefly registers a transient session id
+      // at startup before settling onto <id>; match the resumed id specifically so
+      // we don't return the transient. On fresh create, take the new id by diff.
+      const match = opts.resume
+        ? s.sessionId === opts.resume && samePath(s.owner.cwd, cwd)
+        : !before.has(s.sessionId) && samePath(s.owner.cwd, cwd);
+      if (match) {
         sid = s.sessionId;
         pid = s.owner.pid;
         break;

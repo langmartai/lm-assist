@@ -21,7 +21,10 @@ and drive a specific one by PID — bringing its window/tab to the front and pas
   in one process); foreground preserves maximized state (`IsIconic`-gated `SW_RESTORE`).
 - Full CRUD over WT tab sessions via `core/src/routes/core/windows-terminal.routes.ts`:
   - `POST   /terminal/windows/sessions` — **create**: launch a new Claude session in a WT window
-    (`mode:'window'|'tab'`, optional `cwd`, `resume`); correlates the new sessionId from the registry
+    (`mode:'window'|'tab'`, optional `cwd`, `resume`); correlates the new sessionId from the registry.
+    On `resume`, matches the resumed id specifically — `claude --resume <id>` briefly registers a
+    transient startup id before settling onto `<id>`, so the diff-by-new-id would otherwise return the
+    transient. Resume a NON-live session only (live resume would double-write the transcript).
   - `GET    /terminal/windows/sessions` — **read** all: live CC sessions + window mapping + `driveable`
   - `GET    /terminal/windows/sessions/:sessionId` — **read** one (Linux verdict + Windows window mapping)
   - `POST   /terminal/windows/sessions/:sessionId/focus` — bring its window/tab to the front
