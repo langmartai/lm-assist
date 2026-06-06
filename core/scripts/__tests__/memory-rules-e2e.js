@@ -675,6 +675,292 @@ await test(
   }
 );
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TC-V: Deep memory validation tier (memory-validate.js)
+//
+// These tests guard the deep-validate script itself:
+//   TC-V1  --dry-run safety & prompt correctness (no runtime needed)
+//   TC-V6  --apply gate refuses without env (no runtime needed)
+//   TC-V2  crafted record: --record flag + prompt instructs non-existent file check
+//   TC-V4  re-categorize step is in every prompt
+//   TC-V5  merge/consolidation step is in every prompt
+//   TC-V3  live code-confirmed run (gated: only if agent runtime is reachable)
+//
+// A quick health probe gates the live test (TC-V3). All others run without
+// the agent runtime because they only call --dry-run or check exit behavior.
+// ─────────────────────────────────────────────────────────────────────────────
+
+var VALIDATE_SCRIPT = path.join(REPO, "core", "scripts", "memory-validate.js");
+var VALIDATE_PLAN   = path.join(os.homedir(), ".lm-assist", "memory-validate-plan.jsonl");
+
+// Runtime health probe: GET /health (fast; works on both dev :3200 and prod :3100)
+// Falls back to POST /agent/execute probe if /health isn't reachable.
+var agentRuntimeUp = await (async function probeRuntime() {
+  // First try GET /health (fast, no agent spawn)
+  var healthOk = await new Promise(function (resolve) {
+    http.get(
+      { host: "localhost", port: parseInt(PORT, 10), path: "/health", timeout: 3000 },
+      function (res) {
+        var d = "";
+        res.on("data", function (c) { d += c; });
+        res.on("end", function () {
+          try { var j = JSON.parse(d); resolve(j.success === true); }
+          catch (e) { resolve(res.statusCode === 200); }
+        });
+      }
+    ).on("error", function () { resolve(false); })
+     .on("timeout", function () { resolve(false); });
+  });
+  if (healthOk) return true;
+  // Fallback: check if /agent/execute route exists (POST with no-op, quick response)
+  return new Promise(function (resolve) {
+    var body = JSON.stringify({ prompt: "echo hello", cwd: "/tmp", background: false });
+    var req = http.request(
+      { host: "localhost", port: parseInt(PORT, 10), path: "/agent/execute", method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+        timeout: 5000 },
+      function (res) { res.resume(); resolve(res.statusCode < 500); }
+    );
+    req.on("error", function () { resolve(false); });
+    req.on("timeout", function () { req.destroy(); resolve(false); });
+    req.write(body);
+    req.end();
+  });
+})();
+
+if (!agentRuntimeUp) {
+  console.log("\nSKIP: TC-V3 (live) -- agent runtime not reachable at :" + PORT + "/agent/execute");
+  console.log("       (set up the dev server with ./core.sh restart to run this test)");
+}
+
+// Helper: read validate plan items written after a given timestamp
+function readValidatePlanSince(sinceMs) {
+  try {
+    var content = fs.readFileSync(VALIDATE_PLAN, "utf8");
+    return content
+      .split("\n")
+      .filter(function (l) { return l.trim(); })
+      .map(function (l) { try { return JSON.parse(l); } catch (e) { return null; } })
+      .filter(function (item) { return item && item._planWrittenAt >= sinceMs; });
+  } catch (e) { return []; }
+}
+
+// The broker-boundary record is a real existing record -- used in several tests.
+var BROKER_RECORD_ID = "live:linux-117:-home-ubuntu-lm-unified-trade:project_broker_boundary.md#";
+
+// TC-V1: --dry-run prints records + prompts including CODE and SESSION steps; no plan written
+await test(
+  "TC-V1: validate --dry-run prints records + deep-verify prompt (code+session steps shown)",
+  async function () {
+    var raw = execFileSync(
+      "node",
+      [VALIDATE_SCRIPT, "--dry-run", "--limit", "1", "--port", PORT],
+      { encoding: "utf8", maxBuffer: 8 * 1024 * 1024, timeout: 60000 }
+    );
+
+    assert(raw.length > 0, "dry-run should produce output");
+
+    // Must show the deep-verify sections
+    assert(raw.indexOf("CODE-LEVEL VERIFICATION") >= 0,
+      "prompt must include CODE-LEVEL VERIFICATION section");
+    assert(
+      raw.indexOf("SESSION-LEVEL VERIFICATION") >= 0 ||
+      raw.indexOf("session verification not applicable") >= 0,
+      "prompt must include SESSION-LEVEL VERIFICATION section (or note it is N/A)"
+    );
+    assert(raw.indexOf("STEP 2") >= 0,
+      "prompt must include STEP 2 (code verification step)");
+    assert(raw.indexOf("CRITICAL SAFETY CONSTRAINT") >= 0,
+      "prompt must include the safety constraint");
+
+    // Must NOT have written plan items
+    var recent = readValidatePlanSince(Date.now() - 2000);
+    assert(recent.length === 0,
+      "dry-run must not write to plan file, but found " + recent.length + " recent entries");
+  }
+);
+
+// TC-V6: --apply without env MEMORY_VALIDATE_APPLY=on is refused
+await test(
+  "TC-V6: plan-default safety -- --apply refused without MEMORY_VALIDATE_APPLY=on",
+  async function () {
+    var caught = null;
+    try {
+      execFileSync(
+        "node",
+        [VALIDATE_SCRIPT, "--apply", "--limit", "1", "--port", PORT],
+        {
+          encoding: "utf8",
+          timeout: 15000,
+          env: Object.assign({}, process.env, { MEMORY_VALIDATE_APPLY: "" })
+        }
+      );
+    } catch (e) { caught = e; }
+
+    assert(caught !== null, "--apply without env should exit non-zero");
+    var output = (caught.stderr || "") + (caught.stdout || "");
+    assert(output.indexOf("REFUSED") >= 0,
+      "should print REFUSED, got: " + output.slice(0, 200));
+
+    // No plan items should have been written
+    var recent = readValidatePlanSince(Date.now() - 2000);
+    assert(recent.length === 0, "refused apply must not write plan items");
+  }
+);
+
+// TC-V2: --record with a real record selects it and prompt instructs code verification
+// of its referenced files. Uses --dry-run so no agent is spawned.
+await test(
+  "TC-V2: --record selects specific record; prompt references its files and instructs code check",
+  async function () {
+    var raw = execFileSync(
+      "node",
+      [VALIDATE_SCRIPT, "--record", BROKER_RECORD_ID, "--dry-run", "--port", PORT],
+      { encoding: "utf8", maxBuffer: 8 * 1024 * 1024, timeout: 60000 }
+    );
+
+    // Should show the broker record was selected
+    assert(raw.indexOf("broker") >= 0 || raw.indexOf("Broker") >= 0,
+      "dry-run should mention the broker record");
+
+    // Prompt must instruct code-level verification
+    assert(raw.indexOf("CODE-LEVEL VERIFICATION") >= 0,
+      "prompt must include CODE-LEVEL VERIFICATION instruction");
+
+    // Prompt must mention the project path (code to read)
+    assert(
+      raw.indexOf("lm-unified-trade") >= 0 || raw.indexOf("/home/ubuntu/") >= 0,
+      "prompt must reference the project path for code verification"
+    );
+
+    // Prompt must include session verification (this record has an originSessionId)
+    assert(
+      raw.indexOf("SESSION-LEVEL VERIFICATION") >= 0 ||
+      raw.indexOf("380bf3c8") >= 0,
+      "prompt must include session verification section (record has originSessionId)"
+    );
+
+    // No plan written (dry-run)
+    var recent = readValidatePlanSince(Date.now() - 2000);
+    assert(recent.length === 0, "dry-run must not write plan items");
+  }
+);
+
+// TC-V4: re-categorize -- prompt always includes the STEP 4 re-categorization section
+// and lists valid categories including 'lesson'
+await test(
+  "TC-V4: re-categorize -- every prompt includes STEP 4 with category taxonomy",
+  async function () {
+    var raw = execFileSync(
+      "node",
+      [VALIDATE_SCRIPT, "--record", BROKER_RECORD_ID, "--dry-run", "--port", PORT],
+      { encoding: "utf8", maxBuffer: 8 * 1024 * 1024, timeout: 60000 }
+    );
+
+    // Must include the re-categorize instruction
+    assert(
+      raw.indexOf("RE-CATEGORIZE") >= 0 || raw.indexOf("STEP 4") >= 0,
+      "prompt must include STEP 4 re-categorization instruction"
+    );
+
+    // Must list valid categories
+    assert(raw.indexOf("lesson") >= 0,
+      "prompt category taxonomy must include 'lesson'");
+    assert(raw.indexOf("architecture") >= 0,
+      "prompt category taxonomy must include 'architecture'");
+
+    // Must show the current category for the record
+    assert(
+      raw.indexOf("Current category") >= 0,
+      "prompt must show the record's current category"
+    );
+  }
+);
+
+// TC-V5: merge/consolidation step is present in every prompt
+await test(
+  "TC-V5: consolidation/merge -- every prompt includes STEP 5 with merge analysis",
+  async function () {
+    var raw = execFileSync(
+      "node",
+      [VALIDATE_SCRIPT, "--record", BROKER_RECORD_ID, "--dry-run", "--port", PORT],
+      { encoding: "utf8", maxBuffer: 8 * 1024 * 1024, timeout: 60000 }
+    );
+
+    // Must include the consolidation/merge step
+    assert(
+      raw.indexOf("CONSOLIDATION") >= 0 || raw.indexOf("STEP 5") >= 0,
+      "prompt must include STEP 5 consolidation/merge analysis"
+    );
+
+    // Must mention mergeWith and supersededBy fields in output spec
+    assert(raw.indexOf("mergeWith") >= 0,
+      "prompt must reference the mergeWith output field");
+    assert(raw.indexOf("supersededBy") >= 0,
+      "prompt must reference the supersededBy output field");
+  }
+);
+
+// TC-V3: live code-confirmed -- only runs when agent runtime is up
+if (agentRuntimeUp) {
+  await test(
+    "TC-V3: live validate -- broker-boundary record -> plan shows code-confirmed, validity=current",
+    async function () {
+      var beforeMs = Date.now();
+
+      // Remember plan size before run to isolate our new items
+      try {
+        execFileSync(
+          "node",
+          [VALIDATE_SCRIPT, "--record", BROKER_RECORD_ID, "--limit", "1", "--port", PORT],
+          { encoding: "utf8", maxBuffer: 8 * 1024 * 1024, timeout: 600000 }  // 10 min for Opus
+        );
+      } catch (e) {
+        // Non-zero exit is tolerated if the plan was still written
+        if (e.stderr && e.stderr.indexOf("plan item") < 0 && e.stderr.indexOf("No memory record") >= 0) {
+          throw new Error("live validate failed (record not found): " + (e.stderr || e.message).slice(0, 300));
+        }
+      }
+
+      var newItems = readValidatePlanSince(beforeMs);
+      assert(newItems.length >= 1,
+        "live validate should write at least 1 plan item; got " + newItems.length);
+
+      var item = newItems[0];
+      assert(
+        item.recordId === BROKER_RECORD_ID || (item.recordId && item.recordId.indexOf("broker") >= 0),
+        "plan item should reference the broker record; got recordId=" + item.recordId
+      );
+      assert(
+        item.validationTier === "code-confirmed" || item.validationTier === "session-confirmed",
+        "broker boundary record should be code-confirmed or session-confirmed; got " + item.validationTier
+      );
+      assert(item.validity === "current",
+        "broker boundary record should be validity=current; got " + item.validity);
+      assert(item.evidence && item.evidence.length > 0,
+        "plan item must include evidence");
+
+      // Cleanup: remove items we wrote
+      try {
+        var allContent = fs.readFileSync(VALIDATE_PLAN, "utf8");
+        var kept = allContent
+          .split("\n")
+          .filter(function (l) {
+            if (!l.trim()) return false;
+            try { var p = JSON.parse(l); return p._planWrittenAt < beforeMs; } catch (e) { return true; }
+          })
+          .join("\n");
+        if (kept.trim().length > 0) fs.writeFileSync(VALIDATE_PLAN, kept + "\n", "utf8");
+        else { try { fs.unlinkSync(VALIDATE_PLAN); } catch (e) {} }
+      } catch (e) { /* best-effort cleanup */ }
+    }
+  );
+} else {
+  console.log("SKIP: TC-V3: live validate -- agent runtime not up");
+}
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Summary
 // ─────────────────────────────────────────────────────────────────────────────
