@@ -146,3 +146,21 @@ A separate LLM agent periodically scans recent session files (`~/.claude/project
 `type` = provenance class (user/feedback/project/reference/claude/index). `category` = semantic role, the axis the harvester classifies into and both streams filter on:
 `architecture · deployment · component · endpoint · feature · config · lesson (knowledge/lessons-learned) · knowledge (catch-all) · index`.
 Extensible. A rule-based categorizer assigns a default at extraction; the reconcile/harvest agent refines and can re-tag. Category is a first-class filter in `/memory/map` and the CLI (`--category`).
+
+## 12. The Harvester is a deep analyst, and the system is a timestamped self-validating registry
+
+The harvester (Opus) is NOT a recorder. Its job is to keep memory the **authoritative, current, timestamped view of the project** — every record knows when it was written AND when it was last confirmed true. Temporal fields on every record: `recordedAtMs` (written), `lastValidatedMs` (last confirmed still-true), `validity` (current|stale|outdated|superseded), optional `validFrom`/`validUntil`, and `supersededBy`.
+
+### What the harvester reasons about (per candidate + per existing record)
+1. **Why memory at all** — is this significant, non-obvious, and NOT already captured by the code itself, CLAUDE.md, or a design doc? Trivia and things derivable from the repo are rejected.
+2. **Validity window** — from when is it true, and until when / under what condition does it stop being true? Validity is tied to **code/feature state** (e.g. "valid while the broker boundary lives at scripts/broker/", "valid until the 3001->3011 port move ships to npm").
+3. **Outdated / superseded detection** — re-validate existing records against the **current** code, features, endpoints, and docs. If a record names a file/function/flag/endpoint that changed or no longer exists, or a newer record contradicts it, mark `outdated`/`superseded` (never auto-delete) and set `supersededBy`. Automates the CLAUDE.md rule "if a memory names a file/function/flag, verify it still exists."
+4. **Document-awareness** — scan the project docs (CLAUDE.md sections, `docs/`, README, design plans), understand **each document''s purpose and its own validity-till**, and reconcile memory against them: do not duplicate what a doc authoritatively owns; flag divergence (memory says X, doc says Y) for the reconcile tier.
+
+### Triggers
+- On a session''s end / recent-change scan (the harvest pass).
+- On code/feature change signals (git commits touching files referenced by records) -> re-validate the affected records'' `validity` + bump `lastValidatedMs`.
+- Periodic full re-validation sweep.
+
+### Result
+The map answers not just "what do we know" but "what is **currently true**, since when, last checked when, and what superseded what" — across every project and node. Stream B can prefer `validity=current` and surface "last validated N days ago" so stale knowledge is visibly stale.

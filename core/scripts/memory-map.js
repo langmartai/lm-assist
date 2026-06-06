@@ -121,7 +121,7 @@ function match(r) {
   if (limit) recs = recs.slice(0, limit);
 
   if (format === 'json') {
-    console.log(JSON.stringify(recs.map(r => level === 'complete' ? r : { recordId: r.recordId, node: r.node, project: r.project, file: r.file, title: r.title, brief: r.brief, type: r.type }), null, 2));
+    console.log(JSON.stringify(recs.map(r => level === 'complete' ? r : { recordId: r.recordId, node: r.node, project: r.project, file: r.file, title: r.title, brief: r.brief, type: r.type, category: r.category, validity: r.validity, recordedAtMs: r.recordedAtMs }), null, 2));
   } else {
     for (const r of recs) {
       if (level === 'complete') console.log(`## ${r.title}\n_${r.node} · ${r.project} · ${r.file} · ${r.type}_\n\n${r.complete}\n`);

@@ -33,6 +33,11 @@ export interface MemoryRecord {
   shareability: Shareability;
   originSessionId?: string;  // backtrack to the session that recorded it
   recordedAtMs: number;     // when this record state was written (file mtime)
+  lastValidatedMs: number;  // when last confirmed still-true (harvester/reconcile); defaults to recordedAtMs
+  validity: 'current' | 'stale' | 'outdated' | 'superseded';
+  validFrom?: string;
+  validUntil?: string;
+  supersededBy?: string;  // recordId that replaces this one
   mtimeMs: number;
   size: number;
 }
@@ -99,7 +104,7 @@ function extractMemoryFile(inp: ExtractInput): MemoryRecord[] {
     kind: 'memory', anchor: '', title, brief, complete, type,
     category: categorize(title + ' ' + brief + ' ' + complete + ' ' + inp.filename, type),
     originSessionId: (frontmatter as { originSessionId?: string }).originSessionId,
-    recordedAtMs: inp.mtimeMs,
+    recordedAtMs: inp.mtimeMs, lastValidatedMs: inp.mtimeMs, validity: 'current' as const,
     shareability: classifyShareability(inp.filename, frontmatter),
     mtimeMs: inp.mtimeMs, size: inp.size,
   }];
@@ -124,7 +129,7 @@ export function extractClaudeSections(inp: ExtractInput): MemoryRecord[] {
       brief: firstProse(curLevel ? buf.slice(1).join('\n') : complete),
       complete, type: 'claude',
       category: categorize(curTitle + ' ' + complete, 'claude'),
-      recordedAtMs: inp.mtimeMs,
+      recordedAtMs: inp.mtimeMs, lastValidatedMs: inp.mtimeMs, validity: 'current' as const,
       shareability: 'project-domain', // CLAUDE.md is shared repo content
       mtimeMs: inp.mtimeMs, size: complete.length,
     });
@@ -156,7 +161,7 @@ export function extractIndexEntries(inp: ExtractInput): MemoryRecord[] {
       kind: 'index-entry', anchor, title: title.trim(),
       brief: hook.trim(), complete, type: 'index',
       category: 'index',
-      recordedAtMs: inp.mtimeMs,
+      recordedAtMs: inp.mtimeMs, lastValidatedMs: inp.mtimeMs, validity: 'current' as const,
       shareability: 'project-domain',
       mtimeMs: inp.mtimeMs, size: complete.length,
     });

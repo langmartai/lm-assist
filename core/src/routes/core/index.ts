@@ -35,6 +35,7 @@ import { createSkillRoutes } from './skills.routes';
 import { createTerminalRoutes } from './terminal.routes';
 import { createAnnotationRoutes } from './annotation.routes';
 import { createMemoryRoutes } from './memory.routes';
+import { createMemoryMapRoutes } from './memory-map.routes';
 import { createBrowserRoutes } from './browser.routes';
 
 /**
@@ -70,6 +71,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createTerminalRoutes(ctx),
     ...createAnnotationRoutes(ctx),
     ...createMemoryRoutes(ctx),
+    ...createMemoryMapRoutes(ctx),
     ...createBrowserRoutes(ctx),
   ];
 }
