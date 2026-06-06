@@ -141,6 +141,19 @@ export class TierRestServer {
           /* swallow */
         }
       });
+
+      // Start the cross-node memory autosync daemon (Stream A). It hooks the
+      // SAME memory-cache watcher (no second chokidar) and the hub receive
+      // channel. OBSERVE-ONLY by default (MEMORY_AUTOSYNC=observe) — it only
+      // detects + logs a sync PLAN; no git mutation unless MEMORY_AUTOSYNC=on.
+      try {
+        const { getAutoSyncDaemon } = require('./memory/autosync');
+        const daemon = getAutoSyncDaemon();
+        daemon.start();
+        console.log(`[Server] Memory autosync daemon: mode=${daemon.getMode()}`);
+      } catch (e) {
+        console.warn('[Server] Memory autosync daemon init failed:', e);
+      }
     } catch (err) {
       console.warn('[Server] MemoryCache init failed:', err);
     }

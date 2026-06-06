@@ -357,6 +357,12 @@ export class WebSocketClient extends EventEmitter {
           this.emit('console_relay_data', message);
           break;
 
+        case 'memory_updated':
+          // Another node mirrored+pushed a memory change; fan-out notification.
+          // See core/src/memory/autosync.ts (Stream A cross-node sync).
+          this.emit('memory_updated', message);
+          break;
+
         default:
           console.log(`[WebSocketClient] Unknown message type: ${messageType}`);
       }

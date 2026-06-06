@@ -57,6 +57,19 @@ export interface HubClientEvents {
   gateway_conflict: () => void;
 }
 
+/**
+ * Cross-node memory-updated notification (Stream A autosync).
+ * Carries only a pointer to what changed; the actual data travels via git mirror.
+ */
+export interface MemoryUpdatedMessage {
+  type: 'memory_updated';
+  project: string;
+  host: string;
+  recordIds: string[];
+  /** Optional epoch ms when the originating push completed. */
+  ts?: number;
+}
+
 export class HubClient extends EventEmitter {
   private wsClient: WebSocketClient | null = null;
   private apiRelayHandler: ApiRelayHandler | null = null;
@@ -77,6 +90,7 @@ export class HubClient extends EventEmitter {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
+  private memoryUpdatedCallbacks: Array<(m: MemoryUpdatedMessage) => void> = [];
 
   constructor(options: HubClientOptions = {}) {
     super();
@@ -234,6 +248,24 @@ export class HubClient extends EventEmitter {
   }
 
   /**
+   * Subscribe to cross-node memory-updated notifications relayed from the hub.
+   * Used by the autosync daemon (core/src/memory/autosync.ts).
+   */
+  onMemoryUpdated(cb: (m: MemoryUpdatedMessage) => void): void {
+    this.memoryUpdatedCallbacks.push(cb);
+  }
+
+  /**
+   * Send a memory-updated notification to the hub (fanned to other nodes).
+   * No-op if not connected. Pure notification — data travels via git mirror.
+   */
+  sendMemoryUpdated(msg: Omit<MemoryUpdatedMessage, 'type'>): boolean {
+    if (!this.wsClient || !this.status.connected) return false;
+    this.wsClient.send({ type: 'memory_updated', ...msg });
+    return true;
+  }
+
+  /**
    * Get the assigned gateway ID (after authentication)
    */
   getGatewayId(): string | null {
@@ -384,6 +416,14 @@ export class HubClient extends EventEmitter {
       if (this.consoleRelayHandler) {
         this.consoleRelayHandler.handleBinaryData(message.relayIdHash, message.payload);
       }
+    });
+
+    // Handle cross-node memory-updated notifications (Stream A autosync).
+    // Re-emit so the autosync daemon can react (git fetch + cache refresh).
+    this.wsClient.on('memory_updated', (message: MemoryUpdatedMessage) => {
+      try {
+        for (const cb of this.memoryUpdatedCallbacks) cb(message);
+      } catch { /* swallow */ }
     });
   }
 
