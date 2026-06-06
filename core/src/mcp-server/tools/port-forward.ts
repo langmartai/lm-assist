@@ -87,6 +87,7 @@ interface ForwardEntry {
   targetGatewayId: string;
   targetPort: number;
   activeStreams?: number;
+  health?: { status: 'unknown' | 'up' | 'down'; since: string; lastError?: string };
 }
 
 interface NodeInfo {
@@ -133,9 +134,13 @@ async function handleListPortForwards(): Promise<McpToolResult> {
     const header = `Node: ${fmtNode(data.node)}`;
     if (forwards.length === 0) return ok(`${header}\n\nNo active port forwards on this node.`);
     const lines = forwards.map(
-      (f) =>
-        `- ${f.forwardId}\n  ${f.bindHost}:${f.localPort} -> ${f.targetGatewayId}:${f.targetPort}` +
-        (typeof f.activeStreams === 'number' ? ` (${f.activeStreams} active streams)` : ''),
+      (f) => {
+        const h = f.health
+          ? ` [target ${f.health.status}${f.health.lastError ? `: ${f.health.lastError}` : ''} since ${f.health.since}]`
+          : '';
+        return `- ${f.forwardId}\n  ${f.bindHost}:${f.localPort} -> ${f.targetGatewayId}:${f.targetPort}` +
+          (typeof f.activeStreams === 'number' ? ` (${f.activeStreams} active streams)` : '') + h;
+      },
     );
     return ok(`${header}\n\nActive port forwards (${forwards.length}):\n${lines.join('\n')}`);
   } catch (e) {

@@ -67,6 +67,8 @@ const TARGET_CONNECT_TIMEOUT_MS = 10_000;
 const LISTENER_READY_TIMEOUT_MS = 15_000;
 /** Graceful close: force-destroy a socket if it hasn't finished draining by now. */
 const CLOSE_LINGER_MS = 10_000;
+/** How often an idle forward probes its target's reachability (for status). */
+const HEALTH_PROBE_INTERVAL_MS = 30_000;
 
 /** Minimal view of the gateway WebSocket this handler needs. */
 export interface PortForwardSender {
@@ -78,6 +80,13 @@ export interface PortForwardSender {
   bufferedAmount(): number;
 }
 
+/** Reachability of the target service a forward points at. */
+export interface ForwardHealth {
+  status: 'unknown' | 'up' | 'down';
+  since: Date;          // when status last changed
+  lastError?: string;   // last connect error when down
+}
+
 interface ForwardListener {
   forwardId: string;
   localPort: number;
@@ -86,6 +95,10 @@ interface ForwardListener {
   targetPort: number;
   server: net.Server;
   createdAt: Date;
+  /** Target-port reachability. The forward stays valid across target restarts;
+   *  this just reflects whether the target service is currently reachable. */
+  health: ForwardHealth;
+  probeTimer?: NodeJS.Timeout;
 }
 
 interface ForwardStream {
@@ -217,8 +230,13 @@ export class PortForwardHandler {
           targetPort: opts.targetPort,
           server,
           createdAt: new Date(),
+          health: { status: 'unknown', since: new Date() },
         };
         this.listeners.set(forwardId, listener);
+        // Periodically probe target reachability so status reflects the target
+        // process going down / coming back even with no user traffic.
+        listener.probeTimer = setInterval(() => this.probeForward(forwardId), HEALTH_PROBE_INTERVAL_MS);
+        if (listener.probeTimer.unref) listener.probeTimer.unref();
         console.log(`[PortForward] Listening on ${bindHost}:${actualPort} -> ${opts.targetGatewayId}:${opts.targetPort} (forward=${forwardId})`);
         resolve({ forwardId, localPort: actualPort, bindHost });
       });
@@ -279,6 +297,7 @@ export class PortForwardHandler {
     targetPort: number;
     activeStreams: number;
     createdAt: Date;
+    health: ForwardHealth;
   }> {
     return Array.from(this.listeners.values()).map((l) => ({
       forwardId: l.forwardId,
@@ -288,12 +307,14 @@ export class PortForwardHandler {
       targetPort: l.targetPort,
       activeStreams: Array.from(this.streams.values()).filter((s) => s.forwardId === l.forwardId).length,
       createdAt: l.createdAt,
+      health: l.health,
     }));
   }
 
   public closeForward(forwardId: string): boolean {
     const listener = this.listeners.get(forwardId);
     if (!listener) return false;
+    if (listener.probeTimer) clearInterval(listener.probeTimer);
     try { listener.server.close(); } catch { /* ignore */ }
     // Tear down any streams belonging to this listener.
     for (const stream of Array.from(this.streams.values())) {
@@ -368,11 +389,46 @@ export class PortForwardHandler {
     if (!stream || stream.role !== 'listener') return;
     if (stream.openTimer) { clearTimeout(stream.openTimer); stream.openTimer = undefined; }
     stream.status = 'active';
+    if (stream.forwardId) this.setForwardHealth(stream.forwardId, 'up'); // target reachable
     stream.socket.resume(); // start flowing client bytes now that target is up
   }
 
   public handleForwardError(msg: { streamId: string; error?: string }): void {
+    // A failed open means the target service is currently unreachable — record
+    // it on the forward (the forward itself stays valid for future connections).
+    const stream = this.streams.get(msg.streamId);
+    if (stream?.role === 'listener' && stream.forwardId) {
+      this.setForwardHealth(stream.forwardId, 'down', msg.error || 'forward error');
+    }
     this.teardownStream(msg.streamId, msg.error || 'forward error', { notifyPeer: false, graceful: false });
+  }
+
+  /** Update a forward's target-reachability status, stamping the change time. */
+  private setForwardHealth(forwardId: string, status: ForwardHealth['status'], lastError?: string): void {
+    const l = this.listeners.get(forwardId);
+    if (!l) return;
+    if (l.health.status !== status) {
+      l.health = { status, since: new Date(), lastError: status === 'down' ? lastError : undefined };
+      console.log(`[PortForward] ${forwardId} target ${status}${lastError ? ` (${lastError})` : ''}`);
+    } else if (status === 'down' && lastError) {
+      l.health.lastError = lastError;
+    }
+  }
+
+  /**
+   * Probe an idle forward's target reachability by opening a throwaway local
+   * connection (which drives the normal forward_open -> ready/error round-trip,
+   * updating health). Skipped when real streams are active (traffic already
+   * reports health). Reuses the tunnel — no extra protocol.
+   */
+  private probeForward(forwardId: string): void {
+    const l = this.listeners.get(forwardId);
+    if (!l || !this.ws || !this.ws.isConnected()) return;
+    const active = Array.from(this.streams.values()).some((s) => s.forwardId === forwardId);
+    if (active) return; // real traffic already reflects health
+    const probe = net.connect({ port: l.localPort, host: l.bindHost === '::1' ? '::1' : '127.0.0.1' });
+    probe.on('connect', () => setTimeout(() => probe.destroy(), 800));
+    probe.on('error', () => { /* listener should be up; ignore */ });
   }
 
   public handleForwardEof(msg: { streamId: string }): void {
