@@ -25,6 +25,7 @@ const fProjects = list(opt('projects'));
 const fNodes = list(opt('nodes'));
 const fTypes = list(opt('types'));
 const fCats = list(opt('category'));
+const fRefs = list(opt('references'));
 const q = (opt('q') || '').toLowerCase().split(/\s+/).filter(Boolean);
 const since = parseInt(opt('since', '0'), 10);
 const limit = parseInt(opt('limit', '0'), 10);
@@ -80,6 +81,12 @@ function claudeFilesIn(root, maxDepth) {
   return out;
 }
 
+function projShort(p){ return (p.projectPath||"").split("/").filter(Boolean).pop() || p.projectId; }
+function buildProjIndex(projects){ const idx=[]; for(const p of projects){ const s=projShort(p); if(!s||s==="ubuntu") continue; const markers=[s.toLowerCase()]; if(p.projectPath) markers.push(p.projectPath.toLowerCase()); idx.push({slug:p.projectId, short:s, markers}); } return idx; }
+function isWord(c){ return !!c && ((c>="a"&&c<="z")||(c>="0"&&c<="9")||c==="-"); }
+function mentions(hay,m){ let i=hay.indexOf(m); while(i>=0){ const b=i===0?"":hay[i-1]; const a=(i+m.length>=hay.length)?"":hay[i+m.length]; if(!isWord(b)&&!isWord(a)) return true; i=hay.indexOf(m,i+1);} return false; }
+function computeRefs(r, idx){ const hay=(r.title+" "+(r.complete||r.brief||"")).toLowerCase(); const refs=new Set(); for(const p of idx){ for(const m of p.markers){ if(mentions(hay,m)){ refs.add(p.short); break; } } } if(refs.size===0){ const sp=idx.find(p=>p.slug===r.project); if(sp) refs.add(sp.short); } return Array.from(refs); }
+
 async function collect() {
   const projects = await fetchProjects();
   const home = os.homedir();
@@ -106,6 +113,8 @@ async function collect() {
       for (const h of hosts) readDir(path.join(repoBase, h), h, 'repo:' + h, p.projectId, recs);
     }
   }
+  const _pidx = buildProjIndex(projects);
+  for (const r of recs) r.referencedProjects = computeRefs(r, _pidx);
   return recs;
 }
 
@@ -114,6 +123,7 @@ function match(r) {
   if (fNodes && !fNodes.includes(r.node)) return false;
   if (fTypes && !fTypes.includes(r.type)) return false;
   if (fCats && !fCats.includes(r.category)) return false;
+  if (fRefs && !(r.referencedProjects||[]).some(x => fRefs.includes(x))) return false;
   if (since && r.recordedAtMs < since) return false;
   if (q.length) { const hay = (r.title + ' ' + r.brief + ' ' + r.complete).toLowerCase(); if (!q.every(t => hay.includes(t))) return false; }
   return true;
@@ -166,14 +176,14 @@ function appendLog(obj){ fs.appendFileSync(CHLOG, JSON.stringify(obj) + String.f
 
   if (wantStats) {
     const by = (k) => recs.reduce((m, r) => (m[r[k]] = (m[r[k]] || 0) + 1, m), {});
-    console.log(JSON.stringify({ total: recs.length, byProject: by('project'), byNode: by('node'), byType: by('type'), byCategory: by('category'), byKind: by('kind') }, null, 2));
+    console.log(JSON.stringify({ total: recs.length, byProject: by('project'), byNode: by('node'), byType: by('type'), byCategory: by('category'), byKind: by('kind'), byReferencedProject: recs.reduce((m,r)=>{(r.referencedProjects||[]).forEach(p=>{m[p]=(m[p]||0)+1;});return m;},{}) }, null, 2));
     return;
   }
 
   if (limit) recs = recs.slice(0, limit);
 
   if (format === 'json') {
-    console.log(JSON.stringify(recs.map(r => level === 'complete' ? r : { recordId: r.recordId, node: r.node, project: r.project, file: r.file, title: r.title, brief: r.brief, type: r.type, category: r.category, validity: r.validity, recordedAtMs: r.recordedAtMs }), null, 2));
+    console.log(JSON.stringify(recs.map(r => level === 'complete' ? r : { recordId: r.recordId, node: r.node, project: r.project, file: r.file, title: r.title, brief: r.brief, type: r.type, category: r.category, validity: r.validity, referencedProjects: r.referencedProjects, recordedAtMs: r.recordedAtMs }), null, 2));
   } else {
     for (const r of recs) {
       if (level === 'complete') console.log(`## ${r.title}\n_${r.node} · ${r.project} · ${r.file} · ${r.type}_\n\n${r.complete}\n`);
