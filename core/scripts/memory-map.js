@@ -52,7 +52,7 @@ function resolveMyHostId(projectPath) {
       if (id && ips.some(ip => line.includes(ip))) return id;
     }
   } catch {}
-  return os.hostname();
+  return null;
 }
 
 function readDir(dir, node, source, project, out) {
@@ -83,15 +83,16 @@ function claudeFilesIn(root, maxDepth) {
 async function collect() {
   const projects = await fetchProjects();
   const home = os.homedir();
+  const liveNode = process.env.LM_HOST_ID || projects.map(function(p){return resolveMyHostId(p.projectPath || '');}).find(Boolean) || os.hostname();
   const recs = [];
   for (const gf of ['CLAUDE.md','CLAUDE.local.md']) {
     const gp = path.join(home, '.claude', gf);
     if (fs.existsSync(gp)) { const c=fs.readFileSync(gp,'utf8'); const st=fs.statSync(gp);
-      recs.push(...extractRecords({ node:'(local)', project:'(user-global)', source:'live', filename:gf, content:c, mtimeMs:st.mtimeMs, size:st.size })); }
+      recs.push(...extractRecords({ node: liveNode, project:'(user-global)', source:'live', filename:gf, content:c, mtimeMs:st.mtimeMs, size:st.size })); }
   }
   for (const p of projects) {
     const liveDir = path.join(home, '.claude', 'projects', p.projectId, 'memory');
-    const myHost = resolveMyHostId(p.projectPath || '');
+    const myHost = liveNode;
     readDir(liveDir, myHost, 'live', p.projectId, recs);
     // CLAUDE.md (special) — index the project root instructions
     if (p.projectPath) {
