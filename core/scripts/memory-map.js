@@ -67,20 +67,38 @@ function readDir(dir, node, source, project, out) {
   }
 }
 
+function claudeFilesIn(root, maxDepth) {
+  const SKIP = new Set(['node_modules','.git','.next','dist','dist-test','.cache','coverage','.npm','ms-playwright-go']);
+  const out = [];
+  (function walk(dir, depth, rel){
+    let entries; try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (e.isFile() && (e.name === 'CLAUDE.md' || e.name === 'CLAUDE.local.md')) out.push(rel ? rel + '/' + e.name : e.name);
+      else if (e.isDirectory() && depth < maxDepth && !SKIP.has(e.name) && (!e.name.startsWith('.') || e.name === '.claude') && !fs.existsSync(path.join(dir, e.name, '.git'))) walk(path.join(dir, e.name), depth + 1, rel ? rel + '/' + e.name : e.name);
+    }
+  })(root, 0, '');
+  return out;
+}
+
 async function collect() {
   const projects = await fetchProjects();
   const home = os.homedir();
   const recs = [];
+  for (const gf of ['CLAUDE.md','CLAUDE.local.md']) {
+    const gp = path.join(home, '.claude', gf);
+    if (fs.existsSync(gp)) { const c=fs.readFileSync(gp,'utf8'); const st=fs.statSync(gp);
+      recs.push(...extractRecords({ node:'(local)', project:'(user-global)', source:'live', filename:gf, content:c, mtimeMs:st.mtimeMs, size:st.size })); }
+  }
   for (const p of projects) {
     const liveDir = path.join(home, '.claude', 'projects', p.projectId, 'memory');
     const myHost = resolveMyHostId(p.projectPath || '');
     readDir(liveDir, myHost, 'live', p.projectId, recs);
     // CLAUDE.md (special) — index the project root instructions
     if (p.projectPath) {
-      const claude = path.join(p.projectPath, 'CLAUDE.md');
-      if (fs.existsSync(claude)) {
-        const c = fs.readFileSync(claude, 'utf8'); const st = fs.statSync(claude);
-        recs.push(...extractRecords({ node: myHost, project: p.projectId, source: 'live', filename: 'CLAUDE.md', content: c, mtimeMs: st.mtimeMs, size: st.size }));
+      for (const rel of claudeFilesIn(p.projectPath, 2)) {
+        const fpath = path.join(p.projectPath, rel);
+        let c, st; try { c = fs.readFileSync(fpath,'utf8'); st = fs.statSync(fpath); } catch { continue; }
+        recs.push(...extractRecords({ node: myHost, project: p.projectId, source: 'live', filename: rel, content: c, mtimeMs: st.mtimeMs, size: st.size }));
       }
       const repoBase = path.join(p.projectPath, 'memory');
       let hosts; try { hosts = fs.readdirSync(repoBase, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name); } catch { hosts = []; }

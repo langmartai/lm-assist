@@ -173,7 +173,7 @@ export function extractIndexEntries(inp: ExtractInput): MemoryRecord[] {
 /** Dispatch by filename. */
 export function extractRecords(inp: ExtractInput): MemoryRecord[] {
   const base = inp.filename.split('/').pop() || inp.filename;
-  if (base === 'CLAUDE.md') return extractClaudeSections(inp);
+  if (base === 'CLAUDE.md' || base === 'CLAUDE.local.md') return extractClaudeSections(inp);
   if (base === 'MEMORY.md') return extractIndexEntries(inp);
   return extractMemoryFile(inp);
 }
