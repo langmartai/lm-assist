@@ -40,6 +40,7 @@ const MAP_SCRIPT = path.join(__dirname, "memory-map.js");
 const PLAN_FILE  = path.join(os.homedir(), ".lm-assist", "memory-validate-plan.jsonl");
 
 const wantRevalidate = process.argv.includes("--revalidate");
+const wantCrossProject = process.argv.includes("--cross-project");
 function planValidatedIds() {
   try {
     const lines = fs.readFileSync(PLAN_FILE, "utf8").trim().split(String.fromCharCode(10)).filter(Boolean);
@@ -206,6 +207,15 @@ function selectRecords() {
 
   // Only validate memory-kind records (index-entry and claude-section are structural, not facts)
   records = records.filter((r) => r.kind === "memory");
+
+  if (wantCrossProject) {
+    records = records.filter(function(r){
+      const refs = r.referencedProjects || [];
+      if (!refs.length) return false;
+      const ss = (resolveProjectPath(r.project) || "").split("/").filter(Boolean).pop();
+      return ss && refs.indexOf(ss) === -1;
+    });
+  }
 
   if (filterRecord) {
     records = records.filter((r) => r.recordId === filterRecord);
