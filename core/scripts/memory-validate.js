@@ -55,7 +55,7 @@ const has    = (k) => argv.includes("--" + k);
 
 const dryRun          = has("dry-run");
 const applyMode       = has("apply");
-const concurrency     = Math.max(1, parseInt(opt("concurrency") || "4", 10) || 4);
+const concurrency     = Math.max(1, parseInt(opt("concurrency") || "8", 10) || 8);
 const filterProject   = opt("project");
 const filterRecord    = opt("record");
 const wantStale       = has("stale");
