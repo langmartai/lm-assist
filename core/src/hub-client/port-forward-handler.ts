@@ -33,6 +33,27 @@
 
 import * as net from 'net';
 import * as crypto from 'crypto';
+import { execFile } from 'child_process';
+
+/** What's holding a local port, if anything (best-effort, Linux `ss`). */
+export interface PortHolder {
+  pid: number;        // 0 = unknown (e.g. owned by another user, no privilege to see)
+  process: string;    // process name, or 'unknown'
+  address: string;    // local listen address:port
+}
+export interface PortStatus {
+  available: boolean;
+  holder?: PortHolder;
+}
+
+/** Human-readable "port in use" message, naming the holding process when known. */
+function describePortConflict(port: number, holder?: PortHolder): string {
+  if (holder && holder.pid > 0) {
+    return `localPort ${port} is already in use by pid ${holder.pid} (${holder.process})` +
+      `${holder.address ? ` on ${holder.address}` : ''}`;
+  }
+  return `localPort ${port} is already in use (holder unknown — likely owned by another user/root)`;
+}
 
 /** Binary frame marker for port-forward data (console relay uses 0xFF). */
 export const PORT_FORWARD_MARKER = 0xfe;
@@ -96,6 +117,34 @@ export class PortForwardHandler {
     return crypto.createHash('md5').update(streamId).digest().subarray(0, 8);
   }
 
+  /**
+   * Best-effort check of whether a local TCP port is free, and if not, who
+   * holds it. Uses Linux `ss`; on other platforms / if `ss` is unavailable it
+   * returns available:true and lets the bind attempt be the real arbiter.
+   * pid is 0 / process 'unknown' when the holder is owned by another user
+   * (no privilege to read it without root).
+   */
+  public static inspectLocalPort(port: number): Promise<PortStatus> {
+    return new Promise((resolve) => {
+      execFile('ss', ['-ltnpH', `sport = :${port}`], { timeout: 3000 }, (err, stdout) => {
+        if (err || !stdout || !stdout.trim()) {
+          resolve({ available: true });
+          return;
+        }
+        const line = stdout.trim().split('\n')[0];
+        const cols = line.trim().split(/\s+/);
+        const address = cols[3] || '';
+        const m = line.match(/users:\(\("([^"]+)",pid=(\d+)/);
+        resolve({
+          available: false,
+          holder: m
+            ? { process: m[1], pid: parseInt(m[2], 10), address }
+            : { process: 'unknown', pid: 0, address },
+        });
+      });
+    });
+  }
+
   public setWebSocket(ws: PortForwardSender): void {
     this.ws = ws;
   }
@@ -112,7 +161,7 @@ export class PortForwardHandler {
    * Open a local listening port that forwards every connection to
    * targetGatewayId's targetPort. Resolves once the listener is bound.
    */
-  public openForward(opts: {
+  public async openForward(opts: {
     localPort: number;
     targetGatewayId: string;
     targetPort: number;
@@ -120,21 +169,38 @@ export class PortForwardHandler {
   }): Promise<{ forwardId: string; localPort: number; bindHost: string }> {
     const bindHost = opts.bindHost || '127.0.0.1';
     if (opts.targetGatewayId && opts.targetGatewayId === this.selfGatewayId) {
-      return Promise.reject(new Error('Cannot forward to the same node (targetGatewayId is self)'));
+      throw new Error('Cannot forward to the same node (targetGatewayId is self)');
     }
     if (this.listeners.size >= PortForwardHandler.MAX_FORWARDS) {
-      return Promise.reject(new Error(`Too many active port forwards on this node (max ${PortForwardHandler.MAX_FORWARDS})`));
+      throw new Error(`Too many active port forwards on this node (max ${PortForwardHandler.MAX_FORWARDS})`);
     }
+
+    // Source-port preflight: a non-ephemeral local port may already be taken by
+    // another process. Surface the holder (pid/name) instead of a bare EADDRINUSE.
+    if (opts.localPort > 0) {
+      const st = await PortForwardHandler.inspectLocalPort(opts.localPort);
+      if (!st.available) {
+        throw new Error(describePortConflict(opts.localPort, st.holder));
+      }
+    }
+
     return new Promise((resolve, reject) => {
       const forwardId = crypto.randomUUID();
       // allowHalfOpen: keep the write side open after the client sends FIN so a
       // half-close (forward_eof) can propagate without tearing the stream down.
       const server = net.createServer({ allowHalfOpen: true }, (socket) => this.onListenerConnection(forwardId, socket));
 
-      server.on('error', (err) => {
+      server.on('error', (err: NodeJS.ErrnoException) => {
         // Bind failures surface here before 'listening'
         if (!this.listeners.has(forwardId)) {
-          reject(err);
+          // Lost a race (or privileged port): enrich EADDRINUSE with the holder.
+          if (err.code === 'EADDRINUSE' && opts.localPort > 0) {
+            PortForwardHandler.inspectLocalPort(opts.localPort)
+              .then((st) => reject(new Error(describePortConflict(opts.localPort, st.holder))))
+              .catch(() => reject(err));
+          } else {
+            reject(err);
+          }
         } else {
           console.error(`[PortForward] Listener ${forwardId} error:`, err.message);
         }

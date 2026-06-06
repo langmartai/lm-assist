@@ -89,6 +89,19 @@ interface ForwardEntry {
   activeStreams?: number;
 }
 
+interface NodeInfo {
+  gatewayId: string | null;
+  hostname: string;
+  os: { platform: string; release: string; arch: string };
+  ip: string;
+}
+
+/** "host (gw4-… · linux 6.x x64 · 10.0.1.117)" — the node a forward lives on. */
+function fmtNode(n?: NodeInfo): string {
+  if (!n) return '';
+  return `${n.hostname} (${n.gatewayId || 'unregistered'} · ${n.os.platform} ${n.os.release} ${n.os.arch} · ${n.ip})`;
+}
+
 async function handleOpenPortForward(args: Record<string, unknown>): Promise<McpToolResult> {
   const targetGatewayId = String(args.targetGatewayId || '').trim();
   const targetPort = Number(args.targetPort);
@@ -101,11 +114,11 @@ async function handleOpenPortForward(args: Record<string, unknown>): Promise<Mcp
   if (args.bindHost) body.bindHost = String(args.bindHost);
 
   try {
-    const data = await workerPost<ForwardEntry>('/port-forward', body);
+    const data = await workerPost<ForwardEntry & { node?: NodeInfo }>('/port-forward', body);
     return ok(
-      `Port forward opened.\n` +
+      `Port forward opened on ${fmtNode(data.node)}.\n` +
         `  forwardId: ${data.forwardId}\n` +
-        `  listening: ${data.bindHost}:${data.localPort}\n` +
+        `  listening: ${data.bindHost}:${data.localPort} (on the node above)\n` +
         `  -> target: ${data.targetGatewayId}:${data.targetPort}`,
     );
   } catch (e) {
@@ -115,15 +128,16 @@ async function handleOpenPortForward(args: Record<string, unknown>): Promise<Mcp
 
 async function handleListPortForwards(): Promise<McpToolResult> {
   try {
-    const data = await workerGet<{ forwards: ForwardEntry[] }>('/port-forward');
+    const data = await workerGet<{ node?: NodeInfo; forwards: ForwardEntry[] }>('/port-forward');
     const forwards = data.forwards || [];
-    if (forwards.length === 0) return ok('No active port forwards on this node.');
+    const header = `Node: ${fmtNode(data.node)}`;
+    if (forwards.length === 0) return ok(`${header}\n\nNo active port forwards on this node.`);
     const lines = forwards.map(
       (f) =>
         `- ${f.forwardId}\n  ${f.bindHost}:${f.localPort} -> ${f.targetGatewayId}:${f.targetPort}` +
         (typeof f.activeStreams === 'number' ? ` (${f.activeStreams} active streams)` : ''),
     );
-    return ok(`Active port forwards (${forwards.length}):\n${lines.join('\n')}`);
+    return ok(`${header}\n\nActive port forwards (${forwards.length}):\n${lines.join('\n')}`);
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }

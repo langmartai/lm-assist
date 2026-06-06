@@ -10,6 +10,7 @@
  */
 
 import { EventEmitter } from 'events';
+import * as os from 'os';
 import { WebSocketClient } from './websocket-client';
 import { ApiRelayHandler, ApiRelayRequest, ServiceRoute } from './api-relay-handler';
 import { ConsoleRelayHandler } from './console-relay-handler';
@@ -329,6 +330,38 @@ export class HubClient extends EventEmitter {
     createdAt: Date;
   }> {
     return this.portForwardHandler?.listForwards() ?? [];
+  }
+
+  /**
+   * Identity + environment of THIS node — so port-forward responses and node
+   * listings carry which machine they ran on (gatewayId/hostId, hostname, OS,
+   * and the node's LAN IP).
+   */
+  getNodeInfo(): {
+    gatewayId: string | null;
+    hostname: string;
+    os: { platform: string; release: string; arch: string };
+    ip: string;
+  } {
+    const cfg = getHubConfig();
+    let ip = '127.0.0.1';
+    const ifaces = os.networkInterfaces();
+    outer: for (const list of Object.values(ifaces)) {
+      for (const a of list || []) {
+        if (a.family === 'IPv4' && !a.internal) { ip = a.address; break outer; }
+      }
+    }
+    return {
+      gatewayId: this.status.gatewayId || cfg.gatewayId,
+      hostname: cfg.hostname,
+      os: { platform: os.platform(), release: os.release(), arch: os.arch() },
+      ip,
+    };
+  }
+
+  /** Check whether a local TCP port is free on this node (and who holds it). */
+  checkLocalPort(port: number): Promise<import('./port-forward-handler').PortStatus> {
+    return PortForwardHandler.inspectLocalPort(port);
   }
 
   private setupEventHandlers(): void {

@@ -52,7 +52,7 @@ export function createPortForwardRoutes(_ctx: RouteContext): RouteHandler[] {
           const result = await hub.openPortForward({ localPort, targetGatewayId, targetPort, bindHost });
           return {
             success: true,
-            data: { ...result, targetGatewayId, targetPort },
+            data: { ...result, targetGatewayId, targetPort, node: hub.getNodeInfo() },
           };
         } catch (error) {
           return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -66,7 +66,22 @@ export function createPortForwardRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/port-forward$/,
       handler: async () => {
         const hub = getHubClient();
-        return { success: true, data: { forwards: hub.listPortForwards() } };
+        return { success: true, data: { node: hub.getNodeInfo(), forwards: hub.listPortForwards() } };
+      },
+    },
+
+    // GET /port-forward/check?port=NNNN — is a local port free on this node, and who holds it
+    {
+      method: 'GET',
+      pattern: /^\/port-forward\/check$/,
+      handler: async (req: ParsedRequest) => {
+        const port = parseInt(String(req.query?.port ?? ''), 10);
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+          return { success: false, error: 'port query param must be an integer 1–65535' };
+        }
+        const hub = getHubClient();
+        const status = await hub.checkLocalPort(port);
+        return { success: true, data: { port, node: hub.getNodeInfo(), ...status } };
       },
     },
 
