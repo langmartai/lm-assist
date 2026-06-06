@@ -214,9 +214,22 @@ function parseProposals(agentResult) {
     else if (agentResult.result && typeof agentResult.result === 'string') text = agentResult.result;
     else text = JSON.stringify(agentResult);
   }
-  const match = text.match(/(\[[\s\S]*\])/);
-  if (!match) return [];
-  try { return JSON.parse(match[1]); } catch { return []; }
+  const cands = [];
+  const fence = text.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
+  if (fence) cands.push(fence[1]);
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '[') continue;
+    let depth = 0;
+    for (let j = i; j < text.length; j++) {
+      if (text[j] === '[') depth++;
+      else if (text[j] === ']') { if (--depth === 0) { cands.push(text.slice(i, j + 1)); i = j; break; } }
+    }
+  }
+  for (const c of cands) {
+    try { const a = JSON.parse(c); if (Array.isArray(a) && (a.length === 0 || typeof a[0] === 'object')) return a; } catch {}
+  }
+  console.error('[harvest] no parseable JSON proposals array; raw(600): ' + (text || '').slice(0, 600));
+  return [];
 }
 
 function appendProposals(proposals, session) {
