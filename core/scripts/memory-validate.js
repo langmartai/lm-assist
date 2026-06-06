@@ -38,6 +38,14 @@ const { execFileSync } = require("child_process");
 const PORT       = process.env.API_PORT || (__dirname.includes("node_modules") ? "3100" : "3200");
 const MAP_SCRIPT = path.join(__dirname, "memory-map.js");
 const PLAN_FILE  = path.join(os.homedir(), ".lm-assist", "memory-validate-plan.jsonl");
+
+const wantRevalidate = process.argv.includes("--revalidate");
+function planValidatedIds() {
+  try {
+    const lines = fs.readFileSync(PLAN_FILE, "utf8").trim().split(String.fromCharCode(10)).filter(Boolean);
+    return new Set(lines.map(function(l){ try { return JSON.parse(l).recordId; } catch (e) { return null; } }).filter(Boolean));
+  } catch (e) { return new Set(); }
+}
 const PROJECT_DIR = path.join(os.homedir(), ".claude", "projects");
 
 const argv   = process.argv.slice(2);
@@ -224,6 +232,13 @@ function selectRecords() {
     records = [...unval, ...rest];
   }
 
+  if (!wantRevalidate) {
+    const done = planValidatedIds();
+    const before = records.length;
+    records = records.filter(function(r){ return !done.has(r.recordId); });
+    const skipped = before - records.length;
+    if (skipped > 0) console.error('[validate] Resume: skipping ' + skipped + ' already-validated record(s) (use --revalidate to redo).');
+  }
   return records.slice(0, limitN);
 }
 
