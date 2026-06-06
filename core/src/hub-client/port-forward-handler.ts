@@ -40,6 +40,12 @@ export const PORT_FORWARD_MARKER = 0xfe;
 /** Pause the source socket while the WS send buffer is above this many bytes. */
 const WS_BACKPRESSURE_HIGH_WATER = 8 * 1024 * 1024; // 8 MB
 const WS_BACKPRESSURE_POLL_MS = 50;
+/** Target-side: fail the stream if the local dial doesn't connect in time. */
+const TARGET_CONNECT_TIMEOUT_MS = 10_000;
+/** Listener-side: fail the stream if the hub never replies forward_ready. */
+const LISTENER_READY_TIMEOUT_MS = 15_000;
+/** Graceful close: force-destroy a socket if it hasn't finished draining by now. */
+const CLOSE_LINGER_MS = 10_000;
 
 /** Minimal view of the gateway WebSocket this handler needs. */
 export interface PortForwardSender {
@@ -70,6 +76,8 @@ interface ForwardStream {
   forwardId?: string;       // listener side only
   bytesUp: number;
   bytesDown: number;
+  /** Pending connect-timeout (target) / ready-timeout (listener); cleared when active. */
+  openTimer?: NodeJS.Timeout;
 }
 
 export class PortForwardHandler {
@@ -119,7 +127,9 @@ export class PortForwardHandler {
     }
     return new Promise((resolve, reject) => {
       const forwardId = crypto.randomUUID();
-      const server = net.createServer((socket) => this.onListenerConnection(forwardId, socket));
+      // allowHalfOpen: keep the write side open after the client sends FIN so a
+      // half-close (forward_eof) can propagate without tearing the stream down.
+      const server = net.createServer({ allowHalfOpen: true }, (socket) => this.onListenerConnection(forwardId, socket));
 
       server.on('error', (err) => {
         // Bind failures surface here before 'listening'
@@ -179,6 +189,13 @@ export class PortForwardHandler {
     socket.pause();
     this.wireSocket(stream);
 
+    // If the hub/target never replies forward_ready, don't leak a paused socket.
+    stream.openTimer = setTimeout(() => {
+      if (stream.status === 'opening') {
+        this.teardownStream(streamId, 'forward open timeout', { notifyPeer: true, graceful: false });
+      }
+    }, LISTENER_READY_TIMEOUT_MS);
+
     this.ws.send({
       type: 'forward_open',
       forwardId,
@@ -215,7 +232,7 @@ export class PortForwardHandler {
     // Tear down any streams belonging to this listener.
     for (const stream of Array.from(this.streams.values())) {
       if (stream.forwardId === forwardId) {
-        this.teardownStream(stream.streamId, 'forward closed', true);
+        this.teardownStream(stream.streamId, 'forward closed', { notifyPeer: true, graceful: false });
       }
     }
     this.listeners.delete(forwardId);
@@ -232,7 +249,13 @@ export class PortForwardHandler {
     if (this.streams.has(streamId)) {
       return; // duplicate
     }
-    const socket = net.connect(targetPort, '127.0.0.1');
+    if (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535) {
+      this.sendControl({ type: 'forward_error', streamId, error: `invalid targetPort ${targetPort}` });
+      return;
+    }
+    // allowHalfOpen: keep reading the local service's response after we end()
+    // our write side in response to a peer forward_eof.
+    const socket = net.connect({ port: targetPort, host: '127.0.0.1', allowHalfOpen: true });
     const streamHash = PortForwardHandler.hashStreamId(streamId);
     const stream: ForwardStream = {
       streamId,
@@ -246,7 +269,16 @@ export class PortForwardHandler {
     this.streams.set(streamId, stream);
     this.streamByHash.set(streamHash.toString('hex'), streamId);
 
+    // Don't hang forever if the local port is filtered (SYN dropped).
+    stream.openTimer = setTimeout(() => {
+      if (stream.status === 'opening') {
+        this.sendControl({ type: 'forward_error', streamId, error: 'target connect timeout' });
+        this.teardownStream(streamId, 'target connect timeout', { notifyPeer: false, graceful: false });
+      }
+    }, TARGET_CONNECT_TIMEOUT_MS);
+
     socket.once('connect', () => {
+      if (stream.openTimer) { clearTimeout(stream.openTimer); stream.openTimer = undefined; }
       stream.status = 'active';
       this.wireSocket(stream);
       this.sendControl({ type: 'forward_ready', streamId });
@@ -257,7 +289,7 @@ export class PortForwardHandler {
       if (stream.status === 'opening') {
         this.sendControl({ type: 'forward_error', streamId, error: err.message });
       }
-      this.teardownStream(streamId, err.message, false);
+      this.teardownStream(streamId, err.message, { notifyPeer: false, graceful: false });
     });
   }
 
@@ -268,23 +300,27 @@ export class PortForwardHandler {
   public handleForwardReady(msg: { streamId: string }): void {
     const stream = this.streams.get(msg.streamId);
     if (!stream || stream.role !== 'listener') return;
+    if (stream.openTimer) { clearTimeout(stream.openTimer); stream.openTimer = undefined; }
     stream.status = 'active';
     stream.socket.resume(); // start flowing client bytes now that target is up
   }
 
   public handleForwardError(msg: { streamId: string; error?: string }): void {
-    this.teardownStream(msg.streamId, msg.error || 'forward error', false);
+    this.teardownStream(msg.streamId, msg.error || 'forward error', { notifyPeer: false, graceful: false });
   }
 
   public handleForwardEof(msg: { streamId: string }): void {
     const stream = this.streams.get(msg.streamId);
-    if (!stream) return;
-    // Peer finished writing; signal FIN on our local socket (half-close).
+    if (!stream || stream.status === 'closed') return;
+    // Peer finished writing — flush our pending writes then FIN our write side
+    // toward the local socket. allowHalfOpen keeps our read side open for the
+    // response, so this is a true half-close, not a teardown.
     try { stream.socket.end(); } catch { /* ignore */ }
   }
 
   public handleForwardClose(msg: { streamId: string; reason?: string }): void {
-    this.teardownStream(msg.streamId, msg.reason || 'peer closed', false);
+    // Peer fully closed — drain our buffered writes to the local socket, then close.
+    this.teardownStream(msg.streamId, msg.reason || 'peer closed', { notifyPeer: false, graceful: true });
   }
 
   /** Binary data frame from hub: write payload to the matching local socket. */
@@ -297,7 +333,7 @@ export class PortForwardHandler {
     try {
       stream.socket.write(payload);
     } catch (err) {
-      this.teardownStream(streamId, err instanceof Error ? err.message : 'write failed', true);
+      this.teardownStream(streamId, err instanceof Error ? err.message : 'write failed', { notifyPeer: true, graceful: false });
     }
   }
 
@@ -330,12 +366,16 @@ export class PortForwardHandler {
     });
 
     socket.on('end', () => {
-      // Local side sent FIN — tell the peer (half-close).
-      this.sendControl({ type: 'forward_eof', streamId: stream.streamId });
+      // Local side sent FIN (done writing) — propagate as a half-close.
+      if (stream.status !== 'closed') {
+        this.sendControl({ type: 'forward_eof', streamId: stream.streamId });
+      }
     });
 
     socket.on('close', () => {
-      this.teardownStream(stream.streamId, 'socket closed', true);
+      // Socket fully closed locally. If we haven't already torn down (e.g. via a
+      // peer forward_close), notify the peer now. Already-closed → no-op.
+      this.teardownStream(stream.streamId, 'socket closed', { notifyPeer: true, graceful: false });
     });
 
     socket.on('error', () => {
@@ -343,19 +383,47 @@ export class PortForwardHandler {
     });
   }
 
-  private teardownStream(streamId: string, reason: string, notifyPeer: boolean): void {
+  /**
+   * Tear a stream down.
+   *  - graceful=true: socket.end() so buffered writes flush (no truncation),
+   *    with a linger backstop that force-destroys if it doesn't drain.
+   *  - graceful=false: socket.destroy() (error/abort paths).
+   *  - notifyPeer: send forward_close to the hub (skip when the peer initiated).
+   */
+  private teardownStream(
+    streamId: string,
+    reason: string,
+    opts: { notifyPeer: boolean; graceful: boolean },
+  ): void {
     const stream = this.streams.get(streamId);
     if (!stream) return;
     if (stream.status === 'closed') return;
     stream.status = 'closed';
 
-    try { stream.socket.destroy(); } catch { /* ignore */ }
-
+    if (stream.openTimer) { clearTimeout(stream.openTimer); stream.openTimer = undefined; }
     this.streamByHash.delete(stream.streamHash.toString('hex'));
     this.streams.delete(streamId);
 
-    if (notifyPeer) {
+    if (opts.graceful) {
+      try { stream.socket.end(); } catch { /* ignore */ }
+      const linger = setTimeout(() => { try { stream.socket.destroy(); } catch { /* ignore */ } }, CLOSE_LINGER_MS);
+      stream.socket.once('close', () => clearTimeout(linger));
+    } else {
+      try { stream.socket.destroy(); } catch { /* ignore */ }
+    }
+
+    if (opts.notifyPeer) {
       this.sendControl({ type: 'forward_close', streamId, reason });
+    }
+  }
+
+  /**
+   * Drop all in-flight streams (the hub connection went away, so their routing
+   * is dead). Listeners are kept bound so new connections work after reconnect.
+   */
+  public dropStreamsOnDisconnect(): void {
+    for (const streamId of Array.from(this.streams.keys())) {
+      this.teardownStream(streamId, 'hub disconnected', { notifyPeer: false, graceful: false });
     }
   }
 
@@ -374,7 +442,7 @@ export class PortForwardHandler {
       this.closeForward(forwardId);
     }
     for (const streamId of Array.from(this.streams.keys())) {
-      this.teardownStream(streamId, 'cleanup', false);
+      this.teardownStream(streamId, 'cleanup', { notifyPeer: false, graceful: false });
     }
     this.listeners.clear();
     this.streams.clear();

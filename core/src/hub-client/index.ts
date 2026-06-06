@@ -380,6 +380,11 @@ export class HubClient extends EventEmitter {
       this.status.authenticated = false;
       this.clearTimers();
 
+      // In-flight port-forward streams are dead once the hub link drops (the hub
+      // forgets their routing). Tear them down so clients get a reset instead of a
+      // hung socket; listeners stay bound to serve new connections after reconnect.
+      this.portForwardHandler?.dropStreamsOnDisconnect();
+
       if (!this.isShuttingDown) {
         this.scheduleReconnect();
       }
