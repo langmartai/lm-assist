@@ -111,6 +111,17 @@ function appendLog(obj){ fs.appendFileSync(CHLOG, JSON.stringify(obj) + String.f
 (async () => {
   let recs = (await collect()).filter(match);
   recs.sort((a, b) => b.recordedAtMs - a.recordedAtMs);
+  if (has('duplicates')) {
+    const byFile = {};
+    for (const r of recs) { if (r.kind !== 'memory') continue; const k = r.project + '::' + r.file; (byFile[k] = byFile[k] || []).push(r); }
+    const divergent = Object.keys(byFile).map(function(k){ return [k, byFile[k]]; })
+      .filter(function(e){ return new Set(e[1].map(function(r){return r.contentHash;})).size > 1; })
+      .map(function(e){ return { key: e[0], nodes: e[1].map(function(r){ return { node: r.node, source: r.source, hash: r.contentHash.slice(0,10), recordedAtMs: r.recordedAtMs }; }) }; });
+    const byHash = {}; for (const r of recs) (byHash[r.contentHash] = byHash[r.contentHash] || []).push(r);
+    const exact = Object.keys(byHash).map(function(h){return byHash[h];}).filter(function(g){return g.length>1;}).length;
+    console.log(JSON.stringify({ exactDuplicateClusters: exact, divergentMirrorCount: divergent.length, divergentMirrors: divergent.slice(0,20) }, null, 2));
+    return;
+  }
   if (has('snapshot')) { const n=writeSnap(recs); console.log(JSON.stringify({snapshot:SNAP,records:n})); return; }
   if (has('changes')) {
     const d=diffSnap(loadSnap(), recs);
