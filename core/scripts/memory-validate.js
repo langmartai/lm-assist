@@ -318,7 +318,14 @@ function buildPrompt(record, neighbors) {
       })), null, 2)
     : "[]";
 
-  const projectPath = resolveProjectPath(record.project) || "/home/ubuntu/lm-unified-trade";
+  // Verify against the project(s) this record is ABOUT (referencedProjects),
+  // not just where it is stored — a cross-project record gets checked against the right codebase.
+  const refShorts = (record.referencedProjects && record.referencedProjects.length) ? record.referencedProjects : [];
+  const verifyPaths = [];
+  for (const s of refShorts) { if (s === "(home)" || s === "(user-global)") continue; const pp = "/home/ubuntu/" + s; try { if (fs.existsSync(pp)) verifyPaths.push(pp); } catch (e) {} }
+  if (verifyPaths.length === 0) { const sp = resolveProjectPath(record.project); if (sp) verifyPaths.push(sp); }
+  if (verifyPaths.length === 0) verifyPaths.push("/home/ubuntu/lm-unified-trade");
+  const projectPath = verifyPaths.join(", ");
 
   const sessionPath = record.originSessionId
     ? path.join(PROJECT_DIR, record.project, record.originSessionId + ".jsonl")
@@ -363,7 +370,8 @@ function buildPrompt(record, neighbors) {
     "",
     "=== STEP 2 -- CODE-LEVEL VERIFICATION (REQUIRED) ===",
     "",
-    "Project path: " + projectPath,
+    "Project path(s) to verify against -- the project(s) this record is ABOUT (may differ from where it is stored): " + projectPath,
+    "(This record is stored under: " + record.project + ". Verify claims against the path(s) above, reading each referenced project's actual code.)",
     "",
     "For EACH claim identified in Step 1, verify it against the actual code:",
     "",
