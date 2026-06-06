@@ -72,8 +72,8 @@ function firstProse(body: string, max = 220): string {
   return '';
 }
 
-function mkId(node: string, project: string, file: string, anchor: string): string {
-  return `${node}:${project}:${file}#${anchor}`;
+function mkId(source: string, node: string, project: string, file: string, anchor: string): string {
+  return `${source}:${node}:${project}:${file}#${anchor}`;
 }
 
 const CATEGORIES = ['index','endpoint','deployment','architecture','component','feature','lesson','config','knowledge'] as const;
@@ -99,7 +99,7 @@ function extractMemoryFile(inp: ExtractInput): MemoryRecord[] {
   const complete = body.trim() || inp.content.trim();
   const type = (frontmatter.type as RecordType) || 'project';
   return [{
-    recordId: mkId(inp.node, inp.project, inp.filename, ''),
+    recordId: mkId(inp.source, inp.node, inp.project, inp.filename, ''),
     contentHash: sha256(complete),
     node: inp.node, project: inp.project, source: inp.source, file: inp.filename,
     kind: 'memory', anchor: '', title, brief, complete, type,
@@ -118,12 +118,13 @@ export function extractClaudeSections(inp: ExtractInput): MemoryRecord[] {
   let curTitle = '(preamble)';
   let curLevel = 0;
   let buf: string[] = [];
+  const seenAnchors: Record<string, number> = {};
   const flush = () => {
     const complete = buf.join('\n').trim();
     if (!complete) { buf = []; return; }
-    const anchor = slug(curTitle) || 'preamble';
+    let anchor = slug(curTitle) || 'preamble'; { const k=anchor; const n=(seenAnchors[k]=(seenAnchors[k]||0)+1); if(n>1) anchor=`${k}-${n}`; }
     out.push({
-      recordId: mkId(inp.node, inp.project, inp.filename, anchor),
+      recordId: mkId(inp.source, inp.node, inp.project, inp.filename, anchor),
       contentHash: sha256(complete),
       node: inp.node, project: inp.project, source: inp.source, file: inp.filename,
       kind: 'claude-section', anchor, title: curTitle,
@@ -148,15 +149,16 @@ export function extractClaudeSections(inp: ExtractInput): MemoryRecord[] {
 /** MEMORY.md -> one index-entry record per bullet "- [Title](file.md) — hook". */
 export function extractIndexEntries(inp: ExtractInput): MemoryRecord[] {
   const out: MemoryRecord[] = [];
+  const seenAnchors: Record<string, number> = {};
   const re = /^\s*-\s*\[([^\]]+)\]\(([^)]+)\)\s*(?:[—\-:]\s*(.*))?$/;
   for (const line of inp.content.split('\n')) {
     const m = re.exec(line);
     if (!m) continue;
     const [, title, target, hook = ''] = m;
-    const anchor = slug(target.replace(/\.md$/, ''));
+    let anchor = slug(target.replace(/\.md$/, '')); { const k=anchor; const n=(seenAnchors[k]=(seenAnchors[k]||0)+1); if(n>1) anchor=`${k}-${n}`; }
     const complete = line.trim();
     out.push({
-      recordId: mkId(inp.node, inp.project, inp.filename, anchor),
+      recordId: mkId(inp.source, inp.node, inp.project, inp.filename, anchor),
       contentHash: sha256(complete),
       node: inp.node, project: inp.project, source: inp.source, file: inp.filename,
       kind: 'index-entry', anchor, title: title.trim(),
