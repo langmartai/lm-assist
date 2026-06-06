@@ -28,6 +28,7 @@ const filterProject = opt('project');
 const filterSession = opt('session');
 const limitN        = parseInt(opt('limit', '0'), 10);
 const dryRun        = has('dry-run');
+const concurrency   = Math.max(1, parseInt(opt('concurrency', '8'), 10) || 8);
 
 function parseSince(raw) {
   if (!raw) return Date.now() - DEFAULT_SINCE_MS;
@@ -257,20 +258,23 @@ function appendProposals(proposals, session) {
     console.log('[harvest]   --since   : ' + new Date(sinceMs).toISOString());
     console.log('[harvest]   --session : ' + (filterSession || '(any)'));
     console.log('[harvest]   --limit   : ' + (limitN || 'unlimited'));
+    console.log('[harvest]   --concurrency : ' + concurrency);
     return;
   }
   console.log('[harvest] Found ' + sessions.length + ' session(s) to analyse.');
   console.log('[harvest] Proposals file : ' + PROPOSALS);
   console.log('[harvest] Agent endpoint : http://localhost:' + PORT + '/agent/execute');
   console.log('[harvest] Model          : opus (deep analyst -- spec section 11)');
+  console.log('[harvest] Concurrency    : ' + (dryRun ? 'n/a (dry-run)' : String(concurrency)));
   if (dryRun) {
     console.log('[harvest] DRY-RUN mode   : prompt(s) printed, NO Opus agents spawned.');
     console.log('');
   }
   let totalProposed = 0;
-  for (const session of sessions) {
-    const prompt = buildPrompt(session);
-    if (dryRun) {
+  // dry-run: serial (output must stay ordered)
+  if (dryRun) {
+    for (const session of sessions) {
+      const prompt = buildPrompt(session);
       console.log('='.repeat(72));
       console.log('TARGET SESSION');
       console.log('  ID      : ' + session.sessionId);
@@ -284,21 +288,34 @@ function appendProposals(proposals, session) {
       console.log(prompt);
       console.log('='.repeat(72));
       console.log('');
-      continue;
     }
-    console.log('[harvest] Analysing session ' + session.sessionId + ' ...');
-    let agentResponse;
-    try {
-      agentResponse = await spawnOpusAgent(prompt);
-    } catch (e) {
-      console.error('[harvest] Agent endpoint error for session ' + session.sessionId + ':', e.message);
-      console.error('[harvest] NOTE: live Opus harvest requires the full prod agent stack.');
-      continue;
+  } else {
+    // concurrent worker pool (mirrors memory-validate.js pattern)
+    let nextIdx = 0;
+    async function harvestOne(session) {
+      console.log('[harvest] Analysing session ' + session.sessionId + ' ...');
+      let agentResponse;
+      try {
+        agentResponse = await spawnOpusAgent(buildPrompt(session));
+      } catch (e) {
+        console.error('[harvest] Agent endpoint error for session ' + session.sessionId + ':', e.message);
+        console.error('[harvest] NOTE: live Opus harvest requires the full prod agent stack.');
+        return;
+      }
+      const proposals = parseProposals(agentResponse);
+      console.log('[harvest]   -> ' + proposals.length + ' proposal(s) (' + session.sessionId + ')');
+      appendProposals(proposals, session);
+      totalProposed += proposals.length;
     }
-    const proposals = parseProposals(agentResponse);
-    console.log('[harvest]   -> ' + proposals.length + ' proposal(s)');
-    appendProposals(proposals, session);
-    totalProposed += proposals.length;
+    async function worker() {
+      while (nextIdx < sessions.length) {
+        const s = sessions[nextIdx++];
+        await harvestOne(s);
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, sessions.length) }, function () { return worker(); })
+    );
   }
   if (!dryRun) {
     console.log('');

@@ -37,6 +37,7 @@ import { createAnnotationRoutes } from './annotation.routes';
 import { createMemoryRoutes } from './memory.routes';
 import { createMemoryMapRoutes } from './memory-map.routes';
 import { createMemoryAutoSyncRoutes } from './memory-autosync.routes';
+import { createMemoryHarvestRoutes } from './memory-harvest.routes';
 import { createMemoryProposalsRoutes } from './memory-proposals.routes';
 import { createMemoryReconcileRoutes } from './memory-reconcile.routes';
 import { createMemoryValidateRoutes } from './memory-validate.routes';
@@ -78,6 +79,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createMemoryRoutes(ctx),
     ...createMemoryMapRoutes(ctx),
     ...createMemoryAutoSyncRoutes(ctx),
+    ...createMemoryHarvestRoutes(ctx),
     ...createMemoryProposalsRoutes(ctx),
     ...createMemoryReconcileRoutes(ctx),
     ...createMemoryValidateRoutes(ctx),

@@ -154,6 +154,18 @@ export class TierRestServer {
       } catch (e) {
         console.warn('[Server] Memory autosync daemon init failed:', e);
       }
+
+      // Start the periodic memory harvest daemon (Stream A feeder). Default OFF
+      // (MEMORY_HARVEST_DAEMON != on). When off: logs disabled and returns
+      // immediately -- no timers, no Opus agents spawned.
+      try {
+        const { getHarvestDaemon } = require('./memory/harvest-daemon');
+        const hd = getHarvestDaemon();
+        hd.start();
+        console.log('[Server] Memory harvest daemon: enabled=' + hd.getStatus().enabled);
+      } catch (e) {
+        console.warn('[Server] Memory harvest daemon init failed:', e);
+      }
     } catch (err) {
       console.warn('[Server] MemoryCache init failed:', err);
     }
