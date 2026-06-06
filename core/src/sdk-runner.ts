@@ -30,6 +30,11 @@ import type {
   McpServerConfig,
 } from '@anthropic-ai/claude-agent-sdk';
 
+// tsc(module:commonjs) downlevels dynamic import() to require(), which fails on the
+// ESM-only @anthropic-ai/claude-agent-sdk (ERR_REQUIRE_ESM). Indirect through Function
+// so the native dynamic import() survives compilation to runtime.
+const esmImport: (m: string) => Promise<any> = new Function('m', 'return import(m)') as (m: string) => Promise<any>;
+
 // Import change tracker
 import {
   ChangeTracker,
@@ -254,7 +259,7 @@ export class ClaudeSdkRunner extends EventEmitter {
    */
   async execute(prompt: string, options: SdkExecuteOptions): Promise<SdkExecuteResult> {
     // Dynamic import for ESM module
-    const { query } = await import('@anthropic-ai/claude-agent-sdk');
+    const { query } = await esmImport('@anthropic-ai/claude-agent-sdk');
 
     const startTime = Date.now();
     const timeout = options.timeout || this.defaultTimeout;
@@ -643,7 +648,7 @@ export class ClaudeSdkRunner extends EventEmitter {
     onSessionInit: (sessionId: string, abortController: AbortController) => void
   ): Promise<SdkExecuteResult> {
     // Dynamic import for ESM module
-    const { query } = await import('@anthropic-ai/claude-agent-sdk');
+    const { query } = await esmImport('@anthropic-ai/claude-agent-sdk');
 
     const startTime = Date.now();
     const timeout = options.timeout || this.defaultTimeout;
