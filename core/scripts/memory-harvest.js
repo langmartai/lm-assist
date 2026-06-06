@@ -212,6 +212,7 @@ function parseProposals(agentResult) {
   else if (agentResult && typeof agentResult === 'object') {
     if (agentResult.data && typeof agentResult.data === 'string') text = agentResult.data;
     else if (agentResult.result && typeof agentResult.result === 'string') text = agentResult.result;
+    else if (agentResult.data && typeof agentResult.data === 'object' && typeof agentResult.data.result === 'string') text = agentResult.data.result;
     else text = JSON.stringify(agentResult);
   }
   const cands = [];
