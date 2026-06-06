@@ -136,6 +136,24 @@ Provides 3 tools via stdio transport (server name: `lm-assist`):
 | `detail` | Progressive disclosure for any item by ID (K001, sessionId:index) |
 | `feedback` | Quality feedback on context sources (outdated, wrong, useful, etc.) |
 
+**Two MCP surfaces — both come up with Core, neither is a separate process or port:**
+
+1. **stdio** (table above) — `core/src/mcp-server/index.ts`, server name `lm-assist`, loaded by a **local** Claude Code session through the plugin; it is an HTTP client to Core's `/mcp/search|detail|feedback` shims (`mcp-api.routes.ts`).
+2. **HTTP `/mcp`** — the Model Context Protocol StreamableHTTP endpoint served by **Core itself** at `POST/GET/DELETE /mcp` (`core/src/rest-server.ts` → `core/src/routes/core/mcp.routes.ts`). This is the surface reached **remotely through the hub** (the `mcp__claude_ai_lm-assist_langmart__*` connector tools).
+
+**How the remote MCP reaches Core (no extra process/port — it rides the outbound hub WebSocket):**
+
+```
+Claude Code / claude.ai connector
+  -> mcp.langmart.ai                      (public MCP endpoint, OAuth)
+  -> LangMart hub  (assist-api.langmart.ai)
+  -> api_relay message over the worker WebSocket   (the same HubClient connection Core dialed out)
+  -> Core HubClient -> ApiRelayHandler    (core/src/hub-client/api-relay-handler.ts; /mcp is on its allow-list)
+  -> localhost:3100/mcp                   (mcp.routes.ts) -> response relayed back up
+```
+
+So the remote MCP is live as soon as **(a) Core is started** (prod via `lm-assist start` — the `/mcp` route binds with Core, there is no separate MCP daemon) **and (b) the HubClient is authenticated** to `assist-api.langmart.ai` (auto-connects on Core start when `~/.lm-assist/hub.json` has `hubUrl` + `apiKey`; `register -> register_ack -> auth_confirmed`). The hub **pushes** requests down the existing outbound socket — nothing listens on a separate inbound MCP port. If Core is down (e.g. the chokidar crash above) the relay has nowhere to land and the connector errors with "MCP down", even though `mcp.langmart.ai` and the hub are healthy.
+
 ## Key API Endpoints
 
 ### Health & Status
@@ -438,6 +456,17 @@ All commands call the existing REST API with `curl` on the active port (dev :320
 - Plugin: `claude plugin install .` (from repo root)
 - npm global: `npm install -g lm-assist` then `/assist-setup`
 
+
+**Effective hub config lives in saved files, not just `.env`.** The Core reads `~/.lm-assist/hub.json` (prod) / `~/.lm-assist/hub-dev.json` (dev) — `{ hubUrl, apiKey, apiPort, assistWebPort }`. `.env`'s `TIER_AGENT_HUB_URL` is only the fallback used when the saved file has none. The `-dev` suffix is applied automatically when running from the repo (`IS_DEV_REPO`).
+
+**Which hub each env connects to (do not mix):**
+
+| Env | `hubUrl` | meaning |
+|-----|----------|---------|
+| **Prod** (npm, :3100) | `wss://assist-api.langmart.ai` | LangMart **prod** hub (SG instance) |
+| **Dev** (repo, :3200) | `wss://assist-api.xeenhub.com` | **xeenhub** dev/HMR hub |
+
+The Core dials the hub **outbound** over WebSocket on start: register → `register_ack` → `auth_confirmed`. Verify: `curl -s localhost:3100/health` (Core up) and `curl -s localhost:3100/hub/status` → `{ configured, connected, authenticated, hubUrl, apiKeyConfigured }`. The public MCP path is `Claude Code → mcp.langmart.ai → langmart hub → this prod worker`; when prod is authenticated the `mcp__claude_ai_lm-assist_langmart__*` tools appear in the Claude Code session. A 502 from `assist-api.langmart.ai` means the SG hub origin is down (not a local problem); a crash-looped local `langmart-gateway.service` (xeenhub Type-3 gateway, :8083, needs a marketplace at :8081) is unrelated leftover and **not** in this path.
 ## Development
 
 ```bash
@@ -462,6 +491,19 @@ npm run build:web        # Build web
 ### Workspace Notes
 
 This project uses **npm workspaces**. Dependencies are hoisted to the root `node_modules/` directory. Run `npm install` from the project root, not from inside `core/` or `web/`.
+
+### Dependency pin — chokidar MUST stay `^3.6.0` (do NOT bump)
+
+chokidar 4.x/5.x are **ESM-only**. The core build is CommonJS (`core/tsconfig.json` → `"module": "commonjs"`), so `core/dist/*.js` does `require("chokidar")`. `require()` of an ESM-only module throws **`ERR_REQUIRE_ESM`** and **Core crashes on boot** — the Web UI still starts, but Core never binds `:3100` (prod) / `:3200` (dev). Symptom: services look half-up, `curl localhost:3100/health` fails, and anything the hub relays (the MCP) errors → "lm-assist MCP is down". Loaders that import it: `task-store.ts`, `rest-server.ts`, `session-cache.ts`, `memory-cache.ts`.
+
+The source uses the v3 API (`import chokidar, { FSWatcher }` + `chokidar.watch(...)`), so **`^3.6.0`** (last CommonJS release) matches the code and can never resolve to the ESM v4/v5 line. Keep it pinned in BOTH `package.json` and `core/package.json`.
+
+Recover if Core won't boot with `ERR_REQUIRE_ESM`:
+1. `npm install chokidar@^3.6.0 --ignore-scripts` (the `prepare` hook runs `next build`; `--ignore-scripts` skips it).
+2. `core` is a workspace — a nested `core/node_modules/chokidar@5` wins resolution from `core/dist`. Remove it so it hoists to root v3: `rm -rf core/node_modules/chokidar`.
+3. Verify: `node -e "const p=require.resolve('chokidar',{paths:['./core/dist']}); require(p); console.log(require(p.replace(/index\.js$/,'package.json')).version)"` → prints `3.6.0`, no throw.
+
+**⚠️ Upgrade hazard:** `lm-assist upgrade` / `npm install -g lm-assist@latest` reinstalls from npm. Until a version carrying `chokidar: ^3.6.0` is **published to npm** (npm `latest` still ships `^5.0.0`), every upgrade RE-BREAKS startup and needs the recovery above. A build/install from this repo is fine (pin committed here).
 
 ### Route Development
 
