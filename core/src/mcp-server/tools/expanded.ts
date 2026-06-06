@@ -29,6 +29,7 @@ import {
 } from './_passthrough';
 import { handleListNodes } from './list-nodes';
 import { GITHUB_TOOL_DEFS, GITHUB_HANDLERS } from './github';
+import { PORT_FORWARD_TOOL_DEFS, PORT_FORWARD_HANDLERS } from './port-forward';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -498,6 +499,8 @@ export const EXPANDED_TOOL_DEFS = [
   deleteConversationToolDef,
   // github (read: github_query, write: github_mutate)
   ...GITHUB_TOOL_DEFS,
+  // port forward (node-to-node TCP tunnel)
+  ...PORT_FORWARD_TOOL_DEFS,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -903,4 +906,6 @@ export const EXPANDED_HANDLERS: Record<
   list_nodes: async () => handleListNodes(),
   // github (read: github_query, write: github_mutate) — dispatch to /github/<action>
   ...GITHUB_HANDLERS,
+  // port forward (open/list/close node-to-node TCP tunnel)
+  ...PORT_FORWARD_HANDLERS,
 };

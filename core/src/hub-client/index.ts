@@ -13,6 +13,7 @@ import { EventEmitter } from 'events';
 import { WebSocketClient } from './websocket-client';
 import { ApiRelayHandler, ApiRelayRequest, ServiceRoute } from './api-relay-handler';
 import { ConsoleRelayHandler } from './console-relay-handler';
+import { PortForwardHandler } from './port-forward-handler';
 import { SessionCacheSync } from './session-cache-sync';
 import { getHubConfig, HubConfig, saveGatewayId, loadServicePorts } from './hub-config';
 
@@ -74,6 +75,7 @@ export class HubClient extends EventEmitter {
   private wsClient: WebSocketClient | null = null;
   private apiRelayHandler: ApiRelayHandler | null = null;
   private consoleRelayHandler: ConsoleRelayHandler | null = null;
+  private portForwardHandler: PortForwardHandler | null = null;
   private sessionCacheSync: SessionCacheSync | null = null;
   private config: HubConfig;
   private options: Required<Pick<HubClientOptions, 'hubUrl' | 'apiKey' | 'localApiPort' | 'autoReconnect' | 'reconnectDelay' | 'maxReconnectAttempts'>> & Pick<HubClientOptions, 'adminWebPort' | 'assistWebPort' | 'vibeCoderPort'>;
@@ -189,6 +191,9 @@ export class HubClient extends EventEmitter {
         localApiPort: this.options.localApiPort,
       });
 
+      // Create port-forward handler (node-to-node TCP tunnel over this WS)
+      this.portForwardHandler = new PortForwardHandler();
+
       // Create session cache sync
       this.sessionCacheSync = new SessionCacheSync({
         localApiPort: this.options.localApiPort,
@@ -228,6 +233,11 @@ export class HubClient extends EventEmitter {
     if (this.consoleRelayHandler) {
       await this.consoleRelayHandler.cleanup();
       this.consoleRelayHandler = null;
+    }
+
+    if (this.portForwardHandler) {
+      this.portForwardHandler.cleanup();
+      this.portForwardHandler = null;
     }
 
     if (this.sessionCacheSync) {
@@ -286,6 +296,41 @@ export class HubClient extends EventEmitter {
     return this.consoleRelayHandler?.getActiveRelays() || [];
   }
 
+  /**
+   * Open a local listening port that forwards every TCP connection to
+   * targetGatewayId's targetPort, tunneled over this hub connection.
+   * Requires an authenticated hub connection.
+   */
+  async openPortForward(opts: {
+    localPort: number;
+    targetGatewayId: string;
+    targetPort: number;
+    bindHost?: string;
+  }): Promise<{ forwardId: string; localPort: number; bindHost: string }> {
+    if (!this.status.authenticated || !this.portForwardHandler) {
+      throw new Error('Hub not authenticated — cannot open port forward');
+    }
+    return this.portForwardHandler.openForward(opts);
+  }
+
+  /** Close a port forward by id. Returns false if not found. */
+  closePortForward(forwardId: string): boolean {
+    return this.portForwardHandler?.closeForward(forwardId) ?? false;
+  }
+
+  /** List active port forwards on this node. */
+  listPortForwards(): Array<{
+    forwardId: string;
+    localPort: number;
+    bindHost: string;
+    targetGatewayId: string;
+    targetPort: number;
+    activeStreams: number;
+    createdAt: Date;
+  }> {
+    return this.portForwardHandler?.listForwards() ?? [];
+  }
+
   private setupEventHandlers(): void {
     if (!this.wsClient) return;
 
@@ -318,6 +363,12 @@ export class HubClient extends EventEmitter {
         // WebSocketClient implements WebSocketSender interface
         this.sessionCacheSync.setWebSocket(this.wsClient);
         this.sessionCacheSync.start();
+      }
+
+      // Wire port-forward handler to this connection
+      if (this.portForwardHandler && this.wsClient) {
+        this.portForwardHandler.setWebSocket(this.wsClient);
+        this.portForwardHandler.setSelfGatewayId(data.gatewayId);
       }
 
       this.emit('authenticated', data);
@@ -416,6 +467,26 @@ export class HubClient extends EventEmitter {
       if (this.consoleRelayHandler) {
         this.consoleRelayHandler.handleBinaryData(message.relayIdHash, message.payload);
       }
+    });
+
+    // Port-forward control + data from hub (node-to-node TCP tunnel)
+    this.wsClient.on('forward_open', (message: { streamId: string; srcGatewayId?: string; targetPort: number }) => {
+      this.portForwardHandler?.handleForwardOpen(message);
+    });
+    this.wsClient.on('forward_ready', (message: { streamId: string }) => {
+      this.portForwardHandler?.handleForwardReady(message);
+    });
+    this.wsClient.on('forward_error', (message: { streamId: string; error?: string }) => {
+      this.portForwardHandler?.handleForwardError(message);
+    });
+    this.wsClient.on('forward_eof', (message: { streamId: string }) => {
+      this.portForwardHandler?.handleForwardEof(message);
+    });
+    this.wsClient.on('forward_close', (message: { streamId: string; reason?: string }) => {
+      this.portForwardHandler?.handleForwardClose(message);
+    });
+    this.wsClient.on('forward_binary_data', (message: { streamHash: Buffer; payload: Buffer }) => {
+      this.portForwardHandler?.handleForwardData(message.streamHash, message.payload);
     });
 
     // Handle cross-node memory-updated notifications (Stream A autosync).
@@ -545,4 +616,5 @@ export { HubConfig, getHubConfig, saveGatewayId, clearGatewayId, isHubConfigured
 export { WebSocketClient, WebSocketClientOptions } from './websocket-client';
 export { ApiRelayHandler, ApiRelayHandlerOptions, ApiRelayRequest, ApiRelayResponse } from './api-relay-handler';
 export { ConsoleRelayHandler, ConsoleSession, ConsoleRelayOptions, getConsoleRelayHandler } from './console-relay-handler';
+export { PortForwardHandler, getPortForwardHandler } from './port-forward-handler';
 export { SessionCacheSync, SessionSummary as SessionCacheSummary, SessionCacheSyncOptions, getSessionCacheSync } from './session-cache-sync';

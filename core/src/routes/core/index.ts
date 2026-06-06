@@ -43,6 +43,7 @@ import { createMemoryReconcileRoutes } from './memory-reconcile.routes';
 import { createMemoryValidateRoutes } from './memory-validate.routes';
 import { createRuleMapRoutes } from './rule-map.routes';
 import { createBrowserRoutes } from './browser.routes';
+import { createPortForwardRoutes } from './port-forward.routes';
 
 /**
  * Create all core routes
@@ -85,5 +86,6 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createMemoryValidateRoutes(ctx),
     ...createRuleMapRoutes(ctx),
     ...createBrowserRoutes(ctx),
+    ...createPortForwardRoutes(ctx),
   ];
 }
