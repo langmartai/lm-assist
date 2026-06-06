@@ -100,9 +100,31 @@ function match(r) {
   return true;
 }
 
+const SNAP = opt('snapshot-file', path.join(os.homedir(), '.lm-assist', 'memory-map.json'));
+const CHLOG = path.join(os.homedir(), '.lm-assist', 'memory-changes.jsonl');
+function snapKey(r){ return { contentHash: r.contentHash, title: r.title, node: r.node, project: r.project, file: r.file, category: r.category, recordedAtMs: r.recordedAtMs }; }
+function loadSnap(){ try { return JSON.parse(fs.readFileSync(SNAP,'utf8')); } catch { return {}; } }
+function writeSnap(recs){ const m={}; for(const r of recs) m[r.recordId]=snapKey(r); fs.mkdirSync(path.dirname(SNAP),{recursive:true}); fs.writeFileSync(SNAP, JSON.stringify(m)); return Object.keys(m).length; }
+function diffSnap(prev, recs){ const cur={}; for(const r of recs) cur[r.recordId]=r; const added=[],modified=[],removed=[]; for(const id in cur){ if(!prev[id]) added.push(cur[id]); else if(prev[id].contentHash!==cur[id].contentHash) modified.push(cur[id]); } for(const id in prev){ if(!cur[id]) removed.push(Object.assign({recordId:id}, prev[id])); } return {added,modified,removed}; }
+function appendLog(obj){ fs.appendFileSync(CHLOG, JSON.stringify(obj) + String.fromCharCode(10)); }
+
 (async () => {
   let recs = (await collect()).filter(match);
   recs.sort((a, b) => b.recordedAtMs - a.recordedAtMs);
+  if (has('snapshot')) { const n=writeSnap(recs); console.log(JSON.stringify({snapshot:SNAP,records:n})); return; }
+  if (has('changes')) {
+    const d=diffSnap(loadSnap(), recs);
+    if (has('commit')) { const ts=String(Date.now());
+      for(const r of d.added) appendLog({t:ts,op:'add',id:r.recordId,title:r.title,node:r.node,category:r.category});
+      for(const r of d.modified) appendLog({t:ts,op:'mod',id:r.recordId,title:r.title,node:r.node});
+      for(const r of d.removed) appendLog({t:ts,op:'del',id:r.recordId});
+      writeSnap(recs); }
+    console.log(JSON.stringify({ added:d.added.length, modified:d.modified.length, removed:d.removed.length,
+      addedRecords:d.added.map(function(r){return {id:r.recordId,title:r.title,node:r.node,category:r.category};}),
+      modifiedRecords:d.modified.map(function(r){return {id:r.recordId,title:r.title};}),
+      removedRecords:d.removed.map(function(r){return r.recordId;}) }, null, 2));
+    return;
+  }
 
   if (wantRecord) {
     const r = recs.find(x => x.recordId === wantRecord) || (await collect()).find(x => x.recordId === wantRecord);

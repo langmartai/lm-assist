@@ -164,3 +164,18 @@ The harvester (Opus) is NOT a recorder. Its job is to keep memory the **authorit
 
 ### Result
 The map answers not just "what do we know" but "what is **currently true**, since when, last checked when, and what superseded what" — across every project and node. Stream B can prefer `validity=current` and surface "last validated N days ago" so stale knowledge is visibly stale.
+
+## 13. Graded confirmation — how the harvester knows a fact is TRUE
+
+A memory record is only as trustworthy as its evidence. Every record carries a `validationTier` and the harvester earns it from ranked evidence sources (highest wins, recorded with `lastValidatedMs` + the source):
+
+| Tier | Evidence | How the harvester confirms |
+|---|---|---|
+| `code-confirmed` | The codebase itself | Harvester reads the actual code/config and verifies the fact holds (file/function/endpoint/flag exists and matches). Independent, strongest. |
+| `session-confirmed` | The originating Claude Code session | Harvester reads the session transcript and sees the work was **developed -> tested -> validated** (tool results show tests passing, a round-trip succeeded, the user confirmed). Strong when the session shows verification, weaker when it only shows intent. |
+| `asserted` | Stated in a session/doc but not verified | Claimed but no test/code evidence yet — provisional. |
+| `unvalidated` | Default at extraction | Nobody has checked. Extractor sets this; harvester upgrades it. |
+
+The harvester escalates: start from the session''s work-status (cheapest — already have the transcript), and **drop into the codebase to validate directly only if needed** (the session is ambiguous, or the record is high-stakes, or time has passed since `lastValidatedMs`). On a code/feature change touching a record''s referenced files, the record''s tier is reset toward `unvalidated` until re-confirmed — so the registry never silently claims a stale fact is `code-confirmed`.
+
+This composes with §12: `validity` (current/outdated/superseded) = is it still true *now*; `validationTier` = how do we *know*. A Stream B answer can show both ("code-confirmed, current, last checked 2d ago" vs "asserted, validity unknown").
