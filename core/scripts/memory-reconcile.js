@@ -321,7 +321,7 @@ function buildOpusPrompt(divergentMirrors, exactDuplicateClusters, dependencyEdg
     '=== CRITICAL SAFETY CONSTRAINT ===',
     '',
     'Do NOT write files, run git, or call write API endpoints.',
-    'Return ONLY the JSON object. No preamble or prose.',
+    'Return ONLY the JSON object. No preamble or prose. CRITICAL: your FINAL message must BE the JSON object itself, emitted VERBATIM as text — running the tool is NOT enough; if your final reply is empty or a summary the result is lost.',
   ].join('\n');
 }
 

@@ -182,7 +182,7 @@ function buildPrompt(session) {
     '',
     '=== BEGIN ===',
     '',
-    'Analyse the session now. Return only the JSON proposals array.',
+    'Analyse the session now. Return only the JSON proposals array. CRITICAL: your FINAL message must BE the JSON array itself, emitted VERBATIM as text — running the tool is NOT enough; if your final reply is empty or a summary the result is lost.',
   ].join('\n');
 }
 

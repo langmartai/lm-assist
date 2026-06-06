@@ -27,7 +27,7 @@ const PROMPT = [
   'Steps: (1) pick the best --q keywords (+ optional --category/--types) for this question;',
   '(2) run the CLI at --level brief --limit 20 to see candidates;',
   '(3) for the few most relevant, run --record <id> (complete); mix brief + complete by relevance;',
-  '(4) return ONLY the assembled CLI output (the actual records). No preamble, no paraphrase.',
+  '(4) return ONLY the assembled CLI output (the actual records). No preamble, no paraphrase. CRITICAL: your FINAL message must BE that output itself, emitted VERBATIM as text — running the tool is NOT enough; if your final reply is empty or a summary the result is lost.',
 ].join('\n');
 
 const body = JSON.stringify({
