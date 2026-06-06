@@ -161,6 +161,10 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   // github endpoint (read = query, write = mutate)
   github_query: 'read',
   github_mutate: 'write',
+  // memory map + rules map (read — shell out to CLIs)
+  memory_map: 'read',
+  memory_record: 'read',
+  rule_map: 'read',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */

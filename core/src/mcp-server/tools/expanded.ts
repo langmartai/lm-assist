@@ -15,6 +15,8 @@
  *   3. a handler in EXPANDED_HANDLERS (below)
  */
 
+import * as childProcess from 'child_process';
+import * as nodePath from 'path';
 import {
   ok,
   err,
@@ -400,6 +402,69 @@ export const claudeaiSetPluginEnabledToolDef = {
   },
 };
 
+export const memoryMapToolDef = {
+  name: 'memory_map',
+  description:
+    'Query the cross-project/node MEMORY map (record-level, brief/complete, with optional ' +
+    'filters). Returns ACTUAL memory records from disk — never fabricated. Use level="brief" ' +
+    '(default) for a quick overview; level="complete" for full record text. Filter by ' +
+    'projects, nodes, types, category, keyword query (q), or time (since). Pass stats=true ' +
+    'for a count-only summary. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      level: { type: 'string', enum: ['brief', 'complete'], description: 'Detail level — brief (default) or complete.' },
+      projects: { type: 'string', description: 'Comma-separated project id substrings.' },
+      nodes: { type: 'string', description: 'Comma-separated host ids.' },
+      types: { type: 'string', description: 'Comma-separated memory types.' },
+      category: { type: 'string', description: 'Comma-separated categories.' },
+      q: { type: 'string', description: 'Keyword query — all terms must appear in title+brief+complete.' },
+      since: { type: 'number', description: 'Only records modified after this Unix ms timestamp.' },
+      limit: { type: 'number', description: 'Max records to return (0 = all).' },
+      stats: { type: 'boolean', description: 'Return count/stats summary only instead of records.' },
+    },
+  },
+};
+
+export const memoryRecordToolDef = {
+  name: 'memory_record',
+  description:
+    'Fetch one complete MEMORY record by its recordId (from memory_map output). Returns the ' +
+    'full record text. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      recordId: { type: 'string', description: 'The record id from a prior memory_map result.' },
+    },
+    required: ['recordId'],
+  },
+};
+
+export const ruleMapToolDef = {
+  name: 'rule_map',
+  description:
+    'Query the cross-project/node RULES map (.claude/rules/ path-scoped rules). Returns ' +
+    'ACTUAL rule records from disk — never fabricated. Supports the same brief/complete ' +
+    'levels and filters as memory_map, plus scope (user/project), paths (glob substring), ' +
+    'and always (load-always rules only). Pass stats=true for count summary. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      level: { type: 'string', enum: ['brief', 'complete'], description: 'Detail level — brief (default) or complete.' },
+      scope: { type: 'string', enum: ['user', 'project'], description: 'Filter to user-level or project-level rules.' },
+      paths: { type: 'string', description: 'Substring to match against rule path globs.' },
+      always: { type: 'boolean', description: 'If true, only return rules with loadCondition=always.' },
+      category: { type: 'string', description: 'Comma-separated categories to filter.' },
+      q: { type: 'string', description: 'Keyword query over rule title+brief+complete+paths.' },
+      limit: { type: 'number', description: 'Max records to return (0 = all).' },
+      stats: { type: 'boolean', description: 'Return count/stats summary only instead of records.' },
+    },
+  },
+};
+
 export const EXPANDED_TOOL_DEFS = [
   // read
   listExecutionsToolDef,
@@ -412,6 +477,10 @@ export const EXPANDED_TOOL_DEFS = [
   claudeaiListMarketplacesToolDef,
   claudeaiListMarketplacePluginsToolDef,
   claudeaiListPluginsToolDef,
+  // memory map + rules map (read — shell out to CLIs)
+  memoryMapToolDef,
+  memoryRecordToolDef,
+  ruleMapToolDef,
   // write
   claudeaiCreateConversationToolDef,
   claudeaiCompletionToolDef,
@@ -705,6 +774,92 @@ async function handleClaudeaiSetPluginEnabled(args: Record<string, unknown>): Pr
   }
 }
 
+// ─── memory map + rules map handlers (shell out to CLIs) ───────────────────
+
+/** Resolve the path to a core/scripts/*.js CLI from anywhere in the dist tree. */
+function cliPath(script: string): string {
+  // At runtime __dirname is core/dist/mcp-server/tools; go up 3 to core/, then scripts/
+  return nodePath.resolve(__dirname, '../../../scripts', script);
+}
+
+/** Detect the API port the same way _passthrough.ts does. */
+function apiPort(): string {
+  if (process.env.API_PORT) return process.env.API_PORT;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const os = require('os') as typeof import('os');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs') as typeof import('fs');
+    const cfgPath = nodePath.join(os.homedir(), '.claude-code-config.json');
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8')) as { devModeEnabled?: boolean };
+    if (cfg.devModeEnabled) return '3200';
+  } catch { /* default */ }
+  return '3100';
+}
+
+function runCli(argv: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    childProcess.execFile(
+      'node',
+      argv,
+      { maxBuffer: 64 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(stderr.trim() || error.message));
+        } else {
+          resolve(stdout.trim());
+        }
+      },
+    );
+  });
+}
+
+async function handleMemoryMap(args: Record<string, unknown>): Promise<McpToolResult> {
+  const argv: string[] = [cliPath('memory-map.js'), '--port', apiPort(), '--format', 'json'];
+  if (args.level) argv.push('--level', String(args.level));
+  if (args.projects) argv.push('--projects', String(args.projects));
+  if (args.nodes) argv.push('--nodes', String(args.nodes));
+  if (args.types) argv.push('--types', String(args.types));
+  if (args.category) argv.push('--category', String(args.category));
+  if (args.q) argv.push('--q', String(args.q));
+  if (args.since) argv.push('--since', String(args.since));
+  if (args.limit) argv.push('--limit', String(args.limit));
+  if (args.stats) argv.push('--stats');
+  try {
+    return ok(await runCli(argv));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleMemoryRecord(args: Record<string, unknown>): Promise<McpToolResult> {
+  const id = String(args.recordId || '').trim();
+  if (!id) return err('recordId is required.');
+  const argv: string[] = [cliPath('memory-map.js'), '--port', apiPort(), '--record', id];
+  try {
+    return ok(await runCli(argv));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleRuleMap(args: Record<string, unknown>): Promise<McpToolResult> {
+  const argv: string[] = [cliPath('rule-map.js'), '--port', apiPort(), '--format', 'json'];
+  if (args.level) argv.push('--level', String(args.level));
+  if (args.scope) argv.push('--scope', String(args.scope));
+  if (args.paths) argv.push('--paths', String(args.paths));
+  if (args.always) argv.push('--always');
+  if (args.category) argv.push('--category', String(args.category));
+  if (args.q) argv.push('--q', String(args.q));
+  if (args.limit) argv.push('--limit', String(args.limit));
+  if (args.stats) argv.push('--stats');
+  try {
+    return ok(await runCli(argv));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 /**
  * Name → handler for every expanded tool. Both transports consult this map
  * as a fallback for tool names not in their explicit switch.
@@ -740,6 +895,10 @@ export const EXPANDED_HANDLERS: Record<
   terminal_interrupt: handleTerminalInterrupt,
   terminal_open_tab: handleTerminalOpenTab,
   delete_conversation: handleDeleteConversation,
+  // memory map + rules map (read — shell out to CLIs)
+  memory_map: handleMemoryMap,
+  memory_record: handleMemoryRecord,
+  rule_map: handleRuleMap,
   // multi-node (worker-side fallback; hub answers the full list when connected)
   list_nodes: async () => handleListNodes(),
   // github (read: github_query, write: github_mutate) — dispatch to /github/<action>
