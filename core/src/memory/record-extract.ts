@@ -9,7 +9,7 @@
  * See docs/plans/2026-06-06-record-level-memory-map-and-sync.md
  */
 import { createHash } from 'crypto';
-import { parseFrontmatter } from '../utils/frontmatter';
+import { parseFrontmatter, KNOWN_CATEGORIES } from '../utils/frontmatter';
 import { classifyShareability, Shareability } from '../utils/memory-shareability';
 
 export type RecordKind = 'memory' | 'claude-section' | 'index-entry';
@@ -103,9 +103,16 @@ function extractMemoryFile(inp: ExtractInput): MemoryRecord[] {
     contentHash: sha256(complete),
     node: inp.node, project: inp.project, source: inp.source, file: inp.filename,
     kind: 'memory', anchor: '', title, brief, complete, type,
-    category: categorize(title + ' ' + brief + ' ' + complete + ' ' + inp.filename, type),
-    originSessionId: (frontmatter as { originSessionId?: string }).originSessionId,
-    recordedAtMs: inp.mtimeMs, lastValidatedMs: inp.mtimeMs, validity: 'current' as const, validationTier: 'unvalidated' as const,
+    // For kind=memory: prefer frontmatter validation metadata over computed defaults.
+    category: (frontmatter.category && (KNOWN_CATEGORIES as readonly string[]).includes(frontmatter.category))
+      ? frontmatter.category
+      : categorize(title + ' ' + brief + ' ' + complete + ' ' + inp.filename, type),
+    originSessionId: frontmatter.originSessionId,
+    recordedAtMs: inp.mtimeMs,
+    lastValidatedMs: frontmatter.lastValidatedMs !== undefined ? frontmatter.lastValidatedMs : inp.mtimeMs,
+    validity: (frontmatter.validity || 'current') as 'current' | 'stale' | 'outdated' | 'superseded',
+    validationTier: (frontmatter.validationTier || 'unvalidated') as 'code-confirmed' | 'session-confirmed' | 'asserted' | 'unvalidated',
+    supersededBy: frontmatter.supersededBy,
     shareability: classifyShareability(inp.filename, frontmatter),
     mtimeMs: inp.mtimeMs, size: inp.size,
   }];

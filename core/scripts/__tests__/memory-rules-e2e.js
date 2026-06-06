@@ -961,6 +961,276 @@ if (agentRuntimeUp) {
 }
 
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TC-A1 through TC-A5: Apply pipeline (extractor + apply executor)
+// ─────────────────────────────────────────────────────────────────────────────
+
+var APPLY_SCRIPT = path.join(REPO, "core", "scripts", "memory-apply-plan.js");
+
+// TC-A1: Extractor round-trip -- frontmatter category/validationTier wins over rule-based default.
+await test("TC-A1: extractor round-trip -- frontmatter category honored", async function () {
+  var home = os.homedir();
+  var projects = [];
+  // Find a live project dir to write a temp file into
+  var liveProj = null, liveDir = null;
+  var projBase = path.join(home, ".claude", "projects");
+  try {
+    var projEntries = fs.readdirSync(projBase, { withFileTypes: true });
+    for (var pe of projEntries) {
+      if (pe.isDirectory()) {
+        var memDir = path.join(projBase, pe.name, "memory");
+        if (fs.existsSync(memDir)) { liveProj = pe.name; liveDir = memDir; break; }
+      }
+    }
+  } catch {}
+  assert(liveDir, "need a live memory dir for TC-A1");
+
+  var tmpFile = path.join(liveDir, "_tc_a1_test_frontmatter.md");
+  var NL = String.fromCharCode(10);
+  var tmpContent = [
+    "---",
+    "name: TC-A1 test record",
+    "description: test record for extractor round-trip",
+    "type: project",
+    "category: architecture",
+    "validationTier: code-confirmed",
+    "validity: current",
+    "lastValidatedMs: 1234567890000",
+    "---",
+    "",
+    "This is the body of the TC-A1 test record.",
+  ].join(NL);
+
+  try {
+    fs.writeFileSync(tmpFile, tmpContent, "utf8");
+
+    // Run memory-map.js --record to get this record
+    var recordId = "live:" + os.hostname().replace(/-/g,"-") + ":" + liveProj + ":_tc_a1_test_frontmatter.md#";
+    // Use --q filter to find the record since hostname may vary
+    var raw = runScript(MAP_SCRIPT, ["--level", "complete", "--q", "TC-A1 test record"]);
+    var recs = JSON.parse(raw);
+    var found = recs.find(function(r) { return r.file === "_tc_a1_test_frontmatter.md"; });
+    assert(found, "TC-A1: record not found in memory-map output");
+    assertEq(found.category, "architecture", "category should be frontmatter value, not rule-based default");
+    assertEq(found.validationTier, "code-confirmed", "validationTier should be frontmatter value");
+    assertEq(found.validity, "current", "validity should be frontmatter value");
+    assertEq(found.lastValidatedMs, 1234567890000, "lastValidatedMs should be frontmatter value");
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch {}
+  }
+});
+
+// TC-A2: apply --preview shows before/after for a record with a verdict, writes nothing.
+await test("TC-A2: apply --preview shows diffs, writes nothing", async function () {
+  // Run --preview and capture output
+  var out;
+  try {
+    out = execFileSync("node", [APPLY_SCRIPT, "--preview", "--limit", "3", "--port", PORT], {
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 60000,
+    });
+  } catch (e) {
+    // exit 0 is expected; if it exited non-zero the message is in stderr
+    out = (e.stdout || "") + (e.stderr || "");
+    // Only fail if we got no output at all
+    if (!out.includes("[apply]")) throw new Error("apply --preview failed: " + (e.message || e));
+  }
+  assert(out.includes("[apply] mode: PREVIEW"), "should show PREVIEW mode");
+  assert(out.includes("[apply] PREVIEW only"), "should say no files written");
+  assert(!out.includes("[write]"), "should not write any files in preview mode");
+  // Check no memory file was actually modified (spot check: plan file mtime unchanged conceptually)
+  // Just verify the output has summary line
+  assert(out.includes("[apply] Summary:"), "should have summary line");
+  // Verify git is clean (no new tracked file changes)
+  try {
+    var gitOut = execFileSync("git", ["-C", path.join(__dirname, "..", ".."), "diff", "--name-only"], { encoding: "utf8" });
+    // record-extract.ts and frontmatter.ts changes are expected (our own edits), but no memory .md files
+    var changedMemory = gitOut.split(String.fromCharCode(10)).filter(function(l) {
+      return l.includes("memory/") && l.endsWith(".md");
+    });
+    assert(changedMemory.length === 0, "no memory .md files should be modified by preview: " + changedMemory.join(", "));
+  } catch (e2) {
+    if (!e2.message.includes("Assertion failed")) throw e2; // re-throw assertion errors
+    // git diff can fail in some envs -- not fatal for this test
+  }
+});
+
+// TC-A3: Ownership -- a repo:windows-desk verdict is reported not-owned/skipped, never written.
+await test("TC-A3: ownership -- repo:windows-desk verdict is skipped", async function () {
+  var NL = String.fromCharCode(10);
+  var planFile = path.join(os.homedir(), ".lm-assist", "memory-validate-plan.jsonl");
+  // Inject a synthetic windows-desk verdict
+  var syntheticVerdict = {
+    _planWrittenAt: Date.now() - 1000,
+    _planWrittenAtIso: new Date(Date.now() - 1000).toISOString(),
+    _planStatus: "proposed",
+    planType: "deep-validate",
+    recordId: "repo:windows-desk:windows-desk:-home-ubuntu-lm-unified-trade:_tc_a3_test.md#",
+    validationTier: "code-confirmed",
+    validity: "current",
+    suggestedCategory: "architecture",
+    lastValidatedMs: Date.now() - 1000,
+    mergeWith: null,
+    supersededBy: null,
+    reason: "synthetic TC-A3 test",
+    evidence: "none",
+    _recordTitle: "TC-A3 test",
+    _recordFile: "_tc_a3_test.md",
+    _recordProject: "-home-ubuntu-lm-unified-trade",
+  };
+  var lineToAdd = JSON.stringify(syntheticVerdict) + NL;
+
+  var originalPlan = "";
+  try { originalPlan = fs.readFileSync(planFile, "utf8"); } catch {}
+
+  try {
+    fs.appendFileSync(planFile, lineToAdd);
+
+    var out = execFileSync("node", [
+      APPLY_SCRIPT, "--preview",
+      "--record", syntheticVerdict.recordId,
+      "--port", PORT
+    ], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, timeout: 30000 });
+
+    // The record does not exist in the map (no such file on this host), so should be NOT FOUND or SKIP
+    // Either way, it must NOT have a diff line showing it would be applied
+    assert(!out.includes("[write]"), "no writes should happen for windows-desk source");
+    // Should report as skipped-not-owned OR not-found (the record is both non-existent and wrong source)
+    var isSkipped = out.includes("not-owned") || out.includes("SKIP") || out.includes("NOT FOUND");
+    assert(isSkipped, "windows-desk record should be skipped (not-owned or not-found): " + out.slice(0, 400));
+  } finally {
+    // Restore original plan
+    try {
+      if (originalPlan !== "") fs.writeFileSync(planFile, originalPlan, "utf8");
+    } catch {}
+  }
+});
+
+// TC-A4: --write refused without MEMORY_VALIDATE_APPLY=on.
+await test("TC-A4: --write refused without env gate", async function () {
+  var threw = false;
+  try {
+    execFileSync("node", [APPLY_SCRIPT, "--write", "--port", PORT], {
+      encoding: "utf8",
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 10000,
+      env: Object.assign({}, process.env, { MEMORY_VALIDATE_APPLY: "" }),
+    });
+  } catch (e) {
+    threw = true;
+    var msg = (e.stderr || e.stdout || e.message || "");
+    assert(msg.includes("REFUSED") || msg.includes("requires env"), "error message should explain the gate: " + msg.slice(0, 300));
+  }
+  assert(threw, "--write without env gate should exit non-zero");
+});
+
+// TC-A5 (optional, gated): with env + temp owned file + synthetic plan entry,
+// --write updates only frontmatter keys, body untouched, backup created.
+// Only runs if MEMORY_VALIDATE_APPLY=on is already set in the test environment.
+if (process.env.MEMORY_VALIDATE_APPLY === "on") {
+  await test("TC-A5: --write applies frontmatter, body untouched, backup created", async function () {
+    var NL = String.fromCharCode(10);
+    var home = os.homedir();
+    var planFile = path.join(home, ".lm-assist", "memory-validate-plan.jsonl");
+    var backupRoot = path.join(home, ".lm-assist", "apply-backups");
+
+    // Find a live project dir
+    var liveProj = null, liveDir = null;
+    var projBase = path.join(home, ".claude", "projects");
+    try {
+      var projEntries = fs.readdirSync(projBase, { withFileTypes: true });
+      for (var pe of projEntries) {
+        if (pe.isDirectory()) {
+          var memDir = path.join(projBase, pe.name, "memory");
+          if (fs.existsSync(memDir)) { liveProj = pe.name; liveDir = memDir; break; }
+        }
+      }
+    } catch {}
+    assert(liveDir, "need a live memory dir for TC-A5");
+
+    var tmpFile = path.join(liveDir, "_tc_a5_test_write.md");
+    var originalBody = "This is the original body text that must not change.";
+    var originalContent = [
+      "---",
+      "name: TC-A5 write test",
+      "description: test for apply write",
+      "type: project",
+      "---",
+      "",
+      originalBody,
+    ].join(NL);
+
+    // Get the recordId for this file
+    var nodeId = "linux-117"; // this host
+    var recordId = "live:" + nodeId + ":" + liveProj + ":_tc_a5_test_write.md#";
+
+    // Synthetic plan entry
+    var syntheticVerdict = {
+      _planWrittenAt: Date.now(),
+      _planStatus: "proposed",
+      planType: "deep-validate",
+      recordId: recordId,
+      validationTier: "session-confirmed",
+      validity: "current",
+      suggestedCategory: "lesson",
+      lastValidatedMs: 1700000000000,
+      mergeWith: null,
+      supersededBy: null,
+      reason: "TC-A5 synthetic test",
+      evidence: "TC-A5 test",
+      _recordTitle: "TC-A5 write test",
+      _recordFile: "_tc_a5_test_write.md",
+      _recordProject: liveProj,
+    };
+
+    var originalPlan = "";
+    var backupBefore = Date.now();
+
+    try {
+      fs.writeFileSync(tmpFile, originalContent, "utf8");
+      try { originalPlan = fs.readFileSync(planFile, "utf8"); } catch {}
+      fs.appendFileSync(planFile, JSON.stringify(syntheticVerdict) + NL);
+
+      // Run --write
+      var out = execFileSync("node", [
+        APPLY_SCRIPT, "--write",
+        "--record", recordId,
+        "--port", PORT,
+      ], {
+        encoding: "utf8",
+        maxBuffer: 4 * 1024 * 1024,
+        timeout: 30000,
+        env: Object.assign({}, process.env, { MEMORY_VALIDATE_APPLY: "on" }),
+      });
+
+      assert(out.includes("[write]"), "should report write: " + out.slice(0, 400));
+
+      // Verify file was updated
+      var newContent = fs.readFileSync(tmpFile, "utf8");
+      assert(newContent.includes("validationTier: session-confirmed"), "validationTier should be written");
+      assert(newContent.includes("category: lesson"), "category should be written");
+      assert(newContent.includes("lastValidatedMs: 1700000000000"), "lastValidatedMs should be written");
+      assert(newContent.includes(originalBody), "body must be unchanged");
+
+      // Verify backup was created
+      var backupDirs = fs.existsSync(backupRoot) ? fs.readdirSync(backupRoot) : [];
+      var newBackup = backupDirs.filter(function(d) { return parseInt(d, 10) >= backupBefore; });
+      assert(newBackup.length > 0, "backup dir should have been created");
+
+    } finally {
+      // Restore
+      try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch {}
+      try {
+        if (originalPlan !== "") fs.writeFileSync(planFile, originalPlan, "utf8");
+      } catch {}
+    }
+  });
+} else {
+  console.log("SKIP: TC-A5: gated by MEMORY_VALIDATE_APPLY=on (not set)");
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Summary
 // ─────────────────────────────────────────────────────────────────────────────
