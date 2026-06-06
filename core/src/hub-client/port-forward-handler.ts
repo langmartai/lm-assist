@@ -81,6 +81,9 @@ export class PortForwardHandler {
   /** This node's own gatewayId, set once authenticated (used to reject self-forward). */
   private selfGatewayId: string | null = null;
 
+  /** Cap on concurrently open local listeners on this node. */
+  private static readonly MAX_FORWARDS = 64;
+
   private static hashStreamId(streamId: string): Buffer {
     return crypto.createHash('md5').update(streamId).digest().subarray(0, 8);
   }
@@ -110,6 +113,9 @@ export class PortForwardHandler {
     const bindHost = opts.bindHost || '127.0.0.1';
     if (opts.targetGatewayId && opts.targetGatewayId === this.selfGatewayId) {
       return Promise.reject(new Error('Cannot forward to the same node (targetGatewayId is self)'));
+    }
+    if (this.listeners.size >= PortForwardHandler.MAX_FORWARDS) {
+      return Promise.reject(new Error(`Too many active port forwards on this node (max ${PortForwardHandler.MAX_FORWARDS})`));
     }
     return new Promise((resolve, reject) => {
       const forwardId = crypto.randomUUID();

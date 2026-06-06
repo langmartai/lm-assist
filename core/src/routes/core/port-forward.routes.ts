@@ -37,6 +37,11 @@ export function createPortForwardRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!targetGatewayId || typeof targetGatewayId !== 'string') {
           return { success: false, error: 'targetGatewayId (target node hostId or hostname) is required' };
         }
+        // Default is loopback; only allow explicitly binding to loopback addresses
+        // so a forward can't accidentally expose the tunnel on a public interface.
+        if (bindHost && !['127.0.0.1', '::1', 'localhost'].includes(bindHost)) {
+          return { success: false, error: 'bindHost must be a loopback address (127.0.0.1, ::1, or localhost)' };
+        }
 
         const hub = getHubClient();
         if (!hub.getStatus().authenticated) {
