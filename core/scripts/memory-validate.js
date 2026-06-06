@@ -55,6 +55,7 @@ const has    = (k) => argv.includes("--" + k);
 
 const dryRun          = has("dry-run");
 const applyMode       = has("apply");
+const concurrency     = Math.max(1, parseInt(opt("concurrency") || "4", 10) || 4);
 const filterProject   = opt("project");
 const filterRecord    = opt("record");
 const wantStale       = has("stale");
@@ -539,51 +540,34 @@ function buildPrompt(record, neighbors) {
     if (!Array.isArray(allRecords)) allRecords = [];
   } catch { /* neighbors are a nice-to-have; don't fail if this errors */ }
 
-  let totalWritten = 0;
-  for (const record of records) {
-    const neighbors = findNeighbors(record, allRecords);
-    const prompt = buildPrompt(record, neighbors);
-
-    if (dryRun) {
+  if (dryRun) {
+    for (const record of records) {
+      const neighbors = findNeighbors(record, allRecords);
+      const prompt = buildPrompt(record, neighbors);
       console.log("=".repeat(72));
-      console.log("RECORD TO VALIDATE");
-      console.log("  recordId  : " + record.recordId);
-      console.log("  title     : " + record.title);
-      console.log("  tier      : " + record.validationTier);
-      console.log("  validity  : " + record.validity);
-      console.log("  neighbors : " + neighbors.length);
-      console.log("  sessionId : " + (record.originSessionId || "(none)"));
-      console.log("");
+      console.log("RECORD: " + record.recordId);
+      console.log("  title: " + record.title + " | neighbors: " + neighbors.length);
       console.log("ASSEMBLED OPUS DEEP-VERIFY PROMPT (" + prompt.length + " chars):");
-      console.log("-".repeat(72));
       console.log(prompt);
       console.log("=".repeat(72));
-      console.log("");
-      continue;
     }
+    return;
+  }
 
-    console.log("[validate] Validating: " + record.title);
-    console.log("[validate]   recordId : " + record.recordId);
-
+  console.log("[validate] Concurrency      : " + concurrency);
+  let totalWritten = 0;
+  let nextIdx = 0;
+  async function validateOne(record) {
+    const neighbors = findNeighbors(record, allRecords);
+    const prompt = buildPrompt(record, neighbors);
+    console.log("[validate] start: " + record.title.slice(0, 50));
     let agentResponse;
-    try {
-      agentResponse = await spawnOpusAgent(prompt);
-    } catch (e) {
-      console.error("[validate] Agent endpoint error for record " + record.recordId + ":", e.message);
-      console.error("[validate] NOTE: live Opus validation requires the full prod agent stack.");
-      continue;
-    }
-
+    try { agentResponse = await spawnOpusAgent(prompt); }
+    catch (e) { console.error("[validate] agent error " + record.recordId + ": " + e.message); return; }
     const verdict = parseVerdict(agentResponse);
-    if (!verdict) {
-      console.error("[validate]   -> Could not extract verdict. Skipping plan write.");
-      continue;
-    }
-
-    console.log("[validate]   -> tier=" + verdict.validationTier + " validity=" + verdict.validity);
-    if (verdict.evidence) console.log("[validate]   -> evidence: " + verdict.evidence.slice(0, 100));
-
-    const planItem = {
+    if (!verdict) { console.error("[validate]   no verdict: " + record.recordId); return; }
+    console.log("[validate] done : " + record.title.slice(0, 40) + " -> " + verdict.validationTier + "/" + verdict.validity);
+    writePlan({
       planType: "deep-validate",
       recordId: verdict.recordId || record.recordId,
       validationTier: verdict.validationTier,
@@ -597,11 +581,11 @@ function buildPrompt(record, neighbors) {
       _recordTitle: record.title,
       _recordFile: record.file,
       _recordProject: record.project,
-    };
-
-    writePlan(planItem);
+    });
     totalWritten++;
   }
+  async function worker() { while (nextIdx < records.length) { const r = records[nextIdx++]; await validateOne(r); } }
+  await Promise.all(Array.from({ length: Math.min(concurrency, records.length) }, function () { return worker(); }));
 
   if (!dryRun) {
     console.log("");
