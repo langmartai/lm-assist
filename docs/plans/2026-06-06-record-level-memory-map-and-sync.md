@@ -179,3 +179,33 @@ A memory record is only as trustworthy as its evidence. Every record carries a `
 The harvester escalates: start from the session''s work-status (cheapest — already have the transcript), and **drop into the codebase to validate directly only if needed** (the session is ambiguous, or the record is high-stakes, or time has passed since `lastValidatedMs`). On a code/feature change touching a record''s referenced files, the record''s tier is reset toward `unvalidated` until re-confirmed — so the registry never silently claims a stale fact is `code-confirmed`.
 
 This composes with §12: `validity` (current/outdated/superseded) = is it still true *now*; `validationTier` = how do we *know*. A Stream B answer can show both ("code-confirmed, current, last checked 2d ago" vs "asserted, validity unknown").
+
+## 14. Implementation status (2026-06-06)
+
+Built on branch `feat/github-dir-aware-actions` (pushed through b7c15cb):
+
+| Tier | Commit | State |
+|---|---|---|
+| Record extractor + model (provenance/temporal/validationTier/category/shareability) | acfcca8, 55bb8be, a650c33, 518340e, d67b98a | DONE |
+| CLI engine `memory-map.js` (brief/complete, partial filters, --stats/--record/--snapshot/--changes/--duplicates) | acfcca8.. | DONE |
+| Unified HTTP API `/memory/map`, `/memory/map/stats`, `/memory/record/:id` | 55bb8be | DONE |
+| All CLAUDE.md levels (root/.claude/nested/.local/user-global) | 518340e | DONE |
+| Stream A detect+register (snapshot+delta) | a650c33 | DONE |
+| Reconcile candidates (`--duplicates`) | b473722 | DONE |
+| Stream B query wrapper `memory-query.js` (Haiku) | a10bf23 | DONE (live = prod) |
+| RULES sibling system (`rule-extract.ts`, `rule-map.js`, `/rules/*`) | cfc2c3a | DONE |
+| Cross-node sync daemon `autosync.ts` (observe-default) + `/memory/autosync/status` | 6a1d016 | DONE (observe; on=prod, human-flip) |
+| Opus harvester `memory-harvest.js` (propose-default) + `/memory/proposals` | b7c15cb | DONE (live = prod) |
+| Opus reconciliation `memory-reconcile.js` (plan-default) | (building) | IN FLIGHT |
+| MCP tools (`memory_map`, `memory_record`, `rule_map`) | (next) | PENDING |
+
+### MCP tools spec (the final tier)
+Add tools to the stdio MCP server (`core/src/mcp-server/`, server name `lm-assist`) so any Claude session gets them, AND they ride the existing hub-relayed `/mcp` route to claude.ai connectors:
+- `memory_map({ level?, projects?, nodes?, types?, category?, q?, since?, limit? })` -> runs `memory-map.js` (verbatim records, never fabricated).
+- `memory_record({ recordId })` -> one complete record.
+- `rule_map({ level?, scope?, paths?, always?, category?, q?, limit? })` -> runs `rule-map.js`.
+Each tool shells out to the CLI (same single-engine principle as the HTTP routes) — the model orchestrates, the script produces the bytes. Register in the mcp-server tool list next to the existing `search`/`detail`/`feedback`. No new HTTP route needed (the `/mcp` relay already exists).
+
+### Remaining beyond MCP tools (operational, not code)
+- Flip live agent tiers on PROD (dev `:3200` has no agent runtime): harvester, reconcile-decide, Stream B all spawn agents via `/agent/execute` which only runs on the prod auto-start stack (`:3100`).
+- Human-controlled enables: `MEMORY_AUTOSYNC=on` (cross-node git sync), `MEMORY_RECONCILE_APPLY=on` (apply merge/supersede plans). Both observe/plan-default until deliberately flipped.
