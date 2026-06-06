@@ -505,6 +505,18 @@ Recover if Core won't boot with `ERR_REQUIRE_ESM`:
 
 **⚠️ Upgrade hazard:** `lm-assist upgrade` / `npm install -g lm-assist@latest` reinstalls from npm. Until a version carrying `chokidar: ^3.6.0` is **published to npm** (npm `latest` still ships `^5.0.0`), every upgrade RE-BREAKS startup and needs the recovery above. A build/install from this repo is fine (pin committed here).
 
+### Agent SDK (`@anthropic-ai/claude-agent-sdk`) is ESM-only — `import()` must survive tsc
+
+`/agent/execute` (the agent runtime in `sdk-runner.ts`) loads `@anthropic-ai/claude-agent-sdk`, which is **ESM-only** (`type: module`, `exports.require: null`). The code imports it dynamically, but **tsc with `module: commonjs` downlevels `await import('pkg')` to `Promise.resolve().then(() => require('pkg'))`** — and `require()` of an ESM module throws **`ERR_REQUIRE_ESM`**. Result: every agent execution dies with **0 turns / empty result** on the dev build (`:3200`). Prod masks it only because its older npm-installed SDK is still `require`-able — a latent trap, same class as the chokidar one above.
+
+**Fix (in `sdk-runner.ts`):** indirect the dynamic import through `Function` so tsc cannot see/downlevel it:
+```
+const esmImport: (m: string) => Promise<any> = new Function('m', 'return import(m)') as (m: string) => Promise<any>;
+// ...
+const { query } = await esmImport('@anthropic-ai/claude-agent-sdk');
+```
+Type-only imports from the SDK are fine as `import type { ... }` (erased at compile). Verify: `POST :3200/agent/execute {"prompt":"reply OK","model":"haiku"}` → `turns>0`, no `ERR_REQUIRE_ESM`. (Note: `annotation/matcher.ts` + `annotation/annotator.ts` have the same downleveled `import()` and would need the same treatment if/when their feature is exercised on a CJS build with an ESM SDK.)
+
 ### Route Development
 
 Routes live in `core/src/routes/core/`. Each file exports a `create*Routes(ctx: RouteContext)` function returning an array of `RouteHandler` objects:
