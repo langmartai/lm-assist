@@ -74,6 +74,12 @@ const DIRECT_RECV_STALE_MS = 4000;
 /** If the peer hasn't reconfirmed (DPROBE_ACK) within this window, stop routing
  *  our OUTBOUND over direct (fall back to relay for sends). */
 const DIRECT_OUT_STALE_MS = 4000;
+/** Datagrams at or below this size are control/handshake (reliable ACK/PING/FIN
+ *  are 11B; small app-level control like the file-transfer FT_OK is tiny). They
+ *  ride the relay floor UNCONDITIONALLY (plus opportunistic direct) so control
+ *  delivery never depends on a flickery / one-way-only direct leg. Bulk data
+ *  above this size rides direct when our outbound leg is confirmed, else relay. */
+const CONTROL_DATAGRAM_MAX = 256;
 
 function hashChannelId(channelId: string): Buffer {
   return crypto.createHash('md5').update(channelId).digest().subarray(0, 8);
@@ -189,16 +195,22 @@ export function openHybridChannel(
     const makeReliable = (): ReliableConnection => {
       return new ReliableConnection({
         sendDatagram: (buf: Buffer) => {
-          // Route OUTBOUND: direct only when confirmed reachable AND we know the
-          // peer's udp endpoint; otherwise the relay floor.
-          if (myDirectOut && peerUdp && socket) {
-            try {
-              socket.send(buf, peerUdp.port, peerUdp.ip);
-              return;
-            } catch {
-              // fall through to relay on a transient socket error
-            }
+          // Policy: data on the available direct direction, control on relay.
+          // Small datagrams (acks/ping/fin + tiny app control like FT_OK) ALWAYS
+          // ride the relay floor (+ opportunistic direct) so a flickery or
+          // one-way-only direct leg can never black-hole control. Bulk data rides
+          // direct when our outbound leg is confirmed, otherwise the relay floor.
+          const canDirect = myDirectOut && !!peerUdp && !!socket;
+          const sendDirect = (): boolean => {
+            try { socket!.send(buf, peerUdp!.port, peerUdp!.ip); return true; }
+            catch { return false; }
+          };
+          if (buf.length <= CONTROL_DATAGRAM_MAX) {
+            relaySendDatagram(buf);
+            if (canDirect) sendDirect();
+            return;
           }
+          if (canDirect && sendDirect()) return;
           relaySendDatagram(buf);
         },
         onDeliver,
