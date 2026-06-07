@@ -139,10 +139,15 @@ export function holePunch(
     const goReliable = () => {
       if (settled || tornDown || !peer) return;
       settled = true;
-      const target = peer;
       reliable = new ReliableConnection({
+        // Read the LIVE peer endpoint (not a goReliable-time snapshot) so sends
+        // follow NAT rebinding tracked by the roaming logic in the message
+        // handler. A snapshot here pinned us to the punch-time port and silently
+        // killed the reverse path when the NAT remapped.
         sendDatagram: (buf: Buffer) => {
-          try { socket.send(buf, target.port, target.ip); } catch { /* tolerated */ }
+          const p = peer;
+          if (!p) return;
+          try { socket.send(buf, p.port, p.ip); } catch { /* tolerated */ }
         },
         onDeliver,
         onClose: (r) => {
