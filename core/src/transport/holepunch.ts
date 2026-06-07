@@ -200,11 +200,20 @@ export function holePunch(
     let offerListener: ((msg: { channelId: string; udp: UdpEndpoint }) => void) | null = null;
 
     const begin = async () => {
-      socket.bind(); // ephemeral local port
+      // Fixed-port mode: bind a known public UDP port and advertise it directly
+      // (no STUN), so a NAT'd peer can reach this side at <publicIp>:<port>.
+      // Enables a DIRECT channel when this side has an open, reachable port
+      // (e.g. a cloud host with the security-list/firewall opened). 0 = ephemeral.
+      const fixedPort = Number(process.env.LM_ASSIST_TRANSPORT_PORT) || 0;
+      const publicIp = process.env.LM_ASSIST_PUBLIC_IP;
+      socket.bind(fixedPort);
       await new Promise<void>((r) => socket.once('listening', () => r()));
 
-      // STUN to learn our own public endpoint (for the offer/answer we emit).
-      const mine = await stun(socket, opts.stunHost, stunPort, 1500);
+      // STUN to learn our own public endpoint (for the offer/answer we emit),
+      // unless a fixed public endpoint is configured (then advertise it directly).
+      const mine = fixedPort && publicIp
+        ? { ip: publicIp, port: fixedPort }
+        : await stun(socket, opts.stunHost, stunPort, 1500);
       if (tornDown) return;
       // STUN failure is non-fatal if we already know the peer (answerer with
       // knownPeer can still try to punch), but the peer won't learn our mapping.
