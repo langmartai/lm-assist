@@ -522,6 +522,7 @@ export async function launchSession(opts: {
   resume?: string;
   waitMs?: number;
   skipPermissions?: boolean;
+  remoteControl?: boolean | string;
 } = {}): Promise<LaunchResult> {
   if (!IS_WINDOWS) return { launched: false, sessionId: null, mode: '', cwd: '', note: 'windows-only' };
   const cwd = opts.cwd || os.homedir();
@@ -529,7 +530,8 @@ export async function launchSession(opts: {
   const before = new Set(listLiveSessions().map((s) => s.sessionId));
   const beforeRids = new Set((await listTabIds()).map((t) => t.rid));
   const skipFlag = opts.skipPermissions ? ' --dangerously-skip-permissions' : '';
-  const claudeCmd = (opts.resume ? `claude --resume ${opts.resume}` : 'claude') + skipFlag;
+  const rcFlag = opts.remoteControl ? ' --remote-control' + (typeof opts.remoteControl === 'string' ? ` ${opts.remoteControl}` : '') : '';
+  const claudeCmd = (opts.resume ? `claude --resume ${opts.resume}` : 'claude') + rcFlag + skipFlag;
   const wtArgs =
     mode === 'tab'
       ? ['-w', '0', 'nt', '-d', cwd, 'cmd', '/k', claudeCmd]
