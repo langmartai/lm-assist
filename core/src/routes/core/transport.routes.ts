@@ -25,7 +25,8 @@ export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
           return { success: false, error: 'peerGatewayId, localPath, remotePath required' };
         }
         try {
-          const res = await sendPath(peerGatewayId, localPath, remotePath);
+          const forceMode = b.forceMode === 'relay' || b.forceMode === 'direct' ? b.forceMode : undefined;
+          const res = await sendPath(peerGatewayId, localPath, remotePath, forceMode ? { forceMode } : undefined);
           return { success: true, data: res };
         } catch (e) {
           return { success: false, error: e instanceof Error ? e.message : String(e) };

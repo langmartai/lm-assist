@@ -162,13 +162,14 @@ export async function sendPath(
     channel.send(encodeControl(end));
 
     await done;
-    return { bytes: totalBytes, entries: entries.length };
+    lastMode = channel.mode;
+    return { bytes: totalBytes, entries: entries.length, mode: lastMode };
   } finally {
     channel.close();
   }
   };
   try {
-    return await attempt();
+    return await attempt(opts?.forceMode);
   } catch (e) {
     // A direct channel can establish (punch ok) yet have a hostile reverse path
     // (symmetric/CGNAT): the transfer stalls and idle-times-out. Fall back to the

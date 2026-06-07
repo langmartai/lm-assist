@@ -104,10 +104,14 @@ export type FtControl =
 export interface SendResult {
   bytes: number;
   entries: number;
+  /** Final channel mode at end of transfer: 'direct' | 'relay' | 'hybrid'. */
+  mode?: string;
 }
 
 export interface SendOpts {
   onProgress?: (sent: number, total: number) => void;
+  /** Force the channel transport: 'relay' (hub only) or 'direct' (best-effort). */
+  forceMode?: 'direct' | 'relay';
   /** Bytes per data chunk on the wire. Default 32 KiB. */
   chunkSize?: number;
 }

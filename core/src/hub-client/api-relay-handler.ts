@@ -117,6 +117,7 @@ export class ApiRelayHandler {
     '/claude-code',
     '/mcp',          // MCP StreamableHTTP endpoint + /mcp/* (relayed from the hub for connector routing)
     '/mcp-call',     // generic expanded-tool shim
+    '/session-messages', // cross-node session-to-session messaging (node-routed)
   ];
 
   /**

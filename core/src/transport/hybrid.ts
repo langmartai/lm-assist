@@ -430,6 +430,19 @@ export function openHybridChannel(
 
     // ========================= bring-up =========================
     if (wantRelay) setupRelay();
+    if (wantRelay && !wantDirect && opts.initiator) {
+      // Relay-only (force:'relay'): the hub forwards transport_open -> the peer
+      // as transport_offer (the answerer's set-up trigger) but does NOT forward
+      // transport_relay_open. Send a bare transport_open (no udp) purely to
+      // notify the answerer so it brings up its relay floor and replies
+      // transport_relay_ready; we never open a udp socket or probe.
+      opts.ws.send({
+        type: 'transport_open',
+        channelId: opts.channelId,
+        peerGatewayId: opts.peerGatewayId,
+        udp: undefined,
+      });
+    }
     if (wantDirect) {
       setupDirect().catch(() => { /* direct setup failure leaves relay floor */ });
     }
