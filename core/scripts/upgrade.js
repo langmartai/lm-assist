@@ -593,7 +593,12 @@ async function main() {
   }
 
   if (lmBin) {
-    run(process.execPath, [lmBin, 'start'], 'Service start');
+    // Use `restart`, not `start`. Something (the web start hook / a self-heal)
+    // can respawn the core DURING `npm install` — before the package files are
+    // moved into place — so it loads the OLD code. A plain `start` then no-ops
+    // ("already running") and leaves that stale process serving. `restart`
+    // stops whatever is up and launches fresh from the just-installed build.
+    run(process.execPath, [lmBin, 'restart'], 'Service restart');
   } else {
     log('ERROR: Cannot find lm-assist binary to start services');
   }
