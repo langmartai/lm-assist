@@ -43,6 +43,13 @@ export interface McpAccessConfig {
   /** Scopes for any caller with no matching grant. New connectors are read-only. */
   defaultScopes: ToolScope[];
   grants: McpGrant[];
+  /**
+   * When true, an admin-scope tool call from a subject that HOLDS admin runs
+   * immediately instead of parking for out-of-band confirmation. It never
+   * widens access — a subject without admin scope is still denied. Defaults to
+   * true (admin actions auto-approve); set false to require manual confirm.
+   */
+  autoApproveAdmin: boolean;
 }
 
 /** The subject of an incoming MCP request, as forwarded by the gateway. */
@@ -65,6 +72,7 @@ const DEFAULT_CONFIG: McpAccessConfig = {
   version: 1,
   defaultScopes: ['read'],
   grants: [],
+  autoApproveAdmin: true,
 };
 
 // ─── load / save ────────────────────────────────────────────────
@@ -109,6 +117,8 @@ function normalize(cfg: Partial<McpAccessConfig> | null | undefined): McpAccessC
   return {
     version: typeof c.version === 'number' ? c.version : 1,
     defaultScopes: validScopes(c.defaultScopes).length ? validScopes(c.defaultScopes) : ['read'],
+    // Default auto-approve ON: missing/undefined → true; only an explicit false disables.
+    autoApproveAdmin: c.autoApproveAdmin !== false,
     grants: Array.isArray(c.grants)
       ? c.grants.map((g) => ({
           id: String(g.id || ''),
@@ -153,14 +163,20 @@ export interface AccessResult {
 
 /**
  * Decide whether `subject` may call `tool`. read/write that the subject holds
- * → allow. admin that the subject holds → pending (out-of-band confirm). Not
- * held → deny.
+ * → allow. admin that the subject holds → allow when auto-approve is on, else
+ * pending (out-of-band confirm). Not held → deny.
  */
 export function evaluateAccess(subject: McpSubject, tool: string): AccessResult {
   const required = requiredScope(tool);
   const granted = resolveScopes(subject);
   if (!granted.includes(required)) return { decision: 'deny', required, granted };
-  if (required === 'admin') return { decision: 'pending', required, granted };
+  if (required === 'admin') {
+    // Subject holds admin (we passed the deny check). Auto-approve runs it now;
+    // otherwise park for out-of-band confirm. Auto-approve never widens access —
+    // a non-admin subject was already denied above.
+    const autoApprove = loadAccessConfig().autoApproveAdmin;
+    return { decision: autoApprove ? 'allow' : 'pending', required, granted };
+  }
   return { decision: 'allow', required, granted };
 }
 
@@ -220,6 +236,14 @@ export function removeGrant(id: string): boolean {
 export function setDefaultScopes(scopes: ToolScope[], _nowIso: string): McpAccessConfig {
   const cfg = loadAccessConfig();
   cfg.defaultScopes = scopes;
+  saveAccessConfig(cfg);
+  return cfg;
+}
+
+/** Toggle auto-approve for admin actions (on = skip the out-of-band confirm). */
+export function setAutoApproveAdmin(enabled: boolean, _nowIso: string): McpAccessConfig {
+  const cfg = loadAccessConfig();
+  cfg.autoApproveAdmin = enabled;
   saveAccessConfig(cfg);
   return cfg;
 }

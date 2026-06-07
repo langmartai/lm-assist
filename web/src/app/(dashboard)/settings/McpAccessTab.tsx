@@ -27,7 +27,7 @@ interface Grant {
   updatedAt: string;
 }
 interface ToolRow { tool: string; scope: Scope }
-interface AccessConfig { defaultScopes: Scope[]; grants: Grant[]; tools: ToolRow[] }
+interface AccessConfig { defaultScopes: Scope[]; grants: Grant[]; tools: ToolRow[]; autoApproveAdmin: boolean }
 interface Pending {
   id: string; tool: string; summary: string;
   subject: { clientId?: string; email?: string; userId?: string };
@@ -130,6 +130,20 @@ export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
     }
   };
 
+  const setAutoApprove = async (enabled: boolean) => {
+    try {
+      const r = await fetch(`${baseUrl}/mcp/access/auto-approve`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      }).then((x) => x.json());
+      flash(r?.success ? `Auto-approve turned ${enabled ? 'on' : 'off'}` : (r?.error?.message || 'Update failed'), r?.success ? 'ok' : 'error');
+      load();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), 'error');
+    }
+  };
+
   const resolvePending = async (id: string, action: 'confirm' | 'deny') => {
     try {
       const r = await fetch(`${baseUrl}/mcp/pending/${encodeURIComponent(id)}/${action}`, { method: 'POST' }).then((x) => x.json());
@@ -158,6 +172,28 @@ export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
           these rules decide what each caller may do. Default is read-only; grant write/admin per connector or user.
         </p>
       </div>
+
+      {/* Admin action approval mode */}
+      <section>
+        <h4 className="font-semibold mb-2">Admin action approval</h4>
+        <div className="flex items-center justify-between border border-gray-700 rounded px-3 py-2">
+          <div className="pr-4">
+            <div className="font-medium">{cfg?.autoApproveAdmin ? 'Auto-approve ON' : 'Manual confirm'}</div>
+            <div className="text-gray-500 text-xs mt-0.5">
+              {cfg?.autoApproveAdmin
+                ? 'Admin tools held by a caller run immediately. Callers without admin scope are still denied.'
+                : 'Admin tool calls park below and need an out-of-band Confirm before they run.'}
+            </div>
+          </div>
+          <button
+            onClick={() => cfg && setAutoApprove(!cfg.autoApproveAdmin)}
+            disabled={!cfg}
+            className={`px-3 py-1 rounded text-xs border ${cfg?.autoApproveAdmin ? 'bg-emerald-900/40 text-emerald-300 border-emerald-700' : 'border-gray-600 text-gray-400'}`}
+          >
+            {cfg?.autoApproveAdmin ? 'On' : 'Off'}
+          </button>
+        </div>
+      </section>
 
       {/* Pending admin actions */}
       <section>

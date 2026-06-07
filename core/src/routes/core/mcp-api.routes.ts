@@ -28,6 +28,7 @@ import {
   upsertGrant,
   removeGrant,
   setDefaultScopes,
+  setAutoApproveAdmin,
   toolCatalog,
 } from '../../mcp-server/access-control';
 import { listPending, takePending } from '../../mcp-server/mcp-pending';
@@ -189,7 +190,12 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
         const start = Date.now();
         const cfg = loadAccessConfig();
         return wrapResponse(
-          { defaultScopes: cfg.defaultScopes, grants: cfg.grants, tools: toolCatalog() },
+          {
+            defaultScopes: cfg.defaultScopes,
+            grants: cfg.grants,
+            tools: toolCatalog(),
+            autoApproveAdmin: cfg.autoApproveAdmin,
+          },
           start,
         );
       },
@@ -253,6 +259,22 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
           return wrapError('MCP_ACCESS_BAD', 'scopes must be a non-empty subset of read/write/admin', start);
         }
         return wrapResponse(setDefaultScopes(scopes, nowIso()), start);
+      },
+    },
+
+    // PUT /mcp/access/auto-approve — toggle auto-approve for admin actions.
+    // Body: { enabled: boolean }. On → admin tools held by the caller run
+    // immediately (no out-of-band confirm); off → they park as pending.
+    {
+      method: 'PUT',
+      pattern: /^\/mcp\/access\/auto-approve$/,
+      handler: async (req) => {
+        const start = Date.now();
+        const enabled = (req.body as Record<string, unknown>)?.enabled;
+        if (typeof enabled !== 'boolean') {
+          return wrapError('MCP_ACCESS_BAD', 'enabled must be a boolean', start);
+        }
+        return wrapResponse(setAutoApproveAdmin(enabled, nowIso()), start);
       },
     },
 
