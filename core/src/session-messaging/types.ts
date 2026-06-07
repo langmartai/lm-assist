@@ -65,7 +65,7 @@ export interface SessionMessage {
 }
 
 /** The injection drivers, in fallback order. */
-export type InjectionDriverName = 'cc-prompt' | 'tmux-send-keys' | 'none';
+export type InjectionDriverName = 'remote-control' | 'cc-prompt' | 'tmux-send-keys' | 'windows-terminal' | 'none';
 
 /** Result of one injection attempt by a driver. */
 export interface InjectionResult {

@@ -46,6 +46,8 @@ import { createBrowserRoutes } from './browser.routes';
 import { createPortForwardRoutes } from './port-forward.routes';
 import { createSessionMessagingRoutes } from './session-messaging.routes';
 import { createTransportRoutes } from './transport.routes';
+import { createWindowsTerminalRoutes } from './windows-terminal.routes';
+import { createRemoteControlRoutes } from './remote-control.routes';
 
 /**
  * Create all core routes
@@ -91,5 +93,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createPortForwardRoutes(ctx),
     ...createSessionMessagingRoutes(ctx),
     ...createTransportRoutes(ctx),
+    ...createWindowsTerminalRoutes(ctx),
+    ...createRemoteControlRoutes(ctx),
   ];
 }

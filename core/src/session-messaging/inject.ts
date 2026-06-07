@@ -139,8 +139,43 @@ export const tmuxSendKeysDriver: InjectionDriver = {
   },
 };
 
+/** Driver — Windows Terminal Claude session (POST /terminal/windows/sessions/:id/send). The Windows tmux substitute. */
+export const windowsTerminalDriver: InjectionDriver = {
+  name: 'windows-terminal',
+  async available(session, t) {
+    try {
+      const data = unwrap(await t.get(`/terminal/windows/sessions/${enc(session)}`));
+      return (data as { driveable?: boolean }).driveable === true;
+    } catch {
+      return false;
+    }
+  },
+  async deliver(session, wrapped, t) {
+    unwrap(await t.post(`/terminal/windows/sessions/${enc(session)}/send`, { text: wrapped, submit: true }));
+  },
+};
+
+/** Driver — claude.ai Remote Control (cloud control channel). The cross-platform
+ *  "remote session interface": drives a session via claude.ai even when no local
+ *  tmux/WT reaches it. Probes/relays through the loopback /terminal/remote-control
+ *  route, which carries the OAuth call to api.anthropic.com. */
+export const remoteControlDriver: InjectionDriver = {
+  name: 'remote-control',
+  async available(session, t) {
+    try {
+      const data = unwrap(await t.get(`/terminal/remote-control/${enc(session)}`));
+      return (data as { driveable?: boolean }).driveable === true;
+    } catch {
+      return false;
+    }
+  },
+  async deliver(session, wrapped, t) {
+    unwrap(await t.post(`/terminal/remote-control/${enc(session)}/send`, { text: wrapped }));
+  },
+};
+
 /** The default driver chain, in fallback order. */
-export const DEFAULT_DRIVERS: InjectionDriver[] = [ccPromptDriver, tmuxSendKeysDriver];
+export const DEFAULT_DRIVERS: InjectionDriver[] = [remoteControlDriver, ccPromptDriver, tmuxSendKeysDriver, windowsTerminalDriver];
 
 /**
  * Try each driver in order. Returns the result of the first driver that
