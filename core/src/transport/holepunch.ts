@@ -180,7 +180,15 @@ export function holePunch(
         // STUN reply is consumed by the stun() listener; anything else is noise.
         return;
       }
-      // Reliable phase: forward datagrams to the reliable layer.
+      // Reliable phase: track the peer's CURRENT source endpoint so our acks/
+      // data follow it. A NAT can remap the peer's external port mid-session
+      // (symmetric NAT / rebinding — observed on a home NAT moving 52061->1359);
+      // without this we keep sending to the stale endpoint and the reverse path
+      // silently dies (acks/FT_OK never arrive -> idle timeout). Last-received-
+      // source roaming, same approach WireGuard uses.
+      if (peer && (peer.ip !== rinfo.address || peer.port !== rinfo.port)) {
+        peer = { ip: rinfo.address, port: rinfo.port };
+      }
       if (reliable) reliable.onDatagram(msg);
     });
 
