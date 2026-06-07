@@ -1,36 +1,29 @@
 'use client';
 
 /**
- * MCP Access Control tab — manages who may call which MCP tools on this node.
+ * MCP Admin Approval tab — per-user, this node, your account.
  *
- * Authorization is owned by lm-assist (config at ~/.lm-assist/mcp-access.json),
- * not the gateway. This tab is the UI over the worker's /mcp/access* + /mcp/pending
- * REST endpoints:
- *   - tool catalog (tool -> required scope)
- *   - default scopes for unmatched callers
- *   - per-subject grants (by connector clientId, langmart email, or userId)
- *   - parked admin actions to confirm / deny (out-of-band)
+ * This MCP connection is the user's own; there is no other principal to
+ * authorize. The only control here is an OPTIONAL extra confirmation gate the
+ * user can switch on PER TOOL:
+ *   - ungated tool (default for every tool) → runs normally; whatever per-tool
+ *     approval claude.ai applies is outside our control.
+ *   - gated tool → parks as a pending action, released only by an out-of-band
+ *     Confirm here (or POST /mcp/pending/:id/confirm). The model cannot reach
+ *     that endpoint, so it can never release its own gated action.
+ *
+ * UI over the worker's /mcp/access (tool catalog + gate state),
+ * /mcp/access/tool-gate (toggle a gate), and /mcp/pending* (confirm/deny).
  */
 
 import { useCallback, useEffect, useState } from 'react';
 
 type Scope = 'read' | 'write' | 'admin';
-const SCOPES: Scope[] = ['read', 'write', 'admin'];
 
-interface Grant {
-  id: string;
-  clientId?: string;
-  email?: string;
-  userId?: string;
-  scopes: Scope[];
-  note?: string;
-  updatedAt: string;
-}
-interface ToolRow { tool: string; scope: Scope }
-interface AccessConfig { defaultScopes: Scope[]; grants: Grant[]; tools: ToolRow[]; autoApproveAdmin: boolean }
+interface ToolRow { tool: string; scope: Scope; adminGate: boolean }
+interface AccessConfig { tools: ToolRow[] }
 interface Pending {
   id: string; tool: string; summary: string;
-  subject: { clientId?: string; email?: string; userId?: string };
   createdAt: number; expiresAt: number;
 }
 
@@ -49,12 +42,6 @@ export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
   const [pending, setPending] = useState<Pending[]>([]);
   const [msg, setMsg] = useState<{ text: string; type: 'ok' | 'error' } | null>(null);
   const [loading, setLoading] = useState(false);
-
-  // new-grant form
-  const [matchType, setMatchType] = useState<'email' | 'clientId' | 'userId'>('email');
-  const [matchValue, setMatchValue] = useState('');
-  const [newScopes, setNewScopes] = useState<Scope[]>(['read']);
-  const [note, setNote] = useState('');
 
   const flash = (text: string, type: 'ok' | 'error') => {
     setMsg({ text, type });
@@ -83,62 +70,17 @@ export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
     return () => clearInterval(t);
   }, [load]);
 
-  const toggleScope = (list: Scope[], s: Scope, set: (v: Scope[]) => void) => {
-    set(list.includes(s) ? list.filter((x) => x !== s) : [...list, s]);
-  };
-
-  const addGrant = async () => {
-    if (!matchValue.trim()) return flash('Enter a value to match', 'error');
-    if (newScopes.length === 0) return flash('Pick at least one scope', 'error');
-    const body: Record<string, unknown> = { scopes: newScopes, note: note || undefined };
-    body[matchType] = matchValue.trim();
+  const setGate = async (tool: string, enabled: boolean) => {
     try {
-      const r = await fetch(`${baseUrl}/mcp/access/grant`, {
-        method: 'POST',
+      const r = await fetch(`${baseUrl}/mcp/access/tool-gate`, {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ tool, enabled }),
       }).then((x) => x.json());
       if (r?.success) {
-        flash('Grant saved', 'ok');
-        setMatchValue(''); setNote(''); setNewScopes(['read']);
-        load();
-      } else flash(r?.error?.message || 'Save failed', 'error');
-    } catch (e) {
-      flash(e instanceof Error ? e.message : String(e), 'error');
-    }
-  };
-
-  const removeGrant = async (id: string) => {
-    try {
-      await fetch(`${baseUrl}/mcp/access/grant/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      load();
-    } catch (e) {
-      flash(e instanceof Error ? e.message : String(e), 'error');
-    }
-  };
-
-  const setDefaults = async (scopes: Scope[]) => {
-    try {
-      await fetch(`${baseUrl}/mcp/access/defaults`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scopes }),
-      });
-      load();
-    } catch (e) {
-      flash(e instanceof Error ? e.message : String(e), 'error');
-    }
-  };
-
-  const setAutoApprove = async (enabled: boolean) => {
-    try {
-      const r = await fetch(`${baseUrl}/mcp/access/auto-approve`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled }),
-      }).then((x) => x.json());
-      flash(r?.success ? `Auto-approve turned ${enabled ? 'on' : 'off'}` : (r?.error?.message || 'Update failed'), r?.success ? 'ok' : 'error');
-      load();
+        setCfg(r.data);
+        flash(`${tool}: admin approval ${enabled ? 'on' : 'off'}`, 'ok');
+      } else flash(r?.error?.message || 'Update failed', 'error');
     } catch (e) {
       flash(e instanceof Error ? e.message : String(e), 'error');
     }
@@ -154,8 +96,7 @@ export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
     }
   };
 
-  const subjectLabel = (s: Pending['subject']) =>
-    s.clientId ? `client ${s.clientId}` : s.email ? s.email : s.userId ? `user ${s.userId.slice(0, 8)}` : 'anonymous';
+  const gatedCount = cfg?.tools.filter((t) => t.adminGate).length ?? 0;
 
   return (
     <div className="space-y-6 text-sm">
@@ -166,47 +107,27 @@ export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
       )}
 
       <div>
-        <h3 className="text-base font-semibold mb-1">MCP Access Control</h3>
+        <h3 className="text-base font-semibold mb-1">MCP Admin Approval</h3>
         <p className="text-gray-400">
-          Authorization lives on this node. The gateway authenticates the caller and routes the MCP request here;
-          these rules decide what each caller may do. Default is read-only; grant write/admin per connector or user.
+          This MCP is your own connection on this node — there is no other account to authorize. By default every
+          tool runs under claude.ai&apos;s normal per-tool approval (outside our control). Optionally switch on an
+          extra admin confirm for specific tools below: a gated tool parks as a pending action and runs only after
+          you Confirm it here.
         </p>
       </div>
-
-      {/* Admin action approval mode */}
-      <section>
-        <h4 className="font-semibold mb-2">Admin action approval</h4>
-        <div className="flex items-center justify-between border border-gray-700 rounded px-3 py-2">
-          <div className="pr-4">
-            <div className="font-medium">{cfg?.autoApproveAdmin ? 'Auto-approve ON' : 'Manual confirm'}</div>
-            <div className="text-gray-500 text-xs mt-0.5">
-              {cfg?.autoApproveAdmin
-                ? 'Admin tools held by a caller run immediately. Callers without admin scope are still denied.'
-                : 'Admin tool calls park below and need an out-of-band Confirm before they run.'}
-            </div>
-          </div>
-          <button
-            onClick={() => cfg && setAutoApprove(!cfg.autoApproveAdmin)}
-            disabled={!cfg}
-            className={`px-3 py-1 rounded text-xs border ${cfg?.autoApproveAdmin ? 'bg-emerald-900/40 text-emerald-300 border-emerald-700' : 'border-gray-600 text-gray-400'}`}
-          >
-            {cfg?.autoApproveAdmin ? 'On' : 'Off'}
-          </button>
-        </div>
-      </section>
 
       {/* Pending admin actions */}
       <section>
         <h4 className="font-semibold mb-2">Pending admin actions {pending.length > 0 && <span className="text-rose-400">({pending.length})</span>}</h4>
         {pending.length === 0 ? (
-          <p className="text-gray-500">No admin tool calls awaiting confirmation.</p>
+          <p className="text-gray-500">No gated tool calls awaiting confirmation.</p>
         ) : (
           <div className="space-y-2">
             {pending.map((p) => (
               <div key={p.id} className="flex items-center justify-between border border-rose-800 rounded px-3 py-2 bg-rose-950/20">
                 <div>
                   <div className="font-mono">{p.tool}</div>
-                  <div className="text-gray-400 text-xs">{subjectLabel(p.subject)} · expires {new Date(p.expiresAt).toLocaleTimeString()}</div>
+                  <div className="text-gray-400 text-xs">expires {new Date(p.expiresAt).toLocaleTimeString()}</div>
                 </div>
                 <div className="flex gap-2">
                   <button onClick={() => resolvePending(p.id, 'confirm')} className="px-2 py-1 rounded bg-rose-700 hover:bg-rose-600 text-white text-xs">Confirm &amp; run</button>
@@ -218,77 +139,33 @@ export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
         )}
       </section>
 
-      {/* Default scopes */}
+      {/* Per-tool admin gate */}
       <section>
-        <h4 className="font-semibold mb-2">Default scopes (callers with no grant)</h4>
-        <div className="flex gap-2">
-          {SCOPES.map((s) => {
-            const on = cfg?.defaultScopes.includes(s);
-            return (
-              <button
-                key={s}
-                onClick={() => cfg && setDefaults(on ? cfg.defaultScopes.filter((x) => x !== s) : [...cfg.defaultScopes, s])}
-                className={`px-2 py-1 rounded text-xs border ${on ? scopeColor[s] : 'border-gray-700 text-gray-500'}`}
-              >
-                {s}
-              </button>
-            );
-          })}
-        </div>
-      </section>
-
-      {/* Grants */}
-      <section>
-        <h4 className="font-semibold mb-2">Grants</h4>
-        <div className="space-y-2 mb-3">
-          {cfg?.grants.length === 0 && <p className="text-gray-500">No grants yet — everyone gets the default scopes.</p>}
-          {cfg?.grants.map((g) => (
-            <div key={g.id} className="flex items-center justify-between border border-gray-700 rounded px-3 py-2">
-              <div>
-                <div className="font-mono text-xs">
-                  {g.clientId ? `client ${g.clientId}` : g.email ? g.email : `user ${g.userId}`}
-                </div>
-                <div className="flex gap-1 mt-1">{g.scopes.map((s) => <ScopeBadge key={s} s={s} />)}</div>
-                {g.note && <div className="text-gray-500 text-xs mt-1">{g.note}</div>}
-              </div>
-              <button onClick={() => removeGrant(g.id)} className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs">Remove</button>
-            </div>
-          ))}
-        </div>
-
-        {/* Add grant */}
-        <div className="border border-gray-700 rounded p-3 space-y-2">
-          <div className="font-medium">Add grant</div>
-          <div className="flex gap-2 items-center flex-wrap">
-            <select value={matchType} onChange={(e) => setMatchType(e.target.value as typeof matchType)} className="bg-gray-800 border border-gray-700 rounded px-2 py-1">
-              <option value="email">email</option>
-              <option value="clientId">clientId</option>
-              <option value="userId">userId</option>
-            </select>
-            <input value={matchValue} onChange={(e) => setMatchValue(e.target.value)} placeholder="value to match" className="bg-gray-800 border border-gray-700 rounded px-2 py-1 flex-1 min-w-[180px]" />
-          </div>
-          <div className="flex gap-2">
-            {SCOPES.map((s) => (
-              <button key={s} onClick={() => toggleScope(newScopes, s, setNewScopes)} className={`px-2 py-1 rounded text-xs border ${newScopes.includes(s) ? scopeColor[s] : 'border-gray-700 text-gray-500'}`}>{s}</button>
-            ))}
-          </div>
-          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="note (optional)" className="bg-gray-800 border border-gray-700 rounded px-2 py-1 w-full" />
-          <button onClick={addGrant} className="px-3 py-1 rounded bg-blue-700 hover:bg-blue-600 text-white">Save grant</button>
-        </div>
-      </section>
-
-      {/* Tool catalog */}
-      <section>
-        <h4 className="font-semibold mb-2">Tool catalog ({cfg?.tools.length ?? 0})</h4>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-1">
-          {(['read', 'write', 'admin'] as Scope[]).flatMap((sc) =>
+        <h4 className="font-semibold mb-2">
+          Tool admin gate {gatedCount > 0 && <span className="text-rose-400">({gatedCount} gated)</span>}
+        </h4>
+        <p className="text-gray-500 mb-2 text-xs">
+          Toggle the extra admin confirm per tool. Default is off (normal claude.ai approval). The scope badge is a
+          sensitivity hint only.
+        </p>
+        <div className="space-y-1">
+          {(['admin', 'write', 'read'] as Scope[]).flatMap((sc) =>
             (cfg?.tools.filter((t) => t.scope === sc) || []).map((t) => (
-              <div key={t.tool} className="flex items-center justify-between border-b border-gray-800 py-1">
-                <span className="font-mono text-xs">{t.tool}</span>
-                <ScopeBadge s={t.scope} />
+              <div key={t.tool} className="flex items-center justify-between border-b border-gray-800 py-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-xs">{t.tool}</span>
+                  <ScopeBadge s={t.scope} />
+                </div>
+                <button
+                  onClick={() => setGate(t.tool, !t.adminGate)}
+                  className={`px-2 py-1 rounded text-xs border ${t.adminGate ? 'bg-rose-900/40 text-rose-300 border-rose-700' : 'border-gray-600 text-gray-500'}`}
+                >
+                  {t.adminGate ? 'Admin confirm ON' : 'off'}
+                </button>
               </div>
             )),
           )}
+          {!cfg && <p className="text-gray-500">Loading…</p>}
         </div>
       </section>
 

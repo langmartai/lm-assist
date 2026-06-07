@@ -1,66 +1,43 @@
 /**
- * MCP Access Control (authorization) — owned by lm-assist, not the gateway.
+ * MCP admin-approval gate — owned by lm-assist, per-user, this node.
  *
- * The gateway/hub authenticates the caller and ROUTES the MCP request to this
- * node. THIS module decides what that caller is allowed to do. Source of truth
- * is a local JSON config at `~/.lm-assist/mcp-access.json`, editable via the
- * REST API (`/mcp/access*`) and the "MCP" settings tab.
+ * This MCP connection IS the user's own — there is no other principal, so there
+ * is nothing to authorize between accounts (no grants, no "everyone", no deny).
+ * The ONLY control here is an OPTIONAL extra confirmation gate the user can turn
+ * on PER TOOL:
  *
- * A caller is identified by a `subject` carried on the relayed request (the
- * connector's clientId, the langmart user email, or an issued MCP token id —
- * whichever the gateway forwards). Each subject is granted a set of scopes
- * (`read` | `write` | `admin`); unknown subjects get `defaultScopes`.
+ *   - ungated tool (the default for every tool) → runs normally; whatever
+ *     per-tool approval claude.ai applies is outside our control.
+ *   - gated tool → the call does NOT execute. It parks a pending action and the
+ *     user releases it out-of-band (the MCP settings tab / POST
+ *     /mcp/pending/:id/confirm). The model can park a pending but cannot reach
+ *     the confirm endpoint, so it can never release its own gated action.
  *
- * Tool → required-scope comes from the canonical `TOOL_SCOPES` map in
- * configure.ts, so there is one source of truth for that.
+ * Source of truth: `~/.lm-assist/mcp-access.json`. Default = no tool gated.
+ *
+ * NOTE: the tool→scope map (`TOOL_SCOPES` in configure.ts, served at
+ * /mcp/tool-scopes) is a SEPARATE concern — the upstream langmart gateway uses
+ * it for Bearer-key gating. It is unrelated to this per-user gate, kept here
+ * only as a sensitivity hint for the settings UI.
  */
 
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { TOOL_SCOPES, requiredScope, type ToolScope } from './configure';
-
-export interface McpGrant {
-  /** Stable id for this grant row (for edit/delete from the UI). */
-  id: string;
-  /** Match by connector clientId (preferred — stable per connector). */
-  clientId?: string;
-  /** Or match by langmart user email. */
-  email?: string;
-  /** Or match by langmart userId. */
-  userId?: string;
-  /** Granted scopes. */
-  scopes: ToolScope[];
-  /** Free-text note shown in the UI. */
-  note?: string;
-  /** ISO timestamp of last change. */
-  updatedAt: string;
-}
+import { TOOL_SCOPES, type ToolScope } from './configure';
 
 export interface McpAccessConfig {
   version: number;
-  /** Scopes for any caller with no matching grant. New connectors are read-only. */
-  defaultScopes: ToolScope[];
-  grants: McpGrant[];
   /**
-   * When true, an admin-scope tool call from a subject that HOLDS admin runs
-   * immediately instead of parking for out-of-band confirmation. It never
-   * widens access — a subject without admin scope is still denied. Defaults to
-   * true (admin actions auto-approve); set false to require manual confirm.
+   * Tool names that require the extra out-of-band admin confirm. Every tool not
+   * in this list runs normally. Default is empty (no tool gated).
    */
-  autoApproveAdmin: boolean;
-}
-
-/** The subject of an incoming MCP request, as forwarded by the gateway. */
-export interface McpSubject {
-  clientId?: string;
-  email?: string;
-  userId?: string;
+  adminGatedTools: string[];
 }
 
 // Dev/prod separation: the dev-repo instance (no LM_ASSIST_PROD) keeps its own
-// access config so dev grants never leak into prod and vice-versa — mirrors the
+// config so dev settings never leak into prod and vice-versa — mirrors the
 // `-dev` suffix the hub config uses (hub-dev.json, machine-id-dev).
 const IS_DEV_REPO = process.env.LM_ASSIST_PROD === 'true' ? false : !__dirname.includes('node_modules');
 const DEV_SUFFIX = IS_DEV_REPO ? '-dev' : '';
@@ -69,24 +46,21 @@ const ACCESS_DIR = path.join(os.homedir(), '.lm-assist');
 const ACCESS_FILE = path.join(ACCESS_DIR, `mcp-access${DEV_SUFFIX}.json`);
 
 const DEFAULT_CONFIG: McpAccessConfig = {
-  version: 1,
-  defaultScopes: ['read'],
-  grants: [],
-  autoApproveAdmin: true,
+  version: 2,
+  adminGatedTools: [],
 };
 
 // ─── load / save ────────────────────────────────────────────────
 
 let cache: { cfg: McpAccessConfig; mtimeMs: number } | null = null;
 
-/** Read the access config, creating the default file on first use. */
+/** Read the config, creating the default file on first use. */
 export function loadAccessConfig(): McpAccessConfig {
   try {
     const stat = fs.statSync(ACCESS_FILE);
     if (cache && cache.mtimeMs === stat.mtimeMs) return cache.cfg;
     const raw = fs.readFileSync(ACCESS_FILE, 'utf-8');
-    const parsed = JSON.parse(raw) as McpAccessConfig;
-    const cfg = normalize(parsed);
+    const cfg = normalize(JSON.parse(raw));
     cache = { cfg, mtimeMs: stat.mtimeMs };
     return cfg;
   } catch {
@@ -96,7 +70,7 @@ export function loadAccessConfig(): McpAccessConfig {
   }
 }
 
-/** Persist the access config atomically and refresh the cache. */
+/** Persist the config atomically and refresh the cache. */
 export function saveAccessConfig(cfg: McpAccessConfig): void {
   const normalized = normalize(cfg);
   fs.mkdirSync(ACCESS_DIR, { recursive: true });
@@ -110,147 +84,65 @@ export function saveAccessConfig(cfg: McpAccessConfig): void {
   }
 }
 
+/**
+ * Coerce any prior/partial config into the current shape. Migrates legacy files
+ * (which carried grants / defaultScopes / autoApproveAdmin) by simply dropping
+ * those fields — only `adminGatedTools` survives, filtered to known tools.
+ */
 function normalize(cfg: Partial<McpAccessConfig> | null | undefined): McpAccessConfig {
-  const c = cfg || {};
-  const validScopes = (s: unknown): ToolScope[] =>
-    Array.isArray(s) ? (s.filter((x) => x === 'read' || x === 'write' || x === 'admin') as ToolScope[]) : [];
+  const c = (cfg || {}) as Record<string, unknown>;
+  const known = new Set(Object.keys(TOOL_SCOPES));
+  const gated = Array.isArray(c.adminGatedTools)
+    ? [...new Set(c.adminGatedTools.filter((t): t is string => typeof t === 'string' && known.has(t)))]
+    : [];
   return {
-    version: typeof c.version === 'number' ? c.version : 1,
-    defaultScopes: validScopes(c.defaultScopes).length ? validScopes(c.defaultScopes) : ['read'],
-    // Default auto-approve ON: missing/undefined → true; only an explicit false disables.
-    autoApproveAdmin: c.autoApproveAdmin !== false,
-    grants: Array.isArray(c.grants)
-      ? c.grants.map((g) => ({
-          id: String(g.id || ''),
-          clientId: g.clientId ? String(g.clientId) : undefined,
-          email: g.email ? String(g.email) : undefined,
-          userId: g.userId ? String(g.userId) : undefined,
-          scopes: validScopes(g.scopes),
-          note: g.note ? String(g.note) : undefined,
-          updatedAt: String(g.updatedAt || ''),
-        }))
-      : [],
+    version: typeof c.version === 'number' ? c.version : 2,
+    adminGatedTools: gated,
   };
 }
 
-// ─── resolve + evaluate ─────────────────────────────────────────
+// ─── evaluate ───────────────────────────────────────────────────
 
-/** True if grant `g` matches subject `s` (clientId first, then email, then userId). */
-function grantMatches(g: McpGrant, s: McpSubject): boolean {
-  if (g.clientId && s.clientId && g.clientId === s.clientId) return true;
-  if (g.email && s.email && g.email.toLowerCase() === s.email.toLowerCase()) return true;
-  if (g.userId && s.userId && g.userId === s.userId) return true;
-  return false;
-}
-
-/** The scopes granted to a subject — the union of all matching grants, else defaultScopes. */
-export function resolveScopes(subject: McpSubject): ToolScope[] {
-  const cfg = loadAccessConfig();
-  const matched = cfg.grants.filter((g) => grantMatches(g, subject));
-  if (matched.length === 0) return [...cfg.defaultScopes];
-  const set = new Set<ToolScope>();
-  for (const g of matched) for (const sc of g.scopes) set.add(sc);
-  return [...set];
-}
-
-export type AccessDecision = 'allow' | 'deny' | 'pending';
+export type AccessDecision = 'allow' | 'pending';
 
 export interface AccessResult {
   decision: AccessDecision;
-  required: ToolScope;
-  granted: ToolScope[];
+}
+
+/** True if the tool currently has the extra admin-confirm gate switched on. */
+export function isToolGated(tool: string): boolean {
+  return loadAccessConfig().adminGatedTools.includes(tool);
 }
 
 /**
- * Decide whether `subject` may call `tool`. read/write that the subject holds
- * → allow. admin that the subject holds → allow when auto-approve is on, else
- * pending (out-of-band confirm). Not held → deny.
+ * Decide whether `tool` runs now or parks for confirm. Gated → pending;
+ * everything else → allow. There is no deny — this MCP is the user's own.
  */
-export function evaluateAccess(subject: McpSubject, tool: string): AccessResult {
-  const required = requiredScope(tool);
-  const granted = resolveScopes(subject);
-  if (!granted.includes(required)) return { decision: 'deny', required, granted };
-  if (required === 'admin') {
-    // Subject holds admin (we passed the deny check). Auto-approve runs it now;
-    // otherwise park for out-of-band confirm. Auto-approve never widens access —
-    // a non-admin subject was already denied above.
-    const autoApprove = loadAccessConfig().autoApproveAdmin;
-    return { decision: autoApprove ? 'allow' : 'pending', required, granted };
-  }
-  return { decision: 'allow', required, granted };
+export function evaluateAccess(tool: string): AccessResult {
+  return { decision: isToolGated(tool) ? 'pending' : 'allow' };
 }
 
-// ─── grant management (used by the API + UI) ────────────────────
+// ─── gate management (used by the API + UI) ─────────────────────
 
-function genId(): string {
-  // Time-free, collision-resistant enough for a small hand-managed list.
-  return 'g_' + Array.from({ length: 12 }, () => 'abcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(safeRandom() * 36)]).join('');
-}
-
-// Math.random is unavailable in workflow scripts but fine here (server runtime).
-function safeRandom(): number {
-  return Math.random();
-}
-
-/** Add or update a grant (matched by id, or by the same clientId/email/userId). Returns the saved grant. */
-export function upsertGrant(input: Omit<McpGrant, 'id' | 'updatedAt'> & { id?: string }, nowIso: string): McpGrant {
+/** Turn the extra admin-confirm gate on/off for a single tool. Unknown tools are ignored. */
+export function setToolGate(tool: string, enabled: boolean): McpAccessConfig {
   const cfg = loadAccessConfig();
-  const subjectKey = (g: { clientId?: string; email?: string; userId?: string }) =>
-    `${g.clientId || ''}|${(g.email || '').toLowerCase()}|${g.userId || ''}`;
-  let row = input.id ? cfg.grants.find((g) => g.id === input.id) : undefined;
-  if (!row) row = cfg.grants.find((g) => subjectKey(g) === subjectKey(input) && subjectKey(input) !== '||');
-  if (row) {
-    row.clientId = input.clientId;
-    row.email = input.email;
-    row.userId = input.userId;
-    row.scopes = input.scopes;
-    row.note = input.note;
-    row.updatedAt = nowIso;
-  } else {
-    row = {
-      id: input.id || genId(),
-      clientId: input.clientId,
-      email: input.email,
-      userId: input.userId,
-      scopes: input.scopes,
-      note: input.note,
-      updatedAt: nowIso,
-    };
-    cfg.grants.push(row);
-  }
-  saveAccessConfig(cfg);
-  return row;
-}
-
-/** Remove a grant by id. Returns true if one was removed. */
-export function removeGrant(id: string): boolean {
-  const cfg = loadAccessConfig();
-  const before = cfg.grants.length;
-  cfg.grants = cfg.grants.filter((g) => g.id !== id);
-  if (cfg.grants.length === before) return false;
-  saveAccessConfig(cfg);
-  return true;
-}
-
-/** Replace defaultScopes. */
-export function setDefaultScopes(scopes: ToolScope[], _nowIso: string): McpAccessConfig {
-  const cfg = loadAccessConfig();
-  cfg.defaultScopes = scopes;
+  if (!(tool in TOOL_SCOPES)) return cfg;
+  const set = new Set(cfg.adminGatedTools);
+  if (enabled) set.add(tool);
+  else set.delete(tool);
+  cfg.adminGatedTools = [...set];
   saveAccessConfig(cfg);
   return cfg;
 }
 
-/** Toggle auto-approve for admin actions (on = skip the out-of-band confirm). */
-export function setAutoApproveAdmin(enabled: boolean, _nowIso: string): McpAccessConfig {
-  const cfg = loadAccessConfig();
-  cfg.autoApproveAdmin = enabled;
-  saveAccessConfig(cfg);
-  return cfg;
-}
-
-/** The tool→scope catalog, for the UI to render. */
-export function toolCatalog(): Array<{ tool: string; scope: ToolScope }> {
-  return Object.entries(TOOL_SCOPES).map(([tool, scope]) => ({ tool, scope }));
+/**
+ * The full tool catalog for the settings UI: every tool, its sensitivity scope
+ * (hint), and whether the extra admin gate is currently on.
+ */
+export function toolCatalog(): Array<{ tool: string; scope: ToolScope; adminGate: boolean }> {
+  const gated = new Set(loadAccessConfig().adminGatedTools);
+  return Object.entries(TOOL_SCOPES).map(([tool, scope]) => ({ tool, scope, adminGate: gated.has(tool) }));
 }
 
 export { ACCESS_FILE };

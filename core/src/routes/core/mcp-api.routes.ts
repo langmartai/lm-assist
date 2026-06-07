@@ -22,26 +22,12 @@ import { handleSearchMemory } from '../../mcp-server/tools/search-memory';
 import { handleListClaudeaiConversations } from '../../mcp-server/tools/list-claudeai-conversations';
 import { handleReadConversation } from '../../mcp-server/tools/read-conversation';
 import { EXPANDED_HANDLERS } from '../../mcp-server/tools/expanded';
-import { TOOL_SCOPES, type ToolScope } from '../../mcp-server/configure';
+import { TOOL_SCOPES } from '../../mcp-server/configure';
 import {
-  loadAccessConfig,
-  upsertGrant,
-  removeGrant,
-  setDefaultScopes,
-  setAutoApproveAdmin,
   toolCatalog,
+  setToolGate,
 } from '../../mcp-server/access-control';
 import { listPending, takePending } from '../../mcp-server/mcp-pending';
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function asScopes(v: unknown): ToolScope[] {
-  return Array.isArray(v)
-    ? (v.filter((x) => x === 'read' || x === 'write' || x === 'admin') as ToolScope[])
-    : [];
-}
 
 export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -179,102 +165,38 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // ── MCP access control (authorization, lm-assist-owned) ──────────────
+    // ── MCP admin gate (per-user, lm-assist-owned) ───────────────────────
 
-    // GET /mcp/access — full config for the settings UI: defaults, grants,
-    // and the tool→scope catalog.
+    // GET /mcp/access — the tool catalog for the settings UI. Each entry is
+    // { tool, scope (sensitivity hint), adminGate (extra confirm on/off) }.
     {
       method: 'GET',
       pattern: /^\/mcp\/access$/,
       handler: async () => {
         const start = Date.now();
-        const cfg = loadAccessConfig();
-        return wrapResponse(
-          {
-            defaultScopes: cfg.defaultScopes,
-            grants: cfg.grants,
-            tools: toolCatalog(),
-            autoApproveAdmin: cfg.autoApproveAdmin,
-          },
-          start,
-        );
+        return wrapResponse({ tools: toolCatalog() }, start);
       },
     },
 
-    // POST /mcp/access/grant — add or update a grant.
-    // Body: { id?, clientId?, email?, userId?, scopes:[], note? }
-    {
-      method: 'POST',
-      pattern: /^\/mcp\/access\/grant$/,
-      handler: async (req) => {
-        const start = Date.now();
-        try {
-          const b = (req.body || {}) as Record<string, unknown>;
-          const scopes = asScopes(b.scopes);
-          if (!b.clientId && !b.email && !b.userId) {
-            return wrapError('MCP_ACCESS_BAD', 'one of clientId, email, userId is required', start);
-          }
-          if (scopes.length === 0) {
-            return wrapError('MCP_ACCESS_BAD', 'scopes must be a non-empty subset of read/write/admin', start);
-          }
-          const row = upsertGrant(
-            {
-              id: b.id ? String(b.id) : undefined,
-              clientId: b.clientId ? String(b.clientId) : undefined,
-              email: b.email ? String(b.email) : undefined,
-              userId: b.userId ? String(b.userId) : undefined,
-              scopes,
-              note: b.note ? String(b.note) : undefined,
-            },
-            nowIso(),
-          );
-          return wrapResponse(row, start);
-        } catch (err) {
-          return wrapError('MCP_ACCESS_ERROR', err instanceof Error ? err.message : String(err), start);
-        }
-      },
-    },
-
-    // DELETE /mcp/access/grant/:id — remove a grant.
-    {
-      method: 'DELETE',
-      pattern: /^\/mcp\/access\/grant\/(?<id>[^/]+)$/,
-      handler: async (req) => {
-        const start = Date.now();
-        const ok = removeGrant(req.params.id);
-        return ok
-          ? wrapResponse({ removed: req.params.id }, start)
-          : wrapError('MCP_ACCESS_NOT_FOUND', `no grant ${req.params.id}`, start);
-      },
-    },
-
-    // PUT /mcp/access/defaults — set the default scopes for unmatched callers.
+    // PUT /mcp/access/tool-gate — turn the extra admin-confirm gate on/off for a
+    // single tool. Body: { tool: string, enabled: boolean }. Gated tools park as
+    // pending; ungated tools (the default) run normally.
     {
       method: 'PUT',
-      pattern: /^\/mcp\/access\/defaults$/,
+      pattern: /^\/mcp\/access\/tool-gate$/,
       handler: async (req) => {
         const start = Date.now();
-        const scopes = asScopes((req.body as Record<string, unknown>)?.scopes);
-        if (scopes.length === 0) {
-          return wrapError('MCP_ACCESS_BAD', 'scopes must be a non-empty subset of read/write/admin', start);
+        const b = (req.body || {}) as Record<string, unknown>;
+        const tool = typeof b.tool === 'string' ? b.tool : '';
+        const enabled = b.enabled;
+        if (!tool || !(tool in TOOL_SCOPES)) {
+          return wrapError('MCP_ACCESS_BAD', `unknown tool "${tool}"`, start);
         }
-        return wrapResponse(setDefaultScopes(scopes, nowIso()), start);
-      },
-    },
-
-    // PUT /mcp/access/auto-approve — toggle auto-approve for admin actions.
-    // Body: { enabled: boolean }. On → admin tools held by the caller run
-    // immediately (no out-of-band confirm); off → they park as pending.
-    {
-      method: 'PUT',
-      pattern: /^\/mcp\/access\/auto-approve$/,
-      handler: async (req) => {
-        const start = Date.now();
-        const enabled = (req.body as Record<string, unknown>)?.enabled;
         if (typeof enabled !== 'boolean') {
           return wrapError('MCP_ACCESS_BAD', 'enabled must be a boolean', start);
         }
-        return wrapResponse(setAutoApproveAdmin(enabled, nowIso()), start);
+        setToolGate(tool, enabled);
+        return wrapResponse({ tools: toolCatalog() }, start);
       },
     },
 
@@ -288,7 +210,6 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
           id: p.id,
           tool: p.tool,
           summary: p.summary,
-          subject: p.subject,
           createdAt: p.createdAt,
           expiresAt: p.expiresAt,
         }));
