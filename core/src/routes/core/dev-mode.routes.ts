@@ -595,11 +595,15 @@ export function createDevModeRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // POST /dev-mode/npm-update - Install latest npm package version
+    // POST /dev-mode/npm-update - Install an npm package version (default latest)
+    // Optional body { source | from }: any npm/git spec, a bare version, a local
+    // .tgz path, or an unpacked dir — passed straight to `npm install -g`.
+    // This is the lightweight path (no service kill/restart, no plugin step);
+    // use POST /dev-mode/upgrade for the full custom-build upgrade.
     {
       method: 'POST',
       pattern: /^\/dev-mode\/npm-update$/,
-      handler: async () => {
+      handler: async (req) => {
         if (activeOperation) {
           return {
             success: false,
@@ -612,6 +616,15 @@ export function createDevModeRoutes(_ctx: RouteContext): RouteHandler[] {
 
         const operationId = crypto.randomUUID();
 
+        // Resolve the install spec: a bare version → lm-assist@<version>; a
+        // filesystem path / npm / git spec is passed through; default latest.
+        const rawSource = (req.body?.source ?? req.body?.from);
+        let spec = 'lm-assist@latest';
+        if (typeof rawSource === 'string' && rawSource.trim()) {
+          const s = rawSource.trim();
+          spec = /^[0-9]/.test(s) ? `lm-assist@${s}` : s;
+        }
+
         // Invalidate npm version cache so next status check picks up new version
         npmVersionCache = null;
 
@@ -619,12 +632,12 @@ export function createDevModeRoutes(_ctx: RouteContext): RouteHandler[] {
           operationId,
           'npm-update',
           'npm',
-          ['install', '-g', 'lm-assist@latest'],
+          ['install', '-g', spec],
         );
 
         return {
           success: true,
-          data: { operationId },
+          data: { operationId, spec },
         };
       },
     },
@@ -730,10 +743,15 @@ export function createDevModeRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // POST /dev-mode/upgrade - Spawn detached upgrade script
+    // Optional body { source | from }: install a specific non-published build
+    // instead of npm latest — a local .tgz path, an unpacked dir, a bare
+    // version, or any npm/git spec. API callers should pass an absolute path
+    // for filesystem sources (the spawned script resolves relative paths
+    // against the server's cwd). Omit for the published latest.
     {
       method: 'POST',
       pattern: /^\/dev-mode\/upgrade$/,
-      handler: async () => {
+      handler: async (req) => {
         if (activeOperation) {
           return {
             success: false,
@@ -743,6 +761,11 @@ export function createDevModeRoutes(_ctx: RouteContext): RouteHandler[] {
             },
           };
         }
+
+        const source = (req.body?.source ?? req.body?.from);
+        const extraArgs = (typeof source === 'string' && source.trim())
+          ? ['--from', source.trim()]
+          : [];
 
         const upgradeScript = path.resolve(__dirname, '../../../scripts/upgrade.js');
         if (!fs.existsSync(upgradeScript)) {
@@ -761,7 +784,7 @@ export function createDevModeRoutes(_ctx: RouteContext): RouteHandler[] {
         fs.copyFileSync(upgradeScript, tmpScript);
 
         // Spawn detached — the script will kill this server process
-        const child = spawn(process.execPath, [tmpScript], {
+        const child = spawn(process.execPath, [tmpScript, ...extraArgs], {
           detached: true,
           stdio: 'ignore',
           env: process.env,
@@ -774,7 +797,11 @@ export function createDevModeRoutes(_ctx: RouteContext): RouteHandler[] {
 
         return {
           success: true,
-          data: { message: 'Upgrade started', pid: child.pid },
+          data: {
+            message: 'Upgrade started',
+            pid: child.pid,
+            source: extraArgs.length ? extraArgs[1] : 'lm-assist@latest',
+          },
         };
       },
     },

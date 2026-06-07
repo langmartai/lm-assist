@@ -7,11 +7,19 @@
  * ~/.cache/lm-assist/upgrade.log so the frontend can display progress
  * after the server restarts.
  *
+ * Usage:
+ *   node upgrade.js                       # install lm-assist@latest (default)
+ *   node upgrade.js --from <tgz|dir|spec> # install a specific build, e.g. a
+ *                                         # local lm-assist-0.1.72.tgz, an
+ *                                         # unpacked dir, a bare version, or any
+ *                                         # npm/git spec. See resolveSource().
+ *
  * Steps:
  *   1. Plugin install (claude plugin install lm-assist@langmartai)
+ *      - Skipped for a custom --from build (plugin always tracks published latest)
  *   2. Kill all lm-assist processes (services + MCP servers)
- *   3. npm install -g lm-assist@latest
- *      - If EBUSY: pre-remove old package, retry npm install
+ *   3. npm install -g <source>   (default lm-assist@latest)
+ *      - Windows EBUSY: tarball + robocopy fallback (uses a local .tgz directly)
  *   4. Start services
  */
 
@@ -122,6 +130,48 @@ function run(cmd, args, label) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Resolve the install source from `--from <x>` / `--source <x>` argv (or default
+ * to the published `lm-assist@latest`). This is what lets the upgrade install a
+ * specific NON-published build instead of npm latest.
+ *
+ * Accepted source forms:
+ *   - a local tarball  : /abs/lm-assist-0.1.72.tgz  (or relative; .tgz/.tar.gz)
+ *   - a local pkg dir  : /abs/lm-assist            (an unpacked package directory)
+ *   - a bare version   : 0.1.72                     → lm-assist@0.1.72
+ *   - any npm/git spec : lm-assist@next, github:org/repo#sha, https://…/x.tgz
+ *   - latest (default) : (omit, or --from latest)   → lm-assist@latest
+ *
+ * Returns { spec, tgz, label, isCustom }:
+ *   spec     — passed to `npm install -g <spec>` on every platform
+ *   tgz      — absolute path when the source IS a local .tgz (lets the Windows
+ *              tarball fallback skip `npm pack`); null otherwise
+ *   isCustom — false only for the default published @latest
+ */
+function resolveSource(argv) {
+  let raw = null;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--from' || a === '--source') { raw = argv[i + 1]; break; }
+    if (a.startsWith('--from=')) { raw = a.slice('--from='.length); break; }
+    if (a.startsWith('--source=')) { raw = a.slice('--source='.length); break; }
+  }
+  raw = (raw || '').trim();
+  if (!raw || raw === 'latest' || raw === 'lm-assist@latest') {
+    return { spec: 'lm-assist@latest', tgz: null, label: 'lm-assist@latest', isCustom: false };
+  }
+  // A filesystem path (local build: a .tgz tarball or an unpacked package dir)?
+  const resolved = path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
+  if (fs.existsSync(resolved)) {
+    const isTgz = /\.(tgz|tar\.gz)$/i.test(resolved);
+    // npm install -g accepts both a tarball path and a directory path directly.
+    return { spec: resolved, tgz: isTgz ? resolved : null, label: resolved, isCustom: true };
+  }
+  // Otherwise treat as an npm/git spec; a bare version → lm-assist@<version>.
+  const spec = /^[0-9]/.test(raw) ? `lm-assist@${raw}` : raw;
+  return { spec, tgz: null, label: spec, isCustom: true };
 }
 
 // ── Process killing ─────────────────────────────────────────────────────────
@@ -259,23 +309,25 @@ function cleanPidFiles(dir) {
 }
 
 /**
- * Run npm install -g lm-assist@latest.
- * Returns true on success, false on failure.
+ * Run npm install -g <spec>. `spec` defaults to lm-assist@latest but may be a
+ * local .tgz path, an unpacked dir, a bare version, or any npm/git spec — see
+ * resolveSource(). Returns true on success, false on failure.
  */
-function runNpmInstall() {
+function runNpmInstall(spec) {
+  spec = spec || 'lm-assist@latest';
   if (isWindows) {
     const npmCli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
     if (fs.existsSync(npmCli)) {
-      return run(process.execPath, [npmCli, 'install', '-g', 'lm-assist@latest'], 'npm install');
+      return run(process.execPath, [npmCli, 'install', '-g', spec], 'npm install');
     }
     const npmBin = which('npm.cmd') || which('npm');
     if (npmBin) {
-      return run(npmBin, ['install', '-g', 'lm-assist@latest'], 'npm install');
+      return run(npmBin, ['install', '-g', spec], 'npm install');
     }
     log('[npm install] Cannot find npm binary');
     return false;
   }
-  return run('npm', ['install', '-g', 'lm-assist@latest'], 'npm install');
+  return run('npm', ['install', '-g', spec], 'npm install');
 }
 
 /**
@@ -307,8 +359,13 @@ function getNpmCmd() {
  *
  * robocopy overwrites individual files (not directory renames), so it works
  * even when Windows Defender/Indexer holds a handle on the directory.
+ *
+ * `source` (from resolveSource) selects WHAT to lay down: a local .tgz is used
+ * directly (no npm pack / no download); anything else is fetched via npm pack of
+ * its spec.
  */
-function upgradeViaTarball(pkgDir) {
+function upgradeViaTarball(pkgDir, source) {
+  source = source || { spec: 'lm-assist@latest', tgz: null, label: 'lm-assist@latest' };
   const npm = getNpmCmd();
   if (!npm) {
     log('[tarball] Cannot find npm binary');
@@ -316,32 +373,39 @@ function upgradeViaTarball(pkgDir) {
   }
 
   const tmpDir = path.join(os.tmpdir(), `lm-assist-tarball-${Date.now()}`);
+  let tarball;
   try {
     fs.mkdirSync(tmpDir, { recursive: true });
 
-    // 1. Download tarball
-    log('[tarball] Downloading lm-assist@latest tarball...');
-    try {
-      const packOutput = execFileSync(npm.cmd, [...npm.prefix, 'pack', 'lm-assist@latest', '--pack-destination', tmpDir], {
-        encoding: 'utf-8', timeout: 60_000, windowsHide: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, CLAUDECODE: undefined },
-      }).trim();
-      // npm pack outputs the tarball filename
-      const tgzName = packOutput.split(/\r?\n/).pop().trim();
-      log(`[tarball] Downloaded: ${tgzName}`);
-    } catch (e) {
-      log(`[tarball] npm pack failed: ${e.stderr || e.message}`);
-      return false;
-    }
+    if (source.tgz && fs.existsSync(source.tgz)) {
+      // 1a. Local build tarball — use it directly, no fetch needed.
+      tarball = source.tgz;
+      log(`[tarball] Using local build tarball: ${tarball}`);
+    } else {
+      // 1b. Fetch the tarball for the requested spec
+      log(`[tarball] Downloading ${source.label} tarball...`);
+      try {
+        const packOutput = execFileSync(npm.cmd, [...npm.prefix, 'pack', source.spec, '--pack-destination', tmpDir], {
+          encoding: 'utf-8', timeout: 60_000, windowsHide: true,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: { ...process.env, CLAUDECODE: undefined },
+        }).trim();
+        // npm pack outputs the tarball filename
+        const tgzName = packOutput.split(/\r?\n/).pop().trim();
+        log(`[tarball] Downloaded: ${tgzName}`);
+      } catch (e) {
+        log(`[tarball] npm pack failed: ${e.stderr || e.message}`);
+        return false;
+      }
 
-    // Find the tarball
-    const tarballs = fs.readdirSync(tmpDir).filter(f => f.endsWith('.tgz'));
-    if (tarballs.length === 0) {
-      log('[tarball] No tarball found after npm pack');
-      return false;
+      // Find the tarball
+      const tarballs = fs.readdirSync(tmpDir).filter(f => f.endsWith('.tgz'));
+      if (tarballs.length === 0) {
+        log('[tarball] No tarball found after npm pack');
+        return false;
+      }
+      tarball = path.join(tmpDir, tarballs[0]);
     }
-    const tarball = path.join(tmpDir, tarballs[0]);
 
     // 2. Extract tarball
     // On Windows, use C:\Windows\System32\tar.exe explicitly — Git's tar
@@ -433,14 +497,22 @@ async function main() {
   fs.writeFileSync(LOG_FILE, '');
   log('=== upgrade started ===');
 
+  const source = resolveSource(process.argv.slice(2));
+  log(`Install source: ${source.label}${source.isCustom ? ' (custom build)' : ' (published latest)'}`);
+
   const claudeBin = which('claude');
   const apiPort = process.env.API_PORT || '3100';
   const webPort = process.env.WEB_PORT || '3848';
   const npmGlobalRoot = getNpmGlobalRoot();
 
   // ── Step 1: Plugin install ──────────────────────────────────────────────
+  // The marketplace plugin always tracks the published release, so for a custom
+  // build we skip it — installing the public plugin would not match the build
+  // being laid down and could overwrite a deliberately-pinned version.
   log('--- Step 1: Plugin install ---');
-  if (claudeBin) {
+  if (source.isCustom) {
+    log('Custom build source — skipping marketplace plugin install (use --from latest to refresh it).');
+  } else if (claudeBin) {
     run(claudeBin, ['plugin', 'install', 'lm-assist@langmartai'], 'Plugin install');
   } else {
     log('claude binary not found in PATH, skipping plugin install');
@@ -472,7 +544,7 @@ async function main() {
   await sleep(waitSec * 1000);
 
   // ── Step 3: npm install ─────────────────────────────────────────────────
-  log('--- Step 3: npm install -g lm-assist@latest ---');
+  log(`--- Step 3: npm install -g ${source.spec} ---`);
 
   // Clean npm staging directories from any previous failed installs
   if (isWindows && npmGlobalRoot) {
@@ -489,7 +561,7 @@ async function main() {
   }
 
   // Attempt 1: Try npm install directly (works when file handles are released)
-  let npmOk = runNpmInstall();
+  let npmOk = runNpmInstall(source.spec);
 
   // Attempt 2 (Windows only): If npm failed with EBUSY, use tarball + robocopy fallback.
   // This overwrites files in place (no directory rename), bypassing the EBUSY issue
@@ -497,11 +569,11 @@ async function main() {
   if (!npmOk && isWindows && npmGlobalRoot) {
     const pkgDir = path.join(npmGlobalRoot, 'lm-assist');
     log('npm install failed (likely EBUSY), trying tarball + robocopy fallback...');
-    npmOk = upgradeViaTarball(pkgDir);
+    npmOk = upgradeViaTarball(pkgDir, source);
   }
 
   if (!npmOk) {
-    log('ERROR: All upgrade methods failed. Run manually: npm install -g lm-assist@latest');
+    log(`ERROR: All upgrade methods failed. Run manually: npm install -g ${source.spec}`);
   }
 
   // ── Step 4: Start services ──────────────────────────────────────────────
