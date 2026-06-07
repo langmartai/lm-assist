@@ -169,6 +169,10 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   open_port_forward: 'admin',
   list_port_forwards: 'read',
   close_port_forward: 'admin',
+  // session-to-session messaging
+  send_session_message: 'admin',
+  list_session_messages: 'read',
+  get_message_status: 'read',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */

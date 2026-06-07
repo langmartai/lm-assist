@@ -291,6 +291,14 @@ export class WebSocketClient extends EventEmitter {
         return;
       }
 
+      // Binary transport relay frame (0xFD): [0xFD][8-byte md5(channelId)][payload]
+      if (buffer.length >= 9 && buffer[0] === 0xfd) {
+        const channelHash = buffer.subarray(1, 9);  // 8 bytes
+        const payload = buffer.subarray(9);
+        this.emit('transport_relay_data', { channelHash, payload });
+        return;
+      }
+
       // Otherwise parse as JSON
       const dataStr = buffer.toString('utf-8');
       const message = JSON.parse(dataStr) as Record<string, unknown>;
@@ -402,6 +410,27 @@ export class WebSocketClient extends EventEmitter {
 
         case 'forward_close':
           this.emit('forward_close', message);
+          break;
+
+        // Transport driver control (node-to-node UDP hole-punch + relay).
+        // See ../transport/.
+        case 'transport_open':
+          this.emit('transport_open', message);
+          break;
+        case 'transport_offer':
+          this.emit('transport_offer', message);
+          break;
+        case 'transport_answer':
+          this.emit('transport_answer', message);
+          break;
+        case 'transport_relay_open':
+          this.emit('transport_relay_open', message);
+          break;
+        case 'transport_relay_ready':
+          this.emit('transport_relay_ready', message);
+          break;
+        case 'transport_close':
+          this.emit('transport_close', message);
           break;
 
         default:

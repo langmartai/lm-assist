@@ -12,6 +12,8 @@
 import { EventEmitter } from 'events';
 import * as os from 'os';
 import { WebSocketClient } from './websocket-client';
+import { initTransport, onInboundChannel } from '../transport';
+import { handleIncomingTransfer } from '../file-transfer';
 import { ApiRelayHandler, ApiRelayRequest, ServiceRoute } from './api-relay-handler';
 import { ConsoleRelayHandler } from './console-relay-handler';
 import { PortForwardHandler } from './port-forward-handler';
@@ -77,6 +79,7 @@ export class HubClient extends EventEmitter {
   private apiRelayHandler: ApiRelayHandler | null = null;
   private consoleRelayHandler: ConsoleRelayHandler | null = null;
   private portForwardHandler: PortForwardHandler | null = null;
+  private transportInboundWired = false;
   private sessionCacheSync: SessionCacheSync | null = null;
   private config: HubConfig;
   private options: Required<Pick<HubClientOptions, 'hubUrl' | 'apiKey' | 'localApiPort' | 'autoReconnect' | 'reconnectDelay' | 'maxReconnectAttempts'>> & Pick<HubClientOptions, 'adminWebPort' | 'assistWebPort' | 'vibeCoderPort'>;
@@ -402,6 +405,24 @@ export class HubClient extends EventEmitter {
       if (this.portForwardHandler && this.wsClient) {
         this.portForwardHandler.setWebSocket(this.wsClient);
         this.portForwardHandler.setSelfGatewayId(data.gatewayId);
+      }
+
+      // Wire the node-to-node transport driver (UDP hole-punch + relay fallback)
+      // and route inbound transfer channels to the file-transfer receiver.
+      if (this.wsClient) {
+        initTransport({
+          ws: this.wsClient,
+          selfGatewayId: data.gatewayId,
+          stunHost: process.env.LM_ASSIST_STUN_HOST || new URL(this.options.hubUrl).hostname,
+          stunPort: Number(process.env.LM_ASSIST_STUN_PORT) || 8087,
+        });
+        if (!this.transportInboundWired) {
+          this.transportInboundWired = true;
+          onInboundChannel((ch) => {
+            handleIncomingTransfer(ch, {}).catch((e) =>
+              console.error('[HubClient] inbound transfer failed:', e));
+          });
+        }
       }
 
       this.emit('authenticated', data);
