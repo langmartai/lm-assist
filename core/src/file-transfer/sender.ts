@@ -122,7 +122,10 @@ export async function sendPath(
   const totalBytes = entries.reduce((a, e) => a + (e.isDir ? 0 : e.size), 0);
   const transferId = randomUUID();
 
-  const channel = await openChannel(peerGatewayId);
+  let lastMode = '';
+  const attempt = async (forceMode?: 'direct' | 'relay'): Promise<SendResult> => {
+  const channel = await openChannel(peerGatewayId, forceMode ? { forceMode } : undefined);
+  lastMode = channel.mode;
   try {
     const reader = new FrameReader();
     const done = waitForReply(channel, reader, transferId);
@@ -162,6 +165,16 @@ export async function sendPath(
     return { bytes: totalBytes, entries: entries.length };
   } finally {
     channel.close();
+  }
+  };
+  try {
+    return await attempt();
+  } catch (e) {
+    // A direct channel can establish (punch ok) yet have a hostile reverse path
+    // (symmetric/CGNAT): the transfer stalls and idle-times-out. Fall back to the
+    // hub relay (reliable, rides the WS). No double-retry if already on relay.
+    if (lastMode === 'relay') throw e;
+    return await attempt('relay');
   }
 }
 
