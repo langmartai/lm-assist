@@ -28,6 +28,7 @@ import {
   setToolGate,
 } from '../../mcp-server/access-control';
 import { listPending, takePending } from '../../mcp-server/mcp-pending';
+import { dispatch } from './mcp.routes';
 
 export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -226,10 +227,9 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
         const start = Date.now();
         const p = takePending(req.params.id);
         if (!p) return wrapError('MCP_PENDING_NOT_FOUND', 'pending not found or expired', start);
-        const handler = EXPANDED_HANDLERS[p.tool];
-        if (!handler) return wrapError('MCP_UNKNOWN_TOOL', `no handler for ${p.tool}`, start);
         try {
-          const result = await handler(p.args);
+          // Full dispatcher (base + expanded tools) — any gated tool can be released.
+          const result = await dispatch(p.tool, p.args);
           return wrapResponse({ status: 'executed', tool: p.tool, result }, start);
         } catch (err) {
           return wrapError('MCP_EXEC_ERROR', err instanceof Error ? err.message : String(err), start);

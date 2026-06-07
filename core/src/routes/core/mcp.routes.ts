@@ -43,7 +43,7 @@ import { createPending } from '../../mcp-server/mcp-pending';
 // the data stores that already live in this core API process. No HTTP
 // hop, no client. Mirror of the stdio dispatcher's shape; only the
 // per-tool implementation differs.
-const dispatch: McpToolDispatcher = async (name, args) => {
+export const dispatch: McpToolDispatcher = async (name, args) => {
   switch (name) {
     case 'search':                       return handleSearch(args);
     case 'detail':                       return handleDetail(args);
