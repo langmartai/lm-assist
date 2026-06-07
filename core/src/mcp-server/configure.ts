@@ -165,6 +165,10 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   memory_map: 'read',
   memory_record: 'read',
   rule_map: 'read',
+  // port forward (node-to-node TCP tunnel): open/close mutate, list reads
+  open_port_forward: 'admin',
+  list_port_forwards: 'read',
+  close_port_forward: 'admin',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */
