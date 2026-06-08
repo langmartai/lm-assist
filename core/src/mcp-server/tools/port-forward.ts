@@ -41,6 +41,10 @@ export const openPortForwardToolDef = {
         type: 'string',
         description: 'Interface to bind the local listener to. Defaults to 127.0.0.1 (loopback only).',
       },
+      exposeLan: {
+        type: 'boolean',
+        description: 'Bind the node\'s LAN IP instead of loopback so OTHER hosts on the network can reach this forward. Default false (loopback only, for safety).',
+      },
     },
     required: ['targetGatewayId', 'targetPort'],
   },
@@ -113,6 +117,7 @@ async function handleOpenPortForward(args: Record<string, unknown>): Promise<Mcp
   const localPort = args.localPort !== undefined && args.localPort !== null ? Number(args.localPort) : targetPort;
   const body: Record<string, unknown> = { targetGatewayId, targetPort, localPort };
   if (args.bindHost) body.bindHost = String(args.bindHost);
+  if (args.exposeLan) body.exposeLan = true;
 
   try {
     const data = await workerPost<ForwardEntry & { node?: NodeInfo }>('/port-forward', body);

@@ -30,6 +30,7 @@ import {
 import { handleListNodes } from './list-nodes';
 import { GITHUB_TOOL_DEFS, GITHUB_HANDLERS } from './github';
 import { PORT_FORWARD_TOOL_DEFS, PORT_FORWARD_HANDLERS } from './port-forward';
+import { TRANSFER_TOOL_DEFS, TRANSFER_HANDLERS } from './transfer';
 import { SESSION_MESSAGING_TOOL_DEFS, SESSION_MESSAGING_HANDLERS } from './session-messaging';
 
 // ─── Tool definitions ────────────────────────────────────────────
@@ -502,6 +503,7 @@ export const EXPANDED_TOOL_DEFS = [
   ...GITHUB_TOOL_DEFS,
   // port forward (node-to-node TCP tunnel)
   ...PORT_FORWARD_TOOL_DEFS,
+  ...TRANSFER_TOOL_DEFS,
   // session-to-session messaging (send: write/admin; list+status: read)
   ...SESSION_MESSAGING_TOOL_DEFS,
 ] as const;
@@ -911,6 +913,7 @@ export const EXPANDED_HANDLERS: Record<
   ...GITHUB_HANDLERS,
   // port forward (open/list/close node-to-node TCP tunnel)
   ...PORT_FORWARD_HANDLERS,
+  ...TRANSFER_HANDLERS,
   // session-to-session messaging
   ...SESSION_MESSAGING_HANDLERS,
 };

@@ -169,6 +169,10 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   open_port_forward: 'admin',
   list_port_forwards: 'read',
   close_port_forward: 'admin',
+  transfer_send_file: 'admin',
+  transfer_list_remote: 'read',
+  transfer_stats: 'read',
+  port_forward_stats: 'read',
   // session-to-session messaging
   send_session_message: 'admin',
   list_session_messages: 'read',

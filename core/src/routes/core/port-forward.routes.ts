@@ -26,7 +26,7 @@ export function createPortForwardRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!isHubConfigured()) {
           return { success: false, error: 'Hub not configured — port forwarding requires a hub connection' };
         }
-        const { localPort, targetGatewayId, targetPort, bindHost } = req.body || {};
+        const { localPort, targetGatewayId, targetPort, bindHost, exposeLan } = req.body || {};
 
         if (!Number.isInteger(localPort) || localPort < 0 || localPort > 65535) {
           return { success: false, error: 'localPort must be an integer 0–65535 (0 = ephemeral)' };
@@ -37,11 +37,8 @@ export function createPortForwardRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!targetGatewayId || typeof targetGatewayId !== 'string') {
           return { success: false, error: 'targetGatewayId (target node hostId or hostname) is required' };
         }
-        // Default is loopback; only allow explicitly binding to loopback addresses
-        // so a forward can't accidentally expose the tunnel on a public interface.
-        if (bindHost && !['127.0.0.1', '::1', 'localhost'].includes(bindHost)) {
-          return { success: false, error: 'bindHost must be a loopback address (127.0.0.1, ::1, or localhost)' };
-        }
+        // bindHost is resolved below (after the hub is available, so exposeLan
+        // can fall back to this node's LAN IP).
 
         const hub = getHubClient();
         if (!hub.getStatus().authenticated) {
@@ -49,7 +46,16 @@ export function createPortForwardRoutes(_ctx: RouteContext): RouteHandler[] {
         }
 
         try {
-          const result = await hub.openPortForward({ localPort, targetGatewayId, targetPort, bindHost });
+          // Default: loopback only (not reachable by other hosts). exposeLan opts
+          // IN to binding the node's LAN IP so other machines on the network can
+          // reach the forward.
+          let bind: string | undefined = bindHost;
+          if (exposeLan) {
+            bind = bindHost || hub.getNodeInfo().ip || '0.0.0.0';
+          } else if (bindHost && !['127.0.0.1', '::1', 'localhost'].includes(bindHost)) {
+            return { success: false, error: 'bindHost must be a loopback address unless exposeLan:true (default off, for safety)' };
+          }
+          const result = await hub.openPortForward({ localPort, targetGatewayId, targetPort, bindHost: bind });
           return {
             success: true,
             data: { ...result, targetGatewayId, targetPort, node: hub.getNodeInfo() },
