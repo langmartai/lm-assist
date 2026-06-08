@@ -97,6 +97,8 @@ export interface FtFs {
   op: 'drives' | 'list' | 'stat';
   path?: string;
   refresh?: boolean;
+  pattern?: string;
+  regex?: boolean;
 }
 /** Reply to FtFs. data shape depends on op: DriveInfo[] | FsListResult | StatInfo. */
 export interface FtFsResult {

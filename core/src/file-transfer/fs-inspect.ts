@@ -42,10 +42,14 @@ export interface StatInfo {
 export interface FsListResult {
   path: string;
   entries: DirEntry[];
-  /** True when the directory held more than MAX_ENTRIES; entries is the head. */
+  /** True when more entries than MAX_ENTRIES were found; entries is the head. */
   truncated: boolean;
-  /** Total child count in the directory (before the cap). */
+  /** Total child count in the directory (before any pattern filter). */
   total: number;
+  /** When a pattern was given: how many children matched (before the cap). */
+  matched?: number;
+  /** Echo of the filter applied, if any. */
+  pattern?: string;
 }
 
 export interface DriveInfo {
@@ -99,9 +103,15 @@ export function markDirty(absPath: string): void {
   const p = path.resolve(absPath);
   const parent = path.dirname(p);
   cache.delete('stat:' + p);
-  cache.delete('list:' + p);
   cache.delete('stat:' + parent);
-  cache.delete('list:' + parent);
+  // List cache keys may carry a pattern suffix ('list:<dir>\x00<filter>').
+  // Drop every list entry for this dir and its parent, whatever filter made it.
+  // The '\x00' sentinel after <dir> avoids prefix collisions (e.g. /home/yi vs
+  // /home/yitest).
+  for (const k of [...cache.keys()]) {
+    if (k === 'list:' + p || k.startsWith('list:' + p + '\x00')) cache.delete(k);
+    else if (k === 'list:' + parent || k.startsWith('list:' + parent + '\x00')) cache.delete(k);
+  }
 }
 
 /** Drop the whole cache (test/debug). */
@@ -170,21 +180,46 @@ export async function statAbs(
  * List a directory, one level deep, capped at MAX_ENTRIES. Entries are sorted
  * by name. A child that can't be lstat'd (permissions, race) is skipped.
  */
+/**
+ * Convert a shell-style glob (only `*` and `?` are special) to an anchored
+ * RegExp that matches a single filename. Every other regex metacharacter is
+ * escaped, so `[`, `.`, `(` etc. are literal.
+ */
+function globToRegExp(glob: string): RegExp {
+  let re = '^';
+  for (const c of glob) {
+    if (c === '*') re += '[^/]*';
+    else if (c === '?') re += '[^/]';
+    else if ('\\^$.|+()[]{}'.includes(c)) re += '\\' + c;
+    else re += c;
+  }
+  return new RegExp(re + '$');
+}
+
 export async function listDirAbs(
   absPath: string,
-  opts?: { refresh?: boolean },
+  opts?: { refresh?: boolean; pattern?: string; regex?: boolean },
 ): Promise<FsListResult> {
   const p = path.resolve(absPath);
-  const key = 'list:' + p;
+  const pat = opts?.pattern && opts.pattern.length ? opts.pattern : undefined;
+  const key = 'list:' + p + (pat ? '\x00' + (opts?.regex ? 're:' : 'gl:') + pat : '');
   const hit = cacheGet<FsListResult>(key, opts?.refresh);
   if (hit) return hit;
 
-  // readdir is a single syscall even for a large dir; the per-entry lstat is
-  // the real cost, and we cap THAT at MAX_ENTRIES so a directory with 100k
-  // children can't turn into 100k stat calls.
+  // readdir is a single syscall even for a large dir. We then filter by NAME
+  // (pure string, no disk) BEFORE the per-entry lstat, and cap the lstat count
+  // at MAX_ENTRIES — so a pattern query against a 100k-file directory only
+  // stats the matches, never every child.
   const names = (await fsp.readdir(p)).sort();
   const total = names.length;
-  const slice = names.slice(0, MAX_ENTRIES);
+  let pool = names;
+  let matched: number | undefined;
+  if (pat) {
+    const re = opts?.regex ? new RegExp(pat) : globToRegExp(pat);
+    pool = names.filter((n) => re.test(n));
+    matched = pool.length;
+  }
+  const slice = pool.slice(0, MAX_ENTRIES);
   const entries: DirEntry[] = [];
   for (const name of slice) {
     const childAbs = path.join(p, name);
@@ -203,7 +238,11 @@ export async function listDirAbs(
       mtimeMs: st.mtimeMs,
     });
   }
-  const res: FsListResult = { path: p, entries, truncated: total > slice.length, total };
+  const res: FsListResult = { path: p, entries, truncated: pool.length > slice.length, total };
+  if (pat) {
+    res.matched = matched;
+    res.pattern = pat;
+  }
   cacheSet(key, res);
   return res;
 }

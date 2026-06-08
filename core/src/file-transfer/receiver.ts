@@ -416,7 +416,7 @@ export function handleIncomingTransfer(
         let data: unknown;
         if (req.op === 'drives') data = await listDrives({ refresh: req.refresh });
         else if (req.op === 'stat') data = await statAbs(req.path || '', { refresh: req.refresh });
-        else data = await listDirAbs(req.path || '', { refresh: req.refresh });
+        else data = await listDirAbs(req.path || '', { refresh: req.refresh, pattern: req.pattern, regex: req.regex });
         const res: FtFsResult = { type: 'FT_FS_RESULT', op: req.op, data };
         channel.sendControl(encodeControl(res));
       } catch (e) {

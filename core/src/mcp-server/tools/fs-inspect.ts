@@ -38,8 +38,9 @@ export const fsListToolDef = {
   name: 'fs_list',
   description:
     'List a directory (one level) on a node by ABSOLUTE path. Returns each child: name, size, ' +
-    'mode, isDir, mtime. Shallow + entry-capped (does not recurse, so it is safe on huge trees; ' +
-    'truncated:true means there were more children than returned). ' +
+    'mode, isDir, mtime. Optionally filter by name with `pattern` (a shell glob like "*.ts" by ' +
+    'default, or a JS regex when regex:true). Shallow + entry-capped (does not recurse, so it is ' +
+    'safe on huge trees; truncated:true means there were more matches than returned). ' +
     peerNote +
     ' Read-only, cached (pass refresh:true to force a re-read).',
   annotations: { readOnlyHint: true },
@@ -47,6 +48,8 @@ export const fsListToolDef = {
     type: 'object' as const,
     properties: {
       path: { type: 'string', description: 'Absolute directory path on the target node.' },
+      pattern: { type: 'string', description: 'Optional name filter: a shell glob by default (e.g. "*.ts", "data-?.json"), matched against the filename only (listing is one level, not recursive).' },
+      regex: { type: 'boolean', description: 'Interpret `pattern` as a JavaScript regular expression instead of a glob.' },
       peerGatewayId: { type: 'string', description: 'Optional peer node to inspect (from list_nodes).' },
       refresh: { type: 'boolean', description: 'Bypass the cache and re-read from disk.' },
     },
@@ -102,15 +105,20 @@ async function handleFsList(args: Record<string, unknown>): Promise<McpToolResul
   const p = String(args.path || '').trim();
   if (!p) return err('path is required (absolute directory path).');
   const body: Record<string, unknown> = { path: p };
+  if (typeof args.pattern === 'string' && args.pattern) body.pattern = args.pattern;
+  if (args.regex === true) body.regex = true;
   if (args.peerGatewayId) body.peerGatewayId = String(args.peerGatewayId);
   if (args.refresh === true) body.refresh = true;
   try {
-    const d = await workerPost<{ path: string; entries: Entry[]; truncated: boolean; total: number }>(
+    const d = await workerPost<{ path: string; entries: Entry[]; truncated: boolean; total: number; matched?: number; pattern?: string }>(
       '/storage/list',
       body,
     );
     const entries = d.entries || [];
-    const header = `${d.path} (${d.total} item${d.total === 1 ? '' : 's'}${d.truncated ? `, showing ${entries.length}` : ''}):`;
+    const scope = d.pattern
+      ? `${d.matched ?? entries.length} of ${d.total} matching ${d.pattern}`
+      : `${d.total} item${d.total === 1 ? '' : 's'}`;
+    const header = `${d.path} (${scope}${d.truncated ? `, showing ${entries.length}` : ''}):`;
     if (!entries.length) return ok(`${header}\n  (empty)`);
     return ok(
       header +

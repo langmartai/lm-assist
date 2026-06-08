@@ -99,12 +99,14 @@ export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
         const b = req.body || {};
         const p = String(b.path || '');
         if (!p) return { success: false, error: 'path required' };
+        const pattern = typeof b.pattern === 'string' && b.pattern ? b.pattern : undefined;
+        const regex = b.regex === true;
         try {
           if (b.peerGatewayId) {
-            const data = await requestFs(String(b.peerGatewayId), { op: 'list', path: p, refresh: b.refresh === true });
+            const data = await requestFs(String(b.peerGatewayId), { op: 'list', path: p, refresh: b.refresh === true, pattern, regex });
             return { success: true, data };
           }
-          const data = await listDirAbs(p, { refresh: b.refresh === true });
+          const data = await listDirAbs(p, { refresh: b.refresh === true, pattern, regex });
           return { success: true, data };
         } catch (e) {
           return { success: false, error: e instanceof Error ? e.message : String(e) };
