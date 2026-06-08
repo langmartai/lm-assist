@@ -51,6 +51,8 @@ export interface Channel {
    * srflx path. Read live; safe to read at any time.
    */
   via: "host" | "static" | "srflx" | null;
+  /** Measured direct p2p round-trip latency in ms, or null if unmeasured. Live. */
+  rtt: number | null;
   /** Reliable, ordered bulk data — rides the direct path when confirmed. */
   send(data: Buffer): void;
   /** Reliable, ordered control/metadata — ALWAYS rides the relay (priority). */
@@ -159,6 +161,7 @@ function makeChannel(
     // ch.via always see the live leg state + winning candidate kind.
     get mode() { return hybrid.mode(); },
     get via() { return hybrid.via(); },
+    get rtt() { return hybrid.rtt(); },
     send: (data: Buffer) => hybrid.reliable.send(data, false),
     sendControl: (data: Buffer) => hybrid.reliable.send(data, true),
     onData: (cb) => { dataCbRef.cb = cb; },

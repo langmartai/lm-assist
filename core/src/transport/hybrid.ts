@@ -81,6 +81,7 @@ const RELAY_TAG_CONTROL = 0x02; // [0x02][reliable datagram] — control/metadat
 /** Raw byte tags used on the direct UDP socket (before/around reliable). */
 const STUN_REQUEST = Buffer.from('LMSTUN'); // tiny probe to the hub STUN responder
 const PUNCH_PROBE = Buffer.from('LMPUNCH'); // direct probe blasted at the peer
+const PUNCH_ECHO = Buffer.from('LMPECHO'); // direct echo of a probe → measures p2p RTT (one clock, no sync)
 
 /**
  * FIREHOSE marker (raw byte tag on the direct UDP socket). A firehose datagram
@@ -150,6 +151,8 @@ export interface HybridChannel {
   mode(): HybridMode;
   /** Kind of the best confirmed OUTBOUND candidate, or null in relay. Live. */
   via(): CandidateKind | null;
+  /** Measured direct p2p round-trip latency (ms), or null if unmeasured. Live. */
+  rtt(): number | null;
   /**
    * FIREHOSE send: fire `buf` over the DIRECT UDP socket to the live peer,
    * prefixed with the 0xF1 marker. No reliability, no retransmit, no pacing
@@ -205,6 +208,7 @@ export function openHybridChannel(
     let viaKind: CandidateKind | null = null;
     let myDirectOut = false; // peer confirmed it receives OUR direct packets
     let lastDirectRecvAt = 0; // last time we got ANY direct packet from peer
+    let rttMinMs = 0; // min direct round-trip (p2p latency) in ms; 0 = unmeasured
     let lastDirectOutConfirmAt = 0; // last DPROBE_ACK from peer
     let probeTimer: NodeJS.Timeout | null = null;
     let staleTimer: NodeJS.Timeout | null = null;
@@ -283,6 +287,9 @@ export function openHybridChannel(
       return viaKind;
     };
 
+    /** Measured direct round-trip latency (ms), or null if not yet measured. */
+    const rtt = (): number | null => (rttMinMs > 0 ? rttMinMs : null);
+
     // --- the single reliable engine, routing per-direction LIVE ---
     const makeReliable = (): ReliableConnection => {
       return new ReliableConnection({
@@ -342,6 +349,7 @@ export function openHybridChannel(
         reliable,
         mode,
         via,
+        rtt,
         sendUnreliable: (buf: Buffer): boolean => {
           if (tornDown) return false;
           const p = peerUdp;
@@ -464,7 +472,7 @@ export function openHybridChannel(
         }
         const cands = activePeerCands();
         for (const c of cands) {
-          const probe = Buffer.concat([PUNCH_PROBE, Buffer.from(`${c.ip}:${c.port}`)]);
+          const probe = Buffer.concat([PUNCH_PROBE, Buffer.from(`${c.ip}:${c.port}#${Date.now()}`)]);
           try { socket.send(probe, c.port, c.ip); } catch { /* ignore */ }
         }
       };
@@ -516,10 +524,22 @@ export function openHybridChannel(
       if (msg.length >= PUNCH_PROBE.length && msg.subarray(0, PUNCH_PROBE.length).equals(PUNCH_PROBE)) {
         lastDirectRecvAt = Date.now();
         adoptPeerSource(rinfo); // roaming: learn the peer's current udp source
-        // Echo back the candidate the peer aimed at, so they learn which of
-        // THEIR candidates reaches us (per-candidate outbound confirmation).
-        const aimed = msg.subarray(PUNCH_PROBE.length).toString('utf-8');
-        sendDprobeAck(aimed);
+        // tag = "ip:port[#sendTs]". Strip the ts for the candidate-confirm ack;
+        // echo the whole tag straight back over DIRECT so the prober can measure
+        // p2p RTT on its own clock (no clock sync needed).
+        const tag = msg.subarray(PUNCH_PROBE.length).toString('utf-8');
+        sendDprobeAck(tag.split('#')[0]);
+        try { socket!.send(Buffer.concat([PUNCH_ECHO, Buffer.from(tag)]), rinfo.port, rinfo.address); } catch { /* ignore */ }
+        return;
+      }
+      // Direct echo of our own probe coming back → p2p round-trip latency.
+      if (msg.length >= PUNCH_ECHO.length && msg.subarray(0, PUNCH_ECHO.length).equals(PUNCH_ECHO)) {
+        lastDirectRecvAt = Date.now();
+        const ts = Number(msg.subarray(PUNCH_ECHO.length).toString('utf-8').split('#')[1]);
+        if (ts > 0) {
+          const r = Date.now() - ts;
+          if (r >= 0 && r < 60000) rttMinMs = rttMinMs === 0 ? r : Math.min(rttMinMs, r);
+        }
         return;
       }
       // STUN reply is consumed by the stun() listener below; ignore here.

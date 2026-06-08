@@ -28,10 +28,12 @@ interface Stat {
   state: TransferState;
   mode?: string;
   via?: string | null;
+  rttMs?: number | null;
   error?: string;
   instantBps: number;
   sBytes: number;
   sAt: number;
+  live?: () => { mode?: string; via?: string | null; rttMs?: number | null };
 }
 
 export interface TransferStatView {
@@ -50,6 +52,7 @@ export interface TransferStatView {
   instantMBps: number;
   mode?: string;
   via?: string | null;
+  rttMs?: number | null;
   state: TransferState;
   startedAt: number;
   endedAt?: number;
@@ -69,13 +72,14 @@ function statsFile(): string {
 export function beginTransfer(p: {
   id: string; peerGatewayId: string; direction: TransferDirection;
   remotePath: string; totalBytes: number; kind?: TransferKind;
+  live?: () => { mode?: string; via?: string | null; rttMs?: number | null };
 }): void {
   const now = Date.now();
   active.set(p.id, {
     id: p.id, peerGatewayId: p.peerGatewayId, direction: p.direction,
     kind: p.kind ?? 'reliable', remotePath: p.remotePath, totalBytes: p.totalBytes,
     bytes: 0, startedAt: now, updatedAt: now, state: 'active',
-    instantBps: 0, sBytes: 0, sAt: now,
+    instantBps: 0, sBytes: 0, sAt: now, live: p.live,
   });
 }
 
@@ -108,6 +112,8 @@ export function endTransfer(id: string, state: 'done' | 'failed', error?: string
   st.instantBps = 0;
   if (error) st.error = error;
   if (state === 'done' && st.totalBytes > 0) st.bytes = st.totalBytes;
+  if (st.live) { const l = st.live(); if (l.mode !== undefined) st.mode = l.mode; if (l.via !== undefined) st.via = l.via; if (l.rttMs !== undefined) st.rttMs = l.rttMs; }
+  st.live = undefined;
   active.delete(id);
   recent.unshift(st);
   if (recent.length > RECENT_MAX) recent.pop();
@@ -119,13 +125,20 @@ function toView(st: Stat): TransferStatView {
   const elapsedMs = Math.max(0, end - st.startedAt);
   const avgBps = elapsedMs > 0 ? Math.round((st.bytes * 1000) / elapsedMs) : 0;
   const instantBps = st.state === 'active' ? st.instantBps : avgBps;
+  let mode = st.mode, via = st.via, rttMs = st.rttMs;
+  if (st.state === 'active' && st.live) {
+    const l = st.live();
+    if (l.mode !== undefined) mode = l.mode;
+    if (l.via !== undefined) via = l.via;
+    if (l.rttMs !== undefined) rttMs = l.rttMs;
+  }
   return {
     id: st.id, peerGatewayId: st.peerGatewayId, direction: st.direction, kind: st.kind,
     remotePath: st.remotePath, totalBytes: st.totalBytes, bytes: st.bytes,
     pct: st.totalBytes > 0 ? Math.round((st.bytes / st.totalBytes) * 1000) / 10 : 0,
     elapsedMs, avgBps, avgMBps: Math.round((avgBps / 1048576) * 100) / 100,
     instantBps, instantMBps: Math.round((instantBps / 1048576) * 100) / 100,
-    mode: st.mode, via: st.via, state: st.state,
+    mode, via, rttMs, state: st.state,
     startedAt: st.startedAt, endedAt: st.endedAt, error: st.error,
   };
 }

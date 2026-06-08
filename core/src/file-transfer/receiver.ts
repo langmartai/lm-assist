@@ -110,7 +110,8 @@ export function handleIncomingTransfer(
     const handleMeta = async (m: FtMeta) => {
       meta = m;
       transferId = m.transferId;
-      beginTransfer({ id: m.transferId, peerGatewayId: channel.peerGatewayId, direction: 'recv', remotePath: m.root, totalBytes: m.totalBytes, kind: 'reliable' });
+      beginTransfer({ id: m.transferId, peerGatewayId: channel.peerGatewayId, direction: 'recv', remotePath: m.root, totalBytes: m.totalBytes, kind: 'reliable',
+        live: () => ({ mode: channel.mode, via: channel.via, rttMs: channel.rtt }) });
       try {
         // Pre-create directories and prepare file handles.
         for (let i = 0; i < m.entries.length; i++) {
@@ -196,7 +197,8 @@ export function handleIncomingTransfer(
 
     const handleFhMeta = async (m: FtFhMeta) => {
       transferId = m.transferId;
-      beginTransfer({ id: m.transferId, peerGatewayId: channel.peerGatewayId, direction: 'recv', remotePath: m.name, totalBytes: m.size, kind: 'firehose' });
+      beginTransfer({ id: m.transferId, peerGatewayId: channel.peerGatewayId, direction: 'recv', remotePath: m.name, totalBytes: m.size, kind: 'firehose',
+        live: () => ({ mode: channel.mode, via: channel.via, rttMs: channel.rtt }) });
       try {
         const abs = safeJoin(path.join(root, m.root), m.name);
         await fsp.mkdir(path.dirname(abs), { recursive: true });
