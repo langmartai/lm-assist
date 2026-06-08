@@ -199,4 +199,6 @@ export interface SendOpts {
   timeoutMs?: number;
   /** Retry attempts after the first (default 2). Backoff also covers WS reconnect. */
   maxRetries?: number;
+  /** Override the transfer id (the send queue sets it to the jobId for stats linkage). */
+  transferId?: string;
 }

@@ -122,7 +122,7 @@ export async function sendPath(
 ): Promise<SendResult> {
   const { entries } = await walk(localPath);
   const totalBytes = entries.reduce((a, e) => a + (e.isDir ? 0 : e.size), 0);
-  const transferId = randomUUID();
+  const transferId = opts?.transferId ?? randomUUID();
   beginTransfer({ id: transferId, peerGatewayId, direction: 'send', remotePath, totalBytes,
     live: () => (currentChannel ? { mode: currentChannel.mode, via: currentChannel.via, rttMs: currentChannel.rtt } : {}) });
   const onProg = (sent: number, total: number): void => { updateTransfer(transferId, sent); opts?.onProgress?.(sent, total); };

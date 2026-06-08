@@ -21,6 +21,8 @@
 export { sendPath, listRemote } from './sender';
 export { TransferError, classifyError, isRetriable } from './errors';
 export { snapshotTransfers, getTransfer } from './transfer-stats';
+export { enqueueSend, snapshotQueue, getSendJob } from './send-queue';
+export type { SendJobView, SendJobState } from './send-queue';
 export type { TransferStatView } from './transfer-stats';
 export type { TransferErrorCode } from './errors';
 export { handleIncomingTransfer, receiveRoot } from './receiver';

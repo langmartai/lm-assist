@@ -25,6 +25,7 @@ export const sendFileToolDef = {
       localPath: { type: 'string', description: 'Absolute path of the file or directory to send (on the sender node).' },
       remotePath: { type: 'string', description: 'Destination path/name on the receiver (relative to its receive root).' },
       forceMode: { type: 'string', enum: ['direct', 'relay'], description: 'Optional: force transport path. Default auto.' },
+      wait: { type: 'boolean', description: 'Block until the transfer completes (sync). Default false — enqueue and return a jobId; poll transfer_queue.' },
     },
     required: ['peerGatewayId', 'localPath', 'remotePath'],
   },
@@ -66,11 +67,22 @@ export const portForwardStatsToolDef = {
   inputSchema: { type: 'object' as const, properties: {} },
 };
 
+export const transferQueueToolDef = {
+  name: 'transfer_queue',
+  description:
+    'Send-queue status on a node (use the `node` selector): each queued / active / done / ' +
+    'failed send job with state, bytes + percent, MB/s, mode/via, and any error. Sends are ' +
+    'enqueued (non-blocking) and run from this queue. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: { type: 'object' as const, properties: {} },
+};
+
 export const TRANSFER_TOOL_DEFS = [
   sendFileToolDef,
   listRemoteToolDef,
   transferStatsToolDef,
   portForwardStatsToolDef,
+  transferQueueToolDef,
 ] as const;
 
 async function handleSendFile(args: Record<string, unknown>): Promise<McpToolResult> {
@@ -82,14 +94,45 @@ async function handleSendFile(args: Record<string, unknown>): Promise<McpToolRes
   }
   const body: Record<string, unknown> = { peerGatewayId, localPath, remotePath };
   if (args.forceMode === 'direct' || args.forceMode === 'relay') body.forceMode = args.forceMode;
+  if (args.wait === true) body.wait = true;
   try {
-    const d = await workerPost<{ bytes: number; entries: number; mode?: string; via?: string | null }>(
+    const d = await workerPost<{ jobId?: string; state?: string; bytes?: number; entries?: number; mode?: string; via?: string | null }>(
       '/transport/send-file',
       body,
     );
+    if (d.jobId) {
+      return ok(
+        `Queued send to ${peerGatewayId} as "${remotePath}" — jobId ${d.jobId} (${d.state}).\n` +
+          `Poll transfer_queue (or transfer_stats) for progress.`,
+      );
+    }
     return ok(
       `Sent ${d.bytes} bytes (${d.entries} entr${d.entries === 1 ? 'y' : 'ies'}) to ${peerGatewayId} as "${remotePath}".\n` +
         `  mode: ${d.mode ?? '-'} via ${d.via ?? '-'}`,
+    );
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+interface QJob {
+  jobId: string; state: string; peerGatewayId: string; remotePath: string; localPath: string;
+  bytes?: number; totalBytes?: number; pct?: number; instantMBps?: number; avgMBps?: number;
+  rttMs?: number | null; mode?: string; via?: string | null; error?: string;
+}
+async function handleTransferQueue(): Promise<McpToolResult> {
+  try {
+    const d = await workerGet<{ maxConcurrent: number; active: number; pending: number; jobs: QJob[] }>('/transport/queue');
+    const jobs = d.jobs || [];
+    const fmt = (j: QJob) =>
+      `  [${j.state}] ${j.localPath} -> ${j.peerGatewayId}:${j.remotePath}` +
+      (j.state === 'active' ? ` ${j.pct ?? 0}% inst=${j.instantMBps ?? 0} avg=${j.avgMBps ?? 0}MB/s rtt=${j.rttMs ?? '-'}ms ${j.mode ?? '-'}/${j.via ?? '-'}` : '') +
+      (j.state === 'done' ? ` ${j.bytes ?? 0}B ${j.mode ?? '-'}/${j.via ?? '-'}` : '') +
+      (j.error ? ` ERROR: ${j.error}` : '') +
+      ` (${j.jobId.slice(0, 8)})`;
+    return ok(
+      `Send queue — ${d.active} active / ${d.pending} pending (max ${d.maxConcurrent}):\n` +
+        (jobs.length ? jobs.map(fmt).join('\n') : '  no jobs'),
     );
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
@@ -168,6 +211,7 @@ async function handlePortForwardStats(): Promise<McpToolResult> {
 
 export const TRANSFER_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
   transfer_send_file: handleSendFile,
+  transfer_queue: () => handleTransferQueue(),
   transfer_list_remote: handleListRemote,
   transfer_stats: () => handleTransferStats(),
   port_forward_stats: () => handlePortForwardStats(),

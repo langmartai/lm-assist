@@ -9,7 +9,7 @@
  */
 
 import type { RouteContext, RouteHandler, ParsedRequest } from '../index';
-import { sendPath, listRemote, TransferError, snapshotTransfers } from '../../file-transfer';
+import { sendPath, listRemote, TransferError, snapshotTransfers, enqueueSend, snapshotQueue } from '../../file-transfer';
 
 export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -17,6 +17,11 @@ export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'GET',
       pattern: /^\/transport\/stats$/,
       handler: async () => ({ success: true, data: snapshotTransfers() }),
+    },
+    {
+      method: 'GET',
+      pattern: /^\/transport\/queue$/,
+      handler: async () => ({ success: true, data: snapshotQueue() }),
     },
     {
       method: 'POST',
@@ -34,8 +39,15 @@ export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
           if (b.forceMode === 'relay' || b.forceMode === 'direct') o.forceMode = b.forceMode;
           if (typeof b.timeoutMs === 'number') o.timeoutMs = b.timeoutMs;
           if (typeof b.maxRetries === 'number') o.maxRetries = b.maxRetries;
-          const res = await sendPath(peerGatewayId, localPath, remotePath, o);
-          return { success: true, data: res };
+          // Default: ENQUEUE and return a jobId immediately (non-blocking). The
+          // send runs from the queue; poll /transport/queue or /transport/stats.
+          // Pass wait:true to block until the transfer completes (sync).
+          if (b.wait === true) {
+            const res = await sendPath(peerGatewayId, localPath, remotePath, o);
+            return { success: true, data: res };
+          }
+          const jobId = enqueueSend({ peerGatewayId, localPath, remotePath, opts: o });
+          return { success: true, data: { jobId, state: 'queued' } };
         } catch (e) {
           return {
             success: false,
