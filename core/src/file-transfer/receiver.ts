@@ -275,7 +275,7 @@ export function handleIncomingTransfer(
       }
       fh.bitmap[byteIdx] |= mask;
       fh.received += 1;
-      writeQueue.push({ seq, bytes: Buffer.from(bytes) }); // copy: socket buffer may be reused
+      writeQueue.push({ seq, bytes }); // dgram allocates a fresh buffer per datagram (no reuse) — no copy needed
       void drainWrites();
     };
 
