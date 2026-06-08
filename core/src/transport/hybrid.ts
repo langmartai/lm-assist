@@ -63,6 +63,7 @@ import {
   type CandidateKind,
   buildCandidateList,
   buildUdpAdvert,
+  candidatePriority,
   classifyEndpoint,
   gatherHostCandidates,
   gatherStaticCandidate,
@@ -168,6 +169,9 @@ export function openHybridChannel(
   return new Promise<HybridChannel>((resolve, reject) => {
     let settled = false;
     let tornDown = false;
+    const dbg = (...a: unknown[]): void => {
+      if (process.env.LM_TDEBUG) console.log('[hybrid]', opts.channelId.slice(0, 8), opts.initiator ? 'I' : 'A', ...a);
+    };
 
     // --- direct (udp) state ---
     let socket: dgram.Socket | null = null;
@@ -186,6 +190,7 @@ export function openHybridChannel(
     let probingStartedAt = 0;
     let bidiFreshCycles = 0; // consecutive sweeps with BOTH legs fresh
     let bidiPromoted = false; // sticky promotion flag (cleared on demotion)
+    let roamed = false; // we have observed real inbound udp from the peer
 
     // --- relay state ---
     let relayReady = false;
@@ -220,9 +225,14 @@ export function openHybridChannel(
       sendRelayFrame(framed);
     };
 
-    const sendDprobeAck = (): void => {
-      // Tag 0x01: "your direct reaches me" — single-byte control over relay.
-      sendRelayFrame(Buffer.from([RELAY_TAG_DPROBE_ACK]));
+    const sendDprobeAck = (tag: string): void => {
+      // Tag 0x01 + echoed target string: tells the peer WHICH of its candidate
+      // targets actually reached us, so it can pick the right send endpoint.
+      const t = Buffer.from(tag, 'utf-8');
+      const buf = Buffer.allocUnsafe(1 + t.length);
+      buf.writeUInt8(RELAY_TAG_DPROBE_ACK, 0);
+      t.copy(buf, 1);
+      sendRelayFrame(buf);
     };
 
     // --- mode computation (live) ---
@@ -328,6 +338,21 @@ export function openHybridChannel(
         // Peer confirms our direct packets reach it → route OUTBOUND direct.
         myDirectOut = true;
         lastDirectOutConfirmAt = Date.now();
+        // Echoed payload = which of OUR candidate targets reached the peer. Use
+        // it as the send endpoint UNLESS we already roamed to an observed inbound
+        // source (a proven reverse path = higher confidence). Prefer the
+        // highest-priority confirmed candidate.
+        const ep = payload.subarray(1).toString('utf-8');
+        const mm = /^(.+):(\d+)$/.exec(ep);
+        if (mm && !roamed) {
+          const cand: UdpEndpoint = { ip: mm[1], port: Number(mm[2]) };
+          const kind = classifyEndpoint(cand, peerCands);
+          if (!viaKind || candidatePriority(kind) >= candidatePriority(viaKind)) {
+            peerUdp = cand;
+            viaKind = kind;
+            dbg('out-confirmed target', ep, kind);
+          }
+        }
         return;
       }
       if (tag === RELAY_TAG_DATAGRAM) {
@@ -398,6 +423,7 @@ export function openHybridChannel(
     const startProbing = (): void => {
       if (probeTimer || tornDown) return;
       probingStartedAt = Date.now();
+      dbg('startProbing peerCands=', JSON.stringify(peerCands));
       const blast = () => {
         if (tornDown || !socket) return;
         // Escalate HOST → PUNCH if nothing confirmed within the phase-1 budget.
@@ -407,7 +433,8 @@ export function openHybridChannel(
         }
         const cands = activePeerCands();
         for (const c of cands) {
-          try { socket.send(PUNCH_PROBE, c.port, c.ip); } catch { /* ignore */ }
+          const probe = Buffer.concat([PUNCH_PROBE, Buffer.from(`${c.ip}:${c.port}`)]);
+          try { socket.send(probe, c.port, c.ip); } catch { /* ignore */ }
         }
       };
       blast();
@@ -428,6 +455,7 @@ export function openHybridChannel(
         // CONSERVATIVE PROMOTION: count consecutive cycles where BOTH legs are
         // fresh; promote to BIDI only after the sustain window. Reset the moment
         // either leg goes stale (which also demotes a promoted channel).
+        const was = bidiPromoted;
         if (myDirectFresh() && weReceiveDirect()) {
           bidiFreshCycles += 1;
           if (bidiFreshCycles >= BIDI_SUSTAIN_CYCLES) bidiPromoted = true;
@@ -435,26 +463,32 @@ export function openHybridChannel(
           bidiFreshCycles = 0;
           bidiPromoted = false; // FAST DEMOTION out of BIDI on either leg stale.
         }
+        if (process.env.LM_TDEBUG)
+          dbg('sweep out=' + myDirectFresh() + ' inn=' + weReceiveDirect() + ' mode=' + mode()
+              + (was !== bidiPromoted ? ' BIDI->' + bidiPromoted : ''));
       }, PROBE_INTERVAL_MS);
       staleTimer.unref?.();
     };
 
     /** Roam peerUdp to a freshly observed source + recompute via kind. */
     const adoptPeerSource = (rinfo: dgram.RemoteInfo): void => {
-      if (!peerUdp || peerUdp.ip !== rinfo.address || peerUdp.port !== rinfo.port) {
-        peerUdp = { ip: rinfo.address, port: rinfo.port };
-      }
-      viaKind = classifyEndpoint(peerUdp, peerCands);
+      const changed = !peerUdp || peerUdp.ip !== rinfo.address || peerUdp.port !== rinfo.port;
+      if (changed) peerUdp = { ip: rinfo.address, port: rinfo.port };
+      roamed = true; // proven reverse path: the peer's packets reach us
+      viaKind = classifyEndpoint(peerUdp!, peerCands);
+      if (changed) dbg('roamed to', rinfo.address + ':' + rinfo.port, viaKind);
     };
 
     const onUdpMessage = (msg: Buffer, rinfo: dgram.RemoteInfo): void => {
       if (tornDown) return;
       // Direct probe from the peer: their direct path reaches us.
-      if (msg.length === PUNCH_PROBE.length && msg.equals(PUNCH_PROBE)) {
+      if (msg.length >= PUNCH_PROBE.length && msg.subarray(0, PUNCH_PROBE.length).equals(PUNCH_PROBE)) {
         lastDirectRecvAt = Date.now();
         adoptPeerSource(rinfo); // roaming: learn the peer's current udp source
-        // Tell the peer over the relay control plane: "your direct reaches me."
-        sendDprobeAck();
+        // Echo back the candidate the peer aimed at, so they learn which of
+        // THEIR candidates reaches us (per-candidate outbound confirmation).
+        const aimed = msg.subarray(PUNCH_PROBE.length).toString('utf-8');
+        sendDprobeAck(aimed);
         return;
       }
       // STUN reply is consumed by the stun() listener below; ignore here.
@@ -495,6 +529,7 @@ export function openHybridChannel(
 
       const myCands = buildCandidateList(hostCands, staticCand, srflx);
       const advert = buildUdpAdvert(myCands);
+      dbg('myCands=', JSON.stringify(myCands));
 
       // Exchange candidate adverts over the existing transport_open/offer/answer.
       if (opts.initiator) {
