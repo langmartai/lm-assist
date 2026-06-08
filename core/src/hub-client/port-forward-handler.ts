@@ -109,6 +109,7 @@ interface ForwardListener {
   sBytes: number;     // instant-rate sample baseline (total bytes)
   sAt: number;
   instantBps: number;
+  rttMinMs: number;   // min forward_open→ready round-trip (ping/pong latency), ms; 0 = unmeasured
 }
 
 interface ForwardStream {
@@ -122,6 +123,7 @@ interface ForwardStream {
   bytesDown: number;
   /** Pending connect-timeout (target) / ready-timeout (listener); cleared when active. */
   openTimer?: NodeJS.Timeout;
+  openSentAt?: number; // listener: when forward_open was sent (for ping/pong RTT)
 }
 
 export class PortForwardHandler {
@@ -247,6 +249,7 @@ export class PortForwardHandler {
           sBytes: 0,
           sAt: Date.now(),
           instantBps: 0,
+          rttMinMs: 0,
         };
         this.listeners.set(forwardId, listener);
         // Periodically probe target reachability so status reflects the target
@@ -297,6 +300,7 @@ export class PortForwardHandler {
       }
     }, LISTENER_READY_TIMEOUT_MS);
 
+    stream.openSentAt = Date.now();
     this.ws.send({
       type: 'forward_open',
       forwardId,
@@ -334,7 +338,7 @@ export class PortForwardHandler {
     activeStreams: number; streamsTotal: number;
     bytesUp: number; bytesDown: number; totalBytes: number;
     elapsedMs: number; avgBps: number; avgMBps: number; instantBps: number; instantMBps: number;
-    health: ForwardHealth; createdAt: Date;
+    health: ForwardHealth; createdAt: Date; rttMs: number | null;
   }> {
     const now = Date.now();
     return Array.from(this.listeners.values()).map((l) => {
@@ -356,7 +360,7 @@ export class PortForwardHandler {
         bytesUp: up, bytesDown: down, totalBytes: total,
         elapsedMs, avgBps, avgMBps: Math.round((avgBps / 1048576) * 100) / 100,
         instantBps: l.instantBps, instantMBps: Math.round((l.instantBps / 1048576) * 100) / 100,
-        health: l.health, createdAt: l.createdAt,
+        health: l.health, createdAt: l.createdAt, rttMs: l.rttMinMs || null,
       };
     });
   }
@@ -379,7 +383,7 @@ export class PortForwardHandler {
       fs.appendFileSync(path.join(dir, 'forward-stats.jsonl'), JSON.stringify({
         forwardId, localPort: listener.localPort, targetGatewayId: listener.targetGatewayId,
         targetPort: listener.targetPort, bytesUp: listener.bytesUp, bytesDown: listener.bytesDown,
-        totalBytes: total, streamsTotal: listener.streamsTotal, elapsedMs,
+        totalBytes: total, streamsTotal: listener.streamsTotal, elapsedMs, rttMs: listener.rttMinMs || null,
         avgMBps: elapsedMs > 0 ? Math.round(((total * 1000) / elapsedMs / 1048576) * 100) / 100 : 0,
         endedAt: Date.now(),
       }) + '\n');
@@ -451,7 +455,16 @@ export class PortForwardHandler {
     if (!stream || stream.role !== 'listener') return;
     if (stream.openTimer) { clearTimeout(stream.openTimer); stream.openTimer = undefined; }
     stream.status = 'active';
-    if (stream.forwardId) this.setForwardHealth(stream.forwardId, 'up'); // target reachable
+    if (stream.forwardId) {
+      this.setForwardHealth(stream.forwardId, 'up'); // target reachable
+      // forward_open→forward_ready is a full round-trip over the forward path
+      // (listener→hub→target→hub→listener) — the legacy ping/pong. Record the RTT.
+      if (stream.openSentAt) {
+        const rtt = Date.now() - stream.openSentAt;
+        const lst = this.listeners.get(stream.forwardId);
+        if (lst && rtt >= 0 && rtt < 60000) lst.rttMinMs = lst.rttMinMs === 0 ? rtt : Math.min(lst.rttMinMs, rtt);
+      }
+    }
     stream.socket.resume(); // start flowing client bytes now that target is up
   }
 
