@@ -18,6 +18,7 @@ import * as crypto from 'crypto';
 import { Channel } from '../transport';
 import { FrameReader, encodeControl } from './frame';
 import type { FtDelay } from './types';
+import { beginTransfer, updateTransfer, setTransferMeta, endTransfer } from './transfer-stats';
 import { SUBSYSTEM_TAG } from './protocol';
 import { safeJoin } from './safe-path';
 import {
@@ -95,6 +96,7 @@ export function handleIncomingTransfer(
     let fh: FirehoseRecvState | null = null;
 
     const replyErr = async (id: string, error: string) => {
+      endTransfer(id, 'failed', error);
       const msg: FtErr = { type: 'FT_ERR', transferId: id, error };
       try {
         channel.sendControl(encodeControl(msg));
@@ -108,6 +110,7 @@ export function handleIncomingTransfer(
     const handleMeta = async (m: FtMeta) => {
       meta = m;
       transferId = m.transferId;
+      beginTransfer({ id: m.transferId, peerGatewayId: channel.peerGatewayId, direction: 'recv', remotePath: m.root, totalBytes: m.totalBytes, kind: 'reliable' });
       try {
         // Pre-create directories and prepare file handles.
         for (let i = 0; i < m.entries.length; i++) {
@@ -178,6 +181,8 @@ export function handleIncomingTransfer(
         }
         const ok: FtOk = { type: 'FT_OK', transferId: end.transferId };
         channel.sendControl(encodeControl(ok));
+        setTransferMeta(end.transferId, { mode: channel.mode, via: channel.via });
+        endTransfer(end.transferId, 'done');
         finish();
       } catch (e) {
         await replyErr(end.transferId, 'finalize failed: ' + (e as Error).message);
@@ -191,6 +196,7 @@ export function handleIncomingTransfer(
 
     const handleFhMeta = async (m: FtFhMeta) => {
       transferId = m.transferId;
+      beginTransfer({ id: m.transferId, peerGatewayId: channel.peerGatewayId, direction: 'recv', remotePath: m.name, totalBytes: m.size, kind: 'firehose' });
       try {
         const abs = safeJoin(path.join(root, m.root), m.name);
         await fsp.mkdir(path.dirname(abs), { recursive: true });
@@ -275,6 +281,7 @@ export function handleIncomingTransfer(
       }
       fh.bitmap[byteIdx] |= mask;
       fh.received += 1;
+      updateTransfer(transferId, Math.min(fh.size, fh.received * fh.chunk));
       writeQueue.push({ seq, bytes }); // dgram allocates a fresh buffer per datagram (no reuse) — no copy needed
       void drainWrites();
     };
@@ -370,6 +377,8 @@ export function handleIncomingTransfer(
         }
         const ok: FtOk = { type: 'FT_OK', transferId };
         channel.sendControl(encodeControl(ok));
+        setTransferMeta(transferId, { mode: channel.mode, via: channel.via });
+        endTransfer(transferId, 'done');
         fh = null;
         finish();
       } catch (e) {

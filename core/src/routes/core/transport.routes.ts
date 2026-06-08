@@ -9,10 +9,15 @@
  */
 
 import type { RouteContext, RouteHandler, ParsedRequest } from '../index';
-import { sendPath, listRemote, TransferError } from '../../file-transfer';
+import { sendPath, listRemote, TransferError, snapshotTransfers } from '../../file-transfer';
 
 export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
+    {
+      method: 'GET',
+      pattern: /^\/transport\/stats$/,
+      handler: async () => ({ success: true, data: snapshotTransfers() }),
+    },
     {
       method: 'POST',
       pattern: /^\/transport\/send-file$/,

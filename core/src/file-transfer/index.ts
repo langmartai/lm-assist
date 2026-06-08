@@ -20,6 +20,8 @@
 
 export { sendPath, listRemote } from './sender';
 export { TransferError, classifyError, isRetriable } from './errors';
+export { snapshotTransfers, getTransfer } from './transfer-stats';
+export type { TransferStatView } from './transfer-stats';
 export type { TransferErrorCode } from './errors';
 export { handleIncomingTransfer, receiveRoot } from './receiver';
 export type { ReceiveOpts } from './receiver';

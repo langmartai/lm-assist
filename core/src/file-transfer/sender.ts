@@ -15,6 +15,7 @@ import { randomUUID } from 'crypto';
 import { openChannel, Channel } from '../transport';
 import { FrameReader, encodeControl, encodeData } from './frame';
 import { TransferError, classifyError, isRetriable } from './errors';
+import { beginTransfer, updateTransfer, setTransferMeta, endTransfer } from './transfer-stats';
 import { SUBSYSTEM_TAG } from './protocol';
 import { sendFirehose } from './firehose-sender';
 import type {
@@ -122,6 +123,8 @@ export async function sendPath(
   const { entries } = await walk(localPath);
   const totalBytes = entries.reduce((a, e) => a + (e.isDir ? 0 : e.size), 0);
   const transferId = randomUUID();
+  beginTransfer({ id: transferId, peerGatewayId, direction: 'send', remotePath, totalBytes });
+  const onProg = (sent: number, total: number): void => { updateTransfer(transferId, sent); opts?.onProgress?.(sent, total); };
 
   // --- size-adaptive parameters (chosen up front from the manifest size) ---
   const TINY = 64 * 1024;          // below this: skip direct, relay one-shot
@@ -155,9 +158,10 @@ export async function sendPath(
       entries.length === 1 && !entries[0].isDir && totalBytes > LARGE;
     if (firehoseEligible && (await waitForDirect(channel, 3000))) {
       const e0 = entries[0];
+      setTransferMeta(transferId, { kind: 'firehose' });
       const res = await sendFirehose(
         channel, e0.absPath, remotePath, e0.relPath, totalBytes, e0.mode,
-        { onProgress: opts?.onProgress },
+        { onProgress: onProg },
       );
       lastMode = channel.mode;
       return res;
@@ -189,7 +193,7 @@ export async function sendPath(
       }
       await streamFile(channel, transferId, i, e.absPath, chunkSize, (n) => {
         sent += n;
-        opts?.onProgress?.(sent, totalBytes);
+        onProg(sent, totalBytes);
       });
       sha256PerEntry.push(await sha256File(e.absPath));
     }
@@ -222,20 +226,26 @@ export async function sendPath(
   let lastErr: unknown;
   for (let i = 0; i <= maxRetries; i++) {
     try {
-      return await withTimeout(
+      const res = await withTimeout(
         oneRun(i === 0 ? initialForce : 'relay'),
         timeoutMs,
         () => { try { currentChannel?.close(); } catch { /* ignore */ } },
       );
+      setTransferMeta(transferId, { mode: res.mode, via: res.via });
+      endTransfer(transferId, 'done');
+      return res;
     } catch (e) {
       lastErr = e;
       const code = e instanceof TransferError ? e.code : classifyError(e);
       if (!isRetriable(code) || i === maxRetries) {
-        throw e instanceof TransferError ? e : new TransferError(code, errMsg(e), e);
+        const err = e instanceof TransferError ? e : new TransferError(code, errMsg(e), e);
+        endTransfer(transferId, 'failed', err.message);
+        throw err;
       }
       await sleep(Math.min(9000, 1000 * Math.pow(3, i))); // 1s, 3s, 9s
     }
   }
+  endTransfer(transferId, 'failed', 'max retries');
   throw new TransferError('MAX_RETRIES', `transfer failed after ${maxRetries + 1} attempts`, lastErr);
 }
 
