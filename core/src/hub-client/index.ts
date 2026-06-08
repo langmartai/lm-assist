@@ -335,6 +335,10 @@ export class HubClient extends EventEmitter {
     return this.portForwardHandler?.listForwards() ?? [];
   }
 
+  portForwardStats(): ReturnType<PortForwardHandler['stats']> {
+    return this.portForwardHandler?.stats() ?? [];
+  }
+
   /**
    * Identity + environment of THIS node — so port-forward responses and node
    * listings carry which machine they ran on (gatewayId/hostId, hostname, OS,

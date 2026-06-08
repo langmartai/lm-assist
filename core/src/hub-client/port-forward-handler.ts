@@ -34,6 +34,9 @@
 import * as net from 'net';
 import * as crypto from 'crypto';
 import { execFile } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 /** What's holding a local port, if anything (best-effort, Linux `ss`). */
 export interface PortHolder {
@@ -99,6 +102,13 @@ interface ForwardListener {
    *  this just reflects whether the target service is currently reachable. */
   health: ForwardHealth;
   probeTimer?: NodeJS.Timeout;
+  // --- traffic stats (same shape as transfer stats) ---
+  bytesUp: number;    // accumulated from CLOSED streams; active streams summed live
+  bytesDown: number;
+  streamsTotal: number;
+  sBytes: number;     // instant-rate sample baseline (total bytes)
+  sAt: number;
+  instantBps: number;
 }
 
 interface ForwardStream {
@@ -231,6 +241,12 @@ export class PortForwardHandler {
           server,
           createdAt: new Date(),
           health: { status: 'unknown', since: new Date() },
+          bytesUp: 0,
+          bytesDown: 0,
+          streamsTotal: 0,
+          sBytes: 0,
+          sAt: Date.now(),
+          instantBps: 0,
         };
         this.listeners.set(forwardId, listener);
         // Periodically probe target reachability so status reflects the target
@@ -267,6 +283,7 @@ export class PortForwardHandler {
       bytesDown: 0,
     };
     this.streams.set(streamId, stream);
+    listener.streamsTotal += 1;
     this.streamByHash.set(streamHash.toString('hex'), streamId);
 
     // Hold incoming bytes until the target confirms it connected.
@@ -311,6 +328,39 @@ export class PortForwardHandler {
     }));
   }
 
+  /** Per-forward traffic stats (mirrors the transfer-stats shape). Live. */
+  public stats(): Array<{
+    forwardId: string; localPort: number; bindHost: string; targetGatewayId: string; targetPort: number;
+    activeStreams: number; streamsTotal: number;
+    bytesUp: number; bytesDown: number; totalBytes: number;
+    elapsedMs: number; avgBps: number; avgMBps: number; instantBps: number; instantMBps: number;
+    health: ForwardHealth; createdAt: Date;
+  }> {
+    const now = Date.now();
+    return Array.from(this.listeners.values()).map((l) => {
+      const act = Array.from(this.streams.values()).filter((s) => s.forwardId === l.forwardId);
+      const up = l.bytesUp + act.reduce((a, s) => a + s.bytesUp, 0);
+      const down = l.bytesDown + act.reduce((a, s) => a + s.bytesDown, 0);
+      const total = up + down;
+      const elapsedMs = Math.max(0, now - l.createdAt.getTime());
+      const avgBps = elapsedMs > 0 ? Math.round((total * 1000) / elapsedMs) : 0;
+      const dt = now - l.sAt;
+      if (dt >= 500) {
+        l.instantBps = Math.max(0, Math.round(((total - l.sBytes) * 1000) / dt));
+        l.sBytes = total; l.sAt = now;
+      }
+      return {
+        forwardId: l.forwardId, localPort: l.localPort, bindHost: l.bindHost,
+        targetGatewayId: l.targetGatewayId, targetPort: l.targetPort,
+        activeStreams: act.length, streamsTotal: l.streamsTotal,
+        bytesUp: up, bytesDown: down, totalBytes: total,
+        elapsedMs, avgBps, avgMBps: Math.round((avgBps / 1048576) * 100) / 100,
+        instantBps: l.instantBps, instantMBps: Math.round((l.instantBps / 1048576) * 100) / 100,
+        health: l.health, createdAt: l.createdAt,
+      };
+    });
+  }
+
   public closeForward(forwardId: string): boolean {
     const listener = this.listeners.get(forwardId);
     if (!listener) return false;
@@ -322,6 +372,18 @@ export class PortForwardHandler {
         this.teardownStream(stream.streamId, 'forward closed', { notifyPeer: true, graceful: false });
       }
     }
+    try {
+      const dir = process.env.LM_ASSIST_DATA_DIR || path.join(os.homedir(), '.lm-assist');
+      const total = listener.bytesUp + listener.bytesDown;
+      const elapsedMs = Date.now() - listener.createdAt.getTime();
+      fs.appendFileSync(path.join(dir, 'forward-stats.jsonl'), JSON.stringify({
+        forwardId, localPort: listener.localPort, targetGatewayId: listener.targetGatewayId,
+        targetPort: listener.targetPort, bytesUp: listener.bytesUp, bytesDown: listener.bytesDown,
+        totalBytes: total, streamsTotal: listener.streamsTotal, elapsedMs,
+        avgMBps: elapsedMs > 0 ? Math.round(((total * 1000) / elapsedMs / 1048576) * 100) / 100 : 0,
+        endedAt: Date.now(),
+      }) + '\n');
+    } catch { /* best-effort */ }
     this.listeners.delete(forwardId);
     console.log(`[PortForward] Closed forward ${forwardId}`);
     return true;
@@ -521,6 +583,10 @@ export class PortForwardHandler {
     if (!stream) return;
     if (stream.status === 'closed') return;
     stream.status = 'closed';
+    if (stream.forwardId) {
+      const lst = this.listeners.get(stream.forwardId);
+      if (lst) { lst.bytesUp += stream.bytesUp; lst.bytesDown += stream.bytesDown; }
+    }
 
     if (stream.openTimer) { clearTimeout(stream.openTimer); stream.openTimer = undefined; }
     this.streamByHash.delete(stream.streamHash.toString('hex'));

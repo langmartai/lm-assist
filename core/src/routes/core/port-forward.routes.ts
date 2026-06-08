@@ -69,6 +69,15 @@ export function createPortForwardRoutes(_ctx: RouteContext): RouteHandler[] {
         return { success: true, data: { node: hub.getNodeInfo(), forwards: hub.listPortForwards() } };
       },
     },
+    // GET /port-forward/stats — per-forward traffic stats (bytes/elapsed/speed)
+    {
+      method: 'GET',
+      pattern: /^\/port-forward\/stats$/,
+      handler: async () => {
+        const hub = getHubClient();
+        return { success: true, data: { node: hub.getNodeInfo(), forwards: hub.portForwardStats() } };
+      },
+    },
 
     // GET /port-forward/check?port=NNNN — is a local port free on this node, and who holds it
     {
