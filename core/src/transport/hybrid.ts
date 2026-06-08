@@ -82,6 +82,15 @@ const RELAY_TAG_CONTROL = 0x02; // [0x02][reliable datagram] — control/metadat
 const STUN_REQUEST = Buffer.from('LMSTUN'); // tiny probe to the hub STUN responder
 const PUNCH_PROBE = Buffer.from('LMPUNCH'); // direct probe blasted at the peer
 
+/**
+ * FIREHOSE marker (raw byte tag on the direct UDP socket). A firehose datagram
+ * is [0xF1][firehose payload]. It rides the DIRECT socket only (unreliable,
+ * unpaced inside the transport — the firehose layer paces). It cannot collide:
+ * reliable datagram type bytes are 0..3, PUNCH_PROBE starts 'L'(0x4C), the STUN
+ * reply is JSON starting '{'(0x7B); 0xF1 is none of these.
+ */
+export const FIREHOSE_MARKER = 0xf1;
+
 /** WS relay backpressure (mirrors relay.ts). */
 const WS_BACKPRESSURE_HIGH_WATER = 8 * 1024 * 1024; // 8 MB
 const WS_BACKPRESSURE_POLL_MS = 50;
@@ -141,6 +150,18 @@ export interface HybridChannel {
   mode(): HybridMode;
   /** Kind of the best confirmed OUTBOUND candidate, or null in relay. Live. */
   via(): CandidateKind | null;
+  /**
+   * FIREHOSE send: fire `buf` over the DIRECT UDP socket to the live peer,
+   * prefixed with the 0xF1 marker. No reliability, no retransmit, no pacing
+   * inside the transport. Returns true if it was handed to the socket, false if
+   * there is no confirmed direct peer (the firehose layer should escalate via
+   * the relay instead). Never throws.
+   */
+  sendUnreliable(buf: Buffer): boolean;
+  /** Register the firehose receive callback (bytes AFTER the 0xF1 marker). */
+  onUnreliable(cb: (buf: Buffer) => void): void;
+  /** True when a confirmed direct peer exists and firehose can flow. Live. */
+  directReady(): boolean;
   close(reason?: string): void;
 }
 
@@ -199,6 +220,9 @@ export function openHybridChannel(
 
     // --- reliable ---
     let reliable: ReliableConnection | null = null;
+
+    // --- firehose (unreliable direct) ---
+    let unreliableCb: ((buf: Buffer) => void) | null = null;
 
     // --- relay send (0xFD with 1-byte tag) ---
     const sendRelayFrame = (payload: Buffer, priority = false): void => {
@@ -318,6 +342,18 @@ export function openHybridChannel(
         reliable,
         mode,
         via,
+        sendUnreliable: (buf: Buffer): boolean => {
+          if (tornDown) return false;
+          const p = peerUdp;
+          if (!myDirectFresh() || !p || !socket) return false;
+          const framed = Buffer.allocUnsafe(1 + buf.length);
+          framed.writeUInt8(FIREHOSE_MARKER, 0);
+          buf.copy(framed, 1);
+          try { socket.send(framed, p.port, p.ip); return true; }
+          catch { return false; }
+        },
+        onUnreliable: (cb: (buf: Buffer) => void): void => { unreliableCb = cb; },
+        directReady: (): boolean => myDirectFresh() && !!peerUdp && !!socket,
         close: (r?: string) => teardown(r),
       });
     };
@@ -488,6 +524,17 @@ export function openHybridChannel(
       }
       // STUN reply is consumed by the stun() listener below; ignore here.
       if (isStunReply(msg)) return;
+      // FIREHOSE datagram: [0xF1][payload]. Receiving one over the direct path
+      // also proves the inbound direct leg is live (refresh recv freshness +
+      // roam to the source, same as a reliable direct datagram).
+      if (msg.length >= 1 && msg.readUInt8(0) === FIREHOSE_MARKER) {
+        lastDirectRecvAt = Date.now();
+        adoptPeerSource(rinfo);
+        if (unreliableCb) {
+          try { unreliableCb(msg.subarray(1)); } catch { /* consumer errors ignored */ }
+        }
+        return;
+      }
       // Otherwise: a reliable datagram arriving over the direct path.
       lastDirectRecvAt = Date.now();
       adoptPeerSource(rinfo);

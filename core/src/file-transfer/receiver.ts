@@ -19,6 +19,11 @@ import { Channel } from '../transport';
 import { FrameReader, encodeControl } from './frame';
 import { SUBSYSTEM_TAG } from './protocol';
 import { safeJoin } from './safe-path';
+import {
+  FIREHOSE_CHUNK,
+  unpackFirehoseDatagram,
+  encodeMissingRuns,
+} from './firehose-wire';
 import type {
   FileEntry,
   FtMeta,
@@ -28,6 +33,10 @@ import type {
   FtList,
   FtListResult,
   FtListErr,
+  FtFhMeta,
+  FtFhEnd,
+  FtFhRepair,
+  FtNack,
   DirEntry,
 } from './types';
 
@@ -76,6 +85,9 @@ export function handleIncomingTransfer(
     const openFiles = new Map<number, OpenFile>(); // entryIndex -> handle
     const hashers = new Map<number, crypto.Hash>();
     const seenBytes = new Map<number, number>();
+
+    // Firehose-mode state (set when FT_FH_META is seen instead of FT_META).
+    let fh: FirehoseRecvState | null = null;
 
     const replyErr = async (id: string, error: string) => {
       const msg: FtErr = { type: 'FT_ERR', transferId: id, error };
@@ -167,6 +179,136 @@ export function handleIncomingTransfer(
       }
     };
 
+    // ----------------------------- FIREHOSE -------------------------------
+    // FT_FH_META enters firehose mode: open the dest file (sparse), allocate a
+    // received-bitmap (memory-bounded — 1 bit per chunk, NOT a data buffer),
+    // register the unreliable (direct) data callback, and start the NACK timer.
+
+    const handleFhMeta = async (m: FtFhMeta) => {
+      transferId = m.transferId;
+      try {
+        const abs = safeJoin(path.join(root, m.root), m.name);
+        await fsp.mkdir(path.dirname(abs), { recursive: true });
+        const handle = await fsp.open(abs, 'w');
+        // Preallocate (sparse) so writes by offset land correctly even out of order.
+        if (m.size > 0) await handle.truncate(m.size).catch(() => {});
+        const bitmap = new Uint8Array(Math.ceil(m.totalChunks / 8));
+        fh = {
+          handle,
+          absPath: abs,
+          fileMode: m.fileMode,
+          chunk: m.chunk || FIREHOSE_CHUNK,
+          size: m.size,
+          totalChunks: m.totalChunks,
+          bitmap,
+          received: 0,
+          ended: false,
+          expectedSha: '',
+          nackTimer: null,
+        };
+        // Direct (unreliable) data plane: [seq][payload] → write at seq*chunk.
+        channel.onUnreliable((buf) => {
+          const u = unpackFirehoseDatagram(buf);
+          if (u) void writeFhChunk(u.seq, u.bytes);
+        });
+        startNackTimer();
+      } catch (e) {
+        await replyErr(m.transferId, 'firehose setup failed: ' + (e as Error).message);
+      }
+    };
+
+    let fhWriteChain: Promise<void> = Promise.resolve();
+    const writeFhChunk = (seq: number, bytes: Buffer): Promise<void> => {
+      // Serialize writes (the handle is shared); idempotent — a duplicate seq just
+      // re-writes the same bytes and re-sets the (already-set) bitmap bit.
+      fhWriteChain = fhWriteChain.then(async () => {
+        if (!fh || settled) return;
+        if (seq < 0 || seq >= fh.totalChunks) return;
+        try {
+          await fh.handle.write(bytes, 0, bytes.length, seq * fh.chunk);
+          const byteIdx = seq >> 3;
+          const mask = 1 << (seq & 7);
+          if ((fh.bitmap[byteIdx] & mask) === 0) {
+            fh.bitmap[byteIdx] |= mask;
+            fh.received += 1;
+          }
+        } catch (e) {
+          await replyErr(transferId, 'firehose write failed: ' + (e as Error).message);
+        }
+      });
+      return fhWriteChain;
+    };
+
+    const handleFhRepair = async (r: FtFhRepair) => {
+      if (!fh || r.transferId !== transferId) return;
+      await writeFhChunk(r.seq, Buffer.from(r.data, 'base64'));
+    };
+
+    const handleFhEnd = async (e: FtFhEnd) => {
+      if (!fh || e.transferId !== transferId) return;
+      fh.ended = true;
+      fh.expectedSha = e.sha256;
+      await maybeComplete();
+    };
+
+    const missingSeqs = (limit: number): number[] => {
+      const out: number[] = [];
+      if (!fh) return out;
+      for (let seq = 0; seq < fh.totalChunks && out.length < limit; seq++) {
+        const byteIdx = seq >> 3;
+        const mask = 1 << (seq & 7);
+        if ((fh.bitmap[byteIdx] & mask) === 0) out.push(seq);
+      }
+      return out;
+    };
+
+    const sendNack = (): void => {
+      if (!fh || settled) return;
+      // Bound the scan/report so a 64K-chunk file stays cheap; the next interval
+      // reports any overflow. We cap at totalChunks but stop early at the limit.
+      const missing = missingSeqs(fh.totalChunks);
+      if (missing.length === 0) { void maybeComplete(); return; }
+      const runs = encodeMissingRuns(missing, 256);
+      const msg: FtNack = { type: 'FT_NACK', transferId, missing: runs };
+      try { channel.sendControl(encodeControl(msg)); } catch { /* channel gone */ }
+    };
+
+    const startNackTimer = (): void => {
+      if (!fh || fh.nackTimer) return;
+      fh.nackTimer = setInterval(() => { void Promise.resolve().then(sendNack); }, 75);
+      fh.nackTimer.unref?.();
+    };
+
+    const maybeComplete = async (): Promise<void> => {
+      if (!fh || settled) return;
+      if (!fh.ended) return;
+      // Drain any in-flight writes before checking completeness.
+      await fhWriteChain;
+      if (!fh || settled) return;
+      if (fh.received < fh.totalChunks) { sendNack(); return; }
+      if (fh.nackTimer) { clearInterval(fh.nackTimer); fh.nackTimer = null; }
+      try {
+        // fsync, close, chmod, verify whole-file sha256.
+        await fh.handle.sync().catch(() => {});
+        await fh.handle.close();
+        await fsp.chmod(fh.absPath, fh.fileMode).catch(() => {});
+        const actual = await sha256File(fh.absPath);
+        if (fh.expectedSha && actual !== fh.expectedSha) {
+          const msg: FtErr = { type: 'FT_ERR', transferId, error: 'sha256 mismatch (firehose)' };
+          try { channel.sendControl(encodeControl(msg)); } catch { /* gone */ }
+          fh = null;
+          finish();
+          return;
+        }
+        const ok: FtOk = { type: 'FT_OK', transferId };
+        channel.sendControl(encodeControl(ok));
+        fh = null;
+        finish();
+      } catch (e) {
+        await replyErr(transferId, 'firehose finalize failed: ' + (e as Error).message);
+      }
+    };
+
     const handleList = async (req: FtList) => {
       try {
         const entries = await listDir(root, req.path);
@@ -219,6 +361,15 @@ export function handleIncomingTransfer(
             case 'FT_END':
               await handleEnd(msg as FtEnd);
               break;
+            case 'FT_FH_META':
+              await handleFhMeta(msg as FtFhMeta);
+              break;
+            case 'FT_FH_REPAIR':
+              await handleFhRepair(msg as FtFhRepair);
+              break;
+            case 'FT_FH_END':
+              await handleFhEnd(msg as FtFhEnd);
+              break;
             case 'FT_LIST':
               await handleList(msg as FtList);
               break;
@@ -232,8 +383,40 @@ export function handleIncomingTransfer(
 
     channel.onClose(() => {
       void closeAll(openFiles).catch(() => {});
+      if (fh) {
+        if (fh.nackTimer) { clearInterval(fh.nackTimer); fh.nackTimer = null; }
+        fh.handle.close().catch(() => {});
+        fh = null;
+      }
       finish();
     });
+  });
+}
+
+/** Firehose-mode receive state (single file). */
+interface FirehoseRecvState {
+  handle: fsp.FileHandle;
+  absPath: string;
+  fileMode: number;
+  chunk: number;
+  size: number;
+  totalChunks: number;
+  /** Received-bitmap: 1 bit per chunk (memory-bounded, NOT a data buffer). */
+  bitmap: Uint8Array;
+  received: number;
+  ended: boolean;
+  expectedSha: string;
+  nackTimer: NodeJS.Timeout | null;
+}
+
+/** Whole-file sha256 (streamed). */
+function sha256File(absPath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    const rs = fs.createReadStream(absPath);
+    rs.on('error', reject);
+    rs.on('data', (d) => h.update(d));
+    rs.on('end', () => resolve(h.digest('hex')));
   });
 }
 

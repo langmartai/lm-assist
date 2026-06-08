@@ -16,6 +16,7 @@ import { openChannel, Channel } from '../transport';
 import { FrameReader, encodeControl, encodeData } from './frame';
 import { TransferError, classifyError, isRetriable } from './errors';
 import { SUBSYSTEM_TAG } from './protocol';
+import { sendFirehose } from './firehose-sender';
 import type {
   FileEntry,
   FtMeta,
@@ -144,6 +145,24 @@ export async function sendPath(
   currentChannel = channel;
   lastMode = channel.mode;
   try {
+    // FIREHOSE FAST PATH: single large file (> LARGE) + a confirmed direct path.
+    // Wait briefly for the direct leg to confirm; if it does, run the rate-paced
+    // firehose. If direct never confirms within the window, fall through to the
+    // existing reliable path on THIS channel (unchanged behavior).
+    const firehoseEligible =
+      process.env.LM_FIREHOSE === '1' && // opt-in: needs real-systems tuning (receiver drain + UDP buffers + AIMD) before default-on
+      forceMode !== 'relay' &&
+      entries.length === 1 && !entries[0].isDir && totalBytes > LARGE;
+    if (firehoseEligible && (await waitForDirect(channel, 3000))) {
+      const e0 = entries[0];
+      const res = await sendFirehose(
+        channel, e0.absPath, remotePath, e0.relPath, totalBytes, e0.mode,
+        { onProgress: opts?.onProgress },
+      );
+      lastMode = channel.mode;
+      return res;
+    }
+
     const reader = new FrameReader();
     const done = waitForReply(channel, reader, transferId);
 
@@ -229,6 +248,16 @@ function sleep(ms: number): Promise<void> {
     const t = setTimeout(r, ms);
     if ((t as { unref?: () => void }).unref) (t as { unref: () => void }).unref();
   });
+}
+
+/** Resolve true once the channel's direct leg is confirmed, or false after ms. */
+async function waitForDirect(channel: Channel, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (channel.directReady()) return true;
+    await sleep(50);
+  }
+  return channel.directReady();
 }
 
 /** Reject with a TIMEOUT TransferError if `p` does not settle within `ms`. */

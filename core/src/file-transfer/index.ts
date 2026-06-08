@@ -36,6 +36,15 @@ export {
   DATA_HEADER_LEN,
 } from './frame';
 export type { Frame, ControlFrame, DataFrame } from './frame';
+export { sendFirehose } from './firehose-sender';
+export type { FirehoseSendOpts } from './firehose-sender';
+export {
+  FIREHOSE_CHUNK,
+  packFirehoseDatagram,
+  unpackFirehoseDatagram,
+  encodeMissingRuns,
+  decodeMissingRuns,
+} from './firehose-wire';
 export type {
   FileEntry,
   DirEntry,
@@ -47,6 +56,10 @@ export type {
   FtList,
   FtListResult,
   FtListErr,
+  FtFhMeta,
+  FtNack,
+  FtFhEnd,
+  FtFhRepair,
   FtControl,
   SendOpts,
   SendResult,

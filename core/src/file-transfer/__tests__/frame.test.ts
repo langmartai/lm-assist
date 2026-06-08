@@ -71,6 +71,10 @@ function makeFakePair(splitBytes = false): FakePair {
     onClose: (cb) => {
       aClose = cb;
     },
+    // Relay-only fake: no direct plane → firehose never engages here.
+    sendUnreliable: () => false,
+    onUnreliable: () => {},
+    directReady: () => false,
     close: () => {
       if (closed) {
         return;
@@ -93,6 +97,9 @@ function makeFakePair(splitBytes = false): FakePair {
     onClose: (cb) => {
       bClose = cb;
     },
+    sendUnreliable: () => false,
+    onUnreliable: () => {},
+    directReady: () => false,
     close: () => {
       if (closed) {
         return;

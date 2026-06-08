@@ -57,6 +57,17 @@ export interface Channel {
   sendControl(data: Buffer): void;
   onData(cb: (data: Buffer) => void): void;
   onClose(cb: (reason?: string) => void): void;
+  /**
+   * FIREHOSE send: fire `buf` over the DIRECT UDP socket to the live peer
+   * (0xF1-marked). Unreliable — no retransmit, no ordering, no pacing inside the
+   * transport. Returns true if handed to the socket, false if there is no
+   * confirmed direct peer. The firehose file-transfer layer paces + repairs.
+   */
+  sendUnreliable(buf: Buffer): boolean;
+  /** Receive firehose datagrams (the bytes AFTER the 0xF1 marker). */
+  onUnreliable(cb: (buf: Buffer) => void): void;
+  /** True when a confirmed direct peer exists and firehose can flow. Live. */
+  directReady(): boolean;
   close(): void;
 }
 export interface OpenChannelOpts {
@@ -152,6 +163,9 @@ function makeChannel(
     sendControl: (data: Buffer) => hybrid.reliable.send(data, true),
     onData: (cb) => { dataCbRef.cb = cb; },
     onClose: (cb) => { closeCbRef.cb = cb; },
+    sendUnreliable: (buf: Buffer) => hybrid.sendUnreliable(buf),
+    onUnreliable: (cb) => hybrid.onUnreliable(cb),
+    directReady: () => hybrid.directReady(),
     close: () => hybrid.close('closed by caller'),
   } as Channel;
 }
@@ -232,7 +246,7 @@ async function setupHybrid(
 // ---------------------------------------------------------------------------
 
 export { ReliableConnection } from './reliable';
-export { TRANSPORT_RELAY_MARKER } from './hybrid';
+export { TRANSPORT_RELAY_MARKER, FIREHOSE_MARKER } from './hybrid';
 export type { TransportDeps, TransportWsSender, UdpEndpoint } from './ws-deps';
 
 /*

@@ -91,6 +91,73 @@ export interface FtListErr {
   error: string;
 }
 
+// ===========================================================================
+// FIREHOSE control messages (single large-file fast path).
+//
+// The firehose data plane is the DIRECT UDP socket (unreliable, rate-paced,
+// fire-once); ALL coordination — meta, NACK, end, escalated repair, completion —
+// rides the EXISTING reliable relay control plane (channel.sendControl). File
+// offset for a firehose data datagram = seq * chunk; totalChunks = ceil(size/chunk).
+// ===========================================================================
+
+/**
+ * Sender → receiver: switch this transfer into firehose mode + sizing. Sent on
+ * the reliable control plane BEFORE any firehose datagram. `chunk` is the
+ * firehose payload size (bytes/chunk); file offset of seq = seq * chunk.
+ */
+export interface FtFhMeta {
+  type: 'FT_FH_META';
+  transferId: string;
+  /** Final destination path on the receiver (relative to its safe root). */
+  root: string;
+  /** Single-file base name (relative path written under root). */
+  name: string;
+  /** Total file size in bytes. */
+  size: number;
+  /** Firehose payload size per chunk (bytes). */
+  chunk: number;
+  /** ceil(size / chunk). */
+  totalChunks: number;
+  mode: 'firehose';
+  /** POSIX mode bits for the written file. */
+  fileMode: number;
+}
+
+/**
+ * Receiver → sender: chunks still missing. `missing` is a COMPACT run-length
+ * encoding: a flat array of [start, len] pairs (each run = seqs start..start+len-1).
+ * Bounded — if too many runs, the receiver sends the first/worst N and relies on
+ * the next interval to report the rest.
+ */
+export interface FtNack {
+  type: 'FT_NACK';
+  transferId: string;
+  /** Run-length encoded missing seqs: [[start,len],...]. */
+  missing: Array<[number, number]>;
+}
+
+/** Sender → receiver: all chunks fired once. Carries whole-file sha256. */
+export interface FtFhEnd {
+  type: 'FT_FH_END';
+  transferId: string;
+  totalChunks: number;
+  /** Hex sha256 of the whole file. */
+  sha256: string;
+}
+
+/**
+ * Sender → receiver: an ESCALATED repair of one chunk over the reliable relay
+ * (sent only after a seq survives K direct re-fire rounds, or on direct death).
+ * `data` is base64 of the chunk's raw bytes.
+ */
+export interface FtFhRepair {
+  type: 'FT_FH_REPAIR';
+  transferId: string;
+  seq: number;
+  /** base64 of the chunk bytes at offset seq*chunk. */
+  data: string;
+}
+
 export type FtControl =
   | FtMeta
   | FtData
@@ -99,7 +166,11 @@ export type FtControl =
   | FtErr
   | FtList
   | FtListResult
-  | FtListErr;
+  | FtListErr
+  | FtFhMeta
+  | FtNack
+  | FtFhEnd
+  | FtFhRepair;
 
 export interface SendResult {
   bytes: number;
