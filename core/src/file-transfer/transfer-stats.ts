@@ -93,6 +93,14 @@ export function updateTransfer(id: string, bytes: number): void {
     st.instantBps = Math.max(0, Math.round(((bytes - st.sBytes) * 1000) / dt));
     st.sBytes = bytes;
     st.sAt = st.updatedAt;
+    // Snapshot the live channel metrics so the final/persisted record keeps the
+    // last-known mode/via/rtt even after the channel closes at completion.
+    if (st.live) {
+      const l = st.live();
+      if (l.mode) st.mode = l.mode;
+      if (l.via != null) st.via = l.via;
+      if (l.rttMs != null) st.rttMs = l.rttMs;
+    }
   }
 }
 
