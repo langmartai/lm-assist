@@ -37,7 +37,7 @@ export const MAX_PAYLOAD = 1200;
 
 export interface ReliableOptions {
   /** Send a single datagram. Must not throw for transient errors. */
-  sendDatagram: (datagram: Buffer) => void;
+  sendDatagram: (datagram: Buffer, isControl: boolean) => void;
   /** Delivered an in-order, reassembled chunk to the consumer. */
   onDeliver: (data: Buffer) => void;
   /** Peer sent FIN, or the link is being torn down. */
@@ -60,6 +60,7 @@ interface PendingDatagram {
   sentAt: number;     // last (re)send time
   rto: number;        // current per-datagram backed-off RTO
   retries: number;
+  control: boolean;   // routing class: control/metadata (relay) vs bulk (direct)
 }
 
 function encodeDatagram(type: DatagramType, seq: number, ack: number, payload: Buffer): Buffer {
@@ -102,7 +103,7 @@ export class ReliableConnection {
   private nextSeq = 0;                              // next seq to assign to a DATA datagram
   private sendBase = 0;                             // oldest unacked seq
   private readonly inFlight = new Map<number, PendingDatagram>();
-  private readonly waitQueue: Buffer[] = [];        // payloads waiting for window space
+  private readonly waitQueue: Array<{ payload: Buffer; control: boolean }> = []; // payloads waiting for window space
 
   // --- receive side ---
   private rcvNext = 0;                              // next in-order seq we expect to deliver
@@ -130,11 +131,11 @@ export class ReliableConnection {
   }
 
   /** Reliable, ordered application send. Fragments across datagrams. */
-  send(data: Buffer): void {
+  send(data: Buffer, control = false): void {
     if (this.closed) return;
     for (let off = 0; off < data.length; off += MAX_PAYLOAD) {
       const chunk = data.subarray(off, Math.min(off + MAX_PAYLOAD, data.length));
-      this.waitQueue.push(chunk);
+      this.waitQueue.push({ payload: chunk, control });
     }
     // Zero-length send is a no-op (no empty DATA datagrams).
     this.pumpWindow();
@@ -143,7 +144,7 @@ export class ReliableConnection {
   /** Move payloads from the wait queue into the send window while there's room. */
   private pumpWindow(): void {
     while (this.waitQueue.length > 0 && this.inFlight.size < this.opts.windowSize) {
-      const payload = this.waitQueue.shift()!;
+      const { payload, control } = this.waitQueue.shift()!;
       const seq = this.nextSeq;
       this.nextSeq = (this.nextSeq + 1) >>> 0;
       const datagram = encodeDatagram(DATAGRAM_TYPE.DATA, seq, this.rcvNext, payload);
@@ -153,9 +154,10 @@ export class ReliableConnection {
         sentAt: Date.now(),
         rto: this.opts.rtoMs,
         retries: 0,
+        control,
       };
       this.inFlight.set(seq, pending);
-      this.safeSend(datagram);
+      this.safeSend(datagram, control);
     }
     this.ensureRtoTimer();
   }
@@ -267,7 +269,7 @@ export class ReliableConnection {
         pending.sentAt = now;
         // Refresh the piggybacked ack to our latest rcvNext before resending.
         pending.datagram.writeUInt32BE(this.rcvNext >>> 0, 5);
-        this.safeSend(pending.datagram);
+        this.safeSend(pending.datagram, pending.control);
       }
     }
     if (this.inFlight.size === 0) this.clearRtoTimer();
@@ -293,12 +295,12 @@ export class ReliableConnection {
     // Control datagrams carry no payload; seq is the current nextSeq (ignored by
     // the receiver for ACK/PING/FIN ordering), ack is our cumulative rcvNext.
     const dg = encodeDatagram(type, this.nextSeq, this.rcvNext, Buffer.alloc(0));
-    this.safeSend(dg);
+    this.safeSend(dg, true); // reliable ACK/PING/FIN are control → relay
   }
 
-  private safeSend(datagram: Buffer): void {
+  private safeSend(datagram: Buffer, isControl: boolean): void {
     try {
-      this.opts.sendDatagram(datagram);
+      this.opts.sendDatagram(datagram, isControl);
     } catch {
       /* transient send errors are tolerated; retransmit/keepalive will recover */
     }

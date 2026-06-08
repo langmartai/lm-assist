@@ -76,6 +76,7 @@ export const TRANSPORT_RELAY_MARKER = 0xfd;
 /** Relay 0xFD payload tags. */
 const RELAY_TAG_DATAGRAM = 0x00; // [0x00][reliable datagram]
 const RELAY_TAG_DPROBE_ACK = 0x01; // [0x01] — "your direct reaches me"
+const RELAY_TAG_CONTROL = 0x02; // [0x02][reliable datagram] — control/metadata on relay
 
 /** Raw byte tags used on the direct UDP socket (before/around reliable). */
 const STUN_REQUEST = Buffer.from('LMSTUN'); // tiny probe to the hub STUN responder
@@ -200,9 +201,11 @@ export function openHybridChannel(
     let reliable: ReliableConnection | null = null;
 
     // --- relay send (0xFD with 1-byte tag) ---
-    const sendRelayFrame = (payload: Buffer): void => {
+    const sendRelayFrame = (payload: Buffer, priority = false): void => {
       if (tornDown || !opts.ws.isConnected()) return;
-      if (opts.ws.bufferedAmount() > WS_BACKPRESSURE_HIGH_WATER) {
+      // Priority (control/metadata) frames bypass the data backpressure gate so
+      // coordination is never starved behind a backlog of bulk relay data.
+      if (!priority && opts.ws.bufferedAmount() > WS_BACKPRESSURE_HIGH_WATER) {
         const retry = () => {
           if (tornDown) return;
           if (opts.ws.bufferedAmount() <= WS_BACKPRESSURE_HIGH_WATER) {
@@ -217,12 +220,12 @@ export function openHybridChannel(
       opts.ws.sendBinary(hash, payload, TRANSPORT_RELAY_MARKER);
     };
 
-    const relaySendDatagram = (datagram: Buffer): void => {
-      // Tag 0x00: reliable datagram follows.
+    const relaySendDatagram = (datagram: Buffer, priority = false, control = false): void => {
+      // Tag 0x00 (bulk) or 0x02 (control/metadata): reliable datagram follows.
       const framed = Buffer.allocUnsafe(1 + datagram.length);
-      framed.writeUInt8(RELAY_TAG_DATAGRAM, 0);
+      framed.writeUInt8(control ? RELAY_TAG_CONTROL : RELAY_TAG_DATAGRAM, 0);
       datagram.copy(framed, 1);
-      sendRelayFrame(framed);
+      sendRelayFrame(framed, priority);
     };
 
     const sendDprobeAck = (tag: string): void => {
@@ -232,7 +235,7 @@ export function openHybridChannel(
       const buf = Buffer.allocUnsafe(1 + t.length);
       buf.writeUInt8(RELAY_TAG_DPROBE_ACK, 0);
       t.copy(buf, 1);
-      sendRelayFrame(buf);
+      sendRelayFrame(buf, /*priority*/ true);
     };
 
     // --- mode computation (live) ---
@@ -259,29 +262,21 @@ export function openHybridChannel(
     // --- the single reliable engine, routing per-direction LIVE ---
     const makeReliable = (): ReliableConnection => {
       return new ReliableConnection({
-        sendDatagram: (buf: Buffer) => {
-          // Read live state at send time (never snapshot).
-          const canDirect = myDirectFresh() && !!peerUdp && !!socket;
-          const sendDirect = (): boolean => {
-            try { socket!.send(buf, peerUdp!.port, peerUdp!.ip); return true; }
-            catch { return false; }
-          };
-          // BIDI: both legs confirmed + sustained → EVERYTHING direct, no relay copy.
-          if (mode() === 'bidi') {
-            if (sendDirect()) return;
-            // Direct send threw despite BIDI — fall back to relay this once;
-            // the stale sweep will demote shortly.
-            relaySendDatagram(buf);
+        sendDatagram: (buf: Buffer, isControl: boolean) => {
+          // CONTROL / METADATA PLANE: reliable ACK/PING/FIN + app control
+          // (FT_META/FT_END/FT_OK) ALWAYS ride the relay, with PRIORITY (bypass
+          // the data backpressure gate). The data path therefore always has
+          // authoritative, never-starved coordination state, regardless of mode.
+          if (isControl) {
+            relaySendDatagram(buf, /*priority*/ true, /*control*/ true);
             return;
           }
-          // ONEWAY / RELAY policy: small control always on relay floor (+
-          // opportunistic direct); bulk data direct when our outbound is fresh.
-          if (buf.length <= CONTROL_DATAGRAM_MAX) {
-            relaySendDatagram(buf);
-            if (canDirect) sendDirect();
-            return;
+          // BULK DATA PLANE: ride direct when our outbound leg is confirmed,
+          // else fall back to the relay floor (last resort). Read peer live.
+          const p = peerUdp;
+          if (myDirectFresh() && p && socket) {
+            try { socket.send(buf, p.port, p.ip); return; } catch { /* fall through to relay */ }
           }
-          if (canDirect && sendDirect()) return;
           relaySendDatagram(buf);
         },
         onDeliver,
@@ -355,7 +350,7 @@ export function openHybridChannel(
         }
         return;
       }
-      if (tag === RELAY_TAG_DATAGRAM) {
+      if (tag === RELAY_TAG_DATAGRAM || tag === RELAY_TAG_CONTROL) {
         if (reliable) reliable.onDatagram(payload.subarray(1));
       }
     };

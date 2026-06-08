@@ -131,7 +131,7 @@ export async function sendPath(
     const done = waitForReply(channel, reader, transferId);
 
     // Announce ourselves as a file-transfer channel, then the manifest.
-    channel.send(encodeControl({ type: SUBSYSTEM_TAG } as never));
+    channel.sendControl(encodeControl({ type: SUBSYSTEM_TAG } as never));
 
     const meta: FtMeta = {
       type: 'FT_META',
@@ -140,7 +140,7 @@ export async function sendPath(
       entries: entries.map(({ absPath: _abs, ...e }) => e),
       totalBytes,
     };
-    channel.send(encodeControl(meta));
+    channel.sendControl(encodeControl(meta));
 
     // Stream file bytes.
     const sha256PerEntry: string[] = [];
@@ -159,7 +159,7 @@ export async function sendPath(
     }
 
     const end: FtEnd = { type: 'FT_END', transferId, sha256PerEntry };
-    channel.send(encodeControl(end));
+    channel.sendControl(encodeControl(end));
 
     await done;
     lastMode = channel.mode;
@@ -310,8 +310,8 @@ export function listRemote(
     ch.onClose((reason) => {
       finish(new Error('channel closed before listing' + (reason ? ': ' + reason : '')));
     });
-    ch.send(encodeControl({ type: SUBSYSTEM_TAG } as never));
+    ch.sendControl(encodeControl({ type: SUBSYSTEM_TAG } as never));
     const req: FtList = { type: 'FT_LIST', path: remotePath };
-    ch.send(encodeControl(req));
+    ch.sendControl(encodeControl(req));
   });
 }

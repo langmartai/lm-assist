@@ -64,6 +64,7 @@ function makeFakePair(splitBytes = false): FakePair {
     mode: 'relay',
     via: null,
     send: (d) => pump(() => bData, d),
+    sendControl: (d) => pump(() => bData, d),
     onData: (cb) => {
       aData = cb;
     },
@@ -85,6 +86,7 @@ function makeFakePair(splitBytes = false): FakePair {
     mode: 'relay',
     via: null,
     send: (d) => pump(() => aData, d),
+    sendControl: (d) => pump(() => aData, d),
     onData: (cb) => {
       bData = cb;
     },

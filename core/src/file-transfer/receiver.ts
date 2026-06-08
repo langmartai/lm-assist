@@ -80,7 +80,7 @@ export function handleIncomingTransfer(
     const replyErr = async (id: string, error: string) => {
       const msg: FtErr = { type: 'FT_ERR', transferId: id, error };
       try {
-        channel.send(encodeControl(msg));
+        channel.sendControl(encodeControl(msg));
       } catch {
         /* channel may be gone */
       }
@@ -160,7 +160,7 @@ export function handleIncomingTransfer(
           }
         }
         const ok: FtOk = { type: 'FT_OK', transferId: end.transferId };
-        channel.send(encodeControl(ok));
+        channel.sendControl(encodeControl(ok));
         finish();
       } catch (e) {
         await replyErr(end.transferId, 'finalize failed: ' + (e as Error).message);
@@ -171,13 +171,13 @@ export function handleIncomingTransfer(
       try {
         const entries = await listDir(root, req.path);
         const res: FtListResult = { type: 'FT_LIST_RESULT', entries };
-        channel.send(encodeControl(res));
+        channel.sendControl(encodeControl(res));
       } catch (e) {
         const res: FtListErr = {
           type: 'FT_LIST_ERR',
           error: (e as Error).message,
         };
-        channel.send(encodeControl(res));
+        channel.sendControl(encodeControl(res));
       }
       finish();
     };

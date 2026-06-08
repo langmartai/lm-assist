@@ -51,8 +51,10 @@ export interface Channel {
    * srflx path. Read live; safe to read at any time.
    */
   via: "host" | "static" | "srflx" | null;
-  /** Reliable, ordered in all modes. */
+  /** Reliable, ordered bulk data — rides the direct path when confirmed. */
   send(data: Buffer): void;
+  /** Reliable, ordered control/metadata — ALWAYS rides the relay (priority). */
+  sendControl(data: Buffer): void;
   onData(cb: (data: Buffer) => void): void;
   onClose(cb: (reason?: string) => void): void;
   close(): void;
@@ -146,7 +148,8 @@ function makeChannel(
     // ch.via always see the live leg state + winning candidate kind.
     get mode() { return hybrid.mode(); },
     get via() { return hybrid.via(); },
-    send: (data: Buffer) => hybrid.reliable.send(data),
+    send: (data: Buffer) => hybrid.reliable.send(data, false),
+    sendControl: (data: Buffer) => hybrid.reliable.send(data, true),
     onData: (cb) => { dataCbRef.cb = cb; },
     onClose: (cb) => { closeCbRef.cb = cb; },
     close: () => hybrid.close('closed by caller'),
