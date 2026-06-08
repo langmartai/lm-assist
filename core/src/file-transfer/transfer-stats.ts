@@ -125,7 +125,7 @@ export function endTransfer(id: string, state: 'done' | 'failed', error?: string
   active.delete(id);
   recent.unshift(st);
   if (recent.length > RECENT_MAX) recent.pop();
-  try { fs.appendFileSync(statsFile(), JSON.stringify(toView(st)) + '\n'); } catch { /* best-effort */ }
+  void fs.promises.appendFile(statsFile(), JSON.stringify(toView(st)) + '\n').catch(() => { /* best-effort */ });
 }
 
 function toView(st: Stat): TransferStatView {

@@ -380,13 +380,13 @@ export class PortForwardHandler {
       const dir = process.env.LM_ASSIST_DATA_DIR || path.join(os.homedir(), '.lm-assist');
       const total = listener.bytesUp + listener.bytesDown;
       const elapsedMs = Date.now() - listener.createdAt.getTime();
-      fs.appendFileSync(path.join(dir, 'forward-stats.jsonl'), JSON.stringify({
+      void fs.promises.appendFile(path.join(dir, 'forward-stats.jsonl'), JSON.stringify({
         forwardId, localPort: listener.localPort, targetGatewayId: listener.targetGatewayId,
         targetPort: listener.targetPort, bytesUp: listener.bytesUp, bytesDown: listener.bytesDown,
         totalBytes: total, streamsTotal: listener.streamsTotal, elapsedMs, rttMs: listener.rttMinMs || null,
         avgMBps: elapsedMs > 0 ? Math.round(((total * 1000) / elapsedMs / 1048576) * 100) / 100 : 0,
         endedAt: Date.now(),
-      }) + '\n');
+      }) + '\n').catch(() => { /* best-effort */ });
     } catch { /* best-effort */ }
     this.listeners.delete(forwardId);
     console.log(`[PortForward] Closed forward ${forwardId}`);
