@@ -163,7 +163,7 @@ export async function sendPath(
 
     await done;
     lastMode = channel.mode;
-    return { bytes: totalBytes, entries: entries.length, mode: lastMode };
+    return { bytes: totalBytes, entries: entries.length, mode: lastMode, via: channel.via };
   } finally {
     channel.close();
   }

@@ -62,6 +62,7 @@ function makeFakePair(splitBytes = false): FakePair {
     id: 'fake-a',
     peerGatewayId: 'peer-b',
     mode: 'relay',
+    via: null,
     send: (d) => pump(() => bData, d),
     onData: (cb) => {
       aData = cb;
@@ -82,6 +83,7 @@ function makeFakePair(splitBytes = false): FakePair {
     id: 'fake-b',
     peerGatewayId: 'peer-a',
     mode: 'relay',
+    via: null,
     send: (d) => pump(() => aData, d),
     onData: (cb) => {
       bData = cb;

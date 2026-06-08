@@ -104,8 +104,10 @@ export type FtControl =
 export interface SendResult {
   bytes: number;
   entries: number;
-  /** Final channel mode at end of transfer: 'direct' | 'relay' | 'hybrid'. */
+  /** Final channel mode at end of transfer: 'bidi' | 'oneway' | 'relay'. */
   mode?: string;
+  /** Winning outbound candidate kind: 'host' | 'static' | 'srflx' | null. */
+  via?: string | null;
 }
 
 export interface SendOpts {

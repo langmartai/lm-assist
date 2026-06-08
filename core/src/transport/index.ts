@@ -31,13 +31,26 @@
 import { randomUUID } from 'crypto';
 import { openHybridChannel } from './hybrid';
 import type { HybridChannel } from './hybrid';
-import type { TransportDeps, TransportWsSender, UdpEndpoint } from './ws-deps';
+import type { TransportDeps, TransportWsSender } from './ws-deps';
 
 export interface Channel {
   id: string;
   peerGatewayId: string;
-  /** 'direct' (both legs direct), 'relay' (neither), 'hybrid' (one leg each). */
-  mode: "direct" | "relay" | "hybrid";
+  /**
+   * Live ICE-ladder state:
+   *   'bidi'   — both legs direct + sustained; everything direct, relay idle.
+   *   'oneway' — exactly one leg direct; bulk data direct that way, control relay.
+   *   'relay'  — neither leg direct; all traffic via the relay floor.
+   * Read live (getter) — reflects current per-direction confirmation.
+   */
+  mode: "bidi" | "oneway" | "relay";
+  /**
+   * Kind of the best confirmed OUTBOUND direct candidate
+   * ('host' | 'static' | 'srflx'), or null when not sending direct (relay).
+   * Lets a caller distinguish a same-LAN host-direct path from a hole-punched
+   * srflx path. Read live; safe to read at any time.
+   */
+  via: "host" | "static" | "srflx" | null;
   /** Reliable, ordered in all modes. */
   send(data: Buffer): void;
   onData(cb: (data: Buffer) => void): void;
@@ -93,7 +106,9 @@ function registerInboundHandlers(ws: TransportWsSender): void {
     void answerHybrid(msg.channelId, peer, undefined);
   }) as (...a: unknown[]) => void);
 
-  ws.on('transport_offer', ((msg: { channelId: string; fromGatewayId: string; udp?: UdpEndpoint }) => {
+  // udp is the candidate ADVERT ({ip, port, cands?}), forwarded verbatim by the
+  // hub. Pass it through opaquely (typed unknown) — hybrid.ts parses the ladder.
+  ws.on('transport_offer', ((msg: { channelId: string; fromGatewayId: string; udp?: unknown }) => {
     if (!deps) return;
     void answerHybrid(msg.channelId, msg.fromGatewayId, msg.udp);
   }) as (...a: unknown[]) => void);
@@ -127,9 +142,10 @@ function makeChannel(
   return {
     id,
     peerGatewayId,
-    // mode is dynamic; expose the current value via a getter so callers reading
-    // ch.mode always see the live leg state.
+    // mode + via are dynamic; expose via getters so callers reading ch.mode /
+    // ch.via always see the live leg state + winning candidate kind.
     get mode() { return hybrid.mode(); },
+    get via() { return hybrid.via(); },
     send: (data: Buffer) => hybrid.reliable.send(data),
     onData: (cb) => { dataCbRef.cb = cb; },
     onClose: (cb) => { closeCbRef.cb = cb; },
@@ -162,7 +178,7 @@ export async function openChannel(peerGatewayId: string, opts?: OpenChannelOpts)
 // Answerer side: respond to a peer's inbound open.
 // ---------------------------------------------------------------------------
 
-async function answerHybrid(channelId: string, peerGatewayId: string, peerUdp?: UdpEndpoint): Promise<void> {
+async function answerHybrid(channelId: string, peerGatewayId: string, peerUdp?: unknown): Promise<void> {
   if (answeredChannels.has(channelId)) return; // already set up by the other signal
   answeredChannels.add(channelId);
   try {
@@ -181,7 +197,7 @@ async function setupHybrid(
   channelId: string,
   peerGatewayId: string,
   initiator: boolean,
-  knownPeer: UdpEndpoint | undefined,
+  knownPeer: unknown,
   forceMode: 'direct' | 'relay' | undefined,
 ): Promise<Channel> {
   const d = deps!;

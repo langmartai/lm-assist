@@ -1,52 +1,73 @@
 /**
- * Hybrid transport path for the transport driver.
+ * Hybrid transport path for the transport driver — ICE-style escalation ladder.
  *
- * Replaces the old binary "direct OR relay" choice with a channel that keeps
- * BOTH underlying transports live at once and picks, per direction, whichever
- * one is confirmed reachable. The relay is ALWAYS present as the reliable floor
- * and the control plane; the direct UDP path is layered on top opportunistically
- * and only used for OUTBOUND once the peer has confirmed it receives our direct
- * packets. On an asymmetric NAT (one direction punchable) this yields
- * one-way-direct for the heavy data plus relay for the reverse, automatically.
+ * Keeps BOTH underlying transports live at once and routes per-direction. The
+ * relay is ALWAYS the reliable floor + bootstrap control plane; the direct UDP
+ * path is layered on top and escalated through a candidate ladder. On a path
+ * that fully opens both directions the channel promotes to strict-direct (BIDI)
+ * and the relay goes idle (0 bytes) but stays connected as the safety net.
  *
- * Architecture:
- *   - ONE ReliableConnection per channel (reliable.ts). The single sequencing/
- *     ack/retransmit engine. Its sendDatagram routes LIVE:
- *         myDirectOut && peerUdp ? udp.send(peerUdp) : relaySend()
- *     and its onDatagram is fed from BOTH inbound sources (udp socket + relay).
- *   - TWO transports:
- *       DIRECT: a dgram udp4 socket (fixed port via LM_ASSIST_TRANSPORT_PORT, or
- *               ephemeral; advertise LM_ASSIST_PUBLIC_IP:port or STUN result —
- *               identical endpoint discovery to holepunch.ts).
- *       RELAY:  a 0xFD stream over the hub WS (transport_relay_open / _ready,
- *               same handshake as relay.ts).
+ * Candidate ladder (NEW): each node gathers UDP candidates for its bound socket
+ * and advertises them ALL inside the single `udp` field the hub forwards
+ * verbatim (see candidates.ts for the wire shape and gathering):
+ *   host   (highest) — every non-internal IPv4 at the bound local port. Lets
+ *                      same-LAN peers connect directly over the LAN.
+ *   static           — configured public endpoint (env).
+ *   srflx  (lowest)  — STUN-discovered public mapping (needs hole punch).
+ * Probing escalates HOST → PUNCH:
+ *   Phase 1 (HOST): probe host + static candidates for ~PHASE1_HOST_MS.
+ *   Phase 2 (PUNCH): if no direction confirmed direct by then, ALSO probe the
+ *                    srflx candidate (the public-IP hole punch). All candidates
+ *                    keep being probed as keepalive.
  *
- * Per-direction confirmation (the crux):
- *   - We periodically blast LMPUNCH probes at the peer's advertised/last-seen
- *     udp endpoint (keepalive so the NAT mapping + confirmation stay fresh).
- *   - On receiving a direct LMPUNCH from the peer: record the peer's udp source
- *     (rinfo) for our own sends (roaming) AND send a relay control DPROBE_ACK
- *     ("your direct reaches me").
- *   - On receiving DPROBE_ACK over the relay: set myDirectOut = true — our
- *     direct packets are confirmed to reach the peer, so route OUTBOUND direct.
- *   - If no fresh direct traffic/confirm arrives for a while, fall back
- *     myDirectOut = false (robust against NAT remap / route change).
+ * State machine: RELAY → ONEWAY → BIDI (with fast demotion).
+ *   RELAY  — relay floor only; all traffic via relay. openChannel resolves here.
+ *   ONEWAY — our outbound direct confirmed for >=1 direction but NOT both.
+ *            Bulk data (>CONTROL_DATAGRAM_MAX) rides direct when myDirectOut;
+ *            control (<=256B) always relay + opportunistic direct.
+ *   BIDI   — BOTH directions confirmed AND sustained. EVERYTHING (data, control,
+ *            acks) rides direct both ways; the relay WS stays connected but idle.
+ *
+ * Promotion to BIDI is CONSERVATIVE (avoids reintroducing reverse-control loss):
+ *   both directions must be FRESH — myDirectOut confirmed within
+ *   DIRECT_OUT_STALE_MS AND weReceiveDirect() within DIRECT_RECV_STALE_MS —
+ *   sustained across >=BIDI_SUSTAIN_CYCLES consecutive stale-sweep ticks (the
+ *   sweep runs every PROBE_INTERVAL_MS). The counter only increments while BOTH
+ *   are fresh and resets to 0 the instant either goes stale.
+ *
+ * Demotion is FAST (the safety net):
+ *   the stale sweep (every PROBE_INTERVAL_MS) drops myDirectOut when no
+ *   DPROBE_ACK within DIRECT_OUT_STALE_MS. weReceiveDirect() is freshness-based
+ *   already. The live routing reads both every send, so the instant either leg
+ *   goes stale the mode falls from BIDI → ONEWAY (control returns to relay) or →
+ *   RELAY (neither direct). Because reliable.ts retransmits unacked datagrams and
+ *   the relay is warm, any datagram lost on a just-broken direct leg is
+ *   retransmitted over the relay — no data loss.
  *
  * Relay 0xFD payload wire format (1-byte tag prefix):
  *   0x00  reliable datagram follows  → onDatagram(payload.subarray(1))
- *   0x01  DPROBE_ACK control         → myDirectOut = true
+ *   0x01  DPROBE_ACK control         → myDirectOut = true (confirm)
  *
- * Mode reporting (Channel.mode):
- *   'direct' if BOTH legs are direct (we send direct AND the peer sends us
- *            direct, i.e. myDirectOut && weReceiveDirect),
- *   'relay'  if neither leg is direct,
- *   'hybrid' otherwise (exactly one leg direct).
+ * Mode reporting:
+ *   Channel.mode → 'bidi' | 'oneway' | 'relay'
+ *   Channel.via  → kind of the best confirmed OUTBOUND candidate
+ *                  ('host'|'static'|'srflx'), or null in relay.
  */
 
 import * as dgram from 'dgram';
 import * as crypto from 'crypto';
 import { ReliableConnection } from './reliable';
 import type { TransportWsSender, UdpEndpoint } from './ws-deps';
+import {
+  type Candidate,
+  type CandidateKind,
+  buildCandidateList,
+  buildUdpAdvert,
+  classifyEndpoint,
+  gatherHostCandidates,
+  gatherStaticCandidate,
+  parseUdpAdvert,
+} from './candidates';
 
 /** Binary frame marker for transport relay data (same as relay.ts). */
 export const TRANSPORT_RELAY_MARKER = 0xfd;
@@ -74,18 +95,21 @@ const DIRECT_RECV_STALE_MS = 4000;
 /** If the peer hasn't reconfirmed (DPROBE_ACK) within this window, stop routing
  *  our OUTBOUND over direct (fall back to relay for sends). */
 const DIRECT_OUT_STALE_MS = 4000;
-/** Datagrams at or below this size are control/handshake (reliable ACK/PING/FIN
- *  are 11B; small app-level control like the file-transfer FT_OK is tiny). They
- *  ride the relay floor UNCONDITIONALLY (plus opportunistic direct) so control
- *  delivery never depends on a flickery / one-way-only direct leg. Bulk data
- *  above this size rides direct when our outbound leg is confirmed, else relay. */
+/** Phase 1 (HOST tier) duration: probe host + static only. After this, if no
+ *  direction is confirmed direct, escalate to PUNCH (also probe srflx). */
+const PHASE1_HOST_MS = 2000;
+/** Number of consecutive stale-sweep cycles BOTH legs must be fresh before we
+ *  promote to BIDI. At PROBE_INTERVAL_MS=1000 this is a ~2s sustained window. */
+const BIDI_SUSTAIN_CYCLES = 2;
+
 const CONTROL_DATAGRAM_MAX = 256;
 
 function hashChannelId(channelId: string): Buffer {
   return crypto.createHash('md5').update(channelId).digest().subarray(0, 8);
 }
 
-export type HybridMode = 'direct' | 'relay' | 'hybrid';
+export type HybridMode = 'bidi' | 'oneway' | 'relay';
+export type ProbeTier = 'host' | 'punch';
 
 export interface HybridOptions {
   channelId: string;
@@ -96,13 +120,13 @@ export interface HybridOptions {
   /** Hub host for STUN (the gateway host). */
   stunHost: string;
   stunPort?: number; // default 8087
-  /** Peer udp endpoint already known from transport_offer (answerer side). */
-  knownPeer?: UdpEndpoint;
+  /** Peer udp advert already known from transport_offer (answerer side). */
+  knownPeer?: unknown;
   /**
    * Mode policy:
    *   'relay'  — relay only, never open the udp socket (forceMode:'relay').
    *   'direct' — best-effort direct, skip the relay floor (forceMode:'direct').
-   *   undefined — full hybrid (relay floor + opportunistic direct). Default.
+   *   undefined — full hybrid ladder (relay floor + escalating direct). Default.
    */
   force?: 'direct' | 'relay';
   /** Initiator: how long to wait for the relay floor before giving up. */
@@ -111,8 +135,10 @@ export interface HybridOptions {
 
 export interface HybridChannel {
   reliable: ReliableConnection;
-  /** Current mode based on which legs are confirmed direct. Read live. */
+  /** Current mode based on which legs are confirmed direct + sustained. Live. */
   mode(): HybridMode;
+  /** Kind of the best confirmed OUTBOUND candidate, or null in relay. Live. */
+  via(): CandidateKind | null;
   close(reason?: string): void;
 }
 
@@ -121,9 +147,8 @@ export interface HybridChannel {
  *
  * Usability:
  *   - force:'relay'  → resolves when the relay floor is ready.
- *   - force:'direct' → resolves once the udp socket is bound + endpoints
- *                      exchanged (best-effort; direct may not actually be
- *                      reachable — for testing).
+ *   - force:'direct' → resolves once the udp socket is bound + candidates
+ *                      exchanged (best-effort; direct may not be reachable).
  *   - default hybrid → resolves when the relay floor is ready (the guaranteed
  *                      bidirectional path); direct upgrades asynchronously.
  *
@@ -146,16 +171,25 @@ export function openHybridChannel(
 
     // --- direct (udp) state ---
     let socket: dgram.Socket | null = null;
-    let peerUdp: UdpEndpoint | null = opts.knownPeer ?? null;
+    /** Peer candidates we probe (priority-ordered). */
+    let peerCands: Candidate[] = opts.knownPeer ? parseUdpAdvert(opts.knownPeer) : [];
+    /** The peer endpoint our OUTBOUND data is sent to (roamed to last good src). */
+    let peerUdp: UdpEndpoint | null = peerCands.length > 0 ? { ip: peerCands[0].ip, port: peerCands[0].port } : null;
+    /** Kind of the candidate peerUdp currently corresponds to (for via()). */
+    let viaKind: CandidateKind | null = null;
     let myDirectOut = false; // peer confirmed it receives OUR direct packets
     let lastDirectRecvAt = 0; // last time we got ANY direct packet from peer
     let lastDirectOutConfirmAt = 0; // last DPROBE_ACK from peer
     let probeTimer: NodeJS.Timeout | null = null;
     let staleTimer: NodeJS.Timeout | null = null;
+    let tier: ProbeTier = 'host'; // ladder tier; escalates to 'punch'
+    let probingStartedAt = 0;
+    let bidiFreshCycles = 0; // consecutive sweeps with BOTH legs fresh
+    let bidiPromoted = false; // sticky promotion flag (cleared on demotion)
 
     // --- relay state ---
     let relayReady = false;
-    let answerListener: ((m: { channelId: string; udp?: UdpEndpoint }) => void) | null = null;
+    let answerListener: ((m: { channelId: string; udp?: unknown }) => void) | null = null;
 
     // --- reliable ---
     let reliable: ReliableConnection | null = null;
@@ -191,20 +225,47 @@ export function openHybridChannel(
       sendRelayFrame(Buffer.from([RELAY_TAG_DPROBE_ACK]));
     };
 
+    // --- mode computation (live) ---
+    const weReceiveDirect = (): boolean =>
+      lastDirectRecvAt > 0 && Date.now() - lastDirectRecvAt < DIRECT_RECV_STALE_MS;
+
+    const myDirectFresh = (): boolean =>
+      myDirectOut && Date.now() - lastDirectOutConfirmAt < DIRECT_OUT_STALE_MS;
+
+    const mode = (): HybridMode => {
+      const out = myDirectFresh(); // our send leg is direct + fresh
+      const inn = weReceiveDirect(); // our recv leg is direct + fresh
+      // BIDI only after conservative sustained promotion AND both legs still fresh.
+      if (bidiPromoted && out && inn) return 'bidi';
+      if (out || inn) return 'oneway';
+      return 'relay';
+    };
+
+    const via = (): CandidateKind | null => {
+      if (!myDirectFresh()) return null;
+      return viaKind;
+    };
+
     // --- the single reliable engine, routing per-direction LIVE ---
     const makeReliable = (): ReliableConnection => {
       return new ReliableConnection({
         sendDatagram: (buf: Buffer) => {
-          // Policy: data on the available direct direction, control on relay.
-          // Small datagrams (acks/ping/fin + tiny app control like FT_OK) ALWAYS
-          // ride the relay floor (+ opportunistic direct) so a flickery or
-          // one-way-only direct leg can never black-hole control. Bulk data rides
-          // direct when our outbound leg is confirmed, otherwise the relay floor.
-          const canDirect = myDirectOut && !!peerUdp && !!socket;
+          // Read live state at send time (never snapshot).
+          const canDirect = myDirectFresh() && !!peerUdp && !!socket;
           const sendDirect = (): boolean => {
             try { socket!.send(buf, peerUdp!.port, peerUdp!.ip); return true; }
             catch { return false; }
           };
+          // BIDI: both legs confirmed + sustained → EVERYTHING direct, no relay copy.
+          if (mode() === 'bidi') {
+            if (sendDirect()) return;
+            // Direct send threw despite BIDI — fall back to relay this once;
+            // the stale sweep will demote shortly.
+            relaySendDatagram(buf);
+            return;
+          }
+          // ONEWAY / RELAY policy: small control always on relay floor (+
+          // opportunistic direct); bulk data direct when our outbound is fresh.
           if (buf.length <= CONTROL_DATAGRAM_MAX) {
             relaySendDatagram(buf);
             if (canDirect) sendDirect();
@@ -219,18 +280,6 @@ export function openHybridChannel(
           teardown(r);
         },
       });
-    };
-
-    // --- mode computation (live) ---
-    const weReceiveDirect = (): boolean =>
-      lastDirectRecvAt > 0 && Date.now() - lastDirectRecvAt < DIRECT_RECV_STALE_MS;
-
-    const mode = (): HybridMode => {
-      const out = myDirectOut; // our send leg is direct
-      const inn = weReceiveDirect(); // our recv leg is direct
-      if (out && inn) return 'direct';
-      if (!out && !inn) return 'relay';
-      return 'hybrid';
     };
 
     // --- teardown ---
@@ -263,6 +312,7 @@ export function openHybridChannel(
       resolve({
         reliable,
         mode,
+        via,
         close: (r?: string) => teardown(r),
       });
     };
@@ -338,11 +388,27 @@ export function openHybridChannel(
     };
 
     // ========================= DIRECT =========================
+    /** Candidates eligible at the current tier: host+static always; srflx only
+     *  once we've escalated to the PUNCH tier. */
+    const activePeerCands = (): Candidate[] => {
+      if (tier === 'punch') return peerCands;
+      return peerCands.filter((c) => c.kind !== 'srflx');
+    };
+
     const startProbing = (): void => {
       if (probeTimer || tornDown) return;
+      probingStartedAt = Date.now();
       const blast = () => {
-        if (tornDown || !socket || !peerUdp) return;
-        try { socket.send(PUNCH_PROBE, peerUdp.port, peerUdp.ip); } catch { /* ignore */ }
+        if (tornDown || !socket) return;
+        // Escalate HOST → PUNCH if nothing confirmed within the phase-1 budget.
+        if (tier === 'host' && !myDirectFresh() && !weReceiveDirect()
+            && Date.now() - probingStartedAt >= PHASE1_HOST_MS) {
+          tier = 'punch';
+        }
+        const cands = activePeerCands();
+        for (const c of cands) {
+          try { socket.send(PUNCH_PROBE, c.port, c.ip); } catch { /* ignore */ }
+        }
       };
       blast();
       probeTimer = setInterval(blast, PROBE_INTERVAL_MS);
@@ -353,13 +419,32 @@ export function openHybridChannel(
       if (staleTimer || tornDown) return;
       staleTimer = setInterval(() => {
         if (tornDown) return;
-        // Robustness: if the peer stopped confirming our direct sends, fall back
-        // OUTBOUND to relay so a NAT remap / route change cannot black-hole us.
+        // FAST DEMOTION: if the peer stopped confirming our direct sends, fall
+        // back OUTBOUND to relay so a NAT remap / route change cannot black-hole
+        // us. (weReceiveDirect is already freshness-based, no flag to clear.)
         if (myDirectOut && Date.now() - lastDirectOutConfirmAt > DIRECT_OUT_STALE_MS) {
           myDirectOut = false;
         }
+        // CONSERVATIVE PROMOTION: count consecutive cycles where BOTH legs are
+        // fresh; promote to BIDI only after the sustain window. Reset the moment
+        // either leg goes stale (which also demotes a promoted channel).
+        if (myDirectFresh() && weReceiveDirect()) {
+          bidiFreshCycles += 1;
+          if (bidiFreshCycles >= BIDI_SUSTAIN_CYCLES) bidiPromoted = true;
+        } else {
+          bidiFreshCycles = 0;
+          bidiPromoted = false; // FAST DEMOTION out of BIDI on either leg stale.
+        }
       }, PROBE_INTERVAL_MS);
       staleTimer.unref?.();
+    };
+
+    /** Roam peerUdp to a freshly observed source + recompute via kind. */
+    const adoptPeerSource = (rinfo: dgram.RemoteInfo): void => {
+      if (!peerUdp || peerUdp.ip !== rinfo.address || peerUdp.port !== rinfo.port) {
+        peerUdp = { ip: rinfo.address, port: rinfo.port };
+      }
+      viaKind = classifyEndpoint(peerUdp, peerCands);
     };
 
     const onUdpMessage = (msg: Buffer, rinfo: dgram.RemoteInfo): void => {
@@ -367,10 +452,7 @@ export function openHybridChannel(
       // Direct probe from the peer: their direct path reaches us.
       if (msg.length === PUNCH_PROBE.length && msg.equals(PUNCH_PROBE)) {
         lastDirectRecvAt = Date.now();
-        // Roaming: learn/track the peer's current udp source for our own sends.
-        if (!peerUdp || peerUdp.ip !== rinfo.address || peerUdp.port !== rinfo.port) {
-          peerUdp = { ip: rinfo.address, port: rinfo.port };
-        }
+        adoptPeerSource(rinfo); // roaming: learn the peer's current udp source
         // Tell the peer over the relay control plane: "your direct reaches me."
         sendDprobeAck();
         return;
@@ -379,9 +461,7 @@ export function openHybridChannel(
       if (isStunReply(msg)) return;
       // Otherwise: a reliable datagram arriving over the direct path.
       lastDirectRecvAt = Date.now();
-      if (peerUdp && (peerUdp.ip !== rinfo.address || peerUdp.port !== rinfo.port)) {
-        peerUdp = { ip: rinfo.address, port: rinfo.port };
-      }
+      adoptPeerSource(rinfo);
       if (reliable) reliable.onDatagram(msg);
     };
 
@@ -396,22 +476,41 @@ export function openHybridChannel(
       await new Promise<void>((r) => s.once('listening', () => r()));
       if (tornDown) return;
 
-      const mine = fixedPort && publicIp
-        ? { ip: publicIp, port: fixedPort }
-        : await stun(s, opts.stunHost, stunPort, 1500);
+      // The actual bound local port (resolves the ephemeral case for host cands).
+      const localPort = (() => { try { return s.address().port; } catch { return fixedPort; } })();
+
+      // Gather candidates: host (all LAN IPs at the bound port), static (env),
+      // srflx (STUN). When a fixed public endpoint is configured we advertise it
+      // as the static candidate and skip STUN (matching the prior single-endpoint
+      // behavior); otherwise STUN gives the srflx candidate.
+      const hostCands = gatherHostCandidates(localPort);
+      const staticCand = gatherStaticCandidate();
+      let srflx: UdpEndpoint | null = null;
+      if (fixedPort && publicIp) {
+        srflx = null; // static candidate already covers the public endpoint
+      } else {
+        srflx = await stun(s, opts.stunHost, stunPort, 1500);
+      }
       if (tornDown) return;
 
-      // Exchange udp endpoints over the existing transport_open/offer/answer.
+      const myCands = buildCandidateList(hostCands, staticCand, srflx);
+      const advert = buildUdpAdvert(myCands);
+
+      // Exchange candidate adverts over the existing transport_open/offer/answer.
       if (opts.initiator) {
         opts.ws.send({
           type: 'transport_open',
           channelId: opts.channelId,
           peerGatewayId: opts.peerGatewayId,
-          udp: mine || undefined,
+          udp: advert,
         });
         answerListener = (m) => {
           if (m.channelId !== opts.channelId) return;
-          if (m.udp) peerUdp = m.udp;
+          const cands = parseUdpAdvert(m.udp);
+          if (cands.length > 0) {
+            peerCands = cands;
+            if (!peerUdp) peerUdp = { ip: cands[0].ip, port: cands[0].port };
+          }
           startProbing();
         };
         opts.ws.on('transport_answer', answerListener as (...a: unknown[]) => void);
@@ -420,9 +519,9 @@ export function openHybridChannel(
           type: 'transport_answer',
           channelId: opts.channelId,
           peerGatewayId: opts.peerGatewayId,
-          udp: mine || undefined,
+          udp: advert,
         });
-        // Answerer already knows the peer endpoint from transport_offer.udp.
+        // Answerer already knows the peer candidates from transport_offer.udp.
         startProbing();
       }
       startStaleSweep();
