@@ -9,7 +9,7 @@
  */
 
 import type { RouteContext, RouteHandler, ParsedRequest } from '../index';
-import { sendPath, listRemote, TransferError, snapshotTransfers, enqueueSend, snapshotQueue } from '../../file-transfer';
+import { sendPath, listRemote, TransferError, snapshotTransfers, enqueueSend, snapshotQueue, requestFs, listDirAbs, statAbs, listDrives } from '../../file-transfer';
 
 export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -70,6 +70,61 @@ export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
         try {
           const entries = await listRemote(peerGatewayId, remotePath);
           return { success: true, data: { entries } };
+        } catch (e) {
+          return { success: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+    },
+    {
+      method: 'POST',
+      pattern: /^\/storage\/drives$/,
+      handler: async (req: ParsedRequest) => {
+        const b = req.body || {};
+        try {
+          if (b.peerGatewayId) {
+            const data = await requestFs(String(b.peerGatewayId), { op: 'drives', refresh: b.refresh === true });
+            return { success: true, data: { drives: data, node: String(b.peerGatewayId) } };
+          }
+          const drives = await listDrives({ refresh: b.refresh === true });
+          return { success: true, data: { drives } };
+        } catch (e) {
+          return { success: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+    },
+    {
+      method: 'POST',
+      pattern: /^\/storage\/list$/,
+      handler: async (req: ParsedRequest) => {
+        const b = req.body || {};
+        const p = String(b.path || '');
+        if (!p) return { success: false, error: 'path required' };
+        try {
+          if (b.peerGatewayId) {
+            const data = await requestFs(String(b.peerGatewayId), { op: 'list', path: p, refresh: b.refresh === true });
+            return { success: true, data };
+          }
+          const data = await listDirAbs(p, { refresh: b.refresh === true });
+          return { success: true, data };
+        } catch (e) {
+          return { success: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+    },
+    {
+      method: 'POST',
+      pattern: /^\/storage\/stat$/,
+      handler: async (req: ParsedRequest) => {
+        const b = req.body || {};
+        const p = String(b.path || '');
+        if (!p) return { success: false, error: 'path required' };
+        try {
+          if (b.peerGatewayId) {
+            const data = await requestFs(String(b.peerGatewayId), { op: 'stat', path: p, refresh: b.refresh === true });
+            return { success: true, data };
+          }
+          const data = await statAbs(p, { refresh: b.refresh === true });
+          return { success: true, data };
         } catch (e) {
           return { success: false, error: e instanceof Error ? e.message : String(e) };
         }

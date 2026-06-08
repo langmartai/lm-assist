@@ -23,7 +23,7 @@ export const sendFileToolDef = {
     properties: {
       peerGatewayId: { type: 'string', description: 'Receiver node hostId/gatewayId (from list_nodes).' },
       localPath: { type: 'string', description: 'Absolute path of the file or directory to send (on the sender node).' },
-      remotePath: { type: 'string', description: 'Destination path/name on the receiver (relative to its receive root).' },
+      remotePath: { type: 'string', description: 'Destination path on the receiver: an ABSOLUTE path writes there directly (a target file path for a single file, or a target directory for a dir); a RELATIVE path lands under the receiver receive-root. Use fs_list / fs_stat to discover the target location first.' },
       forceMode: { type: 'string', enum: ['direct', 'relay'], description: 'Optional: force transport path. Default auto.' },
       wait: { type: 'boolean', description: 'Block until the transfer completes (sync). Default false — enqueue and return a jobId; poll transfer_queue.' },
     },

@@ -21,6 +21,7 @@ import type { FtDelay } from './types';
 import { beginTransfer, updateTransfer, setTransferMeta, endTransfer } from './transfer-stats';
 import { SUBSYSTEM_TAG } from './protocol';
 import { safeJoin } from './safe-path';
+import { listDirAbs, statAbs, listDrives, markDirty } from './fs-inspect';
 import {
   FIREHOSE_CHUNK,
   unpackFirehoseDatagram,
@@ -35,6 +36,9 @@ import type {
   FtList,
   FtListResult,
   FtListErr,
+  FtFs,
+  FtFsResult,
+  FtFsErr,
   FtFhMeta,
   FtFhEnd,
   FtFhRepair,
@@ -49,6 +53,21 @@ const RENACK_MAX_MS = 4000;
 /** Default safe root for received files. */
 export function receiveRoot(): string {
   return path.join(os.homedir(), '.lm-assist', 'received');
+}
+
+/**
+ * Resolve the absolute write target for one entry. When the sender gave an
+ * ABSOLUTE remotePath (m.root) the file lands there directly (own-node copy to
+ * a chosen location): a single file goes to m.root itself, a directory's
+ * entries append under m.root. A RELATIVE remotePath stays under the
+ * receive-root via safeJoin (unchanged legacy behavior).
+ */
+function destFor(root: string, m: FtMeta, e: FileEntry): string {
+  if (path.isAbsolute(m.root)) {
+    const single = m.entries.length === 1 && !m.entries[0].isDir;
+    return single ? m.root : safeJoin(m.root, e.relPath);
+  }
+  return safeJoin(path.join(root, m.root), e.relPath);
 }
 
 export interface ReceiveOpts {
@@ -116,7 +135,7 @@ export function handleIncomingTransfer(
         // Pre-create directories and prepare file handles.
         for (let i = 0; i < m.entries.length; i++) {
           const e = m.entries[i];
-          const abs = safeJoin(path.join(root, m.root), e.relPath);
+          const abs = destFor(root, m, e);
           if (e.isDir) {
             await fsp.mkdir(abs, { recursive: true });
             await fsp.chmod(abs, e.mode).catch(() => {});
@@ -168,6 +187,7 @@ export function handleIncomingTransfer(
           await of.handle.close();
           openFiles.delete(i);
           await fsp.chmod(of.absPath, of.mode).catch(() => {});
+          markDirty(of.absPath);
           if (end.sha256PerEntry) {
             const expected = end.sha256PerEntry[i];
             const actual = hashers.get(i)!.digest('hex');
@@ -200,7 +220,9 @@ export function handleIncomingTransfer(
       beginTransfer({ id: m.transferId, peerGatewayId: channel.peerGatewayId, direction: 'recv', remotePath: m.name, totalBytes: m.size, kind: 'firehose',
         live: () => ({ mode: channel.mode, via: channel.via, rttMs: channel.rtt }) });
       try {
-        const abs = safeJoin(path.join(root, m.root), m.name);
+        const abs = path.isAbsolute(m.root)
+          ? m.root
+          : safeJoin(path.join(root, m.root), m.name);
         await fsp.mkdir(path.dirname(abs), { recursive: true });
         const handle = await fsp.open(abs, 'w');
         // Preallocate (sparse) so writes by offset land correctly even out of order.
@@ -370,6 +392,7 @@ export function handleIncomingTransfer(
         await fh.handle.close();
         await fsp.chmod(fh.absPath, fh.fileMode).catch(() => {});
         const actual = await sha256File(fh.absPath);
+        markDirty(fh.absPath);
         if (fh.expectedSha && actual !== fh.expectedSha) {
           const msg: FtErr = { type: 'FT_ERR', transferId, error: 'sha256 mismatch (firehose)' };
           try { channel.sendControl(encodeControl(msg)); } catch { /* gone */ }
@@ -386,6 +409,21 @@ export function handleIncomingTransfer(
       } catch (e) {
         await replyErr(transferId, 'firehose finalize failed: ' + (e as Error).message);
       }
+    };
+
+    const handleFs = async (req: FtFs) => {
+      try {
+        let data: unknown;
+        if (req.op === 'drives') data = await listDrives({ refresh: req.refresh });
+        else if (req.op === 'stat') data = await statAbs(req.path || '', { refresh: req.refresh });
+        else data = await listDirAbs(req.path || '', { refresh: req.refresh });
+        const res: FtFsResult = { type: 'FT_FS_RESULT', op: req.op, data };
+        channel.sendControl(encodeControl(res));
+      } catch (e) {
+        const res: FtFsErr = { type: 'FT_FS_ERR', op: req.op, error: (e as Error).message };
+        channel.sendControl(encodeControl(res));
+      }
+      finish();
     };
 
     const handleList = async (req: FtList) => {
@@ -451,6 +489,9 @@ export function handleIncomingTransfer(
               break;
             case 'FT_LIST':
               await handleList(msg as FtList);
+              break;
+            case 'FT_FS':
+              await handleFs(msg as FtFs);
               break;
             default:
               // ignore unknown control frames

@@ -28,6 +28,9 @@ import type {
   FtList,
   FtListResult,
   FtListErr,
+  FtFs,
+  FtFsResult,
+  FtFsErr,
   SendOpts,
   SendResult,
 } from './types';
@@ -420,5 +423,63 @@ export function listRemote(
     ch.sendControl(encodeControl({ type: SUBSYSTEM_TAG } as never));
     const req: FtList = { type: 'FT_LIST', path: remotePath };
     ch.sendControl(encodeControl(req));
+  });
+}
+
+
+/**
+ * Ask a peer to run a filesystem inspect (drives / list / stat) over the
+ * transport and resolve with the result. Mirrors listRemote: open a short-lived
+ * channel, send FT_FS, await FT_FS_RESULT, close.
+ */
+export function requestFs(
+  peerGatewayId: string,
+  req: { op: 'drives' | 'list' | 'stat'; path?: string; refresh?: boolean },
+): Promise<unknown> {
+  return new Promise(async (resolve, reject) => {
+    let channel: Channel | undefined;
+    try {
+      channel = await openChannel(peerGatewayId);
+    } catch (e) {
+      reject(e);
+      return;
+    }
+    const ch = channel;
+    const reader = new FrameReader();
+    let settled = false;
+    const finish = (err: Error | null, data?: unknown) => {
+      if (settled) return;
+      settled = true;
+      ch.close();
+      if (err) reject(err);
+      else resolve(data);
+    };
+    ch.onData((data) => {
+      let frames;
+      try {
+        frames = reader.push(data);
+      } catch (e) {
+        finish(e as Error);
+        return;
+      }
+      for (const f of frames) {
+        if (f.kind !== 'control') continue;
+        const msg = f.msg as FtFsResult | FtFsErr;
+        if (msg.type === 'FT_FS_RESULT') {
+          finish(null, msg.data);
+          return;
+        }
+        if (msg.type === 'FT_FS_ERR') {
+          finish(new Error('fs request failed: ' + msg.error));
+          return;
+        }
+      }
+    });
+    ch.onClose((reason) => {
+      finish(new Error('channel closed before fs reply' + (reason ? ': ' + reason : '')));
+    });
+    ch.sendControl(encodeControl({ type: SUBSYSTEM_TAG } as never));
+    const r: FtFs = { type: 'FT_FS', op: req.op, path: req.path, refresh: req.refresh };
+    ch.sendControl(encodeControl(r));
   });
 }

@@ -174,6 +174,9 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   transfer_stats: 'read',
   transfer_queue: 'read',
   port_forward_stats: 'read',
+  fs_drives: 'read',
+  fs_list: 'read',
+  fs_stat: 'read',
   // session-to-session messaging
   send_session_message: 'admin',
   list_session_messages: 'read',

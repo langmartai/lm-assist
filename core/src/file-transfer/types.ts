@@ -91,6 +91,25 @@ export interface FtListErr {
   error: string;
 }
 
+/** Filesystem inspect request over the transport (whole-fs; no receive-root). */
+export interface FtFs {
+  type: 'FT_FS';
+  op: 'drives' | 'list' | 'stat';
+  path?: string;
+  refresh?: boolean;
+}
+/** Reply to FtFs. data shape depends on op: DriveInfo[] | FsListResult | StatInfo. */
+export interface FtFsResult {
+  type: 'FT_FS_RESULT';
+  op: 'drives' | 'list' | 'stat';
+  data: unknown;
+}
+export interface FtFsErr {
+  type: 'FT_FS_ERR';
+  op: 'drives' | 'list' | 'stat';
+  error: string;
+}
+
 // ===========================================================================
 // FIREHOSE control messages (single large-file fast path).
 //
@@ -178,7 +197,10 @@ export type FtControl =
   | FtNack
   | FtDelay
   | FtFhEnd
-  | FtFhRepair;
+  | FtFhRepair
+  | FtFs
+  | FtFsResult
+  | FtFsErr;
 
 export interface SendResult {
   bytes: number;

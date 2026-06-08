@@ -18,7 +18,7 @@
  *   integrator may simply forward the channel without re-injecting the frame.
  */
 
-export { sendPath, listRemote } from './sender';
+export { sendPath, listRemote, requestFs } from './sender';
 export { TransferError, classifyError, isRetriable } from './errors';
 export { snapshotTransfers, getTransfer } from './transfer-stats';
 export { enqueueSend, snapshotQueue, getSendJob } from './send-queue';
@@ -29,6 +29,8 @@ export { handleIncomingTransfer, receiveRoot } from './receiver';
 export type { ReceiveOpts } from './receiver';
 export { SUBSYSTEM_TAG } from './protocol';
 export { safeJoin, UnsafePathError } from './safe-path';
+export { listDirAbs, statAbs, listDrives, markDirty, clearFsCache } from './fs-inspect';
+export type { StatInfo, FsListResult, DriveInfo } from './fs-inspect';
 export {
   FrameReader,
   encodeControl,
