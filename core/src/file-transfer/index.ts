@@ -19,6 +19,8 @@
  */
 
 export { sendPath, listRemote } from './sender';
+export { TransferError, classifyError, isRetriable } from './errors';
+export type { TransferErrorCode } from './errors';
 export { handleIncomingTransfer, receiveRoot } from './receiver';
 export type { ReceiveOpts } from './receiver';
 export { SUBSYSTEM_TAG } from './protocol';

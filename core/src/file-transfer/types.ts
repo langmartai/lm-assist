@@ -114,6 +114,10 @@ export interface SendOpts {
   onProgress?: (sent: number, total: number) => void;
   /** Force the channel transport: 'relay' (hub only) or 'direct' (best-effort). */
   forceMode?: 'direct' | 'relay';
-  /** Bytes per data chunk on the wire. Default 32 KiB. */
+  /** Bytes per data chunk on the wire. Default 32 KiB (256 KiB for large files). */
   chunkSize?: number;
+  /** Hard ceiling for the whole transfer in ms. Default scales with file size. */
+  timeoutMs?: number;
+  /** Retry attempts after the first (default 2). Backoff also covers WS reconnect. */
+  maxRetries?: number;
 }

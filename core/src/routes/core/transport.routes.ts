@@ -9,7 +9,7 @@
  */
 
 import type { RouteContext, RouteHandler, ParsedRequest } from '../index';
-import { sendPath, listRemote } from '../../file-transfer';
+import { sendPath, listRemote, TransferError } from '../../file-transfer';
 
 export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -25,11 +25,18 @@ export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
           return { success: false, error: 'peerGatewayId, localPath, remotePath required' };
         }
         try {
-          const forceMode = b.forceMode === 'relay' || b.forceMode === 'direct' ? b.forceMode : undefined;
-          const res = await sendPath(peerGatewayId, localPath, remotePath, forceMode ? { forceMode } : undefined);
+          const o: { forceMode?: 'direct' | 'relay'; timeoutMs?: number; maxRetries?: number } = {};
+          if (b.forceMode === 'relay' || b.forceMode === 'direct') o.forceMode = b.forceMode;
+          if (typeof b.timeoutMs === 'number') o.timeoutMs = b.timeoutMs;
+          if (typeof b.maxRetries === 'number') o.maxRetries = b.maxRetries;
+          const res = await sendPath(peerGatewayId, localPath, remotePath, o);
           return { success: true, data: res };
         } catch (e) {
-          return { success: false, error: e instanceof Error ? e.message : String(e) };
+          return {
+            success: false,
+            error: e instanceof Error ? e.message : String(e),
+            code: e instanceof TransferError ? e.code : undefined,
+          };
         }
       },
     },

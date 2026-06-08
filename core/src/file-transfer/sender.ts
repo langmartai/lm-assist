@@ -14,6 +14,7 @@ import * as crypto from 'crypto';
 import { randomUUID } from 'crypto';
 import { openChannel, Channel } from '../transport';
 import { FrameReader, encodeControl, encodeData } from './frame';
+import { TransferError, classifyError, isRetriable } from './errors';
 import { SUBSYSTEM_TAG } from './protocol';
 import type {
   FileEntry,
@@ -117,14 +118,30 @@ export async function sendPath(
   remotePath: string,
   opts?: SendOpts,
 ): Promise<SendResult> {
-  const chunkSize = opts?.chunkSize ?? DEFAULT_CHUNK;
   const { entries } = await walk(localPath);
   const totalBytes = entries.reduce((a, e) => a + (e.isDir ? 0 : e.size), 0);
   const transferId = randomUUID();
 
+  // --- size-adaptive parameters (chosen up front from the manifest size) ---
+  const TINY = 64 * 1024;          // below this: skip direct, relay one-shot
+  const LARGE = 10 * 1024 * 1024;  // above this: larger fs reads
+  const chunkSize = opts?.chunkSize ?? (totalBytes > LARGE ? 256 * 1024 : DEFAULT_CHUNK);
+  // Tiny transfers complete in ~1 round trip on the relay floor before a direct
+  // path could even confirm — skip the direct machinery (STUN + socket) entirely.
+  const initialForce: 'direct' | 'relay' | undefined =
+    opts?.forceMode ?? (totalBytes < TINY ? 'relay' : undefined);
+  // Total-transfer backstop timeout, scaled by size. (The 30s reliable idle
+  // timeout already catches true stalls; this only bounds a pathologically slow
+  // but technically-progressing transfer.)
+  const FLOOR_RATE = 100 * 1024; // assume at least 100 KiB/s
+  const timeoutMs = opts?.timeoutMs ?? Math.max(120_000, Math.ceil(totalBytes / FLOOR_RATE) * 1000);
+  const maxRetries = opts?.maxRetries ?? 2;
+
   let lastMode = '';
+  let currentChannel: Channel | null = null;
   const attempt = async (forceMode?: 'direct' | 'relay'): Promise<SendResult> => {
   const channel = await openChannel(peerGatewayId, forceMode ? { forceMode } : undefined);
+  currentChannel = channel;
   lastMode = channel.mode;
   try {
     const reader = new FrameReader();
@@ -165,18 +182,68 @@ export async function sendPath(
     lastMode = channel.mode;
     return { bytes: totalBytes, entries: entries.length, mode: lastMode, via: channel.via };
   } finally {
+    if (currentChannel === channel) currentChannel = null;
     channel.close();
   }
   };
-  try {
-    return await attempt(opts?.forceMode);
-  } catch (e) {
-    // A direct channel can establish (punch ok) yet have a hostile reverse path
-    // (symmetric/CGNAT): the transfer stalls and idle-times-out. Fall back to the
-    // hub relay (reliable, rides the WS). No double-retry if already on relay.
-    if (lastMode === 'relay') throw e;
-    return await attempt('relay');
+
+  // One logical run: try the chosen path, then fall back to the relay floor if a
+  // direct/hybrid channel established but stalled (hostile reverse-path NAT).
+  const oneRun = async (force?: 'direct' | 'relay'): Promise<SendResult> => {
+    try {
+      return await attempt(force);
+    } catch (e) {
+      if (force === 'relay' || lastMode === 'relay') throw e;
+      return await attempt('relay');
+    }
+  };
+
+  // Retry loop with exponential backoff. The backoff also gives a dropped hub
+  // WebSocket time to auto-reconnect before the next attempt (reconnect-aware).
+  let lastErr: unknown;
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      return await withTimeout(
+        oneRun(i === 0 ? initialForce : 'relay'),
+        timeoutMs,
+        () => { try { currentChannel?.close(); } catch { /* ignore */ } },
+      );
+    } catch (e) {
+      lastErr = e;
+      const code = e instanceof TransferError ? e.code : classifyError(e);
+      if (!isRetriable(code) || i === maxRetries) {
+        throw e instanceof TransferError ? e : new TransferError(code, errMsg(e), e);
+      }
+      await sleep(Math.min(9000, 1000 * Math.pow(3, i))); // 1s, 3s, 9s
+    }
   }
+  throw new TransferError('MAX_RETRIES', `transfer failed after ${maxRetries + 1} attempts`, lastErr);
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => {
+    const t = setTimeout(r, ms);
+    if ((t as { unref?: () => void }).unref) (t as { unref: () => void }).unref();
+  });
+}
+
+/** Reject with a TIMEOUT TransferError if `p` does not settle within `ms`. */
+function withTimeout<T>(p: Promise<T>, ms: number, onTimeout?: () => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => {
+      onTimeout?.();
+      reject(new TransferError('TIMEOUT', `transfer exceeded ${ms}ms`));
+    }, ms);
+    if ((t as { unref?: () => void }).unref) (t as { unref: () => void }).unref();
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
 }
 
 async function streamFile(
