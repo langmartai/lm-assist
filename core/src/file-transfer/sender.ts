@@ -150,7 +150,7 @@ export async function sendPath(
     // firehose. If direct never confirms within the window, fall through to the
     // existing reliable path on THIS channel (unchanged behavior).
     const firehoseEligible =
-      process.env.LM_FIREHOSE === '1' && // opt-in: needs real-systems tuning (receiver drain + UDP buffers + AIMD) before default-on
+      process.env.LM_FIREHOSE !== '0' && // default-on for large (>10MB) single-file direct transfers; set LM_FIREHOSE=0 to disable
       forceMode !== 'relay' &&
       entries.length === 1 && !entries[0].isDir && totalBytes > LARGE;
     if (firehoseEligible && (await waitForDirect(channel, 3000))) {
