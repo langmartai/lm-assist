@@ -551,6 +551,9 @@ export function openHybridChannel(
       s.bind(fixedPort);
       await new Promise<void>((r) => s.once('listening', () => r()));
       if (tornDown) return;
+      // Big UDP socket buffers absorb firehose bursts while the receiver drains
+      // (capped by net.core.rmem_max/wmem_max — raised via sysctl on the hosts).
+      try { s.setRecvBufferSize(16 * 1024 * 1024); s.setSendBufferSize(16 * 1024 * 1024); } catch { /* best-effort */ }
 
       // The actual bound local port (resolves the ephemeral case for host cands).
       const localPort = (() => { try { return s.address().port; } catch { return fixedPort; } })();

@@ -22,21 +22,23 @@
 export const FIREHOSE_CHUNK = 1100;
 
 /** Bytes of the firehose data-datagram header (the 4-byte seq). */
-export const FH_DATA_HEADER = 4;
+export const FH_DATA_HEADER = 10; // 4B seq + 6B send-timestamp (ms, for delay-based rate control)
 
-/** Pack a firehose data datagram payload: [4B seq][bytes]. */
-export function packFirehoseDatagram(seq: number, bytes: Buffer): Buffer {
+/** Pack a firehose data datagram payload: [4B seq][6B send-ts ms][bytes]. */
+export function packFirehoseDatagram(seq: number, sendTs: number, bytes: Buffer): Buffer {
   const out = Buffer.allocUnsafe(FH_DATA_HEADER + bytes.length);
   out.writeUInt32BE(seq >>> 0, 0);
+  out.writeUIntBE(sendTs, 4, 6); // 48-bit ms timestamp — receiver measures one-way delay
   bytes.copy(out, FH_DATA_HEADER);
   return out;
 }
 
-/** Unpack a firehose data datagram payload → { seq, bytes }, or null if short. */
-export function unpackFirehoseDatagram(buf: Buffer): { seq: number; bytes: Buffer } | null {
+/** Unpack a firehose data datagram → { seq, sendTs, bytes }, or null if short. */
+export function unpackFirehoseDatagram(buf: Buffer): { seq: number; sendTs: number; bytes: Buffer } | null {
   if (buf.length < FH_DATA_HEADER) return null;
   const seq = buf.readUInt32BE(0);
-  return { seq, bytes: buf.subarray(FH_DATA_HEADER) };
+  const sendTs = buf.readUIntBE(4, 6);
+  return { seq, sendTs, bytes: buf.subarray(FH_DATA_HEADER) };
 }
 
 /**

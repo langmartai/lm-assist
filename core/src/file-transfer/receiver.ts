@@ -17,6 +17,7 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { Channel } from '../transport';
 import { FrameReader, encodeControl } from './frame';
+import type { FtDelay } from './types';
 import { SUBSYSTEM_TAG } from './protocol';
 import { safeJoin } from './safe-path';
 import {
@@ -39,6 +40,10 @@ import type {
   FtNack,
   DirEntry,
 } from './types';
+
+/** Don't re-NACK a missing seq within this window — give the repair time to land. */
+const RENACK_MIN_MS = 400;
+const RENACK_MAX_MS = 4000;
 
 /** Default safe root for received files. */
 export function receiveRoot(): string {
@@ -202,6 +207,12 @@ export function handleIncomingTransfer(
           totalChunks: m.totalChunks,
           bitmap,
           received: 0,
+          highWater: 0,
+          nackedAt: new Float64Array(m.totalChunks),
+          repairRtt: 0,
+          baseOwd: Infinity,
+          curMinOwd: Infinity,
+          delayTimer: null,
           ended: false,
           expectedSha: '',
           nackTimer: null,
@@ -209,39 +220,68 @@ export function handleIncomingTransfer(
         // Direct (unreliable) data plane: [seq][payload] → write at seq*chunk.
         channel.onUnreliable((buf) => {
           const u = unpackFirehoseDatagram(buf);
-          if (u) void writeFhChunk(u.seq, u.bytes);
+          if (!u || !fh) return;
+          // Delay-based control input: queuing delay = one-way delay - its running
+          // min (the constant clock offset cancels). FASP/LEDBAT style.
+          const owd = Date.now() - u.sendTs;
+          if (owd < fh.baseOwd) fh.baseOwd = owd;
+          if (owd < fh.curMinOwd) fh.curMinOwd = owd;
+          acceptFhChunk(u.seq, u.bytes);
         });
         startNackTimer();
+        startDelayTimer();
       } catch (e) {
         await replyErr(m.transferId, 'firehose setup failed: ' + (e as Error).message);
       }
     };
 
-    let fhWriteChain: Promise<void> = Promise.resolve();
-    const writeFhChunk = (seq: number, bytes: Buffer): Promise<void> => {
-      // Serialize writes (the handle is shared); idempotent — a duplicate seq just
-      // re-writes the same bytes and re-sets the (already-set) bitmap bit.
-      fhWriteChain = fhWriteChain.then(async () => {
-        if (!fh || settled) return;
-        if (seq < 0 || seq >= fh.totalChunks) return;
-        try {
-          await fh.handle.write(bytes, 0, bytes.length, seq * fh.chunk);
-          const byteIdx = seq >> 3;
-          const mask = 1 << (seq & 7);
-          if ((fh.bitmap[byteIdx] & mask) === 0) {
-            fh.bitmap[byteIdx] |= mask;
-            fh.received += 1;
-          }
-        } catch (e) {
-          await replyErr(transferId, 'firehose write failed: ' + (e as Error).message);
+    // Receiver write pipeline: socket-drain (recv) is DECOUPLED from disk I/O.
+    // recv synchronously marks the bitmap + queues the payload (instant — the UDP
+    // socket never backs up); a background drainer writes concurrently. This is
+    // what lets the receiver keep up with a multi-MB/s firehose without dropping.
+    const writeQueue: Array<{ seq: number; bytes: Buffer }> = [];
+    let draining = false;
+    let drainWaiters: Array<() => void> = [];
+    const drainWrites = async (): Promise<void> => {
+      if (draining) return;
+      draining = true;
+      try {
+        while (writeQueue.length > 0 && fh && !settled) {
+          const batch = writeQueue.splice(0, 256);
+          await Promise.all(
+            batch.map((w) =>
+              fh!.handle.write(w.bytes, 0, w.bytes.length, w.seq * fh!.chunk).then(() => {}, () => {})),
+          );
         }
-      });
-      return fhWriteChain;
+      } finally {
+        draining = false;
+        const ws = drainWaiters; drainWaiters = []; ws.forEach((fn) => fn());
+      }
+    };
+    const flushWrites = (): Promise<void> => {
+      if (!draining && writeQueue.length === 0) return Promise.resolve();
+      return new Promise<void>((res) => { drainWaiters.push(res); void drainWrites(); });
+    };
+    const acceptFhChunk = (seq: number, bytes: Buffer): void => {
+      if (!fh || settled) return;
+      if (seq < 0 || seq >= fh.totalChunks) return;
+      if (seq + 1 > fh.highWater) fh.highWater = seq + 1;
+      const byteIdx = seq >> 3;
+      const mask = 1 << (seq & 7);
+      if ((fh.bitmap[byteIdx] & mask) !== 0) return; // already have it
+      if (fh.nackedAt[seq] > 0) { // a NACKed gap just got repaired — measure the round-trip
+        const rtt = Date.now() - fh.nackedAt[seq];
+        fh.repairRtt = fh.repairRtt > 0 ? 0.8 * fh.repairRtt + 0.2 * rtt : rtt;
+      }
+      fh.bitmap[byteIdx] |= mask;
+      fh.received += 1;
+      writeQueue.push({ seq, bytes: Buffer.from(bytes) }); // copy: socket buffer may be reused
+      void drainWrites();
     };
 
     const handleFhRepair = async (r: FtFhRepair) => {
       if (!fh || r.transferId !== transferId) return;
-      await writeFhChunk(r.seq, Buffer.from(r.data, 'base64'));
+      acceptFhChunk(r.seq, Buffer.from(r.data, 'base64'));
     };
 
     const handleFhEnd = async (e: FtFhEnd) => {
@@ -254,10 +294,24 @@ export function handleIncomingTransfer(
     const missingSeqs = (limit: number): number[] => {
       const out: number[] = [];
       if (!fh) return out;
-      for (let seq = 0; seq < fh.totalChunks && out.length < limit; seq++) {
+      // Until FT_FH_END, only NACK holes BELOW the high-water mark (real gaps
+      // from loss) — never the not-yet-sent tail. 64-chunk margin tolerates UDP
+      // reordering. After END the sender has fired everything, so scan all.
+      const now = Date.now();
+      // Re-NACK grace = ~2x the measured repair RTT, so we never re-NACK a gap
+      // before its repair has had time to arrive (else high-RTT paths spam-NACK
+      // and falsely escalate everything to relay). Clamped; 600ms until measured.
+      const renack = fh.repairRtt > 0
+        ? Math.min(RENACK_MAX_MS, Math.max(RENACK_MIN_MS, fh.repairRtt * 2))
+        : 600;
+      const scanEnd = fh.ended ? fh.totalChunks : Math.max(0, fh.highWater - 64);
+      for (let seq = 0; seq < scanEnd && out.length < limit; seq++) {
         const byteIdx = seq >> 3;
         const mask = 1 << (seq & 7);
-        if ((fh.bitmap[byteIdx] & mask) === 0) out.push(seq);
+        if ((fh.bitmap[byteIdx] & mask) !== 0) continue;        // already have it
+        if (now - fh.nackedAt[seq] < renack) continue;          // NACKed recently — let the repair arrive first
+        fh.nackedAt[seq] = now;
+        out.push(seq);
       }
       return out;
     };
@@ -279,14 +333,28 @@ export function handleIncomingTransfer(
       fh.nackTimer.unref?.();
     };
 
+    const startDelayTimer = (): void => {
+      if (!fh || fh.delayTimer) return;
+      fh.delayTimer = setInterval(() => {
+        if (!fh || settled) return;
+        if (fh.baseOwd === Infinity) return; // no samples yet at all
+        const qd = fh.curMinOwd === Infinity ? 0 : Math.max(0, fh.curMinOwd - fh.baseOwd);
+        fh.curMinOwd = Infinity; // reset the per-window min
+        const msg: FtDelay = { type: 'FT_DELAY', transferId, qd };
+        try { channel.sendControl(encodeControl(msg)); } catch { /* channel gone */ }
+      }, 50);
+      fh.delayTimer.unref?.();
+    };
+
     const maybeComplete = async (): Promise<void> => {
       if (!fh || settled) return;
       if (!fh.ended) return;
       // Drain any in-flight writes before checking completeness.
-      await fhWriteChain;
+      await flushWrites();
       if (!fh || settled) return;
       if (fh.received < fh.totalChunks) { sendNack(); return; }
       if (fh.nackTimer) { clearInterval(fh.nackTimer); fh.nackTimer = null; }
+      if (fh.delayTimer) { clearInterval(fh.delayTimer); fh.delayTimer = null; }
       try {
         // fsync, close, chmod, verify whole-file sha256.
         await fh.handle.sync().catch(() => {});
@@ -385,6 +453,7 @@ export function handleIncomingTransfer(
       void closeAll(openFiles).catch(() => {});
       if (fh) {
         if (fh.nackTimer) { clearInterval(fh.nackTimer); fh.nackTimer = null; }
+      if (fh.delayTimer) { clearInterval(fh.delayTimer); fh.delayTimer = null; }
         fh.handle.close().catch(() => {});
         fh = null;
       }
@@ -404,6 +473,12 @@ interface FirehoseRecvState {
   /** Received-bitmap: 1 bit per chunk (memory-bounded, NOT a data buffer). */
   bitmap: Uint8Array;
   received: number;
+  highWater: number;  // highest received seq + 1 (bounds first-pass NACK)
+  nackedAt: Float64Array;  // per-seq last-NACK time (re-NACK grace)
+  repairRtt: number;  // EWMA of NACK->repair-arrival latency (adapts re-NACK grace to RTT)
+  baseOwd: number;    // running min one-way delay (ms) — the no-queue baseline
+  curMinOwd: number;  // min one-way delay this report window
+  delayTimer: NodeJS.Timeout | null;
   ended: boolean;
   expectedSha: string;
   nackTimer: NodeJS.Timeout | null;

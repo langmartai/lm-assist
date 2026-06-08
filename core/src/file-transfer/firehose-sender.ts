@@ -27,7 +27,7 @@ import {
   decodeMissingRuns,
 } from './firehose-wire';
 import { SUBSYSTEM_TAG } from './protocol';
-import type { FtFhMeta, FtFhEnd, FtFhRepair, FtNack, FtOk, FtErr, SendResult, SendOpts } from './types';
+import type { FtFhMeta, FtFhEnd, FtFhRepair, FtNack, FtDelay, FtOk, FtErr, SendResult, SendOpts } from './types';
 
 // --- rate-AIMD constants (the parent tunes these against real e2e) ---
 /** AIMD evaluation interval. */
@@ -38,14 +38,12 @@ const RATE_START = 4 * 1024 * 1024;
 const RATE_MIN = 256 * 1024;
 /** Upper clamp. */
 const RATE_MAX = 200 * 1024 * 1024;
-/** Multiplicative increase when loss is low. */
-const RATE_UP = 1.25;
-/** Multiplicative decrease when loss is high. */
-const RATE_DOWN = 0.6;
-/** Loss below this → increase. */
-const LOSS_LOW = 0.02;
-/** Loss above this → decrease. */
-const LOSS_HIGH = 0.10;
+// Delay-based rate control (Aspera FASP / LEDBAT style): drive the rate from the
+// receiver's measured QUEUING DELAY, not from loss. Loss only triggers repair.
+/** Target queuing delay (ms) — keep a small, stable standing queue. */
+const TARGET_QD_MS = 30;
+/** Per-report gain: rate *= 1 + GAIN*clamp((TARGET-qd)/TARGET, -1, 1). */
+const DELAY_GAIN = 0.15;
 
 /** Re-fire rounds over DIRECT before a stubborn seq escalates to a RELAY repair. */
 const K_REFIRE = 3;
@@ -94,6 +92,14 @@ export function sendFirehose(
 
     // Pacing + AIMD state.
     let rate = opts?.rateStart ?? RATE_START; // bytes/sec
+    let lastQd = 0; // last reported queuing delay (ms)
+    // Delay-based rate update (FASP/LEDBAT): raise rate while queuing delay is
+    // below target, lower it when above. Loss never touches the rate.
+    const handleDelay = (qd: number): void => {
+      lastQd = qd;
+      const off = Math.max(-1, Math.min(1, (TARGET_QD_MS - qd) / TARGET_QD_MS));
+      rate = Math.max(RATE_MIN, Math.min(RATE_MAX, rate * (1 + DELAY_GAIN * off)));
+    };
     let tokens = 0; // token bucket (bytes)
     let lastFillAt = Date.now();
     let nextSeq = 0; // next chunk to fire in the first pass
@@ -148,7 +154,7 @@ export function sendFirehose(
     // --- fire one chunk over the DIRECT plane (unreliable). ---
     const fireDirect = async (seq: number): Promise<void> => {
       const bytes = await readChunk(seq);
-      channel.sendUnreliable(packFirehoseDatagram(seq, bytes));
+      channel.sendUnreliable(packFirehoseDatagram(seq, Date.now(), bytes));
       sentThisInterval += 1;
     };
 
@@ -210,17 +216,17 @@ export function sendFirehose(
       }
     };
 
-    // --- AIMD: adjust rate off the interval loss; also handle direct death. ---
+    // Delay-based controller: rate is set by handleDelay() off the receiver's
+    // queuing-delay reports. This timer only logs + handles direct death (loss is
+    // NOT a rate signal — it only schedules repairs).
     const startRateControl = (): void => {
       rateTimer = setInterval(() => {
         if (settled) return;
-        const loss = lostThisInterval / Math.max(1, sentThisInterval);
-        if (loss < LOSS_LOW) rate = Math.min(RATE_MAX, rate * RATE_UP);
-        else if (loss > LOSS_HIGH) rate = Math.max(RATE_MIN, rate * RATE_DOWN);
-        // mid band: hold.
+        const _sent = sentThisInterval, _lost = lostThisInterval;
         sentThisInterval = 0;
         lostThisInterval = 0;
         opts?.onRate?.(rate);
+        if (process.env.LM_FHDEBUG) console.log('[fh] rate=' + Math.round(rate / 1024) + 'KB/s sent=' + _sent + ' lost=' + _lost + ' qd=' + lastQd.toFixed(0) + 'ms repairs=' + repairCount + ' seq=' + nextSeq + '/' + totalChunks + ' direct=' + channel.directReady());
 
         // DIRECT-DEATH escalation: when the direct leg has been down for a
         // sustained window, flip directDead so subsequent NACKs escalate to the
@@ -267,6 +273,7 @@ export function sendFirehose(
         if (f.kind !== 'control') continue;
         const msg = f.msg as FtNack | FtOk | FtErr | { type: string };
         if (msg.type === 'FT_NACK') { void handleNack(msg as FtNack); }
+        else if (msg.type === 'FT_DELAY' && (msg as FtDelay).transferId === transferId) { handleDelay((msg as FtDelay).qd); }
         else if (msg.type === 'FT_OK' && (msg as FtOk).transferId === transferId) {
           finish(undefined, { bytes: totalBytes, entries: 1, mode: channel.mode, via: channel.via });
         }

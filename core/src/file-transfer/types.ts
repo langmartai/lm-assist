@@ -136,6 +136,13 @@ export interface FtNack {
   missing: Array<[number, number]>;
 }
 
+export interface FtDelay {
+  type: 'FT_DELAY';
+  transferId: string;
+  /** Receiver-measured queuing delay in ms (current one-way delay minus its running min). */
+  qd: number;
+}
+
 /** Sender → receiver: all chunks fired once. Carries whole-file sha256. */
 export interface FtFhEnd {
   type: 'FT_FH_END';
@@ -169,6 +176,7 @@ export type FtControl =
   | FtListErr
   | FtFhMeta
   | FtNack
+  | FtDelay
   | FtFhEnd
   | FtFhRepair;
 
