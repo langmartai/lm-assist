@@ -25,6 +25,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
 import { getDataDir } from '../utils/path-utils';
+import { networkInterfaces } from 'os';
 
 const RING_SIZE = Math.max(1, Number(process.env.LM_ASSIST_API_TOKEN_RING) || 3);
 const ROTATE_MS = Math.max(1_000, Number(process.env.LM_ASSIST_API_TOKEN_ROTATE_MS) || 24 * 60 * 60 * 1000);
@@ -140,6 +141,30 @@ export function lmAuthHeaders(): Record<string, string> {
 export function apiAuthEnabled(): boolean {
   const v = process.env.LM_ASSIST_API_AUTH;
   return v !== '0' && v !== 'off' && v !== 'false';
+}
+
+let _localAddrs: Set<string> | null = null;
+/** True when the remote address is this machine itself (loopback or one of its
+ *  own interface IPs) — mirrors /auth/is-local. Used for the optional
+ *  LM_ASSIST_API_AUTH_EXEMPT_LOCAL gate exemption (trust the local desk). */
+export function isLocalAddress(ip: string | undefined | null): boolean {
+  if (!ip) return false;
+  if (!_localAddrs) {
+    const s = new Set<string>(['127.0.0.1', '::1', '::ffff:127.0.0.1', 'localhost']);
+    try {
+      const nets = networkInterfaces();
+      for (const ifaces of Object.values(nets)) {
+        for (const i of ifaces || []) {
+          s.add(i.address);
+          if (i.family === 'IPv4') s.add('::ffff:' + i.address);
+        }
+      }
+    } catch {
+      /* best effort */
+    }
+    _localAddrs = s;
+  }
+  return _localAddrs.has(ip);
 }
 
 export function apiTokenFilePath(): string {

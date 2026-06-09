@@ -5,7 +5,7 @@
  */
 
 import * as http from 'http';
-import { startApiTokenRotation, isValidToken, apiAuthEnabled } from './auth/api-token';
+import { startApiTokenRotation, isValidToken, apiAuthEnabled, isLocalAddress } from './auth/api-token';
 import * as fs from 'fs';
 import * as path from 'path';
 import { URL } from 'url';
@@ -435,7 +435,12 @@ export class TierRestServer {
     // Emergency kill-switch: LM_ASSIST_API_AUTH=0
     {
       const authPath = (req.url || '').split('?')[0];
-      if (apiAuthEnabled() && authPath !== '/health') {
+      // Optional: trust requests from this machine itself (the local desk) so a
+      // local browser whose web build can't attach the token still works.
+      // LAN/remote callers still need the token. Off unless LM_ASSIST_API_AUTH_EXEMPT_LOCAL=1.
+      const exemptLocal = process.env.LM_ASSIST_API_AUTH_EXEMPT_LOCAL === '1'
+        && isLocalAddress(req.socket.remoteAddress);
+      if (apiAuthEnabled() && authPath !== '/health' && !exemptLocal) {
         const rawKey = req.headers['x-api-key'];
         const providedKey = (Array.isArray(rawKey) ? rawKey[0] : rawKey) || this.getQueryParam(req.url || '', 'apiKey');
         const okAuth = isValidToken(providedKey) || (this.options.apiKey && providedKey === this.options.apiKey);
