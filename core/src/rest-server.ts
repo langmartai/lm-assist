@@ -63,7 +63,7 @@ export class TierRestServer {
 
     this.options = {
       port: options.port || (__dirname.includes('node_modules') ? 3100 : 3200),
-      host: options.host || '::',
+      host: options.host || process.env.LM_ASSIST_API_HOST || '127.0.0.1',
       projectPath: options.projectPath,
       tierManager: options.tierManager || undefined as any,
       cors: options.cors ?? true,
