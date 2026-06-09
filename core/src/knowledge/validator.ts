@@ -13,6 +13,7 @@
  */
 
 import type { IdentificationResult } from './identifier-types';
+import { lmAuthHeaders } from '../auth/api-token';
 import { getIdentificationStore } from './identification-store';
 import { getDataDir } from '../utils/path-utils';
 
@@ -405,7 +406,7 @@ export class KnowledgeValidator {
     try {
       const response = await fetch(`${this.apiBaseUrl}/agent/execute`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
         body: JSON.stringify({
           prompt,
           systemPrompt: SYSTEM_PROMPT,

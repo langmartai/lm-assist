@@ -6,6 +6,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { lmAuthHeaders } from '../auth/api-token';
 
 /** Interface for WebSocket-like objects that can send messages */
 export interface WebSocketSender {
@@ -139,7 +140,7 @@ export class SessionCacheSync extends EventEmitter {
     try {
       const response = await fetch(
         `http://localhost:${this.localApiPort}/sessions?limit=${this.maxSessionsPerSync}`,
-        { signal: controller.signal }
+        { headers: lmAuthHeaders(), signal: controller.signal }
       );
 
       clearTimeout(timeoutId);

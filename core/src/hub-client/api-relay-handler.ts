@@ -10,6 +10,7 @@
  */
 
 import * as http from 'http';
+import { currentApiToken } from '../auth/api-token';
 import * as path from 'path';
 import { WebSocketClient } from './websocket-client';
 
@@ -379,6 +380,7 @@ export class ApiRelayHandler {
         headers: {
           ...headers,
           'x-relay-source': 'hub',
+          'x-api-key': currentApiToken(),
         },
       };
 

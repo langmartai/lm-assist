@@ -5,6 +5,7 @@
  */
 
 import * as http from 'http';
+import { startApiTokenRotation, isValidToken, apiAuthEnabled } from './auth/api-token';
 import * as fs from 'fs';
 import * as path from 'path';
 import { URL } from 'url';
@@ -346,6 +347,7 @@ export class TierRestServer {
   start(): Promise<void> {
     const profiler = getStartupProfiler();
     profiler.start('httpListen', 'HTTP Listen');
+    startApiTokenRotation();
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => this.handleRequest(req, res));
 
@@ -429,12 +431,18 @@ export class TierRestServer {
       }
     }
 
-    // API key authentication
-    if (this.options.apiKey) {
-      const providedKey = req.headers['x-api-key'] || this.getQueryParam(req.url || '', 'apiKey');
-      if (providedKey !== this.options.apiKey) {
-        this.sendJson(res, 401, { success: false, error: { code: 'UNAUTHORIZED', message: 'Invalid API key' } });
-        return;
+    // API token authentication (rotating ring; /health open for liveness).
+    // Emergency kill-switch: LM_ASSIST_API_AUTH=0
+    {
+      const authPath = (req.url || '').split('?')[0];
+      if (apiAuthEnabled() && authPath !== '/health') {
+        const rawKey = req.headers['x-api-key'];
+        const providedKey = (Array.isArray(rawKey) ? rawKey[0] : rawKey) || this.getQueryParam(req.url || '', 'apiKey');
+        const okAuth = isValidToken(providedKey) || (this.options.apiKey && providedKey === this.options.apiKey);
+        if (!okAuth) {
+          this.sendJson(res, 401, { success: false, error: { code: 'UNAUTHORIZED', message: 'Invalid or missing API token' } });
+          return;
+        }
       }
     }
 

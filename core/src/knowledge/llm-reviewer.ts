@@ -8,6 +8,7 @@
  */
 
 import * as fs from 'fs';
+import { lmAuthHeaders } from '../auth/api-token';
 import * as path from 'path';
 import { getKnowledgeStore } from './store';
 import { getKnowledgeSettings } from './settings';
@@ -206,7 +207,7 @@ export class KnowledgeLlmReviewer {
       // Call agent API
       const response = await fetch(`${this.apiBaseUrl}/agent/execute`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
         body: JSON.stringify({
           prompt,
           systemPrompt: SYSTEM_PROMPT,

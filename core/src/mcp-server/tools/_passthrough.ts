@@ -14,6 +14,7 @@
  */
 
 import * as fs from 'fs';
+import { lmAuthHeaders } from '../../auth/api-token';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -54,6 +55,7 @@ export function err(message: string): McpToolResult {
  */
 export async function workerGet<T = unknown>(routePath: string): Promise<T> {
   const res = await fetch(`${BASE_URL}${routePath}`, {
+    headers: { ...lmAuthHeaders() },
     signal: AbortSignal.timeout(15000),
   });
   const json = (await res.json()) as { success?: boolean; data?: T; error?: { message?: string } };
@@ -70,7 +72,7 @@ export async function workerPost<T = unknown>(
 ): Promise<T> {
   const res = await fetch(`${BASE_URL}${routePath}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(30000),
   });
@@ -94,7 +96,7 @@ export async function workerPostRaw(
 ): Promise<Record<string, unknown>> {
   const res = await fetch(`${BASE_URL}${routePath}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(120000),
   });
@@ -108,7 +110,7 @@ export async function workerPut<T = unknown>(
 ): Promise<T> {
   const res = await fetch(`${BASE_URL}${routePath}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(30000),
   });
@@ -126,7 +128,7 @@ export async function workerDelete<T = unknown>(
 ): Promise<T> {
   const res = await fetch(`${BASE_URL}${routePath}`, {
     method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(30000),
   });

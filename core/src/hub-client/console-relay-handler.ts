@@ -18,6 +18,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { lmAuthHeaders } from '../auth/api-token';
 import * as crypto from 'crypto';
 import * as net from 'net';
 import WebSocket from 'ws';
@@ -182,7 +183,7 @@ export class ConsoleRelayHandler extends EventEmitter {
 
         const response = await fetch(`http://localhost:${this.localApiPort}/ttyd/session/${sessionId}/start`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
           body: JSON.stringify({
             projectPath: resolvedProjectPath,
             port,
@@ -477,7 +478,7 @@ export class ConsoleRelayHandler extends EventEmitter {
 
       await fetch(`http://localhost:${this.localApiPort}/ttyd/stop`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
         body: JSON.stringify({ sessionId: relay.sessionId }),
         signal: controller.signal,
       });
@@ -596,7 +597,7 @@ export class ConsoleRelayHandler extends EventEmitter {
 
       const response = await fetch(`http://localhost:${this.localApiPort}/ttyd/session/${sessionId}/start`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
         body: JSON.stringify({
           projectPath: resolvedProjectPath,
           port,
@@ -677,7 +678,7 @@ export class ConsoleRelayHandler extends EventEmitter {
 
       const response = await fetch(`http://localhost:${this.localApiPort}/ttyd/start-all`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
         signal: controller.signal,
       });
 
@@ -793,7 +794,7 @@ export class ConsoleRelayHandler extends EventEmitter {
     try {
       await fetch(`http://localhost:${this.localApiPort}/ttyd/stop`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
         body: JSON.stringify({ sessionId }),
         signal: controller.signal,
       });
@@ -842,7 +843,7 @@ export class ConsoleRelayHandler extends EventEmitter {
       const timeoutId = setTimeout(() => controller.abort(), 5000);
       const response = await fetch(
         `http://localhost:${this.localApiPort}/sessions/${sessionId}`,
-        { signal: controller.signal }
+        { headers: lmAuthHeaders(), signal: controller.signal }
       );
       clearTimeout(timeoutId);
       if (!response.ok) return null;
