@@ -1,26 +1,22 @@
 /**
  * Pending admin-action store (out-of-band confirmation) — worker side.
  *
- * An `admin`-scope MCP tool call does not execute. It parks a pending action
- * here and returns `pending_confirmation`. The action runs only when the
- * operator confirms it through a NON-model channel — the `/mcp/pending/:id/
- * confirm` REST endpoint, surfaced as a button in the MCP settings tab. The
- * model (driving claude.ai) can create a pending but cannot reach the confirm
- * endpoint, so it can never release its own admin action. That break is the
- * whole point.
+ * A tool the user has GATED does not execute. It parks a pending action here
+ * and returns `pending_confirmation`. The action runs only when the user
+ * confirms it through a NON-model channel — the `/mcp/pending/:id/confirm` REST
+ * endpoint, surfaced as a button in the MCP settings tab. The model (driving
+ * claude.ai) can park a pending but cannot reach the confirm endpoint, so it can
+ * never release its own gated action. That break is the whole point.
  *
- * In-memory with a 10-minute TTL. A restart drops in-flight pendings (the
- * operator just re-issues the tool call) — acceptable, and keeps this free of
+ * In-memory with a 10-minute TTL. A restart drops in-flight pendings (the user
+ * just re-issues the tool call) — acceptable, and keeps this free of
  * persistence concerns.
  */
-
-import type { McpSubject } from './access-control';
 
 export interface PendingAction {
   id: string;
   tool: string;
   args: Record<string, unknown>;
-  subject: McpSubject;
   /** Short human summary for the confirm UI. */
   summary: string;
   createdAt: number;
@@ -45,12 +41,11 @@ function id(): string {
 export function createPending(
   tool: string,
   args: Record<string, unknown>,
-  subject: McpSubject,
   summary: string,
 ): PendingAction {
   sweep();
   const now = Date.now();
-  const p: PendingAction = { id: id(), tool, args, subject, summary, createdAt: now, expiresAt: now + TTL_MS };
+  const p: PendingAction = { id: id(), tool, args, summary, createdAt: now, expiresAt: now + TTL_MS };
   store.set(p.id, p);
   return p;
 }

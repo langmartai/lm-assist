@@ -7,6 +7,7 @@
  */
 
 import * as fs from 'fs';
+import { lmAuthHeaders } from '../auth/api-token';
 import * as os from 'os';
 import * as path from 'path';
 import { startCore, startWeb } from '../service-manager';
@@ -43,7 +44,7 @@ interface ApiResponse<T> {
 async function post<T>(endpoint: string, body: Record<string, unknown>): Promise<T> {
   const res = await fetch(`${BASE_URL}${endpoint}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
     body: JSON.stringify(body),
   });
 
@@ -59,7 +60,7 @@ async function post<T>(endpoint: string, body: Record<string, unknown>): Promise
 }
 
 async function get<T>(endpoint: string): Promise<T> {
-  const res = await fetch(`${BASE_URL}${endpoint}`);
+  const res = await fetch(`${BASE_URL}${endpoint}`, { headers: lmAuthHeaders() });
 
   if (!res.ok) {
     throw new Error(`API ${endpoint} returned ${res.status}: ${await res.text()}`);

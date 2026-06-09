@@ -53,6 +53,102 @@ macOS is **not yet supported** (Claude Code uses Keychain there rather than the 
 | `GET` | `/claude-code/mcp-servers?limit=` | Anthropic-managed MCP servers connected to this account (Google Drive, etc.). Uses `anthropic-beta: mcp-servers-2025-12-04` + `anthropic-version: 2023-06-01` (not the standard `oauth-2025-04-20`). |
 | `GET` | `/claude-code/mcp-registry?limit=&version=&visibility=&cursor=` | Public MCP marketplace catalog. **No auth required** — public endpoint. |
 
+## Routines / Triggers (CCR)
+
+Full CRUD over the Claude Code **Routines** (a.k.a. *Triggers*) surface — the scheduled cloud agents that run on a cron and fire a CCR (Claude Code Remote) session. lm-assist proxies the upstream `/v1/code/triggers` family (plus `/v1/environment_providers`, needed to build create bodies) using the OAuth bearer + the `ccr-triggers-2026-01-30` fingerprint (see the exceptions table below). Helpers live in `core/src/utils/claude-oauth.ts` (`listRoutines`, `getRoutine`, `createRoutine`, `updateRoutine`, `runRoutine`, `deleteRoutine`, `listRoutineEnvironments`, `getClaudeCodeRoutineRunBudget`).
+
+| Method | Path | Upstream | Description |
+|---|---|---|---|
+| `GET` | `/claude-code/routines` | `GET /v1/code/triggers` | List routines/triggers. Returns the raw upstream `{ data: [...], has_more }`. |
+| `GET` | `/claude-code/routines/run-budget` | `GET /v1/code/routines/run-budget` | Organization's **routine RUN quota** for the rolling 24-hour window. Returns the raw upstream `{ limit, used, unified_billing_enabled }` (`limit`/`used` are **strings**) plus a clearly-derived integer `remaining` = `Number(limit) - Number(used)`. Plan tiers: Pro 5 / Max 15 / Team-Enterprise 25; overage billed via Extra Usage when `unified_billing_enabled`. |
+| `GET` | `/claude-code/routines/:id` | `GET /v1/code/triggers/{id}` | Read a single routine/trigger by id (`trig_…`). |
+| `POST` | `/claude-code/routines` | `POST /v1/code/triggers` | **[WRITE]** Create a routine/trigger. The JSON body is passed straight through to upstream (see contract below). |
+| `POST` | `/claude-code/routines/:id/run` | `POST /v1/code/triggers/{id}/run` | **[WRITE]** Run now — fire the routine immediately (spawns a CCR cloud session). Body-less. |
+| `POST` | `/claude-code/routines/:id` | `POST /v1/code/triggers/{id}` | **[WRITE]** Partial update of a routine/trigger. JSON body passed through. Registered **after** `/:id/run`. |
+| `DELETE` | `/claude-code/routines/:id` | `DELETE /v1/code/triggers/{id}` | **[WRITE / destructive]** Delete a routine/trigger. Returns `{ deleted_session_count: "N" }`. |
+| `GET` | `/claude-code/environments` | `GET /v1/environment_providers` | List routine **environments** for `job_config.ccr.environment_id` when building create bodies. |
+
+> **Route ordering matters.** The static `GET /routines/run-budget` and `GET /routines` are registered **before** the `GET /routines/:id` catch-all, and `POST /routines/:id/run` is registered **before** `POST /routines/:id`. The dispatcher is first-match-wins per method (`rest-server.ts`), so a generic `:id` route placed first would otherwise swallow `run-budget`/`run`.
+
+All routes return the standard lm-assist envelope: `{ success, data }` on a 2xx upstream; `{ success: false, error: { code: "UPSTREAM_<status>", message }, data: <upstream body> }` on a non-2xx upstream; and `{ success: false, error: { code: "OAUTH_UNAVAILABLE", message } }` when the OAuth token can't be obtained (no creds / refresh failure). `POST` create and update also return `{ success: false, error: { code: "INVALID_BODY", … } }` if the JSON body is missing or not an object.
+
+### Validated upstream contract
+
+Tested live against `api.anthropic.com` (2026-06-03):
+
+- `GET /v1/code/triggers` → `{ data: [...], has_more }`
+- `GET /v1/environment_providers` → `{ environments: [{ environment_id: "env_…", kind: "anthropic_cloud", state: "active" }] }`
+- `POST /v1/code/triggers` body shape → `{ trigger: { id: "trig_…", next_run_at, mcp_connections, … } }` (`mcp_connections` are auto-attached upstream):
+  ```jsonc
+  {
+    "name": "my-routine",
+    "cron_expression": "0 9 * * *",   // UTC; minimum cadence ≥ 1 hour
+    "enabled": true,
+    "job_config": {
+      "ccr": {
+        "environment_id": "env_…",
+        "session_context": {
+          "model": "claude-sonnet-4-6",
+          "sources": [{ "git_repository": { "url": "https://github.com/owner/repo" } }],
+          "allowed_tools": ["Bash", "Read", "Edit"]
+        },
+        "events": [
+          { "data": { "type": "user", "message": { "role": "user", "content": "do the thing" } } }
+        ]
+      }
+    }
+  }
+  ```
+- `POST /v1/code/triggers/{id}/run` → `200` (fires a CCR cloud session)
+- `DELETE /v1/code/triggers/{id}` → `{ "deleted_session_count": "N" }`
+
+### curl examples
+
+```bash
+BASE=http://localhost:3100        # prod; dev uses 3200
+
+# List routines
+curl -s "$BASE/claude-code/routines" | jq
+
+# Read one
+curl -s "$BASE/claude-code/routines/trig_abc123" | jq
+
+# RUN quota for the rolling 24h window
+curl -s "$BASE/claude-code/routines/run-budget" | jq
+
+# Environments — pick an environment_id for the create body
+curl -s "$BASE/claude-code/environments" | jq
+
+# Create  [WRITE]
+curl -s -X POST "$BASE/claude-code/routines" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "daily-standup",
+    "cron_expression": "0 9 * * *",
+    "enabled": true,
+    "job_config": { "ccr": {
+      "environment_id": "env_xxx",
+      "session_context": {
+        "model": "claude-sonnet-4-6",
+        "sources": [{ "git_repository": { "url": "https://github.com/owner/repo" } }],
+        "allowed_tools": ["Bash", "Read", "Edit"]
+      },
+      "events": [{ "data": { "type": "user", "message": { "role": "user", "content": "Summarize overnight CI failures." } } }]
+    } }
+  }' | jq
+
+# Run now  [WRITE]
+curl -s -X POST "$BASE/claude-code/routines/trig_abc123/run" | jq
+
+# Update (partial — e.g. disable)  [WRITE]
+curl -s -X POST "$BASE/claude-code/routines/trig_abc123" \
+  -H 'Content-Type: application/json' \
+  -d '{ "enabled": false }' | jq
+
+# Delete  [WRITE / destructive]
+curl -s -X DELETE "$BASE/claude-code/routines/trig_abc123" | jq
+```
+
 ## Header fingerprint
 
 Standard pattern (most endpoints):
@@ -73,9 +169,10 @@ Exceptions:
 |---|---|
 | `/claude-code/roles` | **No** `anthropic-beta` header (Bearer only) |
 | `/claude-code/mcp-servers` | `anthropic-beta: mcp-servers-2025-12-04` + `anthropic-version: 2023-06-01` |
+| `/claude-code/routines`, `/claude-code/routines/*`, `/claude-code/environments` | `anthropic-beta: ccr-triggers-2026-01-30` + `anthropic-version: 2023-06-01` + `x-organization-uuid: <org uuid>` (beta header **required** — the surface 404s without it). Covers the whole CCR triggers CRUD, `run-budget`, and `environments`. |
 | `/claude-code/mcp-registry` | **No** `Authorization` header — public endpoint |
 
-`anthropicOAuthGet()` in `core/src/utils/claude-oauth.ts` accepts `betaHeader: null` (drop the header), `betaHeader: '<value>'` (override), `extraHeaders: { ... }` (add more), and `skipAuth: true` (public endpoints) to compose these variants.
+`anthropicOAuthGet()` in `core/src/utils/claude-oauth.ts` accepts `betaHeader: null` (drop the header), `betaHeader: '<value>'` (override), `extraHeaders: { ... }` (add more), and `skipAuth: true` (public endpoints) to compose these variants. It, along with `anthropicOAuthPost(path, body?, opts?)` and `anthropicOAuthDelete(path, opts?)`, are thin wrappers over a shared `anthropicOAuthRequest(method, path, opts)` core that owns the header fingerprint, optional JSON body, and the single-retry-on-401 (force-refresh) logic. Retrying a 401/403 after refresh is safe for the write paths too: an auth-rejected request never reached the upstream mutation.
 
 ## Smoke-test results (2026-05-15)
 
@@ -93,6 +190,8 @@ Live against an authenticated Claude Code OAuth (subscription: `max`):
 | `/claude-code/user-settings` | 200 | User state with sha256 checksum |
 | `/claude-code/mcp-servers?limit=3` | 200 | Google Drive MCP server entry |
 | `/claude-code/mcp-registry?limit=2` | 200 | Public endpoint, no-auth verified |
+| `/claude-code/routines/run-budget` | 200 | `{ limit: "15", used: "0", unified_billing_enabled: true, remaining: 15 }` (verified 2026-06-03, `max`) |
+| `/claude-code/routines` (list) | 200 | `{ data: [], has_more: false }` (verified 2026-06-03, `max`, org has 0 routines) |
 
 ## Refresh / token lifecycle
 

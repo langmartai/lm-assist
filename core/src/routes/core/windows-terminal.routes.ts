@@ -85,6 +85,8 @@ export function createWindowsTerminalRoutes(_ctx: RouteContext): RouteHandler[] 
           mode?: 'window' | 'tab';
           resume?: string;
           waitMs?: number;
+          skipPermissions?: boolean;
+          remoteControl?: boolean | string;
         };
         if (body.mode && body.mode !== 'window' && body.mode !== 'tab') {
           return fail('INVALID_BODY', "mode must be 'window' or 'tab'");

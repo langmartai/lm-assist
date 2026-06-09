@@ -13,6 +13,7 @@
 
 import type { RouteHandler, RouteContext } from '../index';
 import { wrapResponse, wrapError } from '../../api/helpers';
+import type { ToolScope } from '../../mcp-server/configure';
 import { handleSearch } from '../../mcp-server/tools/search';
 import { handleDetail } from '../../mcp-server/tools/detail';
 import { handleFeedback } from '../../mcp-server/tools/feedback';
@@ -22,13 +23,10 @@ import { handleSearchMemory } from '../../mcp-server/tools/search-memory';
 import { handleListClaudeaiConversations } from '../../mcp-server/tools/list-claudeai-conversations';
 import { handleReadConversation } from '../../mcp-server/tools/read-conversation';
 import { EXPANDED_HANDLERS } from '../../mcp-server/tools/expanded';
-import { TOOL_SCOPES, type ToolScope } from '../../mcp-server/configure';
+import { TOOL_SCOPES } from '../../mcp-server/configure';
 import {
-  loadAccessConfig,
-  upsertGrant,
-  removeGrant,
-  setDefaultScopes,
   toolCatalog,
+  setToolGate,
 } from '../../mcp-server/access-control';
 import { listPending, takePending } from '../../mcp-server/mcp-pending';
 import { listConnectors, deleteConnector, setConnectorEnabled } from '../../mcp-server/connectors';
@@ -42,6 +40,7 @@ function asScopes(v: unknown): ToolScope[] {
     ? (v.filter((x) => x === 'read' || x === 'write' || x === 'admin') as ToolScope[])
     : [];
 }
+import { dispatch } from './mcp.routes';
 
 export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -179,7 +178,7 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // ── MCP access control (authorization, lm-assist-owned) ──────────────
+    // ── MCP admin gate (per-user, lm-assist-owned) ───────────────────────
 
     // ── MCP connectors (settings UI): list/disable/delete the node's
     //    OAuth connectors on the gateway + their claude.ai registration status.
@@ -227,77 +226,36 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
 
     // GET /mcp/access — full config for the settings UI: defaults, grants,
     // and the tool→scope catalog.
+    // GET /mcp/access — the tool catalog for the settings UI. Each entry is
+    // { tool, scope (sensitivity hint), adminGate (extra confirm on/off) }.
     {
       method: 'GET',
       pattern: /^\/mcp\/access$/,
       handler: async () => {
         const start = Date.now();
-        const cfg = loadAccessConfig();
-        return wrapResponse(
-          { defaultScopes: cfg.defaultScopes, grants: cfg.grants, tools: toolCatalog() },
-          start,
-        );
+        return wrapResponse({ tools: toolCatalog() }, start);
       },
     },
 
-    // POST /mcp/access/grant — add or update a grant.
-    // Body: { id?, clientId?, email?, userId?, scopes:[], note? }
-    {
-      method: 'POST',
-      pattern: /^\/mcp\/access\/grant$/,
-      handler: async (req) => {
-        const start = Date.now();
-        try {
-          const b = (req.body || {}) as Record<string, unknown>;
-          const scopes = asScopes(b.scopes);
-          if (!b.clientId && !b.email && !b.userId) {
-            return wrapError('MCP_ACCESS_BAD', 'one of clientId, email, userId is required', start);
-          }
-          if (scopes.length === 0) {
-            return wrapError('MCP_ACCESS_BAD', 'scopes must be a non-empty subset of read/write/admin', start);
-          }
-          const row = upsertGrant(
-            {
-              id: b.id ? String(b.id) : undefined,
-              clientId: b.clientId ? String(b.clientId) : undefined,
-              email: b.email ? String(b.email) : undefined,
-              userId: b.userId ? String(b.userId) : undefined,
-              scopes,
-              note: b.note ? String(b.note) : undefined,
-            },
-            nowIso(),
-          );
-          return wrapResponse(row, start);
-        } catch (err) {
-          return wrapError('MCP_ACCESS_ERROR', err instanceof Error ? err.message : String(err), start);
-        }
-      },
-    },
-
-    // DELETE /mcp/access/grant/:id — remove a grant.
-    {
-      method: 'DELETE',
-      pattern: /^\/mcp\/access\/grant\/(?<id>[^/]+)$/,
-      handler: async (req) => {
-        const start = Date.now();
-        const ok = removeGrant(req.params.id);
-        return ok
-          ? wrapResponse({ removed: req.params.id }, start)
-          : wrapError('MCP_ACCESS_NOT_FOUND', `no grant ${req.params.id}`, start);
-      },
-    },
-
-    // PUT /mcp/access/defaults — set the default scopes for unmatched callers.
+    // PUT /mcp/access/tool-gate — turn the extra admin-confirm gate on/off for a
+    // single tool. Body: { tool: string, enabled: boolean }. Gated tools park as
+    // pending; ungated tools (the default) run normally.
     {
       method: 'PUT',
-      pattern: /^\/mcp\/access\/defaults$/,
+      pattern: /^\/mcp\/access\/tool-gate$/,
       handler: async (req) => {
         const start = Date.now();
-        const scopes = asScopes((req.body as Record<string, unknown>)?.scopes);
-        if (scopes.length === 0) {
-          return wrapError('MCP_ACCESS_BAD', 'scopes must be a non-empty subset of read/write/admin', start);
+        const b = (req.body || {}) as Record<string, unknown>;
+        const tool = typeof b.tool === 'string' ? b.tool : '';
+        const enabled = b.enabled;
+        if (!tool || !(tool in TOOL_SCOPES)) {
+          return wrapError('MCP_ACCESS_BAD', `unknown tool "${tool}"`, start);
         }
-        return wrapResponse(setDefaultScopes(scopes, nowIso()), start);
+        if (typeof enabled !== 'boolean') {
+          return wrapError('MCP_ACCESS_BAD', 'enabled must be a boolean', start);
+        }
+        setToolGate(tool, enabled);
+        return wrapResponse({ tools: toolCatalog() }, start);
       },
     },
 
@@ -311,7 +269,6 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
           id: p.id,
           tool: p.tool,
           summary: p.summary,
-          subject: p.subject,
           createdAt: p.createdAt,
           expiresAt: p.expiresAt,
         }));
@@ -328,10 +285,9 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
         const start = Date.now();
         const p = takePending(req.params.id);
         if (!p) return wrapError('MCP_PENDING_NOT_FOUND', 'pending not found or expired', start);
-        const handler = EXPANDED_HANDLERS[p.tool];
-        if (!handler) return wrapError('MCP_UNKNOWN_TOOL', `no handler for ${p.tool}`, start);
         try {
-          const result = await handler(p.args);
+          // Full dispatcher (base + expanded tools) — any gated tool can be released.
+          const result = await dispatch(p.tool, p.args);
           return wrapResponse({ status: 'executed', tool: p.tool, result }, start);
         } catch (err) {
           return wrapError('MCP_EXEC_ERROR', err instanceof Error ? err.message : String(err), start);

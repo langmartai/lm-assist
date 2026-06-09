@@ -100,7 +100,10 @@ Commands:
   storage            Show storage usage (~/.lm-assist/)
   storage clean      Delete all lm-assist data and start fresh (-y to skip confirm)
   setup --key KEY    Connect to cloud with an API key
-  upgrade            Upgrade to latest version (npm + plugin + restart)
+  upgrade [--from S]  Upgrade lm-assist (npm + plugin + restart).
+                     --from S installs a specific build instead of npm latest:
+                       a local .tgz, an unpacked dir, a bare version, or any
+                       npm/git spec. Omit for the published latest.
   help               Show this help message
 
 Examples:
@@ -114,6 +117,9 @@ Examples:
   lm-assist log mcp
   lm-assist logs core
   lm-assist logs core --dev
+  lm-assist upgrade
+  lm-assist upgrade --from ./lm-assist-0.1.72.tgz
+  lm-assist upgrade --from 0.1.72
 
 More info: https://github.com/langmartai/lm-assist
 `);
@@ -140,7 +146,9 @@ if (command === 'upgrade') {
   fs.copyFileSync(upgradeScript, tmpScript);
   const { execFileSync } = require('child_process');
   try {
-    execFileSync(process.execPath, [tmpScript], {
+    // Pass through upgrade args (e.g. `--from <tgz|dir|spec>`) so the user can
+    // install a specific non-published build instead of npm latest.
+    execFileSync(process.execPath, [tmpScript, ...args], {
       stdio: 'inherit',
       env: process.env,
       windowsHide: true,

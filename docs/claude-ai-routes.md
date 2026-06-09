@@ -79,6 +79,24 @@ CRUD for your claude.ai **personal Agent Skills**. Distinct from the org-scoped 
 | `POST` | `/claude-ai/skills/:id/duplicate` | **WRITE** — duplicate the skill. Body: `{ name? }` (alias `newName`). Native (`duplicate-skill` → `{ skill_id, new_name }`). |
 | `POST` | `/claude-ai/skills/:id/delete-org` | **WRITE (destructive)** — delete an **org-shared** skill (native `delete-org-skill` → `{ skill_id }`); distinct from the personal `DELETE /claude-ai/skills/:id`. |
 
+#### Marketplaces & plugins
+
+Manage the account's claude.ai **plugin marketplaces** (each a GitHub repo with a `.claude-plugin/marketplace.json` at its root) and the plugins within them. Mutating routes (`POST`/`PUT`/`DELETE`) are **WRITES** against your real account.
+
+> **Route order (first-match-wins):** `/:id/plugins/:pid` and `/:id/plugins` are registered **before** the bare `DELETE /:id`, so the literal `plugins` segment is never captured as an `:id`.
+
+> **Account vs. default marketplace:** plugins added via your own marketplaces are returned by `GET /claude-ai/marketplaces/:id/plugins` (upstream `…/plugins/account-list-plugins`). `GET /claude-ai/plugins` (upstream `plugins/list-plugins`) returns **only the default marketplace's** plugins.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/claude-ai/marketplaces[?scope=account\|default\|org]` | List registered marketplaces (default `account`). Maps to `marketplaces/list-{account,default,org}-marketplaces`. Each entry: `{ id, name, source, source_url, sync_status, last_synced_sha, is_default, … }`. |
+| `POST` | `/claude-ai/marketplaces` | **WRITE** — register an account marketplace (`create-account-marketplace`). Body: `{ name, source_url, source?="github" }`. `source_url` accepts `"owner/repo"` or a full `github.com` URL (normalized to `https://github.com/owner/repo`). claude.ai git-clones the repo's **default branch** (async — poll the list for `sync_status="success"`) and requires `.claude-plugin/marketplace.json` at its root. `400 marketplace_already_default` for the default repo. |
+| `GET` | `/claude-ai/marketplaces/:id/plugins[?limit=100]` | Plugins published by an **account** marketplace (`…/plugins/account-list-plugins`). Each entry: `{ id, name, enabled, skills, … }`. |
+| `DELETE` | `/claude-ai/marketplaces/:id/plugins/:pid` | **WRITE** — remove a plugin from a marketplace (`marketplaces/{id}/plugins/{plugin_id}`). |
+| `DELETE` | `/claude-ai/marketplaces/:id` | **WRITE** — remove an account marketplace (`{id}/account-delete`). The upstream `200` alone is unreliable — **verify by re-listing**. |
+| `GET` | `/claude-ai/plugins[?enabled_only=true]` | DEFAULT-marketplace plugins (`plugins/list-plugins`). |
+| `PUT` | `/claude-ai/plugins/:id/enabled` | **WRITE** — enable/disable a plugin (`plugins/{id}/enabled`). Body: `{ enabled: boolean }`. |
+
 #### Account / identity
 
 | Method | Path | Description |

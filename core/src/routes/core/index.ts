@@ -35,9 +35,20 @@ import { createSkillRoutes } from './skills.routes';
 import { createTerminalRoutes } from './terminal.routes';
 import { createAnnotationRoutes } from './annotation.routes';
 import { createMemoryRoutes } from './memory.routes';
+import { createMemoryMapRoutes } from './memory-map.routes';
+import { createMemoryAutoSyncRoutes } from './memory-autosync.routes';
+import { createMemoryHarvestRoutes } from './memory-harvest.routes';
+import { createMemoryProposalsRoutes } from './memory-proposals.routes';
+import { createMemoryReconcileRoutes } from './memory-reconcile.routes';
+import { createMemoryValidateRoutes } from './memory-validate.routes';
+import { createRuleMapRoutes } from './rule-map.routes';
 import { createBrowserRoutes } from './browser.routes';
 import { createCcrRoutes } from './ccr.routes';
 import { createWindowsTerminalRoutes } from './windows-terminal.routes';
+import { createPortForwardRoutes } from './port-forward.routes';
+import { createSessionMessagingRoutes } from './session-messaging.routes';
+import { createTransportRoutes } from './transport.routes';
+import { createRemoteControlRoutes } from './remote-control.routes';
 
 /**
  * Create all core routes
@@ -72,8 +83,19 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createTerminalRoutes(ctx),
     ...createAnnotationRoutes(ctx),
     ...createMemoryRoutes(ctx),
+    ...createMemoryMapRoutes(ctx),
+    ...createMemoryAutoSyncRoutes(ctx),
+    ...createMemoryHarvestRoutes(ctx),
+    ...createMemoryProposalsRoutes(ctx),
+    ...createMemoryReconcileRoutes(ctx),
+    ...createMemoryValidateRoutes(ctx),
+    ...createRuleMapRoutes(ctx),
     ...createBrowserRoutes(ctx),
     ...createCcrRoutes(ctx),
     ...createWindowsTerminalRoutes(ctx),
+    ...createPortForwardRoutes(ctx),
+    ...createSessionMessagingRoutes(ctx),
+    ...createTransportRoutes(ctx),
+    ...createRemoteControlRoutes(ctx),
   ];
 }

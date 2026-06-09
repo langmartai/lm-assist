@@ -10,9 +10,13 @@
  */
 
 import { EventEmitter } from 'events';
+import * as os from 'os';
 import { WebSocketClient } from './websocket-client';
+import { initTransport, onInboundChannel } from '../transport';
+import { handleIncomingTransfer } from '../file-transfer';
 import { ApiRelayHandler, ApiRelayRequest, ServiceRoute } from './api-relay-handler';
 import { ConsoleRelayHandler } from './console-relay-handler';
+import { PortForwardHandler } from './port-forward-handler';
 import { SessionCacheSync } from './session-cache-sync';
 import { getHubConfig, HubConfig, saveGatewayId, loadServicePorts } from './hub-config';
 
@@ -57,10 +61,25 @@ export interface HubClientEvents {
   gateway_conflict: () => void;
 }
 
+/**
+ * Cross-node memory-updated notification (Stream A autosync).
+ * Carries only a pointer to what changed; the actual data travels via git mirror.
+ */
+export interface MemoryUpdatedMessage {
+  type: 'memory_updated';
+  project: string;
+  host: string;
+  recordIds: string[];
+  /** Optional epoch ms when the originating push completed. */
+  ts?: number;
+}
+
 export class HubClient extends EventEmitter {
   private wsClient: WebSocketClient | null = null;
   private apiRelayHandler: ApiRelayHandler | null = null;
   private consoleRelayHandler: ConsoleRelayHandler | null = null;
+  private portForwardHandler: PortForwardHandler | null = null;
+  private transportInboundWired = false;
   private sessionCacheSync: SessionCacheSync | null = null;
   private config: HubConfig;
   private options: Required<Pick<HubClientOptions, 'hubUrl' | 'apiKey' | 'localApiPort' | 'autoReconnect' | 'reconnectDelay' | 'maxReconnectAttempts'>> & Pick<HubClientOptions, 'adminWebPort' | 'assistWebPort' | 'vibeCoderPort'>;
@@ -77,6 +96,7 @@ export class HubClient extends EventEmitter {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
+  private memoryUpdatedCallbacks: Array<(m: MemoryUpdatedMessage) => void> = [];
 
   constructor(options: HubClientOptions = {}) {
     super();
@@ -175,6 +195,9 @@ export class HubClient extends EventEmitter {
         localApiPort: this.options.localApiPort,
       });
 
+      // Create port-forward handler (node-to-node TCP tunnel over this WS)
+      this.portForwardHandler = new PortForwardHandler();
+
       // Create session cache sync
       this.sessionCacheSync = new SessionCacheSync({
         localApiPort: this.options.localApiPort,
@@ -216,6 +239,11 @@ export class HubClient extends EventEmitter {
       this.consoleRelayHandler = null;
     }
 
+    if (this.portForwardHandler) {
+      this.portForwardHandler.cleanup();
+      this.portForwardHandler = null;
+    }
+
     if (this.sessionCacheSync) {
       this.sessionCacheSync.stop();
       this.sessionCacheSync = null;
@@ -231,6 +259,24 @@ export class HubClient extends EventEmitter {
    */
   getStatus(): HubClientStatus {
     return { ...this.status };
+  }
+
+  /**
+   * Subscribe to cross-node memory-updated notifications relayed from the hub.
+   * Used by the autosync daemon (core/src/memory/autosync.ts).
+   */
+  onMemoryUpdated(cb: (m: MemoryUpdatedMessage) => void): void {
+    this.memoryUpdatedCallbacks.push(cb);
+  }
+
+  /**
+   * Send a memory-updated notification to the hub (fanned to other nodes).
+   * No-op if not connected. Pure notification — data travels via git mirror.
+   */
+  sendMemoryUpdated(msg: Omit<MemoryUpdatedMessage, 'type'>): boolean {
+    if (!this.wsClient || !this.status.connected) return false;
+    this.wsClient.send({ type: 'memory_updated', ...msg });
+    return true;
   }
 
   /**
@@ -252,6 +298,77 @@ export class HubClient extends EventEmitter {
    */
   getConsoleRelays(): Array<{ relayId: string; sessionId: string; ttydPort: number; status: string; startedAt: Date }> {
     return this.consoleRelayHandler?.getActiveRelays() || [];
+  }
+
+  /**
+   * Open a local listening port that forwards every TCP connection to
+   * targetGatewayId's targetPort, tunneled over this hub connection.
+   * Requires an authenticated hub connection.
+   */
+  async openPortForward(opts: {
+    localPort: number;
+    targetGatewayId: string;
+    targetPort: number;
+    bindHost?: string;
+  }): Promise<{ forwardId: string; localPort: number; bindHost: string }> {
+    if (!this.status.authenticated || !this.portForwardHandler) {
+      throw new Error('Hub not authenticated — cannot open port forward');
+    }
+    return this.portForwardHandler.openForward(opts);
+  }
+
+  /** Close a port forward by id. Returns false if not found. */
+  closePortForward(forwardId: string): boolean {
+    return this.portForwardHandler?.closeForward(forwardId) ?? false;
+  }
+
+  /** List active port forwards on this node. */
+  listPortForwards(): Array<{
+    forwardId: string;
+    localPort: number;
+    bindHost: string;
+    targetGatewayId: string;
+    targetPort: number;
+    activeStreams: number;
+    createdAt: Date;
+  }> {
+    return this.portForwardHandler?.listForwards() ?? [];
+  }
+
+  portForwardStats(): ReturnType<PortForwardHandler['stats']> {
+    return this.portForwardHandler?.stats() ?? [];
+  }
+
+  /**
+   * Identity + environment of THIS node — so port-forward responses and node
+   * listings carry which machine they ran on (gatewayId/hostId, hostname, OS,
+   * and the node's LAN IP).
+   */
+  getNodeInfo(): {
+    gatewayId: string | null;
+    hostname: string;
+    os: { platform: string; release: string; arch: string };
+    ip: string;
+  } {
+    const cfg = getHubConfig();
+    let ip = '127.0.0.1';
+    const ifaces = os.networkInterfaces();
+    outer: for (const list of Object.values(ifaces)) {
+      for (const a of list || []) {
+        if (a.family === 'IPv4' && !a.internal) { ip = a.address; break outer; }
+      }
+    }
+    return {
+      gatewayId: this.status.gatewayId || cfg.gatewayId,
+      hostname: cfg.hostname,
+      os: { platform: os.platform(), release: os.release(), arch: os.arch() },
+      ip,
+    };
+  }
+
+  /** Check whether a local TCP port is free on this node (and who holds it). */
+  checkLocalPort(port: number): Promise<import('./port-forward-handler').PortStatus> {
+    return PortForwardHandler.inspectLocalPort(port);
   }
 
   private setupEventHandlers(): void {
@@ -288,6 +405,30 @@ export class HubClient extends EventEmitter {
         this.sessionCacheSync.start();
       }
 
+      // Wire port-forward handler to this connection
+      if (this.portForwardHandler && this.wsClient) {
+        this.portForwardHandler.setWebSocket(this.wsClient);
+        this.portForwardHandler.setSelfGatewayId(data.gatewayId);
+      }
+
+      // Wire the node-to-node transport driver (UDP hole-punch + relay fallback)
+      // and route inbound transfer channels to the file-transfer receiver.
+      if (this.wsClient) {
+        initTransport({
+          ws: this.wsClient,
+          selfGatewayId: data.gatewayId,
+          stunHost: process.env.LM_ASSIST_STUN_HOST || new URL(this.options.hubUrl).hostname,
+          stunPort: Number(process.env.LM_ASSIST_STUN_PORT) || 8087,
+        });
+        if (!this.transportInboundWired) {
+          this.transportInboundWired = true;
+          onInboundChannel((ch) => {
+            handleIncomingTransfer(ch, {}).catch((e) =>
+              console.error('[HubClient] inbound transfer failed:', e));
+          });
+        }
+      }
+
       this.emit('authenticated', data);
     });
 
@@ -296,6 +437,11 @@ export class HubClient extends EventEmitter {
       this.status.connected = false;
       this.status.authenticated = false;
       this.clearTimers();
+
+      // In-flight port-forward streams are dead once the hub link drops (the hub
+      // forgets their routing). Tear them down so clients get a reset instead of a
+      // hung socket; listeners stay bound to serve new connections after reconnect.
+      this.portForwardHandler?.dropStreamsOnDisconnect();
 
       if (!this.isShuttingDown) {
         this.scheduleReconnect();
@@ -384,6 +530,34 @@ export class HubClient extends EventEmitter {
       if (this.consoleRelayHandler) {
         this.consoleRelayHandler.handleBinaryData(message.relayIdHash, message.payload);
       }
+    });
+
+    // Port-forward control + data from hub (node-to-node TCP tunnel)
+    this.wsClient.on('forward_open', (message: { streamId: string; srcGatewayId?: string; targetPort: number }) => {
+      this.portForwardHandler?.handleForwardOpen(message);
+    });
+    this.wsClient.on('forward_ready', (message: { streamId: string }) => {
+      this.portForwardHandler?.handleForwardReady(message);
+    });
+    this.wsClient.on('forward_error', (message: { streamId: string; error?: string }) => {
+      this.portForwardHandler?.handleForwardError(message);
+    });
+    this.wsClient.on('forward_eof', (message: { streamId: string }) => {
+      this.portForwardHandler?.handleForwardEof(message);
+    });
+    this.wsClient.on('forward_close', (message: { streamId: string; reason?: string }) => {
+      this.portForwardHandler?.handleForwardClose(message);
+    });
+    this.wsClient.on('forward_binary_data', (message: { streamHash: Buffer; payload: Buffer }) => {
+      this.portForwardHandler?.handleForwardData(message.streamHash, message.payload);
+    });
+
+    // Handle cross-node memory-updated notifications (Stream A autosync).
+    // Re-emit so the autosync daemon can react (git fetch + cache refresh).
+    this.wsClient.on('memory_updated', (message: MemoryUpdatedMessage) => {
+      try {
+        for (const cb of this.memoryUpdatedCallbacks) cb(message);
+      } catch { /* swallow */ }
     });
   }
 
@@ -505,4 +679,5 @@ export { HubConfig, getHubConfig, saveGatewayId, clearGatewayId, isHubConfigured
 export { WebSocketClient, WebSocketClientOptions } from './websocket-client';
 export { ApiRelayHandler, ApiRelayHandlerOptions, ApiRelayRequest, ApiRelayResponse } from './api-relay-handler';
 export { ConsoleRelayHandler, ConsoleSession, ConsoleRelayOptions, getConsoleRelayHandler } from './console-relay-handler';
+export { PortForwardHandler, getPortForwardHandler } from './port-forward-handler';
 export { SessionCacheSync, SessionSummary as SessionCacheSummary, SessionCacheSyncOptions, getSessionCacheSync } from './session-cache-sync';

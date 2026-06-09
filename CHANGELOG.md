@@ -57,6 +57,75 @@ captured RuntimeId while its title was still animating (HTTP 200, title-independ
 `closeTab` (whole subtree killed, window closed, session GONE). Separately: the marker method drives
 pre-existing sessions including one whose summary had drifted (which passive title-matching had missed);
 8 driveable WT tabs listed (subagent/SDK sessions correctly excluded).
+### claude.ai marketplaces + plugins -- cookie-path routes + MCP tools (2026-06-03)
+
+Mirrors the claude.ai web UI's plugin-marketplace screen on the cookie-file `/claude-ai/*` surface so a
+headless caller can manage marketplaces (each a GitHub repo with `.claude-plugin/marketplace.json` at its
+root) and the plugins within them. Verified end-to-end against live claude.ai.
+
+- **New cookie WRITE helpers** in `claudeai-session.ts` -- `claudeaiPost`/`claudeaiPut`/`claudeaiDelete` share
+  one `buildBrowserHeaders()` (extracted from `claudeaiGet`) so writes carry an IDENTICAL browser fingerprint,
+  differing only by HTTP method + JSON body. Plus typed helpers `listMarketplaces`, `createAccountMarketplace`,
+  `deleteAccountMarketplace`, `listAccountMarketplacePlugins`, `listPlugins`, `setPluginEnabled`,
+  `deleteMarketplacePlugin`, and `normalizeGithubSourceUrl` (accepts `owner/repo`, full URL, or SSH form).
+- **7 routes** under `/claude-ai/marketplaces` + `/claude-ai/plugins` (list/create/delete marketplaces,
+  list/delete marketplace plugins, list default-marketplace plugins, enable/disable a plugin). Route order is
+  first-match-wins: `/:id/plugins[/:pid]` precede the bare `DELETE /:id`.
+- **6 MCP tools** wrapping them (`claudeai_list_marketplaces`, `claudeai_add_marketplace`,
+  `claudeai_remove_marketplace`, `claudeai_list_marketplace_plugins`, `claudeai_list_plugins`,
+  `claudeai_set_plugin_enabled`) with read/write scopes registered in `configure.ts`; new `workerPut` loopback
+  helper in `_passthrough.ts`. Documented in `docs/claude-ai-routes.md`.
+
+### Claude Code Routines / Triggers (CCR) CRUD (2026-06-03)
+
+Full CRUD over the Claude Code Routines (a.k.a. Triggers) surface on the OAuth `/claude-code/*` family,
+extending the pre-existing `GET /claude-code/routines/run-budget`. Validated live against `api.anthropic.com`.
+
+- **8 OAuth helpers** in `claude-oauth.ts` -- generalized `anthropicOAuthGet` into `anthropicOAuthRequest`
+  (method + optional JSON body) with `anthropicOAuthGet`/`Post`/`Delete` wrappers; added `getOrganizationUuid`
+  (memoized from `/api/oauth/profile`) and `listRoutines`/`getRoutine`/`createRoutine`/`updateRoutine`/
+  `runRoutine`/`deleteRoutine`/`listRoutineEnvironments`. All carry the `ccr-triggers-2026-01-30` beta +
+  `anthropic-version` + `x-organization-uuid` fingerprint.
+- **8 routes** under `/claude-code/routines` + `/claude-code/environments` (list/get/create/update/delete a
+  routine, run-now, list environments). Ordering: static `run-budget`/list precede the `:id` catch-all;
+  `:id/run` precedes the `:id` update. Standard `{success,data}` / `UPSTREAM_<status>` / `OAUTH_UNAVAILABLE`
+  envelope. Documented in `docs/claude-code-routes.md`.
+
+### ttyd console — tmux-only writable attach + external-session lifecycle (2026-06-03)
+
+Hardens the ttyd "console connect to Claude" + process-awareness surface so a writable console
+is **only ever attached to a Claude session hosted inside tmux**. A Claude process running outside
+tmux (a plain terminal, or a `--chrome` full window) has no tmux pane to share, so the only thing
+the code could do to "connect" is launch a second `claude --resume <sessionId>` — two live processes
+writing the same session JSONL, which corrupts it. The non-tmux/tmux distinction comes straight from
+the live-PID detector (ancestor-walk against `#{pane_pid}`): a process has `tmuxSessionName` only when
+its ancestor chain hits a tmux pane.
+
+- **New chokepoint guard in `startTtyd` (force-proof).** Before the "create new tmux + `claude --resume`"
+  / direct-mode branches, refuse with new code `SESSION_NOT_IN_TMUX` if a **live** non-tmux process is
+  already running this `sessionId` — regardless of `force`. RECONNECT (attach ttyd to an existing tmux
+  via `new-session -t`) and `--fork-session` (new session file) are exempt; they never duplicate.
+- **`POST /ttyd/session/:id/start`** — `force:true` can no longer bypass a live non-tmux `activeInstance`
+  (it could before, launching a duplicate). It now returns `SESSION_NOT_IN_TMUX` with the blocking PID,
+  a `killUrl`, and `canFork:true`. force still bypasses reconnectable-tmux instances + unmanaged-process warnings.
+- **`connectPid`** — when the supplied PID does not resolve to a tmux pane (i.e. it's a non-tmux session),
+  the start no longer silently falls through to a fresh (duplicate) start: it returns `SESSION_NOT_IN_TMUX`
+  when the PID is alive, or proceeds with a clean fresh start when the PID is already dead.
+- **`POST /ttyd/start-all`** — skips sessions running outside tmux instead of force-launching duplicates,
+  and reports them in a new `skipped[]` array (`{sessionId, pid, reason}`) + `summary.skipped`.
+- **Dead external sessions never block (kill/term).** `getSessionStatus` re-checks `isProcessAlive` before
+  setting `activeInstance` / counting unmanaged processes, so a dead/zombie process can't keep blocking a
+  fresh start. `killProcess` is now dead-safe: a PID that's already gone returns `{success:true, alreadyDead:true}`
+  and cleans up stale ttyd-instance tracking, instead of "not a Claude-related process". Live, non-Claude PIDs
+  are still refused (no arbitrary-kill).
+- **New pure module `core/src/terminal-attach-policy.ts`** (`isNonTmuxProcess`, `findLiveNonTmuxSession` with
+  injectable liveness) holds the rule so it is deterministically unit-testable; `ttyd-manager` + `ttyd.routes`
+  both call it. RECONNECT mode and the default (no-force) block were already correct and are unchanged.
+
+Verified: `tsc --noEmit` clean; new `attach-policy.test.ts` (9 cases: live non-tmux blocks, tmux-backed allowed,
+dead does-not-block, id-scoping, mixed-list) + existing inspector tests = 35/35 pass under Node 20. (The
+`cc-integration` E2E file is unrelated and only fails without a live `:3201` server / under Node 18's
+chokidar-ESM limitation.) Not yet deployed — source change only.
 
 ### GitHub repo/list + fork + directory-aware git ops (2026-06-03)
 

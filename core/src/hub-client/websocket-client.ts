@@ -170,18 +170,19 @@ export class WebSocketClient extends EventEmitter {
   }
 
   /**
-   * Send binary data to the Hub (for console relay)
-   * Frame format: [0xFF] [8-byte relayId hash] [payload]
+   * Send binary data to the Hub.
+   * Frame format: [marker] [8-byte id hash] [payload]
+   *   marker 0xFF = console relay (default), 0xFE = port forward.
    */
-  sendBinary(relayIdHash: Buffer, payload: Buffer): void {
+  sendBinary(relayIdHash: Buffer, payload: Buffer, marker = 0xff): void {
     if (!this.isConnected()) {
       return;
     }
 
     try {
-      // 0xFF marker + 8-byte relay ID hash + payload
+      // marker byte + 8-byte id hash + payload
       const frame = Buffer.concat([
-        Buffer.from([0xff]),
+        Buffer.from([marker]),
         relayIdHash,
         payload,
       ]);
@@ -189,6 +190,14 @@ export class WebSocketClient extends EventEmitter {
     } catch (error) {
       console.error('[WebSocketClient] Failed to send binary:', error instanceof Error ? error.message : error);
     }
+  }
+
+  /**
+   * Bytes still queued in the WebSocket send buffer.
+   * Used by port-forward backpressure to pause source sockets.
+   */
+  bufferedAmount(): number {
+    return this.ws?.bufferedAmount ?? 0;
   }
 
   /**
@@ -237,6 +246,7 @@ export class WebSocketClient extends EventEmitter {
       capabilities: {
         supports_api_relay: true,
         supports_console_relay: true,
+        supports_port_forward: true,
         local_api_port: this.options.localApiPort,
       },
       version: this.getVersion(),
@@ -269,6 +279,23 @@ export class WebSocketClient extends EventEmitter {
         const relayIdHash = buffer.subarray(1, 9);  // 8 bytes
         const payload = buffer.subarray(9);
         this.emit('console_binary_data', { relayIdHash, payload });
+        return;
+      }
+
+      // Check for binary port-forward frame (starts with 0xFE)
+      // Format: [0xFE][8-byte streamId hash][payload]
+      if (buffer.length >= 9 && buffer[0] === 0xfe) {
+        const streamHash = buffer.subarray(1, 9);  // 8 bytes
+        const payload = buffer.subarray(9);
+        this.emit('forward_binary_data', { streamHash, payload });
+        return;
+      }
+
+      // Binary transport relay frame (0xFD): [0xFD][8-byte md5(channelId)][payload]
+      if (buffer.length >= 9 && buffer[0] === 0xfd) {
+        const channelHash = buffer.subarray(1, 9);  // 8 bytes
+        const payload = buffer.subarray(9);
+        this.emit('transport_relay_data', { channelHash, payload });
         return;
       }
 
@@ -355,6 +382,55 @@ export class WebSocketClient extends EventEmitter {
         case 'console_relay_data':
           // Hub is sending binary console data (base64 encoded)
           this.emit('console_relay_data', message);
+          break;
+
+        case 'memory_updated':
+          // Another node mirrored+pushed a memory change; fan-out notification.
+          // See core/src/memory/autosync.ts (Stream A cross-node sync).
+          this.emit('memory_updated', message);
+          break;
+
+        // Port-forward control messages (node-to-node TCP tunnel).
+        // See hub-client/port-forward-handler.ts.
+        case 'forward_open':
+          this.emit('forward_open', message);
+          break;
+
+        case 'forward_ready':
+          this.emit('forward_ready', message);
+          break;
+
+        case 'forward_error':
+          this.emit('forward_error', message);
+          break;
+
+        case 'forward_eof':
+          this.emit('forward_eof', message);
+          break;
+
+        case 'forward_close':
+          this.emit('forward_close', message);
+          break;
+
+        // Transport driver control (node-to-node UDP hole-punch + relay).
+        // See ../transport/.
+        case 'transport_open':
+          this.emit('transport_open', message);
+          break;
+        case 'transport_offer':
+          this.emit('transport_offer', message);
+          break;
+        case 'transport_answer':
+          this.emit('transport_answer', message);
+          break;
+        case 'transport_relay_open':
+          this.emit('transport_relay_open', message);
+          break;
+        case 'transport_relay_ready':
+          this.emit('transport_relay_ready', message);
+          break;
+        case 'transport_close':
+          this.emit('transport_close', message);
           break;
 
         default:

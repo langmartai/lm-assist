@@ -15,18 +15,25 @@
  *   3. a handler in EXPANDED_HANDLERS (below)
  */
 
+import * as childProcess from 'child_process';
+import * as nodePath from 'path';
 import {
   ok,
   err,
   workerGet,
   workerPost,
   workerPostRaw,
+  workerPut,
   workerDelete,
   isCwdAllowed,
   type McpToolResult,
 } from './_passthrough';
 import { handleListNodes } from './list-nodes';
 import { GITHUB_TOOL_DEFS, GITHUB_HANDLERS } from './github';
+import { PORT_FORWARD_TOOL_DEFS, PORT_FORWARD_HANDLERS } from './port-forward';
+import { TRANSFER_TOOL_DEFS, TRANSFER_HANDLERS } from './transfer';
+import { FS_INSPECT_TOOL_DEFS, FS_INSPECT_HANDLERS } from './fs-inspect';
+import { SESSION_MESSAGING_TOOL_DEFS, SESSION_MESSAGING_HANDLERS } from './session-messaging';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -358,6 +365,173 @@ export const ccrRemoteStopToolDef = {
     required: ['id'],
   },
 };
+// ─── claude.ai marketplace + plugin management ───────────────────────────
+//
+// Mirror the cookie-path /claude-ai/marketplaces + /claude-ai/plugins routes
+// (loopback). list_* are reads; add/remove/set are writes against the account.
+
+export const claudeaiListMarketplacesToolDef = {
+  name: 'claudeai_list_marketplaces',
+  description:
+    'List the plugin marketplaces registered on the user\'s claude.ai account. A marketplace ' +
+    'is a GitHub repo (with .claude-plugin/marketplace.json) that publishes plugins. ' +
+    'scope="account" (default) lists the user\'s added marketplaces; "default" the built-in ' +
+    'one; "org" the organization\'s. Each entry has id, name, source, source_url, sync_status. ' +
+    'Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      scope: { type: 'string', enum: ['account', 'default', 'org'], description: 'Which marketplace set to list (default "account").' },
+    },
+  },
+};
+
+export const claudeaiAddMarketplaceToolDef = {
+  name: 'claudeai_add_marketplace',
+  description:
+    'Register a new plugin marketplace on the user\'s claude.ai account from a public GitHub ' +
+    'repo. source_url accepts "owner/repo" or a full github.com URL (normalized to ' +
+    'https://github.com/owner/repo). claude.ai git-clones the repo\'s default branch and ' +
+    'requires .claude-plugin/marketplace.json at its root; the clone+sync is async (poll ' +
+    '`claudeai_list_marketplaces` for sync_status="success"). WRITE — changes account state.',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      name: { type: 'string', description: 'Display name for the marketplace.' },
+      source_url: { type: 'string', description: 'GitHub "owner/repo" or full github.com URL.' },
+    },
+    required: ['name', 'source_url'],
+  },
+};
+
+export const claudeaiRemoveMarketplaceToolDef = {
+  name: 'claudeai_remove_marketplace',
+  description:
+    'Remove a plugin marketplace from the user\'s claude.ai account by its marketplace id ' +
+    '(from `claudeai_list_marketplaces`). WRITE — unregisters the marketplace and its plugins. ' +
+    'Verify removal by re-listing (the upstream 200 alone is unreliable).',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      marketplace_id: { type: 'string', description: 'Marketplace id from claudeai_list_marketplaces.' },
+    },
+    required: ['marketplace_id'],
+  },
+};
+
+export const claudeaiListMarketplacePluginsToolDef = {
+  name: 'claudeai_list_marketplace_plugins',
+  description:
+    'List the plugins published by one ACCOUNT marketplace (by marketplace id from ' +
+    '`claudeai_list_marketplaces`). Account-marketplace plugins are NOT returned by ' +
+    '`claudeai_list_plugins` (which only covers the default marketplace). Each entry has ' +
+    'id, name, enabled, skills. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      marketplace_id: { type: 'string', description: 'Marketplace id from claudeai_list_marketplaces.' },
+    },
+    required: ['marketplace_id'],
+  },
+};
+
+export const claudeaiListPluginsToolDef = {
+  name: 'claudeai_list_plugins',
+  description:
+    'List the plugins in the user\'s claude.ai DEFAULT marketplace, with each plugin\'s id, ' +
+    'name, and enabled state. Pass enabled_only=true to return only enabled plugins. For ' +
+    'account-marketplace plugins use `claudeai_list_marketplace_plugins` instead. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      enabled_only: { type: 'boolean', description: 'Return only enabled plugins (default false).' },
+    },
+  },
+};
+
+export const claudeaiSetPluginEnabledToolDef = {
+  name: 'claudeai_set_plugin_enabled',
+  description:
+    'Enable or disable a claude.ai plugin by its plugin id (from a list_*_plugins tool). ' +
+    'WRITE — toggles whether the plugin\'s skills/tools are active on the account.',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      plugin_id: { type: 'string', description: 'Plugin id (from claudeai_list_plugins or claudeai_list_marketplace_plugins).' },
+      enabled: { type: 'boolean', description: 'true to enable, false to disable.' },
+    },
+    required: ['plugin_id', 'enabled'],
+  },
+};
+
+export const memoryMapToolDef = {
+  name: 'memory_map',
+  description:
+    'Query the cross-project/node MEMORY map (record-level, brief/complete, with optional ' +
+    'filters). Returns ACTUAL memory records from disk — never fabricated. Use level="brief" ' +
+    '(default) for a quick overview; level="complete" for full record text. Filter by ' +
+    'projects, nodes, types, category, keyword query (q), or time (since). Pass stats=true ' +
+    'for a count-only summary. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      level: { type: 'string', enum: ['brief', 'complete'], description: 'Detail level — brief (default) or complete.' },
+      projects: { type: 'string', description: 'Comma-separated project id substrings.' },
+      nodes: { type: 'string', description: 'Comma-separated host ids.' },
+      types: { type: 'string', description: 'Comma-separated memory types.' },
+      category: { type: 'string', description: 'Comma-separated categories.' },
+      q: { type: 'string', description: 'Keyword query — all terms must appear in title+brief+complete.' },
+      since: { type: 'number', description: 'Only records modified after this Unix ms timestamp.' },
+      limit: { type: 'number', description: 'Max records to return (0 = all).' },
+      stats: { type: 'boolean', description: 'Return count/stats summary only instead of records.' },
+    },
+  },
+};
+
+export const memoryRecordToolDef = {
+  name: 'memory_record',
+  description:
+    'Fetch one complete MEMORY record by its recordId (from memory_map output). Returns the ' +
+    'full record text. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      recordId: { type: 'string', description: 'The record id from a prior memory_map result.' },
+    },
+    required: ['recordId'],
+  },
+};
+
+export const ruleMapToolDef = {
+  name: 'rule_map',
+  description:
+    'Query the cross-project/node RULES map (.claude/rules/ path-scoped rules). Returns ' +
+    'ACTUAL rule records from disk — never fabricated. Supports the same brief/complete ' +
+    'levels and filters as memory_map, plus scope (user/project), paths (glob substring), ' +
+    'and always (load-always rules only). Pass stats=true for count summary. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      level: { type: 'string', enum: ['brief', 'complete'], description: 'Detail level — brief (default) or complete.' },
+      scope: { type: 'string', enum: ['user', 'project'], description: 'Filter to user-level or project-level rules.' },
+      paths: { type: 'string', description: 'Substring to match against rule path globs.' },
+      always: { type: 'boolean', description: 'If true, only return rules with loadCondition=always.' },
+      category: { type: 'string', description: 'Comma-separated categories to filter.' },
+      q: { type: 'string', description: 'Keyword query over rule title+brief+complete+paths.' },
+      limit: { type: 'number', description: 'Max records to return (0 = all).' },
+      stats: { type: 'boolean', description: 'Return count/stats summary only instead of records.' },
+    },
+  },
+};
 
 export const EXPANDED_TOOL_DEFS = [
   // read
@@ -368,9 +542,19 @@ export const EXPANDED_TOOL_DEFS = [
   memoryImportCandidatesToolDef,
   terminalListToolDef,
   terminalCaptureToolDef,
+  claudeaiListMarketplacesToolDef,
+  claudeaiListMarketplacePluginsToolDef,
+  claudeaiListPluginsToolDef,
+  // memory map + rules map (read — shell out to CLIs)
+  memoryMapToolDef,
+  memoryRecordToolDef,
+  ruleMapToolDef,
   // write
   claudeaiCreateConversationToolDef,
   claudeaiCompletionToolDef,
+  claudeaiAddMarketplaceToolDef,
+  claudeaiRemoveMarketplaceToolDef,
+  claudeaiSetPluginEnabledToolDef,
   agentAbortToolDef,
   agentResumeToolDef,
   terminalPromptToolDef,
@@ -390,6 +574,12 @@ export const EXPANDED_TOOL_DEFS = [
   ccrMirrorToolDef,
   ccrConnectToolDef,
   ccrRemoteStopToolDef,
+  // port forward (node-to-node TCP tunnel)
+  ...PORT_FORWARD_TOOL_DEFS,
+  ...TRANSFER_TOOL_DEFS,
+  ...FS_INSPECT_TOOL_DEFS,
+  // session-to-session messaging (send: write/admin; list+status: read)
+  ...SESSION_MESSAGING_TOOL_DEFS,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -647,6 +837,154 @@ async function handleCcrRemoteStop(args: Record<string, unknown>): Promise<McpTo
   try { return ok(pretty(await workerPost(`/ccr/remote/${enc(id)}/stop`, {}))); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
+// ─── claude.ai marketplace + plugin handlers ─────────────────────────────
+
+async function handleClaudeaiListMarketplaces(args: Record<string, unknown>): Promise<McpToolResult> {
+  const scope = args.scope ? String(args.scope) : '';
+  const qs = scope ? `?scope=${enc(scope)}` : '';
+  try {
+    return ok(pretty(await workerGet(`/claude-ai/marketplaces${qs}`)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleClaudeaiAddMarketplace(args: Record<string, unknown>): Promise<McpToolResult> {
+  const name = String(args.name || '').trim();
+  const sourceUrl = String(args.source_url || '').trim();
+  if (!name || !sourceUrl) return err('name and source_url are required.');
+  try {
+    return ok(pretty(await workerPost('/claude-ai/marketplaces', { name, source_url: sourceUrl })));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleClaudeaiRemoveMarketplace(args: Record<string, unknown>): Promise<McpToolResult> {
+  const id = String(args.marketplace_id || '').trim();
+  if (!id) return err('marketplace_id is required.');
+  try {
+    return ok(pretty(await workerDelete(`/claude-ai/marketplaces/${enc(id)}`)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleClaudeaiListMarketplacePlugins(args: Record<string, unknown>): Promise<McpToolResult> {
+  const id = String(args.marketplace_id || '').trim();
+  if (!id) return err('marketplace_id is required.');
+  try {
+    return ok(pretty(await workerGet(`/claude-ai/marketplaces/${enc(id)}/plugins`)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleClaudeaiListPlugins(args: Record<string, unknown>): Promise<McpToolResult> {
+  const qs = args.enabled_only ? '?enabled_only=true' : '';
+  try {
+    return ok(pretty(await workerGet(`/claude-ai/plugins${qs}`)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleClaudeaiSetPluginEnabled(args: Record<string, unknown>): Promise<McpToolResult> {
+  const id = String(args.plugin_id || '').trim();
+  if (!id) return err('plugin_id is required.');
+  if (typeof args.enabled !== 'boolean') return err('enabled (boolean) is required.');
+  try {
+    return ok(pretty(await workerPut(`/claude-ai/plugins/${enc(id)}/enabled`, { enabled: args.enabled })));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+// ─── memory map + rules map handlers (shell out to CLIs) ───────────────────
+
+/** Resolve the path to a core/scripts/*.js CLI from anywhere in the dist tree. */
+function cliPath(script: string): string {
+  // At runtime __dirname is core/dist/mcp-server/tools; go up 3 to core/, then scripts/
+  return nodePath.resolve(__dirname, '../../../scripts', script);
+}
+
+/** Detect the API port the same way _passthrough.ts does. */
+function apiPort(): string {
+  if (process.env.API_PORT) return process.env.API_PORT;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const os = require('os') as typeof import('os');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs') as typeof import('fs');
+    const cfgPath = nodePath.join(os.homedir(), '.claude-code-config.json');
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8')) as { devModeEnabled?: boolean };
+    if (cfg.devModeEnabled) return '3200';
+  } catch { /* default */ }
+  return '3100';
+}
+
+function runCli(argv: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    childProcess.execFile(
+      'node',
+      argv,
+      { maxBuffer: 64 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(stderr.trim() || error.message));
+        } else {
+          resolve(stdout.trim());
+        }
+      },
+    );
+  });
+}
+
+async function handleMemoryMap(args: Record<string, unknown>): Promise<McpToolResult> {
+  const argv: string[] = [cliPath('memory-map.js'), '--port', apiPort(), '--format', 'json'];
+  if (args.level) argv.push('--level', String(args.level));
+  if (args.projects) argv.push('--projects', String(args.projects));
+  if (args.nodes) argv.push('--nodes', String(args.nodes));
+  if (args.types) argv.push('--types', String(args.types));
+  if (args.category) argv.push('--category', String(args.category));
+  if (args.q) argv.push('--q', String(args.q));
+  if (args.since) argv.push('--since', String(args.since));
+  if (args.limit) argv.push('--limit', String(args.limit));
+  if (args.stats) argv.push('--stats');
+  try {
+    return ok(await runCli(argv));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleMemoryRecord(args: Record<string, unknown>): Promise<McpToolResult> {
+  const id = String(args.recordId || '').trim();
+  if (!id) return err('recordId is required.');
+  const argv: string[] = [cliPath('memory-map.js'), '--port', apiPort(), '--record', id];
+  try {
+    return ok(await runCli(argv));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleRuleMap(args: Record<string, unknown>): Promise<McpToolResult> {
+  const argv: string[] = [cliPath('rule-map.js'), '--port', apiPort(), '--format', 'json'];
+  if (args.level) argv.push('--level', String(args.level));
+  if (args.scope) argv.push('--scope', String(args.scope));
+  if (args.paths) argv.push('--paths', String(args.paths));
+  if (args.always) argv.push('--always');
+  if (args.category) argv.push('--category', String(args.category));
+  if (args.q) argv.push('--q', String(args.q));
+  if (args.limit) argv.push('--limit', String(args.limit));
+  if (args.stats) argv.push('--stats');
+  try {
+    return ok(await runCli(argv));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
 
 /**
  * Name → handler for every expanded tool. Both transports consult this map
@@ -664,9 +1002,16 @@ export const EXPANDED_HANDLERS: Record<
   memory_import_candidates: handleMemoryImportCandidates,
   terminal_list: () => handleTerminalList(),
   terminal_capture: handleTerminalCapture,
+  // claude.ai marketplaces + plugins (read)
+  claudeai_list_marketplaces: handleClaudeaiListMarketplaces,
+  claudeai_list_marketplace_plugins: handleClaudeaiListMarketplacePlugins,
+  claudeai_list_plugins: handleClaudeaiListPlugins,
   // write
   claudeai_create_conversation: handleClaudeaiCreateConversation,
   claudeai_completion: handleClaudeaiCompletion,
+  claudeai_add_marketplace: handleClaudeaiAddMarketplace,
+  claudeai_remove_marketplace: handleClaudeaiRemoveMarketplace,
+  claudeai_set_plugin_enabled: handleClaudeaiSetPluginEnabled,
   agent_abort: handleAgentAbort,
   agent_resume: handleAgentResume,
   terminal_prompt: handleTerminalPrompt,
@@ -676,6 +1021,10 @@ export const EXPANDED_HANDLERS: Record<
   terminal_interrupt: handleTerminalInterrupt,
   terminal_open_tab: handleTerminalOpenTab,
   delete_conversation: handleDeleteConversation,
+  // memory map + rules map (read — shell out to CLIs)
+  memory_map: handleMemoryMap,
+  memory_record: handleMemoryRecord,
+  rule_map: handleRuleMap,
   // multi-node (worker-side fallback; hub answers the full list when connected)
   list_nodes: async () => handleListNodes(),
   // github (read: github_query, write: github_mutate) — dispatch to /github/<action>
@@ -688,4 +1037,10 @@ export const EXPANDED_HANDLERS: Record<
   ccr_mirror: handleCcrMirror,
   ccr_connect: handleCcrConnect,
   ccr_remote_stop: handleCcrRemoteStop,
+  // port forward (open/list/close node-to-node TCP tunnel)
+  ...PORT_FORWARD_HANDLERS,
+  ...TRANSFER_HANDLERS,
+  ...FS_INSPECT_HANDLERS,
+  // session-to-session messaging
+  ...SESSION_MESSAGING_HANDLERS,
 };

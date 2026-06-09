@@ -13,6 +13,7 @@
  */
 
 import { getKnowledgeStore } from './store';
+import { lmAuthHeaders } from '../auth/api-token';
 import { renderKnowledgeMd } from './parser';
 import { REVIEWER_SYSTEM_PROMPT } from './prompts';
 import { getDataDir } from '../utils/path-utils';
@@ -207,7 +208,7 @@ export class KnowledgeReviewer {
     try {
       const response = await fetch(`${this.apiBaseUrl}/agent/execute`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
         body: JSON.stringify({
           prompt,
           systemPrompt: REVIEWER_SYSTEM_PROMPT,

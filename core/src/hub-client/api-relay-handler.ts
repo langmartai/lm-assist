@@ -10,6 +10,7 @@
  */
 
 import * as http from 'http';
+import { currentApiToken } from '../auth/api-token';
 import * as path from 'path';
 import { WebSocketClient } from './websocket-client';
 
@@ -117,6 +118,7 @@ export class ApiRelayHandler {
     '/claude-code',
     '/mcp',          // MCP StreamableHTTP endpoint + /mcp/* (relayed from the hub for connector routing)
     '/mcp-call',     // generic expanded-tool shim
+    '/session-messages', // cross-node session-to-session messaging (node-routed)
   ];
 
   /**
@@ -378,6 +380,7 @@ export class ApiRelayHandler {
         headers: {
           ...headers,
           'x-relay-source': 'hub',
+          'x-api-key': currentApiToken(),
         },
       };
 

@@ -137,9 +137,16 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   memory_import_candidates: 'read',
   terminal_list: 'read',
   terminal_capture: 'read',
+  // claude.ai marketplaces + plugins (read)
+  claudeai_list_marketplaces: 'read',
+  claudeai_list_marketplace_plugins: 'read',
+  claudeai_list_plugins: 'read',
   // expanded write tier
   claudeai_create_conversation: 'write',
   claudeai_completion: 'write',
+  claudeai_add_marketplace: 'write',
+  claudeai_remove_marketplace: 'write',
+  claudeai_set_plugin_enabled: 'write',
   agent_abort: 'write',
   agent_resume: 'write',
   terminal_prompt: 'write',
@@ -162,6 +169,26 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   ccr_mirror: 'write',
   ccr_remote_stop: 'write',
   ccr_connect: 'admin',
+  // memory map + rules map (read — shell out to CLIs)
+  memory_map: 'read',
+  memory_record: 'read',
+  rule_map: 'read',
+  // port forward (node-to-node TCP tunnel): open/close mutate, list reads
+  open_port_forward: 'admin',
+  list_port_forwards: 'read',
+  close_port_forward: 'admin',
+  transfer_send_file: 'admin',
+  transfer_list_remote: 'read',
+  transfer_stats: 'read',
+  transfer_queue: 'read',
+  port_forward_stats: 'read',
+  fs_drives: 'read',
+  fs_list: 'read',
+  fs_stat: 'read',
+  // session-to-session messaging
+  send_session_message: 'admin',
+  list_session_messages: 'read',
+  get_message_status: 'read',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */

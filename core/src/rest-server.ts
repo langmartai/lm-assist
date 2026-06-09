@@ -5,6 +5,7 @@
  */
 
 import * as http from 'http';
+import { startApiTokenRotation, isValidToken, apiAuthEnabled, isLocalAddress } from './auth/api-token';
 import * as fs from 'fs';
 import * as path from 'path';
 import { URL } from 'url';
@@ -63,7 +64,7 @@ export class TierRestServer {
 
     this.options = {
       port: options.port || (__dirname.includes('node_modules') ? 3100 : 3200),
-      host: options.host || '::',
+      host: options.host || process.env.LM_ASSIST_API_HOST || '127.0.0.1',
       projectPath: options.projectPath,
       tierManager: options.tierManager || undefined as any,
       cors: options.cors ?? true,
@@ -141,6 +142,31 @@ export class TierRestServer {
           /* swallow */
         }
       });
+
+      // Start the cross-node memory autosync daemon (Stream A). It hooks the
+      // SAME memory-cache watcher (no second chokidar) and the hub receive
+      // channel. OBSERVE-ONLY by default (MEMORY_AUTOSYNC=observe) — it only
+      // detects + logs a sync PLAN; no git mutation unless MEMORY_AUTOSYNC=on.
+      try {
+        const { getAutoSyncDaemon } = require('./memory/autosync');
+        const daemon = getAutoSyncDaemon();
+        daemon.start();
+        console.log(`[Server] Memory autosync daemon: mode=${daemon.getMode()}`);
+      } catch (e) {
+        console.warn('[Server] Memory autosync daemon init failed:', e);
+      }
+
+      // Start the periodic memory harvest daemon (Stream A feeder). Default OFF
+      // (MEMORY_HARVEST_DAEMON != on). When off: logs disabled and returns
+      // immediately -- no timers, no Opus agents spawned.
+      try {
+        const { getHarvestDaemon } = require('./memory/harvest-daemon');
+        const hd = getHarvestDaemon();
+        hd.start();
+        console.log('[Server] Memory harvest daemon: enabled=' + hd.getStatus().enabled);
+      } catch (e) {
+        console.warn('[Server] Memory harvest daemon init failed:', e);
+      }
     } catch (err) {
       console.warn('[Server] MemoryCache init failed:', err);
     }
@@ -321,6 +347,7 @@ export class TierRestServer {
   start(): Promise<void> {
     const profiler = getStartupProfiler();
     profiler.start('httpListen', 'HTTP Listen');
+    startApiTokenRotation();
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => this.handleRequest(req, res));
 
@@ -404,12 +431,23 @@ export class TierRestServer {
       }
     }
 
-    // API key authentication
-    if (this.options.apiKey) {
-      const providedKey = req.headers['x-api-key'] || this.getQueryParam(req.url || '', 'apiKey');
-      if (providedKey !== this.options.apiKey) {
-        this.sendJson(res, 401, { success: false, error: { code: 'UNAUTHORIZED', message: 'Invalid API key' } });
-        return;
+    // API token authentication (rotating ring; /health open for liveness).
+    // Emergency kill-switch: LM_ASSIST_API_AUTH=0
+    {
+      const authPath = (req.url || '').split('?')[0];
+      // Optional: trust requests from this machine itself (the local desk) so a
+      // local browser whose web build can't attach the token still works.
+      // LAN/remote callers still need the token. Off unless LM_ASSIST_API_AUTH_EXEMPT_LOCAL=1.
+      const exemptLocal = process.env.LM_ASSIST_API_AUTH_EXEMPT_LOCAL === '1'
+        && isLocalAddress(req.socket.remoteAddress);
+      if (apiAuthEnabled() && authPath !== '/health' && !exemptLocal) {
+        const rawKey = req.headers['x-api-key'];
+        const providedKey = (Array.isArray(rawKey) ? rawKey[0] : rawKey) || this.getQueryParam(req.url || '', 'apiKey');
+        const okAuth = isValidToken(providedKey) || (this.options.apiKey && providedKey === this.options.apiKey);
+        if (!okAuth) {
+          this.sendJson(res, 401, { success: false, error: { code: 'UNAUTHORIZED', message: 'Invalid or missing API token' } });
+          return;
+        }
       }
     }
 
