@@ -137,6 +137,13 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   memory_import_candidates: 'read',
   terminal_list: 'read',
   terminal_capture: 'read',
+  windows_terminal_list: 'read',
+  windows_terminal_capture: 'read',
+  windows_terminal_state: 'read',
+  windows_terminal_create: 'write',
+  windows_terminal_send: 'write',
+  windows_terminal_auto_handle: 'write',
+  windows_terminal_close: 'write',
   // claude.ai marketplaces + plugins (read)
   claudeai_list_marketplaces: 'read',
   claudeai_list_marketplace_plugins: 'read',

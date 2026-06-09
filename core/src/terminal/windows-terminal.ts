@@ -55,7 +55,8 @@ param(
   [string]$MessageB64 = '',
   [switch]$Submit,
   [switch]$CloseTab,
-  [string]$RuntimeId = ''
+  [string]$RuntimeId = '',
+  [string]$Keys = ''
 )
 $ErrorActionPreference = 'Stop'
 
@@ -89,6 +90,8 @@ public class WT {
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
+  [DllImport("user32.dll")] public static extern bool SystemParametersInfo(uint a, uint b, IntPtr c, uint d);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
 
   // --- screen capture: read the attached console's visible viewport ---------
   [StructLayout(LayoutKind.Sequential)] public struct COORD { public short X; public short Y; }
@@ -130,6 +133,64 @@ public class WT {
       }
       return all.ToString();
     } finally { CloseHandle(h); }
+  }
+
+  // --- input injection: write key events straight into the console buffer -----
+  // Focus-independent (no SetForegroundWindow / SendKeys): AttachConsole(pid) +
+  // WriteConsoleInput to CONIN$, so the attached app (claude) reads the keys as
+  // typed regardless of which window has focus. This is how we drive menus
+  // (folder-trust Enter, numbered answers) reliably even from a background
+  // service that can't steal foreground.
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern short VkKeyScan(char ch);
+  [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint type);
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct KEY_EVENT_RECORD {
+    public int bKeyDown; public ushort wRepeatCount; public ushort wVirtualKeyCode;
+    public ushort wVirtualScanCode; public char UnicodeChar; public uint dwControlKeyState;
+  }
+  [StructLayout(LayoutKind.Explicit)] public struct INPUT_RECORD {
+    [FieldOffset(0)] public ushort EventType; [FieldOffset(4)] public KEY_EVENT_RECORD Key;
+  }
+  [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+  public static extern bool WriteConsoleInputW(IntPtr h, INPUT_RECORD[] buf, uint len, out uint written);
+
+  static INPUT_RECORD MakeKey(bool down, ushort vk, char ch) {
+    var r = new INPUT_RECORD(); r.EventType = 0x0001; // KEY_EVENT
+    r.Key.bKeyDown = down ? 1 : 0; r.Key.wRepeatCount = 1; r.Key.wVirtualKeyCode = vk;
+    r.Key.wVirtualScanCode = (ushort)MapVirtualKey(vk, 0); r.Key.UnicodeChar = ch; r.Key.dwControlKeyState = 0;
+    return r;
+  }
+  // spec = space-separated tokens: ENTER ESC UP DOWN LEFT RIGHT TAB SPACE, or a single literal char.
+  public static bool SendConsoleKeys(uint pid, string spec) {
+    FreeConsole();
+    if (!AttachConsole(pid)) return false;
+    try {
+      IntPtr h = CreateFileW("CONIN$", 0xC0000000u, 3u, IntPtr.Zero, 3u, 0u, IntPtr.Zero);
+      if (h == IntPtr.Zero || h == (IntPtr)(-1)) return false;
+      try {
+        var recs = new List<INPUT_RECORD>();
+        foreach (var raw in spec.Split(' ')) {
+          if (raw.Length == 0) continue;
+          ushort vk; char ch;
+          switch (raw.ToUpperInvariant()) {
+            case "ENTER": vk = 0x0D; ch = '\r'; break;
+            case "ESC": vk = 0x1B; ch = (char)27; break;
+            case "UP": vk = 0x26; ch = '\0'; break;
+            case "DOWN": vk = 0x28; ch = '\0'; break;
+            case "LEFT": vk = 0x25; ch = '\0'; break;
+            case "RIGHT": vk = 0x27; ch = '\0'; break;
+            case "TAB": vk = 0x09; ch = '\t'; break;
+            case "SPACE": vk = 0x20; ch = ' '; break;
+            default: ch = raw[0]; vk = (ushort)(VkKeyScan(ch) & 0xFF); break;
+          }
+          recs.Add(MakeKey(true, vk, ch));
+          recs.Add(MakeKey(false, vk, ch));
+        }
+        if (recs.Count == 0) return false;
+        var arr = recs.ToArray();
+        uint written;
+        return WriteConsoleInputW(h, arr, (uint)arr.Length, out written) && written > 0;
+      } finally { CloseHandle(h); }
+    } finally { FreeConsole(); }
   }
 }
 "@
@@ -231,15 +292,28 @@ function Locate-Authoritative([int]$p){
   return $r
 }
 
+# Bring $hwnd to the foreground and RETURN whether it actually became foreground.
+# A background-spawned process can't normally steal focus, so we: attach to the
+# current foreground thread's input queue, disable the foreground-lock timeout,
+# nudge with an Alt keypress (satisfies the "received input" rule), then set
+# foreground and VERIFY. Callers must not SendKeys unless this returns $true,
+# else the keystrokes land in the wrong window.
 function Set-Foreground([IntPtr]$hwnd){
   $fg=[WT]::GetForegroundWindow(); $d=0
   $fgT=[WT]::GetWindowThreadProcessId($fg,[ref]$d)
   $me=[WT]::GetCurrentThreadId()
   [WT]::AttachThreadInput($me,$fgT,$true)|Out-Null
-  if([WT]::IsIconic($hwnd)){ [WT]::ShowWindow($hwnd,9)|Out-Null }
+  [WT]::SystemParametersInfo(0x2001,0,[IntPtr]::Zero,0)|Out-Null  # SPI_SETFOREGROUNDLOCKTIMEOUT = 0
+  if([WT]::IsIconic($hwnd)){ [WT]::ShowWindow($hwnd,9)|Out-Null } else { [WT]::ShowWindow($hwnd,5)|Out-Null }
   [WT]::BringWindowToTop($hwnd)|Out-Null
   [WT]::SetForegroundWindow($hwnd)|Out-Null
+  # Alt down/up nudge, then retry -- unsticks the foreground lock in many cases.
+  [WT]::keybd_event(0x12,0,0,[UIntPtr]::Zero); [WT]::keybd_event(0x12,0,2,[UIntPtr]::Zero)
+  [WT]::SetForegroundWindow($hwnd)|Out-Null
+  Start-Sleep -Milliseconds 90
+  $now=[WT]::GetForegroundWindow()
   [WT]::AttachThreadInput($me,$fgT,$false)|Out-Null
+  return ($now -eq $hwnd)
 }
 
 $map = Get-ParentMap
@@ -301,8 +375,15 @@ if($Action -eq 'tabids'){
 }
 
 if($Action -eq 'send'){
-  # Prefer RuntimeId (title-independent, robust even while the session animates);
-  # fall back to the console-title marker when no rid is supplied.
+  # Keys (menu/prompt answers) go straight into the console input buffer via
+  # WriteConsoleInput -- focus-free and reliable, no foreground/SendKeys needed.
+  if($Keys){
+    if($ClaudePid -le 0){ ConvertTo-Json @{ ok=$false; error='ClaudePid required for keys' } -Compress; exit 1 }
+    $r=[WT]::SendConsoleKeys([uint32]$ClaudePid, $Keys)
+    ConvertTo-Json @{ ok=$r; pid=$ClaudePid; sentKeys=$Keys; via='WriteConsoleInput' } -Compress
+    exit ($(if($r){0}else{2}))
+  }
+  # Text paste: prefer RuntimeId (title-independent), else console-title marker.
   if($RuntimeId){
     $loc = Locate-ByRid $RuntimeId
   } else {
@@ -314,8 +395,14 @@ if($Action -eq 'send'){
   if($loc.tabElement){
     try { $loc.tabElement.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select(); Start-Sleep -Milliseconds 180 } catch {}
   }
-  Set-Foreground $hwnd
-  Start-Sleep -Milliseconds 250
+  $fgOk = Set-Foreground $hwnd
+  Start-Sleep -Milliseconds 200
+  if(-not $fgOk){
+    # Could not truly focus the window -- refuse to paste (it would land in
+    # whatever IS focused). Caller can retry. (Key presses use the focus-free
+    # WriteConsoleInput path above and are unaffected by this.)
+    ConvertTo-Json @{ ok=$false; error='could not bring window to foreground (focus blocked)'; windowHandle=$loc.hwnd; tabIndex=$loc.tabIndex } -Compress; exit 3
+  }
   if($MessageB64){
     $msg=[System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($MessageB64))
     Set-Clipboard -Value $msg
@@ -323,7 +410,7 @@ if($Action -eq 'send'){
     $sh.SendKeys("^v")
     if($Submit){ Start-Sleep -Milliseconds 150; $sh.SendKeys("{ENTER}") }
   }
-  ConvertTo-Json @{ ok=$true; windowHandle=$loc.hwnd; tabIndex=$loc.tabIndex; kind=$loc.kind; submitted=[bool]$Submit } -Depth 6 -Compress
+  ConvertTo-Json @{ ok=$true; windowHandle=$loc.hwnd; tabIndex=$loc.tabIndex; kind=$loc.kind; submitted=[bool]$Submit; sentKeys=$Keys } -Depth 6 -Compress
   exit 0
 }
 
@@ -512,14 +599,161 @@ export async function focusAndSend(opts: {
   rid?: string;
   text?: string;
   submit?: boolean;
+  /** raw SendKeys string (e.g. "{ENTER}", "1{ENTER}", "{ESC}"); ignores text */
+  keys?: string;
 }): Promise<SendResult> {
   if (!IS_WINDOWS) return { ok: false, error: 'windows-only' };
   const args = ['-Action', 'send'];
   if (opts.rid) args.push('-RuntimeId', opts.rid); // title-independent, robust
   if (opts.pid) args.push('-ClaudePid', String(opts.pid)); // marker fallback
-  if (opts.text) args.push('-MessageB64', Buffer.from(opts.text, 'utf8').toString('base64'));
+  if (opts.keys) args.push('-Keys', opts.keys);
+  else if (opts.text) args.push('-MessageB64', Buffer.from(opts.text, 'utf8').toString('base64'));
   if (opts.submit) args.push('-Submit');
   return (await runEngine(args)) as SendResult;
+}
+
+// ---------------------------------------------------------------------------
+// Screen-state classifier + auto-handlers
+//
+// On top of captureScreen: pattern-match the visible terminal text into a
+// known state so callers (and the create flow) can react automatically — most
+// importantly auto-accepting the folder-trust prompt, but also surfacing
+// questions, rate limits, server errors and auth problems instead of silently
+// hanging. Patterns are derived from the Claude Code CLI's on-screen strings.
+// ---------------------------------------------------------------------------
+
+export type ScreenState =
+  | 'folder_trust' // "Is this a project you created or one you trust?"
+  | 'await_question' // a numbered choice / permission prompt waiting on the user
+  | 'rate_limit_user' // the account's usage limit (5-hour / weekly) is reached
+  | 'rate_limit_server' // "Server is temporarily limiting requests (not your usage limit)"
+  | 'overloaded' // 529 / Overloaded / "Waiting for capacity"
+  | 'server_error' // API Error 5xx / internal server error
+  | 'auth_error' // invalid key / expired OAuth / credit too low / needs /login
+  | 'busy' // actively working (spinner / "esc to interrupt")
+  | 'idle' // at the prompt, ready for input
+  | 'unknown';
+
+export interface ScreenClassification {
+  state: ScreenState;
+  /** the line (or extracted fragment) that triggered the match */
+  detail?: string;
+  /** for await_question: the numbered options found */
+  options?: string[];
+  /** for rate_limit_*: extracted reset/retry hint if present */
+  retryHint?: string;
+}
+
+/** Classify the visible terminal text. Pure + deterministic; order = priority. */
+export function classifyScreen(text: string): ScreenClassification {
+  const t = text || '';
+  const find = (re: RegExp): string | undefined => {
+    const m = t.match(re);
+    return m ? (m[0].length > 200 ? m[0].slice(0, 200) : m[0]).trim() : undefined;
+  };
+
+  // 1. Folder-trust prompt (highest priority — blocks everything, auto-handleable)
+  let d =
+    find(/Is this a project you created or one you trust\??/i) ||
+    find(/Do you trust the files in this folder\??/i) ||
+    find(/Yes, I trust this folder/i);
+  if (d) return { state: 'folder_trust', detail: d };
+
+  // 2. Auth problems
+  d =
+    find(/OAuth token has expired[^\n]*/i) ||
+    find(/Invalid API key[^\n]*/i) ||
+    find(/Invalid authentication credentials[^\n]*/i) ||
+    find(/Credit balance is too low[^\n]*/i) ||
+    find(/API Error:\s*401[^\n]*/i) ||
+    find(/Please run \/login[^\n]*/i);
+  if (d) return { state: 'auth_error', detail: d };
+
+  // 3. Server-side throttle — explicitly NOT the user's usage limit (check before user limit)
+  d = find(/Server is temporarily limiting requests \(not your usage limit\)[^\n]*/i) || find(/temporarily limiting requests[^\n]*/i);
+  if (d) return { state: 'rate_limit_server', detail: d };
+
+  // 4. User account usage limit
+  d =
+    find(/(Claude )?usage limit reached[^\n]*/i) ||
+    find(/5-hour limit[^\n]*/i) ||
+    find(/approaching your usage limit[^\n]*/i) ||
+    find(/You've been rate limited[^\n]*/i) ||
+    find(/limit reached[^\n]*reset[^\n]*/i);
+  if (d) {
+    return { state: 'rate_limit_user', detail: d, retryHint: find(/resets?\s*(at|in)[^\n]*/i) };
+  }
+
+  // 5. Overloaded / capacity (529)
+  d = find(/Overloaded[^\n]*/i) || find(/overloaded_error/i) || find(/API Error:\s*529[^\n]*/i) || find(/Waiting for capacity[^\n]*/i);
+  if (d) return { state: 'overloaded', detail: d };
+
+  // 6. Other server / API errors (5xx)
+  d = find(/API Error:\s*5\d\d[^\n]*/i) || find(/Internal server error[^\n]*/i) || find(/API Error \(.*5\d\d.*\)[^\n]*/i);
+  if (d) return { state: 'server_error', detail: d };
+
+  // 7. A question / numbered choice waiting on the user (permission prompts, etc.)
+  if (/Enter to confirm|Do you want to (proceed|continue|create|run|make|allow)/i.test(t) || /❯\s*\d+\.\s+\S/.test(t)) {
+    const options = (t.match(/^[\s│]*[❯>]?\s*(\d+\.\s+.+?)\s*$/gim) || [])
+      .map((l) => l.replace(/^[\s│❯>]+/, '').trim())
+      .filter(Boolean)
+      .slice(0, 9);
+    if (options.length > 0) {
+      return { state: 'await_question', detail: find(/(Do you want to[^\n]*|[^\n]*\?)\s*$/m) || options[0], options };
+    }
+  }
+
+  // 8. Busy (actively working)
+  if (/esc to interrupt|\besc\b.*interrupt|Running…|tokens? ·|⏵⏵|✻|✶|·\s*\d+\s*tokens/i.test(t)) {
+    return { state: 'busy', detail: find(/[^\n]*esc to interrupt[^\n]*/i) };
+  }
+
+  // 9. Idle at the prompt
+  if (/[❯>]\s*$|bypass permissions on|for shortcuts|\bctx:\d+%/i.test(t)) {
+    return { state: 'idle' };
+  }
+
+  return { state: 'unknown' };
+}
+
+export interface AutoHandleResult {
+  ok: boolean;
+  pid: number;
+  state: ScreenState;
+  detail?: string;
+  options?: string[];
+  retryHint?: string;
+  /** true when we sent keystrokes to advance the prompt */
+  handled: boolean;
+  action?: string;
+  error?: string;
+}
+
+/**
+ * Capture + classify a session's screen and, when actionable, advance it:
+ *   - folder_trust  -> press Enter (confirms the highlighted "Yes, I trust") when trust!==false
+ *   - await_question -> press the given `answer` digit (only if provided — never guesses)
+ * Everything else (rate limits, server errors, auth) is reported, not actioned.
+ */
+export async function autoHandle(
+  pid: number,
+  opts: { trust?: boolean; answer?: number; rid?: string } = {},
+): Promise<AutoHandleResult> {
+  if (!IS_WINDOWS) return { ok: false, pid, state: 'unknown', handled: false, error: 'windows-only' };
+  const cap = await captureScreen(pid);
+  if (!cap.ok) return { ok: false, pid, state: 'unknown', handled: false, error: cap.error };
+  const cls = classifyScreen(cap.text || '');
+  const base: AutoHandleResult = { ok: true, pid, state: cls.state, detail: cls.detail, options: cls.options, retryHint: cls.retryHint, handled: false };
+
+  if (cls.state === 'folder_trust' && opts.trust !== false) {
+    const r = await focusAndSend({ pid, rid: opts.rid, keys: 'ENTER' });
+    return { ...base, handled: r.ok, action: r.ok ? 'trusted-folder (Enter)' : r.error };
+  }
+  if (cls.state === 'await_question' && typeof opts.answer === 'number' && opts.answer >= 1 && opts.answer <= 9) {
+    const r = await focusAndSend({ pid, rid: opts.rid, keys: `${opts.answer} ENTER` });
+    return { ...base, handled: r.ok, action: r.ok ? `answered ${opts.answer}` : r.error };
+  }
+  return { ...base, action: 'observed' };
 }
 
 export interface CaptureResult {
@@ -578,6 +812,8 @@ export interface LaunchResult {
   pid?: number;
   /** stable, title-independent tab handle captured at create (for robust drive) */
   tabRid?: string | null;
+  /** true when a folder-trust prompt was detected and auto-accepted during launch */
+  trustHandled?: boolean;
   mode: string;
   cwd: string;
   note?: string;
@@ -592,6 +828,27 @@ export interface CloseResult {
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** All live claude.exe pids via PowerShell Get-Process (reliable on Windows;
+ *  the find-process npm pkg is flaky here). [] on non-Windows or on error. */
+function listClaudePids(): Promise<number[]> {
+  if (!IS_WINDOWS) return Promise.resolve([]);
+  return new Promise((resolve) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-Command', '(Get-Process claude -ErrorAction SilentlyContinue).Id'],
+      { timeout: 8000, windowsHide: true } as any,
+      (_err: any, stdout: string) => {
+        resolve(
+          String(stdout || '')
+            .split(/\r?\n/)
+            .map((s) => parseInt(s.trim(), 10))
+            .filter((n) => Number.isFinite(n) && n > 0),
+        );
+      },
+    );
+  });
+}
 
 function samePath(a: string, b: string): boolean {
   const norm = (s: string) => (s || '').replace(/[\\/]+/g, '\\').replace(/\\+$/, '').toLowerCase();
@@ -613,12 +870,16 @@ export async function launchSession(opts: {
   waitMs?: number;
   skipPermissions?: boolean;
   remoteControl?: boolean | string;
+  /** auto-accept the folder-trust prompt if it blocks registration (default true) */
+  autoTrust?: boolean;
 } = {}): Promise<LaunchResult> {
   if (!IS_WINDOWS) return { launched: false, sessionId: null, mode: '', cwd: '', note: 'windows-only' };
   const cwd = opts.cwd || os.homedir();
   const mode = opts.mode || 'window';
+  const autoTrust = opts.autoTrust !== false;
   const before = new Set(listLiveSessions().map((s) => s.sessionId));
   const beforeRids = new Set((await listTabIds()).map((t) => t.rid));
+  const beforeClaude = new Set(await listClaudePids());
   const skipFlag = opts.skipPermissions ? ' --dangerously-skip-permissions' : '';
   const rcFlag = opts.remoteControl ? ' --remote-control' + (typeof opts.remoteControl === 'string' ? ` ${opts.remoteControl}` : '') : '';
   const claudeCmd = (opts.resume ? `claude --resume ${opts.resume}` : 'claude') + rcFlag + skipFlag;
@@ -632,9 +893,12 @@ export async function launchSession(opts: {
   const child = spawn('wt.exe', wtArgs, { detached: true, stdio: 'ignore', windowsHide: false } as any);
   child.unref();
 
-  const deadline = Date.now() + (opts.waitMs ?? 9000);
+  const start = Date.now();
+  const deadline = start + (opts.waitMs ?? 9000);
   let sid: string | null = null;
   let pid: number | undefined;
+  let trustHandled = false;
+  let lastTrustTry = 0;
   while (Date.now() < deadline) {
     await sleep(400);
     for (const s of listLiveSessions()) {
@@ -651,6 +915,28 @@ export async function launchSession(opts: {
       }
     }
     if (sid) break;
+
+    // Auto-trust: if registration is blocked for a couple seconds, a new claude
+    // is probably sitting at the folder-trust prompt (it doesn't register until
+    // accepted). Find the new claude pid (reliable Get-Process, not find-process),
+    // confirm it's the trust screen, inject Enter into its console buffer, then
+    // keep polling for it to register. Retried across the poll until handled.
+    if (autoTrust && !trustHandled && Date.now() - start > 2200 && Date.now() - lastTrustTry > 1400) {
+      lastTrustTry = Date.now();
+      try {
+        for (const cp of await listClaudePids()) {
+          if (beforeClaude.has(cp)) continue;
+          const cap = await captureScreen(cp);
+          if (cap.ok && classifyScreen(cap.text || '').state === 'folder_trust') {
+            await focusAndSend({ pid: cp, keys: 'ENTER' });
+            trustHandled = true;
+            break;
+          }
+        }
+      } catch {
+        /* best effort */
+      }
+    }
   }
 
   // Capture the new tab's RuntimeId by diffing the tab set — a title-independent
@@ -679,11 +965,14 @@ export async function launchSession(opts: {
     pid,
     win,
     tabRid,
+    trustHandled,
     mode,
     cwd,
     note: sid
-      ? undefined
-      : 'launched, but no new session registered within the wait window — the folder-trust prompt may be pending in the new tab; accept it, then GET /terminal/windows/sessions',
+      ? trustHandled
+        ? 'folder-trust prompt was auto-accepted during launch'
+        : undefined
+      : 'launched, but no new session registered within the wait window — a folder-trust prompt may still be pending (autoTrust may have been disabled or the prompt differs); GET /terminal/windows/capture?pid=<newClaudePid> to see it',
   };
 }
 

@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Windows terminal — screen-state classifier + auto-handlers + reliable input + MCP (2026-06-10)
+
+Builds on screen capture: classify what a Windows Claude Code session is showing and react
+automatically (most importantly auto-accepting the folder-trust prompt), plus a focus-free input path
+and MCP tools for the whole Windows terminal surface.
+
+- **`classifyScreen(text)`** → one of: `folder_trust`, `await_question`, `rate_limit_user`,
+  `rate_limit_server` ("Server is temporarily limiting requests (not your usage limit)"), `overloaded`
+  (529 / "Waiting for capacity"), `server_error` (5xx), `auth_error` (invalid key / expired OAuth /
+  credit too low / needs `/login`), `busy`, `idle`, `unknown` — with `detail`, `options`, `retryHint`.
+  Patterns derived from the real Claude Code CLI strings. (9/9 synthetic cases pass.)
+- **Auto-handlers**: `autoHandle(pid,{trust,answer})` — auto-accepts folder trust (default) or answers a
+  numbered prompt; other states (rate limits, server/auth errors) are reported, not actioned. **Create
+  now auto-trusts** by default: if registration is blocked, it finds the new claude pid, confirms the
+  trust screen, and accepts it — `create` returns `trustHandled:true` and the session registers.
+- **Reliable, focus-free key injection** (the important fix): `WScript.Shell` SendKeys does NOT reach a
+  Windows Terminal pane from a background service even when "focused", so menu answers were silently
+  lost. Keys now go straight into the console input buffer via `AttachConsole` + `WriteConsoleInput`
+  (CONIN$) — delivered to claude as typed input regardless of focus. Text *paste* still uses
+  foreground+clipboard, but now verifies foreground (disable foreground-lock timeout + Alt-nudge +
+  check) and returns an error instead of misfiring into the wrong window.
+- **Routes**: `GET …/:sessionId/state` and `GET /terminal/windows/state?pid=N`; `POST …/:sessionId/auto-handle`
+  and `POST /terminal/windows/auto-handle?pid=N` (`{trust?,answer?}`).
+- **MCP tools** (7, via the expanded catalog): `windows_terminal_list`/`_capture`/`_state` (read),
+  `windows_terminal_create`/`_send`/`_auto_handle`/`_close` (write). Verified over the loopback `/mcp`:
+  tools/list advertises all 7; tools/call `windows_terminal_list` round-trips.
+- Verified e2e on windows-desk: created in an UNTRUSTED dir → auto-trust accepted the prompt → session
+  registered driveable; auto-handle flipped a stuck session `folder_trust`→`idle`; classifier 9/9.
+- Finding (unchanged): `skipPermissions` does NOT bypass folder trust — that's exactly why auto-trust
+  via the trust prompt is needed.
+
 ### Windows terminal — screen capture (tmux capture-pane equivalent) (2026-06-10)
 
 Read the visible text of any console-hosted process's terminal — the missing observability piece for

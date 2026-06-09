@@ -140,6 +140,119 @@ export const terminalCaptureToolDef = {
   },
 };
 
+// ─── Windows terminal (Windows hosts only — tmux substitute) ─────────────
+
+export const windowsTerminalListToolDef = {
+  name: 'windows_terminal_list',
+  description:
+    'List live Claude Code sessions on a WINDOWS host with their Windows Terminal window/tab mapping ' +
+    'and a `driveable` verdict (the Windows equivalent of terminal_list — Windows has no tmux). ' +
+    'Returns NOT_SUPPORTED on non-Windows hosts. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: { type: 'object' as const, properties: {} },
+};
+
+export const windowsTerminalCaptureToolDef = {
+  name: 'windows_terminal_capture',
+  description:
+    'Read the visible terminal text of a Windows Claude Code session (capture-pane equivalent). ' +
+    'Pass `sessionId` (from windows_terminal_list) OR a raw `pid` (reaches a session stuck at the ' +
+    'folder-trust prompt that has not registered yet). Read-only — no keystrokes.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      sessionId: { type: 'string', description: 'Session id from windows_terminal_list.' },
+      pid: { type: 'number', description: 'Raw process id (alternative to sessionId).' },
+    },
+  },
+};
+
+export const windowsTerminalStateToolDef = {
+  name: 'windows_terminal_state',
+  description:
+    'Classify what a Windows Claude Code session is showing: folder_trust, await_question, ' +
+    'rate_limit_user, rate_limit_server, overloaded, server_error, auth_error, busy, idle, unknown ' +
+    '(with detail/options). Pass `sessionId` OR raw `pid`. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      sessionId: { type: 'string', description: 'Session id from windows_terminal_list.' },
+      pid: { type: 'number', description: 'Raw process id (alternative to sessionId).' },
+    },
+  },
+};
+
+export const windowsTerminalCreateToolDef = {
+  name: 'windows_terminal_create',
+  description:
+    'Launch a NEW Claude Code session in a Windows Terminal window (or tab). Auto-accepts the ' +
+    'folder-trust prompt by default. Returns the new sessionId once it registers. WRITE — spawns a ' +
+    'real process.',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      cwd: { type: 'string', description: 'Working directory for the new session.' },
+      mode: { type: 'string', description: "'window' (default) or 'tab'." },
+      resume: { type: 'string', description: 'Resume a non-live sessionId (continues its transcript).' },
+      autoTrust: { type: 'boolean', description: 'Auto-accept folder-trust prompt (default true).' },
+    },
+  },
+};
+
+export const windowsTerminalSendToolDef = {
+  name: 'windows_terminal_send',
+  description:
+    'Type text into a Windows Claude Code session (focus its tab + paste). Set `submit` to also press ' +
+    'Enter. Pass `sessionId` from windows_terminal_list. WRITE — drives the session.',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      sessionId: { type: 'string', description: 'Session id from windows_terminal_list.' },
+      text: { type: 'string', description: 'Text to type.' },
+      submit: { type: 'boolean', description: 'Press Enter after typing (default false).' },
+    },
+    required: ['sessionId', 'text'],
+  },
+};
+
+export const windowsTerminalAutoHandleToolDef = {
+  name: 'windows_terminal_auto_handle',
+  description:
+    "Detect a Windows session's screen state and advance it: auto-accept folder trust (default), or " +
+    'answer a numbered prompt with `answer`. Other states (rate limits, server/auth errors) are ' +
+    'reported, not actioned. Pass `sessionId` OR raw `pid`. WRITE.',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      sessionId: { type: 'string', description: 'Session id from windows_terminal_list.' },
+      pid: { type: 'number', description: 'Raw process id (e.g. a stuck, unregistered session).' },
+      trust: { type: 'boolean', description: 'Accept folder-trust prompt (default true).' },
+      answer: { type: 'number', description: 'Digit to answer a numbered question (1-9).' },
+    },
+  },
+};
+
+export const windowsTerminalCloseToolDef = {
+  name: 'windows_terminal_close',
+  description:
+    'Terminate a Windows Claude Code session. With `closeTab` (default true) also closes its Windows ' +
+    'Terminal tab/window. Pass `sessionId` from windows_terminal_list. WRITE — destructive.',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      sessionId: { type: 'string', description: 'Session id from windows_terminal_list.' },
+      closeTab: { type: 'boolean', description: 'Also close the tab/window (default true).' },
+    },
+    required: ['sessionId'],
+  },
+};
+
 // ─── write tier (scope: write — gateway requires per-call approval) ──────
 
 export const claudeaiCreateConversationToolDef = {
@@ -542,6 +655,13 @@ export const EXPANDED_TOOL_DEFS = [
   memoryImportCandidatesToolDef,
   terminalListToolDef,
   terminalCaptureToolDef,
+  windowsTerminalListToolDef,
+  windowsTerminalCaptureToolDef,
+  windowsTerminalStateToolDef,
+  windowsTerminalCreateToolDef,
+  windowsTerminalSendToolDef,
+  windowsTerminalAutoHandleToolDef,
+  windowsTerminalCloseToolDef,
   claudeaiListMarketplacesToolDef,
   claudeaiListMarketplacePluginsToolDef,
   claudeaiListPluginsToolDef,
@@ -657,6 +777,87 @@ async function handleTerminalCapture(args: Record<string, unknown>): Promise<Mcp
   if (!name) return err('name is required.');
   try {
     return ok(pretty(await workerGet(`/terminal/tmux/${enc(name)}/capture`)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+// ─── Windows terminal handlers ───────────────────────────────────────────
+const winSid = (a: Record<string, unknown>): string => String(a.sessionId || '').trim();
+const winPid = (a: Record<string, unknown>): number => Number(a.pid || 0);
+
+async function handleWindowsTerminalList(): Promise<McpToolResult> {
+  try {
+    return ok(pretty(await workerGet('/terminal/windows/sessions')));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+async function handleWindowsTerminalCapture(a: Record<string, unknown>): Promise<McpToolResult> {
+  const sid = winSid(a);
+  const pid = winPid(a);
+  if (!sid && !pid) return err('sessionId or pid is required.');
+  try {
+    const path = sid ? `/terminal/windows/sessions/${enc(sid)}/capture` : `/terminal/windows/capture?pid=${pid}`;
+    return ok(pretty(await workerGet(path)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+async function handleWindowsTerminalState(a: Record<string, unknown>): Promise<McpToolResult> {
+  const sid = winSid(a);
+  const pid = winPid(a);
+  if (!sid && !pid) return err('sessionId or pid is required.');
+  try {
+    const path = sid ? `/terminal/windows/sessions/${enc(sid)}/state` : `/terminal/windows/state?pid=${pid}`;
+    return ok(pretty(await workerGet(path)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+async function handleWindowsTerminalCreate(a: Record<string, unknown>): Promise<McpToolResult> {
+  const body: Record<string, unknown> = {};
+  if (a.cwd) body.cwd = String(a.cwd);
+  if (a.mode) body.mode = String(a.mode);
+  if (a.resume) body.resume = String(a.resume);
+  if (typeof a.autoTrust === 'boolean') body.autoTrust = a.autoTrust;
+  try {
+    return ok(pretty(await workerPostRaw('/terminal/windows/sessions', body)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+async function handleWindowsTerminalSend(a: Record<string, unknown>): Promise<McpToolResult> {
+  const sid = winSid(a);
+  const text = String(a.text || '');
+  if (!sid) return err('sessionId is required.');
+  if (!text) return err('text is required.');
+  try {
+    return ok(pretty(await workerPostRaw(`/terminal/windows/sessions/${enc(sid)}/send`, { text, submit: a.submit === true })));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+async function handleWindowsTerminalAutoHandle(a: Record<string, unknown>): Promise<McpToolResult> {
+  const sid = winSid(a);
+  const pid = winPid(a);
+  if (!sid && !pid) return err('sessionId or pid is required.');
+  const body: Record<string, unknown> = {};
+  if (typeof a.trust === 'boolean') body.trust = a.trust;
+  if (typeof a.answer === 'number') body.answer = a.answer;
+  try {
+    const path = sid ? `/terminal/windows/sessions/${enc(sid)}/auto-handle` : `/terminal/windows/auto-handle?pid=${pid}`;
+    return ok(pretty(await workerPostRaw(path, body)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+async function handleWindowsTerminalClose(a: Record<string, unknown>): Promise<McpToolResult> {
+  const sid = winSid(a);
+  if (!sid) return err('sessionId is required.');
+  const closeTab = a.closeTab !== false;
+  try {
+    return ok(pretty(await workerDelete(`/terminal/windows/sessions/${enc(sid)}?closeTab=${closeTab}`)));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -1002,6 +1203,13 @@ export const EXPANDED_HANDLERS: Record<
   memory_import_candidates: handleMemoryImportCandidates,
   terminal_list: () => handleTerminalList(),
   terminal_capture: handleTerminalCapture,
+  windows_terminal_list: () => handleWindowsTerminalList(),
+  windows_terminal_capture: handleWindowsTerminalCapture,
+  windows_terminal_state: handleWindowsTerminalState,
+  windows_terminal_create: handleWindowsTerminalCreate,
+  windows_terminal_send: handleWindowsTerminalSend,
+  windows_terminal_auto_handle: handleWindowsTerminalAutoHandle,
+  windows_terminal_close: handleWindowsTerminalClose,
   // claude.ai marketplaces + plugins (read)
   claudeai_list_marketplaces: handleClaudeaiListMarketplaces,
   claudeai_list_marketplace_plugins: handleClaudeaiListMarketplacePlugins,

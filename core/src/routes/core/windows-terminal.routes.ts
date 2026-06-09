@@ -29,6 +29,8 @@ import {
   getTabRid,
   forgetTabRid,
   captureScreen,
+  classifyScreen,
+  autoHandle,
 } from '../../terminal/windows-terminal';
 
 interface Envelope {
@@ -173,6 +175,85 @@ export function createWindowsTerminalRoutes(_ctx: RouteContext): RouteHandler[] 
         try {
           const res = await captureScreen(pid);
           return res.ok ? ok({ pid, text: res.text }) : fail('CAPTURE_FAILED', res.error || 'capture failed');
+        } catch (e) {
+          return fail('INTERNAL_ERROR', (e as Error).message);
+        }
+      },
+    },
+
+    // GET /terminal/windows/sessions/:sessionId/state — capture + classify the
+    // screen into {state, detail, options, retryHint}. Read-only.
+    {
+      method: 'GET',
+      pattern: /^\/terminal\/windows\/sessions\/(?<sessionId>[^/]+)\/state$/,
+      handler: async (req: ParsedRequest): Promise<Envelope> => {
+        if (!IS_WINDOWS) return notSupported();
+        const sessionId = req.params.sessionId;
+        const pid = pidForSession(sessionId);
+        if (!pid) return fail('SESSION_NOT_LIVE', `no live session ${sessionId} on this host`);
+        try {
+          const cap = await captureScreen(pid);
+          if (!cap.ok) return fail('CAPTURE_FAILED', cap.error || 'capture failed');
+          return ok({ sessionId, pid, ...classifyScreen(cap.text || '') });
+        } catch (e) {
+          return fail('INTERNAL_ERROR', (e as Error).message);
+        }
+      },
+    },
+
+    // GET /terminal/windows/state?pid=N — classify by raw pid (pre-registration,
+    // e.g. a claude stuck at the folder-trust prompt).
+    {
+      method: 'GET',
+      pattern: /^\/terminal\/windows\/state$/,
+      handler: async (req: ParsedRequest): Promise<Envelope> => {
+        if (!IS_WINDOWS) return notSupported();
+        const pid = parseInt(req.query?.pid ?? '', 10);
+        if (!pid || pid <= 0) return fail('INVALID_QUERY', 'pid query param (positive integer) is required');
+        try {
+          const cap = await captureScreen(pid);
+          if (!cap.ok) return fail('CAPTURE_FAILED', cap.error || 'capture failed');
+          return ok({ pid, ...classifyScreen(cap.text || '') });
+        } catch (e) {
+          return fail('INTERNAL_ERROR', (e as Error).message);
+        }
+      },
+    },
+
+    // POST /terminal/windows/sessions/:sessionId/auto-handle  { trust?, answer? }
+    // Detect the screen state and advance it: auto-accept folder trust (default),
+    // or answer a numbered question with `answer`. Other states are reported.
+    {
+      method: 'POST',
+      pattern: /^\/terminal\/windows\/sessions\/(?<sessionId>[^/]+)\/auto-handle$/,
+      handler: async (req: ParsedRequest): Promise<Envelope> => {
+        if (!IS_WINDOWS) return notSupported();
+        const sessionId = req.params.sessionId;
+        const body = (req.body ?? {}) as { trust?: boolean; answer?: number };
+        const pid = pidForSession(sessionId);
+        if (!pid) return fail('SESSION_NOT_LIVE', `no live session ${sessionId} on this host`);
+        try {
+          const res = await autoHandle(pid, { trust: body.trust, answer: body.answer, rid: getTabRid(sessionId) });
+          return res.ok ? ok({ sessionId, ...res }) : fail('AUTO_HANDLE_FAILED', res.error || 'failed', res);
+        } catch (e) {
+          return fail('INTERNAL_ERROR', (e as Error).message);
+        }
+      },
+    },
+
+    // POST /terminal/windows/auto-handle?pid=N  { trust?, answer? } — by raw pid
+    // (e.g. auto-trust a stuck, never-registered claude).
+    {
+      method: 'POST',
+      pattern: /^\/terminal\/windows\/auto-handle$/,
+      handler: async (req: ParsedRequest): Promise<Envelope> => {
+        if (!IS_WINDOWS) return notSupported();
+        const pid = parseInt(req.query?.pid ?? '', 10);
+        if (!pid || pid <= 0) return fail('INVALID_QUERY', 'pid query param (positive integer) is required');
+        const body = (req.body ?? {}) as { trust?: boolean; answer?: number };
+        try {
+          const res = await autoHandle(pid, { trust: body.trust, answer: body.answer });
+          return res.ok ? ok(res) : fail('AUTO_HANDLE_FAILED', res.error || 'failed', res);
         } catch (e) {
           return fail('INTERNAL_ERROR', (e as Error).message);
         }
