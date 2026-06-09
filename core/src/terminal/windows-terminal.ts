@@ -49,7 +49,7 @@ import { listLiveSessions, LiveSession } from './cc-sessions';
 // ---------------------------------------------------------------------------
 const ENGINE_PS1 = String.raw`
 param(
-  [Parameter(Mandatory)][ValidateSet('query','locate','send','close','tabids')][string]$Action,
+  [Parameter(Mandatory)][ValidateSet('query','locate','send','close','tabids','capture')][string]$Action,
   [string]$PidList = '',
   [int]$ClaudePid = 0,
   [string]$MessageB64 = '',
@@ -89,6 +89,48 @@ public class WT {
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
+
+  // --- screen capture: read the attached console's visible viewport ---------
+  [StructLayout(LayoutKind.Sequential)] public struct COORD { public short X; public short Y; }
+  [StructLayout(LayoutKind.Sequential)] public struct SMALL_RECT { public short Left; public short Top; public short Right; public short Bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct CSBI {
+    public COORD dwSize; public COORD dwCursorPosition; public ushort wAttributes;
+    public SMALL_RECT srWindow; public COORD dwMaximumWindowSize;
+  }
+  [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+  public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr tmpl);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  public static extern bool GetConsoleScreenBufferInfo(IntPtr h, out CSBI info);
+  [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+  public static extern bool ReadConsoleOutputCharacterW(IntPtr h, StringBuilder buf, uint len, COORD coord, out uint read);
+
+  // Read the visible viewport of the console this process is currently attached
+  // to (caller does AttachConsole(pid) first). With ConPTY (Windows Terminal),
+  // the hidden conhost keeps a real screen buffer mirroring what the terminal
+  // renders, so this returns the on-screen text. Trailing per-row spaces trimmed.
+  public static string CaptureViewport() {
+    IntPtr h = CreateFileW("CONOUT$", 0xC0000000u, 3u, IntPtr.Zero, 3u, 0u, IntPtr.Zero);
+    if (h == IntPtr.Zero || h == (IntPtr)(-1)) return null;
+    try {
+      CSBI info;
+      if (!GetConsoleScreenBufferInfo(h, out info)) return null;
+      int top = info.srWindow.Top, bottom = info.srWindow.Bottom;
+      int width = info.dwSize.X;
+      if (width <= 0 || bottom < top) return "";
+      var all = new StringBuilder();
+      for (int y = top; y <= bottom; y++) {
+        var buf = new StringBuilder(width);
+        COORD c; c.X = 0; c.Y = (short)y;
+        uint read;
+        if (ReadConsoleOutputCharacterW(h, buf, (uint)width, c, out read) && read > 0) {
+          all.AppendLine(buf.ToString(0, (int)read).TrimEnd());
+        } else {
+          all.AppendLine();
+        }
+      }
+      return all.ToString();
+    } finally { CloseHandle(h); }
+  }
 }
 "@
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
@@ -137,7 +179,7 @@ function Get-TabItems($win){
   return @($win.FindAll([System.Windows.Automation.TreeScope]::Descendants,$tc))
 }
 
-# Locate a tab by its UIA RuntimeId — stable across processes and INDEPENDENT of
+# Locate a tab by its UIA RuntimeId -- stable across processes and INDEPENDENT of
 # title, so it works even while the session is actively animating its title.
 function Locate-ByRid([string]$rid){
   $r=@{ found=$false; hwnd=$null; tabIndex=-1; tabElement=$null; kind='windows-terminal' }
@@ -221,6 +263,27 @@ if($Action -eq 'locate'){
   if($ClaudePid -le 0){ ConvertTo-Json @{ ok=$false; error='ClaudePid required' } -Compress; exit 1 }
   $loc = Locate-Authoritative $ClaudePid
   ConvertTo-Json @{ ok=$loc.found; pid=$ClaudePid; windowHandle=$loc.hwnd; tabIndex=$loc.tabIndex; kind=$loc.kind; origTitle=$loc.origTitle } -Depth 6 -Compress
+  exit 0
+}
+
+if($Action -eq 'capture'){
+  # Read the target console's visible viewport text (works for any pid attached
+  # to a console -- including a session stuck at the folder-trust prompt that
+  # never registered). Passive: attach the reader, read CONOUT$, detach.
+  if($ClaudePid -le 0){ ConvertTo-Json @{ ok=$false; error='ClaudePid required' } -Compress; exit 1 }
+  [WT]::FreeConsole()|Out-Null
+  $txt=$null
+  if([WT]::AttachConsole([uint32]$ClaudePid)){
+    $txt=[WT]::CaptureViewport()
+    [WT]::FreeConsole()|Out-Null
+  } else {
+    $err=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    [WT]::FreeConsole()|Out-Null
+    ConvertTo-Json @{ ok=$false; error="AttachConsole failed (win32=$err) - pid has no console?" } -Compress; exit 2
+  }
+  if($null -eq $txt){ ConvertTo-Json @{ ok=$false; error='CONOUT$ read failed' } -Compress; exit 2 }
+  $b64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($txt))
+  ConvertTo-Json @{ ok=$true; pid=$ClaudePid; textB64=$b64 } -Compress
   exit 0
 }
 
@@ -370,7 +433,11 @@ let enginePathCache: string | null = null;
 function enginePath(): string {
   if (enginePathCache && fs.existsSync(enginePathCache)) return enginePathCache;
   const p = path.join(os.tmpdir(), 'lm-assist-wt-engine.ps1');
-  fs.writeFileSync(p, ENGINE_PS1, 'utf8');
+  // UTF-8 BOM is REQUIRED: PowerShell 5.1 parses BOM-less files as the ANSI
+  // codepage (cp950 here), where a multi-byte char's tail byte can eat a
+  // closing quote and break the whole script. Keep the engine ASCII anyway.
+  // NOTE: the quoted prefix below is a LITERAL U+FEFF char (invisible).
+  fs.writeFileSync(p, "﻿" + ENGINE_PS1, "utf8");
   enginePathCache = p;
   return p;
 }
@@ -453,6 +520,29 @@ export async function focusAndSend(opts: {
   if (opts.text) args.push('-MessageB64', Buffer.from(opts.text, 'utf8').toString('base64'));
   if (opts.submit) args.push('-Submit');
   return (await runEngine(args)) as SendResult;
+}
+
+export interface CaptureResult {
+  ok: boolean;
+  pid: number;
+  /** visible viewport text, rows joined with \n, trailing spaces trimmed */
+  text?: string;
+  error?: string;
+}
+
+/**
+ * Read the visible terminal text of the console hosting `pid` — the Windows
+ * equivalent of tmux capture-pane. Passive (AttachConsole + read CONOUT$, no
+ * focus change, no input). Works for ANY console-attached pid, including a
+ * claude stuck at the folder-trust prompt that never registered a session.
+ */
+export async function captureScreen(pid: number): Promise<CaptureResult> {
+  if (!IS_WINDOWS) return { ok: false, pid, error: 'windows-only' };
+  const r = await runEngine(['-Action', 'capture', '-ClaudePid', String(pid)]);
+  if (r?.ok && typeof r.textB64 === 'string') {
+    return { ok: true, pid, text: Buffer.from(r.textB64, 'base64').toString('utf8') };
+  }
+  return { ok: false, pid, error: r?.error || 'capture failed' };
 }
 
 // ---------------------------------------------------------------------------

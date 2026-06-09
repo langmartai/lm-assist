@@ -28,6 +28,7 @@ import {
   closeSession,
   getTabRid,
   forgetTabRid,
+  captureScreen,
 } from '../../terminal/windows-terminal';
 
 interface Envelope {
@@ -134,6 +135,44 @@ export function createWindowsTerminalRoutes(_ctx: RouteContext): RouteHandler[] 
           const pid = verdict.owner?.pid ?? pidForSession(sessionId);
           const win = pid ? (await mapPidsToWindows([pid]))[0] ?? null : null;
           return ok({ sessionId, verdict, win, driveable: !!(win && win.driveable) });
+        } catch (e) {
+          return fail('INTERNAL_ERROR', (e as Error).message);
+        }
+      },
+    },
+
+    // GET /terminal/windows/sessions/:sessionId/capture — read the visible
+    // terminal text (Windows tmux capture-pane equivalent). Passive.
+    {
+      method: 'GET',
+      pattern: /^\/terminal\/windows\/sessions\/(?<sessionId>[^/]+)\/capture$/,
+      handler: async (req: ParsedRequest): Promise<Envelope> => {
+        if (!IS_WINDOWS) return notSupported();
+        const sessionId = req.params.sessionId;
+        const pid = pidForSession(sessionId);
+        if (!pid) return fail('SESSION_NOT_LIVE', `no live session ${sessionId} on this host`);
+        try {
+          const res = await captureScreen(pid);
+          return res.ok ? ok({ sessionId, pid, text: res.text }) : fail('CAPTURE_FAILED', res.error || 'capture failed');
+        } catch (e) {
+          return fail('INTERNAL_ERROR', (e as Error).message);
+        }
+      },
+    },
+
+    // GET /terminal/windows/capture?pid=N — capture by raw pid, for processes
+    // that never registered a session (e.g. claude stuck at the folder-trust
+    // prompt) or non-claude console programs.
+    {
+      method: 'GET',
+      pattern: /^\/terminal\/windows\/capture$/,
+      handler: async (req: ParsedRequest): Promise<Envelope> => {
+        if (!IS_WINDOWS) return notSupported();
+        const pid = parseInt(req.query?.pid ?? '', 10);
+        if (!pid || pid <= 0) return fail('INVALID_QUERY', 'pid query param (positive integer) is required');
+        try {
+          const res = await captureScreen(pid);
+          return res.ok ? ok({ pid, text: res.text }) : fail('CAPTURE_FAILED', res.error || 'capture failed');
         } catch (e) {
           return fail('INTERNAL_ERROR', (e as Error).message);
         }

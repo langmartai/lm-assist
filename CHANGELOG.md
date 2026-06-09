@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Windows terminal — screen capture (tmux capture-pane equivalent) (2026-06-10)
+
+Read the visible text of any console-hosted process's terminal — the missing observability piece for
+the Windows terminal driver (you could focus/type/close a session but not see what it was showing,
+e.g. a claude stuck at the folder-trust prompt that never registers a session).
+
+- Engine `capture` action: `AttachConsole(pid)` + open `CONOUT$` + `ReadConsoleOutputCharacterW` over
+  the viewport rows (with ConPTY, the hidden conhost's screen buffer mirrors what Windows Terminal
+  renders). Passive — no focus change, no input. Text returned base64 to survive the JSON/console hop.
+- `captureScreen(pid)` in `terminal/windows-terminal.ts`.
+- Routes: `GET /terminal/windows/sessions/:sessionId/capture` (registered sessions) and
+  `GET /terminal/windows/capture?pid=N` (raw pid — for pre-registration processes like a trust-prompt
+  stuck claude, or any console program).
+- **Engine encoding fix**: the materialized `.ps1` is now written with a UTF-8 BOM, and the embedded
+  engine is kept strictly ASCII. PowerShell 5.1 parses BOM-less files as the ANSI codepage (cp950 on
+  zh-TW systems), where a multi-byte char's tail byte can swallow a closing quote and break the whole
+  script — an em-dash inside a quoted string did exactly that.
+- Verified e2e on windows-desk against the rotating-token gate (401 without `x-api-key`, 200 with):
+  captured a live Claude session's screen (prompt + status bar) and read a folder-trust prompt
+  verbatim off a stuck, never-registered claude by raw pid. Also re-validated the full CRUD on latest
+  main: create/read/send-via-RuntimeId/focus/delete (single-tab window close + multi-tab sibling
+  survival) and resume (returns the resumed sessionId). Finding: `skipPermissions`
+  (`--dangerously-skip-permissions`) does NOT bypass the folder-trust prompt — an untrusted-cwd launch
+  still sticks pre-registration; use the capture endpoint to see it.
+
 ### Worker API — rotating token security gate + localhost bind (2026-06-09)
 
 Every worker API route now requires a rotating API token — a separate secret from the langmart hub
