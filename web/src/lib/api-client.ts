@@ -185,9 +185,20 @@ export function setProxySessionExpiredCallback(cb: (() => void) | null) {
 // Shared fetch helper
 // ============================================
 
+/** x-api-key for direct local-mode calls to the worker. Token is injected into
+ *  the page by the server layout (window.__LM_API_TOKEN__). Empty in hub mode
+ *  (the hub relay injects it server-side). */
+function localAuthHeader(): Record<string, string> {
+  if (typeof window !== 'undefined') {
+    const t = (window as unknown as { __LM_API_TOKEN__?: string }).__LM_API_TOKEN__;
+    if (t) return { 'x-api-key': t };
+  }
+  return {};
+}
+
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    headers: { 'Content-Type': 'application/json', ...localAuthHeader(), ...options?.headers },
     ...options,
   });
   if (!res.ok) {
@@ -214,7 +225,7 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
  */
 async function fetchJsonRaw<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    headers: { 'Content-Type': 'application/json', ...localAuthHeader(), ...options?.headers },
     ...options,
   });
   if (!res.ok) {
