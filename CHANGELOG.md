@@ -2,6 +2,68 @@
 
 ## [Unreleased]
 
+### Worker API — rotating token security gate + localhost bind (2026-06-09)
+
+Every worker API route now requires a rotating API token — a separate secret from the langmart hub
+key, never exposed to the LLM/MCP (read from disk and attached server-side).
+
+- **Worker-owned token**: generated on boot, written to `<dataDir>/api-token` (mode 0600), rotated
+  (default 24h) keeping a **ring of the last N (default 3) tokens valid at once** — grace so rotation
+  never 401s an in-flight client; an aged-out token gets `401` and the client re-reads the file +
+  retries. Sent as `x-api-key` (or `?apiKey=`). `/health` is the only exempt route. Kill-switch
+  `LM_ASSIST_API_AUTH=0`; tune via `LM_ASSIST_API_TOKEN_RING` / `LM_ASSIST_API_TOKEN_ROTATE_MS`.
+- **All in-process loopback callers inject it** — the hub-relay forwarder (covers all connector /
+  remote-control traffic), MCP `_passthrough` + `api-client`, console-relay, session-cache-sync,
+  knowledge/*.
+- **Worker API binds `127.0.0.1` by default** (was `::` / all interfaces); `LM_ASSIST_API_HOST` to
+  override. The connector keeps working — it reaches the worker over the outbound hub WS + loopback
+  dispatch, not the bound port.
+- **`LM_ASSIST_API_AUTH_EXEMPT_LOCAL=1`** — trust `is-local` requests (a local-desk browser whose
+  prebuilt web can't carry the token); LAN/remote callers still require it.
+- **lm-assist web** injects the token into the page (`window.__LM_API_TOKEN__`, server-side in the
+  root layout) so browser calls carry it.
+
+### Filesystem inspect interface + `fs_list` filter + absolute-path copy (2026-06-09)
+
+- `fs_drives` / `fs_list` / `fs_stat` over the node-to-node transport — browse drives → directories →
+  files on any owned node (whole filesystem; the hub same-user gate is the trust boundary). In-memory
+  TTL cache with explicit dirty-on-write + per-call `refresh`; shallow + entry-capped (never recurses).
+  New `FT_FS` wire op + `requestFs` peer helper; REST `POST /storage/{drives,list,stat}`.
+- `transfer_send_file` accepts an **absolute** destination (single file → that path, directory →
+  entries under it); a relative path still lands under the receive-root.
+- `fs_list` optional `pattern` — shell glob (`*`, `?`) by default, JS regex with `regex:true`; filters
+  names **before** the per-entry stat, so it's cheaper on huge directories.
+
+### Node-to-node transport, file/dir transfer + firehose (2026-06-04 … 06-09)
+
+- **Transport**: ICE-style ladder (host/static direct → public-IP STUN punch → relay), RELAY/ONEWAY/
+  BIDI state machine, hybrid relay-floor + opportunistic per-direction direct, type-based control/data
+  plane split (control always relay + priority), peer-endpoint roaming (NAT rebind), fixed-port mode.
+- **File/dir transfer**: size-adaptive (tiny relay one-shot, large 256K reads), typed errors +
+  retry-with-backoff, relay fallback if a direct channel stalls.
+- **Firehose** (default-on for large single-file direct paths; `LM_FIREHOSE=0` to disable):
+  Aspera/UDT-style unreliable rate-paced data plane + out-of-band NACK repair; delay-based rate control
+  (FASP/LEDBAT) driven by receiver-measured queuing delay.
+- **Stats + latency**: per-transfer data-plane stats (bytes/elapsed/instant+avg MB/s, mode/via, p2p
+  RTT via a clock-independent echo probe) at `GET /transport/stats`; async **send queue**
+  (`POST /transport/send-file` enqueues + returns a jobId, `wait:true` for sync; `GET /transport/queue`;
+  `LM_SEND_CONCURRENCY`); per-forward traffic stats + ping/pong RTT at `GET /port-forward/stats`.
+- **Port-forward**: node-to-node TCP over the hub WS; opt-in `exposeLan` (LAN-IP bind, default loopback).
+- **MCP tools**: `transfer_send_file`, `transfer_list_remote`, `transfer_stats`, `transfer_queue`,
+  `port_forward_stats` (+ `exposeLan` on `open_port_forward`).
+
+### Cross-node session messaging + drivers (2026-06-08)
+
+Session-to-session messaging across nodes (`send_session_message` / `list_session_messages` /
+`get_message_status`) with remote-control (claude.ai RC) and Windows-terminal injection drivers.
+
+### Record-level memory + rules map (2026-06-06)
+
+Record-level, project/node-aware MEMORY + RULES map: detect/register (snapshot + delta) with graded
+confirmation, Opus deep-validation (code + session verified), reconciliation/dedup, an apply pipeline
+(frontmatter-aware, preview-first write), cross-node autosync (observe-default) + harvest daemon
+(default-off). MCP tools `memory_map` / `memory_record` / `rule_map`; HTTP `/memory/map`.
+
 ### Windows terminal control — query + drive Claude Code sessions (2026-06-05)
 
 The Windows substitute for the Linux tmux send-keys API. Windows has no tmux, so interactive Claude
