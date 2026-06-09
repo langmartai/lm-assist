@@ -184,6 +184,24 @@ export const windowsTerminalStateToolDef = {
   },
 };
 
+export const windowsTerminalLaunchToolDef = {
+  name: 'windows_terminal_launch',
+  description:
+    'Launch ANY command in a new Windows Terminal window/tab (GENERIC — Claude Code is just one ' +
+    'consumer of the Windows terminal driver). Returns the new tab RuntimeId. For a Claude session ' +
+    'use windows_terminal_create instead. WRITE — spawns a process.',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      command: { type: 'string', description: 'Command to run (launched as `cmd /k <command>`).' },
+      cwd: { type: 'string', description: 'Working directory.' },
+      mode: { type: 'string', description: "'window' (default) or 'tab'." },
+    },
+    required: ['command'],
+  },
+};
+
 export const windowsTerminalCreateToolDef = {
   name: 'windows_terminal_create',
   description:
@@ -658,6 +676,7 @@ export const EXPANDED_TOOL_DEFS = [
   windowsTerminalListToolDef,
   windowsTerminalCaptureToolDef,
   windowsTerminalStateToolDef,
+  windowsTerminalLaunchToolDef,
   windowsTerminalCreateToolDef,
   windowsTerminalSendToolDef,
   windowsTerminalAutoHandleToolDef,
@@ -811,6 +830,18 @@ async function handleWindowsTerminalState(a: Record<string, unknown>): Promise<M
   try {
     const path = sid ? `/terminal/windows/sessions/${enc(sid)}/state` : `/terminal/windows/state?pid=${pid}`;
     return ok(pretty(await workerGet(path)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+async function handleWindowsTerminalLaunch(a: Record<string, unknown>): Promise<McpToolResult> {
+  const command = String(a.command || '').trim();
+  if (!command) return err('command is required.');
+  const body: Record<string, unknown> = { command };
+  if (a.cwd) body.cwd = String(a.cwd);
+  if (a.mode) body.mode = String(a.mode);
+  try {
+    return ok(pretty(await workerPostRaw('/terminal/windows/launch', body)));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -1206,6 +1237,7 @@ export const EXPANDED_HANDLERS: Record<
   windows_terminal_list: () => handleWindowsTerminalList(),
   windows_terminal_capture: handleWindowsTerminalCapture,
   windows_terminal_state: handleWindowsTerminalState,
+  windows_terminal_launch: handleWindowsTerminalLaunch,
   windows_terminal_create: handleWindowsTerminalCreate,
   windows_terminal_send: handleWindowsTerminalSend,
   windows_terminal_auto_handle: handleWindowsTerminalAutoHandle,

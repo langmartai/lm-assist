@@ -140,6 +140,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   windows_terminal_list: 'read',
   windows_terminal_capture: 'read',
   windows_terminal_state: 'read',
+  windows_terminal_launch: 'write',
   windows_terminal_create: 'write',
   windows_terminal_send: 'write',
   windows_terminal_auto_handle: 'write',

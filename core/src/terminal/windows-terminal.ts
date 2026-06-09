@@ -39,7 +39,6 @@ import { IS_WINDOWS } from '../utils/process-utils';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { listLiveSessions, LiveSession } from './cc-sessions';
 
 // ---------------------------------------------------------------------------
 // Embedded PowerShell engine (materialized to a temp .ps1 on first use).
@@ -504,13 +503,6 @@ export interface SendResult {
   origTitle?: string | null;
 }
 
-/** A live Claude Code session enriched with its Windows window/tab mapping. */
-export interface WinLiveSession extends LiveSession {
-  win: WinMapping | null;
-  /** true when the session can be brought to front + driven (focus/send). */
-  driveable: boolean;
-}
-
 // ---------------------------------------------------------------------------
 // Engine invocation
 // ---------------------------------------------------------------------------
@@ -575,19 +567,6 @@ export async function locateWindow(pid: number): Promise<LocateResult> {
   return (await runEngine(['-Action', 'locate', '-ClaudePid', String(pid)])) as LocateResult;
 }
 
-/** List all live Claude Code sessions on this host, enriched with window/tab mapping. */
-export async function listWindowsSessions(): Promise<WinLiveSession[]> {
-  const live = listLiveSessions();
-  if (!IS_WINDOWS) return live.map((s) => ({ ...s, win: null, driveable: false }));
-  const pids = live.map((s) => s.owner.pid);
-  const maps = await mapPidsToWindows(pids);
-  const byPid = new Map<number, WinMapping>(maps.map((m) => [m.pid, m]));
-  return live.map((s) => {
-    const win = byPid.get(s.owner.pid) ?? null;
-    return { ...s, win, driveable: !!(win && win.driveable) };
-  });
-}
-
 /**
  * Bring the window/tab hosting `pid` to the front and (optionally) paste text.
  * Locates the tab authoritatively via a unique console-title marker (drift-proof),
@@ -610,150 +589,6 @@ export async function focusAndSend(opts: {
   else if (opts.text) args.push('-MessageB64', Buffer.from(opts.text, 'utf8').toString('base64'));
   if (opts.submit) args.push('-Submit');
   return (await runEngine(args)) as SendResult;
-}
-
-// ---------------------------------------------------------------------------
-// Screen-state classifier + auto-handlers
-//
-// On top of captureScreen: pattern-match the visible terminal text into a
-// known state so callers (and the create flow) can react automatically — most
-// importantly auto-accepting the folder-trust prompt, but also surfacing
-// questions, rate limits, server errors and auth problems instead of silently
-// hanging. Patterns are derived from the Claude Code CLI's on-screen strings.
-// ---------------------------------------------------------------------------
-
-export type ScreenState =
-  | 'folder_trust' // "Is this a project you created or one you trust?"
-  | 'await_question' // a numbered choice / permission prompt waiting on the user
-  | 'rate_limit_user' // the account's usage limit (5-hour / weekly) is reached
-  | 'rate_limit_server' // "Server is temporarily limiting requests (not your usage limit)"
-  | 'overloaded' // 529 / Overloaded / "Waiting for capacity"
-  | 'server_error' // API Error 5xx / internal server error
-  | 'auth_error' // invalid key / expired OAuth / credit too low / needs /login
-  | 'busy' // actively working (spinner / "esc to interrupt")
-  | 'idle' // at the prompt, ready for input
-  | 'unknown';
-
-export interface ScreenClassification {
-  state: ScreenState;
-  /** the line (or extracted fragment) that triggered the match */
-  detail?: string;
-  /** for await_question: the numbered options found */
-  options?: string[];
-  /** for rate_limit_*: extracted reset/retry hint if present */
-  retryHint?: string;
-}
-
-/** Classify the visible terminal text. Pure + deterministic; order = priority. */
-export function classifyScreen(text: string): ScreenClassification {
-  const t = text || '';
-  const find = (re: RegExp): string | undefined => {
-    const m = t.match(re);
-    return m ? (m[0].length > 200 ? m[0].slice(0, 200) : m[0]).trim() : undefined;
-  };
-
-  // 1. Folder-trust prompt (highest priority — blocks everything, auto-handleable)
-  let d =
-    find(/Is this a project you created or one you trust\??/i) ||
-    find(/Do you trust the files in this folder\??/i) ||
-    find(/Yes, I trust this folder/i);
-  if (d) return { state: 'folder_trust', detail: d };
-
-  // 2. Auth problems
-  d =
-    find(/OAuth token has expired[^\n]*/i) ||
-    find(/Invalid API key[^\n]*/i) ||
-    find(/Invalid authentication credentials[^\n]*/i) ||
-    find(/Credit balance is too low[^\n]*/i) ||
-    find(/API Error:\s*401[^\n]*/i) ||
-    find(/Please run \/login[^\n]*/i);
-  if (d) return { state: 'auth_error', detail: d };
-
-  // 3. Server-side throttle — explicitly NOT the user's usage limit (check before user limit)
-  d = find(/Server is temporarily limiting requests \(not your usage limit\)[^\n]*/i) || find(/temporarily limiting requests[^\n]*/i);
-  if (d) return { state: 'rate_limit_server', detail: d };
-
-  // 4. User account usage limit
-  d =
-    find(/(Claude )?usage limit reached[^\n]*/i) ||
-    find(/5-hour limit[^\n]*/i) ||
-    find(/approaching your usage limit[^\n]*/i) ||
-    find(/You've been rate limited[^\n]*/i) ||
-    find(/limit reached[^\n]*reset[^\n]*/i);
-  if (d) {
-    return { state: 'rate_limit_user', detail: d, retryHint: find(/resets?\s*(at|in)[^\n]*/i) };
-  }
-
-  // 5. Overloaded / capacity (529)
-  d = find(/Overloaded[^\n]*/i) || find(/overloaded_error/i) || find(/API Error:\s*529[^\n]*/i) || find(/Waiting for capacity[^\n]*/i);
-  if (d) return { state: 'overloaded', detail: d };
-
-  // 6. Other server / API errors (5xx)
-  d = find(/API Error:\s*5\d\d[^\n]*/i) || find(/Internal server error[^\n]*/i) || find(/API Error \(.*5\d\d.*\)[^\n]*/i);
-  if (d) return { state: 'server_error', detail: d };
-
-  // 7. A question / numbered choice waiting on the user (permission prompts, etc.)
-  if (/Enter to confirm|Do you want to (proceed|continue|create|run|make|allow)/i.test(t) || /❯\s*\d+\.\s+\S/.test(t)) {
-    const options = (t.match(/^[\s│]*[❯>]?\s*(\d+\.\s+.+?)\s*$/gim) || [])
-      .map((l) => l.replace(/^[\s│❯>]+/, '').trim())
-      .filter(Boolean)
-      .slice(0, 9);
-    if (options.length > 0) {
-      return { state: 'await_question', detail: find(/(Do you want to[^\n]*|[^\n]*\?)\s*$/m) || options[0], options };
-    }
-  }
-
-  // 8. Busy (actively working)
-  if (/esc to interrupt|\besc\b.*interrupt|Running…|tokens? ·|⏵⏵|✻|✶|·\s*\d+\s*tokens/i.test(t)) {
-    return { state: 'busy', detail: find(/[^\n]*esc to interrupt[^\n]*/i) };
-  }
-
-  // 9. Idle at the prompt
-  if (/[❯>]\s*$|bypass permissions on|for shortcuts|\bctx:\d+%/i.test(t)) {
-    return { state: 'idle' };
-  }
-
-  return { state: 'unknown' };
-}
-
-export interface AutoHandleResult {
-  ok: boolean;
-  pid: number;
-  state: ScreenState;
-  detail?: string;
-  options?: string[];
-  retryHint?: string;
-  /** true when we sent keystrokes to advance the prompt */
-  handled: boolean;
-  action?: string;
-  error?: string;
-}
-
-/**
- * Capture + classify a session's screen and, when actionable, advance it:
- *   - folder_trust  -> press Enter (confirms the highlighted "Yes, I trust") when trust!==false
- *   - await_question -> press the given `answer` digit (only if provided — never guesses)
- * Everything else (rate limits, server errors, auth) is reported, not actioned.
- */
-export async function autoHandle(
-  pid: number,
-  opts: { trust?: boolean; answer?: number; rid?: string } = {},
-): Promise<AutoHandleResult> {
-  if (!IS_WINDOWS) return { ok: false, pid, state: 'unknown', handled: false, error: 'windows-only' };
-  const cap = await captureScreen(pid);
-  if (!cap.ok) return { ok: false, pid, state: 'unknown', handled: false, error: cap.error };
-  const cls = classifyScreen(cap.text || '');
-  const base: AutoHandleResult = { ok: true, pid, state: cls.state, detail: cls.detail, options: cls.options, retryHint: cls.retryHint, handled: false };
-
-  if (cls.state === 'folder_trust' && opts.trust !== false) {
-    const r = await focusAndSend({ pid, rid: opts.rid, keys: 'ENTER' });
-    return { ...base, handled: r.ok, action: r.ok ? 'trusted-folder (Enter)' : r.error };
-  }
-  if (cls.state === 'await_question' && typeof opts.answer === 'number' && opts.answer >= 1 && opts.answer <= 9) {
-    const r = await focusAndSend({ pid, rid: opts.rid, keys: `${opts.answer} ENTER` });
-    return { ...base, handled: r.ok, action: r.ok ? `answered ${opts.answer}` : r.error };
-  }
-  return { ...base, action: 'observed' };
 }
 
 export interface CaptureResult {
@@ -786,11 +621,14 @@ export async function captureScreen(pid: number): Promise<CaptureResult> {
 // ---------------------------------------------------------------------------
 const tabRidBySession = new Map<string, string>();
 
-export function getTabRid(sessionId: string): string | undefined {
-  return tabRidBySession.get(sessionId);
+export function getTabRid(key: string): string | undefined {
+  return tabRidBySession.get(key);
 }
-export function forgetTabRid(sessionId: string): void {
-  tabRidBySession.delete(sessionId);
+export function setTabRid(key: string, rid: string): void {
+  tabRidBySession.set(key, rid);
+}
+export function forgetTabRid(key: string): void {
+  tabRidBySession.delete(key);
 }
 
 interface TabId { rid: string; hwnd: number; tabIndex: number; name: string }
@@ -802,22 +640,8 @@ export async function listTabIds(): Promise<TabId[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Create / Delete
+// Create (generic — run ANY command) / Delete
 // ---------------------------------------------------------------------------
-
-export interface LaunchResult {
-  launched: boolean;
-  sessionId: string | null;
-  win?: WinMapping | null;
-  pid?: number;
-  /** stable, title-independent tab handle captured at create (for robust drive) */
-  tabRid?: string | null;
-  /** true when a folder-trust prompt was detected and auto-accepted during launch */
-  trustHandled?: boolean;
-  mode: string;
-  cwd: string;
-  note?: string;
-}
 
 export interface CloseResult {
   ok: boolean;
@@ -829,152 +653,66 @@ export interface CloseResult {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** All live claude.exe pids via PowerShell Get-Process (reliable on Windows;
- *  the find-process npm pkg is flaky here). [] on non-Windows or on error. */
-function listClaudePids(): Promise<number[]> {
-  if (!IS_WINDOWS) return Promise.resolve([]);
-  return new Promise((resolve) => {
-    execFile(
-      'powershell.exe',
-      ['-NoProfile', '-Command', '(Get-Process claude -ErrorAction SilentlyContinue).Id'],
-      { timeout: 8000, windowsHide: true } as any,
-      (_err: any, stdout: string) => {
-        resolve(
-          String(stdout || '')
-            .split(/\r?\n/)
-            .map((s) => parseInt(s.trim(), 10))
-            .filter((n) => Number.isFinite(n) && n > 0),
-        );
-      },
-    );
-  });
+/**
+ * Spawn a Windows Terminal window (default) or tab running an arbitrary command
+ * (`cmd /k <command>`). Fire-and-forget — the Claude layer (or any caller) polls
+ * for whatever it needs afterward. windowsHide:false is REQUIRED: the shared
+ * spawn wrapper defaults windowsHide:true, which opens the window HIDDEN
+ * (IsWindowVisible=false) so it never enters the UIA tab tree.
+ */
+export function spawnTerminal(opts: { cwd: string; command: string; mode?: 'window' | 'tab' }): void {
+  const wtArgs =
+    opts.mode === 'tab'
+      ? ['-w', '0', 'nt', '-d', opts.cwd, 'cmd', '/k', opts.command]
+      : ['-w', 'new', '-d', opts.cwd, 'cmd', '/k', opts.command];
+  const child = spawn('wt.exe', wtArgs, { detached: true, stdio: 'ignore', windowsHide: false } as any);
+  child.unref();
 }
 
-function samePath(a: string, b: string): boolean {
-  const norm = (s: string) => (s || '').replace(/[\\/]+/g, '\\').replace(/\\+$/, '').toLowerCase();
-  return norm(a) === norm(b);
+export interface WindowLaunchResult {
+  launched: boolean;
+  /** stable, title-independent handle for the new tab (diffed from the tab set) */
+  tabRid: string | null;
+  mode: string;
+  cwd: string;
+  command: string;
+  note?: string;
 }
 
 /**
- * Launch a new Claude Code session in a Windows Terminal window (default) or tab,
- * then poll the live-session registry for the newly-registered sessionId (matched
- * by cwd). Returns the new session + its window mapping once it registers.
- *
- * Note: if the target cwd is not yet folder-trusted, Claude shows a trust prompt
- * and does not register until accepted — `sessionId` comes back null with a note.
+ * Launch ANY command in a new Windows Terminal window/tab and return the new
+ * tab's RuntimeId (title-independent handle) once it appears. Generic — no
+ * Claude knowledge. Use focusAndSend/captureScreen/closeWindow to drive it.
  */
-export async function launchSession(opts: {
+export async function launchWindow(opts: {
   cwd?: string;
+  command: string;
   mode?: 'window' | 'tab';
-  resume?: string;
   waitMs?: number;
-  skipPermissions?: boolean;
-  remoteControl?: boolean | string;
-  /** auto-accept the folder-trust prompt if it blocks registration (default true) */
-  autoTrust?: boolean;
-} = {}): Promise<LaunchResult> {
-  if (!IS_WINDOWS) return { launched: false, sessionId: null, mode: '', cwd: '', note: 'windows-only' };
+}): Promise<WindowLaunchResult> {
+  if (!IS_WINDOWS) return { launched: false, tabRid: null, mode: '', cwd: '', command: opts.command, note: 'windows-only' };
   const cwd = opts.cwd || os.homedir();
   const mode = opts.mode || 'window';
-  const autoTrust = opts.autoTrust !== false;
-  const before = new Set(listLiveSessions().map((s) => s.sessionId));
   const beforeRids = new Set((await listTabIds()).map((t) => t.rid));
-  const beforeClaude = new Set(await listClaudePids());
-  const skipFlag = opts.skipPermissions ? ' --dangerously-skip-permissions' : '';
-  const rcFlag = opts.remoteControl ? ' --remote-control' + (typeof opts.remoteControl === 'string' ? ` ${opts.remoteControl}` : '') : '';
-  const claudeCmd = (opts.resume ? `claude --resume ${opts.resume}` : 'claude') + rcFlag + skipFlag;
-  const wtArgs =
-    mode === 'tab'
-      ? ['-w', '0', 'nt', '-d', cwd, 'cmd', '/k', claudeCmd]
-      : ['-w', 'new', '-d', cwd, 'cmd', '/k', claudeCmd];
-  // windowsHide:false is REQUIRED — the spawn wrapper defaults windowsHide:true,
-  // which opens the terminal window HIDDEN (IsWindowVisible=false) so it never
-  // appears in the UIA tab tree and can't be located/driven. Force it visible.
-  const child = spawn('wt.exe', wtArgs, { detached: true, stdio: 'ignore', windowsHide: false } as any);
-  child.unref();
-
-  const start = Date.now();
-  const deadline = start + (opts.waitMs ?? 9000);
-  let sid: string | null = null;
-  let pid: number | undefined;
-  let trustHandled = false;
-  let lastTrustTry = 0;
-  while (Date.now() < deadline) {
-    await sleep(400);
-    for (const s of listLiveSessions()) {
-      // On resume, `claude --resume <id>` briefly registers a transient session id
-      // at startup before settling onto <id>; match the resumed id specifically so
-      // we don't return the transient. On fresh create, take the new id by diff.
-      const match = opts.resume
-        ? s.sessionId === opts.resume && samePath(s.owner.cwd, cwd)
-        : !before.has(s.sessionId) && samePath(s.owner.cwd, cwd);
-      if (match) {
-        sid = s.sessionId;
-        pid = s.owner.pid;
-        break;
-      }
-    }
-    if (sid) break;
-
-    // Auto-trust: if registration is blocked for a couple seconds, a new claude
-    // is probably sitting at the folder-trust prompt (it doesn't register until
-    // accepted). Find the new claude pid (reliable Get-Process, not find-process),
-    // confirm it's the trust screen, inject Enter into its console buffer, then
-    // keep polling for it to register. Retried across the poll until handled.
-    if (autoTrust && !trustHandled && Date.now() - start > 2200 && Date.now() - lastTrustTry > 1400) {
-      lastTrustTry = Date.now();
-      try {
-        for (const cp of await listClaudePids()) {
-          if (beforeClaude.has(cp)) continue;
-          const cap = await captureScreen(cp);
-          if (cap.ok && classifyScreen(cap.text || '').state === 'folder_trust') {
-            await focusAndSend({ pid: cp, keys: 'ENTER' });
-            trustHandled = true;
-            break;
-          }
-        }
-      } catch {
-        /* best effort */
-      }
-    }
-  }
-
-  // Capture the new tab's RuntimeId by diffing the tab set — a title-independent
-  // handle so we can drive this session even while its title is still animating.
-  // The new WT window can lag the registry by a few seconds, so poll for it.
-  // The new WT window can lag the registry by a few seconds, so poll for it.
+  spawnTerminal({ cwd, command: opts.command, mode });
+  const deadline = Date.now() + (opts.waitMs ?? 9000);
   let tabRid: string | null = null;
-  if (sid) {
-    for (let i = 0; i < 14 && !tabRid; i++) {
-      await sleep(500);
-      const newTabs = (await listTabIds()).filter((t) => !beforeRids.has(t.rid));
-      if (newTabs.length === 1) {
-        tabRid = newTabs[0].rid;
-        tabRidBySession.set(sid, tabRid);
-      } else if (newTabs.length > 1) {
-        break; // ambiguous (concurrent launches) — leave uncached, marker fallback
-      }
-    }
+  while (Date.now() < deadline && !tabRid) {
+    await sleep(500);
+    const neu = (await listTabIds()).filter((t) => !beforeRids.has(t.rid));
+    if (neu.length === 1) tabRid = neu[0].rid;
+    else if (neu.length > 1) break; // ambiguous (concurrent launches)
   }
-
-  let win: WinMapping | null = null;
-  if (pid) win = (await mapPidsToWindows([pid]))[0] ?? null;
   return {
     launched: true,
-    sessionId: sid,
-    pid,
-    win,
     tabRid,
-    trustHandled,
     mode,
     cwd,
-    note: sid
-      ? trustHandled
-        ? 'folder-trust prompt was auto-accepted during launch'
-        : undefined
-      : 'launched, but no new session registered within the wait window — a folder-trust prompt may still be pending (autoTrust may have been disabled or the prompt differs); GET /terminal/windows/capture?pid=<newClaudePid> to see it',
+    command: opts.command,
+    note: tabRid ? undefined : 'launched, but could not isolate the new tab (concurrent launches?)',
   };
 }
+
 
 /**
  * Terminate a session by killing its process subtree (WMI-free — enumerates the
@@ -982,7 +720,7 @@ export async function launchSession(opts: {
  * With `closeTab`, kills the tab's host shell subtree so the WT tab/window closes;
  * otherwise kills just the claude process (the tab may remain at a shell prompt).
  */
-export async function closeSession(pid: number, closeTab = false, rid?: string): Promise<CloseResult> {
+export async function closeWindow(pid: number, closeTab = false, rid?: string): Promise<CloseResult> {
   if (!IS_WINDOWS) return { ok: false, error: 'windows-only' };
   const args = ['-Action', 'close', '-ClaudePid', String(pid)];
   if (rid) args.push('-RuntimeId', rid); // precise tab in a multi-tab window

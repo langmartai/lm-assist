@@ -21,17 +21,23 @@ import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import { IS_WINDOWS } from '../../utils/process-utils';
 import { listLiveSessions, sessionVerdict } from '../../terminal/cc-sessions';
 import {
-  listWindowsSessions,
+  // generic Windows terminal driver
   mapPidsToWindows,
   focusAndSend,
-  launchSession,
-  closeSession,
+  closeWindow,
+  launchWindow,
   getTabRid,
   forgetTabRid,
   captureScreen,
+  listTabIds,
+} from '../../terminal/windows-terminal';
+import {
+  // Claude Code layer on top of the generic driver
+  listWindowsSessions,
+  launchSession,
   classifyScreen,
   autoHandle,
-} from '../../terminal/windows-terminal';
+} from '../../terminal/windows-cc';
 
 interface Envelope {
   success: boolean;
@@ -76,6 +82,49 @@ export function createWindowsTerminalRoutes(_ctx: RouteContext): RouteHandler[] 
       },
     },
 
+    // ── Generic terminal driver (any console command — Claude is just one) ──
+
+    // GET /terminal/windows/windows — raw list of WT/conhost tabs (rid, hwnd,
+    // tabIndex, title). The generic view, independent of Claude sessions.
+    {
+      method: 'GET',
+      pattern: /^\/terminal\/windows\/windows$/,
+      handler: async (): Promise<Envelope> => {
+        if (!IS_WINDOWS) return notSupported();
+        try {
+          const tabs = await listTabIds();
+          return ok({ tabs, count: tabs.length });
+        } catch (e) {
+          return fail('INTERNAL_ERROR', (e as Error).message);
+        }
+      },
+    },
+
+    // POST /terminal/windows/launch  { command, cwd?, mode?, waitMs? }
+    // Generic: launch ANY command in a new WT window/tab; returns the new tab's
+    // RuntimeId. (Claude sessions use POST /terminal/windows/sessions instead.)
+    {
+      method: 'POST',
+      pattern: /^\/terminal\/windows\/launch$/,
+      handler: async (req: ParsedRequest): Promise<Envelope> => {
+        if (!IS_WINDOWS) return notSupported();
+        const body = (req.body ?? {}) as { command?: string; cwd?: string; mode?: 'window' | 'tab'; waitMs?: number };
+        if (typeof body.command !== 'string' || body.command.length === 0) {
+          return fail('INVALID_BODY', 'body.command (non-empty string) is required');
+        }
+        if (body.mode && body.mode !== 'window' && body.mode !== 'tab') {
+          return fail('INVALID_BODY', "mode must be 'window' or 'tab'");
+        }
+        try {
+          return ok(await launchWindow({ command: body.command, cwd: body.cwd, mode: body.mode, waitMs: body.waitMs }));
+        } catch (e) {
+          return fail('INTERNAL_ERROR', (e as Error).message);
+        }
+      },
+    },
+
+    // ── Claude Code session layer ──────────────────────────────────────────
+
     // POST /terminal/windows/sessions  { cwd?, mode?: 'window'|'tab', resume?, waitMs? }
     // Create: launch a new Claude Code session in a WT window (default) or tab.
     {
@@ -116,7 +165,7 @@ export function createWindowsTerminalRoutes(_ctx: RouteContext): RouteHandler[] 
         const pid = pidForSession(sessionId);
         if (!pid) return fail('SESSION_NOT_LIVE', `no live session ${sessionId} on this host`);
         try {
-          const res = await closeSession(pid, !!closeTab, getTabRid(sessionId));
+          const res = await closeWindow(pid, !!closeTab, getTabRid(sessionId));
           if (res.ok) forgetTabRid(sessionId);
           return res.ok ? ok({ sessionId, ...res }) : fail('CLOSE_FAILED', res.error || 'close failed', res);
         } catch (e) {

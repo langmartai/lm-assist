@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Windows terminal — split into a GENERIC driver + a Claude Code layer (2026-06-10)
+
+Refactor so the Windows terminal control is a generic primitive (drive ANY console program), with
+Claude Code as one layer on top — mirroring the Linux split (`cc.ts` on `tmux.ts`).
+
+- **`terminal/windows-terminal.ts` (generic, Claude-free):** the PowerShell engine + `mapPidsToWindows`,
+  `locateWindow`, `focusAndSend` (text/keys/paste by pid|rid), `captureScreen`, `listTabIds`, the tab-rid
+  cache (`get/set/forgetTabRid`), `closeWindow`, and now **`spawnTerminal({cwd,command,mode})`** +
+  **`launchWindow({command,…})`** — launch and handle for *any* command.
+- **`terminal/windows-cc.ts` (Claude Code layer, NEW):** imports the generic driver and adds the
+  Claude-specific bits — `listWindowsSessions` (cc-sessions → windows), `launchSession` (claude +
+  resume + auto-trust), `classifyScreen`, `autoHandle`. Other terminal apps reuse the generic driver
+  without any of this.
+- **Generic routes added:** `GET /terminal/windows/windows` (raw WT/conhost tab list) and
+  `POST /terminal/windows/launch {command,cwd?,mode?}` (run any command). The Claude session routes
+  (`/terminal/windows/sessions/*`) are unchanged.
+- **Generic MCP tool added:** `windows_terminal_launch` (run any command); the 7 Claude tools unchanged.
+- **Dependency review (done before the change):** the only consumer is the `session-messaging`
+  `windows-terminal` injection driver, which uses the HTTP routes `GET /terminal/windows/sessions/:id`
+  and `POST …/:id/send` (no direct module import) — both preserved. One behavior note: `/send` now
+  returns `success:false` when it can't truly focus (instead of silently losing the keystrokes), so the
+  messaging layer correctly falls through to its `remote-control` driver.
+- Verified e2e after the split: session-messaging contract (`GET :id` driveable, `POST :id/send`),
+  generic `launchWindow` (ran a plain `cmd`), generic window list (13 tabs), Claude auto-trust create
+  (`trustHandled:true`, registered driveable), classifier, and MCP tools/list (8 windows tools).
+
 ### Windows terminal — screen-state classifier + auto-handlers + reliable input + MCP (2026-06-10)
 
 Builds on screen capture: classify what a Windows Claude Code session is showing and react
