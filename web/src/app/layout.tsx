@@ -46,7 +46,14 @@ export default function RootLayout({
         {localApiPort ? (
           <script
             dangerouslySetInnerHTML={{
-              __html: `window.__LM_LOCAL_API_PORT__=${JSON.stringify(localApiPort)};window.__LM_API_TOKEN__=${JSON.stringify(lmApiToken)};`,
+              __html: `window.__LM_LOCAL_API_PORT__=${JSON.stringify(localApiPort)};`,
+            }}
+          />
+        ) : null}
+        {lmApiToken ? (
+          <script
+            dangerouslySetInnerHTML={{
+              __html: `window.__LM_API_TOKEN__=${JSON.stringify(lmApiToken)};`,
             }}
           />
         ) : null}
