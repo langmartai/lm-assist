@@ -3,12 +3,16 @@
  * dispatches through the TerminalBackend / CcController interfaces (backend.ts),
  * so the same URLs behave identically on Linux (tmux) and Windows (wt).
  *
- *   Generic terminal (backend-prefixed):
- *     GET    /terminal/wt                 list terminals          (Windows; Linux uses /terminal/tmux)
- *     POST   /terminal/wt                 launch a command -> new terminal
- *     GET    /terminal/wt/:id/capture     read screen text
- *     POST   /terminal/wt/:id/send-keys   send keystrokes/text
- *     DELETE /terminal/wt/:id             close
+ *   Generic terminal (platform-neutral — lm-assist auto-picks its own backend):
+ *     GET    /terminal/local                 list terminals
+ *     POST   /terminal/local                 launch a command -> new terminal
+ *     GET    /terminal/local/:id/capture     read screen text
+ *     POST   /terminal/local/:id/send-keys   send keystrokes/text
+ *     DELETE /terminal/local/:id             close
+ *
+ *   `/terminal/local/*` dispatches through getTerminalBackend(), which resolves
+ *   to tmux on Linux and wt on Windows — the caller never names the OS. The
+ *   richer tmux-native low-level routes remain at /terminal/tmux/* (Linux only).
  *
  *   Claude Code sessions (sessionId-keyed, SAME on both platforms):
  *     GET    /terminal/cc-sessions             list live CC sessions + driveable
@@ -23,7 +27,6 @@
 
 import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import { getCcController, getTerminalBackend } from '../../terminal/backend';
-import { wtTerminalBackend } from '../../terminal/wt-backend';
 
 interface Envelope {
   success: boolean;
@@ -41,55 +44,62 @@ function wrap(fn: () => Promise<unknown> | unknown): Promise<Envelope> {
 }
 
 export function createTerminalStdRoutes(_ctx: RouteContext): RouteHandler[] {
-  // The generic terminal backend keyed by URL prefix. Only Windows (wt) is
-  // exposed here; Linux generic remains /terminal/tmux/* (richer, in terminal.routes.ts).
-  const wt = wtTerminalBackend;
-
   return [
-    // ── Generic Windows Terminal backend (/terminal/wt/*) ──────────────────
+    // ── Generic local terminal (/terminal/local/*) — backend auto-picked ────
+    // getTerminalBackend() resolves to tmux (Linux) or wt (Windows); the caller
+    // never names the OS. Resolved per-request so a backend that becomes
+    // available after boot (or in tests) is picked up without a restart.
     {
       method: 'GET',
-      pattern: /^\/terminal\/wt$/,
-      handler: async (): Promise<Envelope> =>
-        !wt.available() ? notSupported('wt') : wrap(async () => ({ terminals: await wt.list() })),
+      pattern: /^\/terminal\/local$/,
+      handler: async (): Promise<Envelope> => {
+        const backend = getTerminalBackend();
+        return !backend.available() ? notSupported(backend.id) : wrap(async () => ({ backend: backend.id, terminals: await backend.list() }));
+      },
     },
     {
       method: 'POST',
-      pattern: /^\/terminal\/wt$/,
+      pattern: /^\/terminal\/local$/,
       handler: async (req: ParsedRequest): Promise<Envelope> => {
-        if (!wt.available()) return notSupported('wt');
+        const backend = getTerminalBackend();
+        if (!backend.available()) return notSupported(backend.id);
         const b = (req.body ?? {}) as { command?: string; cwd?: string; mode?: string };
         if (typeof b.command !== 'string' || !b.command) return fail('INVALID_BODY', 'body.command (non-empty string) is required');
-        return wrap(() => wt.create({ command: b.command!, cwd: b.cwd, mode: b.mode }));
+        return wrap(() => backend.create({ command: b.command!, cwd: b.cwd, mode: b.mode }));
       },
     },
     {
       method: 'GET',
-      pattern: /^\/terminal\/wt\/(?<id>[^/]+)\/capture$/,
-      handler: async (req: ParsedRequest): Promise<Envelope> =>
-        !wt.available() ? notSupported('wt') : wrap(() => wt.capture(req.params.id)),
+      pattern: /^\/terminal\/local\/(?<id>[^/]+)\/capture$/,
+      handler: async (req: ParsedRequest): Promise<Envelope> => {
+        const backend = getTerminalBackend();
+        return !backend.available() ? notSupported(backend.id) : wrap(() => backend.capture(req.params.id));
+      },
     },
     {
       method: 'POST',
-      pattern: /^\/terminal\/wt\/(?<id>[^/]+)\/send-keys$/,
+      pattern: /^\/terminal\/local\/(?<id>[^/]+)\/send-keys$/,
       handler: async (req: ParsedRequest): Promise<Envelope> => {
-        if (!wt.available()) return notSupported('wt');
+        const backend = getTerminalBackend();
+        if (!backend.available()) return notSupported(backend.id);
         const b = (req.body ?? {}) as { keys?: string; enter?: boolean; literal?: boolean };
         if (typeof b.keys !== 'string') return fail('INVALID_BODY', 'body.keys (string) is required');
         return wrap(async () => {
-          await wt.sendKeys(req.params.id, { keys: b.keys!, enter: b.enter, literal: b.literal });
+          await backend.sendKeys(req.params.id, { keys: b.keys!, enter: b.enter, literal: b.literal });
           return { sent: true };
         });
       },
     },
     {
       method: 'DELETE',
-      pattern: /^\/terminal\/wt\/(?<id>[^/]+)$/,
-      handler: async (req: ParsedRequest): Promise<Envelope> =>
-        !wt.available() ? notSupported('wt') : wrap(async () => {
-          await wt.close(req.params.id);
+      pattern: /^\/terminal\/local\/(?<id>[^/]+)$/,
+      handler: async (req: ParsedRequest): Promise<Envelope> => {
+        const backend = getTerminalBackend();
+        return !backend.available() ? notSupported(backend.id) : wrap(async () => {
+          await backend.close(req.params.id);
           return { closed: req.params.id };
-        }),
+        });
+      },
     },
 
     // ── Claude Code sessions (/terminal/cc-sessions/*) — both platforms ─────

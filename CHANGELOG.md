@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Generic terminal route is platform-neutral — backend auto-picked (2026-06-10)
+
+The generic terminal route no longer carries the backend in its URL. It was `/terminal/wt/*`, which
+forced the caller to know the host's OS. lm-assist already knows its own platform, so the route is now
+`/terminal/local/*` and dispatches through `getTerminalBackend()` — tmux on Linux, wt on Windows —
+resolved per request. The Claude-Code layer (`/terminal/cc-sessions/*`) already auto-picked via
+`getCcController()`; this brings the generic layer to parity.
+
+- `terminal-std.routes.ts`: `/terminal/wt` → `/terminal/local` (GET list, POST create, GET `:id/capture`,
+  POST `:id/send-keys`, DELETE `:id`); dropped the hardcoded `wtTerminalBackend` import. `NOT_SUPPORTED`
+  reports the resolved backend id.
+- MCP `expanded.ts`: the pid-path of `windows_terminal_capture`/`_state` and `windows_terminal_launch`
+  now hit `/terminal/local/*`.
+- The richer tmux-native low-level routes stay at `/terminal/tmux/*` (Linux only) — unchanged.
+
 ### Session-messaging: unified sessionId-keyed cc-session injection driver (2026-06-10)
 
 Follow-on to the standardized terminal interface. The cross-node session-messaging injection layer was
@@ -36,17 +51,19 @@ the same grammar behaves identically on both. Foundation for any future terminal
   - `GET/POST /terminal/cc-sessions`, `GET/DELETE /terminal/cc-sessions/:id`,
     `POST /terminal/cc-sessions/:id/{prompt,auto-handle,interrupt}`, `GET /terminal/cc-sessions/:id/screen`
     — sessionId-keyed, SAME on Linux and Windows.
-  - `GET/POST /terminal/wt`, `GET /terminal/wt/:id/capture`, `POST /terminal/wt/:id/send-keys`,
-    `DELETE /terminal/wt/:id` — Windows generic, mirroring the Linux `/terminal/tmux/*` grammar.
+  - `GET/POST /terminal/local`, `GET /terminal/local/:id/capture`, `POST /terminal/local/:id/send-keys`,
+    `DELETE /terminal/local/:id` — platform-neutral generic terminal; lm-assist auto-picks its own
+    backend via `getTerminalBackend()` (tmux on Linux, wt on Windows). The caller never names the OS.
+    The richer tmux-native low-level routes remain at `/terminal/tmux/*` (Linux only).
 - **Hard rename (Windows):** removed `/terminal/windows/sessions/*`, `/terminal/windows/{windows,launch,
-  capture,state,auto-handle}` — replaced by `/terminal/cc-sessions/*` + `/terminal/wt/*`. Updated the
+  capture,state,auto-handle}` — replaced by `/terminal/cc-sessions/*` + `/terminal/local/*`. Updated the
   session-messaging `windows-terminal` injection driver and the 8 MCP `windows_terminal_*` tools to the
   new paths. The legacy Linux `/terminal/tmux/*` and `/terminal/cc/:name/*` routes are unchanged (their
   consumers — the `cc-prompt`/`tmux-send-keys` drivers and MCP `terminal_*` tools — are tmux-NAME-keyed;
   re-keying that chain to sessionId is a separate, 117-tested migration).
 - Web reviewed: the dashboards use ttyd + process-status, not these control routes — unaffected.
 - Verified e2e on windows-desk: `GET /terminal/cc-sessions` (8 sessions), full CC cycle
-  (create/screen/prompt/auto-handle/delete), generic `/terminal/wt` list + capture + close, old routes
+  (create/screen/prompt/auto-handle/delete), generic `/terminal/local` list + capture + close, old routes
   now 404. tsc clean (Linux adapter compiles; 117 runtime smoke pending).
 
 ### Windows terminal — split into a GENERIC driver + a Claude Code layer (2026-06-10)

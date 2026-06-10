@@ -817,7 +817,7 @@ async function handleWindowsTerminalCapture(a: Record<string, unknown>): Promise
   const pid = winPid(a);
   if (!sid && !pid) return err('sessionId or pid is required.');
   try {
-    const path = sid ? `/terminal/cc-sessions/${enc(sid)}/screen` : `/terminal/wt/${pid}/capture`;
+    const path = sid ? `/terminal/cc-sessions/${enc(sid)}/screen` : `/terminal/local/${pid}/capture`;
     return ok(pretty(await workerGet(path)));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
@@ -828,7 +828,7 @@ async function handleWindowsTerminalState(a: Record<string, unknown>): Promise<M
   const pid = winPid(a);
   if (!sid && !pid) return err('sessionId or pid is required.');
   try {
-    const path = sid ? `/terminal/cc-sessions/${enc(sid)}/screen` : `/terminal/wt/${pid}/capture`;
+    const path = sid ? `/terminal/cc-sessions/${enc(sid)}/screen` : `/terminal/local/${pid}/capture`;
     return ok(pretty(await workerGet(path)));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
@@ -841,7 +841,7 @@ async function handleWindowsTerminalLaunch(a: Record<string, unknown>): Promise<
   if (a.cwd) body.cwd = String(a.cwd);
   if (a.mode) body.mode = String(a.mode);
   try {
-    return ok(pretty(await workerPostRaw('/terminal/wt', body)));
+    return ok(pretty(await workerPostRaw('/terminal/local', body)));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
