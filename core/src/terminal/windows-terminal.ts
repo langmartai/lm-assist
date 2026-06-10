@@ -152,13 +152,13 @@ public class WT {
   [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
   public static extern bool WriteConsoleInputW(IntPtr h, INPUT_RECORD[] buf, uint len, out uint written);
 
-  static INPUT_RECORD MakeKey(bool down, ushort vk, char ch) {
+  static INPUT_RECORD MakeKey(bool down, ushort vk, char ch, uint ctrl) {
     var r = new INPUT_RECORD(); r.EventType = 0x0001; // KEY_EVENT
     r.Key.bKeyDown = down ? 1 : 0; r.Key.wRepeatCount = 1; r.Key.wVirtualKeyCode = vk;
-    r.Key.wVirtualScanCode = (ushort)MapVirtualKey(vk, 0); r.Key.UnicodeChar = ch; r.Key.dwControlKeyState = 0;
+    r.Key.wVirtualScanCode = (ushort)MapVirtualKey(vk, 0); r.Key.UnicodeChar = ch; r.Key.dwControlKeyState = ctrl;
     return r;
   }
-  // spec = space-separated tokens: ENTER ESC UP DOWN LEFT RIGHT TAB SPACE, or a single literal char.
+  // spec = space-separated tokens: ENTER ESC UP DOWN LEFT RIGHT TAB SPACE CTRL_C, or a single literal char.
   public static bool SendConsoleKeys(uint pid, string spec) {
     FreeConsole();
     if (!AttachConsole(pid)) return false;
@@ -169,7 +169,7 @@ public class WT {
         var recs = new List<INPUT_RECORD>();
         foreach (var raw in spec.Split(' ')) {
           if (raw.Length == 0) continue;
-          ushort vk; char ch;
+          ushort vk; char ch; uint ctrl = 0;
           switch (raw.ToUpperInvariant()) {
             case "ENTER": vk = 0x0D; ch = '\r'; break;
             case "ESC": vk = 0x1B; ch = (char)27; break;
@@ -179,10 +179,11 @@ public class WT {
             case "RIGHT": vk = 0x27; ch = '\0'; break;
             case "TAB": vk = 0x09; ch = '\t'; break;
             case "SPACE": vk = 0x20; ch = ' '; break;
+            case "CTRL_C": vk = 0x43; ch = (char)3; ctrl = 0x0008; break; // LEFT_CTRL_PRESSED + 'C'
             default: ch = raw[0]; vk = (ushort)(VkKeyScan(ch) & 0xFF); break;
           }
-          recs.Add(MakeKey(true, vk, ch));
-          recs.Add(MakeKey(false, vk, ch));
+          recs.Add(MakeKey(true, vk, ch, ctrl));
+          recs.Add(MakeKey(false, vk, ch, ctrl));
         }
         if (recs.Count == 0) return false;
         var arr = recs.ToArray();
@@ -370,6 +371,21 @@ if($Action -eq 'tabids'){
     if($tabs.Count -eq 0){ $out += [ordered]@{ rid=("win." + $hwnd); hwnd=$hwnd; tabIndex=-1; name=$win.Current.Name } }
   }
   ConvertTo-Json @{ tabs=@($out) } -Depth 6 -Compress
+  exit 0
+}
+
+if($Action -eq 'procs'){
+  # Generic terminal listing: every process that IS a tab's top program (its
+  # parent is a terminal host) — the cmd/pwsh/claude that owns a tab's console.
+  # pid + console title, so the generic wt backend is pid-keyed.
+  $out=@()
+  foreach($p in $map.parent.Keys){
+    $par=$map.parent[$p]
+    if($par -and ($TERMS -contains $map.name[$par])){
+      $out += [ordered]@{ pid=$p; name=$map.name[$p]; hostPid=$par; hostName=$map.name[$par]; title=(Normalize-Title (Read-ConsoleTitle $p)) }
+    }
+  }
+  ConvertTo-Json @{ procs=@($out) } -Depth 6 -Compress
   exit 0
 }
 
@@ -637,6 +653,23 @@ export async function listTabIds(): Promise<TabId[]> {
   if (!IS_WINDOWS) return [];
   const r = await runEngine(['-Action', 'tabids']);
   return (r?.tabs ?? []) as TabId[];
+}
+
+export interface TerminalProc {
+  pid: number;
+  name: string;
+  hostPid: number;
+  hostName: string;
+  /** spinner-stripped console title */
+  title: string;
+}
+
+/** Generic list of terminal-hosted processes (the program owning each tab's
+ *  console) — pid + title. Backs the generic wt terminal backend's list(). */
+export async function listTerminalProcs(): Promise<TerminalProc[]> {
+  if (!IS_WINDOWS) return [];
+  const r = await runEngine(['-Action', 'procs']);
+  return (r?.procs ?? []) as TerminalProc[];
 }
 
 // ---------------------------------------------------------------------------
