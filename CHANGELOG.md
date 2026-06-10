@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Session-messaging: unified sessionId-keyed cc-session injection driver (2026-06-10)
+
+Follow-on to the standardized terminal interface. The cross-node session-messaging injection layer was
+platform-split (`cc-prompt` for Linux tmux, `windows-terminal` for Windows). Merged into ONE
+`cc-session` driver that is **sessionId-keyed and cross-platform**, driving via the unified
+`/terminal/cc-sessions/*` API (the CcController resolves the Claude sessionId to a tmux pane on Linux or
+a WT tab on Windows).
+
+- `InjectionDriverName`: `cc-prompt` + `windows-terminal` → `cc-session`. Chain is now
+  `[remote-control, cc-session, tmux-send-keys]`.
+- `cc-session.available` = the session is `driveable` in `GET /terminal/cc-sessions`; `deliver` =
+  `POST /terminal/cc-sessions/:id/prompt`. `tmux-send-keys` stays the raw tmux-NAME fallback.
+- `send_session_message.toSession` is now a Claude sessionId for the cc-session/remote-control drivers
+  (or a raw tmux name for the send-keys fallback) — updated the tool description.
+- The tmux-native low-level layer `/terminal/cc/:name/*` (and the `terminal_*` MCP tools) is kept as the
+  name-keyed generic CC access, parallel to `/terminal/tmux/*` — not forced onto sessionId, since it is
+  a tmux-native handle.
+- Verified: 117 (Linux) deploy + runtime smoke of the unified routes passed (cc-sessions list+verdict,
+  sessionId→tmux bridge, screen capture+classify); Windows full CC cycle. tsc clean both.
+
 ### Standardized terminal interface + unified cross-platform routes (2026-06-10)
 
 Unify the Windows and Linux terminal / Claude-Code surface at the INTERFACE level (not just URLs), so

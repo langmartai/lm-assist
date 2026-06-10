@@ -49,7 +49,7 @@ export const sendSessionMessageToolDef = {
     properties: {
       toSession: {
         type: 'string',
-        description: 'Target session name (a tmux/Claude-Code session name from terminal_list). On the target node.',
+        description: 'Target session on the target node. Preferred: a Claude sessionId (from cc_sessions / list_recent_sessions) — drives the live CC session on Linux or Windows. A raw tmux session name also works (raw send-keys fallback, POSIX only).',
       },
       category: {
         type: 'string',

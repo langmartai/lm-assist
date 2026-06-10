@@ -7,19 +7,21 @@
  * the message stays PENDING and the sweeper retries later.
  *
  * Drivers (in order):
- *   1. cc-prompt       — the Claude Code adapter. Only usable when the session
- *                        is a live CC session at the idle prompt (phase==='idle').
- *                        This is the "remote-session interface" — it types the
- *                        wrapped body as a prompt and submits it.
- *   2. tmux-send-keys  — raw tmux injection. Usable when the tmux session
- *                        exists (POSIX hosts). Lower-level fallback for a tmux
- *                        session that is not a CC idle prompt (e.g. a plain
- *                        shell, or CC busy — keystrokes queue in the TUI input).
+ *   1. remote-control  — claude.ai cloud control channel (sessionId-keyed).
+ *   2. cc-session      — the UNIFIED Claude Code adapter (sessionId-keyed),
+ *                        works on Linux (tmux pane) AND Windows (WT tab) via the
+ *                        cross-platform /terminal/cc-sessions API. Replaces the
+ *                        old platform-split cc-prompt + windows-terminal drivers.
+ *                        Types the wrapped body as a prompt and submits it.
+ *   3. tmux-send-keys  — raw tmux injection (tmux session NAME, POSIX). Lower-
+ *                        level fallback for a tmux session that is not a CC
+ *                        session (e.g. a plain shell).
  *
  * "Driver available?" is decided by probing the session's live state through
- * the existing lm-assist routes — NOT by config. cc-prompt checks
- * GET /terminal/cc/:name/status (phase). tmux-send-keys checks the session
- * appears in GET /terminal/tmux.
+ * the existing lm-assist routes — NOT by config. cc-session checks the session
+ * is driveable in GET /terminal/cc-sessions; tmux-send-keys checks the name
+ * appears in GET /terminal/tmux. So `toSession` is a Claude sessionId for the
+ * cc-session/remote-control drivers, or a raw tmux NAME for tmux-send-keys.
  *
  * All driving goes through the EXISTING terminal-control routes on loopback;
  * this module never re-implements tmux/CC mechanics.
@@ -100,21 +102,25 @@ export interface InjectionDriver {
   deliver(session: string, wrapped: string, t: DriverTransport): Promise<void>;
 }
 
-/** Driver 1 — Claude Code remote-session interface (POST /terminal/cc/:name/prompt). */
-export const ccPromptDriver: InjectionDriver = {
-  name: 'cc-prompt',
+/** Driver — unified Claude Code session injection over the cross-platform
+ *  sessionId-keyed API (GET /terminal/cc-sessions list, POST /terminal/cc-sessions/:id/prompt).
+ *  Works on BOTH Linux (tmux pane) and Windows (WT tab) — the CcController
+ *  resolves the Claude sessionId to the platform handle. `session` here is the
+ *  Claude sessionId. Replaces the old platform-split cc-prompt + windows-terminal drivers. */
+export const ccSessionDriver: InjectionDriver = {
+  name: 'cc-session',
   async available(session, t) {
     try {
-      const data = unwrap(await t.get(`/terminal/cc/${enc(session)}/status`));
-      // cc.prompt asserts phase 'idle'; only claim availability when idle.
-      return (data as { phase?: string }).phase === 'idle';
+      const data = unwrap(await t.get('/terminal/cc-sessions')) as {
+        sessions?: Array<{ sessionId?: string; driveable?: boolean }>;
+      };
+      return (data.sessions || []).some((s) => s.sessionId === session && s.driveable === true);
     } catch {
       return false;
     }
   },
   async deliver(session, wrapped, t) {
-    // allowNewlines so the multi-line preamble + body is typed as one prompt.
-    unwrap(await t.post(`/terminal/cc/${enc(session)}/prompt`, { text: wrapped, allowNewlines: true }));
+    unwrap(await t.post(`/terminal/cc-sessions/${enc(session)}/prompt`, { text: wrapped, submit: true }));
   },
 };
 
@@ -139,26 +145,6 @@ export const tmuxSendKeysDriver: InjectionDriver = {
   },
 };
 
-/** Driver — Windows Terminal Claude session via the unified cc-sessions API
- *  (GET /terminal/cc-sessions/:id verdict, POST .../:id/prompt). On Windows the
- *  injection target `session` is the Claude sessionId. The Windows tmux substitute. */
-export const windowsTerminalDriver: InjectionDriver = {
-  name: 'windows-terminal',
-  async available(session, t) {
-    try {
-      // On Windows the cc verdict carries inTmux=false; driveability comes from
-      // the live windows mapping, exposed by the cc-sessions list. Probe the list.
-      const data = unwrap(await t.get('/terminal/cc-sessions')) as { sessions?: Array<{ sessionId?: string; driveable?: boolean }> };
-      return (data.sessions || []).some((s) => s.sessionId === session && s.driveable === true);
-    } catch {
-      return false;
-    }
-  },
-  async deliver(session, wrapped, t) {
-    unwrap(await t.post(`/terminal/cc-sessions/${enc(session)}/prompt`, { text: wrapped, submit: true }));
-  },
-};
-
 /** Driver — claude.ai Remote Control (cloud control channel). The cross-platform
  *  "remote session interface": drives a session via claude.ai even when no local
  *  tmux/WT reaches it. Probes/relays through the loopback /terminal/remote-control
@@ -179,7 +165,7 @@ export const remoteControlDriver: InjectionDriver = {
 };
 
 /** The default driver chain, in fallback order. */
-export const DEFAULT_DRIVERS: InjectionDriver[] = [remoteControlDriver, ccPromptDriver, tmuxSendKeysDriver, windowsTerminalDriver];
+export const DEFAULT_DRIVERS: InjectionDriver[] = [remoteControlDriver, ccSessionDriver, tmuxSendKeysDriver];
 
 /**
  * Try each driver in order. Returns the result of the first driver that
