@@ -48,7 +48,7 @@ import * as path from 'path';
 // ---------------------------------------------------------------------------
 const ENGINE_PS1 = String.raw`
 param(
-  [Parameter(Mandatory)][ValidateSet('query','locate','send','close','tabids','capture')][string]$Action,
+  [Parameter(Mandatory)][ValidateSet('query','locate','send','close','tabids','capture','procs')][string]$Action,
   [string]$PidList = '',
   [int]$ClaudePid = 0,
   [string]$MessageB64 = '',

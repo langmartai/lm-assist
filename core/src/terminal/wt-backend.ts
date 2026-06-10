@@ -71,7 +71,12 @@ export const wtTerminalBackend: TerminalBackend = {
       const now = await listTerminalProcs();
       const neu = now.filter((p) => !before.has(p.pid));
       if (neu.length === 1) newPid = neu[0].pid;
-      else if (neu.length > 1) break; // ambiguous (concurrent launches)
+      else if (neu.length > 1) {
+        // Ambiguous under concurrent churn — best-effort: the most recently
+        // started new terminal proc (highest pid is a decent proxy).
+        newPid = neu.map((p) => p.pid).sort((a, b) => b - a)[0];
+        break;
+      }
     }
     return { id: newPid ? String(newPid) : '', title: opts.command, backend: 'wt', pid: newPid || undefined };
   },

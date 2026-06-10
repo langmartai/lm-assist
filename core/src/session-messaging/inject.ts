@@ -139,19 +139,23 @@ export const tmuxSendKeysDriver: InjectionDriver = {
   },
 };
 
-/** Driver — Windows Terminal Claude session (POST /terminal/windows/sessions/:id/send). The Windows tmux substitute. */
+/** Driver — Windows Terminal Claude session via the unified cc-sessions API
+ *  (GET /terminal/cc-sessions/:id verdict, POST .../:id/prompt). On Windows the
+ *  injection target `session` is the Claude sessionId. The Windows tmux substitute. */
 export const windowsTerminalDriver: InjectionDriver = {
   name: 'windows-terminal',
   async available(session, t) {
     try {
-      const data = unwrap(await t.get(`/terminal/windows/sessions/${enc(session)}`));
-      return (data as { driveable?: boolean }).driveable === true;
+      // On Windows the cc verdict carries inTmux=false; driveability comes from
+      // the live windows mapping, exposed by the cc-sessions list. Probe the list.
+      const data = unwrap(await t.get('/terminal/cc-sessions')) as { sessions?: Array<{ sessionId?: string; driveable?: boolean }> };
+      return (data.sessions || []).some((s) => s.sessionId === session && s.driveable === true);
     } catch {
       return false;
     }
   },
   async deliver(session, wrapped, t) {
-    unwrap(await t.post(`/terminal/windows/sessions/${enc(session)}/send`, { text: wrapped, submit: true }));
+    unwrap(await t.post(`/terminal/cc-sessions/${enc(session)}/prompt`, { text: wrapped, submit: true }));
   },
 };
 

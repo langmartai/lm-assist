@@ -18,8 +18,6 @@ import * as manager from '../../terminal/manager';
 import * as tmux from '../../terminal/tmux';
 import * as cc from '../../terminal/cc';
 import { withAudit } from '../../terminal/audit';
-import * as os from 'os';
-import { listLiveSessions, sessionVerdict } from '../../terminal/cc-sessions';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string; details?: unknown }; }
 
@@ -375,36 +373,9 @@ export function createTerminalRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // --------- Claude Code live-session registry ---------------------------
-
-    // GET /terminal/cc-sessions
-    // Returns all live Claude Code sessions on this host, each with ownership
-    // verdict. Callers MUST check connectStrategy before spawning a new
-    // `claude --resume` tmux — double-writing the append-only .jsonl corrupts it.
-    {
-      method: 'GET',
-      pattern: /^\/terminal\/cc-sessions$/,
-      handler: async () => envelope(() => {
-        const sessions = listLiveSessions();
-        return {
-          host: os.hostname(),
-          liveCount: sessions.length,
-          sessions: sessions.map((s) => ({ ...s, verdict: sessionVerdict(s.sessionId) })),
-        };
-      }),
-    },
-
-    // GET /terminal/cc-sessions/:sessionId
-    // Returns the ownership verdict for a single session (live or not).
-    {
-      method: 'GET',
-      pattern: /^\/terminal\/cc-sessions\/(?<sessionId>[^/]+)$/,
-      handler: async (req) => envelope(() => {
-        const sid = req.params.sessionId;
-        if (!sid || typeof sid !== 'string' || !/^[0-9a-f-]{36}$/.test(sid)) {
-          throw new TerminalError('INVALID_INPUT', 'sessionId must be a UUID');
-        }
-        return sessionVerdict(sid);
-      }),
-    },
+    // MOVED to the unified, cross-platform terminal-std.routes.ts:
+    //   GET /terminal/cc-sessions        (list + verdict, both platforms)
+    //   GET /terminal/cc-sessions/:id    (verdict)
+    // plus the sessionId-keyed CC actions (prompt/screen/auto-handle/interrupt).
   ];
 }

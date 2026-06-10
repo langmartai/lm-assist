@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Standardized terminal interface + unified cross-platform routes (2026-06-10)
+
+Unify the Windows and Linux terminal / Claude-Code surface at the INTERFACE level (not just URLs), so
+the same grammar behaves identically on both. Foundation for any future terminal backend.
+
+- **Shared interfaces** (`terminal/backend.ts`): `TerminalBackend` (generic list/create/capture/sendKeys/
+  close, opaque id) and `CcController` (Claude ops keyed by the cross-platform Claude sessionId:
+  list/verdict/launch/prompt/screen/auto-handle/interrupt/close) + a registry that picks the platform
+  backend. `tmux-backend.ts` adapts tmux.ts + cc.ts; `wt-backend.ts` adapts windows-terminal.ts +
+  windows-cc.ts. `cc-classify.ts` is the shared screen classifier both use.
+- **Unified routes** (`terminal-std.routes.ts`), dispatch through the interfaces:
+  - `GET/POST /terminal/cc-sessions`, `GET/DELETE /terminal/cc-sessions/:id`,
+    `POST /terminal/cc-sessions/:id/{prompt,auto-handle,interrupt}`, `GET /terminal/cc-sessions/:id/screen`
+    — sessionId-keyed, SAME on Linux and Windows.
+  - `GET/POST /terminal/wt`, `GET /terminal/wt/:id/capture`, `POST /terminal/wt/:id/send-keys`,
+    `DELETE /terminal/wt/:id` — Windows generic, mirroring the Linux `/terminal/tmux/*` grammar.
+- **Hard rename (Windows):** removed `/terminal/windows/sessions/*`, `/terminal/windows/{windows,launch,
+  capture,state,auto-handle}` — replaced by `/terminal/cc-sessions/*` + `/terminal/wt/*`. Updated the
+  session-messaging `windows-terminal` injection driver and the 8 MCP `windows_terminal_*` tools to the
+  new paths. The legacy Linux `/terminal/tmux/*` and `/terminal/cc/:name/*` routes are unchanged (their
+  consumers — the `cc-prompt`/`tmux-send-keys` drivers and MCP `terminal_*` tools — are tmux-NAME-keyed;
+  re-keying that chain to sessionId is a separate, 117-tested migration).
+- Web reviewed: the dashboards use ttyd + process-status, not these control routes — unaffected.
+- Verified e2e on windows-desk: `GET /terminal/cc-sessions` (8 sessions), full CC cycle
+  (create/screen/prompt/auto-handle/delete), generic `/terminal/wt` list + capture + close, old routes
+  now 404. tsc clean (Linux adapter compiles; 117 runtime smoke pending).
+
 ### Windows terminal — split into a GENERIC driver + a Claude Code layer (2026-06-10)
 
 Refactor so the Windows terminal control is a generic primitive (drive ANY console program), with

@@ -44,7 +44,7 @@ import { createMemoryValidateRoutes } from './memory-validate.routes';
 import { createRuleMapRoutes } from './rule-map.routes';
 import { createBrowserRoutes } from './browser.routes';
 import { createCcrRoutes } from './ccr.routes';
-import { createWindowsTerminalRoutes } from './windows-terminal.routes';
+import { createTerminalStdRoutes } from './terminal-std.routes';
 import { createPortForwardRoutes } from './port-forward.routes';
 import { createSessionMessagingRoutes } from './session-messaging.routes';
 import { createTransportRoutes } from './transport.routes';
@@ -92,7 +92,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createRuleMapRoutes(ctx),
     ...createBrowserRoutes(ctx),
     ...createCcrRoutes(ctx),
-    ...createWindowsTerminalRoutes(ctx),
+    ...createTerminalStdRoutes(ctx),
     ...createPortForwardRoutes(ctx),
     ...createSessionMessagingRoutes(ctx),
     ...createTransportRoutes(ctx),

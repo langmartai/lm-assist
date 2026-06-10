@@ -807,7 +807,7 @@ const winPid = (a: Record<string, unknown>): number => Number(a.pid || 0);
 
 async function handleWindowsTerminalList(): Promise<McpToolResult> {
   try {
-    return ok(pretty(await workerGet('/terminal/windows/sessions')));
+    return ok(pretty(await workerGet('/terminal/cc-sessions')));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -817,7 +817,7 @@ async function handleWindowsTerminalCapture(a: Record<string, unknown>): Promise
   const pid = winPid(a);
   if (!sid && !pid) return err('sessionId or pid is required.');
   try {
-    const path = sid ? `/terminal/windows/sessions/${enc(sid)}/capture` : `/terminal/windows/capture?pid=${pid}`;
+    const path = sid ? `/terminal/cc-sessions/${enc(sid)}/screen` : `/terminal/wt/${pid}/capture`;
     return ok(pretty(await workerGet(path)));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
@@ -828,7 +828,7 @@ async function handleWindowsTerminalState(a: Record<string, unknown>): Promise<M
   const pid = winPid(a);
   if (!sid && !pid) return err('sessionId or pid is required.');
   try {
-    const path = sid ? `/terminal/windows/sessions/${enc(sid)}/state` : `/terminal/windows/state?pid=${pid}`;
+    const path = sid ? `/terminal/cc-sessions/${enc(sid)}/screen` : `/terminal/wt/${pid}/capture`;
     return ok(pretty(await workerGet(path)));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
@@ -841,7 +841,7 @@ async function handleWindowsTerminalLaunch(a: Record<string, unknown>): Promise<
   if (a.cwd) body.cwd = String(a.cwd);
   if (a.mode) body.mode = String(a.mode);
   try {
-    return ok(pretty(await workerPostRaw('/terminal/windows/launch', body)));
+    return ok(pretty(await workerPostRaw('/terminal/wt', body)));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -853,7 +853,7 @@ async function handleWindowsTerminalCreate(a: Record<string, unknown>): Promise<
   if (a.resume) body.resume = String(a.resume);
   if (typeof a.autoTrust === 'boolean') body.autoTrust = a.autoTrust;
   try {
-    return ok(pretty(await workerPostRaw('/terminal/windows/sessions', body)));
+    return ok(pretty(await workerPostRaw('/terminal/cc-sessions', body)));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -864,20 +864,19 @@ async function handleWindowsTerminalSend(a: Record<string, unknown>): Promise<Mc
   if (!sid) return err('sessionId is required.');
   if (!text) return err('text is required.');
   try {
-    return ok(pretty(await workerPostRaw(`/terminal/windows/sessions/${enc(sid)}/send`, { text, submit: a.submit === true })));
+    return ok(pretty(await workerPostRaw(`/terminal/cc-sessions/${enc(sid)}/prompt`, { text, submit: a.submit === true })));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
 }
 async function handleWindowsTerminalAutoHandle(a: Record<string, unknown>): Promise<McpToolResult> {
   const sid = winSid(a);
-  const pid = winPid(a);
-  if (!sid && !pid) return err('sessionId or pid is required.');
+  if (!sid) return err('sessionId is required.');
   const body: Record<string, unknown> = {};
   if (typeof a.trust === 'boolean') body.trust = a.trust;
   if (typeof a.answer === 'number') body.answer = a.answer;
   try {
-    const path = sid ? `/terminal/windows/sessions/${enc(sid)}/auto-handle` : `/terminal/windows/auto-handle?pid=${pid}`;
+    const path = `/terminal/cc-sessions/${enc(sid)}/auto-handle`;
     return ok(pretty(await workerPostRaw(path, body)));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
@@ -888,7 +887,7 @@ async function handleWindowsTerminalClose(a: Record<string, unknown>): Promise<M
   if (!sid) return err('sessionId is required.');
   const closeTab = a.closeTab !== false;
   try {
-    return ok(pretty(await workerDelete(`/terminal/windows/sessions/${enc(sid)}?closeTab=${closeTab}`)));
+    return ok(pretty(await workerDelete(`/terminal/cc-sessions/${enc(sid)}?closeTab=${closeTab}`)));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
