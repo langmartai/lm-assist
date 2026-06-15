@@ -81,18 +81,18 @@ test('wrapForInjection labels each category + embeds id and body', () => {
 test('injectViaChain picks the first available+ok driver', async () => {
   let secondCalled = false;
   const drivers = [
-    mockDriver('cc-prompt', { available: true, deliverOk: true }),
+    mockDriver('cc-session', { available: true, deliverOk: true }),
     mockDriver('tmux-send-keys', { available: true, deliverOk: true, onDeliver: () => { secondCalled = true; } }),
   ];
   const res = await injectViaChain('s1', 'wrapped', drivers, nullTransport);
   assert.equal(res.delivered, true);
-  assert.equal(res.driver, 'cc-prompt');
+  assert.equal(res.driver, 'cc-session');
   assert.equal(secondCalled, false, 'second driver must not run once first succeeds');
 });
 
 test('injectViaChain falls back when first driver is unavailable', async () => {
   const drivers = [
-    mockDriver('cc-prompt', { available: false, deliverOk: true }),
+    mockDriver('cc-session', { available: false, deliverOk: true }),
     mockDriver('tmux-send-keys', { available: true, deliverOk: true }),
   ];
   const res = await injectViaChain('s1', 'wrapped', drivers, nullTransport);
@@ -102,7 +102,7 @@ test('injectViaChain falls back when first driver is unavailable', async () => {
 
 test('injectViaChain falls back when first driver is available but throws', async () => {
   const drivers = [
-    mockDriver('cc-prompt', { available: true, deliverOk: false }),
+    mockDriver('cc-session', { available: true, deliverOk: false }),
     mockDriver('tmux-send-keys', { available: true, deliverOk: true }),
   ];
   const res = await injectViaChain('s1', 'wrapped', drivers, nullTransport);
@@ -112,7 +112,7 @@ test('injectViaChain falls back when first driver is available but throws', asyn
 
 test('injectViaChain reports none when no driver delivers', async () => {
   const drivers = [
-    mockDriver('cc-prompt', { available: false, deliverOk: true }),
+    mockDriver('cc-session', { available: false, deliverOk: true }),
     mockDriver('tmux-send-keys', { available: true, deliverOk: false }),
   ];
   const res = await injectViaChain('s1', 'wrapped', drivers, nullTransport);
@@ -125,13 +125,13 @@ test('injectViaChain reports none when no driver delivers', async () => {
 
 test('sendMessage stores, injects, and acks received on success', async () => {
   store._clearAll();
-  const drivers = [mockDriver('cc-prompt', { available: true, deliverOk: true })];
+  const drivers = [mockDriver('cc-session', { available: true, deliverOk: true })];
   const r = await sendMessage(
     { toSession: 'target1', category: 'guided', body: 'hello', fromSession: 'me' },
     { drivers, transport: nullTransport, localNode: 'thisNode' },
   );
   assert.equal(r.status, 'received');
-  assert.equal(r.driver, 'cc-prompt');
+  assert.equal(r.driver, 'cc-session');
 
   const stored = getStatus(r.id);
   assert.ok(stored);
@@ -146,7 +146,7 @@ test('sendMessage stores, injects, and acks received on success', async () => {
 test('sendMessage leaves message pending when no driver delivers, sweep retries', async () => {
   store._clearAll();
   // First attempt: nothing available.
-  const noDrivers = [mockDriver('cc-prompt', { available: false, deliverOk: true })];
+  const noDrivers = [mockDriver('cc-session', { available: false, deliverOk: true })];
   const r = await sendMessage(
     { toSession: 'target2', category: 'overwrite', body: 'urgent' },
     { drivers: noDrivers, transport: nullTransport, localNode: 'thisNode' },
