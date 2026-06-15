@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### MCP cross-host tools — fix categorical failures on non-`/home/ubuntu` and Windows workers (2026-06-16)
+
+The langmart MCP's cross-host / multi-node tools failed wholesale when targeting a worker whose home
+isn't `/home/ubuntu` (yitest `/home/yi`, Windows `C:\Users\yi`), or when running a command on a Windows
+node. Surfaced by a cross-host test session (`ee045a79` on 10.0.1.123) where every failure clustered in
+the multi-node path.
+
+- **cwd allowlist no longer hardcodes `/home/ubuntu`** (`utils/cwd-allowlist.ts`): `isCwdAllowed` now
+  gates on the EXECUTING worker's own home dir (`os.homedir()`) — the correct basis, since these tools
+  run on the node they target (the hub relays the call there). Fixes `agent_execute` / `terminal_open_tab`
+  being rejected on every non-ubuntu worker. `home` is injectable for tests; messages + schema text updated.
+- **`terminal_open_tab` works on Windows and forwards all params** (`mcp-server/tools/open-tab-plan.ts`,
+  new pure planner): omit `kind` → routes to the platform-neutral `/terminal/local` (tmux on Linux, wt on
+  Windows — the Windows path); an explicit `kind` → `/terminal/tabs` with `sshTarget`/`tmuxSession` now
+  forwarded. Previously the handler dropped them, so `wt-ssh`/`tmux` always failed "requires X" even when
+  supplied. Schema documents `sshTarget`/`tmuxSession` and the optional, platform-aware `kind`.
+- **MCP loopback errors now include the response body** (`mcp-server/tools/_passthrough.ts`): a non-2xx
+  without a structured `error.message` surfaced only "`<route> returned 400`" — the body (the actual
+  reason) was dropped, making `fs_list` / `transfer_send_file` failures undiagnosable. The 4 duplicated
+  parse-and-throw blocks are consolidated into one `unwrapEnvelope` that carries the body.
+- Unit tests added for all three (`cwd-allowlist`, `open-tab-plan`, `passthrough-unwrap`).
+
 ### Worker API token — rotation timer no longer overflows Node's 32-bit cap (2026-06-15)
 
 The API-token rotation interval now defaults to **30 days** (was 24h). 30 days in ms (2,592,000,000)

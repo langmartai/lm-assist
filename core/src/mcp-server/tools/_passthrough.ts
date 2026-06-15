@@ -37,6 +37,27 @@ export interface McpToolResult {
   isError?: boolean;
 }
 
+/**
+ * Unwrap the `{success, data, error}` envelope from a loopback route response.
+ * On a non-2xx (or `success:false`) it throws, preferring a structured
+ * `error.message` but otherwise INCLUDING the raw response body — so an opaque
+ * `<route> returned 400` becomes diagnosable. Returns `data` on success.
+ */
+export async function unwrapEnvelope<T = unknown>(
+  res: { ok: boolean; status: number; text(): Promise<string> },
+  routePath: string,
+): Promise<T> {
+  const text = await res.text();
+  let json: { success?: boolean; data?: T; error?: { message?: string } } | null = null;
+  try { json = text ? JSON.parse(text) : {}; } catch { json = null; }
+  if (!res.ok || json?.success === false) {
+    if (json?.error?.message) throw new Error(json.error.message);
+    const body = text ? `: ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : '';
+    throw new Error(`${routePath} returned ${res.status}${body}`);
+  }
+  return (json?.data ?? (json as unknown)) as T;
+}
+
 /** Wrap arbitrary text as a successful tool result. */
 export function ok(text: string): McpToolResult {
   return { content: [{ type: 'text', text }] };
@@ -58,11 +79,7 @@ export async function workerGet<T = unknown>(routePath: string): Promise<T> {
     headers: { ...lmAuthHeaders() },
     signal: AbortSignal.timeout(15000),
   });
-  const json = (await res.json()) as { success?: boolean; data?: T; error?: { message?: string } };
-  if (!res.ok || json.success === false) {
-    throw new Error(json.error?.message || `${routePath} returned ${res.status}`);
-  }
-  return (json.data ?? (json as unknown)) as T;
+  return unwrapEnvelope<T>(res, routePath);
 }
 
 /** POST an lm-assist route on loopback. Same envelope handling as workerGet. */
@@ -76,11 +93,7 @@ export async function workerPost<T = unknown>(
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(30000),
   });
-  const json = (await res.json()) as { success?: boolean; data?: T; error?: { message?: string } };
-  if (!res.ok || json.success === false) {
-    throw new Error(json.error?.message || `${routePath} returned ${res.status}`);
-  }
-  return (json.data ?? (json as unknown)) as T;
+  return unwrapEnvelope<T>(res, routePath);
 }
 
 /**
@@ -114,11 +127,7 @@ export async function workerPut<T = unknown>(
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(30000),
   });
-  const json = (await res.json()) as { success?: boolean; data?: T; error?: { message?: string } };
-  if (!res.ok || json.success === false) {
-    throw new Error(json.error?.message || `${routePath} returned ${res.status}`);
-  }
-  return (json.data ?? (json as unknown)) as T;
+  return unwrapEnvelope<T>(res, routePath);
 }
 
 /** DELETE an lm-assist route on loopback. Same envelope handling as workerGet. */
@@ -132,11 +141,7 @@ export async function workerDelete<T = unknown>(
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(30000),
   });
-  const json = (await res.json()) as { success?: boolean; data?: T; error?: { message?: string } };
-  if (!res.ok || json.success === false) {
-    throw new Error(json.error?.message || `${routePath} returned ${res.status}`);
-  }
-  return (json.data ?? (json as unknown)) as T;
+  return unwrapEnvelope<T>(res, routePath);
 }
 
 /**

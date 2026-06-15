@@ -28,6 +28,8 @@ import {
   isCwdAllowed,
   type McpToolResult,
 } from './_passthrough';
+import { planOpenTab } from './open-tab-plan';
+import * as os from 'os';
 import { handleListNodes } from './list-nodes';
 import { GITHUB_TOOL_DEFS, GITHUB_HANDLERS } from './github';
 import { PORT_FORWARD_TOOL_DEFS, PORT_FORWARD_HANDLERS } from './port-forward';
@@ -375,14 +377,14 @@ export const agentExecuteToolDef = {
   name: 'agent_execute',
   description:
     'Start a NEW autonomous Claude Code session on the host with an arbitrary prompt. ' +
-    'ADMIN / high-risk — runs real code. cwd is restricted to directories under ' +
-    '/home/ubuntu. Requires out-of-band confirmation before it executes.',
+    "ADMIN / high-risk — runs real code. cwd is restricted to directories under the " +
+    "worker's own home dir. Requires out-of-band confirmation before it executes.",
   annotations: { readOnlyHint: false, destructiveHint: true },
   inputSchema: {
     type: 'object' as const,
     properties: {
       prompt: { type: 'string', description: 'The task for the Claude Code session.' },
-      cwd: { type: 'string', description: 'Working directory — MUST be under /home/ubuntu.' },
+      cwd: { type: 'string', description: "Working directory — MUST be under the worker's home dir." },
       model: { type: 'string', description: 'Optional model (opus|sonnet|haiku or full id).' },
     },
     required: ['prompt', 'cwd'],
@@ -405,16 +407,19 @@ export const terminalInterruptToolDef = {
 export const terminalOpenTabToolDef = {
   name: 'terminal_open_tab',
   description:
-    'Open a real GUI terminal window on the host running a command. ADMIN — spawns a host ' +
-    'process. Requires out-of-band confirmation.',
+    'Open a terminal on the host running a command. Omit `kind` to use the platform-neutral ' +
+    'local terminal (tmux on Linux, wt on Windows) — this is what works on a Windows node. ' +
+    'ADMIN — spawns a host process. Requires out-of-band confirmation.',
   annotations: { readOnlyHint: false, destructiveHint: true },
   inputSchema: {
     type: 'object' as const,
     properties: {
-      title: { type: 'string', description: 'Window title.' },
-      cwd: { type: 'string', description: 'Working directory (under /home/ubuntu).' },
+      title: { type: 'string', description: 'Window title (advanced kinds only).' },
+      cwd: { type: 'string', description: "Working directory (under the worker's home dir)." },
       command: { type: 'string', description: 'Command to run in the new terminal.' },
-      kind: { type: 'string', description: 'Terminal kind (e.g. "gnome").' },
+      kind: { type: 'string', description: 'Optional. Omit for the platform-neutral local terminal (recommended; works on Windows). Or one of gnome|wt-ssh|tmux for the advanced tab spawner — wt-ssh needs sshTarget, tmux needs tmuxSession.' },
+      sshTarget: { type: 'string', description: 'For kind=wt-ssh: ssh target (user@host or host).' },
+      tmuxSession: { type: 'string', description: 'For kind=tmux: tmux session name to open the tab in.' },
     },
     required: ['command'],
   },
@@ -975,7 +980,7 @@ async function handleAgentExecute(args: Record<string, unknown>): Promise<McpToo
   // Layer-6 defense in depth: even past the gateway's admin confirm, refuse a
   // cwd outside the operator's allowlist.
   if (!isCwdAllowed(cwd)) {
-    return err(`cwd "${cwd}" is not permitted; agent_execute is restricted to /home/ubuntu/*`);
+    return err(`cwd "${cwd}" is not permitted; agent_execute is restricted to ${os.homedir()} and below.`);
   }
   const body: Record<string, unknown> = { prompt, cwd, background: true };
   if (args.model) body.model = String(args.model);
@@ -997,18 +1002,10 @@ async function handleTerminalInterrupt(args: Record<string, unknown>): Promise<M
 }
 
 async function handleTerminalOpenTab(args: Record<string, unknown>): Promise<McpToolResult> {
-  const command = String(args.command || '').trim();
-  if (!command) return err('command is required.');
-  const cwd = args.cwd ? String(args.cwd) : '';
-  if (cwd && !isCwdAllowed(cwd)) {
-    return err(`cwd "${cwd}" is not permitted; restricted to /home/ubuntu/*`);
-  }
-  const body: Record<string, unknown> = { command };
-  if (cwd) body.cwd = cwd;
-  if (args.title) body.title = String(args.title);
-  if (args.kind) body.kind = String(args.kind);
+  const plan = planOpenTab(args);
+  if ('error' in plan) return err(plan.error);
   try {
-    return ok(pretty(await workerPost('/terminal/tabs', body)));
+    return ok(pretty(await workerPost(plan.route, plan.body)));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
