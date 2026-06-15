@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Worker API token — rotation timer no longer overflows Node's 32-bit cap (2026-06-15)
+
+The API-token rotation interval now defaults to **30 days** (was 24h). 30 days in ms (2,592,000,000)
+exceeds `setTimeout`/`setInterval`'s signed-32-bit cap (~24.8 days, `MAX_TIMER_MS` = 2,147,483,647);
+Node silently clamps an over-cap delay to ~1 ms, so the daemon rotated the token in a tight loop and
+every client's cached token aged out instantly → a storm of `401`s. Fixed by replacing the single
+`setInterval` with a self-rescheduling `setTimeout` that counts the window down in `<= MAX_TIMER_MS`
+chunks and only rotates once the full `ROTATE_MS` window has elapsed, then re-arms. Works for any
+interval; keeps the 30-day default and the `LM_ASSIST_API_TOKEN_ROTATE_MS` override.
+
+- `core/src/auth/api-token.ts`: `ROTATE_MS` default `30 * 24 * 60 * 60 * 1000`; chunked countdown via
+  the `MAX_TIMER_MS`-capped `setTimeout` loop.
+
+### CLI `start` defers to systemd when a unit manages the worker (2026-06-15)
+
+`startCore()` no longer spawns a competing worker when an `lm-assist.service` systemd unit already
+manages the host. The systemd service runs `serve` directly with no PID file, so it is invisible to
+the health probe during its startup/restart window — the CLI would otherwise spawn a second instance
+that crash-loops on `EADDRINUSE`. Now, if the worker isn't yet health-responsive, `start` checks
+systemd first and bows out with guidance (`sudo systemctl restart lm-assist`); if some other
+non-systemd instance already holds the API port, it reports that instead of duplicating.
+
+- `core/src/service-manager.ts`: `isManagedBySystemd(unit)` (queries `systemctl is-active` /
+  `is-enabled`, Windows-safe no-op) + a port guard in `startCore()` before spawning.
+
 ### Generic terminal route is platform-neutral — backend auto-picked (2026-06-10)
 
 The generic terminal route no longer carries the backend in its URL. It was `/terminal/wt/*`, which
@@ -154,7 +179,7 @@ Every worker API route now requires a rotating API token — a separate secret f
 key, never exposed to the LLM/MCP (read from disk and attached server-side).
 
 - **Worker-owned token**: generated on boot, written to `<dataDir>/api-token` (mode 0600), rotated
-  (default 24h) keeping a **ring of the last N (default 3) tokens valid at once** — grace so rotation
+  (default 30 days) keeping a **ring of the last N (default 3) tokens valid at once** — grace so rotation
   never 401s an in-flight client; an aged-out token gets `401` and the client re-reads the file +
   retries. Sent as `x-api-key` (or `?apiKey=`). `/health` is the only exempt route. Kill-switch
   `LM_ASSIST_API_AUTH=0`; tune via `LM_ASSIST_API_TOKEN_RING` / `LM_ASSIST_API_TOKEN_ROTATE_MS`.
