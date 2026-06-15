@@ -159,6 +159,21 @@ function checkPort(port: number): Promise<boolean> {
   });
 }
 
+function isManagedBySystemd(unit: string): boolean {
+  if (process.platform === 'win32') return false;
+  const q = (cmd: string): string => {
+    try {
+      return execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch (e: any) {
+      return ((e && e.stdout) || '').toString().trim();
+    }
+  };
+  const active = q(`systemctl is-active ${unit}`);
+  if (active === 'active' || active === 'activating') return true;
+  const enabled = q(`systemctl is-enabled ${unit}`);
+  return enabled === 'enabled' || enabled === 'enabled-runtime' || enabled === 'static';
+}
+
 async function checkHealth(port: number): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, {
@@ -407,6 +422,18 @@ export async function startCore(config?: ServiceConfig): Promise<{ success: bool
   // Already running?
   if (await checkHealth(apiPort)) {
     return { success: true, message: `Core API already running on port ${apiPort}` };
+  }
+
+  // Not health-responsive yet. If a systemd unit manages lm-assist on this host, defer to it
+  // rather than spawn a competing CLI instance: the systemd service runs `serve` directly with
+  // no PID file, so it is invisible to the health check above during its startup/restart window,
+  // and a second instance crash-loops on EADDRINUSE.
+  if (isManagedBySystemd('lm-assist')) {
+    return { success: false, message: `lm-assist core is managed by systemd ('lm-assist.service') - use \`sudo systemctl restart lm-assist\` instead of the CLI (running both spawns a duplicate that crash-loops on EADDRINUSE).` };
+  }
+  // Port held by some other (non-systemd) instance - don't spawn a duplicate.
+  if (await checkPort(apiPort)) {
+    return { success: true, message: `Core API already running on port ${apiPort} (another instance holds the port).` };
   }
 
   // Check if cli.js exists
