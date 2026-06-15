@@ -19,7 +19,7 @@
  * Env:
  *   LM_ASSIST_API_AUTH=0|off|false   disable enforcement (emergency kill-switch)
  *   LM_ASSIST_API_TOKEN_RING=N       ring depth (default 3)
- *   LM_ASSIST_API_TOKEN_ROTATE_MS=N  rotation interval ms (default 24h)
+ *   LM_ASSIST_API_TOKEN_ROTATE_MS=N  rotation interval ms (default 30 days)
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -28,7 +28,11 @@ import { getDataDir } from '../utils/path-utils';
 import { networkInterfaces } from 'os';
 
 const RING_SIZE = Math.max(1, Number(process.env.LM_ASSIST_API_TOKEN_RING) || 3);
-const ROTATE_MS = Math.max(1_000, Number(process.env.LM_ASSIST_API_TOKEN_ROTATE_MS) || 24 * 60 * 60 * 1000);
+const ROTATE_MS = Math.max(1_000, Number(process.env.LM_ASSIST_API_TOKEN_ROTATE_MS) || 30 * 24 * 60 * 60 * 1000);
+// Node timer delays are a signed 32-bit int of ms (~24.8 days max). A raw delay
+// above this overflows and Node clamps it to 1ms — firing continuously. The
+// 30-day default exceeds it, so rotation must be armed in capped chunks.
+const MAX_TIMER_MS = 2_147_483_647;
 
 function tokenFile(): string {
   return path.join(getDataDir(), 'api-token');
@@ -101,14 +105,27 @@ export function rotateApiToken(): string {
 export function startApiTokenRotation(): void {
   initApiToken();
   if (timer) return;
-  timer = setInterval(() => {
-    try {
-      rotateApiToken();
-    } catch {
-      /* keep prior token on failure */
-    }
-  }, ROTATE_MS);
-  timer.unref?.();
+  // Count down to the next rotation in <= MAX_TIMER_MS chunks so a long
+  // ROTATE_MS (e.g. 30 days) never overflows Node's timer cap. Rotate only
+  // once the full window has elapsed, then re-arm for the next window.
+  const arm = (remainingMs: number): void => {
+    const step = Math.min(MAX_TIMER_MS, remainingMs);
+    timer = setTimeout(() => {
+      const left = remainingMs - step;
+      if (left > 0) {
+        arm(left);
+      } else {
+        try {
+          rotateApiToken();
+        } catch {
+          /* keep prior token on failure */
+        }
+        arm(ROTATE_MS);
+      }
+    }, step);
+    timer.unref?.();
+  };
+  arm(ROTATE_MS);
 }
 
 // --- client side: token to attach to an outbound loopback call to the worker ---
