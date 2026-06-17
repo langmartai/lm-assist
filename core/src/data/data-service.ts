@@ -1,6 +1,6 @@
 // core/src/data/data-service.ts
 import type {
-  Principal, DataAction, DataRecord, QuerySpec, AccessRequest, BackendKind, NodeVisibility, SyncMode,
+  Principal, DataAction, DataRecord, QuerySpec, SearchSpec, AccessRequest, BackendKind, NodeVisibility, SyncMode,
   PeerClient, NodeInfo,
 } from './types';
 import type { DatasetRegistry } from './dataset-registry';
@@ -9,6 +9,7 @@ import type { BackendRegistry } from './backend-registry';
 import { BackendRegistry as BReg } from './backend-registry';
 import { AccessManager } from './access-manager';
 import { CacheBackend } from './backends/cache-backend';
+import { VectorBackend } from './backends/vector-backend';
 import { getKeyStore } from './key-store';
 import { redactRecord } from './redaction';
 import { thisNodeId } from './paths';
@@ -96,6 +97,15 @@ export class DataService {
     return { ok: true, value: { records: r.records.map(redactRecord), total: r.total } };
   }
 
+  async search(ctx: CallCtx, datasetId: string, spec: SearchSpec): Promise<DataResult<Array<DataRecord & { score: number }>>> {
+    const a = await this.authorize(ctx, datasetId, 'search');
+    if (!a.ok) return a;
+    const backend = a.value.backend!;
+    if (!backend.search) return { ok: false, code: 'NOT_SUPPORTED', reason: `backend "${backend.kind}" does not support search` };
+    const results = await backend.search(datasetId, spec);
+    return { ok: true, value: results.map((r) => ({ ...redactRecord(r), score: r.score })) };
+  }
+
   async put(ctx: CallCtx, datasetId: string, record: DataRecord): Promise<DataResult<{ id: string }>> {
     const a = await this.authorize(ctx, datasetId, 'write');
     if (!a.ok) return a;
@@ -172,6 +182,7 @@ export function getDataService(): DataService {
     const datasets = getDatasetRegistry();
     const backends = new BReg();
     backends.register(new CacheBackend());
+    backends.register(new VectorBackend());
     const manager = new AccessManager({ datasets, keys: getKeyStore(), nodeId: thisNodeId() });
     const queue = getSyncQueue();
     const nodeId = thisNodeId();
