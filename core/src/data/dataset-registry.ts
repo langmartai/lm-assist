@@ -15,6 +15,7 @@ export interface CreateDatasetInput {
   visibility?: NodeVisibility;
   readOnly?: boolean;
   sensitive?: boolean;
+  syncMode?: import('./types').SyncMode;
   config: BackendConfig;
   acl?: AclRule[];
   system?: boolean;
@@ -73,6 +74,7 @@ export class DatasetRegistry {
       system: input.system,
       readOnly: input.readOnly,
       sensitive: input.sensitive,
+      syncMode: input.syncMode,
       config: input.config,
       acl: input.acl ?? [],
       createdAt: now,

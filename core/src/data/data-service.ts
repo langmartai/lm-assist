@@ -110,7 +110,7 @@ export class DataService {
     const a = await this.authorize(ctx, datasetId, 'read');
     if (!a.ok) return a;
     const records = await a.value.backend!.exportSince(datasetId, since);
-    return { ok: true, value: records };
+    return { ok: true, value: records.map(redactRecord) };
   }
 
   /** Returns descriptor stubs for datasets this node advertises as syncable (syncMode !== 'none'). */
@@ -118,7 +118,8 @@ export class DataService {
     const readActions: DataAction[] = ['read'];
     const out = [];
     for (const d of this.deps.datasets.list()) {
-      const syncMode: SyncMode = ((d as any).syncMode || 'none') as SyncMode;
+      if ((d as any).sensitive) continue;
+      const syncMode: SyncMode = (d.syncMode || 'none') as SyncMode;
       if (syncMode === 'none') continue;
       const actions = this.deps.manager.evaluateGrants(p, d, readActions);
       if (!actions.length) continue;

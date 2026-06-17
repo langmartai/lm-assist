@@ -40,6 +40,7 @@ export interface DatasetDescriptor {
   system?: boolean;           // reserved datasets (M2) — not user-deletable
   readOnly?: boolean;         // HARD cap to read/query/search for EVERY principal
   sensitive?: boolean;        // never exposed to cloud; never synced
+  syncMode?: SyncMode;        // 'none' (default) | 'full' | 'partial'
   config: BackendConfig;
   acl: AclRule[];
   createdAt: string;
