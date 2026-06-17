@@ -7,6 +7,7 @@ import { ok, err } from './_passthrough';
 import { currentMcpContext } from '../principal-context';
 import { getDataService, type CallCtx } from '../../data/data-service';
 import type { DataRecord, QuerySpec, AccessRequest } from '../../data/types';
+import { getHubConfig } from '../../hub-client/hub-config';
 
 function ctxFromArgs(args: Record<string, unknown>): CallCtx | { error: string } {
   const c = currentMcpContext();
@@ -22,7 +23,9 @@ async function handleDataCatalog(_args: Record<string, unknown>): Promise<McpToo
   if (!c) return err('no MCP principal context');
   const svc = getDataService();
   if (!svc.isEnabled()) return err('data service is disabled');
-  return ok(pretty({ datasets: svc.catalog(c.principal) }));
+  const cfg = getHubConfig();
+  const servedBy = { node: cfg.gatewayId || cfg.machineId, hostname: cfg.hostname, platform: cfg.platform };
+  return ok(pretty({ servedBy, datasets: svc.catalog(c.principal) }));
 }
 
 async function handleDataRequestAccess(args: Record<string, unknown>): Promise<McpToolResult> {

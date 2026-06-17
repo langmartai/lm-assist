@@ -2,6 +2,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import { getDataDir } from '../utils/path-utils';
+import { getHubConfig } from '../hub-client/hub-config';
 
 // Mirror the hub-config dev/prod split so dev (repo) and prod (npm) never collide.
 const IS_DEV_REPO = process.env.LM_ASSIST_PROD === 'true' ? false : !__dirname.includes('node_modules');
@@ -19,8 +20,13 @@ export function keysDir(): string {
 export function cacheDirFor(datasetId: string): string {
   return path.join(dataRoot(), 'cache', `${datasetId}.lmdb`);
 }
-// M1 node identity: stable per host. M5 will unify this with the canonical machineId
-// used by the knowledge/vector remote-sync layer.
+// Canonical fleet node id: hub-assigned gatewayId when registered, else the stable machineId,
+// else hostname. Matches what the hub + knowledge remote-sync use to identify a node.
 export function thisNodeId(): string {
-  return os.hostname() || 'local';
+  try {
+    const cfg = getHubConfig();
+    return cfg.gatewayId || cfg.machineId || os.hostname() || 'local';
+  } catch {
+    return os.hostname() || 'local';
+  }
 }
