@@ -13,6 +13,7 @@ import { redactRecord } from './redaction';
 import { thisNodeId } from './paths';
 import { getProjectSettings } from '../project-settings';
 import type { ParsedRequest } from '../routes/index';
+import { getSyncQueue } from './sync-queue';
 
 export interface CallCtx { principal: Principal; keyHeader?: string; }
 export type DataResult<T> = { ok: true; value: T } | { ok: false; code: string; reason: string };
@@ -136,7 +137,8 @@ export function getDataService(): DataService {
     const backends = new BReg();
     backends.register(new CacheBackend());
     const manager = new AccessManager({ datasets, keys: getKeyStore(), nodeId: thisNodeId() });
-    instance = new DataService({ datasets, backends, manager });
+    const queue = getSyncQueue();
+    instance = new DataService({ datasets, backends, manager, onLocalWrite: (dataset, id) => queue.markDirty(dataset, id) });
   }
   return instance;
 }
