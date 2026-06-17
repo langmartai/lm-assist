@@ -119,6 +119,7 @@ export class ApiRelayHandler {
     '/mcp',          // MCP StreamableHTTP endpoint + /mcp/* (relayed from the hub for connector routing)
     '/mcp-call',     // generic expanded-tool shim
     '/session-messages', // cross-node session-to-session messaging (node-routed)
+    '/data',          // generic data service (access-key gated; see routes/core/data.routes.ts)
   ];
 
   /**

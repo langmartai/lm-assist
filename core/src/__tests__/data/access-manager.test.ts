@@ -143,3 +143,14 @@ test('enforce: bad secret rejected', async () => {
   assert.equal(res.ok, false);
   assert.equal(res.ok ? '' : res.code, 'KEY_INVALID');
 });
+
+test('enforce: denied attempts are audited', async () => {
+  const { mgr, datasets, keys } = deps();
+  datasets.create({ id: 'd', backend: 'cache', visibility: 'local-only', config: { kind: 'cache' }, acl: [] });
+  const d = datasets.get('d')!;
+  const res = await mgr.enforce({ type: 'cloud', userId: 'u' }, undefined, d, 'read'); // cloud, no key
+  assert.equal(res.ok, false);
+  const denies = keys.listAudit().filter((e) => e.event === 'deny');
+  assert.equal(denies.length >= 1, true);
+  assert.equal(denies[denies.length - 1].detail, 'KEY_REQUIRED');
+});

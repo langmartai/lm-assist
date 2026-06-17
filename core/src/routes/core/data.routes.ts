@@ -50,7 +50,7 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!svc().isEnabled()) return disabled(start);
         const p = svc().resolvePrincipal(req);
         const res = await svc().requestAccess(p, req.body || { grants: [] });
-        if (!res.ok) return wrapError('FORBIDDEN', res.reason, start);
+        if (!res.ok) return wrapError(res.code, res.reason, start);
         return wrapResponse(res.value, start);
       },
     },
@@ -113,7 +113,7 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
         const start = Date.now();
         if (!svc().isEnabled()) return disabled(start);
         const r = await svc().get(ctxOf(req), req.params.dataset, req.params.id);
-        if (!r.ok) return wrapError(r.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'FORBIDDEN', r.reason, start);
+        if (!r.ok) return wrapError(r.code, r.reason, start);
         return wrapResponse(r.value, start);
       },
     },
@@ -126,7 +126,7 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
         const start = Date.now();
         if (!svc().isEnabled()) return disabled(start);
         const r = await svc().query(ctxOf(req), req.params.dataset, req.body || {});
-        if (!r.ok) return wrapError(r.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'FORBIDDEN', r.reason, start);
+        if (!r.ok) return wrapError(r.code, r.reason, start);
         return wrapResponse(r.value, start);
       },
     },
@@ -141,7 +141,7 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
         const rec = recordFromBody(req.body);
         if (!rec.id) return wrapError('BAD_REQUEST', 'record id is required', start);
         const r = await svc().put(ctxOf(req), req.params.dataset, rec);
-        if (!r.ok) return wrapError(r.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'FORBIDDEN', r.reason, start);
+        if (!r.ok) return wrapError(r.code, r.reason, start);
         return wrapResponse(r.value, start);
       },
     },
@@ -154,7 +154,7 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
         const start = Date.now();
         if (!svc().isEnabled()) return disabled(start);
         const r = await svc().del(ctxOf(req), req.params.dataset, req.params.id);
-        if (!r.ok) return wrapError(r.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'FORBIDDEN', r.reason, start);
+        if (!r.ok) return wrapError(r.code, r.reason, start);
         return wrapResponse({ deleted: r.value }, start);
       },
     },

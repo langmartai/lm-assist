@@ -51,6 +51,13 @@ test('data service: cloud denied without key, allowed with minted key', async ()
   assert.equal(ok.ok, true);
 });
 
+test('data service: revoke is local-only', async () => {
+  const { svc } = service();
+  assert.equal(await svc.revoke({ type: 'cloud', userId: 'u' }, 'any-key-id'), false);
+  // local revoke of a nonexistent key returns false too, but is not rejected by authz
+  assert.equal(await svc.revoke({ type: 'local' }, 'nonexistent'), false);
+});
+
 test('data service: catalog reflects what a principal may do', async () => {
   const { svc, datasets } = service();
   datasets.create({ id: 'pub', backend: 'cache', visibility: 'cross-node-readable',

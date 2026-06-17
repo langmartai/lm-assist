@@ -107,12 +107,21 @@ export class AccessManager {
   }
 
   async enforce(p: Principal, keyHeader: string | undefined, d: DatasetDescriptor, action: DataAction): Promise<EnforceResult> {
+    const deny = async (code: string, status: number, reason: string, keyId?: string): Promise<EnforceResult> => {
+      await this.deps.keys.appendAudit({
+        at: new Date().toISOString(), event: 'deny',
+        keyId, principalType: p.type, principalId: p.userId,
+        dataset: d.id, action, detail: code,
+      });
+      return { ok: false, code, status, reason };
+    };
+
     // Hard caps first (apply to everyone, incl. local root).
     if (d.readOnly && !READ_ONLY_ACTIONS.includes(action)) {
-      return { ok: false, code: 'READ_ONLY', status: 403, reason: `dataset "${d.id}" is read-only` };
+      return await deny('READ_ONLY', 403, `dataset "${d.id}" is read-only`);
     }
     if (d.sensitive && p.type === 'cloud') {
-      return { ok: false, code: 'SENSITIVE', status: 403, reason: `dataset "${d.id}" is not available to cloud callers` };
+      return await deny('SENSITIVE', 403, `dataset "${d.id}" is not available to cloud callers`);
     }
 
     if (keyHeader) {
@@ -120,18 +129,18 @@ export class AccessManager {
       const keyId = dot >= 0 ? keyHeader.slice(0, dot) : keyHeader;
       const secret = dot >= 0 ? keyHeader.slice(dot + 1) : '';
       const key = this.deps.keys.get(keyId);
-      if (!key) return { ok: false, code: 'KEY_INVALID', status: 403, reason: 'unknown access key' };
-      if (key.revoked) return { ok: false, code: 'KEY_REVOKED', status: 403, reason: 'access key revoked' };
-      if (Date.parse(key.expiresAt) <= Date.now()) return { ok: false, code: 'KEY_EXPIRED', status: 403, reason: 'access key expired' };
-      if (key.node !== this.deps.nodeId) return { ok: false, code: 'KEY_WRONG_NODE', status: 403, reason: 'access key not valid on this node' };
+      if (!key) return await deny('KEY_INVALID', 403, 'unknown access key', keyId);
+      if (key.revoked) return await deny('KEY_REVOKED', 403, 'access key revoked', keyId);
+      if (Date.parse(key.expiresAt) <= Date.now()) return await deny('KEY_EXPIRED', 403, 'access key expired', keyId);
+      if (key.node !== this.deps.nodeId) return await deny('KEY_WRONG_NODE', 403, 'access key not valid on this node', keyId);
       const expected = Buffer.from(key.secretHash, 'hex');
       const got = crypto.createHash('sha256').update(secret).digest();
       if (expected.length !== got.length || !crypto.timingSafeEqual(expected, got)) {
-        return { ok: false, code: 'KEY_INVALID', status: 403, reason: 'bad access key secret' };
+        return await deny('KEY_INVALID', 403, 'bad access key secret', keyId);
       }
       const grant = key.grants.find((g) => g.dataset === d.id);
       if (!grant || !grant.actions.includes(action)) {
-        return { ok: false, code: 'NOT_GRANTED', status: 403, reason: `key does not grant "${action}" on "${d.id}"` };
+        return await deny('NOT_GRANTED', 403, `key does not grant "${action}" on "${d.id}"`, keyId);
       }
       await this.deps.keys.appendAudit({ at: new Date().toISOString(), event: 'use', keyId,
         principalType: p.type, principalId: p.userId, dataset: d.id, action });
@@ -140,6 +149,6 @@ export class AccessManager {
 
     // No key: local fast-path (root on local data). Cloud must present a key.
     if (p.type === 'local') return { ok: true, principal: p };
-    return { ok: false, code: 'KEY_REQUIRED', status: 403, reason: 'cloud callers must present an access key' };
+    return await deny('KEY_REQUIRED', 403, 'cloud callers must present an access key');
   }
 }

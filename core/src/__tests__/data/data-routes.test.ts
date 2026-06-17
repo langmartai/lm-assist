@@ -46,7 +46,7 @@ test('routes: cloud caller without key is forbidden', async () => {
   await call('PUT', `/data/${id}/records`, { body: { id: 'a', fields: { n: 1 } } });
   const got = await call('GET', `/data/${id}/records/a`, { headers: { 'x-relay-source': 'hub', 'x-lm-user-id': 'u' } });
   assert.equal(got.success, false);
-  assert.equal(got.error.code, 'FORBIDDEN');
+  assert.equal(got.error.code, 'KEY_REQUIRED');
 });
 
 test('routes: cloud create dataset is forbidden (local-only admin)', async () => {

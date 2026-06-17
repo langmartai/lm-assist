@@ -44,7 +44,12 @@ export class DataService {
     if (!r.ok) return { ok: false, code: 'ACCESS_DENIED', reason: r.reason };
     return { ok: true, value: { key: r.key, keyId: r.keyId, grants: r.grants, expiresAt: r.expiresAt } };
   }
-  async revoke(_p: Principal, keyId: string): Promise<boolean> { return getKeyStore().revoke(keyId); }
+  async revoke(p: Principal, keyId: string): Promise<boolean> {
+    // M1: only a local (root) caller may revoke. Cloud revocation needs a verified issuer identity
+    // (deferred to the cross-node milestone), so cloud callers cannot revoke arbitrary keys.
+    if (p.type !== 'local') return false;
+    return getKeyStore().revoke(keyId);
+  }
 
   private async authorize(ctx: CallCtx, datasetId: string, action: DataAction): Promise<DataResult<{ backend: ReturnType<BackendRegistry['get']> }>> {
     const d = this.deps.datasets.get(datasetId);
