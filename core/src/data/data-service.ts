@@ -118,6 +118,8 @@ export class DataService {
   async del(ctx: CallCtx, datasetId: string, id: string): Promise<DataResult<boolean>> {
     const a = await this.authorize(ctx, datasetId, 'delete');
     if (!a.ok) return a;
+    const d = this.deps.datasets.get(datasetId)!;
+    if ((d as any).origin) return { ok: false, code: 'READ_ONLY_REPLICA', reason: `dataset "${datasetId}" is a remote replica (read-only)` };
     return { ok: true, value: await a.value.backend!.delete(datasetId, id) };
   }
 

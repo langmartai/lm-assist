@@ -119,6 +119,14 @@ export class DatasetRegistry {
     }
     const arr = this.load();
     const idx = arr.findIndex((d) => d.id === input.id);
+
+    // Guard: do not overwrite a locally-owned dataset with a replica descriptor.
+    // A locally-owned dataset has no `origin` field (it is the authoritative owner).
+    // Converting it to a read-only replica would lock the rightful owner out of writes.
+    if (idx >= 0 && !arr[idx].origin) {
+      return { ...arr[idx] };
+    }
+
     const now = new Date().toISOString();
     const d: DatasetDescriptor = {
       id: input.id,

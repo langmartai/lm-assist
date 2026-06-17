@@ -27,12 +27,19 @@ async function hubFetch(urlPath: string): Promise<unknown> {
   return res.json();
 }
 
-async function proxyFetch(node: string, urlPath: string): Promise<unknown> {
+interface ProxyGetOptions {
+  extraHeaders?: Record<string, string>;
+}
+
+async function proxyFetch(node: string, urlPath: string, opts?: ProxyGetOptions): Promise<unknown> {
   const cfg = getHubConfig();
   const base = getHubHttpUrl();
   const proxyUrl = `${base}/api/tier-agent/machines/${node}/proxy${urlPath}`;
   const res = await fetch(proxyUrl, {
-    headers: { Authorization: `Bearer ${cfg.apiKey}` },
+    headers: {
+      Authorization: `Bearer ${cfg.apiKey}`,
+      ...(opts?.extraHeaders ?? {}),
+    },
   });
   if (!res.ok) {
     throw new Error(`Proxy request to ${node}${urlPath} returned ${res.status}`);
@@ -40,10 +47,75 @@ async function proxyFetch(node: string, urlPath: string): Promise<unknown> {
   return res.json();
 }
 
+async function proxyPost(node: string, urlPath: string, body: unknown): Promise<unknown> {
+  const cfg = getHubConfig();
+  const base = getHubHttpUrl();
+  const proxyUrl = `${base}/api/tier-agent/machines/${node}/proxy${urlPath}`;
+  const res = await fetch(proxyUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${cfg.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`Proxy POST to ${node}${urlPath} returned ${res.status}`);
+  }
+  return res.json();
+}
+
+// ── Error code helpers ───────────────────────────────────────────────────────
+
+const AUTH_DENY_CODES = new Set(['KEY_REQUIRED', 'KEY_EXPIRED', 'KEY_INVALID', 'KEY_REVOKED', 'KEY_WRONG_NODE']);
+
+function isAuthDenial(json: unknown): boolean {
+  if (json && typeof json === 'object') {
+    const code = (json as any).error?.code ?? (json as any).code;
+    if (typeof code === 'string' && AUTH_DENY_CODES.has(code)) return true;
+  }
+  return false;
+}
+
 // ── HubPeerClient ────────────────────────────────────────────────────────────
 
 export class HubPeerClient implements PeerClient {
+  // Cache: keyed by "node:dataset", stores { key, expMs }
+  private keyCache = new Map<string, { key: string; expMs: number }>();
+
   constructor(private nodeId: string) {}
+
+  /**
+   * Mint (or return a cached) scoped read key for a given peer dataset.
+   * The key is valid on the peer node and presented as x-lm-access-key on
+   * proxied GETs so `enforce` accepts the cloud-principal request.
+   */
+  private async keyFor(node: string, dataset: string): Promise<string | null> {
+    const cacheKey = `${node}:${dataset}`;
+    const cached = this.keyCache.get(cacheKey);
+    // Use cached key if it won't expire in the next 30 seconds
+    if (cached && cached.expMs - Date.now() > 30_000) return cached.key;
+    try {
+      const res = await proxyPost(node, '/data/access', {
+        intent: 'lm-assist cross-node sync',
+        grants: [{ dataset, actions: ['read'] }],
+      });
+      const data = (res as any).data ?? res;
+      if (!data?.key) return null;
+      this.keyCache.set(cacheKey, {
+        key: data.key,
+        expMs: Date.parse(data.expiresAt) || (Date.now() + 3_000_000),
+      });
+      return data.key;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Invalidate cached key for a peer+dataset so the next call re-mints. */
+  private evictKey(node: string, dataset: string): void {
+    this.keyCache.delete(`${node}:${dataset}`);
+  }
 
   async listPeers(): Promise<NodeInfo[]> {
     const json = await hubFetch('/api/tier-agent/machines') as any;
@@ -69,23 +141,64 @@ export class HubPeerClient implements PeerClient {
 
   async exportFrom(node: string, dataset: string, since?: string): Promise<DataRecord[]> {
     const qs = since ? `?since=${encodeURIComponent(since)}` : '';
-    const json = await proxyFetch(node, `/data/${encodeURIComponent(dataset)}/export${qs}`) as any;
-    const raw = json.data || json;
+    const urlPath = `/data/${encodeURIComponent(dataset)}/export${qs}`;
+
+    const key = await this.keyFor(node, dataset);
+    const extraHeaders: Record<string, string> = key ? { 'x-lm-access-key': key } : {};
+
+    let json: unknown;
+    try {
+      json = await proxyFetch(node, urlPath, { extraHeaders });
+    } catch {
+      return [];
+    }
+
+    // If the response contains an auth denial, invalidate and retry once with a fresh key
+    if (isAuthDenial(json)) {
+      this.evictKey(node, dataset);
+      const freshKey = await this.keyFor(node, dataset);
+      if (!freshKey) return [];
+      try {
+        json = await proxyFetch(node, urlPath, { extraHeaders: { 'x-lm-access-key': freshKey } });
+      } catch {
+        return [];
+      }
+      if (isAuthDenial(json)) return [];
+    }
+
+    const raw = (json as any).data || json;
     // envelope: { records: [...] } or direct array
     return Array.isArray(raw) ? raw : (raw.records ?? []);
   }
 
   async getFrom(node: string, dataset: string, id: string): Promise<DataRecord | null> {
+    const urlPath = `/data/${encodeURIComponent(dataset)}/records/${encodeURIComponent(id)}`;
+
+    const key = await this.keyFor(node, dataset);
+    const extraHeaders: Record<string, string> = key ? { 'x-lm-access-key': key } : {};
+
+    let json: unknown;
     try {
-      const json = await proxyFetch(
-        node,
-        `/data/${encodeURIComponent(dataset)}/records/${encodeURIComponent(id)}`,
-      ) as any;
-      const raw = json.data || json;
-      return raw ?? null;
+      json = await proxyFetch(node, urlPath, { extraHeaders });
     } catch {
       return null;
     }
+
+    // If the response contains an auth denial, invalidate and retry once with a fresh key
+    if (isAuthDenial(json)) {
+      this.evictKey(node, dataset);
+      const freshKey = await this.keyFor(node, dataset);
+      if (!freshKey) return null;
+      try {
+        json = await proxyFetch(node, urlPath, { extraHeaders: { 'x-lm-access-key': freshKey } });
+      } catch {
+        return null;
+      }
+      if (isAuthDenial(json)) return null;
+    }
+
+    const raw = (json as any).data || json;
+    return raw ?? null;
   }
 }
 
