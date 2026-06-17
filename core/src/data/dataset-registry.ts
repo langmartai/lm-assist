@@ -31,14 +31,14 @@ export class DatasetRegistry {
     try {
       if (!fs.existsSync(this.file)) return [];
       const stat = fs.statSync(this.file);
-      if (this.cache && stat.mtimeMs === this.mtime) return this.cache;
+      if (this.cache && stat.mtimeMs === this.mtime) return [...this.cache];
       const data = JSON.parse(fs.readFileSync(this.file, 'utf-8'));
       const arr: DatasetDescriptor[] = Array.isArray(data) ? data : [];
       this.cache = arr;
       this.mtime = stat.mtimeMs;
       return arr;
     } catch {
-      return this.cache ?? [];
+      return this.cache ? [...this.cache] : [];
     }
   }
 
@@ -46,7 +46,7 @@ export class DatasetRegistry {
     const dir = path.dirname(this.file);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(this.file, JSON.stringify(arr, null, 2));
-    this.cache = arr;
+    this.cache = [...arr];
     this.mtime = fs.statSync(this.file).mtimeMs;
   }
 
