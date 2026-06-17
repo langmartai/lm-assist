@@ -159,5 +159,29 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
         return wrapResponse({ deleted: r.value }, start);
       },
     },
+
+    // GET /data/sync/manifest — syncable datasets this node advertises (must precede :dataset wildcard)
+    {
+      method: 'GET',
+      pattern: /^\/data\/sync\/manifest$/,
+      handler: async (req) => {
+        const start = Date.now();
+        if (!svc().isEnabled()) return disabled(start);
+        return wrapResponse({ node: svc().nodeId(), datasets: svc().syncManifest(svc().resolvePrincipal(req)) }, start);
+      },
+    },
+
+    // GET /data/:dataset/export?since=ISO  — records changed since watermark (for sync pull)
+    {
+      method: 'GET',
+      pattern: /^\/data\/(?<dataset>[^/]+)\/export$/,
+      handler: async (req) => {
+        const start = Date.now();
+        if (!svc().isEnabled()) return disabled(start);
+        const r = await svc().exportDataset(ctxOf(req), req.params.dataset, req.query?.since);
+        if (!r.ok) return wrapError(r.code, r.reason, start);
+        return wrapResponse({ records: r.value }, start);
+      },
+    },
   ];
 }

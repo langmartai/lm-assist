@@ -3,8 +3,9 @@ import { open, RootDatabase, Database } from 'lmdb';
 import * as fs from 'fs';
 import * as path from 'path';
 import type {
-  StorageBackend, BackendKind, DatasetDescriptor, DataRecord, QuerySpec, QueryFilter,
+  StorageBackend, BackendKind, DatasetDescriptor, DataRecord, QuerySpec, QueryFilter, NodeOrigin,
 } from '../types';
+import { isNewer } from '../types';
 import { cacheDirFor } from '../paths';
 
 interface Env { root: RootDatabase; db: Database<DataRecord, string>; }
@@ -99,5 +100,27 @@ export class CacheBackend implements StorageBackend {
     if (db.get(id) === undefined) return false;
     await db.remove(id);
     return true;
+  }
+
+  async exportSince(dataset: string, since?: string): Promise<DataRecord[]> {
+    const { db } = this.envFor(dataset);
+    const rows: DataRecord[] = [];
+    for (const { value } of db.getRange()) {
+      const r = value as DataRecord;
+      if (!since || r.updatedAt >= since) rows.push(r);
+    }
+    rows.sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0));
+    return rows;
+  }
+
+  async importBatch(dataset: string, records: DataRecord[], origin: NodeOrigin): Promise<{ applied: number; skipped: number }> {
+    const { db } = this.envFor(dataset);
+    let applied = 0, skipped = 0;
+    for (const incoming of records) {
+      const local = (db.get(incoming.id) as DataRecord | undefined) ?? null;
+      const stamped: DataRecord = { ...incoming, origin };
+      if (isNewer(stamped, local)) { await db.put(incoming.id, stamped); applied++; } else skipped++;
+    }
+    return { applied, skipped };
   }
 }

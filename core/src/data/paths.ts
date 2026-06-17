@@ -30,3 +30,7 @@ export function thisNodeId(): string {
     return os.hostname() || 'local';
   }
 }
+/** Storage dir for a remote node's replica of a dataset (used by the sync engine, M5+). */
+export function remoteDir(node: string, datasetId: string): string {
+  return path.join(dataRoot(), 'remote', node, `${datasetId}.lmdb`);
+}

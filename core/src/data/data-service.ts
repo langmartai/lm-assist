@@ -1,6 +1,6 @@
 // core/src/data/data-service.ts
 import type {
-  Principal, DataAction, DataRecord, QuerySpec, AccessRequest, BackendKind, NodeVisibility,
+  Principal, DataAction, DataRecord, QuerySpec, AccessRequest, BackendKind, NodeVisibility, SyncMode,
 } from './types';
 import type { DatasetRegistry } from './dataset-registry';
 import { getDatasetRegistry } from './dataset-registry';
@@ -98,6 +98,33 @@ export class DataService {
     const a = await this.authorize(ctx, datasetId, 'delete');
     if (!a.ok) return a;
     return { ok: true, value: await a.value.backend!.delete(datasetId, id) };
+  }
+
+  // M5 sync helpers ----------------------------------------------------------------
+
+  /** Returns this node's stable id. */
+  nodeId(): string { return thisNodeId(); }
+
+  /** Export records from a dataset changed since the given watermark (ISO string). */
+  async exportDataset(ctx: CallCtx, datasetId: string, since?: string): Promise<DataResult<DataRecord[]>> {
+    const a = await this.authorize(ctx, datasetId, 'read');
+    if (!a.ok) return a;
+    const records = await a.value.backend!.exportSince(datasetId, since);
+    return { ok: true, value: records };
+  }
+
+  /** Returns descriptor stubs for datasets this node advertises as syncable (syncMode !== 'none'). */
+  syncManifest(p: Principal): Array<{ id: string; syncMode: SyncMode; ownerNode: string; backend: BackendKind }> {
+    const readActions: DataAction[] = ['read'];
+    const out = [];
+    for (const d of this.deps.datasets.list()) {
+      const syncMode: SyncMode = ((d as any).syncMode || 'none') as SyncMode;
+      if (syncMode === 'none') continue;
+      const actions = this.deps.manager.evaluateGrants(p, d, readActions);
+      if (!actions.length) continue;
+      out.push({ id: d.id, syncMode, ownerNode: d.ownerNode, backend: d.backend });
+    }
+    return out;
   }
 }
 

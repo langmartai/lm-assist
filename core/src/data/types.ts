@@ -103,7 +103,7 @@ export interface AccessRequest {
   ttlSeconds?: number;
 }
 
-// M1 backend contract. Sync hooks (exportSince/importBatch) are added in M5.
+// M1 backend contract. Sync hooks (exportSince/importBatch) added in M5-T2.
 export interface StorageBackend {
   readonly kind: BackendKind;
   createDataset(d: DatasetDescriptor): Promise<void>;
@@ -113,4 +113,9 @@ export interface StorageBackend {
   query(dataset: string, q: QuerySpec): Promise<{ records: DataRecord[]; total?: number }>;
   search?(dataset: string, s: SearchSpec): Promise<Array<DataRecord & { score: number }>>;
   delete(dataset: string, id: string): Promise<boolean>;
+  // M5 sync hooks ----------------------------------------------------------------
+  /** Returns records with updatedAt >= since (or all if no since), ascending by updatedAt. */
+  exportSince(dataset: string, since?: string): Promise<DataRecord[]>;
+  /** LWW-guarded batch import: stamps origin on each record applied. */
+  importBatch(dataset: string, records: DataRecord[], origin: NodeOrigin): Promise<{ applied: number; skipped: number }>;
 }
