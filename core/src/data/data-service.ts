@@ -10,6 +10,9 @@ import { BackendRegistry as BReg } from './backend-registry';
 import { AccessManager } from './access-manager';
 import { CacheBackend } from './backends/cache-backend';
 import { VectorBackend } from './backends/vector-backend';
+import { KnowledgeBackend } from './backends/knowledge-backend';
+import { VectorsBackend } from './backends/vectors-backend';
+import { ensureSystemDatasets } from './system-datasets';
 import { getKeyStore } from './key-store';
 import { redactRecord, redactValueDeep } from './redaction';
 import { thisNodeId } from './paths';
@@ -189,9 +192,12 @@ let engineInstance: SyncEngine | null = null;
 export function getDataService(): DataService {
   if (!instance) {
     const datasets = getDatasetRegistry();
+    ensureSystemDatasets(datasets);
     const backends = new BReg();
     backends.register(new CacheBackend());
     backends.register(new VectorBackend());
+    backends.register(new KnowledgeBackend());
+    backends.register(new VectorsBackend());
     const manager = new AccessManager({ datasets, keys: getKeyStore(), nodeId: thisNodeId() });
     const queue = getSyncQueue();
     const nodeId = thisNodeId();
