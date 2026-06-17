@@ -1,0 +1,63 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as os from 'os';
+import * as path from 'path';
+import * as fs from 'fs';
+import { DataService } from '../../data/data-service';
+import { BackendRegistry } from '../../data/backend-registry';
+import { CacheBackend } from '../../data/backends/cache-backend';
+import { DatasetRegistry } from '../../data/dataset-registry';
+import { KeyStore } from '../../data/key-store';
+import { AccessManager } from '../../data/access-manager';
+import { REDACTED } from '../../data/redaction';
+
+function service() {
+  const datasets = new DatasetRegistry(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lm-ds-reg-')), 'd.json'));
+  const keys = new KeyStore(fs.mkdtempSync(path.join(os.tmpdir(), 'lm-ds-keys-')));
+  const backends = new BackendRegistry();
+  backends.register(new CacheBackend(fs.mkdtempSync(path.join(os.tmpdir(), 'lm-ds-cache-'))));
+  const manager = new AccessManager({ datasets, keys, nodeId: 'n1' });
+  // force-enable regardless of project settings on the test box
+  const svc = new DataService({ datasets, backends, manager });
+  (svc as any).enabledOverride = true;
+  return { svc, datasets };
+}
+
+test('data service: local put then redacted get', async () => {
+  const { svc, datasets } = service();
+  datasets.create({ id: 'd', backend: 'cache', visibility: 'local-only', config: { kind: 'cache' }, acl: [] });
+  const local = { principal: { type: 'local' as const } };
+  const put = await svc.put(local, 'd', { id: 'a', fields: { name: 'x', apiKey: 'sk-1' }, createdAt: 't', updatedAt: 't' });
+  assert.equal(put.ok, true);
+  const got = await svc.get(local, 'd', 'a');
+  assert.equal(got.ok, true);
+  if (!got.ok) return;
+  assert.equal(got.value?.fields.name, 'x');
+  assert.equal(got.value?.fields.apiKey, REDACTED); // redaction on the way out
+});
+
+test('data service: cloud denied without key, allowed with minted key', async () => {
+  const { svc, datasets } = service();
+  datasets.create({ id: 'd', backend: 'cache', visibility: 'cross-node-readable',
+    config: { kind: 'cache' }, acl: [{ principal: 'cloud', actions: ['read', 'query'] }] });
+  await svc.put({ principal: { type: 'local' } }, 'd', { id: 'a', fields: { n: 1 }, createdAt: 't', updatedAt: 't' });
+  const cloud = { type: 'cloud' as const, userId: 'u1' };
+  const denied = await svc.get({ principal: cloud }, 'd', 'a');
+  assert.equal(denied.ok, false);
+  const issued = await svc.requestAccess(cloud, { grants: [{ dataset: 'd', actions: ['read'] }] });
+  assert.equal(issued.ok, true);
+  if (!issued.ok) return;
+  const ok = await svc.get({ principal: cloud, keyHeader: issued.value.key }, 'd', 'a');
+  assert.equal(ok.ok, true);
+});
+
+test('data service: catalog reflects what a principal may do', async () => {
+  const { svc, datasets } = service();
+  datasets.create({ id: 'pub', backend: 'cache', visibility: 'cross-node-readable',
+    config: { kind: 'cache' }, acl: [{ principal: 'cloud', actions: ['read'] }] });
+  datasets.create({ id: 'priv', backend: 'cache', visibility: 'local-only', config: { kind: 'cache' }, acl: [] });
+  const cloud = svc.catalog({ type: 'cloud', userId: 'u' });
+  assert.deepEqual(cloud.map((c) => c.id), ['pub']); // priv hidden from cloud
+  const local = svc.catalog({ type: 'local' });
+  assert.deepEqual(local.map((c) => c.id).sort(), ['priv', 'pub']);
+});
