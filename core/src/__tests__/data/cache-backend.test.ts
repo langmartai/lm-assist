@@ -12,7 +12,7 @@ function descriptor(id: string): DatasetDescriptor {
     config: { kind: 'cache' }, acl: [], createdAt: 't', updatedAt: 't' };
 }
 function rec(id: string, fields: Record<string, unknown>, text?: string): DataRecord {
-  return { id, fields, text, createdAt: 't', updatedAt: 't' };
+  return { id, version: 1, fields, text, createdAt: 't', updatedAt: 't' };
 }
 
 test('cache backend: put/get round-trip', async () => {

@@ -19,7 +19,7 @@ export type DataResult<T> = { ok: true; value: T } | { ok: false; code: string; 
 
 export class DataService {
   private enabledOverride?: boolean; // tests only
-  constructor(private deps: { datasets: DatasetRegistry; backends: BackendRegistry; manager: AccessManager }) {}
+  constructor(private deps: { datasets: DatasetRegistry; backends: BackendRegistry; manager: AccessManager; onLocalWrite?: (dataset: string, id: string) => void }) {}
 
   isEnabled(): boolean {
     if (typeof this.enabledOverride === 'boolean') return this.enabledOverride;
@@ -78,7 +78,20 @@ export class DataService {
   async put(ctx: CallCtx, datasetId: string, record: DataRecord): Promise<DataResult<{ id: string }>> {
     const a = await this.authorize(ctx, datasetId, 'write');
     if (!a.ok) return a;
-    return { ok: true, value: await a.value.backend!.put(datasetId, record) };
+    const d = this.deps.datasets.get(datasetId)!;
+    if ((d as any).origin) return { ok: false, code: 'READ_ONLY_REPLICA', reason: `dataset "${datasetId}" is a remote replica (read-only)` };
+    const existing = await a.value.backend!.get(datasetId, record.id);
+    const now = new Date().toISOString();
+    const versioned: DataRecord = {
+      ...record,
+      version: (existing?.version ?? 0) + 1,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      origin: undefined, // local-owned record (origin is stamped only on replicas)
+    };
+    const r = await a.value.backend!.put(datasetId, versioned);
+    this.deps.onLocalWrite?.(datasetId, record.id);
+    return { ok: true, value: r };
   }
 
   async del(ctx: CallCtx, datasetId: string, id: string): Promise<DataResult<boolean>> {

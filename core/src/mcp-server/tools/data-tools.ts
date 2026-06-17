@@ -80,6 +80,7 @@ async function handleDataPut(args: Record<string, unknown>): Promise<McpToolResu
   const now = new Date().toISOString();
   const record: DataRecord = {
     id: String(rec.id),
+    version: 0, // placeholder — engine overwrites in DataService.put
     fields: (rec.fields && typeof rec.fields === 'object' ? rec.fields : {}) as Record<string, unknown>,
     text: typeof rec.text === 'string' ? rec.text : undefined,
     metadata: (rec.metadata && typeof rec.metadata === 'object' ? rec.metadata : undefined) as Record<string, unknown> | undefined,

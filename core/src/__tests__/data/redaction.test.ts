@@ -24,6 +24,7 @@ test('isHardExcludedPath: allows ordinary paths', () => {
 test('redactRecord: scrubs secret-named fields recursively, leaves others', () => {
   const rec: DataRecord = {
     id: 'r1',
+    version: 1,
     fields: {
       name: 'ok',
       apiKey: 'sk-123',

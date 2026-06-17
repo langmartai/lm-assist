@@ -27,7 +27,7 @@ test('data service: local put then redacted get', async () => {
   const { svc, datasets } = service();
   datasets.create({ id: 'd', backend: 'cache', visibility: 'local-only', config: { kind: 'cache' }, acl: [] });
   const local = { principal: { type: 'local' as const } };
-  const put = await svc.put(local, 'd', { id: 'a', fields: { name: 'x', apiKey: 'sk-1' }, createdAt: 't', updatedAt: 't' });
+  const put = await svc.put(local, 'd', { id: 'a', version: 0, fields: { name: 'x', apiKey: 'sk-1' }, createdAt: 't', updatedAt: 't' });
   assert.equal(put.ok, true);
   const got = await svc.get(local, 'd', 'a');
   assert.equal(got.ok, true);
@@ -40,7 +40,7 @@ test('data service: cloud denied without key, allowed with minted key', async ()
   const { svc, datasets } = service();
   datasets.create({ id: 'd', backend: 'cache', visibility: 'cross-node-readable',
     config: { kind: 'cache' }, acl: [{ principal: 'cloud', actions: ['read', 'query'] }] });
-  await svc.put({ principal: { type: 'local' } }, 'd', { id: 'a', fields: { n: 1 }, createdAt: 't', updatedAt: 't' });
+  await svc.put({ principal: { type: 'local' } }, 'd', { id: 'a', version: 0, fields: { n: 1 }, createdAt: 't', updatedAt: 't' });
   const cloud = { type: 'cloud' as const, userId: 'u1' };
   const denied = await svc.get({ principal: cloud }, 'd', 'a');
   assert.equal(denied.ok, false);

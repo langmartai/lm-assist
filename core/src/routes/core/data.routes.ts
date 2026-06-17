@@ -17,6 +17,7 @@ function recordFromBody(body: any): DataRecord {
   const now = new Date().toISOString();
   return {
     id: String(body?.id ?? ''),
+    version: 0, // placeholder — engine overwrites in DataService.put
     fields: (body?.fields && typeof body.fields === 'object') ? body.fields : {},
     text: typeof body?.text === 'string' ? body.text : undefined,
     metadata: (body?.metadata && typeof body.metadata === 'object') ? body.metadata : undefined,

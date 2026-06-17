@@ -48,12 +48,24 @@ export interface DatasetDescriptor {
 
 export interface DataRecord {
   id: string;
+  version: number;
   fields: Record<string, unknown>;
   text?: string;
   metadata?: Record<string, unknown>;
   origin?: NodeOrigin;        // stamped on sync landing (M5); absent = local
   createdAt: string;
   updatedAt: string;
+}
+
+export type SyncMode = 'none' | 'full' | 'partial';
+
+/** LWW order: version desc, then updatedAt desc, then ownerNode desc. True iff `incoming` should win. */
+export function isNewer(incoming: { version: number; updatedAt: string; origin?: NodeOrigin },
+                        local: { version: number; updatedAt: string; origin?: NodeOrigin } | null): boolean {
+  if (!local) return true;
+  if (incoming.version !== local.version) return incoming.version > local.version;
+  if (incoming.updatedAt !== local.updatedAt) return incoming.updatedAt > local.updatedAt;
+  return (incoming.origin?.machineId || '') > (local.origin?.machineId || '');
 }
 
 export interface QueryFilter {
