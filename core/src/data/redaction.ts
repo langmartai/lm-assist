@@ -40,6 +40,12 @@ function redactValue(value: unknown): unknown {
   return value;
 }
 
+/** Deep-clone an arbitrary value, replacing any object property whose key matches SECRET_KEY_RE with REDACTED.
+ *  Used to scrub admin-op results (status/stats objects), which are not DataRecords. */
+export function redactValueDeep(v: unknown): unknown {
+  return redactValue(v);
+}
+
 /** Deep-clone the record with any secret-named field values replaced by REDACTED. */
 export function redactRecord(rec: DataRecord): DataRecord {
   return {

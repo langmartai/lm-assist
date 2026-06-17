@@ -11,7 +11,7 @@ import { AccessManager } from './access-manager';
 import { CacheBackend } from './backends/cache-backend';
 import { VectorBackend } from './backends/vector-backend';
 import { getKeyStore } from './key-store';
-import { redactRecord } from './redaction';
+import { redactRecord, redactValueDeep } from './redaction';
 import { thisNodeId } from './paths';
 import { getProjectSettings } from '../project-settings';
 import type { ParsedRequest } from '../routes/index';
@@ -104,6 +104,15 @@ export class DataService {
     if (!backend.search) return { ok: false, code: 'NOT_SUPPORTED', reason: `backend "${backend.kind}" does not support search` };
     const results = await backend.search(datasetId, spec);
     return { ok: true, value: results.map((r) => ({ ...redactRecord(r), score: r.score })) };
+  }
+
+  async admin(ctx: CallCtx, datasetId: string, op: string, args?: Record<string, unknown>): Promise<DataResult<unknown>> {
+    const a = await this.authorize(ctx, datasetId, 'manage');
+    if (!a.ok) return a;
+    const backend = a.value.backend!;
+    if (!backend.admin) return { ok: false, code: 'NOT_SUPPORTED', reason: `backend "${backend.kind}" has no admin ops` };
+    const result = await backend.admin(datasetId, op, args);
+    return { ok: true, value: redactValueDeep(result) };
   }
 
   async put(ctx: CallCtx, datasetId: string, record: DataRecord): Promise<DataResult<{ id: string }>> {

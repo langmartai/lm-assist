@@ -1,7 +1,7 @@
 // core/src/data/types.ts
 // Shared contracts for the generic data service. CommonJS-safe (types only).
 
-export type BackendKind = 'vector' | 'sql' | 'cache';
+export type BackendKind = 'vector' | 'sql' | 'cache' | 'knowledge' | 'vectors';
 export type DataAction = 'read' | 'query' | 'search' | 'write' | 'delete' | 'manage';
 export type NodeVisibility = 'local-only' | 'synced' | 'cross-node-readable';
 export type PrincipalType = 'local' | 'cloud';
@@ -29,7 +29,9 @@ export interface SqlConfig {
   kind: 'sql';
   indexedFields?: Array<{ path: string; type: 'text' | 'number' }>; // M3
 }
-export type BackendConfig = CacheConfig | VectorConfig | SqlConfig;
+export interface KnowledgeConfig { kind: 'knowledge'; } // system dataset over getKnowledgeStore()
+export interface VectorsConfig { kind: 'vectors'; }      // system dataset over getVectorStore()
+export type BackendConfig = CacheConfig | VectorConfig | SqlConfig | KnowledgeConfig | VectorsConfig;
 
 export interface DatasetDescriptor {
   id: string;                 // ^[a-z0-9][a-z0-9_-]{0,63}$
@@ -145,6 +147,8 @@ export interface StorageBackend {
   get(dataset: string, id: string): Promise<DataRecord | null>;
   query(dataset: string, q: QuerySpec): Promise<{ records: DataRecord[]; total?: number }>;
   search?(dataset: string, s: SearchSpec): Promise<Array<DataRecord & { score: number }>>;
+  /** Store-specific maintenance op (the 'manage' path). Optional — only system-dataset adapters implement it. */
+  admin?(dataset: string, op: string, args?: Record<string, unknown>): Promise<unknown>;
   delete(dataset: string, id: string): Promise<boolean>;
   // M5 sync hooks ----------------------------------------------------------------
   /** Returns records with updatedAt >= since (or all if no since), ascending by updatedAt. */
