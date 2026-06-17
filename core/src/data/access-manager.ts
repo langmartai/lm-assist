@@ -25,6 +25,10 @@ function header(req: ParsedRequest, name: string): string | undefined {
   return Array.isArray(v) ? v[0] : v;
 }
 
+function isLoopbackAddress(ip?: string): boolean {
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
 function principalMatches(rule: AclRule['principal'], p: Principal): boolean {
   if (rule === '*') return true;
   if (typeof rule === 'string') return rule === p.type;
@@ -35,11 +39,18 @@ export class AccessManager {
   constructor(private deps: { datasets: DatasetRegistry; keys: KeyStore; nodeId: string }) {}
 
   resolvePrincipal(req: ParsedRequest): Principal {
-    // The hub relay marks every relayed call with `x-relay-source: hub` (see api-relay-handler).
+    // `x-relay-source` is set server-side by the hub relay, which strips any client-supplied copy
+    // (see api-relay-handler) — so it is a trustworthy signal that this is a relayed (cloud) call.
+    // `x-lm-user-id` is likewise relay-controlled (stripped from client input); it is unset in M1
+    // until the hub injects a verified user id, so cloud callers get only '*'/cloud-class grants.
     if (header(req, 'x-relay-source') === 'hub') {
       return { type: 'cloud', userId: header(req, 'x-lm-user-id') };
     }
-    return { type: 'local' };
+    // Not relayed: only a genuinely loopback caller (holding the local api-token) is trusted as
+    // local root. Any other origin is treated as cloud (no userId) — never local root — which
+    // defends the 0.0.0.0 bind if api-token auth is ever disabled.
+    if (isLoopbackAddress(req.clientIp)) return { type: 'local' };
+    return { type: 'cloud' };
   }
 
   evaluateGrants(p: Principal, d: DatasetDescriptor, requested: DataAction[]): DataAction[] {

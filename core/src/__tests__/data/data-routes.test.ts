@@ -23,7 +23,7 @@ function find(method: string, path: string) {
 }
 function call(method: string, path: string, opts: { body?: any; headers?: Record<string, string> } = {}) {
   const { handler, params } = find(method, path);
-  const req: ParsedRequest = { method, path, params, query: {}, body: opts.body, headers: opts.headers ?? {} };
+  const req: ParsedRequest = { method, path, params, query: {}, body: opts.body, headers: opts.headers ?? {}, clientIp: '127.0.0.1' };
   return handler(req, {} as any);
 }
 

@@ -16,14 +16,15 @@ function deps() {
   const keys = new KeyStore(keysDir);
   return { mgr: new AccessManager({ datasets, keys, nodeId: 'n1' }), datasets, keys };
 }
-function req(headers: Record<string, string>): ParsedRequest {
-  return { method: 'GET', path: '/', params: {}, query: {}, body: undefined, headers };
+function req(headers: Record<string, string>, clientIp?: string): ParsedRequest {
+  return { method: 'GET', path: '/', params: {}, query: {}, body: undefined, headers, clientIp };
 }
 
-test('resolvePrincipal: relayed = cloud, direct = local', () => {
+test('resolvePrincipal: relayed = cloud, loopback = local, other = cloud', () => {
   const { mgr } = deps();
   assert.equal(mgr.resolvePrincipal(req({ 'x-relay-source': 'hub' })).type, 'cloud');
-  assert.equal(mgr.resolvePrincipal(req({})).type, 'local');
+  assert.equal(mgr.resolvePrincipal(req({}, '127.0.0.1')).type, 'local');
+  assert.equal(mgr.resolvePrincipal(req({})).type, 'cloud'); // non-loopback, non-relay -> cloud (no root)
   const p = mgr.resolvePrincipal(req({ 'x-relay-source': 'hub', 'x-lm-user-id': 'u9' }));
   assert.equal(p.userId, 'u9');
 });
