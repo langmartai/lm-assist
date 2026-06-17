@@ -3,33 +3,13 @@ import { open, RootDatabase, Database } from 'lmdb';
 import * as fs from 'fs';
 import * as path from 'path';
 import type {
-  StorageBackend, BackendKind, DatasetDescriptor, DataRecord, QuerySpec, QueryFilter, NodeOrigin,
+  StorageBackend, BackendKind, DatasetDescriptor, DataRecord, QuerySpec, NodeOrigin,
 } from '../types';
 import { isNewer } from '../types';
+import { applyQuery } from './query-filter';
 import { cacheDirFor } from '../paths';
 
 interface Env { root: RootDatabase; db: Database<DataRecord, string>; }
-
-function getField(rec: DataRecord, field: string): unknown {
-  if (field in rec.fields) return rec.fields[field];
-  if (rec.metadata && field in rec.metadata) return rec.metadata[field];
-  return (rec as unknown as Record<string, unknown>)[field];
-}
-
-function matches(rec: DataRecord, f: QueryFilter): boolean {
-  const v = getField(rec, f.field);
-  switch (f.op) {
-    case 'eq': return v === f.value;
-    case 'ne': return v !== f.value;
-    case 'gt': return (v as any) > (f.value as any);
-    case 'gte': return (v as any) >= (f.value as any);
-    case 'lt': return (v as any) < (f.value as any);
-    case 'lte': return (v as any) <= (f.value as any);
-    case 'in': return Array.isArray(f.value) && (f.value as unknown[]).includes(v);
-    case 'contains': return typeof v === 'string' && typeof f.value === 'string' && v.includes(f.value);
-    default: return false;
-  }
-}
 
 export class CacheBackend implements StorageBackend {
   readonly kind: BackendKind = 'cache';
@@ -75,24 +55,9 @@ export class CacheBackend implements StorageBackend {
 
   async query(dataset: string, q: QuerySpec): Promise<{ records: DataRecord[]; total?: number }> {
     const { db } = this.envFor(dataset);
-    let rows: DataRecord[] = [];
+    const rows: DataRecord[] = [];
     for (const { value } of db.getRange()) rows.push(value as DataRecord);
-    if (q.filter?.length) rows = rows.filter((r) => q.filter!.every((f) => matches(r, f)));
-    if (q.sort?.length) {
-      const s = q.sort;
-      rows.sort((a, b) => {
-        for (const { field, dir } of s) {
-          const av = getField(a, field) as any, bv = getField(b, field) as any;
-          if (av < bv) return dir === 'asc' ? -1 : 1;
-          if (av > bv) return dir === 'asc' ? 1 : -1;
-        }
-        return 0;
-      });
-    }
-    const total = rows.length;
-    const offset = q.offset ?? 0;
-    const limit = q.limit ?? rows.length;
-    return { records: rows.slice(offset, offset + limit), total };
+    return applyQuery(rows, q);
   }
 
   async delete(dataset: string, id: string): Promise<boolean> {

@@ -20,6 +20,11 @@ export function keysDir(): string {
 export function cacheDirFor(datasetId: string): string {
   return path.join(dataRoot(), 'cache', `${datasetId}.lmdb`);
 }
+/** Store dir for the generic vector backend's per-dataset LanceDB tables (ds_<id>).
+ *  Separate from the knowledge `lance-store/vectors` table so the two never collide. */
+export function vectorStoreDir(): string {
+  return path.join(dataRoot(), 'vectors');
+}
 // Canonical fleet node id: hub-assigned gatewayId when registered, else the stable machineId,
 // else hostname. Matches what the hub + knowledge remote-sync use to identify a node.
 export function thisNodeId(): string {
