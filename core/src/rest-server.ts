@@ -553,6 +553,7 @@ export class TierRestServer {
       params: {},
       query: Object.fromEntries(url.searchParams),
       body: await this.parseBody(req),
+      headers: req.headers,
       clientIp: req.socket?.remoteAddress || undefined,
     };
   }

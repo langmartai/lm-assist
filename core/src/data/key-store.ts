@@ -2,6 +2,7 @@
 import { open, RootDatabase, Database } from 'lmdb';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as path from 'path';
 import type { AccessKey, PrincipalType, DataAction } from './types';
 import { keysDir } from './paths';
 
@@ -24,7 +25,8 @@ export class KeyStore {
 
   constructor(dirOverride?: string) {
     const dir = dirOverride || keysDir();
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const parentDir = path.dirname(dir);
+    if (!fs.existsSync(parentDir)) fs.mkdirSync(parentDir, { recursive: true });
     this.env = open({ path: dir, compression: true, maxDbs: 2, mapSize: 256 * 1024 * 1024 });
     this.keys = this.env.openDB('keys', { encoding: 'msgpack' }) as Database<AccessKey, string>;
     this.audit = this.env.openDB('audit', { encoding: 'msgpack' }) as Database<AuditEntry, string>;
