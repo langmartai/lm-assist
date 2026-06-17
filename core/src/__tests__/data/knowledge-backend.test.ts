@@ -95,3 +95,18 @@ test('knowledge backend: admin rejects an unknown op', async () => {
   const be = new KnowledgeBackend();
   await assert.rejects(() => be.admin('knowledge', 'no-such-op'), /unknown admin op/i);
 });
+
+test('knowledge backend: partial put update preserves omitted fields (no parts-wipe)', async () => {
+  const be = new KnowledgeBackend();
+  const created = await be.put('knowledge', { id: '', version: 0,
+    fields: { title: 'Has parts', type: 'flow', project: '/p',
+      parts: [{ partId: 'p1', title: 'P', summary: 's', content: 'original body' }] },
+    createdAt: 't', updatedAt: 't' });
+  // update ONLY the title — omit parts entirely
+  await be.put('knowledge', { id: created.id, version: 0, fields: { title: 'Renamed only' }, createdAt: 't', updatedAt: 't' });
+  const after = await be.get('knowledge', created.id);
+  assert.equal(after?.fields.title, 'Renamed only');
+  const parts = after?.fields.parts as any[];
+  assert.equal(parts.length, 1);                 // parts preserved, NOT wiped
+  assert.equal(parts[0].content, 'original body');
+});

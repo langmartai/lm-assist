@@ -73,17 +73,27 @@ export class KnowledgeBackend implements StorageBackend {
   async put(_dataset: string, record: DataRecord): Promise<{ id: string }> {
     const store = getKnowledgeStore();
     const f = record.fields || {};
-    const title = String(f.title ?? '');
-    const type = (f.type ?? 'flow') as any;
-    const project = String(f.project ?? '');
-    const parts = Array.isArray(f.parts) ? (f.parts as any[]) : [];
-    const status = (f.status as any) ?? undefined;
     const existing = record.id ? store.getKnowledge(record.id) : null;
     if (existing) {
-      const updated = store.updateKnowledge(record.id, { title, type, project, parts, ...(status ? { status } : {}) });
+      // Partial update: only set fields the caller actually provided. Omitting a key
+      // (e.g. `parts`) must PRESERVE the existing value — never silently wipe it.
+      const updates: Record<string, unknown> = {};
+      if (f.title !== undefined) updates.title = String(f.title);
+      if (f.type !== undefined) updates.type = f.type;
+      if (f.project !== undefined) updates.project = String(f.project);
+      if (f.status !== undefined) updates.status = f.status;
+      if (Array.isArray(f.parts)) updates.parts = f.parts;
+      const updated = store.updateKnowledge(record.id, updates as any);
       return { id: updated?.id ?? record.id };
     }
-    const created = store.createKnowledge({ title, type, project, parts, ...(status ? { status } : {}) });
+    // Create: the store requires title/type/project/parts.
+    const created = store.createKnowledge({
+      title: String(f.title ?? ''),
+      type: (f.type ?? 'flow') as any, // match the store's own default type
+      project: String(f.project ?? ''),
+      parts: Array.isArray(f.parts) ? (f.parts as any[]) : [],
+      ...(f.status !== undefined ? { status: f.status as any } : {}),
+    });
     return { id: created.id };
   }
 
