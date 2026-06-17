@@ -2,6 +2,7 @@
 import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import { wrapResponse, wrapError } from '../../api/helpers';
 import { getDataService, type CallCtx } from '../../data/data-service';
+import { getDatasetRegistry } from '../../data/dataset-registry';
 import type { DataRecord } from '../../data/types';
 
 function ctxOf(req: ParsedRequest): CallCtx {
@@ -89,7 +90,6 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
         const b = req.body || {};
         try {
           // getDatasetRegistry is the same instance the service uses
-          const { getDatasetRegistry } = require('../../data/dataset-registry');
           const d = getDatasetRegistry().create({
             id: b.id, backend: b.backend ?? 'cache', title: b.title,
             visibility: b.visibility, readOnly: b.readOnly, sensitive: b.sensitive,
