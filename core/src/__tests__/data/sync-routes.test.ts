@@ -88,3 +88,13 @@ test('GET /data/sync/status (local) returns success with SyncStatus shape', asyn
   assert.ok('lastRun' in d, 'status should have lastRun field');
   assert.ok(Array.isArray(d.errors), 'status.errors should be an array');
 });
+
+test('GET /data/sync/status as CLOUD caller returns FORBIDDEN', async () => {
+  enable();
+  // x-relay-source: hub marks the request as coming through the hub relay (cloud)
+  const res = await call('GET', '/data/sync/status', {
+    headers: { 'x-relay-source': 'hub', 'x-lm-user-id': 'u1' },
+  });
+  assert.equal(res.success, false, 'should fail for cloud caller');
+  assert.equal(res.error?.code, 'FORBIDDEN', `expected FORBIDDEN, got: ${res.error?.code}`);
+});

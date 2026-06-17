@@ -12,6 +12,7 @@ import { thisNodeId } from './paths';
 let _started = false;
 let _flushTimer: NodeJS.Timeout | null = null;
 let _reconcileTimer: NodeJS.Timeout | null = null;
+let _initTimer: NodeJS.Timeout | null = null;
 
 export function startDataSync(): void {
   if (_started) return;
@@ -50,15 +51,16 @@ export function startDataSync(): void {
   });
 
   // Initial reconcile shortly after boot so a fresh node converges quickly
-  const initTimer = setTimeout(() => {
+  _initTimer = setTimeout(() => {
     getSyncEngine().reconcile().catch(() => {});
   }, 2000);
-  if (initTimer.unref) initTimer.unref();
+  if (_initTimer.unref) _initTimer.unref();
 }
 
 export function stopDataSync(): void {
   if (_flushTimer) clearInterval(_flushTimer);
   if (_reconcileTimer) clearInterval(_reconcileTimer);
-  _flushTimer = _reconcileTimer = null;
+  if (_initTimer) clearTimeout(_initTimer);
+  _flushTimer = _reconcileTimer = _initTimer = null;
   _started = false;
 }

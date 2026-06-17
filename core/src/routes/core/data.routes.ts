@@ -198,13 +198,15 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // GET /data/sync/status — current sync engine status
+    // GET /data/sync/status — current sync engine status (local-only)
     {
       method: 'GET',
       pattern: /^\/data\/sync\/status$/,
-      handler: async (_req) => {
+      handler: async (req) => {
         const start = Date.now();
         if (!svc().isEnabled()) return disabled(start);
+        const p = svc().resolvePrincipal(req);
+        if (p.type !== 'local') return wrapError('FORBIDDEN', 'sync status is local-only', start);
         return wrapResponse(getSyncEngine().status(), start);
       },
     },
