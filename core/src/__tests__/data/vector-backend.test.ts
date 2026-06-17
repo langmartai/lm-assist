@@ -73,3 +73,24 @@ test('vector backend: concurrent first writes to a new dataset both land (no cre
   assert.equal((await b.get('race', 'a'))?.id, 'a');
   assert.equal((await b.get('race', 'b'))?.id, 'b');
 });
+
+test('vector backend: query filter + sort + limit', async () => {
+  const b = be();
+  await b.createDataset(descriptor('q'));
+  await b.put('q', { id: 'a', version: 1, fields: { tag: 'x', n: 1 }, text: 'a', createdAt: 'c', updatedAt: 'u' });
+  await b.put('q', { id: 'b', version: 1, fields: { tag: 'y', n: 2 }, text: 'b', createdAt: 'c', updatedAt: 'u' });
+  await b.put('q', { id: 'c', version: 1, fields: { tag: 'x', n: 3 }, text: 'c', createdAt: 'c', updatedAt: 'u' });
+  const filtered = await b.query('q', { filter: [{ field: 'tag', op: 'eq', value: 'x' }] });
+  assert.deepEqual(filtered.records.map((r) => r.id).sort(), ['a', 'c']);
+  assert.equal(filtered.total, 2);
+  const limited = await b.query('q', { sort: [{ field: 'n', dir: 'desc' }], limit: 1 });
+  assert.deepEqual(limited.records.map((r) => r.id), ['c']);
+  assert.equal(limited.total, 3);
+});
+
+test('vector backend: query on a never-created dataset returns empty', async () => {
+  const b = be();
+  const r = await b.query('nope', {});
+  assert.deepEqual(r.records, []);
+  assert.equal(r.total, 0);
+});

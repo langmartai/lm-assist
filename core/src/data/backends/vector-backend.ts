@@ -140,7 +140,13 @@ export class VectorBackend implements StorageBackend {
   }
 
   // query added in Task 4; search in Task 5; exportSince/importBatch in Task 6.
-  async query(_dataset: string, _q: QuerySpec): Promise<{ records: DataRecord[]; total?: number }> { throw new Error('not implemented'); }
+  async query(dataset: string, q: QuerySpec): Promise<{ records: DataRecord[]; total?: number }> {
+    const table = await this.openOrNull(dataset);
+    if (!table) return { records: [], total: 0 };
+    const rows = await table.query().select(['doc']).toArray();
+    const records = rows.map((r: any) => JSON.parse(r.doc) as DataRecord);
+    return applyQuery(records, q);
+  }
 
   async delete(dataset: string, id: string): Promise<boolean> {
     const table = await this.openOrNull(dataset);
