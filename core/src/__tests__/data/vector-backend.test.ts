@@ -32,3 +32,44 @@ test('vector backend: two datasets coexist independently', async () => {
   assert.equal(await b.get('alpha', 'x'), null);
   assert.equal(await b.get('beta', 'x'), null);
 });
+
+test('vector backend: put/get round-trip preserves the full record', async () => {
+  const b = be();
+  await b.createDataset(descriptor('rt'));
+  const rec: DataRecord = {
+    id: 'r1', version: 3, fields: { title: 'Hello', n: 42 }, text: 'hello world',
+    metadata: { src: 'unit' }, createdAt: 'c', updatedAt: 'u',
+  };
+  await b.put('rt', rec);
+  const got = await b.get('rt', 'r1');
+  assert.deepEqual(got, rec); // doc column is the faithful source of truth
+});
+
+test('vector backend: re-put same id upserts (no duplicate rows)', async () => {
+  const b = be();
+  await b.createDataset(descriptor('up'));
+  await b.put('up', { id: 'r1', version: 1, fields: { v: 'first' }, text: 'first', createdAt: 'c', updatedAt: 'u1' });
+  await b.put('up', { id: 'r1', version: 2, fields: { v: 'second' }, text: 'second', createdAt: 'c', updatedAt: 'u2' });
+  const got = await b.get('up', 'r1');
+  assert.equal(got?.fields.v, 'second');
+  assert.equal(got?.version, 2);
+});
+
+test('vector backend: delete removes the record', async () => {
+  const b = be();
+  await b.createDataset(descriptor('del'));
+  await b.put('del', { id: 'r1', version: 1, fields: {}, text: 't', createdAt: 'c', updatedAt: 'u' });
+  assert.equal(await b.delete('del', 'r1'), true);
+  assert.equal(await b.get('del', 'r1'), null);
+  assert.equal(await b.delete('del', 'r1'), false); // already gone
+});
+
+test('vector backend: concurrent first writes to a new dataset both land (no create race)', async () => {
+  const b = be();
+  await Promise.all([
+    b.put('race', { id: 'a', version: 1, fields: {}, text: 'a', createdAt: 'c', updatedAt: 'u' }),
+    b.put('race', { id: 'b', version: 1, fields: {}, text: 'b', createdAt: 'c', updatedAt: 'u' }),
+  ]);
+  assert.equal((await b.get('race', 'a'))?.id, 'a');
+  assert.equal((await b.get('race', 'b'))?.id, 'b');
+});

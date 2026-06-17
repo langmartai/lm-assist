@@ -47,6 +47,7 @@ export class VectorBackend implements StorageBackend {
   private embedFn: (text: string) => Promise<number[]>;
   private dbPromise: Promise<any> | null = null;
   private tables = new Map<string, any>();
+  private opening = new Map<string, Promise<any>>();
   private ftsDirty = new Set<string>();
 
   constructor(opts?: { storeDir?: string; embed?: (text: string) => Promise<number[]> }) {
@@ -72,18 +73,36 @@ export class VectorBackend implements StorageBackend {
     return t;
   }
 
-  /** Open the dataset's table, creating it (seed-then-delete for schema inference) if absent. */
+  /** Open the dataset's table, creating it (seed-then-delete for schema inference) if absent.
+   *  Concurrency-safe: serializes concurrent first-opens per dataset and falls back to
+   *  openTable if it loses a create race (mirrors VectorStore.init()'s `initializing` guard). */
   private async tableFor(datasetId: string): Promise<any> {
-    const existing = await this.openOrNull(datasetId);
-    if (existing) return existing;
-    const db = await this.db();
-    const seed: LanceDoc = {
-      id: '__seed__', vector: new Array(VECTOR_DIM).fill(0), text: '', doc: '', version: 0, updatedAt: '',
-    };
-    const t = await db.createTable(tableName(datasetId), [seed]);
-    try { await t.delete("id = '__seed__'"); } catch { /* best effort */ }
-    this.tables.set(datasetId, t);
-    return t;
+    const cached = this.tables.get(datasetId);
+    if (cached) return cached;
+    let inflight = this.opening.get(datasetId);
+    if (!inflight) {
+      inflight = (async () => {
+        const existing = await this.openOrNull(datasetId);
+        if (existing) return existing;
+        const db = await this.db();
+        const seed: LanceDoc = {
+          id: '__seed__', vector: new Array(VECTOR_DIM).fill(0), text: '', doc: '', version: 0, updatedAt: '',
+        };
+        let t: any;
+        try {
+          t = await db.createTable(tableName(datasetId), [seed]);
+          try { await t.delete("id = '__seed__'"); } catch { /* best effort */ }
+        } catch {
+          // Lost a create race (table already exists) — open the existing one.
+          t = await db.openTable(tableName(datasetId));
+        }
+        this.tables.set(datasetId, t);
+        return t;
+      })();
+      this.opening.set(datasetId, inflight);
+    }
+    try { return await inflight; }
+    finally { this.opening.delete(datasetId); }
   }
 
   async createDataset(d: DatasetDescriptor): Promise<void> { await this.tableFor(d.id); }
@@ -103,10 +122,35 @@ export class VectorBackend implements StorageBackend {
     return JSON.parse(rows[0].doc) as DataRecord;
   }
 
-  // put/query/delete added in Task 3; search in Task 5; exportSince/importBatch in Task 6.
-  async put(_dataset: string, _record: DataRecord): Promise<{ id: string }> { throw new Error('not implemented'); }
+  private async row(rec: DataRecord): Promise<LanceDoc> {
+    const text = embedText(rec);
+    const vector = await this.embedFn(text);
+    return { id: rec.id, vector, text, doc: JSON.stringify(rec), version: rec.version ?? 0, updatedAt: rec.updatedAt };
+  }
+
+  private async upsert(table: any, rows: LanceDoc[]): Promise<void> {
+    await table.mergeInsert('id').whenMatchedUpdateAll().whenNotMatchedInsertAll().execute(rows);
+  }
+
+  async put(dataset: string, record: DataRecord): Promise<{ id: string }> {
+    const table = await this.tableFor(dataset);
+    await this.upsert(table, [await this.row(record)]);
+    this.ftsDirty.add(dataset);
+    return { id: record.id };
+  }
+
+  // query added in Task 4; search in Task 5; exportSince/importBatch in Task 6.
   async query(_dataset: string, _q: QuerySpec): Promise<{ records: DataRecord[]; total?: number }> { throw new Error('not implemented'); }
-  async delete(_dataset: string, _id: string): Promise<boolean> { throw new Error('not implemented'); }
+
+  async delete(dataset: string, id: string): Promise<boolean> {
+    const table = await this.openOrNull(dataset);
+    if (!table) return false;
+    if (!(await this.get(dataset, id))) return false;
+    await table.delete(`id = '${esc(id)}'`);
+    this.ftsDirty.add(dataset);
+    return true;
+  }
+
   async exportSince(_dataset: string, _since?: string): Promise<DataRecord[]> { throw new Error('not implemented'); }
   async importBatch(_dataset: string, _records: DataRecord[], _origin: NodeOrigin): Promise<{ applied: number; skipped: number }> { throw new Error('not implemented'); }
 }
