@@ -95,3 +95,50 @@ test('enforce: expired and revoked keys rejected', async () => {
   assert.equal(expired.ok, false);
   assert.equal(expired.ok ? '' : expired.code, 'KEY_EXPIRED');
 });
+
+test('enforce: revoked key rejected', async () => {
+  const { mgr, datasets, keys } = deps();
+  datasets.create({ id: 'd', backend: 'cache', visibility: 'cross-node-readable',
+    config: { kind: 'cache' }, acl: [{ principal: 'cloud', actions: ['read'] }] });
+  const d = datasets.get('d')!;
+  const crypto = require('crypto');
+  const secret = 'abc';
+  const keyId = 'kr';
+  await keys.put({ keyId, secretHash: crypto.createHash('sha256').update(secret).digest('hex'),
+    principalType: 'cloud', principalId: 'u', node: 'n1', grants: [{ dataset: 'd', actions: ['read'] }],
+    issuedAt: '2000-01-01T00:00:00Z', expiresAt: '2999-01-01T00:00:00Z', revoked: true });
+  const res = await mgr.enforce({ type: 'cloud', userId: 'u' }, `${keyId}.${secret}`, d, 'read');
+  assert.equal(res.ok, false);
+  assert.equal(res.ok ? '' : res.code, 'KEY_REVOKED');
+});
+
+test('enforce: wrong-node key rejected', async () => {
+  const { mgr, datasets, keys } = deps();
+  datasets.create({ id: 'd', backend: 'cache', visibility: 'cross-node-readable',
+    config: { kind: 'cache' }, acl: [{ principal: 'cloud', actions: ['read'] }] });
+  const d = datasets.get('d')!;
+  const crypto = require('crypto');
+  const secret = 'abc';
+  const keyId = 'kn';
+  await keys.put({ keyId, secretHash: crypto.createHash('sha256').update(secret).digest('hex'),
+    principalType: 'cloud', principalId: 'u', node: 'other', grants: [{ dataset: 'd', actions: ['read'] }],
+    issuedAt: '2000-01-01T00:00:00Z', expiresAt: '2999-01-01T00:00:00Z' });
+  const res = await mgr.enforce({ type: 'cloud', userId: 'u' }, `${keyId}.${secret}`, d, 'read');
+  assert.equal(res.ok, false);
+  assert.equal(res.ok ? '' : res.code, 'KEY_WRONG_NODE');
+});
+
+test('enforce: bad secret rejected', async () => {
+  const { mgr, datasets, keys } = deps();
+  datasets.create({ id: 'd', backend: 'cache', visibility: 'cross-node-readable',
+    config: { kind: 'cache' }, acl: [{ principal: 'cloud', actions: ['read'] }] });
+  const d = datasets.get('d')!;
+  const crypto = require('crypto');
+  const keyId = 'kb';
+  await keys.put({ keyId, secretHash: crypto.createHash('sha256').update('rightsecret').digest('hex'),
+    principalType: 'cloud', principalId: 'u', node: 'n1', grants: [{ dataset: 'd', actions: ['read'] }],
+    issuedAt: '2000-01-01T00:00:00Z', expiresAt: '2999-01-01T00:00:00Z' });
+  const res = await mgr.enforce({ type: 'cloud', userId: 'u' }, `${keyId}.wrongsecret`, d, 'read');
+  assert.equal(res.ok, false);
+  assert.equal(res.ok ? '' : res.code, 'KEY_INVALID');
+});
