@@ -105,6 +105,37 @@ export interface AccessRequest {
   ttlSeconds?: number;
 }
 
+// M5 sync contracts ----------------------------------------------------------------
+
+export interface NodeInfo {
+  node: string;
+  hostname: string;
+  platform: string;
+}
+
+export interface ManifestEntry {
+  id: string;
+  syncMode: SyncMode;
+  ownerNode: string;
+  backend: BackendKind;
+}
+
+export interface PeerClient {
+  listPeers(): Promise<NodeInfo[]>;
+  manifest(node: string): Promise<{ node: string; datasets: ManifestEntry[] }>;
+  exportFrom(node: string, dataset: string, since?: string): Promise<DataRecord[]>;
+  getFrom(node: string, dataset: string, id: string): Promise<DataRecord | null>;
+}
+
+export interface SyncStatus {
+  lastRun: string | null;
+  peersChecked: number;
+  datasetsReplicated: number;
+  recordsApplied: number;
+  recordsSkipped: number;
+  errors: string[];
+}
+
 // M1 backend contract. Sync hooks (exportSince/importBatch) added in M5-T2.
 export interface StorageBackend {
   readonly kind: BackendKind;
