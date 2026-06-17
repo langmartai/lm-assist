@@ -140,15 +140,16 @@ export class HubPeerClient implements PeerClient {
   }
 
   async exportFrom(node: string, dataset: string, since?: string): Promise<DataRecord[]> {
-    const qs = since ? `?since=${encodeURIComponent(since)}` : '';
-    const urlPath = `/data/${encodeURIComponent(dataset)}/export${qs}`;
+    const urlPath = `/data/${encodeURIComponent(dataset)}/export`;
+    const body: Record<string, string> = {};
+    if (since) body.since = since;
 
     const key = await this.keyFor(node, dataset);
-    const extraHeaders: Record<string, string> = key ? { 'x-lm-access-key': key } : {};
+    if (key) body.key = key;
 
     let json: unknown;
     try {
-      json = await proxyFetch(node, urlPath, { extraHeaders });
+      json = await proxyPost(node, urlPath, body);
     } catch {
       return [];
     }
@@ -159,7 +160,7 @@ export class HubPeerClient implements PeerClient {
       const freshKey = await this.keyFor(node, dataset);
       if (!freshKey) return [];
       try {
-        json = await proxyFetch(node, urlPath, { extraHeaders: { 'x-lm-access-key': freshKey } });
+        json = await proxyPost(node, urlPath, { ...body, key: freshKey });
       } catch {
         return [];
       }
@@ -172,14 +173,15 @@ export class HubPeerClient implements PeerClient {
   }
 
   async getFrom(node: string, dataset: string, id: string): Promise<DataRecord | null> {
-    const urlPath = `/data/${encodeURIComponent(dataset)}/records/${encodeURIComponent(id)}`;
+    const urlPath = `/data/${encodeURIComponent(dataset)}/fetch`;
 
     const key = await this.keyFor(node, dataset);
-    const extraHeaders: Record<string, string> = key ? { 'x-lm-access-key': key } : {};
+    const body: Record<string, string> = { id };
+    if (key) body.key = key;
 
     let json: unknown;
     try {
-      json = await proxyFetch(node, urlPath, { extraHeaders });
+      json = await proxyPost(node, urlPath, body);
     } catch {
       return null;
     }
@@ -190,14 +192,14 @@ export class HubPeerClient implements PeerClient {
       const freshKey = await this.keyFor(node, dataset);
       if (!freshKey) return null;
       try {
-        json = await proxyFetch(node, urlPath, { extraHeaders: { 'x-lm-access-key': freshKey } });
+        json = await proxyPost(node, urlPath, { id, key: freshKey });
       } catch {
         return null;
       }
       if (isAuthDenial(json)) return null;
     }
 
-    const raw = (json as any).data || json;
+    const raw = (json as any).data ?? json;
     return raw ?? null;
   }
 }

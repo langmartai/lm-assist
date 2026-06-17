@@ -184,6 +184,36 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // POST /data/:dataset/export — sync pull; key in body (hub proxy doesn't forward the key header)
+    {
+      method: 'POST',
+      pattern: /^\/data\/(?<dataset>[^/]+)\/export$/,
+      handler: async (req) => {
+        const start = Date.now();
+        if (!svc().isEnabled()) return disabled(start);
+        const b = req.body || {};
+        const ctx = { principal: svc().resolvePrincipal(req), keyHeader: typeof b.key === 'string' ? b.key : undefined };
+        const r = await svc().exportDataset(ctx, req.params.dataset, typeof b.since === 'string' ? b.since : undefined);
+        if (!r.ok) return wrapError(r.code, r.reason, start);
+        return wrapResponse({ records: r.value }, start);
+      },
+    },
+
+    // POST /data/:dataset/fetch — peer-facing single-record read for partial sync; key in body
+    {
+      method: 'POST',
+      pattern: /^\/data\/(?<dataset>[^/]+)\/fetch$/,
+      handler: async (req) => {
+        const start = Date.now();
+        if (!svc().isEnabled()) return disabled(start);
+        const b = req.body || {};
+        const ctx = { principal: svc().resolvePrincipal(req), keyHeader: typeof b.key === 'string' ? b.key : undefined };
+        const r = await svc().getRecordRaw(ctx, req.params.dataset, String(b.id || ''));
+        if (!r.ok) return wrapError(r.code, r.reason, start);
+        return wrapResponse(r.value, start);
+      },
+    },
+
     // POST /data/sync — trigger a full reconcile against all peers (local-only)
     {
       method: 'POST',

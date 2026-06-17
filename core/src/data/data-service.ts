@@ -128,6 +128,18 @@ export class DataService {
   /** Returns this node's stable id. */
   nodeId(): string { return thisNodeId(); }
 
+  /**
+   * Peer-facing single-record read — authorizes 'read' and returns the LOCAL record
+   * (redacted) WITHOUT the partial remote-fallback that `get` uses. The peer-facing
+   * fetch must serve THIS node's record only; recursing to other peers would cycle.
+   */
+  async getRecordRaw(ctx: CallCtx, datasetId: string, id: string): Promise<DataResult<DataRecord | null>> {
+    const a = await this.authorize(ctx, datasetId, 'read');
+    if (!a.ok) return a;
+    const rec = await a.value.backend!.get(datasetId, id);
+    return { ok: true, value: rec ? redactRecord(rec) : null };
+  }
+
   /** Export records from a dataset changed since the given watermark (ISO string). */
   async exportDataset(ctx: CallCtx, datasetId: string, since?: string): Promise<DataResult<DataRecord[]>> {
     const a = await this.authorize(ctx, datasetId, 'read');
