@@ -12,9 +12,9 @@ import { getDatasetRegistry } from '../../data/dataset-registry';
 function enable() { (getDataService() as any).enabledOverride = true; }
 function textOf(r: any): string { return r.content.map((c: any) => c.text).join('\n'); }
 
-test('data tools: the 6 expected tools are defined and mapped', () => {
+test('data tools: the 7 expected tools are defined and mapped', () => {
   const names = DATA_TOOL_DEFS.map((d) => d.name).sort();
-  assert.deepEqual(names, ['data_catalog', 'data_delete', 'data_get', 'data_put', 'data_query', 'data_request_access']);
+  assert.deepEqual(names, ['data_catalog', 'data_delete', 'data_get', 'data_put', 'data_query', 'data_request_access', 'data_search']);
   for (const n of names) assert.equal(typeof DATA_HANDLERS[n], 'function');
 });
 
@@ -60,4 +60,22 @@ test('data tools: cloud request_access then get with key', async () => {
     DATA_HANDLERS.data_get({ dataset: id, id: 'a', key }));
   assert.equal(got.isError ?? false, false);
   assert.match(textOf(got), /"n": 1/);
+});
+
+test('data tools: data_search on a non-search (cache) dataset returns NOT_SUPPORTED', async () => {
+  enable();
+  const id = `ds_search_${Date.now()}`;
+  getDatasetRegistry().create({ id, backend: 'cache', visibility: 'local-only', config: { kind: 'cache' }, acl: [] });
+  const r = await runWithMcpContext({ principal: { type: 'local' } }, () =>
+    DATA_HANDLERS.data_search({ dataset: id, query: 'anything' }));
+  assert.equal(r.isError, true);
+  assert.match(textOf(r), /NOT_SUPPORTED/);
+});
+
+test('data tools: data_search requires dataset and query', async () => {
+  enable();
+  const missing = await runWithMcpContext({ principal: { type: 'local' } }, () =>
+    DATA_HANDLERS.data_search({ dataset: 'x' }));
+  assert.equal(missing.isError, true);
+  assert.match(textOf(missing), /query is required/);
 });

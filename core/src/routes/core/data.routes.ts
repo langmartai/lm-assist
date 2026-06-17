@@ -132,6 +132,27 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // POST /data/:dataset/search — hybrid semantic + FTS search (vector backends only)
+    {
+      method: 'POST',
+      pattern: /^\/data\/(?<dataset>[^/]+)\/search$/,
+      handler: async (req) => {
+        const start = Date.now();
+        if (!svc().isEnabled()) return disabled(start);
+        const b = req.body || {};
+        const query = typeof b.query === 'string' ? b.query : '';
+        if (!query) return wrapError('BAD_REQUEST', 'query is required', start);
+        const spec = {
+          query,
+          limit: typeof b.limit === 'number' ? b.limit : undefined,
+          filter: Array.isArray(b.filter) ? b.filter : undefined,
+        };
+        const r = await svc().search(ctxOf(req), req.params.dataset, spec);
+        if (!r.ok) return wrapError(r.code, r.reason, start);
+        return wrapResponse({ results: r.value }, start);
+      },
+    },
+
     // PUT /data/:dataset/records
     {
       method: 'PUT',

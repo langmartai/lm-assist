@@ -6,7 +6,7 @@ import type { McpToolResult } from '../configure';
 import { ok, err } from './_passthrough';
 import { currentMcpContext } from '../principal-context';
 import { getDataService, type CallCtx } from '../../data/data-service';
-import type { DataRecord, QuerySpec, AccessRequest } from '../../data/types';
+import type { DataRecord, QuerySpec, SearchSpec, AccessRequest } from '../../data/types';
 import { getHubConfig } from '../../hub-client/hub-config';
 
 function ctxFromArgs(args: Record<string, unknown>): CallCtx | { error: string } {
@@ -65,6 +65,25 @@ async function handleDataQuery(args: Record<string, unknown>): Promise<McpToolRe
   if (!dataset) return err('dataset is required');
   const q = (args.query && typeof args.query === 'object' ? args.query : {}) as QuerySpec;
   const r = await svc.query(ctx, dataset, q);
+  if (!r.ok) return err(`${r.code}: ${r.reason}`);
+  return ok(pretty(r.value));
+}
+
+async function handleDataSearch(args: Record<string, unknown>): Promise<McpToolResult> {
+  const ctx = ctxFromArgs(args);
+  if ('error' in ctx) return err(ctx.error);
+  const svc = getDataService();
+  if (!svc.isEnabled()) return err('data service is disabled');
+  const dataset = String(args.dataset || '');
+  if (!dataset) return err('dataset is required');
+  const query = typeof args.query === 'string' ? args.query : '';
+  if (!query) return err('query is required');
+  const spec: SearchSpec = {
+    query,
+    limit: typeof args.limit === 'number' ? args.limit : undefined,
+    filter: Array.isArray(args.filter) ? (args.filter as SearchSpec['filter']) : undefined,
+  };
+  const r = await svc.search(ctx, dataset, spec);
   if (!r.ok) return err(`${r.code}: ${r.reason}`);
   return ok(pretty(r.value));
 }
@@ -140,6 +159,22 @@ export const DATA_TOOL_DEFS = [
     inputSchema: { type: 'object' as const, properties: { dataset: STR('Dataset id.'), query: { type: 'object' as const, description: 'QuerySpec: { filter?, fts?, sort?, limit?, offset? }.' }, key: STR('Access key (omit if local).') }, required: ['dataset'] },
   },
   {
+    name: 'data_search',
+    description: 'Semantic + full-text hybrid search over a vector-backed dataset. Returns the best-matching records (redacted) each with a relevance `score`, ranked high to low. Only datasets whose backend is `vector` support this; others return NOT_SUPPORTED. Pass `key` if you have one.',
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        dataset: STR('Dataset id (must be a vector-backed dataset).'),
+        query: STR('Natural-language search query.'),
+        limit: { type: 'number' as const, description: 'Max results to return (default 20).' },
+        filter: { type: 'array' as const, description: 'Optional QueryFilter[] applied to results: [{ field, op, value }].', items: { type: 'object' as const } },
+        key: STR('Access key granting search/read (omit if local).'),
+      },
+      required: ['dataset', 'query'],
+    },
+  },
+  {
     name: 'data_put',
     description: 'Write (upsert) a record into a data-service dataset. `record` is { id, fields, text?, metadata? }. Requires the write action (a key granting write, or local). ',
     annotations: { readOnlyHint: false },
@@ -158,6 +193,7 @@ export const DATA_HANDLERS: Record<string, (args: Record<string, unknown>) => Pr
   data_request_access: handleDataRequestAccess,
   data_get: handleDataGet,
   data_query: handleDataQuery,
+  data_search: handleDataSearch,
   data_put: handleDataPut,
   data_delete: handleDataDelete,
 };
