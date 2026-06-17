@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import { VectorBackend } from '../../data/backends/vector-backend';
 import { fakeEmbed } from './_fake-embed';
 import type { DatasetDescriptor, DataRecord } from '../../data/types';
+import type { NodeOrigin } from '../../data/types';
 
 function tmp(): string { return fs.mkdtempSync(path.join(os.tmpdir(), 'lm-vec-')); }
 function be(dir = tmp()): VectorBackend { return new VectorBackend({ storeDir: dir, embed: fakeEmbed }); }
@@ -131,4 +132,53 @@ test('vector backend: search honors filter and limit', async () => {
 test('vector backend: search on empty/missing dataset returns []', async () => {
   const b = be();
   assert.deepEqual(await b.search('ghost', { query: 'anything' }), []);
+});
+
+const ORIGIN: NodeOrigin = { machineId: 'remote1', hostname: 'r1', os: 'linux' };
+
+test('vector backend: exportSince filters by watermark, ascending', async () => {
+  const b = be();
+  await b.createDataset(descriptor('ex'));
+  await b.put('ex', { id: 'a', version: 1, fields: {}, text: 'a', createdAt: 'c', updatedAt: '2026-01-01T00:00:00Z' });
+  await b.put('ex', { id: 'b', version: 1, fields: {}, text: 'b', createdAt: 'c', updatedAt: '2026-02-01T00:00:00Z' });
+  const all = await b.exportSince('ex');
+  assert.deepEqual(all.map((r) => r.id), ['a', 'b']); // ascending by updatedAt
+  const since = await b.exportSince('ex', '2026-01-15T00:00:00Z');
+  assert.deepEqual(since.map((r) => r.id), ['b']);
+});
+
+test('vector backend: importBatch applies newer, skips older (LWW), stamps origin', async () => {
+  const b = be();
+  await b.createDataset(descriptor('im'));
+  await b.put('im', { id: 'a', version: 2, fields: { v: 'local' }, text: 'local', createdAt: 'c', updatedAt: 'u2' });
+
+  // incoming v1 (older) is skipped; incoming v3 (newer) is applied
+  const res = await b.importBatch('im', [
+    { id: 'a', version: 1, fields: { v: 'old' }, text: 'old', createdAt: 'c', updatedAt: 'u1' },
+    { id: 'z', version: 3, fields: { v: 'new' }, text: 'searchable new content', createdAt: 'c', updatedAt: 'u3' },
+  ], ORIGIN);
+  assert.equal(res.applied, 1);
+  assert.equal(res.skipped, 1);
+
+  const a = await b.get('im', 'a');
+  assert.equal(a?.fields.v, 'local'); // local v2 preserved over incoming v1
+
+  const z = await b.get('im', 'z');
+  assert.equal(z?.fields.v, 'new');
+  assert.deepEqual(z?.origin, ORIGIN); // origin stamped on the replica
+
+  // re-embedded on import -> findable by search
+  const found = await b.search('im', { query: 'searchable new content', limit: 5 });
+  assert.ok(found.some((r) => r.id === 'z'));
+});
+
+test('vector backend: importBatch upserts (no duplicate rows)', async () => {
+  const b = be();
+  await b.createDataset(descriptor('iu'));
+  await b.importBatch('iu', [{ id: 'a', version: 1, fields: { v: '1' }, text: 't', createdAt: 'c', updatedAt: 'u1' }], ORIGIN);
+  await b.importBatch('iu', [{ id: 'a', version: 2, fields: { v: '2' }, text: 't', createdAt: 'c', updatedAt: 'u2' }], ORIGIN);
+  const got = await b.get('iu', 'a');
+  assert.equal(got?.version, 2);
+  const all = await b.query('iu', {});
+  assert.equal(all.records.filter((r) => r.id === 'a').length, 1); // single row
 });

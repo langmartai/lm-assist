@@ -15,7 +15,7 @@ import { vectorStoreDir } from '../paths';
 
 const lancedb = require('@lancedb/lancedb');
 
-// RRF + similarity constants — kept identical to core/src/vector/vector-store.ts.
+// RRF + similarity constants — same numeric values as core/src/vector/vector-store.ts (that file names the rank constant K; here it is RRF_K).
 const RRF_K = 60;
 const VEC_WEIGHT = 1.0;
 const FTS_WEIGHT = 0.8;
@@ -220,6 +220,29 @@ export class VectorBackend implements StorageBackend {
     return true;
   }
 
-  async exportSince(_dataset: string, _since?: string): Promise<DataRecord[]> { throw new Error('not implemented'); }
-  async importBatch(_dataset: string, _records: DataRecord[], _origin: NodeOrigin): Promise<{ applied: number; skipped: number }> { throw new Error('not implemented'); }
+  async exportSince(dataset: string, since?: string): Promise<DataRecord[]> {
+    const table = await this.openOrNull(dataset);
+    if (!table) return [];
+    const rows = await table.query().select(['doc', 'updatedAt']).toArray();
+    const recs: DataRecord[] = [];
+    for (const r of rows) {
+      if (!since || r.updatedAt >= since) recs.push(JSON.parse(r.doc) as DataRecord);
+    }
+    recs.sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0));
+    return recs;
+  }
+
+  async importBatch(dataset: string, records: DataRecord[], origin: NodeOrigin): Promise<{ applied: number; skipped: number }> {
+    const table = await this.tableFor(dataset);
+    let applied = 0, skipped = 0;
+    const toWrite: LanceDoc[] = [];
+    for (const incoming of records) {
+      const local = await this.get(dataset, incoming.id);
+      const stamped: DataRecord = { ...incoming, origin };
+      if (isNewer(stamped, local)) { toWrite.push(await this.row(stamped)); applied++; }
+      else skipped++;
+    }
+    if (toWrite.length) { await this.upsert(table, toWrite); this.ftsDirty.add(dataset); }
+    return { applied, skipped };
+  }
 }
