@@ -94,7 +94,7 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
           const d = getDatasetRegistry().create({
             id: b.id, backend: b.backend ?? 'cache', title: b.title,
             visibility: b.visibility, readOnly: b.readOnly, sensitive: b.sensitive,
-            config: b.config ?? { kind: 'cache' }, acl: b.acl,
+            config: b.config ?? { kind: 'cache' }, acl: b.acl, syncMode: b.syncMode,
           });
           // ensure the backend allocates storage
           await svc().put({ principal: p }, d.id, recordFromBody({ id: '__init__', fields: {} }));

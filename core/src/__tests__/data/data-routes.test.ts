@@ -56,3 +56,12 @@ test('routes: cloud create dataset is forbidden (local-only admin)', async () =>
       headers: { 'x-relay-source': 'hub' } });
   assert.equal(got.success, false);
 });
+
+test('routes: POST /data/datasets forwards syncMode to registry', async () => {
+  enable();
+  const id = `sync_${Date.now()}`;
+  const created = await call('POST', '/data/datasets',
+    { body: { id, backend: 'cache', config: { kind: 'cache' }, syncMode: 'full' } });
+  assert.equal(created.success, true);
+  assert.equal(created.data.dataset.syncMode, 'full');
+});
