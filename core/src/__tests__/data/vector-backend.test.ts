@@ -94,3 +94,41 @@ test('vector backend: query on a never-created dataset returns empty', async () 
   assert.deepEqual(r.records, []);
   assert.equal(r.total, 0);
 });
+
+test('vector backend: hybrid search ranks token-overlapping records above unrelated ones', async () => {
+  const b = be();
+  await b.createDataset(descriptor('s'));
+  // SHORT texts (<=3 distinct tokens) on purpose: the token-bag fakeEmbed L2-normalizes,
+  // so a single-token query ("fruit") vs a k-token doc has cosine ~= 1/sqrt(k). With k<=3
+  // that is >= 0.577 > MIN_SIMILARITY (0.57), so the relevant docs survive the VECTOR path
+  // (and FTS also matches them) — the test exercises BOTH RRF inputs, not FTS alone. Longer
+  // texts would dilute the cosine below the cutoff and make the test FTS-only and fragile.
+  await b.put('s', { id: 'fruit1', version: 1, fields: {}, text: 'fresh fruit', createdAt: 'c', updatedAt: 'u' });
+  await b.put('s', { id: 'fruit2', version: 1, fields: {}, text: 'fruit salad', createdAt: 'c', updatedAt: 'u' });
+  await b.put('s', { id: 'cat', version: 1, fields: {}, text: 'sleepy cat', createdAt: 'c', updatedAt: 'u' });
+
+  const results = await b.search('s', { query: 'fruit', limit: 3 });
+  const ids = results.map((r) => r.id);
+  assert.ok(ids[0] === 'fruit1' || ids[0] === 'fruit2', `expected a fruit record first, got ${ids[0]}`);
+  // the unrelated 'cat' record must not outrank the fruit records
+  assert.ok(ids.indexOf('cat') === -1 || ids.indexOf('cat') > 1, `cat ranked too high: ${ids}`);
+  // scores are attached and descending
+  assert.equal(typeof results[0].score, 'number');
+  for (let i = 1; i < results.length; i++) assert.ok(results[i - 1].score >= results[i].score);
+});
+
+test('vector backend: search honors filter and limit', async () => {
+  const b = be();
+  await b.createDataset(descriptor('sf'));
+  await b.put('sf', { id: 'a', version: 1, fields: { kind: 'doc' }, text: 'shared topic alpha', createdAt: 'c', updatedAt: 'u' });
+  await b.put('sf', { id: 'b', version: 1, fields: { kind: 'note' }, text: 'shared topic beta', createdAt: 'c', updatedAt: 'u' });
+  const filtered = await b.search('sf', { query: 'shared topic', filter: [{ field: 'kind', op: 'eq', value: 'doc' }], limit: 10 });
+  assert.deepEqual(filtered.map((r) => r.id), ['a']); // only kind=doc survives the post-filter
+  const capped = await b.search('sf', { query: 'shared topic', limit: 1 });
+  assert.equal(capped.length, 1);
+});
+
+test('vector backend: search on empty/missing dataset returns []', async () => {
+  const b = be();
+  assert.deepEqual(await b.search('ghost', { query: 'anything' }), []);
+});

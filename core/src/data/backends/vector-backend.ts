@@ -139,6 +139,69 @@ export class VectorBackend implements StorageBackend {
     return { id: record.id };
   }
 
+  /** Rebuild the FTS index if writes have happened since the last build. Returns false if FTS is unavailable (e.g. empty table). */
+  private async ensureFts(dataset: string, table: any): Promise<boolean> {
+    if (!this.ftsDirty.has(dataset)) return true;
+    try {
+      await table.createIndex('text', { config: lancedb.Index.fts({ withPosition: true }), replace: true });
+      this.ftsDirty.delete(dataset);
+      return true;
+    } catch {
+      return false; // empty table or transient — fall back to vector-only
+    }
+  }
+
+  async search(dataset: string, s: SearchSpec): Promise<Array<DataRecord & { score: number }>> {
+    const table = await this.openOrNull(dataset);
+    if (!table) return [];
+    const limit = s.limit ?? 20;
+    const fetchCount = limit * 3; // over-fetch for dedup + post-filter
+    const queryVector = await this.embedFn(s.query);
+    const ftsOk = await this.ensureFts(dataset, table);
+
+    const vecPromise: Promise<any[]> = table.search(queryVector).limit(fetchCount).toArray();
+    const ftsPromise: Promise<any[]> = ftsOk
+      ? table.query().fullTextSearch(s.query, { columns: ['text'] }).limit(fetchCount).toArray().catch(() => [])
+      : Promise.resolve([]);
+    const [vecRows, ftsRows] = await Promise.all([vecPromise, ftsPromise]);
+
+    // id -> best vector similarity (drop low-similarity noise)
+    const vec = new Map<string, { row: any; sim: number }>();
+    for (const r of vecRows) {
+      const sim = Math.max(0, 1 - (r._distance ?? 0) / 2);
+      if (sim < MIN_SIMILARITY) continue;
+      const cur = vec.get(r.id);
+      if (!cur || sim > cur.sim) vec.set(r.id, { row: r, sim });
+    }
+    // id -> best FTS score
+    const fts = new Map<string, { row: any; score: number }>();
+    for (const r of ftsRows) {
+      const score = r._score ?? 0;
+      const cur = fts.get(r.id);
+      if (!cur || score > cur.score) fts.set(r.id, { row: r, score });
+    }
+
+    // 1-indexed rank maps
+    const vecRanked = [...vec.entries()].sort((a, b) => b[1].sim - a[1].sim);
+    const ftsRanked = [...fts.entries()].sort((a, b) => b[1].score - a[1].score);
+    const vecRank = new Map<string, number>(); vecRanked.forEach(([id], i) => vecRank.set(id, i + 1));
+    const ftsRank = new Map<string, number>(); ftsRanked.forEach(([id], i) => ftsRank.set(id, i + 1));
+
+    const ids = new Set<string>([...vecRank.keys(), ...ftsRank.keys()]);
+    let merged: Array<DataRecord & { score: number }> = [];
+    for (const id of ids) {
+      let rrf = 0;
+      const vr = vecRank.get(id); if (vr !== undefined) rrf += VEC_WEIGHT / (RRF_K + vr);
+      const fr = ftsRank.get(id); if (fr !== undefined) rrf += FTS_WEIGHT / (RRF_K + fr);
+      const row = vec.get(id)?.row ?? fts.get(id)?.row;
+      merged.push({ ...(JSON.parse(row.doc) as DataRecord), score: rrf });
+    }
+
+    if (s.filter?.length) merged = merged.filter((rec) => s.filter!.every((f) => matches(rec, f)));
+    merged.sort((a, b) => b.score - a.score);
+    return merged.slice(0, limit);
+  }
+
   // query added in Task 4; search in Task 5; exportSince/importBatch in Task 6.
   async query(dataset: string, q: QuerySpec): Promise<{ records: DataRecord[]; total?: number }> {
     const table = await this.openOrNull(dataset);
