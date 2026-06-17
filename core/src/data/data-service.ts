@@ -15,6 +15,8 @@ import { thisNodeId } from './paths';
 import { getProjectSettings } from '../project-settings';
 import type { ParsedRequest } from '../routes/index';
 import { getSyncQueue } from './sync-queue';
+import { HubPeerClient } from './peer-client';
+import { SyncEngine } from './sync-engine';
 
 export interface CallCtx { principal: Principal; keyHeader?: string; }
 export type DataResult<T> = { ok: true; value: T } | { ok: false; code: string; reason: string };
@@ -149,6 +151,8 @@ export class DataService {
 }
 
 let instance: DataService | null = null;
+let engineInstance: SyncEngine | null = null;
+
 export function getDataService(): DataService {
   if (!instance) {
     const datasets = getDatasetRegistry();
@@ -156,7 +160,18 @@ export function getDataService(): DataService {
     backends.register(new CacheBackend());
     const manager = new AccessManager({ datasets, keys: getKeyStore(), nodeId: thisNodeId() });
     const queue = getSyncQueue();
-    instance = new DataService({ datasets, backends, manager, onLocalWrite: (dataset, id) => queue.markDirty(dataset, id) });
+    const nodeId = thisNodeId();
+    const peers = new HubPeerClient(nodeId);
+    engineInstance = new SyncEngine({ datasets, backends, peers, nodeId });
+    instance = new DataService({ datasets, backends, manager, onLocalWrite: (dataset, id) => queue.markDirty(dataset, id), peers });
   }
   return instance;
+}
+
+export function getSyncEngine(): SyncEngine {
+  if (!engineInstance) {
+    // Ensure the engine is created via getDataService()
+    getDataService();
+  }
+  return engineInstance!;
 }

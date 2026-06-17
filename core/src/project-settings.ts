@@ -19,6 +19,10 @@ export interface ProjectSettings {
   knowledgeEnabled: boolean;
   /** Kill switch: disable the generic data service (datasets, access keys, data routes). */
   dataServiceEnabled: boolean;
+  /** How often (seconds) to flush the dirty-record queue and emit dataset_updated. Default 15. */
+  dataSyncPeriodSec: number;
+  /** How often (seconds) to run a full reconcile against all peers. Default 300. */
+  dataReconcileSec: number;
 }
 
 // ── Constants ──────────────────────────────────────────
@@ -29,6 +33,8 @@ const DEFAULTS: ProjectSettings = {
   excludedPaths: [],
   knowledgeEnabled: false,
   dataServiceEnabled: false,
+  dataSyncPeriodSec: 15,
+  dataReconcileSec: 300,
 };
 
 // ── Mtime Cache ──────────────────────────────────────────
@@ -54,6 +60,8 @@ export function getProjectSettings(): ProjectSettings {
         : DEFAULTS.excludedPaths,
       knowledgeEnabled: typeof data.knowledgeEnabled === 'boolean' ? data.knowledgeEnabled : DEFAULTS.knowledgeEnabled,
       dataServiceEnabled: typeof data.dataServiceEnabled === 'boolean' ? data.dataServiceEnabled : DEFAULTS.dataServiceEnabled,
+      dataSyncPeriodSec: typeof data.dataSyncPeriodSec === 'number' ? data.dataSyncPeriodSec : DEFAULTS.dataSyncPeriodSec,
+      dataReconcileSec: typeof data.dataReconcileSec === 'number' ? data.dataReconcileSec : DEFAULTS.dataReconcileSec,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -74,6 +82,8 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
       : current.excludedPaths,
     knowledgeEnabled: typeof partial.knowledgeEnabled === 'boolean' ? partial.knowledgeEnabled : current.knowledgeEnabled,
     dataServiceEnabled: typeof partial.dataServiceEnabled === 'boolean' ? partial.dataServiceEnabled : current.dataServiceEnabled,
+    dataSyncPeriodSec: typeof partial.dataSyncPeriodSec === 'number' ? partial.dataSyncPeriodSec : current.dataSyncPeriodSec,
+    dataReconcileSec: typeof partial.dataReconcileSec === 'number' ? partial.dataReconcileSec : current.dataReconcileSec,
   };
 
   // Ensure parent directory exists

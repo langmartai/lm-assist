@@ -172,6 +172,14 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
       console.log('Knowledge disabled — skipping scheduler');
     }
 
+    // Start data sync boot (flush timer, reconcile timer, dataset_updated subscription).
+    // Guard: hub client is already initialized above; startDataSync() is dormant if
+    // dataServiceEnabled=false, so this is always safe to call.
+    try {
+      const { startDataSync } = require('./data/sync-boot');
+      startDataSync();
+    } catch (e) { /* non-fatal — data sync is optional */ }
+
     profiler.end('total');
     profiler.summary();
 

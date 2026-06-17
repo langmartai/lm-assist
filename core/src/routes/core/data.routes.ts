@@ -1,7 +1,7 @@
 // core/src/routes/core/data.routes.ts
 import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import { wrapResponse, wrapError } from '../../api/helpers';
-import { getDataService, type CallCtx } from '../../data/data-service';
+import { getDataService, getSyncEngine, type CallCtx } from '../../data/data-service';
 import { getDatasetRegistry } from '../../data/dataset-registry';
 import type { DataRecord } from '../../data/types';
 
@@ -181,6 +181,31 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
         const r = await svc().exportDataset(ctxOf(req), req.params.dataset, req.query?.since);
         if (!r.ok) return wrapError(r.code, r.reason, start);
         return wrapResponse({ records: r.value }, start);
+      },
+    },
+
+    // POST /data/sync — trigger a full reconcile against all peers (local-only)
+    {
+      method: 'POST',
+      pattern: /^\/data\/sync$/,
+      handler: async (req) => {
+        const start = Date.now();
+        if (!svc().isEnabled()) return disabled(start);
+        const p = svc().resolvePrincipal(req);
+        if (p.type !== 'local') return wrapError('FORBIDDEN', 'sync is local-only', start);
+        const status = await getSyncEngine().reconcile();
+        return wrapResponse(status, start);
+      },
+    },
+
+    // GET /data/sync/status — current sync engine status
+    {
+      method: 'GET',
+      pattern: /^\/data\/sync\/status$/,
+      handler: async (_req) => {
+        const start = Date.now();
+        if (!svc().isEnabled()) return disabled(start);
+        return wrapResponse(getSyncEngine().status(), start);
       },
     },
   ];

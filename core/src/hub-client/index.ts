@@ -59,6 +59,7 @@ export interface HubClientEvents {
   error: (error: Error) => void;
   max_reconnects: () => void;
   gateway_conflict: () => void;
+  dataset_updated: (message: DatasetUpdatedMessage) => void;
 }
 
 /**
