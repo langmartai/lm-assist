@@ -36,7 +36,7 @@ async function handleDataRequestAccess(args: Record<string, unknown>): Promise<M
     ttlSeconds: typeof args.ttlSeconds === 'number' ? args.ttlSeconds : undefined,
   };
   const res = await svc.requestAccess(c.principal, req);
-  if (!res.ok) return err(res.reason);
+  if (!res.ok) return err(`${res.code}: ${res.reason}`);
   return ok(pretty({ key: res.value.key, keyId: res.value.keyId, grants: res.value.grants, expiresAt: res.value.expiresAt }));
 }
 
@@ -112,7 +112,7 @@ export const DATA_TOOL_DEFS = [
   {
     name: 'data_request_access',
     description: 'Request a scoped, expiring access key for one or more datasets/actions. Returns a key string to pass as `key` to data_get/data_query/data_put/data_delete. Local callers have implicit root access and do not need a key; cloud callers must request one.',
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: false },
     inputSchema: {
       type: 'object' as const,
       properties: {
