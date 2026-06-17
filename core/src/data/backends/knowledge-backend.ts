@@ -70,8 +70,65 @@ export class KnowledgeBackend implements StorageBackend {
     return removed;
   }
 
-  // put + admin land in Task 3.
-  async put(_dataset: string, _record: DataRecord): Promise<{ id: string }> { throw new Error('not implemented'); }
+  async put(_dataset: string, record: DataRecord): Promise<{ id: string }> {
+    const store = getKnowledgeStore();
+    const f = record.fields || {};
+    const title = String(f.title ?? '');
+    const type = (f.type ?? 'flow') as any;
+    const project = String(f.project ?? '');
+    const parts = Array.isArray(f.parts) ? (f.parts as any[]) : [];
+    const status = (f.status as any) ?? undefined;
+    const existing = record.id ? store.getKnowledge(record.id) : null;
+    if (existing) {
+      const updated = store.updateKnowledge(record.id, { title, type, project, parts, ...(status ? { status } : {}) });
+      return { id: updated?.id ?? record.id };
+    }
+    const created = store.createKnowledge({ title, type, project, parts, ...(status ? { status } : {}) });
+    return { id: created.id };
+  }
+
+  async admin(_dataset: string, op: string, args?: Record<string, unknown>): Promise<unknown> {
+    const a = args || {};
+    const store = getKnowledgeStore();
+    switch (op) {
+      case 'stats': {
+        const all = store.getAllKnowledge();
+        const byStatus: Record<string, number> = {};
+        const byType: Record<string, number> = {};
+        for (const k of all) { byStatus[k.status] = (byStatus[k.status] || 0) + 1; byType[k.type] = (byType[k.type] || 0) + 1; }
+        return { total: all.length, byStatus, byType };
+      }
+      case 'add-comment': {
+        return store.addComment({
+          knowledgeId: String(a.knowledgeId || ''),
+          partId: a.partId ? String(a.partId) : undefined,
+          type: (a.type as any) || 'general',
+          content: String(a.content || ''),
+          source: 'llm',
+        });
+      }
+      case 'regenerate': {
+        const { getKnowledgePipeline } = require('../../knowledge/pipeline');
+        return await getKnowledgePipeline().regenerateKnowledge(String(a.knowledgeId || ''));
+      }
+      case 'dedup': {
+        const { cleanupExistingDuplicates } = require('../../knowledge/dedup');
+        return await cleanupExistingDuplicates(a.project ? String(a.project) : undefined, a.dryRun === true);
+      }
+      case 'review': {
+        const { getKnowledgeReviewer } = require('../../knowledge/reviewer');
+        return await getKnowledgeReviewer().review();
+      }
+      case 'remote-sync': {
+        const rs = require('../../knowledge/remote-sync');
+        // fire-and-forget like the route; return the current status snapshot
+        Promise.resolve(rs.sync(a.project ? String(a.project) : undefined)).catch(() => {});
+        return { started: true, status: rs.getSyncStatus() };
+      }
+      default:
+        throw new Error(`unknown admin op: ${op}`);
+    }
+  }
 
   async exportSince(_dataset: string, _since?: string): Promise<DataRecord[]> {
     throw new Error('SYNC_NOT_SUPPORTED: knowledge is a system dataset (uses its own remote-sync)');

@@ -49,3 +49,49 @@ test('knowledge backend: sync hooks throw (system datasets are not generically s
   await assert.rejects(() => be.exportSince('knowledge'), /SYNC_NOT_SUPPORTED/);
   await assert.rejects(() => be.importBatch('knowledge', [], { machineId: 'm', hostname: 'h', os: 'linux' }), /SYNC_NOT_SUPPORTED/);
 });
+
+test('knowledge backend: put creates a new doc then updates it', async () => {
+  const be = new KnowledgeBackend();
+  // create (no id)
+  const created = await be.put('knowledge', {
+    id: '', version: 0,
+    fields: { title: 'Created via put', type: 'invariant', project: '/p',
+      parts: [{ partId: 'p1', title: 'P', summary: 's', content: 'c' }] },
+    createdAt: 't', updatedAt: 't',
+  });
+  assert.match(created.id, /^K\d+/);
+  const got = await be.get('knowledge', created.id);
+  assert.equal(got?.fields.title, 'Created via put');
+  assert.equal(got?.fields.type, 'invariant');
+
+  // update (existing id)
+  await be.put('knowledge', {
+    id: created.id, version: 0,
+    fields: { title: 'Renamed', type: 'invariant', project: '/p',
+      parts: [{ partId: 'p1', title: 'P', summary: 's', content: 'c2' }], status: 'active' },
+    createdAt: 't', updatedAt: 't',
+  });
+  const after = await be.get('knowledge', created.id);
+  assert.equal(after?.fields.title, 'Renamed');
+});
+
+test('knowledge backend: admin stats reports counts', async () => {
+  const be = new KnowledgeBackend();
+  await be.put('knowledge', { id: '', version: 0, fields: { title: 'S1', type: 'flow', project: '/p', parts: [] }, createdAt: 't', updatedAt: 't' });
+  const stats = await be.admin('knowledge', 'stats') as any;
+  assert.equal(typeof stats.total, 'number');
+  assert.ok(stats.total >= 1);
+});
+
+test('knowledge backend: admin add-comment delegates to the store', async () => {
+  const be = new KnowledgeBackend();
+  const created = await be.put('knowledge', { id: '', version: 0, fields: { title: 'Commented', type: 'flow', project: '/p', parts: [] }, createdAt: 't', updatedAt: 't' });
+  const c = await be.admin('knowledge', 'add-comment', { knowledgeId: created.id, type: 'general', content: 'note from llm' }) as any;
+  assert.equal(c.knowledgeId, created.id);
+  assert.equal(c.content, 'note from llm');
+});
+
+test('knowledge backend: admin rejects an unknown op', async () => {
+  const be = new KnowledgeBackend();
+  await assert.rejects(() => be.admin('knowledge', 'no-such-op'), /unknown admin op/i);
+});
