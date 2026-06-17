@@ -197,6 +197,13 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   send_session_message: 'admin',
   list_session_messages: 'read',
   get_message_status: 'read',
+  // data service
+  data_catalog: 'read',
+  data_request_access: 'read',
+  data_get: 'read',
+  data_query: 'read',
+  data_put: 'write',
+  data_delete: 'write',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */
