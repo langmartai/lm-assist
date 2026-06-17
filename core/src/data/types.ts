@@ -41,6 +41,7 @@ export interface DatasetDescriptor {
   readOnly?: boolean;         // HARD cap to read/query/search for EVERY principal
   sensitive?: boolean;        // never exposed to cloud; never synced
   syncMode?: SyncMode;        // 'none' (default) | 'full' | 'partial'
+  origin?: NodeOrigin;        // when set, this is a remote replica (read-only; written by sync engine)
   config: BackendConfig;
   acl: AclRule[];
   createdAt: string;

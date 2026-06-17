@@ -2,7 +2,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type {
-  DatasetDescriptor, BackendKind, BackendConfig, AclRule, NodeVisibility,
+  DatasetDescriptor, BackendKind, BackendConfig, AclRule, NodeVisibility, NodeOrigin, SyncMode,
 } from './types';
 import { datasetsFile, thisNodeId } from './paths';
 
@@ -19,6 +19,16 @@ export interface CreateDatasetInput {
   config: BackendConfig;
   acl?: AclRule[];
   system?: boolean;
+}
+
+export interface UpsertReplicaInput {
+  id: string;
+  backend: BackendKind;
+  ownerNode: string;
+  syncMode: SyncMode;
+  config: BackendConfig;
+  origin: NodeOrigin;
+  title?: string;
 }
 
 export class DatasetRegistry {
@@ -74,7 +84,7 @@ export class DatasetRegistry {
       system: input.system,
       readOnly: input.readOnly,
       sensitive: input.sensitive,
-      syncMode: input.syncMode,
+      syncMode: input.syncMode ?? 'none',
       config: input.config,
       acl: input.acl ?? [],
       createdAt: now,
@@ -101,6 +111,36 @@ export class DatasetRegistry {
     if (next.length === arr.length) return false;
     this.save(next);
     return true;
+  }
+
+  upsertReplica(input: UpsertReplicaInput): DatasetDescriptor {
+    if (!DATASET_ID_RE.test(input.id)) {
+      throw new Error(`invalid dataset id "${input.id}" (must match ${DATASET_ID_RE})`);
+    }
+    const arr = this.load();
+    const idx = arr.findIndex((d) => d.id === input.id);
+    const now = new Date().toISOString();
+    const d: DatasetDescriptor = {
+      id: input.id,
+      backend: input.backend,
+      title: input.title,
+      ownerNode: input.ownerNode,
+      visibility: 'local-only',
+      syncMode: input.syncMode,
+      origin: input.origin,
+      config: input.config,
+      acl: [],
+      createdAt: idx >= 0 ? arr[idx].createdAt : now,
+      updatedAt: now,
+    };
+    const next = [...arr];
+    if (idx >= 0) {
+      next[idx] = d;
+    } else {
+      next.push(d);
+    }
+    this.save(next);
+    return { ...d };
   }
 }
 
