@@ -73,6 +73,9 @@ test('partial mode: local miss triggers remote fetch and lazy-caches the record'
   assert.ok(got.value !== null, 'should return the remote record');
   assert.equal((got.value as DataRecord).id, 'remote1');
   assert.equal((got.value as DataRecord).fields.value, 42);
+  // The returned record must carry origin (consistent with cache)
+  assert.ok((got.value as DataRecord).origin !== undefined, 'returned record must have origin stamped');
+  assert.equal((got.value as DataRecord).origin!.machineId, 'remote-node', 'returned origin machineId must match peer');
 
   // 1b. getFrom was called exactly once
   assert.equal(getFromCalls, 1, 'getFrom should be called once for the remote fetch');

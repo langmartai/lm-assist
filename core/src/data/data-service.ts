@@ -77,8 +77,9 @@ export class DataService {
           const rec = await this.deps.peers.getFrom(peer.node, datasetId, id);
           if (rec) {
             const origin = rec.origin ?? { machineId: peer.node, hostname: peer.hostname, os: peer.platform };
-            await a.value.backend!.importBatch(datasetId, [rec], origin); // lazy-cache locally
-            return { ok: true, value: redactRecord(rec) };
+            const stamped = { ...rec, origin };
+            await a.value.backend!.importBatch(datasetId, [stamped], origin); // lazy-cache locally
+            return { ok: true, value: redactRecord(stamped) };
           }
         } catch { /* try next peer */ }
       }
