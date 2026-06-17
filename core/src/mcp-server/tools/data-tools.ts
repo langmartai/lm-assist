@@ -160,7 +160,7 @@ export const DATA_TOOL_DEFS = [
   },
   {
     name: 'data_search',
-    description: 'Semantic + full-text hybrid search over a vector-backed dataset. Returns the best-matching records (redacted) each with a relevance `score`, ranked high to low. Only datasets whose backend is `vector` support this; others return NOT_SUPPORTED. Pass `key` if you have one.',
+    description: 'Semantic + full-text hybrid search over a vector-backed dataset. Returns the best-matching records (redacted) each with a relevance `score`, ranked high to low. Only datasets whose backend is `vector` support this; others return NOT_SUPPORTED. Pass `key` if you have one. Search quality depends on each record having a meaningful \'text\' (or string fields); records with only numeric fields fall back to their id.',
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: 'object' as const,

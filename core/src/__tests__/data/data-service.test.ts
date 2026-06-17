@@ -93,7 +93,7 @@ test('data service: search on a vector dataset returns redacted scored records',
   if (!r.ok) return;
   assert.ok(r.value.length >= 1);
   assert.equal(r.value[0].id, 'r1');
-  assert.equal(typeof r.value[0].score, 'number');
+  assert.ok(Number.isFinite(r.value[0].score) && r.value[0].score > 0);
   assert.equal(r.value[0].fields.apiKey, REDACTED); // redaction applies to search results too
 });
 
@@ -112,4 +112,6 @@ test('data service: cloud without key cannot search (auth before backend check)'
     config: { kind: 'vector' }, acl: [{ principal: 'cloud', actions: ['search'] }] });
   const denied = await svc.search({ principal: { type: 'cloud', userId: 'u' } }, 'v2', { query: 'x' });
   assert.equal(denied.ok, false);
+  if (denied.ok) return;
+  assert.equal(denied.code, 'KEY_REQUIRED');
 });
