@@ -1,6 +1,7 @@
 // core/src/data/data-service.ts
 import type {
   Principal, DataAction, DataRecord, QuerySpec, AccessRequest, BackendKind, NodeVisibility, SyncMode,
+  PeerClient, NodeInfo,
 } from './types';
 import type { DatasetRegistry } from './dataset-registry';
 import { getDatasetRegistry } from './dataset-registry';
@@ -20,7 +21,7 @@ export type DataResult<T> = { ok: true; value: T } | { ok: false; code: string; 
 
 export class DataService {
   private enabledOverride?: boolean; // tests only
-  constructor(private deps: { datasets: DatasetRegistry; backends: BackendRegistry; manager: AccessManager; onLocalWrite?: (dataset: string, id: string) => void }) {}
+  constructor(private deps: { datasets: DatasetRegistry; backends: BackendRegistry; manager: AccessManager; onLocalWrite?: (dataset: string, id: string) => void; peers?: PeerClient }) {}
 
   isEnabled(): boolean {
     if (typeof this.enabledOverride === 'boolean') return this.enabledOverride;
@@ -65,8 +66,24 @@ export class DataService {
   async get(ctx: CallCtx, datasetId: string, id: string): Promise<DataResult<DataRecord | null>> {
     const a = await this.authorize(ctx, datasetId, 'read');
     if (!a.ok) return a;
-    const rec = await a.value.backend!.get(datasetId, id);
-    return { ok: true, value: rec ? redactRecord(rec) : null };
+    const local = await a.value.backend!.get(datasetId, id);
+    if (local) return { ok: true, value: redactRecord(local) };
+    const d = this.deps.datasets.get(datasetId)!;
+    if (d.syncMode === 'partial' && this.deps.peers) {
+      let peers: NodeInfo[] = [];
+      try { peers = await this.deps.peers.listPeers(); } catch { peers = []; }
+      for (const peer of peers) {
+        try {
+          const rec = await this.deps.peers.getFrom(peer.node, datasetId, id);
+          if (rec) {
+            const origin = rec.origin ?? { machineId: peer.node, hostname: peer.hostname, os: peer.platform };
+            await a.value.backend!.importBatch(datasetId, [rec], origin); // lazy-cache locally
+            return { ok: true, value: redactRecord(rec) };
+          }
+        } catch { /* try next peer */ }
+      }
+    }
+    return { ok: true, value: null };
   }
 
   async query(ctx: CallCtx, datasetId: string, q: QuerySpec): Promise<DataResult<{ records: DataRecord[]; total?: number }>> {

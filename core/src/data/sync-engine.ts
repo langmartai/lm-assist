@@ -59,7 +59,25 @@ export class SyncEngine {
       }
 
       for (const m of entries) {
-        // 'partial' is lazy (handled on-read), not eagerly pulled
+        if (m.syncMode === 'partial') {
+          // Register the descriptor so local code knows the dataset exists as partial
+          // (enables read-through in DataService.get), but do NOT eagerly pull records.
+          const origin: NodeOrigin = {
+            machineId: peer.node,
+            hostname: peer.hostname,
+            os: peer.platform,
+          };
+          this.deps.datasets.upsertReplica({
+            id: m.id,
+            backend: m.backend,
+            ownerNode: m.ownerNode,
+            syncMode: 'partial',
+            config: { kind: m.backend } as BackendConfig,
+            origin,
+          });
+          continue;
+        }
+        // 'none' and any unknown modes are skipped entirely
         if (m.syncMode !== 'full') continue;
         try {
           const r = await this.pullOne(peer, m);
