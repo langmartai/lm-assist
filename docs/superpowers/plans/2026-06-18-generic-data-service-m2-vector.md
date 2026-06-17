@@ -609,9 +609,14 @@ git commit -m "feat(data): VectorBackend query via shared applyQuery over stored
 test('vector backend: hybrid search ranks token-overlapping records above unrelated ones', async () => {
   const b = be();
   await b.createDataset(descriptor('s'));
-  await b.put('s', { id: 'fruit1', version: 1, fields: {}, text: 'apples and oranges are fruit', createdAt: 'c', updatedAt: 'u' });
-  await b.put('s', { id: 'fruit2', version: 1, fields: {}, text: 'a fresh fruit salad recipe', createdAt: 'c', updatedAt: 'u' });
-  await b.put('s', { id: 'cat', version: 1, fields: {}, text: 'the cat sat on the mat', createdAt: 'c', updatedAt: 'u' });
+  // SHORT texts (<=3 distinct tokens) on purpose: the token-bag fakeEmbed L2-normalizes,
+  // so a single-token query ("fruit") vs a k-token doc has cosine ~= 1/sqrt(k). With k<=3
+  // that is >= 0.577 > MIN_SIMILARITY (0.57), so the relevant docs survive the VECTOR path
+  // (and FTS also matches them) — the test exercises BOTH RRF inputs, not FTS alone. Longer
+  // texts would dilute the cosine below the cutoff and make the test FTS-only and fragile.
+  await b.put('s', { id: 'fruit1', version: 1, fields: {}, text: 'fresh fruit', createdAt: 'c', updatedAt: 'u' });
+  await b.put('s', { id: 'fruit2', version: 1, fields: {}, text: 'fruit salad', createdAt: 'c', updatedAt: 'u' });
+  await b.put('s', { id: 'cat', version: 1, fields: {}, text: 'sleepy cat', createdAt: 'c', updatedAt: 'u' });
 
   const results = await b.search('s', { query: 'fruit', limit: 3 });
   const ids = results.map((r) => r.id);
