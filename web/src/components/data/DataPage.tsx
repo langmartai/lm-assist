@@ -219,6 +219,7 @@ function KeysTab({ apiFetch, canManage, setError }: { apiFetch: <T,>(p: string, 
     try {
       const r = await apiFetch<{ keys: PublicKey[] }>('/data/keys');
       setKeys(r.keys || []);
+      setError(null);
     } catch (e) {
       console.error('fetchKeys failed', e);
       setError(e instanceof Error ? e.message : 'failed to load keys');
@@ -281,6 +282,7 @@ function SyncTab({ apiFetch, canManage, setError }: { apiFetch: <T,>(p: string, 
     setLoading(true);
     try {
       setStatus(await apiFetch<SyncStatus>('/data/sync/status'));
+      setError(null);
     } catch (e) {
       console.error('fetchStatus failed', e);
       setError(e instanceof Error ? e.message : 'failed to load sync status');
@@ -295,6 +297,7 @@ function SyncTab({ apiFetch, canManage, setError }: { apiFetch: <T,>(p: string, 
     setRunning(true);
     try {
       setStatus(await apiFetch<SyncStatus>('/data/sync', { method: 'POST' }));
+      setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'sync failed');
     } finally {
