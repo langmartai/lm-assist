@@ -204,6 +204,16 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   data_query: 'read',
   data_put: 'write',
   data_delete: 'write',
+  data_search: 'read',
+  data_admin: 'admin',
+  // data service — management (local-only; the handler enforces local principal,
+  // these scopes are the gateway/approval defense-in-depth tier)
+  data_create_dataset: 'write',
+  data_drop_dataset: 'admin',
+  data_keys: 'read',
+  data_revoke_key: 'write',
+  data_sync: 'write',
+  data_sync_status: 'read',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */
