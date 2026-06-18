@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Generic data service — multi-backend data/RAG with access control, sync, REST + MCP (2026-06-18)
+
+A new generic data service (`core/src/data/`) exposing pluggable storage backends through a uniform
+REST (`/data/*`) and MCP (`data_*`) surface, with access-key control, secret redaction, and engine-level
+cross-node sync. **Unreleased / opt-in:** gated behind `dataServiceEnabled` and not yet published to npm;
+the feature ships in `main` for review and is rolled out to the fleet by syncing `core/dist`.
+
+- **Backends:** `cache` (LMDB), `vector` (LanceDB + 384-dim embedder, RRF hybrid search), `sql`
+  (better-sqlite3 + FTS5, parameterized QuerySpec→SQL compiler, lazy-required so Core boots where the
+  native binary is absent), plus read adapters over existing stores (`knowledge`, `vectors`) and a
+  read-only `file` tracker (allow-listed logs/JSON, content-scrubbed).
+- **Access + safety:** scoped, expiring access keys; principal model (loopback/stdio = `local` root vs
+  hub-relayed = `cloud`, unspoofable — the relay strips client trust headers); field-name + inline-secret
+  redaction on every record-return surface; hard-exclusion of credential paths (incl. LIVE trading creds).
+- **Cross-node sync:** engine-level full/partial replication with version + LWW reconciliation, batched
+  change events; node-targeting is hub-routed.
+- **Management (local-only, LLM-legible):** REST `POST/DELETE /data/datasets`, `GET /data/keys`,
+  `POST /data/sync`; MCP `data_create_dataset`/`drop_dataset`/`keys`/`revoke_key`/`sync`/`sync_status`,
+  all gated to a local principal with an actionable remote-denial message; `data_catalog` reports
+  `you.{principal, canManage}` so a session knows whether it can manage. A remote/cloud session cannot
+  create/drop datasets, manage keys, or trigger sync.
+- **Web `/data` page:** Datasets (list/create/drop), Access Keys (list/revoke), and Sync
+  (status/reconcile) tabs, capability-gated to mirror the local-only model.
+- **Fix — MCP `/mcp` build no longer crashes Core:** every advertised MCP tool now has a `TOOL_SCOPES`
+  entry. `data_search`/`data_admin` and the management tools previously lacked scopes, so
+  `assertScopesCoverTools()` threw inside the StreamableHTTP `/mcp` server build on the first hub-relayed
+  request — crashing the worker. Added the missing scopes + a regression guard.
+- **Fix — server binds the resolved `--host`:** `cli.ts` resolved `--host` (default `0.0.0.0`) and printed
+  it in the banner but never passed it to `startServer`, so `rest-server.ts` always fell back to
+  `127.0.0.1`. The host is now threaded through.
+
 ### MCP cross-host tools — fix categorical failures on non-`/home/ubuntu` and Windows workers (2026-06-16)
 
 The langmart MCP's cross-host / multi-node tools failed wholesale when targeting a worker whose home
