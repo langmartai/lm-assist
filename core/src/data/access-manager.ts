@@ -38,6 +38,9 @@ function principalMatches(rule: AclRule['principal'], p: Principal): boolean {
 export class AccessManager {
   constructor(private deps: { datasets: DatasetRegistry; keys: KeyStore; nodeId: string }) {}
 
+  /** Expose the underlying KeyStore so DataService.listKeys can list/strip keys consistently. */
+  get keyStore(): KeyStore { return this.deps.keys; }
+
   resolvePrincipal(req: ParsedRequest): Principal {
     // `x-relay-source` is set server-side by the hub relay, which strips any client-supplied copy
     // (see api-relay-handler) — so it is a trustworthy signal that this is a relayed (cloud) call.
@@ -76,7 +79,13 @@ export class AccessManager {
     const grants: Grant[] = [];
     for (const g of req.grants) {
       const d = this.deps.datasets.get(g.dataset);
-      if (!d) continue;
+      // Local root may pre-provision keys for datasets that don't exist yet
+      if (!d && p.type !== 'local') continue;
+      if (!d) {
+        // local root: grant as-requested (all actions accepted; dataset will be enforced at use-time)
+        grants.push({ dataset: g.dataset, actions: g.actions });
+        continue;
+      }
       const actions = this.evaluateGrants(p, d, g.actions);
       if (actions.length) grants.push({ dataset: g.dataset, actions });
     }

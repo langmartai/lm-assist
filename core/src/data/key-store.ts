@@ -36,6 +36,13 @@ export class KeyStore {
 
   get(keyId: string): AccessKey | undefined { return this.keys.get(keyId); }
 
+  /** All issued keys (metadata + secretHash). Callers that expose keys MUST strip secretHash. */
+  list(): AccessKey[] {
+    const out: AccessKey[] = [];
+    for (const { value } of this.keys.getRange()) out.push(value as AccessKey);
+    return out;
+  }
+
   async revoke(keyId: string): Promise<boolean> {
     const k = this.keys.get(keyId);
     if (!k) return false;

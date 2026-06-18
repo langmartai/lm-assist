@@ -2,7 +2,6 @@
 import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import { wrapResponse, wrapError } from '../../api/helpers';
 import { getDataService, getSyncEngine, type CallCtx } from '../../data/data-service';
-import { getDatasetRegistry } from '../../data/dataset-registry';
 import type { DataRecord } from '../../data/types';
 
 function ctxOf(req: ParsedRequest): CallCtx {
@@ -89,20 +88,13 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
         const p = svc().resolvePrincipal(req);
         if (p.type !== 'local') return wrapError('FORBIDDEN', 'dataset creation is local-only', start);
         const b = req.body || {};
-        try {
-          // getDatasetRegistry is the same instance the service uses
-          const d = getDatasetRegistry().create({
-            id: b.id, backend: b.backend ?? 'cache', title: b.title,
-            visibility: b.visibility, readOnly: b.readOnly, sensitive: b.sensitive,
-            config: b.config ?? { kind: 'cache' }, acl: b.acl, syncMode: b.syncMode,
-          });
-          // allocate the backend's storage via the real lifecycle method
-          const init = await svc().initDataset({ principal: p }, d.id);
-          if (!init.ok) { getDatasetRegistry().drop(d.id); return wrapError(init.code, init.reason, start); }
-          return wrapResponse({ dataset: d }, start);
-        } catch (e) {
-          return wrapError('BAD_REQUEST', e instanceof Error ? e.message : String(e), start);
-        }
+        const r = await svc().createDataset({ principal: p }, {
+          id: b.id, backend: b.backend ?? 'cache', title: b.title,
+          visibility: b.visibility, readOnly: b.readOnly, sensitive: b.sensitive,
+          config: b.config ?? { kind: 'cache' }, acl: b.acl, syncMode: b.syncMode, system: b.system,
+        });
+        if (!r.ok) return wrapError(r.code, r.reason, start);
+        return wrapResponse({ dataset: r.value }, start);
       },
     },
 

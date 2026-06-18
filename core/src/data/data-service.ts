@@ -26,6 +26,7 @@ import { SyncEngine } from './sync-engine';
 
 export interface CallCtx { principal: Principal; keyHeader?: string; }
 export type DataResult<T> = { ok: true; value: T } | { ok: false; code: string; reason: string };
+export type PublicKey = Omit<import('./types').AccessKey, 'secretHash'>;
 
 export class DataService {
   private enabledOverride?: boolean; // tests only
@@ -169,6 +170,44 @@ export class DataService {
     if (backend) { try { await backend.dropDataset(datasetId); } catch { /* best effort — still remove the descriptor */ } }
     const dropped = this.deps.datasets.drop(datasetId);
     return { ok: true, value: { dropped } };
+  }
+
+  /** Create a dataset + allocate its backend storage (local-only). Single impl shared by REST + MCP. */
+  async createDataset(ctx: CallCtx, input: import('./dataset-registry').CreateDatasetInput): Promise<DataResult<import('./types').DatasetDescriptor>> {
+    if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'dataset creation is local-only' };
+    let d: import('./types').DatasetDescriptor;
+    try {
+      d = this.deps.datasets.create(input);
+    } catch (e) {
+      return { ok: false, code: 'BAD_REQUEST', reason: e instanceof Error ? e.message : String(e) };
+    }
+    const init = await this.initDataset(ctx, d.id);
+    if (!init.ok) { this.deps.datasets.drop(d.id); return init; } // roll back the descriptor on alloc failure
+    return { ok: true, value: d };
+  }
+
+  /** List issued access keys (metadata only — NEVER secretHash). Local-only. */
+  async listKeys(ctx: CallCtx): Promise<DataResult<PublicKey[]>> {
+    if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'key listing is local-only' };
+    const store = this.deps.manager.keyStore;
+    const keys = (store.list() as import('./types').AccessKey[]).map((k) => {
+      const { secretHash, ...pub } = k; // strip the hash
+      return pub as PublicKey;
+    });
+    return { ok: true, value: keys };
+  }
+
+  /** Trigger a cross-node reconcile (local-only). */
+  async sync(ctx: CallCtx): Promise<DataResult<import('./types').SyncStatus>> {
+    if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'sync is local-only' };
+    const status = await getSyncEngine().reconcile();
+    return { ok: true, value: status };
+  }
+
+  /** Current sync engine status (local-only). */
+  async syncStatus(ctx: CallCtx): Promise<DataResult<import('./types').SyncStatus>> {
+    if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'sync status is local-only' };
+    return { ok: true, value: getSyncEngine().status() };
   }
 
   /** Local-only, read-only raw SQL on a `sql` dataset. Never reachable by cloud/manage keys. */
