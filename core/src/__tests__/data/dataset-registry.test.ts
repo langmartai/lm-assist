@@ -42,3 +42,21 @@ test('registry: update and drop', () => {
   assert.equal(r.get('d'), undefined);
   assert.equal(r.drop('d'), false);
 });
+
+test('registry: reserved ids are rejected', () => {
+  const r = new DatasetRegistry(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lm-resv-')), 'd.json'));
+  for (const id of ['sync', 'access', 'catalog', 'datasets']) {
+    assert.throws(() => r.create({ id, backend: 'cache', config: { kind: 'cache' } }), /reserved/i);
+  }
+  // a normal id still works
+  assert.equal(r.create({ id: 'ok-ds', backend: 'cache', config: { kind: 'cache' } }).id, 'ok-ds');
+});
+
+test('registry: drop refuses a system dataset', () => {
+  const r = new DatasetRegistry(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lm-drop-')), 'd.json'));
+  r.create({ id: 'sysone', backend: 'cache', system: true, config: { kind: 'cache' } });
+  assert.equal(r.drop('sysone'), false);          // refused
+  assert.ok(r.get('sysone'));                      // still there
+  r.create({ id: 'userone', backend: 'cache', config: { kind: 'cache' } });
+  assert.equal(r.drop('userone'), true);          // normal drop works
+});

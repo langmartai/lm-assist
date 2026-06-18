@@ -7,6 +7,7 @@ import type {
 import { datasetsFile, thisNodeId } from './paths';
 
 export const DATASET_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+export const RESERVED_DATASET_IDS = new Set(['sync', 'access', 'catalog', 'datasets']);
 
 export interface CreateDatasetInput {
   id: string;
@@ -72,6 +73,9 @@ export class DatasetRegistry {
     if (!DATASET_ID_RE.test(input.id)) {
       throw new Error(`invalid dataset id "${input.id}" (must match ${DATASET_ID_RE})`);
     }
+    if (RESERVED_DATASET_IDS.has(input.id)) {
+      throw new Error(`dataset id "${input.id}" is reserved (collides with a /data route)`);
+    }
     const arr = this.load();
     if (arr.some((d) => d.id === input.id)) throw new Error(`dataset "${input.id}" already exists`);
     const now = new Date().toISOString();
@@ -107,8 +111,10 @@ export class DatasetRegistry {
 
   drop(id: string): boolean {
     const arr = this.load();
+    const target = arr.find((d) => d.id === id);
+    if (!target) return false;
+    if (target.system) return false; // system datasets are not user-droppable
     const next = arr.filter((d) => d.id !== id);
-    if (next.length === arr.length) return false;
     this.save(next);
     return true;
   }
