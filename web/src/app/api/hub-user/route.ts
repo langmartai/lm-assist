@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { serverAuthHeader } from '@/lib/server-auth';
 
 /**
  * Server-side proxy for hub user info.
@@ -22,7 +23,7 @@ export async function GET(request: NextRequest) {
   const tierAgentUrl = `http://localhost:${apiPort}`;
 
   try {
-    const hubStatusRes = await fetch(`${tierAgentUrl}/hub/status`);
+    const hubStatusRes = await fetch(`${tierAgentUrl}/hub/status`, { headers: serverAuthHeader() });
     const hubStatus = await hubStatusRes.json();
     const hubWsUrl = hubStatus?.data?.hubUrl || hubStatus?.hubUrl;
 

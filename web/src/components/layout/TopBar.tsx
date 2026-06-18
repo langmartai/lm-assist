@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Search, Globe, Monitor, CloudOff, Maximize2, LogOut, Info, Download, Wifi } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
-import { detectAppMode, detectProxyInfo } from '@/lib/api-client';
+import { detectAppMode, detectProxyInfo, workerFetch } from '@/lib/api-client';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useSearch } from '@/contexts/SearchContext';
 import { MachineDropdown } from './MachineDropdown';
@@ -96,7 +96,7 @@ export function TopBar() {
       // so a different user can sign in. Then send them to Settings to re-connect.
       try {
         const { baseUrl } = detectAppMode();
-        await fetch(`${baseUrl}/hub/config`, {
+        await workerFetch(`${baseUrl}/hub/config`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ apiKey: '', reconnect: false }),
@@ -158,7 +158,7 @@ export function TopBar() {
     const baseCloudUrl = `https://${assistDomain}/w/${gatewayId}/assist${currentPage}`;
     try {
       const { baseUrl } = detectAppMode();
-      const res = await fetch(`${baseUrl}/hub/machines/${gatewayId}/proxy-token`, { method: 'POST' });
+      const res = await workerFetch(`${baseUrl}/hub/machines/${gatewayId}/proxy-token`, { method: 'POST' });
       const json = await res.json();
       if (json.success && json.data?.token) {
         window.open(`${baseCloudUrl}?token=${json.data.token}`, '_blank');

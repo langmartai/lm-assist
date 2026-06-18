@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppMode } from '@/contexts/AppModeContext';
-import { detectAppMode } from '@/lib/api-client';
+import { detectAppMode, workerFetch } from '@/lib/api-client';
 import { useExperiment } from '@/hooks/useExperiment';
 import { usePlatform } from '@/hooks/usePlatform';
 import McpAccessTab from './McpAccessTab';
@@ -385,8 +385,8 @@ export default function SettingsPage() {
     setStatusError(null);
     try {
       const [healthRes, hubRes] = await Promise.all([
-        fetch(tierAgentUrl + '/health').catch(() => null),
-        fetch(tierAgentUrl + '/hub/status').catch(() => null),
+        workerFetch(tierAgentUrl + '/health').catch(() => null),
+        workerFetch(tierAgentUrl + '/hub/status').catch(() => null),
       ]);
 
       if (healthRes?.ok) {
@@ -468,7 +468,7 @@ export default function SettingsPage() {
       setCloudSignInMessage(null);
       try {
         const hubUrl = getDefaultHubUrl(hubStatus?.hubUrl);
-        const res = await fetch(tierAgentUrl + '/hub/config', {
+        const res = await workerFetch(tierAgentUrl + '/hub/config', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ apiKey: receivedKey, hubUrl, reconnect: true }),
@@ -479,7 +479,7 @@ export default function SettingsPage() {
           if (!json.data?.authenticated) {
             for (let i = 0; i < 5; i++) {
               await new Promise(r => setTimeout(r, 1000));
-              const statusRes = await fetch(tierAgentUrl + '/hub/status').catch(() => null);
+              const statusRes = await workerFetch(tierAgentUrl + '/hub/status').catch(() => null);
               if (statusRes?.ok) {
                 const s = (await statusRes.json()).data;
                 if (s?.authenticated) break;
@@ -577,7 +577,7 @@ export default function SettingsPage() {
     setActionMessage(null);
     try {
       const hubUrl = getDefaultHubUrl();
-      const res = await fetch(tierAgentUrl + '/hub/config', {
+      const res = await workerFetch(tierAgentUrl + '/hub/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apiKey: apiKeyInput.trim(), hubUrl, reconnect: true }),
@@ -591,7 +591,7 @@ export default function SettingsPage() {
           showMessage('Connecting...', 'ok');
           for (let i = 0; i < 3; i++) {
             await new Promise(r => setTimeout(r, 1000));
-            const statusRes = await fetch(tierAgentUrl + '/hub/status').catch(() => null);
+            const statusRes = await workerFetch(tierAgentUrl + '/hub/status').catch(() => null);
             if (statusRes?.ok) {
               const s = (await statusRes.json()).data;
               if (s?.authenticated) break;
@@ -616,7 +616,7 @@ export default function SettingsPage() {
     setIsDisconnecting(true);
     setActionMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/hub/disconnect', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/hub/disconnect', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         showMessage('Disconnected from hub', 'ok');
@@ -637,14 +637,14 @@ export default function SettingsPage() {
     setIsConnecting(true);
     setActionMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/hub/connect', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/hub/connect', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         showMessage('Connecting to hub...', 'ok');
         // Auth completes asynchronously after WS connect — poll until authenticated or timeout
         for (let i = 0; i < 5; i++) {
           await new Promise(r => setTimeout(r, 1000));
-          const statusRes = await fetch(tierAgentUrl + '/hub/status').catch(() => null);
+          const statusRes = await workerFetch(tierAgentUrl + '/hub/status').catch(() => null);
           if (statusRes?.ok) {
             const statusJson = await statusRes.json();
             const s = statusJson.data || statusJson;
@@ -671,7 +671,7 @@ export default function SettingsPage() {
     setIsRemoving(true);
     setActionMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/hub/config', {
+      const res = await workerFetch(tierAgentUrl + '/hub/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apiKey: '' }),
@@ -697,7 +697,7 @@ export default function SettingsPage() {
     if (proxy.isProxied) return;
     setIsTmuxLoading(true);
     try {
-      const res = await fetch(tierAgentUrl + '/tmux/status').catch(() => null);
+      const res = await workerFetch(tierAgentUrl + '/tmux/status').catch(() => null);
       if (res?.ok) {
         const json = await res.json();
         setTmuxStatus(json.data || null);
@@ -724,7 +724,7 @@ export default function SettingsPage() {
     setIsTmuxInstalling(true);
     setTmuxMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/tmux/install', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/tmux/install', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setTmuxStatus(json.data);
@@ -743,7 +743,7 @@ export default function SettingsPage() {
     setIsTmuxUninstalling(true);
     setTmuxMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/tmux/uninstall', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/tmux/uninstall', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setTmuxStatus(json.data);
@@ -762,7 +762,7 @@ export default function SettingsPage() {
     if (isTmuxConfigSaving) return;
     setIsTmuxConfigSaving(true);
     try {
-      const res = await fetch(tierAgentUrl + '/tmux/config', {
+      const res = await workerFetch(tierAgentUrl + '/tmux/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ [key]: value }),
@@ -787,18 +787,18 @@ export default function SettingsPage() {
     setIsClaudeCodeLoading(true);
     try {
       const [statusRes, configRes, slRes, mcpRes, hookRes, settingsRes, vscodeRes, codexRes, antigravityRes, geminiCliRes, cursorRes, windsurfRes] = await Promise.all([
-        fetch(tierAgentUrl + '/claude-code/status').catch(() => null),
-        fetch(tierAgentUrl + '/claude-code/config').catch(() => null),
-        fetch(tierAgentUrl + '/claude-code/statusline').catch(() => null),
-        fetch(tierAgentUrl + '/claude-code/mcp').catch(() => null),
-        fetch(tierAgentUrl + '/claude-code/context-hook').catch(() => null),
-        fetch(tierAgentUrl + '/claude-code/settings').catch(() => null),
-        fetch(tierAgentUrl + '/claude-code/ide-mcp/vscode').catch(() => null),
-        fetch(tierAgentUrl + '/claude-code/ide-mcp/codex').catch(() => null),
-        fetch(tierAgentUrl + '/claude-code/ide-mcp/antigravity').catch(() => null),
-        fetch(tierAgentUrl + '/claude-code/ide-mcp/gemini-cli').catch(() => null),
-        fetch(tierAgentUrl + '/claude-code/ide-mcp/cursor').catch(() => null),
-        fetch(tierAgentUrl + '/claude-code/ide-mcp/windsurf').catch(() => null),
+        workerFetch(tierAgentUrl + '/claude-code/status').catch(() => null),
+        workerFetch(tierAgentUrl + '/claude-code/config').catch(() => null),
+        workerFetch(tierAgentUrl + '/claude-code/statusline').catch(() => null),
+        workerFetch(tierAgentUrl + '/claude-code/mcp').catch(() => null),
+        workerFetch(tierAgentUrl + '/claude-code/context-hook').catch(() => null),
+        workerFetch(tierAgentUrl + '/claude-code/settings').catch(() => null),
+        workerFetch(tierAgentUrl + '/claude-code/ide-mcp/vscode').catch(() => null),
+        workerFetch(tierAgentUrl + '/claude-code/ide-mcp/codex').catch(() => null),
+        workerFetch(tierAgentUrl + '/claude-code/ide-mcp/antigravity').catch(() => null),
+        workerFetch(tierAgentUrl + '/claude-code/ide-mcp/gemini-cli').catch(() => null),
+        workerFetch(tierAgentUrl + '/claude-code/ide-mcp/cursor').catch(() => null),
+        workerFetch(tierAgentUrl + '/claude-code/ide-mcp/windsurf').catch(() => null),
       ]);
       if (statusRes?.ok) {
         const json = await statusRes.json();
@@ -867,7 +867,7 @@ export default function SettingsPage() {
     if (proxy.isProxied || !localStatus?.healthy) return;
     setIsDevModeLoading(true);
     try {
-      const res = await fetch(tierAgentUrl + '/dev-mode/status');
+      const res = await workerFetch(tierAgentUrl + '/dev-mode/status');
       if (res.ok) {
         const json = await res.json();
         if (json.success) {
@@ -903,7 +903,7 @@ export default function SettingsPage() {
     const poll = async () => {
       if (abort.signal.aborted) return;
       try {
-        const res = await fetch(tierAgentUrl + '/dev-mode/operation/' + operationId, { signal: abort.signal });
+        const res = await workerFetch(tierAgentUrl + '/dev-mode/operation/' + operationId, { signal: abort.signal });
         if (abort.signal.aborted) return;
         if (res.ok) {
           const json = await res.json();
@@ -947,7 +947,7 @@ export default function SettingsPage() {
     setDevModeComplete(false);
     setDevModeSuccess(null);
     try {
-      const res = await fetch(tierAgentUrl + '/dev-mode/' + action, { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/dev-mode/' + action, { method: 'POST' });
       const json = await res.json();
       if (json.success && json.data?.operationId) {
         pollOperation(json.data.operationId);
@@ -966,7 +966,7 @@ export default function SettingsPage() {
   const handleCheckUpdate = useCallback(async () => {
     setIsCheckingUpdate(true);
     try {
-      const res = await fetch(tierAgentUrl + '/dev-mode/check-update');
+      const res = await workerFetch(tierAgentUrl + '/dev-mode/check-update');
       if (res.ok) {
         const json = await res.json();
         if (json.success) {
@@ -986,7 +986,7 @@ export default function SettingsPage() {
     upgradePollRef.current = true;
 
     try {
-      const res = await fetch(tierAgentUrl + '/dev-mode/upgrade', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/dev-mode/upgrade', { method: 'POST' });
       const json = await res.json();
       if (!json.success) {
         setUpgradeLines([json.error?.message || 'Failed to start upgrade']);
@@ -1013,13 +1013,13 @@ export default function SettingsPage() {
         return;
       }
       try {
-        const healthRes = await fetch(tierAgentUrl + '/health', { signal: AbortSignal.timeout(3000) });
+        const healthRes = await workerFetch(tierAgentUrl + '/health', { signal: AbortSignal.timeout(3000) });
         if (healthRes.ok) {
           // Server is back — poll upgrade log until complete (up to 30s)
           let logComplete = false;
           for (let attempt = 0; attempt < 15; attempt++) {
             try {
-              const logRes = await fetch(tierAgentUrl + '/dev-mode/upgrade-log');
+              const logRes = await workerFetch(tierAgentUrl + '/dev-mode/upgrade-log');
               if (logRes.ok) {
                 const logJson = await logRes.json();
                 if (logJson.success) {
@@ -1038,7 +1038,7 @@ export default function SettingsPage() {
           if (!logComplete) {
             // Final fetch — show whatever we have
             try {
-              const logRes = await fetch(tierAgentUrl + '/dev-mode/upgrade-log');
+              const logRes = await workerFetch(tierAgentUrl + '/dev-mode/upgrade-log');
               if (logRes.ok) {
                 const logJson = await logRes.json();
                 if (logJson.success) {
@@ -1073,21 +1073,21 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!proxy.isProxied && localStatus?.healthy && (activeTab === 'data-loading' || activeTab === 'experiment')) {
       // Fetch knowledge settings
-      fetch(tierAgentUrl + '/knowledge-settings').then(r => r.json()).then(j => {
+      workerFetch(tierAgentUrl + '/knowledge-settings').then(r => r.json()).then(j => {
         if (j.success) setKnowledgeSettings(j.data);
       }).catch(() => {});
       // Fetch last remote sync status (show previous result on page load)
       if (!isRemoteSyncing) {
-        fetch(tierAgentUrl + '/knowledge/remote-sync/status').then(r => r.json()).then(j => {
+        workerFetch(tierAgentUrl + '/knowledge/remote-sync/status').then(r => r.json()).then(j => {
           if (j.success && j.data.status !== 'idle') setRemoteSyncStatus(j.data);
         }).catch(() => {});
       }
       // Fetch scheduler status
-      fetch(tierAgentUrl + '/knowledge/scheduler/status').then(r => r.json()).then(j => {
+      workerFetch(tierAgentUrl + '/knowledge/scheduler/status').then(r => r.json()).then(j => {
         if (j.success) setSchedulerStatus(j.data);
       }).catch(() => {});
       // Fetch project settings (excluded projects)
-      fetch(tierAgentUrl + '/project-settings').then(r => r.json()).then(j => {
+      workerFetch(tierAgentUrl + '/project-settings').then(r => r.json()).then(j => {
         if (j.success) {
           setExcludedPaths(j.data.excludedPaths || []);
           setKnowledgeEnabled(j.data.knowledgeEnabled !== false);
@@ -1102,8 +1102,8 @@ export default function SettingsPage() {
     if (proxy.isProxied || !localStatus?.healthy) return;
     try {
       const [statsRes, statusRes] = await Promise.all([
-        fetch(tierAgentUrl + '/knowledge/generate/stats').catch(() => null),
-        fetch(tierAgentUrl + '/knowledge/generate/status').catch(() => null),
+        workerFetch(tierAgentUrl + '/knowledge/generate/stats').catch(() => null),
+        workerFetch(tierAgentUrl + '/knowledge/generate/status').catch(() => null),
       ]);
       if (statsRes?.ok) {
         const json = await statsRes.json();
@@ -1135,7 +1135,7 @@ export default function SettingsPage() {
     setIsKnowledgeGenerating(true);
     setKnowledgeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/knowledge/generate/all', {
+      const res = await workerFetch(tierAgentUrl + '/knowledge/generate/all', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
@@ -1161,7 +1161,7 @@ export default function SettingsPage() {
 
   const handleStopKnowledgeGeneration = useCallback(async () => {
     try {
-      await fetch(tierAgentUrl + '/knowledge/generate/stop', { method: 'POST' });
+      await workerFetch(tierAgentUrl + '/knowledge/generate/stop', { method: 'POST' });
     } catch { /* best effort */ }
   }, [tierAgentUrl]);
 
@@ -1174,7 +1174,7 @@ export default function SettingsPage() {
     if (isClaudeCodeConfigSaving) return;
     setIsClaudeCodeConfigSaving(true);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/config', {
+      const res = await workerFetch(tierAgentUrl + '/claude-code/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ [key]: value }),
@@ -1191,7 +1191,7 @@ export default function SettingsPage() {
             for (let i = 0; i < 30; i++) {
               await new Promise(r => setTimeout(r, 1000));
               try {
-                const h = await fetch(tierAgentUrl + '/health', { signal: AbortSignal.timeout(2000) });
+                const h = await workerFetch(tierAgentUrl + '/health', { signal: AbortSignal.timeout(2000) });
                 if (h.ok) {
                   setDevModeMessage({ text: 'Services restarted successfully', type: 'ok' });
                   setTimeout(() => setDevModeMessage(null), 3000);
@@ -1222,7 +1222,7 @@ export default function SettingsPage() {
 
   const handleClaudeSettingsChange = useCallback(async (key: string, value: number | Record<string, boolean>) => {
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/settings', {
+      const res = await workerFetch(tierAgentUrl + '/claude-code/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ [key]: value }),
@@ -1242,7 +1242,7 @@ export default function SettingsPage() {
     setIsStatuslineInstalling(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/statusline/install', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/statusline/install', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setStatuslineStatus(json.data || null);
@@ -1261,7 +1261,7 @@ export default function SettingsPage() {
     setIsStatuslineUninstalling(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/statusline/uninstall', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/statusline/uninstall', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setStatuslineStatus(json.data || null);
@@ -1280,7 +1280,7 @@ export default function SettingsPage() {
     setIsMcpInstalling(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/mcp/install', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/mcp/install', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setMcpStatus(json.data || null);
@@ -1299,7 +1299,7 @@ export default function SettingsPage() {
     setIsMcpUninstalling(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/mcp/uninstall', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/mcp/uninstall', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setMcpStatus(json.data || null);
@@ -1318,7 +1318,7 @@ export default function SettingsPage() {
     setIsVscodeActivating(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/vscode/activate', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/ide-mcp/vscode/activate', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setVscodeMcpStatus(json.data || null);
@@ -1337,7 +1337,7 @@ export default function SettingsPage() {
     setIsVscodeDeactivating(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/vscode/deactivate', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/ide-mcp/vscode/deactivate', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setVscodeMcpStatus(json.data || null);
@@ -1356,7 +1356,7 @@ export default function SettingsPage() {
     setIsCodexActivating(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/codex/activate', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/ide-mcp/codex/activate', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setCodexMcpStatus(json.data || null);
@@ -1375,7 +1375,7 @@ export default function SettingsPage() {
     setIsCodexDeactivating(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/codex/deactivate', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/ide-mcp/codex/deactivate', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setCodexMcpStatus(json.data || null);
@@ -1394,7 +1394,7 @@ export default function SettingsPage() {
     setIsAntigravityActivating(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/antigravity/activate', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/ide-mcp/antigravity/activate', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setAntigravityMcpStatus(json.data || null);
@@ -1413,7 +1413,7 @@ export default function SettingsPage() {
     setIsAntigravityDeactivating(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/antigravity/deactivate', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/ide-mcp/antigravity/deactivate', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setAntigravityMcpStatus(json.data || null);
@@ -1432,7 +1432,7 @@ export default function SettingsPage() {
     setIsGeminiCliActivating(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/gemini-cli/activate', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/ide-mcp/gemini-cli/activate', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setGeminiCliMcpStatus(json.data || null);
@@ -1451,7 +1451,7 @@ export default function SettingsPage() {
     setIsGeminiCliDeactivating(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/gemini-cli/deactivate', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/ide-mcp/gemini-cli/deactivate', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setGeminiCliMcpStatus(json.data || null);
@@ -1470,7 +1470,7 @@ export default function SettingsPage() {
     setIsCursorActivating(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/cursor/activate', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/ide-mcp/cursor/activate', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setCursorMcpStatus(json.data || null);
@@ -1489,7 +1489,7 @@ export default function SettingsPage() {
     setIsCursorDeactivating(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/cursor/deactivate', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/ide-mcp/cursor/deactivate', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setCursorMcpStatus(json.data || null);
@@ -1508,7 +1508,7 @@ export default function SettingsPage() {
     setIsWindsurfActivating(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/windsurf/activate', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/ide-mcp/windsurf/activate', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setWindsurfMcpStatus(json.data || null);
@@ -1527,7 +1527,7 @@ export default function SettingsPage() {
     setIsWindsurfDeactivating(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/ide-mcp/windsurf/deactivate', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/ide-mcp/windsurf/deactivate', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setWindsurfMcpStatus(json.data || null);
@@ -1546,7 +1546,7 @@ export default function SettingsPage() {
     setIsContextHookInstalling(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/context-hook/install', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/context-hook/install', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setContextHookStatus(json.data || null);
@@ -1565,7 +1565,7 @@ export default function SettingsPage() {
     setIsContextHookUninstalling(true);
     setClaudeCodeMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/claude-code/context-hook/uninstall', { method: 'POST' });
+      const res = await workerFetch(tierAgentUrl + '/claude-code/context-hook/uninstall', { method: 'POST' });
       const json = await res.json();
       if (json.success) {
         setContextHookStatus(json.data || null);
@@ -1597,7 +1597,7 @@ export default function SettingsPage() {
         // Poll health until reachable or timeout
         for (let i = 0; i < 10; i++) {
           await new Promise(r => setTimeout(r, 1500));
-          const healthRes = await fetch(tierAgentUrl + '/health').catch(() => null);
+          const healthRes = await workerFetch(tierAgentUrl + '/health').catch(() => null);
           if (healthRes?.ok) {
             setStartServerOutput({ text: 'API server is running', type: 'ok' });
             await fetchStatus();
@@ -4194,7 +4194,7 @@ export default function SettingsPage() {
                     onChange={async (checked) => {
                       setKnowledgeEnabled(checked);
                       try {
-                        await fetch(tierAgentUrl + '/project-settings', {
+                        await workerFetch(tierAgentUrl + '/project-settings', {
                           method: 'PUT',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ knowledgeEnabled: checked }),
@@ -4217,7 +4217,7 @@ export default function SettingsPage() {
                         onChange={(checked) => {
                           const val = checked ? 5 : 0;
                           setKnowledgeSettings({ ...knowledgeSettings, discoveryIntervalMinutes: val });
-                          fetch(tierAgentUrl + '/knowledge-settings', {
+                          workerFetch(tierAgentUrl + '/knowledge-settings', {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ discoveryIntervalMinutes: val }),
@@ -4234,7 +4234,7 @@ export default function SettingsPage() {
                         checked={knowledgeSettings.autoGenericDiscovery === true}
                         onChange={(checked) => {
                           setKnowledgeSettings({ ...knowledgeSettings, autoGenericDiscovery: checked });
-                          fetch(tierAgentUrl + '/knowledge-settings', {
+                          workerFetch(tierAgentUrl + '/knowledge-settings', {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ autoGenericDiscovery: checked }),
@@ -4252,7 +4252,7 @@ export default function SettingsPage() {
                         checked={knowledgeSettings.autoExploreGeneration === true}
                         onChange={(checked) => {
                           setKnowledgeSettings({ ...knowledgeSettings, autoExploreGeneration: checked });
-                          fetch(tierAgentUrl + '/knowledge-settings', {
+                          workerFetch(tierAgentUrl + '/knowledge-settings', {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ autoExploreGeneration: checked }),
@@ -4270,7 +4270,7 @@ export default function SettingsPage() {
                         checked={knowledgeSettings.remoteSyncEnabled === true}
                         onChange={(checked) => {
                           setKnowledgeSettings({ ...knowledgeSettings, remoteSyncEnabled: checked });
-                          fetch(tierAgentUrl + '/knowledge-settings', {
+                          workerFetch(tierAgentUrl + '/knowledge-settings', {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ remoteSyncEnabled: checked }),
@@ -4289,12 +4289,12 @@ export default function SettingsPage() {
                             onClick={async () => {
                               setIsSchedulerRunning(true);
                               try {
-                                await fetch(tierAgentUrl + '/knowledge/scheduler/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+                                await workerFetch(tierAgentUrl + '/knowledge/scheduler/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
                                 // Poll scheduler status until done
                                 let failures = 0;
                                 const poll = setInterval(async () => {
                                   try {
-                                    const r = await fetch(tierAgentUrl + '/knowledge/scheduler/status');
+                                    const r = await workerFetch(tierAgentUrl + '/knowledge/scheduler/status');
                                     const j = await r.json();
                                     failures = 0;
                                     if (j.success) {
@@ -4349,7 +4349,7 @@ export default function SettingsPage() {
                         key={opt.value}
                         onClick={() => {
                           setKnowledgeSettings({ ...knowledgeSettings, genericValidationModel: opt.value });
-                          fetch(tierAgentUrl + '/knowledge-settings', {
+                          workerFetch(tierAgentUrl + '/knowledge-settings', {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ genericValidationModel: opt.value }),
@@ -4401,7 +4401,7 @@ export default function SettingsPage() {
                         checked={knowledgeSettings.autoReview === true}
                         onChange={(checked) => {
                           setKnowledgeSettings({ ...knowledgeSettings, autoReview: checked });
-                          fetch(tierAgentUrl + '/knowledge-settings', {
+                          workerFetch(tierAgentUrl + '/knowledge-settings', {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ autoReview: checked }),
@@ -4423,7 +4423,7 @@ export default function SettingsPage() {
                         key={opt.value}
                         onClick={() => {
                           setKnowledgeSettings({ ...knowledgeSettings, reviewModel: opt.value });
-                          fetch(tierAgentUrl + '/knowledge-settings', {
+                          workerFetch(tierAgentUrl + '/knowledge-settings', {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ reviewModel: opt.value }),
@@ -4585,7 +4585,7 @@ export default function SettingsPage() {
                       onChange={(checked) => {
                         const updated = { ...knowledgeSettings, remoteSyncEnabled: checked } as any;
                         setKnowledgeSettings(updated);
-                        fetch(tierAgentUrl + '/knowledge-settings', {
+                        workerFetch(tierAgentUrl + '/knowledge-settings', {
                           method: 'PUT',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ remoteSyncEnabled: checked }),
@@ -4627,12 +4627,12 @@ export default function SettingsPage() {
                           setIsRemoteSyncing(true);
                           setRemoteSyncStatus(null);
                           try {
-                            await fetch(tierAgentUrl + '/knowledge/remote-sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+                            await workerFetch(tierAgentUrl + '/knowledge/remote-sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
                             // Poll status until sync completes (no timeout — sync can take several minutes)
                             let failures = 0;
                             const poll = setInterval(async () => {
                               try {
-                                const r = await fetch(tierAgentUrl + '/knowledge/remote-sync/status');
+                                const r = await workerFetch(tierAgentUrl + '/knowledge/remote-sync/status');
                                 const j = await r.json();
                                 failures = 0;
                                 if (j.success) {
@@ -4692,14 +4692,14 @@ export default function SettingsPage() {
                                 setExcludedPaths(updated);
                                 setVerifyResult(null);
                                 try {
-                                  await fetch(tierAgentUrl + '/project-settings', {
+                                  await workerFetch(tierAgentUrl + '/project-settings', {
                                     method: 'PUT',
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({ excludedPaths: updated }),
                                   });
                                   // Verify knowledge state
                                   setIsVerifying(true);
-                                  const r = await fetch(tierAgentUrl + '/knowledge/verify', { method: 'POST' });
+                                  const r = await workerFetch(tierAgentUrl + '/knowledge/verify', { method: 'POST' });
                                   const j = await r.json();
                                   if (j.success) setVerifyResult(j.data);
                                 } catch (err) { console.error('Failed to update project settings:', err); } finally { setIsVerifying(false); }
@@ -4743,14 +4743,14 @@ export default function SettingsPage() {
                                     setAllProjects([]);
                                     setVerifyResult(null);
                                     try {
-                                      await fetch(tierAgentUrl + '/project-settings', {
+                                      await workerFetch(tierAgentUrl + '/project-settings', {
                                         method: 'PUT',
                                         headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({ excludedPaths: updated }),
                                       });
                                       // Verify knowledge state
                                       setIsVerifying(true);
-                                      const r = await fetch(tierAgentUrl + '/knowledge/verify', { method: 'POST' });
+                                      const r = await workerFetch(tierAgentUrl + '/knowledge/verify', { method: 'POST' });
                                       const j = await r.json();
                                       if (j.success) setVerifyResult(j.data);
                                     } catch (err) { console.error('Failed to update project settings:', err); } finally { setIsVerifying(false); }
@@ -4770,7 +4770,7 @@ export default function SettingsPage() {
                         onClick={async () => {
                           setShowAddProject(true);
                           try {
-                            const r = await fetch(tierAgentUrl + '/projects?includeExcluded=true&includeSize=false');
+                            const r = await workerFetch(tierAgentUrl + '/projects?includeExcluded=true&includeSize=false');
                             const j = await r.json();
                             if (j.success) setAllProjects(j.data.projects || []);
                           } catch (err) { console.error('Failed to load projects:', err); }
@@ -4823,7 +4823,7 @@ function ShellConfigSection({ tierAgentUrl }: { tierAgentUrl: string }) {
   useEffect(() => {
     async function fetchConfig() {
       try {
-        const res = await fetch(tierAgentUrl + '/shell/config');
+        const res = await workerFetch(tierAgentUrl + '/shell/config');
         if (res.ok) {
           const json = await res.json();
           const shell = json.data?.shell || json.shell || '/bin/bash';
@@ -4844,7 +4844,7 @@ function ShellConfigSection({ tierAgentUrl }: { tierAgentUrl: string }) {
     setSaving(true);
     setMessage(null);
     try {
-      const res = await fetch(tierAgentUrl + '/shell/config', {
+      const res = await workerFetch(tierAgentUrl + '/shell/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shell: shellPath.trim() }),
@@ -4865,7 +4865,7 @@ function ShellConfigSection({ tierAgentUrl }: { tierAgentUrl: string }) {
 
   const handleDetect = async () => {
     try {
-      const res = await fetch(tierAgentUrl + '/shell/config');
+      const res = await workerFetch(tierAgentUrl + '/shell/config');
       if (res.ok) {
         const json = await res.json();
         const shell = json.data?.shell || '/bin/bash';

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Shield, Globe, LogIn, Loader2, CheckCircle, XCircle, Info } from 'lucide-react';
-import { detectAppMode, detectProxyInfo } from '@/lib/api-client';
+import { detectAppMode, detectProxyInfo, workerFetch } from '@/lib/api-client';
 import { getHubDomain } from '@/lib/utils';
 
 type VerifyStatus = 'idle' | 'waiting' | 'verifying' | 'success' | 'error';
@@ -26,7 +26,7 @@ export default function LanBlockedPage() {
 
     // Check via Core API if the request originates from this machine
     const { baseUrl } = detectAppMode();
-    fetch(`${baseUrl}/auth/is-local`, { signal: AbortSignal.timeout(2000) })
+    workerFetch(`${baseUrl}/auth/is-local`, { signal: AbortSignal.timeout(2000) })
       .then(r => r.json())
       .then(data => {
         if (data?.data?.isLocal === true) {
@@ -39,7 +39,7 @@ export default function LanBlockedPage() {
   // Check if hub is configured (device has a cloud account bound)
   useEffect(() => {
     const apiPort = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
-    fetch(`http://${window.location.hostname}:${apiPort}/hub/status`)
+    workerFetch(`http://${window.location.hostname}:${apiPort}/hub/status`)
       .then(r => r.json())
       .then(data => {
         const d = data.data || data;

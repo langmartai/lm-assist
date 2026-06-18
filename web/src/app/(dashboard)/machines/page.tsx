@@ -2,7 +2,7 @@
 
 import { useMachineContext } from '@/contexts/MachineContext';
 import { useAppMode } from '@/contexts/AppModeContext';
-import { detectAppMode } from '@/lib/api-client';
+import { detectAppMode, workerFetch } from '@/lib/api-client';
 import { CrossRefStats } from '@/components/shared/CrossRefStats';
 import { Monitor, LayoutDashboard } from 'lucide-react';
 import { getPlatformEmoji, getHubDomain } from '@/lib/utils';
@@ -30,7 +30,7 @@ export default function MachinesPage() {
     // Local/hybrid: fetch a proxy token for authentication
     try {
       const { baseUrl: apiBase } = detectAppMode();
-      const res = await fetch(`${apiBase}/hub/machines/${remoteGatewayId}/proxy-token`, { method: 'POST' });
+      const res = await workerFetch(`${apiBase}/hub/machines/${remoteGatewayId}/proxy-token`, { method: 'POST' });
       const json = await res.json();
       if (json.success && json.data?.token) {
         window.open(`${baseUrl}?token=${json.data.token}`, '_blank');

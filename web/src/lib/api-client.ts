@@ -188,12 +188,28 @@ export function setProxySessionExpiredCallback(cb: (() => void) | null) {
 /** x-api-key for direct local-mode calls to the worker. Token is injected into
  *  the page by the server layout (window.__LM_API_TOKEN__). Empty in hub mode
  *  (the hub relay injects it server-side). */
-function localAuthHeader(): Record<string, string> {
+export function localAuthHeader(): Record<string, string> {
   if (typeof window !== 'undefined') {
     const t = (window as unknown as { __LM_API_TOKEN__?: string }).__LM_API_TOKEN__;
     if (t) return { 'x-api-key': t };
   }
   return {};
+}
+
+/**
+ * fetch() against the local worker core API with the rotating x-api-key
+ * attached (the core gates every non-/health endpoint behind it; raw fetches
+ * that omit it get 401). Use this for ANY direct browser→worker call that does
+ * not go through the api-client's fetchJson helpers (which already inject it).
+ * In hub/proxy mode the token is empty here and the relay injects it
+ * server-side, so this is a safe no-op there. Mirrors fetchJson's header merge,
+ * letting callers still override headers. Returns the raw Response (like fetch).
+ */
+export function workerFetch(url: string, options?: RequestInit): Promise<Response> {
+  return fetch(url, {
+    ...options,
+    headers: { ...localAuthHeader(), ...(options?.headers || {}) },
+  });
 }
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -1574,6 +1590,22 @@ export function createApiClient(mode?: AppMode, baseUrl?: string): ApiClient {
     // Pass proxy info to local client for proxy-aware terminal handling
     const proxyInfo = detectProxyInfo();
     return createLocalClient(resolvedUrl, proxyInfo);
+  }
+
+  // Hub mode. When proxied (/w/:machineId/assist/...), the proxied machine's OWN
+  // data is reachable via the worker relay at `<basePath>/_coreapi` (relayed to
+  // that machine's core — no Gateway-Type-1 auth needed). Only OTHER machines need
+  // the gateway (/api/tier-agent/*), which requires a cloud login session. So serve
+  // the proxied machine through a local client over _coreapi and keep the gateway
+  // for cross-machine access. Without this the cloud-proxied dashboard shows no data
+  // because /api/tier-agent/machines/:id/* returns GATEWAY1_AUTH_001 (401).
+  const proxyInfo = detectProxyInfo();
+  if (proxyInfo.isProxied && proxyInfo.machineId) {
+    return createHybridClient({
+      localBaseUrl: `${proxyInfo.basePath}/_coreapi`,
+      hubBaseUrl: proxyInfo.basePath,
+      localGatewayId: proxyInfo.machineId,
+    });
   }
   return createHubClient(resolvedUrl);
 }

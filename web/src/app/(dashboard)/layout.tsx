@@ -9,7 +9,7 @@ import { SearchProvider, useSearch } from '@/contexts/SearchContext';
 import { SearchOverlay } from '@/components/search/SearchOverlay';
 import { DataLoadingModal } from '@/components/data-loading/DataLoadingModal';
 import { DATA_LOADED_KEY } from '@/hooks/useDataLoading';
-import { detectAppMode, detectProxyInfo } from '@/lib/api-client';
+import { detectAppMode, detectProxyInfo, workerFetch } from '@/lib/api-client';
 import { useExperiment } from '@/hooks/useExperiment';
 
 function useLanAuthGuard() {
@@ -36,7 +36,7 @@ function useLanAuthGuard() {
       const { baseUrl } = detectAppMode();
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          const localRes = await fetch(`${baseUrl}/auth/is-local`, {
+          const localRes = await workerFetch(`${baseUrl}/auth/is-local`, {
             signal: AbortSignal.timeout(3000),
           });
           const localData = await localRes.json();

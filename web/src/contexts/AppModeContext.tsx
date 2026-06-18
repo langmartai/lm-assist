@@ -9,6 +9,7 @@ import {
   fetchHubUserInfo,
   getHubHttpUrl,
   setProxySessionExpiredCallback,
+  workerFetch,
   type ApiClient,
 } from '@/lib/api-client';
 import type { AppMode, ProxyInfo, HubUserInfo } from '@/lib/types';
@@ -115,7 +116,7 @@ export function AppModeProvider({ children }: { children: ReactNode }) {
       const tierAgentUrl = baseUrl || 'http://localhost:3100';
 
       // Check hub status first
-      const statusRes = await fetch(tierAgentUrl + '/hub/status');
+      const statusRes = await workerFetch(tierAgentUrl + '/hub/status');
       if (!statusRes.ok) {
         setHubConnected(false);
         setHubUser(null);
@@ -142,8 +143,8 @@ export function AppModeProvider({ children }: { children: ReactNode }) {
       if (authenticated) {
         // Fetch user info and API key in parallel
         const [userRes, keyRes] = await Promise.all([
-          fetch(tierAgentUrl + '/hub/user').catch(() => null),
-          fetch(tierAgentUrl + '/hub/api-key').catch(() => null),
+          workerFetch(tierAgentUrl + '/hub/user').catch(() => null),
+          workerFetch(tierAgentUrl + '/hub/api-key').catch(() => null),
         ]);
 
         let user: HubUserInfo | null = null;

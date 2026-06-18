@@ -17,6 +17,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import { workerFetch } from '@/lib/api-client';
 
 type Scope = 'read' | 'write' | 'admin';
 
@@ -52,8 +53,8 @@ export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
     setLoading(true);
     try {
       const [a, p] = await Promise.all([
-        fetch(`${baseUrl}/mcp/access`).then((r) => r.json()),
-        fetch(`${baseUrl}/mcp/pending`).then((r) => r.json()),
+        workerFetch(`${baseUrl}/mcp/access`).then((r) => r.json()),
+        workerFetch(`${baseUrl}/mcp/pending`).then((r) => r.json()),
       ]);
       if (a?.success) setCfg(a.data);
       if (p?.success) setPending(p.data.pending);
@@ -72,7 +73,7 @@ export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
 
   const setGate = async (tool: string, enabled: boolean) => {
     try {
-      const r = await fetch(`${baseUrl}/mcp/access/tool-gate`, {
+      const r = await workerFetch(`${baseUrl}/mcp/access/tool-gate`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tool, enabled }),
@@ -88,7 +89,7 @@ export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
 
   const resolvePending = async (id: string, action: 'confirm' | 'deny') => {
     try {
-      const r = await fetch(`${baseUrl}/mcp/pending/${encodeURIComponent(id)}/${action}`, { method: 'POST' }).then((x) => x.json());
+      const r = await workerFetch(`${baseUrl}/mcp/pending/${encodeURIComponent(id)}/${action}`, { method: 'POST' }).then((x) => x.json());
       flash(r?.success ? `Action ${action}ed` : (r?.error?.message || `${action} failed`), r?.success ? 'ok' : 'error');
       load();
     } catch (e) {

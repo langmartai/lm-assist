@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { homedir } from 'os';
 import path from 'path';
+import { serverAuthHeader } from '@/lib/server-auth';
 
 const CONFIG_DIR = path.join(homedir(), '.lm-assist');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'assist-config.json');
@@ -68,7 +69,7 @@ export async function POST(request: NextRequest) {
 
   try {
     // 1. Get the hub URL from the local tier-agent to determine gateway URL
-    const hubStatusRes = await fetch(`${tierAgentUrl}/hub/status`);
+    const hubStatusRes = await fetch(`${tierAgentUrl}/hub/status`, { headers: serverAuthHeader() });
     const hubStatus = await hubStatusRes.json();
     const hubWsUrl = hubStatus?.data?.hubUrl || hubStatus?.hubUrl;
 
@@ -102,7 +103,7 @@ export async function POST(request: NextRequest) {
     const oauthUserId = oauthData.user.id;
 
     // 3. Get the device-bound user from tier-agent
-    const deviceRes = await fetch(`${tierAgentUrl}/hub/user`);
+    const deviceRes = await fetch(`${tierAgentUrl}/hub/user`, { headers: serverAuthHeader() });
     if (!deviceRes.ok) {
       return NextResponse.json(
         { valid: false, error: 'Device is not connected to cloud. Connect on localhost first.' },

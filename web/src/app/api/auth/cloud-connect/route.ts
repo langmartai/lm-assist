@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { serverAuthHeader } from '@/lib/server-auth';
 
 /**
  * GET /api/auth/cloud-connect — Callback for OAuth assist-connect flow
@@ -36,7 +37,7 @@ export async function GET(request: NextRequest) {
   try {
     const res = await fetch(`${tierAgentUrl}/hub/config`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...serverAuthHeader() },
       body: JSON.stringify({ apiKey: key, hubUrl, reconnect: true }),
     });
 

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { detectAppMode, detectProxyInfo, resolveConsoleUrl, getHubHttpUrl } from '@/lib/api-client';
+import { detectAppMode, detectProxyInfo, resolveConsoleUrl, getHubHttpUrl, workerFetch } from '@/lib/api-client';
 
 /** Extract a string error message from various response formats. */
 function extractErrorMessage(data: any, fallback = 'Failed to start console'): string {
@@ -34,8 +34,8 @@ function normalizeConsoleUrl(url: string): string {
 async function getHubInfo(coreBaseUrl: string): Promise<{ hubHttpUrl: string; apiKey: string } | null> {
   try {
     const [statusRes, keyRes] = await Promise.all([
-      fetch(`${coreBaseUrl}/hub/status`),
-      fetch(`${coreBaseUrl}/hub/api-key`),
+      workerFetch(`${coreBaseUrl}/hub/status`),
+      workerFetch(`${coreBaseUrl}/hub/api-key`),
     ]);
     const statusData = await statusRes.json();
     const keyData = await keyRes.json();

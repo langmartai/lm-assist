@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAppMode } from '@/contexts/AppModeContext';
+import { workerFetch } from '@/lib/api-client';
 import type { SessionDetail, SessionMessage, SubagentSession } from '@/lib/types';
 
 interface UseSessionDetailOptions {
@@ -218,7 +219,7 @@ export function useSessionDetail({
       try {
         const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
         const apiHost = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
-        const sumRes = await fetch(`http://${apiHost}:${port}/sessions/${sessionId}/summary`, { signal: AbortSignal.timeout(2000) });
+        const sumRes = await workerFetch(`http://${apiHost}:${port}/sessions/${sessionId}/summary`, { signal: AbortSignal.timeout(2000) });
         if (sumRes.ok) {
           const sumData = await sumRes.json();
           if (sumData?.data?.summary) {
