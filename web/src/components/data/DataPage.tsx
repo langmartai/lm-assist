@@ -209,10 +209,132 @@ export function DataPage() {
   );
 }
 
-// Placeholder implementations replaced in Task 3:
-function KeysTab(_props: { apiFetch: <T,>(p: string, o?: { method?: string; body?: unknown }) => Promise<T>; canManage: boolean; setError: (s: string | null) => void }) {
-  return <div className="empty-state"><KeyRound size={32} className="empty-state-icon" /><div>Keys tab (Task 3)</div></div>;
+function KeysTab({ apiFetch, canManage, setError }: { apiFetch: <T,>(p: string, o?: { method?: string; body?: unknown }) => Promise<T>; canManage: boolean; setError: (s: string | null) => void }) {
+  const [keys, setKeys] = useState<PublicKey[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
+
+  const fetchKeys = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await apiFetch<{ keys: PublicKey[] }>('/data/keys');
+      setKeys(r.keys || []);
+    } catch (e) {
+      console.error('fetchKeys failed', e);
+      setError(e instanceof Error ? e.message : 'failed to load keys');
+    } finally {
+      setLoading(false);
+    }
+  }, [apiFetch, setError]);
+
+  useEffect(() => { if (canManage) fetchKeys(); else setLoading(false); }, [canManage, fetchKeys]);
+
+  const revoke = useCallback(async (keyId: string) => {
+    try {
+      await apiFetch(`/data/access/${encodeURIComponent(keyId)}`, { method: 'DELETE' });
+      setConfirmRevoke(null);
+      await fetchKeys();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'revoke failed');
+    }
+  }, [apiFetch, fetchKeys, setError]);
+
+  if (!canManage) {
+    return <div className="empty-state"><KeyRound size={32} className="empty-state-icon" /><div>Access-key management is local-only</div></div>;
+  }
+  if (loading) return <div className="empty-state"><Loader2 size={24} style={{ animation: 'spin 1s linear infinite' }} /><span style={{ fontSize: 12 }}>Loading…</span></div>;
+  if (keys.length === 0) return <div className="empty-state"><KeyRound size={32} className="empty-state-icon" /><div>No access keys issued</div></div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {keys.map((k) => {
+        const expired = new Date(k.expiresAt).getTime() < Date.now();
+        return (
+          <div key={k.keyId} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12 }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--color-text-primary)', minWidth: 150 }}>{k.keyId}</div>
+            <span className="badge badge-default">{k.principalType}{k.principalId ? `:${k.principalId}` : ''}</span>
+            {k.revoked ? <span className="badge badge-red">revoked</span> : expired ? <span className="badge badge-orange">expired</span> : <span className="badge badge-green">active</span>}
+            <div style={{ flex: 1, fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+              {k.label ? `${k.label} · ` : ''}{k.grants.map((g) => `${g.dataset}[${g.actions.join(',')}]`).join(' ')} · exp {new Date(k.expiresAt).toLocaleString()}
+            </div>
+            {!k.revoked && (confirmRevoke === k.keyId ? (
+              <>
+                <button className="btn btn-destructive btn-sm" onClick={() => revoke(k.keyId)}>Confirm revoke</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => setConfirmRevoke(null)}>Cancel</button>
+              </>
+            ) : (
+              <button className="btn btn-ghost btn-sm" onClick={() => setConfirmRevoke(k.keyId)}>Revoke</button>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
-function SyncTab(_props: { apiFetch: <T,>(p: string, o?: { method?: string; body?: unknown }) => Promise<T>; canManage: boolean; setError: (s: string | null) => void }) {
-  return <div className="empty-state"><RefreshCw size={32} className="empty-state-icon" /><div>Sync tab (Task 3)</div></div>;
+
+function SyncTab({ apiFetch, canManage, setError }: { apiFetch: <T,>(p: string, o?: { method?: string; body?: unknown }) => Promise<T>; canManage: boolean; setError: (s: string | null) => void }) {
+  const [status, setStatus] = useState<SyncStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
+
+  const fetchStatus = useCallback(async () => {
+    setLoading(true);
+    try {
+      setStatus(await apiFetch<SyncStatus>('/data/sync/status'));
+    } catch (e) {
+      console.error('fetchStatus failed', e);
+      setError(e instanceof Error ? e.message : 'failed to load sync status');
+    } finally {
+      setLoading(false);
+    }
+  }, [apiFetch, setError]);
+
+  useEffect(() => { if (canManage) fetchStatus(); else setLoading(false); }, [canManage, fetchStatus]);
+
+  const runSync = useCallback(async () => {
+    setRunning(true);
+    try {
+      setStatus(await apiFetch<SyncStatus>('/data/sync', { method: 'POST' }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'sync failed');
+    } finally {
+      setRunning(false);
+    }
+  }, [apiFetch, setError]);
+
+  if (!canManage) {
+    return <div className="empty-state"><RefreshCw size={32} className="empty-state-icon" /><div>Cross-node sync is local-only</div></div>;
+  }
+  if (loading) return <div className="empty-state"><Loader2 size={24} style={{ animation: 'spin 1s linear infinite' }} /><span style={{ fontSize: 12 }}>Loading…</span></div>;
+
+  const stat = (label: string, value: string | number) => (
+    <div className="card" style={{ padding: 12, minWidth: 120 }}>
+      <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--color-text-primary)' }}>{value}</div>
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
+        <div style={{ fontSize: 13, color: 'var(--color-text-tertiary)' }}>Last run: {status?.lastRun ? new Date(status.lastRun).toLocaleString() : 'never'}</div>
+        <div style={{ flex: 1 }} />
+        <button className="btn btn-primary btn-sm" disabled={running} onClick={runSync}>
+          {running ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={14} />} Reconcile now
+        </button>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+        {stat('Peers checked', status?.peersChecked ?? 0)}
+        {stat('Datasets', status?.datasetsReplicated ?? 0)}
+        {stat('Records applied', status?.recordsApplied ?? 0)}
+        {stat('Records skipped', status?.recordsSkipped ?? 0)}
+      </div>
+      {status && status.errors.length > 0 && (
+        <div className="card" style={{ marginTop: 12, borderColor: 'var(--color-status-red)' }}>
+          <div style={{ fontSize: 12, color: 'var(--color-status-red)', marginBottom: 6 }}>Errors</div>
+          {status.errors.map((er, i) => <div key={i} style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--color-text-secondary)' }}>{er}</div>)}
+        </div>
+      )}
+    </div>
+  );
 }
