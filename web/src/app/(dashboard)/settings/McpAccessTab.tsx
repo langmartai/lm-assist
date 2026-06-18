@@ -16,7 +16,7 @@
  * /mcp/access/tool-gate (toggle a gate), and /mcp/pending* (confirm/deny).
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { workerFetch } from '@/lib/api-client';
 
 type Scope = 'read' | 'write' | 'admin';
@@ -43,6 +43,43 @@ export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
   const [pending, setPending] = useState<Pending[]>([]);
   const [msg, setMsg] = useState<{ text: string; type: 'ok' | 'error' } | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Click-to-open, draggable tool-description popup; closes on an outside click.
+  const [popup, setPopup] = useState<{ tool: string; desc: string; x: number; y: number } | null>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+
+  const openPopup = (e: ReactMouseEvent, t: ToolRow) => {
+    if (!t.description) return;
+    const x = Math.max(8, Math.min(e.clientX, window.innerWidth - 400));
+    const y = Math.max(8, Math.min(e.clientY, window.innerHeight - 260));
+    setPopup({ tool: t.tool, desc: t.description, x, y });
+  };
+
+  // Close when clicking anywhere outside the popup. The opening click can't
+  // trigger this — the listener is only attached after `popup` becomes set.
+  useEffect(() => {
+    if (!popup) return;
+    const onDown = (e: MouseEvent) => {
+      if (popupRef.current && !popupRef.current.contains(e.target as Node)) setPopup(null);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [popup]);
+
+  // Drag the popup by its header.
+  const startDrag = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    const sx = e.clientX, sy = e.clientY;
+    const ox = popup?.x ?? 0, oy = popup?.y ?? 0;
+    const onMove = (ev: MouseEvent) =>
+      setPopup((p) => (p ? { ...p, x: ox + (ev.clientX - sx), y: oy + (ev.clientY - sy) } : p));
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
 
   const flash = (text: string, type: 'ok' | 'error') => {
     setMsg({ text, type });
@@ -155,8 +192,8 @@ export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
               <div key={t.tool} className="flex items-center justify-between border-b border-gray-800 py-1.5">
                 <div className="flex items-center gap-2">
                   <span
-                    className={`font-mono text-xs ${t.description ? 'cursor-help underline decoration-dotted decoration-gray-600 underline-offset-4' : ''}`}
-                    title={t.description || undefined}
+                    className={`font-mono text-xs ${t.description ? 'cursor-pointer underline decoration-dotted decoration-gray-500 underline-offset-4 hover:text-gray-200' : ''}`}
+                    onClick={t.description ? (e) => openPopup(e, t) : undefined}
                   >
                     {t.tool}
                   </span>
@@ -176,6 +213,25 @@ export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
       </section>
 
       <button onClick={load} disabled={loading} className="text-xs text-gray-400 hover:text-gray-200">{loading ? 'Refreshing…' : 'Refresh'}</button>
+
+      {popup && (
+        <div
+          ref={popupRef}
+          style={{ position: 'fixed', left: popup.x, top: popup.y, width: 380, maxWidth: '90vw', zIndex: 50 }}
+          className="rounded border border-gray-700 bg-gray-900 shadow-2xl text-xs"
+        >
+          <div
+            onMouseDown={startDrag}
+            className="flex items-center justify-between gap-3 px-3 py-2 border-b border-gray-700 bg-gray-800 rounded-t cursor-move select-none"
+          >
+            <span className="font-mono text-gray-200">{popup.tool}</span>
+            <button onClick={() => setPopup(null)} className="text-gray-400 hover:text-gray-100 leading-none" aria-label="Close">✕</button>
+          </div>
+          <div className="px-3 py-2 max-h-72 overflow-auto whitespace-pre-wrap text-gray-300 leading-relaxed">
+            {popup.desc}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
