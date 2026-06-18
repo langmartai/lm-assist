@@ -49,6 +49,7 @@ import { createPortForwardRoutes } from './port-forward.routes';
 import { createSessionMessagingRoutes } from './session-messaging.routes';
 import { createTransportRoutes } from './transport.routes';
 import { createRemoteControlRoutes } from './remote-control.routes';
+import { createDataRoutes } from './data.routes';
 
 /**
  * Create all core routes
@@ -97,5 +98,6 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createSessionMessagingRoutes(ctx),
     ...createTransportRoutes(ctx),
     ...createRemoteControlRoutes(ctx),
+    ...createDataRoutes(ctx),
   ];
 }

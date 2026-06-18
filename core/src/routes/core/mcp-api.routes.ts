@@ -41,6 +41,8 @@ function asScopes(v: unknown): ToolScope[] {
     : [];
 }
 import { dispatch } from './mcp.routes';
+import { runWithMcpContext } from '../../mcp-server/principal-context';
+import { getDataService } from '../../data/data-service';
 
 export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -324,7 +326,9 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
           if (!handler) {
             return wrapError('MCP_UNKNOWN_TOOL', `Unknown expanded tool: ${tool}`, start);
           }
-          return wrapResponse(await handler(body.args || {}), start);
+          const principal = getDataService().resolvePrincipal(req);
+          const result = await runWithMcpContext({ principal }, () => handler(body.args || {}));
+          return wrapResponse(result, start);
         } catch (err) {
           return wrapError('MCP_CALL_ERROR', err instanceof Error ? err.message : String(err), start);
         }

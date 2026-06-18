@@ -59,6 +59,7 @@ export interface HubClientEvents {
   error: (error: Error) => void;
   max_reconnects: () => void;
   gateway_conflict: () => void;
+  dataset_updated: (message: DatasetUpdatedMessage) => void;
 }
 
 /**
@@ -72,6 +73,18 @@ export interface MemoryUpdatedMessage {
   recordIds: string[];
   /** Optional epoch ms when the originating push completed. */
   ts?: number;
+}
+
+/**
+ * Cross-node dataset-updated notification (M5 data sync).
+ * Carries only a pointer to what changed; actual records are pulled on receive.
+ */
+export interface DatasetUpdatedMessage {
+  type: 'dataset_updated';
+  node: string;
+  dataset: string;
+  recordIds: string[];
+  ts: number;
 }
 
 export class HubClient extends EventEmitter {
@@ -276,6 +289,16 @@ export class HubClient extends EventEmitter {
   sendMemoryUpdated(msg: Omit<MemoryUpdatedMessage, 'type'>): boolean {
     if (!this.wsClient || !this.status.connected) return false;
     this.wsClient.send({ type: 'memory_updated', ...msg });
+    return true;
+  }
+
+  /**
+   * Send a dataset-updated notification to the hub (fanned to other nodes).
+   * No-op if not connected. Pure notification — receivers pull the actual records.
+   */
+  sendDatasetUpdated(msg: { node: string; dataset: string; recordIds: string[]; ts: number }): boolean {
+    if (!this.wsClient || !this.status.connected) return false;
+    this.wsClient.send({ type: 'dataset_updated', ...msg });
     return true;
   }
 
@@ -558,6 +581,12 @@ export class HubClient extends EventEmitter {
       try {
         for (const cb of this.memoryUpdatedCallbacks) cb(message);
       } catch { /* swallow */ }
+    });
+
+    // Handle cross-node dataset-updated notifications (M5 data sync).
+    // Re-emit so the sync engine can pull the changed records.
+    this.wsClient.on('dataset_updated', (message: DatasetUpdatedMessage) => {
+      this.emit('dataset_updated', message);
     });
   }
 

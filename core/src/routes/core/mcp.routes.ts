@@ -25,6 +25,9 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { runWithMcpContext } from '../../mcp-server/principal-context';
+import { getDataService } from '../../data/data-service';
+import type { ParsedRequest } from '../index';
 
 import { configureMcpServer, type McpToolDispatcher } from '../../mcp-server/configure';
 import { handleSearch } from '../../mcp-server/tools/search';
@@ -175,9 +178,18 @@ export async function handleMcpRequest(
     sessionIdGenerator: undefined,
   });
 
+  // Resolve the caller's principal from the ORIGINATING request (the SDK strips this),
+  // so principal-gated tools (data_*) enforce cloud-vs-local correctly.
+  const synthReq = {
+    method: req.method || 'POST', path: '/mcp', params: {}, query: {}, body: undefined,
+    headers: req.headers as ParsedRequest['headers'],
+    clientIp: req.socket?.remoteAddress || undefined,
+  } as ParsedRequest;
+  const principal = getDataService().resolvePrincipal(synthReq);
+
   try {
     await server.connect(transport);
-    await transport.handleRequest(req, res, body);
+    await runWithMcpContext({ principal }, () => transport.handleRequest(req, res, body));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (!res.headersSent) {

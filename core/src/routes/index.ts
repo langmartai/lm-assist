@@ -21,6 +21,8 @@ export interface ParsedRequest {
   params: Record<string, string>;
   query: Record<string, string>;
   body: any;
+  /** Lower-cased HTTP headers (populated by the server). */
+  headers?: Record<string, string | string[] | undefined>;
   /** Client IP address from the TCP connection */
   clientIp?: string;
   raw?: {

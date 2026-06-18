@@ -93,7 +93,7 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
 
   try {
     profiler.start('startServer', 'Server Init + Listen');
-    const server = await startServer(projectPath, port);
+    const server = await startServer(projectPath, port, host);
     profiler.end('startServer');
 
     // Pre-warm the embedder + vector store in the background (async, non-blocking)
@@ -171,6 +171,14 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
     } else {
       console.log('Knowledge disabled — skipping scheduler');
     }
+
+    // Start data sync boot (flush timer, reconcile timer, dataset_updated subscription).
+    // Guard: hub client is already initialized above; startDataSync() is dormant if
+    // dataServiceEnabled=false, so this is always safe to call.
+    try {
+      const { startDataSync } = require('./data/sync-boot');
+      startDataSync();
+    } catch (e) { /* non-fatal — data sync is optional */ }
 
     profiler.end('total');
     profiler.summary();

@@ -119,6 +119,7 @@ export class ApiRelayHandler {
     '/mcp',          // MCP StreamableHTTP endpoint + /mcp/* (relayed from the hub for connector routing)
     '/mcp-call',     // generic expanded-tool shim
     '/session-messages', // cross-node session-to-session messaging (node-routed)
+    '/data',          // generic data service (access-key gated; see routes/core/data.routes.ts)
   ];
 
   /**
@@ -372,13 +373,20 @@ export class ApiRelayHandler {
     const targetPort = port || this.options.localApiPort;
 
     return new Promise((resolve, reject) => {
+      // Strip client-supplied trust headers so only the relay can set them.
+      const safeHeaders: Record<string, any> = { ...headers };
+      for (const k of Object.keys(safeHeaders)) {
+        const lk = k.toLowerCase();
+        if (lk === 'x-relay-source' || lk === 'x-lm-user-id') delete safeHeaders[k];
+      }
+
       const options: http.RequestOptions = {
         hostname: '127.0.0.1',
         port: targetPort,
         path,
         method: method.toUpperCase(),
         headers: {
-          ...headers,
+          ...safeHeaders,
           'x-relay-source': 'hub',
           'x-api-key': currentApiToken(),
         },
