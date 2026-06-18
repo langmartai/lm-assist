@@ -20,6 +20,7 @@ test('system datasets: registers knowledge + vectors with the gating ACL, idempo
   assert.equal(k.system, true);
   assert.equal(k.readOnly ?? false, false);  // NOT readOnly (manage must be allowed)
   assert.equal(k.syncMode, 'none');
+  assert.equal(k.visibility, 'cross-node-readable'); // the field that gates cloud read exposure
   // gating: cloud/* gets read/query/search; local gets write/delete/manage
   const star = k.acl.find((a: any) => a.principal === '*');
   const local = k.acl.find((a: any) => a.principal === 'local');

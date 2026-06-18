@@ -89,7 +89,7 @@ export class KnowledgeBackend implements StorageBackend {
     // Create: the store requires title/type/project/parts.
     const created = store.createKnowledge({
       title: String(f.title ?? ''),
-      type: (f.type ?? 'flow') as any, // match the store's own default type
+      type: (f.type ?? 'flow') as any, // adapter default: createKnowledge requires `type` (the store has no default)
       project: String(f.project ?? ''),
       parts: Array.isArray(f.parts) ? (f.parts as any[]) : [],
       ...(f.status !== undefined ? { status: f.status as any } : {}),

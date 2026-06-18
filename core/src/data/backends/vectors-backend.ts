@@ -10,7 +10,9 @@ import { getVectorStore } from '../../vector/vector-store';
 
 function vectorHitToRecord(h: any): DataRecord & { score: number } {
   return {
-    id: h.knowledgeId || h.partId || h.sessionId || '',
+    // composite id so multiple parts of one doc don't collide (vectors are non-record-addressable;
+    // this id is a read-only projection field, not a storage key)
+    id: [h.knowledgeId || h.sessionId || '', h.partId].filter(Boolean).join('#'),
     version: 1,
     fields: { type: h.type, contentType: h.contentType, sessionId: h.sessionId, knowledgeId: h.knowledgeId, partId: h.partId, origin: h.origin },
     text: h.text,
@@ -57,10 +59,16 @@ export class VectorsBackend implements StorageBackend {
       case 'rebuild-fts':
         await store.rebuildFtsIndex();
         return { ok: true };
-      case 'delete-knowledge':
-        return { deleted: await store.deleteKnowledge(String(a.knowledgeId || '')) };
-      case 'delete-session':
-        return { deleted: await store.deleteSession(String(a.sessionId || '')) };
+      case 'delete-knowledge': {
+        const id = String(a.knowledgeId || '');
+        if (!id) throw new Error('delete-knowledge: knowledgeId is required');
+        return { deleted: await store.deleteKnowledge(id) };
+      }
+      case 'delete-session': {
+        const id = String(a.sessionId || '');
+        if (!id) throw new Error('delete-session: sessionId is required');
+        return { deleted: await store.deleteSession(id) };
+      }
       case 'delete-all-by-type': {
         const t = String(a.type || '');
         if (t !== 'session' && t !== 'knowledge') throw new Error("delete-all-by-type: type must be 'session' or 'knowledge'");
