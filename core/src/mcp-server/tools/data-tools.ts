@@ -16,6 +16,17 @@ function ctxFromArgs(args: Record<string, unknown>): CallCtx | { error: string }
   return { principal: c.principal, keyHeader };
 }
 
+const LOCAL_ONLY_MSG =
+  'FORBIDDEN: data management is local-only. This MCP session is remote (a cloud principal), so it cannot create/drop datasets, manage access keys, or trigger sync. Run management from a Claude Code session on the data-service host (a local session). Tip: call data_catalog and check you.canManage.';
+
+/** Front-gate management tools on a LOCAL principal, returning a clear, actionable message for remote sessions. */
+function requireLocalCtx(): CallCtx | { error: string } {
+  const c = currentMcpContext();
+  if (!c) return { error: 'no MCP principal context (tool invoked outside an MCP entry point)' };
+  if (c.principal.type !== 'local') return { error: LOCAL_ONLY_MSG };
+  return { principal: c.principal };
+}
+
 function pretty(v: unknown): string { return JSON.stringify(v, null, 2); }
 
 async function handleDataCatalog(_args: Record<string, unknown>): Promise<McpToolResult> {
@@ -25,7 +36,11 @@ async function handleDataCatalog(_args: Record<string, unknown>): Promise<McpToo
   if (!svc.isEnabled()) return err('data service is disabled');
   const cfg = getHubConfig();
   const servedBy = { node: cfg.gatewayId || cfg.machineId, hostname: cfg.hostname, platform: cfg.platform };
-  return ok(pretty({ servedBy, datasets: svc.catalog(c.principal) }));
+  return ok(pretty({
+    you: { principal: c.principal.type, canManage: c.principal.type === 'local' },
+    servedBy,
+    datasets: svc.catalog(c.principal),
+  }));
 }
 
 async function handleDataRequestAccess(args: Record<string, unknown>): Promise<McpToolResult> {
@@ -138,6 +153,66 @@ async function handleDataAdmin(args: Record<string, unknown>): Promise<McpToolRe
   return ok(pretty(r.value));
 }
 
+async function handleDataCreateDataset(args: Record<string, unknown>): Promise<McpToolResult> {
+  const ctx = requireLocalCtx(); if ('error' in ctx) return err(ctx.error);
+  const svc = getDataService(); if (!svc.isEnabled()) return err('data service is disabled');
+  const id = String(args.id || ''); if (!id) return err('id is required');
+  const r = await svc.createDataset(ctx, {
+    id,
+    backend: (args.backend as any) || 'cache',
+    title: typeof args.title === 'string' ? args.title : undefined,
+    visibility: args.visibility as any,
+    readOnly: args.readOnly === true ? true : undefined,
+    sensitive: args.sensitive === true ? true : undefined,
+    syncMode: args.syncMode as any,
+    config: (args.config && typeof args.config === 'object' ? args.config : { kind: (args.backend as any) || 'cache' }) as any,
+    acl: Array.isArray(args.acl) ? (args.acl as any) : undefined,
+  });
+  if (!r.ok) return err(`${r.code}: ${r.reason}`);
+  return ok(pretty(r.value));
+}
+
+async function handleDataDropDataset(args: Record<string, unknown>): Promise<McpToolResult> {
+  const ctx = requireLocalCtx(); if ('error' in ctx) return err(ctx.error);
+  const svc = getDataService(); if (!svc.isEnabled()) return err('data service is disabled');
+  const dataset = String(args.dataset || ''); if (!dataset) return err('dataset is required');
+  const r = await svc.dropDataset(ctx, dataset);
+  if (!r.ok) return err(`${r.code}: ${r.reason}`);
+  return ok(pretty(r.value));
+}
+
+async function handleDataKeys(_args: Record<string, unknown>): Promise<McpToolResult> {
+  const ctx = requireLocalCtx(); if ('error' in ctx) return err(ctx.error);
+  const svc = getDataService(); if (!svc.isEnabled()) return err('data service is disabled');
+  const r = await svc.listKeys(ctx);
+  if (!r.ok) return err(`${r.code}: ${r.reason}`);
+  return ok(pretty(r.value));
+}
+
+async function handleDataRevokeKey(args: Record<string, unknown>): Promise<McpToolResult> {
+  const ctx = requireLocalCtx(); if ('error' in ctx) return err(ctx.error);
+  const svc = getDataService(); if (!svc.isEnabled()) return err('data service is disabled');
+  const keyId = String(args.keyId || ''); if (!keyId) return err('keyId is required');
+  const revoked = await svc.revoke(ctx.principal, keyId);
+  return ok(pretty({ revoked }));
+}
+
+async function handleDataSync(_args: Record<string, unknown>): Promise<McpToolResult> {
+  const ctx = requireLocalCtx(); if ('error' in ctx) return err(ctx.error);
+  const svc = getDataService(); if (!svc.isEnabled()) return err('data service is disabled');
+  const r = await svc.sync(ctx);
+  if (!r.ok) return err(`${r.code}: ${r.reason}`);
+  return ok(pretty(r.value));
+}
+
+async function handleDataSyncStatus(_args: Record<string, unknown>): Promise<McpToolResult> {
+  const ctx = requireLocalCtx(); if ('error' in ctx) return err(ctx.error);
+  const svc = getDataService(); if (!svc.isEnabled()) return err('data service is disabled');
+  const r = await svc.syncStatus(ctx);
+  if (!r.ok) return err(`${r.code}: ${r.reason}`);
+  return ok(pretty(r.value));
+}
+
 const STR = (description: string) => ({ type: 'string' as const, description });
 
 export const DATA_TOOL_DEFS = [
@@ -216,6 +291,50 @@ export const DATA_TOOL_DEFS = [
       required: ['dataset', 'op'],
     },
   },
+  {
+    name: 'data_create_dataset',
+    description: 'Create a new data-service dataset (cache/vector/sql). LOCAL-ONLY: works only from a Claude Code session running on the data-service host; a remote/hub session is refused. Check data_catalog -> you.canManage first. Body: { id, backend, visibility?, syncMode?, config?, acl?, readOnly?, sensitive? }.',
+    annotations: { readOnlyHint: false },
+    inputSchema: { type: 'object' as const, properties: {
+      id: STR('Dataset id (^[a-z0-9][a-z0-9_-]{0,63}$; not a reserved name).'),
+      backend: STR('Backend: cache | vector | sql.'),
+      visibility: STR('local-only | synced | cross-node-readable.'),
+      syncMode: STR('none | full | partial.'),
+      config: { type: 'object' as const, description: 'BackendConfig, e.g. { kind:"sql", indexedFields:[...] }.' },
+      acl: { type: 'array' as const, description: 'AclRule[]: [{ principal, actions[] }].', items: { type: 'object' as const } },
+      title: STR('Optional title.'),
+    }, required: ['id', 'backend'] },
+  },
+  {
+    name: 'data_drop_dataset',
+    description: 'Drop a dataset and its backend storage. LOCAL-ONLY (remote sessions refused). Refuses system datasets + remote replicas. Check data_catalog -> you.canManage.',
+    annotations: { readOnlyHint: false },
+    inputSchema: { type: 'object' as const, properties: { dataset: STR('Dataset id to drop.') }, required: ['dataset'] },
+  },
+  {
+    name: 'data_keys',
+    description: 'List issued access keys (metadata only — keyId, principal, grants, expiry, revoked; NEVER secrets). LOCAL-ONLY (remote sessions refused).',
+    annotations: { readOnlyHint: true },
+    inputSchema: { type: 'object' as const, properties: {}, required: [] as string[] },
+  },
+  {
+    name: 'data_revoke_key',
+    description: 'Revoke an access key by keyId. LOCAL-ONLY (remote sessions refused).',
+    annotations: { readOnlyHint: false },
+    inputSchema: { type: 'object' as const, properties: { keyId: STR('The keyId to revoke (from data_keys).') }, required: ['keyId'] },
+  },
+  {
+    name: 'data_sync',
+    description: 'Trigger a cross-node reconcile (pull synced datasets from peers). LOCAL-ONLY (remote sessions refused). Returns the sync run summary.',
+    annotations: { readOnlyHint: false },
+    inputSchema: { type: 'object' as const, properties: {}, required: [] as string[] },
+  },
+  {
+    name: 'data_sync_status',
+    description: 'Report the cross-node sync status (last run, peers checked, records applied/skipped, errors). LOCAL-ONLY (remote sessions refused).',
+    annotations: { readOnlyHint: true },
+    inputSchema: { type: 'object' as const, properties: {}, required: [] as string[] },
+  },
 ] as const;
 
 export const DATA_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
@@ -227,4 +346,10 @@ export const DATA_HANDLERS: Record<string, (args: Record<string, unknown>) => Pr
   data_put: handleDataPut,
   data_delete: handleDataDelete,
   data_admin: handleDataAdmin,
+  data_create_dataset: handleDataCreateDataset,
+  data_drop_dataset: handleDataDropDataset,
+  data_keys: handleDataKeys,
+  data_revoke_key: handleDataRevokeKey,
+  data_sync: handleDataSync,
+  data_sync_status: handleDataSyncStatus,
 };
