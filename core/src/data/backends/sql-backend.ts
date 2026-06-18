@@ -160,6 +160,41 @@ export class SqlBackend implements StorageBackend {
     const info = this.db(dataset).prepare(`DELETE FROM records WHERE id = ?`).run(id);
     return info.changes > 0;
   }
-  async exportSince(_dataset: string, _since?: string): Promise<DataRecord[]> { throw new Error('not implemented'); }
-  async importBatch(_dataset: string, _records: DataRecord[], _origin: NodeOrigin): Promise<{ applied: number; skipped: number }> { throw new Error('not implemented'); }
+
+  async exportSince(dataset: string, since?: string): Promise<DataRecord[]> {
+    const h = this.db(dataset);
+    const rows = since
+      ? h.prepare(`SELECT ${SELECT_COLS} FROM records WHERE updated_at >= ? ORDER BY updated_at ASC`).all(since)
+      : h.prepare(`SELECT ${SELECT_COLS} FROM records ORDER BY updated_at ASC`).all();
+    return rows.map(rowToRecord);
+  }
+
+  async importBatch(dataset: string, records: DataRecord[], origin: NodeOrigin): Promise<{ applied: number; skipped: number }> {
+    let applied = 0, skipped = 0;
+    for (const incoming of records) {
+      const local = await this.get(dataset, incoming.id);
+      const stamped: DataRecord = { ...incoming, origin };
+      if (isNewer(stamped, local)) { await this.put(dataset, stamped); applied++; } else skipped++;
+    }
+    return { applied, skipped };
+  }
+
+  async admin(dataset: string, op: string, _args?: Record<string, unknown>): Promise<unknown> {
+    const h = this.db(dataset);
+    switch (op) {
+      case 'stats': {
+        const n = (h.prepare(`SELECT COUNT(*) AS n FROM records`).get() as any).n;
+        return { count: n };
+      }
+      case 'integrity-check': {
+        const r = h.prepare(`PRAGMA integrity_check`).get() as any;
+        return { ok: r.integrity_check === 'ok', detail: r.integrity_check };
+      }
+      case 'vacuum':
+        h.exec('VACUUM');
+        return { ok: true };
+      default:
+        throw new Error(`unknown admin op: ${op}`);
+    }
+  }
 }

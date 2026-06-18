@@ -73,3 +73,38 @@ test('sql backend: query filter + sort + limit + total + fts', async () => {
   const fts = await b.query('q', { fts: 'galaxies' });
   assert.deepEqual(fts.records.map((r) => r.id), ['a']);
 });
+
+import type { NodeOrigin } from '../../data/types';
+const ORIGIN: NodeOrigin = { machineId: 'remote1', hostname: 'r1', os: 'linux' };
+
+test('sql backend: exportSince watermark (ascending) + importBatch LWW + origin stamp', async () => {
+  const b = be();
+  await b.createDataset(descriptor('s'));
+  await b.put('s', { id: 'a', version: 1, fields: {}, text: 'a', createdAt: 'c', updatedAt: '2026-01-01T00:00:00Z' });
+  await b.put('s', { id: 'b', version: 1, fields: {}, text: 'b', createdAt: 'c', updatedAt: '2026-02-01T00:00:00Z' });
+  assert.deepEqual((await b.exportSince('s')).map((r) => r.id), ['a', 'b']);
+  assert.deepEqual((await b.exportSince('s', '2026-01-15T00:00:00Z')).map((r) => r.id), ['b']);
+
+  await b.put('s', { id: 'a', version: 2, fields: { v: 'local' }, text: 'a', createdAt: 'c', updatedAt: 'u2' });
+  const res = await b.importBatch('s', [
+    { id: 'a', version: 1, fields: { v: 'old' }, text: 'a', createdAt: 'c', updatedAt: 'u1' },   // older → skip
+    { id: 'z', version: 3, fields: { v: 'new' }, text: 'z', createdAt: 'c', updatedAt: 'u3' },   // new → apply
+  ], ORIGIN);
+  assert.equal(res.applied, 1);
+  assert.equal(res.skipped, 1);
+  assert.equal((await b.get('s', 'a'))?.fields.v, 'local'); // local v2 preserved
+  const z = await b.get('s', 'z');
+  assert.equal(z?.fields.v, 'new');
+  assert.deepEqual(z?.origin, ORIGIN);                      // origin stamped on the replica
+});
+
+test('sql backend: admin stats + integrity-check', async () => {
+  const b = be();
+  await b.createDataset(descriptor('adm'));
+  await b.put('adm', { id: 'a', version: 1, fields: {}, createdAt: 'c', updatedAt: 'u' });
+  const stats = await b.admin!('adm', 'stats') as any;
+  assert.equal(stats.count, 1);
+  const ic = await b.admin!('adm', 'integrity-check') as any;
+  assert.equal(ic.ok, true);
+  await assert.rejects(() => b.admin!('adm', 'nope'), /unknown admin op/i);
+});
