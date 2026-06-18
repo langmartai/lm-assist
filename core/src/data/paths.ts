@@ -20,6 +20,9 @@ export function keysDir(): string {
 export function cacheDirFor(datasetId: string): string {
   return path.join(dataRoot(), 'cache', `${datasetId}.lmdb`);
 }
+export function sqlDirFor(datasetId: string): string {
+  return path.join(dataRoot(), 'sql', `${datasetId}.sqlite`);
+}
 /** Store dir for the generic vector backend's per-dataset LanceDB tables (ds_<id>).
  *  Separate from the knowledge `lance-store/vectors` table so the two never collide. */
 export function vectorStoreDir(): string {
