@@ -13,9 +13,10 @@ import { VectorBackend } from './backends/vector-backend';
 import { KnowledgeBackend } from './backends/knowledge-backend';
 import { VectorsBackend } from './backends/vectors-backend';
 import { FileBackend } from './backends/file-backend';
+import { SqlBackend } from './backends/sql-backend';
 import { ensureSystemDatasets, ensureTrackedFiles } from './system-datasets';
 import { getKeyStore } from './key-store';
-import { redactRecord, redactValueDeep } from './redaction';
+import { redactRecord, redactValueDeep, scrubValueDeep } from './redaction';
 import { thisNodeId } from './paths';
 import { getProjectSettings } from '../project-settings';
 import type { ParsedRequest } from '../routes/index';
@@ -170,6 +171,23 @@ export class DataService {
     return { ok: true, value: { dropped } };
   }
 
+  /** Local-only, read-only raw SQL on a `sql` dataset. Never reachable by cloud/manage keys. */
+  async rawSql(ctx: CallCtx, datasetId: string, sql: string, params: unknown[]): Promise<DataResult<{ rows: unknown[] }>> {
+    if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'raw SQL is local-only' };
+    const d = this.deps.datasets.get(datasetId);
+    if (!d) return { ok: false, code: 'NOT_FOUND', reason: `dataset "${datasetId}" not found` };
+    const backend = this.deps.backends.get(d.backend);
+    if (!backend || d.backend !== 'sql' || typeof (backend as any).rawSelect !== 'function') {
+      return { ok: false, code: 'NOT_SUPPORTED', reason: `raw SQL is only available on sql datasets` };
+    }
+    try {
+      const rows = (backend as any).rawSelect(datasetId, String(sql || ''), Array.isArray(params) ? params : []);
+      return { ok: true, value: { rows: scrubValueDeep(rows) as unknown[] } };
+    } catch (e) {
+      return { ok: false, code: 'SQL_ERROR', reason: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   // M5 sync helpers ----------------------------------------------------------------
 
   /** Returns this node's stable id. */
@@ -225,6 +243,7 @@ export function getDataService(): DataService {
     backends.register(new KnowledgeBackend());
     backends.register(new VectorsBackend());
     backends.register(new FileBackend());
+    backends.register(new SqlBackend());
     const manager = new AccessManager({ datasets, keys: getKeyStore(), nodeId: thisNodeId() });
     const queue = getSyncQueue();
     const nodeId = thisNodeId();

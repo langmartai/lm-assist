@@ -265,6 +265,24 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // POST /data/:dataset/sql — raw READ-ONLY SQL, LOCAL principal only (never cloud/manage)
+    {
+      method: 'POST',
+      pattern: /^\/data\/(?<dataset>[^/]+)\/sql$/,
+      handler: async (req) => {
+        const start = Date.now();
+        if (!svc().isEnabled()) return disabled(start);
+        const p = svc().resolvePrincipal(req);
+        if (p.type !== 'local') return wrapError('FORBIDDEN', 'raw SQL is local-only', start);
+        const b = req.body || {};
+        const sql = typeof b.sql === 'string' ? b.sql : '';
+        if (!sql) return wrapError('BAD_REQUEST', 'sql is required', start);
+        const r = await svc().rawSql({ principal: p }, req.params.dataset, sql, Array.isArray(b.params) ? b.params : []);
+        if (!r.ok) return wrapError(r.code, r.reason, start);
+        return wrapResponse(r.value, start);
+      },
+    },
+
     // POST /data/sync — trigger a full reconcile against all peers (local-only)
     {
       method: 'POST',

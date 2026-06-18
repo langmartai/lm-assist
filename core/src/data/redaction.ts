@@ -87,6 +87,10 @@ function scrubValue(v: unknown): unknown {
   return v;
 }
 
+/** Deep scrub: secret-named keys → REDACTED AND every string value run through redactText (inline secrets).
+ *  Used for raw-SQL result rows, which can surface the `fields`/`text` columns verbatim. */
+export function scrubValueDeep(v: unknown): unknown { return scrubValue(v); }
+
 /** Scrub a record's content (text + fields + metadata) for inline AND named secrets.
  *  Used by the file backend on read — tracked file content must never leak secrets. */
 export function scrubRecordContent(rec: DataRecord): DataRecord {

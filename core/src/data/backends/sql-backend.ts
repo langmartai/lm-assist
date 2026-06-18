@@ -179,6 +179,20 @@ export class SqlBackend implements StorageBackend {
     return { applied, skipped };
   }
 
+  /** Run a single READ-ONLY SELECT on a fresh readonly connection. Throws on writes/multi-statement. */
+  rawSelect(dataset: string, sql: string, params: unknown[]): Array<Record<string, unknown>> {
+    const file = this.fileFor(dataset);
+    if (!fs.existsSync(file)) return [];
+    const ro = new Database(file, { readonly: true, fileMustExist: true });
+    try {
+      const stmt = ro.prepare(sql);          // throws "source contained more than one statement" on multi
+      if (!stmt.reader) throw new Error('only read-only SELECT statements are allowed');
+      return stmt.all(...(params || [])) as Array<Record<string, unknown>>;
+    } finally {
+      try { ro.close(); } catch { /* */ }
+    }
+  }
+
   async admin(dataset: string, op: string, _args?: Record<string, unknown>): Promise<unknown> {
     const h = this.db(dataset);
     switch (op) {
