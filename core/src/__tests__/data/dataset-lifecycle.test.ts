@@ -48,3 +48,13 @@ test('lifecycle: dropDataset is local-only and refuses system datasets', async (
   if (sysDrop.ok) return;
   assert.equal(sysDrop.code, 'FORBIDDEN');
 });
+
+test('lifecycle: dropDataset refuses a remote replica (origin set)', async () => {
+  const { s, datasets } = svc();
+  // upsertReplica creates a descriptor with origin set (a read-only replica)
+  datasets.upsertReplica({ id: 'repl', backend: 'cache', ownerNode: 'remoteN', syncMode: 'full', config: { kind: 'cache' }, origin: { machineId: 'remoteN', hostname: 'h', os: 'linux' } });
+  const r = await s.dropDataset({ principal: { type: 'local' } }, 'repl');
+  assert.equal(r.ok, false);
+  if (r.ok) return;
+  assert.equal(r.code, 'FORBIDDEN');
+});

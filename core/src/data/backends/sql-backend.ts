@@ -104,12 +104,6 @@ export class SqlBackend implements StorageBackend {
     return h;
   }
 
-  /** The indexedFields a dataset declared (for the query compiler to prefer generated columns). */
-  indexedPaths(d: DatasetDescriptor): string[] {
-    const c = d.config as SqlConfig;
-    return (c.indexedFields || []).filter((f) => isSafeFieldPath(f.path)).map((f) => f.path);
-  }
-
   async createDataset(d: DatasetDescriptor): Promise<void> {
     const c = d.config as SqlConfig;
     this.db(d.id, c.indexedFields);

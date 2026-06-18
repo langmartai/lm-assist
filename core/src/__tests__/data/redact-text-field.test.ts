@@ -13,7 +13,7 @@ test('redactRecord scrubs inline secrets in the top-level text body (C1)', () =>
   const out = redactRecord(rec);
   assert.equal(out.fields.apiKey, REDACTED);                  // existing field-name redaction unchanged
   assert.ok(!String(out.text).includes('sk-abcdEFGH1234567890')); // the inline token in text is GONE
-  assert.match(String(out.text), /«redacted»/);
+  assert.ok(String(out.text).includes(REDACTED));
 });
 
 test('redactRecord leaves ordinary text untouched', () => {

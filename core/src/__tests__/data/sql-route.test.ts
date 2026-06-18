@@ -51,3 +51,17 @@ test('rawSql: local SELECT returns redacted rows; cloud is FORBIDDEN; writes/mul
   assert.equal(nonSql.ok, false);
   if (nonSql.ok) return; assert.equal(nonSql.code, 'NOT_SUPPORTED');
 });
+
+test('rawSql: a long token under a NON-secret-named field is value-scrubbed from raw rows', async () => {
+  const { s, datasets } = svc();
+  datasets.create({ id: 'sqv', backend: 'sql', config: { kind: 'sql' }, acl: [] });
+  const local = { principal: { type: 'local' as const } };
+  await s.initDataset(local, 'sqv');
+  // key "note" is NOT secret-named; the VALUE contains a realistic long token
+  await s.put(local, 'sqv', { id: 'a', version: 0, fields: { note: 'deployed with sk-ABCDabcd1234567890XYZ today' }, createdAt: 't', updatedAt: 't' });
+  const r = await s.rawSql(local, 'sqv', 'SELECT fields FROM records', []);
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.ok(!JSON.stringify(r.value.rows).includes('sk-ABCDabcd1234567890XYZ')); // value-content scrub (not key-name)
+  assert.ok(JSON.stringify(r.value.rows).includes('«redacted»'));
+});

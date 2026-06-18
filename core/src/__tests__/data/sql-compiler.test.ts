@@ -20,6 +20,7 @@ test('compiler: in / contains / fts', () => {
   assert.match(c.where, /records_fts MATCH \?/);
   assert.ok(c.whereParams.includes('hello'));       // fts query bound
   assert.ok(c.whereParams.includes('%x\\_y%'));     // contains value, LIKE-escaped + bound
+  assert.deepEqual(c.whereParams, ['$.tag', 'a', 'b', '$.body', '%x\\_y%', 'hello']);
 });
 
 test('compiler: rejects unsafe field names; a "version" field hits JSON, not the physical column', () => {
@@ -29,6 +30,10 @@ test('compiler: rejects unsafe field names; a "version" field hits JSON, not the
   assert.match(c.where, /json_extract\(fields, \?\)/);
   assert.ok(!c.where.includes('records.version'));
   assert.deepEqual(c.whereParams, ['$.version', 1]);
+});
+
+test('compiler: unsafe field in the SORT path also throws', () => {
+  assert.throws(() => compileQuery({ sort: [{ field: 'x); DROP TABLE records;--', dir: 'asc' }] }, new Set()), /invalid field/i);
 });
 
 test('compiler: sort + empty query', () => {

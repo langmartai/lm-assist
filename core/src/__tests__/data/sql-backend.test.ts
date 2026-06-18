@@ -106,5 +106,7 @@ test('sql backend: admin stats + integrity-check', async () => {
   assert.equal(stats.count, 1);
   const ic = await b.admin!('adm', 'integrity-check') as any;
   assert.equal(ic.ok, true);
+  const v = await b.admin!('adm', 'vacuum') as any;
+  assert.equal(v.ok, true);
   await assert.rejects(() => b.admin!('adm', 'nope'), /unknown admin op/i);
 });
