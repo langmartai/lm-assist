@@ -54,3 +54,41 @@ export function redactRecord(rec: DataRecord): DataRecord {
     metadata: rec.metadata ? (redactValue(rec.metadata) as Record<string, unknown>) : rec.metadata,
   };
 }
+
+// Inline secret-VALUE patterns — for scrubbing file CONTENT (logs/JSON), where secrets can appear
+// in arbitrary text positions that key-name redaction (SECRET_KEY_RE) does not catch. Best-effort.
+const SECRET_TOKEN_RE = /\b(sk-[A-Za-z0-9_-]{12,}|gh[opsu]_[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}|[A-Fa-f0-9]{40,})\b/g;
+const SECRET_ASSIGN_RE = /\b(token|secret|password|passwd|api[-_]?key|apikey|authorization|bearer|credential|private[-_]?key|access[-_]?key|cookie)\b(["']?\s*[:=]\s*(?:bearer\s+)?["']?)([^\s"',}&]+)/gi;
+
+/** Best-effort scrub of inline secrets in arbitrary text (log lines, string values). */
+export function redactText(s: string): string {
+  if (typeof s !== 'string' || !s) return s;
+  return s
+    .replace(SECRET_ASSIGN_RE, (_m, k, sep) => `${k}${sep}${REDACTED}`)
+    .replace(SECRET_TOKEN_RE, REDACTED);
+}
+
+/** Deep value scrub: secret-NAMED keys → REDACTED; every remaining string → redactText. */
+function scrubValue(v: unknown): unknown {
+  if (typeof v === 'string') return redactText(v);
+  if (Array.isArray(v)) return v.map(scrubValue);
+  if (v && typeof v === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      out[k] = SECRET_KEY_RE.test(k) ? REDACTED : scrubValue(val);
+    }
+    return out;
+  }
+  return v;
+}
+
+/** Scrub a record's content (text + fields + metadata) for inline AND named secrets.
+ *  Used by the file backend on read — tracked file content must never leak secrets. */
+export function scrubRecordContent(rec: DataRecord): DataRecord {
+  return {
+    ...rec,
+    fields: scrubValue(rec.fields) as Record<string, unknown>,
+    text: rec.text ? redactText(rec.text) : rec.text,
+    metadata: rec.metadata ? (scrubValue(rec.metadata) as Record<string, unknown>) : rec.metadata,
+  };
+}

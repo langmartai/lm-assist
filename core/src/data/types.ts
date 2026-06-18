@@ -1,7 +1,7 @@
 // core/src/data/types.ts
 // Shared contracts for the generic data service. CommonJS-safe (types only).
 
-export type BackendKind = 'vector' | 'sql' | 'cache' | 'knowledge' | 'vectors';
+export type BackendKind = 'vector' | 'sql' | 'cache' | 'knowledge' | 'vectors' | 'file';
 export type DataAction = 'read' | 'query' | 'search' | 'write' | 'delete' | 'manage';
 export type NodeVisibility = 'local-only' | 'synced' | 'cross-node-readable';
 export type PrincipalType = 'local' | 'cloud';
@@ -31,7 +31,8 @@ export interface SqlConfig {
 }
 export interface KnowledgeConfig { kind: 'knowledge'; } // system dataset over getKnowledgeStore()
 export interface VectorsConfig { kind: 'vectors'; }      // system dataset over getVectorStore()
-export type BackendConfig = CacheConfig | VectorConfig | SqlConfig | KnowledgeConfig | VectorsConfig;
+export interface FileConfig { kind: 'file'; path: string; format: 'json' | 'log'; maxLines?: number; }
+export type BackendConfig = CacheConfig | VectorConfig | SqlConfig | KnowledgeConfig | VectorsConfig | FileConfig;
 
 export interface DatasetDescriptor {
   id: string;                 // ^[a-z0-9][a-z0-9_-]{0,63}$
