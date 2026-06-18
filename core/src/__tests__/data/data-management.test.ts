@@ -41,7 +41,8 @@ test('createDataset: local creates + allocates; cloud is FORBIDDEN', async () =>
 });
 
 test('listKeys: local lists key metadata WITHOUT secretHash; cloud FORBIDDEN', async () => {
-  const { s } = svc();
+  const { s, datasets } = svc();
+  datasets.create({ id: 'x', backend: 'cache', config: { kind: 'cache' }, acl: [{ principal: '*', actions: ['read'] }] });
   const issued = await s.requestAccess({ type: 'local' }, { grants: [{ dataset: 'x', actions: ['read'] }], intent: 'test' });
   assert.equal(issued.ok, true);
   const r = await s.listKeys(LOCAL);
