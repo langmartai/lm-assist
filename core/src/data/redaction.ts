@@ -14,6 +14,7 @@ const HARD_EXCLUDED = new Set(
     path.join(home, '.lm-assist', 'hub.json'),
     path.join(home, '.lm-assist', 'hub-dev.json'),
     path.join(home, '.claude', 'claudeai-session.json'),
+    path.join(home, '.lm-oandaproxy', 'config.json'),
   ].map((p) => path.resolve(p)),
 );
 
@@ -25,6 +26,9 @@ export function isHardExcludedPath(p: string): boolean {
   if (base === '.env' || base === 'api-token') return true;
   // the access-key store itself
   if (base.startsWith('keys.lmdb')) return true;
+  // LIVE trading credentials — any file under a .lm-oandaproxy directory
+  const normalized = norm.replace(/\\/g, '/');
+  if (normalized.includes('/.lm-oandaproxy/')) return true;
   return false;
 }
 
@@ -57,7 +61,7 @@ export function redactRecord(rec: DataRecord): DataRecord {
 
 // Inline secret-VALUE patterns — for scrubbing file CONTENT (logs/JSON), where secrets can appear
 // in arbitrary text positions that key-name redaction (SECRET_KEY_RE) does not catch. Best-effort.
-const SECRET_TOKEN_RE = /\b(sk-[A-Za-z0-9_-]{12,}|gh[opsu]_[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}|[A-Fa-f0-9]{40,})\b/g;
+const SECRET_TOKEN_RE = /\b(sk-[A-Za-z0-9_-]{12,}|gh[opsu]_[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}|[A-Fa-f0-9]{40,512})\b/g;
 const SECRET_ASSIGN_RE = /\b(token|secret|password|passwd|api[-_]?key|apikey|authorization|bearer|credential|private[-_]?key|access[-_]?key|cookie)\b(["']?\s*[:=]\s*(?:bearer\s+)?["']?)([^\s"',}&]+)/gi;
 
 /** Best-effort scrub of inline secrets in arbitrary text (log lines, string values). */

@@ -21,6 +21,12 @@ test('isHardExcludedPath: allows ordinary paths', () => {
   assert.equal(isHardExcludedPath(path.join(home, '.lm-assist', 'data', 'cache', 'x.lmdb')), false);
 });
 
+test('isHardExcludedPath: refuses LIVE trading credential paths', () => {
+  assert.equal(isHardExcludedPath(path.join(os.homedir(), '.lm-oandaproxy', 'config.json')), true);
+  assert.equal(isHardExcludedPath('/home/opc/.lm-oandaproxy/config.json'), true);
+  assert.equal(isHardExcludedPath('/home/x/projects/normal.json'), false);
+});
+
 test('redactRecord: scrubs secret-named fields recursively, leaves others', () => {
   const rec: DataRecord = {
     id: 'r1',

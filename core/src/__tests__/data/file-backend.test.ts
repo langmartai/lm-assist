@@ -55,6 +55,15 @@ test('file backend: mutate/admin/search are NOT_SUPPORTED; sync throws', async (
   await assert.rejects(() => be.put('fs4', { id: 'a', version: 0, fields: {}, createdAt: 't', updatedAt: 't' }), /NOT_SUPPORTED/);
   await assert.rejects(() => be.delete('fs4', 'a'), /NOT_SUPPORTED/);
   await assert.rejects(() => be.exportSince('fs4'), /SYNC_NOT_SUPPORTED/);
+  await assert.rejects(() => be.importBatch('fs4', [], { machineId: 'm', hostname: 'h', os: 'linux' }), /SYNC_NOT_SUPPORTED/);
+});
+
+test('file backend: inline secret in a non-secret-named field is scrubbed on read', async () => {
+  const p = tmpFile('inline.json', JSON.stringify({ rec1: { note: 'deploy used token sk-abcdEFGH1234567890xyz then done', label: 'ok' } }));
+  const be = backend(desc('inl', p, 'json'));
+  const got = await be.get('inl', 'rec1');
+  assert.ok(!String(got!.fields.note).includes('sk-abcdEFGH1234567890xyz')); // inline token gone
+  assert.equal(got!.fields.label, 'ok');                                      // ordinary value intact
 });
 
 test('file backend: createDataset refuses a hard-excluded credential path', async () => {
