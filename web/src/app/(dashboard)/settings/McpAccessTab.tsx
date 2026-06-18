@@ -38,6 +38,36 @@ function ScopeBadge({ s }: { s: Scope }) {
   return <span className={`inline-block px-1.5 py-0.5 rounded text-xs border ${scopeColor[s]}`}>{s}</span>;
 }
 
+// Functional grouping for the tool list (presentation only). Order = display order.
+const FAMILY_ORDER = [
+  'Search & Knowledge', 'Agent & Executions', 'Terminal', 'Windows Terminal',
+  'claude.ai', 'Remote Control (CCR)', 'GitHub', 'Data Service', 'Files',
+  'Transfer & Ports', 'Messaging', 'Nodes', 'Other',
+] as const;
+
+const KNOWLEDGE_TOOLS = new Set([
+  'search', 'detail', 'feedback', 'list_recent_sessions', 'list_projects', 'search_memory',
+  'memory_projects', 'memory_cross_host', 'memory_import_candidates', 'memory_map', 'memory_record', 'rule_map',
+]);
+
+function familyOf(tool: string): string {
+  if (tool.startsWith('windows_terminal')) return 'Windows Terminal';
+  if (tool.startsWith('terminal_') || tool === 'cc_sessions') return 'Terminal';
+  if (tool.startsWith('ccr_')) return 'Remote Control (CCR)';
+  if (tool.startsWith('agent_') || tool === 'list_executions' || tool === 'get_execution') return 'Agent & Executions';
+  if (tool.startsWith('github_')) return 'GitHub';
+  if (tool.startsWith('data_')) return 'Data Service';
+  if (tool.startsWith('fs_')) return 'Files';
+  if (tool.startsWith('transfer_') || tool.includes('port_forward')) return 'Transfer & Ports';
+  if (tool === 'send_session_message' || tool === 'list_session_messages' || tool === 'get_message_status') return 'Messaging';
+  if (tool === 'list_nodes') return 'Nodes';
+  if (tool.startsWith('claudeai_') || tool === 'list_claudeai_conversations' || tool === 'read_conversation' || tool === 'delete_conversation') return 'claude.ai';
+  if (KNOWLEDGE_TOOLS.has(tool)) return 'Search & Knowledge';
+  return 'Other';
+}
+
+const SCOPE_RANK: Record<Scope, number> = { admin: 0, write: 1, read: 2 };
+
 export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
   const [cfg, setCfg] = useState<AccessConfig | null>(null);
   const [pending, setPending] = useState<Pending[]>([]);
@@ -186,28 +216,43 @@ export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
           Toggle the extra admin confirm per tool. Default is off (normal claude.ai approval). The scope badge is a
           sensitivity hint only.
         </p>
-        <div className="space-y-1">
-          {(['admin', 'write', 'read'] as Scope[]).flatMap((sc) =>
-            (cfg?.tools.filter((t) => t.scope === sc) || []).map((t) => (
-              <div key={t.tool} className="flex items-center justify-between border-b border-gray-800 py-1.5">
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`font-mono text-xs ${t.description ? 'cursor-pointer underline decoration-dotted decoration-gray-500 underline-offset-4 hover:text-gray-200' : ''}`}
-                    onClick={t.description ? (e) => openPopup(e, t) : undefined}
-                  >
-                    {t.tool}
-                  </span>
-                  <ScopeBadge s={t.scope} />
+        <div className="space-y-3">
+          {cfg && FAMILY_ORDER.map((fam) => {
+            const tools = cfg.tools
+              .filter((t) => familyOf(t.tool) === fam)
+              .sort((a, b) => (SCOPE_RANK[a.scope] - SCOPE_RANK[b.scope]) || a.tool.localeCompare(b.tool));
+            if (tools.length === 0) return null;
+            const gated = tools.filter((t) => t.adminGate).length;
+            return (
+              <div key={fam}>
+                <div className="flex items-center gap-2 mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                  <span>{fam}</span>
+                  <span className="text-gray-600 normal-case font-normal">({tools.length}{gated > 0 ? `, ${gated} gated` : ''})</span>
                 </div>
-                <button
-                  onClick={() => setGate(t.tool, !t.adminGate)}
-                  className={`px-2 py-1 rounded text-xs border ${t.adminGate ? 'bg-rose-900/40 text-rose-300 border-rose-700' : 'border-gray-600 text-gray-500'}`}
-                >
-                  {t.adminGate ? 'Admin confirm ON' : 'off'}
-                </button>
+                <div className="space-y-1">
+                  {tools.map((t) => (
+                    <div key={t.tool} className="flex items-center justify-between border-b border-gray-800 py-1.5">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`font-mono text-xs ${t.description ? 'cursor-pointer underline decoration-dotted decoration-gray-500 underline-offset-4 hover:text-gray-200' : ''}`}
+                          onClick={t.description ? (e) => openPopup(e, t) : undefined}
+                        >
+                          {t.tool}
+                        </span>
+                        <ScopeBadge s={t.scope} />
+                      </div>
+                      <button
+                        onClick={() => setGate(t.tool, !t.adminGate)}
+                        className={`px-2 py-1 rounded text-xs border ${t.adminGate ? 'bg-rose-900/40 text-rose-300 border-rose-700' : 'border-gray-600 text-gray-500'}`}
+                      >
+                        {t.adminGate ? 'Admin confirm ON' : 'off'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
-            )),
-          )}
+            );
+          })}
           {!cfg && <p className="text-gray-500">Loading…</p>}
         </div>
       </section>
