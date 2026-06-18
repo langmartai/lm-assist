@@ -12,7 +12,8 @@ import { CacheBackend } from './backends/cache-backend';
 import { VectorBackend } from './backends/vector-backend';
 import { KnowledgeBackend } from './backends/knowledge-backend';
 import { VectorsBackend } from './backends/vectors-backend';
-import { ensureSystemDatasets } from './system-datasets';
+import { FileBackend } from './backends/file-backend';
+import { ensureSystemDatasets, ensureTrackedFiles } from './system-datasets';
 import { getKeyStore } from './key-store';
 import { redactRecord, redactValueDeep } from './redaction';
 import { thisNodeId } from './paths';
@@ -193,11 +194,13 @@ export function getDataService(): DataService {
   if (!instance) {
     const datasets = getDatasetRegistry();
     ensureSystemDatasets(datasets);
+    ensureTrackedFiles(datasets);
     const backends = new BReg();
     backends.register(new CacheBackend());
     backends.register(new VectorBackend());
     backends.register(new KnowledgeBackend());
     backends.register(new VectorsBackend());
+    backends.register(new FileBackend());
     const manager = new AccessManager({ datasets, keys: getKeyStore(), nodeId: thisNodeId() });
     const queue = getSyncQueue();
     const nodeId = thisNodeId();
