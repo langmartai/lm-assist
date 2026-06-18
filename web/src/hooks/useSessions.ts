@@ -5,7 +5,7 @@ import { useAppMode } from '@/contexts/AppModeContext';
 import { useMachineContext } from '@/contexts/MachineContext';
 import type { Session } from '@/lib/types';
 import type { BatchCheckResponse } from '@/lib/api-client';
-import { workerFetch } from '@/lib/api-client';
+import { workerFetch, detectProxyInfo } from '@/lib/api-client';
 
 export type SessionFilter = {
   machineId: string | null;
@@ -155,9 +155,12 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
 
       // Merge LLM summaries from session-summary-store (non-blocking)
       try {
+        const proxyInfo = detectProxyInfo();
         const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
         const apiHost = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
-        const summariesRes = await workerFetch(`http://${apiHost}:${port}/sessions/summaries`, { signal: AbortSignal.timeout(3000) });
+        // In proxy mode, hostname:3100 is the wrong host — route via the _coreapi relay.
+        const sumBase = proxyInfo.isProxied ? `${proxyInfo.basePath}/_coreapi` : `http://${apiHost}:${port}`;
+        const summariesRes = await workerFetch(`${sumBase}/sessions/summaries`, { signal: AbortSignal.timeout(3000) });
         if (summariesRes.ok) {
           const summariesData = await summariesRes.json();
           const summaryMap = new Map<string, { summary: string; displayName?: string }>();

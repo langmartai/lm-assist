@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAppMode } from '@/contexts/AppModeContext';
-import { workerFetch } from '@/lib/api-client';
+import { workerFetch, detectProxyInfo } from '@/lib/api-client';
 import type { SessionDetail, SessionMessage, SubagentSession } from '@/lib/types';
 
 interface UseSessionDetailOptions {
@@ -217,9 +217,12 @@ export function useSessionDetail({
 
       // Merge LLM summary if available
       try {
+        const proxyInfo = detectProxyInfo();
         const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
         const apiHost = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
-        const sumRes = await workerFetch(`http://${apiHost}:${port}/sessions/${sessionId}/summary`, { signal: AbortSignal.timeout(2000) });
+        // In proxy mode, hostname:3100 is the wrong host — route via the _coreapi relay.
+        const sumBase = proxyInfo.isProxied ? `${proxyInfo.basePath}/_coreapi` : `http://${apiHost}:${port}`;
+        const sumRes = await workerFetch(`${sumBase}/sessions/${sessionId}/summary`, { signal: AbortSignal.timeout(2000) });
         if (sumRes.ok) {
           const sumData = await sumRes.json();
           if (sumData?.data?.summary) {

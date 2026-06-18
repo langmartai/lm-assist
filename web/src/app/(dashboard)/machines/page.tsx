@@ -22,7 +22,10 @@ export default function MachinesPage() {
     const dashboardPath = '/sessions';
     const baseUrl = `https://${assistDomain}/w/${remoteGatewayId}/assist${dashboardPath}`;
 
-    if (mode === 'hub') {
+    // Proxy (cloud) or non-proxied hub: open the machine's cloud URL directly —
+    // the cloud session carries auth. (In proxy mode `mode` is 'hybrid', not 'hub',
+    // so guarding on mode alone would fall through to a wrong-host proxy-token fetch.)
+    if (proxy.isProxied || mode === 'hub') {
       window.open(baseUrl, '_blank');
       return;
     }
