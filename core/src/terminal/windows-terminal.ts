@@ -319,15 +319,24 @@ function Set-Foreground([IntPtr]$hwnd){
 $map = Get-ParentMap
 
 if($Action -eq 'query'){
+  $coreSession=(Get-Process -Id $PID).SessionId
   $out=@()
   foreach($s in ($PidList -split ',')){
     $p=0; if(-not [int]::TryParse($s.Trim(),[ref]$p)){ continue }
-    if(-not (Is-Alive $p)){ $out += [ordered]@{ pid=$p; alive=$false; driveable=$false }; continue }
+    if(-not (Is-Alive $p)){ $out += [ordered]@{ pid=$p; alive=$false; driveable=$false; reason='not running' }; continue }
     $h=Resolve-Host $p $map
+    $tgtSession=$null; try{ $tgtSession=(Get-Process -Id $p -ErrorAction Stop).SessionId }catch{}
+    $sameSession = ($tgtSession -ne $null) -and ($tgtSession -eq $coreSession)
     $title=Normalize-Title (Read-ConsoleTitle $p)
     $kind = if($h){ if($h.name -eq 'WindowsTerminal.exe'){'windows-terminal'}elseif($h.name -eq 'conhost.exe' -or $h.name -eq 'OpenConsole.exe'){'conhost'}else{'unknown'} } else {'unknown'}
-    $driveable = ($h -ne $null) -and ($title -ne '')
-    $out += [ordered]@{ pid=$p; alive=$true; hostPid=($(if($h){$h.pid}else{0})); hostName=($(if($h){$h.name}else{$null})); kind=$kind; consoleTitle=$title; driveable=$driveable }
+    # Driveable = hosted in a real terminal AND in the SAME Windows session as the
+    # Core. Session 0 isolation blocks a Session-0 Core from attaching to a
+    # Session-1 console, so a cross-session pid is NOT driveable regardless of
+    # title. (The old non-empty-title proxy mis-reported this: an empty title was
+    # actually the cross-session attach failure, not a session that set no title.)
+    $driveable = ($h -ne $null) -and $sameSession
+    $reason = if(-not $h){ 'no host terminal found for this pid' } elseif(-not $sameSession){ "cross-session: target in Windows session $tgtSession but lm-assist Core runs in session $coreSession (Session 0 isolation) - run the Core in the interactive desktop session" } else { $null }
+    $out += [ordered]@{ pid=$p; alive=$true; hostPid=($(if($h){$h.pid}else{0})); hostName=($(if($h){$h.name}else{$null})); kind=$kind; sessionId=$tgtSession; coreSessionId=$coreSession; consoleTitle=$title; driveable=$driveable; reason=$reason }
   }
   ConvertTo-Json @{ sessions=@($out) } -Depth 6 -Compress
   exit 0
@@ -353,7 +362,9 @@ if($Action -eq 'capture'){
   } else {
     $err=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
     [WT]::FreeConsole()|Out-Null
-    ConvertTo-Json @{ ok=$false; error="AttachConsole failed (win32=$err) - pid has no console?" } -Compress; exit 2
+    $coreS=(Get-Process -Id $PID).SessionId; $tgtS=$null; try{ $tgtS=(Get-Process -Id $ClaudePid -ErrorAction Stop).SessionId }catch{}
+    $hint = if($err -eq 5 -and $tgtS -ne $null -and $tgtS -ne $coreS){ " - cross-session: target is in Windows session $tgtS but the lm-assist Core runs in session $coreS (Session 0 isolation blocks console access); run the Core in the interactive desktop session" } elseif($err -eq 5){ " - ACCESS_DENIED (target console may be in another Windows session or at a higher integrity level)" } else { " - pid has no attachable console?" }
+    ConvertTo-Json @{ ok=$false; error="AttachConsole failed (win32=$err)$hint"; coreSessionId=$coreS; targetSessionId=$tgtS } -Compress; exit 2
   }
   if($null -eq $txt){ ConvertTo-Json @{ ok=$false; error='CONOUT$ read failed' } -Compress; exit 2 }
   $b64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($txt))
@@ -493,10 +504,15 @@ export interface WinMapping {
   kind?: string;
   /** spinner-stripped console title, for display (best-effort, may drift) */
   consoleTitle?: string | null;
-  /** hosted in a real terminal with a readable console — the exact tab is
-   *  resolved authoritatively (marker) at drive time, so this is NOT gated on
-   *  passive title matching. */
+  /** Windows session of the target pid, and of the Core. Driving requires they
+   *  match — Session 0 isolation blocks cross-session console access. */
+  sessionId?: number | null;
+  coreSessionId?: number | null;
+  /** hosted in a real terminal AND in the same Windows session as the Core (so
+   *  the marker locate / console attach at drive time can reach it). */
   driveable: boolean;
+  /** when not driveable, why (cross-session / no host) — for diagnostics. */
+  reason?: string | null;
 }
 
 export interface LocateResult {

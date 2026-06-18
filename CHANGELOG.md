@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Windows terminal-driving / `send_session_message` — fix silent failure under Session 0 isolation (2026-06-19)
+
+`send_session_message` (and every terminal-drive op) to a Windows Claude session failed with "no driver
+delivered" / `driveable:false`. **Root cause: Windows Session 0 isolation.** When the Core is started
+over SSH (or as a Session-0 service) it runs in **Session 0**, but the user's Windows Terminal + claude
+sessions run in the interactive **Session 1**. A Session-0 process cannot `AttachConsole` to a Session-1
+console (`ACCESS_DENIED`), so screen-capture / title-locate / key-injection all fail. The old `driveable`
+gate keyed on a non-empty console title and mis-reported this as "no title" — the title only read empty
+*because the attach failed*. `lm-assist restart` over SSH silently regressed this every time.
+
+- **Diagnostics** (`terminal/windows-terminal.ts`, `windows-cc.ts`): `mapPidsToWindows` now bases
+  `driveable` on the Windows-**session match** between the target pid and the Core (the accurate
+  condition) rather than the fragile non-empty-title proxy, and emits `sessionId`/`coreSessionId` + a
+  `reason` (e.g. *"cross-session: target in session 1 but lm-assist Core runs in session 0 (Session 0
+  isolation) — run the Core in the interactive desktop session"*). `GET /terminal/cc-sessions` and the
+  capture error now surface this instead of failing silently / misleadingly ("pid has no console?").
+- **Operational fix**: the Windows Core must run in the interactive Session 1 to drive the user's
+  terminals — established a durable interactive auto-start (`LmAssistCoreInteractive`, `LogonType
+  Interactive`). After moving the Core to Session 1: **11/12 live sessions `driveable:true` (was 0/12)**,
+  titles readable, delivery path restored. Verified on 10.0.1.107.
+
 ### Generic data service — multi-backend data/RAG with access control, sync, REST + MCP (2026-06-18)
 
 A new generic data service (`core/src/data/`) exposing pluggable storage backends through a uniform

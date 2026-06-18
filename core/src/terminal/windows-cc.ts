@@ -65,6 +65,8 @@ export interface WinLiveSession extends LiveSession {
   win: WinMapping | null;
   /** true when the session can be brought to front + driven (focus/send). */
   driveable: boolean;
+  /** when not driveable, why (cross-session / no mapping) — for diagnostics. */
+  reason?: string | null;
 }
 
 /** List all live Claude Code sessions on this host, enriched with window/tab mapping. */
@@ -76,7 +78,12 @@ export async function listWindowsSessions(): Promise<WinLiveSession[]> {
   const byPid = new Map<number, WinMapping>(maps.map((m) => [m.pid, m]));
   return live.map((s) => {
     const win = byPid.get(s.owner.pid) ?? null;
-    return { ...s, win, driveable: !!(win && win.driveable) };
+    return {
+      ...s,
+      win,
+      driveable: !!(win && win.driveable),
+      reason: win?.reason ?? (win ? null : 'no window/tab mapping for this session'),
+    };
   });
 }
 
