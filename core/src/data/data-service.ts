@@ -146,6 +146,30 @@ export class DataService {
     return { ok: true, value: await a.value.backend!.delete(datasetId, id) };
   }
 
+  /** Allocate a dataset's backend storage (local-only). Replaces the route's put/del __init__ hack. */
+  async initDataset(ctx: CallCtx, datasetId: string): Promise<DataResult<void>> {
+    if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'dataset init is local-only' };
+    const d = this.deps.datasets.get(datasetId);
+    if (!d) return { ok: false, code: 'NOT_FOUND', reason: `dataset "${datasetId}" not found` };
+    const backend = this.deps.backends.get(d.backend);
+    if (!backend) return { ok: false, code: 'NO_BACKEND', reason: `backend "${d.backend}" unavailable` };
+    await backend.createDataset(d); // may throw (e.g. file hard-exclusion) — caller (route) maps to BAD_REQUEST
+    return { ok: true, value: undefined };
+  }
+
+  /** Drop a dataset + its backend storage (local-only; refuses system datasets and replicas). */
+  async dropDataset(ctx: CallCtx, datasetId: string): Promise<DataResult<{ dropped: boolean }>> {
+    if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'dataset drop is local-only' };
+    const d = this.deps.datasets.get(datasetId);
+    if (!d) return { ok: false, code: 'NOT_FOUND', reason: `dataset "${datasetId}" not found` };
+    if (d.system) return { ok: false, code: 'FORBIDDEN', reason: `dataset "${datasetId}" is a system dataset` };
+    if ((d as any).origin) return { ok: false, code: 'FORBIDDEN', reason: `dataset "${datasetId}" is a remote replica` };
+    const backend = this.deps.backends.get(d.backend);
+    if (backend) { try { await backend.dropDataset(datasetId); } catch { /* best effort — still remove the descriptor */ } }
+    const dropped = this.deps.datasets.drop(datasetId);
+    return { ok: true, value: { dropped } };
+  }
+
   // M5 sync helpers ----------------------------------------------------------------
 
   /** Returns this node's stable id. */

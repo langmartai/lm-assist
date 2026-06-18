@@ -96,13 +96,26 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
             visibility: b.visibility, readOnly: b.readOnly, sensitive: b.sensitive,
             config: b.config ?? { kind: 'cache' }, acl: b.acl, syncMode: b.syncMode,
           });
-          // ensure the backend allocates storage
-          await svc().put({ principal: p }, d.id, recordFromBody({ id: '__init__', fields: {} }));
-          await svc().del({ principal: p }, d.id, '__init__');
+          // allocate the backend's storage via the real lifecycle method
+          const init = await svc().initDataset({ principal: p }, d.id);
+          if (!init.ok) { getDatasetRegistry().drop(d.id); return wrapError(init.code, init.reason, start); }
           return wrapResponse({ dataset: d }, start);
         } catch (e) {
           return wrapError('BAD_REQUEST', e instanceof Error ? e.message : String(e), start);
         }
+      },
+    },
+
+    // DELETE /data/datasets/:id — drop a dataset + its storage (LOCAL only; refuses system/replica)
+    {
+      method: 'DELETE',
+      pattern: /^\/data\/datasets\/(?<id>[^/]+)$/,
+      handler: async (req) => {
+        const start = Date.now();
+        if (!svc().isEnabled()) return disabled(start);
+        const r = await svc().dropDataset(ctxOf(req), req.params.id);
+        if (!r.ok) return wrapError(r.code, r.reason, start);
+        return wrapResponse(r.value, start);
       },
     },
 
