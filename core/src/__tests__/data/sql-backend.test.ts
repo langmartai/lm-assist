@@ -110,3 +110,9 @@ test('sql backend: admin stats + integrity-check', async () => {
   assert.equal(v.ok, true);
   await assert.rejects(() => b.admin!('adm', 'nope'), /unknown admin op/i);
 });
+
+test('sql backend: importing + constructing does not require the native module (lazy load)', () => {
+  // constructing must not throw even before any sql op — the require happens on first use
+  const b = new SqlBackend(fs.mkdtempSync(path.join(os.tmpdir(), 'lm-sql-lazy-')));
+  assert.equal(b.kind, 'sql');
+});

@@ -13,7 +13,19 @@ import { sqlDirFor } from '../paths';
 import { compileQuery } from './sql-compiler';
 import { getDatasetRegistry } from '../dataset-registry';
 
-const Database = require('better-sqlite3');
+// better-sqlite3 is a NATIVE module loaded LAZILY: importing/constructing SqlBackend must NOT
+// require it, so Core boots on a node where the binary is absent/ABI-mismatched (sql is simply
+// unavailable there — the rest of the data service works). Only actual sql operations load it.
+let _Database: any = null;
+function sqlite(): any {
+  if (_Database) return _Database;
+  try {
+    _Database = require('better-sqlite3');
+  } catch (e) {
+    throw new Error(`sql backend unavailable: better-sqlite3 could not be loaded — install it on this node (${e instanceof Error ? e.message : String(e)})`);
+  }
+  return _Database;
+}
 
 /** Sanitize an indexedField path into a safe generated-column name. */
 function colName(p: string): string { return 'f_' + p.replace(/[^a-z0-9_]/gi, '_'); }
@@ -63,7 +75,7 @@ export class SqlBackend implements StorageBackend {
     if (h) return h;
     const file = this.fileFor(id);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    h = new Database(file);
+    h = new (sqlite())(file);
     h.pragma('journal_mode = WAL');
     h.exec(`
       CREATE TABLE IF NOT EXISTS records(
@@ -177,7 +189,7 @@ export class SqlBackend implements StorageBackend {
   rawSelect(dataset: string, sql: string, params: unknown[]): Array<Record<string, unknown>> {
     const file = this.fileFor(dataset);
     if (!fs.existsSync(file)) return [];
-    const ro = new Database(file, { readonly: true, fileMustExist: true });
+    const ro = new (sqlite())(file, { readonly: true, fileMustExist: true });
     try {
       const stmt = ro.prepare(sql);          // throws "source contained more than one statement" on multi
       if (!stmt.reader) throw new Error('only read-only SELECT statements are allowed');
