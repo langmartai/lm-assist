@@ -12,9 +12,9 @@ import { getDatasetRegistry } from '../../data/dataset-registry';
 function enable() { (getDataService() as any).enabledOverride = true; }
 function textOf(r: any): string { return r.content.map((c: any) => c.text).join('\n'); }
 
-test('data tools: the 7 expected tools are defined and mapped', () => {
+test('data tools: the 8 expected tools are defined and mapped', () => {
   const names = DATA_TOOL_DEFS.map((d) => d.name).sort();
-  assert.deepEqual(names, ['data_catalog', 'data_delete', 'data_get', 'data_put', 'data_query', 'data_request_access', 'data_search']);
+  assert.deepEqual(names, ['data_admin', 'data_catalog', 'data_delete', 'data_get', 'data_put', 'data_query', 'data_request_access', 'data_search']);
   for (const n of names) assert.equal(typeof DATA_HANDLERS[n], 'function');
 });
 
@@ -78,4 +78,20 @@ test('data tools: data_search requires dataset and query', async () => {
     DATA_HANDLERS.data_search({ dataset: 'x' }));
   assert.equal(missing.isError, true);
   assert.match(textOf(missing), /query is required/);
+});
+
+test('data tools: data_admin runs a system-dataset op (knowledge stats) for a local caller', async () => {
+  enable();
+  const r = await runWithMcpContext({ principal: { type: 'local' } }, () =>
+    DATA_HANDLERS.data_admin({ dataset: 'knowledge', op: 'stats' }));
+  assert.equal(r.isError ?? false, false);
+  assert.match(textOf(r), /"total"/);
+});
+
+test('data tools: data_admin requires dataset and op', async () => {
+  enable();
+  const miss = await runWithMcpContext({ principal: { type: 'local' } }, () =>
+    DATA_HANDLERS.data_admin({ dataset: 'knowledge' }));
+  assert.equal(miss.isError, true);
+  assert.match(textOf(miss), /op is required/);
 });

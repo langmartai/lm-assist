@@ -153,6 +153,23 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // POST /data/:dataset/admin — run a declared store-specific maintenance op (manage-gated; goal-8 LLM management)
+    {
+      method: 'POST',
+      pattern: /^\/data\/(?<dataset>[^/]+)\/admin$/,
+      handler: async (req) => {
+        const start = Date.now();
+        if (!svc().isEnabled()) return disabled(start);
+        const b = req.body || {};
+        const op = typeof b.op === 'string' ? b.op : '';
+        if (!op) return wrapError('BAD_REQUEST', 'op is required', start);
+        const opArgs = (b.args && typeof b.args === 'object') ? b.args : undefined;
+        const r = await svc().admin(ctxOf(req), req.params.dataset, op, opArgs);
+        if (!r.ok) return wrapError(r.code, r.reason, start);
+        return wrapResponse({ result: r.value }, start);
+      },
+    },
+
     // PUT /data/:dataset/records
     {
       method: 'PUT',

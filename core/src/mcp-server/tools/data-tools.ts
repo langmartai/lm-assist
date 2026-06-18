@@ -123,6 +123,21 @@ async function handleDataDelete(args: Record<string, unknown>): Promise<McpToolR
   return ok(pretty({ deleted: r.value }));
 }
 
+async function handleDataAdmin(args: Record<string, unknown>): Promise<McpToolResult> {
+  const ctx = ctxFromArgs(args);
+  if ('error' in ctx) return err(ctx.error);
+  const svc = getDataService();
+  if (!svc.isEnabled()) return err('data service is disabled');
+  const dataset = String(args.dataset || '');
+  const op = String(args.op || '');
+  if (!dataset) return err('dataset is required');
+  if (!op) return err('op is required');
+  const opArgs = (args.args && typeof args.args === 'object' ? args.args : undefined) as Record<string, unknown> | undefined;
+  const r = await svc.admin(ctx, dataset, op, opArgs);
+  if (!r.ok) return err(`${r.code}: ${r.reason}`);
+  return ok(pretty(r.value));
+}
+
 const STR = (description: string) => ({ type: 'string' as const, description });
 
 export const DATA_TOOL_DEFS = [
@@ -186,6 +201,21 @@ export const DATA_TOOL_DEFS = [
     annotations: { readOnlyHint: false },
     inputSchema: { type: 'object' as const, properties: { dataset: STR('Dataset id.'), id: STR('Record id.'), key: STR('Access key granting delete (omit if local).') }, required: ['dataset', 'id'] },
   },
+  {
+    name: 'data_admin',
+    description: 'Run a declared maintenance op on a (system) dataset — break-glass management of the existing knowledge/vectors stores. knowledge ops: stats, add-comment, regenerate, dedup, review, remote-sync. vectors ops: stats, rebuild-fts, delete-knowledge, delete-session, delete-all-by-type. Requires the manage action (local by default; cloud only via an explicit operator ACL rule + key).',
+    annotations: { readOnlyHint: false },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        dataset: STR('System dataset id (e.g. "knowledge" or "vectors").'),
+        op: STR('The maintenance op to run.'),
+        args: { type: 'object' as const, description: 'Op-specific arguments (e.g. { knowledgeId } for regenerate, { type } for delete-all-by-type).' },
+        key: STR('Access key granting manage (omit if local).'),
+      },
+      required: ['dataset', 'op'],
+    },
+  },
 ] as const;
 
 export const DATA_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
@@ -196,4 +226,5 @@ export const DATA_HANDLERS: Record<string, (args: Record<string, unknown>) => Pr
   data_search: handleDataSearch,
   data_put: handleDataPut,
   data_delete: handleDataDelete,
+  data_admin: handleDataAdmin,
 };
