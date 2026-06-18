@@ -50,11 +50,12 @@ export function redactValueDeep(v: unknown): unknown {
   return redactValue(v);
 }
 
-/** Deep-clone the record with any secret-named field values replaced by REDACTED. */
+/** Deep-clone the record: secret-named field/metadata values → REDACTED, and inline secrets in the text body scrubbed. */
 export function redactRecord(rec: DataRecord): DataRecord {
   return {
     ...rec,
     fields: redactValue(rec.fields) as Record<string, unknown>,
+    text: rec.text ? redactText(rec.text) : rec.text,
     metadata: rec.metadata ? (redactValue(rec.metadata) as Record<string, unknown>) : rec.metadata,
   };
 }
