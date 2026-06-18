@@ -644,8 +644,8 @@ export function createRestServer(options: ServerOptions): TierRestServer {
 /**
  * Quick start server with defaults
  */
-export async function startServer(projectPath: string, port = (__dirname.includes('node_modules') ? 3100 : 3200)): Promise<TierRestServer> {
-  const server = new TierRestServer({ projectPath, port });
+export async function startServer(projectPath: string, port = (__dirname.includes('node_modules') ? 3100 : 3200), host?: string): Promise<TierRestServer> {
+  const server = new TierRestServer({ projectPath, port, host });
   await server.start();
   return server;
 }

@@ -93,7 +93,7 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
 
   try {
     profiler.start('startServer', 'Server Init + Listen');
-    const server = await startServer(projectPath, port);
+    const server = await startServer(projectPath, port, host);
     profiler.end('startServer');
 
     // Pre-warm the embedder + vector store in the background (async, non-blocking)
