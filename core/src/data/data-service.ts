@@ -175,9 +175,13 @@ export class DataService {
   /** Create a dataset + allocate its backend storage (local-only). Single impl shared by REST + MCP. */
   async createDataset(ctx: CallCtx, input: import('./dataset-registry').CreateDatasetInput): Promise<DataResult<import('./types').DatasetDescriptor>> {
     if (ctx.principal.type !== 'local') return { ok: false, code: 'FORBIDDEN', reason: 'dataset creation is local-only' };
+    // Callers (route body / MCP args) must never mint a system dataset or stamp a replica
+    // origin — those are reserved for internal registration (ensureSystemDatasets / replica upsert).
+    const { system, origin, ...safe } = input as import('./dataset-registry').CreateDatasetInput & { origin?: unknown };
+    void system; void origin;
     let d: import('./types').DatasetDescriptor;
     try {
-      d = this.deps.datasets.create(input);
+      d = this.deps.datasets.create(safe);
     } catch (e) {
       return { ok: false, code: 'BAD_REQUEST', reason: e instanceof Error ? e.message : String(e) };
     }

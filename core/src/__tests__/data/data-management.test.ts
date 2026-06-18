@@ -67,3 +67,21 @@ test('sync + syncStatus are local-only', async () => {
   if (denied.ok) return;
   assert.equal(denied.code, 'FORBIDDEN');
 });
+
+test('createDataset: ignores caller-supplied system/origin (stays user-droppable)', async () => {
+  const { s, datasets } = svc();
+  const r = await s.createDataset(LOCAL, {
+    id: 'md3', backend: 'cache', config: { kind: 'cache' }, acl: [],
+    system: true, origin: { machineId: 'evil', updatedAt: 't', version: 1 },
+  } as any);
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.notEqual(r.value.system, true);              // system flag NOT honored from caller input
+  assert.equal((r.value as any).origin, undefined);   // no replica origin stamped
+  const stored = datasets.get('md3');
+  assert.ok(stored);
+  assert.notEqual(stored!.system, true);
+  // because it is not a system dataset, it is user-droppable:
+  const dropped = await s.dropDataset(LOCAL, 'md3');
+  assert.equal(dropped.ok, true);
+});
