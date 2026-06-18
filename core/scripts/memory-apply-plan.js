@@ -25,6 +25,7 @@ const fs   = require("fs");
 const path = require("path");
 const os   = require("os");
 const http = require("http");
+const { loopbackAuthHeader } = require("./lib/loopback-auth");
 const { execFileSync } = require("child_process");
 
 // ---------------------------------------------------------------------------
@@ -73,7 +74,7 @@ function runMapJSON(flags) {
 
 function fetchProjects() {
   return new Promise(function(resolve) {
-    http.get("http://localhost:" + PORT + "/memory/projects", function(res) {
+    http.get("http://localhost:" + PORT + "/memory/projects", { headers: loopbackAuthHeader() }, function(res) {
       let d = "";
       res.on("data", function(c) { d += c; });
       res.on("end", function() {

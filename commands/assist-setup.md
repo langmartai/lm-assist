@@ -47,7 +47,7 @@ claude plugin install claude-code-multisession@langmartai 2>/dev/null
 The statusline shows context %, rate limits, cost, and process info in the terminal status bar.
 
 ```bash
-curl -s -X POST http://localhost:3100/claude-code/statusline/install
+curl -s -X POST -H "x-api-key: $(cat "${LM_ASSIST_DATA_DIR:-$HOME/.lm-assist}/api-token" 2>/dev/null)" http://localhost:3100/claude-code/statusline/install
 ```
 
 ### 5. Optionally install MCP server and context hook
@@ -85,6 +85,7 @@ Then use the Edit tool to update the `.mcp.json` to:
 Also enable knowledge in project settings:
 ```bash
 curl -s -X PUT http://localhost:3100/project-settings \
+  -H "x-api-key: $(cat "${LM_ASSIST_DATA_DIR:-$HOME/.lm-assist}/api-token" 2>/dev/null)" \
   -H 'Content-Type: application/json' \
   -d '{"knowledgeEnabled": true}'
 ```

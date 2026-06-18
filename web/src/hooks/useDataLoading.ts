@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback, useEffect } from 'react';
-import { detectAppMode, detectProxyInfo } from '@/lib/api-client';
+import { detectAppMode, detectProxyInfo, workerFetch } from '@/lib/api-client';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -82,7 +82,7 @@ function getTierAgentBase(): string {
 async function apiGet<T>(path: string): Promise<T | null> {
   try {
     const base = getTierAgentBase();
-    const res = await fetch(`${base}${path}`);
+    const res = await workerFetch(`${base}${path}`);
     if (!res.ok) return null;
     const json = await res.json();
     if (json && typeof json === 'object' && 'data' in json) return json.data as T;
@@ -93,7 +93,7 @@ async function apiGet<T>(path: string): Promise<T | null> {
 async function apiPost<T>(path: string, body?: Record<string, unknown>): Promise<T | null> {
   try {
     const base = getTierAgentBase();
-    const res = await fetch(`${base}${path}`, {
+    const res = await workerFetch(`${base}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : undefined,

@@ -41,6 +41,24 @@ function getDefaultApiPort() {
 }
 const API_PORT = process.env.TIER_AGENT_PORT || getDefaultApiPort();
 
+// Shared API token (gated Core endpoints require x-api-key); empty if missing
+function lmApiToken() {
+  try {
+    return require('fs')
+      .readFileSync(
+        require('path').join(
+          process.env.LM_ASSIST_DATA_DIR ||
+            require('path').join(require('os').homedir(), '.lm-assist'),
+          'api-token'
+        ),
+        'utf8'
+      )
+      .trim();
+  } catch {
+    return '';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Logging
 // ---------------------------------------------------------------------------
@@ -91,16 +109,19 @@ function readStdin() {
 function httpPost(port, urlPath, body) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
+    const headers = {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(data),
+    };
+    const token = lmApiToken();
+    if (token) headers['x-api-key'] = token;
     const req = http.request(
       {
         hostname: 'localhost',
         port: parseInt(port, 10),
         path: urlPath,
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(data),
-        },
+        headers,
         timeout: 5000,
       },
       (res) => {

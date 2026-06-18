@@ -28,6 +28,7 @@
  */
 
 import type { InjectionDriverName, InjectionResult } from './types';
+import { lmAuthHeaders } from '../auth/api-token';
 
 /**
  * Minimal transport the drivers use to reach lm-assist's own routes. Defaults
@@ -61,13 +62,13 @@ export function loopbackTransport(): DriverTransport {
   const base = `http://127.0.0.1:${resolveApiPort()}`;
   return {
     async get(routePath) {
-      const res = await fetch(`${base}${routePath}`, { signal: AbortSignal.timeout(10000) });
+      const res = await fetch(`${base}${routePath}`, { headers: lmAuthHeaders(), signal: AbortSignal.timeout(10000) });
       return res.json();
     },
     async post(routePath, body) {
       const res = await fetch(`${base}${routePath}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(15000),
       });

@@ -64,6 +64,10 @@ WEB_DIR="$PROJECT_ROOT/web"
 CORE_PID_FILE="$CORE_DIR/server.pid"
 WEB_PID_FILE="$WEB_DIR/web.pid"
 
+# Loopback API token — the Core gates every endpoint except /health behind the
+# x-api-key header. dev+prod share <dataDir>/api-token, so one token works for both.
+LM_API_TOKEN="$(cat "${LM_ASSIST_DATA_DIR:-$HOME/.lm-assist}/api-token" 2>/dev/null)"
+
 # Log files
 CORE_LOG="$CORE_DIR/server.log"
 WEB_LOG="$WEB_DIR/web.log"
@@ -509,7 +513,7 @@ restart_core() {
         echo ""
         echo -e "${BLUE}Auto-reconnecting Hub Client...${NC}"
         sleep 3
-        local hub_status=$(curl -s "http://localhost:$API_PORT/hub/status" 2>/dev/null)
+        local hub_status=$(curl -s -H "x-api-key: $LM_API_TOKEN" "http://localhost:$API_PORT/hub/status" 2>/dev/null)
         local hub_auth=$(echo "$hub_status" | jq -r '.data.authenticated // false' 2>/dev/null)
         local hub_gw=$(echo "$hub_status" | jq -r '.data.gatewayId // ""' 2>/dev/null)
 
@@ -691,7 +695,7 @@ show_hub_status() {
         echo -e "  API Key:     ${CYAN}${TIER_AGENT_API_KEY:0:16}...${NC}"
         echo -e "  API Server:  ${RED}Not running${NC}"
     else
-        local hub_json=$(curl -s "http://localhost:$API_PORT/hub/status" 2>/dev/null)
+        local hub_json=$(curl -s -H "x-api-key: $LM_API_TOKEN" "http://localhost:$API_PORT/hub/status" 2>/dev/null)
         local hub_connected=$(echo "$hub_json" | jq -r '.data.connected // false' 2>/dev/null)
         local hub_auth=$(echo "$hub_json" | jq -r '.data.authenticated // false' 2>/dev/null)
         local hub_gw=$(echo "$hub_json" | jq -r '.data.gatewayId // "none"' 2>/dev/null)
@@ -738,7 +742,7 @@ start_hub() {
     fi
 
     # Check if already connected
-    local status=$(curl -s "http://localhost:$API_PORT/hub/status" 2>/dev/null)
+    local status=$(curl -s -H "x-api-key: $LM_API_TOKEN" "http://localhost:$API_PORT/hub/status" 2>/dev/null)
     local connected=$(echo "$status" | jq -r '.data.connected // false' 2>/dev/null)
 
     if [ "$connected" = "true" ]; then
@@ -748,12 +752,12 @@ start_hub() {
     fi
 
     # Connect
-    local result=$(curl -s -X POST "http://localhost:$API_PORT/hub/connect" 2>/dev/null)
+    local result=$(curl -s -X POST -H "x-api-key: $LM_API_TOKEN" "http://localhost:$API_PORT/hub/connect" 2>/dev/null)
     local success=$(echo "$result" | jq -r '.success // false' 2>/dev/null)
 
     if [ "$success" = "true" ]; then
         sleep 2
-        local post_status=$(curl -s "http://localhost:$API_PORT/hub/status" 2>/dev/null)
+        local post_status=$(curl -s -H "x-api-key: $LM_API_TOKEN" "http://localhost:$API_PORT/hub/status" 2>/dev/null)
         local auth=$(echo "$post_status" | jq -r '.data.authenticated // false' 2>/dev/null)
         local gw_id=$(echo "$post_status" | jq -r '.data.gatewayId // "pending"' 2>/dev/null)
 
@@ -782,7 +786,7 @@ stop_hub() {
         return 0
     fi
 
-    local result=$(curl -s -X POST "http://localhost:$API_PORT/hub/disconnect" 2>/dev/null)
+    local result=$(curl -s -X POST -H "x-api-key: $LM_API_TOKEN" "http://localhost:$API_PORT/hub/disconnect" 2>/dev/null)
     local success=$(echo "$result" | jq -r '.success // false' 2>/dev/null)
 
     if [ "$success" = "true" ]; then
@@ -806,12 +810,12 @@ reconnect_hub() {
         return 1
     fi
 
-    local result=$(curl -s -X POST "http://localhost:$API_PORT/hub/reconnect" 2>/dev/null)
+    local result=$(curl -s -X POST -H "x-api-key: $LM_API_TOKEN" "http://localhost:$API_PORT/hub/reconnect" 2>/dev/null)
     local success=$(echo "$result" | jq -r '.success // false' 2>/dev/null)
 
     if [ "$success" = "true" ]; then
         sleep 2
-        local post_status=$(curl -s "http://localhost:$API_PORT/hub/status" 2>/dev/null)
+        local post_status=$(curl -s -H "x-api-key: $LM_API_TOKEN" "http://localhost:$API_PORT/hub/status" 2>/dev/null)
         local auth=$(echo "$post_status" | jq -r '.data.authenticated // false' 2>/dev/null)
         local gw_id=$(echo "$post_status" | jq -r '.data.gatewayId // "pending"' 2>/dev/null)
 
@@ -924,7 +928,7 @@ _print_env_status() {
     if [ "$api_up" = true ]; then
         echo -n "  Hub Client:              "
         if is_hub_configured; then
-            local hub_status=$(curl -s "http://localhost:$ap/hub/status" 2>/dev/null)
+            local hub_status=$(curl -s -H "x-api-key: $LM_API_TOKEN" "http://localhost:$ap/hub/status" 2>/dev/null)
             local hub_auth=$(echo "$hub_status" | jq -r '.data.authenticated // false' 2>/dev/null)
             local hub_gw=$(echo "$hub_status" | jq -r '.data.gatewayId // ""' 2>/dev/null)
             local hub_retries=$(echo "$hub_status" | jq -r '.data.reconnectAttempts // 0' 2>/dev/null)
@@ -1030,7 +1034,7 @@ test_api() {
 
     # Status check
     echo -n "GET /status:     "
-    local status=$(curl -s -w "%{http_code}" -o /tmp/lm-status.json "http://localhost:$API_PORT/status")
+    local status=$(curl -s -w "%{http_code}" -H "x-api-key: $LM_API_TOKEN" -o /tmp/lm-status.json "http://localhost:$API_PORT/status")
     if [ "$status" = "200" ]; then
         echo -e "${GREEN}OK${NC}"
     else
@@ -1039,7 +1043,7 @@ test_api() {
 
     # Sessions list
     echo -n "GET /sessions:   "
-    local sessions=$(curl -s -w "%{http_code}" -o /tmp/lm-sessions.json "http://localhost:$API_PORT/sessions")
+    local sessions=$(curl -s -w "%{http_code}" -H "x-api-key: $LM_API_TOKEN" -o /tmp/lm-sessions.json "http://localhost:$API_PORT/sessions")
     if [ "$sessions" = "200" ]; then
         echo -e "${GREEN}OK${NC}"
     else

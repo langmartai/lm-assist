@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const http = require('http');
+const { loopbackAuthHeader } = require('./lib/loopback-auth');
 const { extractRecords } = require(path.join(__dirname, '..', 'dist', 'memory', 'record-extract'));
 
 const args = process.argv.slice(2);
@@ -36,7 +37,7 @@ const port = opt('port', '3100');
 
 function fetchProjects() {
   return new Promise((resolve) => {
-    http.get(`http://localhost:${port}/memory/projects`, (res) => {
+    http.get(`http://localhost:${port}/memory/projects`, { headers: loopbackAuthHeader() }, (res) => {
       let d = ''; res.on('data', c => d += c);
       res.on('end', () => { try { resolve(JSON.parse(d).data || []); } catch { resolve([]); } });
     }).on('error', () => resolve([]));

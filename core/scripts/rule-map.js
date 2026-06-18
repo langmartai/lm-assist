@@ -18,6 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const http = require('http');
+const { loopbackAuthHeader } = require('./lib/loopback-auth');
 const { extractRule } = require(path.join(__dirname, '..', 'dist', 'rules', 'rule-extract'));
 
 const args = process.argv.slice(2);
@@ -43,7 +44,7 @@ const USER_PROJECT = '(user)';
 
 function fetchProjects() {
   return new Promise((resolve) => {
-    http.get(`http://localhost:${port}/memory/projects`, (res) => {
+    http.get(`http://localhost:${port}/memory/projects`, { headers: loopbackAuthHeader() }, (res) => {
       let d = ''; res.on('data', c => d += c);
       res.on('end', () => { try { resolve(JSON.parse(d).data || []); } catch { resolve([]); } });
     }).on('error', () => resolve([]));

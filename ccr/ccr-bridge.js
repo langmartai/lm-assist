@@ -1,5 +1,8 @@
 const fs=require('fs'),crypto=require('crypto');
 const BASE='https://api.anthropic.com', LM='http://127.0.0.1:3100';
+// Core gates non-/health endpoints on x-api-key (shared dev+prod token file).
+const LM_TOK=(()=>{try{return fs.readFileSync((process.env.LM_ASSIST_DATA_DIR||(process.env.HOME+'/.lm-assist'))+'/api-token','utf8').trim()}catch{return ''}})();
+const LM_HDR=LM_TOK?{'x-api-key':LM_TOK}:{};
 const ORG=JSON.parse(fs.readFileSync(process.env.HOME+'/.claude.json','utf8')).oauthAccount.organizationUuid;
 function tok(){const d=JSON.parse(fs.readFileSync(process.env.HOME+'/.claude/.credentials.json','utf8'));const f=o=>{if(o&&typeof o==='object'){for(const k of Object.keys(o)){if(/^access_?token$/i.test(k)&&typeof o[k]==='string')return o[k];const r=f(o[k]);if(r)return r;}}return null;};return f(d);}
 const RC_BETA='claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14';
@@ -43,6 +46,6 @@ function newMsgs(cse){const out=[];let lines;try{lines=fs.readFileSync(JSONL,'ut
         else resp={subtype:'error',request_id:rid,error:'unsupported: '+sub};
         await fetch(`${BASE}/v1/code/sessions/${cse}/worker/events`,{method:'POST',headers:W,body:JSON.stringify({worker_epoch:epoch,events:[{payload:{type:'control_response',response:resp,session_id:cse,uuid:crypto.randomUUID()}}]})}).catch(()=>{});log('CTRL '+sub);}
       else if(d.event_type==='user'&&(d.source==='client'||p.client_platform==='web_claude_ai')){const u=p.uuid||d.event_id;if(seenDown.has(u))continue;seenDown.add(u);const text=txtOf(p.message).trim();if(!text)continue;
-        if(MODE==='twoway'){injected.add(text);await setStatus('running');log('DOWN inject: '+text.slice(0,50));await fetch(`${LM}/terminal/tmux/${TMUX}/send-keys`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({keys:text,literal:true,enter:true})}).catch(e=>log('injecterr '+e.message));}}
+        if(MODE==='twoway'){injected.add(text);await setStatus('running');log('DOWN inject: '+text.slice(0,50));await fetch(`${LM}/terminal/tmux/${TMUX}/send-keys`,{method:'POST',headers:{'content-type':'application/json',...LM_HDR},body:JSON.stringify({keys:text,literal:true,enter:true})}).catch(e=>log('injecterr '+e.message));}}
     }}
 })().catch(e=>log('ERR '+e.message));

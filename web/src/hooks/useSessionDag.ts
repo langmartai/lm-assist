@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback, useRef } from 'react';
-import { detectAppMode } from '@/lib/api-client';
+import { detectAppMode, detectProxyInfo, workerFetch } from '@/lib/api-client';
 import type { DagGraph, BranchInfo, RelatedSessions, UnifiedDag, DagViewMode } from '@/components/dag/dag-types';
 
 interface SessionDagState {
@@ -14,7 +14,7 @@ interface SessionDagState {
 }
 
 async function fetchDagJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, {
+  const res = await workerFetch(url, {
     headers: { 'Content-Type': 'application/json' },
   });
   if (!res.ok) {
@@ -52,7 +52,11 @@ export function useSessionDag(sessionId: string | null) {
   }
 
   const getBaseUrl = useCallback(() => {
-    return detectAppMode().baseUrl;
+    // In proxy mode, route through the worker relay (<basePath>/_coreapi) like the
+    // other data hooks — bare detectAppMode().baseUrl is '' under the proxy and
+    // resolves to the web server (404/HTML), not the core. Direct/local otherwise.
+    const p = detectProxyInfo();
+    return p.isProxied ? `${p.basePath}/_coreapi` : detectAppMode().baseUrl;
   }, []);
 
   const fetchSessionDag = useCallback(async () => {

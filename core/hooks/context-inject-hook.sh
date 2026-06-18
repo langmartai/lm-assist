@@ -108,6 +108,7 @@ JSON_BODY=$(jq -n \
 # Call tier-agent API for context suggestions (5 second timeout)
 HTTP_CODE=$(curl -s --max-time 5 -o /tmp/context-inject-response.json -w '%{http_code}' \
   -X POST "http://localhost:${API_PORT}/context/suggest" \
+  -H "x-api-key: $(cat "${LM_ASSIST_DATA_DIR:-$HOME/.lm-assist}/api-token" 2>/dev/null)" \
   -H "Content-Type: application/json" \
   -d "$JSON_BODY" 2>/dev/null) || {
   log "FAIL session=${SESSION_ID:-unknown} reason=connection_error (curl exit=$?)"

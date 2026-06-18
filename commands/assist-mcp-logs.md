@@ -18,7 +18,7 @@ If the API is not running, tell the user to start services with `lm-assist start
 
 2. Fetch the MCP call logs:
 ```bash
-curl -s "http://localhost:3100/assist-resources/log?file=mcp-calls.jsonl&limit=${LIMIT}&search=${SEARCH}"
+curl -s -H "x-api-key: $(cat "${LM_ASSIST_DATA_DIR:-$HOME/.lm-assist}/api-token" 2>/dev/null)" "http://localhost:3100/assist-resources/log?file=mcp-calls.jsonl&limit=${LIMIT}&search=${SEARCH}"
 ```
 
 ## Arguments

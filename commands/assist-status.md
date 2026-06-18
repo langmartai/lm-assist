@@ -18,7 +18,7 @@ curl -s --max-time 2 http://localhost:3100/health
 
 2. **API Status** — Get uptime and project path:
 ```bash
-curl -s --max-time 2 http://localhost:3100/status
+curl -s --max-time 2 -H "x-api-key: $(cat "${LM_ASSIST_DATA_DIR:-$HOME/.lm-assist}/api-token" 2>/dev/null)" http://localhost:3100/status
 ```
 
 3. **Web UI** — Check if the web server responds:
@@ -28,27 +28,27 @@ curl -s --max-time 2 -o /dev/null -w "%{http_code}" http://localhost:3848
 
 4. **MCP Server** — Check installation:
 ```bash
-curl -s --max-time 3 http://localhost:3100/claude-code/mcp
+curl -s --max-time 3 -H "x-api-key: $(cat "${LM_ASSIST_DATA_DIR:-$HOME/.lm-assist}/api-token" 2>/dev/null)" http://localhost:3100/claude-code/mcp
 ```
 
 5. **Context Hook** — Check installation:
 ```bash
-curl -s --max-time 3 http://localhost:3100/claude-code/context-hook
+curl -s --max-time 3 -H "x-api-key: $(cat "${LM_ASSIST_DATA_DIR:-$HOME/.lm-assist}/api-token" 2>/dev/null)" http://localhost:3100/claude-code/context-hook
 ```
 
 6. **Statusline** — Check installation:
 ```bash
-curl -s --max-time 3 http://localhost:3100/claude-code/statusline
+curl -s --max-time 3 -H "x-api-key: $(cat "${LM_ASSIST_DATA_DIR:-$HOME/.lm-assist}/api-token" 2>/dev/null)" http://localhost:3100/claude-code/statusline
 ```
 
 7. **Hub Client** — Check connection:
 ```bash
-curl -s --max-time 3 http://localhost:3100/hub/status
+curl -s --max-time 3 -H "x-api-key: $(cat "${LM_ASSIST_DATA_DIR:-$HOME/.lm-assist}/api-token" 2>/dev/null)" http://localhost:3100/hub/status
 ```
 
 8. **Knowledge Stats** — Get knowledge entry count:
 ```bash
-curl -s --max-time 3 http://localhost:3100/knowledge
+curl -s --max-time 3 -H "x-api-key: $(cat "${LM_ASSIST_DATA_DIR:-$HOME/.lm-assist}/api-token" 2>/dev/null)" http://localhost:3100/knowledge
 ```
 
 ## Output Format

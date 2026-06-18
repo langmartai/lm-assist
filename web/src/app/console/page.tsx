@@ -87,7 +87,7 @@ function FullScreenConsole() {
         // Shell mode: start a plain shell terminal (no Claude session)
         if (isShell) {
           const localBase = baseUrl || `http://localhost:${process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100'}`;
-          const startRes = await fetch(`${localBase}/ttyd/shell/start`, {
+          const startRes = await workerFetch(`${localBase}/ttyd/shell/start`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ projectPath }),
@@ -167,7 +167,7 @@ function FullScreenConsole() {
 
           // First check if ttyd is already running (only if we have a real sessionId, not for new/fork sessions)
           if (sessionId && !newSession && !isFork) {
-            const statusRes = await fetch(
+            const statusRes = await workerFetch(
               `${localBase}/ttyd/session/${sessionId}/status?projectPath=${encodeURIComponent(projectPath)}`
             );
             const statusData = await statusRes.json();
@@ -180,7 +180,7 @@ function FullScreenConsole() {
           }
 
           // Start ttyd in shared mode (tmux) or attach to existing session
-          const startRes = await fetch(`${localBase}/ttyd/session/${effectiveSessionId}/start`, {
+          const startRes = await workerFetch(`${localBase}/ttyd/session/${effectiveSessionId}/start`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -244,7 +244,7 @@ function FullScreenConsole() {
           url = `${localBase}/sessions/${sessionId}/conversation`;
         }
 
-        const res = await fetch(url, { headers });
+        const res = await workerFetch(url, { headers });
         if (!res.ok) return;
 
         const data = await res.json();

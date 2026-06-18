@@ -14,6 +14,7 @@ const fs    = require('fs');
 const path  = require('path');
 const os    = require('os');
 const http  = require('http');
+const { loopbackAuthHeader } = require('./lib/loopback-auth');
 
 const PORT        = process.env.API_PORT || (__dirname.includes('node_modules') ? '3100' : '3200');
 const MAP_SCRIPT  = path.join(__dirname, 'memory-map.js');
@@ -196,7 +197,7 @@ function spawnOpusAgent(prompt) {
     });
     const req = http.request(
       { host: 'localhost', port: PORT, path: '/agent/execute', method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } },
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...loopbackAuthHeader() } },
       (res) => {
         let d = '';
         res.on('data', c => (d += c));

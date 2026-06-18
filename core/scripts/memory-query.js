@@ -10,6 +10,7 @@
  *   node core/scripts/memory-query.js "what do we know about the broker boundary?"
  */
 const http = require('http');
+const { loopbackAuthHeader } = require('./lib/loopback-auth');
 const PORT = process.env.API_PORT || (__dirname.includes('node_modules') ? '3100' : '3200');
 const SCRIPT = require('path').join(__dirname, 'memory-map.js');
 const query = process.argv.slice(2).join(' ').trim();
@@ -36,7 +37,7 @@ const body = JSON.stringify({
   outputConfig: { effort: 'low' },
 });
 const req = http.request({ host: 'localhost', port: PORT, path: '/agent/execute', method: 'POST',
-  headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } },
+  headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...loopbackAuthHeader() } },
   (res) => { let d = ''; res.on('data', c => d += c); res.on('end', () => process.stdout.write(d)); });
 req.on('error', e => { console.error('agent endpoint error:', e.message); process.exit(2); });
 req.write(body); req.end();

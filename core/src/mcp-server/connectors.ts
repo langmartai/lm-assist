@@ -15,6 +15,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { lmAuthHeaders } from '../auth/api-token';
 
 const IS_DEV_REPO = process.env.LM_ASSIST_PROD === 'true' ? false : !__dirname.includes('node_modules');
 const DEV_SUFFIX = IS_DEV_REPO ? '-dev' : '';
@@ -102,6 +103,7 @@ async function claudeRegistered(): Promise<string[]> {
   const mcpUrl = `${base}/mcp`;
   try {
     const r = await fetch(`http://127.0.0.1:${localApiPort()}/claude-ai/org/mcp-bootstrap`, {
+      headers: lmAuthHeaders(),
       signal: AbortSignal.timeout(15000),
     });
     const j = (await r.json()) as { data?: { events?: Array<{ type: string; data?: { servers?: Array<{ url?: string; name?: string }> } }> } };

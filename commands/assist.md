@@ -16,7 +16,7 @@ curl -s --max-time 2 http://localhost:3100/health
 
 2. If the API is running, get the status for details:
 ```bash
-curl -s --max-time 2 http://localhost:3100/status
+curl -s --max-time 2 -H "x-api-key: $(cat "${LM_ASSIST_DATA_DIR:-$HOME/.lm-assist}/api-token" 2>/dev/null)" http://localhost:3100/status
 ```
 
 3. If the API is healthy, open the web UI in the user's browser:

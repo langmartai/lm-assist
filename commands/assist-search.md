@@ -20,7 +20,7 @@ If the API is not running, tell the user to start services with `lm-assist start
 
 3. Search the knowledge base:
 ```bash
-curl -s "http://localhost:3100/knowledge/search?q=${QUERY}&limit=${LIMIT}"
+curl -s -H "x-api-key: $(cat "${LM_ASSIST_DATA_DIR:-$HOME/.lm-assist}/api-token" 2>/dev/null)" "http://localhost:3100/knowledge/search?q=${QUERY}&limit=${LIMIT}"
 ```
 
 ## Arguments

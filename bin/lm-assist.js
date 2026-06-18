@@ -19,6 +19,17 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
+// Loopback API token — the Core gates every endpoint except /health behind the
+// x-api-key header. dev+prod share <dataDir>/api-token, so one token works for both.
+function lmAuthHeader() {
+  try {
+    const dir = process.env.LM_ASSIST_DATA_DIR || path.join(os.homedir(), '.lm-assist');
+    const t = fs.readFileSync(path.join(dir, 'api-token'), 'utf8').trim();
+    if (t) return { 'x-api-key': t };
+  } catch { /* no token file */ }
+  return {};
+}
+
 /** Always returns the npm package path (prod). Dev mode no longer switches this. */
 function getProjectRoot() {
   const fromFilename = path.dirname(path.dirname(__filename));
@@ -516,6 +527,7 @@ lm-assist Cloud Setup
         // Check current hub status
         try {
           const statusRes = await fetch(`http://localhost:${PROD_API_PORT}/hub/status`, {
+            headers: lmAuthHeader(),
             signal: AbortSignal.timeout(5000),
           });
           const statusJson = await statusRes.json();
@@ -550,7 +562,7 @@ lm-assist Cloud Setup
         try {
           const configRes = await fetch(`http://localhost:${PROD_API_PORT}/hub/config`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...lmAuthHeader() },
             body: JSON.stringify({ apiKey: keyArg, hubUrl, reconnect: true }),
             signal: AbortSignal.timeout(15000),
           });
@@ -570,7 +582,7 @@ lm-assist Cloud Setup
                 try {
                   const rollbackRes = await fetch(`http://localhost:${PROD_API_PORT}/hub/config`, {
                     method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...lmAuthHeader() },
                     body: JSON.stringify({ apiKey: oldKey, hubUrl, reconnect: false }),
                     signal: AbortSignal.timeout(5000),
                   });
@@ -634,6 +646,7 @@ lm-assist Cloud Setup
           await new Promise(r => setTimeout(r, 1500));
           try {
             const statusRes = await fetch(`http://localhost:${PROD_API_PORT}/hub/status`, {
+              headers: lmAuthHeader(),
               signal: AbortSignal.timeout(3000),
             });
             const statusJson = await statusRes.json();
