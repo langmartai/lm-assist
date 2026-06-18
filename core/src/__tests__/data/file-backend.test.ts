@@ -63,3 +63,27 @@ test('file backend: createDataset refuses a hard-excluded credential path', asyn
   const be = backend(d);
   await assert.rejects(() => be.createDataset(d), /excluded|forbidden/i);
 });
+
+test('file backend: log format → one record per line, tailed, with inline secrets scrubbed', async () => {
+  const lines = [];
+  for (let i = 0; i < 10; i++) lines.push(`line ${i}`);
+  lines.push('oops authorization: Bearer leaktoken9999');
+  const p = tmpFile('app.log', lines.join('\n') + '\n');
+  const d = desc('lg1', p, 'log', 5); // tail last 5
+  const be = backend(d);
+  const all = await be.query('lg1', {});
+  assert.equal(all.records.length, 5);                  // tailed to maxLines
+  assert.ok(all.records.every((r) => typeof r.text === 'string'));
+  const leak = all.records.find((r) => /authorization/i.test(String(r.text)));
+  assert.ok(leak);
+  assert.ok(!String(leak!.text).includes('leaktoken9999')); // inline secret scrubbed
+});
+
+test('file backend: log get by line id', async () => {
+  const p = tmpFile('b.log', 'alpha\nbeta\ngamma\n');
+  const be = backend(desc('lg2', p, 'log'));
+  const all = await be.query('lg2', {});
+  const first = all.records[0];
+  const got = await be.get('lg2', first.id);
+  assert.equal(got?.text, first.text);
+});

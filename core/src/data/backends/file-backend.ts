@@ -58,8 +58,21 @@ export class FileBackend implements StorageBackend {
     return [mk('0', data)];
   }
 
-  // parseLog is implemented in Task 3.
-  protected parseLog(_raw: string, _maxLines?: number): DataRecord[] { return []; }
+  protected parseLog(raw: string, maxLines?: number): DataRecord[] {
+    const limit = maxLines && maxLines > 0 ? maxLines : 500;
+    const allLines = raw.split('\n');
+    // drop a trailing empty element from a final newline
+    if (allLines.length && allLines[allLines.length - 1] === '') allLines.pop();
+    const start = Math.max(0, allLines.length - limit);
+    const tail = allLines.slice(start);
+    return tail.map((line, i) => ({
+      id: String(start + i),         // stable line number across the file
+      version: 1,
+      fields: { line: start + i },
+      text: line,                    // scrubRecordContent (applied in read()) runs redactText on this
+      createdAt: '', updatedAt: '',
+    }));
+  }
 
   async createDataset(d: DatasetDescriptor): Promise<void> {
     const c = d.config as FileConfig;
