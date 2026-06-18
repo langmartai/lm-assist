@@ -125,10 +125,26 @@ export class SqlBackend implements StorageBackend {
     return row ? rowToRecord(row) : null;
   }
 
-  // put/query/delete in Task 5-6; exportSince/importBatch/admin in Task 7.
-  async put(_dataset: string, _record: DataRecord): Promise<{ id: string }> { throw new Error('not implemented'); }
+  async put(dataset: string, record: DataRecord): Promise<{ id: string }> {
+    const h = this.db(dataset);
+    h.prepare(`
+      INSERT INTO records(id, fields, text, metadata, origin, version, created_at, updated_at)
+      VALUES(@id, @fields, @text, @metadata, @origin, @version, @created_at, @updated_at)
+      ON CONFLICT(id) DO UPDATE SET
+        fields=excluded.fields, text=excluded.text, metadata=excluded.metadata,
+        origin=excluded.origin, version=excluded.version,
+        created_at=excluded.created_at, updated_at=excluded.updated_at
+    `).run(recordParams(record));
+    return { id: record.id };
+  }
+
+  // query in Task 6; exportSince/importBatch/admin in Task 7.
   async query(_dataset: string, _q: QuerySpec): Promise<{ records: DataRecord[]; total?: number }> { throw new Error('not implemented'); }
-  async delete(_dataset: string, _id: string): Promise<boolean> { throw new Error('not implemented'); }
+
+  async delete(dataset: string, id: string): Promise<boolean> {
+    const info = this.db(dataset).prepare(`DELETE FROM records WHERE id = ?`).run(id);
+    return info.changes > 0;
+  }
   async exportSince(_dataset: string, _since?: string): Promise<DataRecord[]> { throw new Error('not implemented'); }
   async importBatch(_dataset: string, _records: DataRecord[], _origin: NodeOrigin): Promise<{ applied: number; skipped: number }> { throw new Error('not implemented'); }
 }
