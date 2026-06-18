@@ -1283,7 +1283,12 @@ export interface HybridClientOptions {
 
 export function createHybridClient(options: HybridClientOptions): ApiClient {
   const { localBaseUrl, hubBaseUrl, localGatewayId, apiKey } = options;
-  const localClient = createLocalClient(localBaseUrl);
+  // Pass proxy info so the local client's console/terminal methods (ttyd) route
+  // through the gateway path (/api/tier-agent/.../console/), which can carry the
+  // WebSocket upgrade — the _coreapi relay can't. Data methods still use the
+  // localBaseUrl (_coreapi in proxy mode). No-op when not proxied (isProxied=false
+  // → console uses the local ttyd path, unchanged for localhost hybrid mode).
+  const localClient = createLocalClient(localBaseUrl, detectProxyInfo());
   const hubClient = createHubClient(hubBaseUrl, apiKey);
 
   /**
