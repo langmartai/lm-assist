@@ -57,3 +57,19 @@ test('sql backend: delete removes the record (and its FTS row)', async () => {
   assert.equal(await b.get('del', 'a'), null);
   assert.equal(await b.delete('del', 'a'), false);
 });
+
+test('sql backend: query filter + sort + limit + total + fts', async () => {
+  const b = be();
+  await b.createDataset(descriptor('q', [{ path: 'topic', type: 'text' }]));
+  await b.put('q', rec('a', { topic: 'astro', n: 1 }, 'telescope galaxies'));
+  await b.put('q', rec('b', { topic: 'cook', n: 2 }, 'tomato sauce'));
+  await b.put('q', rec('c', { topic: 'astro', n: 3 }, 'exoplanet orbit'));
+  const f = await b.query('q', { filter: [{ field: 'topic', op: 'eq', value: 'astro' }] });
+  assert.deepEqual(f.records.map((r) => r.id).sort(), ['a', 'c']);
+  assert.equal(f.total, 2);
+  const sorted = await b.query('q', { sort: [{ field: 'n', dir: 'desc' }], limit: 1 });
+  assert.deepEqual(sorted.records.map((r) => r.id), ['c']);
+  assert.equal(sorted.total, 3);
+  const fts = await b.query('q', { fts: 'galaxies' });
+  assert.deepEqual(fts.records.map((r) => r.id), ['a']);
+});

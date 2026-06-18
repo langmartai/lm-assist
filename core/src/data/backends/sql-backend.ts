@@ -10,6 +10,8 @@ import type {
 } from '../types';
 import { isNewer } from '../types';
 import { sqlDirFor } from '../paths';
+import { compileQuery } from './sql-compiler';
+import { getDatasetRegistry } from '../dataset-registry';
 
 const Database = require('better-sqlite3');
 
@@ -138,8 +140,21 @@ export class SqlBackend implements StorageBackend {
     return { id: record.id };
   }
 
-  // query in Task 6; exportSince/importBatch/admin in Task 7.
-  async query(_dataset: string, _q: QuerySpec): Promise<{ records: DataRecord[]; total?: number }> { throw new Error('not implemented'); }
+  private indexedFor(dataset: string): Set<string> {
+    const d = getDatasetRegistry().get(dataset);
+    const c = d?.config as SqlConfig | undefined;
+    return new Set((c?.indexedFields || []).filter((f) => isSafeFieldPath(f.path)).map((f) => f.path));
+  }
+
+  async query(dataset: string, q: QuerySpec): Promise<{ records: DataRecord[]; total?: number }> {
+    const h = this.db(dataset);
+    const { where, whereParams, order, orderParams } = compileQuery(q, this.indexedFor(dataset));
+    const total = (h.prepare(`SELECT COUNT(*) AS n FROM records ${where}`).get(...whereParams) as any).n as number;
+    const limit = q.limit ?? -1;            // sqlite: LIMIT -1 = no limit
+    const offset = q.offset ?? 0;
+    const rows = h.prepare(`SELECT ${SELECT_COLS} FROM records ${where} ${order} LIMIT ? OFFSET ?`).all(...whereParams, ...orderParams, limit, offset);
+    return { records: rows.map(rowToRecord), total };
+  }
 
   async delete(dataset: string, id: string): Promise<boolean> {
     const info = this.db(dataset).prepare(`DELETE FROM records WHERE id = ?`).run(id);
