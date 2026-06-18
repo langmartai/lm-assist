@@ -30,14 +30,14 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
   const disabled = (start: number) => wrapError('DATA_SERVICE_DISABLED', 'data service is disabled', start);
 
   return [
-    // GET /data/catalog
+    // GET /data/catalog — datasets visible to caller + the caller's management capability
     {
       method: 'GET',
       pattern: /^\/data\/catalog$/,
       handler: async (req) => {
         const start = Date.now();
         if (!svc().isEnabled()) return disabled(start);
-        return wrapResponse({ datasets: svc().catalog(svc().resolvePrincipal(req)) }, start);
+        return wrapResponse(svc().catalogView(svc().resolvePrincipal(req)), start);
       },
     },
 
@@ -64,6 +64,19 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!svc().isEnabled()) return disabled(start);
         const ok = await svc().revoke(svc().resolvePrincipal(req), req.params.keyId);
         return wrapResponse({ revoked: ok }, start);
+      },
+    },
+
+    // GET /data/keys — list issued access keys (metadata only; NEVER secretHash). LOCAL-ONLY.
+    {
+      method: 'GET',
+      pattern: /^\/data\/keys$/,
+      handler: async (req) => {
+        const start = Date.now();
+        if (!svc().isEnabled()) return disabled(start);
+        const r = await svc().listKeys(ctxOf(req));
+        if (!r.ok) return wrapError(r.code, r.reason, start);
+        return wrapResponse({ keys: r.value }, start);
       },
     },
 

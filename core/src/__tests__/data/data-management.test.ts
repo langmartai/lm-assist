@@ -85,3 +85,18 @@ test('createDataset: ignores caller-supplied system/origin (stays user-droppable
   const dropped = await s.dropDataset(LOCAL, 'md3');
   assert.equal(dropped.ok, true);
 });
+
+test('catalogView: reports caller capability (canManage) alongside visible datasets', async () => {
+  const { s, datasets } = svc();
+  datasets.create({ id: 'cv1', backend: 'cache', visibility: 'local-only', config: { kind: 'cache' }, acl: [{ principal: '*', actions: ['read'] }] });
+
+  const local = s.catalogView(LOCAL.principal);
+  assert.equal(local.you.principal, 'local');
+  assert.equal(local.you.canManage, true);
+  assert.ok(Array.isArray(local.datasets));
+  assert.ok(local.datasets.some((d) => d.id === 'cv1'));
+
+  const cloud = s.catalogView(CLOUD.principal);
+  assert.equal(cloud.you.principal, 'cloud');
+  assert.equal(cloud.you.canManage, false);
+});

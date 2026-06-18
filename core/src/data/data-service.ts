@@ -50,6 +50,15 @@ export class DataService {
     return out;
   }
 
+  /** Catalog plus the caller's management capability — one call for the web UI / MCP catalog.
+   *  canManage mirrors the local-only management boundary (local principal only). */
+  catalogView(p: Principal): { you: { principal: Principal['type']; canManage: boolean }; datasets: ReturnType<DataService['catalog']> } {
+    return {
+      you: { principal: p.type, canManage: p.type === 'local' },
+      datasets: this.catalog(p),
+    };
+  }
+
   async requestAccess(p: Principal, req: AccessRequest): Promise<DataResult<{ key: string; keyId: string; grants: import('./types').Grant[]; expiresAt: string }>> {
     const r = await this.deps.manager.requestAccess(p, req);
     if (!r.ok) return { ok: false, code: 'ACCESS_DENIED', reason: r.reason };
