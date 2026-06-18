@@ -25,7 +25,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { TOOL_SCOPES, type ToolScope } from './configure';
+import { TOOL_SCOPES, LM_ASSIST_TOOL_DEFS, type ToolScope } from './configure';
 
 export interface McpAccessConfig {
   version: number;
@@ -140,9 +140,12 @@ export function setToolGate(tool: string, enabled: boolean): McpAccessConfig {
  * The full tool catalog for the settings UI: every tool, its sensitivity scope
  * (hint), and whether the extra admin gate is currently on.
  */
-export function toolCatalog(): Array<{ tool: string; scope: ToolScope; adminGate: boolean }> {
+export function toolCatalog(): Array<{ tool: string; scope: ToolScope; adminGate: boolean; description: string }> {
   const gated = new Set(loadAccessConfig().adminGatedTools);
-  return Object.entries(TOOL_SCOPES).map(([tool, scope]) => ({ tool, scope, adminGate: gated.has(tool) }));
+  // Join the actual MCP tool description (what ListTools advertises) so the
+  // settings UI can show it on hover.
+  const desc = new Map(LM_ASSIST_TOOL_DEFS.map((t) => [t.name, String(t.description || '')] as const));
+  return Object.entries(TOOL_SCOPES).map(([tool, scope]) => ({ tool, scope, adminGate: gated.has(tool), description: desc.get(tool) || '' }));
 }
 
 export { ACCESS_FILE };

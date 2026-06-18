@@ -21,7 +21,7 @@ import { workerFetch } from '@/lib/api-client';
 
 type Scope = 'read' | 'write' | 'admin';
 
-interface ToolRow { tool: string; scope: Scope; adminGate: boolean }
+interface ToolRow { tool: string; scope: Scope; adminGate: boolean; description?: string }
 interface AccessConfig { tools: ToolRow[] }
 interface Pending {
   id: string; tool: string; summary: string;
@@ -154,7 +154,12 @@ export default function McpAccessTab({ baseUrl }: { baseUrl: string }) {
             (cfg?.tools.filter((t) => t.scope === sc) || []).map((t) => (
               <div key={t.tool} className="flex items-center justify-between border-b border-gray-800 py-1.5">
                 <div className="flex items-center gap-2">
-                  <span className="font-mono text-xs">{t.tool}</span>
+                  <span
+                    className={`font-mono text-xs ${t.description ? 'cursor-help underline decoration-dotted decoration-gray-600 underline-offset-4' : ''}`}
+                    title={t.description || undefined}
+                  >
+                    {t.tool}
+                  </span>
                   <ScopeBadge s={t.scope} />
                 </div>
                 <button
