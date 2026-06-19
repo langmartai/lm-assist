@@ -1104,15 +1104,13 @@ export async function clearMcpServerCache(serverUuid: string, opts: { orgUuid?: 
   }
 }
 
-/** GET /api/account/settings — the account settings object (incl. enabled_mcp_tools). */
-export async function getAccountSettings(): Promise<ClaudeAIResponse<any>> {
-  return claudeaiGet('/api/account/settings', { referer: 'https://claude.ai/customize/connectors' });
-}
-
 /**
- * PATCH /api/account/settings — partial update of account settings. The web UI
- * uses this to change MCP tool access via `enabled_mcp_tools` (a map of
- * `{connectorUuid}:{toolName}` → bool; captured via lm-proxy 2026-06-20).
+ * PATCH /api/account/settings — partial update of account settings (the web UI
+ * changes MCP tool access here via `enabled_mcp_tools`; captured via lm-proxy
+ * 2026-06-20). This is JSON Merge Patch (RFC 7386): the web sends ONLY the
+ * `enabled_mcp_tools` field, never the whole settings object — toggling a tool
+ * never resets your theme/other settings — so the server deep-merges. GET on
+ * this path is 405; there is no read-back.
  */
 export async function patchAccountSettings(partial: Record<string, unknown>): Promise<ClaudeAIResponse<any>> {
   const cfg = readClaudeAISession();
@@ -1135,30 +1133,26 @@ export async function patchAccountSettings(partial: Record<string, unknown>): Pr
 }
 
 /**
- * Set MCP tool access (enabled/blocked) for a connector's tools — the
- * "Always allow/Ask" vs "Block" control. Read-modify-write: reads the current
- * `enabled_mcp_tools` map, flips ONLY the requested `{connectorUuid}:{toolName}`
- * keys (true = enabled/shown, false = blocked), and PATCHes the full map back —
- * so every other tool's setting is preserved regardless of merge semantics.
+ * Set MCP tool access (enabled/blocked) for a connector's tools — the web
+ * "tool access" control. Sends a PARTIAL `enabled_mcp_tools` merge-patch with
+ * ONLY the requested `{connectorUuid}:{toolName}` keys (true = enabled/shown,
+ * false = blocked); every other tool's setting is preserved by the server's
+ * JSON-Merge-Patch deep-merge (see patchAccountSettings). No read-back needed
+ * (GET is 405).
  *
  * NOTE: the bare key is enabled-vs-blocked; the per-version `…:{tool}-{hash}`
  * variant is claude.ai's "always allow (this version)" pre-approval, which this
- * helper does not touch (so an enabled tool stays at its current ask/always
- * setting). Returns the keys it changed.
+ * helper does not touch (an enabled tool keeps its current ask/always setting).
+ * Returns the keys it changed.
  */
 export async function setMcpToolsAccess(
   connectorUuid: string,
   changes: Record<string, boolean>,
-): Promise<ClaudeAIResponse<{ changed: Record<string, boolean>; totalTools: number }>> {
+): Promise<ClaudeAIResponse<{ changed: Record<string, boolean> }>> {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(connectorUuid)) {
     throw new Error(`Invalid MCP server UUID: ${connectorUuid}`);
   }
-  const cur = await getAccountSettings();
-  if (cur.status >= 400) {
-    return { status: cur.status, statusText: cur.statusText, headers: cur.headers, body: { changed: {}, totalTools: 0 } };
-  }
-  const settings = (cur.body && typeof cur.body === 'object' ? cur.body : {}) as Record<string, any>;
-  const map: Record<string, boolean> = { ...(settings.enabled_mcp_tools || {}) };
+  const map: Record<string, boolean> = {};
   const changed: Record<string, boolean> = {};
   for (const [tool, enabled] of Object.entries(changes)) {
     const key = `${connectorUuid}:${tool}`;
@@ -1166,12 +1160,7 @@ export async function setMcpToolsAccess(
     changed[key] = enabled;
   }
   const res = await patchAccountSettings({ enabled_mcp_tools: map });
-  return {
-    status: res.status,
-    statusText: res.statusText,
-    headers: res.headers,
-    body: { changed, totalTools: Object.keys(map).length },
-  };
+  return { status: res.status, statusText: res.statusText, headers: res.headers, body: { changed } };
 }
 
 /**
