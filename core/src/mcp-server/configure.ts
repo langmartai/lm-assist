@@ -201,6 +201,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   auth_status: 'read',
   claude_code_account: 'read',
   claudeai_account: 'read',
+  session_dag: 'read',
   claude_code_usage: 'read',
   claudeai_active_sessions: 'read',
   // session-to-session messaging
