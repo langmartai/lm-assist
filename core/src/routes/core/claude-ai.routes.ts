@@ -71,6 +71,8 @@ import {
   getOrgMcpBootstrap,
   createMcpRemoteServer,
   deleteMcpRemoteServer,
+  clearMcpServerCache,
+  setMcpToolsAccess,
   listMcpRemoteServers,
   listOrgStyles,
   getModelConfig,
@@ -536,6 +538,49 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
         }
         try {
           return upstreamWrap(await deleteMcpRemoteServer(uuid));
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      } },
+
+    // POST /claude-ai/mcp/servers/:uuid/clear-cache — clear claude.ai's cached
+    //   tool list for a connector, forcing a fresh tools/list re-fetch on the
+    //   next bootstrap (surfaces newly-added worker tools). Exactly what the web
+    //   UI "refresh tools" button calls. Empty body; returns the upstream 200.
+    { method: 'POST', pattern: /^\/claude-ai\/mcp\/servers\/(?<uuid>[^/?]+)\/clear-cache$/,
+      handler: async (req) => {
+        const uuid = req.params.uuid;
+        if (!UUID_RE.test(uuid)) {
+          return { success: false, error: { code: 'INVALID_UUID', message: `MCP server UUID must be a UUIDv4: got ${uuid}` } };
+        }
+        try {
+          return upstreamWrap(await clearMcpServerCache(uuid));
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      } },
+
+    // POST /claude-ai/mcp/servers/:uuid/tool-access — enable/block a connector's
+    //   MCP tools (the web "tool access" control). Body: { enable?: string[],
+    //   block?: string[] } (tool names). Read-modify-write on enabled_mcp_tools
+    //   so other tools' settings are preserved. Returns the keys changed.
+    { method: 'POST', pattern: /^\/claude-ai\/mcp\/servers\/(?<uuid>[^/?]+)\/tool-access$/,
+      handler: async (req) => {
+        const uuid = req.params.uuid;
+        if (!UUID_RE.test(uuid)) {
+          return { success: false, error: { code: 'INVALID_UUID', message: `MCP server UUID must be a UUIDv4: got ${uuid}` } };
+        }
+        const b = req.body || {};
+        const enable = Array.isArray(b.enable) ? b.enable.filter((t: unknown) => typeof t === 'string') : [];
+        const block = Array.isArray(b.block) ? b.block.filter((t: unknown) => typeof t === 'string') : [];
+        if (enable.length === 0 && block.length === 0) {
+          return { success: false, error: { code: 'NO_CHANGES', message: 'provide enable[] and/or block[] tool names' } };
+        }
+        const changes: Record<string, boolean> = {};
+        for (const t of block) changes[t] = false;
+        for (const t of enable) changes[t] = true; // enable wins if a name is in both
+        try {
+          return upstreamWrap(await setMcpToolsAccess(uuid, changes));
         } catch (err) {
           return catchOAuth(err);
         }
