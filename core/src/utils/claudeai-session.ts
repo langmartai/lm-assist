@@ -1104,13 +1104,22 @@ export async function clearMcpServerCache(serverUuid: string, opts: { orgUuid?: 
   }
 }
 
+/** GET /api/account → settings.enabled_mcp_tools — the current full tool map. */
+export async function getEnabledMcpTools(): Promise<Record<string, boolean>> {
+  const r = await claudeaiGet('/api/account', { referer: 'https://claude.ai/customize/connectors' });
+  if (r.status >= 400) throw new Error(`GET /api/account -> ${r.status}`);
+  const settings = (r.body && typeof r.body === 'object' ? (r.body as any).settings : null) || {};
+  return (settings.enabled_mcp_tools as Record<string, boolean>) || {};
+}
+
 /**
- * PATCH /api/account/settings — partial update of account settings (the web UI
- * changes MCP tool access here via `enabled_mcp_tools`; captured via lm-proxy
- * 2026-06-20). This is JSON Merge Patch (RFC 7386): the web sends ONLY the
- * `enabled_mcp_tools` field, never the whole settings object — toggling a tool
- * never resets your theme/other settings — so the server deep-merges. GET on
- * this path is 405; there is no read-back.
+ * PATCH /api/account/settings — update account settings (the web UI changes MCP
+ * tool access here via `enabled_mcp_tools`; captured via lm-proxy 2026-06-20).
+ * Top-level fields MERGE (sending just `enabled_mcp_tools` doesn't reset your
+ * theme), BUT a provided object field is REPLACED wholesale — verified
+ * 2026-06-20: a partial `enabled_mcp_tools` collapsed the live map 228→1. So
+ * callers MUST send the COMPLETE map (read it via getEnabledMcpTools / GET
+ * /api/account; GET on THIS path is 405).
  */
 export async function patchAccountSettings(partial: Record<string, unknown>): Promise<ClaudeAIResponse<any>> {
   const cfg = readClaudeAISession();
@@ -1134,25 +1143,29 @@ export async function patchAccountSettings(partial: Record<string, unknown>): Pr
 
 /**
  * Set MCP tool access (enabled/blocked) for a connector's tools — the web
- * "tool access" control. Sends a PARTIAL `enabled_mcp_tools` merge-patch with
- * ONLY the requested `{connectorUuid}:{toolName}` keys (true = enabled/shown,
- * false = blocked); every other tool's setting is preserved by the server's
- * JSON-Merge-Patch deep-merge (see patchAccountSettings). No read-back needed
- * (GET is 405).
+ * "tool access" control. READ-MODIFY-WRITE (required: the PATCH REPLACES the
+ * whole enabled_mcp_tools map): reads the current map via getEnabledMcpTools,
+ * flips ONLY the requested `{connectorUuid}:{toolName}` keys (true =
+ * enabled/shown, false = blocked), and PATCHes the FULL map back so every other
+ * tool's setting is preserved.
  *
  * NOTE: the bare key is enabled-vs-blocked; the per-version `…:{tool}-{hash}`
  * variant is claude.ai's "always allow (this version)" pre-approval, which this
  * helper does not touch (an enabled tool keeps its current ask/always setting).
- * Returns the keys it changed.
+ * Returns the keys it changed + the resulting map size (sanity check).
  */
 export async function setMcpToolsAccess(
   connectorUuid: string,
   changes: Record<string, boolean>,
-): Promise<ClaudeAIResponse<{ changed: Record<string, boolean> }>> {
+): Promise<ClaudeAIResponse<{ changed: Record<string, boolean>; totalKeys: number }>> {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(connectorUuid)) {
     throw new Error(`Invalid MCP server UUID: ${connectorUuid}`);
   }
-  const map: Record<string, boolean> = {};
+  // READ the full current map (PATCH replaces wholesale, so we must round-trip it).
+  const map: Record<string, boolean> = { ...(await getEnabledMcpTools()) };
+  if (Object.keys(map).length === 0) {
+    throw new Error('refusing to write an empty enabled_mcp_tools map (read returned nothing) — would wipe all tool settings');
+  }
   const changed: Record<string, boolean> = {};
   for (const [tool, enabled] of Object.entries(changes)) {
     const key = `${connectorUuid}:${tool}`;
@@ -1160,7 +1173,7 @@ export async function setMcpToolsAccess(
     changed[key] = enabled;
   }
   const res = await patchAccountSettings({ enabled_mcp_tools: map });
-  return { status: res.status, statusText: res.statusText, headers: res.headers, body: { changed } };
+  return { status: res.status, statusText: res.statusText, headers: res.headers, body: { changed, totalKeys: Object.keys(map).length } };
 }
 
 /**
