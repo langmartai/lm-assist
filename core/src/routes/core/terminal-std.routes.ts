@@ -110,8 +110,22 @@ export function createTerminalStdRoutes(_ctx: RouteContext): RouteHandler[] {
         wrap(async () => {
           const cc = getCcController();
           const sessions = await cc.list();
-          // include the ownership verdict per session (parity with the legacy route)
-          const withVerdict = sessions.map((s) => ({ ...s, verdict: cc.verdict(s.sessionId) }));
+          // include the ownership verdict per session, but keep ONLY its new
+          // fields — the full verdict re-states sessionId/jsonl/owner/inTmux/
+          // tmuxSession/pane which each session already carries (~2x payload).
+          const withVerdict = sessions.map((s) => {
+            const v = cc.verdict(s.sessionId);
+            return {
+              ...s,
+              verdict: {
+                live: v.live,
+                allowedModes: v.allowedModes,
+                connectStrategy: v.connectStrategy,
+                safeToCreateTmux: v.safeToCreateTmux,
+                reason: v.reason,
+              },
+            };
+          });
           return { backend: getTerminalBackend().id, liveCount: sessions.length, sessions: withVerdict };
         }),
     },
