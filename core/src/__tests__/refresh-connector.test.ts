@@ -75,3 +75,30 @@ test('set_connector_tool_access: requires at least one tool', async () => {
   const res = await REFRESH_CONNECTOR_HANDLERS.set_connector_tool_access({});
   assert.equal(res.isError, true);
 });
+
+test('list_claudeai_connectors: lists each connector with uuid + tool count', async () => {
+  stub(() => ({ servers: SERVERS.map((s) => ({ ...s, authStatus: 'authenticated', toolCount: 5 })) }));
+  const res = await REFRESH_CONNECTOR_HANDLERS.list_claudeai_connectors({});
+  const t = res.content[0].text;
+  assert.notEqual(res.isError, true);
+  assert.match(t, /Google Drive/);
+  assert.match(t, /lm-assist langmart/);
+  assert.match(t, /8f61a74e-9d48-44b6-9ba0-a8d4873a86c2/);
+  assert.match(t, /5 tools/);
+});
+
+test('refresh_connector_tools: connector="drive" targets the Google Drive connector', async () => {
+  stub((url) => (url.includes('/mcp/servers') && !url.includes('clear-cache') ? { servers: SERVERS } : { cleared: true }));
+  const res = await REFRESH_CONNECTOR_HANDLERS.refresh_connector_tools({ connector: 'drive' });
+  assert.notEqual(res.isError, true);
+  const cc = calls.find((c) => c.url.includes('clear-cache'));
+  assert.match(cc!.url, /aaaaaaaa-0000-4000-8000-000000000001\/clear-cache/, 'targeted Google Drive by name');
+});
+
+test('set_connector_tool_access: ambiguous connector match errors with options', async () => {
+  stub(() => ({ servers: SERVERS }));
+  // "a" matches both "Google Drive"(url mcp.google) ? no — match name/url substring "lm" matches langmart only.
+  const res = await REFRESH_CONNECTOR_HANDLERS.set_connector_tool_access({ connector: 'mcp', block: ['detail'] });
+  assert.equal(res.isError, true, '"mcp" appears in both urls -> ambiguous');
+  assert.match(res.content[0].text, /matches 2|more specific/i);
+});

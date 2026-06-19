@@ -155,6 +155,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   claudeai_add_marketplace: 'write',
   claudeai_remove_marketplace: 'write',
   claudeai_set_plugin_enabled: 'write',
+  list_claudeai_connectors: 'read',
   refresh_connector_tools: 'write',
   set_connector_tool_access: 'write',
   agent_abort: 'write',
