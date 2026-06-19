@@ -19,6 +19,7 @@ import { ConsoleRelayHandler } from './console-relay-handler';
 import { PortForwardHandler } from './port-forward-handler';
 import { SessionCacheSync } from './session-cache-sync';
 import { getHubConfig, HubConfig, saveGatewayId, loadServicePorts } from './hub-config';
+import { acquireHubSingletonLock, releaseHubSingletonLock } from './singleton-lock';
 
 export interface HubClientOptions {
   /** Hub WebSocket URL (defaults from env TIER_AGENT_HUB_URL) */
@@ -109,6 +110,8 @@ export class HubClient extends EventEmitter {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
+  /** Hub URL whose machine-global singleton lock this client holds (null if none). */
+  private hubLockUrl: string | null = null;
   private memoryUpdatedCallbacks: Array<(m: MemoryUpdatedMessage) => void> = [];
 
   constructor(options: HubClientOptions = {}) {
@@ -152,6 +155,25 @@ export class HubClient extends EventEmitter {
     if (this.status.connected) {
       console.log('[HubClient] Already connected');
       return;
+    }
+
+    // Machine-global singleton: refuse to dial a hub that ANOTHER live core on
+    // this machine is already connected to, so a stray/orphan core can't
+    // register as a duplicate node (the 502-on-the-default-node failure mode).
+    // dev + prod target different hub URLs → different locks → both still run.
+    if (this.hubLockUrl !== this.options.hubUrl) {
+      const lock = acquireHubSingletonLock(this.options.hubUrl);
+      if (!lock.acquired) {
+        console.warn(
+          `[HubClient] Another lm-assist core (pid ${lock.heldByPid}) is already connected to ` +
+            `${this.options.hubUrl} from this machine — NOT connecting, to avoid a duplicate node ` +
+            `registration. Stop the other core (or this one) so only one serves this hub. (lock: ${lock.lockFile})`,
+        );
+        // Retry on backoff so we self-heal if that core later exits (frees the lock).
+        if (this.options.autoReconnect) this.scheduleReconnect();
+        return;
+      }
+      this.hubLockUrl = this.options.hubUrl;
     }
 
     this.isShuttingDown = false;
@@ -236,6 +258,14 @@ export class HubClient extends EventEmitter {
   async disconnect(): Promise<void> {
     this.isShuttingDown = true;
     this.clearTimers();
+
+    // Release the machine-global hub lock so a restart (or another core) can
+    // take it. A crash without this still self-heals: the next core sees our
+    // dead pid and reclaims the stale lock.
+    if (this.hubLockUrl) {
+      releaseHubSingletonLock(this.hubLockUrl);
+      this.hubLockUrl = null;
+    }
 
     if (this.wsClient) {
       await this.wsClient.disconnect();
