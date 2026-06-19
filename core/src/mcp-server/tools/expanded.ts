@@ -38,6 +38,8 @@ import { FS_INSPECT_TOOL_DEFS, FS_INSPECT_HANDLERS } from './fs-inspect';
 import { SESSION_MESSAGING_TOOL_DEFS, SESSION_MESSAGING_HANDLERS } from './session-messaging';
 import { DATA_TOOL_DEFS, DATA_HANDLERS } from './data-tools';
 import { AUTH_STATUS_TOOL_DEFS, AUTH_STATUS_HANDLERS } from './auth-status';
+import { CLAUDE_CODE_ACCOUNT_TOOL_DEFS, CLAUDE_CODE_ACCOUNT_HANDLERS } from './claude-code-account';
+import { CLAUDEAI_ACCOUNT_TOOL_DEFS, CLAUDEAI_ACCOUNT_HANDLERS } from './claudeai-account';
 import { CLAUDE_CODE_USAGE_TOOL_DEFS, CLAUDE_CODE_USAGE_HANDLERS } from './claude-code-usage';
 import { CLAUDEAI_ACTIVE_SESSIONS_TOOL_DEFS, CLAUDEAI_ACTIVE_SESSIONS_HANDLERS } from './claudeai-active-sessions';
 import { BROWSER_TASK_TOOL_DEFS, BROWSER_TASK_HANDLERS } from './browser-task';
@@ -737,6 +739,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...DATA_TOOL_DEFS,
   // credential health — claude.ai cookie + Claude Code OAuth (read, no secrets)
   ...AUTH_STATUS_TOOL_DEFS,
+  ...CLAUDE_CODE_ACCOUNT_TOOL_DEFS,
+  ...CLAUDEAI_ACCOUNT_TOOL_DEFS,
   ...CLAUDE_CODE_USAGE_TOOL_DEFS,
   ...CLAUDEAI_ACTIVE_SESSIONS_TOOL_DEFS,
   ...BROWSER_TASK_TOOL_DEFS,
@@ -1340,6 +1344,8 @@ export const EXPANDED_HANDLERS: Record<
   // data service
   ...DATA_HANDLERS,
   ...AUTH_STATUS_HANDLERS,
+  ...CLAUDE_CODE_ACCOUNT_HANDLERS,
+  ...CLAUDEAI_ACCOUNT_HANDLERS,
   ...CLAUDE_CODE_USAGE_HANDLERS,
   ...CLAUDEAI_ACTIVE_SESSIONS_HANDLERS,
   ...BROWSER_TASK_HANDLERS,
