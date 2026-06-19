@@ -37,6 +37,9 @@ import { TRANSFER_TOOL_DEFS, TRANSFER_HANDLERS } from './transfer';
 import { FS_INSPECT_TOOL_DEFS, FS_INSPECT_HANDLERS } from './fs-inspect';
 import { SESSION_MESSAGING_TOOL_DEFS, SESSION_MESSAGING_HANDLERS } from './session-messaging';
 import { DATA_TOOL_DEFS, DATA_HANDLERS } from './data-tools';
+import { AUTH_STATUS_TOOL_DEFS, AUTH_STATUS_HANDLERS } from './auth-status';
+import { CLAUDE_CODE_USAGE_TOOL_DEFS, CLAUDE_CODE_USAGE_HANDLERS } from './claude-code-usage';
+import { CLAUDEAI_ACTIVE_SESSIONS_TOOL_DEFS, CLAUDEAI_ACTIVE_SESSIONS_HANDLERS } from './claudeai-active-sessions';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -730,6 +733,10 @@ export const EXPANDED_TOOL_DEFS = [
   ...SESSION_MESSAGING_TOOL_DEFS,
   // data service (read: catalog/request_access/get/query; write: put/delete)
   ...DATA_TOOL_DEFS,
+  // credential health — claude.ai cookie + Claude Code OAuth (read, no secrets)
+  ...AUTH_STATUS_TOOL_DEFS,
+  ...CLAUDE_CODE_USAGE_TOOL_DEFS,
+  ...CLAUDEAI_ACTIVE_SESSIONS_TOOL_DEFS,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -1328,4 +1335,7 @@ export const EXPANDED_HANDLERS: Record<
   ...SESSION_MESSAGING_HANDLERS,
   // data service
   ...DATA_HANDLERS,
+  ...AUTH_STATUS_HANDLERS,
+  ...CLAUDE_CODE_USAGE_HANDLERS,
+  ...CLAUDEAI_ACTIVE_SESSIONS_HANDLERS,
 };
