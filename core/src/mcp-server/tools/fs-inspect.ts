@@ -76,7 +76,32 @@ export const fsStatToolDef = {
   },
 };
 
-export const FS_INSPECT_TOOL_DEFS = [fsDrivesToolDef, fsListToolDef, fsStatToolDef] as const;
+export const fsReadToolDef = {
+  name: 'fs_read',
+  description:
+    'Read the CONTENTS of a file on a node by ABSOLUTE path (a bounded byte slice — ' +
+    'fs_list/fs_stat only show metadata). Returns the text plus size/offset/eof; page ' +
+    'large files with `offset` + `maxBytes` (default 64KB, max 1MB). Binary files return ' +
+    'binary:true with no text. ' +
+    'SECURITY: refuses known credential/secret files — SSH keys, .env, *.pem/*.key, ' +
+    'cloud + gh tokens, and lm-assist\'s own keys (~/.lm-assist, ~/.lm-oandaproxy, ' +
+    '~/.claude/.credentials.json) — returning a `blocked` reason instead of the bytes. ' +
+    peerNote +
+    ' Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      path: { type: 'string', description: 'Absolute file path on the target node.' },
+      offset: { type: 'number', description: 'Byte offset to start reading at (default 0). Use with maxBytes to page a large file.' },
+      maxBytes: { type: 'number', description: 'Max bytes to return (default 65536, capped at 1048576).' },
+      peerGatewayId: { type: 'string', description: 'Optional peer node to inspect (from list_nodes).' },
+    },
+    required: ['path'],
+  },
+};
+
+export const FS_INSPECT_TOOL_DEFS = [fsDrivesToolDef, fsListToolDef, fsStatToolDef, fsReadToolDef] as const;
 
 interface Drive { path: string; type: string; label?: string }
 interface Entry { name: string; size: number; mode: number; isDir: boolean; mtimeMs: number }
@@ -158,8 +183,37 @@ async function handleFsStat(args: Record<string, unknown>): Promise<McpToolResul
   }
 }
 
+interface ReadResp {
+  path: string; exists: boolean; isFile: boolean; size: number; offset: number;
+  bytesReturned: number; eof: boolean; truncated: boolean; binary: boolean;
+  blocked?: string; content: string;
+}
+
+async function handleFsRead(args: Record<string, unknown>): Promise<McpToolResult> {
+  const p = String(args.path || '').trim();
+  if (!p) return err('path is required (absolute file path).');
+  const body: Record<string, unknown> = { path: p };
+  if (args.offset !== undefined && args.offset !== null) body.offset = Number(args.offset);
+  if (args.maxBytes !== undefined && args.maxBytes !== null) body.maxBytes = Number(args.maxBytes);
+  if (args.peerGatewayId) body.peerGatewayId = String(args.peerGatewayId);
+  try {
+    const r = await workerPost<ReadResp>('/storage/read', body);
+    if (r.blocked) return err(`refused to read ${r.path}: ${r.blocked}`);
+    if (!r.exists) return ok(`${r.path} — does not exist.`);
+    if (!r.isFile) return ok(`${r.path} — not a regular file (cannot read contents).`);
+    if (r.binary) return ok(`${r.path} — binary file (${r.size} bytes); contents not shown as text.`);
+    const shown = r.offset + r.bytesReturned;
+    const span = `bytes ${r.offset}–${shown} of ${r.size}`;
+    const more = r.truncated ? `  (truncated — continue with offset=${shown})` : '';
+    return ok(`${r.path} (${span}${more}):\n${r.content}`);
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 export const FS_INSPECT_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
   fs_drives: handleFsDrives,
   fs_list: handleFsList,
   fs_stat: handleFsStat,
+  fs_read: handleFsRead,
 };

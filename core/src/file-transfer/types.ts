@@ -94,21 +94,25 @@ export interface FtListErr {
 /** Filesystem inspect request over the transport (whole-fs; no receive-root). */
 export interface FtFs {
   type: 'FT_FS';
-  op: 'drives' | 'list' | 'stat';
+  op: 'drives' | 'list' | 'stat' | 'read';
   path?: string;
   refresh?: boolean;
   pattern?: string;
   regex?: boolean;
+  /** read: byte offset to start at (default 0). */
+  offset?: number;
+  /** read: max bytes to return (backend-capped). */
+  maxBytes?: number;
 }
-/** Reply to FtFs. data shape depends on op: DriveInfo[] | FsListResult | StatInfo. */
+/** Reply to FtFs. data shape depends on op: DriveInfo[] | FsListResult | StatInfo | ReadResult. */
 export interface FtFsResult {
   type: 'FT_FS_RESULT';
-  op: 'drives' | 'list' | 'stat';
+  op: 'drives' | 'list' | 'stat' | 'read';
   data: unknown;
 }
 export interface FtFsErr {
   type: 'FT_FS_ERR';
-  op: 'drives' | 'list' | 'stat';
+  op: 'drives' | 'list' | 'stat' | 'read';
   error: string;
 }
 

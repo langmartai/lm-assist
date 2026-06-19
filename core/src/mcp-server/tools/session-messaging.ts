@@ -123,7 +123,21 @@ async function handleSendSessionMessage(args: Record<string, unknown>): Promise<
   // if present (harmless — the route uses its own localNode()).
   if (args.node) payload.toNode = String(args.node);
   try {
-    return ok(pretty(await workerPost('/session-messages', payload)));
+    const result = (await workerPost('/session-messages', payload)) as { id?: string; status?: string; detail?: string };
+    // status 'pending' means NO live driver delivered it — it was only stored.
+    // Returning ok() here would read as "delivered" to the caller, so surface
+    // it as an error with the reason + how to follow up (this is the same
+    // non-delivery the Windows Session-0 fix exposed).
+    if (result?.status === 'pending') {
+      const mid = result.id ?? '(unknown)';
+      const detail = result.detail || 'no live driver delivered it';
+      return err(
+        `message ${mid} was QUEUED but NOT delivered to "${toSession}" (${detail}). ` +
+        'It is stored and the sweeper will retry if that session becomes live — confirm the ' +
+        `target exists via cc_sessions / terminal_list, then check get_message_status(id="${mid}").`,
+      );
+    }
+    return ok(pretty(result));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }

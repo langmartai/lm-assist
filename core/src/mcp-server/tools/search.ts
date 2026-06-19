@@ -334,13 +334,27 @@ async function handleTextSearch(
     return { content: [{ type: 'text', text: `No results found for "${query}" (text search)` }] };
   }
 
+  // Index the in-scope sessions so each result can carry a topic + project +
+  // turn count — without this the LLM only gets bare UUIDs and can't judge
+  // relevance. (Text-only by design: the vector store is intentionally off to
+  // cap memory, so the text path must itself be informative.)
+  const byId = new Map(sessions.map((s) => [s.sessionId, s] as const));
   const lines: string[] = [];
-  lines.push(`Found ${totalMatches} results (text search fallback, showing ${offset + 1}-${offset + pageResults.length})`);
+  lines.push(`Found ${totalMatches} results (text search, showing ${offset + 1}-${offset + pageResults.length})`);
   lines.push('');
 
   for (let i = 0; i < pageResults.length; i++) {
     const r = pageResults[i];
-    lines.push(`${offset + i + 1}. [session] ${r.sessionId}`);
+    const entry = byId.get(r.sessionId);
+    const cd = entry?.cacheData;
+    const projPath = cd ? getProjectPathForSession(cd, entry!.filePath) : '';
+    const projName = projPath ? projPath.split('/').filter(Boolean).pop() : '?';
+    const firstReal = (cd?.userPrompts || [])
+      .map((p) => (p?.text || '').trim())
+      .find((t) => t && !t.startsWith('<') && !t.startsWith('/') && t.length > 3);
+    const topic = (firstReal || '').replace(/\s+/g, ' ').slice(0, 120);
+    lines.push(`${offset + i + 1}. [session] ${r.sessionId}  (${projName}, ${cd?.numTurns ?? '?'} turns)`);
+    if (topic) lines.push(`   "${topic}"`);
     lines.push(`   → detail("${r.sessionId}")`);
     lines.push('');
   }

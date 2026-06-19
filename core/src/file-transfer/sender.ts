@@ -434,7 +434,7 @@ export function listRemote(
  */
 export function requestFs(
   peerGatewayId: string,
-  req: { op: 'drives' | 'list' | 'stat'; path?: string; refresh?: boolean; pattern?: string; regex?: boolean },
+  req: { op: 'drives' | 'list' | 'stat' | 'read'; path?: string; refresh?: boolean; pattern?: string; regex?: boolean; offset?: number; maxBytes?: number },
 ): Promise<unknown> {
   return new Promise(async (resolve, reject) => {
     let channel: Channel | undefined;
@@ -479,7 +479,7 @@ export function requestFs(
       finish(new Error('channel closed before fs reply' + (reason ? ': ' + reason : '')));
     });
     ch.sendControl(encodeControl({ type: SUBSYSTEM_TAG } as never));
-    const r: FtFs = { type: 'FT_FS', op: req.op, path: req.path, refresh: req.refresh, pattern: req.pattern, regex: req.regex };
+    const r: FtFs = { type: 'FT_FS', op: req.op, path: req.path, refresh: req.refresh, pattern: req.pattern, regex: req.regex, offset: req.offset, maxBytes: req.maxBytes };
     ch.sendControl(encodeControl(r));
   });
 }

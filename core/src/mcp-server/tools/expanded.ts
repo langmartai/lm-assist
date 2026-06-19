@@ -58,8 +58,9 @@ export const listExecutionsToolDef = {
 export const getExecutionToolDef = {
   name: 'get_execution',
   description:
-    'Get the full detail of one background agent execution by id — status, result, session ' +
-    'URL, duration. Pass the id from `list_executions`. Read-only.',
+    'Get the full detail of one background agent execution by id — status, the agent\'s ' +
+    'result/output once complete, session id + URL, and start/end timestamps. Pass the id ' +
+    'from `list_executions` (or the executionId returned by `agent_execute`). Read-only.',
   annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,
@@ -379,7 +380,9 @@ export const agentExecuteToolDef = {
   description:
     'Start a NEW autonomous Claude Code session on the host with an arbitrary prompt. ' +
     "ADMIN / high-risk — runs real code. cwd is restricted to directories under the " +
-    "worker's own home dir. Requires out-of-band confirmation before it executes.",
+    "worker's own home dir. Requires out-of-band confirmation before it executes. " +
+    'Runs in the BACKGROUND — returns immediately with an executionId; poll ' +
+    '`get_execution(id=...)` for status and the result.',
   annotations: { readOnlyHint: false, destructiveHint: true },
   inputSchema: {
     type: 'object' as const,
@@ -735,6 +738,22 @@ function pretty(data: unknown): string {
   return typeof data === 'string' ? data : JSON.stringify(data, null, 2);
 }
 
+/**
+ * Render a RAW `{success,data,error}` envelope (from workerPostRaw, which does
+ * NOT throw on success:false) as a tool result. A `success:false` body becomes
+ * a proper isError result instead of being wrapped as success — otherwise a
+ * CONFLICT refusal (ccr_connect) or a failed write (windows_terminal_*) reads
+ * to the LLM as if it had worked. Mirrors github.ts's envelope handling.
+ */
+function renderRaw(body: Record<string, unknown>): McpToolResult {
+  if (body && body.success === false) {
+    const e = body.error as { message?: string; code?: string } | string | undefined;
+    const msg = typeof e === 'string' ? e : e?.message || e?.code || 'request failed';
+    return err(msg);
+  }
+  return ok(pretty(body));
+}
+
 function enc(s: string): string {
   return encodeURIComponent(s);
 }
@@ -754,7 +773,25 @@ async function handleGetExecution(args: Record<string, unknown>): Promise<McpToo
   const id = String(args.id || '').trim();
   if (!id) return err('id is required.');
   try {
-    return ok(pretty(await workerGet(`/agent/execution/${enc(id)}`)));
+    const status = (await workerGet(`/agent/execution/${enc(id)}`)) as Record<string, unknown>;
+    // The status route omits the agent's actual output. Also pull the
+    // (non-waiting) result so a completed run is readable through this tool —
+    // otherwise nothing exposes what the agent produced. Result is optional:
+    // a still-running execution has none, and a fetch failure must not sink
+    // the status we already have.
+    let merged = status;
+    try {
+      const result = (await workerGet(`/agent/execution/${enc(id)}/result?wait=false`)) as Record<string, unknown>;
+      if (result && (result.result !== undefined || result.error !== undefined)) {
+        merged = {
+          ...status,
+          completed: result.completed,
+          result: result.result,
+          error: result.error ?? status.error,
+        };
+      }
+    } catch { /* result optional — status alone is still useful */ }
+    return ok(pretty(merged));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -849,7 +886,7 @@ async function handleWindowsTerminalLaunch(a: Record<string, unknown>): Promise<
   if (a.cwd) body.cwd = String(a.cwd);
   if (a.mode) body.mode = String(a.mode);
   try {
-    return ok(pretty(await workerPostRaw('/terminal/local', body)));
+    return renderRaw(await workerPostRaw('/terminal/local', body));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -861,7 +898,7 @@ async function handleWindowsTerminalCreate(a: Record<string, unknown>): Promise<
   if (a.resume) body.resume = String(a.resume);
   if (typeof a.autoTrust === 'boolean') body.autoTrust = a.autoTrust;
   try {
-    return ok(pretty(await workerPostRaw('/terminal/cc-sessions', body)));
+    return renderRaw(await workerPostRaw('/terminal/cc-sessions', body));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -872,7 +909,7 @@ async function handleWindowsTerminalSend(a: Record<string, unknown>): Promise<Mc
   if (!sid) return err('sessionId is required.');
   if (!text) return err('text is required.');
   try {
-    return ok(pretty(await workerPostRaw(`/terminal/cc-sessions/${enc(sid)}/prompt`, { text, submit: a.submit === true })));
+    return renderRaw(await workerPostRaw(`/terminal/cc-sessions/${enc(sid)}/prompt`, { text, submit: a.submit === true }));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -885,7 +922,7 @@ async function handleWindowsTerminalAutoHandle(a: Record<string, unknown>): Prom
   if (typeof a.answer === 'number') body.answer = a.answer;
   try {
     const path = `/terminal/cc-sessions/${enc(sid)}/auto-handle`;
-    return ok(pretty(await workerPostRaw(path, body)));
+    return renderRaw(await workerPostRaw(path, body));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -939,8 +976,9 @@ async function handleAgentAbort(args: Record<string, unknown>): Promise<McpToolR
 async function handleAgentResume(args: Record<string, unknown>): Promise<McpToolResult> {
   const sid = String(args.session_id || '').trim();
   if (!sid) return err('session_id is required.');
-  const body: Record<string, unknown> = {};
-  if (args.prompt) body.prompt = String(args.prompt);
+  // The description promises a default of "continue"; supply it so a resume
+  // with only session_id doesn't hit the route's MISSING_PROMPT rejection.
+  const body: Record<string, unknown> = { prompt: args.prompt ? String(args.prompt) : 'continue' };
   try {
     return ok(pretty(await workerPost(`/agent/session/${enc(sid)}/resume`, body)));
   } catch (e) {
@@ -986,7 +1024,13 @@ async function handleAgentExecute(args: Record<string, unknown>): Promise<McpToo
     return err(`cwd "${cwd}" is not permitted; agent_execute is restricted to ${os.homedir()} and below.`);
   }
   const body: Record<string, unknown> = { prompt, cwd, background: true };
-  if (args.model) body.model = String(args.model);
+  if (args.model) {
+    const model = String(args.model);
+    if (!/^(opus|sonnet|haiku)$/i.test(model) && !/^claude-/.test(model)) {
+      return err(`model must be opus|sonnet|haiku or a full claude-* id; got "${model}".`);
+    }
+    body.model = model;
+  }
   try {
     return ok(pretty(await workerPost('/agent/execute', body)));
   } catch (e) {
@@ -1047,19 +1091,19 @@ async function handleCcrLoad(args: Record<string, unknown>): Promise<McpToolResu
   if (args.session_id) body.sessionId = String(args.session_id);
   if (args.jsonl) body.jsonl = String(args.jsonl);
   if (!body.sessionId && !body.jsonl) return err('session_id or jsonl is required.');
-  try { return ok(pretty(await workerPostRaw('/ccr/load', body))); }
+  try { return renderRaw(await workerPostRaw('/ccr/load', body)); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 async function handleCcrMirror(args: Record<string, unknown>): Promise<McpToolResult> {
   const sid = String(args.session_id || '').trim();
   if (!sid) return err('session_id is required.');
-  try { return ok(pretty(await workerPostRaw('/ccr/mirror', { sessionId: sid }))); }
+  try { return renderRaw(await workerPostRaw('/ccr/mirror', { sessionId: sid })); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 async function handleCcrConnect(args: Record<string, unknown>): Promise<McpToolResult> {
   const sid = String(args.session_id || '').trim();
   if (!sid) return err('session_id is required.');
-  try { return ok(pretty(await workerPostRaw('/ccr/connect', { sessionId: sid }))); }
+  try { return renderRaw(await workerPostRaw('/ccr/connect', { sessionId: sid })); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 async function handleCcrRemoteStop(args: Record<string, unknown>): Promise<McpToolResult> {

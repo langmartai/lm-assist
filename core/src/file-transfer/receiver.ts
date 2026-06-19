@@ -21,7 +21,7 @@ import type { FtDelay } from './types';
 import { beginTransfer, updateTransfer, setTransferMeta, endTransfer } from './transfer-stats';
 import { SUBSYSTEM_TAG } from './protocol';
 import { safeJoin } from './safe-path';
-import { listDirAbs, statAbs, listDrives, markDirty } from './fs-inspect';
+import { listDirAbs, statAbs, listDrives, readFileAbs, markDirty } from './fs-inspect';
 import {
   FIREHOSE_CHUNK,
   unpackFirehoseDatagram,
@@ -416,6 +416,7 @@ export function handleIncomingTransfer(
         let data: unknown;
         if (req.op === 'drives') data = await listDrives({ refresh: req.refresh });
         else if (req.op === 'stat') data = await statAbs(req.path || '', { refresh: req.refresh });
+        else if (req.op === 'read') data = await readFileAbs(req.path || '', { offset: req.offset, maxBytes: req.maxBytes });
         else data = await listDirAbs(req.path || '', { refresh: req.refresh, pattern: req.pattern, regex: req.regex });
         const res: FtFsResult = { type: 'FT_FS_RESULT', op: req.op, data };
         channel.sendControl(encodeControl(res));

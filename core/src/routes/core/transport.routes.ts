@@ -9,7 +9,7 @@
  */
 
 import type { RouteContext, RouteHandler, ParsedRequest } from '../index';
-import { sendPath, listRemote, TransferError, snapshotTransfers, enqueueSend, snapshotQueue, requestFs, listDirAbs, statAbs, listDrives } from '../../file-transfer';
+import { sendPath, listRemote, TransferError, snapshotTransfers, enqueueSend, snapshotQueue, requestFs, listDirAbs, statAbs, listDrives, readFileAbs } from '../../file-transfer';
 
 export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -126,6 +126,27 @@ export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
             return { success: true, data };
           }
           const data = await statAbs(p, { refresh: b.refresh === true });
+          return { success: true, data };
+        } catch (e) {
+          return { success: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+    },
+    {
+      method: 'POST',
+      pattern: /^\/storage\/read$/,
+      handler: async (req: ParsedRequest) => {
+        const b = req.body || {};
+        const p = String(b.path || '');
+        if (!p) return { success: false, error: 'path required' };
+        const offset = Number.isFinite(Number(b.offset)) ? Number(b.offset) : undefined;
+        const maxBytes = Number.isFinite(Number(b.maxBytes)) ? Number(b.maxBytes) : undefined;
+        try {
+          if (b.peerGatewayId) {
+            const data = await requestFs(String(b.peerGatewayId), { op: 'read', path: p, offset, maxBytes });
+            return { success: true, data };
+          }
+          const data = await readFileAbs(p, { offset, maxBytes });
           return { success: true, data };
         } catch (e) {
           return { success: false, error: e instanceof Error ? e.message : String(e) };

@@ -35,7 +35,7 @@ export const openPortForwardToolDef = {
       },
       localPort: {
         type: 'number',
-        description: 'Local port to listen on at the listener node. Omit or 0 for an ephemeral port. Defaults to targetPort.',
+        description: 'Local port to listen on at the listener node. Pass 0 for an ephemeral (OS-assigned) port. Omit to default to targetPort.',
       },
       bindHost: {
         type: 'string',
