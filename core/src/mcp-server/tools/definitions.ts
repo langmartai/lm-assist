@@ -232,7 +232,9 @@ export const searchMemoryToolDef = {
     '"check memory". These are the operator\'s OWN captured facts, feedback, references, ' +
     'and project notes — distinct from the knowledge store (which `search` covers, ' +
     'auto-extracted from code sessions) and distinct from claude.ai conversations.\n\n' +
-    'Returns matching files with title, description, and a snippet around the match.',
+    'By default (no `project`) it sweeps EVERY project\'s memory and tags each hit ' +
+    'with its project — the right call for general "do I have notes on X" queries. ' +
+    'Returns matching files with project, title, description, and a snippet around the match.',
   annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,
@@ -244,8 +246,8 @@ export const searchMemoryToolDef = {
       project: {
         type: 'string',
         description:
-          'Project directory to scope the memory search to. If omitted, defaults to the ' +
-          'lm-assist server\'s current working directory.',
+          'Optional. Absolute project directory to scope the search to ONE project. ' +
+          'Omit it to search across all projects (the usual case).',
       },
       include_repo_mirror: {
         type: 'boolean',

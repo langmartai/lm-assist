@@ -10,10 +10,49 @@
 
 import * as fs from 'fs';
 import { getMemoryCache } from '../../memory-cache';
+import { getProjectsDir, decodePath } from '../../utils/path-utils';
 
 export { searchMemoryToolDef } from './definitions';
 
 const MAX_BODY_BYTES = 200_000;
+
+/**
+ * Enumerate every Claude project cwd that has an on-disk project slug under
+ * `~/.claude/projects/`. Used when the caller omits `project` — "search my
+ * memory" should sweep ALL projects, not the lm-assist server's process.cwd()
+ * (which is the npm install dir and has no memory/, so the old default always
+ * returned "no results"). Mirrors memory-cache.startWatching()'s discovery.
+ */
+function listAllProjectCwds(): string[] {
+  let slugs: string[] = [];
+  try {
+    slugs = fs.readdirSync(getProjectsDir());
+  } catch {
+    return [];
+  }
+  const cwds: string[] = [];
+  const seen = new Set<string>();
+  for (const slug of slugs) {
+    if (slug.startsWith('.')) continue;
+    let cwd: string;
+    try {
+      cwd = decodePath(slug);
+    } catch {
+      continue;
+    }
+    if (cwd && !seen.has(cwd)) {
+      seen.add(cwd);
+      cwds.push(cwd);
+    }
+  }
+  return cwds;
+}
+
+/** Short, human label for a project cwd (its basename), for tagging hits. */
+function projectLabel(cwd: string): string {
+  const base = cwd.split(/[\\/]/).filter(Boolean).pop();
+  return base || cwd;
+}
 
 function readBodyOnce(filePath: string): string {
   try {
@@ -55,22 +94,28 @@ export async function handleSearchMemory(args: Record<string, unknown>): Promise
     return { content: [{ type: 'text', text: 'Error: query is required' }] };
   }
 
-  const project = (args.project as string | undefined) || process.cwd();
+  const explicitProject = (args.project as string | undefined)?.trim() || undefined;
   const includeRepo = Boolean(args.include_repo_mirror);
   const limit = Math.min(Math.max(Number(args.limit) || 10, 1), 30);
   const q = query.toLowerCase();
 
-  let projectMemory;
+  // No project given → sweep ALL projects' memory (the natural "search my
+  // memory" intent). Only scope to one project when the caller names it.
+  const targets = explicitProject ? [explicitProject] : listAllProjectCwds();
+  const scopeLabel = explicitProject
+    ? `project ${explicitProject}`
+    : `all projects (${targets.length})`;
+
+  let cache: ReturnType<typeof getMemoryCache>;
   try {
-    projectMemory = getMemoryCache().getForProject(project, {
-      sources: includeRepo ? 'all' : 'live',
-    });
+    cache = getMemoryCache();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return { content: [{ type: 'text', text: `Memory cache error: ${msg}` }] };
   }
 
   type Hit = {
+    project: string;
     source: string;
     filename: string;
     title?: string;
@@ -80,54 +125,66 @@ export async function handleSearchMemory(args: Record<string, unknown>): Promise
   };
   const hits: Hit[] = [];
 
-  for (const dir of projectMemory.dirs) {
-    for (const file of (dir.files || []) as Array<{
-      source: string;
-      filename: string;
-      filePath: string;
-      frontmatter?: { name?: string; description?: string };
-      bodyPreview?: string;
-    }>) {
-      const filename = file.filename || '';
-      const title = file.frontmatter?.name || '';
-      const description = file.frontmatter?.description || '';
+  for (const cwd of targets) {
+    let projectMemory;
+    try {
+      projectMemory = cache.getForProject(cwd, { sources: includeRepo ? 'all' : 'live' });
+    } catch {
+      // A single unreadable project shouldn't sink the whole sweep.
+      continue;
+    }
+    const label = projectLabel(cwd);
 
-      // Cheap pre-filter on metadata + preview before doing the disk read
-      const inFilename = filename.toLowerCase().includes(q);
-      const inTitle = title.toLowerCase().includes(q);
-      const inDesc = description.toLowerCase().includes(q);
-      const inPreview = (file.bodyPreview || '').toLowerCase().includes(q);
+    for (const dir of projectMemory.dirs) {
+      for (const file of (dir.files || []) as Array<{
+        source: string;
+        filename: string;
+        filePath: string;
+        frontmatter?: { name?: string; description?: string };
+        bodyPreview?: string;
+      }>) {
+        const filename = file.filename || '';
+        const title = file.frontmatter?.name || '';
+        const description = file.frontmatter?.description || '';
 
-      let inBody = false;
-      let bodyForSnippet = file.bodyPreview || '';
-      if (!inFilename && !inTitle && !inDesc && !inPreview) {
-        // Fall back to full-body read for files where the preview doesn't capture it
-        const full = readBodyOnce(file.filePath);
-        if (full && full.toLowerCase().includes(q)) {
-          inBody = true;
-          bodyForSnippet = full;
+        // Cheap pre-filter on metadata + preview before doing the disk read
+        const inFilename = filename.toLowerCase().includes(q);
+        const inTitle = title.toLowerCase().includes(q);
+        const inDesc = description.toLowerCase().includes(q);
+        const inPreview = (file.bodyPreview || '').toLowerCase().includes(q);
+
+        let inBody = false;
+        let bodyForSnippet = file.bodyPreview || '';
+        if (!inFilename && !inTitle && !inDesc && !inPreview) {
+          // Fall back to full-body read for files where the preview doesn't capture it
+          const full = readBodyOnce(file.filePath);
+          if (full && full.toLowerCase().includes(q)) {
+            inBody = true;
+            bodyForSnippet = full;
+          }
+        } else if (inPreview) {
+          bodyForSnippet = file.bodyPreview || '';
         }
-      } else if (inPreview) {
-        bodyForSnippet = file.bodyPreview || '';
+
+        if (!(inFilename || inTitle || inDesc || inPreview || inBody)) continue;
+
+        const score =
+          (inFilename ? 3 : 0) +
+          (inTitle ? 3 : 0) +
+          (inDesc ? 2 : 0) +
+          (inPreview ? 1 : 0) +
+          (inBody ? 1 : 0);
+
+        hits.push({
+          project: label,
+          source: file.source || 'live',
+          filename,
+          title,
+          description,
+          snippet: snippet(bodyForSnippet, query),
+          score,
+        });
       }
-
-      if (!(inFilename || inTitle || inDesc || inPreview || inBody)) continue;
-
-      const score =
-        (inFilename ? 3 : 0) +
-        (inTitle ? 3 : 0) +
-        (inDesc ? 2 : 0) +
-        (inPreview ? 1 : 0) +
-        (inBody ? 1 : 0);
-
-      hits.push({
-        source: file.source || 'live',
-        filename,
-        title,
-        description,
-        snippet: snippet(bodyForSnippet, query),
-        score,
-      });
     }
   }
 
@@ -137,7 +194,7 @@ export async function handleSearchMemory(args: Record<string, unknown>): Promise
       content: [
         {
           type: 'text',
-          text: `No memory files match "${query}" for project ${project} (sources: ${sources}).`,
+          text: `No memory files match "${query}" across ${scopeLabel} (sources: ${sources}).`,
         },
       ],
     };
@@ -147,12 +204,12 @@ export async function handleSearchMemory(args: Record<string, unknown>): Promise
   const top = hits.slice(0, limit);
 
   const lines: string[] = [
-    `Memory matches for "${query}" (${top.length} of ${hits.length}, project=${project}):`,
+    `Memory matches for "${query}" (${top.length} of ${hits.length}, ${scopeLabel}):`,
     '',
   ];
   for (const h of top) {
     const tag = h.source === 'live' ? '[live]' : `[${h.source}]`;
-    lines.push(`${tag} ${h.filename}${h.title ? `  — ${h.title}` : ''}`);
+    lines.push(`${tag} {${h.project}} ${h.filename}${h.title ? `  — ${h.title}` : ''}`);
     if (h.description) lines.push(`  ${h.description}`);
     lines.push(`  > ${h.snippet}`);
     lines.push('');
