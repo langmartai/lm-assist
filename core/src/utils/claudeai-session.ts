@@ -1072,6 +1072,109 @@ export async function deleteMcpRemoteServer(serverUuid: string, opts: { orgUuid?
 }
 
 /**
+ * POST /api/organizations/{org}/mcp/remote_servers/{uuid}/clear_cache — clear
+ * claude.ai's cached tool list for a connector, forcing a fresh tools/list
+ * re-fetch from the MCP server on the next bootstrap. This is exactly what the
+ * web UI's "refresh tools" button calls (captured via lm-proxy 2026-06-20) —
+ * the way to surface NEWLY-ADDED worker tools without re-registering. Empty
+ * JSON body; returns 200.
+ */
+export async function clearMcpServerCache(serverUuid: string, opts: { orgUuid?: string } = {}): Promise<ClaudeAIResponse<any>> {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(serverUuid)) {
+    throw new Error(`Invalid MCP server UUID: ${serverUuid}`);
+  }
+  const orgUuid = _org(opts);
+  const url = `https://claude.ai/api/organizations/${orgUuid}/mcp/remote_servers/${serverUuid}/clear_cache`;
+  const headers = _mcpHeaders(cfg, 'https://claude.ai/customize/connectors');
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20_000);
+  try {
+    const res = await fetch(url, { method: 'POST', headers, body: '{}', signal: ctrl.signal });
+    const respHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => (respHeaders[k] = v));
+    const text = await res.text();
+    let parsed: any;
+    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+    return { status: res.status, statusText: res.statusText, headers: respHeaders, body: parsed };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** GET /api/account/settings — the account settings object (incl. enabled_mcp_tools). */
+export async function getAccountSettings(): Promise<ClaudeAIResponse<any>> {
+  return claudeaiGet('/api/account/settings', { referer: 'https://claude.ai/customize/connectors' });
+}
+
+/**
+ * PATCH /api/account/settings — partial update of account settings. The web UI
+ * uses this to change MCP tool access via `enabled_mcp_tools` (a map of
+ * `{connectorUuid}:{toolName}` → bool; captured via lm-proxy 2026-06-20).
+ */
+export async function patchAccountSettings(partial: Record<string, unknown>): Promise<ClaudeAIResponse<any>> {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  const url = `https://claude.ai/api/account/settings`;
+  const headers = _mcpHeaders(cfg, 'https://claude.ai/customize/connectors');
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20_000);
+  try {
+    const res = await fetch(url, { method: 'PATCH', headers, body: JSON.stringify(partial), signal: ctrl.signal });
+    const respHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => (respHeaders[k] = v));
+    const text = await res.text();
+    let parsed: any;
+    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+    return { status: res.status, statusText: res.statusText, headers: respHeaders, body: parsed };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Set MCP tool access (enabled/blocked) for a connector's tools — the
+ * "Always allow/Ask" vs "Block" control. Read-modify-write: reads the current
+ * `enabled_mcp_tools` map, flips ONLY the requested `{connectorUuid}:{toolName}`
+ * keys (true = enabled/shown, false = blocked), and PATCHes the full map back —
+ * so every other tool's setting is preserved regardless of merge semantics.
+ *
+ * NOTE: the bare key is enabled-vs-blocked; the per-version `…:{tool}-{hash}`
+ * variant is claude.ai's "always allow (this version)" pre-approval, which this
+ * helper does not touch (so an enabled tool stays at its current ask/always
+ * setting). Returns the keys it changed.
+ */
+export async function setMcpToolsAccess(
+  connectorUuid: string,
+  changes: Record<string, boolean>,
+): Promise<ClaudeAIResponse<{ changed: Record<string, boolean>; totalTools: number }>> {
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(connectorUuid)) {
+    throw new Error(`Invalid MCP server UUID: ${connectorUuid}`);
+  }
+  const cur = await getAccountSettings();
+  if (cur.status >= 400) {
+    return { status: cur.status, statusText: cur.statusText, headers: cur.headers, body: { changed: {}, totalTools: 0 } };
+  }
+  const settings = (cur.body && typeof cur.body === 'object' ? cur.body : {}) as Record<string, any>;
+  const map: Record<string, boolean> = { ...(settings.enabled_mcp_tools || {}) };
+  const changed: Record<string, boolean> = {};
+  for (const [tool, enabled] of Object.entries(changes)) {
+    const key = `${connectorUuid}:${tool}`;
+    map[key] = enabled;
+    changed[key] = enabled;
+  }
+  const res = await patchAccountSettings({ enabled_mcp_tools: map });
+  return {
+    status: res.status,
+    statusText: res.statusText,
+    headers: res.headers,
+    body: { changed, totalTools: Object.keys(map).length },
+  };
+}
+
+/**
  * List MCP connectors with status, distilled from the `mcp/v2/bootstrap` SSE.
  *
  * Returns one entry per registered connector: uuid, name, url, connected flag,
