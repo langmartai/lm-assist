@@ -29,8 +29,8 @@ export { handleIncomingTransfer, receiveRoot } from './receiver';
 export type { ReceiveOpts } from './receiver';
 export { SUBSYSTEM_TAG } from './protocol';
 export { safeJoin, UnsafePathError } from './safe-path';
-export { listDirAbs, statAbs, listDrives, markDirty, clearFsCache } from './fs-inspect';
-export type { StatInfo, FsListResult, DriveInfo } from './fs-inspect';
+export { listDirAbs, statAbs, listDrives, readFileAbs, sensitiveReadReason, markDirty, clearFsCache } from './fs-inspect';
+export type { StatInfo, FsListResult, DriveInfo, ReadResult } from './fs-inspect';
 export {
   FrameReader,
   encodeControl,

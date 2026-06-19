@@ -59,6 +59,134 @@ export interface DriveInfo {
   label?: string;
 }
 
+export interface ReadResult {
+  path: string;
+  exists: boolean;
+  isFile: boolean;
+  size: number;
+  offset: number;
+  bytesReturned: number;
+  /** true when the slice reaches end-of-file. */
+  eof: boolean;
+  /** true when more bytes remain past offset+bytesReturned. */
+  truncated: boolean;
+  /** true when the bytes look binary (contain a NUL) — content is then empty. */
+  binary: boolean;
+  /** Set (with a human reason) when the path is refused by the security gate. */
+  blocked?: string;
+  content: string;
+}
+
+const READ_DEFAULT_BYTES = 64 * 1024;
+const READ_MAX_BYTES = Number(process.env.LM_FS_READ_MAX) || 1024 * 1024;
+
+/**
+ * Security gate for fs_read (file CONTENTS). fs_list/fs_stat only reveal
+ * metadata; reading bytes can leak credentials, so refuse known-secret paths.
+ * Returns a human reason when blocked, null when the path may be read.
+ *
+ * Deliberately PRECISE (exact filenames, secret dotdirs, key extensions) rather
+ * than a broad "contains token/secret" match, so it does not block ordinary
+ * source files (e.g. apikey.ts, a branch about token rotation).
+ */
+export function sensitiveReadReason(absPath: string): string | null {
+  const p = path.resolve(absPath);
+  const segs = p.toLowerCase().split(/[\\/]+/).filter(Boolean);
+  const base = path.basename(p);
+  const lbase = base.toLowerCase();
+
+  // 1. Directories that only ever hold credentials/keys — block wholesale.
+  const SECRET_DIRS = ['.ssh', '.gnupg', '.aws', '.lm-assist', '.lm-oandaproxy', '.docker', '.kube'];
+  for (const d of SECRET_DIRS) {
+    if (segs.includes(d)) return `path is inside a protected credential directory (${d}/)`;
+  }
+  // gh CLI host tokens live at ~/.config/gh/hosts.yml
+  if (segs.includes('.config') && segs.includes('gh')) return 'path is inside the gh CLI config (holds tokens)';
+
+  // 2. Exact credential/secret filenames.
+  const SECRET_FILES = new Set([
+    '.credentials.json', '.git-credentials', '.netrc', '.npmrc', '.pypirc',
+    '.pgpass', '.htpasswd', 'credentials', 'shadow', 'gshadow', 'sudoers',
+    'hub.json', 'hub-dev.json', 'authorized_keys', 'known_hosts',
+    'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519',
+  ]);
+  if (SECRET_FILES.has(lbase)) return `"${base}" is a known credential/secret file`;
+
+  // 3. .env files hold secrets — but allow templates (.env.example etc.).
+  if (lbase === '.env' || (lbase.startsWith('.env.') && !/\.(example|sample|template|dist)$/.test(lbase))) {
+    return '".env" files hold secrets';
+  }
+
+  // 4. Private-key / keystore / encrypted-store extensions.
+  if (/\.(pem|key|pfx|p12|ppk|keystore|jks|kdbx|asc|gpg)$/.test(lbase)) {
+    return `"${base}" looks like a private key / keystore`;
+  }
+
+  // 5. SSH private keys by convention (id_rsa, my_id_ed25519.bak, …) — but a
+  //    .pub public key is fine.
+  if (/(^|[._-])(id_rsa|id_dsa|id_ecdsa|id_ed25519)([._-]|$)/.test(lbase) && !lbase.endsWith('.pub')) {
+    return `"${base}" looks like an SSH private key`;
+  }
+
+  return null;
+}
+
+/**
+ * Read a BOUNDED slice of a file's contents. Enforces sensitiveReadReason on
+ * both the literal path and its realpath (so a symlink can't smuggle a secret).
+ * Never throws for a missing path (exists:false) or a blocked path (blocked).
+ * Not cached — file contents change and would bloat the metadata cache.
+ */
+export async function readFileAbs(
+  absPath: string,
+  opts?: { offset?: number; maxBytes?: number },
+): Promise<ReadResult> {
+  const p = path.resolve(absPath);
+  const base: ReadResult = {
+    path: p, exists: false, isFile: false, size: 0, offset: 0,
+    bytesReturned: 0, eof: true, truncated: false, binary: false, content: '',
+  };
+
+  // Security gate — literal path, then realpath if it resolves elsewhere.
+  let reason = sensitiveReadReason(p);
+  if (!reason) {
+    try {
+      const rp = await fsp.realpath(p);
+      if (rp !== p) reason = sensitiveReadReason(rp);
+    } catch { /* missing/dangling — nothing to resolve */ }
+  }
+  if (reason) return { ...base, blocked: reason };
+
+  let st;
+  try {
+    st = await fsp.stat(p);
+  } catch {
+    return base; // exists:false
+  }
+  if (!st.isFile()) return { ...base, exists: true, isFile: false, size: st.size };
+
+  const size = st.size;
+  const offset = Math.max(0, Math.floor(opts?.offset ?? 0));
+  const maxBytes = Math.min(Math.max(1, Math.floor(opts?.maxBytes ?? READ_DEFAULT_BYTES)), READ_MAX_BYTES);
+  const toRead = Math.max(0, Math.min(maxBytes, size - offset));
+
+  const fh = await fsp.open(p, 'r');
+  try {
+    const buf = Buffer.alloc(toRead);
+    const { bytesRead } = toRead > 0 ? await fh.read(buf, 0, toRead, offset) : { bytesRead: 0 };
+    const slice = buf.subarray(0, bytesRead);
+    const binary = slice.includes(0);
+    const eof = offset + bytesRead >= size;
+    return {
+      path: p, exists: true, isFile: true, size, offset,
+      bytesReturned: bytesRead, eof, truncated: !eof, binary,
+      content: binary ? '' : slice.toString('utf-8'),
+    };
+  } finally {
+    await fh.close();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Cache — keyed by `${op}:${absPath}`. TTL + LRU. A hit does zero disk I/O.
 // ---------------------------------------------------------------------------

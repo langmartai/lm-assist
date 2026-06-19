@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as os from 'node:os';
 import { EXPANDED_HANDLERS } from '../mcp-server/tools/expanded';
 import { SESSION_MESSAGING_HANDLERS } from '../mcp-server/tools/session-messaging';
+import { FS_INSPECT_HANDLERS } from '../mcp-server/tools/fs-inspect';
 
 /**
  * Behavioral fixes for MCP tool handlers:
@@ -113,4 +114,20 @@ test('send_session_message: a delivered (received) result is success', async () 
   stubFetch({ success: true, data: { id: 'msg-2', status: 'received', driver: 'tmux-send-keys', detail: 'delivered' } });
   const res = await SESSION_MESSAGING_HANDLERS.send_session_message({ toSession: 'real', category: 'reference', body: 'fyi' });
   assert.notEqual(res.isError, true, 'a delivered message is success');
+});
+
+test('fs_read: a blocked file surfaces the reason as an error (no bytes)', async () => {
+  stubFetch({ success: true, data: { path: '/home/ubuntu/.ssh/id_rsa', exists: false, isFile: false, size: 0, offset: 0, bytesReturned: 0, eof: true, truncated: false, binary: false, blocked: 'path is inside a protected credential directory (.ssh/)', content: '' } });
+  const res = await FS_INSPECT_HANDLERS.fs_read({ path: '/home/ubuntu/.ssh/id_rsa' });
+  assert.equal(res.isError, true, 'a blocked read must be an error');
+  assert.match(res.content[0].text, /refused to read/);
+  assert.match(res.content[0].text, /\.ssh/);
+});
+
+test('fs_read: a normal file shows its contents with a byte span', async () => {
+  stubFetch({ success: true, data: { path: '/home/ubuntu/x.txt', exists: true, isFile: true, size: 5, offset: 0, bytesReturned: 5, eof: true, truncated: false, binary: false, content: 'hello' } });
+  const res = await FS_INSPECT_HANDLERS.fs_read({ path: '/home/ubuntu/x.txt' });
+  assert.notEqual(res.isError, true);
+  assert.match(res.content[0].text, /hello/);
+  assert.match(res.content[0].text, /bytes 0–5 of 5/);
 });

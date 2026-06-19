@@ -193,6 +193,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   fs_drives: 'read',
   fs_list: 'read',
   fs_stat: 'read',
+  fs_read: 'read',
   // session-to-session messaging
   send_session_message: 'admin',
   list_session_messages: 'read',
