@@ -40,6 +40,7 @@ import { DATA_TOOL_DEFS, DATA_HANDLERS } from './data-tools';
 import { AUTH_STATUS_TOOL_DEFS, AUTH_STATUS_HANDLERS } from './auth-status';
 import { CLAUDE_CODE_USAGE_TOOL_DEFS, CLAUDE_CODE_USAGE_HANDLERS } from './claude-code-usage';
 import { CLAUDEAI_ACTIVE_SESSIONS_TOOL_DEFS, CLAUDEAI_ACTIVE_SESSIONS_HANDLERS } from './claudeai-active-sessions';
+import { BROWSER_TASK_TOOL_DEFS, BROWSER_TASK_HANDLERS } from './browser-task';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -737,6 +738,7 @@ export const EXPANDED_TOOL_DEFS = [
   ...AUTH_STATUS_TOOL_DEFS,
   ...CLAUDE_CODE_USAGE_TOOL_DEFS,
   ...CLAUDEAI_ACTIVE_SESSIONS_TOOL_DEFS,
+  ...BROWSER_TASK_TOOL_DEFS,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -1338,4 +1340,5 @@ export const EXPANDED_HANDLERS: Record<
   ...AUTH_STATUS_HANDLERS,
   ...CLAUDE_CODE_USAGE_HANDLERS,
   ...CLAUDEAI_ACTIVE_SESSIONS_HANDLERS,
+  ...BROWSER_TASK_HANDLERS,
 };

@@ -146,7 +146,7 @@ function parseLogFile(logFile: string): {
 /**
  * Build CLI args from SDK options.
  */
-function buildCliArgs(prompt: string, options: SdkExecuteOptions): string[] {
+export function buildCliArgs(prompt: string, options: SdkExecuteOptions): string[] {
   const args: string[] = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
 
   // Permission mode
@@ -154,6 +154,11 @@ function buildCliArgs(prompt: string, options: SdkExecuteOptions): string[] {
     args.push('--dangerously-skip-permissions');
   } else if (options.permissionMode) {
     args.push('--permission-mode', options.permissionMode);
+  }
+
+  // Browser control: drive the host Chrome (Claude-in-Chrome extension).
+  if (options.chrome) {
+    args.push('--chrome');
   }
 
   // Model

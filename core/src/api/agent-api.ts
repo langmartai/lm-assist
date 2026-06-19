@@ -92,6 +92,11 @@ export function convertToSdkOptions(
     options.permissionMode = request.permissionMode;
   }
 
+  // Browser control: drive the host Chrome via the CLI's --chrome flag.
+  if (request.chrome) {
+    options.chrome = true;
+  }
+
   // Max turns
   if (request.maxTurns !== undefined) {
     options.maxTurns = request.maxTurns;

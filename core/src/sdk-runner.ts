@@ -153,6 +153,8 @@ export interface ExtendedThinkingConfig {
 export interface SdkExecuteOptions extends ClaudeCliOptions {
   /** Tier context for events */
   tier?: TierName;
+  /** Drive the host Chrome via the CLI `--chrome` flag (background/CLI path only). */
+  chrome?: boolean;
   /** Execution ID for grouping events */
   executionId?: string;
   /** Override event handlers for this execution */

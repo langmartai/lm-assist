@@ -322,6 +322,14 @@ export interface AgentExecuteRequest {
   background?: boolean;
 
   /**
+   * Launch the CLI with `--chrome` so the agent drives this host's Chrome
+   * (Claude-in-Chrome extension) — remote browser control. Only effective on
+   * the background/CLI path (the SDK runner has no browser surface). Pair with
+   * permissionMode='bypassPermissions' (required for `--chrome` in -p mode).
+   */
+  chrome?: boolean;
+
+  /**
    * Which runner to use:
    *   - 'sdk' (default): execute via @anthropic-ai/claude-agent-sdk.
    *     Stateless, full cost/usage telemetry, no interactive surface.
