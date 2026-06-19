@@ -18,9 +18,9 @@ import { open, RootDatabase, Database } from 'lmdb';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { SessionCacheData, RawMessagesCache } from './session-cache';
-import { getDataDir } from './utils/path-utils';
+import { getDataDir, getCacheDir } from './utils/path-utils';
 
-const DEFAULT_CACHE_DIR = path.join(getDataDir(), 'session-cache');
+const DEFAULT_CACHE_DIR = getCacheDir('session-cache');
 
 export class SessionCacheStore {
   private env: RootDatabase;

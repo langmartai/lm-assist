@@ -245,6 +245,28 @@ export function getDataDir(): string {
 }
 
 /**
+ * True when running from the DEV repo (a checkout), false from a prod npm
+ * install. Same rule the hub config uses: `__dirname` is under `node_modules`
+ * for the npm package, but a repo path for dev. `LM_ASSIST_PROD=true` forces
+ * prod (e.g. for tests / a prod-from-repo run).
+ */
+export function isDevRepo(): boolean {
+  if (process.env.LM_ASSIST_PROD === 'true') return false;
+  return !__dirname.includes('node_modules');
+}
+
+/**
+ * A dev/prod-SEPARATED cache dir under the data dir — prod keeps the bare name
+ * (`<data>/session-cache`), dev gets a `-dev` suffix (`<data>/session-cache-dev`).
+ * This is what keeps the dev (:3200) and prod (:3100) cores from sharing an
+ * LMDB store and contending on its write mutex (which hangs the loser on
+ * startup). Prod's path is unchanged → no migration for the existing cache.
+ */
+export function getCacheDir(name: string): string {
+  return path.join(getDataDir(), `${name}${isDevRepo() ? '-dev' : ''}`);
+}
+
+/**
  * Get the Claude config directory
  * Default: ~/.claude
  * Can be overridden with CLAUDE_CONFIG_DIR env var

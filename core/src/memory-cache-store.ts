@@ -18,9 +18,9 @@ import { open, RootDatabase, Database } from 'lmdb';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { MemoryDirData } from './memory-cache';
-import { getDataDir } from './utils/path-utils';
+import { getDataDir, getCacheDir } from './utils/path-utils';
 
-const DEFAULT_CACHE_DIR = path.join(getDataDir(), 'memory-cache');
+const DEFAULT_CACHE_DIR = getCacheDir('memory-cache');
 
 export class MemoryCacheStore {
   private env: RootDatabase;
