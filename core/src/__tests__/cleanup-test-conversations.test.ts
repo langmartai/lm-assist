@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { matchTestConversations, withAutoDeleteMarker, parseAutoDeleteMs } from '../utils/claudeai-session';
+import { matchTestConversations, withAutoDeleteMarker, parseAutoDeleteMs, stripAutoDeleteMarker } from '../utils/claudeai-session';
 
 // Pure core of the test-conversation sweeper. Selection only — deletion happens in the lib wrapper,
 // which is SAFE BY DEFAULT (dryRun). These guard that it sweeps the right things and never blindly.
@@ -60,4 +60,28 @@ test('matchTestConversations sweeps EXPIRED auto-delete markers (even with no pa
     { uuid: 'z', name: 'unrelated' },
   ];
   assert.deepEqual(matchTestConversations(convs, { patterns: [], nowMs: NOW }).map((c) => c.uuid), ['x']);
+});
+
+test('empty / zero / invalid / absent TTL is NEVER swept (the safety rule)', () => {
+  // parse rejects them → null
+  assert.equal(parseAutoDeleteMs('x [lm-autodel:]'), null);            // empty
+  assert.equal(parseAutoDeleteMs('x [lm-autodel:0]'), null);          // too short
+  assert.equal(parseAutoDeleteMs('x [lm-autodel:0000000000]'), null); // 10 zeros = 0 < floor
+  assert.equal(parseAutoDeleteMs('x [lm-autodel:123]'), null);        // implausibly small
+  assert.equal(parseAutoDeleteMs('no marker'), null);
+  assert.equal(parseAutoDeleteMs('x [lm-autodel:' + NOW + ']'), NOW); // a real timestamp parses
+  // and the sweep (no patterns) matches NONE of them
+  const convs = [
+    { uuid: 'zero', name: 'p [lm-autodel:0000000000]' },
+    { uuid: 'empty', name: 'p [lm-autodel:]' },
+    { uuid: 'none', name: 'real conversation' },
+  ];
+  assert.deepEqual(matchTestConversations(convs, { patterns: [], nowMs: NOW }), []);
+});
+
+test('stripAutoDeleteMarker removes the marker (valid or malformed), keeping a clean name', () => {
+  assert.equal(stripAutoDeleteMarker('my chat [lm-autodel:' + NOW + ']'), 'my chat');
+  assert.equal(stripAutoDeleteMarker('my chat [lm-autodel:]'), 'my chat');
+  assert.equal(stripAutoDeleteMarker('[lm-autodel:' + NOW + ']'), '');
+  assert.equal(stripAutoDeleteMarker('plain'), 'plain');
 });
