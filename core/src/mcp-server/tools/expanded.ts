@@ -298,6 +298,11 @@ export const claudeaiCreateConversationToolDef = {
     type: 'object' as const,
     properties: {
       name: { type: 'string', description: 'Optional title for the new conversation.' },
+      auto_delete_hours: {
+        type: 'number',
+        description: 'Mark the conversation for auto-deletion after this many hours (tags its name with ' +
+          'a TTL marker; the scheduled cleanup-test sweep deletes it once expired). Good for throwaway chats.',
+      },
     },
   },
 };
@@ -986,6 +991,10 @@ async function handleWindowsTerminalClose(a: Record<string, unknown>): Promise<M
 async function handleClaudeaiCreateConversation(args: Record<string, unknown>): Promise<McpToolResult> {
   const body: Record<string, unknown> = {};
   if (args.name) body.name = String(args.name);
+  // auto_delete_hours: mark the conv for auto-deletion after N hours (coerce — MCP args arrive as strings)
+  const adh = typeof args.auto_delete_hours === 'number' ? args.auto_delete_hours
+    : (typeof args.auto_delete_hours === 'string' && args.auto_delete_hours.trim() !== '' && Number.isFinite(Number(args.auto_delete_hours)) ? Number(args.auto_delete_hours) : undefined);
+  if (adh !== undefined) body.autoDeleteHours = adh;
   try {
     return ok(pretty(await workerPost('/claude-ai/conversations', body)));
   } catch (e) {

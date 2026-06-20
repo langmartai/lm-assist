@@ -1566,6 +1566,13 @@ export async function createConversation(opts: {
   enabledMcpTools?: Record<string, boolean>;
   /** Optional `settings.tool_search_mode` override. Pass 'off' to suppress the SPA's tool_search meta-tool. */
   toolSearchMode?: 'on' | 'off' | string;
+  /**
+   * Mark the conversation for auto-deletion after N hours by appending a `[lm-autodel:<expiryMs>]`
+   * marker to its name. The marker only TAGS it — nothing is deleted here. The actual delete is done by
+   * the sweep (`cleanupTestConversations` / `POST /claude-ai/conversations/cleanup-test`) once expired,
+   * so a SCHEDULED sweep realizes the TTL. Ideal for throwaway / probe conversations.
+   */
+  autoDeleteHours?: number;
 } = {}) {
   const cfg = readClaudeAISession();
   if (!cfg) throw new Error('No claude.ai session configured');
@@ -1576,7 +1583,7 @@ export async function createConversation(opts: {
   const orgUuid = _org(opts);
   const url = `https://claude.ai/api/organizations/${orgUuid}/chat_conversations`;
   const id = deriveIdentity(cfg);
-  const body: Record<string, unknown> = { uuid: convUuid, name: opts.name ?? '' };
+  const body: Record<string, unknown> = { uuid: convUuid, name: withAutoDeleteMarker(opts.name ?? '', opts.autoDeleteHours, Date.now()) };
   if (opts.model) body.model = opts.model;
   if (opts.enabledMcpTools || opts.toolSearchMode) {
     const settings: Record<string, unknown> = {};
@@ -1680,6 +1687,86 @@ export async function deleteConversation(convUuid: string, opts: { orgUuid?: str
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Default name patterns for lm-assist's OWN throwaway conversation (the approval probe). Callers can
+ *  add patterns (or pass explicit ids) to also sweep ad-hoc test conversations. */
+export const DEFAULT_TEST_CONV_PATTERNS: readonly string[] = ['^lm-assist-approval-probe$'];
+
+const AUTODELETE_RE = /\[lm-autodel:(\d{10,})\]/;
+/** Parse the `[lm-autodel:<expiryMs>]` marker from a conversation name → expiry ms, or null. */
+export function parseAutoDeleteMs(name: string): number | null {
+  const m = AUTODELETE_RE.exec(String(name || ''));
+  const n = m ? Number(m[1]) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+/** Append a `[lm-autodel:<expiryMs>]` TTL marker to a name when `hours > 0`; else return it unchanged. */
+export function withAutoDeleteMarker(name: string, hours: number | undefined, nowMs: number): string {
+  if (!hours || hours <= 0) return name ?? '';
+  const base = String(name || '').trim();
+  return `${base ? base + ' ' : ''}[lm-autodel:${nowMs + Math.round(hours * 3600_000)}]`;
+}
+
+/** Pure: select conversations to clean. A conv matches if (a) its uuid is in `ids`, or (b) it carries an
+ *  EXPIRED `[lm-autodel:…]` marker (this is what realizes a create-time TTL), or (c) its name matches one
+ *  of `patterns` AND (no age guard, or it's older than `olderThanMs`). Selects only — never deletes.
+ *  Exported for tests. */
+export function matchTestConversations(
+  convs: Array<{ uuid?: string; name?: string; updated_at?: string }>,
+  opts: { ids?: string[]; patterns?: RegExp[]; olderThanMs?: number; nowMs: number },
+): Array<{ uuid: string; name: string; updated_at?: string }> {
+  const idSet = opts.ids && opts.ids.length ? new Set(opts.ids) : null;
+  const cutoff = opts.olderThanMs && opts.olderThanMs > 0 ? opts.nowMs - opts.olderThanMs : null;
+  const out: Array<{ uuid: string; name: string; updated_at?: string }> = [];
+  for (const c of convs) {
+    if (!c.uuid) continue;
+    const name = String(c.name || '').trim();
+    if (idSet && idSet.has(c.uuid)) { out.push({ uuid: c.uuid, name, updated_at: c.updated_at }); continue; }
+    const ttl = parseAutoDeleteMs(name);
+    if (ttl !== null && ttl <= opts.nowMs) { out.push({ uuid: c.uuid, name, updated_at: c.updated_at }); continue; } // expired TTL marker
+    if (!opts.patterns || !opts.patterns.length) continue;
+    if (!opts.patterns.some((re) => re.test(name))) continue;
+    if (cutoff !== null) {
+      const t = Date.parse(c.updated_at || '');
+      if (Number.isFinite(t) && t > cutoff) continue; // too recent → keep
+    }
+    out.push({ uuid: c.uuid, name, updated_at: c.updated_at });
+  }
+  return out;
+}
+
+/** Sweep throwaway/test conversations. SAFE BY DEFAULT: `dryRun` true (the default) only REPORTS what
+ *  would be deleted — nothing is deleted unless `dryRun:false` is passed explicitly. `ids` delete
+ *  unconditionally; `patterns` (name regexes; default = lm-assist's own probe) match by name + optional
+ *  `olderThanHours` age guard. Bounded scan. */
+export async function cleanupTestConversations(opts: {
+  dryRun?: boolean; ids?: string[]; patterns?: string[]; olderThanHours?: number; limit?: number; nowMs?: number;
+} = {}): Promise<{ dryRun: boolean; matched: Array<{ uuid: string; name: string }>; deleted: string[]; failed: Array<{ uuid: string; error: string }> }> {
+  const dryRun = opts.dryRun !== false; // default TRUE — never deletes unless explicitly told to
+  const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000);
+  const patternStrs = (opts.patterns && opts.patterns.length ? opts.patterns : DEFAULT_TEST_CONV_PATTERNS.slice())
+    .slice(0, 50).map((p) => String(p).slice(0, 200));
+  const patterns: RegExp[] = [];
+  for (const p of patternStrs) { try { patterns.push(new RegExp(p, 'i')); } catch { /* skip invalid regex */ } }
+  const ids = Array.isArray(opts.ids) ? opts.ids.filter((x) => typeof x === 'string') : undefined;
+
+  const resp: any = await listConversations({ limit });
+  const body: any = resp.body ?? resp;
+  const convs: any[] = Array.isArray(body) ? body : (body.conversations || body.data || []);
+  const olderThanMs = opts.olderThanHours && opts.olderThanHours > 0 ? opts.olderThanHours * 3600_000 : undefined;
+  const matched = matchTestConversations(convs, { ids, patterns, olderThanMs, nowMs: opts.nowMs ?? Date.now() });
+
+  const deleted: string[] = [];
+  const failed: Array<{ uuid: string; error: string }> = [];
+  if (!dryRun) {
+    for (const m of matched) {
+      try {
+        const r = await deleteConversation(m.uuid);
+        if (r.status < 400) deleted.push(m.uuid); else failed.push({ uuid: m.uuid, error: `HTTP ${r.status}` });
+      } catch (e) { failed.push({ uuid: m.uuid, error: e instanceof Error ? e.message : String(e) }); }
+    }
+  }
+  return { dryRun, matched: matched.map((m) => ({ uuid: m.uuid, name: m.name })), deleted, failed };
 }
 
 /** GET /api/organizations/{org_uuid}/artifacts/{artifact_uuid}/versions */

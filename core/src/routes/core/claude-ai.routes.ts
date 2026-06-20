@@ -88,6 +88,7 @@ import {
   setConversationTitle,
   createConversation,
   deleteConversation,
+  cleanupTestConversations,
   listSkills,
   listSkillFiles,
   downloadSkillBundle,
@@ -336,6 +337,8 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
             model: typeof b.model === 'string' ? b.model : undefined,
             enabledMcpTools,
             toolSearchMode: typeof b.toolSearchMode === 'string' ? b.toolSearchMode : undefined,
+            autoDeleteHours: typeof b.autoDeleteHours === 'number' ? b.autoDeleteHours
+              : (typeof b.auto_delete_hours === 'number' ? b.auto_delete_hours : undefined),
           });
           const wrapped = upstreamWrap(r);
           if (wrapped.success) (wrapped as { data: unknown }).data = { ...r.body, uuid: r.uuid };
@@ -401,6 +404,33 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
         }
         try {
           return upstreamWrap(await deleteConversation(uuid));
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // POST /claude-ai/conversations/cleanup-test
+    //
+    //   Sweep throwaway/test conversations (lm-assist's own `lm-assist-approval-probe` by default).
+    //   SAFE BY DEFAULT: `dryRun` defaults TRUE — it only REPORTS matches; nothing is deleted unless
+    //   the caller passes `dryRun:false`. Body: { dryRun?, ids?:[], patterns?:[name-regex], olderThanHours?, limit? }.
+    //   `ids` delete unconditionally; `patterns` match by name (+ optional age guard). Read-modify is
+    //   bounded. Intended for a scheduled maintenance job (caller arms it with dryRun:false).
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/conversations\/cleanup-test$/,
+      handler: async (req) => {
+        const b = req.body || {};
+        try {
+          const r = await cleanupTestConversations({
+            dryRun: typeof b.dryRun === 'boolean' ? b.dryRun : undefined, // lib defaults to true
+            ids: Array.isArray(b.ids) ? b.ids.filter((x: unknown) => typeof x === 'string') : undefined,
+            patterns: Array.isArray(b.patterns) ? b.patterns.filter((x: unknown) => typeof x === 'string') : undefined,
+            olderThanHours: typeof b.olderThanHours === 'number' ? b.olderThanHours : undefined,
+            limit: typeof b.limit === 'number' ? b.limit : undefined,
+          });
+          return { success: true, data: r };
         } catch (err) {
           return catchOAuth(err);
         }
