@@ -307,7 +307,12 @@ export const claudeaiCompletionToolDef = {
   description:
     'Send a prompt to an existing claude.ai web conversation and get the assistant reply. ' +
     'SPENDS TOKENS on the user\'s claude.ai account. The conversation must already exist — ' +
-    'create one first with `claudeai_create_conversation`. WRITE.',
+    'create one first with `claudeai_create_conversation`. WRITE.\n' +
+    'To DRIVE the claude.ai conversation to CALL lm-assist connector tools (not just chat), set ' +
+    '`enable_connector_tools` (true = all the langmart connector\'s tools, or a list of tool names). ' +
+    'lm-assist builds the tool definitions for that turn and — with `auto_approve_tools` (default ON ' +
+    'when enabling) — releases claude.ai\'s per-tool approval gates so the calls actually run. The ' +
+    'response includes an `approvals` summary of any tool calls made.',
   annotations: { readOnlyHint: false },
   inputSchema: {
     type: 'object' as const,
@@ -315,6 +320,23 @@ export const claudeaiCompletionToolDef = {
       conversation_uuid: { type: 'string', description: 'Target conversation uuid.' },
       prompt: { type: 'string', description: 'The message to send.' },
       model: { type: 'string', description: 'Optional model override.' },
+      enable_connector_tools: {
+        description: 'Expose lm-assist connector tools to the claude.ai model on this turn so it can CALL them. ' +
+          'Pass true for all the connector\'s tools, or an array of tool names ' +
+          '(e.g. ["data_catalog","list_nodes"]). Omit for a plain text reply.',
+        oneOf: [{ type: 'boolean' }, { type: 'array', items: { type: 'string' } }],
+      },
+      auto_approve_tools: {
+        type: 'boolean',
+        description: 'Auto-release claude.ai\'s per-tool approval gates so the driven calls run ' +
+          '(default true when enable_connector_tools is set).',
+      },
+      tools: {
+        type: 'array',
+        description: 'Advanced: an explicit claude.ai SPA tools array (overrides enable_connector_tools). ' +
+          'Most callers should use enable_connector_tools instead.',
+        items: { type: 'object' },
+      },
     },
     required: ['conversation_uuid', 'prompt'],
   },
@@ -971,12 +993,35 @@ async function handleClaudeaiCreateConversation(args: Record<string, unknown>): 
   }
 }
 
+/** Coerce enable_connector_tools (bool | string[] | "true"/"false" | JSON-array-string | "name").
+ *  MCP args arrive as STRINGS over the connector, so normalize here. */
+function parseEnableConnectorTools(v: unknown): boolean | string[] | undefined {
+  if (typeof v === 'boolean') return v;
+  if (Array.isArray(v)) return v.map(String);
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (s === 'true') return true;
+    if (s === 'false' || s === '') return s === 'false' ? false : undefined;
+    if (s.startsWith('[')) { try { const a = JSON.parse(s); if (Array.isArray(a)) return a.map(String); } catch { /* */ } }
+    return [s]; // a single tool name
+  }
+  return undefined;
+}
+
 async function handleClaudeaiCompletion(args: Record<string, unknown>): Promise<McpToolResult> {
   const uuid = String(args.conversation_uuid || '').trim();
   const prompt = String(args.prompt || '').trim();
   if (!uuid || !prompt) return err('conversation_uuid and prompt are required.');
   const body: Record<string, unknown> = { prompt };
   if (args.model) body.model = String(args.model);
+  // Drive connector tool calls: forward the convenience + raw passthrough to the REST route, which
+  // builds the SPA tools array + auto-approves. Coerce connector string-typed args.
+  const enable = parseEnableConnectorTools(args.enable_connector_tools);
+  if (enable !== undefined) body.enableConnectorTools = enable;
+  const aat = typeof args.auto_approve_tools === 'boolean' ? args.auto_approve_tools
+    : (args.auto_approve_tools === 'true' ? true : args.auto_approve_tools === 'false' ? false : undefined);
+  if (aat !== undefined) body.autoApproveTools = aat;
+  if (Array.isArray(args.tools)) body.tools = args.tools;
   try {
     return ok(pretty(await workerPost(`/claude-ai/conversations/${enc(uuid)}/completion`, body)));
   } catch (e) {

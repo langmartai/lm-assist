@@ -2621,6 +2621,7 @@ export async function approveToolUse(opts: {
   //      compute/return the correct hash on its own.
   //   4) tool not exposed via this connector at all → synthetic 204
   //      (e.g. SPA-internal `tool_search`).
+  let bareFallback: string | undefined;
   if (!approvalKey) {
     const entry = await discoverApprovalKeys(orgUuid);
     // claude.ai's SSE delivers MCP tool names as `<integration>:<tool>`
@@ -2628,11 +2629,16 @@ export async function approveToolUse(opts: {
     // enabled_mcp_tools indexes by bare `<tool>` only. Try both shapes.
     const fullName = opts.toolName;
     const strippedName = fullName.includes(':') ? fullName.split(':').pop() || fullName : fullName;
-    approvalKey = entry.hashKeys[fullName] || entry.hashKeys[strippedName] ||
-                  entry.bareKeys[fullName] || entry.bareKeys[strippedName];
+    const bare = entry.bareKeys[fullName] || entry.bareKeys[strippedName];
+    approvalKey = entry.hashKeys[fullName] || entry.hashKeys[strippedName] || bare;
     if (!approvalKey) {
       return { status: 204, statusText: 'No Content (tool not exposed by any connector)', body: null };
     }
+    // Keep the bare `<srv>:<tool>` key as a fallback when we picked a HASH-suffixed key: a STALE hash
+    // (tool defs changed, e.g. after a connector refresh) makes /tool_approval 404, but the bare key
+    // lets claude.ai compute the current hash itself. (Discovered 2026-06-20: refresh_connector_tools
+    // invalidates the always-approved hash → every connector-tool approval 404s with no recovery.)
+    if (bare && approvalKey !== bare && /-[0-9a-f]{32}$/.test(approvalKey)) bareFallback = bare;
   }
   const url = `https://claude.ai/api/organizations/${orgUuid}/chat_conversations/${opts.convUuid}/tool_approval`;
   const id = deriveIdentity(cfg);
@@ -2659,30 +2665,39 @@ export async function approveToolUse(opts: {
   if (id.activitySessionId) headers['x-activity-session-id'] = id.activitySessionId;
   if (id.deviceId) headers['anthropic-device-id'] = id.deviceId;
 
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 15_000);
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        tool_use_id: opts.toolUseId,
-        is_approved: true,
-        approval_key: approvalKey,
-        approval_option: opts.approvalOption ?? 'once',
-      }),
-      signal: ctrl.signal,
-    });
-    const text = await res.text();
-    let parsed: any;
-    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
-    // If a 4xx came back, the cached hash may be stale (tool description changed)
-    // — invalidate so the next call re-probes.
-    if (res.status >= 400 && res.status < 500) {
-      approvalKeyCache.delete(orgUuid);
+  const post = async (key: string) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 15_000);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          tool_use_id: opts.toolUseId,
+          is_approved: true,
+          approval_key: key,
+          approval_option: opts.approvalOption ?? 'once',
+        }),
+        signal: ctrl.signal,
+      });
+      const text = await res.text();
+      let parsed: any;
+      try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+      return { status: res.status, statusText: res.statusText, body: parsed };
+    } finally {
+      clearTimeout(timer);
     }
-    return { status: res.status, statusText: res.statusText, body: parsed };
-  } finally {
-    clearTimeout(timer);
+  };
+
+  let r = await post(approvalKey);
+  // A 4xx usually means the cached hash is stale (tool description changed). Invalidate it; and if we
+  // used a hash key, retry once with the bare `<srv>:<tool>` key (claude.ai recomputes the hash).
+  if (r.status >= 400 && r.status < 500) {
+    approvalKeyCache.delete(orgUuid);
+    if (bareFallback) {
+      debugAA(`approval ${opts.toolName} → HTTP ${r.status} on hash key; retrying with bare key`);
+      r = await post(bareFallback);
+    }
   }
+  return r;
 }

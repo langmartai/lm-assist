@@ -167,6 +167,8 @@ import {
   type BrowserKind,
 } from '../../utils/claudeai-browser-launch';
 import { installBanner } from '../../utils/claudeai-banner';
+import { LM_ASSIST_TOOL_DEFS } from '../../mcp-server/configure';
+import { buildConnectorToolsArray, pickLmAssistConnector } from '../../mcp-server/connector-tools-array';
 
 const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
@@ -1308,21 +1310,40 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
             error: { code: 'MISSING_PROMPT', message: 'body.prompt is required (non-empty string)' },
           };
         }
+        // Resolve the tools array + auto-approve. A caller may pass an explicit SPA `tools` array, OR
+        // ask lm-assist to BUILD it for the langmart connector via `enableConnectorTools`
+        // (true = all the connector's tools, or string[] of tool names) so a driver doesn't have to
+        // hand-craft the SPA shape. Auto-approve defaults ON when we build the tools (the intent is to
+        // DRIVE tool calls, so the gates should be released).
+        let toolsArr: unknown[] | undefined = Array.isArray(body.tools) ? body.tools : undefined;
+        let autoApprove: boolean | undefined = typeof body.autoApproveTools === 'boolean'
+          ? body.autoApproveTools
+          : (typeof body.auto_approve_tools === 'boolean' ? body.auto_approve_tools : undefined);
+        const enableConn = body.enableConnectorTools ?? body.enable_connector_tools;
+        if (!toolsArr && enableConn) {
+          try {
+            const names = Array.isArray(enableConn) ? enableConn.map(String) : undefined;
+            const roster = await listMcpRemoteServers();
+            const conn = pickLmAssistConnector((roster.body?.servers as unknown[] as never) || []);
+            if (conn) {
+              toolsArr = buildConnectorToolsArray(conn, LM_ASSIST_TOOL_DEFS as never, names);
+              if (autoApprove === undefined) autoApprove = true;
+            }
+          } catch { /* connector discovery failed → proceed with no tools (text-only) */ }
+        }
         try {
           const r = await sendMessage(uuid, body.prompt, {
             model: typeof body.model === 'string' ? body.model : undefined,
             timezone: typeof body.timezone === 'string' ? body.timezone : undefined,
             locale: typeof body.locale === 'string' ? body.locale : undefined,
             parentMessageUuid: typeof body.parentMessageUuid === 'string' ? body.parentMessageUuid : undefined,
-            tools: Array.isArray(body.tools) ? body.tools : undefined,
+            tools: toolsArr,
             attachments: Array.isArray(body.attachments) ? body.attachments : undefined,
             files: Array.isArray(body.files) ? body.files : undefined,
             syncSources: Array.isArray(body.syncSources) ? body.syncSources
               : Array.isArray(body.sync_sources) ? body.sync_sources : undefined,
             timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
-            autoApproveTools: typeof body.autoApproveTools === 'boolean'
-              ? body.autoApproveTools
-              : (typeof body.auto_approve_tools === 'boolean' ? body.auto_approve_tools : undefined),
+            autoApproveTools: autoApprove,
           });
           if (r.status >= 400) {
             return {
