@@ -78,10 +78,35 @@ export const setConnectorToolAccessToolDef = {
   },
 };
 
+export const setConnectorAutoApproveToolDef = {
+  name: 'set_connector_auto_approve',
+  description:
+    'Turn ON (or off) "always approve" auto-approval for a claude.ai connector\'s MCP tools, so the ' +
+    'model can CALL them WITHOUT the per-call approval prompt — this is what smooths DRIVEN tool ' +
+    'calls (e.g. via `claudeai_completion` with `enable_connector_tools`). lm-assist reads each ' +
+    'tool\'s CURRENT per-version always-approved key from the live bootstrap (so it matches claude.ai\'s ' +
+    'current tool defs — a stale hash is exactly what makes a driven approval 404) and writes it via ' +
+    'read-modify-write, preserving all other settings. Pass `tools` (names) to scope, else applies to ' +
+    'ALL the connector\'s tools; `enable:false` removes auto-approval. Target with `server_uuid`/' +
+    '`connector` (default langmart). WRITE — changes claude.ai account settings. Runs where the ' +
+    'claude.ai cookie lives (use `node`).',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      enable: { type: 'boolean', description: 'true (default) = auto-approve the tools; false = remove always-approved.' },
+      tools: { type: 'array', items: { type: 'string' }, description: 'Tool names to scope to (default: ALL the connector\'s tools).' },
+      server_uuid: { type: 'string', description: 'Connector UUID (from list_claudeai_connectors).' },
+      connector: { type: 'string', description: 'Connector name/url substring (alternative to server_uuid).' },
+    },
+  },
+};
+
 export const REFRESH_CONNECTOR_TOOL_DEFS = [
   listClaudeaiConnectorsToolDef,
   refreshConnectorToolsToolDef,
   setConnectorToolAccessToolDef,
+  setConnectorAutoApproveToolDef,
 ] as const;
 
 interface ConnectorEntry {
@@ -193,8 +218,31 @@ async function handleSetConnectorToolAccess(args: Record<string, unknown>): Prom
   }
 }
 
+async function handleSetConnectorAutoApprove(args: Record<string, unknown>): Promise<McpToolResult> {
+  const enable = typeof args.enable === 'boolean' ? args.enable : (args.enable === 'false' ? false : true);
+  const tools = Array.isArray(args.tools) ? (args.tools as unknown[]).filter((t): t is string => typeof t === 'string') : undefined;
+  const r = await resolveConnector(String(args.server_uuid || ''), String(args.connector || ''));
+  if ('error' in r) return err(r.error);
+  try {
+    const res = (await workerPost(`/claude-ai/mcp/servers/${encodeURIComponent(r.uuid)}/auto-approve`, { enable, tools })) as {
+      changed?: string[]; skipped?: string[]; totalKeys?: number;
+    };
+    const n = res.changed?.length || 0;
+    return ok(
+      `${enable ? 'Enabled' : 'Disabled'} auto-approval on connector "${r.label}" (${r.uuid}) for ${n} tool(s)` +
+        `${tools ? ` [${tools.join(', ')}]` : ' (all)'}. ` +
+        `${res.skipped?.length ? `Skipped ${res.skipped.length} (no always-approved key). ` : ''}` +
+        `${res.totalKeys ?? '?'} total settings preserved. Driven tool calls should no longer hit the approval ` +
+        'gate (use a fresh conversation to see it take effect).',
+    );
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 export const REFRESH_CONNECTOR_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
   list_claudeai_connectors: handleListClaudeaiConnectors,
   refresh_connector_tools: handleRefreshConnectorTools,
   set_connector_tool_access: handleSetConnectorToolAccess,
+  set_connector_auto_approve: handleSetConnectorAutoApprove,
 };

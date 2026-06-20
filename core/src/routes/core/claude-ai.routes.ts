@@ -73,6 +73,7 @@ import {
   deleteMcpRemoteServer,
   clearMcpServerCache,
   setMcpToolsAccess,
+  setMcpToolsAutoApprove,
   listMcpRemoteServers,
   listOrgStyles,
   getModelConfig,
@@ -583,6 +584,26 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
         for (const t of enable) changes[t] = true; // enable wins if a name is in both
         try {
           return upstreamWrap(await setMcpToolsAccess(uuid, changes));
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      } },
+
+    // POST /claude-ai/mcp/servers/:uuid/auto-approve — turn ON/off "always approve" auto-approval
+    //   for a connector's tools so driven tool calls don't hit the per-call approval gate. Body:
+    //   { enable?: bool (default true), tools?: string[] (default ALL the connector's tools) }.
+    //   Read-modify-write on enabled_mcp_tools using the live bootstrap's always_approved_key.
+    { method: 'POST', pattern: /^\/claude-ai\/mcp\/servers\/(?<uuid>[^/?]+)\/auto-approve$/,
+      handler: async (req) => {
+        const uuid = req.params.uuid;
+        if (!UUID_RE.test(uuid)) {
+          return { success: false, error: { code: 'INVALID_UUID', message: `MCP server UUID must be a UUIDv4: got ${uuid}` } };
+        }
+        const b = req.body || {};
+        const enable = typeof b.enable === 'boolean' ? b.enable : true;
+        const tools = Array.isArray(b.tools) ? b.tools.filter((t: unknown): t is string => typeof t === 'string') : undefined;
+        try {
+          return upstreamWrap(await setMcpToolsAutoApprove(uuid, enable, tools));
         } catch (err) {
           return catchOAuth(err);
         }
