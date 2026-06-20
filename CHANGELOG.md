@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### claude.ai — `claudeai_completion` tool-drive now works end-to-end (the `backend_execution` flag) (2026-06-21)
+
+The driven flow (`claudeai_completion` / `POST /completion` with `enable_connector_tools`) now COMPLETES:
+the claude.ai model calls the connector tool, it's auto-approved, and the result comes back. **Fix:** the
+SPA-shaped tools array (`buildConnectorToolsArray`) was missing the registration flags claude.ai's own web
+app sends — **`backend_execution: true`** (+ `needs_approval: false`, `is_mcp_app: false`). Without
+`backend_execution`, claude.ai never routes the call to the connector and the tool's `/tool_approval`
+returns 404 ("Tool result could not be submitted"); with it, the identical call returns **200 with the real
+result** (verified end-to-end via the REST route: `data_catalog` → "OK — 5 datasets"). This resolves the
+"does NOT unblock the programmatic drive" caveat in the two entries below.
+
 ### claude.ai — `set_connector_auto_approve`: enable "always approve" for a connector's tools (2026-06-21)
 
 New API + MCP tool to turn ON (or off) per-version "always approve" auto-approval for ALL (or named) of a

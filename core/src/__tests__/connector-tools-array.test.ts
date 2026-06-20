@@ -18,6 +18,10 @@ test('buildConnectorToolsArray maps defs to the claude.ai SPA shape with the con
   assert.equal(t.mcp_server_url, 'https://mcp.langmart.ai/mcp');
   assert.equal(t.integration_name, 'lm-assist langmart');
   assert.deepEqual(t.input_schema, { type: 'object', properties: { node: { type: 'string' } } });
+  // CRITICAL: without these flags claude.ai won't backend-execute the connector tool → /tool_approval 404s
+  assert.equal(t.backend_execution, true);
+  assert.equal(t.needs_approval, false);
+  assert.equal(t.is_mcp_app, false);
 });
 
 test('a def without an inputSchema still yields a valid object schema (claude.ai requires one)', () => {
