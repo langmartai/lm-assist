@@ -28,6 +28,12 @@ minute and compares timestamps (so a long interval is just "elapsed ≥ interval
   it. Create from the web UI (type `shell` + a command textarea) or MCP/REST; jobs start disabled. The web
   card gains an inline command editor + a confirm-gated **Run now**. `formatShellResult`/`clampTimeoutMs`
   unit-tested.
+- **Dry-run toggle for scripted jobs** — a `shell` command containing a `{{dryRun}}` placeholder is
+  substituted with `config.dryRun` (default `true` = safe) at run time, so dry-run⟷armed flips from a
+  **button** (the same Arm/Disarm control the cleanup job uses) instead of hand-editing the script. A forced
+  preview always substitutes `true`; the job runs (safely) in preview when templated. `applyShellTemplate`
+  unit-tested. The web card shows the Arm/Disarm toggle + `dry-run · safe`/`armed` badge for any job with the
+  toggle (cleanup, or a templated shell job).
 
 ### claude.ai — conversation TTL (`autoDeleteHours`) + `cleanup-test` sweeper (safe-by-default) (2026-06-21)
 

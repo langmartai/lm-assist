@@ -37,8 +37,21 @@ function stateLabel(j: JobView): { text: string; cls: string } {
 }
 
 /** Is this the destructive cleanup job, armed (dryRun explicitly false)? */
+/** Does this job have a dry-run⟷armed toggle? The built-in cleanup job, or any shell job whose
+ *  command opts in with a `{{dryRun}}` placeholder. */
+function hasDryRunToggle(j: JobView): boolean {
+  if (j.type === 'cleanup-test-conversations') return true;
+  if (j.type === 'shell') {
+    const cmd = (j.config as { command?: unknown })?.command;
+    const s = typeof cmd === 'string' ? cmd : Array.isArray(cmd) ? cmd.join(' ') : '';
+    return /\{\{\s*dryRun\s*\}\}/.test(s);
+  }
+  return false;
+}
+
+/** Armed = the toggle is set to really act (dryRun off). */
 function isArmed(j: JobView): boolean {
-  return j.type === 'cleanup-test-conversations' && j.config?.dryRun === false;
+  return hasDryRunToggle(j) && j.config?.dryRun === false;
 }
 
 export function SchedulerPage() {
@@ -221,6 +234,7 @@ export function SchedulerPage() {
               const draft = intervalDraft[j.id] ?? String(j.intervalMinutes);
               const cleanup = j.type === 'cleanup-test-conversations';
               const shell = j.type === 'shell';
+              const toggle = hasDryRunToggle(j);
               const cmdVal = (j.config as { command?: unknown })?.command;
               const cmdIsArray = Array.isArray(cmdVal);
               const cmdStr = typeof cmdVal === 'string' ? cmdVal : cmdIsArray ? (cmdVal as string[]).join(' ') : '';
@@ -232,8 +246,8 @@ export function SchedulerPage() {
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)' }}>{j.id}</span>
                     {j.builtin && <span className="badge badge-outline">built-in</span>}
                     <span className={`badge ${st.cls}`}>{st.text}</span>
-                    {armed && <span className="badge badge-red" title="Will permanently delete matching conversations"><AlertTriangle size={11} style={{ marginRight: 3 }} />armed · deletes</span>}
-                    {cleanup && !armed && <span className="badge badge-green">dry-run · safe</span>}
+                    {armed && <span className="badge badge-red" title={cleanup ? 'Will permanently delete matching conversations' : 'Will run for real (dry-run off)'}><AlertTriangle size={11} style={{ marginRight: 3 }} />{cleanup ? 'armed · deletes' : 'armed'}</span>}
+                    {toggle && !armed && <span className="badge badge-green">dry-run · safe</span>}
                     <div style={{ flex: 1 }} />
                     {isBusy && <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', color: 'var(--color-text-tertiary)' }} />}
                   </div>
@@ -282,8 +296,8 @@ export function SchedulerPage() {
                       )}
                     </div>
 
-                    {/* Arm toggle for the cleanup job */}
-                    {cleanup && (
+                    {/* Arm toggle — cleanup job or any shell job with a {{dryRun}} placeholder */}
+                    {toggle && (
                       armed ? (
                         <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => update(j.id, { config: { dryRun: true } })} title="Switch back to safe dry-run mode">
                           Disarm (dry-run)
@@ -314,7 +328,7 @@ export function SchedulerPage() {
                       confirmRun === j.id ? (
                         <>
                           <button className="btn btn-destructive btn-sm" disabled={isBusy} onClick={() => run(j.id, false)}>
-                            {armed ? 'Confirm run (deletes)' : 'Confirm run'}
+                            {armed ? (cleanup ? 'Confirm run (deletes)' : 'Confirm run (live)') : 'Confirm run'}
                           </button>
                           <button className="btn btn-ghost btn-sm" onClick={() => setConfirmRun(null)}>Cancel</button>
                         </>

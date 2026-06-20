@@ -113,6 +113,15 @@ export function clampTimeoutMs(v: unknown): number {
   return Math.min(SHELL_TIMEOUT_MAX_MS, Math.max(SHELL_TIMEOUT_MIN_MS, Math.round(n)));
 }
 
+/**
+ * Substitute the `{{dryRun}}` placeholder in a command with the effective boolean, so a job can be
+ * toggled dry-run⟷armed from a button (flipping `config.dryRun`) instead of hand-editing the script.
+ * e.g. `... -d '{"dryRun":{{dryRun}}}'` → `... -d '{"dryRun":true}'` or `...false}'`.
+ */
+export function applyShellTemplate(command: string, dryRun: boolean): string {
+  return command.replace(/\{\{\s*dryRun\s*\}\}/g, String(dryRun));
+}
+
 /** Render a finished shell command into a one-line job outcome (exit code + truncated output tail). */
 export function formatShellResult(r: { code: number | null; stdout: string; stderr: string; timedOut: boolean }): JobRunOutcome {
   if (r.timedOut) {
@@ -193,17 +202,31 @@ class ScheduledJobs {
     //     This is the deliberate "I want shell features" path; the string is operator-trusted.
     //   - command as an ARRAY [bin, ...args] → run via execFile (NO shell) — injection-safe; metacharacters
     //     in args are literal. Prefer this when you don't need a shell.
-    // Disabled by default like a fresh cron entry; bounded timeout + truncated output; dryRun previews it.
+    // Disabled by default like a fresh cron entry; bounded timeout + truncated output.
+    //
+    // DRY-RUN TOGGLE: if the command contains a `{{dryRun}}` placeholder, it's substituted with
+    // `config.dryRun` (default true = safe) — so a UI/MCP toggle flips dry-run⟷armed without editing
+    // the script. A forced preview always substitutes true. Such a job runs even in preview (the
+    // placeholder makes it safe). A command WITHOUT the placeholder can't be safely previewed, so a
+    // forced preview just reports what would run.
     this.registerHandler('shell', async (config, ctx) => {
-      const argv = Array.isArray(config.command) && config.command.every((x: unknown) => typeof x === 'string')
+      const argvRaw = Array.isArray(config.command) && config.command.every((x: unknown) => typeof x === 'string')
         ? (config.command as string[]).filter((s) => s.length > 0)
         : null;
-      const cmdStr = typeof config.command === 'string' ? config.command.trim() : '';
-      if (!argv?.length && !cmdStr) return { result: 'no command configured', status: 'skipped' };
-      const display = argv?.length ? argv.join(' ') : cmdStr;
-      if (ctx.dryRunForced) {
+      const cmdRaw = typeof config.command === 'string' ? config.command.trim() : '';
+      if (!argvRaw?.length && !cmdRaw) return { result: 'no command configured', status: 'skipped' };
+      const display = argvRaw?.length ? argvRaw.join(' ') : cmdRaw;
+
+      const templated = /\{\{\s*dryRun\s*\}\}/.test(display);
+      if (ctx.dryRunForced && !templated) {
         return { result: `dry-run: would run \`${display.slice(0, 200)}\``, status: 'ok' };
       }
+      const effDryRun = ctx.dryRunForced ? true : config.dryRun !== false; // default true = safe
+      const sub = (s: string) => (templated ? applyShellTemplate(s, effDryRun) : s);
+      const cmdStr = sub(cmdRaw);
+      const argv = argvRaw?.map(sub);
+      const tag = templated ? (effDryRun ? '[dry-run] ' : '[armed] ') : '';
+
       const cwd = typeof config.cwd === 'string' && config.cwd ? config.cwd : undefined;
       const timeout = clampTimeoutMs(config.timeoutMs);
       const opts = { cwd, timeout, maxBuffer: 1024 * 1024, windowsHide: true };
@@ -212,7 +235,8 @@ class ScheduledJobs {
         const done = (err: any, stdout: string, stderr: string) => {
           const timedOut = !!err && (err.killed || err.signal === 'SIGTERM') && err.code == null;
           const code = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
-          resolve(formatShellResult({ code: timedOut ? null : code, stdout: stdout || '', stderr: stderr || '', timedOut }));
+          const r = formatShellResult({ code: timedOut ? null : code, stdout: stdout || '', stderr: stderr || '', timedOut });
+          resolve({ ...r, result: tag + r.result });
         };
         // argv form → execFile (no shell, injection-safe). string form → exec (operator-trusted shell line).
         const child = argv?.length ? cp.execFile(argv[0], argv.slice(1), opts, done) : cp.exec(cmdStr, opts, done);
