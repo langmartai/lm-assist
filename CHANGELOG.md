@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+### MCP connector skill + precise session identification — bootstrap / guide / session_status (2026-06-20)
+
+The langmart MCP connector now ships its own "skill" so an LLM is proactively capability-aware even when
+local skills / CLAUDE.md aren't loaded in the conversation (the connector is always reachable). **Unreleased
+/ ships in `main` for review; rolled out to the fleet by syncing `core/dist`.**
+
+- **`bootstrap`** (call once, no args) loads ALL use cases in one response; the server `instructions`
+  direct the LLM to call it first on connect. **`guide(topic)`** re-reads a single playbook (single-node +
+  cross-node recipes for every feature, plus combination workflows). Framed as COMPLEMENTING local
+  CLAUDE.md / memory / skills, not replacing them.
+- **Precise caller identification (`session_status` + bootstrap):** the connector tags each `tools/call`
+  with `_meta["claudecode/toolUseId"]` — the calling conversation's `tool_use` block id. lm-assist matches
+  it against the session cache to pin the EXACT Claude Code session driving the call (deterministic), and
+  hands the id back so the session becomes self-aware. Falls back to recency (most-recent claude.ai
+  conversation + Claude Code session, "pick your runtime") when no id is present. Threaded via a
+  per-request `McpCallContext.toolUseId` ALS.
+- claude.ai-web callers use the same `toolu_…` id format, but whether they forward it in `_meta` is not yet
+  confirmed (the capture needs a successful tool-approval), so they remain recency-resolved by design.
+
+### Data service — type-aware records, partial retrieval, richer queries, non-blocking SQLite (2026-06-20)
+
+Refinement passes over the generic data service (below), all live-verified through the connector.
+**Unreleased / opt-in (`dataServiceEnabled`); ships in `main`, rolled out by syncing `core/dist`.**
+
+- **Type-aware records:** `detectType` classifies values as bin / text / json / code (+ language); record
+  summaries report type/size/lang. **Partial retrieval** in `data_get`: field / part-id / JSON-path, `grep`
+  (line numbers) and `lines` (ranges), with offset/limit in the type's natural unit.
+- **Richer queries:** `regex` / `wildcard` / `nin` / `exists` operators alongside the existing set.
+- **Security hardening:** ReDoS guard + input cap on regex, `lines` set-bomb guard, boolean-SQL-bind crash
+  fix, prototype-path block, 1 MiB record cap.
+- **Perf / non-blocking / disk:** bounded cache scan, SQL default-LIMIT + busy_timeout, audit-log
+  ring-buffer (avoids the 256 MB `MDB_MAP_FULL` cliff), `-lock` leak cleanup, and **better-sqlite3 moved to
+  a `worker_thread`** so it no longer blocks the `:3100` event loop.
+
+### claude.ai — `create_conversation → completion` works on the first turn (2026-06-20)
+
+A freshly-created (empty) conversation has no `current_leaf_message_uuid`, so `claudeai_completion`
+dead-ended with *"no current_leaf_message_uuid (empty thread?)"*. Both completion paths (the cookie-file
+`sendMessage` and the via-chrome browser-JS snippet) now fall back to claude.ai's first-message ROOT parent
+(`00000000-0000-4000-8000-000000000000`), so the documented create→completion flow works on the first
+message. Verified live (HTTP 200).
+
 ### Windows terminal-driving / `send_session_message` — fix silent failure under Session 0 isolation (2026-06-19)
 
 `send_session_message` (and every terminal-drive op) to a Windows Claude session failed with "no driver
