@@ -89,6 +89,7 @@ import {
   createConversation,
   deleteConversation,
   cleanupTestConversations,
+  setConversationAutoDelete,
   listSkills,
   listSkillFiles,
   downloadSkillBundle,
@@ -431,6 +432,30 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
             limit: typeof b.limit === 'number' ? b.limit : undefined,
           });
           return { success: true, data: r };
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // POST /claude-ai/conversations/:uuid/auto-delete
+    //
+    //   Set / update / CLEAR the auto-delete TTL on an EXISTING conversation (rewrites its `[lm-autodel:…]`
+    //   name marker). Body: { autoDeleteHours?: number }. `autoDeleteHours > 0` (re)arms the TTL; 0 / null /
+    //   omitted CLEARS it → the conversation will never be auto-deleted. WRITE (renames the conversation).
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/conversations\/(?<uuid>[^/?]+)\/auto-delete$/,
+      handler: async (req) => {
+        const uuid = req.params.uuid;
+        if (!UUID_RE.test(uuid)) {
+          return { success: false, error: { code: 'INVALID_UUID', message: `Conversation UUID must be a UUIDv4: got ${uuid}` } };
+        }
+        const b = req.body || {};
+        const hours = typeof b.autoDeleteHours === 'number' ? b.autoDeleteHours
+          : (typeof b.auto_delete_hours === 'number' ? b.auto_delete_hours : null); // absent → clear
+        try {
+          return { success: true, data: await setConversationAutoDelete(uuid, hours) };
         } catch (err) {
           return catchOAuth(err);
         }

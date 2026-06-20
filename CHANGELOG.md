@@ -4,19 +4,24 @@
 
 ### claude.ai — conversation TTL (`autoDeleteHours`) + `cleanup-test` sweeper (safe-by-default) (2026-06-21)
 
-Create-time auto-deletion for throwaway conversations, plus the sweep that realizes it:
+Create-time AND update-time auto-deletion for throwaway conversations, plus the sweep that realizes it:
 
-- **`createConversation({ autoDeleteHours })`** — REST `POST /claude-ai/conversations` body `autoDeleteHours`;
-  MCP `claudeai_create_conversation` arg `auto_delete_hours` — tags the conversation's name with a
+- **Set a TTL at create:** `createConversation({ autoDeleteHours })` — REST `POST /claude-ai/conversations`
+  body `autoDeleteHours`; MCP `claudeai_create_conversation` arg `auto_delete_hours` — tags the name with a
   `[lm-autodel:<expiryMs>]` marker. It only TAGS the conversation; it deletes nothing.
-- **`POST /claude-ai/conversations/cleanup-test`** sweeps: any conversation with an EXPIRED `[lm-autodel:…]`
-  marker, lm-assist's own `lm-assist-approval-probe` (default), and any caller-supplied `patterns`/`ids`.
-  **Safe by default: `dryRun` is TRUE unless `dryRun:false` is passed — it only reports matches and deletes
-  nothing.** Body: `{ dryRun?, ids?, patterns?:[name-regex], olderThanHours?, limit? }`; bounded scan. Pure
-  matcher `matchTestConversations` + `withAutoDeleteMarker`/`parseAutoDeleteMs` are unit-tested.
+- **Set / update / CLEAR the TTL on an EXISTING conversation:** `POST /claude-ai/conversations/:uuid/auto-delete`
+  body `{ autoDeleteHours }` — `>0` (re)arms the TTL; `0` / null / omitted CLEARS it (strips the marker → the
+  conversation will never be auto-deleted). Renames the conversation.
+- **`POST /claude-ai/conversations/cleanup-test`** sweeps. **Two safety guarantees:** (1) `dryRun` is TRUE
+  unless `dryRun:false` is passed — it only reports matches and deletes nothing; (2) the DEFAULT match set is
+  ONLY conversations with a VALID, EXPIRED `[lm-autodel:…]` TTL (plus explicit `ids`). **A conversation with
+  no / empty / invalid TTL is NEVER swept** unless the caller explicitly opts in via `patterns`. (A TTL value
+  must be a plausible epoch-ms ≥ ~2020; `0`/empty/garbage → treated as no TTL.) Pure `matchTestConversations`
+  + `withAutoDeleteMarker`/`parseAutoDeleteMs`/`stripAutoDeleteMarker` are unit-tested.
 
-Together: create a conv with `autoDeleteHours: 24`, schedule the sweep (`dryRun:false`) daily, and it
-self-cleans. The operator arms (`dryRun:false`) and schedules the sweep — i.e. owns the actual deletion.
+lm-assist's own approval probe now carries a 2h TTL backstop so a lingering probe self-cleans via the sweep.
+Together: create (or update) a conv with a TTL, schedule the sweep (`dryRun:false`) daily, and it self-cleans.
+The operator arms (`dryRun:false`) and schedules the sweep — i.e. owns the actual deletion.
 
 ### claude.ai — `claudeai_completion` tool-drive now works end-to-end (the `backend_execution` flag) (2026-06-21)
 

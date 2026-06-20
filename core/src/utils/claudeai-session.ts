@@ -1694,11 +1694,23 @@ export async function deleteConversation(convUuid: string, opts: { orgUuid?: str
 export const DEFAULT_TEST_CONV_PATTERNS: readonly string[] = ['^lm-assist-approval-probe$'];
 
 const AUTODELETE_RE = /\[lm-autodel:(\d{10,})\]/;
-/** Parse the `[lm-autodel:<expiryMs>]` marker from a conversation name → expiry ms, or null. */
+const AUTODELETE_STRIP_RE = /\s*\[lm-autodel:[^\]]*\]\s*/g;
+// A valid TTL must be a plausible epoch-ms timestamp. Anything below this floor (0, empty, garbage, a
+// stray short number) is treated as NO TTL → the conversation is NEVER auto-deleted by TTL. This is the
+// guard for "empty / null / none-existent TTL should never delete".
+const MIN_TTL_MS = 1_600_000_000_000; // ~2020-09-13
+
+/** Parse the `[lm-autodel:<expiryMs>]` marker → a VALID expiry ms, or null. Returns null when the marker
+ *  is absent, empty, or not a plausible timestamp — those conversations are never swept by TTL. */
 export function parseAutoDeleteMs(name: string): number | null {
   const m = AUTODELETE_RE.exec(String(name || ''));
-  const n = m ? Number(m[1]) : NaN;
-  return Number.isFinite(n) ? n : null;
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n >= MIN_TTL_MS ? n : null;
+}
+/** Remove any `[lm-autodel:…]` marker (even a malformed/empty one) from a name; collapse whitespace. */
+export function stripAutoDeleteMarker(name: string): string {
+  return String(name || '').replace(AUTODELETE_STRIP_RE, ' ').trim();
 }
 /** Append a `[lm-autodel:<expiryMs>]` TTL marker to a name when `hours > 0`; else return it unchanged. */
 export function withAutoDeleteMarker(name: string, hours: number | undefined, nowMs: number): string {
@@ -1735,16 +1747,19 @@ export function matchTestConversations(
   return out;
 }
 
-/** Sweep throwaway/test conversations. SAFE BY DEFAULT: `dryRun` true (the default) only REPORTS what
- *  would be deleted — nothing is deleted unless `dryRun:false` is passed explicitly. `ids` delete
- *  unconditionally; `patterns` (name regexes; default = lm-assist's own probe) match by name + optional
- *  `olderThanHours` age guard. Bounded scan. */
+/** Sweep throwaway/test conversations. SAFE BY DEFAULT in two ways: (1) `dryRun` true (the default) only
+ *  REPORTS what would be deleted — nothing is deleted unless `dryRun:false` is passed; (2) the DEFAULT
+ *  match set is ONLY conversations with an EXPIRED `[lm-autodel:…]` TTL marker (plus any explicit `ids`).
+ *  A conversation with NO / empty / invalid TTL is NEVER swept unless the caller explicitly opts in via
+ *  `patterns` (name regexes, + optional `olderThanHours` age guard). Bounded scan. */
 export async function cleanupTestConversations(opts: {
   dryRun?: boolean; ids?: string[]; patterns?: string[]; olderThanHours?: number; limit?: number; nowMs?: number;
 } = {}): Promise<{ dryRun: boolean; matched: Array<{ uuid: string; name: string }>; deleted: string[]; failed: Array<{ uuid: string; error: string }> }> {
   const dryRun = opts.dryRun !== false; // default TRUE — never deletes unless explicitly told to
   const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000);
-  const patternStrs = (opts.patterns && opts.patterns.length ? opts.patterns : DEFAULT_TEST_CONV_PATTERNS.slice())
+  // No implicit name patterns: the default sweep matches expired-TTL + explicit ids only, so a conv
+  // without a (valid, expired) TTL is never deleted unless the caller passes `patterns` on purpose.
+  const patternStrs = (opts.patterns && opts.patterns.length ? opts.patterns : [])
     .slice(0, 50).map((p) => String(p).slice(0, 200));
   const patterns: RegExp[] = [];
   for (const p of patternStrs) { try { patterns.push(new RegExp(p, 'i')); } catch { /* skip invalid regex */ } }
@@ -1767,6 +1782,25 @@ export async function cleanupTestConversations(opts: {
     }
   }
   return { dryRun, matched: matched.map((m) => ({ uuid: m.uuid, name: m.name })), deleted, failed };
+}
+
+/** Set, update, or CLEAR the auto-delete TTL on an EXISTING conversation by rewriting the `[lm-autodel:…]`
+ *  marker in its name. `hours > 0` → (re)arm the TTL (now + hours); `hours` null/0/undefined → CLEAR it
+ *  (strip the marker, so the conversation will NEVER be auto-deleted). Reads the current name, strips any
+ *  old marker, applies the new one, and renames via setConversationTitle. */
+export async function setConversationAutoDelete(
+  convUuid: string,
+  hours: number | null | undefined,
+  opts: { orgUuid?: string; nowMs?: number } = {},
+): Promise<{ status: number; uuid: string; name: string; autoDeleteAtMs: number | null }> {
+  const conv = await readConversation(convUuid, { orgUuid: opts.orgUuid });
+  if (conv.status >= 400) throw new Error(`read conversation ${convUuid} failed: HTTP ${conv.status}`);
+  const base = stripAutoDeleteMarker(String((conv.body as { name?: string } | null)?.name || ''));
+  const now = opts.nowMs ?? Date.now();
+  const arm = typeof hours === 'number' && hours > 0;
+  const newName = arm ? withAutoDeleteMarker(base, hours as number, now) : base;
+  const r = await setConversationTitle(convUuid, { title: newName, orgUuid: opts.orgUuid });
+  return { status: r.status, uuid: convUuid, name: newName, autoDeleteAtMs: arm ? now + Math.round((hours as number) * 3600_000) : null };
 }
 
 /** GET /api/organizations/{org_uuid}/artifacts/{artifact_uuid}/versions */
@@ -2708,7 +2742,9 @@ export async function discoverApprovalKeys(orgUuidArg?: string): Promise<Approva
   // Create probe conv WITHOUT explicit settings so it inherits
   // account.settings.enabled_mcp_tools (bare keys for every installed tool
   // plus hash keys for tools previously always-approved).
-  const probe = await createConversation({ orgUuid, name: 'lm-assist-approval-probe' });
+  // autoDeleteHours backstop: the probe is best-effort-deleted below, but tag it with a short TTL so a
+  // lingering probe (if that delete fails) self-cleans via the cleanup sweep.
+  const probe = await createConversation({ orgUuid, name: 'lm-assist-approval-probe', autoDeleteHours: 2 });
   if (probe.status >= 400) {
     throw new Error(`probe conversation create failed: ${probe.status} ${probe.statusText}`);
   }
