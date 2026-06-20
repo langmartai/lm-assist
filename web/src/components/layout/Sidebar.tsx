@@ -17,6 +17,7 @@ import {
   Compass,
   Zap,
   Database,
+  Clock,
 } from 'lucide-react';
 import { useExperiment } from '@/hooks/useExperiment';
 import { usePlatform } from '@/hooks/usePlatform';
@@ -31,6 +32,7 @@ const baseNavItems = [
   { href: '/projects', icon: FolderOpen, label: 'Projects' },
   { href: '/knowledge', icon: BookOpen, label: 'Knowledge' },
   { href: '/data', icon: Database, label: 'Data' },
+  { href: '/scheduler', icon: Clock, label: 'Scheduler' },
   { href: '/skills', icon: Zap, label: 'Skills' },
   { href: '/assist-resources', icon: Compass, label: 'Assist Resources' },
   { href: '/machines', icon: Monitor, label: 'Machines' },

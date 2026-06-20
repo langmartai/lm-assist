@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Scheduler — lm-assist's own internal scheduled-jobs system (not OS cron) (2026-06-21)
+
+A self-contained job scheduler that runs INSIDE Core — no crontab/systemd-timers. Periodic Node timers, a
+JSON-persisted job store (`<dataDir>/scheduled-jobs[-dev].json`), and a handler registry. It ticks once a
+minute and compares timestamps (so a long interval is just "elapsed ≥ interval", never an oversized
+`setTimeout` that would overflow Node's 32-bit timer cap). Starts on boot (`cli.ts`), stops on SIGINT/SIGTERM.
+
+- **REST:** `GET /scheduler/jobs`, `GET/PUT/DELETE /scheduler/jobs/:id`, `POST /scheduler/jobs` (create),
+  `POST /scheduler/jobs/:id/run` (manual trigger; `{dryRun:true}` forces a non-destructive preview).
+- **MCP:** `scheduler_jobs` (action = list | get | run | update | create | delete) — connector-string args
+  coerced (enabled/interval_minutes/dry_run); config accepts an object or JSON string.
+- **Web UI:** a new **Scheduler** page (sidebar) — per-job card with enable/disable, interval, Preview run,
+  and (for the cleanup job) an **Arm deletion** toggle gated behind an explicit confirm. Browser-verified.
+- **Built-in job `cleanup-test-conversations`** (runs the `cleanup-test` sweep on a schedule). Ships
+  **DISABLED + `dryRun:true`** — SAFE BY DEFAULT. A dry-run reports what WOULD be deleted; the default match
+  set is only expired-TTL markers + explicit ids. Arming deletion (`enabled:true`, `config.dryRun:false`) is
+  a deliberate operator action. Built-in jobs can't be deleted, only disabled. Pure scheduling logic
+  (`isJobDue`/`nextRunAtMs`/`applyJobResult`/`makeBuiltinJobs`) is unit-tested, incl. the safety invariant.
+
 ### claude.ai — conversation TTL (`autoDeleteHours`) + `cleanup-test` sweeper (safe-by-default) (2026-06-21)
 
 Create-time AND update-time auto-deletion for throwaway conversations, plus the sweep that realizes it:

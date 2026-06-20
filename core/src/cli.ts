@@ -172,6 +172,18 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
       console.log('Knowledge disabled — skipping scheduler');
     }
 
+    // Start the internal scheduled-jobs runner (lm-assist's own cron replacement).
+    // Always starts — its only built-in job (test-conversation cleanup) ships
+    // disabled + dryRun, so this is inert until the user arms a job.
+    let scheduledJobs: any = null;
+    try {
+      const { getScheduledJobs } = require('./scheduler/scheduled-jobs');
+      scheduledJobs = getScheduledJobs();
+      scheduledJobs.start();
+    } catch (err: any) {
+      console.error('Scheduled jobs start failed:', err.message);
+    }
+
     // Start data sync boot (flush timer, reconcile timer, dataset_updated subscription).
     // Guard: hub client is already initialized above; startDataSync() is dormant if
     // dataServiceEnabled=false, so this is always safe to call.
@@ -189,6 +201,7 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
     process.on('SIGINT', async () => {
       console.log('\nShutting down...');
       try { if (knowledgeScheduler) knowledgeScheduler.stop(); } catch {}
+      try { if (scheduledJobs) scheduledJobs.stop(); } catch {}
       if (hubClient) {
         await hubClient.disconnect();
       }
@@ -198,6 +211,7 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
 
     process.on('SIGTERM', async () => {
       try { if (knowledgeScheduler) knowledgeScheduler.stop(); } catch {}
+      try { if (scheduledJobs) scheduledJobs.stop(); } catch {}
       if (hubClient) {
         await hubClient.disconnect();
       }

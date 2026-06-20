@@ -162,6 +162,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   refresh_connector_tools: 'write',
   set_connector_tool_access: 'write',
   set_connector_auto_approve: 'write',
+  scheduler_jobs: 'write',
   agent_abort: 'write',
   agent_resume: 'write',
   terminal_prompt: 'write',

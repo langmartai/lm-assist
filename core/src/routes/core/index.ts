@@ -50,6 +50,7 @@ import { createSessionMessagingRoutes } from './session-messaging.routes';
 import { createTransportRoutes } from './transport.routes';
 import { createRemoteControlRoutes } from './remote-control.routes';
 import { createDataRoutes } from './data.routes';
+import { createSchedulerRoutes } from './scheduler.routes';
 
 /**
  * Create all core routes
@@ -99,5 +100,6 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createTransportRoutes(ctx),
     ...createRemoteControlRoutes(ctx),
     ...createDataRoutes(ctx),
+    ...createSchedulerRoutes(ctx),
   ];
 }
