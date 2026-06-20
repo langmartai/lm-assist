@@ -1179,6 +1179,64 @@ export async function setMcpToolsAccess(
   return { status: res.status, statusText: res.statusText, headers: res.headers, body: { changed, totalKeys: Object.keys(map).length } };
 }
 
+/** Pure: merge the connector tools' always_approved_key (+ enabled_key) into the current
+ *  enabled_mcp_tools map. `enable` true = auto-approve; false = clear it. Tools without an
+ *  always_approved_key are skipped. Never mutates the input map. Exported for tests. */
+export function buildAutoApproveMap(
+  toolObjs: Array<{ name: string; enabled_key?: string; always_approved_key?: string }>,
+  currentMap: Record<string, boolean>,
+  enable: boolean,
+  toolNames?: string[],
+): { map: Record<string, boolean>; changed: string[]; skipped: string[] } {
+  const want = toolNames && toolNames.length ? new Set(toolNames) : null;
+  const map: Record<string, boolean> = { ...currentMap };
+  const changed: string[] = [];
+  const skipped: string[] = [];
+  for (const t of toolObjs) {
+    if (want && !want.has(t.name)) continue;
+    if (!t.always_approved_key) { skipped.push(t.name); continue; }
+    map[t.always_approved_key] = enable;
+    if (enable && t.enabled_key) map[t.enabled_key] = true; // auto-approving implies enabled
+    changed.push(t.name);
+  }
+  return { map, changed, skipped };
+}
+
+/**
+ * Turn ON (or off) per-version "always approve" auto-approval for a connector's MCP tools, so the
+ * model can CALL them without the per-call approval gate. The always_approved_key (`<uuid>:<tool>-
+ * <contentHash>`) is read from the LIVE bootstrap, so it matches claude.ai's CURRENT tool defs — a
+ * stale hash is exactly what makes a driven approval 404. Read-modify-write on enabled_mcp_tools
+ * (PATCH replaces wholesale) — preserves every other setting.
+ */
+export async function setMcpToolsAutoApprove(
+  connectorUuid: string,
+  enable: boolean,
+  toolNames?: string[],
+): Promise<ClaudeAIResponse<{ changed: string[]; skipped: string[]; totalKeys: number }>> {
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(connectorUuid)) {
+    throw new Error(`Invalid MCP server UUID: ${connectorUuid}`);
+  }
+  // Bootstrap → this connector's tool objects (each carries enabled_key + always_approved_key).
+  const boot = await getOrgMcpBootstrap();
+  const events: Array<{ type: string; data: any }> = boot.body?.events || [];
+  let toolObjs: Array<{ name: string; enabled_key?: string; always_approved_key?: string }> = [];
+  for (const e of events) {
+    if (e.type === 'tools' && e.data?.server_uuid === connectorUuid) toolObjs = e.data.tools || [];
+  }
+  if (toolObjs.length === 0) {
+    throw new Error(`No tools found for connector ${connectorUuid} (is it connected? check list_claudeai_connectors).`);
+  }
+  // READ the full current map (PATCH replaces wholesale, so we must round-trip it).
+  const current: Record<string, boolean> = await getEnabledMcpTools();
+  if (Object.keys(current).length === 0) {
+    throw new Error('refusing to write an empty enabled_mcp_tools map (read returned nothing) — would wipe all tool settings');
+  }
+  const { map, changed, skipped } = buildAutoApproveMap(toolObjs, current, enable, toolNames);
+  const res = await patchAccountSettings({ enabled_mcp_tools: map });
+  return { status: res.status, statusText: res.statusText, headers: res.headers, body: { changed, skipped, totalKeys: Object.keys(map).length } };
+}
+
 /**
  * List MCP connectors with status, distilled from the `mcp/v2/bootstrap` SSE.
  *

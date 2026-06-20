@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### claude.ai — `set_connector_auto_approve`: enable "always approve" for a connector's tools (2026-06-21)
+
+New API + MCP tool to turn ON (or off) per-version "always approve" auto-approval for ALL (or named) of a
+claude.ai connector's MCP tools, so they don't prompt for per-call approval — **`set_connector_auto_approve`**
+(MCP) / **`POST /claude-ai/mcp/servers/:uuid/auto-approve`** (REST). lm-assist reads each tool's CURRENT
+always-approved key (`<uuid>:<tool>-<contentHash>`) from the live bootstrap so it matches claude.ai's current
+tool defs, then read-modify-writes `enabled_mcp_tools` (preserving every other setting; refuses an empty
+read). Default target: the langmart connector; default scope: all its tools. Pure core `buildAutoApproveMap`
+is unit-tested.
+
+Note: this smooths approval in the claude.ai web UI. It does NOT by itself unblock the *programmatic*
+`claudeai_completion` drive — verified that even with always-approved set in both the account AND the
+conversation, a script-driven connector-tool `/tool_approval` still 404s (claude.ai's internal `tool_search`
+approves at 204; connector tools don't), an open claude.ai-backend behavior best resolved by one "Allow
+always" in the real web UI.
+
 ### claude.ai — drive connector tool calls from `claudeai_completion` (+ approval bare-key fallback) (2026-06-20)
 
 The MCP `claudeai_completion` tool (and the REST `/claude-ai/conversations/:uuid/completion` route) can
