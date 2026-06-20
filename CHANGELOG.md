@@ -20,6 +20,14 @@ minute and compares timestamps (so a long interval is just "elapsed ≥ interval
   set is only expired-TTL markers + explicit ids. Arming deletion (`enabled:true`, `config.dryRun:false`) is
   a deliberate operator action. Built-in jobs can't be deleted, only disabled. Pure scheduling logic
   (`isJobDue`/`nextRunAtMs`/`applyJobResult`/`makeBuiltinJobs`) is unit-tested, incl. the safety invariant.
+- **Scripted (`shell`) jobs** — a generic handler that runs a command on the schedule (a true cron
+  replacement). `config.command` as a STRING runs via a shell (cron-style pipes/`&&`/redirects); as an
+  ARRAY `[bin, ...args]` runs via `execFile` (no shell, injection-safe). The command is OPERATOR input via
+  the api-token-gated surface — same trust as a crontab line. Bounded timeout (`config.timeoutMs`, clamped
+  1s–10m), 1 MB output cap, truncated one-line result; a dry-run preview reports the command without running
+  it. Create from the web UI (type `shell` + a command textarea) or MCP/REST; jobs start disabled. The web
+  card gains an inline command editor + a confirm-gated **Run now**. `formatShellResult`/`clampTimeoutMs`
+  unit-tested.
 
 ### claude.ai — conversation TTL (`autoDeleteHours`) + `cleanup-test` sweeper (safe-by-default) (2026-06-21)
 

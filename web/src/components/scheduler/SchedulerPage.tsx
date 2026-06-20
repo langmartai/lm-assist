@@ -62,8 +62,10 @@ export function SchedulerPage() {
 
   // Create-job form
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState<{ id: string; type: string; intervalMinutes: string }>({ id: '', type: 'noop', intervalMinutes: '1440' });
+  const [form, setForm] = useState<{ id: string; type: string; intervalMinutes: string; command: string }>({ id: '', type: 'shell', intervalMinutes: '1440', command: '' });
   const [creating, setCreating] = useState(false);
+  // Per-job command draft (editing a shell job's command inline)
+  const [cmdDraft, setCmdDraft] = useState<Record<string, string>>({});
 
   const setBusyFor = (id: string, on: boolean) =>
     setBusy((prev) => { const n = new Set(prev); if (on) n.add(id); else n.delete(id); return n; });
@@ -130,13 +132,20 @@ export function SchedulerPage() {
     setCreating(true);
     setError(null);
     try {
+      const type = form.type.trim() || 'shell';
       const created = await apiFetch<JobView>('/scheduler/jobs', {
         method: 'POST',
-        body: { id: form.id.trim(), type: form.type.trim() || 'noop', intervalMinutes: Number(form.intervalMinutes) || 1440, enabled: false },
+        body: {
+          id: form.id.trim(),
+          type,
+          intervalMinutes: Number(form.intervalMinutes) || 1440,
+          enabled: false,
+          config: type === 'shell' && form.command.trim() ? { command: form.command } : undefined,
+        },
       });
       setJobs((prev) => [...prev, created]);
       setShowCreate(false);
-      setForm({ id: '', type: 'noop', intervalMinutes: '1440' });
+      setForm({ id: '', type: 'shell', intervalMinutes: '1440', command: '' });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -173,17 +182,28 @@ export function SchedulerPage() {
             <label style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>id<br />
               <input className="input" value={form.id} placeholder="my-job" onChange={(e) => setForm({ ...form, id: e.target.value })} />
             </label>
-            <label style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>type (handler)<br />
-              <input className="input" value={form.type} placeholder="noop" onChange={(e) => setForm({ ...form, type: e.target.value })} />
+            <label style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>type<br />
+              <select className="input" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
+                <option value="shell">shell (run a script/command)</option>
+                <option value="noop">noop (placeholder)</option>
+              </select>
             </label>
             <label style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>interval (min)<br />
               <input className="input" type="number" value={form.intervalMinutes} onChange={(e) => setForm({ ...form, intervalMinutes: e.target.value })} style={{ width: 110 }} />
             </label>
+            {form.type === 'shell' && (
+              <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', flexBasis: '100%' }}>command (runs in a shell — pipes/&&/redirects OK)<br />
+                <textarea className="input" value={form.command} placeholder="e.g. cd ~/proj && ./backup.sh" rows={2}
+                  style={{ width: '100%', fontFamily: 'var(--font-mono)', resize: 'vertical' }}
+                  onChange={(e) => setForm({ ...form, command: e.target.value })} />
+              </label>
+            )}
             <button className="btn btn-primary btn-sm" disabled={creating || !form.id.trim()} onClick={createJob}>
               {creating ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : 'Create'}
             </button>
             <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', flexBasis: '100%' }}>
-              Custom jobs start disabled. `type` must be a registered handler (currently <code>cleanup-test-conversations</code>; <code>noop</code> is a placeholder).
+              Jobs start <strong>disabled</strong> — enable + set an interval to schedule. A <code>shell</code> job runs its command
+              on the worker (operator-set, like a crontab line); use <strong>Preview run</strong> to see what would run.
             </span>
           </div>
         )}
@@ -200,6 +220,11 @@ export function SchedulerPage() {
               const isBusy = busy.has(j.id);
               const draft = intervalDraft[j.id] ?? String(j.intervalMinutes);
               const cleanup = j.type === 'cleanup-test-conversations';
+              const shell = j.type === 'shell';
+              const cmdVal = (j.config as { command?: unknown })?.command;
+              const cmdIsArray = Array.isArray(cmdVal);
+              const cmdStr = typeof cmdVal === 'string' ? cmdVal : cmdIsArray ? (cmdVal as string[]).join(' ') : '';
+              const cmdEdit = cmdDraft[j.id];
               return (
                 <div key={j.id} className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
                   {/* Top row */}
@@ -216,7 +241,23 @@ export function SchedulerPage() {
                   {/* Meta */}
                   <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', display: 'flex', flexDirection: 'column', gap: 3 }}>
                     <div>type: <span style={{ fontFamily: 'var(--font-mono)' }}>{j.type}</span></div>
-                    <div>config: <span style={{ fontFamily: 'var(--font-mono)' }}>{JSON.stringify(j.config)}</span></div>
+                    {shell ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <span>command{cmdIsArray ? ' (argv — edit via API/MCP)' : ' (runs in a shell)'}:</span>
+                        <textarea className="input" value={cmdEdit ?? cmdStr} disabled={isBusy || cmdIsArray} rows={2}
+                          placeholder="e.g. cd ~/proj && ./backup.sh"
+                          style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: 12, resize: 'vertical' }}
+                          onChange={(e) => setCmdDraft((p) => ({ ...p, [j.id]: e.target.value }))} />
+                        {!cmdIsArray && cmdEdit !== undefined && cmdEdit !== cmdStr && (
+                          <button className="btn btn-ghost btn-sm" style={{ alignSelf: 'flex-start' }} disabled={isBusy}
+                            onClick={() => { update(j.id, { config: { command: cmdEdit } }); setCmdDraft((p) => { const n = { ...p }; delete n[j.id]; return n; }); }}>
+                            <Save size={13} /> Save command
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <div>config: <span style={{ fontFamily: 'var(--font-mono)' }}>{JSON.stringify(j.config)}</span></div>
+                    )}
                     <div>last run: {fmtTime(j.lastRunAt)}{j.lastStatus ? ` — ${j.lastStatus}: ${j.lastResult}` : ''}</div>
                     <div>next run: {j.enabled && j.intervalMinutes > 0 ? fmtTime(j.nextRunAt) : '— (not scheduled)'}</div>
                     {runResult[j.id] && <div style={{ color: 'var(--color-accent)' }}>{runResult[j.id]}</div>}
@@ -268,15 +309,17 @@ export function SchedulerPage() {
                       <Eye size={13} /> Preview run
                     </button>
 
-                    {/* Real run — only meaningful when armed; needs confirm */}
-                    {armed && (
+                    {/* Real run — for an armed cleanup job (deletes) or any shell job (runs the command). Needs confirm. */}
+                    {(armed || shell) && (
                       confirmRun === j.id ? (
                         <>
-                          <button className="btn btn-destructive btn-sm" disabled={isBusy} onClick={() => run(j.id, false)}>Confirm run (deletes)</button>
+                          <button className="btn btn-destructive btn-sm" disabled={isBusy} onClick={() => run(j.id, false)}>
+                            {armed ? 'Confirm run (deletes)' : 'Confirm run'}
+                          </button>
                           <button className="btn btn-ghost btn-sm" onClick={() => setConfirmRun(null)}>Cancel</button>
                         </>
                       ) : (
-                        <button className="btn btn-destructive btn-sm" disabled={isBusy} onClick={() => setConfirmRun(j.id)} title="Run now and actually delete">
+                        <button className="btn btn-destructive btn-sm" disabled={isBusy} onClick={() => setConfirmRun(j.id)} title={armed ? 'Run now and actually delete' : 'Run the command now'}>
                           <Play size={13} /> Run now
                         </button>
                       )
