@@ -28,6 +28,14 @@ export interface CallCtx { principal: Principal; keyHeader?: string; }
 export type DataResult<T> = { ok: true; value: T } | { ok: false; code: string; reason: string };
 export type PublicKey = Omit<import('./types').AccessKey, 'secretHash'>;
 
+export const MAX_RECORD_BYTES = 1_048_576; // 1 MiB — a single data record's serialized cap
+/** Returns a reason string if the record exceeds the size cap, else undefined. */
+export function recordTooLarge(record: DataRecord): string | undefined {
+  let n = 0;
+  try { n = Buffer.byteLength(JSON.stringify(record) ?? '', 'utf8'); } catch { return 'record is not serializable'; }
+  return n > MAX_RECORD_BYTES ? `record is ${n} bytes; the per-record cap is ${MAX_RECORD_BYTES} bytes` : undefined;
+}
+
 export class DataService {
   private enabledOverride?: boolean; // tests only
   constructor(private deps: { datasets: DatasetRegistry; backends: BackendRegistry; manager: AccessManager; onLocalWrite?: (dataset: string, id: string) => void; peers?: PeerClient }) {}
@@ -133,6 +141,8 @@ export class DataService {
   async put(ctx: CallCtx, datasetId: string, record: DataRecord): Promise<DataResult<{ id: string }>> {
     const a = await this.authorize(ctx, datasetId, 'write');
     if (!a.ok) return a;
+    const tooBig = recordTooLarge(record);
+    if (tooBig) return { ok: false, code: 'RECORD_TOO_LARGE', reason: tooBig };
     const d = this.deps.datasets.get(datasetId)!;
     if ((d as any).origin) return { ok: false, code: 'READ_ONLY_REPLICA', reason: `dataset "${datasetId}" is a remote replica (read-only)` };
     const existing = await a.value.backend!.get(datasetId, record.id);
@@ -233,7 +243,7 @@ export class DataService {
       return { ok: false, code: 'NOT_SUPPORTED', reason: `raw SQL is only available on sql datasets` };
     }
     try {
-      const rows = (backend as any).rawSelect(datasetId, String(sql || ''), Array.isArray(params) ? params : []);
+      const rows = await (backend as any).rawSelect(datasetId, String(sql || ''), Array.isArray(params) ? params : []);
       return { ok: true, value: { rows: scrubValueDeep(rows) as unknown[] } };
     } catch (e) {
       return { ok: false, code: 'SQL_ERROR', reason: e instanceof Error ? e.message : String(e) };

@@ -24,7 +24,7 @@ console.info = console.error.bind(console);
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
-import { configureMcpServer, type McpToolDispatcher } from './configure';
+import { configureMcpServer, type McpToolDispatcher, LM_ASSIST_INSTRUCTIONS } from './configure';
 import {
   ensureCoreApi,
   mcpSearch,
@@ -43,7 +43,7 @@ import { EXPANDED_HANDLERS } from './tools/expanded';
 
 const server = new Server(
   { name: 'lm-assist', version: '2.0.0' },
-  { capabilities: { tools: {} } }
+  { capabilities: { tools: {} }, instructions: LM_ASSIST_INSTRUCTIONS }
 );
 
 // Dispatcher for stdio mode — forwards each tool call to the running core

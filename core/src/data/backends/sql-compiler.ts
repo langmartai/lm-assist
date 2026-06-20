@@ -17,27 +17,34 @@ function colExpr(field: string, indexed: Set<string>, params: unknown[]): string
 }
 
 function opSql(col: string, f: QueryFilter, params: unknown[]): string {
+  // better-sqlite3 can only bind number/string/bigint/buffer/null — a JS boolean throws.
+  // Coerce booleans to 0/1 so a boolean filter behaves like the cache backend instead of crashing.
+  const bind = (v: unknown) => params.push(typeof v === 'boolean' ? (v ? 1 : 0) : v);
   switch (f.op) {
-    case 'eq': params.push(f.value); return `${col} IS ?`;
-    case 'ne': params.push(f.value); return `${col} IS NOT ?`;
-    case 'gt': params.push(f.value); return `${col} > ?`;
-    case 'gte': params.push(f.value); return `${col} >= ?`;
-    case 'lt': params.push(f.value); return `${col} < ?`;
-    case 'lte': params.push(f.value); return `${col} <= ?`;
-    case 'in': {
+    case 'eq': bind(f.value); return `${col} IS ?`;
+    case 'ne': bind(f.value); return `${col} IS NOT ?`;
+    case 'gt': bind(f.value); return `${col} > ?`;
+    case 'gte': bind(f.value); return `${col} >= ?`;
+    case 'lt': bind(f.value); return `${col} < ?`;
+    case 'lte': bind(f.value); return `${col} <= ?`;
+    case 'in': case 'nin': {
       const arr = Array.isArray(f.value) ? f.value : [];
+      const not = f.op === 'nin' ? 'NOT ' : '';
       // Empty IN matches nothing. Still reference `col` (X IN (NULL) → NULL/false) so the json-path
       // param `colExpr` already pushed stays aligned with a placeholder — returning a bare '0' would
       // leave that param dangling and better-sqlite3 would over-bind.
-      if (!arr.length) return `${col} IN (NULL)`;
-      arr.forEach((v) => params.push(v));
-      return `${col} IN (${arr.map(() => '?').join(', ')})`;
+      if (!arr.length) return `${col} ${not}IN (NULL)`;
+      arr.forEach(bind);
+      return `${col} ${not}IN (${arr.map(() => '?').join(', ')})`;
     }
     case 'contains': {
       const v = String(f.value).replace(/[%_\\]/g, '\\$&'); // escape LIKE wildcards in the value
       params.push(`%${v}%`);
       return `${col} LIKE ? ESCAPE '\\'`;
     }
+    case 'wildcard': params.push(String(f.value)); return `${col} GLOB ?`;           // native *,? glob
+    case 'regex': params.push(String(f.value)); return `${col} REGEXP ?`;            // REGEXP fn registered on the connection
+    case 'exists': return f.value === false ? `${col} IS NULL` : `${col} IS NOT NULL`;
     default: throw new Error(`unsupported op "${(f as any).op}"`);
   }
 }

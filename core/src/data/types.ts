@@ -75,8 +75,10 @@ export function isNewer(incoming: { version: number; updatedAt: string; origin?:
 
 export interface QueryFilter {
   field: string;
-  op: 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'contains';
+  op: 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'nin' | 'contains' | 'regex' | 'wildcard' | 'exists';
   value: unknown;
+  /** Regex flags (e.g. "i") for op 'regex'/'wildcard'. Ignored by other ops. */
+  flags?: string;
 }
 export interface QuerySpec {
   filter?: QueryFilter[];

@@ -45,6 +45,8 @@ import { CLAUDE_CODE_USAGE_TOOL_DEFS, CLAUDE_CODE_USAGE_HANDLERS } from './claud
 import { CLAUDEAI_ACTIVE_SESSIONS_TOOL_DEFS, CLAUDEAI_ACTIVE_SESSIONS_HANDLERS } from './claudeai-active-sessions';
 import { BROWSER_TASK_TOOL_DEFS, BROWSER_TASK_HANDLERS } from './browser-task';
 import { REFRESH_CONNECTOR_TOOL_DEFS, REFRESH_CONNECTOR_HANDLERS } from './refresh-connector';
+import { GUIDE_TOOL_DEFS, GUIDE_HANDLERS } from './guide';
+import { SESSION_STATUS_TOOL_DEFS, SESSION_STATUS_HANDLERS } from '../mcp-session-resolver';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -747,6 +749,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...CLAUDEAI_ACTIVE_SESSIONS_TOOL_DEFS,
   ...BROWSER_TASK_TOOL_DEFS,
   ...REFRESH_CONNECTOR_TOOL_DEFS,
+  ...GUIDE_TOOL_DEFS,
+  ...SESSION_STATUS_TOOL_DEFS,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -1353,4 +1357,6 @@ export const EXPANDED_HANDLERS: Record<
   ...CLAUDEAI_ACTIVE_SESSIONS_HANDLERS,
   ...BROWSER_TASK_HANDLERS,
   ...REFRESH_CONNECTOR_HANDLERS,
+  ...GUIDE_HANDLERS,
+  ...SESSION_STATUS_HANDLERS,
 };

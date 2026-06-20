@@ -869,8 +869,9 @@ export function snippetSendMessage(convUuid: string, prompt: string, opts: {
     });
     if (!cr.ok) return { error: 'read_conv_failed', status: cr.status };
     const cj = await cr.json();
-    parent = cj.current_leaf_message_uuid;
-    if (!parent) return { error: 'no_leaf_message_uuid' };
+    // Empty conversation → claude.ai's first-message convention is the all-zero "root" parent,
+    // so create_conversation → completion works on the first turn (no dead-end on empty thread).
+    parent = cj.current_leaf_message_uuid || '00000000-0000-4000-8000-000000000000';
   }
 
   // 2. Generate UUIDs for this turn (UUIDv4)

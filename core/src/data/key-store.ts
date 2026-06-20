@@ -22,8 +22,13 @@ export class KeyStore {
   private keys: Database<AccessKey, string>;
   private audit: Database<AuditEntry, string>;
   private _closed = false;
+  private auditWrites = 0;
+  private readonly maxAudit: number;
+  private readonly auditTrimEvery: number;
 
-  constructor(dirOverride?: string) {
+  constructor(dirOverride?: string, opts?: { maxAudit?: number; auditTrimEvery?: number }) {
+    this.maxAudit = opts?.maxAudit ?? 50000;
+    this.auditTrimEvery = opts?.auditTrimEvery ?? 1000;
     const dir = dirOverride || keysDir();
     const parentDir = path.dirname(dir);
     if (!fs.existsSync(parentDir)) fs.mkdirSync(parentDir, { recursive: true });
@@ -53,6 +58,28 @@ export class KeyStore {
   async appendAudit(e: AuditEntry): Promise<void> {
     // monotonic-ish key: timestamp + random suffix avoids collisions within the same ms
     await this.audit.put(`${e.at}-${crypto.randomUUID()}`, e);
+    if (++this.auditWrites % this.auditTrimEvery === 0) await this.trimAudit();
+  }
+
+  /** Ring-buffer: drop the oldest audit rows beyond maxAudit + sweep long-expired keys. Awaited so growth is bounded. */
+  private async trimAudit(): Promise<void> {
+    try {
+      let count = 0;
+      for (const _ of this.audit.getKeys()) count++;                 // portable count (runs only every auditTrimEvery)
+      const over = count - this.maxAudit;
+      const dels: Array<Promise<boolean>> = [];
+      if (over > 0) {
+        const oldest: string[] = [];
+        for (const key of this.audit.getKeys({ limit: over })) oldest.push(key as string); // keys are time-ordered → oldest first
+        for (const k of oldest) dels.push(this.audit.remove(k));
+      }
+      const nowMs = Date.now();
+      for (const { key, value } of this.keys.getRange()) {
+        const exp = (value as AccessKey).expiresAt;
+        if (exp && Date.parse(exp) < nowMs - 86_400_000) dels.push(this.keys.remove(key as string)); // purge keys expired >1d ago
+      }
+      await Promise.all(dels);
+    } catch { /* best-effort; never break the request path */ }
   }
 
   listAudit(): AuditEntry[] {
