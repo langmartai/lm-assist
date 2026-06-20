@@ -9,11 +9,17 @@ export interface ConnectorRef { uuid: string; url: string; name: string; connect
 export interface ToolDef { name: string; description?: string; inputSchema?: unknown }
 export interface SpaTool {
   name: string; description: string; integration_name: string;
-  mcp_server_uuid: string; mcp_server_url: string; input_schema: unknown;
+  mcp_server_uuid: string; mcp_server_url: string;
+  needs_approval: boolean; backend_execution: boolean; is_mcp_app: boolean;
+  input_schema: unknown;
 }
 
 /** Map worker tool defs → claude.ai SPA tool entries for one connector. `names` (if given) restricts
- *  the set; otherwise the connector's own advertised tool list is used; otherwise all defs. */
+ *  the set; otherwise the connector's own advertised tool list is used; otherwise all defs.
+ *  CRITICAL: each entry MUST carry `backend_execution: true` + `needs_approval: false` + `is_mcp_app:
+ *  false` — without them claude.ai doesn't know to route the call to the connector and the driven
+ *  tool's `/tool_approval` 404s ("Tool result could not be submitted"). (Verified 2026-06-21: adding
+ *  these flipped data_catalog from 404 → 200 + real result. See the pure-script-mcp-e2e memory.) */
 export function buildConnectorToolsArray(connector: ConnectorRef, toolDefs: ToolDef[], names?: string[]): SpaTool[] {
   const allow = names && names.length ? new Set(names)
     : (connector.tools && connector.tools.length ? new Set(connector.tools) : null);
@@ -25,6 +31,9 @@ export function buildConnectorToolsArray(connector: ConnectorRef, toolDefs: Tool
       integration_name: connector.name || 'lm-assist',
       mcp_server_uuid: connector.uuid,
       mcp_server_url: connector.url,
+      needs_approval: false,
+      backend_execution: true,
+      is_mcp_app: false,
       input_schema: t.inputSchema ?? { type: 'object', properties: {} },
     }));
 }
