@@ -627,7 +627,10 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
       throw new Error(`Failed to read conversation for current_leaf_message_uuid: ${conv.status}`);
     }
     parent = (conv.body as any)?.current_leaf_message_uuid;
-    if (!parent) throw new Error('Conversation has no current_leaf_message_uuid (empty thread?)');
+    // Empty conversation (no messages yet): claude.ai's convention for the FIRST message is the
+    // all-zero "root" parent. Fall back to it so create_conversation → completion works on the
+    // first turn instead of dead-ending on an empty thread.
+    if (!parent) parent = '00000000-0000-4000-8000-000000000000';
   }
 
   // Generate client-side UUIDs for this turn. Real Chrome uses UUIDv7
