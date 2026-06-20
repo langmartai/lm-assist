@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### claude.ai — drive connector tool calls from `claudeai_completion` (+ approval bare-key fallback) (2026-06-20)
+
+The MCP `claudeai_completion` tool (and the REST `/claude-ai/conversations/:uuid/completion` route) can
+now DRIVE a claude.ai conversation to CALL lm-assist connector tools, not just chat:
+
+- New params **`enable_connector_tools`** (true = all the langmart connector's tools, or a list of tool
+  names), **`auto_approve_tools`** (default ON when enabling), and a raw **`tools`** passthrough.
+  lm-assist builds the claude.ai SPA tools array from the worker's own tool defs + the discovered
+  connector identity (`listMcpRemoteServers` + `buildConnectorToolsArray`), so callers don't hand-craft
+  it. Previously the tool sent `tools:[]`, so a driven model replied *"those tools aren't exposed to me
+  here."*
+- **Approval bare-key fallback:** `approveToolUse` now retries `/tool_approval` with the bare
+  `<srv>:<tool>` key when the hash-suffixed key 4xxs (a stale content-hash — e.g. after a connector
+  refresh changes tool defs) — previously a stale hash dead-ended with no recovery.
+
+Known limitation: connector-tool auto-approval needs claude.ai's CURRENT per-tool content-hash; a
+`refresh_connector_tools` invalidates the account's always-approved hash until the connector re-syncs (or
+a one-off UI approval re-establishes it), so a driven tool call can 404 at the approval step until then.
+
 ### MCP connector skill + precise session identification — bootstrap / guide / session_status (2026-06-20)
 
 The langmart MCP connector now ships its own "skill" so an LLM is proactively capability-aware even when
