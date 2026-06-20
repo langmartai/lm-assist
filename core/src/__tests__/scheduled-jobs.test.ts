@@ -5,6 +5,8 @@ import {
   nextRunAtMs,
   applyJobResult,
   makeBuiltinJobs,
+  formatShellResult,
+  clampTimeoutMs,
   type ScheduledJob,
 } from '../scheduler/scheduled-jobs';
 
@@ -83,6 +85,41 @@ test('applyJobResult defaults a missing status to ok', () => {
 });
 
 // ── SAFETY: the built-in cleanup job ships inert ───────────────
+// ── scripted ("shell") jobs ────────────────────────────────────
+test('clampTimeoutMs: clamps to [1000, 600000], default 60000, accepts numeric string', () => {
+  assert.equal(clampTimeoutMs(undefined), 60000);
+  assert.equal(clampTimeoutMs(500), 1000); // floor
+  assert.equal(clampTimeoutMs(99_999_999), 600_000); // ceil
+  assert.equal(clampTimeoutMs(30_000), 30_000);
+  assert.equal(clampTimeoutMs('45000'), 45_000); // connector delivers numbers as strings
+  assert.equal(clampTimeoutMs('garbage'), 60_000); // fallback to default
+});
+
+test('formatShellResult: exit 0 → ok, keeps the output tail', () => {
+  const r = formatShellResult({ code: 0, stdout: 'l1\nl2\nl3\nl4', stderr: '', timedOut: false });
+  assert.equal(r.status, 'ok');
+  assert.match(r.result, /exit 0/);
+  assert.match(r.result, /l4/); // last line kept
+});
+
+test('formatShellResult: nonzero exit → error, includes stderr', () => {
+  const r = formatShellResult({ code: 2, stdout: '', stderr: 'boom', timedOut: false });
+  assert.equal(r.status, 'error');
+  assert.match(r.result, /exit 2/);
+  assert.match(r.result, /boom/);
+});
+
+test('formatShellResult: timeout → error and says so', () => {
+  const r = formatShellResult({ code: null, stdout: '', stderr: '', timedOut: true });
+  assert.equal(r.status, 'error');
+  assert.match(r.result, /timed out/i);
+});
+
+test('formatShellResult: truncates very long output', () => {
+  const r = formatShellResult({ code: 0, stdout: 'x'.repeat(5000), stderr: '', timedOut: false });
+  assert.ok(r.result.length < 600, `result should be truncated, got ${r.result.length}`);
+});
+
 test('SAFETY: the cleanup-test-conversations built-in ships DISABLED + dryRun', () => {
   const builtins = makeBuiltinJobs(NOW);
   const cleanup = builtins.find((j) => j.id === 'cleanup-test-conversations');

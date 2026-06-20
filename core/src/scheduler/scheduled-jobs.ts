@@ -99,6 +99,34 @@ export function applyJobResult(job: ScheduledJob, outcome: JobRunOutcome, nowMs:
   };
 }
 
+// ── Scripted ("shell") job helpers (unit-tested) ──────────────────────────────
+
+const SHELL_TIMEOUT_DEFAULT_MS = 60_000;
+const SHELL_TIMEOUT_MIN_MS = 1_000;
+const SHELL_TIMEOUT_MAX_MS = 600_000;
+const SHELL_RESULT_MAX = 400;
+
+/** Clamp a configured timeout (number or numeric string — the connector stringifies) to a sane range. */
+export function clampTimeoutMs(v: unknown): number {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN;
+  if (!Number.isFinite(n)) return SHELL_TIMEOUT_DEFAULT_MS;
+  return Math.min(SHELL_TIMEOUT_MAX_MS, Math.max(SHELL_TIMEOUT_MIN_MS, Math.round(n)));
+}
+
+/** Render a finished shell command into a one-line job outcome (exit code + truncated output tail). */
+export function formatShellResult(r: { code: number | null; stdout: string; stderr: string; timedOut: boolean }): JobRunOutcome {
+  if (r.timedOut) {
+    return { result: `timed out after ${SHELL_TIMEOUT_MAX_MS / 1000}s max`, status: 'error' };
+  }
+  const code = r.code ?? 0;
+  const body = (r.stdout || '').trim() || (r.stderr || '').trim();
+  const tail = body.split('\n').slice(-3).join(' | ').slice(0, SHELL_RESULT_MAX);
+  return {
+    result: `exit ${code}${tail ? `: ${tail}` : ''}`,
+    status: code === 0 ? 'ok' : 'error',
+  };
+}
+
 /** The built-in jobs, seeded on first load. All ship inert (disabled). */
 export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
   const at = iso(nowMs);
@@ -153,6 +181,45 @@ class ScheduledJobs {
   }
 
   private registerDefaults(): void {
+    if (this.handlers.has('shell')) return;
+
+    // Generic scripted job — runs a command on the schedule (a true cron replacement).
+    //
+    // SECURITY MODEL: `config.command` is OPERATOR input, set only through the api-token-gated
+    // REST/MCP/UI surface — the same trust level as editing one's own crontab. It is NOT third-party
+    // input and is never interpolated into a larger command (the operator's whole command IS what runs).
+    // Two forms:
+    //   - command as a STRING  → run via a shell (exec) so cron-style pipes/redirects/&&/globs work.
+    //     This is the deliberate "I want shell features" path; the string is operator-trusted.
+    //   - command as an ARRAY [bin, ...args] → run via execFile (NO shell) — injection-safe; metacharacters
+    //     in args are literal. Prefer this when you don't need a shell.
+    // Disabled by default like a fresh cron entry; bounded timeout + truncated output; dryRun previews it.
+    this.registerHandler('shell', async (config, ctx) => {
+      const argv = Array.isArray(config.command) && config.command.every((x: unknown) => typeof x === 'string')
+        ? (config.command as string[]).filter((s) => s.length > 0)
+        : null;
+      const cmdStr = typeof config.command === 'string' ? config.command.trim() : '';
+      if (!argv?.length && !cmdStr) return { result: 'no command configured', status: 'skipped' };
+      const display = argv?.length ? argv.join(' ') : cmdStr;
+      if (ctx.dryRunForced) {
+        return { result: `dry-run: would run \`${display.slice(0, 200)}\``, status: 'ok' };
+      }
+      const cwd = typeof config.cwd === 'string' && config.cwd ? config.cwd : undefined;
+      const timeout = clampTimeoutMs(config.timeoutMs);
+      const opts = { cwd, timeout, maxBuffer: 1024 * 1024, windowsHide: true };
+      const cp = require('child_process');
+      return await new Promise<JobRunOutcome>((resolve) => {
+        const done = (err: any, stdout: string, stderr: string) => {
+          const timedOut = !!err && (err.killed || err.signal === 'SIGTERM') && err.code == null;
+          const code = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
+          resolve(formatShellResult({ code: timedOut ? null : code, stdout: stdout || '', stderr: stderr || '', timedOut }));
+        };
+        // argv form → execFile (no shell, injection-safe). string form → exec (operator-trusted shell line).
+        const child = argv?.length ? cp.execFile(argv[0], argv.slice(1), opts, done) : cp.exec(cmdStr, opts, done);
+        child.on?.('error', (e: any) => resolve({ result: `spawn failed: ${e?.message || e}`, status: 'error' }));
+      });
+    });
+
     if (this.handlers.has('cleanup-test-conversations')) return;
     this.registerHandler('cleanup-test-conversations', async (config, ctx) => {
       // Lazy require to avoid a static import cycle (claudeai-session is large).
