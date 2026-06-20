@@ -7,6 +7,12 @@ import type { Principal } from '../data/types';
 
 export interface McpCallContext {
   principal: Principal;
+  /**
+   * The calling conversation's tool_use block id (`toolu_…`), lifted from the request's
+   * `_meta["claudecode/toolUseId"]`. Present when the MCP client (Claude Code) tags the call;
+   * lets the session resolver pin the EXACT caller session instead of guessing by recency.
+   */
+  toolUseId?: string;
 }
 
 const storage = new AsyncLocalStorage<McpCallContext>();

@@ -6,13 +6,18 @@ import type {
   StorageBackend, BackendKind, DatasetDescriptor, DataRecord, QuerySpec, NodeOrigin,
 } from '../types';
 import { isNewer } from '../types';
-import { applyQuery } from './query-filter';
+import { applyQuery, matches } from './query-filter';
+
+// Hard cap on rows a single cache query/export materializes — bounds the worst-case
+// synchronous stall on the shared event loop when a caller-grown dataset is large.
+export const CACHE_MAX_SCAN = 50000;
 import { cacheDirFor } from '../paths';
 
 interface Env { root: RootDatabase; db: Database<DataRecord, string>; }
 
 export class CacheBackend implements StorageBackend {
   readonly kind: BackendKind = 'cache';
+  maxScan = CACHE_MAX_SCAN;
   private envs = new Map<string, Env>();
   private baseDirOverride?: string;
 
@@ -41,7 +46,7 @@ export class CacheBackend implements StorageBackend {
     const e = this.envs.get(id);
     if (e) { e.root.close(); this.envs.delete(id); }
     const dir = this.dirFor(id);
-    if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+    for (const f of [dir, `${dir}-lock`]) { if (fs.existsSync(f)) fs.rmSync(f, { recursive: true, force: true }); }
   }
 
   async put(dataset: string, record: DataRecord): Promise<{ id: string }> {
@@ -53,11 +58,30 @@ export class CacheBackend implements StorageBackend {
     return this.envFor(dataset).db.get(id) ?? null;
   }
 
-  async query(dataset: string, q: QuerySpec): Promise<{ records: DataRecord[]; total?: number }> {
+  async query(dataset: string, q: QuerySpec): Promise<{ records: DataRecord[]; total?: number; scanTruncated?: boolean }> {
     const { db } = this.envFor(dataset);
+    // No sort: stream-filter and keep only the requested page — never materialize the whole DB.
+    if (!q.sort?.length) {
+      const offset = q.offset ?? 0;
+      const limit = q.limit;
+      const out: DataRecord[] = [];
+      let total = 0, scanned = 0, truncated = false;
+      for (const { value } of db.getRange()) {
+        const r = value as DataRecord;
+        if (!q.filter?.length || q.filter.every((f) => matches(r, f))) {
+          if (total >= offset && (limit == null || out.length < limit)) out.push(r);
+          total++;
+        }
+        if (++scanned >= this.maxScan) { truncated = true; break; }
+      }
+      return truncated ? { records: out, total, scanTruncated: true } : { records: out, total };
+    }
+    // Sort path must materialize, but still bounded by maxScan.
     const rows: DataRecord[] = [];
-    for (const { value } of db.getRange()) rows.push(value as DataRecord);
-    return applyQuery(rows, q);
+    let truncated = false;
+    for (const { value } of db.getRange()) { rows.push(value as DataRecord); if (rows.length >= this.maxScan) { truncated = true; break; } }
+    const res = applyQuery(rows, q);
+    return truncated ? { ...res, scanTruncated: true } : res;
   }
 
   async delete(dataset: string, id: string): Promise<boolean> {
@@ -73,6 +97,7 @@ export class CacheBackend implements StorageBackend {
     for (const { value } of db.getRange()) {
       const r = value as DataRecord;
       if (!since || r.updatedAt >= since) rows.push(r);
+      if (rows.length >= this.maxScan) break; // backstop; watermark loop fetches the rest next tick
     }
     rows.sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0));
     return rows;

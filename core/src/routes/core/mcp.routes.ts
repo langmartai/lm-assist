@@ -29,7 +29,7 @@ import { runWithMcpContext } from '../../mcp-server/principal-context';
 import { getDataService } from '../../data/data-service';
 import type { ParsedRequest } from '../index';
 
-import { configureMcpServer, type McpToolDispatcher } from '../../mcp-server/configure';
+import { configureMcpServer, type McpToolDispatcher, LM_ASSIST_INSTRUCTIONS } from '../../mcp-server/configure';
 import { handleSearch } from '../../mcp-server/tools/search';
 import { handleDetail } from '../../mcp-server/tools/detail';
 import { handleFeedback } from '../../mcp-server/tools/feedback';
@@ -72,7 +72,7 @@ export const dispatch: McpToolDispatcher = async (name, args) => {
 function buildServer(): Server {
   const server = new Server(
     { name: 'lm-assist', version: '2.0.0' },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {} }, instructions: LM_ASSIST_INSTRUCTIONS },
   );
   configureMcpServer(server, dispatch);
   return server;
@@ -173,6 +173,16 @@ export async function handleMcpRequest(
     // ungated → fall through to normal dispatch
   }
 
+  // The connector tags each tool call with the calling conversation's tool_use id in
+  // `_meta["claudecode/toolUseId"]` (a `toolu_…`, verified live). Lift it here so the session
+  // resolver can pin the EXACT caller session (bootstrap/session_status) instead of guessing by
+  // recency. Read from the raw body — robust whether or not the SDK preserves `_meta` downstream.
+  const callerToolUseId = ((): string | undefined => {
+    const m = (body as any)?.params?._meta;
+    const v = m && (m['claudecode/toolUseId'] ?? m.toolUseId);
+    return typeof v === 'string' ? v : undefined;
+  })();
+
   const server = buildServer();
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
@@ -189,7 +199,7 @@ export async function handleMcpRequest(
 
   try {
     await server.connect(transport);
-    await runWithMcpContext({ principal }, () => transport.handleRequest(req, res, body));
+    await runWithMcpContext({ principal, toolUseId: callerToolUseId }, () => transport.handleRequest(req, res, body));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (!res.headersSent) {
