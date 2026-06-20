@@ -7,6 +7,7 @@ import {
   makeBuiltinJobs,
   formatShellResult,
   clampTimeoutMs,
+  applyShellTemplate,
   type ScheduledJob,
 } from '../scheduler/scheduled-jobs';
 
@@ -107,6 +108,13 @@ test('formatShellResult: nonzero exit → error, includes stderr', () => {
   assert.equal(r.status, 'error');
   assert.match(r.result, /exit 2/);
   assert.match(r.result, /boom/);
+});
+
+test('applyShellTemplate substitutes {{dryRun}} with the boolean (so a toggle can flip it, no hand-editing)', () => {
+  assert.equal(applyShellTemplate('curl -d {"dryRun":{{dryRun}}}', true), 'curl -d {"dryRun":true}');
+  assert.equal(applyShellTemplate('curl -d {"dryRun":{{dryRun}}}', false), 'curl -d {"dryRun":false}');
+  assert.equal(applyShellTemplate('a {{ dryRun }} b {{dryRun}}', false), 'a false b false'); // inner spaces + multiple
+  assert.equal(applyShellTemplate('no template here', true), 'no template here');
 });
 
 test('formatShellResult: timeout → error and says so', () => {
