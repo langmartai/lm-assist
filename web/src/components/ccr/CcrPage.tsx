@@ -2,9 +2,10 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import {
-  MonitorPlay, RefreshCw, Loader2, Eye, Radio, Cast, Square, ExternalLink, X, AlertTriangle, Copy, Check,
+  MonitorPlay, RefreshCw, Loader2, Eye, Radio, Cast, Square, ExternalLink, X, AlertTriangle, Copy, Check, Maximize2,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
+import { CcrSessionView } from './CcrSessionView';
 
 type Mode = 'load' | 'mirror' | 'connect';
 
@@ -58,6 +59,7 @@ export function CcrPage() {
   const [confirmConnect, setConfirmConnect] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<string | null>(null); // sessionId whose embedded view is open
   const setBusyFor = (k: string, on: boolean) => setBusy((p) => { const n = new Set(p); on ? n.add(k) : n.delete(k); return n; });
   const copyUrl = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setCopied(url); setTimeout(() => setCopied((c) => (c === url ? null : c)), 1500); } catch { /* clipboard blocked */ }
@@ -119,6 +121,18 @@ export function CcrPage() {
       )}
 
       <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
+        {/* Embedded session view (claude.ai can't be iframed, so we render it natively) */}
+        {viewing && (
+          <div style={{ marginBottom: 18 }}>
+            <CcrSessionView
+              sessionId={viewing}
+              driveable={!!sessions.find((s) => s.sessionId === viewing)?.driveable || !!sessions.find((s) => s.sessionId === viewing)?.verdict?.live}
+              apiFetch={apiFetch}
+              onClose={() => setViewing(null)}
+            />
+          </div>
+        )}
+
         {/* Active remotes */}
         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 8 }}>
           Active remotes {remotes.length ? `(${remotes.length})` : ''}
@@ -141,6 +155,7 @@ export function CcrPage() {
                       {copied === r.webUrl ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy URL</>}
                     </button>
                   )}
+                  {r.sessionId && <button className={`btn btn-sm ${viewing === r.sessionId ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setViewing(viewing === r.sessionId ? null : r.sessionId)} title="View the session here (embedded)"><Maximize2 size={13} /> View</button>}
                   {r.webUrl && <a className="btn btn-ghost btn-sm" href={r.webUrl} target="_blank" rel="noreferrer" title="Open (may launch the Claude app via the claude.ai/code deep-link handler)"><ExternalLink size={13} /> Open</a>}
                   <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => stop(r.id)} title="Stop bridge">
                     {isBusy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <><Square size={12} /> Stop</>}
@@ -183,6 +198,9 @@ export function CcrPage() {
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <button className={`btn btn-sm ${viewing === s.sessionId ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setViewing(viewing === s.sessionId ? null : s.sessionId)} title="View this session here (embedded) — read + drive">
+                      <Maximize2 size={13} /> View here
+                    </button>
                     {(['load', 'mirror'] as Mode[]).map((m) => {
                       const M = MODE_META[m]; const Icon = M.icon; const can = allowed(m);
                       return (

@@ -15,10 +15,17 @@
   package (and every prod install) lacked `ccr/` — `ccr_load`/`mirror`/`connect` failed with
   `MODULE_NOT_FOUND` on prod. Added `ccr` to `files`; deploys must sync `ccr/` alongside `core/dist`.
   Verified end-to-end on prod after deploying it (load → claude.ai/code URL → list → stop).
-- **Web UI — a new "CCR Remote" page** (sidebar): lists active CCR bridges (mode badge, session, Open URL,
-  Stop) and the host's Claude Code sessions (project, status, tmux, connectStrategy verdict) with per-session
-  **Load / Mirror / Connect** buttons (Mirror/Connect gated by `allowedModes`; Connect is confirm-gated and
-  shows the strategy; a `refuse` verdict is surfaced). Browser-verified: Load → bridge appears → Open/Stop.
+- **Web UI — a new "CCR Remote" page** (sidebar): lists active CCR bridges (mode badge, session, URL,
+  **Copy URL**, **Open**, Stop) and the host's Claude Code sessions (project, status, tmux, connectStrategy
+  verdict) with per-session **Load / Mirror / Connect** buttons (Mirror/Connect gated by `allowedModes`;
+  Connect is confirm-gated and shows the strategy; a `refuse` verdict is surfaced). Browser-verified.
+- **Embedded session view + drive (`CcrSessionView`).** claude.ai sends `x-frame-options: SAMEORIGIN`, so the
+  `claude.ai/code` page CANNOT be iframed cross-origin (and the OS deep-links it to the Claude app). Instead,
+  **View here** renders the bridged session NATIVELY inside the CCR page — a live conversation (auto-refresh
+  from `/sessions/:id/conversation`, tool calls shown) plus a **Drive** box that injects a prompt into the
+  running session via `POST /session-messages` (`send_session_message`, category `guided`), gated on the
+  session being driveable. Same content the claude.ai page mirrors, no iframe/app. Browser-verified end-to-end
+  (view → drive → turn count incremented).
 
 ### Scheduler — the built-in delete job is now DIRECT-ID-ONLY (no matching of any kind) (2026-06-21)
 
