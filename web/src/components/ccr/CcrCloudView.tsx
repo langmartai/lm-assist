@@ -23,15 +23,27 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose }: {
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
 
+  const seqRef = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++seqRef.current; // guard: a slower/older response must not overwrite a newer one
     try {
       const r = await apiFetch<{ messages?: CloudMsg[] }>(`/ccr/cloud/${encodeURIComponent(sid)}`);
+      if (seq !== seqRef.current) return; // a newer load started — drop this stale result
       setMessages(r.messages || []); setErr(null);
-    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
-    finally { setLoading(false); }
+    } catch (e) { if (seq === seqRef.current) setErr(e instanceof Error ? e.message : String(e)); }
+    finally { if (seq === seqRef.current) setLoading(false); }
   }, [apiFetch, sid]);
 
-  useEffect(() => { load(); if (!live) return; const t = setInterval(load, 5000); return () => clearInterval(t); }, [load, live]);
+  // Stable 5s poll via a ref — apiFetch/apiClient identity churn (hybrid/proxy mode) must not reset
+  // the interval and fire overlapping fetches that race and show stale data.
+  const loadRef = useRef(load);
+  useEffect(() => { loadRef.current = load; }, [load]);
+  useEffect(() => {
+    loadRef.current();
+    if (!live) return;
+    const t = setInterval(() => loadRef.current(), 5000);
+    return () => clearInterval(t);
+  }, [live, sid]);
   useEffect(() => { const el = scrollRef.current; if (el && atBottomRef.current) el.scrollTop = el.scrollHeight; });
 
   const send = useCallback(async () => {

@@ -32,20 +32,34 @@ export function CcrSessionView({ sessionId, driveable, tmuxSession, apiFetch, on
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
 
+  const seqRef = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++seqRef.current; // guard: a slower/older response must not overwrite a newer one
     try {
       const r = await apiFetch<{ messages?: Msg[]; thinkingBlocks?: Think[]; model?: string; numTurns?: number; sessionInfo?: { status?: string } }>(
         `/sessions/${encodeURIComponent(sessionId)}/conversation?lastN=40&toolDetail=full`,
       );
+      if (seq !== seqRef.current) return; // a newer load started — drop this stale result
       setMessages(r.messages || []);
       setThinking(r.thinkingBlocks || []);
       setInfo({ model: r.model, numTurns: r.numTurns, status: r.sessionInfo?.status });
       setErr(null);
-    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
-    finally { setLoading(false); }
+    } catch (e) { if (seq === seqRef.current) setErr(e instanceof Error ? e.message : String(e)); }
+    finally { if (seq === seqRef.current) setLoading(false); }
   }, [apiFetch, sessionId]);
 
-  useEffect(() => { load(); if (!live) return; const t = setInterval(load, 5000); return () => clearInterval(t); }, [load, live]);
+  // Poll on a STABLE 5s interval that always calls the latest `load` via a ref. Keying the interval
+  // on `load`/`apiFetch` identity (which churns in hybrid/proxy mode) made the effect re-run every
+  // few seconds, firing OVERLAPPING fetches whose out-of-order arrival showed stale data ("not
+  // updating sometimes"). The ref decouples the cadence from that churn.
+  const loadRef = useRef(load);
+  useEffect(() => { loadRef.current = load; }, [load]);
+  useEffect(() => {
+    loadRef.current();
+    if (!live) return;
+    const t = setInterval(() => loadRef.current(), 5000);
+    return () => clearInterval(t);
+  }, [live, sessionId]);
   useEffect(() => { const el = scrollRef.current; if (el && atBottomRef.current) el.scrollTop = el.scrollHeight; });
 
   // interleave messages + thinking by line position (the transcript order claude.ai renders)
