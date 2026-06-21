@@ -52,3 +52,38 @@ test('rejects link-local / cloud-metadata hubUrls even over ws', () => {
     assert.throws(() => decodeKeypack(bad), /not allowed/);
   }
 });
+// --- SSRF hardening v2: complete the internal-range denylist (the prefix check missed these) ---
+test('rejects RFC1918 / CGNAT / other-cloud-metadata / IPv6-internal IP-literal hubUrls', () => {
+  for (const url of [
+    'ws://10.0.0.1', 'ws://10.255.255.255:8086', 'ws://172.16.0.1', 'ws://172.31.255.1',
+    'wss://192.168.1.1', 'ws://100.64.0.1', 'ws://100.100.100.200', // Alibaba metadata (in 100.64/10)
+    'ws://192.0.0.192',                                              // Oracle metadata (192.0.0.0/24)
+    'ws://0.0.0.0', 'ws://[fc00::1]', 'wss://[fe80::1]',
+    'ws://[::ffff:169.254.169.254]',                                 // IPv4-mapped link-local
+    'ws://[::ffff:10.0.0.1]',                                        // IPv4-mapped RFC1918
+  ]) {
+    const bad = 'lmkp_' + Buffer.from(JSON.stringify({ v: 1, hubUrl: url, token: 'x' })).toString('base64url');
+    assert.throws(() => decodeKeypack(bad), /not allowed/, `should reject ${url}`);
+  }
+});
+test('rejects the metadata hostname with a trailing-dot bypass', () => {
+  const bad = 'lmkp_' + Buffer.from(JSON.stringify({ v: 1, hubUrl: 'ws://metadata.google.internal.', token: 'x' })).toString('base64url');
+  assert.throws(() => decodeKeypack(bad), /not allowed/);
+});
+test('rejects alternative IP encodings that normalize to internal (decimal/hex/octal/IPv4-mapped-hex)', () => {
+  for (const url of [
+    'ws://0xA9FEA9FE',            // hex → 169.254.169.254
+    'ws://0251.0376.0251.0376',  // octal → 169.254.169.254
+    'ws://[::ffff:a9fe:a9fe]',   // hex IPv4-mapped → 169.254.169.254
+    'ws://[0:0:0:0:0:ffff:0a00:0001]', // expanded IPv4-mapped → 10.0.0.1
+  ]) {
+    const bad = 'lmkp_' + Buffer.from(JSON.stringify({ v: 1, hubUrl: url, token: 'x' })).toString('base64url');
+    assert.throws(() => decodeKeypack(bad), /not allowed/, `should reject ${url}`);
+  }
+});
+test('still ACCEPTS loopback (dev) + public hubUrls (no over-block)', () => {
+  for (const url of ['ws://localhost:8086', 'ws://127.0.0.1:8086', 'wss://[::1]:8086', 'wss://assist-api.langmart.ai', 'wss://203.0.113.5']) {
+    const k = { v: 1 as const, hubUrl: url, token: 't'.repeat(8) };
+    assert.deepEqual(decodeKeypack(encodeKeypack(k)), k, `should accept ${url}`);
+  }
+});
