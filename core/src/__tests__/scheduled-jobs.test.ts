@@ -239,8 +239,9 @@ test('SAFETY: the cleanup-test-conversations built-in ships DISABLED + dryRun', 
   assert.equal(cleanup!.config.dryRun, true, 'ships dryRun=true — never deletes until armed');
   assert.equal(cleanup!.builtin, true, 'flagged builtin so it cannot be deleted, only disabled');
   assert.equal(cleanup!.type, 'cleanup-test-conversations');
-  // TTL-only by design: the seed config carries no name patterns or explicit ids, so the auto-delete
-  // sweep can only ever touch the verified auto-delete list (expired [lm-autodel:…] markers).
-  assert.equal(cleanup!.config.patterns, undefined, 'no name patterns — TTL-verified list only');
-  assert.equal(cleanup!.config.ids, undefined, 'no explicit ids — TTL-verified list only');
+  // ID-only by design: the ONLY delete mechanism is a direct uuid match against the verified list
+  // (config.ids). The seed has an empty list and NO name patterns, so it can never delete anything by
+  // matching — a conversation is removed only if its exact id was added.
+  assert.deepEqual(cleanup!.config.ids, [], 'seeds an empty verified id list — the only delete mechanism');
+  assert.equal(cleanup!.config.patterns, undefined, 'no name patterns — direct id match only');
 });

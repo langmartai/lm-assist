@@ -2,15 +2,15 @@
 
 ## [Unreleased]
 
-### Scheduler — the built-in auto-delete job is now TTL-VERIFIED-only by design (2026-06-21)
+### Scheduler — the built-in delete job is now DIRECT-ID-ONLY (no matching of any kind) (2026-06-21)
 
-The built-in `cleanup-test-conversations` (auto-delete) job now manages **only the verified auto-delete list** —
-conversations carrying a valid, EXPIRED `[lm-autodel:…]` TTL marker (a TTL the operator explicitly set). Its
-handler **ignores name patterns and explicit ids entirely**, so an armed/scheduled run can never delete a
-conversation that wasn't itself marked for auto-deletion. (Curated id/pattern deletes belong to a separate
-`shell` job that calls `/claude-ai/conversations/cleanup-test` directly.) Renamed to "Auto-delete expired
-conversations"; seed config drops ids/patterns/olderThanHours (unit-tested: the built-in seeds with no
-patterns/ids). This makes the job safe to keep armed for a daily sweep.
+The built-in `cleanup-test-conversations` job now deletes **only the exact conversation ids in its verified
+list** (`config.ids`), by **direct uuid match**. The handler does **NO name / pattern / TTL matching
+whatsoever** — a conversation is deleted only if its exact id was added to the list; an empty list deletes
+nothing. ids are uuid-validated; a 404 counts as "already gone", not a failure. Renamed to "Delete verified
+conversation IDs"; seed config is `{ dryRun:true, ids:[] }` (unit-tested: empty id list, no patterns). This
+makes an armed/scheduled run incapable of ever deleting a conversation that wasn't explicitly verified by id.
+(Earlier iterations allowed name patterns, then TTL markers; this removes all fuzzy matching.)
 
 ### Scheduler — one-time jobs + MCP scheduling modes (one-time / recurring / trigger; dry/real/test) (2026-06-21)
 
