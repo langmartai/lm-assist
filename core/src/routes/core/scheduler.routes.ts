@@ -63,6 +63,8 @@ export function createSchedulerRoutes(_ctx: RouteContext): RouteHandler[] {
         }
         const job = getScheduledJobs().upsertJob({
           id: b.id,
+          name: typeof b.name === 'string' ? b.name : undefined,
+          description: typeof b.description === 'string' ? b.description : undefined,
           type: typeof b.type === 'string' ? b.type : 'noop',
           enabled: typeof b.enabled === 'boolean' ? b.enabled : false,
           intervalMinutes: typeof b.intervalMinutes === 'number' ? b.intervalMinutes : undefined,
@@ -72,7 +74,7 @@ export function createSchedulerRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // PUT /scheduler/jobs/:id — update enabled / interval / config
+    // PUT /scheduler/jobs/:id — update name / description / enabled / interval / config
     {
       method: 'PUT',
       pattern: /^\/scheduler\/jobs\/(?<id>[^/?]+)$/,
@@ -84,6 +86,8 @@ export function createSchedulerRoutes(_ctx: RouteContext): RouteHandler[] {
         const b = req.body || {};
         const job = getScheduledJobs().upsertJob({
           id,
+          name: typeof b.name === 'string' ? b.name : undefined,
+          description: typeof b.description === 'string' ? b.description : undefined,
           enabled: typeof b.enabled === 'boolean' ? b.enabled : undefined,
           intervalMinutes: typeof b.intervalMinutes === 'number' ? b.intervalMinutes : undefined,
           config: sanitizeConfig(b.config),
@@ -92,17 +96,34 @@ export function createSchedulerRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // POST /scheduler/jobs/:id/run — run now (manual trigger, bypasses the interval gate)
+    // POST /scheduler/jobs/:id/run — run now. Body: { dryRun?: true (force preview), test?: true (verify run —
+    // captures full output but doesn't advance the schedule / run count) }. Returns the job with `lastRun`
+    // (exitCode, durationMs, stdout, stderr) so the caller can verify the result.
     {
       method: 'POST',
       pattern: /^\/scheduler\/jobs\/(?<id>[^/?]+)\/run$/,
       handler: async (req) => {
         const id = req.params.id;
         const b = req.body || {};
-        // dryRun:true forces a non-destructive preview even on an armed job.
-        const job = await getScheduledJobs().runJob(id, { force: true, dryRunForced: b.dryRun === true });
+        const job = await getScheduledJobs().runJob(id, {
+          force: true,
+          dryRunForced: b.dryRun === true,
+          trigger: b.test === true ? 'test' : 'manual',
+        });
         if (!job) return { success: false, error: { code: 'NOT_FOUND', message: `No job "${id}"` } };
         return { success: true, data: job };
+      },
+    },
+
+    // GET /scheduler/jobs/:id/logs — run history (newest first)
+    {
+      method: 'GET',
+      pattern: /^\/scheduler\/jobs\/(?<id>[^/?]+)\/logs$/,
+      handler: async (req) => {
+        const id = req.params.id;
+        if (!getScheduledJobs().getJob(id)) return { success: false, error: { code: 'NOT_FOUND', message: `No job "${id}"` } };
+        const logs = getScheduledJobs().getLogs(id);
+        return { success: true, data: { id, logs, count: logs.length } };
       },
     },
 

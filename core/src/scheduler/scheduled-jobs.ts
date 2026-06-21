@@ -31,20 +31,51 @@ import { getDataDir, isDevRepo } from '../utils/path-utils';
 
 export type JobStatus = 'ok' | 'error' | 'skipped';
 
+/** Why a run happened — gates conditions + scheduling effects. */
+export type JobTrigger = 'schedule' | 'manual' | 'test';
+
+/** A full capture of one execution (for display + history). */
+export interface JobRunRecord {
+  at: string;                 // ISO timestamp
+  status: JobStatus;          // ok | error | skipped
+  result: string;            // one-line summary
+  trigger: JobTrigger;
+  exitCode?: number | null;   // for shell jobs
+  durationMs?: number;
+  stdout?: string;            // captured (bounded)
+  stderr?: string;            // captured (bounded)
+  condition?: string;         // note about a runIf guard evaluation (when present)
+}
+
 export interface ScheduledJob {
   /** Stable id. Built-in ids are reserved (e.g. 'cleanup-test-conversations'). */
   id: string;
+  /** Human-readable display name (falls back to id). */
+  name?: string;
+  /** What the job does — shown in the UI / MCP listing. */
+  description?: string;
   /** Handler key in the registry (built-ins set this to their id). */
   type: string;
   /** Master on/off. Built-ins ship disabled. */
   enabled: boolean;
   /** Run cadence in minutes. <=0 means "paused" (never fires even if enabled). */
   intervalMinutes: number;
-  /** Handler-specific options (e.g. { dryRun, ids, patterns, olderThanHours }). */
+  /**
+   * Handler-specific options + execution conditions:
+   *   command/cwd/timeoutMs/dryRun (shell), ids/patterns/... (cleanup)
+   *   runIf?: string  — a guard command; a SCHEDULED run only fires if it exits 0
+   *   maxRuns?: number — stop auto-running after this many successful runs (0 = no cap)
+   */
   config: Record<string, any>;
   lastRunAt: string | null;
   lastResult: string | null;
   lastStatus: JobStatus | null;
+  /** Full capture of the most recent run (stdout/stderr/exit/duration). */
+  lastRun?: JobRunRecord | null;
+  /** Bounded history of recent runs (newest first). */
+  runLog?: JobRunRecord[];
+  /** How many real (non-test, non-skipped) runs have executed — drives maxRuns. */
+  runCount?: number;
   /** Built-in jobs cannot be deleted (only disabled/configured). */
   builtin: boolean;
   createdAt: string;
@@ -54,9 +85,12 @@ export interface ScheduledJob {
 export interface JobRunOutcome {
   result: string;
   status?: JobStatus;
+  exitCode?: number | null;
+  stdout?: string;
+  stderr?: string;
 }
 
-/** A handler receives the job's config and a ctx flag, and returns a one-line outcome. */
+/** A handler receives the job's config and a ctx flag, and returns an outcome. */
 export type JobHandler = (
   config: Record<string, any>,
   ctx: { dryRunForced: boolean },
@@ -68,10 +102,32 @@ export type ScheduledJobView = ScheduledJob & { nextRunAt: string | null; isRunn
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 
-/** Is this job due to run at nowMs? Disabled / paused / not-yet-elapsed → false. */
+const RUN_LOG_MAX = 20;
+const CAPTURE_MAX = 8_000; // per-stream stdout/stderr cap for storage
+
+/** Cap a string for storage/display, noting how much was dropped. */
+export function truncate(s: string, max: number): string {
+  if (typeof s !== 'string') return '';
+  return s.length <= max ? s : `${s.slice(0, max)}… (+${s.length - max} more)`;
+}
+
+/** Prepend the newest record and bound the ring (newest first). Pure. */
+export function pushRunLog(log: JobRunRecord[] | undefined, rec: JobRunRecord, max = RUN_LOG_MAX): JobRunRecord[] {
+  return [rec, ...(Array.isArray(log) ? log : [])].slice(0, max);
+}
+
+/** Has this job hit its run cap? Only when config.maxRuns is a positive number. */
+export function reachedMaxRuns(job: ScheduledJob): boolean {
+  const max = Number(job.config?.maxRuns);
+  if (!Number.isFinite(max) || max <= 0) return false;
+  return (job.runCount ?? 0) >= max;
+}
+
+/** Is this job due to run at nowMs? Disabled / paused / capped / not-yet-elapsed → false. */
 export function isJobDue(job: ScheduledJob, nowMs: number): boolean {
   if (!job.enabled) return false;
   if (!job.intervalMinutes || job.intervalMinutes <= 0) return false;
+  if (reachedMaxRuns(job)) return false; // hit its run cap
   if (!job.lastRunAt) return true; // never run → due immediately
   const last = Date.parse(job.lastRunAt);
   if (Number.isNaN(last)) return true; // unparseable timestamp → treat as never-run
@@ -95,6 +151,27 @@ export function applyJobResult(job: ScheduledJob, outcome: JobRunOutcome, nowMs:
     lastRunAt: iso(nowMs),
     lastResult: outcome.result,
     lastStatus: outcome.status ?? 'ok',
+    updatedAt: iso(nowMs),
+  };
+}
+
+/**
+ * Apply a full run record: capture it as lastRun, ring it into runLog, update the summary fields,
+ * and count real runs. A 'test' run is a verification — it does NOT advance the schedule clock or
+ * the run count (so it never disturbs scheduling or trips maxRuns). A 'skipped' run doesn't count
+ * either. Pure — returns a new job.
+ */
+export function applyRun(job: ScheduledJob, record: JobRunRecord, nowMs: number): ScheduledJob {
+  const isTest = record.trigger === 'test';
+  const counts = !isTest && record.status !== 'skipped';
+  return {
+    ...job,
+    lastRunAt: isTest ? job.lastRunAt : iso(nowMs),
+    lastResult: record.result,
+    lastStatus: record.status,
+    lastRun: record,
+    runLog: pushRunLog(job.runLog, record),
+    runCount: (job.runCount ?? 0) + (counts ? 1 : 0),
     updatedAt: iso(nowMs),
   };
 }
@@ -133,6 +210,9 @@ export function formatShellResult(r: { code: number | null; stdout: string; stde
   return {
     result: `exit ${code}${tail ? `: ${tail}` : ''}`,
     status: code === 0 ? 'ok' : 'error',
+    exitCode: code,
+    stdout: truncate(r.stdout || '', CAPTURE_MAX),
+    stderr: truncate(r.stderr || '', CAPTURE_MAX),
   };
 }
 
@@ -142,6 +222,8 @@ export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
   return [
     {
       id: 'cleanup-test-conversations',
+      name: 'Clean up test conversations',
+      description: 'Sweeps throwaway claude.ai conversations (expired auto-delete TTL + explicit ids). Ships disabled + dry-run; arm with config.dryRun=false.',
       type: 'cleanup-test-conversations',
       enabled: false, // SAFE BY DEFAULT — the user arms it
       intervalMinutes: 1440, // daily, once armed
@@ -288,15 +370,20 @@ class ScheduledJobs {
       const existing = this.jobs.get(j.id);
       if (existing?.builtin) {
         // Preserve the built-in's identity/type/builtin flag; take the user's
-        // saved enabled/interval/config + last-run state.
+        // saved enabled/interval/config + last-run state + run history.
         this.jobs.set(j.id, {
           ...existing,
+          name: typeof j.name === 'string' ? j.name : existing.name,
+          description: typeof j.description === 'string' ? j.description : existing.description,
           enabled: !!j.enabled,
           intervalMinutes: typeof j.intervalMinutes === 'number' ? j.intervalMinutes : existing.intervalMinutes,
           config: { ...existing.config, ...(j.config || {}) },
           lastRunAt: j.lastRunAt ?? existing.lastRunAt,
           lastResult: j.lastResult ?? existing.lastResult,
           lastStatus: j.lastStatus ?? existing.lastStatus,
+          lastRun: j.lastRun ?? existing.lastRun,
+          runLog: Array.isArray(j.runLog) ? j.runLog : existing.runLog,
+          runCount: typeof j.runCount === 'number' ? j.runCount : existing.runCount,
           updatedAt: j.updatedAt || existing.updatedAt,
         });
       } else {
@@ -351,44 +438,95 @@ class ScheduledJobs {
   }
 
   /**
-   * Run one job now. `force` bypasses the interval gate (manual trigger).
-   * `dryRunForced` makes a destructive handler preview-only regardless of config.
+   * Run one job now. `force` = a manual trigger (bypasses the interval gate AND execution conditions —
+   * the user explicitly asked). `trigger:'test'` = a verification run that captures full output but does
+   * NOT advance the schedule clock or run count. `dryRunForced` makes a templated/destructive handler
+   * preview-only. The tick calls with no opts → trigger 'schedule' (conditions apply).
    */
-  async runJob(id: string, opts: { force?: boolean; dryRunForced?: boolean } = {}): Promise<ScheduledJobView | null> {
+  async runJob(
+    id: string,
+    opts: { force?: boolean; dryRunForced?: boolean; trigger?: JobTrigger } = {},
+  ): Promise<ScheduledJobView | null> {
     this.load();
     const job = this.jobs.get(id);
     if (!job) return null;
     if (this.running.has(id)) return this.viewOf(job);
-    if (!opts.force && !opts.dryRunForced && !job.enabled) {
-      // A non-forced run of a disabled job is a no-op (the tick path already gates on enabled).
-      return this.viewOf(job);
-    }
+    const trigger: JobTrigger = opts.trigger || (opts.force ? 'manual' : 'schedule');
+    if (trigger === 'schedule' && !job.enabled) return this.viewOf(job); // disabled → no-op on a tick
 
-    const handler = this.handlers.get(job.type);
     this.running.add(id);
+    const start = Date.now();
+    let conditionNote: string | undefined;
     try {
-      let outcome: JobRunOutcome;
-      if (!handler) {
-        outcome = { result: `no handler registered for type "${job.type}"`, status: 'error' };
-      } else {
-        outcome = await handler(job.config || {}, { dryRunForced: !!opts.dryRunForced });
+      // Execution conditions gate AUTOMATIC (scheduled) runs only — an explicit run/test bypasses them.
+      if (trigger === 'schedule') {
+        if (reachedMaxRuns(job)) {
+          return this.finishRun(job, { at: iso(start), status: 'skipped', trigger, durationMs: 0,
+            result: `skipped: reached maxRuns (${job.config?.maxRuns})` });
+        }
+        const runIf = typeof job.config?.runIf === 'string' ? job.config.runIf.trim() : '';
+        if (runIf) {
+          const g = await this.evalGuard(runIf, job.config?.cwd, job.config?.timeoutMs);
+          conditionNote = `runIf exit ${g.code}${g.output ? `: ${g.output}` : ''}`;
+          if (!g.ok) {
+            return this.finishRun(job, { at: iso(start), status: 'skipped', trigger, durationMs: Date.now() - start,
+              result: `skipped: condition not met (runIf exit ${g.code})`, condition: conditionNote });
+          }
+        }
       }
-      const updated = applyJobResult(job, outcome, Date.now());
-      this.jobs.set(id, updated);
-      this.persist();
-      console.log(`[ScheduledJobs] ran "${id}": ${outcome.result}`);
-      this.running.delete(id); // clear before viewOf so the returned snapshot isn't stale
-      return this.viewOf(updated);
+      const handler = this.handlers.get(job.type);
+      const outcome: JobRunOutcome = handler
+        ? await handler(job.config || {}, { dryRunForced: !!opts.dryRunForced })
+        : { result: `no handler registered for type "${job.type}"`, status: 'error' };
+      return this.finishRun(job, {
+        at: iso(start), status: outcome.status ?? 'ok', result: outcome.result, trigger,
+        exitCode: outcome.exitCode, durationMs: Date.now() - start,
+        stdout: outcome.stdout, stderr: outcome.stderr, condition: conditionNote,
+      });
     } catch (e: any) {
-      const updated = applyJobResult(job, { result: `Error: ${e?.message || e}`, status: 'error' }, Date.now());
-      this.jobs.set(id, updated);
-      this.persist();
-      console.error(`[ScheduledJobs] job "${id}" failed: ${e?.message || e}`);
-      this.running.delete(id);
-      return this.viewOf(updated);
+      return this.finishRun(job, { at: iso(start), status: 'error', trigger, durationMs: Date.now() - start,
+        result: `Error: ${e?.message || e}`, condition: conditionNote });
     } finally {
       this.running.delete(id); // safety net (idempotent on a Set)
     }
+  }
+
+  /** Persist a finished run record onto the job and return a fresh view. */
+  private finishRun(job: ScheduledJob, record: JobRunRecord): ScheduledJobView {
+    const updated = applyRun(job, record, Date.now());
+    this.jobs.set(job.id, updated);
+    this.persist();
+    this.running.delete(job.id); // clear before viewOf so the snapshot isn't stale
+    const tag = record.trigger === 'test' ? 'tested' : record.status === 'skipped' ? 'skipped' : 'ran';
+    console.log(`[ScheduledJobs] ${tag} "${job.id}": ${record.result}`);
+    return this.viewOf(updated);
+  }
+
+  /** Run a guard command (config.runIf); a scheduled job only fires when it exits 0. */
+  private async evalGuard(command: string, cwd?: unknown, timeoutMs?: unknown): Promise<{ ok: boolean; code: number; output: string }> {
+    const cp = require('child_process');
+    const opts = {
+      cwd: typeof cwd === 'string' && cwd ? cwd : undefined,
+      timeout: clampTimeoutMs(timeoutMs),
+      maxBuffer: 256 * 1024,
+      windowsHide: true,
+    };
+    return await new Promise((resolve) => {
+      try {
+        cp.exec(command, opts, (err: any, stdout: string, stderr: string) => {
+          const code = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
+          resolve({ ok: code === 0, code, output: ((stdout || '').trim() || (stderr || '').trim()).slice(0, 200) });
+        });
+      } catch (e: any) {
+        resolve({ ok: false, code: 1, output: `guard spawn failed: ${e?.message || e}` });
+      }
+    });
+  }
+
+  /** The run-log history (newest first), or [] if none. */
+  getLogs(id: string): JobRunRecord[] {
+    this.load();
+    return this.jobs.get(id)?.runLog ?? [];
   }
 
   private viewOf(job: ScheduledJob): ScheduledJobView {
@@ -418,6 +556,8 @@ class ScheduledJobs {
     if (existing) {
       const updated: ScheduledJob = {
         ...existing,
+        name: typeof patch.name === 'string' ? patch.name : existing.name,
+        description: typeof patch.description === 'string' ? patch.description : existing.description,
         enabled: typeof patch.enabled === 'boolean' ? patch.enabled : existing.enabled,
         intervalMinutes:
           typeof patch.intervalMinutes === 'number' ? patch.intervalMinutes : existing.intervalMinutes,
@@ -432,6 +572,8 @@ class ScheduledJobs {
     }
     const created: ScheduledJob = {
       id: patch.id,
+      name: typeof patch.name === 'string' ? patch.name : undefined,
+      description: typeof patch.description === 'string' ? patch.description : undefined,
       type: patch.type || 'noop',
       enabled: typeof patch.enabled === 'boolean' ? patch.enabled : false,
       intervalMinutes: typeof patch.intervalMinutes === 'number' ? patch.intervalMinutes : 1440,
@@ -439,6 +581,9 @@ class ScheduledJobs {
       lastRunAt: null,
       lastResult: null,
       lastStatus: null,
+      lastRun: null,
+      runLog: [],
+      runCount: 0,
       builtin: false,
       createdAt: iso(now),
       updatedAt: iso(now),

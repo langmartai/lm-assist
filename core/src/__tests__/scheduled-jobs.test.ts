@@ -8,7 +8,12 @@ import {
   formatShellResult,
   clampTimeoutMs,
   applyShellTemplate,
+  truncate,
+  pushRunLog,
+  reachedMaxRuns,
+  applyRun,
   type ScheduledJob,
+  type JobRunRecord,
 } from '../scheduler/scheduled-jobs';
 
 const NOW = Date.parse('2026-06-21T12:00:00Z');
@@ -83,6 +88,73 @@ test('applyJobResult advances lastRunAt and records the outcome', () => {
 test('applyJobResult defaults a missing status to ok', () => {
   const updated = applyJobResult(job({}), { result: 'done' }, NOW);
   assert.equal(updated.lastStatus, 'ok');
+});
+
+// ── run capture: truncate / runLog / conditions / applyRun ─────
+test('truncate caps a string and notes how much was dropped', () => {
+  assert.equal(truncate('hello', 10), 'hello');
+  assert.equal(truncate('hello world', 5), 'hello… (+6 more)');
+  assert.equal(truncate('', 5), '');
+  assert.equal(truncate(undefined as any, 5), '');
+});
+
+test('pushRunLog prepends newest and bounds the ring', () => {
+  const rec = (i: number): JobRunRecord => ({ at: `t${i}`, status: 'ok', result: `r${i}`, trigger: 'schedule' });
+  let log = pushRunLog(undefined, rec(1), 3);
+  log = pushRunLog(log, rec(2), 3);
+  log = pushRunLog(log, rec(3), 3);
+  log = pushRunLog(log, rec(4), 3); // overflow drops the oldest
+  assert.deepEqual(log.map((r) => r.result), ['r4', 'r3', 'r2']); // newest first, max 3
+});
+
+test('reachedMaxRuns: only caps when config.maxRuns is a positive number', () => {
+  assert.equal(reachedMaxRuns(job({ config: {}, runCount: 99 })), false); // no cap
+  assert.equal(reachedMaxRuns(job({ config: { maxRuns: 3 }, runCount: 2 })), false);
+  assert.equal(reachedMaxRuns(job({ config: { maxRuns: 3 }, runCount: 3 })), true);
+  assert.equal(reachedMaxRuns(job({ config: { maxRuns: 0 }, runCount: 5 })), false); // 0 = no cap
+});
+
+test('isJobDue: a job that hit maxRuns is no longer due', () => {
+  const j = job({ enabled: true, intervalMinutes: 60, lastRunAt: null, config: { maxRuns: 2 }, runCount: 2 });
+  assert.equal(isJobDue(j, NOW), false);
+  assert.equal(isJobDue(job({ enabled: true, intervalMinutes: 60, lastRunAt: null, config: { maxRuns: 2 }, runCount: 1 }), NOW), true);
+});
+
+test('applyRun records the full record, rings the log, and counts real runs', () => {
+  const j = job({ lastRunAt: null, runCount: 0 });
+  const rec: JobRunRecord = { at: 'x', status: 'ok', result: 'done', trigger: 'manual', exitCode: 0, durationMs: 12, stdout: 'out' };
+  const u = applyRun(j, rec, NOW);
+  assert.equal(u.lastRun!.result, 'done');
+  assert.equal(u.lastResult, 'done');
+  assert.equal(u.lastStatus, 'ok');
+  assert.equal(Date.parse(u.lastRunAt!), NOW);   // manual advances the schedule clock
+  assert.equal(u.runCount, 1);                    // real run counts
+  assert.equal(u.runLog!.length, 1);
+});
+
+test('applyRun: a TEST run does not disturb the schedule clock or runCount', () => {
+  const j = job({ lastRunAt: '2026-06-20T00:00:00.000Z', runCount: 4 });
+  const rec: JobRunRecord = { at: 'x', status: 'ok', result: 'verified', trigger: 'test' };
+  const u = applyRun(j, rec, NOW);
+  assert.equal(u.lastRunAt, '2026-06-20T00:00:00.000Z'); // unchanged — test doesn't advance schedule
+  assert.equal(u.runCount, 4);                            // test doesn't count toward maxRuns
+  assert.equal(u.lastRun!.result, 'verified');            // but it IS captured + logged
+  assert.equal(u.runLog!.length, 1);
+});
+
+test('applyRun: a SKIPPED run does not count toward maxRuns', () => {
+  const u = applyRun(job({ runCount: 1 }), { at: 'x', status: 'skipped', result: 'condition not met', trigger: 'schedule' }, NOW);
+  assert.equal(u.runCount, 1);
+});
+
+test('formatShellResult also returns exitCode + truncated stdout/stderr', () => {
+  const r = formatShellResult({ code: 0, stdout: 'the output', stderr: '', timedOut: false });
+  assert.equal(r.exitCode, 0);
+  assert.equal(r.stdout, 'the output');
+  const big = formatShellResult({ code: 1, stdout: 'x'.repeat(20000), stderr: 'err', timedOut: false });
+  assert.ok((big.stdout || '').length < 9000, 'stdout is bounded for storage');
+  assert.equal(big.exitCode, 1);
+  assert.equal(big.stderr, 'err');
 });
 
 // ── SAFETY: the built-in cleanup job ships inert ───────────────
