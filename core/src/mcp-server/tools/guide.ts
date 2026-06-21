@@ -15,6 +15,7 @@ const TOPIC_TOOLS: Record<string, string[]> = {
   data: ['data_catalog', 'data_request_access', 'data_get', 'data_query', 'data_search', 'data_put', 'data_delete', 'data_create_dataset', 'data_drop_dataset', 'data_keys', 'data_revoke_key', 'data_sync', 'data_sync_status', 'data_admin'],
   agents: ['agent_execute', 'agent_resume', 'agent_abort', 'get_execution', 'list_executions', 'browser_task'],
   terminals: ['terminal_open_tab', 'terminal_list', 'terminal_capture', 'terminal_prompt', 'terminal_slash', 'terminal_interrupt', 'send_session_message', 'get_message_status', 'cc_sessions', 'windows_terminal_create', 'windows_terminal_list', 'windows_terminal_send', 'windows_terminal_capture', 'windows_terminal_state', 'windows_terminal_launch', 'windows_terminal_close', 'windows_terminal_auto_handle'],
+  ccr: ['ccr_preflight', 'ccr_load', 'ccr_mirror', 'ccr_connect', 'ccr_remote_list', 'ccr_remote_stop', 'cc_sessions'],
   nodes: ['list_nodes', 'open_port_forward', 'close_port_forward', 'list_port_forwards', 'port_forward_stats'],
   'claude-ai': ['list_claudeai_conversations', 'read_conversation', 'claudeai_create_conversation', 'claudeai_completion', 'delete_conversation', 'claudeai_list_marketplaces', 'claudeai_list_marketplace_plugins', 'claudeai_list_plugins', 'claudeai_add_marketplace', 'claudeai_remove_marketplace', 'claudeai_set_plugin_enabled', 'list_claudeai_connectors', 'refresh_connector_tools', 'set_connector_tool_access'],
   account: ['auth_status', 'claude_code_usage', 'claude_code_account', 'claudeai_account', 'claudeai_active_sessions'],
@@ -164,6 +165,23 @@ Windows-specific (when the generic route isn't enough): \`windows_terminal_*\` (
 CROSS-NODE: pass \`node=B\` to open/capture/drive a terminal on host B, or to send_session_message into a session on host B.
 GOTCHA: driving a WINDOWS session/terminal needs that host's Core in interactive Session 1; "pending/no driver" = nothing delivered.`,
 
+  ccr: `# Guide: CCR — view or DRIVE a Claude Code session from claude.ai/code
+WHAT: bridge a Claude Code session on a node to the claude.ai/code web UI so you can watch it or drive it remotely. Three modes — each spawns a detached bridge and returns a https://claude.ai/code/session_… web URL:
+• ccr_load(session_id | jsonl) — READ-ONLY replay: load a session's transcript into a fresh claude.ai/code session (disconnected). Works on ANY session (live or finished). No side effects on the session — the safe default for "just show me".
+• ccr_mirror(session_id) — ONE-WAY live mirror: streams a RUNNING session to claude.ai/code as it grows. View-only (not drivable).
+• ccr_connect(session_id) — TWO-WAY control: DRIVE the session from claude.ai/code. SAFETY-GATED (see step 4).
+
+OPERATE FLOW
+1. FIND the session: cc_sessions (live Claude Code sessions on the host, each with an ownership verdict) or list_recent_sessions (history). Take its session_id (a UUID).
+2. PREFLIGHT before connecting: ccr_preflight(session_id) → { live, owner, inTmux, tmuxSession, allowedModes:[load|mirror|connect], connectStrategy }. Read-only, no side effects — ALWAYS call it before ccr_connect.
+3. PICK the mode by intent + the verdict's allowedModes: look at any session → ccr_load · watch a running one → ccr_mirror · DRIVE it → ccr_connect (only when allowedModes includes "connect").
+4. ccr_connect SAFETY GATE (connectStrategy): attach-existing = attaches the tmux already running it; create-tmux = nothing live owns it, so it spawns a NEW "claude --resume" tmux; refuse = a live NON-tmux process owns the storage, so it REFUSES with error CONFLICT rather than double-write the append-only .jsonl (which would corrupt the transcript). Never force past a refuse — load/mirror it instead.
+5. OPEN the returned webUrl to view/drive in the browser.
+6. MANAGE bridges: ccr_remote_list → running remotes (id, mode, webUrl, live); ccr_remote_stop(id) → tear one down (stops the bridge; only kills a tmux WE created, never the user's existing one).
+
+CROSS-NODE: pass node=<host> (after list_nodes) to operate on a session living on another machine.
+GOLDEN RULE: load is always safe; connect = preflight first and respect the verdict — the gate protects a live session's transcript from corruption.`,
+
   nodes: `# Guide: machines (nodes) + port-forward
 SINGLE + CROSS NODE
 1. \`list_nodes\` → every host behind this connector (hostId, hostname, platform, online, default).
@@ -212,6 +230,7 @@ const ALIASES: Record<string, string> = {
   memory: 'knowledge', search: 'knowledge',
   agent: 'agents', execute: 'agents', run: 'agents', browser: 'agents',
   terminal: 'terminals', tmux: 'terminals', message: 'terminals', windows: 'terminals',
+  ccr: 'ccr', remote: 'ccr', mirror: 'ccr', 'claude-code-remote': 'ccr', drive: 'ccr', 'remote-control': 'ccr',
   node: 'nodes', host: 'nodes', machine: 'nodes', 'port-forward': 'nodes', ports: 'nodes',
   claudeai: 'claude-ai', 'claude.ai': 'claude-ai', connector: 'claude-ai', connectors: 'claude-ai',
   auth: 'account', usage: 'account', oauth: 'account',
@@ -229,6 +248,7 @@ const BLURB: Record<string, string> = {
   knowledge: 'search the knowledge base + cross-project/cross-host memory; give feedback',
   agents: 'run / resume / monitor a Claude Code agent remotely (incl. browser control)',
   terminals: 'drive a terminal or inject a prompt into a running session (Linux/mac/Windows)',
+  ccr: 'CCR — view/drive a Claude Code session from claude.ai/code (load=replay, mirror=live view, connect=two-way; safety-gated)',
   nodes: 'list hosts, target a specific machine, port-forward',
   'claude-ai': "read/operate the user's claude.ai web account + manage this connector's tools",
   account: 'Claude Code OAuth + claude.ai account / usage / active sessions (per node)',
@@ -257,7 +277,7 @@ const INDEX = buildIndex();
 
 /** The whole skill in ONE response — every playbook concatenated (stays in sync with GUIDES). */
 function buildBootstrap(): string {
-  const order = ['orientation', 'cross-node', 'workflows', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'nodes', 'claude-ai', 'account', 'github', 'files'];
+  const order = ['orientation', 'cross-node', 'workflows', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'github', 'files'];
   const header = [
     '# lm-assist — capability bootstrap (you have now loaded ALL use cases for this session)',
     '',
@@ -299,7 +319,7 @@ export const GUIDE_TOOL_DEFS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        topic: { type: 'string' as const, description: 'A use-case (cross-node|workflows|sessions|knowledge|data|agents|terminals|nodes|claude-ai|account|github|files), a tool name, or "index". Omit for the index.' },
+        topic: { type: 'string' as const, description: 'A use-case (cross-node|workflows|sessions|knowledge|data|agents|terminals|ccr|nodes|claude-ai|account|github|files), a tool name, or "index". Omit for the index.' },
       },
       required: [] as string[],
     },
