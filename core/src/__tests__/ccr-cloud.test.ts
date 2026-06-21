@@ -33,6 +33,13 @@ test('buildCreateBody: bundle seed → seed_bundle_file_id, empty sources', () =
   assert.equal(b.events[0].data.session_id, ''); // empty on create
 });
 
+test('buildCreateBody: no prompt → empty events (boots & waits to be driven)', () => {
+  const b = buildCreateBody({ model: 'm', environmentId: 'env_y', sources: [] });
+  assert.deepEqual(b.events, []);
+  const b2 = buildCreateBody({ prompt: '   ', model: 'm', environmentId: 'env_y' });
+  assert.deepEqual(b2.events, []); // whitespace-only is also "no prompt"
+});
+
 test('buildCreateBody: github seed → sources set, no seed_bundle_file_id', () => {
   const src = buildGitHubSource('https://github.com/o/r', 'main');
   const b = buildCreateBody({ prompt: 'go', model: 'm', environmentId: 'env_y', sources: [src] });

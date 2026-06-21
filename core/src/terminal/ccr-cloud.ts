@@ -21,7 +21,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { execFileSync } from '../utils/exec';
+
+const execFileAsync = promisify(execFile);
 import { TerminalError } from './errors';
 import {
   anthropicOAuthGet,
@@ -77,27 +81,21 @@ export function parseGitHubRepo(input: string): { slug: string; url: string } | 
  * Build the POST /v1/sessions body — a create carries the initial user turn (wrapped event).
  * Seed EITHER via `sources` (GitHub repos — the standard) OR `seedFileId` (local git bundle).
  */
-export function buildCreateBody(opts: { prompt: string; model: string; environmentId: string; title?: string; seedFileId?: string; sources?: unknown[] }) {
+export function buildCreateBody(opts: { prompt?: string; model: string; environmentId: string; title?: string; seedFileId?: string; sources?: unknown[] }) {
   const session_context: Record<string, unknown> = {
     sources: opts.sources || [],
     outcomes: [],
     model: opts.model,
   };
   if (opts.seedFileId) session_context.seed_bundle_file_id = opts.seedFileId;
+  // The prompt is OPTIONAL — with no prompt the session boots (clones the repo) and waits to be
+  // driven (events:[]). With a prompt it carries an initial user turn.
+  const events = opts.prompt && opts.prompt.trim()
+    ? [{ type: 'event', data: { uuid: randomUUID(), session_id: '', type: 'user', parent_tool_use_id: null, message: { role: 'user', content: opts.prompt } } }]
+    : [];
   return {
     title: opts.title || 'lm-assist cloud ccr',
-    events: [
-      {
-        type: 'event',
-        data: {
-          uuid: randomUUID(),
-          session_id: '',
-          type: 'user',
-          parent_tool_use_id: null,
-          message: { role: 'user', content: opts.prompt },
-        },
-      },
-    ],
+    events,
     session_context,
     environment_id: opts.environmentId,
   };
@@ -291,6 +289,33 @@ export function listGitHubRepos(limit = 50): GitHubRepo[] {
   }
 }
 
+/**
+ * List a repo's branches for the branch picker. Async (non-blocking). Primary:
+ * `git ls-remote` over SSH — sees the langmartai account's public AND private repos.
+ * Fallback: `gh api .../branches` (REST) for public repos the PAT can read.
+ * Best-effort: [] when neither is authorised (caller can still type a branch).
+ */
+export async function listRepoBranches(repo: string): Promise<string[]> {
+  const parsed = parseGitHubRepo(repo);
+  if (!parsed) return [];
+  try {
+    const { stdout } = await execFileAsync('git', ['ls-remote', '--heads', `git@github.com:${parsed.slug}.git`], {
+      timeout: 12_000,
+      env: { ...process.env, GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new' },
+    });
+    const heads = stdout.split('\n')
+      .map((l) => { const i = l.indexOf('refs/heads/'); return i >= 0 ? l.slice(i + 11).trim() : ''; })
+      .filter(Boolean);
+    if (heads.length) return heads;
+  } catch { /* fall through to gh */ }
+  try {
+    const { stdout } = await execFileAsync('gh', ['api', `repos/${parsed.slug}/branches?per_page=100`, '--jq', '.[].name'], { timeout: 12_000 });
+    return stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -302,9 +327,12 @@ export interface CloudStartResult { sid: string; webUrl: string; status: string;
  * Standard seed = a GitHub repo (`repo` = owner/name or URL; the cloud clones it, branch
  * defaults to the repo's default). Fallback = a local git bundle (`cwd`) or empty scratch.
  */
-export async function cloudStart(opts: { prompt: string; repo?: string; branch?: string; cwd?: string; model?: string; title?: string }): Promise<CloudStartResult> {
-  const prompt = (opts.prompt || '').toString();
-  if (!prompt.trim()) throw new TerminalError('INVALID_INPUT', 'prompt is required');
+export async function cloudStart(opts: { prompt?: string; repo?: string; branch?: string; cwd?: string; model?: string; title?: string }): Promise<CloudStartResult> {
+  const prompt = (opts.prompt || '').toString().trim();
+  const hasRepo = !!(opts.repo && opts.repo.trim());
+  const hasCwd = !!(opts.cwd && opts.cwd.trim());
+  // Prompt is optional: a session can boot from just a repo (clones + waits). Need at least one.
+  if (!prompt && !hasRepo && !hasCwd) throw new TerminalError('INVALID_INPUT', 'provide a repo or a prompt to start a cloud session');
   const model = opts.model || DEFAULT_MODEL;
   const environmentId = await getEnvironmentId();
 

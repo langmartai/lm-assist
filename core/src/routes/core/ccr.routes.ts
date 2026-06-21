@@ -152,10 +152,8 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/ccr\/cloud\/start$/,
       handler: async (req) => envelope(async () => {
         const body = (req.body || {}) as { prompt?: unknown; repo?: unknown; branch?: unknown; cwd?: unknown; model?: unknown; title?: unknown };
-        const prompt = typeof body.prompt === 'string' ? body.prompt : '';
-        if (!prompt.trim()) throw new TerminalError('INVALID_INPUT', 'prompt is required');
         return await ccrCloud.cloudStart({
-          prompt,
+          prompt: typeof body.prompt === 'string' ? body.prompt : undefined,
           repo: typeof body.repo === 'string' ? body.repo : undefined,
           branch: typeof body.branch === 'string' ? body.branch : undefined,
           cwd: typeof body.cwd === 'string' ? body.cwd : undefined,
@@ -170,6 +168,17 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'GET',
       pattern: /^\/ccr\/cloud\/repos$/,
       handler: async () => envelope(() => ({ repos: ccrCloud.listGitHubRepos() })),
+    },
+
+    // GET /ccr/cloud/branches?repo=owner/name — branches for the selected repo (for the branch picker)
+    {
+      method: 'GET',
+      pattern: /^\/ccr\/cloud\/branches$/,
+      handler: async (req) => envelope(async () => {
+        const repo = typeof req.query?.repo === 'string' ? req.query.repo : '';
+        if (!repo.trim()) return { branches: [] as string[] };
+        return { branches: await ccrCloud.listRepoBranches(repo) };
+      }),
     },
 
     // GET /ccr/cloud — list cloud sessions we created

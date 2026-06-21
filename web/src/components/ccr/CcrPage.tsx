@@ -113,6 +113,8 @@ export function CcrPage() {
   const [starting, setStarting] = useState(false);
   const [cloudErr, setCloudErr] = useState<string | null>(null);
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
+  const [branchOptions, setBranchOptions] = useState<string[]>([]);
+  const [branchesLoading, setBranchesLoading] = useState(false);
   const setBusyFor = (k: string, on: boolean) => setBusy((p) => { const n = new Set(p); on ? n.add(k) : n.delete(k); return n; });
   const copyUrl = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setCopied(url); setTimeout(() => setCopied((c) => (c === url ? null : c)), 1500); } catch { /* clipboard blocked */ }
@@ -138,6 +140,22 @@ export function CcrPage() {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
+  // Load the selected repo's branches for the branch picker (debounced).
+  useEffect(() => {
+    const repo = cloudRepo.trim();
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) { setBranchOptions([]); setBranchesLoading(false); return; }
+    let cancelled = false;
+    setBranchesLoading(true);
+    const t = setTimeout(async () => {
+      try {
+        const r = await apiFetch<{ branches: string[] }>(`/ccr/cloud/branches?repo=${encodeURIComponent(repo)}`);
+        if (!cancelled) setBranchOptions(r.branches || []);
+      } catch { if (!cancelled) setBranchOptions([]); }
+      finally { if (!cancelled) setBranchesLoading(false); }
+    }, 450);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [cloudRepo, apiFetch]);
+
   const startMode = useCallback(async (sid: string, mode: Mode) => {
     setBusyFor(sid, true); setConfirmConnect(null);
     setSessionErr((p) => { const n = { ...p }; delete n[sid]; return n; }); // clear prior error for this session
@@ -157,14 +175,17 @@ export function CcrPage() {
   }, [apiFetch, fetchAll]);
 
   const startCloud = useCallback(async () => {
-    const p = cloudPrompt.trim(); if (!p) return;
+    const repo = cloudRepo.trim();
+    const p = cloudPrompt.trim();
+    if (!p && !repo) return; // a prompt is optional, but start needs at least a repo or a prompt
     setStarting(true); setCloudErr(null);
     try {
-      const body: Record<string, unknown> = { prompt: p };
-      if (cloudRepo.trim()) body.repo = cloudRepo.trim();
+      const body: Record<string, unknown> = {};
+      if (p) body.prompt = p;
+      if (repo) body.repo = repo;
       if (cloudBranch.trim()) body.branch = cloudBranch.trim();
       const r = await apiFetch<{ sid: string }>('/ccr/cloud/start', { method: 'POST', body });
-      setCloudPrompt(''); setCloudRepo(''); setCloudBranch('');
+      setCloudPrompt(''); setCloudRepo(''); setCloudBranch(''); setBranchOptions([]);
       await fetchAll();
       if (r?.sid) setCloudViewing(r.sid); // open the new session's view to watch it boot
     } catch (e) { setCloudErr(parseCcrError(e).message); }
@@ -258,7 +279,7 @@ export function CcrPage() {
           <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>claude runs in an Anthropic-cloud container — no local machine needed</span>
         </div>
         <div className="card" style={{ padding: 12, marginBottom: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <textarea className="input" rows={2} value={cloudPrompt} placeholder="Start a cloud session — initial prompt for the cloud claude…"
+          <textarea className="input" rows={2} value={cloudPrompt} placeholder="Optional prompt for the cloud claude — leave empty to just clone the repo and drive it after it boots…"
             style={{ resize: 'none', fontSize: 12.5 }} onChange={(e) => setCloudPrompt(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); startCloud(); } }} />
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -267,20 +288,26 @@ export function CcrPage() {
               spellCheck={false} autoComplete="off"
               style={{ flex: 2, minWidth: 260, fontSize: 12 }}
               title="The cloud container clones this GitHub repo (public or the org's private repos). Leave empty for an empty scratch workspace." />
-            <input className="input" value={cloudBranch} onChange={(e) => setCloudBranch(e.target.value)}
-              placeholder="branch (optional)" spellCheck={false} autoComplete="off"
-              style={{ flex: 1, minWidth: 120, fontSize: 12 }}
-              title="Branch/revision to clone (default: the repo's default branch)" />
+            <input className="input" list="ccr-branch-list" value={cloudBranch} onChange={(e) => setCloudBranch(e.target.value)}
+              placeholder={branchesLoading ? 'loading branches…' : branchOptions.length ? 'branch (pick / default)' : 'branch (optional)'}
+              spellCheck={false} autoComplete="off"
+              style={{ flex: 1, minWidth: 150, fontSize: 12 }}
+              title="Branch to clone — pick from the repo's branches or type one (default: the repo's default branch)" />
           </div>
           <datalist id="ccr-repo-list">
             {repos.map((r) => (<option key={r.repo} value={r.repo}>{r.isPrivate ? 'private' : 'public'}</option>))}
           </datalist>
+          <datalist id="ccr-branch-list">
+            {branchOptions.map((b) => (<option key={b} value={b} />))}
+          </datalist>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {cloudRepo.trim()
-              ? <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>clones <code>{cloudRepo.trim()}</code>{cloudBranch.trim() ? <> @ <code>{cloudBranch.trim()}</code></> : ' (default branch)'}</span>
-              : <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>empty scratch workspace (no repo)</span>}
+            {!cloudPrompt.trim() && !cloudRepo.trim()
+              ? <span style={{ fontSize: 11, color: 'var(--color-status-orange)' }}>pick a repo (or type a prompt) to start</span>
+              : cloudRepo.trim()
+                ? <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>clones <code>{cloudRepo.trim()}</code>{cloudBranch.trim() ? <> @ <code>{cloudBranch.trim()}</code></> : ' (default branch)'}{!cloudPrompt.trim() ? ' · no prompt — drive it after it boots' : ''}</span>
+                : <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>empty scratch workspace (no repo)</span>}
             <div style={{ flex: 1 }} />
-            <button className="btn btn-primary btn-sm" disabled={starting || !cloudPrompt.trim()} onClick={startCloud} title="Boot a cloud-run claude (spends cloud quota)">
+            <button className="btn btn-primary btn-sm" disabled={starting || (!cloudPrompt.trim() && !cloudRepo.trim())} onClick={startCloud} title="Boot a cloud-run claude (spends cloud quota)">
               {starting ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Starting…</> : <><Cloud size={13} /> Start cloud</>}
             </button>
           </div>

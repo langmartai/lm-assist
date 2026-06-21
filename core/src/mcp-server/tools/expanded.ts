@@ -567,14 +567,14 @@ export const ccrCloudStartToolDef = {
   inputSchema: {
     type: 'object' as const,
     properties: {
-      prompt: { type: 'string', description: 'Initial user turn for the cloud session.' },
+      prompt: { type: 'string', description: 'OPTIONAL initial user turn. Omit to just boot (clone the repo) and drive it later with ccr_cloud_drive.' },
       repo: { type: 'string', description: 'GitHub repo to clone: "owner/name" or a github.com URL.' },
       branch: { type: 'string', description: 'Branch/revision (default: the repo\'s default branch).' },
       cwd: { type: 'string', description: 'Fallback: local git repo to bundle+upload instead of a GitHub clone (<=50 MiB).' },
       model: { type: 'string', description: 'Model id (default claude-opus-4-8[1m]).' },
       title: { type: 'string', description: 'Optional session title.' },
     },
-    required: ['prompt'],
+    required: [],
   },
 };
 export const ccrCloudReposToolDef = {
@@ -1287,14 +1287,15 @@ async function handleCcrDrive(args: Record<string, unknown>): Promise<McpToolRes
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 async function handleCcrCloudStart(args: Record<string, unknown>): Promise<McpToolResult> {
+  const body: Record<string, unknown> = {};
   const prompt = String(args.prompt || '').trim();
-  if (!prompt) return err('prompt is required.');
-  const body: Record<string, unknown> = { prompt };
+  if (prompt) body.prompt = prompt;
   if (args.repo) body.repo = String(args.repo);
   if (args.branch) body.branch = String(args.branch);
   if (args.cwd) body.cwd = String(args.cwd);
   if (args.model) body.model = String(args.model);
   if (args.title) body.title = String(args.title);
+  if (!body.prompt && !body.repo && !body.cwd) return err('provide a repo or a prompt to start a cloud session.');
   try { return renderRaw(await workerPostRaw('/ccr/cloud/start', body)); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
