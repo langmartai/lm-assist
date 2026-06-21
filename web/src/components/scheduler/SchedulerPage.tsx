@@ -3,11 +3,26 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Clock, RefreshCw, Loader2, Play, Eye, Trash2, Plus, X, Power, PowerOff, AlertTriangle, Save,
+  ChevronDown, ChevronRight, FlaskConical,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 
+interface RunRec {
+  at: string;
+  status: 'ok' | 'error' | 'skipped';
+  result: string;
+  trigger: 'schedule' | 'manual' | 'test';
+  exitCode?: number | null;
+  durationMs?: number;
+  stdout?: string;
+  stderr?: string;
+  condition?: string;
+}
+
 interface JobView {
   id: string;
+  name?: string;
+  description?: string;
   type: string;
   enabled: boolean;
   intervalMinutes: number;
@@ -15,10 +30,16 @@ interface JobView {
   lastRunAt: string | null;
   lastResult: string | null;
   lastStatus: 'ok' | 'error' | 'skipped' | null;
+  lastRun?: RunRec | null;
+  runLog?: RunRec[];
+  runCount?: number;
   builtin: boolean;
   nextRunAt: string | null;
   isRunning: boolean;
 }
+
+const statusColor = (s: string | null | undefined): string =>
+  s === 'ok' ? 'var(--color-status-green)' : s === 'error' ? 'var(--color-status-red)' : s === 'skipped' ? 'var(--color-status-orange)' : 'var(--color-text-tertiary)';
 
 function fmtTime(iso: string | null): string {
   if (!iso) return '—';
@@ -75,10 +96,13 @@ export function SchedulerPage() {
 
   // Create-job form
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState<{ id: string; type: string; intervalMinutes: string; command: string }>({ id: '', type: 'shell', intervalMinutes: '1440', command: '' });
+  const [form, setForm] = useState<{ id: string; name: string; description: string; type: string; intervalMinutes: string; command: string; runIf: string; maxRuns: string; autoRun: boolean }>(
+    { id: '', name: '', description: '', type: 'shell', intervalMinutes: '1440', command: '', runIf: '', maxRuns: '', autoRun: false });
   const [creating, setCreating] = useState(false);
   // Per-job command draft (editing a shell job's command inline)
   const [cmdDraft, setCmdDraft] = useState<Record<string, string>>({});
+  // Which jobs have their last-run output / run-log expanded
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const setBusyFor = (id: string, on: boolean) =>
     setBusy((prev) => { const n = new Set(prev); if (on) n.add(id); else n.delete(id); return n; });
@@ -111,14 +135,18 @@ export function SchedulerPage() {
     }
   }, [apiFetch]);
 
-  const run = useCallback(async (id: string, dryRun: boolean) => {
+  const run = useCallback(async (id: string, opts: { dryRun?: boolean; test?: boolean } = {}) => {
     setBusyFor(id, true);
     setError(null);
     setConfirmRun(null);
     try {
-      const updated = await apiFetch<JobView>(`/scheduler/jobs/${encodeURIComponent(id)}/run`, { method: 'POST', body: { dryRun } });
+      const updated = await apiFetch<JobView>(`/scheduler/jobs/${encodeURIComponent(id)}/run`, { method: 'POST', body: { dryRun: !!opts.dryRun, test: !!opts.test } });
       setJobs((prev) => prev.map((j) => (j.id === id ? updated : j)));
-      setRunResult((prev) => ({ ...prev, [id]: `${dryRun ? 'Preview' : 'Run'}: ${updated.lastStatus} — ${updated.lastResult}` }));
+      const label = opts.test ? 'Test' : opts.dryRun ? 'Preview' : 'Run';
+      const r = updated.lastRun;
+      const detail = r ? `${r.status}${r.exitCode != null ? ` · exit ${r.exitCode}` : ''}${r.durationMs != null ? ` · ${r.durationMs}ms` : ''}` : `${updated.lastStatus}`;
+      setRunResult((prev) => ({ ...prev, [id]: `${label}: ${detail} — ${updated.lastResult}` }));
+      setExpanded((prev) => ({ ...prev, [id]: true })); // reveal output after a run
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -146,19 +174,25 @@ export function SchedulerPage() {
     setError(null);
     try {
       const type = form.type.trim() || 'shell';
+      const config: Record<string, unknown> = {};
+      if (type === 'shell' && form.command.trim()) config.command = form.command;
+      if (form.runIf.trim()) config.runIf = form.runIf.trim();
+      if (Number(form.maxRuns) > 0) config.maxRuns = Number(form.maxRuns);
       const created = await apiFetch<JobView>('/scheduler/jobs', {
         method: 'POST',
         body: {
           id: form.id.trim(),
+          name: form.name.trim() || undefined,
+          description: form.description.trim() || undefined,
           type,
           intervalMinutes: Number(form.intervalMinutes) || 1440,
-          enabled: false,
-          config: type === 'shell' && form.command.trim() ? { command: form.command } : undefined,
+          enabled: form.autoRun,
+          config: Object.keys(config).length ? config : undefined,
         },
       });
       setJobs((prev) => [...prev, created]);
       setShowCreate(false);
-      setForm({ id: '', type: 'shell', intervalMinutes: '1440', command: '' });
+      setForm({ id: '', name: '', description: '', type: 'shell', intervalMinutes: '1440', command: '', runIf: '', maxRuns: '', autoRun: false });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -195,6 +229,9 @@ export function SchedulerPage() {
             <label style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>id<br />
               <input className="input" value={form.id} placeholder="my-job" onChange={(e) => setForm({ ...form, id: e.target.value })} />
             </label>
+            <label style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>name<br />
+              <input className="input" value={form.name} placeholder="My job" onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            </label>
             <label style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>type<br />
               <select className="input" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
                 <option value="shell">shell (run a script/command)</option>
@@ -202,15 +239,28 @@ export function SchedulerPage() {
               </select>
             </label>
             <label style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>interval (min)<br />
-              <input className="input" type="number" value={form.intervalMinutes} onChange={(e) => setForm({ ...form, intervalMinutes: e.target.value })} style={{ width: 110 }} />
+              <input className="input" type="number" value={form.intervalMinutes} onChange={(e) => setForm({ ...form, intervalMinutes: e.target.value })} style={{ width: 100 }} />
+            </label>
+            <label style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>max runs<br />
+              <input className="input" type="number" value={form.maxRuns} placeholder="∞" onChange={(e) => setForm({ ...form, maxRuns: e.target.value })} style={{ width: 80 }} />
+            </label>
+            <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
+              <input type="checkbox" checked={form.autoRun} onChange={(e) => setForm({ ...form, autoRun: e.target.checked })} /> auto-run (enable)
+            </label>
+            <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', flexBasis: '100%' }}>description<br />
+              <input className="input" value={form.description} placeholder="what this job does" style={{ width: '100%' }} onChange={(e) => setForm({ ...form, description: e.target.value })} />
             </label>
             {form.type === 'shell' && (
-              <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', flexBasis: '100%' }}>command (runs in a shell — pipes/&&/redirects OK)<br />
+              <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', flexBasis: '100%' }}>command (runs in a shell — pipes/&&/redirects OK; <code>{'{{dryRun}}'}</code> for a toggle)<br />
                 <textarea className="input" value={form.command} placeholder="e.g. cd ~/proj && ./backup.sh" rows={2}
                   style={{ width: '100%', fontFamily: 'var(--font-mono)', resize: 'vertical' }}
                   onChange={(e) => setForm({ ...form, command: e.target.value })} />
               </label>
             )}
+            <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', flexBasis: '100%' }}>run condition (optional) — a guard command; a scheduled run only fires if it exits 0<br />
+              <input className="input" value={form.runIf} placeholder="e.g. test -f /tmp/ready" style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+                onChange={(e) => setForm({ ...form, runIf: e.target.value })} />
+            </label>
             <button className="btn btn-primary btn-sm" disabled={creating || !form.id.trim()} onClick={createJob}>
               {creating ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : 'Create'}
             </button>
@@ -243,7 +293,8 @@ export function SchedulerPage() {
                 <div key={j.id} className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
                   {/* Top row */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)' }}>{j.id}</span>
+                    {j.name && <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)' }}>{j.name}</span>}
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: j.name ? 12 : 14, fontWeight: j.name ? 400 : 600, color: j.name ? 'var(--color-text-tertiary)' : 'var(--color-text-primary)' }}>{j.id}</span>
                     {j.builtin && <span className="badge badge-outline">built-in</span>}
                     <span className={`badge ${st.cls}`}>{st.text}</span>
                     {armed && <span className="badge badge-red" title={cleanup ? 'Will permanently delete matching conversations' : 'Will run for real (dry-run off)'}><AlertTriangle size={11} style={{ marginRight: 3 }} />{cleanup ? 'armed · deletes' : 'armed'}</span>}
@@ -251,6 +302,7 @@ export function SchedulerPage() {
                     <div style={{ flex: 1 }} />
                     {isBusy && <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', color: 'var(--color-text-tertiary)' }} />}
                   </div>
+                  {j.description && <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', marginTop: -4 }}>{j.description}</div>}
 
                   {/* Meta */}
                   <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -272,7 +324,49 @@ export function SchedulerPage() {
                     ) : (
                       <div>config: <span style={{ fontFamily: 'var(--font-mono)' }}>{JSON.stringify(j.config)}</span></div>
                     )}
-                    <div>last run: {fmtTime(j.lastRunAt)}{j.lastStatus ? ` — ${j.lastStatus}: ${j.lastResult}` : ''}</div>
+
+                    {/* Execution conditions */}
+                    {(j.config?.runIf || (j.config?.maxRuns as number) > 0) && (
+                      <div>conditions:{' '}
+                        {j.config?.runIf ? <span>runIf <span style={{ fontFamily: 'var(--font-mono)' }}>{String(j.config.runIf).slice(0, 60)}</span></span> : null}
+                        {(j.config?.maxRuns as number) > 0 ? <span>{j.config?.runIf ? ' · ' : ''}maxRuns {String(j.config.maxRuns)} (run {j.runCount ?? 0}×)</span> : null}
+                      </div>
+                    )}
+
+                    {/* Last run — status, exit code, duration; output expandable */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span>last run: {fmtTime(j.lastRunAt)}</span>
+                      {j.lastRun ? (
+                        <>
+                          <span style={{ color: statusColor(j.lastRun.status), fontWeight: 600 }}>{j.lastRun.status}</span>
+                          {j.lastRun.exitCode != null && <span>· exit {j.lastRun.exitCode}</span>}
+                          {j.lastRun.durationMs != null && <span>· {j.lastRun.durationMs}ms</span>}
+                          <span style={{ color: 'var(--color-text-tertiary)' }}>· {j.lastRun.trigger}</span>
+                          {(j.lastRun.stdout || j.lastRun.stderr || j.runLog?.length) ? (
+                            <button className="btn btn-ghost btn-sm" style={{ padding: '0 4px' }} onClick={() => setExpanded((p) => ({ ...p, [j.id]: !p[j.id] }))}>
+                              {expanded[j.id] ? <ChevronDown size={13} /> : <ChevronRight size={13} />} output
+                            </button>
+                          ) : null}
+                        </>
+                      ) : j.lastStatus ? <span>— {j.lastStatus}: {j.lastResult}</span> : <span>— never</span>}
+                    </div>
+
+                    {expanded[j.id] && j.lastRun && (
+                      <div style={{ background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border-subtle)', borderRadius: 'var(--radius-sm)', padding: 8, fontFamily: 'var(--font-mono)', fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: 200, overflow: 'auto' }}>
+                        <div style={{ color: 'var(--color-text-secondary)' }}>{j.lastRun.result}</div>
+                        {j.lastRun.condition && <div style={{ color: 'var(--color-status-orange)' }}>condition: {j.lastRun.condition}</div>}
+                        {j.lastRun.stdout && <div style={{ marginTop: 4 }}><span style={{ color: 'var(--color-text-tertiary)' }}>stdout:</span>{'\n'}{j.lastRun.stdout}</div>}
+                        {j.lastRun.stderr?.trim() && <div style={{ marginTop: 4, color: 'var(--color-status-red)' }}><span style={{ color: 'var(--color-text-tertiary)' }}>stderr:</span>{'\n'}{j.lastRun.stderr}</div>}
+                        {(j.runLog?.length ?? 0) > 1 && (
+                          <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--color-border-subtle)', color: 'var(--color-text-tertiary)' }}>
+                            history ({j.runLog!.length}):{j.runLog!.slice(0, 8).map((r, i) => (
+                              <div key={i}>· {fmtTime(r.at)} [{r.trigger}] <span style={{ color: statusColor(r.status) }}>{r.status}</span>{r.exitCode != null ? ` exit ${r.exitCode}` : ''} — {r.result.slice(0, 50)}</div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     <div>next run: {j.enabled && j.intervalMinutes > 0 ? fmtTime(j.nextRunAt) : '— (not scheduled)'}</div>
                     {runResult[j.id] && <div style={{ color: 'var(--color-accent)' }}>{runResult[j.id]}</div>}
                   </div>
@@ -318,16 +412,23 @@ export function SchedulerPage() {
 
                     <div style={{ flex: 1 }} />
 
-                    {/* Preview run (always safe) */}
-                    <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => run(j.id, true)} title="Run now in preview (deletes nothing)">
-                      <Eye size={13} /> Preview run
+                    {/* Test run — execute once, capture full output, don't touch the schedule (safe/dry for toggle jobs) */}
+                    <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => run(j.id, { test: true, dryRun: toggle })} title="Test run: execute once and show output; doesn't advance the schedule">
+                      <FlaskConical size={13} /> Test
                     </button>
+
+                    {/* Preview run (always safe) */}
+                    {toggle && (
+                      <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => run(j.id, { dryRun: true })} title="Run now in preview (deletes nothing)">
+                        <Eye size={13} /> Preview run
+                      </button>
+                    )}
 
                     {/* Real run — for an armed cleanup job (deletes) or any shell job (runs the command). Needs confirm. */}
                     {(armed || shell) && (
                       confirmRun === j.id ? (
                         <>
-                          <button className="btn btn-destructive btn-sm" disabled={isBusy} onClick={() => run(j.id, false)}>
+                          <button className="btn btn-destructive btn-sm" disabled={isBusy} onClick={() => run(j.id, {})}>
                             {armed ? (cleanup ? 'Confirm run (deletes)' : 'Confirm run (live)') : 'Confirm run'}
                           </button>
                           <button className="btn btn-ghost btn-sm" onClick={() => setConfirmRun(null)}>Cancel</button>

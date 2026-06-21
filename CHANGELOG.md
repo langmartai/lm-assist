@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Scheduler — richer jobs: name/description, full run capture, conditions, easy MCP create/test (2026-06-21)
+
+Substantial upgrade to the scheduled-jobs system:
+
+- **Name + description** per job (display in UI / MCP listing; the built-in cleanup job is named).
+- **Full run capture** — every run records a `JobRunRecord` (status, exit code, duration, stdout, stderr,
+  trigger), surfaced as `lastRun` plus a bounded `runLog` history (newest-first ring, 20). The web card shows
+  the last run (colored status · exit · duration · trigger) with an expandable stdout/stderr + history panel;
+  output/stderr bounded to 8 KB/stream for storage.
+- **Execution conditions** — `config.runIf` is a guard command: a SCHEDULED run only fires if it exits 0
+  (logged as a `skipped` record otherwise). `config.maxRuns` stops auto-running after N real runs
+  (`isJobDue` honors it; `runCount` tracks). Conditions gate scheduled runs; an explicit run/test bypasses them.
+- **Test runs** — a `test` trigger executes once and captures full output but does NOT advance the schedule
+  clock or run count (verification without side effects on scheduling).
+- **REST** — create/PUT accept `name`/`description`; `POST /run` body `{test:true}`; new
+  `GET /scheduler/jobs/:id/logs`; `/run` returns the full `lastRun`.
+- **MCP `scheduler_jobs`** — flat params (`command`, `interval_minutes`, `auto_run`, `run_if`, `max_runs`,
+  `cwd`, `timeout_ms`, `name`, `description`) folded into config so an LLM creates an auto-run job in one call;
+  new actions `test` (returns status · exit · duration · stdout · stderr clearly) and `logs`. Tool description
+  spells out "create an auto-run job" and "test-run + verify".
+- New pure helpers unit-tested: `truncate`, `pushRunLog`, `reachedMaxRuns`, `applyRun`, `formatShellResult`
+  capture fields (24 scheduler tests total).
+
 ### Scheduler — lm-assist's own internal scheduled-jobs system (not OS cron) (2026-06-21)
 
 A self-contained job scheduler that runs INSIDE Core — no crontab/systemd-timers. Periodic Node timers, a
