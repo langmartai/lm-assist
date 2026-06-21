@@ -559,6 +559,60 @@ export const ccrRemoteStopToolDef = {
     required: ['id'],
   },
 };
+// ─── Cloud CCR (BYOC cloud-run): claude runs in an Anthropic-cloud container ──
+export const ccrCloudStartToolDef = {
+  name: 'ccr_cloud_start',
+  description:
+    'Start a CLOUD CCR session — claude runs in an Anthropic-cloud container (NO local machine/tmux/bridge needed), seeded from a git bundle. Distinct from ccr_connect (which bridges a LOCAL session). Returns the session id (session_…) + claude.ai/code URL; it boots async, so poll ccr_cloud_read for the first reply. Pass cwd to seed the container with that git repo (uploads its committed HEAD to Anthropic cloud — privacy + size note: <=50 MiB); omit cwd for an empty scratch workspace. Spends cloud compute/quota — use deliberately.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      prompt: { type: 'string', description: 'Initial user turn for the cloud session.' },
+      cwd: { type: 'string', description: 'Optional local git repo to seed the container with (uploads committed HEAD, <=50 MiB).' },
+      model: { type: 'string', description: 'Model id (default claude-opus-4-8[1m]).' },
+      title: { type: 'string', description: 'Optional session title.' },
+    },
+    required: ['prompt'],
+  },
+};
+export const ccrCloudDriveToolDef = {
+  name: 'ccr_cloud_drive',
+  description: 'Send a follow-up user turn to a running CLOUD CCR session (from ccr_cloud_start). Then poll ccr_cloud_read for the reply.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      sid: { type: 'string', description: 'Cloud session id (session_…).' },
+      text: { type: 'string', description: 'The prompt to send as a user turn.' },
+    },
+    required: ['sid', 'text'],
+  },
+};
+export const ccrCloudReadToolDef = {
+  name: 'ccr_cloud_read',
+  description: 'Read the transcript (role + text + tool names) of a CLOUD CCR session — the cloud claude\'s replies. last_n limits to the most recent N messages.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      sid: { type: 'string', description: 'Cloud session id (session_…).' },
+      last_n: { type: 'number', description: 'Return only the most recent N messages.' },
+    },
+    required: ['sid'],
+  },
+};
+export const ccrCloudStopToolDef = {
+  name: 'ccr_cloud_stop',
+  description: 'Stop (delete) a CLOUD CCR session and free its container.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: { sid: { type: 'string', description: 'Cloud session id (session_…).' } },
+    required: ['sid'],
+  },
+};
+export const ccrCloudListToolDef = {
+  name: 'ccr_cloud_list',
+  description: 'List CLOUD CCR sessions started via ccr_cloud_start (from this host\'s registry).',
+  inputSchema: { type: 'object' as const, properties: {} },
+};
 // ─── claude.ai marketplace + plugin management ───────────────────────────
 //
 // Mirror the cookie-path /claude-ai/marketplaces + /claude-ai/plugins routes
@@ -777,6 +831,11 @@ export const EXPANDED_TOOL_DEFS = [
   ccrConnectToolDef,
   ccrDriveToolDef,
   ccrRemoteStopToolDef,
+  ccrCloudStartToolDef,
+  ccrCloudDriveToolDef,
+  ccrCloudReadToolDef,
+  ccrCloudStopToolDef,
+  ccrCloudListToolDef,
   // port forward (node-to-node TCP tunnel)
   ...PORT_FORWARD_TOOL_DEFS,
   ...TRANSFER_TOOL_DEFS,
@@ -1219,6 +1278,43 @@ async function handleCcrDrive(args: Record<string, unknown>): Promise<McpToolRes
   try { return renderRaw(await workerPostRaw('/ccr/drive', body)); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
+async function handleCcrCloudStart(args: Record<string, unknown>): Promise<McpToolResult> {
+  const prompt = String(args.prompt || '').trim();
+  if (!prompt) return err('prompt is required.');
+  const body: Record<string, unknown> = { prompt };
+  if (args.cwd) body.cwd = String(args.cwd);
+  if (args.model) body.model = String(args.model);
+  if (args.title) body.title = String(args.title);
+  try { return renderRaw(await workerPostRaw('/ccr/cloud/start', body)); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+async function handleCcrCloudDrive(args: Record<string, unknown>): Promise<McpToolResult> {
+  const sid = String(args.sid || '').trim();
+  const text = String(args.text || '').trim();
+  if (!sid) return err('sid is required.');
+  if (!text) return err('text is required.');
+  try { return renderRaw(await workerPostRaw(`/ccr/cloud/${enc(sid)}/drive`, { text })); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+async function handleCcrCloudRead(args: Record<string, unknown>): Promise<McpToolResult> {
+  const sid = String(args.sid || '').trim();
+  if (!sid) return err('sid is required.');
+  // connector numeric args can arrive as strings — coerce.
+  const lastN = Number(args.last_n);
+  const qs = Number.isFinite(lastN) && lastN > 0 ? `?lastN=${Math.floor(lastN)}` : '';
+  try { return ok(pretty(await workerGet(`/ccr/cloud/${enc(sid)}${qs}`))); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+async function handleCcrCloudStop(args: Record<string, unknown>): Promise<McpToolResult> {
+  const sid = String(args.sid || '').trim();
+  if (!sid) return err('sid is required.');
+  try { return renderRaw(await workerPostRaw(`/ccr/cloud/${enc(sid)}/stop`, {})); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+async function handleCcrCloudList(): Promise<McpToolResult> {
+  try { return ok(pretty(await workerGet('/ccr/cloud'))); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
 // ─── claude.ai marketplace + plugin handlers ─────────────────────────────
 
 async function handleClaudeaiListMarketplaces(args: Record<string, unknown>): Promise<McpToolResult> {
@@ -1428,6 +1524,11 @@ export const EXPANDED_HANDLERS: Record<
   ccr_connect: handleCcrConnect,
   ccr_drive: handleCcrDrive,
   ccr_remote_stop: handleCcrRemoteStop,
+  ccr_cloud_start: handleCcrCloudStart,
+  ccr_cloud_drive: handleCcrCloudDrive,
+  ccr_cloud_read: handleCcrCloudRead,
+  ccr_cloud_stop: handleCcrCloudStop,
+  ccr_cloud_list: () => handleCcrCloudList(),
   // port forward (open/list/close node-to-node TCP tunnel)
   ...PORT_FORWARD_HANDLERS,
   ...TRANSFER_HANDLERS,

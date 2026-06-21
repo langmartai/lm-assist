@@ -17,6 +17,7 @@ import type { RouteHandler, RouteContext } from '../index';
 import { TerminalError, httpStatusFor } from '../../terminal/errors';
 import { sessionVerdict } from '../../terminal/cc-sessions';
 import * as ccr from '../../terminal/ccr-manager';
+import * as ccrCloud from '../../terminal/ccr-cloud';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string; details?: unknown }; }
 
@@ -50,6 +51,13 @@ function parseSessionId(raw: string | undefined): string {
 function parseCcrId(raw: string | undefined): string {
   if (!raw || typeof raw !== 'string' || !/^ccr-[0-9a-z]{8}$/.test(raw)) {
     throw new TerminalError('INVALID_INPUT', 'invalid ccr remote id');
+  }
+  return raw;
+}
+
+function parseCloudSid(raw: string | undefined): string {
+  if (!raw || typeof raw !== 'string' || !/^session_[A-Za-z0-9]+$/.test(raw)) {
+    throw new TerminalError('INVALID_INPUT', 'cloud sid must look like session_…');
   }
   return raw;
 }
@@ -133,6 +141,70 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!id && !sessionId && !cse) throw new TerminalError('INVALID_INPUT', 'provide one of: id, sessionId, cse');
         const preferTmux = body.preferTmux === true;
         return await ccr.drive({ id, sessionId, cse, text, preferTmux });
+      }),
+    },
+
+    // ── Cloud CCR (BYOC cloud-run): claude runs in an Anthropic-cloud container ──
+
+    // POST /ccr/cloud/start — create a cloud-run session (seed bundle + initial prompt)
+    {
+      method: 'POST',
+      pattern: /^\/ccr\/cloud\/start$/,
+      handler: async (req) => envelope(async () => {
+        const body = (req.body || {}) as { prompt?: unknown; cwd?: unknown; model?: unknown; title?: unknown };
+        const prompt = typeof body.prompt === 'string' ? body.prompt : '';
+        if (!prompt.trim()) throw new TerminalError('INVALID_INPUT', 'prompt is required');
+        return await ccrCloud.cloudStart({
+          prompt,
+          cwd: typeof body.cwd === 'string' ? body.cwd : undefined,
+          model: typeof body.model === 'string' ? body.model : undefined,
+          title: typeof body.title === 'string' ? body.title : undefined,
+        });
+      }),
+    },
+
+    // GET /ccr/cloud — list cloud sessions we created
+    {
+      method: 'GET',
+      pattern: /^\/ccr\/cloud$/,
+      handler: async () => envelope(() => ({ sessions: ccrCloud.cloudList() })),
+    },
+
+    // POST /ccr/cloud/:sid/drive — send a follow-up turn
+    {
+      method: 'POST',
+      pattern: /^\/ccr\/cloud\/(?<sid>session_[^/]+)\/drive$/,
+      handler: async (req) => envelope(async () => {
+        const sid = parseCloudSid(req.params.sid);
+        const body = (req.body || {}) as { text?: unknown };
+        const text = typeof body.text === 'string' ? body.text : '';
+        if (!text.trim()) throw new TerminalError('INVALID_INPUT', 'text is required');
+        return await ccrCloud.cloudDrive({ sid, text });
+      }),
+    },
+
+    // POST /ccr/cloud/:sid/stop — delete the cloud session
+    {
+      method: 'POST',
+      pattern: /^\/ccr\/cloud\/(?<sid>session_[^/]+)\/stop$/,
+      handler: async (req) => envelope(async () => ccrCloud.cloudStop(parseCloudSid(req.params.sid))),
+    },
+
+    // GET /ccr/cloud/:sid/status — raw cloud session status
+    {
+      method: 'GET',
+      pattern: /^\/ccr\/cloud\/(?<sid>session_[^/]+)\/status$/,
+      handler: async (req) => envelope(async () => ccrCloud.cloudStatus(parseCloudSid(req.params.sid))),
+    },
+
+    // GET /ccr/cloud/:sid — read the transcript (teleport-events). ?lastN= limits.
+    {
+      method: 'GET',
+      pattern: /^\/ccr\/cloud\/(?<sid>session_[^/]+)$/,
+      handler: async (req) => envelope(async () => {
+        const sid = parseCloudSid(req.params.sid);
+        const lastN = Number(req.query?.lastN);
+        return await ccrCloud.cloudRead({ sid, lastN: Number.isFinite(lastN) && lastN > 0 ? lastN : undefined });
       }),
     },
 

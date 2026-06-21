@@ -1,0 +1,311 @@
+/**
+ * Cloud CCR (BYOC cloud-run) manager.
+ *
+ * The OTHER CCR model: `claude` runs in an Anthropic-cloud container (no local
+ * machine / tmux / worker bridge). Lifecycle is pure OAuth HTTP against
+ * api.anthropic.com (anthropic-beta: ccr-byoc-2025-07-29):
+ *
+ *   seed   POST /v1/files (git bundle of cwd, purpose=user_data) -> file_id
+ *   env    GET  /v1/environment_providers                        -> environment_id
+ *   create POST /v1/sessions {seed, env, initial user turn}       -> session_…
+ *   drive  POST /v1/sessions/{sid}/events                          (follow-up turns)
+ *   read   GET  /v1/code/sessions/{sid}/teleport-events            (transcript)
+ *   status GET  /v1/code/sessions/{sid}
+ *   stop   DELETE /v1/sessions/{sid}                               -> session_deleted
+ *
+ * Distinct from ccr-manager.ts (the worker-bridge model that drives a LOCAL
+ * session). Proven end-to-end on prod 117 via ccr/ccr-cloud-run-client.js.
+ */
+
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { randomUUID } from 'crypto';
+import { execFileSync } from '../utils/exec';
+import { TerminalError } from './errors';
+import {
+  anthropicOAuthGet,
+  anthropicOAuthPost,
+  anthropicOAuthDelete,
+  getValidAccessToken,
+  getOrganizationUuid,
+} from '../utils/claude-oauth';
+
+const CACHE_DIR = path.join(os.homedir(), '.cache', 'lm-assist');
+const REGISTRY_FILE = path.join(CACHE_DIR, 'ccr-cloud.json');
+const REGISTRY_TMP = path.join(CACHE_DIR, 'ccr-cloud.json.tmp');
+
+const CCR_BETA = 'ccr-byoc-2025-07-29';
+const DEFAULT_MODEL = 'claude-opus-4-8[1m]';
+const MAX_SEED_BYTES = 50 * 1024 * 1024; // 50 MiB upload guard
+
+// ---------------------------------------------------------------------------
+// Pure helpers (unit-tested in __tests__/ccr-cloud.test.ts)
+// ---------------------------------------------------------------------------
+
+/** claude.ai web URL for a cloud session (sid is already `session_…`). */
+export function cloudSessionWebUrl(sid: string): string {
+  return `https://claude.ai/code/${sid}`;
+}
+
+/** Validate a cloud session id shape. */
+export function isCloudSid(sid: string | undefined | null): boolean {
+  return typeof sid === 'string' && /^session_[A-Za-z0-9]+$/.test(sid);
+}
+
+/** Build the POST /v1/sessions body — a create carries the initial user turn (wrapped event). */
+export function buildCreateBody(opts: { prompt: string; model: string; seedFileId: string; environmentId: string; title?: string }) {
+  return {
+    title: opts.title || 'lm-assist cloud ccr',
+    events: [
+      {
+        type: 'event',
+        data: {
+          uuid: randomUUID(),
+          session_id: '',
+          type: 'user',
+          parent_tool_use_id: null,
+          message: { role: 'user', content: opts.prompt },
+        },
+      },
+    ],
+    session_context: { sources: [], seed_bundle_file_id: opts.seedFileId, outcomes: [], model: opts.model },
+    environment_id: opts.environmentId,
+  };
+}
+
+/** Build a follow-up drive event (POST /v1/sessions/{sid}/events — NOT wrapped, unlike create). */
+export function buildDriveEvent(sid: string, text: string, uuid?: string) {
+  return {
+    uuid: uuid || randomUUID(),
+    session_id: sid,
+    type: 'user' as const,
+    parent_tool_use_id: null,
+    message: { role: 'user' as const, content: text },
+  };
+}
+
+export interface CloudTranscriptMsg { role: string; type: string; text: string; tools?: string[] }
+
+/** Parse a teleport-events response into a simplified transcript (role + text + tool names). */
+export function parseTeleportTranscript(body: unknown): CloudTranscriptMsg[] {
+  const data = (body as { data?: unknown })?.data;
+  if (!Array.isArray(data)) return [];
+  const out: CloudTranscriptMsg[] = [];
+  for (const e of data as Array<Record<string, any>>) {
+    const type = String(e.event_type || e.type || '');
+    if (type !== 'assistant' && type !== 'user') continue;
+    const content = e.payload?.message?.content;
+    let text = '';
+    const tools: string[] = [];
+    if (typeof content === 'string') {
+      text = content;
+    } else if (Array.isArray(content)) {
+      for (const b of content) {
+        if (b?.type === 'text' && typeof b.text === 'string') text += b.text;
+        else if (b?.type === 'tool_use' && b.name) tools.push(String(b.name));
+      }
+    }
+    const msg: CloudTranscriptMsg = { role: e.payload?.message?.role || type, type, text };
+    if (tools.length) msg.tools = tools;
+    out.push(msg);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Registry (sessions WE created — for list/stop convenience)
+// ---------------------------------------------------------------------------
+
+export interface CloudRecord {
+  sid: string;
+  title: string;
+  model: string;
+  cwd: string | null;
+  seedFileId: string | null;
+  environmentId: string | null;
+  webUrl: string;
+  createdAt: string;
+}
+
+function loadRegistry(): Record<string, CloudRecord> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(REGISTRY_FILE, 'utf-8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, CloudRecord>;
+  } catch { /* missing/corrupt */ }
+  return {};
+}
+
+function saveRegistry(data: Record<string, CloudRecord>): void {
+  fs.mkdirSync(CACHE_DIR, { recursive: true });
+  const fd = fs.openSync(REGISTRY_TMP, 'w');
+  try { fs.writeSync(fd, JSON.stringify(data, null, 2) + '\n'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  fs.renameSync(REGISTRY_TMP, REGISTRY_FILE);
+}
+
+// ---------------------------------------------------------------------------
+// Upstream call options (ccr-byoc beta + org header), resolved per call
+// ---------------------------------------------------------------------------
+
+async function ccrOpts() {
+  const org = await getOrganizationUuid();
+  return { betaHeader: CCR_BETA, extraHeaders: { 'anthropic-version': '2023-06-01', 'x-organization-uuid': org } };
+}
+
+function assertOk(res: { status: number; statusText: string; body: any }, what: string): void {
+  if (res.status < 200 || res.status >= 300) {
+    throw new TerminalError('UPSTREAM_ERROR', `${what}: HTTP ${res.status} ${res.statusText}`, { status: res.status, body: res.body });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Seed bundle + upload + environment
+// ---------------------------------------------------------------------------
+
+/** git-bundle a cwd (HEAD) or a minimal scratch repo when no/!git cwd. Returns the bundle bytes. */
+function makeSeedBundle(cwd?: string): { buf: Buffer; cwd: string | null } {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccr-cloud-'));
+  const bundlePath = path.join(tmpDir, 'seed.bundle');
+  try {
+    const isRepo = !!cwd && (() => {
+      try { return execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd, encoding: 'utf-8', timeout: 5000 }).trim() === 'true'; }
+      catch { return false; }
+    })();
+    if (isRepo) {
+      execFileSync('git', ['bundle', 'create', bundlePath, 'HEAD'], { cwd, encoding: 'utf-8', timeout: 60_000 });
+      const buf = fs.readFileSync(bundlePath);
+      if (buf.length > MAX_SEED_BYTES) {
+        throw new TerminalError('INVALID_INPUT', `seed bundle for ${cwd} is ${(buf.length / 1048576).toFixed(1)} MiB (> ${MAX_SEED_BYTES / 1048576} MiB cap) — start without cwd or use a smaller repo`);
+      }
+      return { buf, cwd: cwd! };
+    }
+    // scratch seed — no user code uploaded
+    const sd = path.join(tmpDir, 'repo');
+    fs.mkdirSync(sd);
+    execFileSync('git', ['init', '-q'], { cwd: sd, encoding: 'utf-8' });
+    execFileSync('git', ['config', 'user.email', 'ccr@lm-assist'], { cwd: sd, encoding: 'utf-8' });
+    execFileSync('git', ['config', 'user.name', 'ccr'], { cwd: sd, encoding: 'utf-8' });
+    fs.writeFileSync(path.join(sd, 'README.md'), 'lm-assist cloud ccr seed\n');
+    execFileSync('git', ['add', '-A'], { cwd: sd, encoding: 'utf-8' });
+    execFileSync('git', ['commit', '-qm', 'init'], { cwd: sd, encoding: 'utf-8' });
+    execFileSync('git', ['bundle', 'create', bundlePath, '--all'], { cwd: sd, encoding: 'utf-8' });
+    return { buf: fs.readFileSync(bundlePath), cwd: null };
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
+/** Upload the seed bundle (multipart, files-api beta) → file_id. */
+async function uploadSeed(buf: Buffer): Promise<string> {
+  const creds = await getValidAccessToken();
+  const org = await getOrganizationUuid();
+  const fd = new FormData();
+  fd.append('file', new Blob([buf], { type: 'application/octet-stream' }), '_source_seed.bundle');
+  fd.append('purpose', 'user_data');
+  const res = await fetch('https://api.anthropic.com/v1/files', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${creds.accessToken}`,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'files-api-2025-04-14,oauth-2025-04-20',
+      'x-organization-uuid': org,
+    },
+    body: fd,
+  });
+  const body = await res.json().catch(() => null);
+  if (res.status < 200 || res.status >= 300) {
+    throw new TerminalError('UPSTREAM_ERROR', `seed upload failed: HTTP ${res.status}`, { status: res.status, body });
+  }
+  const id = (body as { id?: string })?.id;
+  if (!id) throw new TerminalError('UPSTREAM_ERROR', 'seed upload returned no file id', { body });
+  return id;
+}
+
+let cachedEnvId: string | null = null;
+/** Resolve the cloud environment id (first available), cached. */
+async function getEnvironmentId(): Promise<string> {
+  if (cachedEnvId) return cachedEnvId;
+  const res = await anthropicOAuthGet('/v1/environment_providers', await ccrOpts());
+  assertOk(res, 'environment lookup');
+  const envs = (res.body as { environments?: Array<{ environment_id?: string; id?: string }> })?.environments || [];
+  const id = envs[0]?.environment_id || envs[0]?.id;
+  if (!id) throw new TerminalError('PRECONDITION_FAILED', 'no cloud environment available for this account (ccr-byoc not provisioned)');
+  cachedEnvId = id;
+  return id;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+export interface CloudStartResult { sid: string; webUrl: string; status: string; model: string; cwd: string | null; environmentId: string }
+
+/** Create a cloud-run CCR session (returns immediately; poll cloudRead for the first turn). */
+export async function cloudStart(opts: { prompt: string; cwd?: string; model?: string; title?: string }): Promise<CloudStartResult> {
+  const prompt = (opts.prompt || '').toString();
+  if (!prompt.trim()) throw new TerminalError('INVALID_INPUT', 'prompt is required');
+  const model = opts.model || DEFAULT_MODEL;
+
+  const { buf, cwd } = makeSeedBundle(opts.cwd);
+  const seedFileId = await uploadSeed(buf);
+  const environmentId = await getEnvironmentId();
+
+  const res = await anthropicOAuthPost('/v1/sessions', buildCreateBody({ prompt, model, seedFileId, environmentId, title: opts.title }), await ccrOpts());
+  assertOk(res, 'cloud session create');
+  const sid = (res.body as { id?: string })?.id;
+  if (!sid) throw new TerminalError('UPSTREAM_ERROR', 'create returned no session id', { body: res.body });
+  const status = (res.body as { session_status?: string })?.session_status || 'pending';
+
+  const rec: CloudRecord = {
+    sid, title: opts.title || 'lm-assist cloud ccr', model, cwd, seedFileId, environmentId,
+    webUrl: cloudSessionWebUrl(sid), createdAt: new Date().toISOString(),
+  };
+  const data = loadRegistry(); data[sid] = rec; saveRegistry(data);
+  return { sid, webUrl: rec.webUrl, status, model, cwd, environmentId };
+}
+
+/** Drive a follow-up turn into a cloud session. */
+export async function cloudDrive(opts: { sid: string; text: string }): Promise<{ delivered: boolean; sid: string; eventId?: string }> {
+  if (!isCloudSid(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_…');
+  const text = (opts.text || '').toString();
+  if (!text.trim()) throw new TerminalError('INVALID_INPUT', 'text is required');
+  const res = await anthropicOAuthPost(`/v1/sessions/${opts.sid}/events`, { events: [buildDriveEvent(opts.sid, text)] }, await ccrOpts());
+  assertOk(res, 'cloud drive');
+  const r = res.body && Array.isArray(res.body.results) ? res.body.results[0] : undefined;
+  return { delivered: true, sid: opts.sid, eventId: r?.event_id };
+}
+
+/** Read a cloud session's transcript (teleport-events). */
+export async function cloudRead(opts: { sid: string; lastN?: number }): Promise<{ sid: string; messages: CloudTranscriptMsg[] }> {
+  if (!isCloudSid(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_…');
+  const res = await anthropicOAuthGet(`/v1/code/sessions/${opts.sid}/teleport-events`, await ccrOpts());
+  assertOk(res, 'cloud read');
+  let messages = parseTeleportTranscript(res.body);
+  if (opts.lastN && opts.lastN > 0) messages = messages.slice(-opts.lastN);
+  return { sid: opts.sid, messages };
+}
+
+/** Get raw cloud session status. */
+export async function cloudStatus(sid: string): Promise<{ sid: string; status: string; connectionStatus?: string; raw: any }> {
+  if (!isCloudSid(sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_…');
+  const res = await anthropicOAuthGet(`/v1/code/sessions/${sid}`, await ccrOpts());
+  assertOk(res, 'cloud status');
+  const b = res.body as Record<string, any>;
+  const shape = b?.response_shape || b;
+  return { sid, status: shape?.session_status || shape?.status || 'unknown', connectionStatus: shape?.connection_status, raw: shape };
+}
+
+/** Stop (delete) a cloud session and drop it from the registry. */
+export async function cloudStop(sid: string): Promise<{ stopped: boolean; sid: string }> {
+  if (!isCloudSid(sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_…');
+  const res = await anthropicOAuthDelete(`/v1/sessions/${sid}`, await ccrOpts());
+  // 404 = already gone; treat as stopped (idempotent)
+  if (res.status !== 404) assertOk(res, 'cloud stop');
+  const data = loadRegistry(); delete data[sid]; saveRegistry(data);
+  return { stopped: true, sid };
+}
+
+/** List cloud sessions WE created (from the registry). */
+export function cloudList(): CloudRecord[] {
+  return Object.values(loadRegistry()).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+}
