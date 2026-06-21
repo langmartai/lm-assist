@@ -469,15 +469,28 @@ export async function cloudDrive(opts: { sid: string; text: string }): Promise<{
   return { delivered: true, sid: opts.sid, eventId: r?.event_id };
 }
 
+/** True when the session is genuinely blocked awaiting input (a question/permission). */
+function isRequiresAction(sessionBody: any): boolean {
+  const shape = sessionBody?.response_shape || sessionBody || {};
+  return /requires_action/i.test(String(shape?.worker_status || ''));
+}
+
 /** Read a cloud session's transcript (teleport-events) + any pending question awaiting an answer. */
 export async function cloudRead(opts: { sid: string; lastN?: number }): Promise<{ sid: string; messages: CloudTranscriptMsg[]; pendingQuestion: PendingQuestion | null }> {
   if (!isCloudSid(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_…');
-  const res = await anthropicOAuthGet(`/v1/code/sessions/${opts.sid}/teleport-events`, await ccrOpts());
+  const ccr = await ccrOpts();
+  const [res, st] = await Promise.all([
+    anthropicOAuthGet(`/v1/code/sessions/${opts.sid}/teleport-events`, ccr),
+    anthropicOAuthGet(`/v1/code/sessions/${opts.sid}`, ccr).catch(() => null),
+  ]);
   assertOk(res, 'cloud read');
   const events = ((res.body as { data?: any[] })?.data) || [];
   let messages = parseTeleportTranscript(res.body);
   if (opts.lastN && opts.lastN > 0) messages = messages.slice(-opts.lastN);
-  return { sid: opts.sid, messages, pendingQuestion: findPendingQuestion(events) };
+  // Gate on worker_status: a client-sent tool_result doesn't reliably appear in teleport-events,
+  // so only surface a pending question when the worker is actually blocked (requires_action).
+  const pendingQuestion = isRequiresAction(st?.body) ? findPendingQuestion(events) : null;
+  return { sid: opts.sid, messages, pendingQuestion };
 }
 
 /**
@@ -489,12 +502,18 @@ export async function cloudAnswer(opts: { sid: string; answer: string; toolUseId
   if (!isCloudSid(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_…');
   const answer = (opts.answer || '').toString();
   if (!answer.trim()) throw new TerminalError('INVALID_INPUT', 'answer is required');
-  const res = await anthropicOAuthGet(`/v1/code/sessions/${opts.sid}/teleport-events`, await ccrOpts());
+  const ccr = await ccrOpts();
+  const [res, st] = await Promise.all([
+    anthropicOAuthGet(`/v1/code/sessions/${opts.sid}/teleport-events`, ccr),
+    anthropicOAuthGet(`/v1/code/sessions/${opts.sid}`, ccr).catch(() => null),
+  ]);
   assertOk(res, 'cloud read');
   const events = ((res.body as { data?: any[] })?.data) || [];
-  const pending = findPendingQuestion(events);
+  // Auto-resolve the pending tool_use_id only when the worker is actually blocked (requires_action),
+  // so we don't re-answer an already-resolved question. An explicit toolUseId always proceeds.
+  const pending = isRequiresAction(st?.body) ? findPendingQuestion(events) : null;
   const toolUseId = opts.toolUseId || pending?.toolUseId;
-  if (!toolUseId) throw new TerminalError('PRECONDITION_FAILED', 'no pending AskUserQuestion to answer in this session');
+  if (!toolUseId) throw new TerminalError('PRECONDITION_FAILED', 'no pending question to answer (the worker is not awaiting input) — use ccr_cloud_drive for a normal turn, or pass tool_use_id explicitly');
   const q = pending?.questions?.[0];
   const isOption = !!(q?.options || []).find((o) => o.label === answer.trim() || o.label?.toLowerCase() === answer.trim().toLowerCase());
   const content = formatAnswerContent(pending?.questions || [], answer);
