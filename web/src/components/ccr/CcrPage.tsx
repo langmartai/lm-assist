@@ -109,6 +109,7 @@ export function CcrPage() {
   const [cloudPrompt, setCloudPrompt] = useState('');
   const [cloudRepo, setCloudRepo] = useState('');
   const [cloudBranch, setCloudBranch] = useState('');
+  const [cloudSetup, setCloudSetup] = useState(false);
   const [cloudViewing, setCloudViewing] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [cloudErr, setCloudErr] = useState<string | null>(null);
@@ -177,20 +178,21 @@ export function CcrPage() {
   const startCloud = useCallback(async () => {
     const repo = cloudRepo.trim();
     const p = cloudPrompt.trim();
-    if (!p && !repo) return; // a prompt is optional, but start needs at least a repo or a prompt
+    if (!p && !repo && !cloudSetup) return; // need a repo, a prompt, or setup
     setStarting(true); setCloudErr(null);
     try {
       const body: Record<string, unknown> = {};
       if (p) body.prompt = p;
       if (repo) body.repo = repo;
       if (cloudBranch.trim()) body.branch = cloudBranch.trim();
+      if (cloudSetup) body.setup = true;
       const r = await apiFetch<{ sid: string }>('/ccr/cloud/start', { method: 'POST', body });
-      setCloudPrompt(''); setCloudRepo(''); setCloudBranch(''); setBranchOptions([]);
+      setCloudPrompt(''); setCloudRepo(''); setCloudBranch(''); setBranchOptions([]); setCloudSetup(false);
       await fetchAll();
       if (r?.sid) setCloudViewing(r.sid); // open the new session's view to watch it boot
     } catch (e) { setCloudErr(parseCcrError(e).message); }
     finally { setStarting(false); }
-  }, [apiFetch, cloudPrompt, cloudRepo, cloudBranch, fetchAll]);
+  }, [apiFetch, cloudPrompt, cloudRepo, cloudBranch, cloudSetup, fetchAll]);
 
   const stopCloud = useCallback(async (sid: string) => {
     setBusyFor(sid, true); setCloudErr(null);
@@ -300,14 +302,20 @@ export function CcrPage() {
           <datalist id="ccr-branch-list">
             {branchOptions.map((b) => (<option key={b} value={b} />))}
           </datalist>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {!cloudPrompt.trim() && !cloudRepo.trim()
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {!cloudPrompt.trim() && !cloudRepo.trim() && !cloudSetup
               ? <span style={{ fontSize: 11, color: 'var(--color-status-orange)' }}>pick a repo (or type a prompt) to start</span>
               : cloudRepo.trim()
-                ? <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>clones <code>{cloudRepo.trim()}</code>{cloudBranch.trim() ? <> @ <code>{cloudBranch.trim()}</code></> : ' (default branch)'}{!cloudPrompt.trim() ? ' · no prompt — drive it after it boots' : ''}</span>
-                : <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>empty scratch workspace (no repo)</span>}
+                ? <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>clones <code>{cloudRepo.trim()}</code>{cloudBranch.trim() ? <> @ <code>{cloudBranch.trim()}</code></> : ' (default branch)'}{!cloudPrompt.trim() && !cloudSetup ? ' · no prompt — drive it after it boots' : ''}</span>
+                : cloudSetup
+                  ? <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>empty workspace · installs lm-assist (local)</span>
+                  : <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>empty scratch workspace (no repo)</span>}
             <div style={{ flex: 1 }} />
-            <button className="btn btn-primary btn-sm" disabled={starting || (!cloudPrompt.trim() && !cloudRepo.trim())} onClick={startCloud} title="Boot a cloud-run claude (spends cloud quota)">
+            <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--color-text-secondary)', cursor: 'pointer' }}
+              title="Seed the first turn to install lm-assist locally in the container (your custom GitHub build, not the stale npm one). No hub key is sent; connecting to your hub is a separate in-session step you confirm.">
+              <input type="checkbox" checked={cloudSetup} onChange={(e) => setCloudSetup(e.target.checked)} /> install&nbsp;lm-assist
+            </label>
+            <button className="btn btn-primary btn-sm" disabled={starting || (!cloudPrompt.trim() && !cloudRepo.trim() && !cloudSetup)} onClick={startCloud} title="Boot a cloud-run claude (spends cloud quota)">
               {starting ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Starting…</> : <><Cloud size={13} /> Start cloud</>}
             </button>
           </div>

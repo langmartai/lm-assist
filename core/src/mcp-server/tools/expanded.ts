@@ -573,6 +573,7 @@ export const ccrCloudStartToolDef = {
       cwd: { type: 'string', description: 'Fallback: local git repo to bundle+upload instead of a GitHub clone (<=50 MiB).' },
       model: { type: 'string', description: 'Model id (default claude-opus-4-8[1m]).' },
       title: { type: 'string', description: 'Optional session title.' },
+      setup: { type: 'boolean', description: 'Install-only setup: seed the first turn to install lm-assist locally in the fresh container (from the user\'s CUSTOM GitHub build, not the stale npm one). No hub key embedded; connecting to the hub is a separate in-session step. Default false.' },
     },
     required: [],
   },
@@ -1295,7 +1296,8 @@ async function handleCcrCloudStart(args: Record<string, unknown>): Promise<McpTo
   if (args.cwd) body.cwd = String(args.cwd);
   if (args.model) body.model = String(args.model);
   if (args.title) body.title = String(args.title);
-  if (!body.prompt && !body.repo && !body.cwd) return err('provide a repo or a prompt to start a cloud session.');
+  if (args.setup === true || args.setup === 'true') body.setup = true;
+  if (!body.prompt && !body.repo && !body.cwd && !body.setup) return err('provide a repo or a prompt to start a cloud session.');
   try { return renderRaw(await workerPostRaw('/ccr/cloud/start', body)); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }

@@ -78,6 +78,32 @@ export function parseGitHubRepo(input: string): { slug: string; url: string } | 
 }
 
 /**
+ * The lm-assist INSTALL-ONLY setup preamble seeded into a cloud session's first turn: install
+ * lm-assist locally (the user's CUSTOM GitHub build — NOT the stale npm-published version) and
+ * start it local-only. NO hub key and NO external connection are embedded (so it doesn't read as
+ * injected C2-wiring, and no secret lands in the transcript). Connecting to the user's hub is a
+ * separate, in-session, user-confirmed step. Pure; tested.
+ */
+export function buildSetupPreamble(): string {
+  const apiPort = 3100;
+  return [
+    "[lm-assist setup] The user asked to install lm-assist (their own dev tooling) in this container — it is NOT installed here. Install it LOCALLY. IMPORTANT: install the user's CUSTOM build from their public GitHub source — the npm-published `lm-assist` is an OLDER build, do not use it:",
+    '',
+    '  npm install -g github:langmartai/lm-assist     # the custom build (NOT `npm i -g lm-assist`, which is stale)',
+    '  claude plugin install lm-assist@langmartai      # adds the lm-assist MCP tools + context hook',
+    '  lm-assist start                                 # boots Core locally on :' + apiPort + ' (LOCAL-only — no external connection)',
+    `  curl -s localhost:${apiPort}/health             # expect ok`,
+    '',
+    `This gives you LOCAL lm-assist — its capability guide (call \`bootstrap\` once the MCP is loaded), local session tracking, knowledge, etc., reachable over the CLI and \`curl -s localhost:${apiPort}/...\`. The lm-assist MCP TOOLS attach at the start of your NEXT Claude Code session; in THIS one reach it over HTTP/CLI. lm-assist COMPLEMENTS your built-in tools.`,
+    '',
+    "To CONNECT this node to the user's lm-assist HUB (to reach their cross-node fleet/data) is a SEPARATE, deliberate step — ASK the user to confirm and provide the hub URL + key; do NOT wire this container to any external hub on your own. Then proceed with the task below.",
+    '',
+    '────────  task  ────────',
+    '',
+  ].join('\n');
+}
+
+/**
  * Build the POST /v1/sessions body — a create carries the initial user turn (wrapped event).
  * Seed EITHER via `sources` (GitHub repos — the standard) OR `seedFileId` (local git bundle).
  */
@@ -320,21 +346,31 @@ export async function listRepoBranches(repo: string): Promise<string[]> {
 // Public API
 // ---------------------------------------------------------------------------
 
-export interface CloudStartResult { sid: string; webUrl: string; status: string; model: string; repo: string | null; branch: string | null; cwd: string | null; environmentId: string }
+export interface CloudStartResult { sid: string; webUrl: string; status: string; model: string; repo: string | null; branch: string | null; cwd: string | null; environmentId: string; setup: boolean }
 
 /**
  * Create a cloud-run CCR session (returns immediately; poll cloudRead for the first turn).
  * Standard seed = a GitHub repo (`repo` = owner/name or URL; the cloud clones it, branch
  * defaults to the repo's default). Fallback = a local git bundle (`cwd`) or empty scratch.
  */
-export async function cloudStart(opts: { prompt?: string; repo?: string; branch?: string; cwd?: string; model?: string; title?: string }): Promise<CloudStartResult> {
+export async function cloudStart(opts: { prompt?: string; repo?: string; branch?: string; cwd?: string; model?: string; title?: string; setup?: boolean }): Promise<CloudStartResult> {
   const prompt = (opts.prompt || '').toString().trim();
   const hasRepo = !!(opts.repo && opts.repo.trim());
   const hasCwd = !!(opts.cwd && opts.cwd.trim());
-  // Prompt is optional: a session can boot from just a repo (clones + waits). Need at least one.
-  if (!prompt && !hasRepo && !hasCwd) throw new TerminalError('INVALID_INPUT', 'provide a repo or a prompt to start a cloud session');
+  // Prompt is optional: a session can boot from just a repo (clones + waits) or just lm-assist setup.
+  if (!prompt && !hasRepo && !hasCwd && !opts.setup) throw new TerminalError('INVALID_INPUT', 'provide a repo or a prompt to start a cloud session');
   const model = opts.model || DEFAULT_MODEL;
   const environmentId = await getEnvironmentId();
+
+  // Optional lm-assist INSTALL-ONLY setup: prepend install instructions to the first turn so the
+  // fresh container installs lm-assist locally (no hub key / external connect — that's a separate
+  // in-session step the user confirms).
+  let effectivePrompt = prompt;
+  let setupApplied = false;
+  if (opts.setup) {
+    effectivePrompt = buildSetupPreamble() + (prompt || 'Then await my instructions.');
+    setupApplied = true;
+  }
 
   let sources: unknown[] = [];
   let seedFileId: string | undefined;
@@ -357,7 +393,7 @@ export async function cloudStart(opts: { prompt?: string; repo?: string; branch?
     cwd = seed.cwd;
   }
 
-  const res = await anthropicOAuthPost('/v1/sessions', buildCreateBody({ prompt, model, environmentId, title: opts.title, seedFileId, sources }), await ccrOpts());
+  const res = await anthropicOAuthPost('/v1/sessions', buildCreateBody({ prompt: effectivePrompt, model, environmentId, title: opts.title, seedFileId, sources }), await ccrOpts());
   assertOk(res, 'cloud session create');
   const sid = (res.body as { id?: string })?.id;
   if (!sid) throw new TerminalError('UPSTREAM_ERROR', 'create returned no session id', { body: res.body });
@@ -369,7 +405,7 @@ export async function cloudStart(opts: { prompt?: string; repo?: string; branch?
     webUrl: cloudSessionWebUrl(sid), createdAt: new Date().toISOString(),
   };
   const data = loadRegistry(); data[sid] = rec; saveRegistry(data);
-  return { sid, webUrl: rec.webUrl, status, model, repo: repoSlug, branch, cwd, environmentId };
+  return { sid, webUrl: rec.webUrl, status, model, repo: repoSlug, branch, cwd, environmentId, setup: setupApplied };
 }
 
 /** Drive a follow-up turn into a cloud session. */

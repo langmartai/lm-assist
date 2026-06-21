@@ -151,7 +151,7 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'POST',
       pattern: /^\/ccr\/cloud\/start$/,
       handler: async (req) => envelope(async () => {
-        const body = (req.body || {}) as { prompt?: unknown; repo?: unknown; branch?: unknown; cwd?: unknown; model?: unknown; title?: unknown };
+        const body = (req.body || {}) as { prompt?: unknown; repo?: unknown; branch?: unknown; cwd?: unknown; model?: unknown; title?: unknown; setup?: unknown };
         return await ccrCloud.cloudStart({
           prompt: typeof body.prompt === 'string' ? body.prompt : undefined,
           repo: typeof body.repo === 'string' ? body.repo : undefined,
@@ -159,6 +159,7 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
           cwd: typeof body.cwd === 'string' ? body.cwd : undefined,
           model: typeof body.model === 'string' ? body.model : undefined,
           title: typeof body.title === 'string' ? body.title : undefined,
+          setup: body.setup === true,
         });
       }),
     },

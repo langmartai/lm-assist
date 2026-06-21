@@ -8,7 +8,18 @@ import {
   parseTeleportTranscript,
   parseGitHubRepo,
   buildGitHubSource,
+  buildSetupPreamble,
 } from '../terminal/ccr-cloud';
+
+test('buildSetupPreamble: install-only from the custom GitHub build, no hub key embedded', () => {
+  const p = buildSetupPreamble();
+  assert.match(p, /npm install -g github:langmartai\/lm-assist/);   // the custom build, not stale npm
+  assert.match(p, /claude plugin install lm-assist@langmartai/);
+  assert.match(p, /lm-assist start/);
+  assert.doesNotMatch(p, /hub\.json/);          // install-only: writes no hub config
+  assert.doesNotMatch(p, /apiKey|wss:\/\//);    // no creds embedded → nothing secret in the transcript
+  assert.match(p, /ASK the user to confirm/);   // connecting to the hub is a separate confirmed step
+});
 
 test('cloudSessionWebUrl: maps sid to the claude.ai/code URL', () => {
   assert.equal(cloudSessionWebUrl('session_01Epb79wZY8Xg7AMpKoxrZdo'), 'https://claude.ai/code/session_01Epb79wZY8Xg7AMpKoxrZdo');
