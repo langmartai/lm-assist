@@ -4,8 +4,7 @@ import * as path from 'path';
 import { getDataDir } from '../utils/path-utils';
 import type { WorkerRecord } from './types';
 
-function dataDir(): string { return process.env.LM_ASSIST_DATA_DIR || getDataDir(); }
-function storeFile(): string { return path.join(dataDir(), 'workers.json'); }
+function storeFile(): string { return path.join(getDataDir(), 'workers.json'); }
 
 function readAll(): Record<string, WorkerRecord> {
   try { return JSON.parse(fs.readFileSync(storeFile(), 'utf-8')) as Record<string, WorkerRecord>; }
