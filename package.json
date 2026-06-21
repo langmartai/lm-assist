@@ -32,6 +32,7 @@
     "core/data",
     "core/hooks",
     "core/scripts",
+    "ccr",
     "web/.next",
     "web/public",
     "core.sh",

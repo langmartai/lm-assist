@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### CCR — bootstrap/guide now teaches operating Claude Code Remote sessions + the `ccr/` deploy fix (2026-06-21)
+
+- **`guide(topic="ccr")` + bootstrap** now include a CCR playbook: the three modes (`ccr_load` read-only
+  replay, `ccr_mirror` one-way live view, `ccr_connect` two-way drive), the operate flow
+  (`cc_sessions`/`list_recent_sessions` → `ccr_preflight` → pick a mode by `allowedModes` → open the
+  `claude.ai/code` webUrl → `ccr_remote_list`/`ccr_remote_stop`), and the connect SAFETY GATE
+  (attach-existing / create-tmux / refuse-CONFLICT — never double-write a live session's append-only
+  transcript). New `ccr` topic in TOPIC_TOOLS/GUIDES/BLURB/bootstrap-order + keyword aliases, so an LLM
+  connecting over the langmart connector learns CCR without reverse-engineering the tool descriptions.
+- **Fix: the `ccr/` bridge scripts were never shipped.** They weren't in package.json `files`, so the npm
+  package (and every prod install) lacked `ccr/` — `ccr_load`/`mirror`/`connect` failed with
+  `MODULE_NOT_FOUND` on prod. Added `ccr` to `files`; deploys must sync `ccr/` alongside `core/dist`.
+  Verified end-to-end on prod after deploying it (load → claude.ai/code URL → list → stop).
+
 ### Scheduler — the built-in delete job is now DIRECT-ID-ONLY (no matching of any kind) (2026-06-21)
 
 The built-in `cleanup-test-conversations` job now deletes **only the exact conversation ids in its verified
