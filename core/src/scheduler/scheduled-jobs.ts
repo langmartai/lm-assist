@@ -242,18 +242,17 @@ export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
   return [
     {
       id: 'cleanup-test-conversations',
-      name: 'Auto-delete expired conversations',
-      description: 'Deletes ONLY conversations on the verified auto-delete list — those carrying an EXPIRED [lm-autodel:…] TTL marker. Ignores names/ids by design. Ships disabled + dry-run; arm with config.dryRun=false.',
+      name: 'Delete verified conversation IDs',
+      description: 'Deletes ONLY the exact conversation ids in its verified list (config.ids), by direct id match. Does NO name/pattern/TTL matching. Empty list deletes nothing. Ships disabled + dry-run; arm with config.dryRun=false.',
       type: 'cleanup-test-conversations',
       enabled: false, // SAFE BY DEFAULT — the user arms it
       intervalMinutes: 1440, // daily, once armed
       config: {
-        // dryRun TRUE → reports matches without deleting. The user sets dryRun:false to arm deletion.
+        // dryRun TRUE → reports the count without deleting. The user sets dryRun:false to arm deletion.
         dryRun: true,
-        // TTL-only: the handler ignores ids/patterns; selection is expired [lm-autodel:…] markers ONLY,
-        // so a conversation that wasn't explicitly marked for auto-deletion is never swept. `limit` only
-        // bounds how many conversations are scanned.
-        limit: 500,
+        // ids = the VERIFIED list. The ONLY delete mechanism is a direct uuid match against this list;
+        // there is no pattern/TTL/name matching. Empty → nothing is ever deleted.
+        ids: [] as string[],
       },
       lastRunAt: null,
       lastResult: null,
@@ -347,26 +346,30 @@ class ScheduledJobs {
     if (this.handlers.has('cleanup-test-conversations')) return;
     this.registerHandler('cleanup-test-conversations', async (config, ctx) => {
       // Lazy require to avoid a static import cycle (claudeai-session is large).
-      const { cleanupTestConversations } = require('../utils/claudeai-session');
+      const { deleteConversation } = require('../utils/claudeai-session');
       // dryRun defaults TRUE; only an explicit config.dryRun===false arms deletion.
       // A forced dry-run (preview "Run now") always wins, so a preview never deletes.
       const armed = config.dryRun === false;
       const dryRun = ctx.dryRunForced ? true : !armed;
-      // TTL-ONLY BY DESIGN: this auto-delete sweep manages ONLY the VERIFIED auto-delete list —
-      // conversations carrying a valid, EXPIRED `[lm-autodel:…]` marker (a TTL the operator explicitly
-      // set). It deliberately IGNORES name patterns and explicit ids, so it can never delete a
-      // conversation that wasn't itself marked for auto-deletion. (For curated id/pattern deletes use a
-      // separate `shell` job that calls /claude-ai/conversations/cleanup-test directly.)
-      const res = await cleanupTestConversations({
-        dryRun,
-        // no ids, no patterns, no olderThanHours → matchTestConversations sweeps expired-TTL markers ONLY
-        limit: typeof config.limit === 'number' ? config.limit : 500,
-      });
-      const matched = res.matched?.length ?? 0;
-      const result = dryRun
-        ? `dry-run: ${matched} TTL-expired conversation(s) would be deleted (verified auto-delete list)`
-        : `deleted ${res.deleted?.length ?? 0}/${matched} TTL-expired` + (res.failed?.length ? `, ${res.failed.length} failed` : '');
-      return { result, status: res.failed?.length ? 'error' : 'ok' };
+      // ID-ONLY BY DESIGN: deletes EXACTLY the conversation ids in the verified list (config.ids), by
+      // DIRECT id match. It does NO name / pattern / TTL matching whatsoever — a conversation is deleted
+      // only if its exact uuid was added to the list. An empty list deletes nothing. (ids are uuid-validated.)
+      const ids = (Array.isArray(config.ids) ? config.ids : []).filter(
+        (x: unknown): x is string => typeof x === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(x),
+      );
+      if (!ids.length) return { result: 'verified id list is empty — nothing to delete', status: 'skipped' };
+      if (dryRun) return { result: `dry-run: would delete ${ids.length} conversation(s) by id`, status: 'ok' };
+      let deleted = 0, gone = 0, failed = 0;
+      for (const id of ids) {
+        try {
+          const r = await deleteConversation(id);
+          if (r.status === 404) gone++;
+          else if (r.status < 400) deleted++;
+          else failed++;
+        } catch { failed++; }
+      }
+      const result = `deleted ${deleted}/${ids.length} by id` + (gone ? `, ${gone} already gone` : '') + (failed ? `, ${failed} failed` : '');
+      return { result, status: failed ? 'error' : 'ok' };
     });
   }
 
