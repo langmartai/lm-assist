@@ -16,17 +16,21 @@ import { ok, err, workerGet, workerPost, workerPut, workerDelete, type McpToolRe
 export const schedulerJobsToolDef = {
   name: 'scheduler_jobs',
   description:
-    "Manage lm-assist's INTERNAL scheduled jobs — the cron replacement that runs inside the worker (NOT OS " +
-    'crontab). Trigger words: "schedule a job", "run it every N minutes/daily", "cron", "recurring task", ' +
-    '"auto-run", "background job", "test the job", "show job logs/output". `action`: list (default) | get | ' +
-    'create | test | run | update | delete | logs.\n' +
-    '• CREATE AN AUTO-RUNNING JOB in one call: action="create", id="my-job", command="<shell command>", ' +
-    'interval_minutes=60, auto_run=true. (auto_run=true enables it so the scheduler runs it on the interval.)\n' +
-    '• TEST-RUN AND VERIFY: action="test", id="my-job" → runs it once NOW and returns status + exit code + ' +
-    'duration + stdout + stderr, WITHOUT advancing the schedule or run count. Use this to confirm a job works ' +
-    'before/after enabling it.\n' +
-    '• EXECUTION CONDITIONS: run_if="<guard command>" makes a scheduled run fire only if the guard exits 0; ' +
-    'max_runs=N stops auto-running after N runs. (Conditions gate scheduled runs; an explicit run/test bypasses them.)\n' +
+    "Manage lm-assist's INTERNAL scheduled jobs — the cron+at replacement that runs inside the worker (NOT OS " +
+    'crontab). Trigger words: "schedule a job", "run it every N minutes/daily", "run once at/in", "cron", ' +
+    '"one-time task", "auto-run", "background job", "test the job", "trigger it now", "show job logs/output". ' +
+    '`action`: list (default) | get | create | test | run | update | delete | logs.\n' +
+    'THREE WAYS TO SCHEDULE (all via action="create"):\n' +
+    '• ONE-TIME at a time: run_at="2026-06-22T03:00Z" (ISO) OR in_minutes=30 → runs ONCE then completes. ' +
+    '(Auto-enabled; no need to set auto_run.)\n' +
+    '• RECURRING: interval_minutes=60, auto_run=true → runs every interval (60=hourly,1440=daily). max_runs=N caps it.\n' +
+    '• TRIGGER-ONLY: omit schedule (disabled) → it only runs when you call action="run"/"test".\n' +
+    'RUN MODES: action="run" = REAL run now (force, bypasses conditions); add dry_run=true = PREVIEW (no ' +
+    'destructive action, for cleanup/{{dryRun}} jobs); action="test" = run once + return full output but DO NOT ' +
+    'advance the schedule/run count (verify without side effects). All return status + exit code + duration + ' +
+    'stdout + stderr.\n' +
+    'EXECUTION CONDITIONS: run_if="<guard command>" — a SCHEDULED run fires only if the guard exits 0. ' +
+    '(Conditions gate scheduled runs; an explicit run/test bypasses them.)\n' +
     'command as a STRING runs in a shell (pipes/&&/redirects); a `{{dryRun}}` placeholder + dry_run toggles ' +
     'preview⟷live. The built-in `cleanup-test-conversations` job deletes claude.ai test convs (ships disabled+dryRun). ' +
     'WRITE for create/test/run/update/delete; list/get/logs are read-only. Runs on the worker (use `node`).',
@@ -39,8 +43,10 @@ export const schedulerJobsToolDef = {
       name: { type: 'string', description: 'Human-readable name (create/update).' },
       description: { type: 'string', description: 'What the job does (create/update).' },
       command: { type: 'string', description: 'Shell command to run (create/update). Sets type=shell. Pipes/&&/redirects work.' },
-      interval_minutes: { type: 'number', description: 'Run cadence in minutes (create/update). 60=hourly, 1440=daily. <=0 pauses.' },
-      auto_run: { type: 'boolean', description: 'Enable the job so the scheduler runs it on its interval (create/update). Default false.' },
+      interval_minutes: { type: 'number', description: 'RECURRING cadence in minutes (create/update). 60=hourly, 1440=daily. <=0 pauses.' },
+      run_at: { type: 'string', description: 'ONE-TIME schedule: an ISO timestamp to run once at (create/update). Auto-enables the job.' },
+      in_minutes: { type: 'number', description: 'ONE-TIME schedule: run once this many minutes from now (create/update). Auto-enables. 0 = on the next tick (~1m).' },
+      auto_run: { type: 'boolean', description: 'Enable the job so the scheduler runs it (create/update). Implied true for run_at/in_minutes. Default false.' },
       run_if: { type: 'string', description: 'Guard command — a SCHEDULED run only fires if this exits 0 (an execution condition).' },
       max_runs: { type: 'number', description: 'Stop auto-running after this many runs (0 = no cap).' },
       cwd: { type: 'string', description: 'Working directory for the command/guard.' },
@@ -67,7 +73,18 @@ function toConfigObj(v: unknown): Record<string, any> | undefined {
   return typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : undefined;
 }
 
-/** Fold the flat params (command/run_if/max_runs/cwd/timeout_ms/dry_run) + explicit config into one config object. */
+/** Resolve a one-time schedule from run_at (ISO) or in_minutes (relative) → an ISO runAt, or undefined. */
+function resolveRunAt(args: Record<string, unknown>): string | undefined {
+  if (typeof args.run_at === 'string' && args.run_at.trim()) {
+    const ms = Date.parse(args.run_at);
+    if (!Number.isNaN(ms)) return new Date(ms).toISOString();
+  }
+  const mins = toNum(args.in_minutes);
+  if (mins !== undefined) return new Date(Date.now() + Math.max(0, mins) * 60_000).toISOString();
+  return undefined;
+}
+
+/** Fold the flat params (command/run_if/max_runs/cwd/timeout_ms/dry_run/run_at/in_minutes) + explicit config. */
 function buildConfig(args: Record<string, unknown>): Record<string, any> | undefined {
   const cfg: Record<string, any> = {};
   if (typeof args.command === 'string') cfg.command = args.command;
@@ -76,6 +93,7 @@ function buildConfig(args: Record<string, unknown>): Record<string, any> | undef
   if (typeof args.cwd === 'string' && args.cwd) cfg.cwd = args.cwd;
   const timeout = toNum(args.timeout_ms); if (timeout !== undefined) cfg.timeoutMs = timeout;
   const dry = toBool(args.dry_run); if (dry !== undefined) cfg.dryRun = dry;
+  const runAt = resolveRunAt(args); if (runAt) cfg.runAt = runAt;
   const explicit = toConfigObj(args.config); if (explicit) Object.assign(cfg, explicit);
   return Object.keys(cfg).length ? cfg : undefined;
 }
@@ -88,7 +106,10 @@ interface JobView {
 interface RunRec { at: string; status: string; result: string; trigger: string; exitCode?: number | null; durationMs?: number; stdout?: string; stderr?: string; condition?: string; }
 
 function fmtJob(j: JobView): string {
-  const state = !j.enabled ? 'disabled' : j.intervalMinutes > 0 ? `every ${j.intervalMinutes}m` : 'paused';
+  const runAt = typeof j.config?.runAt === 'string' ? j.config.runAt : null;
+  const state = !j.enabled ? 'disabled'
+    : runAt ? (j.lastRun ? 'one-time · done' : `one-time @ ${runAt}`)
+    : j.intervalMinutes > 0 ? `every ${j.intervalMinutes}m` : 'trigger-only';
   const lines = [`- ${j.id}${j.name ? `  "${j.name}"` : ''}${j.builtin ? ' (built-in)' : ''}  [${state}]`];
   if (j.description) lines.push(`  ${j.description}`);
   lines.push(`  type: ${j.type}`);
@@ -165,13 +186,19 @@ async function handleSchedulerJobs(args: Record<string, unknown>): Promise<McpTo
       if (typeof args.description === 'string') body.description = args.description;
       if (typeof args.type === 'string') body.type = args.type;
       else if (action === 'create' && typeof args.command === 'string') body.type = 'shell';
-      const en = toBool(args.auto_run); if (en !== undefined) body.enabled = en;
-      const iv = toNum(args.interval_minutes); if (iv !== undefined) body.intervalMinutes = iv;
       const cfg = buildConfig(args); if (cfg) body.config = cfg;
+      const oneTime = !!cfg?.runAt; // run_at / in_minutes makes it a one-time scheduled job
+      const en = toBool(args.auto_run);
+      if (en !== undefined) body.enabled = en;
+      else if (oneTime) body.enabled = true; // one-time jobs auto-enable so they actually fire
+      const iv = toNum(args.interval_minutes); if (iv !== undefined) body.intervalMinutes = iv;
       if (action === 'update' && !exists) return err(`No job "${id}" to update — use action="create".`);
       if (action === 'create' && exists) return err(`Job "${id}" already exists — use action="update".`);
       const data = unwrap(action === 'create' ? await workerPost('/scheduler/jobs', body) : await workerPut(`/scheduler/jobs/${enc(id)}`, body)) as JobView;
-      const hint = data.enabled ? '' : '\n(disabled — pass auto_run=true to schedule it, or action="test" to try it now.)';
+      const runAt = typeof data.config?.runAt === 'string' ? data.config.runAt : null;
+      const hint = runAt ? `\n(one-time — runs once at ${runAt}, then completes. action="test" to verify now.)`
+        : data.enabled ? `\n(scheduled — next run ${data.nextRunAt}. action="test" to verify now.)`
+        : '\n(disabled — pass auto_run=true to schedule, run_at/in_minutes for a one-time run, or action="run"/"test" to trigger now.)';
       return ok(`${action === 'create' ? 'Created' : 'Updated'} "${id}":\n${fmtJob(data)}${hint}`);
     }
     if (action === 'test' || action === 'run') {

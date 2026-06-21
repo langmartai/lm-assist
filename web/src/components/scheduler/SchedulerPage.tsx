@@ -51,7 +51,9 @@ function fmtTime(iso: string | null): string {
 function stateLabel(j: JobView): { text: string; cls: string } {
   if (j.isRunning) return { text: 'running', cls: 'badge-blue' };
   if (!j.enabled) return { text: 'disabled', cls: 'badge-default' };
-  if (j.intervalMinutes <= 0) return { text: 'paused', cls: 'badge-default' };
+  const runAt = typeof j.config?.runAt === 'string' ? j.config.runAt : null;
+  if (runAt) return j.lastRun ? { text: 'one-time · done', cls: 'badge-default' } : { text: 'one-time', cls: 'badge-blue' };
+  if (j.intervalMinutes <= 0) return { text: 'trigger-only', cls: 'badge-default' };
   const m = j.intervalMinutes;
   const human = m % 1440 === 0 ? `${m / 1440}d` : m % 60 === 0 ? `${m / 60}h` : `${m}m`;
   return { text: `every ${human}`, cls: 'badge-green' };
@@ -96,8 +98,8 @@ export function SchedulerPage() {
 
   // Create-job form
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState<{ id: string; name: string; description: string; type: string; intervalMinutes: string; command: string; runIf: string; maxRuns: string; autoRun: boolean }>(
-    { id: '', name: '', description: '', type: 'shell', intervalMinutes: '1440', command: '', runIf: '', maxRuns: '', autoRun: false });
+  const [form, setForm] = useState<{ id: string; name: string; description: string; type: string; intervalMinutes: string; command: string; runIf: string; maxRuns: string; autoRun: boolean; runOnceMin: string }>(
+    { id: '', name: '', description: '', type: 'shell', intervalMinutes: '1440', command: '', runIf: '', maxRuns: '', autoRun: false, runOnceMin: '' });
   const [creating, setCreating] = useState(false);
   // Per-job command draft (editing a shell job's command inline)
   const [cmdDraft, setCmdDraft] = useState<Record<string, string>>({});
@@ -178,6 +180,10 @@ export function SchedulerPage() {
       if (type === 'shell' && form.command.trim()) config.command = form.command;
       if (form.runIf.trim()) config.runIf = form.runIf.trim();
       if (Number(form.maxRuns) > 0) config.maxRuns = Number(form.maxRuns);
+      // One-time: "run once in N min" → a runAt; the job auto-enables and completes after.
+      const onceMin = Number(form.runOnceMin);
+      const oneTime = form.runOnceMin.trim() !== '' && onceMin >= 0;
+      if (oneTime) config.runAt = new Date(Date.now() + onceMin * 60_000).toISOString();
       const created = await apiFetch<JobView>('/scheduler/jobs', {
         method: 'POST',
         body: {
@@ -185,14 +191,14 @@ export function SchedulerPage() {
           name: form.name.trim() || undefined,
           description: form.description.trim() || undefined,
           type,
-          intervalMinutes: Number(form.intervalMinutes) || 1440,
-          enabled: form.autoRun,
+          intervalMinutes: oneTime ? 0 : (Number(form.intervalMinutes) || 1440),
+          enabled: oneTime ? true : form.autoRun,
           config: Object.keys(config).length ? config : undefined,
         },
       });
       setJobs((prev) => [...prev, created]);
       setShowCreate(false);
-      setForm({ id: '', name: '', description: '', type: 'shell', intervalMinutes: '1440', command: '', runIf: '', maxRuns: '', autoRun: false });
+      setForm({ id: '', name: '', description: '', type: 'shell', intervalMinutes: '1440', command: '', runIf: '', maxRuns: '', autoRun: false, runOnceMin: '' });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -238,14 +244,17 @@ export function SchedulerPage() {
                 <option value="noop">noop (placeholder)</option>
               </select>
             </label>
-            <label style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>interval (min)<br />
-              <input className="input" type="number" value={form.intervalMinutes} onChange={(e) => setForm({ ...form, intervalMinutes: e.target.value })} style={{ width: 100 }} />
+            <label style={{ fontSize: 12, color: form.runOnceMin.trim() ? 'var(--color-text-tertiary)' : 'var(--color-text-secondary)' }}>interval (min)<br />
+              <input className="input" type="number" value={form.intervalMinutes} disabled={!!form.runOnceMin.trim()} onChange={(e) => setForm({ ...form, intervalMinutes: e.target.value })} style={{ width: 100 }} />
+            </label>
+            <label style={{ fontSize: 12, color: 'var(--color-accent)' }} title="One-time: runs once this many minutes from now, then completes (0 = next tick)">run once in (min)<br />
+              <input className="input" type="number" value={form.runOnceMin} placeholder="—" onChange={(e) => setForm({ ...form, runOnceMin: e.target.value })} style={{ width: 110 }} />
             </label>
             <label style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>max runs<br />
               <input className="input" type="number" value={form.maxRuns} placeholder="∞" onChange={(e) => setForm({ ...form, maxRuns: e.target.value })} style={{ width: 80 }} />
             </label>
             <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
-              <input type="checkbox" checked={form.autoRun} onChange={(e) => setForm({ ...form, autoRun: e.target.checked })} /> auto-run (enable)
+              <input type="checkbox" checked={form.autoRun} disabled={!!form.runOnceMin.trim()} onChange={(e) => setForm({ ...form, autoRun: e.target.checked })} /> auto-run (enable)
             </label>
             <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', flexBasis: '100%' }}>description<br />
               <input className="input" value={form.description} placeholder="what this job does" style={{ width: '100%' }} onChange={(e) => setForm({ ...form, description: e.target.value })} />
@@ -367,7 +376,7 @@ export function SchedulerPage() {
                       </div>
                     )}
 
-                    <div>next run: {j.enabled && j.intervalMinutes > 0 ? fmtTime(j.nextRunAt) : '— (not scheduled)'}</div>
+                    <div>next run: {j.nextRunAt ? fmtTime(j.nextRunAt) : '— (not scheduled)'}</div>
                     {runResult[j.id] && <div style={{ color: 'var(--color-accent)' }}>{runResult[j.id]}</div>}
                   </div>
 

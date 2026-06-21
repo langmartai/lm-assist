@@ -12,6 +12,8 @@ import {
   pushRunLog,
   reachedMaxRuns,
   applyRun,
+  parseRunAt,
+  isOneTime,
   type ScheduledJob,
   type JobRunRecord,
 } from '../scheduler/scheduled-jobs';
@@ -88,6 +90,35 @@ test('applyJobResult advances lastRunAt and records the outcome', () => {
 test('applyJobResult defaults a missing status to ok', () => {
   const updated = applyJobResult(job({}), { result: 'done' }, NOW);
   assert.equal(updated.lastStatus, 'ok');
+});
+
+// ── one-time (runAt) jobs ──────────────────────────────────────
+test('parseRunAt: parses an ISO time, rejects junk/empty', () => {
+  assert.equal(parseRunAt('2026-06-22T03:00:00Z'), Date.parse('2026-06-22T03:00:00Z'));
+  assert.equal(parseRunAt(''), null);
+  assert.equal(parseRunAt('not a date'), null);
+  assert.equal(parseRunAt(undefined), null);
+});
+
+test('isOneTime: runAt set OR maxRuns===1', () => {
+  assert.equal(isOneTime(job({ config: { runAt: '2026-06-22T03:00:00Z' } })), true);
+  assert.equal(isOneTime(job({ config: { maxRuns: 1 } })), true);
+  assert.equal(isOneTime(job({ config: { maxRuns: 5 } })), false);
+  assert.equal(isOneTime(job({ config: {} })), false);
+});
+
+test('isJobDue: a one-time runAt job fires only at/after runAt, and only once', () => {
+  const future = new Date(NOW + 3600_000).toISOString();
+  const past = new Date(NOW - 3600_000).toISOString();
+  assert.equal(isJobDue(job({ enabled: true, intervalMinutes: 0, lastRunAt: null, config: { runAt: future } }), NOW), false); // before time
+  assert.equal(isJobDue(job({ enabled: true, intervalMinutes: 0, lastRunAt: null, config: { runAt: past } }), NOW), true);   // at/after, unrun
+  assert.equal(isJobDue(job({ enabled: true, intervalMinutes: 0, lastRunAt: past, config: { runAt: past } }), NOW), false);  // already ran → done
+});
+
+test('nextRunAtMs: a one-time job points at runAt until it runs, then null', () => {
+  const at = new Date(NOW + 1800_000).toISOString();
+  assert.equal(nextRunAtMs(job({ enabled: true, intervalMinutes: 0, lastRunAt: null, config: { runAt: at } }), NOW), Date.parse(at));
+  assert.equal(nextRunAtMs(job({ enabled: true, intervalMinutes: 0, lastRunAt: at, config: { runAt: at } }), NOW), null);
 });
 
 // ── run capture: truncate / runLog / conditions / applyRun ─────

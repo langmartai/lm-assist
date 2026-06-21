@@ -123,20 +123,40 @@ export function reachedMaxRuns(job: ScheduledJob): boolean {
   return (job.runCount ?? 0) >= max;
 }
 
-/** Is this job due to run at nowMs? Disabled / paused / capped / not-yet-elapsed → false. */
+/** Parse a `config.runAt` ISO time → ms, or null if absent/unparseable. */
+export function parseRunAt(runAt: unknown): number | null {
+  if (typeof runAt !== 'string' || !runAt.trim()) return null;
+  const ms = Date.parse(runAt);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/** A one-time job runs once then completes: it has a `runAt` time OR maxRuns===1. */
+export function isOneTime(job: ScheduledJob): boolean {
+  return parseRunAt(job.config?.runAt) != null || Number(job.config?.maxRuns) === 1;
+}
+
+/** Is this job due to run at nowMs? Disabled / capped / before-runAt / paused / not-yet-elapsed → false. */
 export function isJobDue(job: ScheduledJob, nowMs: number): boolean {
   if (!job.enabled) return false;
-  if (!job.intervalMinutes || job.intervalMinutes <= 0) return false;
   if (reachedMaxRuns(job)) return false; // hit its run cap
+  const runAtMs = parseRunAt(job.config?.runAt);
+  if (runAtMs != null) {
+    // one-time scheduled run: due once at/after runAt, only if it hasn't run yet
+    return !job.lastRunAt && nowMs >= runAtMs;
+  }
+  if (!job.intervalMinutes || job.intervalMinutes <= 0) return false;
   if (!job.lastRunAt) return true; // never run → due immediately
   const last = Date.parse(job.lastRunAt);
   if (Number.isNaN(last)) return true; // unparseable timestamp → treat as never-run
   return nowMs - last >= job.intervalMinutes * 60_000;
 }
 
-/** When will this job next fire (ms)? null if disabled/paused. A never-run job → now. */
+/** When will this job next fire (ms)? null if disabled/paused/done. A never-run interval job → now. */
 export function nextRunAtMs(job: ScheduledJob, nowMs: number): number | null {
   if (!job.enabled) return null;
+  if (reachedMaxRuns(job)) return null;
+  const runAtMs = parseRunAt(job.config?.runAt);
+  if (runAtMs != null) return job.lastRunAt ? null : runAtMs; // one-time: at runAt, or done
   if (!job.intervalMinutes || job.intervalMinutes <= 0) return null;
   if (!job.lastRunAt) return nowMs;
   const last = Date.parse(job.lastRunAt);
