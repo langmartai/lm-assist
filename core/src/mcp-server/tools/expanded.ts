@@ -595,9 +595,22 @@ export const ccrCloudDriveToolDef = {
     required: ['sid', 'text'],
   },
 };
+export const ccrCloudAnswerToolDef = {
+  name: 'ccr_cloud_answer',
+  description: 'Answer a PENDING question the cloud claude is blocked on — an AskUserQuestion (surfaced as `pendingQuestion` by ccr_cloud_read when the worker is awaiting input). Sends a tool_result keyed to the question. `answer` = an option\'s LABEL (a "click") OR any free TEXT (a custom reply) — both supported. The pending tool_use_id auto-resolves (or pass tool_use_id). NOTE: this is distinct from ccr_cloud_drive, which sends a NEW user turn — the wrong shape for a pending tool_use.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      sid: { type: 'string', description: 'Cloud session id (session_…).' },
+      answer: { type: 'string', description: 'An option label (click) or free-text reply (input).' },
+      tool_use_id: { type: 'string', description: 'Optional explicit AskUserQuestion tool_use id (else auto-resolved from the pending question).' },
+    },
+    required: ['sid', 'answer'],
+  },
+};
 export const ccrCloudReadToolDef = {
   name: 'ccr_cloud_read',
-  description: 'Read the transcript (role + text + tool names) of a CLOUD CCR session — the cloud claude\'s replies. last_n limits to the most recent N messages.',
+  description: 'Read the transcript (role + text + tool names) of a CLOUD CCR session — the cloud claude\'s replies. ALSO returns `pendingQuestion` (an AskUserQuestion the session is blocked on, with its options) — when present, answer it with ccr_cloud_answer, not ccr_cloud_drive. last_n limits to the most recent N messages.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -842,6 +855,7 @@ export const EXPANDED_TOOL_DEFS = [
   ccrCloudStartToolDef,
   ccrCloudReposToolDef,
   ccrCloudDriveToolDef,
+  ccrCloudAnswerToolDef,
   ccrCloudReadToolDef,
   ccrCloudStopToolDef,
   ccrCloudListToolDef,
@@ -1313,6 +1327,16 @@ async function handleCcrCloudDrive(args: Record<string, unknown>): Promise<McpTo
   try { return renderRaw(await workerPostRaw(`/ccr/cloud/${enc(sid)}/drive`, { text })); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
+async function handleCcrCloudAnswer(args: Record<string, unknown>): Promise<McpToolResult> {
+  const sid = String(args.sid || '').trim();
+  const answer = String(args.answer || '').trim();
+  if (!sid) return err('sid is required.');
+  if (!answer) return err('answer is required.');
+  const body: Record<string, unknown> = { answer };
+  if (args.tool_use_id) body.toolUseId = String(args.tool_use_id);
+  try { return renderRaw(await workerPostRaw(`/ccr/cloud/${enc(sid)}/answer`, body)); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
 async function handleCcrCloudRead(args: Record<string, unknown>): Promise<McpToolResult> {
   const sid = String(args.sid || '').trim();
   if (!sid) return err('sid is required.');
@@ -1544,6 +1568,7 @@ export const EXPANDED_HANDLERS: Record<
   ccr_cloud_start: handleCcrCloudStart,
   ccr_cloud_repos: () => handleCcrCloudRepos(),
   ccr_cloud_drive: handleCcrCloudDrive,
+  ccr_cloud_answer: handleCcrCloudAnswer,
   ccr_cloud_read: handleCcrCloudRead,
   ccr_cloud_stop: handleCcrCloudStop,
   ccr_cloud_list: () => handleCcrCloudList(),

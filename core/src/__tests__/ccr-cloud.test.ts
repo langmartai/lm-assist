@@ -9,7 +9,49 @@ import {
   parseGitHubRepo,
   buildGitHubSource,
   buildSetupPreamble,
+  findPendingQuestion,
+  formatAnswerContent,
+  buildAnswerEvent,
 } from '../terminal/ccr-cloud';
+
+test('findPendingQuestion: returns the unanswered AskUserQuestion tool_use', () => {
+  const events = [{ payload: { message: { content: [{ type: 'tool_use', name: 'AskUserQuestion', id: 'toolu_1', input: { questions: [{ header: 'Q', options: [{ label: 'A' }] }] } }] } } }];
+  const p = findPendingQuestion(events);
+  assert.equal(p?.toolUseId, 'toolu_1');
+  assert.equal(p?.questions[0].options?.[0].label, 'A');
+});
+
+test('findPendingQuestion: null once a matching tool_result arrived', () => {
+  const events = [
+    { payload: { message: { content: [{ type: 'tool_use', name: 'AskUserQuestion', id: 'toolu_1', input: { questions: [] } }] } } },
+    { payload: { message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'answered' }] } } },
+  ];
+  assert.equal(findPendingQuestion(events), null);
+});
+
+test('findPendingQuestion: ignores non-AskUserQuestion tool_use; tolerates junk', () => {
+  assert.equal(findPendingQuestion([]), null);
+  assert.equal(findPendingQuestion([{ payload: { message: { content: [{ type: 'tool_use', name: 'Bash', id: 'x' }] } } }]), null);
+});
+
+test('formatAnswerContent: matched option label → explicit label + description (a click)', () => {
+  const qs = [{ header: 'Lockfile', options: [{ label: 'Branch', description: 'make a branch' }, { label: 'Main', description: 'push to main' }] }];
+  const c = formatAnswerContent(qs, 'Branch');
+  assert.match(c, /selected the option "Branch"/);
+  assert.match(c, /make a branch/);
+});
+
+test('formatAnswerContent: unmatched answer → free-text input', () => {
+  const c = formatAnswerContent([{ header: 'Lockfile', options: [{ label: 'Branch' }] }], 'actually, rebase onto main');
+  assert.match(c, /The user replied: actually, rebase onto main/);
+});
+
+test('buildAnswerEvent: a user message carrying a tool_result for the tool_use_id', () => {
+  assert.deepEqual(buildAnswerEvent('session_x', 'toolu_9', 'hi', 'fixed'), {
+    uuid: 'fixed', session_id: 'session_x', type: 'user', parent_tool_use_id: null,
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_9', content: 'hi', is_error: false }] },
+  });
+});
 
 test('buildSetupPreamble: install-only from the custom GitHub build, no hub key embedded', () => {
   const p = buildSetupPreamble();

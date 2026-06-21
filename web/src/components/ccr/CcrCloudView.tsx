@@ -3,10 +3,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Loader2, X, Send, RefreshCw, Wrench, User, Cloud, ExternalLink } from 'lucide-react';
+import { Loader2, X, Send, RefreshCw, Wrench, User, Cloud, ExternalLink, HelpCircle } from 'lucide-react';
 
 type ApiFetch = <T>(path: string, opts?: { method?: string; body?: unknown }) => Promise<T>;
 interface CloudMsg { role: string; type: string; text: string; tools?: string[] }
+interface QOption { label: string; description?: string }
+interface PendingQuestion { toolUseId: string; questions: Array<{ header?: string; question?: string; multiSelect?: boolean; options?: QOption[] }> }
 
 /** Native viewer for a CLOUD CCR session (claude runs in an Anthropic-cloud container).
  *  Renders the teleport-events transcript and drives via /ccr/cloud/:sid/drive. */
@@ -20,6 +22,9 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose }: {
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState<string | null>(null);
   const [live, setLive] = useState(true);
+  const [pendingQ, setPendingQ] = useState<PendingQuestion | null>(null);
+  const [answering, setAnswering] = useState(false);
+  const [customAnswer, setCustomAnswer] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
 
@@ -27,12 +32,23 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose }: {
   const load = useCallback(async () => {
     const seq = ++seqRef.current; // guard: a slower/older response must not overwrite a newer one
     try {
-      const r = await apiFetch<{ messages?: CloudMsg[] }>(`/ccr/cloud/${encodeURIComponent(sid)}`);
+      const r = await apiFetch<{ messages?: CloudMsg[]; pendingQuestion?: PendingQuestion | null }>(`/ccr/cloud/${encodeURIComponent(sid)}`);
       if (seq !== seqRef.current) return; // a newer load started — drop this stale result
-      setMessages(r.messages || []); setErr(null);
+      setMessages(r.messages || []); setPendingQ(r.pendingQuestion || null); setErr(null);
     } catch (e) { if (seq === seqRef.current) setErr(e instanceof Error ? e.message : String(e)); }
     finally { if (seq === seqRef.current) setLoading(false); }
   }, [apiFetch, sid]);
+
+  // Answer a pending AskUserQuestion — by clicking an option (label) or typing free text. Both hit /answer.
+  const answer = useCallback(async (text: string) => {
+    const a = text.trim(); if (!a) return;
+    setAnswering(true); setErr(null);
+    try {
+      await apiFetch(`/ccr/cloud/${encodeURIComponent(sid)}/answer`, { method: 'POST', body: { answer: a } });
+      setPendingQ(null); setCustomAnswer(''); setSent(`answered: ${a.slice(0, 50)}`); setTimeout(() => setSent(null), 4000); setTimeout(load, 1500);
+    } catch (e) { setErr(`answer failed: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { setAnswering(false); }
+  }, [apiFetch, sid, load]);
 
   // Stable 5s poll via a ref — apiFetch/apiClient identity churn (hybrid/proxy mode) must not reset
   // the interval and fire overlapping fetches that race and show stale data.
@@ -83,7 +99,36 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose }: {
 
       <div style={{ borderTop: '1px solid var(--color-border-default)', padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
         {err && messages.length > 0 && <div style={{ fontSize: 11, color: 'var(--color-status-red)' }}>{err}</div>}
-        {sent && <div style={{ fontSize: 11, color: 'var(--color-status-green)' }}>sent to cloud: “{sent}”.</div>}
+        {sent && <div style={{ fontSize: 11, color: 'var(--color-status-green)' }}>{sent}.</div>}
+
+        {/* Pending AskUserQuestion — answer by clicking an option OR typing a custom reply (both → /answer) */}
+        {pendingQ && pendingQ.questions[0] && (
+          <div style={{ border: '1px solid var(--color-accent)', borderRadius: 'var(--radius-md)', padding: 8, marginBottom: 4, background: 'var(--color-bg-elevated)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 6 }}>
+              <HelpCircle size={13} style={{ color: 'var(--color-accent)' }} /> {pendingQ.questions[0].header || 'Question'} — the cloud claude is waiting on you
+            </div>
+            {pendingQ.questions[0].question && <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', marginBottom: 8 }}>{pendingQ.questions[0].question}</div>}
+            {(pendingQ.questions[0].options || []).length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 8 }}>
+                {(pendingQ.questions[0].options || []).map((o) => (
+                  <button key={o.label} className="btn btn-ghost btn-sm" disabled={answering} onClick={() => answer(o.label)}
+                    style={{ justifyContent: 'flex-start', textAlign: 'left', height: 'auto', padding: '6px 10px', whiteSpace: 'normal' }} title={o.description}>
+                    <span style={{ fontWeight: 600 }}>{o.label}</span>{o.description ? <span style={{ color: 'var(--color-text-tertiary)', fontSize: 11 }}> — {o.description}</span> : null}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <input className="input" value={customAnswer} placeholder="…or type your own answer" disabled={answering}
+                style={{ flex: 1, fontSize: 12 }} onChange={(e) => setCustomAnswer(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); answer(customAnswer); } }} />
+              <button className="btn btn-primary btn-sm" disabled={answering || !customAnswer.trim()} onClick={() => answer(customAnswer)} title="Send custom answer">
+                {answering ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : 'Send'}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
           <textarea className="input" value={prompt} rows={2} placeholder="Drive the cloud session: type a prompt…"
             disabled={sending} style={{ flex: 1, resize: 'none', fontSize: 12.5 }}

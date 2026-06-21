@@ -127,6 +127,56 @@ export function buildCreateBody(opts: { prompt?: string; model: string; environm
   };
 }
 
+// ---------------------------------------------------------------------------
+// Answering a pending question (AskUserQuestion tool_use) — pure, tested
+// ---------------------------------------------------------------------------
+
+export interface PendingQuestion {
+  toolUseId: string;
+  questions: Array<{ header?: string; question?: string; multiSelect?: boolean; options?: Array<{ label: string; description?: string }> }>;
+}
+
+/** Scan raw teleport events for an UNANSWERED AskUserQuestion tool_use (session awaiting a tool_result). */
+export function findPendingQuestion(events: Array<{ payload?: { message?: { content?: any[] } } }>): PendingQuestion | null {
+  let pending: PendingQuestion | null = null;
+  const answered = new Set<string>();
+  for (const e of events || []) {
+    const c = e?.payload?.message?.content;
+    if (!Array.isArray(c)) continue;
+    for (const b of c) {
+      if (b?.type === 'tool_use' && b?.name === 'AskUserQuestion' && b?.id) pending = { toolUseId: b.id, questions: (b.input?.questions as PendingQuestion['questions']) || [] };
+      else if (b?.type === 'tool_result' && b?.tool_use_id) answered.add(b.tool_use_id);
+    }
+  }
+  return pending && !answered.has(pending.toolUseId) ? pending : null;
+}
+
+/**
+ * Build the tool_result content for an AskUserQuestion answer. EXPLICIT on purpose: a bare option
+ * label was empirically under-specified (the model pushed to main instead of branching), so we
+ * spell out the SELECTED option (label + description) for a click, or the verbatim free text for an
+ * input. `answer` matching an option label = a click; otherwise = free-text input. Both supported.
+ */
+export function formatAnswerContent(questions: PendingQuestion['questions'], answer: string): string {
+  const q = questions?.[0] || {};
+  const a = (answer || '').trim();
+  const opt = (q.options || []).find((o) => o.label === a || o.label?.toLowerCase() === a.toLowerCase());
+  const label = q.header || q.question || 'question';
+  if (opt) return `[answer to "${label}"] The user selected the option "${opt.label}"${opt.description ? ` — ${opt.description}` : ''}. Proceed accordingly.`;
+  return `[answer to "${label}"] The user replied: ${answer}`;
+}
+
+/** Build the user event that carries a tool_result (the answer to a tool_use, e.g. AskUserQuestion). */
+export function buildAnswerEvent(sid: string, toolUseId: string, content: string, uuid?: string) {
+  return {
+    uuid: uuid || randomUUID(),
+    session_id: sid,
+    type: 'user' as const,
+    parent_tool_use_id: null,
+    message: { role: 'user' as const, content: [{ type: 'tool_result' as const, tool_use_id: toolUseId, content, is_error: false }] },
+  };
+}
+
 /** Build a follow-up drive event (POST /v1/sessions/{sid}/events — NOT wrapped, unlike create). */
 export function buildDriveEvent(sid: string, text: string, uuid?: string) {
   return {
@@ -419,14 +469,38 @@ export async function cloudDrive(opts: { sid: string; text: string }): Promise<{
   return { delivered: true, sid: opts.sid, eventId: r?.event_id };
 }
 
-/** Read a cloud session's transcript (teleport-events). */
-export async function cloudRead(opts: { sid: string; lastN?: number }): Promise<{ sid: string; messages: CloudTranscriptMsg[] }> {
+/** Read a cloud session's transcript (teleport-events) + any pending question awaiting an answer. */
+export async function cloudRead(opts: { sid: string; lastN?: number }): Promise<{ sid: string; messages: CloudTranscriptMsg[]; pendingQuestion: PendingQuestion | null }> {
   if (!isCloudSid(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_…');
   const res = await anthropicOAuthGet(`/v1/code/sessions/${opts.sid}/teleport-events`, await ccrOpts());
   assertOk(res, 'cloud read');
+  const events = ((res.body as { data?: any[] })?.data) || [];
   let messages = parseTeleportTranscript(res.body);
   if (opts.lastN && opts.lastN > 0) messages = messages.slice(-opts.lastN);
-  return { sid: opts.sid, messages };
+  return { sid: opts.sid, messages, pendingQuestion: findPendingQuestion(events) };
+}
+
+/**
+ * Answer a pending question (AskUserQuestion) in a cloud session by POSTing a tool_result.
+ * `answer` = an option's label (a CLICK) or arbitrary text (free INPUT) — both handled. The
+ * tool_use_id auto-resolves from the session's pending question unless given explicitly.
+ */
+export async function cloudAnswer(opts: { sid: string; answer: string; toolUseId?: string }): Promise<{ answered: boolean; sid: string; toolUseId: string; mode: 'option' | 'input'; sentContent: string }> {
+  if (!isCloudSid(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_…');
+  const answer = (opts.answer || '').toString();
+  if (!answer.trim()) throw new TerminalError('INVALID_INPUT', 'answer is required');
+  const res = await anthropicOAuthGet(`/v1/code/sessions/${opts.sid}/teleport-events`, await ccrOpts());
+  assertOk(res, 'cloud read');
+  const events = ((res.body as { data?: any[] })?.data) || [];
+  const pending = findPendingQuestion(events);
+  const toolUseId = opts.toolUseId || pending?.toolUseId;
+  if (!toolUseId) throw new TerminalError('PRECONDITION_FAILED', 'no pending AskUserQuestion to answer in this session');
+  const q = pending?.questions?.[0];
+  const isOption = !!(q?.options || []).find((o) => o.label === answer.trim() || o.label?.toLowerCase() === answer.trim().toLowerCase());
+  const content = formatAnswerContent(pending?.questions || [], answer);
+  const post = await anthropicOAuthPost(`/v1/sessions/${opts.sid}/events`, { events: [buildAnswerEvent(opts.sid, toolUseId, content)] }, await ccrOpts());
+  assertOk(post, 'cloud answer');
+  return { answered: true, sid: opts.sid, toolUseId, mode: isOption ? 'option' : 'input', sentContent: content };
 }
 
 /** Get raw cloud session status. */

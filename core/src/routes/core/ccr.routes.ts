@@ -202,6 +202,20 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       }),
     },
 
+    // POST /ccr/cloud/:sid/answer — answer a pending AskUserQuestion (tool_result).
+    // answer = an option's label (a click) OR arbitrary text (free input) — both supported.
+    {
+      method: 'POST',
+      pattern: /^\/ccr\/cloud\/(?<sid>session_[^/]+)\/answer$/,
+      handler: async (req) => envelope(async () => {
+        const sid = parseCloudSid(req.params.sid);
+        const body = (req.body || {}) as { answer?: unknown; toolUseId?: unknown };
+        const answer = typeof body.answer === 'string' ? body.answer : '';
+        if (!answer.trim()) throw new TerminalError('INVALID_INPUT', 'answer is required');
+        return await ccrCloud.cloudAnswer({ sid, answer, toolUseId: typeof body.toolUseId === 'string' ? body.toolUseId : undefined });
+      }),
+    },
+
     // POST /ccr/cloud/:sid/stop — delete the cloud session
     {
       method: 'POST',
