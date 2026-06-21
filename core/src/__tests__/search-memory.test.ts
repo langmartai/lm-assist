@@ -92,3 +92,21 @@ test('explicit project arg still scopes to that one project', async () => {
     assert.doesNotMatch(text, /beta-note/, 'beta match must be excluded when scoped to alpha');
   });
 });
+
+test('multi-term query matches when all terms are present but not contiguous', async () => {
+  await withFixture(async (run) => {
+    // body is "The zebra crossing pattern is here." — terms reversed/non-adjacent
+    const text = await run({ query: 'crossing zebra', project: '/home/ubuntu/projalpha' });
+    assert.match(text, /alpha-note/, 'all terms present (order/adjacency independent) should match');
+    assert.doesNotMatch(text, /No memory files match/, 'must not report no results');
+  });
+});
+
+test('multi-term query excludes files missing one of the terms', async () => {
+  await withFixture(async (run) => {
+    // projalpha has "zebra" but not "elephant" — must not match
+    const text = await run({ query: 'zebra elephant' });
+    assert.doesNotMatch(text, /alpha-note/, 'file missing a term must be excluded');
+    assert.match(text, /No memory files match/, 'no file has both terms → no results');
+  });
+});
