@@ -186,6 +186,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   ccr_mirror: 'write',
   ccr_remote_stop: 'write',
   ccr_connect: 'admin',
+  ccr_drive: 'admin',
   // memory map + rules map (read — shell out to CLIs)
   memory_map: 'read',
   memory_record: 'read',
