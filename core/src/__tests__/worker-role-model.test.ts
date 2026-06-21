@@ -23,3 +23,15 @@ test('status-block: parse ignores surrounding prose, returns null when absent', 
   assert.deepEqual(parseStatusBlock(wrapped), s);
   assert.equal(parseStatusBlock('no block here'), null);
 });
+
+import { liveness } from '../worker-role/model';
+import type { OrchestratorRef } from '../worker-role/types';
+
+test('liveness: none when no id, active within window, inactive when stale', () => {
+  const now = 1_000_000_000_000;
+  const WIN = 5 * 60_000;
+  assert.equal(liveness({}, now, WIN), 'none');
+  assert.equal(liveness({ id: 'o1' }, now, WIN), 'inactive');                       // id but never contacted
+  assert.equal(liveness({ id: 'o1', lastContact: now - 1000 }, now, WIN), 'active');
+  assert.equal(liveness({ id: 'o1', lastContact: now - WIN - 1 }, now, WIN), 'inactive');
+});
