@@ -24,6 +24,7 @@
   **View here** renders the bridged session NATIVELY inside the CCR page — a live conversation (auto-refresh
   from `/sessions/:id/conversation`, tool calls shown) plus a **Drive** box, gated on the session being
   driveable. Same content the claude.ai page mirrors, no iframe/app. Browser-verified end-to-end.
+- **Rich render like claude.ai/code (`CcrSessionView`).** The embedded view now renders the transcript richly: assistant/user text via **markdown** (`react-markdown`+`remark-gfm`, `.prose`), **thinking blocks** (collapsible, interleaved by line position), and **tool cards** — `formatToolCallString(name,input)` header (e.g. `Bash(cd …)`, `Browser.JavaScript(…)`) with a red **error** badge for failures and a collapsible result (`toolDetail=full`). Suppresses the `[N tool call(s)]` placeholder. Browser-verified.
 - **Drive parity with the real claude.ai/code (captured via lm-proxy on 123).** The real CCR loop: claude.ai
   pushes/receives Claude Code transcript events over `…/worker/events` (+ SSE `…/worker/events/stream` for
   client prompts), and the bridge drives by **typing the prompt into the session's tmux** (`send-keys`, a
