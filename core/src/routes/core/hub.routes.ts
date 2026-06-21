@@ -7,6 +7,7 @@
 import type { RouteContext, RouteHandler, ParsedRequest } from '../index';
 import { getHubClient, resetHubClient, reconnectHubClient, isHubConfigured, getHubConfig, saveHubConnectionConfig } from '../../hub-client';
 import { clearGatewayId } from '../../hub-client/hub-config';
+import { encodeKeypack, decodeKeypack } from '../../hub-client/enroll-code';
 
 export function createHubRoutes(ctx: RouteContext): RouteHandler[] {
   return [
@@ -433,6 +434,108 @@ export function createHubRoutes(ctx: RouteContext): RouteHandler[] {
             success: false,
             error: error instanceof Error ? error.message : 'Failed to fetch user info',
           };
+        }
+      },
+    },
+
+    // POST /hub/enroll/create - mint a one-time enrollment keypack (authed node only)
+    {
+      method: 'POST',
+      pattern: /^\/hub\/enroll\/create$/,
+      handler: async (req: ParsedRequest) => {
+        if (!isHubConfigured()) return { success: false, error: 'Hub not configured' };
+        const status = getHubClient().getStatus();
+        if (!status.authenticated) return { success: false, error: 'Not authenticated to hub' };
+        const config = getHubConfig();
+        const hubHttpUrl = (config.hubUrl || '').replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
+        try {
+          const ttlMinutes = req.body?.ttlMinutes;
+          const body: Record<string, unknown> = {};
+          if (ttlMinutes) body.ttlMinutes = ttlMinutes;
+          if (status.gatewayId) body.fromGatewayId = status.gatewayId; // audit: which node minted it
+          const res = await fetch(`${hubHttpUrl}/api/enroll/create`, {
+            method: 'POST',
+            redirect: 'manual',
+            headers: { 'Authorization': `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          if (!res.ok) return { success: false, error: `Hub returned ${res.status}` };
+          const json = await res.json() as { token?: string; expiresAt?: string };
+          if (!json.token) return { success: false, error: 'Invalid hub response' };
+          const code = encodeKeypack({ v: 1, hubUrl: config.hubUrl as string, token: json.token });
+          return { success: true, data: { code, expiresAt: json.expiresAt } };
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : 'Failed to create enrollment' };
+        }
+      },
+    },
+
+    // POST /hub/login - redeem a keypack: decode -> redeem -> persist -> reconnect
+    {
+      method: 'POST',
+      pattern: /^\/hub\/login$/,
+      handler: async (req: ParsedRequest) => {
+        const code = req.body?.code;
+        if (typeof code !== 'string' || !code) return { success: false, error: 'code is required' };
+        let pack;
+        try { pack = decodeKeypack(code); }
+        catch (e) { return { success: false, error: e instanceof Error ? e.message : 'invalid keypack' }; }
+        const hubHttpUrl = pack.hubUrl.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
+        try {
+          const res = await fetch(`${hubHttpUrl}/api/enroll/redeem`, {
+            method: 'POST',
+            redirect: 'manual',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: pack.token, machineId: getHubConfig().machineId }),
+          });
+          if (res.status === 410) {
+            const j = await res.json().catch(() => ({})) as { reason?: string };
+            return { success: false, error: `Enrollment key invalid: ${j.reason || 'gone'}` };
+          }
+          if (!res.ok) return { success: false, error: `Hub returned ${res.status}` };
+          const json = await res.json() as { apiKey?: string; user?: Record<string, any> };
+          if (!json.apiKey) return { success: false, error: 'Invalid hub response' };
+
+          // Persist the long-term key, drop any stale node identity, reconnect.
+          process.env.TIER_AGENT_API_KEY = json.apiKey;
+          process.env.TIER_AGENT_HUB_URL = pack.hubUrl;
+          saveHubConnectionConfig({ apiKey: json.apiKey, hubUrl: pack.hubUrl });
+          clearGatewayId();
+          await resetHubClient();
+          const hubClient = getHubClient();
+          await hubClient.connect();
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          const status = hubClient.getStatus();
+          return {
+            success: true,
+            data: {
+              message: status.authenticated ? 'Enrolled and authenticated.'
+                : status.connected ? 'Enrolled; authentication pending...' : 'Enrolled; connection pending.',
+              authenticated: status.authenticated,
+              connected: status.connected,
+              gatewayId: status.gatewayId,
+              user: json.user,
+            },
+          };
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : 'login failed' };
+        }
+      },
+    },
+
+    // POST /hub/logout - clear the hub key + node identity and disconnect
+    {
+      method: 'POST',
+      pattern: /^\/hub\/logout$/,
+      handler: async () => {
+        try {
+          process.env.TIER_AGENT_API_KEY = '';
+          saveHubConnectionConfig({ apiKey: '' });
+          clearGatewayId();
+          try { await resetHubClient(); } catch { /* ignore disconnect errors */ }
+          return { success: true, data: { message: 'Logged out. Hub key removed.', connected: false, authenticated: false } };
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : 'logout failed' };
         }
       },
     },

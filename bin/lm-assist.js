@@ -30,6 +30,15 @@ function lmAuthHeader() {
   return {};
 }
 
+// Coerce an API error (string, or a framework {code,message} envelope from an
+// older core that predates these routes) into a readable line.
+function errText(json) {
+  const e = json && json.error;
+  if (typeof e === 'string') return e;
+  if (e && typeof e.message === 'string') return e.message;
+  return e ? JSON.stringify(e) : 'unknown error';
+}
+
 /** Always returns the npm package path (prod). Dev mode no longer switches this. */
 function getProjectRoot() {
   const fromFilename = path.dirname(path.dirname(__filename));
@@ -92,7 +101,7 @@ function loadSm() {
 const command = process.argv[2] || 'help';
 const args = process.argv.slice(3);
 
-const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'version', 'storage', 'log', 'setup', 'help'];
+const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'version', 'storage', 'log', 'setup', 'login', 'logout', 'help'];
 
 if (command === 'help' || command === '--help' || command === '-h') {
   console.log(`
@@ -111,6 +120,9 @@ Commands:
   storage            Show storage usage (~/.lm-assist/)
   storage clean      Delete all lm-assist data and start fresh (-y to skip confirm)
   setup --key KEY    Connect to cloud with an API key
+  login [<keypack>]  Enroll this node by redeeming a one-time keypack;
+                     or 'login --new-node' on an authed node to mint one
+  logout             Remove the hub key and disconnect this node
   upgrade [--from S]  Upgrade lm-assist (npm + plugin + restart).
                      --from S installs a specific build instead of npm latest:
                        a local .tgz, an unpacked dir, a bare version, or any
@@ -119,6 +131,9 @@ Commands:
 
 Examples:
   lm-assist setup --key sk-abc123
+  lm-assist login --new-node          # on an authed node: print a keypack
+  lm-assist login lmkp_...            # on a fresh node: enroll with the keypack
+  lm-assist logout
   lm-assist start
   lm-assist stop
   lm-assist status
@@ -680,6 +695,92 @@ lm-assist Cloud Setup
   })();
 
   // Prevent falling through to main()
+  return;
+}
+
+if (command === 'login') {
+  const newNode = args.includes('--new-node');
+  const ttlIdx = args.indexOf('--ttl');
+  const ttl = ttlIdx >= 0 ? parseInt(args[ttlIdx + 1], 10) : null;
+  if (ttlIdx >= 0 && (!Number.isInteger(ttl) || ttl <= 0)) {
+    console.error('--ttl requires a positive integer (minutes), e.g. --ttl 15');
+    process.exit(1);
+  }
+  const code = args.find(a => a.startsWith('lmkp_'));
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  (async () => {
+    try {
+      const running = await isApiHealthy(PROD_API_PORT);
+      if (newNode) {
+        if (!running) { console.error('Services not running. Run `lm-assist start` first.'); process.exit(1); }
+        const res = await fetch(`http://localhost:${PROD_API_PORT}/hub/enroll/create`, {
+          method: 'POST', headers: { ...lmAuthHeader(), 'Content-Type': 'application/json' },
+          body: JSON.stringify(ttl ? { ttlMinutes: ttl } : {}),
+        });
+        const json = await res.json();
+        if (!json.success) { console.error(`Failed to mint enrollment key: ${errText(json)}`); process.exit(1); }
+        console.log(`\nOne-time node enrollment key (expires ${json.data.expiresAt}):\n`);
+        console.log(`  ${json.data.code}\n`);
+        console.log('Run this on the NEW node:\n');
+        console.log(`  lm-assist login ${json.data.code}\n`);
+        process.exit(0);
+      }
+      if (!code) {
+        console.error('Usage:');
+        console.error('  lm-assist login <keypack>     # enroll this node');
+        console.error('  lm-assist login --new-node    # mint a keypack on an authed node');
+        process.exit(1);
+      }
+      if (!running) {
+        console.log('Starting services...');
+        const svc = loadSm();
+        await svc.startAll();
+        for (let i = 0; i < 10 && !(await isApiHealthy(PROD_API_PORT)); i++) await sleep(1500);
+      }
+      process.stdout.write('Enrolling node... ');
+      const res = await fetch(`http://localhost:${PROD_API_PORT}/hub/login`, {
+        method: 'POST', headers: { ...lmAuthHeader(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      });
+      const json = await res.json();
+      if (!json.success) { console.log('FAILED'); console.error(errText(json)); process.exit(1); }
+      console.log(json.data.authenticated ? 'OK — authenticated.'
+        : json.data.connected ? 'connected, authentication pending...' : 'connection pending...');
+      console.log(`\n  Web UI: http://localhost:${PROD_WEB_PORT}`);
+      process.exit(0);
+    } catch (err) {
+      console.error(`Error: ${err.message || err}`);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
+if (command === 'logout') {
+  (async () => {
+    try {
+      const running = await isApiHealthy(PROD_API_PORT);
+      if (running) {
+        const res = await fetch(`http://localhost:${PROD_API_PORT}/hub/logout`, {
+          method: 'POST', headers: { ...lmAuthHeader() },
+        });
+        const json = await res.json();
+        console.log(json.success ? 'Logged out. Hub key removed.' : `Failed: ${errText(json)}`);
+        process.exit(json.success ? 0 : 1);
+      } else {
+        const cfg = readHubConfig();
+        delete cfg.apiKey;
+        writeHubConfig(cfg);
+        const dataDir = process.env.LM_ASSIST_DATA_DIR || path.join(os.homedir(), '.lm-assist');
+        try { fs.unlinkSync(path.join(dataDir, 'gateway-id')); } catch { /* none */ }
+        console.log('Logged out (services were not running). Hub key removed.');
+        process.exit(0);
+      }
+    } catch (err) {
+      console.error(`Error: ${err.message || err}`);
+      process.exit(1);
+    }
+  })();
   return;
 }
 

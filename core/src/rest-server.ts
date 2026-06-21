@@ -6,6 +6,7 @@
 
 import * as http from 'http';
 import { startApiTokenRotation, isValidToken, apiAuthEnabled, isLocalAddress } from './auth/api-token';
+import { isEnrollExempt } from './auth/enroll-exempt';
 import * as fs from 'fs';
 import * as path from 'path';
 import { URL } from 'url';
@@ -440,7 +441,11 @@ export class TierRestServer {
       // LAN/remote callers still need the token. Off unless LM_ASSIST_API_AUTH_EXEMPT_LOCAL=1.
       const exemptLocal = process.env.LM_ASSIST_API_AUTH_EXEMPT_LOCAL === '1'
         && isLocalAddress(req.socket.remoteAddress);
-      if (apiAuthEnabled() && authPath !== '/health' && !exemptLocal) {
+      // Node-enrollment routes are tokenless from STRICT loopback only AND only when
+      // there is no browser Origin (blocks drive-by CSRF); the keypack is the credential.
+      // LAN/remote/browser callers still need the token. See enroll-exempt.ts.
+      const enrollExempt = isEnrollExempt(req.method, authPath, req.socket.remoteAddress, req.headers['origin']);
+      if (apiAuthEnabled() && authPath !== '/health' && !exemptLocal && !enrollExempt) {
         const rawKey = req.headers['x-api-key'];
         const providedKey = (Array.isArray(rawKey) ? rawKey[0] : rawKey) || this.getQueryParam(req.url || '', 'apiKey');
         const okAuth = isValidToken(providedKey) || (this.options.apiKey && providedKey === this.options.apiKey);
