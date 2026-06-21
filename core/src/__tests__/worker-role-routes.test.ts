@@ -120,3 +120,22 @@ test('worker-role advertises the five tools', () => {
   const names = WORKER_ROLE_TOOL_DEFS.map((d) => d.name).sort();
   assert.deepEqual(names, ['decide_gate', 'list_workers', 'report_status', 'set_role', 'worker_status']);
 });
+
+// ── Task 9: Bootstrap ROLE section ──────────────────────────────────────────
+import { renderRoleSection } from '../mcp-server/mcp-session-resolver';
+import type { WorkerRecord } from '../worker-role/types';
+
+test('renderRoleSection: worker contract names role, task, orchestrator + the print rule', () => {
+  const rec: WorkerRecord = { sessionId: 's1', role: 'worker', tasks: [{ id: 't1', title: 'deploy', status: 'working' }], orchestrator: { id: 'o1', lastContact: Date.now() }, updatedAt: Date.now() };
+  const s = renderRoleSection(rec, Date.now());
+  assert.match(s, /You are a WORKER/);
+  assert.match(s, /WORKER-STATUS/);            // the print contract
+  assert.match(s, /orchestrator/i);
+  assert.match(s, /active/);                    // liveness reflected
+});
+
+test('renderRoleSection: no record → a one-line set_role hint, no guessing', () => {
+  const s = renderRoleSection(null, Date.now());
+  assert.match(s, /set_role/);
+  assert.doesNotMatch(s, /You are a WORKER/);
+});

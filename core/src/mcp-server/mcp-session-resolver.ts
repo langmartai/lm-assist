@@ -24,6 +24,9 @@ import type { McpToolResult } from './configure';
 import { listConversations } from '../utils/claudeai-session';
 import { getSessionCache } from '../session-cache';
 import { currentMcpContext } from './principal-context';
+import type { WorkerRecord } from '../worker-role/types';
+import { liveness } from '../worker-role/model';
+import { getRecord } from '../worker-role/worker-store';
 
 export interface Candidate { id: string; label?: string; updatedAt?: string }
 export interface CallerCandidates { claudeAi?: Candidate; claudeCode?: Candidate; precise?: boolean; resolvedAt: number }
@@ -148,13 +151,32 @@ export function describeCandidates(c: CallerCandidates): string {
   return lines.join('\n');
 }
 
+/** Pure: the ROLE section appended to the identity block. Exported for tests. */
+export function renderRoleSection(rec: WorkerRecord | null, now: number): string {
+  if (!rec || rec.role !== 'worker') {
+    return '[lm-assist — role]\nThis session has no worker role. If you are meant to be a worker, call set_role({sessionId, task:{title}}).\n\n';
+  }
+  const live = liveness(rec.orchestrator, now);
+  const tasks = rec.tasks.map((t) => `  - ${t.id} "${t.title}" [${t.status}]${t.gate?.state === 'open' ? ' (GATE OPEN: ' + t.gate.reason + ')' : ''}`).join('\n') || '  (none yet)';
+  return [
+    '[lm-assist — You are a WORKER]',
+    `Tasks (worker-owned):\n${tasks}`,
+    `Orchestrator: ${rec.orchestrator.id ?? 'none'} (${live}).`,
+    'CONTRACT: every turn, print a ⟦WORKER-STATUS⟧ … ⟦/WORKER-STATUS⟧ block (Way 1 — always). If an orchestrator is active you MAY also report_status (Way 3) and message it (Way 2). Before any gated step, report_status(status:"need_approval", reason) and STOP until the gate is agreed.',
+    '',
+    '',
+  ].join('\n');
+}
+
 /** The full identity block prefixed onto a bootstrap result. Pure; exported for tests. */
 export function identityHeader(c: CallerCandidates): string {
+  const callerId = (c.precise ? c.claudeCode?.id : undefined) ?? c.claudeAi?.id ?? c.claudeCode?.id;
+  const roleSection = renderRoleSection(callerId ? getRecord(callerId) : null, Date.now());
   const body = describeCandidates(c);
   if (c.precise && c.claudeCode) {
-    return `[lm-assist — your session identity]\nThis MCP call carries a tool-call id that pins the caller exactly:\n${body}\nThis session is now recorded as BOOTSTRAPPED.\n\n`;
+    return `[lm-assist — your session identity]\nThis MCP call carries a tool-call id that pins the caller exactly:\n${body}\nThis session is now recorded as BOOTSTRAPPED.\n\n` + roleSection;
   }
-  return `[lm-assist — your session identity]\nThe connector does not pass your exact id, so here are the most-recently-active candidates — pick the one matching where you are running (you know your own runtime):\n${body}\nThis session is now recorded as BOOTSTRAPPED.\n\n`;
+  return `[lm-assist — your session identity]\nThe connector does not pass your exact id, so here are the most-recently-active candidates — pick the one matching where you are running (you know your own runtime):\n${body}\nThis session is now recorded as BOOTSTRAPPED.\n\n` + roleSection;
 }
 
 function bootstrapState(c: CallerCandidates): { id?: string } {
