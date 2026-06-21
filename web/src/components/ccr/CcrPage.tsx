@@ -261,14 +261,19 @@ export function CcrPage() {
           <textarea className="input" rows={2} value={cloudPrompt} placeholder="Start a cloud session — initial prompt for the cloud claude…"
             style={{ resize: 'none', fontSize: 12.5 }} onChange={(e) => setCloudPrompt(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); startCloud(); } }} />
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <select className="input" value={cloudCwd} onChange={(e) => setCloudCwd(e.target.value)}
-              style={{ flex: 1, minWidth: 220, fontSize: 12 }} title="Seed the cloud container with a git repo (uploads its committed HEAD, ≤50 MiB), or run on an empty scratch workspace">
-              <option value="">— no repo (empty scratch workspace) —</option>
-              {repos.map((r) => (
-                <option key={r.path} value={r.path}>{base(r.path)} — {r.path}</option>
-              ))}
-            </select>
+          <input className="input" list="ccr-repo-list" value={cloudCwd} onChange={(e) => setCloudCwd(e.target.value)}
+            placeholder="optional seed repo — pick a git repo or type a path (empty = scratch workspace)"
+            spellCheck={false} autoComplete="off"
+            style={{ width: '100%', fontSize: 12 }}
+            title="Seed the cloud container with a git repo (uploads its committed HEAD, ≤50 MiB), or leave empty for an empty scratch workspace" />
+          <datalist id="ccr-repo-list">
+            {repos.map((r) => (<option key={r.path} value={r.path}>{base(r.path)}</option>))}
+          </datalist>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {cloudCwd.trim()
+              ? <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>seeds <code>{base(cloudCwd.trim())}</code> (committed HEAD)</span>
+              : <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>empty scratch workspace</span>}
+            <div style={{ flex: 1 }} />
             <button className="btn btn-primary btn-sm" disabled={starting || !cloudPrompt.trim()} onClick={startCloud} title="Boot a cloud-run claude (spends cloud quota)">
               {starting ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Starting…</> : <><Cloud size={13} /> Start cloud</>}
             </button>
