@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import {
-  MonitorPlay, RefreshCw, Loader2, Eye, Radio, Cast, Square, ExternalLink, X, AlertTriangle,
+  MonitorPlay, RefreshCw, Loader2, Eye, Radio, Cast, Square, ExternalLink, X, AlertTriangle, Copy, Check,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 
@@ -57,7 +57,11 @@ export function CcrPage() {
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [confirmConnect, setConfirmConnect] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
   const setBusyFor = (k: string, on: boolean) => setBusy((p) => { const n = new Set(p); on ? n.add(k) : n.delete(k); return n; });
+  const copyUrl = useCallback(async (url: string) => {
+    try { await navigator.clipboard.writeText(url); setCopied(url); setTimeout(() => setCopied((c) => (c === url ? null : c)), 1500); } catch { /* clipboard blocked */ }
+  }, []);
 
   const fetchAll = useCallback(async () => {
     setLoading(true); setError(null);
@@ -130,8 +134,14 @@ export function CcrPage() {
                   <span className={`badge ${r.mode === 'connected' ? 'badge-red' : r.mode === 'mirror' ? 'badge-blue' : 'badge-green'}`}>{r.mode}</span>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--color-text-tertiary)' }}>{short(r.sessionId)}</span>
                   {r.live === false && <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>(bridge idle)</span>}
+                  {r.webUrl && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--color-text-tertiary)', maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.webUrl}>{r.webUrl.replace('https://', '')}</span>}
                   <div style={{ flex: 1 }} />
-                  {r.webUrl && <a className="btn btn-ghost btn-sm" href={r.webUrl} target="_blank" rel="noreferrer"><ExternalLink size={13} /> Open</a>}
+                  {r.webUrl && (
+                    <button className="btn btn-ghost btn-sm" onClick={() => copyUrl(r.webUrl!)} title="Copy URL (paste into a browser if the link opens the Claude app)">
+                      {copied === r.webUrl ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy URL</>}
+                    </button>
+                  )}
+                  {r.webUrl && <a className="btn btn-ghost btn-sm" href={r.webUrl} target="_blank" rel="noreferrer" title="Open (may launch the Claude app via the claude.ai/code deep-link handler)"><ExternalLink size={13} /> Open</a>}
                   <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => stop(r.id)} title="Stop bridge">
                     {isBusy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <><Square size={12} /> Stop</>}
                   </button>
@@ -209,6 +219,11 @@ export function CcrPage() {
           session. <strong>Connect</strong> = two-way control — it attaches an existing tmux, or spawns a fresh
           <code> claude --resume</code> tmux only when no live process owns the session; it refuses otherwise to avoid
           corrupting the append-only transcript. Each opens a <code>claude.ai/code</code> URL above.
+          <br />
+          <strong>Note:</strong> the session renders in the <strong>claude.ai web UI</strong>. If <em>Open</em> launches the
+          Claude desktop/mobile <strong>app</strong> instead of a browser tab, that's your OS routing the
+          <code> claude.ai/code</code> deep-link to the app — use <strong>Copy URL</strong> and paste it into a browser to
+          force the web view (or just use the app; it's the same cloud session).
         </div>
       </div>
     </div>
