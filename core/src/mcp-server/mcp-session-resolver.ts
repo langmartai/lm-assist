@@ -162,7 +162,7 @@ export function renderRoleSection(rec: WorkerRecord | null, now: number): string
     '[lm-assist — You are a WORKER]',
     `Tasks (worker-owned):\n${tasks}`,
     `Orchestrator: ${rec.orchestrator.id ?? 'none'} (${live}).`,
-    'CONTRACT: every turn, print a ⟦WORKER-STATUS⟧ … ⟦/WORKER-STATUS⟧ block (Way 1 — always). If an orchestrator is active you MAY also report_status (Way 3) and message it (Way 2). Before any gated step, report_status(status:"need_approval", reason) and STOP until the gate is agreed.',
+    'CONTRACT: every turn, print a ⟦WORKER-STATUS⟧ … ⟦/WORKER-STATUS⟧ block (Way 1 — always). If an orchestrator is active you MAY also report_status (writes your durable record — Way 3) and separately send_session_message to the orchestrator (Way 2). Before any gated step, report_status(status:"need_approval", reason) and STOP until the gate is agreed.',
     '',
     '',
   ].join('\n');

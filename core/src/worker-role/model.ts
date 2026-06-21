@@ -44,7 +44,10 @@ export function applySetRole(prev: WorkerRecord | null, sessionId: string, input
   return rec;
 }
 
-/** Apply a worker's status report to one of its tasks. status=need_approval opens a gate. */
+/** Apply a worker's status report to one of its tasks. status=need_approval opens a gate.
+ *  When status moves past need_approval (any other status) and the task has a stale OPEN gate,
+ *  that gate is cleared — the worker has self-cancelled it. Already-agreed/rejected gates are
+ *  preserved as resolved history. */
 export function applyReportStatus(prev: WorkerRecord, input: ReportInput, now: number): WorkerRecord {
   const tasks = prev.tasks.map((t) => {
     if (t.id !== input.taskId) return t;
@@ -52,7 +55,13 @@ export function applyReportStatus(prev: WorkerRecord, input: ReportInput, now: n
     if (input.status) next.status = input.status;
     if (input.progress !== undefined) next.progress = input.progress;
     if (input.detail !== undefined) next.detail = input.detail;
-    if (input.status === 'need_approval') next.gate = { state: 'open', reason: input.reason ?? 'approval required', requestedAt: now };
+    if (input.status === 'need_approval') {
+      next.gate = { state: 'open', reason: input.reason ?? 'approval required', requestedAt: now };
+    } else if (input.status && t.gate?.state === 'open') {
+      // Worker moved past need_approval — clear the stale open gate.
+      // Only open gates are cleared; agreed/rejected are resolved history and must be kept.
+      delete next.gate;
+    }
     return next;
   });
   return { ...prev, tasks, updatedAt: now };

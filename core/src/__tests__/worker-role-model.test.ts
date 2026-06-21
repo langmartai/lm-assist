@@ -148,3 +148,28 @@ test('applyReportStatus: a non-need_approval status updates the task without a g
   assert.equal(t.status, 'done');
   assert.equal(t.gate, undefined);
 });
+
+// ── Fix 2: stale open gate cleared when task moves past need_approval ─────────
+
+test('applyReportStatus: moving past need_approval clears an open gate (stale gate removed)', () => {
+  // Start with a task that has an open gate (worker raised need_approval then self-resumed)
+  const r1 = applySetRole(null, 'sess-gate', { task: { title: 'deploy' } }, 1000, () => 'tg-1');
+  const r2 = applyReportStatus(r1, { taskId: 'tg-1', status: 'need_approval', reason: 'prod?' }, 2000);
+  assert.equal(r2.tasks[0].gate?.state, 'open');
+
+  // Now the worker moves back to 'working' — the stale open gate should be cleared
+  const r3 = applyReportStatus(r2, { taskId: 'tg-1', status: 'working' }, 3000);
+  assert.equal(r3.tasks[0].status, 'working');
+  assert.equal(r3.tasks[0].gate, undefined, 'open gate must be removed when task moves past need_approval');
+});
+
+test('applyReportStatus: an agreed gate is preserved when task moves to done (resolved history kept)', () => {
+  // An agreed gate is resolved history — it must NOT be cleared
+  const agreedGate = { state: 'agreed' as const, reason: 'prod?', requestedAt: 1000, decidedBy: 'orch-1', decidedAt: 2000 };
+  const r1 = applySetRole(null, 'sess-agreed', { task: { title: 'deploy' } }, 1000, () => 'ta-1');
+  // Manually inject a task with an agreed gate by building the record
+  const withAgreed: WorkerRecord = { ...r1, tasks: [{ ...r1.tasks[0], gate: agreedGate, status: 'working' }] };
+  const r2 = applyReportStatus(withAgreed, { taskId: 'ta-1', status: 'done' }, 3000);
+  assert.equal(r2.tasks[0].status, 'done');
+  assert.equal(r2.tasks[0].gate?.state, 'agreed', 'agreed gate must be preserved as resolved history');
+});
