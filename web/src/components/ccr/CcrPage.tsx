@@ -43,6 +43,35 @@ const MODE_META: Record<Mode, { label: string; icon: typeof Eye; hint: string }>
   connect: { label: 'Connect', icon: Cast, hint: 'Two-way control — drive it from claude.ai/code' },
 };
 
+/** Pull the structured {code,message} out of an apiFetch error (it throws "API <status>: <body>"). */
+function parseCcrError(e: unknown): { code?: string; message: string } {
+  const raw = e instanceof Error ? e.message : String(e);
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (m) { try { const j = JSON.parse(m[0]); if (j?.error?.code || j?.error?.message) return { code: j.error.code, message: j.error.message || raw }; } catch { /* not json */ } }
+  return { message: raw };
+}
+
+/** Turn a CCR failure into a clear, actionable line for the operator. */
+function friendlyCcrError(mode: Mode, e: unknown): string {
+  const { code, message } = parseCcrError(e);
+  switch (code) {
+    case 'CONFLICT':
+      return `Can't ${mode}: a live process already owns this session — connecting would corrupt its append-only transcript. Use Load (read-only) or Mirror (live view) instead.`;
+    case 'SESSION_NOT_FOUND':
+      return `Can't ${mode}: this session isn't on this host. CCR runs on the session's OWN machine — open this page on (or node-target) that host to bridge it; a remote session can't be connected from here.`;
+    case 'TIMEOUT':
+      return `${mode} timed out — the bridge couldn't reach claude.ai/code. Check the claude.ai session (cookie) is valid and retry.`;
+    case 'TMUX_NOT_INSTALLED':
+      return `Can't ${mode}: tmux isn't installed on this host (needed to back the session).`;
+    case 'PLATFORM_UNSUPPORTED':
+      return `${mode} isn't supported on this platform.`;
+    case 'INVALID_INPUT':
+      return `Can't ${mode}: ${message}`;
+    default:
+      return `${mode} failed: ${message}`;
+  }
+}
+
 export function CcrPage() {
   const { apiClient, proxy } = useAppMode();
   const apiFetch = useCallback(
@@ -60,6 +89,7 @@ export function CcrPage() {
   const [showAll, setShowAll] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
   const [viewing, setViewing] = useState<string | null>(null); // sessionId whose embedded view is open
+  const [sessionErr, setSessionErr] = useState<Record<string, string>>({}); // per-session CCR failure
   const setBusyFor = (k: string, on: boolean) => setBusy((p) => { const n = new Set(p); on ? n.add(k) : n.delete(k); return n; });
   const copyUrl = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setCopied(url); setTimeout(() => setCopied((c) => (c === url ? null : c)), 1500); } catch { /* clipboard blocked */ }
@@ -82,12 +112,13 @@ export function CcrPage() {
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
   const startMode = useCallback(async (sid: string, mode: Mode) => {
-    setBusyFor(sid, true); setError(null); setConfirmConnect(null);
+    setBusyFor(sid, true); setConfirmConnect(null);
+    setSessionErr((p) => { const n = { ...p }; delete n[sid]; return n; }); // clear prior error for this session
     try {
       await apiFetch<Remote>(`/ccr/${mode}`, { method: 'POST', body: { sessionId: sid } });
       await fetchAll();
     } catch (e) {
-      setError(`${mode} failed: ${e instanceof Error ? e.message : String(e)}`);
+      setSessionErr((p) => ({ ...p, [sid]: friendlyCcrError(mode, e) }));
     } finally { setBusyFor(sid, false); }
   }, [apiFetch, fetchAll]);
 
@@ -150,6 +181,7 @@ export function CcrPage() {
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--color-text-tertiary)' }}>{short(r.sessionId)}</span>
                   {r.live === false && <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>(bridge idle)</span>}
                   {r.webUrl && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--color-text-tertiary)', maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.webUrl}>{r.webUrl.replace('https://', '')}</span>}
+                  {!r.webUrl && <span style={{ fontSize: 11, color: 'var(--color-status-orange)', display: 'flex', alignItems: 'center', gap: 4 }} title="The bridge started but never returned a claude.ai/code URL — it likely couldn't reach claude.ai (check the session cookie). Stop and retry."><AlertTriangle size={12} /> couldn’t reach claude.ai/code — Stop &amp; retry</span>}
                   <div style={{ flex: 1 }} />
                   {r.webUrl && (
                     <button className="btn btn-ghost btn-sm" onClick={() => copyUrl(r.webUrl!)} title="Copy URL (paste into a browser if the link opens the Claude app)">
@@ -227,6 +259,14 @@ export function CcrPage() {
                     )}
                     {refuse && <span style={{ fontSize: 11, color: 'var(--color-status-orange)', display: 'flex', alignItems: 'center', gap: 4 }}><AlertTriangle size={12} /> connect refused — a live process owns it; load/mirror instead</span>}
                   </div>
+                  {/* Per-session CCR failure — clear + actionable */}
+                  {sessionErr[s.sessionId] && (
+                    <div style={{ marginTop: 4, padding: '6px 8px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', fontSize: 11.5, color: 'var(--color-status-red)', display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                      <AlertTriangle size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+                      <span style={{ flex: 1 }}>{sessionErr[s.sessionId]}</span>
+                      <button className="btn btn-ghost btn-sm" style={{ padding: 0, color: 'var(--color-text-tertiary)' }} onClick={() => setSessionErr((p) => { const n = { ...p }; delete n[s.sessionId]; return n; })}><X size={12} /></button>
+                    </div>
+                  )}
                 </div>
               );
             })}
