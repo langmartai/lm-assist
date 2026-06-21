@@ -574,7 +574,9 @@ export const ccrCloudStartToolDef = {
       cwd: { type: 'string', description: 'Fallback: local git repo to bundle+upload instead of a GitHub clone (<=50 MiB).' },
       model: { type: 'string', description: 'Model id (default claude-opus-4-8[1m]).' },
       title: { type: 'string', description: 'Optional session title.' },
-      setup: { type: 'boolean', description: 'Install-only setup: seed the first turn to install lm-assist locally in the fresh container (from the user\'s CUSTOM GitHub build, not the stale npm one). No hub key embedded; connecting to the hub is a separate in-session step. Default false.' },
+      setup: { type: 'boolean', description: 'Seed a bootstrap/self-heal instruction into the first turn: the container ensures lm-assist runs LOCALLY (restart if just down, install/clone if missing) before its task. No hub key embedded; connecting to the hub is a separate in-session step. Default false.' },
+      role: { type: 'string', enum: ['worker', 'orchestrator'], description: 'With setup: give the session a role contract (worker → set_role + ⟦WORKER-STATUS⟧ + report/agree-gate; orchestrator → read/drive/decide workers), per guide("roles").' },
+      primaryRepo: { type: 'string', description: 'With setup: the session\'s working repo (defaults to `repo`). If it is NOT lm-assist, the bootstrap tells the agent lm-assist is a SEPARATE tool to install independently (npm install -g github:langmartai/lm-assist), then return to this repo.' },
     },
     required: [],
   },
@@ -586,12 +588,15 @@ export const ccrCloudReposToolDef = {
 };
 export const ccrCloudDriveToolDef = {
   name: 'ccr_cloud_drive',
-  description: 'Send a follow-up user turn to a running CLOUD CCR session (from ccr_cloud_start). Then poll ccr_cloud_read for the reply.',
+  description: 'Send a follow-up user turn to a running CLOUD CCR session (from ccr_cloud_start). Then poll ccr_cloud_read for the reply. Set reBootstrap=true when RESUMING a possibly-inactive session so it self-heals lm-assist (restart/install) before the turn.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       sid: { type: 'string', description: 'Cloud session id (session_…).' },
       text: { type: 'string', description: 'The prompt to send as a user turn.' },
+      reBootstrap: { type: 'boolean', description: 'Prepend the bootstrap/self-heal instruction (ensure lm-assist is running locally) — use on RESUME of an inactive container. Default false.' },
+      role: { type: 'string', enum: ['worker', 'orchestrator'], description: 'With reBootstrap: the role contract to re-assert.' },
+      primaryRepo: { type: 'string', description: 'With reBootstrap: the session\'s working repo (for the lm-assist-vs-separate-tool branch).' },
     },
     required: ['sid', 'text'],
   },
@@ -1314,6 +1319,8 @@ async function handleCcrCloudStart(args: Record<string, unknown>): Promise<McpTo
   if (args.model) body.model = String(args.model);
   if (args.title) body.title = String(args.title);
   if (args.setup === true || args.setup === 'true') body.setup = true;
+  if (args.role === 'worker' || args.role === 'orchestrator') body.role = args.role;
+  if (args.primaryRepo) body.primaryRepo = String(args.primaryRepo);
   if (!body.prompt && !body.repo && !body.cwd && !body.setup) return err('provide a repo or a prompt to start a cloud session.');
   try { return renderRaw(await workerPostRaw('/ccr/cloud/start', body)); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
@@ -1327,7 +1334,11 @@ async function handleCcrCloudDrive(args: Record<string, unknown>): Promise<McpTo
   const text = String(args.text || '').trim();
   if (!sid) return err('sid is required.');
   if (!text) return err('text is required.');
-  try { return renderRaw(await workerPostRaw(`/ccr/cloud/${enc(sid)}/drive`, { text })); }
+  const driveBody: Record<string, unknown> = { text };
+  if (args.reBootstrap === true || args.reBootstrap === 'true') driveBody.reBootstrap = true;
+  if (args.role === 'worker' || args.role === 'orchestrator') driveBody.role = args.role;
+  if (args.primaryRepo) driveBody.primaryRepo = String(args.primaryRepo);
+  try { return renderRaw(await workerPostRaw(`/ccr/cloud/${enc(sid)}/drive`, driveBody)); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 async function handleCcrCloudAnswer(args: Record<string, unknown>): Promise<McpToolResult> {

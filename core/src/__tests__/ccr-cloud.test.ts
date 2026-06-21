@@ -9,6 +9,7 @@ import {
   parseGitHubRepo,
   buildGitHubSource,
   buildSetupPreamble,
+  buildBootstrapInstruction,
   findPendingQuestion,
   formatAnswerContent,
   buildAnswerEvent,
@@ -61,6 +62,42 @@ test('buildSetupPreamble: install-only from the custom GitHub build, no hub key 
   assert.doesNotMatch(p, /hub\.json/);          // install-only: writes no hub config
   assert.doesNotMatch(p, /apiKey|wss:\/\//);    // no creds embedded → nothing secret in the transcript
   assert.match(p, /ASK the user to confirm/);   // connecting to the hub is a separate confirmed step
+});
+
+test('buildBootstrapInstruction: self-heal (status||start) + no hub key, in every variant', () => {
+  for (const opts of [{}, { role: 'worker' as const }, { role: 'orchestrator' as const }, { primaryRepo: 'owner/other' }]) {
+    const p = buildBootstrapInstruction(opts);
+    assert.match(p, /localhost:3100\/health|lm-assist status/, 'health/status check');
+    assert.match(p, /lm-assist start/, 'restart path');
+    assert.doesNotMatch(p, /apiKey|wss:\/\//, 'no hub credentials embedded');
+  }
+});
+
+test('buildBootstrapInstruction: Case A (lm-assist repo) → from-repo install via guide("install"), no "separate tool" clone', () => {
+  for (const opts of [{}, { primaryRepo: 'langmartai/lm-assist' }, { primaryRepo: 'git@github.com:langmartai/lm-assist.git' }]) {
+    const p = buildBootstrapInstruction(opts);
+    assert.match(p, /guide\("install"\)/);
+    assert.doesNotMatch(p, /separate tool/i, `${JSON.stringify(opts)} is the lm-assist repo`);
+  }
+});
+
+test('buildBootstrapInstruction: Case B (other repo) → clone lm-assist independently, return to the repo', () => {
+  const p = buildBootstrapInstruction({ primaryRepo: 'YiHuangDB/lm-unified-trade' });
+  assert.match(p, /npm install -g github:langmartai\/lm-assist/);
+  assert.match(p, /separate tool/i);
+  assert.match(p, /YiHuangDB\/lm-unified-trade/);   // names the primary repo to return to
+});
+
+test('buildBootstrapInstruction: role contracts (worker names the task; orchestrator; none)', () => {
+  const w = buildBootstrapInstruction({ role: 'worker', taskId: 'task_9', title: 'ship it' });
+  assert.match(w, /WORKER/);
+  assert.match(w, /set_role|⟦WORKER-STATUS⟧/);
+  assert.match(w, /task_9/);
+  const o = buildBootstrapInstruction({ role: 'orchestrator' });
+  assert.match(o, /ORCHESTRATOR/);
+  assert.match(o, /worker_status|list_workers|decide_gate/);
+  const none = buildBootstrapInstruction({});
+  assert.doesNotMatch(none, /you are a WORKER|you are the ORCHESTRATOR/i);
 });
 
 test('cloudSessionWebUrl: maps sid to the claude.ai/code URL', () => {

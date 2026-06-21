@@ -84,23 +84,69 @@ export function parseGitHubRepo(input: string): { slug: string; url: string } | 
  * injected C2-wiring, and no secret lands in the transcript). Connecting to the user's hub is a
  * separate, in-session, user-confirmed step. Pure; tested.
  */
-export function buildSetupPreamble(): string {
+export type CloudRole = 'worker' | 'orchestrator';
+
+/** A repo slug/url is the lm-assist repo if it's empty (working repo unknown → assume lm-assist) or ends in `lm-assist`. */
+function isLmAssistRepo(repo: string): boolean {
+  return !repo.trim() || /(^|[/:])lm-assist(\.git)?$/i.test(repo.trim());
+}
+
+/**
+ * The standing bootstrap / self-heal instruction we SEND to a cloud session on START and RESUME.
+ * Makes the agent ensure lm-assist is running LOCALLY before its task — RESTART if just down (the common
+ * resumed-container case: disk persists, processes don't), INSTALL if missing — covering both repo cases
+ * (the session's repo IS lm-assist, or a different project that must clone lm-assist separately) and both
+ * roles (worker / orchestrator). NO hub key is embedded (connecting the hub stays a user-confirmed step).
+ * Knowledge lives in the always-reachable connector (`bootstrap`/`guide`), so a recycled container self-heals.
+ */
+export function buildBootstrapInstruction(opts: { role?: CloudRole; taskId?: string; title?: string; primaryRepo?: string } = {}): string {
   const apiPort = 3100;
-  return [
-    "[lm-assist setup] The user asked to install lm-assist (their own dev tooling) in this container — it is NOT installed here. Install it LOCALLY. IMPORTANT: install the user's CUSTOM build from their public GitHub source — the npm-published `lm-assist` is an OLDER build, do not use it:",
+  const repo = (opts.primaryRepo || '').trim();
+  const lines: string[] = [
+    "[lm-assist bootstrap] FIRST — before your task — make sure lm-assist (the user's tooling; you need it to be a node + reach the connector) is running LOCALLY here. Do this on every START and RESUME:",
     '',
-    '  npm install -g github:langmartai/lm-assist     # the custom build (NOT `npm i -g lm-assist`, which is stale)',
-    '  claude plugin install lm-assist@langmartai      # adds the lm-assist MCP tools + context hook',
-    '  lm-assist start                                 # boots Core locally on :' + apiPort + ' (LOCAL-only — no external connection)',
-    `  curl -s localhost:${apiPort}/health             # expect ok`,
+    `  1. Up already?  curl -s localhost:${apiPort}/health   (or: lm-assist status)  → ok ⇒ skip to your role/task.`,
+    '  2. Installed but Core DOWN?  A resumed/rebooted cloud container keeps its DISK but loses all PROCESSES, so:',
+    '       lm-assist start            # ~12s; brings Core back from the on-disk build, NO reinstall.',
+    '  3. NOT installed?  install it, then `lm-assist start`:',
+  ];
+  if (isLmAssistRepo(repo)) {
+    lines.push(
+      '       This working repo IS lm-assist → install from it: call the connector `bootstrap`, then `guide("install")` and follow it',
+      '       (npm install --ignore-scripts → ./core.sh build → lm-assist start). Quick alternative: npm install -g github:langmartai/lm-assist',
+      '       then claude plugin install lm-assist@langmartai.',
+    );
+  } else {
+    lines.push(
+      `       Your working repo is \`${repo}\` — a DIFFERENT project; lm-assist is a SEPARATE tool. Install it INDEPENDENTLY of your checkout:`,
+      '       npm install -g github:langmartai/lm-assist   # npm CLONES + builds the custom lm-assist; does NOT touch your repo',
+      '       then claude plugin install lm-assist@langmartai, then lm-assist start.  (Detailed from-source build: `bootstrap` → `guide("install")`.)',
+      `       Then RETURN to your actual task on \`${repo}\`.`,
+    );
+  }
+  lines.push(
     '',
-    `This gives you LOCAL lm-assist — its capability guide (call \`bootstrap\` once the MCP is loaded), local session tracking, knowledge, etc., reachable over the CLI and \`curl -s localhost:${apiPort}/...\`. The lm-assist MCP TOOLS attach at the start of your NEXT Claude Code session; in THIS one reach it over HTTP/CLI. lm-assist COMPLEMENTS your built-in tools.`,
-    '',
-    "To CONNECT this node to the user's lm-assist HUB (to reach their cross-node fleet/data) is a SEPARATE, deliberate step — ASK the user to confirm and provide the hub URL + key; do NOT wire this container to any external hub on your own. Then proceed with the task below.",
-    '',
-    '────────  task  ────────',
-    '',
-  ].join('\n');
+    `This gives you LOCAL lm-assist on :${apiPort} (CLI + curl -s localhost:${apiPort}/...; the MCP TOOLS attach at your NEXT Claude Code session). lm-assist COMPLEMENTS your built-in tools. NO hub key is embedded — to CONNECT this node to the user's HUB is a SEPARATE step: ASK the user to confirm + provide the hub URL + key; do NOT wire any external hub on your own.`,
+  );
+  if (opts.role === 'worker') {
+    const task = opts.taskId ? ` for task \`${opts.taskId}\`${opts.title ? ` ("${opts.title}")` : ''}` : '';
+    lines.push(
+      '',
+      `ROLE — you are a WORKER${task}. Once lm-assist is up, follow \`guide("roles")\`: call set_role, print a ⟦WORKER-STATUS⟧ … ⟦/WORKER-STATUS⟧ block EVERY turn, report_status as you progress, and raise an agree-gate (status:need_approval) before any sensitive step — STOP until it's decided.`,
+    );
+  } else if (opts.role === 'orchestrator') {
+    lines.push(
+      '',
+      'ROLE — you are the ORCHESTRATOR. Once lm-assist is up, follow `guide("roles")`: read your workers (worker_status / list_workers), drive them (send_session_message / CCR), and decide their agree-gates (decide_gate).',
+    );
+  }
+  lines.push('', '────────  your task  ────────', '');
+  return lines.join('\n');
+}
+
+/** Back-compat: the former install-only name → the no-role bootstrap instruction. */
+export function buildSetupPreamble(): string {
+  return buildBootstrapInstruction({});
 }
 
 /**
@@ -403,7 +449,7 @@ export interface CloudStartResult { sid: string; webUrl: string; status: string;
  * Standard seed = a GitHub repo (`repo` = owner/name or URL; the cloud clones it, branch
  * defaults to the repo's default). Fallback = a local git bundle (`cwd`) or empty scratch.
  */
-export async function cloudStart(opts: { prompt?: string; repo?: string; branch?: string; cwd?: string; model?: string; title?: string; setup?: boolean }): Promise<CloudStartResult> {
+export async function cloudStart(opts: { prompt?: string; repo?: string; branch?: string; cwd?: string; model?: string; title?: string; setup?: boolean; role?: CloudRole; primaryRepo?: string }): Promise<CloudStartResult> {
   const prompt = (opts.prompt || '').toString().trim();
   const hasRepo = !!(opts.repo && opts.repo.trim());
   const hasCwd = !!(opts.cwd && opts.cwd.trim());
@@ -412,13 +458,13 @@ export async function cloudStart(opts: { prompt?: string; repo?: string; branch?
   const model = opts.model || DEFAULT_MODEL;
   const environmentId = await getEnvironmentId();
 
-  // Optional lm-assist INSTALL-ONLY setup: prepend install instructions to the first turn so the
-  // fresh container installs lm-assist locally (no hub key / external connect — that's a separate
-  // in-session step the user confirms).
+  // Optional lm-assist bootstrap/self-heal: prepend the standing instruction so the container ensures
+  // lm-assist is running locally (restart if down, install/clone if missing) — role-aware, repo-case-aware
+  // (primaryRepo defaults to the cloned repo). No hub key / external connect (a separate user-confirmed step).
   let effectivePrompt = prompt;
   let setupApplied = false;
   if (opts.setup) {
-    effectivePrompt = buildSetupPreamble() + (prompt || 'Then await my instructions.');
+    effectivePrompt = buildBootstrapInstruction({ role: opts.role, primaryRepo: opts.primaryRepo || opts.repo }) + (prompt || 'Then await my instructions.');
     setupApplied = true;
   }
 
@@ -459,10 +505,13 @@ export async function cloudStart(opts: { prompt?: string; repo?: string; branch?
 }
 
 /** Drive a follow-up turn into a cloud session. */
-export async function cloudDrive(opts: { sid: string; text: string }): Promise<{ delivered: boolean; sid: string; eventId?: string }> {
+export async function cloudDrive(opts: { sid: string; text: string; reBootstrap?: boolean; role?: CloudRole; primaryRepo?: string }): Promise<{ delivered: boolean; sid: string; eventId?: string }> {
   if (!isCloudSid(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_…');
-  const text = (opts.text || '').toString();
+  let text = (opts.text || '').toString();
   if (!text.trim()) throw new TerminalError('INVALID_INPUT', 'text is required');
+  // Resume self-heal: prepend the bootstrap/self-heal instruction so a re-engaged (possibly rebooted)
+  // container ensures lm-assist is up (restart/install) before doing the new turn.
+  if (opts.reBootstrap) text = buildBootstrapInstruction({ role: opts.role, primaryRepo: opts.primaryRepo }) + text;
   const res = await anthropicOAuthPost(`/v1/sessions/${opts.sid}/events`, { events: [buildDriveEvent(opts.sid, text)] }, await ccrOpts());
   assertOk(res, 'cloud drive');
   const r = res.body && Array.isArray(res.body.results) ? res.body.results[0] : undefined;

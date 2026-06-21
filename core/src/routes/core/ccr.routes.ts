@@ -151,7 +151,8 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'POST',
       pattern: /^\/ccr\/cloud\/start$/,
       handler: async (req) => envelope(async () => {
-        const body = (req.body || {}) as { prompt?: unknown; repo?: unknown; branch?: unknown; cwd?: unknown; model?: unknown; title?: unknown; setup?: unknown };
+        const body = (req.body || {}) as { prompt?: unknown; repo?: unknown; branch?: unknown; cwd?: unknown; model?: unknown; title?: unknown; setup?: unknown; role?: unknown; primaryRepo?: unknown };
+        const role = body.role === 'worker' || body.role === 'orchestrator' ? body.role : undefined;
         return await ccrCloud.cloudStart({
           prompt: typeof body.prompt === 'string' ? body.prompt : undefined,
           repo: typeof body.repo === 'string' ? body.repo : undefined,
@@ -160,6 +161,8 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
           model: typeof body.model === 'string' ? body.model : undefined,
           title: typeof body.title === 'string' ? body.title : undefined,
           setup: body.setup === true,
+          role,
+          primaryRepo: typeof body.primaryRepo === 'string' ? body.primaryRepo : undefined,
         });
       }),
     },
@@ -195,10 +198,11 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/ccr\/cloud\/(?<sid>session_[^/]+)\/drive$/,
       handler: async (req) => envelope(async () => {
         const sid = parseCloudSid(req.params.sid);
-        const body = (req.body || {}) as { text?: unknown };
+        const body = (req.body || {}) as { text?: unknown; reBootstrap?: unknown; role?: unknown; primaryRepo?: unknown };
         const text = typeof body.text === 'string' ? body.text : '';
         if (!text.trim()) throw new TerminalError('INVALID_INPUT', 'text is required');
-        return await ccrCloud.cloudDrive({ sid, text });
+        const role = body.role === 'worker' || body.role === 'orchestrator' ? body.role : undefined;
+        return await ccrCloud.cloudDrive({ sid, text, reBootstrap: body.reBootstrap === true, role, primaryRepo: typeof body.primaryRepo === 'string' ? body.primaryRepo : undefined });
       }),
     },
 
