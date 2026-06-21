@@ -15,6 +15,10 @@
   package (and every prod install) lacked `ccr/` — `ccr_load`/`mirror`/`connect` failed with
   `MODULE_NOT_FOUND` on prod. Added `ccr` to `files`; deploys must sync `ccr/` alongside `core/dist`.
   Verified end-to-end on prod after deploying it (load → claude.ai/code URL → list → stop).
+- **Web UI — a new "CCR Remote" page** (sidebar): lists active CCR bridges (mode badge, session, Open URL,
+  Stop) and the host's Claude Code sessions (project, status, tmux, connectStrategy verdict) with per-session
+  **Load / Mirror / Connect** buttons (Mirror/Connect gated by `allowedModes`; Connect is confirm-gated and
+  shows the strategy; a `refuse` verdict is surfaced). Browser-verified: Load → bridge appears → Open/Stop.
 
 ### Scheduler — the built-in delete job is now DIRECT-ID-ONLY (no matching of any kind) (2026-06-21)
 
