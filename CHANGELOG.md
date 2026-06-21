@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Scheduler — one-time jobs + MCP scheduling modes (one-time / recurring / trigger; dry/real/test) (2026-06-21)
+
+- **One-time jobs** — `config.runAt` (ISO) makes a job run ONCE at/after that time, then complete (`isJobDue`
+  fires once, `nextRunAtMs` points at runAt then null; `isOneTime`/`parseRunAt` helpers, unit-tested).
+- **MCP `scheduler_jobs`** — three create modes, all in one call: ONE-TIME (`run_at="…ISO…"` or
+  `in_minutes=N`, auto-enables), RECURRING (`interval_minutes` + `auto_run`), TRIGGER-ONLY (omit schedule →
+  runs only via `run`/`test`). Run modes spelled out: `run` = real, `run`+`dry_run=true` = preview,
+  `test` = capture-only verify (no schedule effect). State shows `one-time @ <time>` → `one-time · done`.
+- **Web** — a "run once in (min)" create field (→ a one-time job); state badge `one-time` / `one-time · done`;
+  fixed the next-run line to use the server's `nextRunAt` (one-time jobs now show their scheduled time).
+
 ### Scheduler — richer jobs: name/description, full run capture, conditions, easy MCP create/test (2026-06-21)
 
 Substantial upgrade to the scheduled-jobs system:
