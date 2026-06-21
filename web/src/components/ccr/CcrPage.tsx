@@ -2,10 +2,11 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import {
-  MonitorPlay, RefreshCw, Loader2, Eye, Radio, Cast, Square, ExternalLink, X, AlertTriangle, Copy, Check, Maximize2,
+  MonitorPlay, RefreshCw, Loader2, Eye, Radio, Cast, Square, ExternalLink, X, AlertTriangle, Copy, Check, Maximize2, Cloud,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { CcrSessionView } from './CcrSessionView';
+import { CcrCloudView } from './CcrCloudView';
 
 type Mode = 'load' | 'mirror' | 'connect';
 
@@ -32,6 +33,14 @@ interface Remote {
   webUrl: string | null;
   live?: boolean;
   strategy?: string;
+}
+interface CloudSession {
+  sid: string;
+  title: string;
+  model: string;
+  cwd: string | null;
+  webUrl: string;
+  createdAt: string;
 }
 
 const short = (id: string | null | undefined) => (id ? id.slice(0, 8) : '—');
@@ -90,6 +99,12 @@ export function CcrPage() {
   const [copied, setCopied] = useState<string | null>(null);
   const [viewing, setViewing] = useState<string | null>(null); // sessionId whose embedded view is open
   const [sessionErr, setSessionErr] = useState<Record<string, string>>({}); // per-session CCR failure
+  const [cloudSessions, setCloudSessions] = useState<CloudSession[]>([]);
+  const [cloudPrompt, setCloudPrompt] = useState('');
+  const [cloudCwd, setCloudCwd] = useState('');
+  const [cloudViewing, setCloudViewing] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [cloudErr, setCloudErr] = useState<string | null>(null);
   const setBusyFor = (k: string, on: boolean) => setBusy((p) => { const n = new Set(p); on ? n.add(k) : n.delete(k); return n; });
   const copyUrl = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setCopied(url); setTimeout(() => setCopied((c) => (c === url ? null : c)), 1500); } catch { /* clipboard blocked */ }
@@ -98,12 +113,14 @@ export function CcrPage() {
   const fetchAll = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [r, s] = await Promise.all([
+      const [r, s, c] = await Promise.all([
         apiFetch<{ remotes: Remote[] }>('/ccr/remote').catch(() => ({ remotes: [] })),
         apiFetch<CcSession[] | { sessions: CcSession[] }>('/terminal/cc-sessions').catch(() => [] as CcSession[]),
+        apiFetch<{ sessions: CloudSession[] }>('/ccr/cloud').catch(() => ({ sessions: [] })),
       ]);
       setRemotes(r.remotes || []);
       setSessions(Array.isArray(s) ? s : (s.sessions || []));
+      setCloudSessions(c.sessions || []);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally { setLoading(false); }
@@ -128,6 +145,30 @@ export function CcrPage() {
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusyFor(id, false); }
   }, [apiFetch, fetchAll]);
+
+  const startCloud = useCallback(async () => {
+    const p = cloudPrompt.trim(); if (!p) return;
+    setStarting(true); setCloudErr(null);
+    try {
+      const body: Record<string, unknown> = { prompt: p };
+      if (cloudCwd.trim()) body.cwd = cloudCwd.trim();
+      const r = await apiFetch<{ sid: string }>('/ccr/cloud/start', { method: 'POST', body });
+      setCloudPrompt(''); setCloudCwd('');
+      await fetchAll();
+      if (r?.sid) setCloudViewing(r.sid); // open the new session's view to watch it boot
+    } catch (e) { setCloudErr(parseCcrError(e).message); }
+    finally { setStarting(false); }
+  }, [apiFetch, cloudPrompt, cloudCwd, fetchAll]);
+
+  const stopCloud = useCallback(async (sid: string) => {
+    setBusyFor(sid, true); setCloudErr(null);
+    try {
+      await apiFetch(`/ccr/cloud/${encodeURIComponent(sid)}/stop`, { method: 'POST', body: {} });
+      if (cloudViewing === sid) setCloudViewing(null);
+      await fetchAll();
+    } catch (e) { setCloudErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusyFor(sid, false); }
+  }, [apiFetch, fetchAll, cloudViewing]);
 
   const sorted = [...sessions].sort((a, b) => Number(!!b.verdict?.live) - Number(!!a.verdict?.live));
   const shown = showAll ? sorted : sorted.filter((s) => s.verdict?.live || s.driveable).slice(0, 12);
@@ -191,6 +232,61 @@ export function CcrPage() {
                   {r.sessionId && <button className={`btn btn-sm ${viewing === r.sessionId ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setViewing(viewing === r.sessionId ? null : r.sessionId)} title="View the session here (embedded)"><Maximize2 size={13} /> View</button>}
                   {r.webUrl && <a className="btn btn-ghost btn-sm" href={r.webUrl} target="_blank" rel="noreferrer" title="Open (may launch the Claude app via the claude.ai/code deep-link handler)"><ExternalLink size={13} /> Open</a>}
                   <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => stop(r.id)} title="Stop bridge">
+                    {isBusy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <><Square size={12} /> Stop</>}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Cloud CCR — claude runs in an Anthropic-cloud container (no local machine) */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <Cloud size={15} style={{ color: 'var(--color-accent)' }} />
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>Cloud sessions</div>
+          <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>claude runs in an Anthropic-cloud container — no local machine needed</span>
+        </div>
+        <div className="card" style={{ padding: 12, marginBottom: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <textarea className="input" rows={2} value={cloudPrompt} placeholder="Start a cloud session — initial prompt for the cloud claude…"
+            style={{ resize: 'none', fontSize: 12.5 }} onChange={(e) => setCloudPrompt(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); startCloud(); } }} />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input className="input" value={cloudCwd} placeholder="optional: local git repo to seed (uploads committed HEAD, ≤50 MiB)"
+              style={{ flex: 1, minWidth: 220, fontSize: 12 }} onChange={(e) => setCloudCwd(e.target.value)} />
+            <button className="btn btn-primary btn-sm" disabled={starting || !cloudPrompt.trim()} onClick={startCloud} title="Boot a cloud-run claude (spends cloud quota)">
+              {starting ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Starting…</> : <><Cloud size={13} /> Start cloud</>}
+            </button>
+          </div>
+          {cloudErr && <div style={{ fontSize: 11, color: 'var(--color-status-red)', display: 'flex', alignItems: 'center', gap: 6 }}><AlertTriangle size={12} /> {cloudErr}</div>}
+        </div>
+
+        {cloudViewing && (
+          <div style={{ marginBottom: 12 }}>
+            <CcrCloudView sid={cloudViewing} webUrl={cloudSessions.find((c) => c.sid === cloudViewing)?.webUrl} apiFetch={apiFetch} onClose={() => setCloudViewing(null)} />
+          </div>
+        )}
+
+        {cloudSessions.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', marginBottom: 18 }}>No cloud sessions. Start one above.</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
+            {cloudSessions.map((c) => {
+              const isBusy = busy.has(c.sid);
+              return (
+                <div key={c.sid} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, flexWrap: 'wrap' }}>
+                  <span className="badge badge-blue" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><Cloud size={11} /> cloud</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>{c.title}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--color-text-tertiary)' }} title={c.sid}>{c.sid.replace('session_', '').slice(0, 8)}</span>
+                  {c.cwd ? <span className="badge badge-outline" title={c.cwd}>{base(c.cwd)}</span> : <span className="badge badge-outline" title="empty scratch workspace">scratch</span>}
+                  <div style={{ flex: 1 }} />
+                  <button className="btn btn-ghost btn-sm" onClick={() => copyUrl(c.webUrl)} title="Copy claude.ai/code URL">
+                    {copied === c.webUrl ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy URL</>}
+                  </button>
+                  <button className={`btn btn-sm ${cloudViewing === c.sid ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setCloudViewing(cloudViewing === c.sid ? null : c.sid)} title="Watch + drive here">
+                    <Maximize2 size={13} /> View
+                  </button>
+                  <a className="btn btn-ghost btn-sm" href={c.webUrl} target="_blank" rel="noreferrer" title="Open on claude.ai/code"><ExternalLink size={13} /> Open</a>
+                  <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => stopCloud(c.sid)} title="Stop + delete the cloud session">
                     {isBusy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <><Square size={12} /> Stop</>}
                   </button>
                 </div>
