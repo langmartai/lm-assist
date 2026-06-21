@@ -25,3 +25,26 @@ export function decideGate(task: Task, decision: 'agree' | 'reject', by: string,
   const status: Task['status'] = decision === 'agree' ? 'working' : 'blocked';
   return { ...task, gate, status };
 }
+
+/** Derive each parent's status from its direct children (leaves keep their own status). */
+export function rollUp(tasks: Task[]): Task[] {
+  const childrenOf = new Map<string, Task[]>();
+  for (const t of tasks) {
+    if (t.parentId) {
+      const arr = childrenOf.get(t.parentId) ?? [];
+      arr.push(t);
+      childrenOf.set(t.parentId, arr);
+    }
+  }
+  const derive = (kids: Task[]): Task['status'] => {
+    if (kids.some((k) => k.status === 'working' || k.status === 'need_approval')) return 'working';
+    if (kids.some((k) => k.status === 'blocked')) return 'blocked';
+    if (kids.every((k) => k.status === 'done' || k.status === 'skipped')) return 'done';
+    if (kids.some((k) => k.status !== 'todo')) return 'working';
+    return 'todo';
+  };
+  return tasks.map((t) => {
+    const kids = childrenOf.get(t.id);
+    return kids && kids.length ? { ...t, status: derive(kids) } : t;
+  });
+}

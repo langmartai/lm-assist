@@ -61,3 +61,28 @@ test('gate: decideGate throws when there is no open gate', () => {
   const t: Task = { id: 't1', title: 'x', status: 'working' };
   assert.throws(() => decideGate(t, 'agree', 'o', undefined, 1), /no open gate/i);
 });
+
+import { rollUp } from '../worker-role/model';
+
+test('rollUp: a parent is done only when all children are done/skipped', () => {
+  const tasks: Task[] = [
+    { id: 'p', title: 'phase', status: 'todo' },
+    { id: 'a', title: 'a', parentId: 'p', status: 'done' },
+    { id: 'b', title: 'b', parentId: 'p', status: 'skipped' },
+  ];
+  assert.equal(rollUp(tasks).find((t) => t.id === 'p')!.status, 'done');
+});
+
+test('rollUp: a parent is working when any child is working/need_approval', () => {
+  const tasks: Task[] = [
+    { id: 'p', title: 'phase', status: 'todo' },
+    { id: 'a', title: 'a', parentId: 'p', status: 'done' },
+    { id: 'b', title: 'b', parentId: 'p', status: 'working' },
+  ];
+  assert.equal(rollUp(tasks).find((t) => t.id === 'p')!.status, 'working');
+});
+
+test('rollUp: leaves (no children) are unchanged', () => {
+  const tasks: Task[] = [{ id: 'a', title: 'a', status: 'blocked' }];
+  assert.deepEqual(rollUp(tasks), tasks);
+});
