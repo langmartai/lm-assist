@@ -242,20 +242,18 @@ export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
   return [
     {
       id: 'cleanup-test-conversations',
-      name: 'Clean up test conversations',
-      description: 'Sweeps throwaway claude.ai conversations (expired auto-delete TTL + explicit ids). Ships disabled + dry-run; arm with config.dryRun=false.',
+      name: 'Auto-delete expired conversations',
+      description: 'Deletes ONLY conversations on the verified auto-delete list — those carrying an EXPIRED [lm-autodel:…] TTL marker. Ignores names/ids by design. Ships disabled + dry-run; arm with config.dryRun=false.',
       type: 'cleanup-test-conversations',
       enabled: false, // SAFE BY DEFAULT — the user arms it
       intervalMinutes: 1440, // daily, once armed
       config: {
         // dryRun TRUE → reports matches without deleting. The user sets dryRun:false to arm deletion.
         dryRun: true,
-        // Selection: expired lm-autodel markers + these explicit ids. No name patterns by default,
-        // so a conversation without a (valid, expired) TTL marker is never swept.
-        ids: [] as string[],
-        patterns: [] as string[],
-        olderThanHours: 0,
-        limit: 200,
+        // TTL-only: the handler ignores ids/patterns; selection is expired [lm-autodel:…] markers ONLY,
+        // so a conversation that wasn't explicitly marked for auto-deletion is never swept. `limit` only
+        // bounds how many conversations are scanned.
+        limit: 500,
       },
       lastRunAt: null,
       lastResult: null,
@@ -354,17 +352,20 @@ class ScheduledJobs {
       // A forced dry-run (preview "Run now") always wins, so a preview never deletes.
       const armed = config.dryRun === false;
       const dryRun = ctx.dryRunForced ? true : !armed;
+      // TTL-ONLY BY DESIGN: this auto-delete sweep manages ONLY the VERIFIED auto-delete list —
+      // conversations carrying a valid, EXPIRED `[lm-autodel:…]` marker (a TTL the operator explicitly
+      // set). It deliberately IGNORES name patterns and explicit ids, so it can never delete a
+      // conversation that wasn't itself marked for auto-deletion. (For curated id/pattern deletes use a
+      // separate `shell` job that calls /claude-ai/conversations/cleanup-test directly.)
       const res = await cleanupTestConversations({
         dryRun,
-        ids: Array.isArray(config.ids) ? config.ids : undefined,
-        patterns: Array.isArray(config.patterns) && config.patterns.length ? config.patterns : undefined,
-        olderThanHours: typeof config.olderThanHours === 'number' ? config.olderThanHours : undefined,
-        limit: typeof config.limit === 'number' ? config.limit : undefined,
+        // no ids, no patterns, no olderThanHours → matchTestConversations sweeps expired-TTL markers ONLY
+        limit: typeof config.limit === 'number' ? config.limit : 500,
       });
       const matched = res.matched?.length ?? 0;
       const result = dryRun
-        ? `dry-run: ${matched} conversation(s) would be deleted`
-        : `deleted ${res.deleted?.length ?? 0}/${matched}` + (res.failed?.length ? `, ${res.failed.length} failed` : '');
+        ? `dry-run: ${matched} TTL-expired conversation(s) would be deleted (verified auto-delete list)`
+        : `deleted ${res.deleted?.length ?? 0}/${matched} TTL-expired` + (res.failed?.length ? `, ${res.failed.length} failed` : '');
       return { result, status: res.failed?.length ? 'error' : 'ok' };
     });
   }
