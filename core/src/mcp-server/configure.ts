@@ -188,6 +188,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   ccr_connect: 'admin',
   ccr_drive: 'admin',
   ccr_cloud_start: 'admin',
+  ccr_cloud_repos: 'read',
   ccr_cloud_drive: 'admin',
   ccr_cloud_read: 'read',
   ccr_cloud_stop: 'write',

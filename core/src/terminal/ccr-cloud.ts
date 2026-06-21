@@ -53,8 +53,37 @@ export function isCloudSid(sid: string | undefined | null): boolean {
   return typeof sid === 'string' && /^session_[A-Za-z0-9]+$/.test(sid);
 }
 
-/** Build the POST /v1/sessions body — a create carries the initial user turn (wrapped event). */
-export function buildCreateBody(opts: { prompt: string; model: string; seedFileId: string; environmentId: string; title?: string }) {
+/** A `sources` entry: a GitHub repo the cloud container clones (the standard seed). */
+export function buildGitHubSource(url: string, revision?: string) {
+  return { type: 'git_repository' as const, url, ...(revision ? { revision } : {}) };
+}
+
+/** Normalise a repo reference (owner/name, github URL, ssh, or .git) → { slug, url }. */
+export function parseGitHubRepo(input: string): { slug: string; url: string } | null {
+  if (!input || typeof input !== 'string') return null;
+  let s = input.trim()
+    .replace(/^https?:\/\/github\.com\//i, '')
+    .replace(/^git@github\.com:/i, '')
+    .replace(/^github\.com\//i, '')
+    .replace(/\.git$/i, '')
+    .replace(/\/+$/, '');
+  const m = s.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/);
+  if (!m) return null;
+  const slug = `${m[1]}/${m[2]}`;
+  return { slug, url: `https://github.com/${slug}` };
+}
+
+/**
+ * Build the POST /v1/sessions body — a create carries the initial user turn (wrapped event).
+ * Seed EITHER via `sources` (GitHub repos — the standard) OR `seedFileId` (local git bundle).
+ */
+export function buildCreateBody(opts: { prompt: string; model: string; environmentId: string; title?: string; seedFileId?: string; sources?: unknown[] }) {
+  const session_context: Record<string, unknown> = {
+    sources: opts.sources || [],
+    outcomes: [],
+    model: opts.model,
+  };
+  if (opts.seedFileId) session_context.seed_bundle_file_id = opts.seedFileId;
   return {
     title: opts.title || 'lm-assist cloud ccr',
     events: [
@@ -69,7 +98,7 @@ export function buildCreateBody(opts: { prompt: string; model: string; seedFileI
         },
       },
     ],
-    session_context: { sources: [], seed_bundle_file_id: opts.seedFileId, outcomes: [], model: opts.model },
+    session_context,
     environment_id: opts.environmentId,
   };
 }
@@ -121,6 +150,9 @@ export interface CloudRecord {
   sid: string;
   title: string;
   model: string;
+  /** GitHub repo slug (owner/name) the cloud cloned, when seeded from GitHub. */
+  repo: string | null;
+  /** Local repo path, when seeded from a local bundle instead. */
   cwd: string | null;
   seedFileId: string | null;
   environmentId: string | null;
@@ -235,33 +267,81 @@ async function getEnvironmentId(): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
+// GitHub repo listing (for the seed picker) — via the gh CLI
+// ---------------------------------------------------------------------------
+
+export interface GitHubRepo { repo: string; isPrivate: boolean; pushedAt: string }
+
+/**
+ * List the user's GitHub repos (gh), most-recently-pushed first. Best-effort: [] if gh
+ * unavailable. NOTE: we deliberately do NOT request `defaultBranchRef` — a fine-grained
+ * PAT often lacks GraphQL access to it ("Resource not accessible by personal access token"),
+ * which would error the whole call. The cloud picks the repo's default branch on clone when
+ * no branch is specified.
+ */
+export function listGitHubRepos(limit = 50): GitHubRepo[] {
+  try {
+    const out = execFileSync('gh', ['repo', 'list', '--limit', String(limit), '--json', 'nameWithOwner,isPrivate,pushedAt'], { encoding: 'utf-8', timeout: 15_000 });
+    const arr = JSON.parse(out) as Array<{ nameWithOwner: string; isPrivate: boolean; pushedAt: string }>;
+    return arr
+      .map((r) => ({ repo: r.nameWithOwner, isPrivate: !!r.isPrivate, pushedAt: r.pushedAt || '' }))
+      .sort((a, b) => (a.pushedAt < b.pushedAt ? 1 : -1));
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-export interface CloudStartResult { sid: string; webUrl: string; status: string; model: string; cwd: string | null; environmentId: string }
+export interface CloudStartResult { sid: string; webUrl: string; status: string; model: string; repo: string | null; branch: string | null; cwd: string | null; environmentId: string }
 
-/** Create a cloud-run CCR session (returns immediately; poll cloudRead for the first turn). */
-export async function cloudStart(opts: { prompt: string; cwd?: string; model?: string; title?: string }): Promise<CloudStartResult> {
+/**
+ * Create a cloud-run CCR session (returns immediately; poll cloudRead for the first turn).
+ * Standard seed = a GitHub repo (`repo` = owner/name or URL; the cloud clones it, branch
+ * defaults to the repo's default). Fallback = a local git bundle (`cwd`) or empty scratch.
+ */
+export async function cloudStart(opts: { prompt: string; repo?: string; branch?: string; cwd?: string; model?: string; title?: string }): Promise<CloudStartResult> {
   const prompt = (opts.prompt || '').toString();
   if (!prompt.trim()) throw new TerminalError('INVALID_INPUT', 'prompt is required');
   const model = opts.model || DEFAULT_MODEL;
-
-  const { buf, cwd } = makeSeedBundle(opts.cwd);
-  const seedFileId = await uploadSeed(buf);
   const environmentId = await getEnvironmentId();
 
-  const res = await anthropicOAuthPost('/v1/sessions', buildCreateBody({ prompt, model, seedFileId, environmentId, title: opts.title }), await ccrOpts());
+  let sources: unknown[] = [];
+  let seedFileId: string | undefined;
+  let repoSlug: string | null = null;
+  let branch: string | null = null;
+  let cwd: string | null = null;
+
+  if (opts.repo && opts.repo.trim()) {
+    // Standard path: the cloud clones a GitHub repo.
+    const parsed = parseGitHubRepo(opts.repo);
+    if (!parsed) throw new TerminalError('INVALID_INPUT', 'repo must be "owner/name" or a github.com URL');
+    // No branch given → omit revision so the cloud clones the repo's default branch.
+    branch = (opts.branch && opts.branch.trim()) || null;
+    sources = [buildGitHubSource(parsed.url, branch || undefined)];
+    repoSlug = parsed.slug;
+  } else {
+    // Fallback: seed from a local git bundle (cwd) or an empty scratch workspace.
+    const seed = makeSeedBundle(opts.cwd);
+    seedFileId = await uploadSeed(seed.buf);
+    cwd = seed.cwd;
+  }
+
+  const res = await anthropicOAuthPost('/v1/sessions', buildCreateBody({ prompt, model, environmentId, title: opts.title, seedFileId, sources }), await ccrOpts());
   assertOk(res, 'cloud session create');
   const sid = (res.body as { id?: string })?.id;
   if (!sid) throw new TerminalError('UPSTREAM_ERROR', 'create returned no session id', { body: res.body });
   const status = (res.body as { session_status?: string })?.session_status || 'pending';
 
   const rec: CloudRecord = {
-    sid, title: opts.title || 'lm-assist cloud ccr', model, cwd, seedFileId, environmentId,
+    sid, title: opts.title || (repoSlug ? `cloud: ${repoSlug}` : 'lm-assist cloud ccr'), model,
+    repo: repoSlug, cwd, seedFileId: seedFileId || null, environmentId,
     webUrl: cloudSessionWebUrl(sid), createdAt: new Date().toISOString(),
   };
   const data = loadRegistry(); data[sid] = rec; saveRegistry(data);
-  return { sid, webUrl: rec.webUrl, status, model, cwd, environmentId };
+  return { sid, webUrl: rec.webUrl, status, model, repo: repoSlug, branch, cwd, environmentId };
 }
 
 /** Drive a follow-up turn into a cloud session. */

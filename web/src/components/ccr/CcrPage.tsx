@@ -38,15 +38,15 @@ interface CloudSession {
   sid: string;
   title: string;
   model: string;
+  repo: string | null;
   cwd: string | null;
   webUrl: string;
   createdAt: string;
 }
-interface RepoProject {
-  path: string;
-  isGitProject?: boolean;
-  lastActivity?: string;
-  sessionCount?: number;
+interface GitHubRepo {
+  repo: string;          // owner/name
+  isPrivate: boolean;
+  pushedAt: string;
 }
 
 const short = (id: string | null | undefined) => (id ? id.slice(0, 8) : '—');
@@ -107,11 +107,12 @@ export function CcrPage() {
   const [sessionErr, setSessionErr] = useState<Record<string, string>>({}); // per-session CCR failure
   const [cloudSessions, setCloudSessions] = useState<CloudSession[]>([]);
   const [cloudPrompt, setCloudPrompt] = useState('');
-  const [cloudCwd, setCloudCwd] = useState('');
+  const [cloudRepo, setCloudRepo] = useState('');
+  const [cloudBranch, setCloudBranch] = useState('');
   const [cloudViewing, setCloudViewing] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [cloudErr, setCloudErr] = useState<string | null>(null);
-  const [repos, setRepos] = useState<RepoProject[]>([]);
+  const [repos, setRepos] = useState<GitHubRepo[]>([]);
   const setBusyFor = (k: string, on: boolean) => setBusy((p) => { const n = new Set(p); on ? n.add(k) : n.delete(k); return n; });
   const copyUrl = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setCopied(url); setTimeout(() => setCopied((c) => (c === url ? null : c)), 1500); } catch { /* clipboard blocked */ }
@@ -124,14 +125,12 @@ export function CcrPage() {
         apiFetch<{ remotes: Remote[] }>('/ccr/remote').catch(() => ({ remotes: [] })),
         apiFetch<CcSession[] | { sessions: CcSession[] }>('/terminal/cc-sessions').catch(() => [] as CcSession[]),
         apiFetch<{ sessions: CloudSession[] }>('/ccr/cloud').catch(() => ({ sessions: [] })),
-        apiFetch<{ projects: RepoProject[] }>('/projects').catch(() => ({ projects: [] })),
+        apiFetch<{ repos: GitHubRepo[] }>('/ccr/cloud/repos').catch(() => ({ repos: [] })),
       ]);
       setRemotes(r.remotes || []);
       setSessions(Array.isArray(s) ? s : (s.sessions || []));
       setCloudSessions(c.sessions || []);
-      setRepos((p.projects || [])
-        .filter((x) => x.isGitProject)
-        .sort((a, b) => (a.lastActivity || '') < (b.lastActivity || '') ? 1 : -1));
+      setRepos(p.repos || []); // already sorted most-recent-first by the backend
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally { setLoading(false); }
@@ -162,14 +161,15 @@ export function CcrPage() {
     setStarting(true); setCloudErr(null);
     try {
       const body: Record<string, unknown> = { prompt: p };
-      if (cloudCwd.trim()) body.cwd = cloudCwd.trim();
+      if (cloudRepo.trim()) body.repo = cloudRepo.trim();
+      if (cloudBranch.trim()) body.branch = cloudBranch.trim();
       const r = await apiFetch<{ sid: string }>('/ccr/cloud/start', { method: 'POST', body });
-      setCloudPrompt(''); setCloudCwd('');
+      setCloudPrompt(''); setCloudRepo(''); setCloudBranch('');
       await fetchAll();
       if (r?.sid) setCloudViewing(r.sid); // open the new session's view to watch it boot
     } catch (e) { setCloudErr(parseCcrError(e).message); }
     finally { setStarting(false); }
-  }, [apiFetch, cloudPrompt, cloudCwd, fetchAll]);
+  }, [apiFetch, cloudPrompt, cloudRepo, cloudBranch, fetchAll]);
 
   const stopCloud = useCallback(async (sid: string) => {
     setBusyFor(sid, true); setCloudErr(null);
@@ -261,18 +261,24 @@ export function CcrPage() {
           <textarea className="input" rows={2} value={cloudPrompt} placeholder="Start a cloud session — initial prompt for the cloud claude…"
             style={{ resize: 'none', fontSize: 12.5 }} onChange={(e) => setCloudPrompt(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); startCloud(); } }} />
-          <input className="input" list="ccr-repo-list" value={cloudCwd} onChange={(e) => setCloudCwd(e.target.value)}
-            placeholder="optional seed repo — pick a git repo or type a path (empty = scratch workspace)"
-            spellCheck={false} autoComplete="off"
-            style={{ width: '100%', fontSize: 12 }}
-            title="Seed the cloud container with a git repo (uploads its committed HEAD, ≤50 MiB), or leave empty for an empty scratch workspace" />
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <input className="input" list="ccr-repo-list" value={cloudRepo} onChange={(e) => setCloudRepo(e.target.value)}
+              placeholder="GitHub repo to clone — pick or type owner/name (empty = scratch workspace)"
+              spellCheck={false} autoComplete="off"
+              style={{ flex: 2, minWidth: 260, fontSize: 12 }}
+              title="The cloud container clones this GitHub repo (public or the org's private repos). Leave empty for an empty scratch workspace." />
+            <input className="input" value={cloudBranch} onChange={(e) => setCloudBranch(e.target.value)}
+              placeholder="branch (optional)" spellCheck={false} autoComplete="off"
+              style={{ flex: 1, minWidth: 120, fontSize: 12 }}
+              title="Branch/revision to clone (default: the repo's default branch)" />
+          </div>
           <datalist id="ccr-repo-list">
-            {repos.map((r) => (<option key={r.path} value={r.path}>{base(r.path)}</option>))}
+            {repos.map((r) => (<option key={r.repo} value={r.repo}>{r.isPrivate ? 'private' : 'public'}</option>))}
           </datalist>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {cloudCwd.trim()
-              ? <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>seeds <code>{base(cloudCwd.trim())}</code> (committed HEAD)</span>
-              : <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>empty scratch workspace</span>}
+            {cloudRepo.trim()
+              ? <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>clones <code>{cloudRepo.trim()}</code>{cloudBranch.trim() ? <> @ <code>{cloudBranch.trim()}</code></> : ' (default branch)'}</span>
+              : <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>empty scratch workspace (no repo)</span>}
             <div style={{ flex: 1 }} />
             <button className="btn btn-primary btn-sm" disabled={starting || !cloudPrompt.trim()} onClick={startCloud} title="Boot a cloud-run claude (spends cloud quota)">
               {starting ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Starting…</> : <><Cloud size={13} /> Start cloud</>}
@@ -298,7 +304,7 @@ export function CcrPage() {
                   <span className="badge badge-blue" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><Cloud size={11} /> cloud</span>
                   <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>{c.title}</span>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--color-text-tertiary)' }} title={c.sid}>{c.sid.replace('session_', '').slice(0, 8)}</span>
-                  {c.cwd ? <span className="badge badge-outline" title={c.cwd}>{base(c.cwd)}</span> : <span className="badge badge-outline" title="empty scratch workspace">scratch</span>}
+                  {c.repo ? <span className="badge badge-outline" title={`GitHub: ${c.repo}`}>{c.repo}</span> : c.cwd ? <span className="badge badge-outline" title={c.cwd}>{base(c.cwd)}</span> : <span className="badge badge-outline" title="empty scratch workspace">scratch</span>}
                   <div style={{ flex: 1 }} />
                   <button className="btn btn-ghost btn-sm" onClick={() => copyUrl(c.webUrl)} title="Copy claude.ai/code URL">
                     {copied === c.webUrl ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy URL</>}

@@ -563,17 +563,24 @@ export const ccrRemoteStopToolDef = {
 export const ccrCloudStartToolDef = {
   name: 'ccr_cloud_start',
   description:
-    'Start a CLOUD CCR session — claude runs in an Anthropic-cloud container (NO local machine/tmux/bridge needed), seeded from a git bundle. Distinct from ccr_connect (which bridges a LOCAL session). Returns the session id (session_…) + claude.ai/code URL; it boots async, so poll ccr_cloud_read for the first reply. Pass cwd to seed the container with that git repo (uploads its committed HEAD to Anthropic cloud — privacy + size note: <=50 MiB); omit cwd for an empty scratch workspace. Spends cloud compute/quota — use deliberately.',
+    'Start a CLOUD CCR session — claude runs in an Anthropic-cloud container (NO local machine/tmux/bridge needed). Distinct from ccr_connect (which bridges a LOCAL session). The standard seed is a GitHub repo the container CLONES: pass repo="owner/name" (or a github.com URL) and optional branch (defaults to the repo\'s default branch); works for public and the org\'s private repos. Returns the session id (session_…) + claude.ai/code URL; it boots async, so poll ccr_cloud_read for the first reply. Use ccr_cloud_repos to list available repos. (Fallback seeds: cwd = upload a LOCAL repo\'s committed HEAD <=50 MiB; omit everything for an empty scratch workspace.) Spends cloud compute/quota — use deliberately.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       prompt: { type: 'string', description: 'Initial user turn for the cloud session.' },
-      cwd: { type: 'string', description: 'Optional local git repo to seed the container with (uploads committed HEAD, <=50 MiB).' },
+      repo: { type: 'string', description: 'GitHub repo to clone: "owner/name" or a github.com URL.' },
+      branch: { type: 'string', description: 'Branch/revision (default: the repo\'s default branch).' },
+      cwd: { type: 'string', description: 'Fallback: local git repo to bundle+upload instead of a GitHub clone (<=50 MiB).' },
       model: { type: 'string', description: 'Model id (default claude-opus-4-8[1m]).' },
       title: { type: 'string', description: 'Optional session title.' },
     },
     required: ['prompt'],
   },
+};
+export const ccrCloudReposToolDef = {
+  name: 'ccr_cloud_repos',
+  description: 'List GitHub repos available to seed a cloud session (gh, most-recently-pushed first) with their default branch and private/public flag. Pass one as ccr_cloud_start repo=.',
+  inputSchema: { type: 'object' as const, properties: {} },
 };
 export const ccrCloudDriveToolDef = {
   name: 'ccr_cloud_drive',
@@ -832,6 +839,7 @@ export const EXPANDED_TOOL_DEFS = [
   ccrDriveToolDef,
   ccrRemoteStopToolDef,
   ccrCloudStartToolDef,
+  ccrCloudReposToolDef,
   ccrCloudDriveToolDef,
   ccrCloudReadToolDef,
   ccrCloudStopToolDef,
@@ -1282,10 +1290,16 @@ async function handleCcrCloudStart(args: Record<string, unknown>): Promise<McpTo
   const prompt = String(args.prompt || '').trim();
   if (!prompt) return err('prompt is required.');
   const body: Record<string, unknown> = { prompt };
+  if (args.repo) body.repo = String(args.repo);
+  if (args.branch) body.branch = String(args.branch);
   if (args.cwd) body.cwd = String(args.cwd);
   if (args.model) body.model = String(args.model);
   if (args.title) body.title = String(args.title);
   try { return renderRaw(await workerPostRaw('/ccr/cloud/start', body)); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+async function handleCcrCloudRepos(): Promise<McpToolResult> {
+  try { return ok(pretty(await workerGet('/ccr/cloud/repos'))); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 async function handleCcrCloudDrive(args: Record<string, unknown>): Promise<McpToolResult> {
@@ -1525,6 +1539,7 @@ export const EXPANDED_HANDLERS: Record<
   ccr_drive: handleCcrDrive,
   ccr_remote_stop: handleCcrRemoteStop,
   ccr_cloud_start: handleCcrCloudStart,
+  ccr_cloud_repos: () => handleCcrCloudRepos(),
   ccr_cloud_drive: handleCcrCloudDrive,
   ccr_cloud_read: handleCcrCloudRead,
   ccr_cloud_stop: handleCcrCloudStop,

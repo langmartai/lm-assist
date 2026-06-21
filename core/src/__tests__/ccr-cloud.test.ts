@@ -6,6 +6,8 @@ import {
   buildCreateBody,
   buildDriveEvent,
   parseTeleportTranscript,
+  parseGitHubRepo,
+  buildGitHubSource,
 } from '../terminal/ccr-cloud';
 
 test('cloudSessionWebUrl: maps sid to the claude.ai/code URL', () => {
@@ -20,17 +22,43 @@ test('isCloudSid: only session_… ids', () => {
   assert.equal(isCloudSid(undefined), false);
 });
 
-test('buildCreateBody: initial user turn is a wrapped event with seed + env + model', () => {
+test('buildCreateBody: bundle seed → seed_bundle_file_id, empty sources', () => {
   const b = buildCreateBody({ prompt: 'hello', model: 'claude-opus-4-8[1m]', seedFileId: 'file_x', environmentId: 'env_y', title: 'T' });
   assert.equal(b.title, 'T');
   assert.equal(b.environment_id, 'env_y');
-  assert.equal(b.session_context.seed_bundle_file_id, 'file_x');
-  assert.equal(b.session_context.model, 'claude-opus-4-8[1m]');
-  assert.equal(b.events.length, 1);
-  assert.equal(b.events[0].type, 'event');
-  assert.equal(b.events[0].data.type, 'user');
+  assert.equal((b.session_context as any).seed_bundle_file_id, 'file_x');
+  assert.deepEqual((b.session_context as any).sources, []);
+  assert.equal((b.session_context as any).model, 'claude-opus-4-8[1m]');
   assert.equal(b.events[0].data.message.content, 'hello');
   assert.equal(b.events[0].data.session_id, ''); // empty on create
+});
+
+test('buildCreateBody: github seed → sources set, no seed_bundle_file_id', () => {
+  const src = buildGitHubSource('https://github.com/o/r', 'main');
+  const b = buildCreateBody({ prompt: 'go', model: 'm', environmentId: 'env_y', sources: [src] });
+  assert.deepEqual((b.session_context as any).sources, [src]);
+  assert.equal('seed_bundle_file_id' in (b.session_context as any), false);
+});
+
+test('buildGitHubSource: git_repository with url + revision', () => {
+  assert.deepEqual(buildGitHubSource('https://github.com/o/r', 'dev'), { type: 'git_repository', url: 'https://github.com/o/r', revision: 'dev' });
+  assert.deepEqual(buildGitHubSource('https://github.com/o/r'), { type: 'git_repository', url: 'https://github.com/o/r' });
+});
+
+test('parseGitHubRepo: accepts owner/name, https, ssh, .git, trailing slash', () => {
+  const want = { slug: 'langmartai/lm-assist', url: 'https://github.com/langmartai/lm-assist' };
+  assert.deepEqual(parseGitHubRepo('langmartai/lm-assist'), want);
+  assert.deepEqual(parseGitHubRepo('https://github.com/langmartai/lm-assist'), want);
+  assert.deepEqual(parseGitHubRepo('https://github.com/langmartai/lm-assist.git'), want);
+  assert.deepEqual(parseGitHubRepo('git@github.com:langmartai/lm-assist.git'), want);
+  assert.deepEqual(parseGitHubRepo('github.com/langmartai/lm-assist/'), want);
+  assert.deepEqual(parseGitHubRepo('https://github.com/langmartai/lm-assist/tree/main'), want);
+});
+
+test('parseGitHubRepo: rejects junk', () => {
+  assert.equal(parseGitHubRepo(''), null);
+  assert.equal(parseGitHubRepo('not-a-repo'), null);
+  assert.equal(parseGitHubRepo(undefined as any), null);
 });
 
 test('buildDriveEvent: follow-up event is unwrapped and carries the sid', () => {

@@ -151,16 +151,25 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'POST',
       pattern: /^\/ccr\/cloud\/start$/,
       handler: async (req) => envelope(async () => {
-        const body = (req.body || {}) as { prompt?: unknown; cwd?: unknown; model?: unknown; title?: unknown };
+        const body = (req.body || {}) as { prompt?: unknown; repo?: unknown; branch?: unknown; cwd?: unknown; model?: unknown; title?: unknown };
         const prompt = typeof body.prompt === 'string' ? body.prompt : '';
         if (!prompt.trim()) throw new TerminalError('INVALID_INPUT', 'prompt is required');
         return await ccrCloud.cloudStart({
           prompt,
+          repo: typeof body.repo === 'string' ? body.repo : undefined,
+          branch: typeof body.branch === 'string' ? body.branch : undefined,
           cwd: typeof body.cwd === 'string' ? body.cwd : undefined,
           model: typeof body.model === 'string' ? body.model : undefined,
           title: typeof body.title === 'string' ? body.title : undefined,
         });
       }),
+    },
+
+    // GET /ccr/cloud/repos — the user's GitHub repos (for the seed picker), most-recent first
+    {
+      method: 'GET',
+      pattern: /^\/ccr\/cloud\/repos$/,
+      handler: async () => envelope(() => ({ repos: ccrCloud.listGitHubRepos() })),
     },
 
     // GET /ccr/cloud — list cloud sessions we created
