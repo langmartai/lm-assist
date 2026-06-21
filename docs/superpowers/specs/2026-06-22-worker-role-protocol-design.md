@@ -190,7 +190,29 @@ hosts; the `workers` dataset reads cross-node, keys per-node per the data-servic
 `send_session_message`/`get_message_status` (Way 2) · CCR read/drive + `post_turn_summary` (Way 1) ·
 the existing `tier === 'orchestrator'` notion and orchestrator-command plumbing · `TOOL_SCOPES`.
 
-## 10. Testing (TDD, pure-first)
+## 10. Tool & Endpoint Inventory (existing vs new)
+
+**Reused — verified present:** `getDataService()` (in-process data API, gated by `dataServiceEnabled`) ·
+`send_session_message`/`get_message_status` (Way 2) · `cc_sessions`/`ccr_cloud_read`/`post_turn_summary`
+(Way 1 read) · `ccr_connect`/`ccr_cloud_drive` (drive) · `mcp-session-resolver.identityHeader` (caller
+resolved by `claudecode/toolUseId` → `sessionId`) · `EXPANDED_TOOL_DEFS`/`EXPANDED_HANDLERS` →
+`LM_ASSIST_TOOL_DEFS` aggregation · `TOOL_SCOPES` + `assertScopesCoverTools()`.
+
+**New — to build:**
+
+| Layer | Artifact | Notes |
+|-------|----------|-------|
+| Store | `core/src/worker-role/worker-store.ts` | the `workers` record store keyed by `sessionId` + `~/.lm-assist/role.json` marker. Pure helpers (own files, testable): status-block format/parse, task-tree roll-up, orchestrator-liveness, gate FSM |
+| Routes | `core/src/routes/core/worker.routes.ts` | `POST /worker/role` (set_role) · `POST /worker/status` (report_status) · `GET /worker` (list) · `GET /worker/:sessionId` (read **+ stamp orchestrator `lastContact`**) · `POST /worker/:sessionId/gate` (decide_gate). Behind the standard worker `x-api-key` — **not** the data-access-key gate, so a worker self-reports with no key dance; cross-node reads ride the hub relay's injected token. Register in `routes/core/index.ts` |
+| MCP tools | `core/src/mcp-server/tools/worker-role.ts` | `set_role` · `report_status` · `worker_status` · `list_workers` · `decide_gate`, each proxying its route via `workerPost`/`workerGet`. Import `WORKER_ROLE_TOOL_DEFS`/`WORKER_ROLE_HANDLERS` into `expanded.ts` |
+| Scopes | `TOOL_SCOPES` (`configure.ts`) | `set_role`,`report_status` = `write` · `worker_status`,`list_workers` = `read` · `decide_gate` = `admin`. **MUST be added or Core crashes on the first `/mcp` call** |
+| Bootstrap | ROLE section in `mcp-session-resolver.identityHeader` | look up the worker record for the resolved `sessionId` → render the WORKER CONTRACT, or a one-line `set_role` hint when no role |
+| Guide | `guide("roles")` topic in `guide.ts` + the bootstrap `order` array | document the protocol through the connector (like `guide("install")`) |
+| Tests | `core/src/__tests__/worker-role.test.ts` + `guide.test.ts` update | per section 11 |
+
+All five MCP tools take the standard optional `node=` (workers/orchestrators may live on different hosts).
+
+## 11. Testing (TDD, pure-first)
 
 **Pure (unit):**
 - `⟦WORKER-STATUS⟧` formatter + parser round-trip (incl. the `gate:` line).
@@ -205,7 +227,7 @@ the existing `tier === 'orchestrator'` notion and orchestrator-command plumbing 
 flips a gate → worker reads `agreed`. Reuses the existing data-tools + `guide` test harness
 (`core/src/__tests__`, `node --test`).
 
-## 11. Out of scope (YAGNI)
+## 12. Out of scope (YAGNI)
 
 - No orchestrator dashboard/UI; no scheduling/queueing of workers.
 - No multi-role sessions (exactly one active role).
