@@ -1,0 +1,216 @@
+'use client';
+
+import { useState, useEffect, useCallback } from 'react';
+import {
+  MonitorPlay, RefreshCw, Loader2, Eye, Radio, Cast, Square, ExternalLink, X, AlertTriangle,
+} from 'lucide-react';
+import { useAppMode } from '@/contexts/AppModeContext';
+
+type Mode = 'load' | 'mirror' | 'connect';
+
+interface Verdict {
+  live: boolean;
+  allowedModes: Mode[];
+  connectStrategy: 'attach-existing' | 'create-tmux' | 'refuse' | 'none';
+  safeToCreateTmux: boolean;
+  reason?: string;
+}
+interface CcSession {
+  sessionId: string;
+  jsonl?: string;
+  owner?: { cwd?: string; status?: string; kind?: string } | null;
+  inTmux?: boolean;
+  tmuxSession?: string;
+  driveable?: boolean;
+  verdict?: Verdict;
+}
+interface Remote {
+  id: string;
+  mode: 'load' | 'mirror' | 'connected';
+  sessionId: string | null;
+  webUrl: string | null;
+  live?: boolean;
+  strategy?: string;
+}
+
+const short = (id: string | null | undefined) => (id ? id.slice(0, 8) : '—');
+const base = (p?: string) => (p ? p.split('/').filter(Boolean).pop() || p : '');
+
+const MODE_META: Record<Mode, { label: string; icon: typeof Eye; hint: string }> = {
+  load: { label: 'Load', icon: Eye, hint: 'Read-only replay into claude.ai/code (safe, any session)' },
+  mirror: { label: 'Mirror', icon: Radio, hint: 'One-way live view of a running session' },
+  connect: { label: 'Connect', icon: Cast, hint: 'Two-way control — drive it from claude.ai/code' },
+};
+
+export function CcrPage() {
+  const { apiClient, proxy } = useAppMode();
+  const apiFetch = useCallback(
+    async <T,>(path: string, opts?: { method?: string; body?: unknown }): Promise<T> =>
+      apiClient.fetchPath<T>(path, { method: opts?.method, body: opts?.body, machineId: proxy.machineId || undefined }),
+    [apiClient, proxy.machineId],
+  );
+
+  const [remotes, setRemotes] = useState<Remote[]>([]);
+  const [sessions, setSessions] = useState<CcSession[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+  const [confirmConnect, setConfirmConnect] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  const setBusyFor = (k: string, on: boolean) => setBusy((p) => { const n = new Set(p); on ? n.add(k) : n.delete(k); return n; });
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const [r, s] = await Promise.all([
+        apiFetch<{ remotes: Remote[] }>('/ccr/remote').catch(() => ({ remotes: [] })),
+        apiFetch<CcSession[] | { sessions: CcSession[] }>('/terminal/cc-sessions').catch(() => [] as CcSession[]),
+      ]);
+      setRemotes(r.remotes || []);
+      setSessions(Array.isArray(s) ? s : (s.sessions || []));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally { setLoading(false); }
+  }, [apiFetch]);
+
+  useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  const startMode = useCallback(async (sid: string, mode: Mode) => {
+    setBusyFor(sid, true); setError(null); setConfirmConnect(null);
+    try {
+      await apiFetch<Remote>(`/ccr/${mode}`, { method: 'POST', body: { sessionId: sid } });
+      await fetchAll();
+    } catch (e) {
+      setError(`${mode} failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally { setBusyFor(sid, false); }
+  }, [apiFetch, fetchAll]);
+
+  const stop = useCallback(async (id: string) => {
+    setBusyFor(id, true); setError(null);
+    try { await apiFetch(`/ccr/remote/${encodeURIComponent(id)}/stop`, { method: 'POST', body: {} }); await fetchAll(); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusyFor(id, false); }
+  }, [apiFetch, fetchAll]);
+
+  const sorted = [...sessions].sort((a, b) => Number(!!b.verdict?.live) - Number(!!a.verdict?.live));
+  const shown = showAll ? sorted : sorted.filter((s) => s.verdict?.live || s.driveable).slice(0, 12);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', background: 'var(--color-bg-root)' }}>
+      <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border-default)', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <MonitorPlay size={20} style={{ color: 'var(--color-accent)' }} />
+        <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>CCR — Remote Control</div>
+        <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>view or drive a Claude Code session from claude.ai/code</span>
+        <div style={{ flex: 1 }} />
+        <button className="btn btn-ghost btn-sm" onClick={fetchAll} disabled={loading} title="Refresh">
+          <RefreshCw size={14} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} />
+        </button>
+      </div>
+
+      {error && (
+        <div style={{ margin: '12px 20px 0', padding: '8px 12px', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', color: 'var(--color-status-red)', fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ flex: 1 }}>{error}</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => setError(null)}><X size={12} /></button>
+        </div>
+      )}
+
+      <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
+        {/* Active remotes */}
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 8 }}>
+          Active remotes {remotes.length ? `(${remotes.length})` : ''}
+        </div>
+        {remotes.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', marginBottom: 18 }}>No active CCR bridges. Start one from a session below.</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
+            {remotes.map((r) => {
+              const isBusy = busy.has(r.id);
+              return (
+                <div key={r.id} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, flexWrap: 'wrap' }}>
+                  <span className={`badge ${r.mode === 'connected' ? 'badge-red' : r.mode === 'mirror' ? 'badge-blue' : 'badge-green'}`}>{r.mode}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--color-text-tertiary)' }}>{short(r.sessionId)}</span>
+                  {r.live === false && <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>(bridge idle)</span>}
+                  <div style={{ flex: 1 }} />
+                  {r.webUrl && <a className="btn btn-ghost btn-sm" href={r.webUrl} target="_blank" rel="noreferrer"><ExternalLink size={13} /> Open</a>}
+                  <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => stop(r.id)} title="Stop bridge">
+                    {isBusy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <><Square size={12} /> Stop</>}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Sessions */}
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>Claude Code sessions</div>
+          <div style={{ flex: 1 }} />
+          <button className="btn btn-ghost btn-sm" onClick={() => setShowAll((v) => !v)}>{showAll ? 'live only' : `show all (${sessions.length})`}</button>
+        </div>
+
+        {loading ? (
+          <div className="empty-state"><Loader2 size={24} style={{ animation: 'spin 1s linear infinite' }} /><span style={{ fontSize: 12 }}>Loading…</span></div>
+        ) : shown.length === 0 ? (
+          <div className="empty-state"><MonitorPlay size={32} className="empty-state-icon" /><div>No sessions</div></div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {shown.map((s) => {
+              const v = s.verdict;
+              const isBusy = busy.has(s.sessionId);
+              const allowed = (m: Mode) => v?.allowedModes?.includes(m);
+              const refuse = v?.connectStrategy === 'refuse';
+              return (
+                <div key={s.sessionId} className="card" style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>{base(s.owner?.cwd) || base(s.jsonl) || 'session'}</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--color-text-tertiary)' }}>{short(s.sessionId)}</span>
+                    {v?.live ? <span className="badge badge-green">{s.owner?.status || 'live'}</span> : <span className="badge badge-default">finished</span>}
+                    {s.inTmux && <span className="badge badge-outline">tmux</span>}
+                    {v?.connectStrategy && v.connectStrategy !== 'none' && (
+                      <span className="badge badge-outline" title={v.reason}>{v.connectStrategy}</span>
+                    )}
+                    {isBusy && <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', color: 'var(--color-text-tertiary)' }} />}
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    {(['load', 'mirror'] as Mode[]).map((m) => {
+                      const M = MODE_META[m]; const Icon = M.icon; const can = allowed(m);
+                      return (
+                        <button key={m} className="btn btn-ghost btn-sm" disabled={isBusy || !can} title={can ? M.hint : `not available (${m})`} onClick={() => startMode(s.sessionId, m)}>
+                          <Icon size={13} /> {M.label}
+                        </button>
+                      );
+                    })}
+                    {/* Connect — two-way, confirm-gated; respects the refuse verdict */}
+                    {allowed('connect') && (
+                      confirmConnect === s.sessionId ? (
+                        <>
+                          <button className="btn btn-destructive btn-sm" disabled={isBusy} onClick={() => startMode(s.sessionId, 'connect')}>
+                            Confirm connect ({v?.connectStrategy})
+                          </button>
+                          <button className="btn btn-ghost btn-sm" onClick={() => setConfirmConnect(null)}>Cancel</button>
+                        </>
+                      ) : (
+                        <button className="btn btn-ghost btn-sm" disabled={isBusy} title={MODE_META.connect.hint} onClick={() => setConfirmConnect(s.sessionId)}>
+                          <Cast size={13} /> Connect
+                        </button>
+                      )
+                    )}
+                    {refuse && <span style={{ fontSize: 11, color: 'var(--color-status-orange)', display: 'flex', alignItems: 'center', gap: 4 }}><AlertTriangle size={12} /> connect refused — a live process owns it; load/mirror instead</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div style={{ marginTop: 16, fontSize: 11, color: 'var(--color-text-tertiary)', lineHeight: 1.6 }}>
+          <strong>Load</strong> = read-only replay (safe, any session). <strong>Mirror</strong> = one-way live view of a running
+          session. <strong>Connect</strong> = two-way control — it attaches an existing tmux, or spawns a fresh
+          <code> claude --resume</code> tmux only when no live process owns the session; it refuses otherwise to avoid
+          corrupting the append-only transcript. Each opens a <code>claude.ai/code</code> URL above.
+        </div>
+      </div>
+    </div>
+  );
+}
