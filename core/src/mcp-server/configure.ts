@@ -238,6 +238,12 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   data_revoke_key: 'write',
   data_sync: 'write',
   data_sync_status: 'read',
+  // worker role
+  set_role: 'write',
+  report_status: 'write',
+  worker_status: 'read',
+  list_workers: 'read',
+  decide_gate: 'admin',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */

@@ -48,6 +48,7 @@ import { REFRESH_CONNECTOR_TOOL_DEFS, REFRESH_CONNECTOR_HANDLERS } from './refre
 import { SCHEDULER_TOOL_DEFS, SCHEDULER_HANDLERS } from './scheduler';
 import { GUIDE_TOOL_DEFS, GUIDE_HANDLERS } from './guide';
 import { SESSION_STATUS_TOOL_DEFS, SESSION_STATUS_HANDLERS } from '../mcp-session-resolver';
+import { WORKER_ROLE_TOOL_DEFS, WORKER_ROLE_HANDLERS } from './worker-role';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -879,6 +880,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...SCHEDULER_TOOL_DEFS,
   ...GUIDE_TOOL_DEFS,
   ...SESSION_STATUS_TOOL_DEFS,
+  // worker role — set_role / report_status / worker_status / list_workers / decide_gate
+  ...WORKER_ROLE_TOOL_DEFS,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -1591,4 +1594,6 @@ export const EXPANDED_HANDLERS: Record<
   ...SCHEDULER_HANDLERS,
   ...GUIDE_HANDLERS,
   ...SESSION_STATUS_HANDLERS,
+  // worker role
+  ...WORKER_ROLE_HANDLERS,
 };

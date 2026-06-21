@@ -105,3 +105,18 @@ test('routes: POST /worker/:sessionId/gate when the task has no open gate → PR
   assert.equal((res as any).success, false);
   assert.equal(errOf(res), 'PRECONDITION_FAILED');
 });
+
+// ── Task 8: MCP tool + scope coverage ───────────────────────────────────────
+import { TOOL_SCOPES } from '../mcp-server/configure';
+import { WORKER_ROLE_TOOL_DEFS } from '../mcp-server/tools/worker-role';
+
+test('every worker-role tool has a TOOL_SCOPES entry (else Core crashes on /mcp)', () => {
+  for (const def of WORKER_ROLE_TOOL_DEFS) {
+    assert.ok(def.name in TOOL_SCOPES, `${def.name} missing from TOOL_SCOPES`);
+  }
+});
+
+test('worker-role advertises the five tools', () => {
+  const names = WORKER_ROLE_TOOL_DEFS.map((d) => d.name).sort();
+  assert.deepEqual(names, ['decide_gate', 'list_workers', 'report_status', 'set_role', 'worker_status']);
+});
