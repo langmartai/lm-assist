@@ -139,3 +139,25 @@ test('renderRoleSection: no record → a one-line set_role hint, no guessing', (
   assert.match(s, /set_role/);
   assert.doesNotMatch(s, /You are a WORKER/);
 });
+
+// ── Task 11: End-to-end integration test ────────────────────────────────────
+import { liveness as live2 } from '../worker-role/model';
+
+test('e2e: self-directed worker (orchestrator none) then an orchestrator attaches and agrees a gate', async () => {
+  // 1) manual mode: worker self-assigns, orchestrator none
+  const set = await call('POST', '/worker/role', { sessionId: 'e2e', task: { title: 'ship', group: 'Phase 1' } });
+  const taskId = (set as any).data.tasks[0].id;
+  assert.equal(live2((set as any).data.orchestrator, Date.now()), 'none');
+
+  // 2) worker raises an agree-gate and stops
+  await call('POST', '/worker/status', { sessionId: 'e2e', taskId, status: 'need_approval', reason: 'prod deploy?' });
+
+  // 3) an orchestrator reads it → becomes active
+  const read = await (async () => { const { r, params } = find('GET', '/worker/e2e'); return r.handler({ params, query: { orchestrator: 'orch-e2e' }, body: undefined } as any, {} as any); })();
+  assert.equal((read as any).data.orchestratorLiveness, 'active');
+
+  // 4) orchestrator agrees the gate → task unblocks
+  const decided = await call('POST', '/worker/e2e/gate', { taskId, decision: 'agree', by: 'orch-e2e' });
+  assert.equal((decided as any).data.tasks[0].gate.state, 'agreed');
+  assert.equal((decided as any).data.tasks[0].status, 'working');
+});
