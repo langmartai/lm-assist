@@ -42,6 +42,12 @@ interface CloudSession {
   webUrl: string;
   createdAt: string;
 }
+interface RepoProject {
+  path: string;
+  isGitProject?: boolean;
+  lastActivity?: string;
+  sessionCount?: number;
+}
 
 const short = (id: string | null | undefined) => (id ? id.slice(0, 8) : '—');
 const base = (p?: string) => (p ? p.split('/').filter(Boolean).pop() || p : '');
@@ -105,6 +111,7 @@ export function CcrPage() {
   const [cloudViewing, setCloudViewing] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [cloudErr, setCloudErr] = useState<string | null>(null);
+  const [repos, setRepos] = useState<RepoProject[]>([]);
   const setBusyFor = (k: string, on: boolean) => setBusy((p) => { const n = new Set(p); on ? n.add(k) : n.delete(k); return n; });
   const copyUrl = useCallback(async (url: string) => {
     try { await navigator.clipboard.writeText(url); setCopied(url); setTimeout(() => setCopied((c) => (c === url ? null : c)), 1500); } catch { /* clipboard blocked */ }
@@ -113,14 +120,18 @@ export function CcrPage() {
   const fetchAll = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [r, s, c] = await Promise.all([
+      const [r, s, c, p] = await Promise.all([
         apiFetch<{ remotes: Remote[] }>('/ccr/remote').catch(() => ({ remotes: [] })),
         apiFetch<CcSession[] | { sessions: CcSession[] }>('/terminal/cc-sessions').catch(() => [] as CcSession[]),
         apiFetch<{ sessions: CloudSession[] }>('/ccr/cloud').catch(() => ({ sessions: [] })),
+        apiFetch<{ projects: RepoProject[] }>('/projects').catch(() => ({ projects: [] })),
       ]);
       setRemotes(r.remotes || []);
       setSessions(Array.isArray(s) ? s : (s.sessions || []));
       setCloudSessions(c.sessions || []);
+      setRepos((p.projects || [])
+        .filter((x) => x.isGitProject)
+        .sort((a, b) => (a.lastActivity || '') < (b.lastActivity || '') ? 1 : -1));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally { setLoading(false); }
@@ -251,8 +262,13 @@ export function CcrPage() {
             style={{ resize: 'none', fontSize: 12.5 }} onChange={(e) => setCloudPrompt(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); startCloud(); } }} />
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <input className="input" value={cloudCwd} placeholder="optional: local git repo to seed (uploads committed HEAD, ≤50 MiB)"
-              style={{ flex: 1, minWidth: 220, fontSize: 12 }} onChange={(e) => setCloudCwd(e.target.value)} />
+            <select className="input" value={cloudCwd} onChange={(e) => setCloudCwd(e.target.value)}
+              style={{ flex: 1, minWidth: 220, fontSize: 12 }} title="Seed the cloud container with a git repo (uploads its committed HEAD, ≤50 MiB), or run on an empty scratch workspace">
+              <option value="">— no repo (empty scratch workspace) —</option>
+              {repos.map((r) => (
+                <option key={r.path} value={r.path}>{base(r.path)} — {r.path}</option>
+              ))}
+            </select>
             <button className="btn btn-primary btn-sm" disabled={starting || !cloudPrompt.trim()} onClick={startCloud} title="Boot a cloud-run claude (spends cloud quota)">
               {starting ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Starting…</> : <><Cloud size={13} /> Start cloud</>}
             </button>
