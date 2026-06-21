@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Scheduler — the built-in auto-delete job is now TTL-VERIFIED-only by design (2026-06-21)
+
+The built-in `cleanup-test-conversations` (auto-delete) job now manages **only the verified auto-delete list** —
+conversations carrying a valid, EXPIRED `[lm-autodel:…]` TTL marker (a TTL the operator explicitly set). Its
+handler **ignores name patterns and explicit ids entirely**, so an armed/scheduled run can never delete a
+conversation that wasn't itself marked for auto-deletion. (Curated id/pattern deletes belong to a separate
+`shell` job that calls `/claude-ai/conversations/cleanup-test` directly.) Renamed to "Auto-delete expired
+conversations"; seed config drops ids/patterns/olderThanHours (unit-tested: the built-in seeds with no
+patterns/ids). This makes the job safe to keep armed for a daily sweep.
+
 ### Scheduler — one-time jobs + MCP scheduling modes (one-time / recurring / trigger; dry/real/test) (2026-06-21)
 
 - **One-time jobs** — `config.runAt` (ISO) makes a job run ONCE at/after that time, then complete (`isJobDue`
