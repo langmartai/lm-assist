@@ -26,6 +26,38 @@ export function decideGate(task: Task, decision: 'agree' | 'reject', by: string,
   return { ...task, gate, status };
 }
 
+import type { WorkerRecord } from './types';
+
+export interface SetRoleInput { task?: { id?: string; title: string; group?: string; parentId?: string }; orchestrator?: string; }
+export interface ReportInput { taskId: string; status?: Task['status']; progress?: string; detail?: string; reason?: string; }
+
+/** Set/replace the active role and (optionally) append a worker-OWNED task. One active role only. */
+export function applySetRole(prev: WorkerRecord | null, sessionId: string, input: SetRoleInput, now: number, genId: () => string): WorkerRecord {
+  const rec: WorkerRecord = prev && prev.sessionId === sessionId
+    ? { ...prev, role: 'worker', updatedAt: now }
+    : { sessionId, role: 'worker', tasks: [], orchestrator: {}, updatedAt: now };
+  rec.tasks = [...rec.tasks];
+  if (input.orchestrator) rec.orchestrator = { ...rec.orchestrator, id: input.orchestrator };
+  if (input.task) {
+    rec.tasks.push({ id: input.task.id ?? genId(), title: input.task.title, group: input.task.group, parentId: input.task.parentId, status: 'todo' });
+  }
+  return rec;
+}
+
+/** Apply a worker's status report to one of its tasks. status=need_approval opens a gate. */
+export function applyReportStatus(prev: WorkerRecord, input: ReportInput, now: number): WorkerRecord {
+  const tasks = prev.tasks.map((t) => {
+    if (t.id !== input.taskId) return t;
+    const next: Task = { ...t };
+    if (input.status) next.status = input.status;
+    if (input.progress !== undefined) next.progress = input.progress;
+    if (input.detail !== undefined) next.detail = input.detail;
+    if (input.status === 'need_approval') next.gate = { state: 'open', reason: input.reason ?? 'approval required', requestedAt: now };
+    return next;
+  });
+  return { ...prev, tasks, updatedAt: now };
+}
+
 /** Derive each parent's status from its direct children (leaves keep their own status). */
 export function rollUp(tasks: Task[]): Task[] {
   const childrenOf = new Map<string, Task[]>();

@@ -86,3 +86,33 @@ test('rollUp: leaves (no children) are unchanged', () => {
   const tasks: Task[] = [{ id: 'a', title: 'a', status: 'blocked' }];
   assert.deepEqual(rollUp(tasks), tasks);
 });
+
+import { applySetRole, applyReportStatus } from '../worker-role/model';
+import type { WorkerRecord } from '../worker-role/types';
+
+test('applySetRole: creates a worker record with a worker-owned task (auto-id)', () => {
+  const rec = applySetRole(null, 'sess-1', { task: { title: 'do X' }, orchestrator: 'orch-9' }, 1000, () => 'task-aaa');
+  assert.equal(rec.role, 'worker');
+  assert.equal(rec.sessionId, 'sess-1');
+  assert.equal(rec.tasks.length, 1);
+  assert.equal(rec.tasks[0].id, 'task-aaa');
+  assert.equal(rec.tasks[0].status, 'todo');
+  assert.equal(rec.orchestrator.id, 'orch-9');
+});
+
+test('applySetRole: a second call appends a task, keeps ONE active role', () => {
+  const r1 = applySetRole(null, 'sess-1', { task: { title: 'first' } }, 1000, () => 'task-1');
+  const r2 = applySetRole(r1, 'sess-1', { task: { title: 'second' } }, 2000, () => 'task-2');
+  assert.equal(r2.tasks.length, 2);
+  assert.equal(r2.role, 'worker');
+});
+
+test('applyReportStatus: updates a task status; need_approval opens a gate', () => {
+  const r1 = applySetRole(null, 'sess-1', { task: { title: 'deploy' } }, 1000, () => 'task-1');
+  const r2 = applyReportStatus(r1, { taskId: 'task-1', status: 'need_approval', reason: 'prod?' }, 3000);
+  const t = r2.tasks[0];
+  assert.equal(t.status, 'need_approval');
+  assert.equal(t.gate?.state, 'open');
+  assert.equal(t.gate?.reason, 'prod?');
+  assert.equal(r2.updatedAt, 3000);
+});
