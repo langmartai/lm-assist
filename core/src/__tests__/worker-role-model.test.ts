@@ -35,3 +35,29 @@ test('liveness: none when no id, active within window, inactive when stale', () 
   assert.equal(liveness({ id: 'o1', lastContact: now - 1000 }, now, WIN), 'active');
   assert.equal(liveness({ id: 'o1', lastContact: now - WIN - 1 }, now, WIN), 'inactive');
 });
+
+import { decideGate, canProceed } from '../worker-role/model';
+import type { Task } from '../worker-role/types';
+
+test('gate: canProceed true when no gate or agreed; false when open', () => {
+  const base: Task = { id: 't1', title: 'x', status: 'working' };
+  assert.equal(canProceed(base), true);
+  assert.equal(canProceed({ ...base, status: 'need_approval', gate: { state: 'open', reason: 'r', requestedAt: 1 } }), false);
+  assert.equal(canProceed({ ...base, gate: { state: 'agreed', reason: 'r', requestedAt: 1 } }), true);
+  assert.equal(canProceed({ ...base, gate: { state: 'rejected', reason: 'r', requestedAt: 1 } }), false);
+});
+
+test('gate: decideGate flips an open gate and stamps the decider', () => {
+  const t: Task = { id: 't1', title: 'x', status: 'need_approval', gate: { state: 'open', reason: 'deploy?', requestedAt: 1 } };
+  const agreed = decideGate(t, 'agree', 'orch-1', 'go ahead', 2000);
+  assert.equal(agreed.gate?.state, 'agreed');
+  assert.equal(agreed.gate?.decidedBy, 'orch-1');
+  assert.equal(agreed.gate?.decidedAt, 2000);
+  assert.equal(agreed.gate?.note, 'go ahead');
+  assert.equal(agreed.status, 'working');                       // agreeing unblocks the task
+});
+
+test('gate: decideGate throws when there is no open gate', () => {
+  const t: Task = { id: 't1', title: 'x', status: 'working' };
+  assert.throws(() => decideGate(t, 'agree', 'o', undefined, 1), /no open gate/i);
+});
