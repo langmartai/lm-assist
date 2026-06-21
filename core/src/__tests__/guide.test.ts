@@ -132,3 +132,32 @@ test('the tool is advertised read-only with a topic param', () => {
   assert.equal((def as any).annotations.readOnlyHint, true);
   assert.ok((def as any).inputSchema.properties.topic, 'has a topic param');
 });
+
+// The `install` topic teaches a connector-only host (e.g. a fresh cloud/CCR container with NO
+// local lm-assist) how to install + build from the repo. It only reaches such a session if it
+// rides along in the bootstrap payload — i.e. it MUST be in buildBootstrap()'s `order` array
+// (an easy-to-forget invariant). These lock that wiring + the verified gotchas.
+test('bootstrap loads the install topic (no-install host learns to install from repo)', async () => {
+  const t = (await GUIDE_HANDLERS.bootstrap({})).content[0].text as string;
+  assert.match(t, /install & build lm-assist FROM THE REPO/);
+  assert.match(t, /npm install --ignore-scripts/); // the dev install gotcha
+  assert.match(t, /npm pack/);                      // the prod build path
+});
+
+test('install guide gives the dev + prod from-repo playbook', async () => {
+  const t = await text({ topic: 'install' });
+  assert.match(t, /DEV \(repo ports/);
+  assert.match(t, /PROD \(CLI ports/);
+  assert.match(t, /runningFrom":"dev-repo/);
+  assert.match(t, /lm-assist upgrade --from/);      // the local-tgz-vs-npm caveat
+});
+
+test('install synonyms resolve (build, setup, from-repo, not-installed)', async () => {
+  for (const syn of ['build', 'setup', 'from-repo', 'not-installed', 'prod-run']) {
+    assert.match(await text({ topic: syn }), /install & build lm-assist FROM THE REPO/, `${syn} → install`);
+  }
+});
+
+test('index lists the install topic', async () => {
+  assert.match(await text({}), /`install`/);
+});

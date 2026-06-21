@@ -630,6 +630,45 @@ Where `<npm-root>` = e.g. `~/.nvm/versions/node/v20.19.6/lib/node_modules` and `
 
 Log file: `~/.cache/lm-assist/upgrade.log`
 
+### Bootstrapping from the repo on a fresh host (dev + prod)
+
+Verified end-to-end in a clean cloud **CCR** container (Node 22). This is the same procedure the MCP ships through `guide(topic="install")` / `bootstrap` (see `core/src/mcp-server/tools/guide.ts`) so a connector-only host with **no local lm-assist** can self-install. It's an npm **workspace** monorepo (`core` = Node API, `web` = Next.js 16). Requires **Node ≥ 20.9** (the Next 16 web build fails on 18). **Run every `npm` command from the repo ROOT** — workspaces hoist deps; installing inside `core/` or `web/` nests a `node_modules` that shadows the hoist (e.g. the wrong chokidar then resolves from `core/dist`).
+
+**Dev (repo ports — API :3200, Web :3948), from the repo root:**
+```bash
+npm install --ignore-scripts          # plain `npm install` DIES on onnxruntime-node's native postinstall
+                                       # (transitive via @huggingface/transformers / @lancedb):
+                                       # "Cannot find module .../global-agent/.../index.js"
+node -e "require('chokidar');console.log(require('chokidar/package.json').version)"   # must print 3.6.0, no throw
+./core.sh build                        # core TS -> core/dist
+./core.sh start                        # Core :3200, then builds + starts Web :3948
+curl -s localhost:3200/health          # -> "runningFrom":"dev-repo"
+curl -so /dev/null -w '%{http_code}\n' localhost:3948   # -> 307 (= up; see gotcha #3)
+```
+
+**Prod (CLI ports — API :3100, Web :3848), also from the repo root:**
+```bash
+npm pack                               # the `prepare` script builds core+web -> lm-assist-<ver>.tgz (~28 MB)
+npm install -g ./lm-assist-*.tgz       # installs the `lm-assist` CLI + compiles native better-sqlite3 (~46s)
+                                       # (CLI already there? -> lm-assist upgrade --from ./lm-assist-*.tgz)
+lm-assist start                        # Core :3100 + Web :3848
+curl -s localhost:3100/health          # -> "runningFrom":"npm"
+```
+
+Dev + prod run **simultaneously** — separate port spaces (3200/3948 vs 3100/3848), no conflict (`./core.sh status` shows both).
+
+**Gotchas (verified in the container):**
+
+| # | Gotcha | Symptom | Fix |
+|---|--------|---------|-----|
+| 1 | `onnxruntime-node` native postinstall (transitive via `@huggingface/transformers` / `@lancedb`) | `npm install` dies: `Cannot find module .../global-agent/.../index.js` | **dev:** `npm install --ignore-scripts`. **prod** (`npm install -g ./tgz`) does NOT need it — the prod-only dep tree installs clean. |
+| 2 | `--ignore-scripts` skips the better-sqlite3 native build | `better-sqlite3/build/Release/better_sqlite3.node` absent | Core still boots healthy (sqlite is lazy / worker-thread loaded); only matters if you use the SQL data backend. The prod global-install compiles it anyway. |
+| 3 | `./core.sh` web "Failed to start" / "Not Running" | the probe wants 200 on `/`, but the app **307-redirects** `/` → `/sessions` | False negative — ignore it; `curl :3948` → 307 means it's up. |
+| 4 | chokidar must be `^3.6.0` (see the pin section above) | v4/v5 are ESM-only → `ERR_REQUIRE_ESM` → Core never binds :3200/:3100 | the repo + its `npm pack` tgz carry the pin (safe). Only `npm install -g lm-assist@latest` from the registry re-breaks it. |
+| 5 | `lm-assist upgrade` (no flag) reinstalls from npm | overwrites a local-tgz / source build with npm `latest` (possibly older / chokidar-broken) | use `lm-assist upgrade --from ./<tgz>` to keep your source build. |
+
+The hub is a **separate, user-confirmed step**: bootstrapping writes no hub credentials and connects to nothing — `lm-assist setup --key <KEY>` runs only on explicit user instruction (both Core instances report Hub Client *Not configured* until then, and the local services still work).
+
 ### Key Types
 
 ```typescript
