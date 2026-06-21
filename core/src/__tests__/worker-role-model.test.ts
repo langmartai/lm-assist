@@ -36,6 +36,12 @@ test('liveness: none when no id, active within window, inactive when stale', () 
   assert.equal(liveness({ id: 'o1', lastContact: now - WIN - 1 }, now, WIN), 'inactive');
 });
 
+test('liveness: exactly at the window boundary is still active', () => {
+  const now = 1_000_000_000_000;
+  const WIN = 5 * 60_000;
+  assert.equal(liveness({ id: 'o1', lastContact: now - WIN }, now, WIN), 'active');
+});
+
 import { decideGate, canProceed } from '../worker-role/model';
 import type { Task } from '../worker-role/types';
 
@@ -55,6 +61,13 @@ test('gate: decideGate flips an open gate and stamps the decider', () => {
   assert.equal(agreed.gate?.decidedAt, 2000);
   assert.equal(agreed.gate?.note, 'go ahead');
   assert.equal(agreed.status, 'working');                       // agreeing unblocks the task
+});
+
+test('gate: decideGate reject halts the task and omits note when not given', () => {
+  const t: Task = { id: 't1', title: 'x', status: 'need_approval', gate: { state: 'open', reason: 'deploy?', requestedAt: 1 } };
+  const rejected = decideGate(t, 'reject', 'orch-1', undefined, 2000);
+  assert.equal(rejected.status, 'blocked');
+  assert.deepEqual(rejected.gate, { state: 'rejected', reason: 'deploy?', requestedAt: 1, decidedBy: 'orch-1', decidedAt: 2000 });
 });
 
 test('gate: decideGate throws when there is no open gate', () => {
@@ -87,6 +100,17 @@ test('rollUp: leaves (no children) are unchanged', () => {
   assert.deepEqual(rollUp(tasks), tasks);
 });
 
+test('rollUp: propagates through multi-level trees (grandparent → parent → child)', () => {
+  const tasks: Task[] = [
+    { id: 'gp', title: 'grandparent', status: 'todo' },
+    { id: 'p', title: 'parent', parentId: 'gp', status: 'todo' },
+    { id: 'c', title: 'child', parentId: 'p', status: 'working' },
+  ];
+  const rolled = rollUp(tasks);
+  assert.equal(rolled.find((t) => t.id === 'p')!.status, 'working');
+  assert.equal(rolled.find((t) => t.id === 'gp')!.status, 'working');
+});
+
 import { applySetRole, applyReportStatus } from '../worker-role/model';
 import type { WorkerRecord } from '../worker-role/types';
 
@@ -115,4 +139,12 @@ test('applyReportStatus: updates a task status; need_approval opens a gate', () 
   assert.equal(t.gate?.state, 'open');
   assert.equal(t.gate?.reason, 'prod?');
   assert.equal(r2.updatedAt, 3000);
+});
+
+test('applyReportStatus: a non-need_approval status updates the task without a gate', () => {
+  const r1 = applySetRole(null, 'sess-1', { task: { title: 'deploy' } }, 1000, () => 'task-1');
+  const r2 = applyReportStatus(r1, { taskId: 'task-1', status: 'done' }, 3000);
+  const t = r2.tasks[0];
+  assert.equal(t.status, 'done');
+  assert.equal(t.gate, undefined);
 });

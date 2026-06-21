@@ -46,3 +46,9 @@ export interface StatusLine {
   next?: string;
   gate?: string;                  // reason; present when status === 'need_approval'
 }
+
+/** Input to `applySetRole`: take/update the worker role and optionally append a worker-owned task. */
+export interface SetRoleInput { task?: { id?: string; title: string; group?: string; parentId?: string }; orchestrator?: string; }
+
+/** Input to `applyReportStatus`: a worker's progress report on one of its own tasks. */
+export interface ReportInput { taskId: string; status?: TaskStatus; progress?: string; detail?: string; reason?: string; }

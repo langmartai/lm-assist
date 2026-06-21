@@ -1,5 +1,12 @@
 // core/src/worker-role/model.ts
-import type { OrchestratorRef, OrchestratorLiveness } from './types';
+import type {
+  OrchestratorRef,
+  OrchestratorLiveness,
+  Task,
+  WorkerRecord,
+  SetRoleInput,
+  ReportInput,
+} from './types';
 
 export const ORCHESTRATOR_WINDOW_MS = 5 * 60_000;
 
@@ -8,8 +15,6 @@ export function liveness(orch: OrchestratorRef, now: number, windowMs = ORCHESTR
   if (typeof orch.lastContact !== 'number') return 'inactive';
   return now - orch.lastContact <= windowMs ? 'active' : 'inactive';
 }
-
-import type { Task } from './types';
 
 /** A worker may proceed past a task only when it has no gate, or its gate is agreed. */
 export function canProceed(task: Task): boolean {
@@ -21,15 +26,10 @@ export function canProceed(task: Task): boolean {
 export function decideGate(task: Task, decision: 'agree' | 'reject', by: string, note: string | undefined, now: number): Task {
   if (!task.gate || task.gate.state !== 'open') throw new Error('no open gate to decide');
   const state = decision === 'agree' ? 'agreed' : 'rejected';
-  const gate = { ...task.gate, state: state as 'agreed' | 'rejected', decidedBy: by, decidedAt: now, note };
+  const gate = { ...task.gate, state: state as 'agreed' | 'rejected', decidedBy: by, decidedAt: now, ...(note !== undefined && { note }) };
   const status: Task['status'] = decision === 'agree' ? 'working' : 'blocked';
   return { ...task, gate, status };
 }
-
-import type { WorkerRecord } from './types';
-
-export interface SetRoleInput { task?: { id?: string; title: string; group?: string; parentId?: string }; orchestrator?: string; }
-export interface ReportInput { taskId: string; status?: Task['status']; progress?: string; detail?: string; reason?: string; }
 
 /** Set/replace the active role and (optionally) append a worker-OWNED task. One active role only. */
 export function applySetRole(prev: WorkerRecord | null, sessionId: string, input: SetRoleInput, now: number, genId: () => string): WorkerRecord {
@@ -58,16 +58,12 @@ export function applyReportStatus(prev: WorkerRecord, input: ReportInput, now: n
   return { ...prev, tasks, updatedAt: now };
 }
 
-/** Derive each parent's status from its direct children (leaves keep their own status). */
+/**
+ * Derive each parent's status from its direct children (leaves keep their own status).
+ * Iterates the single-pass derivation to a fixpoint so arbitrary-depth trees
+ * (grandparent → parent → child) propagate fully.
+ */
 export function rollUp(tasks: Task[]): Task[] {
-  const childrenOf = new Map<string, Task[]>();
-  for (const t of tasks) {
-    if (t.parentId) {
-      const arr = childrenOf.get(t.parentId) ?? [];
-      arr.push(t);
-      childrenOf.set(t.parentId, arr);
-    }
-  }
   const derive = (kids: Task[]): Task['status'] => {
     if (kids.some((k) => k.status === 'working' || k.status === 'need_approval')) return 'working';
     if (kids.some((k) => k.status === 'blocked')) return 'blocked';
@@ -75,8 +71,26 @@ export function rollUp(tasks: Task[]): Task[] {
     if (kids.some((k) => k.status !== 'todo')) return 'working';
     return 'todo';
   };
-  return tasks.map((t) => {
-    const kids = childrenOf.get(t.id);
-    return kids && kids.length ? { ...t, status: derive(kids) } : t;
-  });
+  let current = tasks;
+  for (;;) {
+    const childrenOf = new Map<string, Task[]>();
+    for (const t of current) {
+      if (t.parentId) {
+        const arr = childrenOf.get(t.parentId) ?? [];
+        arr.push(t);
+        childrenOf.set(t.parentId, arr);
+      }
+    }
+    let changed = false;
+    const next = current.map((t) => {
+      const kids = childrenOf.get(t.id);
+      if (!kids || !kids.length) return t;
+      const status = derive(kids);
+      if (status === t.status) return t;
+      changed = true;
+      return { ...t, status };
+    });
+    current = next;
+    if (!changed) return current;
+  }
 }
