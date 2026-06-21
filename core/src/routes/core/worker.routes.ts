@@ -15,15 +15,18 @@ import type { RouteHandler, RouteContext } from '../index';
 import { randomBytes } from 'crypto';
 import { getRecord, listRecords, putRecord, stampOrchestrator } from '../../worker-role/worker-store';
 import { applySetRole, applyReportStatus, decideGate, liveness } from '../../worker-role/model';
+import type { WorkerRecord, TaskStatus } from '../../worker-role/types';
 
-interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string }; }
+interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string; details?: unknown }; }
 const ok = <T>(data: T): Envelope => ({ success: true, data });
 const fail = (code: string, message: string): Envelope => ({ success: false, error: { code, message } });
 const genId = () => 'task_' + randomBytes(4).toString('hex');
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 
+const VALID_STATUSES = new Set<string>(['todo', 'working', 'blocked', 'need_approval', 'done', 'skipped']);
+
 /** Attach derived orchestrator liveness to a record for read responses. */
-function withLiveness(rec: any, now: number) {
+function withLiveness(rec: WorkerRecord, now: number) {
   return { ...rec, orchestratorLiveness: liveness(rec.orchestrator, now) };
 }
 
@@ -39,6 +42,7 @@ export function createWorkerRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!sessionId) return fail('INVALID_INPUT', 'sessionId is required');
         const task = b.task as { title?: string } | undefined;
         if (b.role === 'none') {
+          // intentionally discard putRecord's return — the response is {cleared:true}
           putRecord({ sessionId, role: 'worker', tasks: [], orchestrator: {}, updatedAt: Date.now() });
           return ok({ cleared: true });
         }
@@ -63,11 +67,14 @@ export function createWorkerRoutes(_ctx: RouteContext): RouteHandler[] {
         const sessionId = str(b.sessionId);
         const taskId = str(b.taskId);
         if (!sessionId || !taskId) return fail('INVALID_INPUT', 'sessionId and taskId are required');
+        const sv = str(b.status);
+        if (sv !== undefined && !VALID_STATUSES.has(sv)) return fail('INVALID_INPUT', `invalid status "${sv}"`);
         const prev = getRecord(sessionId);
         if (!prev) return fail('NOT_FOUND', `no worker record for ${sessionId} (call /worker/role first)`);
+        if (!prev.tasks.some((t) => t.id === taskId)) return fail('NOT_FOUND', `task ${taskId} not found in worker record for ${sessionId}`);
         const rec = applyReportStatus(
           prev,
-          { taskId, status: b.status as any, progress: str(b.progress), detail: str(b.detail), reason: str(b.reason) },
+          { taskId, status: sv as TaskStatus | undefined, progress: str(b.progress), detail: str(b.detail), reason: str(b.reason) },
           Date.now(),
         );
         return ok(putRecord(rec));
@@ -117,9 +124,10 @@ export function createWorkerRoutes(_ctx: RouteContext): RouteHandler[] {
         const idx = prev.tasks.findIndex((t) => t.id === taskId);
         if (idx < 0) return fail('NOT_FOUND', `task ${taskId} not found`);
         try {
+          const now = Date.now();
           const tasks = [...prev.tasks];
-          tasks[idx] = decideGate(tasks[idx], decision, str(b.by) ?? 'unknown', str(b.note), Date.now());
-          return ok(putRecord({ ...prev, tasks, updatedAt: Date.now() }));
+          tasks[idx] = decideGate(tasks[idx], decision, str(b.by) ?? 'unknown', str(b.note), now);
+          return ok(putRecord({ ...prev, tasks, updatedAt: now }));
         } catch (e) {
           return fail('PRECONDITION_FAILED', (e as Error).message);
         }
