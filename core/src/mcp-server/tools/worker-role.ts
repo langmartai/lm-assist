@@ -4,7 +4,7 @@
  * Tools:
  *   set_role        — take or update the WORKER role + declare a task (POST /worker/role)
  *   report_status   — worker reports progress on a task (POST /worker/status)
- *   worker_status   — read a worker's record + stamp orchestrator (GET /worker/:id)
+ *   worker_status   — read a worker's record (stamps orchestrator only if orchestrator= given) (GET /worker/:id)
  *   list_workers    — list all worker records on this node (GET /worker)
  *   decide_gate     — resolve an open agree-gate (POST /worker/:id/gate)
  *
@@ -65,15 +65,16 @@ export const WORKER_ROLE_TOOL_DEFS = [
     name: 'worker_status',
     description:
       "Read a worker's role, task tree (with statuses + open gates), and orchestrator liveness. " +
-      'Reading STAMPS you as the worker\'s orchestrator (refreshes its lastContact).',
-    annotations: { readOnlyHint: true },
+      'Pass orchestrator=<yourSessionId> to stamp yourself as the active orchestrator ' +
+      '(refreshes lastContact); omit it for a read-only fetch.',
+    annotations: { readOnlyHint: false },
     inputSchema: obj({ sessionId: S, orchestrator: S }, ['sessionId']),
   },
   {
     name: 'list_workers',
     description: 'List all worker records on this node (sessionId, tasks, orchestrator liveness).',
     annotations: { readOnlyHint: true },
-    inputSchema: obj({}),
+    inputSchema: { type: 'object' as const, properties: {} },
   },
   {
     name: 'decide_gate',
@@ -93,7 +94,7 @@ export const WORKER_ROLE_TOOL_DEFS = [
   },
 ] as const;
 
-const j = (v: unknown) => ok(JSON.stringify(v, null, 2));
+const pretty = (v: unknown) => ok(JSON.stringify(v, null, 2));
 
 export const WORKER_ROLE_HANDLERS: Record<
   string,
@@ -101,7 +102,7 @@ export const WORKER_ROLE_HANDLERS: Record<
 > = {
   set_role: async (a) => {
     try {
-      return j(await workerPost('/worker/role', a));
+      return pretty(await workerPost('/worker/role', a));
     } catch (e) {
       return err((e as Error).message);
     }
@@ -109,7 +110,7 @@ export const WORKER_ROLE_HANDLERS: Record<
 
   report_status: async (a) => {
     try {
-      return j(await workerPost('/worker/status', a));
+      return pretty(await workerPost('/worker/status', a));
     } catch (e) {
       return err((e as Error).message);
     }
@@ -120,7 +121,7 @@ export const WORKER_ROLE_HANDLERS: Record<
       const q = a.orchestrator
         ? `?orchestrator=${encodeURIComponent(String(a.orchestrator))}`
         : '';
-      return j(await workerGet(`/worker/${encodeURIComponent(String(a.sessionId))}${q}`));
+      return pretty(await workerGet(`/worker/${encodeURIComponent(String(a.sessionId))}${q}`));
     } catch (e) {
       return err((e as Error).message);
     }
@@ -128,7 +129,7 @@ export const WORKER_ROLE_HANDLERS: Record<
 
   list_workers: async () => {
     try {
-      return j(await workerGet('/worker'));
+      return pretty(await workerGet('/worker'));
     } catch (e) {
       return err((e as Error).message);
     }
@@ -136,7 +137,7 @@ export const WORKER_ROLE_HANDLERS: Record<
 
   decide_gate: async (a) => {
     try {
-      return j(
+      return pretty(
         await workerPost(`/worker/${encodeURIComponent(String(a.sessionId))}/gate`, a),
       );
     } catch (e) {
