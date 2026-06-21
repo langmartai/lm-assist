@@ -7,7 +7,7 @@
 import type { RouteContext, RouteHandler, ParsedRequest } from '../index';
 import { getHubClient, resetHubClient, reconnectHubClient, isHubConfigured, getHubConfig, saveHubConnectionConfig } from '../../hub-client';
 import { clearGatewayId } from '../../hub-client/hub-config';
-import { encodeKeypack, decodeKeypack } from '../../hub-client/enroll-code';
+import { encodeKeypack, decodeKeypack, assertHubUrlResolvesSafe } from '../../hub-client/enroll-code';
 
 export function createHubRoutes(ctx: RouteContext): RouteHandler[] {
   return [
@@ -479,6 +479,10 @@ export function createHubRoutes(ctx: RouteContext): RouteHandler[] {
         if (typeof code !== 'string' || !code) return { success: false, error: 'code is required' };
         let pack;
         try { pack = decodeKeypack(code); }
+        catch (e) { return { success: false, error: e instanceof Error ? e.message : 'invalid keypack' }; }
+        // DNS-rebinding guard: resolve the keypack's hubUrl host and reject if it points at an
+        // internal/metadata address — BEFORE we fetch it or persist it as the hub target.
+        try { await assertHubUrlResolvesSafe(pack.hubUrl); }
         catch (e) { return { success: false, error: e instanceof Error ? e.message : 'invalid keypack' }; }
         const hubHttpUrl = pack.hubUrl.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
         try {

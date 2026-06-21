@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { encodeKeypack, decodeKeypack } from '../hub-client/enroll-code';
+import { encodeKeypack, decodeKeypack, assertHubUrlResolvesSafe } from '../hub-client/enroll-code';
 
 test('round-trips a keypack', () => {
   const k = { v: 1 as const, hubUrl: 'wss://assist-api.langmart.ai', token: 'a'.repeat(64) };
@@ -86,4 +86,24 @@ test('still ACCEPTS loopback (dev) + public hubUrls (no over-block)', () => {
     const k = { v: 1 as const, hubUrl: url, token: 't'.repeat(8) };
     assert.deepEqual(decodeKeypack(encodeKeypack(k)), k, `should accept ${url}`);
   }
+});
+// --- DNS-rebinding guard: assertHubUrlResolvesSafe (resolve the host, reject internal) ---
+const fakeLookup = (...addrs: string[]) => async () => addrs.map((address) => ({ address }));
+test('assertHubUrlResolvesSafe: a NAME resolving to an internal IP is rejected', async () => {
+  await assert.rejects(assertHubUrlResolvesSafe('wss://evil.example.com', fakeLookup('10.0.0.5')), /resolves to an internal address/);
+  await assert.rejects(assertHubUrlResolvesSafe('wss://evil.example.com', fakeLookup('1.2.3.4', '169.254.169.254')), /resolves to an internal address/);
+});
+test('assertHubUrlResolvesSafe: a NAME resolving to public (or loopback) passes', async () => {
+  await assertHubUrlResolvesSafe('wss://hub.example.com', fakeLookup('203.0.113.5')); // public → ok
+  await assertHubUrlResolvesSafe('ws://localhost:8086', fakeLookup('127.0.0.1'));      // loopback → ok (dev)
+});
+test('assertHubUrlResolvesSafe: an internal IP-LITERAL is rejected before any DNS lookup', async () => {
+  let called = false;
+  const spy = (async () => { called = true; return [{ address: '8.8.8.8' }]; }) as unknown as Parameters<typeof assertHubUrlResolvesSafe>[1];
+  await assert.rejects(assertHubUrlResolvesSafe('ws://10.0.0.1', spy), /not allowed/);
+  assert.equal(called, false, 'no DNS lookup for an IP literal');
+});
+test('assertHubUrlResolvesSafe: a host that does not resolve is rejected', async () => {
+  await assert.rejects(assertHubUrlResolvesSafe('wss://nx.example.com', (async () => { throw new Error('ENOTFOUND'); })), /does not resolve/);
+  await assert.rejects(assertHubUrlResolvesSafe('wss://empty.example.com', (async () => [])), /does not resolve/);
 });

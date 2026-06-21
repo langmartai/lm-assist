@@ -1,4 +1,5 @@
 import { BlockList, isIPv4, isIPv6 } from 'node:net';
+import { lookup as dnsLookup } from 'node:dns/promises';
 
 export interface Keypack { v: 1; hubUrl: string; token: string; }
 
@@ -63,6 +64,31 @@ function assertValidHubUrl(hubUrl: string): void {
   const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, ''); // unbracket IPv6, strip trailing dot(s)
   if (META_HOSTS.has(host) || ipLiteralBlocked(host)) {
     throw new Error('invalid keypack: hubUrl host not allowed');
+  }
+}
+
+export type HostLookup = (host: string) => Promise<Array<{ address: string }>>;
+const defaultLookup: HostLookup = (host) => dnsLookup(host, { all: true });
+
+/**
+ * DNS-rebinding guard: resolve a keypack hubUrl's HOST and reject if ANY resolved address is an
+ * internal/metadata target. This closes the gap assertValidHubUrl can't see — a DNS NAME that
+ * *resolves* to an internal IP. Call it at the point the untrusted hubUrl is actually used (the
+ * redeem fetch / before persisting it as the hub target). IP-literal hosts are already settled
+ * synchronously by assertValidHubUrl (and loopback stays allowed, incl. names resolving to loopback).
+ * `lookup` is injectable for tests.
+ */
+export async function assertHubUrlResolvesSafe(hubUrl: string, lookup: HostLookup = defaultLookup): Promise<void> {
+  assertValidHubUrl(hubUrl); // scheme + IP-literal + metadata host (sync) first
+  const host = new URL(hubUrl).hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+  if (isIPv4(host) || isIPv6(host)) return; // literal already judged above — no DNS to resolve
+  let addrs: Array<{ address: string }>;
+  try { addrs = await lookup(host); } catch { throw new Error('invalid keypack: hubUrl host does not resolve'); }
+  if (!addrs.length) throw new Error('invalid keypack: hubUrl host does not resolve');
+  for (const a of addrs) {
+    if (ipLiteralBlocked((a.address || '').toLowerCase())) {
+      throw new Error('invalid keypack: hubUrl resolves to an internal address');
+    }
   }
 }
 
