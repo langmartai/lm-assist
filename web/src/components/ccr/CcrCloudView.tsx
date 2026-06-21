@@ -25,6 +25,7 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose }: {
   const [pendingQ, setPendingQ] = useState<PendingQuestion | null>(null);
   const [answering, setAnswering] = useState(false);
   const [customAnswer, setCustomAnswer] = useState('');
+  const [gone, setGone] = useState(false); // session deleted/ended — stop polling, show a clean state
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
 
@@ -35,7 +36,14 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose }: {
       const r = await apiFetch<{ messages?: CloudMsg[]; pendingQuestion?: PendingQuestion | null }>(`/ccr/cloud/${encodeURIComponent(sid)}`);
       if (seq !== seqRef.current) return; // a newer load started — drop this stale result
       setMessages(r.messages || []); setPendingQ(r.pendingQuestion || null); setErr(null);
-    } catch (e) { if (seq === seqRef.current) setErr(e instanceof Error ? e.message : String(e)); }
+    } catch (e) {
+      if (seq !== seqRef.current) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      // A deleted/stopped session 404s on read — surface a clean "ended" state and stop polling
+      // (don't sit on a raw "API 400: …not found" and keep retrying).
+      if (/not.?found|HTTP 404|session_deleted|no live/i.test(msg)) { setGone(true); setLive(false); }
+      else setErr(msg);
+    }
     finally { if (seq === seqRef.current) setLoading(false); }
   }, [apiFetch, sid]);
 
@@ -88,7 +96,9 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose }: {
 
       <div ref={scrollRef} onScroll={(e) => { const el = e.currentTarget; atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }}
         style={{ flex: 1, overflow: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 12, minHeight: 200 }}>
-        {loading && !messages.length ? (
+        {gone ? (
+          <div className="empty-state"><Cloud size={28} className="empty-state-icon" /><div style={{ fontSize: 12.5 }}>This cloud session has ended (stopped/deleted).</div><button className="btn btn-ghost btn-sm" onClick={onClose} style={{ marginTop: 8 }}><X size={13} /> Close</button></div>
+        ) : loading && !messages.length ? (
           <div className="empty-state"><Loader2 size={20} style={{ animation: 'spin 1s linear infinite' }} /><span style={{ fontSize: 12 }}>Loading…</span></div>
         ) : err && !messages.length ? (
           <div style={{ fontSize: 12, color: 'var(--color-status-red)' }}>{err}</div>
@@ -97,6 +107,7 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose }: {
         ) : messages.map((m, i) => <CloudMessage key={i} m={m} />)}
       </div>
 
+      {!gone && (
       <div style={{ borderTop: '1px solid var(--color-border-default)', padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
         {err && messages.length > 0 && <div style={{ fontSize: 11, color: 'var(--color-status-red)' }}>{err}</div>}
         {sent && <div style={{ fontSize: 11, color: 'var(--color-status-green)' }}>{sent}.</div>}
@@ -139,6 +150,7 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose }: {
           </button>
         </div>
       </div>
+      )}
     </div>
   );
 }
