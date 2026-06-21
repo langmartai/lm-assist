@@ -127,6 +127,7 @@ export function CcrPage() {
             <CcrSessionView
               sessionId={viewing}
               driveable={!!sessions.find((s) => s.sessionId === viewing)?.driveable || !!sessions.find((s) => s.sessionId === viewing)?.verdict?.live}
+              tmuxSession={sessions.find((s) => s.sessionId === viewing)?.tmuxSession}
               apiFetch={apiFetch}
               onClose={() => setViewing(null)}
             />

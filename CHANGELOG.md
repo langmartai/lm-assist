@@ -22,10 +22,14 @@
 - **Embedded session view + drive (`CcrSessionView`).** claude.ai sends `x-frame-options: SAMEORIGIN`, so the
   `claude.ai/code` page CANNOT be iframed cross-origin (and the OS deep-links it to the Claude app). Instead,
   **View here** renders the bridged session NATIVELY inside the CCR page — a live conversation (auto-refresh
-  from `/sessions/:id/conversation`, tool calls shown) plus a **Drive** box that injects a prompt into the
-  running session via `POST /session-messages` (`send_session_message`, category `guided`), gated on the
-  session being driveable. Same content the claude.ai page mirrors, no iframe/app. Browser-verified end-to-end
-  (view → drive → turn count incremented).
+  from `/sessions/:id/conversation`, tool calls shown) plus a **Drive** box, gated on the session being
+  driveable. Same content the claude.ai page mirrors, no iframe/app. Browser-verified end-to-end.
+- **Drive parity with the real claude.ai/code (captured via lm-proxy on 123).** The real CCR loop: claude.ai
+  pushes/receives Claude Code transcript events over `…/worker/events` (+ SSE `…/worker/events/stream` for
+  client prompts), and the bridge drives by **typing the prompt into the session's tmux** (`send-keys`, a
+  clean USER turn). So the embedded Drive box now does the same — `POST /terminal/tmux/:name/send-keys
+  {keys, literal, enter}` when the session is in a tmux (falls back to the `send_session_message` inject
+  otherwise). The protocol is recorded in memory ([[reference-claudeai-web-ui-ccr]]).
 
 ### Scheduler — the built-in delete job is now DIRECT-ID-ONLY (no matching of any kind) (2026-06-21)
 

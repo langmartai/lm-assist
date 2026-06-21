@@ -16,8 +16,8 @@ type ApiFetch = <T>(path: string, opts?: { method?: string; body?: unknown }) =>
 
 /** Native embedded view of a Claude Code (CCR-bridged) session: live conversation + a drive box.
  *  Renders the SAME content the claude.ai/code page mirrors — no iframe (claude.ai blocks framing). */
-export function CcrSessionView({ sessionId, driveable, apiFetch, onClose }: {
-  sessionId: string; driveable: boolean; apiFetch: ApiFetch; onClose: () => void;
+export function CcrSessionView({ sessionId, driveable, tmuxSession, apiFetch, onClose }: {
+  sessionId: string; driveable: boolean; tmuxSession?: string; apiFetch: ApiFetch; onClose: () => void;
 }) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [info, setInfo] = useState<{ model?: string; numTurns?: number; status?: string } | null>(null);
@@ -61,13 +61,21 @@ export function CcrSessionView({ sessionId, driveable, apiFetch, onClose }: {
     if (!text) return;
     setSending(true); setErr(null);
     try {
-      await apiFetch('/session-messages', { method: 'POST', body: { toSession: sessionId, category: 'guided', body: text } });
+      if (tmuxSession) {
+        // Drive PARITY with the real CCR bridge / claude.ai/code: type the prompt into the session's
+        // tmux pane as a clean USER turn (claude.ai → worker/events/stream client_event → bridge does the
+        // same tmux send-keys). Closer than a 'guided' inject — it becomes a real user message.
+        await apiFetch(`/terminal/tmux/${encodeURIComponent(tmuxSession)}/send-keys`, { method: 'POST', body: { keys: text, literal: true, enter: true } });
+      } else {
+        // No tmux backing → fall back to injecting it as a guided message.
+        await apiFetch('/session-messages', { method: 'POST', body: { toSession: sessionId, category: 'guided', body: text } });
+      }
       setPrompt(''); setSent(text.slice(0, 60)); setTimeout(() => setSent(null), 4000);
       setTimeout(load, 1000);
     } catch (e) {
       setErr(`drive failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally { setSending(false); }
-  }, [apiFetch, sessionId, prompt, load]);
+  }, [apiFetch, sessionId, prompt, load, tmuxSession]);
 
   const roleColor = (r: string) => r === 'user' ? 'var(--color-accent)' : r === 'assistant' ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)';
 
@@ -111,7 +119,7 @@ export function CcrSessionView({ sessionId, driveable, apiFetch, onClose }: {
       {/* drive box */}
       <div style={{ borderTop: '1px solid var(--color-border-default)', padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
         {err && messages.length > 0 && <div style={{ fontSize: 11, color: 'var(--color-status-red)' }}>{err}</div>}
-        {sent && <div style={{ fontSize: 11, color: 'var(--color-status-green)' }}>injected: “{sent}” — the session will pick it up.</div>}
+        {sent && <div style={{ fontSize: 11, color: 'var(--color-status-green)' }}>{tmuxSession ? 'typed into the session' : 'injected'}: “{sent}”{tmuxSession ? ' (user turn)' : ' — the session will pick it up'}.</div>}
         {!driveable && <div style={{ fontSize: 11, color: 'var(--color-status-orange)' }}>This session isn’t live/driveable — start it (or Connect) to drive it. (View is read-only.)</div>}
         <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
           <textarea className="input" value={prompt} rows={2} placeholder={driveable ? 'Drive: type a prompt to inject into the running session…' : 'Read-only — session not driveable'}
