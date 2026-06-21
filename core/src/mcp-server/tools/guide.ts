@@ -21,6 +21,7 @@ const TOPIC_TOOLS: Record<string, string[]> = {
   account: ['auth_status', 'claude_code_usage', 'claude_code_account', 'claudeai_account', 'claudeai_active_sessions'],
   github: ['github_query', 'github_mutate'],
   files: ['fs_drives', 'fs_list', 'fs_stat', 'fs_read', 'transfer_queue', 'transfer_send_file', 'transfer_list_remote', 'transfer_stats'],
+  roles: ['set_role', 'report_status', 'worker_status', 'list_workers', 'decide_gate'],
 };
 
 // Ordered so the multi-node model + combination workflows surface first in the index.
@@ -102,7 +103,7 @@ End-to-end recipes. Each step names a tool; add \`node=<host>\` to target anothe
   roles: `# Guide: worker role + orchestration (set_role / report_status / decide_gate)
 A session can take ONE active role: WORKER. Assigned by itself OR by a launcher; it owns its OWN task list (groups/sub-tasks) — not necessarily orchestrator-created.
 BECOME A WORKER: set_role({sessionId, task:{title, group?, parentId?}}). Appends a worker-owned task; one active role. set_role({role:'none'}) clears.
-REPORT (3 ways): (1) ALWAYS print a ⟦WORKER-STATUS⟧ task=.. status=working|blocked|need_approval|done progress=.. block into your output each turn — anyone reads it via session-read. (2) optional report_status({sessionId, taskId, status, progress?, detail?}) → durable record (Way 3). (3) when an orchestrator is active, report_status also messages it (Way 2).
+REPORT (3 ways): (1) ALWAYS print a ⟦WORKER-STATUS⟧ … ⟦/WORKER-STATUS⟧ block into your output each turn — the canonical channel, always on. (2) Way 2 (push): when an orchestrator is active, report_status also messages it (send_session_message). (3) Way 3 (durable): report_status({sessionId, taskId, status, progress?, detail?}) writes your record so an orchestrator can query it. Way 2 and Way 3 are the same report_status call.
 AGREE-GATE: before a sensitive step, report_status({status:'need_approval', reason}) → opens a gate; print it and STOP until agreed. An orchestrator agrees via decide_gate({sessionId, taskId, decision:'agree'|'reject'}); with no orchestrator, a human types the decision into your session.
 ORCHESTRATOR (optional; none/active/inactive): reading a worker (worker_status / list_workers) STAMPS the reader as its orchestrator and refreshes lastContact (>5 min stale ⇒ inactive). Drive a worker via send_session_message or CCR; agree a gate via decide_gate.
 CROSS-NODE: all five tools take node=<host>.`,
@@ -257,7 +258,7 @@ const ALIASES: Record<string, string> = {
   'cross node': 'cross-node', crossnode: 'cross-node', 'multi-node': 'cross-node', multinode: 'cross-node', 'multi node': 'cross-node', fleet: 'cross-node',
   workflow: 'workflows', combo: 'workflows', combos: 'workflows', combination: 'workflows', combinations: 'workflows', recipe: 'workflows', recipes: 'workflows', 'use-case': 'workflows', 'use case': 'workflows',
   install: 'install', build: 'install', setup: 'install', clone: 'install', deploy: 'install', 'from-source': 'install', 'from-repo': 'install', 'not-installed': 'install', 'core.sh': 'install', npm: 'install', 'dev-run': 'install', 'prod-run': 'install',
-  roles: 'roles', role: 'roles', worker: 'roles', orchestrator: 'roles', 'agree-gate': 'roles', gate: 'roles', set_role: 'roles', report_status: 'roles', worker_status: 'roles', list_workers: 'roles', decide_gate: 'roles',
+  roles: 'roles', role: 'roles', worker: 'roles', orchestrator: 'roles', 'agree-gate': 'roles', gate: 'roles',
   storage: 'data', store: 'data', query: 'data', database: 'data', db: 'data', records: 'data',
   session: 'sessions', history: 'sessions', dag: 'sessions',
   memory: 'knowledge', search: 'knowledge',
@@ -354,7 +355,7 @@ export const GUIDE_TOOL_DEFS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        topic: { type: 'string' as const, description: 'A use-case (cross-node|workflows|sessions|knowledge|data|agents|terminals|ccr|nodes|claude-ai|account|github|files), a tool name, or "index". Omit for the index.' },
+        topic: { type: 'string' as const, description: 'A use-case (cross-node|workflows|sessions|knowledge|data|agents|terminals|ccr|nodes|claude-ai|account|github|files|roles), a tool name, or "index". Omit for the index.' },
       },
       required: [] as string[],
     },
