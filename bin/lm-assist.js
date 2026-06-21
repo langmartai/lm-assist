@@ -121,7 +121,9 @@ Commands:
   storage clean      Delete all lm-assist data and start fresh (-y to skip confirm)
   setup --key KEY    Connect to cloud with an API key
   login [<keypack>]  Enroll this node by redeeming a one-time keypack;
-                     or 'login --new-node' on an authed node to mint one
+                     or 'login --new-node' on an authed node to mint one.
+                     On enroll, registers the hub MCP in Claude Code so new
+                     sessions get the worker-role tools (--no-mcp to skip).
   logout             Remove the hub key and disconnect this node
   upgrade [--from S]  Upgrade lm-assist (npm + plugin + restart).
                      --from S installs a specific build instead of npm latest:
@@ -746,6 +748,32 @@ if (command === 'login') {
       if (!json.success) { console.log('FAILED'); console.error(errText(json)); process.exit(1); }
       console.log(json.data.authenticated ? 'OK — authenticated.'
         : json.data.connected ? 'connected, authentication pending...' : 'connection pending...');
+      // Register the hub MCP into Claude Code so this node's sessions get the
+      // worker-role / orchestration tools (set_role, report_status, decide_gate,
+      // ...) at startup — over the always-up hub /mcp endpoint, so there is no
+      // local-Core startup-ordering problem. Opt out with --no-mcp.
+      if (json.data.authenticated && !args.includes('--no-mcp')) {
+        try {
+          const { deriveHubMcpUrl, upsertHubMcpServer, HUB_MCP_SERVER_NAME } =
+            require(path.join(projectRoot, 'core', 'dist', 'utils', 'claude-mcp-config'));
+          const hub = readHubConfig();
+          const mcpUrl = deriveHubMcpUrl(hub.hubUrl);
+          if (mcpUrl && hub.apiKey) {
+            const ccPath = path.join(os.homedir(), '.claude.json');
+            let cc = {};
+            try { cc = JSON.parse(fs.readFileSync(ccPath, 'utf8')); } catch { /* missing/non-JSON → start fresh */ }
+            // This file now carries the sk-key in an Authorization header — write
+            // it owner-only. `mode` only applies on create, so chmod afterward to
+            // also tighten a pre-existing (possibly group/world-readable) file.
+            const ccData = JSON.stringify(upsertHubMcpServer(cc, { url: mcpUrl, key: hub.apiKey }), null, 2);
+            fs.writeFileSync(ccPath, ccData, { mode: 0o600 });
+            try { fs.chmodSync(ccPath, 0o600); } catch { /* best-effort */ }
+            console.log(`  ✓ Registered '${HUB_MCP_SERVER_NAME}' MCP for Claude Code — worker-role tools load in NEW sessions (${mcpUrl}).`);
+          }
+        } catch (e) {
+          console.error(`  (note: hub MCP not registered for Claude Code: ${e.message})`);
+        }
+      }
       console.log(`\n  Web UI: http://localhost:${PROD_WEB_PORT}`);
       process.exit(0);
     } catch (err) {
