@@ -13,11 +13,13 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { spawn } from '../utils/exec';
 import { execFileSync } from '../utils/exec';
 import { TerminalError } from './errors';
 import { sessionVerdict } from './cc-sessions';
 import type { ConnectStrategy } from './cc-sessions';
+import { anthropicOAuthPost, getOrganizationUuid } from '../utils/claude-oauth';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -132,6 +134,43 @@ async function pollForUrl(logFile: string, timeoutMs: number): Promise<string | 
     await new Promise((r) => setTimeout(r, 500));
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Drive helpers (pure — unit-tested in __tests__/ccr-drive.test.ts)
+// ---------------------------------------------------------------------------
+
+/** Derive the cloud-session id (cse_…) from a bridge webUrl (…/code/session_<X>). */
+export function cseFromWebUrl(webUrl: string | null | undefined): string | null {
+  if (!webUrl) return null;
+  const m = webUrl.match(/\/code\/session_([A-Za-z0-9]+)/);
+  return m ? `cse_${m[1]}` : null;
+}
+
+export type DrivePath = 'cloud' | 'tmux' | 'none';
+
+/**
+ * Decide how to deliver a turn: the claude.ai CLOUD endpoint is primary (it
+ * reaches the session from anywhere, incl. off-host drivers); direct tmux
+ * send-keys is the same-host SECOND option. `preferTmux` flips the order when
+ * a tmux is available (skips the cloud round-trip on the local host).
+ */
+export function chooseDrivePath(opts: { cse: string | null; tmux: string | null; preferTmux?: boolean }): DrivePath {
+  const { cse, tmux, preferTmux } = opts;
+  if (preferTmux && tmux) return 'tmux';
+  if (cse) return 'cloud';
+  if (tmux) return 'tmux';
+  return 'none';
+}
+
+/** Build the client `user` event payload claude.ai posts to /{cse}/events. */
+export function buildUserEventPayload(cse: string, text: string, uuid?: string) {
+  return {
+    type: 'user' as const,
+    message: { role: 'user' as const, content: [{ type: 'text' as const, text }] },
+    uuid: uuid || randomUUID(),
+    session_id: cse,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -353,4 +392,111 @@ export async function stop(id: string): Promise<{ stopped: boolean; wasAlive: bo
   delete data[id];
   saveRegistry(data);
   return { stopped: true, wasAlive };
+}
+
+// ---------------------------------------------------------------------------
+// Drive — deliver a prompt (user turn) to a two-way connected session
+// ---------------------------------------------------------------------------
+
+export interface DriveResult {
+  path: DrivePath;
+  delivered: boolean;
+  cse: string | null;
+  sessionId: string | null;
+  tmuxSession: string | null;
+  /** Cloud-path result fields (from the /{cse}/events response). */
+  eventId?: string;
+  sequenceNum?: string;
+  /** true when the cloud path was attempted, failed, and tmux took over. */
+  fellBack?: boolean;
+  detail?: string;
+}
+
+/** Find the best live `connected` bridge record for a session id (most-recent, alive-preferred). */
+function pickConnectedBySession(sessionId: string): CcrRecord | undefined {
+  const recs = Object.values(loadRegistry())
+    .filter((r) => r.mode === 'connected' && r.sessionId === sessionId)
+    .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1)); // most-recent first
+  return recs.find((r) => isAlive(r.pid)) || recs[0];
+}
+
+/** POST a client `user` event to the public code-session endpoint (cloud relays it to the worker). */
+async function driveViaCloud(cse: string, text: string): Promise<{ eventId?: string; sequenceNum?: string }> {
+  const org = await getOrganizationUuid();
+  const res = await anthropicOAuthPost(
+    `/v1/code/sessions/${cse}/events`,
+    { events: [{ payload: buildUserEventPayload(cse, text) }] },
+    { betaHeader: 'ccr-byoc-2025-07-29', extraHeaders: { 'anthropic-version': '2023-06-01', 'x-organization-uuid': org } },
+  );
+  if (res.status < 200 || res.status >= 300) {
+    throw new TerminalError('UPSTREAM_ERROR', `cloud drive failed: HTTP ${res.status} ${res.statusText}`, { status: res.status, body: res.body });
+  }
+  const r = res.body && Array.isArray(res.body.results) ? res.body.results[0] : undefined;
+  return { eventId: r?.event_id, sequenceNum: r?.sequence_num != null ? String(r.sequence_num) : undefined };
+}
+
+/** Type a turn into the local tmux pane (literal text + Enter) — the same-host fallback. */
+function driveViaTmux(tmux: string, text: string): void {
+  // Matches the bridge's send-keys {literal:true, enter:true}: literal text, then Enter.
+  execFileSync('tmux', ['send-keys', '-t', tmux, '-l', text], { encoding: 'utf-8', timeout: 5000 });
+  execFileSync('tmux', ['send-keys', '-t', tmux, 'Enter'], { encoding: 'utf-8', timeout: 5000 });
+}
+
+/**
+ * Deliver a prompt (a user turn) to a two-way connected session.
+ *
+ * Primary path = the claude.ai CLOUD endpoint (`POST /v1/code/sessions/{cse}/events`,
+ * OAuth) which the cloud relays down the worker SSE the bridge holds → reaches the
+ * local session from anywhere. Second option = same-host tmux send-keys. On cloud
+ * failure, falls back to tmux when one is available (same host).
+ *
+ * Resolve the target by `id` (ccr remote id), `sessionId` (its live bridge), or an
+ * explicit `cse`. `preferTmux` forces the same-host shortcut when a tmux exists.
+ */
+export async function drive(opts: {
+  id?: string;
+  sessionId?: string;
+  cse?: string;
+  text: string;
+  preferTmux?: boolean;
+}): Promise<DriveResult> {
+  const text = (opts.text || '').toString();
+  if (!text.trim()) throw new TerminalError('INVALID_INPUT', 'text is required');
+
+  let rec: CcrRecord | undefined;
+  if (opts.id) {
+    rec = loadRegistry()[opts.id];
+    if (!rec) throw new TerminalError('SESSION_NOT_FOUND', `ccr remote ${opts.id} not found`);
+  } else if (opts.sessionId) {
+    rec = pickConnectedBySession(opts.sessionId);
+  }
+
+  const cse = opts.cse || cseFromWebUrl(rec?.webUrl);
+  const tmux = rec?.tmuxSession || null;
+  const sessionId = rec?.sessionId ?? opts.sessionId ?? null;
+  const base: DriveResult = { path: 'none', delivered: false, cse, sessionId, tmuxSession: tmux };
+
+  const planned = chooseDrivePath({ cse, tmux, preferTmux: opts.preferTmux });
+  if (planned === 'none') {
+    throw new TerminalError(
+      'SESSION_NOT_FOUND',
+      'no live cloud bridge (cse) and no tmux for this target — start a two-way connect first (ccr_connect)',
+    );
+  }
+
+  if (planned === 'cloud') {
+    try {
+      const r = await driveViaCloud(cse!, text);
+      return { ...base, path: 'cloud', delivered: true, eventId: r.eventId, sequenceNum: r.sequenceNum };
+    } catch (e) {
+      if (!tmux) throw e;
+      // cloud failed but we are same-host — fall back to tmux send-keys
+      driveViaTmux(tmux, text);
+      return { ...base, path: 'tmux', delivered: true, fellBack: true, detail: `cloud failed (${(e as Error).message}); delivered via tmux` };
+    }
+  }
+
+  // planned === 'tmux'
+  driveViaTmux(tmux!, text);
+  return { ...base, path: 'tmux', delivered: true };
 }

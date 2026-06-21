@@ -27,6 +27,7 @@ export function CcrSessionView({ sessionId, driveable, tmuxSession, apiFetch, on
   const [prompt, setPrompt] = useState('');
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState<string | null>(null);
+  const [via, setVia] = useState<string>('');
   const [live, setLive] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
@@ -59,13 +60,25 @@ export function CcrSessionView({ sessionId, driveable, tmuxSession, apiFetch, on
     const text = prompt.trim();
     if (!text) return;
     setSending(true); setErr(null);
+    let label = '';
     try {
-      if (tmuxSession) {
-        await apiFetch(`/terminal/tmux/${encodeURIComponent(tmuxSession)}/send-keys`, { method: 'POST', body: { keys: text, literal: true, enter: true } });
-      } else {
-        await apiFetch('/session-messages', { method: 'POST', body: { toSession: sessionId, category: 'guided', body: text } });
+      // Primary: claude.ai cloud endpoint via /ccr/drive — reaches a two-way bridged
+      // session from anywhere (the server itself falls back to tmux for a same-host bridge).
+      try {
+        const r = await apiFetch<{ path?: string; delivered?: boolean }>('/ccr/drive', { method: 'POST', body: { sessionId, text } });
+        if (!r?.delivered) throw new Error('not delivered'); // force the same-host fallback
+        label = r.path === 'cloud' ? 'sent via claude.ai (cloud)' : 'typed into the session (user turn)';
+      } catch {
+        // No live bridge for this session — same-host direct drive (second option).
+        if (tmuxSession) {
+          await apiFetch(`/terminal/tmux/${encodeURIComponent(tmuxSession)}/send-keys`, { method: 'POST', body: { keys: text, literal: true, enter: true } });
+          label = 'typed into the session (user turn)';
+        } else {
+          await apiFetch('/session-messages', { method: 'POST', body: { toSession: sessionId, category: 'guided', body: text } });
+          label = 'injected';
+        }
       }
-      setPrompt(''); setSent(text.slice(0, 60)); setTimeout(() => setSent(null), 4000); setTimeout(load, 1000);
+      setVia(label); setPrompt(''); setSent(text.slice(0, 60)); setTimeout(() => setSent(null), 4000); setTimeout(load, 1000);
     } catch (e) { setErr(`drive failed: ${e instanceof Error ? e.message : String(e)}`); }
     finally { setSending(false); }
   }, [apiFetch, sessionId, prompt, load, tmuxSession]);
@@ -99,7 +112,7 @@ export function CcrSessionView({ sessionId, driveable, tmuxSession, apiFetch, on
 
       <div style={{ borderTop: '1px solid var(--color-border-default)', padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
         {err && stream.length > 0 && <div style={{ fontSize: 11, color: 'var(--color-status-red)' }}>{err}</div>}
-        {sent && <div style={{ fontSize: 11, color: 'var(--color-status-green)' }}>{tmuxSession ? 'typed into the session' : 'injected'}: “{sent}”{tmuxSession ? ' (user turn)' : ''}.</div>}
+        {sent && <div style={{ fontSize: 11, color: 'var(--color-status-green)' }}>{via || 'sent'}: “{sent}”.</div>}
         {!driveable && <div style={{ fontSize: 11, color: 'var(--color-status-orange)' }}>Not live/driveable — start it (or Connect) to drive. (View is read-only.)</div>}
         <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
           <textarea className="input" value={prompt} rows={2} placeholder={driveable ? 'Drive: type a prompt to send to the running session…' : 'Read-only'}

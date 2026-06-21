@@ -114,6 +114,28 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // POST /ccr/drive — deliver a prompt (user turn) to a connected session.
+    // Primary: claude.ai cloud endpoint (reaches the session from anywhere).
+    // Second option: same-host tmux send-keys (preferTmux, or cloud-failure fallback).
+    {
+      method: 'POST',
+      pattern: /^\/ccr\/drive$/,
+      handler: async (req) => envelope(async () => {
+        const body = (req.body || {}) as { id?: unknown; sessionId?: unknown; cse?: unknown; text?: unknown; preferTmux?: unknown };
+        const text = typeof body.text === 'string' ? body.text : '';
+        if (!text.trim()) throw new TerminalError('INVALID_INPUT', 'text is required');
+        const id = typeof body.id === 'string' ? body.id : undefined;
+        const sessionId = typeof body.sessionId === 'string' ? body.sessionId : undefined;
+        const cse = typeof body.cse === 'string' ? body.cse : undefined;
+        if (id) parseCcrId(id);
+        if (sessionId) parseSessionId(sessionId);
+        if (cse && !/^cse_[A-Za-z0-9]+$/.test(cse)) throw new TerminalError('INVALID_INPUT', 'cse must look like cse_…');
+        if (!id && !sessionId && !cse) throw new TerminalError('INVALID_INPUT', 'provide one of: id, sessionId, cse');
+        const preferTmux = body.preferTmux === true;
+        return await ccr.drive({ id, sessionId, cse, text, preferTmux });
+      }),
+    },
+
     // GET /ccr/remote — list all registered remotes with liveness
     {
       method: 'GET',

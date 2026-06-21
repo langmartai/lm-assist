@@ -534,6 +534,22 @@ export const ccrConnectToolDef = {
     required: ['session_id'],
   },
 };
+export const ccrDriveToolDef = {
+  name: 'ccr_drive',
+  description:
+    'Send a prompt (a user turn) INTO a two-way connected Claude Code session via the claude.ai cloud endpoint — works even when you are NOT on the session\'s host (remote agent / connector / phone). Requires a live ccr_connect bridge for the target. Resolve the target by session_id (preferred — finds its live bridge), the ccr remote id (ccr-xxxxxxxx), or an explicit cse_… id. Same-host callers may pass prefer_tmux to skip the cloud round-trip and type directly into the local tmux. Returns which path delivered it (cloud|tmux) plus the cloud event id.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      session_id: { type: 'string', description: 'Claude Code session UUID — resolves its live two-way bridge.' },
+      id: { type: 'string', description: 'CCR remote id (ccr-xxxxxxxx), alternative to session_id.' },
+      cse: { type: 'string', description: 'Explicit claude.ai code-session id (cse_…), alternative to session_id/id.' },
+      text: { type: 'string', description: 'The prompt text to deliver as a user turn.' },
+      prefer_tmux: { type: 'boolean', description: 'Same-host shortcut: drive the local tmux directly instead of the cloud endpoint.' },
+    },
+    required: ['text'],
+  },
+};
 export const ccrRemoteStopToolDef = {
   name: 'ccr_remote_stop',
   description: 'Stop a running CCR remote by id (from ccr_remote_list or a ccr_* result).',
@@ -759,6 +775,7 @@ export const EXPANDED_TOOL_DEFS = [
   ccrLoadToolDef,
   ccrMirrorToolDef,
   ccrConnectToolDef,
+  ccrDriveToolDef,
   ccrRemoteStopToolDef,
   // port forward (node-to-node TCP tunnel)
   ...PORT_FORWARD_TOOL_DEFS,
@@ -1189,6 +1206,19 @@ async function handleCcrRemoteStop(args: Record<string, unknown>): Promise<McpTo
   try { return ok(pretty(await workerPost(`/ccr/remote/${enc(id)}/stop`, {}))); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
+async function handleCcrDrive(args: Record<string, unknown>): Promise<McpToolResult> {
+  const text = String(args.text || '').trim();
+  if (!text) return err('text is required.');
+  const body: Record<string, unknown> = { text };
+  if (args.session_id) body.sessionId = String(args.session_id);
+  if (args.id) body.id = String(args.id);
+  if (args.cse) body.cse = String(args.cse);
+  // Connector bool args can arrive as strings — coerce.
+  if (args.prefer_tmux === true || args.prefer_tmux === 'true') body.preferTmux = true;
+  if (!body.sessionId && !body.id && !body.cse) return err('one of session_id, id, or cse is required.');
+  try { return renderRaw(await workerPostRaw('/ccr/drive', body)); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
 // ─── claude.ai marketplace + plugin handlers ─────────────────────────────
 
 async function handleClaudeaiListMarketplaces(args: Record<string, unknown>): Promise<McpToolResult> {
@@ -1396,6 +1426,7 @@ export const EXPANDED_HANDLERS: Record<
   ccr_load: handleCcrLoad,
   ccr_mirror: handleCcrMirror,
   ccr_connect: handleCcrConnect,
+  ccr_drive: handleCcrDrive,
   ccr_remote_stop: handleCcrRemoteStop,
   // port forward (open/list/close node-to-node TCP tunnel)
   ...PORT_FORWARD_HANDLERS,
