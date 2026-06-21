@@ -99,6 +99,14 @@ End-to-end recipes. Each step names a tool; add \`node=<host>\` to target anothe
 12) GREP CODE/LOGS STORED IN DATA
     data_get(dataset, id, field="src", grep="TODO|FIXME", context=1, key) → then field="src", lines="<range around a hit>" to read context. Use wildcard=true to treat the pattern as a *,? glob.`,
 
+  roles: `# Guide: worker role + orchestration (set_role / report_status / decide_gate)
+A session can take ONE active role: WORKER. Assigned by itself OR by a launcher; it owns its OWN task list (groups/sub-tasks) — not necessarily orchestrator-created.
+BECOME A WORKER: set_role({sessionId, task:{title, group?, parentId?}}). Appends a worker-owned task; one active role. set_role({role:'none'}) clears.
+REPORT (3 ways): (1) ALWAYS print a ⟦WORKER-STATUS⟧ task=.. status=working|blocked|need_approval|done progress=.. block into your output each turn — anyone reads it via session-read. (2) optional report_status({sessionId, taskId, status, progress?, detail?}) → durable record (Way 3). (3) when an orchestrator is active, report_status also messages it (Way 2).
+AGREE-GATE: before a sensitive step, report_status({status:'need_approval', reason}) → opens a gate; print it and STOP until agreed. An orchestrator agrees via decide_gate({sessionId, taskId, decision:'agree'|'reject'}); with no orchestrator, a human types the decision into your session.
+ORCHESTRATOR (optional; none/active/inactive): reading a worker (worker_status / list_workers) STAMPS the reader as its orchestrator and refreshes lastContact (>5 min stale ⇒ inactive). Drive a worker via send_session_message or CCR; agree a gate via decide_gate.
+CROSS-NODE: all five tools take node=<host>.`,
+
   install: `# Guide: install & build lm-assist FROM THE REPO on this host (dev + prod)
 WHEN: this connector already works with NO local install — its tools run on the user's ALREADY-INSTALLED hosts (see "cross-node"). Install locally ONLY to make THIS machine its OWN lm-assist node (run its own Core/Web, serve the MCP locally, or register it to a hub). A fresh cloud / CCR container has the connector but NO local lm-assist — install from the repo before expecting local :3100/:3200 services.
 SOURCE: github.com/langmartai/lm-assist — an npm-WORKSPACE monorepo (core = Node API, web = Next.js 16). Needs Node >= 20.9 (the Next 16 web build fails on Node 18; verified on Node 22). ALWAYS run npm from the repo ROOT — workspaces hoist deps, so installing inside core/ or web/ nests a node_modules that shadows the hoist (e.g. the WRONG chokidar then resolves from core/dist).
@@ -249,6 +257,7 @@ const ALIASES: Record<string, string> = {
   'cross node': 'cross-node', crossnode: 'cross-node', 'multi-node': 'cross-node', multinode: 'cross-node', 'multi node': 'cross-node', fleet: 'cross-node',
   workflow: 'workflows', combo: 'workflows', combos: 'workflows', combination: 'workflows', combinations: 'workflows', recipe: 'workflows', recipes: 'workflows', 'use-case': 'workflows', 'use case': 'workflows',
   install: 'install', build: 'install', setup: 'install', clone: 'install', deploy: 'install', 'from-source': 'install', 'from-repo': 'install', 'not-installed': 'install', 'core.sh': 'install', npm: 'install', 'dev-run': 'install', 'prod-run': 'install',
+  roles: 'roles', role: 'roles', worker: 'roles', orchestrator: 'roles', 'agree-gate': 'roles', gate: 'roles', set_role: 'roles', report_status: 'roles', worker_status: 'roles', list_workers: 'roles', decide_gate: 'roles',
   storage: 'data', store: 'data', query: 'data', database: 'data', db: 'data', records: 'data',
   session: 'sessions', history: 'sessions', dag: 'sessions',
   memory: 'knowledge', search: 'knowledge',
@@ -268,6 +277,7 @@ const BLURB: Record<string, string> = {
   'cross-node': 'single-node vs cross-node model — node targeting, per-node keys, sync, local-only (READ for multi-machine)',
   workflows: 'combination recipes that chain tools across features + nodes (investigate→store, run-agent→capture, query→drill, …)',
   install: 'install & build lm-assist FROM THE REPO on this host — dev + prod, every gotcha (for a container/host with NO local lm-assist)',
+  roles: 'worker role + orchestration — set_role, the ⟦WORKER-STATUS⟧ print contract, the 3 report channels, and the agree-gate',
   data: 'store/query structured data (cache/vector/sql); type-aware retrieval, regex/grep, cross-node',
   sessions: 'investigate what happened in a Claude Code run (history, DAG, executions)',
   knowledge: 'search the knowledge base + cross-project/cross-host memory; give feedback',
@@ -302,7 +312,7 @@ const INDEX = buildIndex();
 
 /** The whole skill in ONE response — every playbook concatenated (stays in sync with GUIDES). */
 function buildBootstrap(): string {
-  const order = ['orientation', 'cross-node', 'workflows', 'install', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'github', 'files'];
+  const order = ['orientation', 'cross-node', 'workflows', 'install', 'roles', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'github', 'files'];
   const header = [
     '# lm-assist — capability bootstrap (you have now loaded ALL use cases for this session)',
     '',

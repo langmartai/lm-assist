@@ -161,3 +161,15 @@ test('install synonyms resolve (build, setup, from-repo, not-installed)', async 
 test('index lists the install topic', async () => {
   assert.match(await text({}), /`install`/);
 });
+
+// ── Task 10: roles guide topic ───────────────────────────────────────────────
+
+test('bootstrap + guide expose the roles topic', async () => {
+  const b = (await GUIDE_HANDLERS.bootstrap({})).content[0].text as string;
+  assert.match(b, /Guide: worker role/);
+  const g = await text({ topic: 'roles' });
+  assert.match(g, /⟦WORKER-STATUS⟧/);
+  assert.match(g, /set_role/);
+  assert.match(g, /decide_gate/);
+  for (const syn of ['worker', 'orchestrator', 'agree-gate']) assert.match(await text({ topic: syn }), /Guide: worker role/, `alias ${syn}`);
+});
