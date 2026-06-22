@@ -136,6 +136,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   list_executions: 'read',
   get_execution: 'read',
   memory_projects: 'read',
+  memory_sync_status: 'read',
   memory_cross_host: 'read',
   memory_import_candidates: 'read',
   terminal_list: 'read',

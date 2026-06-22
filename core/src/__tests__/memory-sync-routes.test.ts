@@ -127,3 +127,11 @@ test('sync/enable and pull are local-only', async () => {
   assert.equal(r.success, false);
   assert.equal(r.error.code, 'FORBIDDEN');
 });
+
+test('GET /memory/sync/status returns config + daemon shape', async () => {
+  const r: any = await route('GET', /sync.{1,3}status/).handler({ params: {}, query: {} } as any, {} as any);
+  assert.equal(r.success, true);
+  assert.equal(typeof r.data.config.nodeMode, 'string');
+  assert.ok('homeNode' in r.data.config && 'homeProject' in r.data.config);
+  assert.ok(r.data.daemon && typeof r.data.daemon.mode === 'string');
+});

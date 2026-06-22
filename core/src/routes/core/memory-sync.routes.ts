@@ -20,6 +20,7 @@ import { extractRecords } from '../../memory/record-extract';
 import { selectSyncable } from '../../memory/sync-select';
 import { ingestRecords, IngestRecord } from '../../memory/ingest';
 import { readMemorySyncConfig, writeMemorySyncConfig } from '../../memory/node-mode';
+import { getAutoSyncDaemon } from '../../memory/autosync';
 import { pullFromHome } from '../../memory/mcp-transport';
 import { getHubConfig } from '../../hub-client/hub-config';
 import { getProjectsDir, legacyEncodeProjectPath } from '../../utils/path-utils';
@@ -105,6 +106,15 @@ export function createMemorySyncRoutes(_ctx: RouteContext): RouteHandler[] {
         const projectDir = path.join(getProjectsDir(), b.project);
         const n = ingestRecords(projectDir, b.sourceHost, b.records);
         return wrapResponse({ ingested: n }, start);
+      },
+    },
+    // GET /memory/sync/status — this node's memory-sync config + live autosync daemon state.
+    {
+      method: 'GET',
+      pattern: /^\/memory\/sync\/status$/,
+      handler: async () => {
+        const start = Date.now();
+        return wrapResponse({ config: readMemorySyncConfig(), daemon: getAutoSyncDaemon().getStatus() }, start);
       },
     },
     // POST /memory/sync/enable { homeNode, homeProject, project? } — loopback-only.
