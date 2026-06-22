@@ -182,6 +182,7 @@ export function extractIndexEntries(inp: ExtractInput): MemoryRecord[] {
 /** Dispatch by filename. */
 export function extractRecords(inp: ExtractInput): MemoryRecord[] {
   const base = inp.filename.split('/').pop() || inp.filename;
+  if (base === '_cross-project.md') return []; // lm-assist-managed signpost — not a knowledge record
   if (base === 'CLAUDE.md' || base === 'CLAUDE.local.md') return extractClaudeSections(inp);
   if (base === 'MEMORY.md') return extractIndexEntries(inp);
   return extractMemoryFile(inp);
