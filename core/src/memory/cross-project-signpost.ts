@@ -11,6 +11,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { createMemoryApiImpl } from '../api/memory-api';
+import { getProjectsDir } from '../utils/path-utils';
+import { getProjectSettings } from '../project-settings';
 
 export const SIGNPOST_VERSION = 1;
 export const SIGNPOST_FILE = '_cross-project.md';
@@ -83,4 +86,65 @@ export function ensureSignpostFor(liveMemDir: string, content: string): { wroteF
     wrotePointer = true;
   }
   return { wroteFile, wrotePointer };
+}
+
+// ─── Sweep: write the signpost into every local project ─────────────
+
+export interface ProjectSummaryLite {
+  projectId: string;
+  projectPath: string;
+  hasLive: boolean;
+  fileCount: number;
+}
+
+export interface SweepResult { swept: number; skipped: number; filesWritten: number; disabled?: boolean; }
+
+function nameFromPath(p: string): string { return path.basename(p) || p; }
+
+/** Pure: projects eligible for a signpost — has live memory and not excluded. */
+export function selectEligible(summaries: ProjectSummaryLite[], excludedPaths: string[]): ProjectSummaryLite[] {
+  const excluded = new Set(excludedPaths);
+  return summaries.filter((s) => s.hasLive && !excluded.has(s.projectPath));
+}
+
+/** A stable one-line hook for a project: its MEMORY.md first real title/prose, else "<n> memory entries".
+ *  Ignores our managed boilerplate (the `# Memory Index` heading + the pointer line) so it stays stable. */
+function hookFor(liveMemDir: string, fileCount: number): string {
+  try {
+    const idx = fs.readFileSync(path.join(liveMemDir, 'MEMORY.md'), 'utf-8');
+    for (const raw of idx.split('\n')) {
+      const t = raw.trim();
+      if (!t || t.startsWith('<!--') || t.startsWith('-') || t.includes(SIGNPOST_FILE)) continue;
+      const h = t.replace(/^#+\s*/, '').trim();
+      if (!h || h === 'Memory Index') continue; // our boilerplate title
+      return h.slice(0, 80);
+    }
+  } catch { /* no index */ }
+  return `${fileCount} memory entr${fileCount === 1 ? 'y' : 'ies'}`;
+}
+
+/** Write/refresh the managed signpost into every eligible local project. Gated by the setting. */
+export async function sweepAllProjects(): Promise<SweepResult> {
+  if (!getProjectSettings().crossProjectSignpostEnabled) {
+    return { swept: 0, skipped: 0, filesWritten: 0, disabled: true };
+  }
+  const res = await createMemoryApiImpl().listProjects();
+  const all: ProjectSummaryLite[] = (res.success && Array.isArray(res.data)) ? res.data as any : [];
+  const eligible = selectEligible(all, getProjectSettings().excludedPaths);
+
+  const refs: ProjectRef[] = eligible.map((s) => ({
+    slug: s.projectId,
+    name: nameFromPath(s.projectPath),
+    hook: hookFor(path.join(getProjectsDir(), s.projectId, 'memory'), s.fileCount),
+  }));
+
+  let filesWritten = 0;
+  for (const s of eligible) {
+    const self: ProjectRef = { slug: s.projectId, name: nameFromPath(s.projectPath) };
+    const others = refs.filter((r) => r.slug !== s.projectId);
+    const memDir = path.join(getProjectsDir(), s.projectId, 'memory');
+    const r = ensureSignpostFor(memDir, renderSignpost(self, others));
+    if (r.wroteFile || r.wrotePointer) filesWritten++;
+  }
+  return { swept: eligible.length, skipped: all.length - eligible.length, filesWritten };
 }
