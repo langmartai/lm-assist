@@ -41,6 +41,7 @@ import { createMemoryHarvestRoutes } from './memory-harvest.routes';
 import { createMemoryProposalsRoutes } from './memory-proposals.routes';
 import { createMemoryReconcileRoutes } from './memory-reconcile.routes';
 import { createMemoryValidateRoutes } from './memory-validate.routes';
+import { createMemorySyncRoutes } from './memory-sync.routes';
 import { createRuleMapRoutes } from './rule-map.routes';
 import { createBrowserRoutes } from './browser.routes';
 import { createCcrRoutes } from './ccr.routes';
@@ -92,6 +93,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createMemoryProposalsRoutes(ctx),
     ...createMemoryReconcileRoutes(ctx),
     ...createMemoryValidateRoutes(ctx),
+    ...createMemorySyncRoutes(ctx),
     ...createRuleMapRoutes(ctx),
     ...createBrowserRoutes(ctx),
     ...createCcrRoutes(ctx),

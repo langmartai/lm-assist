@@ -1,37 +1,53 @@
 /**
  * Memory Auto-Sync Daemon — Stream A (write side), cross-node sync.
  *
- * Realizes the design-doc §4 / §10 pipeline:
+ * Transport is DIRECT-MCP over the hub relay (NOT git):
  *
  *   watch (MemoryCache chokidar) → detect record-level delta (memory-map.js
- *   --changes) → filter/guard → register → mirror+commit+push (memory/<host>/)
- *   → hub-notify → (on remote notify) git fetch + cache refresh
+ *   --changes) → filter/guard (host-local, temporary, credentials) →
+ *   push-back to the home node (POST /memory/ingest, relayed) → hub-notify →
+ *   (on remote notify) register/refresh the peer's mirror in the cache
  *
- * SAFETY: observe-only by DEFAULT. Set MEMORY_AUTOSYNC=on to enable real git
- * writes + hub notifications. In `off`/`observe` mode the daemon detects,
- * filters, and LOGS the sync PLAN ("would mirror / would notify / would
- * fetch") but performs NO git mutation and writes to NO file outside its log.
+ * Persistence model (see core/src/memory/node-mode.ts):
+ *   - EPHEMERAL node (cloud worker): its memory dir is a working copy. New
+ *     persistent + project-domain memory is pushed back to the persistent
+ *     `homeNode` so it survives the VM. `persistence: temporary` files stay local.
+ *   - PERSISTENT node (home): memory is canonical here; it does NOT push back
+ *     (cloud workers pull its memory at bootstrap — see ccr-cloud.ts).
  *
- * Per-host-folder ownership: a node ever only writes `memory/<this-host>/`.
- * Never another host's folder, never repo-root files. Never force-push.
+ * SAFETY: observe-only by DEFAULT. Set MEMORY_AUTOSYNC=on to enable real
+ * pushes + hub notifications. In `off`/`observe` mode the daemon detects,
+ * filters, and LOGS the sync PLAN ("would push / would notify / would refresh")
+ * but performs NO transport and writes to NO file outside its log.
+ *
+ * Per-host-folder ownership: a node's records land under `memory/<that-node>/`
+ * on the receiver. A node never overwrites another node's folder.
  *
  * Reuses existing infra (does not reimplement):
  *   - MemoryCache.onMemoryChange  — the chokidar watcher (no second watcher).
  *   - core/scripts/memory-map.js  — deterministic record-level delta source.
  *   - classifyShareability        — host-local vs project-domain gate.
+ *   - mcp-transport pushToHome    — relayed key-in-body transport (peer-client pattern).
  *   - HubClient.sendMemoryUpdated / onMemoryUpdated — cross-node notification.
  *
- * See docs/plans/2026-06-06-record-level-memory-map-and-sync.md (§4, §10).
+ * Supersedes the git-mirror transport in docs/plans/2026-06-06-record-level-memory-map-and-sync.md;
+ * see docs/superpowers/specs/2026-06-22-direct-mcp-memory-sync-design.md.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { execFile, execFileSync } from 'child_process';
+import { createHash } from 'crypto';
+import { execFile } from 'child_process';
 import { getProjectsDir, decodePath } from '../utils/path-utils';
 import { parseFrontmatter, isValidMemoryFrontmatter } from '../utils/frontmatter';
 import { classifyShareability } from '../utils/memory-shareability';
 import { getHubClient, MemoryUpdatedMessage } from '../hub-client';
+import { getHubConfig } from '../hub-client/hub-config';
+import { selectSyncable } from './sync-select';
+import { readMemorySyncConfig, MemorySyncConfig } from './node-mode';
+import { extractRecords, MemoryRecord } from './record-extract';
+import { pushToHome } from './mcp-transport';
 
 // ─── Mode ───────────────────────────────────────────────────
 
@@ -43,6 +59,27 @@ export function resolveMode(): AutoSyncMode {
   if (v === 'on') return 'on';
   if (v === 'off') return 'off';
   return 'observe';
+}
+
+// ─── Push-back planning (pure) ──────────────────────────────
+
+export interface PushPlan {
+  action: 'push' | 'none';
+  homeNode: string | null;
+  records: MemoryRecord[];
+}
+
+/**
+ * Pure: given this node's sync config + the changed records, decide what to push back to home.
+ * Only an EPHEMERAL node with a configured homeNode pushes; persistent (home) nodes never do.
+ * The records are narrowed to persistent + shareable (selectSyncable); temporary/host-local drop.
+ */
+export function planPushBack(cfg: MemorySyncConfig, changed: MemoryRecord[]): PushPlan {
+  if (cfg.nodeMode !== 'ephemeral' || !cfg.homeNode) return { action: 'none', homeNode: null, records: [] };
+  const records = selectSyncable(changed);
+  return records.length
+    ? { action: 'push', homeNode: cfg.homeNode, records }
+    : { action: 'none', homeNode: cfg.homeNode, records: [] };
 }
 
 // ─── Constants ──────────────────────────────────────────────
@@ -246,28 +283,60 @@ export class MemoryAutoSyncDaemon {
     const hostId = this.resolveHostId(projectPath);
     const recordIds = syncable.map((s) => s.recordId);
     const files = [...new Set(syncable.map((s) => s.file))];
+    const cfg = readMemorySyncConfig();
+    const sourceHost = hostId || getHubClient().getStatus().gatewayId;
 
     if (this.mode !== 'on') {
-      // OBSERVE: emit the full sync PLAN without any mutation.
+      // OBSERVE: emit the sync PLAN without any transport.
       this.counts.planned++;
-      const mirrorDir = hostId ? path.join(projectPath, 'memory', hostId) : null;
-      this.log(slug, 'would-mirror', {
-        hostId: hostId || '(unresolved — would skip)',
-        targetDir: mirrorDir ? path.relative(projectPath, mirrorDir) : null,
-        files,
-        note: mirrorDir
-          ? `would copy ${files.length} file(s) into memory/${hostId}/, update MEMORY.md, git add/commit/push (scoped to that folder only)`
-          : 'no host-id / no repo mirror — would skip (nothing to sync)',
-      });
-      this.log(slug, 'would-notify', {
-        hub: 'memory_updated', host: hostId, recordIds,
-        note: 'would send hub notification after successful push',
-      });
+      if (cfg.nodeMode === 'ephemeral' && cfg.homeNode) {
+        this.log(slug, 'would-push', {
+          homeNode: cfg.homeNode, sourceHost: sourceHost || '(unresolved — would skip)',
+          files, recordIds,
+          note: `would POST /memory/ingest ${files.length} file(s) to home node ${cfg.homeNode} (direct-MCP relay, no git) then hub-notify`,
+        });
+      } else {
+        this.log(slug, 'would-skip-persistent', {
+          nodeMode: cfg.nodeMode, homeNode: cfg.homeNode, files,
+          note: 'persistent/home node — memory is canonical here; nothing to push back',
+        });
+      }
       return;
     }
 
-    // ── on-mode: real mirror + commit + push + notify ──
-    await this.mirrorAndPush(projectPath, slug, hostId, files, recordIds);
+    // ── on-mode: build records for the syncable files, plan, push to home ──
+    const records: MemoryRecord[] = [];
+    for (const s of syncable) {
+      try {
+        const fp = path.join(liveDir, s.file);
+        const content = fs.readFileSync(fp, 'utf-8');
+        const st = fs.statSync(fp);
+        const recs = extractRecords({
+          node: sourceHost || '', project: slug, source: 'live',
+          filename: s.file, content, mtimeMs: st.mtimeMs, size: st.size,
+        });
+        if (recs[0]) records.push(recs[0]);
+      } catch { /* unreadable — skip */ }
+    }
+    // An ephemeral node syncs only its configured project (cfg.project = the cloud's local slug).
+    if (cfg.project && slug !== cfg.project) {
+      this.log(slug, 'skip-other-project', {
+        configuredProject: cfg.project,
+        note: 'ephemeral node syncs only its configured project',
+      });
+      return;
+    }
+    const plan = planPushBack(cfg, records);
+    if (plan.action !== 'push') {
+      this.log(slug, 'no-push-target', {
+        nodeMode: cfg.nodeMode, homeNode: cfg.homeNode,
+        note: 'persistent/home node or no syncable records — memory stays local (canonical)',
+      });
+      return;
+    }
+    // Land in the home node's project slug (may differ from the local slug on a cloud clone).
+    const targetProject = cfg.homeProject || slug;
+    await this.pushToHomeNode(slug, targetProject, liveDir, plan.homeNode!, sourceHost, plan.records);
   }
 
   // ─── Guards ───────────────────────────────────────────────
@@ -287,6 +356,7 @@ export class MemoryAutoSyncDaemon {
     catch { return 'unreadable'; }
     const { frontmatter } = parseFrontmatter(content);
     if (!isValidMemoryFrontmatter(frontmatter)) return 'invalid-frontmatter';
+    if (frontmatter.persistence === 'temporary') return 'temporary'; // working-copy scratch — never syncs
     const share = classifyShareability(file, frontmatter);
     if (share === 'host-local') return 'host-local';
     // project-domain + ambiguous are syncable.
@@ -347,89 +417,80 @@ export class MemoryAutoSyncDaemon {
     return id;
   }
 
-  // ─── on-mode mirror + push + notify (NEVER runs in observe) ──
+  // ─── on-mode push-back to home (direct-MCP; NEVER runs in observe) ──
 
-  private async mirrorAndPush(
-    projectPath: string, slug: string, hostId: string | null,
-    files: string[], recordIds: string[],
+  /**
+   * Push the changed records to the home node's per-host mirror via the hub relay
+   * (POST /memory/ingest, access-key in body), then hub-notify so the receiver
+   * registers/refreshes the new mirror folder. The receiver files them under
+   * memory/<sourceHost>/ — this node never writes another node's folder.
+   */
+  private async pushToHomeNode(
+    slug: string, targetProject: string, liveDir: string, homeNode: string,
+    sourceHost: string | null, records: MemoryRecord[],
   ): Promise<void> {
-    if (!hostId) { this.log(slug, 'skip-no-host', {}); return; }
-    const repoBase = path.join(projectPath, 'memory');
-    const mirrorDir = path.join(repoBase, hostId);
-    if (!fs.existsSync(repoBase) || !fs.existsSync(path.join(projectPath, '.git'))) {
-      this.log(slug, 'skip-no-repo', { repoBase }); return;
-    }
-    try {
-      fs.mkdirSync(mirrorDir, { recursive: true });
-      const liveDir = path.join(getProjectsDir(), slug, 'memory');
-      for (const f of files) {
-        const src = path.join(liveDir, f);
-        if (!fs.existsSync(src)) continue;
-        fs.copyFileSync(src, path.join(mirrorDir, f));
-      }
-      this.counts.mirrored++;
-      // Update the host's MEMORY.md index (mirror live index 1:1 if present).
-      const liveIndex = path.join(liveDir, 'MEMORY.md');
-      if (fs.existsSync(liveIndex)) {
-        fs.copyFileSync(liveIndex, path.join(mirrorDir, 'MEMORY.md'));
-      }
-      // git add/commit/push scoped to memory/<host>/ ONLY. Never force-push.
-      const rel = path.relative(projectPath, mirrorDir);
-      const git = (a: string[]) => execFileSync('git', a, { cwd: projectPath, encoding: 'utf-8' });
-      git(['add', '--', rel]);
-      const status = git(['status', '--porcelain', '--', rel]).trim();
-      if (!status) { this.log(slug, 'nothing-to-commit', { rel }); return; }
-      git(['commit', '-m',
-        `memory(${hostId}): autosync ${files.length} record(s) [${recordIds.length} ids]`,
-        '--', rel]);
-      this.counts.pushed++;
-      git(['push']); // plain push — no --force, ever
-      this.log(slug, 'pushed', { hostId, rel, files });
+    if (!sourceHost) { this.log(slug, 'skip-no-host', { note: 'no host id / gatewayId to attribute the push' }); return; }
+    const key = getHubConfig().apiKey || '';
+    if (!key) { this.log(slug, 'skip-no-key', { note: 'node not enrolled (no hub apiKey)' }); return; }
 
-      // Notify other nodes (data already on remote via git).
+    // Read each file's whole bytes (frontmatter + body) so the home re-extracts identically.
+    const payload: Array<{ file: string; content: string; contentHash: string }> = [];
+    for (const r of records) {
+      try {
+        const content = fs.readFileSync(path.join(liveDir, r.file), 'utf-8');
+        payload.push({ file: r.file, content, contentHash: createHash('sha256').update(content).digest('hex') });
+      } catch { /* unreadable — skip */ }
+    }
+    if (!payload.length) { this.log(slug, 'push-noop', { note: 'no readable files to push' }); return; }
+
+    try {
+      // Push into the home node's project (targetProject), filed under this node's mirror.
+      const ingested = await pushToHome(homeNode, targetProject, sourceHost, payload, key);
+      this.counts.pushed++;
+      this.log(slug, 'pushed', { homeNode, targetProject, sourceHost, ingested, files: payload.map((p) => p.file) });
+
+      // Notify so the home registers/refreshes memory/<sourceHost>/ in its cache (under targetProject).
       const hub = getHubClient();
-      const ok = hub.sendMemoryUpdated({ project: slug, host: hostId, recordIds, ts: Date.now() });
-      if (ok) { this.counts.notified++; this.log(slug, 'notified', { host: hostId, recordIds }); }
+      const ok = hub.sendMemoryUpdated({ project: targetProject, host: sourceHost, recordIds: records.map((r) => r.recordId), ts: Date.now() });
+      if (ok) { this.counts.notified++; this.log(slug, 'notified', { host: sourceHost }); }
       else this.log(slug, 'notify-skip', { reason: 'hub not connected' });
     } catch (err) {
       this.counts.errors++;
-      this.log(slug, 'mirror-push-error', { error: String(err) });
+      this.log(slug, 'push-error', { error: String(err) });
     }
   }
 
-  // ─── Receive: another node pushed; fetch its folder + refresh cache ──
+  // ─── Receive: a peer pushed to our mirror + notified; register/refresh cache ──
 
   private onRemoteUpdate(m: MemoryUpdatedMessage): void {
     const slug = m.project;
     let projectPath: string;
     try { projectPath = decodePath(slug); } catch { return; }
-    const thisHost = this.resolveHostId(projectPath);
+    const thisHost = this.resolveHostId(projectPath) || getHubClient().getStatus().gatewayId;
     if (m.host && thisHost && m.host === thisHost) {
       this.log(slug, 'remote-self-echo', { host: m.host }); return; // our own push echoed back
     }
+    if (!m.host) { this.log(slug, 'remote-no-host', {}); return; }
     if (this.mode !== 'on') {
-      this.log(slug, 'would-fetch', {
+      this.log(slug, 'would-refresh', {
         fromHost: m.host, recordIds: m.recordIds,
-        note: `would git fetch + checkout memory/${m.host}/ and refresh cache`,
+        note: `would register/refresh memory/${m.host}/ in the cache (data delivered via direct-MCP push)`,
       });
       return;
     }
-    // on-mode: fetch only the sender's mirror folder, then refresh cache.
+    // on-mode: the peer's records were already written into memory/<m.host>/ by its push
+    // (POST /memory/ingest). Register that folder with the cache so the map re-indexes it.
     try {
-      if (!fs.existsSync(path.join(projectPath, '.git'))) { this.log(slug, 'remote-no-repo', {}); return; }
       const rel = path.posix.join('memory', m.host);
-      const git = (a: string[]) => execFileSync('git', a, { cwd: projectPath, encoding: 'utf-8' });
-      git(['fetch', 'origin']);
-      git(['checkout', 'origin/HEAD', '--', rel]); // only the sender's folder
       this.counts.fetched++;
-      this.log(slug, 'fetched', { fromHost: m.host, rel });
+      this.log(slug, 'refreshed', { fromHost: m.host, rel });
       try {
         const { getMemoryCache } = require('../memory-cache');
         getMemoryCache().addWatchPath(path.join(projectPath, rel));
       } catch { /* cache refresh best-effort */ }
     } catch (err) {
       this.counts.errors++;
-      this.log(slug, 'fetch-error', { error: String(err) });
+      this.log(slug, 'refresh-error', { error: String(err) });
     }
   }
 

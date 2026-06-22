@@ -808,11 +808,22 @@ export const ruleMapToolDef = {
   },
 };
 
+export const memorySyncStatusToolDef = {
+  name: 'memory_sync_status',
+  description:
+    "Show this node's cross-node memory-sync state: its mode (persistent home node vs ephemeral " +
+    'cloud worker), the home node + project it syncs with, and the live autosync daemon status ' +
+    '(observe/on, counts of pushed/refreshed/errors). Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: { type: 'object' as const, properties: {} },
+};
+
 export const EXPANDED_TOOL_DEFS = [
   // read
   listExecutionsToolDef,
   getExecutionToolDef,
   memoryProjectsToolDef,
+  memorySyncStatusToolDef,
   memoryCrossHostToolDef,
   memoryImportCandidatesToolDef,
   terminalListToolDef,
@@ -959,6 +970,20 @@ async function handleMemoryProjects(): Promise<McpToolResult> {
     return ok(pretty(await workerGet('/memory/projects')));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleMemorySyncStatus(): Promise<McpToolResult> {
+  // Prefer the live Core view (config + running daemon); fall back to the on-disk config if Core is down.
+  try {
+    return ok(pretty(await workerGet('/memory/sync/status')));
+  } catch {
+    try {
+      const { readMemorySyncConfig } = await import('../../memory/node-mode');
+      return ok(pretty({ config: readMemorySyncConfig(), daemon: null, note: 'Core unreachable — on-disk config only' }));
+    } catch (e) {
+      return err(e instanceof Error ? e.message : String(e));
+    }
   }
 }
 
@@ -1531,6 +1556,7 @@ export const EXPANDED_HANDLERS: Record<
   list_executions: () => handleListExecutions(),
   get_execution: handleGetExecution,
   memory_projects: () => handleMemoryProjects(),
+  memory_sync_status: () => handleMemorySyncStatus(),
   memory_cross_host: handleMemoryCrossHost,
   memory_import_candidates: handleMemoryImportCandidates,
   terminal_list: () => handleTerminalList(),

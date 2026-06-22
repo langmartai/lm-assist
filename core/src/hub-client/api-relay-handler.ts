@@ -120,6 +120,7 @@ export class ApiRelayHandler {
     '/mcp-call',     // generic expanded-tool shim
     '/session-messages', // cross-node session-to-session messaging (node-routed)
     '/data',          // generic data service (access-key gated; see routes/core/data.routes.ts)
+    '/memory',        // cross-node memory sync (export/ingest; access-key in body when relayed)
   ];
 
   /**

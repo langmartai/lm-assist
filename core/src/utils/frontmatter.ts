@@ -37,6 +37,8 @@ export interface MemoryFrontmatter {
   lastValidatedMs?: number;
   /** RecordId that supersedes this record -- set by the apply pipeline. */
   supersededBy?: string;
+  /** Persistence tier -- `temporary` opts a file out of cross-node sync (default persistent). */
+  persistence?: 'persistent' | 'temporary';
   /** Any extra keys the parser found -- kept for forward compatibility */
   extra?: Record<string, string>;
 }
@@ -104,6 +106,9 @@ export function parseFrontmatter(content: string): ParsedFrontmatter {
       if (!isNaN(n) && n > 0) fm.lastValidatedMs = n; else extra[key] = value;
     } else if (key === 'supersededBy') {
       if (value) fm.supersededBy = value;
+    } else if (key === 'persistence') {
+      if (value === 'temporary' || value === 'persistent') fm.persistence = value;
+      else extra[key] = value;
     } else {
       extra[key] = value;
     }
