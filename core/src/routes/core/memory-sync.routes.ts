@@ -23,7 +23,7 @@ import { readMemorySyncConfig, writeMemorySyncConfig } from '../../memory/node-m
 import { getAutoSyncDaemon } from '../../memory/autosync';
 import { pullFromHome } from '../../memory/mcp-transport';
 import { getHubConfig } from '../../hub-client/hub-config';
-import { getProjectsDir, legacyEncodeProjectPath } from '../../utils/path-utils';
+import { getProjectsDir, legacyEncodeProjectPath, decodePath } from '../../utils/path-utils';
 import { isLoopbackAddress } from '../../auth/enroll-exempt';
 import { createHash } from 'crypto';
 import * as fs from 'fs';
@@ -31,25 +31,37 @@ import * as path from 'path';
 
 function sha256(s: string): string { return createHash('sha256').update(s).digest('hex'); }
 
+/** Credential-shaped filenames are never exported, regardless of shareability (mirrors autosync). */
+const CREDENTIAL_PATTERNS: RegExp[] = [/token/i, /\bkey\b/i, /cookie/i, /password/i, /secret/i, /credential/i];
+
 function relaySource(req: ParsedRequest): string | undefined {
   const v = req.headers?.['x-relay-source'];
   return Array.isArray(v) ? v[0] : v;
 }
 
-/** Loopback root, or a hub-relayed fleet peer carrying the node key in the body. */
+/**
+ * Authorize an export/ingest call. The hub relay always reaches Core over loopback
+ * (api-relay-handler.makeLocalRequest → 127.0.0.1, setting `x-relay-source: hub`), so:
+ *   - non-loopback caller            → REJECT (a remote client can spoof x-relay-source, but not its IP)
+ *   - loopback + x-relay-source:hub  → relayed cross-node call: require the node key in the body
+ *   - loopback, no relay header      → genuine local caller (already past Core's api-token gate)
+ */
 function authorized(req: ParsedRequest, bodyKey: unknown): boolean {
-  if (isLoopbackAddress(req.clientIp)) return true;
-  return relaySource(req) === 'hub' && typeof bodyKey === 'string' && bodyKey.length > 0;
+  if (!isLoopbackAddress(req.clientIp)) return false;
+  if (relaySource(req) === 'hub') return typeof bodyKey === 'string' && bodyKey.length > 0;
+  return true;
 }
 
-/** Pull the home node's `homeProject` memory and ingest it into the local `localProject`'s
- *  home-node mirror, so the local Claude Code session can see it. Returns the count written. */
+/** Pull the home node's `homeProject` memory and ingest it into the local project's per-host
+ *  mirror dir `<cwd>/memory/<homeNode>/` — the same location memory-cache + the MCP tools already
+ *  read (resolveProject's repoBaseDir). Returns the count written. */
 async function doPull(homeNode: string, homeProject: string, localProject: string): Promise<number> {
   const key = getHubConfig().apiKey || '';
   if (!key) return 0;
   const records = await pullFromHome(homeNode, homeProject, 0, key);
-  const projectDir = path.join(getProjectsDir(), localProject);
-  return ingestRecords(projectDir, homeNode, records.map((r) => ({ file: r.file, content: r.content, contentHash: r.contentHash })));
+  let cwd: string;
+  try { cwd = decodePath(localProject); } catch { return 0; }
+  return ingestRecords(cwd, homeNode, records.map((r) => ({ file: r.file, content: r.content, contentHash: r.contentHash })));
 }
 
 export interface ExportedRecord {
@@ -79,6 +91,7 @@ export function createMemorySyncRoutes(_ctx: RouteContext): RouteHandler[] {
         try { names = fs.readdirSync(liveDir); } catch { names = []; }
         for (const name of names) {
           if (!name.endsWith('.md') || name.startsWith('.')) continue;
+          if (CREDENTIAL_PATTERNS.some((re) => re.test(name))) continue; // never export credential-shaped files
           const fp = path.join(liveDir, name);
           let st: fs.Stats;
           try { st = fs.statSync(fp); } catch { continue; }
@@ -103,8 +116,10 @@ export function createMemorySyncRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!b.project || !b.sourceHost || !Array.isArray(b.records)) {
           return wrapError('INVALID_INPUT', 'project, sourceHost, records[] required', start);
         }
-        const projectDir = path.join(getProjectsDir(), b.project);
-        const n = ingestRecords(projectDir, b.sourceHost, b.records);
+        // Write into <cwd>/memory/<sourceHost>/ — the per-host mirror dir memory-cache reads.
+        let cwd: string;
+        try { cwd = decodePath(b.project); } catch { return wrapError('INVALID_INPUT', 'cannot resolve project', start); }
+        const n = ingestRecords(cwd, b.sourceHost, b.records);
         return wrapResponse({ ingested: n }, start);
       },
     },

@@ -17,6 +17,19 @@ Status: IMPLEMENTED (2026-06-22). Branch `feat/direct-mcp-memory-sync`; plan
   the home node and a cloud clone. `memory-sync.json` carries `project` (this node's LOCAL slug, where
   pulled memory is written + local changes detected) and `homeProject` (the home node's slug, the
   export source / push target). `/memory/sync/enable` accepts the agent's `cwd` and encodes it.
+- **Mirror location = `<cwd>/memory/<host>/`** (the decoded repo dir, `memory-cache`'s `repoBaseDir`),
+  NOT the live auto-memory dir. This is the existing per-host mirror convention that `memory-cache`
+  (`resolveProject`/`getForProject`), `memory-api` (`crossHost`/`importCandidates`), and `memory-map.js`
+  already read — so synced memory is immediately visible to the MCP tools. A node's OWN curated memory
+  stays in the live dir `~/.claude/projects/<slug>/memory/*.md` (what `/memory/export` reads). Files are
+  written directly (no git commit); the user/agent may commit them to persist in the repo.
+- **Auth is loopback-gated.** The hub relay always reaches Core over loopback (127.0.0.1, setting
+  `x-relay-source: hub`), so the export/ingest gate REJECTS any non-loopback caller even if it spoofs
+  `x-relay-source` — a remote client can forge the header but not its IP. Relayed (loopback + header)
+  calls additionally require the node key in the body. `/memory/export` also skips credential-shaped
+  filenames (same guard as the push side).
+- **Additive-only (known limitation):** deletions/supersessions are NOT propagated — a memory file
+  removed on one node leaves its mirror on the peer until manually cleaned. Tombstones are future work.
 - **Push-primary delivery.** Push-back writes directly to the home (`POST /memory/ingest`) for
   survival, then hub-notifies; the receiver's `onRemoteUpdate` registers/refreshes the peer's mirror in
   the cache (the data was already delivered) — it does not git-fetch. The git mirror+commit+push and

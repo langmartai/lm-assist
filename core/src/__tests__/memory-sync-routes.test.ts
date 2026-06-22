@@ -12,6 +12,7 @@ process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'msr-cfg-
 
 import { createMemorySyncRoutes } from '../routes/core/memory-sync.routes';
 import { readMemorySyncConfig } from '../memory/node-mode';
+import { decodePath } from '../utils/path-utils';
 import type { ParsedRequest } from '../routes/index';
 
 const SLUG = '-tmp-proj';
@@ -72,21 +73,43 @@ test('unauthorized (not loopback, not relayed) is rejected', async () => {
   assert.equal(r.error.code, 'FORBIDDEN');
 });
 
-test('relayed call (x-relay-source:hub + body key) is authorized', async () => {
+test('relayed call (loopback + x-relay-source:hub + body key) is authorized', async () => {
   const req = { method: 'POST', path: '/memory/export', params: {}, query: {},
     body: { project: SLUG, key: 'sk-xyz' }, headers: { 'x-relay-source': 'hub' },
-    clientIp: '10.0.0.9' } as ParsedRequest;
+    clientIp: '127.0.0.1' } as ParsedRequest; // the relay always reaches Core over loopback
   const r: any = await route('POST', /export/).handler(req, {} as any);
   assert.equal(r.success, true);
 });
 
-test('ingest writes peer records under the project mirror', async () => {
-  const body = { project: SLUG, sourceHost: 'gw-peer',
+test('a REMOTE caller spoofing x-relay-source:hub is still rejected (loopback-gated)', async () => {
+  const req = { method: 'POST', path: '/memory/export', params: {}, query: {},
+    body: { project: SLUG, key: 'sk-anything' }, headers: { 'x-relay-source': 'hub' },
+    clientIp: '10.0.0.9' } as ParsedRequest;
+  const r: any = await route('POST', /export/).handler(req, {} as any);
+  assert.equal(r.success, false);
+  assert.equal(r.error.code, 'FORBIDDEN');
+});
+
+test('export skips credential-shaped filenames', async () => {
+  // seedMemory() (called above) wrote only safe files; add a credential-named one here.
+  const dir = path.join(TMP, 'projects', SLUG, 'memory');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'project_api_token.md'), '---\nname: tok\ndescription: d\ntype: project\n---\nsecret-ish');
+  const r: any = await route('POST', /export/).handler(localReq({ project: SLUG }), {} as any);
+  const files = r.data.records.map((x: any) => x.file);
+  assert.ok(!files.includes('project_api_token.md'), files.join(','));
+});
+
+test('ingest writes peer records under the decoded repo mirror (<cwd>/memory/<host>/)', async () => {
+  const INGEST_SLUG = '-tmp-msringest-proj'; // lowercase legacy slug; decodePath -> /tmp/msringest/proj
+  const cwd = decodePath(INGEST_SLUG);
+  const body = { project: INGEST_SLUG, sourceHost: 'gw-peer',
     records: [{ file: 'p.md', content: 'peer content', contentHash: 'ph1' }] };
   const r: any = await route('POST', /ingest/).handler(localReq(body), {} as any);
   assert.equal(r.success, true);
   assert.equal(r.data.ingested, 1);
-  assert.ok(fs.existsSync(path.join(TMP, 'projects', SLUG, 'memory', 'gw-peer', 'p.md')));
+  assert.ok(fs.existsSync(path.join(cwd, 'memory', 'gw-peer', 'p.md')), `expected mirror under ${cwd}/memory/gw-peer`);
+  try { fs.rmSync(path.join(cwd, 'memory'), { recursive: true, force: true }); } catch { /* cleanup */ }
 });
 
 test('ingest validates required fields', async () => {
