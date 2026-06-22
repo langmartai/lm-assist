@@ -1,6 +1,34 @@
 # Direct-MCP cross-node memory sync + persistence tiers
 
-Status: DESIGN (2026-06-22, approved in brainstorming).
+Status: IMPLEMENTED (2026-06-22). Branch `feat/direct-mcp-memory-sync`; plan
+`docs/superpowers/plans/2026-06-22-direct-mcp-memory-sync.md`. 77 unit tests, clean prod build.
+
+## Implementation notes (deviations from the original design, all deliberate)
+
+- **`/memory/export` is a POST** (not GET): the access-key must ride in the body because the hub
+  `/proxy` drops the `x-lm-access-key` header (same reason the data service POSTs its export).
+- **Transport reuses the data-service pattern** (`core/src/data/peer-client.ts`): relay via
+  `/api/tier-agent/machines/<id>/proxy<path>` with the node hub apiKey as Bearer + key in body.
+  `pullFromHome`/`pushToHome` in `core/src/memory/mcp-transport.ts`.
+- **Auth gate** for `/memory/export|ingest` is loopback-local **or** hub-relayed (`x-relay-source:hub`,
+  relay-set + client-stripped) + a body key — fleet-internal trust. It is **not** the data-service
+  AccessManager (memory is not a dataset); Core's api-token already guards non-loopback requests.
+- **Two project slugs.** Memory dirs are keyed by the cwd-encoded project slug, which differs between
+  the home node and a cloud clone. `memory-sync.json` carries `project` (this node's LOCAL slug, where
+  pulled memory is written + local changes detected) and `homeProject` (the home node's slug, the
+  export source / push target). `/memory/sync/enable` accepts the agent's `cwd` and encodes it.
+- **Push-primary delivery.** Push-back writes directly to the home (`POST /memory/ingest`) for
+  survival, then hub-notifies; the receiver's `onRemoteUpdate` registers/refreshes the peer's mirror in
+  the cache (the data was already delivered) — it does not git-fetch. The git mirror+commit+push and
+  git-fetch transport are removed.
+- **Bootstrap pull is explicit:** `POST /memory/sync/enable` (loopback) writes the config and pulls
+  now; the cloud bootstrap instruction emits this as a one-time background step. `memory_sync_status`
+  MCP tool + `GET /memory/sync/status` surface state.
+- **Safety unchanged:** `MEMORY_AUTOSYNC` defaults to **observe** (logs the plan, no transport).
+
+---
+
+## Original design (approved in brainstorming)
 
 ## Goal
 
