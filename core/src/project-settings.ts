@@ -23,6 +23,8 @@ export interface ProjectSettings {
   dataSyncPeriodSec: number;
   /** How often (seconds) to run a full reconcile against all peers. Default 300. */
   dataReconcileSec: number;
+  /** Auto-write the managed `_cross-project.md` signpost into every project's memory dir. Default true. */
+  crossProjectSignpostEnabled: boolean;
 }
 
 // ── Constants ──────────────────────────────────────────
@@ -35,6 +37,7 @@ const DEFAULTS: ProjectSettings = {
   dataServiceEnabled: false,
   dataSyncPeriodSec: 15,
   dataReconcileSec: 300,
+  crossProjectSignpostEnabled: true,
 };
 
 // ── Mtime Cache ──────────────────────────────────────────
@@ -62,6 +65,7 @@ export function getProjectSettings(): ProjectSettings {
       dataServiceEnabled: typeof data.dataServiceEnabled === 'boolean' ? data.dataServiceEnabled : DEFAULTS.dataServiceEnabled,
       dataSyncPeriodSec: typeof data.dataSyncPeriodSec === 'number' ? data.dataSyncPeriodSec : DEFAULTS.dataSyncPeriodSec,
       dataReconcileSec: typeof data.dataReconcileSec === 'number' ? data.dataReconcileSec : DEFAULTS.dataReconcileSec,
+      crossProjectSignpostEnabled: typeof data.crossProjectSignpostEnabled === 'boolean' ? data.crossProjectSignpostEnabled : DEFAULTS.crossProjectSignpostEnabled,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -84,6 +88,7 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     dataServiceEnabled: typeof partial.dataServiceEnabled === 'boolean' ? partial.dataServiceEnabled : current.dataServiceEnabled,
     dataSyncPeriodSec: typeof partial.dataSyncPeriodSec === 'number' ? partial.dataSyncPeriodSec : current.dataSyncPeriodSec,
     dataReconcileSec: typeof partial.dataReconcileSec === 'number' ? partial.dataReconcileSec : current.dataReconcileSec,
+    crossProjectSignpostEnabled: typeof partial.crossProjectSignpostEnabled === 'boolean' ? partial.crossProjectSignpostEnabled : current.crossProjectSignpostEnabled,
   };
 
   // Ensure parent directory exists
