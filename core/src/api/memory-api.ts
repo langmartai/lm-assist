@@ -439,29 +439,32 @@ export function createMemoryApiImpl(deps: MemoryApiDeps = {}): MemoryApi {
           return wrapResponse(summaries, start);
         }
         for (const slug of fs.readdirSync(projectsDir)) {
-          const projectStorage = path.join(projectsDir, slug);
-          if (!fs.statSync(projectStorage).isDirectory()) continue;
-          const liveMem = path.join(projectStorage, 'memory');
-          let cwd: string;
+          // One unreadable/dangling project entry must not sink the whole
+          // listing. fs.statSync throws for a dangling symlink or an entry
+          // removed mid-scan (TOCTOU), and decodePath / getForProject can throw
+          // too — skip the bad entry the way every other scan loop here does.
           try {
-            cwd = decodePath(slug);
+            const projectStorage = path.join(projectsDir, slug);
+            if (!fs.statSync(projectStorage).isDirectory()) continue;
+            const liveMem = path.join(projectStorage, 'memory');
+            const cwd = decodePath(slug);
+            const snap = cache.resolveProject(cwd);
+            if (!fs.existsSync(liveMem) && !snap.repoBaseDir) continue;
+            const { dirs } = cache.getForProject(cwd, { sources: 'all' });
+            const fileCount = dirs.reduce((sum, d) => sum + d.files.length, 0);
+            const maxMtime = dirs.reduce((m, d) => Math.max(m, d.maxMtimeMs), 0);
+            summaries.push({
+              projectId: snap.projectId,
+              projectPath: snap.projectPath,
+              hasLive: fs.existsSync(liveMem),
+              hasRepo: !!snap.repoBaseDir,
+              hostCount: snap.hosts.length,
+              fileCount,
+              maxMtimeMs: maxMtime,
+            });
           } catch {
             continue;
           }
-          const snap = cache.resolveProject(cwd);
-          if (!fs.existsSync(liveMem) && !snap.repoBaseDir) continue;
-          const { dirs } = cache.getForProject(cwd, { sources: 'all' });
-          const fileCount = dirs.reduce((sum, d) => sum + d.files.length, 0);
-          const maxMtime = dirs.reduce((m, d) => Math.max(m, d.maxMtimeMs), 0);
-          summaries.push({
-            projectId: snap.projectId,
-            projectPath: snap.projectPath,
-            hasLive: fs.existsSync(liveMem),
-            hasRepo: !!snap.repoBaseDir,
-            hostCount: snap.hosts.length,
-            fileCount,
-            maxMtimeMs: maxMtime,
-          });
         }
         // Sort by max mtime desc
         summaries.sort((a, b) => b.maxMtimeMs - a.maxMtimeMs);

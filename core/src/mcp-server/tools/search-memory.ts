@@ -98,6 +98,11 @@ export async function handleSearchMemory(args: Record<string, unknown>): Promise
   const includeRepo = Boolean(args.include_repo_mirror);
   const limit = Math.min(Math.max(Number(args.limit) || 10, 1), 30);
   const q = query.toLowerCase();
+  // Split into individual terms. A file matches when EVERY term appears
+  // somewhere in its searchable text — multi-word queries no longer require the
+  // words to be contiguous (e.g. "crossing zebra" matches "zebra crossing").
+  // A single-term query reduces to the previous substring behaviour.
+  const terms = q.split(/\s+/).filter(Boolean);
 
   // No project given → sweep ALL projects' memory (the natural "search my
   // memory" intent). Only scope to one project when the caller names it.
@@ -147,33 +152,39 @@ export async function handleSearchMemory(args: Record<string, unknown>): Promise
         const title = file.frontmatter?.name || '';
         const description = file.frontmatter?.description || '';
 
-        // Cheap pre-filter on metadata + preview before doing the disk read
-        const inFilename = filename.toLowerCase().includes(q);
-        const inTitle = title.toLowerCase().includes(q);
-        const inDesc = description.toLowerCase().includes(q);
-        const inPreview = (file.bodyPreview || '').toLowerCase().includes(q);
+        const fnLower = filename.toLowerCase();
+        const titleLower = title.toLowerCase();
+        const descLower = description.toLowerCase();
+        const prevLower = (file.bodyPreview || '').toLowerCase();
+        const metaText = `${fnLower}\n${titleLower}\n${descLower}\n${prevLower}`;
 
-        let inBody = false;
+        // Cheap pre-filter on metadata + preview before doing the disk read.
+        // Hit when every term is present across the combined metadata/preview;
+        // otherwise fall back to a single full-body read.
         let bodyForSnippet = file.bodyPreview || '';
-        if (!inFilename && !inTitle && !inDesc && !inPreview) {
-          // Fall back to full-body read for files where the preview doesn't capture it
-          const full = readBodyOnce(file.filePath);
-          if (full && full.toLowerCase().includes(q)) {
-            inBody = true;
-            bodyForSnippet = full;
+        let fullBody = '';
+        let matched = terms.every((t) => metaText.includes(t));
+        if (!matched) {
+          fullBody = readBodyOnce(file.filePath);
+          if (fullBody) {
+            const unionText = `${metaText}\n${fullBody.toLowerCase()}`;
+            matched = terms.every((t) => unionText.includes(t));
+            if (matched) bodyForSnippet = fullBody;
           }
-        } else if (inPreview) {
-          bodyForSnippet = file.bodyPreview || '';
         }
 
-        if (!(inFilename || inTitle || inDesc || inPreview || inBody)) continue;
+        if (!matched) continue;
 
+        // Per-field score: a field earns its weight when it contains the whole
+        // phrase or (for multi-term queries) any of the terms.
+        const fieldHit = (text: string): boolean =>
+          text.includes(q) || (terms.length > 1 && terms.some((t) => text.includes(t)));
         const score =
-          (inFilename ? 3 : 0) +
-          (inTitle ? 3 : 0) +
-          (inDesc ? 2 : 0) +
-          (inPreview ? 1 : 0) +
-          (inBody ? 1 : 0);
+          (fieldHit(fnLower) ? 3 : 0) +
+          (fieldHit(titleLower) ? 3 : 0) +
+          (fieldHit(descLower) ? 2 : 0) +
+          (fieldHit(prevLower) ? 1 : 0) +
+          (fullBody && fieldHit(fullBody.toLowerCase()) ? 1 : 0);
 
         hits.push({
           project: label,
