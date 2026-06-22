@@ -9,9 +9,14 @@
  * See docs/superpowers/specs/2026-06-23-cross-project-memory-signpost-design.md
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
+
 export const SIGNPOST_VERSION = 1;
 export const SIGNPOST_FILE = '_cross-project.md';
 const MANAGED_HEADER = '<!-- managed by lm-assist — do not edit; regenerated automatically -->';
+export const POINTER_LINE =
+  `- [Cross-Project Memory](${SIGNPOST_FILE}) — other projects' memory via langmart MCP (managed)`;
 
 export interface ProjectRef {
   slug: string;
@@ -51,4 +56,31 @@ export function renderSignpost(_self: ProjectRef, others: ProjectRef[]): string 
   }
   lines.push('');
   return lines.join('\n');
+}
+
+/**
+ * Write the signpost file into a project's memory dir and ensure its MEMORY.md carries the managed
+ * pointer line. Idempotent: the file is rewritten only when `content` changes; the pointer is added
+ * only if absent (a minimal MEMORY.md is created if none exists). Returns what actually changed.
+ */
+export function ensureSignpostFor(liveMemDir: string, content: string): { wroteFile: boolean; wrotePointer: boolean } {
+  fs.mkdirSync(liveMemDir, { recursive: true });
+
+  const filePath = path.join(liveMemDir, SIGNPOST_FILE);
+  let wroteFile = false;
+  let prev = '';
+  try { prev = fs.readFileSync(filePath, 'utf-8'); } catch { /* none yet */ }
+  if (prev !== content) { fs.writeFileSync(filePath, content); wroteFile = true; }
+
+  const indexPath = path.join(liveMemDir, 'MEMORY.md');
+  let index = '';
+  try { index = fs.readFileSync(indexPath, 'utf-8'); } catch { /* none yet */ }
+  let wrotePointer = false;
+  if (!index.includes(`(${SIGNPOST_FILE})`)) {
+    const head = index ? '' : '# Memory Index\n\n';
+    const sep = index && !index.endsWith('\n') ? '\n' : '';
+    fs.writeFileSync(indexPath, `${head}${index}${sep}${POINTER_LINE}\n`);
+    wrotePointer = true;
+  }
+  return { wroteFile, wrotePointer };
 }
