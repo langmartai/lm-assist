@@ -24,6 +24,16 @@ test('bootstrap loads ALL use cases in one response (proactive, not per-topic)',
   assert.ok(t.length > 8000, 'bootstrap is the full set'); // ~everything at once
 });
 
+test('knowledge guide + bootstrap inform about the cross-project memory signpost', async () => {
+  const k = await text({ topic: 'knowledge' });
+  assert.match(k, /CROSS-PROJECT/);
+  assert.match(k, /_cross-project\.md/);
+  assert.match(k, /memory_projects/);
+  // and it rides along in the all-in-one bootstrap
+  const b = (await GUIDE_HANDLERS.bootstrap({})).content[0].text as string;
+  assert.match(b, /_cross-project\.md/);
+});
+
 test('bootstrap tool is advertised read-only with no required args', () => {
   const def = GUIDE_TOOL_DEFS.find((d) => d.name === 'bootstrap');
   assert.ok(def, 'bootstrap def present');

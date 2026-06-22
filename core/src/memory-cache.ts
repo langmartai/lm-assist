@@ -264,6 +264,9 @@ export class MemoryCache {
       if (entry.name === HOSTS_REGISTRY) {
         continue;
       }
+      if (entry.name === '_cross-project.md') {
+        continue; // lm-assist-managed signpost — not a memory file
+      }
 
       const { frontmatter, body } = parseFrontmatter(content);
       files.push({

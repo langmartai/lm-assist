@@ -171,6 +171,7 @@ SINGLE-NODE
 4. \`memory_projects\`/\`memory_map\` → what memory exists + where. \`memory_record\` to save. \`rule_map\` for rules.
 5. \`feedback(id, kind="outdated"|"wrong"|"useful", note?)\` → flag a context source's quality.
 
+CROSS-PROJECT: lm-assist auto-places a managed \`_cross-project.md\` signpost in EVERY project's memory dir (linked from its \`MEMORY.md\`), so a session recalling THIS project's memory is reminded that OTHER projects' curated memory is reachable. When a question spans projects, references shared infra/conventions, or this project's memory is thin: \`memory_projects\` (list projects + slugs) then \`search_memory(query)\` across all, or \`memory_map\`/\`memory_record\` for a specific project. Prefer the current project's memory first; reach cross-project when it adds value.
 CROSS-NODE: \`memory_cross_host\` → which hosts hold which memory; \`memory_import_candidates\` → memory on a peer newer than/absent locally (to import). Knowledge search is per-node — pass \`node=B\` to search another host's knowledge base.
 GOTCHA: the vector DB is intentionally minimal — text/BM25 is the designed path; phrase queries as keywords.`,
 

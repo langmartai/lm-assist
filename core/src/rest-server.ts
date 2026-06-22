@@ -157,6 +157,17 @@ export class TierRestServer {
         console.warn('[Server] Memory autosync daemon init failed:', e);
       }
 
+      // Cross-project memory signposts: write the managed _cross-project.md (+ a MEMORY.md pointer)
+      // into every project on start, and refresh when the project set changes. Default ON; per-node
+      // local (never cross-node synced). Lets an LLM recalling memory know to use the langmart MCP
+      // for other projects' memory.
+      try {
+        require('./memory/cross-project-signpost').startCrossProjectSignpost();
+        console.log('[Server] Cross-project memory signpost: started');
+      } catch (e) {
+        console.warn('[Server] Cross-project signpost init failed:', e);
+      }
+
       // Start the periodic memory harvest daemon (Stream A feeder). Default OFF
       // (MEMORY_HARVEST_DAEMON != on). When off: logs disabled and returns
       // immediately -- no timers, no Opus agents spawned.

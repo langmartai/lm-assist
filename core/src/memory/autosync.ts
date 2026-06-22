@@ -345,6 +345,7 @@ export class MemoryAutoSyncDaemon {
   private guard(liveDir: string, file: string): string {
     if (!file) return 'no-file';
     if (file === 'MEMORY.md' || file === '_hosts.md') return 'index-or-registry';
+    if (file === '_cross-project.md') return 'managed-signpost'; // per-node managed; regenerated, never synced
     // CLAUDE.md flows through normal git (repo-root, not host-owned).
     if (file === 'CLAUDE.md' || file === 'CLAUDE.local.md') return 'claude-md-repo-owned';
     for (const re of CREDENTIAL_PATTERNS) {
