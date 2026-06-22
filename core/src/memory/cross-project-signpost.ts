@@ -102,10 +102,14 @@ export interface SweepResult { swept: number; skipped: number; filesWritten: num
 
 function nameFromPath(p: string): string { return path.basename(p) || p; }
 
-/** Pure: projects eligible for a signpost — has live memory and not excluded. */
+/** Pure: projects eligible for a signpost — has live memory and not excluded. Sorted by slug so the
+ *  generated "other projects" list is DETERMINISTIC (listProjects is mtime-ordered, which would
+ *  otherwise reshuffle the list on every sweep — each write bumps the dir mtime — and never converge). */
 export function selectEligible(summaries: ProjectSummaryLite[], excludedPaths: string[]): ProjectSummaryLite[] {
   const excluded = new Set(excludedPaths);
-  return summaries.filter((s) => s.hasLive && !excluded.has(s.projectPath));
+  return summaries
+    .filter((s) => s.hasLive && !excluded.has(s.projectPath))
+    .sort((a, b) => a.projectId.localeCompare(b.projectId));
 }
 
 /** A stable one-line hook for a project: its MEMORY.md first real title/prose, else "<n> memory entries".

@@ -30,20 +30,28 @@ test('selectEligible drops excluded paths + non-live projects', () => {
   assert.deepEqual(got.map((s) => s.projectId), ['-a']);
 });
 
-test('sweep writes each project a signpost listing the OTHER projects, idempotently', async () => {
-  const aMem = seed('-cps-a', 'alpha');
-  seed('-cps-b', 'beta');
+test('sweep lists OTHER projects in DETERMINISTIC (sorted) order and is idempotent', async () => {
+  // Seed in non-sorted creation order; sorted slug order is: -cps-a, -cps-m, -cps-z.
+  const zMem = seed('-cps-z', 'zeta');
+  seed('-cps-m', 'mu');
+  seed('-cps-a', 'alpha');
+
   const r1 = await sweepAllProjects();
-  assert.ok(r1.swept >= 2, `swept ${r1.swept}`);
+  assert.ok(r1.swept >= 3, `swept ${r1.swept}`);
 
-  const aSign = fs.readFileSync(path.join(aMem, SIGNPOST_FILE), 'utf-8');
-  assert.match(aSign, /-cps-b/);                       // A lists B
-  assert.doesNotMatch(aSign, /\(`-cps-a`\)/);          // A does not list itself
-  assert.match(aSign, /memory_projects/);              // the static tool guidance
-  assert.match(fs.readFileSync(path.join(aMem, 'MEMORY.md'), 'utf-8'), new RegExp(`\\(${SIGNPOST_FILE}\\)`));
+  const zSign = fs.readFileSync(path.join(zMem, SIGNPOST_FILE), 'utf-8');
+  assert.match(zSign, /memory_projects/);              // the static tool guidance
+  assert.doesNotMatch(zSign, /\(`-cps-z`\)/);          // Z does not list itself
+  // Others appear in sorted order regardless of creation/mtime order.
+  const ai = zSign.indexOf('-cps-a');
+  const mi = zSign.indexOf('-cps-m');
+  assert.ok(ai > 0 && mi > ai, `others must be sorted: a@${ai} m@${mi}`);
+  assert.match(fs.readFileSync(path.join(zMem, 'MEMORY.md'), 'utf-8'), new RegExp(`\\(${SIGNPOST_FILE}\\)`));
 
+  // Idempotent: writing the signposts bumped memory-dir mtimes, but the sorted list is stable, so a
+  // second sweep changes nothing. (Without the sort this rewrote every file every sweep.)
   const r2 = await sweepAllProjects();
-  assert.equal(r2.filesWritten, 0);                    // idempotent (nothing changed)
+  assert.equal(r2.filesWritten, 0, 'second sweep must write nothing');
 });
 
 test('config off → sweep no-ops (kill switch)', async () => {
