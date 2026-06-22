@@ -11,6 +11,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import chokidar, { FSWatcher } from 'chokidar';
 import { createMemoryApiImpl } from '../api/memory-api';
 import { getProjectsDir } from '../utils/path-utils';
 import { getProjectSettings } from '../project-settings';
@@ -147,4 +148,27 @@ export async function sweepAllProjects(): Promise<SweepResult> {
     if (r.wroteFile || r.wrotePointer) filesWritten++;
   }
   return { swept: eligible.length, skipped: all.length - eligible.length, filesWritten };
+}
+
+// ─── Core-start wiring: sweep once + refresh on project-set change ──
+
+let watcher: FSWatcher | null = null;
+let debounceTimer: NodeJS.Timeout | null = null;
+
+/** Called on Core start: sweep all projects now, then re-sweep (debounced) whenever a project dir is
+ *  added/removed under the projects root so each file's "other projects" list stays current.
+ *  No-ops when disabled. Best-effort (never throws). */
+export function startCrossProjectSignpost(): void {
+  if (!getProjectSettings().crossProjectSignpostEnabled) return;
+  void sweepAllProjects().catch(() => { /* best-effort */ });
+  if (watcher) return; // already watching
+  try {
+    watcher = chokidar.watch(getProjectsDir(), { depth: 0, ignoreInitial: true, persistent: true });
+    const kick = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => void sweepAllProjects().catch(() => { /* best-effort */ }), 2000);
+    };
+    watcher.on('addDir', kick);
+    watcher.on('unlinkDir', kick);
+  } catch { /* watcher is best-effort */ }
 }
