@@ -13,11 +13,12 @@ import * as path from 'path';
 export type NodeMode = 'persistent' | 'ephemeral';
 export interface MemorySyncConfig {
   nodeMode: NodeMode;
-  homeNode: string | null;  // hub gatewayId of the persistent home node to sync with
-  project: string | null;   // project slug this ephemeral node is working on
+  homeNode: string | null;     // hub gatewayId of the persistent home node to sync with
+  project: string | null;      // LOCAL project slug on this node (where pulled memory is written + local changes detected)
+  homeProject: string | null;  // the home node's project slug (export source / push target). Defaults to `project` when unset.
 }
 
-const DEFAULTS: MemorySyncConfig = { nodeMode: 'persistent', homeNode: null, project: null };
+const DEFAULTS: MemorySyncConfig = { nodeMode: 'persistent', homeNode: null, project: null, homeProject: null };
 
 function baseDir(homeDir: string): string {
   return process.env.LM_ASSIST_DATA_DIR || path.join(homeDir, '.lm-assist');
@@ -28,10 +29,12 @@ export function readMemorySyncConfig(homeDir: string = os.homedir()): MemorySync
   const p = path.join(baseDir(homeDir), 'memory-sync.json');
   try {
     const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    const project = typeof raw.project === 'string' && raw.project ? raw.project : null;
     return {
       nodeMode: raw.nodeMode === 'ephemeral' ? 'ephemeral' : 'persistent',
       homeNode: typeof raw.homeNode === 'string' && raw.homeNode ? raw.homeNode : null,
-      project: typeof raw.project === 'string' && raw.project ? raw.project : null,
+      project,
+      homeProject: typeof raw.homeProject === 'string' && raw.homeProject ? raw.homeProject : project,
     };
   } catch {
     return { ...DEFAULTS };

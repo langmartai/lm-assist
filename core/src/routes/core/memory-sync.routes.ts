@@ -19,7 +19,10 @@ import { wrapResponse, wrapError } from '../../api/helpers';
 import { extractRecords } from '../../memory/record-extract';
 import { selectSyncable } from '../../memory/sync-select';
 import { ingestRecords, IngestRecord } from '../../memory/ingest';
-import { getProjectsDir } from '../../utils/path-utils';
+import { readMemorySyncConfig, writeMemorySyncConfig } from '../../memory/node-mode';
+import { pullFromHome } from '../../memory/mcp-transport';
+import { getHubConfig } from '../../hub-client/hub-config';
+import { getProjectsDir, legacyEncodeProjectPath } from '../../utils/path-utils';
 import { isLoopbackAddress } from '../../auth/enroll-exempt';
 import { createHash } from 'crypto';
 import * as fs from 'fs';
@@ -36,6 +39,16 @@ function relaySource(req: ParsedRequest): string | undefined {
 function authorized(req: ParsedRequest, bodyKey: unknown): boolean {
   if (isLoopbackAddress(req.clientIp)) return true;
   return relaySource(req) === 'hub' && typeof bodyKey === 'string' && bodyKey.length > 0;
+}
+
+/** Pull the home node's `homeProject` memory and ingest it into the local `localProject`'s
+ *  home-node mirror, so the local Claude Code session can see it. Returns the count written. */
+async function doPull(homeNode: string, homeProject: string, localProject: string): Promise<number> {
+  const key = getHubConfig().apiKey || '';
+  if (!key) return 0;
+  const records = await pullFromHome(homeNode, homeProject, 0, key);
+  const projectDir = path.join(getProjectsDir(), localProject);
+  return ingestRecords(projectDir, homeNode, records.map((r) => ({ file: r.file, content: r.content, contentHash: r.contentHash })));
 }
 
 export interface ExportedRecord {
@@ -92,6 +105,43 @@ export function createMemorySyncRoutes(_ctx: RouteContext): RouteHandler[] {
         const projectDir = path.join(getProjectsDir(), b.project);
         const n = ingestRecords(projectDir, b.sourceHost, b.records);
         return wrapResponse({ ingested: n }, start);
+      },
+    },
+    // POST /memory/sync/enable { homeNode, homeProject, project? } — loopback-only.
+    // Marks this node ephemeral, records the home node + project slugs, and pulls the home's
+    // persistent memory now. `project` is this node's LOCAL slug for the same repo (defaults to homeProject).
+    {
+      method: 'POST',
+      pattern: /^\/memory\/sync\/enable$/,
+      handler: async (req: ParsedRequest) => {
+        const start = Date.now();
+        if (!isLoopbackAddress(req.clientIp)) return wrapError('FORBIDDEN', 'local-only endpoint', start);
+        const b = (req.body || {}) as { homeNode?: string; homeProject?: string; project?: string; cwd?: string };
+        if (!b.homeNode || !b.homeProject) return wrapError('INVALID_INPUT', 'homeNode and homeProject are required', start);
+        // localProject = this node's slug for the repo: explicit `project`, else encode `cwd`, else fall back to homeProject.
+        const localProject = (typeof b.project === 'string' && b.project) ? b.project
+          : (typeof b.cwd === 'string' && b.cwd) ? legacyEncodeProjectPath(b.cwd)
+          : b.homeProject;
+        writeMemorySyncConfig({ nodeMode: 'ephemeral', homeNode: b.homeNode, homeProject: b.homeProject, project: localProject });
+        const pulled = await doPull(b.homeNode, b.homeProject, localProject);
+        return wrapResponse({ configured: true, nodeMode: 'ephemeral', homeNode: b.homeNode, homeProject: b.homeProject, project: localProject, pulled }, start);
+      },
+    },
+    // POST /memory/pull — loopback-only; re-pull the home node's memory using the saved config.
+    {
+      method: 'POST',
+      pattern: /^\/memory\/pull$/,
+      handler: async (req: ParsedRequest) => {
+        const start = Date.now();
+        if (!isLoopbackAddress(req.clientIp)) return wrapError('FORBIDDEN', 'local-only endpoint', start);
+        const cfg = readMemorySyncConfig();
+        if (cfg.nodeMode !== 'ephemeral' || !cfg.homeNode || !(cfg.homeProject || cfg.project)) {
+          return wrapResponse({ pulled: 0, skipped: 'not an ephemeral node with a home + project configured' }, start);
+        }
+        const localProject = cfg.project || cfg.homeProject!;
+        const homeProject = cfg.homeProject || cfg.project!;
+        const pulled = await doPull(cfg.homeNode, homeProject, localProject);
+        return wrapResponse({ pulled, homeNode: cfg.homeNode, homeProject, project: localProject }, start);
       },
     },
   ];

@@ -11,7 +11,7 @@ function rec(p: Partial<MemoryRecord>): MemoryRecord {
 }
 
 test('ephemeral node pushes persistent+shareable records to the home node', () => {
-  const plan = planPushBack({ nodeMode: 'ephemeral', homeNode: 'gw4-home', project: 'pr' },
+  const plan = planPushBack({ nodeMode: 'ephemeral', homeNode: 'gw4-home', project: 'pr', homeProject: 'pr' },
     [rec({}), rec({ persistence: 'temporary' }), rec({ shareability: 'host-local' })]);
   assert.equal(plan.action, 'push');
   assert.equal(plan.homeNode, 'gw4-home');
@@ -19,17 +19,17 @@ test('ephemeral node pushes persistent+shareable records to the home node', () =
 });
 
 test('persistent node does not push back (it IS the home / canonical store)', () => {
-  const plan = planPushBack({ nodeMode: 'persistent', homeNode: null, project: 'pr' }, [rec({})]);
+  const plan = planPushBack({ nodeMode: 'persistent', homeNode: null, project: 'pr', homeProject: 'pr' }, [rec({})]);
   assert.equal(plan.action, 'none');
 });
 
 test('ephemeral node with no homeNode -> none', () => {
-  const plan = planPushBack({ nodeMode: 'ephemeral', homeNode: null, project: 'pr' }, [rec({})]);
+  const plan = planPushBack({ nodeMode: 'ephemeral', homeNode: null, project: 'pr', homeProject: 'pr' }, [rec({})]);
   assert.equal(plan.action, 'none');
 });
 
 test('ephemeral node with only non-syncable changes -> none (but keeps homeNode)', () => {
-  const plan = planPushBack({ nodeMode: 'ephemeral', homeNode: 'gw4-home', project: 'pr' },
+  const plan = planPushBack({ nodeMode: 'ephemeral', homeNode: 'gw4-home', project: 'pr', homeProject: 'pr' },
     [rec({ persistence: 'temporary' })]);
   assert.equal(plan.action, 'none');
   assert.equal(plan.homeNode, 'gw4-home');

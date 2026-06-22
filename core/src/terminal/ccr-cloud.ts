@@ -34,6 +34,8 @@ import {
   getValidAccessToken,
   getOrganizationUuid,
 } from '../utils/claude-oauth';
+import { getHubClient } from '../hub-client';
+import { legacyEncodeProjectPath } from '../utils/path-utils';
 
 const CACHE_DIR = path.join(os.homedir(), '.cache', 'lm-assist');
 const REGISTRY_FILE = path.join(CACHE_DIR, 'ccr-cloud.json');
@@ -99,7 +101,7 @@ function isLmAssistRepo(repo: string): boolean {
  * roles (worker / orchestrator). NO hub key is embedded (connecting the hub stays a user-confirmed step).
  * Knowledge lives in the always-reachable connector (`bootstrap`/`guide`), so a recycled container self-heals.
  */
-export function buildBootstrapInstruction(opts: { role?: CloudRole; taskId?: string; title?: string; primaryRepo?: string } = {}): string {
+export function buildBootstrapInstruction(opts: { role?: CloudRole; taskId?: string; title?: string; primaryRepo?: string; homeNode?: string; homeProject?: string } = {}): string {
   const apiPort = 3100;
   const repo = (opts.primaryRepo || '').trim();
   const lines: string[] = [
@@ -134,6 +136,23 @@ export function buildBootstrapInstruction(opts: { role?: CloudRole; taskId?: str
       '',
       `ROLE — you are a WORKER${task}. Once lm-assist is up, follow \`guide("roles")\`: call set_role, print a ⟦WORKER-STATUS⟧ … ⟦/WORKER-STATUS⟧ block EVERY turn, report_status as you progress, and raise an agree-gate (status:need_approval) before any sensitive step — STOP until it's decided.`,
     );
+    // MEMORY auto-sync (direct node-to-node over the hub, NOT git). lm-assist manages it in the BACKGROUND.
+    lines.push(
+      '',
+      "MEMORY — lm-assist auto-manages this project's curated memory for you, in the BACKGROUND (direct node-to-node over the hub, not git):",
+      "  • it PULLS the project's PERSISTENT memory from your home node so you begin with the team's knowledge, and",
+      '  • it PUSHES your NEW project memory back to the home node so it SURVIVES this ephemeral VM.',
+      '  Mark a memory file `persistence: temporary` in its frontmatter ONLY for scratch that should die with this VM (it is never synced).',
+    );
+    if (opts.homeNode && opts.homeProject) {
+      lines.push(
+        '  ENABLE it ONCE, right after lm-assist is up (background; safe to repeat) — run from inside your repo so `$(pwd)` is its root:',
+        `    curl -s -XPOST localhost:${apiPort}/memory/sync/enable -H 'Content-Type: application/json' --data-binary "{\\"homeNode\\":\\"${opts.homeNode}\\",\\"homeProject\\":\\"${opts.homeProject}\\",\\"cwd\\":\\"$(pwd)\\"}"`,
+        `  That writes ~/.lm-assist/memory-sync.json (nodeMode:ephemeral, homeNode:${opts.homeNode}) and pulls the home memory now; push-back is then automatic.`,
+      );
+    } else {
+      lines.push('  (Your home node/project is configured once this node enrolls to the hub; until then memory stays local to this VM.)');
+    }
   } else if (opts.role === 'orchestrator') {
     lines.push(
       '',
@@ -449,7 +468,7 @@ export interface CloudStartResult { sid: string; webUrl: string; status: string;
  * Standard seed = a GitHub repo (`repo` = owner/name or URL; the cloud clones it, branch
  * defaults to the repo's default). Fallback = a local git bundle (`cwd`) or empty scratch.
  */
-export async function cloudStart(opts: { prompt?: string; repo?: string; branch?: string; cwd?: string; model?: string; title?: string; setup?: boolean; role?: CloudRole; primaryRepo?: string }): Promise<CloudStartResult> {
+export async function cloudStart(opts: { prompt?: string; repo?: string; branch?: string; cwd?: string; model?: string; title?: string; setup?: boolean; role?: CloudRole; primaryRepo?: string; homeProject?: string }): Promise<CloudStartResult> {
   const prompt = (opts.prompt || '').toString().trim();
   const hasRepo = !!(opts.repo && opts.repo.trim());
   const hasCwd = !!(opts.cwd && opts.cwd.trim());
@@ -464,7 +483,14 @@ export async function cloudStart(opts: { prompt?: string; repo?: string; branch?
   let effectivePrompt = prompt;
   let setupApplied = false;
   if (opts.setup) {
-    effectivePrompt = buildBootstrapInstruction({ role: opts.role, primaryRepo: opts.primaryRepo || opts.repo }) + (prompt || 'Then await my instructions.');
+    // Seed the worker's memory-sync home: this spawner is the persistent home node.
+    let homeNode: string | undefined;
+    try { homeNode = getHubClient().getStatus().gatewayId || undefined; } catch { homeNode = undefined; }
+    let homeProject = opts.homeProject;
+    if (!homeProject) { try { homeProject = legacyEncodeProjectPath(process.cwd()); } catch { homeProject = undefined; } }
+    effectivePrompt = buildBootstrapInstruction({
+      role: opts.role, primaryRepo: opts.primaryRepo || opts.repo, homeNode, homeProject,
+    }) + (prompt || 'Then await my instructions.');
     setupApplied = true;
   }
 

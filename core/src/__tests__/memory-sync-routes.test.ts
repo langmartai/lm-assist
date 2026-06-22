@@ -7,8 +7,11 @@ import * as path from 'path';
 // Hermetic projects root for the export/ingest handlers (read at call time).
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'msr-'));
 process.env.CLAUDE_CONFIG_DIR = TMP;
+// Redirect ~/.lm-assist so the enable/pull config writes can't touch the real node config.
+process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'msr-cfg-'));
 
 import { createMemorySyncRoutes } from '../routes/core/memory-sync.routes';
+import { readMemorySyncConfig } from '../memory/node-mode';
 import type { ParsedRequest } from '../routes/index';
 
 const SLUG = '-tmp-proj';
@@ -90,4 +93,37 @@ test('ingest validates required fields', async () => {
   const r: any = await route('POST', /ingest/).handler(localReq({ project: SLUG }), {} as any);
   assert.equal(r.success, false);
   assert.equal(r.error.code, 'INVALID_INPUT');
+});
+
+test('exposes POST /memory/sync/enable and POST /memory/pull', () => {
+  const paths = routes().map(r => `${r.method} ${r.pattern.source}`);
+  assert.ok(paths.some(p => p.startsWith('POST') && /sync.{1,3}enable/.test(p)), paths.join(','));
+  assert.ok(paths.some(p => p.startsWith('POST') && /memory.{1,3}pull/.test(p)), paths.join(','));
+});
+
+test('sync/enable persists ephemeral config (pull is a no-op without a hub key)', async () => {
+  const r: any = await route('POST', /enable/).handler(
+    localReq({ homeNode: 'gw-home', homeProject: '-home-x', project: '-cloud-x' }), {} as any);
+  assert.equal(r.success, true);
+  assert.equal(r.data.configured, true);
+  assert.equal(r.data.pulled, 0); // no hub apiKey in the test env
+  const cfg = readMemorySyncConfig();
+  assert.equal(cfg.nodeMode, 'ephemeral');
+  assert.equal(cfg.homeNode, 'gw-home');
+  assert.equal(cfg.homeProject, '-home-x');
+  assert.equal(cfg.project, '-cloud-x');
+});
+
+test('sync/enable requires homeNode + homeProject', async () => {
+  const r: any = await route('POST', /enable/).handler(localReq({ homeNode: 'gw-home' }), {} as any);
+  assert.equal(r.success, false);
+  assert.equal(r.error.code, 'INVALID_INPUT');
+});
+
+test('sync/enable and pull are local-only', async () => {
+  const remote = { method: 'POST', path: '/memory/pull', params: {}, query: {},
+    body: {}, headers: { 'x-relay-source': 'hub' }, clientIp: '10.0.0.9' } as ParsedRequest;
+  const r: any = await route('POST', /memory.{1,3}pull/).handler(remote, {} as any);
+  assert.equal(r.success, false);
+  assert.equal(r.error.code, 'FORBIDDEN');
 });

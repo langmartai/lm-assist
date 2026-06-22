@@ -318,6 +318,14 @@ export class MemoryAutoSyncDaemon {
         if (recs[0]) records.push(recs[0]);
       } catch { /* unreadable — skip */ }
     }
+    // An ephemeral node syncs only its configured project (cfg.project = the cloud's local slug).
+    if (cfg.project && slug !== cfg.project) {
+      this.log(slug, 'skip-other-project', {
+        configuredProject: cfg.project,
+        note: 'ephemeral node syncs only its configured project',
+      });
+      return;
+    }
     const plan = planPushBack(cfg, records);
     if (plan.action !== 'push') {
       this.log(slug, 'no-push-target', {
@@ -326,7 +334,9 @@ export class MemoryAutoSyncDaemon {
       });
       return;
     }
-    await this.pushToHomeNode(slug, liveDir, plan.homeNode!, sourceHost, plan.records);
+    // Land in the home node's project slug (may differ from the local slug on a cloud clone).
+    const targetProject = cfg.homeProject || slug;
+    await this.pushToHomeNode(slug, targetProject, liveDir, plan.homeNode!, sourceHost, plan.records);
   }
 
   // ─── Guards ───────────────────────────────────────────────
@@ -416,7 +426,7 @@ export class MemoryAutoSyncDaemon {
    * memory/<sourceHost>/ — this node never writes another node's folder.
    */
   private async pushToHomeNode(
-    slug: string, liveDir: string, homeNode: string,
+    slug: string, targetProject: string, liveDir: string, homeNode: string,
     sourceHost: string | null, records: MemoryRecord[],
   ): Promise<void> {
     if (!sourceHost) { this.log(slug, 'skip-no-host', { note: 'no host id / gatewayId to attribute the push' }); return; }
@@ -434,13 +444,14 @@ export class MemoryAutoSyncDaemon {
     if (!payload.length) { this.log(slug, 'push-noop', { note: 'no readable files to push' }); return; }
 
     try {
-      const ingested = await pushToHome(homeNode, slug, sourceHost, payload, key);
+      // Push into the home node's project (targetProject), filed under this node's mirror.
+      const ingested = await pushToHome(homeNode, targetProject, sourceHost, payload, key);
       this.counts.pushed++;
-      this.log(slug, 'pushed', { homeNode, sourceHost, ingested, files: payload.map((p) => p.file) });
+      this.log(slug, 'pushed', { homeNode, targetProject, sourceHost, ingested, files: payload.map((p) => p.file) });
 
-      // Notify so the home registers/refreshes memory/<sourceHost>/ in its cache.
+      // Notify so the home registers/refreshes memory/<sourceHost>/ in its cache (under targetProject).
       const hub = getHubClient();
-      const ok = hub.sendMemoryUpdated({ project: slug, host: sourceHost, recordIds: records.map((r) => r.recordId), ts: Date.now() });
+      const ok = hub.sendMemoryUpdated({ project: targetProject, host: sourceHost, recordIds: records.map((r) => r.recordId), ts: Date.now() });
       if (ok) { this.counts.notified++; this.log(slug, 'notified', { host: sourceHost }); }
       else this.log(slug, 'notify-skip', { reason: 'hub not connected' });
     } catch (err) {

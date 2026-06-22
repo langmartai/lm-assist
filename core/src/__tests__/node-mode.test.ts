@@ -23,12 +23,21 @@ test('defaults to persistent mode + no home when file missing', () => {
   });
 });
 
-test('reads ephemeral mode + homeNode from file', () => {
+test('reads ephemeral mode + homeNode from file (homeProject defaults to project)', () => {
   withTmpHome({ nodeMode: 'ephemeral', homeNode: 'gw4-abc', project: '-home-x' }, (dir) => {
     const c = readMemorySyncConfig(dir);
     assert.equal(c.nodeMode, 'ephemeral');
     assert.equal(c.homeNode, 'gw4-abc');
     assert.equal(c.project, '-home-x');
+    assert.equal(c.homeProject, '-home-x'); // defaults to project when unset
+  });
+});
+
+test('reads a distinct homeProject when the cloud slug differs from home', () => {
+  withTmpHome({ nodeMode: 'ephemeral', homeNode: 'gw4-abc', project: '-workspace-x', homeProject: '-home-x' }, (dir) => {
+    const c = readMemorySyncConfig(dir);
+    assert.equal(c.project, '-workspace-x');
+    assert.equal(c.homeProject, '-home-x');
   });
 });
 

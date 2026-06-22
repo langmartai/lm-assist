@@ -100,6 +100,26 @@ test('buildBootstrapInstruction: role contracts (worker names the task; orchestr
   assert.doesNotMatch(none, /you are a WORKER|you are the ORCHESTRATOR/i);
 });
 
+test('buildBootstrapInstruction: worker includes the background memory auto-sync guidance', () => {
+  const p = buildBootstrapInstruction({ role: 'worker', primaryRepo: 'langmartai/lm-assist' });
+  assert.match(p, /persistent memory|MEMORY —/i);
+  assert.match(p, /background/i);
+  assert.match(p, /persistence: temporary/);
+});
+
+test('buildBootstrapInstruction: with homeNode+homeProject, includes the concrete enable step', () => {
+  const p = buildBootstrapInstruction({ role: 'worker', homeNode: 'gw-home', homeProject: '-home-x' });
+  assert.match(p, /memory-sync\.json/);
+  assert.match(p, /\/memory\/sync\/enable/);
+  assert.match(p, /gw-home/);
+  assert.match(p, /-home-x/);
+});
+
+test('buildBootstrapInstruction: orchestrator does NOT get the worker memory enable step', () => {
+  const o = buildBootstrapInstruction({ role: 'orchestrator', homeNode: 'gw-home', homeProject: '-home-x' });
+  assert.doesNotMatch(o, /\/memory\/sync\/enable/);
+});
+
 test('cloudSessionWebUrl: maps sid to the claude.ai/code URL', () => {
   assert.equal(cloudSessionWebUrl('session_01Epb79wZY8Xg7AMpKoxrZdo'), 'https://claude.ai/code/session_01Epb79wZY8Xg7AMpKoxrZdo');
 });
