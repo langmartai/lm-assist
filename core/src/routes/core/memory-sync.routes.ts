@@ -34,6 +34,21 @@ function sha256(s: string): string { return createHash('sha256').update(s).diges
 /** Credential-shaped filenames are never exported, regardless of shareability (mirrors autosync). */
 const CREDENTIAL_PATTERNS: RegExp[] = [/token/i, /\bkey\b/i, /cookie/i, /password/i, /secret/i, /credential/i];
 
+/**
+ * Resolve a project slug to its repo cwd, but ONLY for a project this node already knows — i.e. one
+ * with a registered `<projectsDir>/<slug>/` dir. This is an allow-list: it stops a relayed `project`
+ * body field from decoding to an arbitrary path (e.g. /etc) and turning ingest into a write-anywhere
+ * primitive. The slug itself must be a single safe segment (no separators / `..`). Returns null if the
+ * slug is malformed, unknown, or its decoded cwd is not an existing directory.
+ */
+function resolveKnownProjectCwd(slug: string | undefined): string | null {
+  if (!slug || slug.includes('/') || slug.includes('\\') || slug.includes('..')) return null;
+  if (!fs.existsSync(path.join(getProjectsDir(), slug))) return null; // not a registered project on this node
+  let cwd: string;
+  try { cwd = decodePath(slug); } catch { return null; }
+  try { return fs.statSync(cwd).isDirectory() ? cwd : null; } catch { return null; }
+}
+
 function relaySource(req: ParsedRequest): string | undefined {
   const v = req.headers?.['x-relay-source'];
   return Array.isArray(v) ? v[0] : v;
@@ -59,8 +74,8 @@ async function doPull(homeNode: string, homeProject: string, localProject: strin
   const key = getHubConfig().apiKey || '';
   if (!key) return 0;
   const records = await pullFromHome(homeNode, homeProject, 0, key);
-  let cwd: string;
-  try { cwd = decodePath(localProject); } catch { return 0; }
+  const cwd = resolveKnownProjectCwd(localProject);
+  if (!cwd) return 0; // unknown/unsafe local project — refuse to write
   return ingestRecords(cwd, homeNode, records.map((r) => ({ file: r.file, content: r.content, contentHash: r.contentHash })));
 }
 
@@ -117,8 +132,10 @@ export function createMemorySyncRoutes(_ctx: RouteContext): RouteHandler[] {
           return wrapError('INVALID_INPUT', 'project, sourceHost, records[] required', start);
         }
         // Write into <cwd>/memory/<sourceHost>/ — the per-host mirror dir memory-cache reads.
-        let cwd: string;
-        try { cwd = decodePath(b.project); } catch { return wrapError('INVALID_INPUT', 'cannot resolve project', start); }
+        // Allow-list the project: a relayed `project` must map to a KNOWN project on this node, so it
+        // can't decode to an arbitrary path. ingestRecords further confines writes within cwd/memory/<host>/.
+        const cwd = resolveKnownProjectCwd(b.project);
+        if (!cwd) return wrapError('INVALID_INPUT', 'unknown or unresolvable project', start);
         const n = ingestRecords(cwd, b.sourceHost, b.records);
         return wrapResponse({ ingested: n }, start);
       },

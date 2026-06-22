@@ -12,7 +12,7 @@ process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'msr-cfg-
 
 import { createMemorySyncRoutes } from '../routes/core/memory-sync.routes';
 import { readMemorySyncConfig } from '../memory/node-mode';
-import { decodePath } from '../utils/path-utils';
+import { decodePath, legacyEncodeProjectPath } from '../utils/path-utils';
 import type { ParsedRequest } from '../routes/index';
 
 const SLUG = '-tmp-proj';
@@ -101,15 +101,28 @@ test('export skips credential-shaped filenames', async () => {
 });
 
 test('ingest writes peer records under the decoded repo mirror (<cwd>/memory/<host>/)', async () => {
-  const INGEST_SLUG = '-tmp-msringest-proj'; // lowercase legacy slug; decodePath -> /tmp/msringest/proj
-  const cwd = decodePath(INGEST_SLUG);
-  const body = { project: INGEST_SLUG, sourceHost: 'gw-peer',
-    records: [{ file: 'p.md', content: 'peer content', contentHash: 'ph1' }] };
+  // A real repo cwd with no internal dashes → unambiguous decodePath round-trip.
+  const REPO = path.join(os.tmpdir(), 'msringestrepo' + process.pid);
+  fs.mkdirSync(REPO, { recursive: true });
+  const SLUG = legacyEncodeProjectPath(REPO);
+  fs.mkdirSync(path.join(TMP, 'projects', SLUG), { recursive: true }); // register the project (allow-list)
+  try {
+    const body = { project: SLUG, sourceHost: 'gw-peer',
+      records: [{ file: 'p.md', content: 'peer content', contentHash: 'ph1' }] };
+    const r: any = await route('POST', /ingest/).handler(localReq(body), {} as any);
+    assert.equal(r.success, true);
+    assert.equal(r.data.ingested, 1);
+    assert.ok(fs.existsSync(path.join(REPO, 'memory', 'gw-peer', 'p.md')), `expected mirror under ${REPO}/memory/gw-peer`);
+  } finally {
+    fs.rmSync(REPO, { recursive: true, force: true });
+  }
+});
+
+test('ingest refuses an unknown project (allow-list blocks arbitrary write roots)', async () => {
+  const body = { project: '-etc', sourceHost: 'gw-peer', records: [{ file: 'p.md', content: 'x', contentHash: 'h' }] };
   const r: any = await route('POST', /ingest/).handler(localReq(body), {} as any);
-  assert.equal(r.success, true);
-  assert.equal(r.data.ingested, 1);
-  assert.ok(fs.existsSync(path.join(cwd, 'memory', 'gw-peer', 'p.md')), `expected mirror under ${cwd}/memory/gw-peer`);
-  try { fs.rmSync(path.join(cwd, 'memory'), { recursive: true, force: true }); } catch { /* cleanup */ }
+  assert.equal(r.success, false);
+  assert.equal(r.error.code, 'INVALID_INPUT');
 });
 
 test('ingest validates required fields', async () => {
