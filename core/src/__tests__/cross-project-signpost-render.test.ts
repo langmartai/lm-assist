@@ -7,7 +7,7 @@ test('renders the static tool list + each other project, excludes self', () => {
     { slug: '-b', name: 'beta', hook: 'trading engine' },
     { slug: '-c', name: 'gamma' },
   ]);
-  for (const tool of ['memory_projects', 'getByProject', 'search_memory', 'memory_cross_host']) {
+  for (const tool of ['memory_projects', 'search_memory', 'memory_map', 'memory_cross_host']) {
     assert.match(md, new RegExp(tool), `missing tool ${tool}`);
   }
   assert.match(md, /\*\*beta\*\* \(`-b`\) — trading engine/);
