@@ -9,7 +9,7 @@
  * See docs/plans/2026-06-06-record-level-memory-map-and-sync.md
  */
 import { createHash } from 'crypto';
-import { parseFrontmatter, KNOWN_CATEGORIES } from '../utils/frontmatter';
+import { parseFrontmatter, KNOWN_CATEGORIES, MemoryFrontmatter } from '../utils/frontmatter';
 import { classifyShareability, Shareability } from '../utils/memory-shareability';
 
 export type RecordKind = 'memory' | 'claude-section' | 'index-entry';
@@ -31,6 +31,7 @@ export interface MemoryRecord {
   type: RecordType;
   category: string;
   shareability: Shareability;
+  persistence: 'persistent' | 'temporary';  // ephemeral-node working-copy marker; default persistent
   originSessionId?: string;  // backtrack to the session that recorded it
   recordedAtMs: number;     // when this record state was written (file mtime)
   lastValidatedMs: number;  // when last confirmed still-true (harvester/reconcile); defaults to recordedAtMs
@@ -59,6 +60,11 @@ function sha256(s: string): string {
 
 function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+}
+
+/** Persistence tier from frontmatter; only an explicit `temporary` opts out (default persistent). */
+function readPersistence(fm: MemoryFrontmatter): 'persistent' | 'temporary' {
+  return fm.persistence === 'temporary' ? 'temporary' : 'persistent';
 }
 
 /** First prose line (skips blank/heading/table/list markers), stripped of md emphasis. */
@@ -114,6 +120,7 @@ function extractMemoryFile(inp: ExtractInput): MemoryRecord[] {
     validationTier: (frontmatter.validationTier || 'unvalidated') as 'code-confirmed' | 'session-confirmed' | 'asserted' | 'unvalidated',
     supersededBy: frontmatter.supersededBy,
     shareability: classifyShareability(inp.filename, frontmatter),
+    persistence: readPersistence(frontmatter),
     mtimeMs: inp.mtimeMs, size: inp.size,
   }];
 }
@@ -140,6 +147,7 @@ export function extractClaudeSections(inp: ExtractInput): MemoryRecord[] {
       category: categorize(curTitle + ' ' + complete, 'claude'),
       recordedAtMs: inp.mtimeMs, lastValidatedMs: inp.mtimeMs, validity: 'current' as const, validationTier: 'unvalidated' as const,
       shareability: 'project-domain', // CLAUDE.md is shared repo content
+      persistence: 'persistent', // CLAUDE.md is never temporary
       mtimeMs: inp.mtimeMs, size: complete.length,
     });
     buf = [];
@@ -173,6 +181,7 @@ export function extractIndexEntries(inp: ExtractInput): MemoryRecord[] {
       category: 'index',
       recordedAtMs: inp.mtimeMs, lastValidatedMs: inp.mtimeMs, validity: 'current' as const, validationTier: 'unvalidated' as const,
       shareability: 'project-domain',
+      persistence: 'persistent', // MEMORY.md index entries are never temporary
       mtimeMs: inp.mtimeMs, size: complete.length,
     });
   }
