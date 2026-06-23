@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "claude-code-multisession",
-      "version": "0.1.74",
+      "version": "0.1.75",
       "source": { "source": "url", "url": "https://github.com/langmartai/claude-code-multisession.git", "sha": "b2053c2a7b02f37d9a030e2bf954549d14414572" },
       "description": "One prompt to control all your Claude Code sessions. Monitor costs, debug agents, route work across projects, queue prompts, auto-learn routing.",
       "category": "productivity",
