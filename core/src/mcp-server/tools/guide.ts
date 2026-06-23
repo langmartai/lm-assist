@@ -111,6 +111,11 @@ CROSS-NODE: all five tools take node=<host>.`,
   install: `# Guide: install & build lm-assist FROM THE REPO on this host (dev + prod)
 WHEN: this connector already works with NO local install — its tools run on the user's ALREADY-INSTALLED hosts (see "cross-node"). Install locally ONLY to make THIS machine its OWN lm-assist node (run its own Core/Web, serve the MCP locally, or register it to a hub). A fresh cloud / CCR container has the connector but NO local lm-assist — install from the repo before expecting local :3100/:3200 services.
 SOURCE: github.com/langmartai/lm-assist — an npm-WORKSPACE monorepo (core = Node API, web = Next.js 16). Needs Node >= 20.9 (the Next 16 web build fails on Node 18; verified on Node 22). ALWAYS run npm from the repo ROOT — workspaces hoist deps, so installing inside core/ or web/ nests a node_modules that shadows the hoist (e.g. the WRONG chokidar then resolves from core/dist).
+ONE-COMMAND (recommended) — runs a PREFLIGHT first (Node>=20.9, git/npm, chokidar pin), then a prod install (CLI + services on :3100/:3848); add --dev for the repo dev ports :3200/:3948:
+  • Linux/macOS:  curl -fsSL https://raw.githubusercontent.com/langmartai/lm-assist/main/install.sh | bash
+  • Windows:      irm https://raw.githubusercontent.com/langmartai/lm-assist/main/install.ps1 | iex
+DIAGNOSE anytime:  lm-assist doctor  (runs the same preflight; --json for machine output).
+WINDOWS command map (no bash / no core.sh): use lm-assist start|status|stop (NOT ./core.sh) and PowerShell irm|iex (NOT curl|bash). Too-old Node → the preflight prints the nvm-windows command (nvm install 20.19.6 ; nvm use 20.19.6).
 
 DEV (repo ports — API :3200, Web :3948), from the repo ROOT:
 1. npm install --ignore-scripts   — plain "npm install" DIES on the onnxruntime-node native postinstall (pulled transitively via @huggingface/transformers / @lancedb: "Cannot find module .../global-agent/.../index.js"). --ignore-scripts skips it; Core still boots healthy (sqlite is lazy / worker-thread loaded, so the skipped better-sqlite3 native build only matters if you use the SQL data backend).

@@ -632,6 +632,12 @@ Log file: `~/.cache/lm-assist/upgrade.log`
 
 ### Bootstrapping from the repo on a fresh host (dev + prod)
 
+**One-command (recommended), per OS** — both run `scripts/preflight.js` first (Node>=20.9, git/npm, chokidar pin) then a prod install (CLI + services :3100/:3848); add `--dev`/`-Dev` for the dev ports (3200/3948):
+- Linux/macOS: `curl -fsSL https://raw.githubusercontent.com/langmartai/lm-assist/main/install.sh | bash`
+- Windows: `irm https://raw.githubusercontent.com/langmartai/lm-assist/main/install.ps1 | iex`
+- Diagnose anytime: `lm-assist doctor` (runs the same preflight; `--json` for machine output).
+- Node policy is **guidance-only**: too-old Node prints the nvm / nvm-windows / fnm upgrade command and stops — it never changes your Node.
+
 Verified end-to-end in a clean cloud **CCR** container (Node 22). This is the same procedure the MCP ships through `guide(topic="install")` / `bootstrap` (see `core/src/mcp-server/tools/guide.ts`) so a connector-only host with **no local lm-assist** can self-install. It's an npm **workspace** monorepo (`core` = Node API, `web` = Next.js 16). Requires **Node ≥ 20.9** (the Next 16 web build fails on 18). **Run every `npm` command from the repo ROOT** — workspaces hoist deps; installing inside `core/` or `web/` nests a `node_modules` that shadows the hoist (e.g. the wrong chokidar then resolves from `core/dist`).
 
 **Dev (repo ports — API :3200, Web :3948), from the repo root:**

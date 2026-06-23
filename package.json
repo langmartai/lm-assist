@@ -32,6 +32,7 @@
     "core/data",
     "core/hooks",
     "core/scripts",
+    "scripts/preflight.js",
     "ccr",
     "web/.next",
     "web/public",
@@ -42,12 +43,13 @@
     "commands",
     "hooks",
     "install.sh",
+    "install.ps1",
     "LICENSE",
     "README.md",
     ".env.example"
   ],
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.9.0"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",

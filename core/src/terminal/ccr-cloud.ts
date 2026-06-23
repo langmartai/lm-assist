@@ -127,6 +127,9 @@ export function buildBootstrapInstruction(opts: { role?: CloudRole; taskId?: str
     );
   }
   lines.push(
+    '       (WINDOWS host? install via PowerShell instead of bash — irm https://raw.githubusercontent.com/langmartai/lm-assist/main/install.ps1 | iex — then use `lm-assist start` / `lm-assist status` (NOT ./core.sh / curl). `lm-assist doctor` checks Node>=20.9 + the chokidar pin.)',
+  );
+  lines.push(
     '',
     `This gives you LOCAL lm-assist on :${apiPort} (CLI + curl -s localhost:${apiPort}/...; the MCP TOOLS attach at your NEXT Claude Code session). lm-assist COMPLEMENTS your built-in tools. NO hub key is embedded — to CONNECT this node to the user's HUB is a SEPARATE step: ASK the user to confirm + provide the hub URL + key; do NOT wire any external hub on your own.`,
   );
