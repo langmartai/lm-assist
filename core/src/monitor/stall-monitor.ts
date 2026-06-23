@@ -28,9 +28,15 @@ export async function runStallMonitorTick(deps: TickDeps) {
 
   const { isMonitor } = await deps.amMonitor();
 
-  // Build the current stall sets.
-  const local = await deps.findLocal();
-  const remote = isMonitor && deps.remoteScan ? await deps.findRemote() : [];
+  // Build the current stall sets. Isolate detector failures: a throw in one
+  // branch is treated as an EMPTY set so the tick still runs reset-on-recovery,
+  // saves, and the other branch (a hub/cloud blip must not sink local resume).
+  let local: { sessionId: string; category: string }[] = [];
+  try { local = await deps.findLocal(); } catch { local = []; }
+  let remote: { sid: string; category: string }[] = [];
+  if (isMonitor && deps.remoteScan) {
+    try { remote = await deps.findRemote(); } catch { remote = []; }
+  }
 
   const stalledKeys = new Set<string>([...local.map((s) => localKey(s.sessionId)), ...remote.map((s) => remoteKey(s.sid))]);
 

@@ -50,6 +50,20 @@ test('a session that recovered (no longer stalled) is reset out of the store', a
   assert.strictEqual(d.load()['local:L1'], undefined); // reset/cleared
 });
 
+test('a throwing detector does not abort the tick (isolated; save + other branch still run)', async () => {
+  let saved = false;
+  let remoteCalled = false;
+  const d = baseDeps({
+    findLocal: async () => { throw new Error('boom'); },
+    findRemote: async () => { remoteCalled = true; return []; },
+    save: (_s: any) => { saved = true; },
+  });
+  const r = await runStallMonitorTick(d);
+  assert.strictEqual(saved, true);          // save still called despite local throw
+  assert.strictEqual(remoteCalled, true);   // remote branch still ran
+  assert.deepStrictEqual(r.localNudged, []); // local threw → treated as empty set
+});
+
 test('cap reached → giveUp, not nudged', async () => {
   const store: Record<string, StallRecord> = { 'local:L1': { attempts: 6, lastNudgeAt: 1, category: 'overloaded', backoffStep: 5, gaveUp: false } };
   let resumed = false;

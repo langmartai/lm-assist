@@ -87,7 +87,7 @@ export const stallStatusToolDef = {
   name: 'stall_status',
   description: 'Auto-resume monitor status: whether this node is the elected stall-monitor, and the per-session retry/gave-up state for sessions stalled on server errors. Read-only.',
   annotations: { readOnlyHint: true },
-  inputSchema: { type: 'object' as const, properties: { node: { type: 'string' as const, description: 'Target host (omit for default).' } }, required: [] as string[] },
+  inputSchema: { type: 'object' as const, properties: {}, required: [] as string[] },
 };
 
 export const memoryProjectsToolDef = {
