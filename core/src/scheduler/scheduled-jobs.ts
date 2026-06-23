@@ -261,6 +261,21 @@ export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
       createdAt: at,
       updatedAt: at,
     },
+    {
+      id: 'stall-monitor',
+      name: 'Auto-resume stalled sessions',
+      description: 'Resume sessions stalled on server errors (529/5xx/server-rate-limit) with `continue`; never user-usage-limits.',
+      type: 'stall-monitor',
+      enabled: true, // ON BY DEFAULT (deliberate deviation)
+      intervalMinutes: 5,
+      config: {},
+      lastRunAt: null,
+      lastResult: null,
+      lastStatus: null,
+      builtin: true,
+      createdAt: at,
+      updatedAt: at,
+    },
   ];
 }
 
@@ -371,6 +386,11 @@ class ScheduledJobs {
       const result = `deleted ${deleted}/${ids.length} by id` + (gone ? `, ${gone} already gone` : '') + (failed ? `, ${failed} failed` : '');
       return { result, status: failed ? 'error' : 'ok' };
     });
+
+    {
+      const { registerStallMonitor } = require('../monitor/stall-monitor');
+      registerStallMonitor(this);
+    }
   }
 
   private load(): void {
