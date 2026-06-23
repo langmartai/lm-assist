@@ -176,6 +176,9 @@ export class MemoryAutoSyncDaemon {
 
   getMode(): AutoSyncMode { return this.mode; }
 
+  /** Re-resolve the mode from env/settings (called when the memorySyncEnabled toggle changes). */
+  refreshMode(): AutoSyncMode { this.mode = resolveMode(); return this.mode; }
+
   /**
    * Hook into the existing MemoryCache watcher and the hub receive channel.
    * Harmless in observe/off mode (no writes). Idempotent.

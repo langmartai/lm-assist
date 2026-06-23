@@ -176,3 +176,10 @@ export function startCrossProjectSignpost(): void {
     watcher.on('unlinkDir', kick);
   } catch { /* watcher is best-effort */ }
 }
+
+/** Stop the projects-root watcher (called when the crossProjectSignpostEnabled toggle is turned off).
+ *  Existing signpost files are left in place. */
+export function stopCrossProjectSignpost(): void {
+  if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
+  if (watcher) { try { void watcher.close(); } catch { /* best-effort */ } watcher = null; }
+}
