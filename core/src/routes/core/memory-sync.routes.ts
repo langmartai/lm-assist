@@ -22,6 +22,9 @@ import { ingestRecords, IngestRecord } from '../../memory/ingest';
 import { readMemorySyncConfig, writeMemorySyncConfig } from '../../memory/node-mode';
 import { getAutoSyncDaemon } from '../../memory/autosync';
 import { pullFromHome } from '../../memory/mcp-transport';
+import { projectsMatchingRemote } from '../../memory/peer-resolve';
+import { projectRemoteKey } from '../../memory/project-remote';
+import { createMemoryApiImpl } from '../../api/memory-api';
 import { getHubConfig } from '../../hub-client/hub-config';
 import { getProjectsDir, legacyEncodeProjectPath, decodePath } from '../../utils/path-utils';
 import { isLoopbackAddress } from '../../auth/enroll-exempt';
@@ -138,6 +141,24 @@ export function createMemorySyncRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!cwd) return wrapError('INVALID_INPUT', 'unknown or unresolvable project', start);
         const n = ingestRecords(cwd, b.sourceHost, b.records);
         return wrapResponse({ ingested: n }, start);
+      },
+    },
+    // GET /memory/projects-by-remote?key=<remoteKey> — this node's project slug(s) whose cwd's git
+    // remote normalizes to <key>. Used by peer-resolve so a node can find which fleet peers share a
+    // project (by git remote) + how it's slugged there. Reveals only slugs; api-token gated by the relay.
+    {
+      method: 'GET',
+      pattern: /^\/memory\/projects-by-remote$/,
+      handler: async (req: ParsedRequest) => {
+        const start = Date.now();
+        const key = typeof req.query?.key === 'string' ? req.query.key : '';
+        if (!key) return wrapResponse({ slugs: [] }, start);
+        let projects: Array<{ projectId: string; projectPath: string }> = [];
+        try {
+          const r = await createMemoryApiImpl().listProjects();
+          projects = (r.success && Array.isArray(r.data)) ? (r.data as any) : [];
+        } catch { projects = []; }
+        return wrapResponse({ slugs: projectsMatchingRemote(projects, key, projectRemoteKey) }, start);
       },
     },
     // GET /memory/sync/status — this node's memory-sync config + live autosync daemon state.
