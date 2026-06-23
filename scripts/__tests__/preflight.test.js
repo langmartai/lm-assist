@@ -63,3 +63,21 @@ test('evaluate: post-clone chokidar unresolved fails', () => {
   const r = pf.evaluate({ nodeVersion: 'v22.0.0', platform: 'linux', hasGit: true, hasNpm: true, managers: {}, phase: 'post-clone', chokidar: { resolved: false, error: 'not found' } });
   assert.strictEqual(r.ok, false);
 });
+
+const cp = require('node:child_process');
+const path = require('node:path');
+
+test('CLI --json pre-clone on this host exits 0 with ok:true and a checks array', () => {
+  // This host runs Node >= 20.9 (the dev/test node), so pre-clone must pass.
+  const out = cp.execFileSync(process.execPath, [path.join(__dirname, '..', 'preflight.js'), '--json', '--phase=pre-clone'], { encoding: 'utf8' });
+  const j = JSON.parse(out);
+  assert.strictEqual(j.ok, true);
+  assert.ok(Array.isArray(j.checks));
+  assert.ok(j.checks.find((c) => c.name === 'node').ok);
+});
+
+test('CLI human report prints a status line and exits 0 on a healthy host', () => {
+  const out = cp.execFileSync(process.execPath, [path.join(__dirname, '..', 'preflight.js'), '--phase=pre-clone'], { encoding: 'utf8' });
+  assert.match(out, /lm-assist preflight/);
+  assert.match(out, /Preflight OK/);
+});

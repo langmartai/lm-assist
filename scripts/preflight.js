@@ -86,4 +86,81 @@ function evaluate(input) {
   };
 }
 
+// ── IO probes (used only by the CLI) ──
+var cp = require('child_process');
+var fs = require('fs');
+var os = require('os');
+var path = require('path');
+
+function cmdPresent(cmd) {
+  try {
+    if (process.platform === 'win32') {
+      cp.execSync('where ' + cmd, { stdio: 'ignore' });
+    } else {
+      cp.execSync('command -v ' + cmd, { stdio: 'ignore', shell: '/bin/sh' });
+    }
+    return true;
+  } catch (e) { return false; }
+}
+
+function detectManagers() {
+  var home = os.homedir();
+  return {
+    nvm: !!process.env.NVM_DIR || fs.existsSync(path.join(home, '.nvm', 'nvm.sh')),
+    fnm: !!process.env.FNM_DIR || cmdPresent('fnm'),
+    nvmWindows: process.platform === 'win32' && (!!process.env.NVM_HOME || cmdPresent('nvm')),
+  };
+}
+
+function probeChokidar(repo) {
+  try {
+    var fromDist = path.join(repo, 'core', 'dist');
+    var pkgPath = require.resolve('chokidar/package.json', { paths: [fromDist] });
+    var pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    require.resolve('chokidar', { paths: [fromDist] }); // confirm the entry resolves too
+    return { resolved: true, version: pkg.version };
+  } catch (e) {
+    return { resolved: false, error: 'chokidar did not resolve from core/dist: ' + (e && e.message) };
+  }
+}
+
+function printReport(r) {
+  var sym = function (c) { return c.ok ? '✓' : (c.hard ? '✗' : '•'); };
+  var out = [];
+  out.push('lm-assist preflight — ' + r.platform + '/' + r.arch + ', node ' + r.nodeVersion);
+  for (var i = 0; i < r.checks.length; i++) {
+    var c = r.checks[i];
+    out.push('  ' + sym(c) + ' ' + c.name + ': ' + c.detail);
+  }
+  if (!r.ok && r.guidance) { out.push(''); out.push('Guidance:'); out.push('  ' + r.guidance); }
+  out.push('');
+  out.push(r.ok ? 'Preflight OK.' : 'Preflight FAILED — resolve the above and re-run.');
+  process.stdout.write(out.join('\n') + '\n');
+}
+
+function main(argv) {
+  var opts = { json: false, phase: 'pre-clone', repo: process.cwd() };
+  for (var i = 0; i < argv.length; i++) {
+    var a = argv[i];
+    if (a === '--json') opts.json = true;
+    else if (a.indexOf('--phase=') === 0) opts.phase = a.slice('--phase='.length);
+    else if (a.indexOf('--repo=') === 0) opts.repo = a.slice('--repo='.length);
+  }
+  var result = evaluate({
+    nodeVersion: process.version,
+    platform: process.platform,
+    arch: process.arch,
+    hasGit: cmdPresent('git'),
+    hasNpm: cmdPresent('npm'),
+    managers: detectManagers(),
+    phase: opts.phase,
+    chokidar: opts.phase === 'post-clone' ? probeChokidar(opts.repo) : undefined,
+  });
+  if (opts.json) process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+  else printReport(result);
+  process.exit(result.ok ? 0 : 1);
+}
+
 module.exports = { MIN_NODE: MIN_NODE, parseNodeVersion: parseNodeVersion, nodeMeetsMinimum: nodeMeetsMinimum, nodeUpgradeGuidance: nodeUpgradeGuidance, evaluate: evaluate };
+
+if (require.main === module) main(process.argv.slice(2));
