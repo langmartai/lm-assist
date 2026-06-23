@@ -15,10 +15,11 @@
  *   - PERSISTENT node (home): memory is canonical here; it does NOT push back
  *     (cloud workers pull its memory at bootstrap — see ccr-cloud.ts).
  *
- * SAFETY: observe-only by DEFAULT. Set MEMORY_AUTOSYNC=on to enable real
- * pushes + hub notifications. In `off`/`observe` mode the daemon detects,
- * filters, and LOGS the sync PLAN ("would push / would notify / would refresh")
- * but performs NO transport and writes to NO file outside its log.
+ * MODE: `on` by DEFAULT (the `memorySyncEnabled` project setting, default true; the
+ * `MEMORY_AUTOSYNC` env overrides to off/observe/on). In `off`/`observe` mode the daemon detects,
+ * filters, and LOGS the sync PLAN ("would push / would notify / would refresh") but performs NO
+ * transport and writes to NO file outside its log. NOTE: `on` is still a no-op for transport on a
+ * node with no configured peers/home (planPushBack → "none"); it only moves memory once peers exist.
  *
  * Per-host-folder ownership: a node's records land under `memory/<that-node>/`
  * on the receiver. A node never overwrites another node's folder.
@@ -53,12 +54,21 @@ import { pushToHome } from './mcp-transport';
 
 export type AutoSyncMode = 'off' | 'observe' | 'on';
 
-/** Read MEMORY_AUTOSYNC from env. Default `observe` (detect+plan, no writes). */
+/**
+ * Resolve the autosync mode. An explicit `MEMORY_AUTOSYNC` env always wins (`off`/`observe`/`on`).
+ * With no env, the mode follows the `memorySyncEnabled` project setting (default true → `on`).
+ * (Lazy require of project-settings avoids a load cycle; it is mtime-cached.)
+ */
 export function resolveMode(): AutoSyncMode {
   const v = (process.env.MEMORY_AUTOSYNC || '').trim().toLowerCase();
   if (v === 'on') return 'on';
   if (v === 'off') return 'off';
-  return 'observe';
+  if (v === 'observe') return 'observe';
+  try {
+    return require('../project-settings').getProjectSettings().memorySyncEnabled ? 'on' : 'off';
+  } catch {
+    return 'observe';
+  }
 }
 
 // ─── Push-back planning (pure) ──────────────────────────────
