@@ -48,7 +48,10 @@ import { getHubConfig } from '../hub-client/hub-config';
 import { selectSyncable } from './sync-select';
 import { readMemorySyncConfig, MemorySyncConfig } from './node-mode';
 import { extractRecords, MemoryRecord } from './record-extract';
-import { pushToHome } from './mcp-transport';
+import { pushToHome, pushMergeToPeer, slugsByRemote, listFleetNodes, pullFromHome } from './mcp-transport';
+import { projectRemoteKey } from './project-remote';
+import { resolvePeers } from './peer-resolve';
+import { mergeIngestRecords } from './merge-ingest';
 
 // ─── Mode ───────────────────────────────────────────────────
 
@@ -211,6 +214,12 @@ export class MemoryAutoSyncDaemon {
 
     this.started = true;
     this.log('(daemon)', 'started', { mode: this.mode, port: this.port });
+
+    // Startup reconcile (on-mode): pull same-remote peers' memory so a node that was offline while a
+    // peer changed converges. Delayed so Core + the hub connection are up; best-effort, never throws.
+    if (this.mode === 'on') {
+      setTimeout(() => { void this.reconcileAllProjects().catch(() => { /* best-effort */ }); }, 15_000).unref?.();
+    }
   }
 
   // ─── Detect (debounced) ───────────────────────────────────
@@ -339,17 +348,19 @@ export class MemoryAutoSyncDaemon {
       });
       return;
     }
-    const plan = planPushBack(cfg, records);
-    if (plan.action !== 'push') {
-      this.log(slug, 'no-push-target', {
-        nodeMode: cfg.nodeMode, homeNode: cfg.homeNode,
-        note: 'persistent/home node or no syncable records — memory stays local (canonical)',
-      });
-      return;
+    // Convergent MESH: push to every fleet peer that shares this project's git remote (persistent↔persistent
+    // + same-remote cloud). Each peer folds it into its LIVE memory via merge-ingest → all peers converge.
+    const meshRecords = selectSyncable(records);
+    if (meshRecords.length && sourceHost) {
+      await this.pushToProjectPeers(projectPath, slug, sourceHost, meshRecords);
     }
-    // Land in the home node's project slug (may differ from the local slug on a cloud clone).
-    const targetProject = cfg.homeProject || slug;
-    await this.pushToHomeNode(slug, targetProject, liveDir, plan.homeNode!, sourceHost, plan.records);
+
+    // cloud → home (per-host mirror) when this node is a configured ephemeral worker.
+    const plan = planPushBack(cfg, records);
+    if (plan.action === 'push') {
+      const targetProject = cfg.homeProject || slug; // home's slug (may differ from the cloud's local slug)
+      await this.pushToHomeNode(slug, targetProject, liveDir, plan.homeNode!, sourceHost, plan.records);
+    }
   }
 
   // ─── Guards ───────────────────────────────────────────────
@@ -471,6 +482,87 @@ export class MemoryAutoSyncDaemon {
     } catch (err) {
       this.counts.errors++;
       this.log(slug, 'push-error', { error: String(err) });
+    }
+  }
+
+  // ─── Convergent mesh: push to / pull from same-remote fleet peers ──
+
+  private async readPayload(liveDir: string, records: MemoryRecord[]): Promise<Array<{ file: string; content: string; contentHash: string }>> {
+    const out: Array<{ file: string; content: string; contentHash: string }> = [];
+    for (const r of records) {
+      try {
+        const content = fs.readFileSync(path.join(liveDir, r.file), 'utf-8');
+        out.push({ file: r.file, content, contentHash: createHash('sha256').update(content).digest('hex') });
+      } catch { /* unreadable — skip */ }
+    }
+    return out;
+  }
+
+  /** Push changed records to every fleet peer sharing this project's git remote (merge:true → converge). */
+  private async pushToProjectPeers(projectPath: string, slug: string, sourceHost: string, records: MemoryRecord[]): Promise<void> {
+    let remoteKey: string | null = null;
+    try { remoteKey = projectRemoteKey(projectPath); } catch { remoteKey = null; }
+    if (!remoteKey) { this.log(slug, 'mesh-no-remote', { note: 'project has no git origin → no mesh peers' }); return; }
+    const key = getHubConfig().apiKey || '';
+    if (!key) { this.log(slug, 'mesh-skip-no-key', {}); return; }
+    let peers: Array<{ node: string; slug: string }> = [];
+    try {
+      const fleet = await listFleetNodes();
+      peers = await resolvePeers(remoteKey, fleet, (node, k) => slugsByRemote(node, k));
+    } catch (e) { this.counts.errors++; this.log(slug, 'mesh-resolve-error', { error: String(e) }); return; }
+    if (!peers.length) { this.log(slug, 'mesh-no-peers', { remoteKey }); return; }
+
+    const payload = await this.readPayload(path.join(getProjectsDir(), slug, 'memory'), records);
+    if (!payload.length) return;
+    for (const peer of peers) {
+      try {
+        const res = await pushMergeToPeer(peer.node, peer.slug, sourceHost, payload, key);
+        this.counts.pushed++;
+        this.log(slug, 'mesh-pushed', { peer: peer.node, peerSlug: peer.slug, result: res });
+      } catch (e) {
+        this.counts.errors++;
+        this.log(slug, 'mesh-push-error', { peer: peer.node, error: String(e) });
+      }
+    }
+  }
+
+  /**
+   * Startup/periodic reconcile: for each local git-backed project, pull each same-remote peer's memory
+   * and merge it into our LIVE memory — so a node that was offline while a peer changed converges.
+   * On-mode only; best-effort. (Steady-state convergence is maintained by push-on-change above.)
+   */
+  async reconcileAllProjects(): Promise<void> {
+    if (this.mode !== 'on') return;
+    const key = getHubConfig().apiKey || '';
+    if (!key) return;
+    let projects: Array<{ projectId: string; projectPath: string }> = [];
+    try {
+      const { createMemoryApiImpl } = require('../api/memory-api');
+      const r = await createMemoryApiImpl().listProjects();
+      projects = (r.success && Array.isArray(r.data)) ? r.data : [];
+    } catch { return; }
+    let fleet: string[] = [];
+    try { fleet = await listFleetNodes(); } catch { return; }
+    if (!fleet.length) return;
+
+    for (const p of projects) {
+      let remoteKey: string | null = null;
+      try { remoteKey = projectRemoteKey(p.projectPath); } catch { remoteKey = null; }
+      if (!remoteKey) continue;
+      let peers: Array<{ node: string; slug: string }> = [];
+      try { peers = await resolvePeers(remoteKey, fleet, (node, k) => slugsByRemote(node, k)); } catch { continue; }
+      if (!peers.length) continue;
+      const liveDir = path.join(getProjectsDir(), p.projectId, 'memory');
+      for (const peer of peers) {
+        try {
+          const recs = await pullFromHome(peer.node, peer.slug, 0, key); // peer's /memory/export
+          if (recs.length) {
+            const res = await mergeIngestRecords(liveDir, peer.node, p.projectId, recs.map((x) => ({ file: x.file, content: x.content, contentHash: x.contentHash })));
+            this.counts.fetched++;
+            this.log(p.projectId, 'reconciled', { peer: peer.node, peerSlug: peer.slug, result: res });
+          }
+        } catch (e) { this.counts.errors++; this.log(p.projectId, 'reconcile-error', { peer: peer.node, error: String(e) }); }
+      }
     }
   }
 

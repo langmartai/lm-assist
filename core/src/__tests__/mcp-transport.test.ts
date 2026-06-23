@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { proxyUrlPath, exportBody, ingestBody } from '../memory/mcp-transport';
+import { proxyUrlPath, exportBody, ingestBody, mergeIngestBody } from '../memory/mcp-transport';
 
 test('proxyUrlPath targets the hub machine-proxy for the peer Core endpoint', () => {
   assert.equal(
@@ -22,5 +22,13 @@ test('ingest body carries sourceHost, records and the key', () => {
   assert.equal(b.project, 'p');
   assert.equal(b.sourceHost, 'gw-cloud');
   assert.deepEqual(b.records, recs);
+  assert.equal(b.key, 'KEY');
+});
+
+test('mergeIngestBody sets merge:true (convergent peer push)', () => {
+  const b = mergeIngestBody('p', 'gw-peer', [{ file: 'a.md', content: 'x', contentHash: 'h' }], 'KEY');
+  assert.equal(b.merge, true);
+  assert.equal(b.project, 'p');
+  assert.equal(b.sourceHost, 'gw-peer');
   assert.equal(b.key, 'KEY');
 });
