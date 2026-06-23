@@ -3,13 +3,14 @@
 # Usage:
 #   irm https://raw.githubusercontent.com/langmartai/lm-assist/main/install.ps1 | iex
 #   # dev mode:  $env:LM_ASSIST_MODE='dev'; irm https://.../install.ps1 | iex
-#   # (as a file)  powershell -ExecutionPolicy Bypass -File install.ps1 -Dev
+#   # pin a build (tag/branch/commit, no npm publish):  $env:LM_ASSIST_REF='v0.1.76'; irm https://.../install.ps1 | iex
+#   # (as a file)  powershell -ExecutionPolicy Bypass -File install.ps1 -Dev -Ref v0.1.76
 #
 # Mirrors install.sh: bare gate -> plugin -> clone -> PREFLIGHT -> build -> start.
 # prod (default): npm pack -> npm install -g .\tgz (CLI + services :3100/:3848).
 # -Dev:           npm install --ignore-scripts -> build -> node bin\lm-assist.js (dev :3200/:3948).
 
-param([switch]$Dev)
+param([switch]$Dev, [string]$Ref = '')
 $ErrorActionPreference = 'Stop'
 
 function Info($m) { Write-Host "[lm-assist] $m" -ForegroundColor Blue }
@@ -19,6 +20,7 @@ function Fail($m) { Write-Host "[lm-assist] $m" -ForegroundColor Red; exit 1 }
 
 $Mode = if ($Dev -or $env:LM_ASSIST_MODE -eq 'dev') { 'dev' } else { 'prod' }
 $InstallDir = if ($env:LM_ASSIST_DIR) { $env:LM_ASSIST_DIR } else { Join-Path $env:USERPROFILE 'lm-assist' }
+if (-not $Ref -and $env:LM_ASSIST_REF) { $Ref = $env:LM_ASSIST_REF }   # optional: pin to a tag/branch/commit
 
 # --- Prerequisites (bare gate) ---
 Info 'Checking prerequisites...'
@@ -38,14 +40,26 @@ Info 'Adding marketplace + installing plugin...'
 try { claude plugin marketplace add langmartai/lm-assist 2>$null } catch { Warn 'Marketplace may already be added' }
 try { claude plugin install lm-assist@langmartai } catch { Warn 'Plugin install returned non-zero (may already be installed)' }
 
-# --- Step 2: Clone / pull ---
+# --- Step 2: Clone / pull (optionally pinned to -Ref tag/branch/commit) ---
 if (Test-Path (Join-Path $InstallDir '.git')) {
   Info "Updating existing checkout at $InstallDir..."
-  git -C $InstallDir pull --ff-only 2>$null
-  if ($LASTEXITCODE -ne 0) { Warn 'Could not fast-forward (local changes?) - continuing' }
+  git -C $InstallDir fetch --tags --quiet origin 2>$null
+  if ($Ref) {
+    Info "Checking out pinned ref: $Ref"
+    git -C $InstallDir checkout --quiet $Ref 2>$null
+    if ($LASTEXITCODE -ne 0) { Fail "Could not checkout ref: $Ref" }
+  } else {
+    git -C $InstallDir pull --ff-only 2>$null
+    if ($LASTEXITCODE -ne 0) { Warn 'Could not fast-forward (local changes?) - continuing' }
+  }
 } else {
   Info "Cloning lm-assist to $InstallDir..."
   git clone https://github.com/langmartai/lm-assist.git $InstallDir
+  if ($Ref) {
+    Info "Checking out pinned ref: $Ref"
+    git -C $InstallDir checkout --quiet $Ref
+    if ($LASTEXITCODE -ne 0) { Fail "Could not checkout ref: $Ref" }
+  }
 }
 Set-Location $InstallDir
 
