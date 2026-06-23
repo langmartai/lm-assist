@@ -27,6 +27,14 @@ export interface ProjectSettings {
   crossProjectSignpostEnabled: boolean;
   /** Cross-node memory sync: when true the autosync daemon runs in `on` mode (env MEMORY_AUTOSYNC overrides). Default true. */
   memorySyncEnabled: boolean;
+  /** Auto-resume sessions stalled on server errors (529/5xx/server-rate-limit). Default true. */
+  autoResumeStalledEnabled: boolean;
+  /** Base interval (minutes) between `continue` nudges. Default 5. */
+  autoResumeIntervalMin: number;
+  /** Max nudge attempts before giving up + flagging. Default 6. */
+  autoResumeMaxAttempts: number;
+  /** Whether the elected monitor scans remote cloud CCRs. Default true. */
+  autoResumeRemoteScan: boolean;
 }
 
 // ── Constants ──────────────────────────────────────────
@@ -41,6 +49,10 @@ const DEFAULTS: ProjectSettings = {
   dataReconcileSec: 300,
   crossProjectSignpostEnabled: true,
   memorySyncEnabled: true,
+  autoResumeStalledEnabled: true,
+  autoResumeIntervalMin: 5,
+  autoResumeMaxAttempts: 6,
+  autoResumeRemoteScan: true,
 };
 
 // ── Mtime Cache ──────────────────────────────────────────
@@ -70,6 +82,10 @@ export function getProjectSettings(): ProjectSettings {
       dataReconcileSec: typeof data.dataReconcileSec === 'number' ? data.dataReconcileSec : DEFAULTS.dataReconcileSec,
       crossProjectSignpostEnabled: typeof data.crossProjectSignpostEnabled === 'boolean' ? data.crossProjectSignpostEnabled : DEFAULTS.crossProjectSignpostEnabled,
       memorySyncEnabled: typeof data.memorySyncEnabled === 'boolean' ? data.memorySyncEnabled : DEFAULTS.memorySyncEnabled,
+      autoResumeStalledEnabled: typeof data.autoResumeStalledEnabled === 'boolean' ? data.autoResumeStalledEnabled : DEFAULTS.autoResumeStalledEnabled,
+      autoResumeIntervalMin: typeof data.autoResumeIntervalMin === 'number' ? data.autoResumeIntervalMin : DEFAULTS.autoResumeIntervalMin,
+      autoResumeMaxAttempts: typeof data.autoResumeMaxAttempts === 'number' ? data.autoResumeMaxAttempts : DEFAULTS.autoResumeMaxAttempts,
+      autoResumeRemoteScan: typeof data.autoResumeRemoteScan === 'boolean' ? data.autoResumeRemoteScan : DEFAULTS.autoResumeRemoteScan,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -94,6 +110,10 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     dataReconcileSec: typeof partial.dataReconcileSec === 'number' ? partial.dataReconcileSec : current.dataReconcileSec,
     crossProjectSignpostEnabled: typeof partial.crossProjectSignpostEnabled === 'boolean' ? partial.crossProjectSignpostEnabled : current.crossProjectSignpostEnabled,
     memorySyncEnabled: typeof partial.memorySyncEnabled === 'boolean' ? partial.memorySyncEnabled : current.memorySyncEnabled,
+    autoResumeStalledEnabled: typeof partial.autoResumeStalledEnabled === 'boolean' ? partial.autoResumeStalledEnabled : current.autoResumeStalledEnabled,
+    autoResumeIntervalMin: typeof partial.autoResumeIntervalMin === 'number' ? partial.autoResumeIntervalMin : current.autoResumeIntervalMin,
+    autoResumeMaxAttempts: typeof partial.autoResumeMaxAttempts === 'number' ? partial.autoResumeMaxAttempts : current.autoResumeMaxAttempts,
+    autoResumeRemoteScan: typeof partial.autoResumeRemoteScan === 'boolean' ? partial.autoResumeRemoteScan : current.autoResumeRemoteScan,
   };
 
   // Ensure parent directory exists
