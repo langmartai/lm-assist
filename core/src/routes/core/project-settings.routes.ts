@@ -32,7 +32,31 @@ export function createProjectSettingsRoutes(_ctx: RouteContext): RouteHandler[] 
         const updated = saveProjectSettings({
           excludedPaths: body.excludedPaths,
           knowledgeEnabled: body.knowledgeEnabled,
+          memorySyncEnabled: body.memorySyncEnabled,
+          crossProjectSignpostEnabled: body.crossProjectSignpostEnabled,
         });
+
+        // Live-apply the memory-sync toggle: re-resolve the autosync daemon mode (no restart).
+        if (prevSettings.memorySyncEnabled !== updated.memorySyncEnabled) {
+          try {
+            const mode = require('../../memory/autosync').getAutoSyncDaemon().refreshMode();
+            console.log(`[ProjectSettings] memorySyncEnabled=${updated.memorySyncEnabled} → autosync mode=${mode}`);
+          } catch (err: any) {
+            console.error('[ProjectSettings] memory-sync toggle error:', err?.message);
+          }
+        }
+
+        // Live-apply the cross-project signpost toggle: start the sweep+watcher, or stop the watcher.
+        if (prevSettings.crossProjectSignpostEnabled !== updated.crossProjectSignpostEnabled) {
+          try {
+            const sp = require('../../memory/cross-project-signpost');
+            if (updated.crossProjectSignpostEnabled) sp.startCrossProjectSignpost();
+            else sp.stopCrossProjectSignpost();
+            console.log(`[ProjectSettings] crossProjectSignpostEnabled=${updated.crossProjectSignpostEnabled}`);
+          } catch (err: any) {
+            console.error('[ProjectSettings] signpost toggle error:', err?.message);
+          }
+        }
 
         // Runtime load/unload knowledge system on toggle
         if (prevSettings.knowledgeEnabled !== updated.knowledgeEnabled) {

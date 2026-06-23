@@ -25,6 +25,8 @@ export interface ProjectSettings {
   dataReconcileSec: number;
   /** Auto-write the managed `_cross-project.md` signpost into every project's memory dir. Default true. */
   crossProjectSignpostEnabled: boolean;
+  /** Cross-node memory sync: when true the autosync daemon runs in `on` mode (env MEMORY_AUTOSYNC overrides). Default true. */
+  memorySyncEnabled: boolean;
 }
 
 // ── Constants ──────────────────────────────────────────
@@ -38,6 +40,7 @@ const DEFAULTS: ProjectSettings = {
   dataSyncPeriodSec: 15,
   dataReconcileSec: 300,
   crossProjectSignpostEnabled: true,
+  memorySyncEnabled: true,
 };
 
 // ── Mtime Cache ──────────────────────────────────────────
@@ -66,6 +69,7 @@ export function getProjectSettings(): ProjectSettings {
       dataSyncPeriodSec: typeof data.dataSyncPeriodSec === 'number' ? data.dataSyncPeriodSec : DEFAULTS.dataSyncPeriodSec,
       dataReconcileSec: typeof data.dataReconcileSec === 'number' ? data.dataReconcileSec : DEFAULTS.dataReconcileSec,
       crossProjectSignpostEnabled: typeof data.crossProjectSignpostEnabled === 'boolean' ? data.crossProjectSignpostEnabled : DEFAULTS.crossProjectSignpostEnabled,
+      memorySyncEnabled: typeof data.memorySyncEnabled === 'boolean' ? data.memorySyncEnabled : DEFAULTS.memorySyncEnabled,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -89,6 +93,7 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     dataSyncPeriodSec: typeof partial.dataSyncPeriodSec === 'number' ? partial.dataSyncPeriodSec : current.dataSyncPeriodSec,
     dataReconcileSec: typeof partial.dataReconcileSec === 'number' ? partial.dataReconcileSec : current.dataReconcileSec,
     crossProjectSignpostEnabled: typeof partial.crossProjectSignpostEnabled === 'boolean' ? partial.crossProjectSignpostEnabled : current.crossProjectSignpostEnabled,
+    memorySyncEnabled: typeof partial.memorySyncEnabled === 'boolean' ? partial.memorySyncEnabled : current.memorySyncEnabled,
   };
 
   // Ensure parent directory exists

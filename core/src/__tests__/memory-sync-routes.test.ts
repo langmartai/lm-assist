@@ -131,6 +131,18 @@ test('ingest validates required fields', async () => {
   assert.equal(r.error.code, 'INVALID_INPUT');
 });
 
+test('ingest merge:true converges into the project LIVE memory dir', async () => {
+  seedMemory(); // ensures TMP/projects/SLUG/memory exists (registered project)
+  const body = { project: SLUG, sourceHost: 'gw-peer', merge: true,
+    records: [{ file: 'converged_note.md', content: '---\nname: c\ntype: project\n---\nfrom peer', contentHash: 'h' }] };
+  const r: any = await route('POST', /ingest/).handler(localReq(body), {} as any);
+  assert.equal(r.success, true);
+  assert.equal(r.data.merged.adopted, 1); // new file adopted into live
+  const liveFile = path.join(TMP, 'projects', SLUG, 'memory', 'converged_note.md');
+  assert.ok(fs.existsSync(liveFile), 'merged file lands in the live dir');
+  assert.match(fs.readFileSync(liveFile, 'utf-8'), /from peer/);
+});
+
 test('exposes POST /memory/sync/enable and POST /memory/pull', () => {
   const paths = routes().map(r => `${r.method} ${r.pattern.source}`);
   assert.ok(paths.some(p => p.startsWith('POST') && /sync.{1,3}enable/.test(p)), paths.join(','));

@@ -6,6 +6,7 @@ import { detectAppMode, workerFetch } from '@/lib/api-client';
 import { useExperiment } from '@/hooks/useExperiment';
 import { usePlatform } from '@/hooks/usePlatform';
 import McpAccessTab from './McpAccessTab';
+import MemoryTab from './MemoryTab';
 import {
   Settings,
   Globe,
@@ -53,7 +54,7 @@ import {
 // Types
 // ============================================
 
-type SettingsTab = 'connection' | 'terminal' | 'claude-code' | 'data-loading' | 'experiment' | 'mcp';
+type SettingsTab = 'connection' | 'terminal' | 'claude-code' | 'data-loading' | 'experiment' | 'mcp' | 'memory';
 
 interface HubStatusData {
   configured: boolean;
@@ -1685,11 +1686,18 @@ export default function SettingsPage() {
           icon={<FlaskConical size={13} />}
           label="MCP"
         />
+        <TabButton
+          active={activeTab === 'memory'}
+          onClick={() => handleSetActiveTab('memory')}
+          icon={<HardDrive size={13} />}
+          label="Memory"
+        />
       </div>
 
       {/* ──────────── Tab Content ──────────── */}
       <div style={{ maxWidth: 640 }}>
         {activeTab === 'mcp' && <McpAccessTab baseUrl={workerBaseUrl} />}
+        {activeTab === 'memory' && <MemoryTab baseUrl={workerBaseUrl} />}
 
         {/* ═══════════════ CONNECTION TAB ═══════════════ */}
         {activeTab === 'connection' && (
