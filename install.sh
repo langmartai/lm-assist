@@ -4,6 +4,9 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/langmartai/lm-assist/main/install.sh | bash
 #   curl -fsSL https://raw.githubusercontent.com/langmartai/lm-assist/main/install.sh | bash -s -- --dev
+#   # pin a specific build (tag / branch / commit) — no npm publish needed:
+#   curl -fsSL https://raw.githubusercontent.com/langmartai/lm-assist/main/install.sh | bash -s -- --ref v0.1.76
+#   # (or set LM_ASSIST_REF=v0.1.76 in the environment)
 #
 # What it does:
 #   1. Bare prereq gate (git/node/npm/claude present; node major >= 20)
@@ -23,14 +26,18 @@ warn()  { echo -e "${YELLOW}[lm-assist]${NC} $*"; }
 fail()  { echo -e "${RED}[lm-assist]${NC} $*"; exit 1; }
 
 INSTALL_DIR="${LM_ASSIST_DIR:-$HOME/lm-assist}"
+REF="${LM_ASSIST_REF:-}"   # optional: pin to a tag / branch / commit
 
 MODE="prod"
-for arg in "$@"; do
-  case "$arg" in
-    --dev)  MODE="dev" ;;
-    --prod) MODE="prod" ;;
-    *) warn "Ignoring unknown argument: $arg" ;;
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dev)   MODE="dev" ;;
+    --prod)  MODE="prod" ;;
+    --ref)   shift; REF="${1:-}" ;;
+    --ref=*) REF="${1#--ref=}" ;;
+    *) warn "Ignoring unknown argument: $1" ;;
   esac
+  shift
 done
 
 # ─── Prerequisites (bare gate; the post-clone preflight is authoritative) ───
@@ -51,13 +58,23 @@ info "Adding langmartai marketplace + installing plugin..."
 claude plugin marketplace add langmartai/lm-assist 2>/dev/null || warn "Marketplace may already be added"
 claude plugin install lm-assist@langmartai 2>&1 || warn "Plugin install returned non-zero (may already be installed)"
 
-# ─── Step 2: Clone / pull ───
+# ─── Step 2: Clone / pull (optionally pinned to --ref tag/branch/commit) ───
 if [ -d "$INSTALL_DIR/.git" ]; then
   info "Updating existing checkout at $INSTALL_DIR..."
-  git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || warn "Could not fast-forward (local changes?) — continuing"
+  git -C "$INSTALL_DIR" fetch --tags --quiet origin 2>/dev/null || true
+  if [ -n "$REF" ]; then
+    info "Checking out pinned ref: $REF"
+    git -C "$INSTALL_DIR" checkout --quiet "$REF" 2>/dev/null || fail "Could not checkout ref: $REF"
+  else
+    git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || warn "Could not fast-forward (local changes?) — continuing"
+  fi
 else
   info "Cloning lm-assist to $INSTALL_DIR..."
   git clone https://github.com/langmartai/lm-assist.git "$INSTALL_DIR"
+  if [ -n "$REF" ]; then
+    info "Checking out pinned ref: $REF"
+    git -C "$INSTALL_DIR" checkout --quiet "$REF" || fail "Could not checkout ref: $REF"
+  fi
 fi
 cd "$INSTALL_DIR"
 
