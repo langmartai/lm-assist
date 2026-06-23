@@ -42,6 +42,7 @@ try { claude plugin install lm-assist@langmartai } catch { Warn 'Plugin install 
 if (Test-Path (Join-Path $InstallDir '.git')) {
   Info "Updating existing checkout at $InstallDir..."
   git -C $InstallDir pull --ff-only 2>$null
+  if ($LASTEXITCODE -ne 0) { Warn 'Could not fast-forward (local changes?) - continuing' }
 } else {
   Info "Cloning lm-assist to $InstallDir..."
   git clone https://github.com/langmartai/lm-assist.git $InstallDir
@@ -51,6 +52,7 @@ Set-Location $InstallDir
 # --- Step 3: Install deps (--ignore-scripts) + PREFLIGHT ---
 Info 'Installing dependencies (this can take a minute)...'
 npm install --ignore-scripts --no-audit --no-fund | Select-Object -Last 1
+if ($LASTEXITCODE -ne 0) { Fail 'npm install failed' }
 Info 'Running preflight (authoritative environment check)...'
 node scripts\preflight.js --phase=post-clone --repo="$InstallDir"
 if ($LASTEXITCODE -ne 0) { Fail 'Preflight failed - resolve the issues above and re-run.' }
@@ -59,14 +61,17 @@ if ($LASTEXITCODE -ne 0) { Fail 'Preflight failed - resolve the issues above and
 if ($Mode -eq 'dev') {
   Info 'Building (dev)...'
   npm run build | Select-Object -Last 3
+  if ($LASTEXITCODE -ne 0) { Fail 'build failed' }
   Ok "Build complete (dev). Start with: node bin\lm-assist.js start   (dev API :3200 / Web :3948)"
 } else {
   Info 'Packing + installing globally (prod)...'
   npm pack | Select-Object -Last 1
+  if ($LASTEXITCODE -ne 0) { Fail 'npm pack failed' }
   $tgz = Get-ChildItem -Filter 'lm-assist-*.tgz' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
   if (-not $tgz) { Fail 'npm pack did not produce a tgz' }
   Info "Installing $($tgz.Name) globally (compiles better-sqlite3; postinstall auto-starts services)..."
   npm install -g ".\$($tgz.Name)" | Select-Object -Last 3
+  if ($LASTEXITCODE -ne 0) { Fail 'global install failed' }
   Ok 'Installed lm-assist CLI (prod). Services start on :3100 (API) / :3848 (Web).'
 }
 
