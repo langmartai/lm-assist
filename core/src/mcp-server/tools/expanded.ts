@@ -83,6 +83,13 @@ export const getExecutionToolDef = {
   },
 };
 
+export const stallStatusToolDef = {
+  name: 'stall_status',
+  description: 'Auto-resume monitor status: whether this node is the elected stall-monitor, and the per-session retry/gave-up state for sessions stalled on server errors. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: { type: 'object' as const, properties: {}, required: [] as string[] },
+};
+
 export const memoryProjectsToolDef = {
   name: 'memory_projects',
   description:
@@ -822,6 +829,7 @@ export const EXPANDED_TOOL_DEFS = [
   // read
   listExecutionsToolDef,
   getExecutionToolDef,
+  stallStatusToolDef,
   memoryProjectsToolDef,
   memorySyncStatusToolDef,
   memoryCrossHostToolDef,
@@ -924,6 +932,14 @@ function renderRaw(body: Record<string, unknown>): McpToolResult {
 
 function enc(s: string): string {
   return encodeURIComponent(s);
+}
+
+async function handleStallStatus(): Promise<McpToolResult> {
+  try {
+    return ok(pretty(await workerGet('/monitor/stalls')));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
 }
 
 async function handleListExecutions(): Promise<McpToolResult> {
@@ -1555,6 +1571,7 @@ export const EXPANDED_HANDLERS: Record<
   // read
   list_executions: () => handleListExecutions(),
   get_execution: handleGetExecution,
+  stall_status: () => handleStallStatus(),
   memory_projects: () => handleMemoryProjects(),
   memory_sync_status: () => handleMemorySyncStatus(),
   memory_cross_host: handleMemoryCrossHost,

@@ -122,6 +122,9 @@ The backend is a raw Node.js HTTP server (no Express/Hono runtime — Hono is a 
 - Claude Code tasks: `~/.claude/tasks/`
 - Team configs: `~/.claude/teams/`
 
+### Auto-resume stalled sessions (server errors)
+A `scheduled-jobs` handler `stall-monitor` (5 min, on by default) resumes sessions stalled on SERVER errors (529/5xx/server-rate-limit — NEVER user usage-limits or auth) by sending `continue`, capped-backoff then flagged. Local sessions are handled per-node; remote cloud CCRs only by the single auto-elected monitor (lowest online gateway-id from the hub `/machines` list). Toggles in project-settings: `autoResumeStalledEnabled` (default true), `autoResumeIntervalMin`, `autoResumeMaxAttempts`, `autoResumeRemoteScan`. Status: `GET /monitor/stalls` / MCP `stall_status`. Run on demand: `POST /scheduler/jobs/stall-monitor/run`.
+
 ### Web UI (`web/`)
 
 Next.js 16 with Turbopack, React 19, Zustand for state, Tailwind CSS v4 for styling. Renders sessions, terminals, tasks, knowledge, and settings pages. Communicates with the core API (dev :3200 / prod :3100).

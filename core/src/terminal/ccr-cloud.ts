@@ -624,3 +624,16 @@ export async function cloudStop(sid: string): Promise<{ stopped: boolean; sid: s
 export function cloudList(): CloudRecord[] {
   return Object.values(loadRegistry()).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 }
+
+/** List the ACCOUNT's cloud code sessions (fleet-wide, not just ones we created). */
+export async function cloudListAccount(limit = 50): Promise<Array<{ sid: string; status: string; title?: string }>> {
+  const res = await anthropicOAuthGet('/v1/code/sessions', { ...(await ccrOpts()), query: `limit=${limit}` });
+  assertOk(res, 'cloud list account');
+  const arr: any[] = res.body?.sessions ?? res.body?.data ?? (Array.isArray(res.body) ? res.body : []);
+  // field names confirmed against the live endpoint at build time; defensive reads kept.
+  return arr.map((s) => ({
+    sid: (s.id || s.session_id || s.uuid) as string,
+    status: (s.status || s.session_status || '') as string,
+    title: s.title,
+  })).filter((s) => s.sid);
+}

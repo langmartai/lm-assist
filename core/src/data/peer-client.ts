@@ -204,6 +204,16 @@ export class HubPeerClient implements PeerClient {
   }
 }
 
+/** All fleet machine gateway-ids currently `status:"online"` (INCLUDING this node). */
+export async function listOnlineNodeIds(): Promise<string[]> {
+  const json = (await hubFetch('/api/tier-agent/machines')) as any;
+  const machines: any[] = Array.isArray(json) ? json : json.machines || json.data || [];
+  return machines
+    .filter((m) => (m.status || '').toLowerCase() === 'online')
+    .map((m) => (m.gatewayId || m.machineId || m.id) as string)
+    .filter((id): id is string => typeof id === 'string' && !!id);
+}
+
 // ── Factory ──────────────────────────────────────────────────────────────────
 
 export function getHubPeerClient(): HubPeerClient {
