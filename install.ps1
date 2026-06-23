@@ -1,4 +1,4 @@
-# install.ps1 — One-command installer for lm-assist (Windows)
+# install.ps1 - One-command installer for lm-assist (Windows)
 #
 # Usage:
 #   irm https://raw.githubusercontent.com/langmartai/lm-assist/main/install.ps1 | iex
@@ -20,7 +20,7 @@ function Fail($m) { Write-Host "[lm-assist] $m" -ForegroundColor Red; exit 1 }
 $Mode = if ($Dev -or $env:LM_ASSIST_MODE -eq 'dev') { 'dev' } else { 'prod' }
 $InstallDir = if ($env:LM_ASSIST_DIR) { $env:LM_ASSIST_DIR } else { Join-Path $env:USERPROFILE 'lm-assist' }
 
-# ─── Prerequisites (bare gate) ───
+# --- Prerequisites (bare gate) ---
 Info 'Checking prerequisites...'
 foreach ($c in @('git','node','npm','claude')) {
   if (-not (Get-Command $c -ErrorAction SilentlyContinue)) {
@@ -31,14 +31,14 @@ foreach ($c in @('git','node','npm','claude')) {
 }
 $nodeMajor = [int]((node -v).TrimStart('v').Split('.')[0])
 if ($nodeMajor -lt 20) { Fail "Node.js >= 20.9 is required (found $(node -v)). Upgrade (nvm install 20.19.6 ; nvm use 20.19.6) and re-run." }
-Ok "Prereqs present (node $(node -v)) — mode: $Mode"
+Ok "Prereqs present (node $(node -v)) - mode: $Mode"
 
-# ─── Step 1: Plugin ───
+# --- Step 1: Plugin ---
 Info 'Adding marketplace + installing plugin...'
 try { claude plugin marketplace add langmartai/lm-assist 2>$null } catch { Warn 'Marketplace may already be added' }
 try { claude plugin install lm-assist@langmartai } catch { Warn 'Plugin install returned non-zero (may already be installed)' }
 
-# ─── Step 2: Clone / pull ───
+# --- Step 2: Clone / pull ---
 if (Test-Path (Join-Path $InstallDir '.git')) {
   Info "Updating existing checkout at $InstallDir..."
   git -C $InstallDir pull --ff-only 2>$null
@@ -48,14 +48,14 @@ if (Test-Path (Join-Path $InstallDir '.git')) {
 }
 Set-Location $InstallDir
 
-# ─── Step 3: Install deps (--ignore-scripts) + PREFLIGHT ───
+# --- Step 3: Install deps (--ignore-scripts) + PREFLIGHT ---
 Info 'Installing dependencies (this can take a minute)...'
 npm install --ignore-scripts --no-audit --no-fund | Select-Object -Last 1
 Info 'Running preflight (authoritative environment check)...'
 node scripts\preflight.js --phase=post-clone --repo="$InstallDir"
-if ($LASTEXITCODE -ne 0) { Fail 'Preflight failed — resolve the issues above and re-run.' }
+if ($LASTEXITCODE -ne 0) { Fail 'Preflight failed - resolve the issues above and re-run.' }
 
-# ─── Step 4: Build + start by mode ───
+# --- Step 4: Build + start by mode ---
 if ($Mode -eq 'dev') {
   Info 'Building (dev)...'
   npm run build | Select-Object -Last 3
@@ -70,10 +70,10 @@ if ($Mode -eq 'dev') {
   Ok 'Installed lm-assist CLI (prod). Services start on :3100 (API) / :3848 (Web).'
 }
 
-# ─── .env ───
+# --- .env ---
 if (-not (Test-Path (Join-Path $InstallDir '.env')) -and (Test-Path (Join-Path $InstallDir '.env.example'))) {
   Copy-Item (Join-Path $InstallDir '.env.example') (Join-Path $InstallDir '.env')
-  Warn 'Created .env from .env.example — edit to add ANTHROPIC_API_KEY'
+  Warn 'Created .env from .env.example - edit to add ANTHROPIC_API_KEY'
 }
 
 Write-Host ''
