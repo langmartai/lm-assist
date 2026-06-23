@@ -24,6 +24,7 @@ import { getAutoSyncDaemon } from '../../memory/autosync';
 import { pullFromHome } from '../../memory/mcp-transport';
 import { projectsMatchingRemote } from '../../memory/peer-resolve';
 import { projectRemoteKey } from '../../memory/project-remote';
+import { mergeIngestRecords } from '../../memory/merge-ingest';
 import { createMemoryApiImpl } from '../../api/memory-api';
 import { getHubConfig } from '../../hub-client/hub-config';
 import { getProjectsDir, legacyEncodeProjectPath, decodePath } from '../../utils/path-utils';
@@ -129,12 +130,24 @@ export function createMemorySyncRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/memory\/ingest$/,
       handler: async (req: ParsedRequest) => {
         const start = Date.now();
-        const b = (req.body || {}) as { project?: string; sourceHost?: string; records?: IngestRecord[]; key?: string };
+        const b = (req.body || {}) as { project?: string; sourceHost?: string; records?: IngestRecord[]; key?: string; merge?: boolean };
         if (!authorized(req, b.key)) return wrapError('FORBIDDEN', 'not authorized for memory sync', start);
         if (!b.project || !b.sourceHost || !Array.isArray(b.records)) {
           return wrapError('INVALID_INPUT', 'project, sourceHost, records[] required', start);
         }
-        // Write into <cwd>/memory/<sourceHost>/ — the per-host mirror dir memory-cache reads.
+
+        // Convergent mode: base-aware auto-merge into the target project's LIVE memory (peers converge).
+        if (b.merge) {
+          if (b.project.includes('/') || b.project.includes('\\') || b.project.includes('..') ||
+              !fs.existsSync(path.join(getProjectsDir(), b.project))) {
+            return wrapError('INVALID_INPUT', 'unknown project', start);
+          }
+          const liveMemDir = path.join(getProjectsDir(), b.project, 'memory');
+          const merged = await mergeIngestRecords(liveMemDir, b.sourceHost, b.project, b.records);
+          return wrapResponse({ merged }, start);
+        }
+
+        // Default (per-host mirror): write into <cwd>/memory/<sourceHost>/ — the dir memory-cache reads.
         // Allow-list the project: a relayed `project` must map to a KNOWN project on this node, so it
         // can't decode to an arbitrary path. ingestRecords further confines writes within cwd/memory/<host>/.
         const cwd = resolveKnownProjectCwd(b.project);
