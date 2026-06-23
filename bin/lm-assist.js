@@ -101,7 +101,7 @@ function loadSm() {
 const command = process.argv[2] || 'help';
 const args = process.argv.slice(3);
 
-const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'version', 'storage', 'log', 'setup', 'login', 'logout', 'help'];
+const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'version', 'storage', 'log', 'setup', 'login', 'logout', 'doctor', 'help'];
 
 if (command === 'help' || command === '--help' || command === '-h') {
   console.log(`
@@ -117,6 +117,7 @@ Commands:
   logs [core|web]    View service logs (last 100 lines, --dev for dev logs)
   log [context|mcp]  View hook and MCP logs (default: both)
   version            Show installed, latest, and plugin versions
+  doctor             Check this host's environment (Node>=20.9, git/npm, chokidar pin)
   storage            Show storage usage (~/.lm-assist/)
   storage clean      Delete all lm-assist data and start fresh (-y to skip confirm)
   setup --key KEY    Connect to cloud with an API key
@@ -177,6 +178,30 @@ if (command === 'upgrade') {
     // Pass through upgrade args (e.g. `--from <tgz|dir|spec>`) so the user can
     // install a specific non-published build instead of npm latest.
     execFileSync(process.execPath, [tmpScript, ...args], {
+      stdio: 'inherit',
+      env: process.env,
+      windowsHide: true,
+    });
+  } catch (err) {
+    process.exit(err.status || 1);
+  }
+  process.exit(0);
+}
+
+// Handle doctor separately — just runs the preflight (no service-manager needed)
+if (command === 'doctor') {
+  // Use __filename-relative path (the repo containing bin/lm-assist.js),
+  // matching the upgrade block's pattern — projectRoot may resolve to the
+  // global npm package which lacks scripts/preflight.js.
+  const preflight = path.join(path.dirname(path.dirname(__filename)), 'scripts', 'preflight.js');
+  if (!fs.existsSync(preflight)) {
+    console.error('Preflight script not found at:', preflight);
+    console.error('(Run from a source checkout, or reinstall lm-assist.)');
+    process.exit(1);
+  }
+  const { execFileSync } = require('child_process');
+  try {
+    execFileSync(process.execPath, [preflight, '--phase=post-clone', `--repo=${projectRoot}`, ...args], {
       stdio: 'inherit',
       env: process.env,
       windowsHide: true,
