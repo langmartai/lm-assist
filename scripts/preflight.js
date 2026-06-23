@@ -58,7 +58,7 @@ function evaluate(input) {
   checks.push({ name: 'npm', ok: !!input.hasNpm, hard: true, detail: input.hasNpm ? 'present' : 'not found' });
 
   var chokidarBad = false;
-  if (input.phase === 'post-clone') {
+  if (input.phase === 'post-clone' && input.chokidar !== undefined) {
     var ck = input.chokidar || {};
     var ckOk = !!ck.resolved && /^3\.6\./.test(ck.version || '');
     chokidarBad = !ckOk;
@@ -68,6 +68,21 @@ function evaluate(input) {
         ? ck.version + ' (CommonJS pin)'
         : (ck.error || ('resolves to ' + (ck.version || '?') + ' — must be 3.6.x (4/5 are ESM-only → ERR_REQUIRE_ESM)')),
     });
+  }
+
+  if (input.phase === 'post-clone' && input.workspace !== undefined) {
+    var ws = input.workspace || {};
+    var wsOk = ws.rootWorkspaces === true && ws.strayChokidar !== true;
+    var wsDetail;
+    if (wsOk) {
+      wsDetail = 'workspaces root OK';
+    } else {
+      var problems = [];
+      if (!ws.rootWorkspaces) problems.push('no "workspaces" in root package.json');
+      if (ws.strayChokidar) problems.push('stray core/node_modules/chokidar shadows the hoisted pin');
+      wsDetail = problems.join('; ');
+    }
+    checks.push({ name: 'workspace', ok: wsOk, hard: false, detail: wsDetail });
   }
 
   var hardFail = checks.some(function (c) { return c.hard && !c.ok; });
@@ -124,6 +139,19 @@ function probeChokidar(repo) {
   }
 }
 
+function probeWorkspace(repo) {
+  var rootWorkspaces = false;
+  try {
+    var rootPkg = JSON.parse(fs.readFileSync(path.join(repo, 'package.json'), 'utf8'));
+    var ws = rootPkg.workspaces;
+    rootWorkspaces = Array.isArray(ws) || !!(ws && Array.isArray(ws.packages));
+  } catch (e) { rootWorkspaces = false; }
+  return {
+    rootWorkspaces: rootWorkspaces,
+    strayChokidar: fs.existsSync(path.join(repo, 'core', 'node_modules', 'chokidar')),
+  };
+}
+
 function printReport(r) {
   var sym = function (c) { return c.ok ? '✓' : (c.hard ? '✗' : '•'); };
   var out = [];
@@ -155,12 +183,13 @@ function main(argv) {
     managers: detectManagers(),
     phase: opts.phase,
     chokidar: opts.phase === 'post-clone' ? probeChokidar(opts.repo) : undefined,
+    workspace: opts.phase === 'post-clone' ? probeWorkspace(opts.repo) : undefined,
   });
   if (opts.json) process.stdout.write(JSON.stringify(result, null, 2) + '\n');
   else printReport(result);
   process.exit(result.ok ? 0 : 1);
 }
 
-module.exports = { MIN_NODE: MIN_NODE, parseNodeVersion: parseNodeVersion, nodeMeetsMinimum: nodeMeetsMinimum, nodeUpgradeGuidance: nodeUpgradeGuidance, evaluate: evaluate };
+module.exports = { MIN_NODE: MIN_NODE, parseNodeVersion: parseNodeVersion, nodeMeetsMinimum: nodeMeetsMinimum, nodeUpgradeGuidance: nodeUpgradeGuidance, evaluate: evaluate, probeWorkspace: probeWorkspace };
 
 if (require.main === module) main(process.argv.slice(2));

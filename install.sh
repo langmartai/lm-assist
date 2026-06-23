@@ -73,7 +73,7 @@ fi
 # ─── Step 4: Build + start by mode ───
 if [ "$MODE" = "dev" ]; then
   info "Building (dev)..."
-  npm run build 2>&1 | tail -3
+  npm run build 2>&1 | tail -20
   ok "Build complete (dev). Start with: cd $INSTALL_DIR && ./core.sh start   (API :3200, Web :3948)"
 else
   info "Packing + installing globally (prod)..."

@@ -1,6 +1,8 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert');
+const cp = require('node:child_process');
+const path = require('node:path');
 const pf = require('../preflight.js');
 
 test('parseNodeVersion parses v?MAJOR.MINOR.PATCH', () => {
@@ -64,9 +66,6 @@ test('evaluate: post-clone chokidar unresolved fails', () => {
   assert.strictEqual(r.ok, false);
 });
 
-const cp = require('node:child_process');
-const path = require('node:path');
-
 test('CLI --json pre-clone on this host exits 0 with ok:true and a checks array', () => {
   // This host runs Node >= 20.9 (the dev/test node), so pre-clone must pass.
   const out = cp.execFileSync(process.execPath, [path.join(__dirname, '..', 'preflight.js'), '--json', '--phase=pre-clone'], { encoding: 'utf8' });
@@ -80,4 +79,64 @@ test('CLI human report prints a status line and exits 0 on a healthy host', () =
   const out = cp.execFileSync(process.execPath, [path.join(__dirname, '..', 'preflight.js'), '--phase=pre-clone'], { encoding: 'utf8' });
   assert.match(out, /lm-assist preflight/);
   assert.match(out, /Preflight OK/);
+});
+
+// ── #1 workspace WARN check ─────────────────────────────────────────────────
+
+test('evaluate: post-clone workspace ok=true is a soft WARN pass', () => {
+  const r = pf.evaluate({ nodeVersion: 'v22.0.0', platform: 'linux', hasGit: true, hasNpm: true, managers: {}, phase: 'post-clone', chokidar: { resolved: true, version: '3.6.0' }, workspace: { rootWorkspaces: true, strayChokidar: false } });
+  const wc = r.checks.find((c) => c.name === 'workspace');
+  assert.ok(wc, 'workspace check present');
+  assert.strictEqual(wc.ok, true);
+  assert.strictEqual(wc.hard, false);
+  assert.match(wc.detail, /workspaces root OK/);
+  assert.strictEqual(r.ok, true);
+});
+
+test('evaluate: post-clone workspace strayChokidar=true → ok:false but r.ok stays true (soft)', () => {
+  const r = pf.evaluate({ nodeVersion: 'v22.0.0', platform: 'linux', hasGit: true, hasNpm: true, managers: {}, phase: 'post-clone', chokidar: { resolved: true, version: '3.6.0' }, workspace: { rootWorkspaces: true, strayChokidar: true } });
+  const wc = r.checks.find((c) => c.name === 'workspace');
+  assert.ok(wc, 'workspace check present');
+  assert.strictEqual(wc.ok, false);
+  assert.strictEqual(wc.hard, false);
+  assert.match(wc.detail, /stray core\/node_modules\/chokidar/);
+  assert.strictEqual(r.ok, true, 'soft check must not flip r.ok');
+  assert.strictEqual(r.guidance, null, 'guidance unchanged when only soft check fails');
+});
+
+test('evaluate: post-clone workspace rootWorkspaces=false → detail names the problem', () => {
+  const r = pf.evaluate({ nodeVersion: 'v22.0.0', platform: 'linux', hasGit: true, hasNpm: true, managers: {}, phase: 'post-clone', chokidar: { resolved: true, version: '3.6.0' }, workspace: { rootWorkspaces: false, strayChokidar: false } });
+  const wc = r.checks.find((c) => c.name === 'workspace');
+  assert.strictEqual(wc.ok, false);
+  assert.match(wc.detail, /no "workspaces" in root package\.json/);
+  assert.strictEqual(r.ok, true, 'soft check must not flip r.ok');
+});
+
+test('evaluate: post-clone with NO workspace key → NO workspace check pushed', () => {
+  const r = pf.evaluate({ nodeVersion: 'v22.0.0', platform: 'linux', hasGit: true, hasNpm: true, managers: {}, phase: 'post-clone', chokidar: { resolved: true, version: '3.6.0' } });
+  const wc = r.checks.find((c) => c.name === 'workspace');
+  assert.strictEqual(wc, undefined, 'workspace check must not be present when workspace not supplied');
+});
+
+// ── #2 cheap coverage Minors ────────────────────────────────────────────────
+
+test('nodeUpgradeGuidance: linux nvm+fnm → nvm wins', () => {
+  assert.match(pf.nodeUpgradeGuidance('linux', { nvm: true, fnm: true }), /nvm install 20 && nvm use 20/);
+});
+
+test('nodeUpgradeGuidance: win32 nvmWindows+fnm → nvm-windows wins', () => {
+  assert.match(pf.nodeUpgradeGuidance('win32', { nvmWindows: true, fnm: true }), /nvm install 20\.19\.6/);
+});
+
+test('evaluate: post-clone with chokidar omitted → chokidar check absent → r.ok true', () => {
+  const r = pf.evaluate({ nodeVersion: 'v22.0.0', platform: 'linux', hasGit: true, hasNpm: true, managers: {}, phase: 'post-clone' });
+  const ck = r.checks.find((c) => c.name === 'chokidar');
+  assert.strictEqual(ck, undefined, 'chokidar check must not be pushed when input.chokidar is omitted');
+  assert.strictEqual(r.ok, true);
+});
+
+test('evaluate: pre-clone with chokidar key supplied → NO chokidar check pushed', () => {
+  const r = pf.evaluate({ nodeVersion: 'v22.0.0', platform: 'linux', hasGit: true, hasNpm: true, managers: {}, phase: 'pre-clone', chokidar: { resolved: true, version: '3.6.0' } });
+  const ck = r.checks.find((c) => c.name === 'chokidar');
+  assert.strictEqual(ck, undefined, 'chokidar check must be ignored pre-clone');
 });

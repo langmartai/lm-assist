@@ -60,7 +60,7 @@ if ($LASTEXITCODE -ne 0) { Fail 'Preflight failed - resolve the issues above and
 # --- Step 4: Build + start by mode ---
 if ($Mode -eq 'dev') {
   Info 'Building (dev)...'
-  npm run build | Select-Object -Last 3
+  npm run build | Select-Object -Last 20
   if ($LASTEXITCODE -ne 0) { Fail 'build failed' }
   Ok "Build complete (dev). Start with: node bin\lm-assist.js start   (dev API :3200 / Web :3948)"
 } else {
