@@ -135,6 +135,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   // expanded read tier
   list_executions: 'read',
   get_execution: 'read',
+  stall_status: 'read',
   memory_projects: 'read',
   memory_sync_status: 'read',
   memory_cross_host: 'read',
