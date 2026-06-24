@@ -398,6 +398,23 @@ export function decideSupervisor(input: { isMonitor: boolean; live: boolean; dri
   return { action: 'idle' };
 }
 
+/**
+ * Pure drive-cadence gate. When there are active missions the controller drives
+ * at the (fast) active cadence; when idle (0 active missions) it drives at the
+ * slower idle cadence so the heartbeat is infrequent. Never-driven → always due.
+ */
+export function isDriveDue(input: {
+  lastDriveAt: number | null;
+  now: number;
+  activeCount: number;
+  activeMin: number;
+  idleMin: number;
+}): boolean {
+  if (!input.lastDriveAt) return true;
+  const intervalMin = input.activeCount > 0 ? input.activeMin : input.idleMin;
+  return input.now - input.lastDriveAt >= intervalMin * 60_000;
+}
+
 /** Deps interface for runSupervisorTick — all IO points are injectable for tests. */
 export interface SupervisorDeps {
   amMonitor: () => Promise<{ isMonitor: boolean; monitorNodeId: string | null }>;
@@ -409,6 +426,10 @@ export interface SupervisorDeps {
   teardown: (cs: ControllerSession) => Promise<void>;
   /** The adapt cadence in minutes (from project settings). Used to compute driveDue. */
   driveIntervalMin: number;
+  /** Idle drive cadence (min) when there are no active missions. Default = driveIntervalMin (no change). */
+  idleDriveIntervalMin?: number;
+  /** Count of active missions — picks active vs idle cadence. Default = () => 1 (always active). */
+  activeMissionCount?: () => Promise<number>;
   /** Current time in ms. Injected for deterministic tests. */
   now: number;
 }
@@ -429,8 +450,21 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   const cs = await deps.getControllerSession();
   const live = cs ? deps.isLive(cs) : false;
 
-  // Drive is due when: no lastDriveAt yet, OR driveIntervalMin has elapsed.
-  const driveDue = !cs?.lastDriveAt || (deps.now - cs.lastDriveAt >= deps.driveIntervalMin * 60_000);
+  // Drive cadence: fast when there are active missions, slow (idle) otherwise.
+  // Only evaluated when monitor+live (the only case decideSupervisor uses it),
+  // so the active-mission count is read lazily. Defaults reproduce the prior
+  // single-cadence behavior (count=1, idle=active) for existing callers/tests.
+  let driveDue = false;
+  if (isMonitor && live && cs) {
+    const activeCount = deps.activeMissionCount ? await deps.activeMissionCount() : 1;
+    driveDue = isDriveDue({
+      lastDriveAt: cs.lastDriveAt ?? null,
+      now: deps.now,
+      activeCount,
+      activeMin: deps.driveIntervalMin,
+      idleMin: deps.idleDriveIntervalMin ?? deps.driveIntervalMin,
+    });
+  }
 
   const { action } = decideSupervisor({ isMonitor, live, driveDue });
 
@@ -551,6 +585,11 @@ export function registerMissionController(
         return !!v.inTmux;
       },
       driveIntervalMin: getProjectSettings().missionControllerIntervalMin,
+      idleDriveIntervalMin: getProjectSettings().missionControllerIdleIntervalMin,
+      activeMissionCount: async () => {
+        const { listActiveMissions } = require('./mission-store') as typeof import('./mission-store');
+        return (await listActiveMissions()).length;
+      },
       now: Date.now(),
       launch: async () => {
         const { tmuxCcController } = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
