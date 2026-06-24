@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { Mission, ExecutorState, AdjustResult, PlacementDecision, MissionBinding } from '../mission/mission-model';
-import { runMissionTick, MissionTickDeps } from '../mission/mission-controller';
+import { runMissionTick, MissionTickDeps, addAdjustment } from '../mission/mission-controller';
 
 const mk = (over: Partial<Mission>): Mission => ({
   id: 'm', title: 't', objective: 'o', projects: [], dependsOn: [],
@@ -111,4 +111,21 @@ test('one mission throwing does not abort the tick', async () => {
   const r = await runMissionTick(d);
   assert.ok(r.acted.includes('b'));
   assert.strictEqual(saved['b'].binding?.sessionId, 'new-sid');
+});
+
+test('addAdjustment stamps a controller actor + lastUpdatedBy', () => {
+  const m: any = { binding: null, adjustments: [], lastUpdatedBy: undefined };
+  addAdjustment(m, 100, 'blocked', 'why');
+  const adj = m.adjustments[0];
+  assert.equal(adj.by, 'controller');
+  assert.equal(adj.actor.kind, 'controller');
+  assert.equal(adj.actor.channel, 'controller');
+  assert.equal(m.lastUpdatedBy.kind, 'controller');
+});
+
+test('addAdjustment uses ccr kind when the mission has a ccr binding', () => {
+  const m: any = { binding: { ccr: { sid: 'session_z' } }, adjustments: [], lastUpdatedBy: undefined };
+  addAdjustment(m, 1, 'revise', 'c');
+  assert.equal(m.adjustments[0].actor.kind, 'ccr');
+  assert.equal(m.adjustments[0].actor.id, 'session_z');
 });

@@ -4,7 +4,7 @@ import {
   decideMission, place, planMissionNudge, missionSessionTitle, MissionActor, coarseActor,
 } from './mission-model';
 import { pickNewSession, cseToSessionSid, isNativeBinding } from './mission-native';
-import { listMissions, putMission } from './mission-store';
+import { listMissions, putMission, thisNode } from './mission-store';
 import { runAdjust } from './mission-adjust';
 import { getProjectSettings } from '../project-settings';
 import { amIMonitor } from '../monitor/stall-election';
@@ -32,8 +32,14 @@ function setWaiting(m: Mission, pd: Extract<PlacementDecision, { go: false }>): 
   m.control.waitReason = pd.reason;
 }
 
-function addAdjustment(m: Mission, now: number, trigger: string, change: string): void {
-  m.adjustments.push({ at: now, trigger, change, by: 'controller', actor: coarseActor('controller', 'unknown', now) });
+export function addAdjustment(m: Mission, now: number, trigger: string, change: string): void {
+  const node = thisNode();
+  const ccr = m.binding?.ccr;
+  const actor: MissionActor = ccr
+    ? { kind: 'ccr', id: ccr.sid, node, channel: 'controller', at: now }
+    : { kind: 'controller', id: m.binding?.sessionId ?? null, node, channel: 'controller', at: now };
+  m.adjustments.push({ at: now, trigger, change, by: 'controller', actor });
+  m.lastUpdatedBy = actor;
 }
 
 async function processMission(m: Mission, all: Mission[], d: MissionTickDeps): Promise<void> {
