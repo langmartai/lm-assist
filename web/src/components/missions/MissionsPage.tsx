@@ -20,6 +20,18 @@ import { CcrCloudView } from '@/components/ccr/CcrCloudView';
 // ── Types ──────────────────────────────────────────────────────────────────
 
 type MissionStatus = 'draft' | 'active' | 'waiting' | 'paused' | 'blocked' | 'done' | 'failed';
+type ActorKind = 'local-session' | 'ccr' | 'claudeai-conversation' | 'controller' | 'user';
+type ActorChannel = 'mcp' | 'controller' | 'user' | 'api';
+
+interface MissionActor {
+  kind: ActorKind;
+  id?: string | null;
+  node?: string | null;
+  channel: ActorChannel;
+  label?: string;
+  toolUseId?: string | null;
+  at: number;
+}
 
 interface MissionSession {
   sid: string;
@@ -62,6 +74,7 @@ interface MissionAdjustment {
   trigger: string;
   change: string;
   by: 'controller' | 'user';
+  actor?: MissionActor;
 }
 
 interface Mission {
@@ -82,6 +95,8 @@ interface Mission {
   ownerNode: string;
   createdAt: number;
   updatedAt: number;
+  createdBy?: MissionActor;
+  lastUpdatedBy?: MissionActor;
 }
 
 interface ControllerStatus {
@@ -135,6 +150,11 @@ function shortId(id: string | null): string {
   return id.length > 12 ? id.slice(0, 8) + '…' : id;
 }
 
+/** Display label for a MissionActor */
+function labelOf(actor: MissionActor): string {
+  return actor.label || actor.id || actor.kind;
+}
+
 // ── Main component ─────────────────────────────────────────────────────────
 
 export function MissionsPage() {
@@ -171,6 +191,19 @@ export function MissionsPage() {
     dependsOn: '',
   });
 
+  // Repo/branch dropdowns
+  const [repos, setRepos] = useState<string[]>([]);
+  const [reposLoading, setReposLoading] = useState(false);
+  const [reposError, setReposError] = useState(false);
+  const [selectedRepo, setSelectedRepo] = useState('');
+  const [customRepo, setCustomRepo] = useState(false);
+  const [repoText, setRepoText] = useState('');
+  const [branches, setBranches] = useState<string[]>([]);
+  const [branchesLoading, setBranchesLoading] = useState(false);
+  const [selectedBranch, setSelectedBranch] = useState('');
+  const [customBranch, setCustomBranch] = useState(false);
+  const [branchText, setBranchText] = useState('');
+
   // Per-mission objective editing
   const [objDraft, setObjDraft] = useState<Record<string, string>>({});
 
@@ -181,6 +214,60 @@ export function MissionsPage() {
   const [sessionsByMission, setSessionsByMission] = useState<Record<string, MissionSession[]>>({});
   const [sessionsExpanded, setSessionsExpanded] = useState<Set<string>>(new Set());
   const [sessionsFetching, setSessionsFetching] = useState<Set<string>>(new Set());
+
+  // Collapsible contributors
+  const [contributorsExpanded, setContributorsExpanded] = useState<Set<string>>(new Set());
+
+  // ── Repo/branch fetching ──
+
+  const fetchRepos = useCallback(async () => {
+    setReposLoading(true);
+    setReposError(false);
+    try {
+      const res = await apiFetch<{ repos: Array<string | { slug?: string; full_name?: string }> }>('/ccr/cloud/repos');
+      const list = (res?.repos ?? []).map((r) =>
+        typeof r === 'string' ? r : r.slug ?? r.full_name ?? String(r),
+      );
+      setRepos(list);
+      if (list.length === 0) setReposError(true); // empty → fall back to text
+    } catch {
+      setReposError(true);
+    } finally {
+      setReposLoading(false);
+    }
+  }, [apiFetch]);
+
+  const fetchBranches = useCallback(
+    async (repo: string) => {
+      if (!repo) { setBranches([]); return; }
+      setBranchesLoading(true);
+      try {
+        const res = await apiFetch<{ branches: string[] }>(`/ccr/cloud/branches?repo=${encodeURIComponent(repo)}`);
+        setBranches(res?.branches ?? []);
+      } catch {
+        setBranches([]);
+      } finally {
+        setBranchesLoading(false);
+      }
+    },
+    [apiFetch],
+  );
+
+  // Fetch repos when create form opens
+  useEffect(() => {
+    if (showCreate) {
+      fetchRepos();
+    } else {
+      // Reset repo/branch state when form closes
+      setSelectedRepo('');
+      setCustomRepo(false);
+      setRepoText('');
+      setBranches([]);
+      setSelectedBranch('');
+      setCustomBranch(false);
+      setBranchText('');
+    }
+  }, [showCreate, fetchRepos]);
 
   // ── Data loading ──
 
@@ -260,6 +347,14 @@ export function MissionsPage() {
       return n;
     });
 
+  const toggleContributors = (id: string) =>
+    setContributorsExpanded((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+
   const toggleSessionsExpand = useCallback(
     (missionId: string, hasBinding: boolean) => {
       setSessionsExpanded((prev) => {
@@ -304,10 +399,18 @@ export function MissionsPage() {
     setCreating(true);
     setError(null);
     try {
+      // Determine final repo/branch values
+      const finalRepo = customRepo ? repoText.trim() : selectedRepo;
+      const finalBranch = customBranch ? branchText.trim() : selectedBranch;
+
       const body: Record<string, unknown> = {
         title: form.title.trim(),
         objective: form.objective.trim(),
-        env: { isolation: form.isolation },
+        env: {
+          isolation: form.isolation,
+          ...(finalRepo ? { repo: finalRepo } : {}),
+          ...(finalBranch ? { branch: finalBranch } : {}),
+        },
       };
       if (form.projects.trim()) {
         body.projects = form.projects.split(',').map((s) => s.trim()).filter(Boolean);
@@ -324,7 +427,7 @@ export function MissionsPage() {
     } finally {
       setCreating(false);
     }
-  }, [apiFetch, form]);
+  }, [apiFetch, form, customRepo, repoText, selectedRepo, customBranch, branchText, selectedBranch]);
 
   const runTick = useCallback(async () => {
     setTickBusy(true);
@@ -343,6 +446,58 @@ export function MissionsPage() {
       setTickBusy(false);
     }
   }, [apiFetch, fetchAll]);
+
+  // ── Actor link renderer ──
+  const renderActorLink = useCallback(
+    (actor: MissionActor, m: Mission) => {
+      const lbl = labelOf(actor);
+      if (actor.kind === 'ccr' && actor.id && /^session_/.test(actor.id)) {
+        const sid = actor.id;
+        const isOpen = connectSid === sid;
+        return (
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ padding: '0 4px', fontSize: 11, display: 'inline' }}
+            onClick={() => setConnectSid(isOpen ? null : sid)}
+          >
+            {lbl}
+          </button>
+        );
+      }
+      if (actor.kind === 'claudeai-conversation' && actor.id) {
+        return (
+          <a
+            href={`https://claude.ai/chat/${actor.id}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: 'var(--color-accent)', textDecoration: 'underline' }}
+          >
+            {lbl}
+          </a>
+        );
+      }
+      if (actor.kind === 'local-session' && actor.id) {
+        // Link to the sessions page view — carry node context
+        const nodeParam = actor.node ? `&node=${encodeURIComponent(actor.node)}` : '';
+        return (
+          <a
+            href={`/sessions?id=${encodeURIComponent(actor.id)}${nodeParam}`}
+            style={{ color: 'var(--color-accent)', textDecoration: 'underline' }}
+          >
+            {lbl}
+          </a>
+        );
+      }
+      // controller / user — plain text with node
+      return (
+        <span>
+          {lbl}
+          {actor.node ? <span style={{ color: 'var(--color-text-tertiary)' }}> @{actor.node}</span> : null}
+        </span>
+      );
+    },
+    [connectSid],
+  );
 
   // ── Render ──
   return (
@@ -543,6 +698,138 @@ export function MissionsPage() {
                 onChange={(e) => setForm({ ...form, objective: e.target.value })}
               />
             </label>
+
+            {/* ── Repo / Branch pickers ── */}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {/* Repo */}
+              <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', flex: '1 1 180px' }}>
+                repo (optional)
+                <br />
+                {reposLoading ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                    <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />
+                    <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>loading repos…</span>
+                  </div>
+                ) : reposError || repos.length === 0 ? (
+                  <>
+                    <input
+                      className="input"
+                      value={repoText}
+                      placeholder="owner/repo"
+                      style={{ width: '100%' }}
+                      onChange={(e) => setRepoText(e.target.value)}
+                    />
+                    {reposError && (
+                      <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+                        couldn&apos;t load repos — type manually
+                      </span>
+                    )}
+                  </>
+                ) : customRepo ? (
+                  <>
+                    <input
+                      className="input"
+                      value={repoText}
+                      placeholder="owner/repo"
+                      style={{ width: '100%' }}
+                      onChange={(e) => setRepoText(e.target.value)}
+                    />
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      style={{ marginTop: 2, fontSize: 11 }}
+                      onClick={() => { setCustomRepo(false); setRepoText(''); }}
+                    >
+                      pick from list
+                    </button>
+                  </>
+                ) : (
+                  <select
+                    className="input"
+                    value={selectedRepo}
+                    style={{ width: '100%' }}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === '__custom__') {
+                        setCustomRepo(true);
+                        setSelectedRepo('');
+                        setBranches([]);
+                        setSelectedBranch('');
+                      } else {
+                        setSelectedRepo(v);
+                        setSelectedBranch('');
+                        setBranches([]);
+                        if (v) fetchBranches(v);
+                      }
+                    }}
+                  >
+                    <option value="">— none —</option>
+                    {repos.map((r) => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                    <option value="__custom__">— custom —</option>
+                  </select>
+                )}
+              </label>
+
+              {/* Branch */}
+              <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', flex: '1 1 180px' }}>
+                branch (optional)
+                <br />
+                {branchesLoading ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                    <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />
+                    <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>loading branches…</span>
+                  </div>
+                ) : customBranch ? (
+                  <>
+                    <input
+                      className="input"
+                      value={branchText}
+                      placeholder="branch name"
+                      style={{ width: '100%' }}
+                      onChange={(e) => setBranchText(e.target.value)}
+                    />
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      style={{ marginTop: 2, fontSize: 11 }}
+                      onClick={() => { setCustomBranch(false); setBranchText(''); }}
+                    >
+                      pick from list
+                    </button>
+                  </>
+                ) : branches.length > 0 ? (
+                  <select
+                    className="input"
+                    value={selectedBranch}
+                    style={{ width: '100%' }}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === '__custom__') {
+                        setCustomBranch(true);
+                        setSelectedBranch('');
+                      } else {
+                        setSelectedBranch(v);
+                      }
+                    }}
+                  >
+                    <option value="">— none —</option>
+                    {branches.map((b) => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                    <option value="__custom__">— custom —</option>
+                  </select>
+                ) : (
+                  <input
+                    className="input"
+                    value={branchText}
+                    placeholder="branch name"
+                    style={{ width: '100%' }}
+                    onChange={(e) => setBranchText(e.target.value)}
+                  />
+                )}
+              </label>
+            </div>
+
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', flex: '1 1 180px' }}>
                 projects (comma-separated, optional)
@@ -623,6 +910,8 @@ export function MissionsPage() {
                 (m.nextSteps?.length ?? 0) > 0 ||
                 m.adjustments.length > 0 ||
                 m.results.length > 0;
+
+              const contribExpanded = contributorsExpanded.has(m.id);
 
               return (
                 <div
@@ -803,6 +1092,68 @@ export function MissionsPage() {
                       </span>
                     )}
                   </div>
+
+                  {/* ── Provenance: created by + contributors ── */}
+                  {(m.createdBy || m.adjustments.length > 0) && (
+                    <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      {m.createdBy && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                          <span>Created by</span>
+                          <span style={{ color: 'var(--color-text-secondary)' }}>
+                            {renderActorLink(m.createdBy, m)}
+                          </span>
+                          <span style={{ color: 'var(--color-text-tertiary)' }}>
+                            via {m.createdBy.channel}
+                          </span>
+                        </div>
+                      )}
+                      {m.adjustments.length > 0 && (
+                        <div>
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            style={{ padding: '0 2px', fontSize: 11 }}
+                            onClick={() => toggleContributors(m.id)}
+                          >
+                            {contribExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                            {' '}Contributors ({m.adjustments.length})
+                          </button>
+                          {contribExpanded && (
+                            <div
+                              style={{
+                                marginTop: 4,
+                                paddingLeft: 8,
+                                borderLeft: '2px solid var(--color-border-subtle)',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: 2,
+                              }}
+                            >
+                              {m.adjustments
+                                .slice()
+                                .reverse()
+                                .map((adj, i) => (
+                                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                                    <span style={{ color: 'var(--color-text-tertiary)' }}>
+                                      {fmtTime(adj.at)}
+                                    </span>
+                                    <span>·</span>
+                                    <span style={{ color: 'var(--color-text-tertiary)' }}>
+                                      {adj.actor ? adj.actor.channel : adj.by}
+                                    </span>
+                                    <span>·</span>
+                                    <span style={{ color: 'var(--color-text-secondary)' }}>
+                                      {adj.actor ? renderActorLink(adj.actor, m) : adj.by}
+                                    </span>
+                                    <span>—</span>
+                                    <span style={{ color: 'var(--color-text-tertiary)' }}>{adj.change}</span>
+                                  </div>
+                                ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Expand detail: plan, nextSteps, adjustments, results */}
                   {hasDetail && (
@@ -1061,7 +1412,12 @@ export function MissionsPage() {
                     const mSessions = sessionsByMission[m.id] ?? [];
                     const owns = mSessions.some((s) => s.sid === connectSid) ||
                       (m.binding?.sessionId === connectSid && mSessions.length === 0);
-                    return owns && /^session_/.test(connectSid) ? (
+                    // Also open when a provenance actor (ccr kind) triggered the connect
+                    const ownsActor = !owns && connectSid && (
+                      (m.createdBy?.kind === 'ccr' && m.createdBy?.id === connectSid) ||
+                      m.adjustments.some((adj) => adj.actor?.kind === 'ccr' && adj.actor?.id === connectSid)
+                    );
+                    return (owns || ownsActor) && /^session_/.test(connectSid) ? (
                       <CcrCloudView
                         sid={connectSid}
                         webUrl={`https://claude.ai/code/${connectSid}`}
