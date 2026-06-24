@@ -65,6 +65,19 @@ async function proxyPost(node: string, urlPath: string, body: unknown): Promise<
   return res.json();
 }
 
+/**
+ * Server-side GET proxy via hub machine-relay.
+ * Uses the hub Bearer token stored on this node — the browser cannot use this directly.
+ * For cross-node operations, call this from a route handler so the local Core proxies for the browser.
+ */
+export async function proxyGet(node: string, urlPath: string): Promise<unknown> {
+  return proxyFetch(node, urlPath);
+}
+
+// Re-export proxyPost for callers that need server-side POST proxying (e.g. mission routes).
+// The browser cannot use this — it has no hub Bearer token.
+export { proxyPost };
+
 // ── Error code helpers ───────────────────────────────────────────────────────
 
 const AUTH_DENY_CODES = new Set(['KEY_REQUIRED', 'KEY_EXPIRED', 'KEY_INVALID', 'KEY_REVOKED', 'KEY_WRONG_NODE']);

@@ -117,3 +117,65 @@ test('GET /mission/controller leader is null-node when election has no monitorNo
   assert.equal(leader.host, null);
   assert.equal(leader.isSelf, false);
 });
+
+// ── Cross-node proxy: handleGetController (Step 2) ──────────────────────────
+
+test('handleGetController: non-monitor proxies to leader and returns leader controllerSession', async () => {
+  const port = memPort(null); // local has no controllerSession
+  const leaderCs: ControllerSession = { node: 'gw-leader', sessionId: 'session_leader', cse: 'cse_leader', tmux: 'lm-ctrl', startedAt: 2000 };
+  const fakeElection = { isMonitor: false, monitorNodeId: 'gw-leader' };
+  let proxiedNode: string | undefined;
+  const proxyController = async (node: string) => {
+    proxiedNode = node;
+    return { data: { controllerSession: leaderCs, election: fakeElection, job: {} } };
+  };
+  const r = await handleGetController(
+    port as any,
+    async () => fakeElection,
+    () => ({} as any),
+    async (_n) => null,
+    proxyController,
+  );
+  assert.ok(r.success);
+  assert.equal(proxiedNode, 'gw-leader', 'should proxy to the leader node');
+  const d = r.data as any;
+  assert.ok(d.controllerSession, 'controllerSession should come from the leader');
+  assert.equal(d.controllerSession.sessionId, 'session_leader');
+  assert.equal(d.controllerSession.node, 'gw-leader');
+});
+
+test('handleGetController: monitor node returns local controllerSession (no proxy)', async () => {
+  const localCs: ControllerSession = { node: 'gw-self', sessionId: 'session_local', cse: null, tmux: 'lm-ctrl', startedAt: 1000 };
+  const port = memPort(localCs);
+  const fakeElection = { isMonitor: true, monitorNodeId: 'gw-self' };
+  let proxyCalled = false;
+  const proxyController = async (_node: string) => { proxyCalled = true; return {}; };
+  const r = await handleGetController(
+    port as any,
+    async () => fakeElection,
+    () => ({} as any),
+    async (_n) => null,
+    proxyController,
+  );
+  assert.ok(r.success);
+  assert.equal(proxyCalled, false, 'monitor should NOT proxy');
+  const d = r.data as any;
+  assert.equal(d.controllerSession?.sessionId, 'session_local', 'should use local controllerSession');
+});
+
+test('handleGetController: proxy throws — falls back to local controllerSession', async () => {
+  const localCs: ControllerSession = { node: 'gw-self', sessionId: 'session_fallback', cse: null, tmux: 'lm-ctrl', startedAt: 500 };
+  const port = memPort(localCs);
+  const fakeElection = { isMonitor: false, monitorNodeId: 'gw-leader' };
+  const proxyController = async (_node: string) => { throw new Error('network error'); };
+  const r = await handleGetController(
+    port as any,
+    async () => fakeElection,
+    () => ({} as any),
+    async (_n) => null,
+    proxyController,
+  );
+  assert.ok(r.success, 'should still succeed (non-fatal)');
+  const d = r.data as any;
+  assert.equal(d.controllerSession?.sessionId, 'session_fallback', 'fallback to local controllerSession');
+});

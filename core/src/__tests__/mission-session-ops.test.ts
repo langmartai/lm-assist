@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { handleSessionRead, handleSessionDrive, handleSessionControl } from '../routes/core/mission.routes';
-import type { SessionOpsDeps } from '../routes/core/mission.routes';
+import type { SessionOpsDeps, SessionProxyDeps } from '../routes/core/mission.routes';
 import type { SupervisorDeps } from '../mission/mission-controller';
+import { thisNode } from '../mission/mission-store';
 import type { ControllerSession } from '../mission/mission-store';
 
 function makeStubDeps(overrides: Partial<SessionOpsDeps> = {}): SessionOpsDeps {
@@ -232,4 +233,99 @@ test('supervisor teardown dep is called with cs.tmux', async () => {
   };
   await runSupervisorTick(deps);
   assert.equal(tornDownWith, 'lmcc-test123', 'teardown should be called with the controller cs.tmux name');
+});
+
+// ── Cross-node proxy: session ops (Step 3) ───────────────────────────────────
+// thisNode() returns 'unknown' in test env (no hub config). Any other node triggers proxy.
+
+function makeProxyDeps(
+  onPost: (node: string, urlPath: string, body: unknown) => Promise<unknown>,
+): SessionProxyDeps {
+  return { proxyPost: onPost };
+}
+
+test('handleSessionRead: node !== self → dispatches to proxyPost', async () => {
+  let proxyNode: string | undefined;
+  let proxyPath: string | undefined;
+  const pd = makeProxyDeps(async (node, urlPath, _body) => {
+    proxyNode = node; proxyPath = urlPath;
+    return { data: { messages: [{ role: 'assistant', text: 'proxied' }] } };
+  });
+  const r = await handleSessionRead('session_abc', 10, undefined, 'gw-leader', pd);
+  assert.ok(r.success, 'should succeed');
+  assert.equal(proxyNode, 'gw-leader', 'should proxy to gw-leader');
+  assert.ok(proxyPath?.includes('session_abc'), 'path should include the sid');
+  assert.ok(proxyPath?.includes('/read'), 'path should end in /read');
+});
+
+test('handleSessionRead: node === self → executes locally, no proxy', async () => {
+  let proxyCalled = false;
+  const pd = makeProxyDeps(async () => { proxyCalled = true; return {}; });
+  const deps = makeStubDeps({
+    cloudRead: async (opts) => ({ sid: opts.sid, messages: [{ role: 'assistant', text: 'local' }], pendingQuestion: null }),
+  });
+  const r = await handleSessionRead('session_self', undefined, deps, thisNode(), pd);
+  assert.ok(r.success);
+  assert.equal(proxyCalled, false, 'should NOT proxy when node === self');
+});
+
+test('handleSessionRead: node absent → executes locally, no proxy', async () => {
+  let proxyCalled = false;
+  const pd = makeProxyDeps(async () => { proxyCalled = true; return {}; });
+  const deps = makeStubDeps({
+    nativeRead: async (_sid) => ({ messages: [{ role: 'user', content: 'local native' }] }),
+  });
+  const r = await handleSessionRead('4e15ac46-local-0001', undefined, deps, undefined, pd);
+  assert.ok(r.success);
+  assert.equal(proxyCalled, false, 'should NOT proxy when node is absent');
+});
+
+test('handleSessionDrive: node !== self → dispatches to proxyPost', async () => {
+  let proxyNode: string | undefined;
+  let proxyPath: string | undefined;
+  let proxyBody: unknown;
+  const pd = makeProxyDeps(async (node, urlPath, body) => {
+    proxyNode = node; proxyPath = urlPath; proxyBody = body;
+    return { data: { delivered: true } };
+  });
+  const r = await handleSessionDrive('session_def', 'hello', undefined, 'gw-leader', pd);
+  assert.ok(r.success);
+  assert.equal(proxyNode, 'gw-leader');
+  assert.ok(proxyPath?.includes('/drive'));
+  assert.equal((proxyBody as any).text, 'hello');
+});
+
+test('handleSessionDrive: node === self → executes locally', async () => {
+  let proxyCalled = false;
+  const pd = makeProxyDeps(async () => { proxyCalled = true; return {}; });
+  const deps = makeStubDeps({
+    cloudDrive: async (opts) => ({ delivered: true, sid: opts.sid }),
+  });
+  const r = await handleSessionDrive('session_local', 'go', deps, thisNode(), pd);
+  assert.ok(r.success);
+  assert.equal(proxyCalled, false);
+});
+
+test('handleSessionControl: node !== self → dispatches to proxyPost', async () => {
+  let proxyNode: string | undefined;
+  let proxyBody: unknown;
+  const pd = makeProxyDeps(async (node, _urlPath, body) => {
+    proxyNode = node; proxyBody = body;
+    return { data: { action: 'interrupt' } };
+  });
+  const r = await handleSessionControl('session_ghi', 'interrupt', undefined, 'gw-leader', pd);
+  assert.ok(r.success);
+  assert.equal(proxyNode, 'gw-leader');
+  assert.equal((proxyBody as any).action, 'interrupt');
+});
+
+test('handleSessionControl: node === self → executes locally', async () => {
+  let proxyCalled = false;
+  const pd = makeProxyDeps(async () => { proxyCalled = true; return {}; });
+  const deps = makeStubDeps({
+    cloudDrive: async (opts) => ({ delivered: true, sid: opts.sid }),
+  });
+  const r = await handleSessionControl('session_local_ctrl', 'interrupt', deps, thisNode(), pd);
+  assert.ok(r.success);
+  assert.equal(proxyCalled, false);
 });
