@@ -32,13 +32,17 @@ export function remoteControlFlags(rc?: boolean): string[] {
   return rc ? ['--remote-control'] : [];
 }
 
-function buildLaunchCmd(opts: CCLaunchInput): string {
+export function buildLaunchCmd(opts: CCLaunchInput): string {
   // Use the same binary resolution as the SDK runner (handles ~/.local/bin
   // installs that aren't on PATH for service-managed lm-assist).
   const bin = getClaudeBinaryPath();
   const flags: string[] = [
     ...(opts.skipPermissions ? ['--dangerously-skip-permissions'] : []),
     ...remoteControlFlags(opts.remoteControl),
+    // Optional file-path flags (controller bootstrap). File paths only — never
+    // an inline prompt, since this string is run as a shell command.
+    ...(opts.appendSystemPromptFile ? ['--append-system-prompt-file', opts.appendSystemPromptFile] : []),
+    ...(opts.mcpConfigPath ? ['--mcp-config', opts.mcpConfigPath] : []),
     ...opts.extraFlags,                              // MERGED with default, not replaced
     ...(opts.model ? ['--model', opts.model] : []),
   ];
