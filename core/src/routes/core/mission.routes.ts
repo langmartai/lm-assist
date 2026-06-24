@@ -6,7 +6,8 @@ import { resolveMcpActor } from '../../mission/mission-actor';
 import {
   MissionDataPort, getMission, listMissions, putMission, thisNode, getControllerSession,
 } from '../../mission/mission-store';
-import { resolveMissionSession } from '../../mission/mission-session-resolver';
+import { resolveMissionSession, ResolvedSession } from '../../mission/mission-session-resolver';
+import type { Transport, SessionRole } from '../../mission/mission-session-resolver';
 import { amIMonitor } from '../../monitor/stall-election';
 import { getScheduledJobs } from '../../scheduler/scheduled-jobs';
 import { listRecords } from '../../worker-role/worker-store';
@@ -204,6 +205,143 @@ export async function handleAllSessions(
   return ok({ sessions });
 }
 
+// ---------------------------------------------------------------------------
+// Session read / drive / control (transport-dispatched)
+// ---------------------------------------------------------------------------
+
+export interface SessionOpsDeps {
+  cloudRead: (opts: { sid: string; lastN?: number }) => Promise<{ sid: string; messages: Array<Record<string, unknown>>; pendingQuestion: unknown | null }>;
+  cloudDrive: (opts: { sid: string; text: string }) => Promise<{ delivered: boolean; sid: string }>;
+  cloudStop: (sid: string) => Promise<{ stopped: boolean; sid: string }>;
+  nativeRead: (sid: string) => Promise<{ messages: Array<Record<string, unknown>> }>;
+  nativeDrive: (sid: string, text: string) => Promise<void>;
+  nativeInterrupt: (sid: string) => Promise<void>;
+  nativeStop: (sid: string) => Promise<void>;
+  clearController: () => Promise<void>;
+  resolve: (sid: string) => ResolvedSession;
+}
+
+function defaultSessionOpsDeps(): SessionOpsDeps {
+  return {
+    cloudRead: async (opts) => {
+      const { cloudRead } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
+      const r = await cloudRead(opts);
+      return { sid: r.sid, messages: r.messages as unknown as Array<Record<string, unknown>>, pendingQuestion: r.pendingQuestion };
+    },
+    cloudDrive: async (opts) => {
+      const { cloudDrive } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
+      return cloudDrive(opts);
+    },
+    cloudStop: async (sid) => {
+      const { cloudStop } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
+      return cloudStop(sid);
+    },
+    nativeRead: async (sid) => {
+      const { AgentSessionStore } = require('../../agent-session-store') as typeof import('../../agent-session-store');
+      const store = new AgentSessionStore({ projectPath: process.cwd(), persist: false });
+      const res = await store.getConversation({ sessionId: sid });
+      const msgs = res?.messages ?? [];
+      return { messages: msgs as unknown as Array<Record<string, unknown>> };
+    },
+    nativeDrive: async (sid, text) => {
+      const { getCcController } = require('../../terminal/backend') as typeof import('../../terminal/backend');
+      await getCcController().prompt(sid, text);
+    },
+    nativeInterrupt: async (sid) => {
+      const { getCcController } = require('../../terminal/backend') as typeof import('../../terminal/backend');
+      // Use the tmux interrupt if available, otherwise drive an interrupt message
+      const ctrl = getCcController();
+      if (typeof (ctrl as any).interrupt === 'function') {
+        await (ctrl as any).interrupt(sid);
+      } else {
+        await ctrl.prompt(sid, '[interrupt] stop the current action and await');
+      }
+    },
+    nativeStop: async (sid) => {
+      const { getCcController } = require('../../terminal/backend') as typeof import('../../terminal/backend');
+      const ctrl = getCcController();
+      if (typeof (ctrl as any).kill === 'function') {
+        await (ctrl as any).kill(sid);
+      }
+    },
+    clearController: async () => {
+      const { putControllerSession } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+      await putControllerSession(null);
+    },
+    resolve: (sid) => {
+      const { listMissions: lm } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+      // Sync fallback — resolve with no missions (full list too expensive here without a port)
+      return resolveMissionSession(sid, [], null);
+    },
+  };
+}
+
+export async function handleSessionRead(sid: string, lastN?: number, deps?: SessionOpsDeps): Promise<Envelope> {
+  const d = deps ?? defaultSessionOpsDeps();
+  const r = d.resolve(sid);
+  try {
+    if (r.transport === 'cloud') {
+      const result = await d.cloudRead({ sid, lastN });
+      return ok({ messages: result.messages });
+    } else {
+      const result = await d.nativeRead(sid);
+      return ok({ messages: result.messages });
+    }
+  } catch (e) {
+    return fail('READ_ERROR', (e as Error).message);
+  }
+}
+
+export async function handleSessionDrive(sid: string, text: string, actor?: string, deps?: SessionOpsDeps): Promise<Envelope> {
+  const d = deps ?? defaultSessionOpsDeps();
+  const r = d.resolve(sid);
+  try {
+    if (r.transport === 'cloud') {
+      const result = await d.cloudDrive({ sid, text });
+      return ok({ delivered: result.delivered });
+    } else {
+      await d.nativeDrive(sid, text);
+      return ok({ delivered: true });
+    }
+  } catch (e) {
+    return fail('DRIVE_ERROR', (e as Error).message);
+  }
+}
+
+export async function handleSessionControl(sid: string, action: string, deps?: SessionOpsDeps): Promise<Envelope> {
+  const d = deps ?? defaultSessionOpsDeps();
+  const r = d.resolve(sid);
+  try {
+    if (action === 'restart') {
+      if (r.role !== 'controller') {
+        return fail('INVALID_INPUT', 'restart is controller-only — clear the controller session so the supervisor relaunches');
+      }
+      await d.clearController();
+      return ok({ action: 'restart', scheduled: true });
+    }
+    if (action === 'interrupt') {
+      if (r.transport === 'cloud') {
+        await d.cloudDrive({ sid, text: '[interrupt] stop the current action and await' });
+      } else {
+        await d.nativeInterrupt(sid);
+      }
+      return ok({ action: 'interrupt' });
+    }
+    if (action === 'stop') {
+      if (r.transport === 'cloud') {
+        const result = await d.cloudStop(sid);
+        return ok({ action: 'stop', stopped: result.stopped });
+      } else {
+        await d.nativeStop(sid);
+        return ok({ action: 'stop', stopped: true });
+      }
+    }
+    return fail('INVALID_INPUT', `unknown action "${action}"`);
+  } catch (e) {
+    return fail('CONTROL_ERROR', (e as Error).message);
+  }
+}
+
 export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
     { method: 'POST', pattern: /^\/mission$/, handler: async (req) => handleCreate((req.body || {}) as Record<string, unknown>, thisNode()) },
@@ -226,5 +364,22 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     { method: 'PATCH', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>) },
     // POST /mission/:id — same semantics as PATCH, accepts MCP workerPost (POST-only)
     { method: 'POST', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>) },
+    // Session operability routes (read / drive / control) — literal /session/:sid/ prefix
+    { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/read$/, handler: async (req) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const lastN = typeof b.lastN === 'number' ? b.lastN : (typeof b.lastN === 'string' ? parseInt(b.lastN, 10) : undefined);
+        return handleSessionRead(req.params.sid, lastN);
+      } },
+    { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/drive$/, handler: async (req) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const text = typeof b.text === 'string' ? b.text : '';
+        const actor = typeof b._actor === 'string' ? b._actor : undefined;
+        return handleSessionDrive(req.params.sid, text, actor);
+      } },
+    { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/control$/, handler: async (req) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const action = typeof b.action === 'string' ? b.action : '';
+        return handleSessionControl(req.params.sid, action);
+      } },
   ];
 }
