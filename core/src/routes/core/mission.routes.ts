@@ -232,11 +232,12 @@ export interface SessionOpsDeps {
   cloudRead: (opts: { sid: string; lastN?: number }) => Promise<{ sid: string; messages: Array<Record<string, unknown>>; pendingQuestion: unknown | null }>;
   cloudDrive: (opts: { sid: string; text: string }) => Promise<{ delivered: boolean; sid: string }>;
   cloudStop: (sid: string) => Promise<{ stopped: boolean; sid: string }>;
-  nativeRead: (sid: string) => Promise<{ messages: Array<Record<string, unknown>> }>;
+  nativeRead: (sid: string) => Promise<{ messages: Array<{ role: string; content: string; [k: string]: unknown }> }>;
   nativeDrive: (sid: string, text: string) => Promise<void>;
   nativeInterrupt: (sid: string) => Promise<void>;
   nativeStop: (sid: string) => Promise<void>;
   clearController: () => Promise<void>;
+  getControllerSession: () => Promise<{ sessionId: string; cse: string | null } | null>;
   resolve: (sid: string) => ResolvedSession;
 }
 
@@ -259,8 +260,8 @@ function defaultSessionOpsDeps(): SessionOpsDeps {
       const { AgentSessionStore } = require('../../agent-session-store') as typeof import('../../agent-session-store');
       const store = new AgentSessionStore({ projectPath: process.cwd(), persist: false });
       const res = await store.getConversation({ sessionId: sid });
-      const msgs = res?.messages ?? [];
-      return { messages: msgs as unknown as Array<Record<string, unknown>> };
+      const msgs = (res?.messages ?? []) as unknown as Array<{ role: string; content: string; [k: string]: unknown }>;
+      return { messages: msgs };
     },
     nativeDrive: async (sid, text) => {
       const { getCcController } = require('../../terminal/backend') as typeof import('../../terminal/backend');
@@ -268,27 +269,22 @@ function defaultSessionOpsDeps(): SessionOpsDeps {
     },
     nativeInterrupt: async (sid) => {
       const { getCcController } = require('../../terminal/backend') as typeof import('../../terminal/backend');
-      // Use the tmux interrupt if available, otherwise drive an interrupt message
-      const ctrl = getCcController();
-      if (typeof (ctrl as any).interrupt === 'function') {
-        await (ctrl as any).interrupt(sid);
-      } else {
-        await ctrl.prompt(sid, '[interrupt] stop the current action and await');
-      }
+      await getCcController().interrupt(sid);
     },
     nativeStop: async (sid) => {
       const { getCcController } = require('../../terminal/backend') as typeof import('../../terminal/backend');
-      const ctrl = getCcController();
-      if (typeof (ctrl as any).kill === 'function') {
-        await (ctrl as any).kill(sid);
-      }
+      // CcController.close() terminates the Claude session (kills its tmux session on Linux).
+      await getCcController().close(sid);
     },
     clearController: async () => {
       const { putControllerSession } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
       await putControllerSession(null);
     },
+    getControllerSession: async () => {
+      const { getControllerSession: gcs } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+      return gcs();
+    },
     resolve: (sid) => {
-      const { listMissions: lm } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
       // Sync fallback — resolve with no missions (full list too expensive here without a port)
       return resolveMissionSession(sid, [], null);
     },
@@ -301,17 +297,27 @@ export async function handleSessionRead(sid: string, lastN?: number, deps?: Sess
   try {
     if (r.transport === 'cloud') {
       const result = await d.cloudRead({ sid, lastN });
-      return ok({ messages: result.messages });
+      // Cloud messages already have { role, text } from CloudTranscriptMsg — pass through as-is.
+      const normalized = result.messages.map((m) => ({
+        role: (m as any).role ?? 'assistant',
+        text: (m as any).text ?? (m as any).content ?? '',
+      }));
+      return ok({ messages: normalized });
     } else {
       const result = await d.nativeRead(sid);
-      return ok({ messages: result.messages });
+      // Native ConversationMessage has { role, content } — normalize content -> text for a uniform shape.
+      const normalized = result.messages.map((m) => ({
+        role: m.role,
+        text: m.content,
+      }));
+      return ok({ messages: normalized });
     }
   } catch (e) {
     return fail('READ_ERROR', (e as Error).message);
   }
 }
 
-export async function handleSessionDrive(sid: string, text: string, actor?: string, deps?: SessionOpsDeps): Promise<Envelope> {
+export async function handleSessionDrive(sid: string, text: string, deps?: SessionOpsDeps): Promise<Envelope> {
   const d = deps ?? defaultSessionOpsDeps();
   const r = d.resolve(sid);
   try {
@@ -332,7 +338,11 @@ export async function handleSessionControl(sid: string, action: string, deps?: S
   const r = d.resolve(sid);
   try {
     if (action === 'restart') {
-      if (r.role !== 'controller') {
+      // The synchronous resolver can't know the controller sid (it resolves with empty missions/null ctrlSid).
+      // Look it up from the store: a session is the controller if it matches the stored ControllerSession.
+      const ctrl = await d.getControllerSession();
+      const isController = !!ctrl && (sid === ctrl.sessionId || (ctrl.cse !== null && sid === ctrl.cse));
+      if (!isController) {
         return fail('INVALID_INPUT', 'restart is controller-only — clear the controller session so the supervisor relaunches');
       }
       await d.clearController();
@@ -388,8 +398,7 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/drive$/, handler: async (req) => {
         const b = (req.body || {}) as Record<string, unknown>;
         const text = typeof b.text === 'string' ? b.text : '';
-        const actor = typeof b._actor === 'string' ? b._actor : undefined;
-        return handleSessionDrive(req.params.sid, text, actor);
+        return handleSessionDrive(req.params.sid, text);
       } },
     { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/control$/, handler: async (req) => {
         const b = (req.body || {}) as Record<string, unknown>;

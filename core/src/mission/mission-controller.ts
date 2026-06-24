@@ -454,10 +454,10 @@ export function registerMissionController(
       },
       teardown: async (cs) => {
         try {
-          const backend = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
-          const ctrl = backend.tmuxCcController as any;
-          if (cs.tmux && typeof ctrl.kill === 'function') {
-            await ctrl.kill(cs.tmux);
+          if (cs.tmux) {
+            const backend = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
+            // tmuxTerminalBackend.close(id) kills a tmux session by its session name.
+            await backend.tmuxTerminalBackend.close(cs.tmux);
           }
         } catch {
           // Best-effort teardown — don't crash the tick

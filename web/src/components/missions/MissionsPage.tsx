@@ -248,8 +248,10 @@ export function MissionsPage() {
   const [sessionsFetching, setSessionsFetching] = useState<Set<string>>(new Set());
 
   // ── Controller session (Wave 2) ──
-  // auto-opened on load when controllerSession is present
+  // auto-opened on load when controllerSession is present; stays closed once user dismisses
   const [controllerSessionOpen, setControllerSessionOpen] = useState(false);
+  // Once the user manually closes the panel, don't auto-reopen it on subsequent polls.
+  const [controllerSessionDismissed, setControllerSessionDismissed] = useState(false);
 
   // Fleet-wide operable sessions list
   const [allSessions, setAllSessions] = useState<OperableSession[]>([]);
@@ -371,12 +373,13 @@ export function MissionsPage() {
         const raw = ctrlRes.value as any;
         const ctrl = (raw.data ?? raw) as ControllerStatus;
         setController(ctrl);
-        // Auto-open controller session on first load if present
+        // Auto-open controller session if present — but only if the user hasn't dismissed it.
         if (ctrl?.controllerSession) {
-          setControllerSessionOpen((prev) => {
-            // Only default-open once (when going from no-session to having one)
-            if (!prev) return true;
-            return prev;
+          setControllerSessionOpen((prev) => (prev ? true : false));
+          // We read dismissed via the ref so the callback captures the latest value without stale closure.
+          setControllerSessionDismissed((dismissed) => {
+            if (!dismissed) setControllerSessionOpen(true);
+            return dismissed;
           });
         }
       }
@@ -584,7 +587,10 @@ export function MissionsPage() {
           body: { action },
         });
         if (action === 'restart') {
+          // Controller is restarting — close panel and dismiss so it doesn't auto-reopen
+          // until the supervisor relaunches a new session (user can re-open manually then).
           setControllerSessionOpen(false);
+          setControllerSessionDismissed(true);
         }
       } catch {
         // silently ignore
@@ -1069,7 +1075,12 @@ export function MissionsPage() {
               <div style={{ flex: 1 }} />
               <button
                 className={`btn btn-sm ${controllerSessionOpen ? 'btn-primary' : 'btn-ghost'}`}
-                onClick={() => setControllerSessionOpen((v) => !v)}
+                onClick={() => {
+                  setControllerSessionOpen((v) => {
+                    if (v) setControllerSessionDismissed(true); // user is closing — don't auto-reopen
+                    return !v;
+                  });
+                }}
               >
                 <Plug size={12} /> {controllerSessionOpen ? 'Close' : 'Open session'}
               </button>
@@ -1085,7 +1096,7 @@ export function MissionsPage() {
                       sid={viewSid}
                       webUrl={`https://claude.ai/code/${viewSid}`}
                       apiFetch={apiFetch}
-                      onClose={() => setControllerSessionOpen(false)}
+                      onClose={() => { setControllerSessionOpen(false); setControllerSessionDismissed(true); }}
                     />
                   ) : (
                     <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
