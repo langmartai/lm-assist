@@ -182,11 +182,16 @@ export async function handleGetController(
   getElection?: () => Promise<{ isMonitor: boolean; monitorNodeId: string | null }>,
   getJob?: () => unknown,
   getLeaderHost?: (node: string | null) => Promise<string | null>,
+  proxyController?: (node: string) => Promise<unknown>,
 ): Promise<Envelope> {
   const doGetElection = getElection ?? (() => amIMonitor());
   const doGetJob = getJob ?? (() => getScheduledJobs().getJob('mission-controller'));
   const doGetLeaderHost = getLeaderHost ?? defaultGetLeaderHost;
-  const [election, controllerSession] = await Promise.all([
+  const doProxyController = proxyController ?? ((node: string) => {
+    const { proxyGet } = require('../../data/peer-client') as typeof import('../../data/peer-client');
+    return proxyGet(node, '/mission/controller');
+  });
+  const [election, localControllerSession] = await Promise.all([
     doGetElection(),
     getControllerSession(port),
   ]);
@@ -199,6 +204,23 @@ export async function handleGetController(
     host,
     isSelf: leaderNode !== null && leaderNode === selfId,
   };
+
+  // Non-leader node: proxy the controller status from the leader so the browser
+  // sees the leader's controllerSession (not the local stale/null one).
+  // The browser has no hub Bearer token — only the server can proxy.
+  let controllerSession = localControllerSession;
+  if (!election.isMonitor && leaderNode) {
+    try {
+      const leaderData = await doProxyController(leaderNode) as any;
+      const leaderCtrl = (leaderData?.data ?? leaderData) as any;
+      if (leaderCtrl?.controllerSession !== undefined) {
+        controllerSession = leaderCtrl.controllerSession;
+      }
+    } catch {
+      // Non-fatal: fall back to local controllerSession on any proxy error
+    }
+  }
+
   return ok({ election, job, controllerSession, leader });
 }
 
@@ -328,7 +350,43 @@ function defaultSessionOpsDeps(): SessionOpsDeps {
   };
 }
 
-export async function handleSessionRead(sid: string, lastN?: number, deps?: SessionOpsDeps): Promise<Envelope> {
+/** Optional cross-node proxy dep for session ops. Tests inject this; production uses proxyPost from peer-client. */
+export interface SessionProxyDeps {
+  proxyPost: (node: string, urlPath: string, body: unknown) => Promise<unknown>;
+}
+function defaultSessionProxyDeps(): SessionProxyDeps {
+  return {
+    proxyPost: (node, urlPath, body) => {
+      const { proxyPost: pp } = require('../../data/peer-client') as typeof import('../../data/peer-client');
+      return pp(node, urlPath, body);
+    },
+  };
+}
+/**
+ * Normalise a proxy response into an Envelope.
+ * The remote Core returns { success, data, ... } — pass it through directly.
+ * If the stub/proxy returns bare data (e.g. just { data: {...} }), wrap in ok().
+ */
+function proxyEnvelope(result: unknown): Envelope {
+  if (result && typeof result === 'object' && 'success' in (result as object)) {
+    return result as Envelope;
+  }
+  const r = result as any;
+  return ok(r?.data !== undefined ? r.data : r);
+}
+
+export async function handleSessionRead(sid: string, lastN?: number, deps?: SessionOpsDeps, node?: string, proxyDeps?: SessionProxyDeps): Promise<Envelope> {
+  const self = thisNode();
+  if (node && node !== self) {
+    // Proxy to the target node server-side — the browser has no hub Bearer token.
+    const pd = proxyDeps ?? defaultSessionProxyDeps();
+    try {
+      const result = await pd.proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/read`, { lastN }) as any;
+      return proxyEnvelope(result);
+    } catch (e) {
+      return fail('PROXY_ERROR', (e as Error).message);
+    }
+  }
   const d = deps ?? defaultSessionOpsDeps();
   const r = d.resolve(sid);
   try {
@@ -354,7 +412,17 @@ export async function handleSessionRead(sid: string, lastN?: number, deps?: Sess
   }
 }
 
-export async function handleSessionDrive(sid: string, text: string, deps?: SessionOpsDeps): Promise<Envelope> {
+export async function handleSessionDrive(sid: string, text: string, deps?: SessionOpsDeps, node?: string, proxyDeps?: SessionProxyDeps): Promise<Envelope> {
+  const self = thisNode();
+  if (node && node !== self) {
+    const pd = proxyDeps ?? defaultSessionProxyDeps();
+    try {
+      const result = await pd.proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/drive`, { text }) as any;
+      return proxyEnvelope(result);
+    } catch (e) {
+      return fail('PROXY_ERROR', (e as Error).message);
+    }
+  }
   const d = deps ?? defaultSessionOpsDeps();
   const r = d.resolve(sid);
   try {
@@ -370,7 +438,17 @@ export async function handleSessionDrive(sid: string, text: string, deps?: Sessi
   }
 }
 
-export async function handleSessionControl(sid: string, action: string, deps?: SessionOpsDeps): Promise<Envelope> {
+export async function handleSessionControl(sid: string, action: string, deps?: SessionOpsDeps, node?: string, proxyDeps?: SessionProxyDeps): Promise<Envelope> {
+  const self = thisNode();
+  if (node && node !== self) {
+    const pd = proxyDeps ?? defaultSessionProxyDeps();
+    try {
+      const result = await pd.proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/control`, { action }) as any;
+      return proxyEnvelope(result);
+    } catch (e) {
+      return fail('PROXY_ERROR', (e as Error).message);
+    }
+  }
   const d = deps ?? defaultSessionOpsDeps();
   const r = d.resolve(sid);
   try {
@@ -427,20 +505,25 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     // POST /mission/:id — same semantics as PATCH, accepts MCP workerPost (POST-only)
     { method: 'POST', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>) },
     // Session operability routes (read / drive / control) — literal /session/:sid/ prefix
+    // Optional body field `node`: if set and != thisNode(), the local Core proxies to that node
+    // server-side (browser never gets the hub Bearer token).
     { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/read$/, handler: async (req) => {
         const b = (req.body || {}) as Record<string, unknown>;
         const lastN = typeof b.lastN === 'number' ? b.lastN : (typeof b.lastN === 'string' ? parseInt(b.lastN, 10) : undefined);
-        return handleSessionRead(req.params.sid, lastN);
+        const node = typeof b.node === 'string' ? b.node : undefined;
+        return handleSessionRead(req.params.sid, lastN, undefined, node);
       } },
     { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/drive$/, handler: async (req) => {
         const b = (req.body || {}) as Record<string, unknown>;
         const text = typeof b.text === 'string' ? b.text : '';
-        return handleSessionDrive(req.params.sid, text);
+        const node = typeof b.node === 'string' ? b.node : undefined;
+        return handleSessionDrive(req.params.sid, text, undefined, node);
       } },
     { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/control$/, handler: async (req) => {
         const b = (req.body || {}) as Record<string, unknown>;
         const action = typeof b.action === 'string' ? b.action : '';
-        return handleSessionControl(req.params.sid, action);
+        const node = typeof b.node === 'string' ? b.node : undefined;
+        return handleSessionControl(req.params.sid, action, undefined, node);
       } },
   ];
 }
