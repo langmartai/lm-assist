@@ -4,7 +4,7 @@ import {
   decideMission, place, planMissionNudge, missionSessionTitle, MissionActor,
 } from './mission-model';
 import { pickNewSession, cseToSessionSid, isNativeBinding } from './mission-native';
-import { listMissions, putMission, thisNode } from './mission-store';
+import { listMissions, putMission, thisNode, getControllerSession, putControllerSession, ControllerSession } from './mission-store';
 import { runAdjust } from './mission-adjust';
 import { getProjectSettings } from '../project-settings';
 import { amIMonitor } from '../monitor/stall-election';
@@ -313,6 +313,63 @@ export async function startNativeExecutor(m: Mission, decision: any, deps: Nativ
   return binding;
 }
 
+// ---------------------------------------------------------------------------
+// Supervisor (Wave 2): election + controller-session lifecycle + cadence
+// ---------------------------------------------------------------------------
+
+/** The standing directive sent to the controller agent each pass. */
+export const CONTROLLER_PASS_DIRECTIVE =
+  'Run a controller pass now: review every active mission via mission_list; ' +
+  'for each, call mission_place, spawn/drive/adapt/decide as needed; ' +
+  'then await the next pass.';
+
+/** Pure decision table — what should the supervisor do on this tick? */
+export function decideSupervisor(input: { isMonitor: boolean; live: boolean }): { action: 'teardown' | 'launch' | 'drive' | 'idle' } {
+  if (!input.isMonitor) return { action: 'teardown' };
+  if (!input.live) return { action: 'launch' };
+  return { action: 'drive' };
+}
+
+/** Deps interface for runSupervisorTick — all IO points are injectable for tests. */
+export interface SupervisorDeps {
+  amMonitor: () => Promise<{ isMonitor: boolean; monitorNodeId: string | null }>;
+  getControllerSession: () => Promise<ControllerSession | null>;
+  putControllerSession: (cs: ControllerSession | null) => Promise<void>;
+  isLive: (cs: ControllerSession) => boolean;
+  launch: () => Promise<ControllerSession>;
+  drive: (cs: ControllerSession) => Promise<void>;
+  teardown: (cs: ControllerSession) => Promise<void>;
+}
+
+/**
+ * The supervisor tick: elect → reconcile the controller session → drive or launch or teardown.
+ * Called by `registerMissionController`'s scheduled handler (replaces `runMissionTick`).
+ */
+export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action: string; controllerSession: ControllerSession | null }> {
+  const { isMonitor } = await deps.amMonitor();
+  const cs = await deps.getControllerSession();
+  const live = cs ? deps.isLive(cs) : false;
+  const { action } = decideSupervisor({ isMonitor, live });
+
+  if (action === 'teardown') {
+    if (cs) {
+      await deps.teardown(cs);
+      await deps.putControllerSession(null);
+    }
+    return { action: 'teardown', controllerSession: null };
+  }
+
+  if (action === 'launch') {
+    const newCs = await deps.launch();
+    await deps.putControllerSession(newCs);
+    return { action: 'launch', controllerSession: newCs };
+  }
+
+  // action === 'drive'
+  await deps.drive(cs!);
+  return { action: 'drive', controllerSession: cs };
+}
+
 /**
  * Read the executor state for a mission using the real cloud/native deps.
  * Exported so the rail route `handleExecutorStatus` can call it without duplicating logic.
@@ -336,7 +393,12 @@ export async function readExecutorState(m: Mission): Promise<ExecutorState> {
   return readCloudExecutor(m);
 }
 
-/** Register the scheduled-job handler. Reads live config each run; assembles real deps. */
+function controllerCwd(): string {
+  const s = getProjectSettings();
+  return (s as any).missionControllerRepo || process.cwd();
+}
+
+/** Register the scheduled-job handler. Uses the supervisor (Wave 2). */
 export function registerMissionController(
   jobs: { registerHandler: (t: string, fn: any) => void },
 ): void {
@@ -345,54 +407,65 @@ export function registerMissionController(
     if (!s.missionControllerEnabled || !s.dataServiceEnabled) {
       return { result: 'mission controller disabled (or data service off)', status: 'skipped' };
     }
-    const r = await runMissionTick({
-      now: Date.now(),
-      cfg: {
-        intervalMin: s.missionControllerIntervalMin,
-        maxNudges: s.missionControllerMaxNudges,
-        model: s.missionControllerModel,
-      },
+
+    const realDeps: SupervisorDeps = {
       amMonitor: () =>
         amIMonitor().then((mon) => ({
           isMonitor: mon.isMonitor,
           monitorNodeId: mon.monitorNodeId,
         })),
-      listAll: () => listMissions(),
-      readExecutor: (m) => {
-        if (isNativeBinding(m.binding)) {
-          // Lazy-create a session store so we can look up the local conversation.
-          const store = new AgentSessionStore({ projectPath: process.cwd(), persist: false });
-          const realReadDeps: NativeReadDeps = {
-            verdict: (sid) => {
-              const v = sessionVerdict(sid);
-              return { driveable: v.inTmux };
-            },
-            readConversation: async (sid) => {
-              const res = await store.getConversation({ sessionId: sid });
-              const msgs = res?.messages ?? [];
-              return { messages: msgs.map((msg) => ({ text: msg.content })) };
-            },
-          };
-          return readNativeExecutor(m, realReadDeps);
-        }
-        return readCloudExecutor(m);
+      getControllerSession: () => getControllerSession(),
+      putControllerSession: (cs) => putControllerSession(cs),
+      isLive: (cs) => {
+        const v = sessionVerdict(cs.sessionId);
+        return !!v.inTmux;
       },
-      adjust: (m, out) => runAdjust(m, out, s.missionControllerModel),
-      startExecutor: (m, dec) => startCloudExecutor(m, dec),
-      drive: (m, directive) => {
-        const sid = m.binding?.sessionId;
-        if (!sid) return Promise.resolve();
-        if (isNativeBinding(m.binding)) {
-          const ccr = m.binding?.ccr;
-          if (ccr) return cloudDrive({ sid: ccr.sid, text: directive }).then(() => undefined);
-          // no ccr yet: drive the local session by its UUID (same-host)
-          return getCcController().prompt(m.binding!.sessionId!, directive).then(() => undefined);
-        }
-        return driveExecutor(m, directive);
+      launch: async () => {
+        const { tmuxCcController } = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
+        const cwd = controllerCwd();
+        const launched = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true });
+        const sessionId = (launched.sessionId as string | null) ?? '';
+        const tmux = (launched.tmuxSession as string) ?? '';
+        // Try to discover the cloud cse for this session (optional)
+        const baselineArr = await cloudListAccount().then((ss) => ss.map((s2) => s2.sid)).catch(() => [] as string[]);
+        const cur = await cloudListAccount().catch(() => [] as Array<{ sid: string; status?: string }>);
+        const { pickNewSession: pns } = require('./mission-native') as typeof import('./mission-native');
+        const hit = pns(baselineArr, cur);
+        const cs: ControllerSession = {
+          node: thisNode(),
+          sessionId: hit ? hit.sid : sessionId,
+          cse: hit ? hit.sid : null,
+          tmux,
+          startedAt: Date.now(),
+        };
+        return cs;
       },
-      save: (m) => putMission(m).then(() => undefined),
-    });
-    if (r.skipped) return { result: 'not the mission controller (skipped)', status: 'skipped' };
-    return { result: `acted=${r.acted.length} missions`, status: 'ok' };
+      drive: async (cs) => {
+        const sid = cs.cse || cs.sessionId;
+        if (cs.cse) {
+          await cloudDrive({ sid, text: CONTROLLER_PASS_DIRECTIVE }).catch((e: Error) => {
+            console.debug(`[mission-supervisor] drive to ${sid} failed: ${e.message}`);
+          });
+        } else {
+          await getCcController().prompt(cs.sessionId, CONTROLLER_PASS_DIRECTIVE).catch((e: Error) => {
+            console.debug(`[mission-supervisor] native drive to ${cs.sessionId} failed: ${e.message}`);
+          });
+        }
+      },
+      teardown: async (cs) => {
+        try {
+          const backend = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
+          const ctrl = backend.tmuxCcController as any;
+          if (cs.tmux && typeof ctrl.kill === 'function') {
+            await ctrl.kill(cs.tmux);
+          }
+        } catch {
+          // Best-effort teardown — don't crash the tick
+        }
+      },
+    };
+
+    const r = await runSupervisorTick(realDeps);
+    return { result: `supervisor action=${r.action}`, controllerSession: r.controllerSession, status: 'ok' };
   });
 }
