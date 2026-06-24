@@ -276,6 +276,21 @@ export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
       createdAt: at,
       updatedAt: at,
     },
+    {
+      id: 'mission-controller',
+      name: 'Super Mission Controller',
+      description: 'Fleet-elected loop that reads each executor, adapts the mission, and pushes every mission toward done (liveness/adjust/placement).',
+      type: 'mission-controller',
+      enabled: true,
+      intervalMinutes: 5,
+      config: {},
+      lastRunAt: null,
+      lastResult: null,
+      lastStatus: null,
+      builtin: true,
+      createdAt: at,
+      updatedAt: at,
+    },
   ];
 }
 
@@ -390,6 +405,11 @@ class ScheduledJobs {
     {
       const { registerStallMonitor } = require('../monitor/stall-monitor');
       registerStallMonitor(this);
+    }
+
+    {
+      const { registerMissionController } = require('../mission/mission-controller');
+      registerMissionController(this);
     }
   }
 
