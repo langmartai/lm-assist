@@ -3,6 +3,7 @@ import {
   Mission, MissionBinding, ExecutorState, ExecutorOutput, AdjustResult, PlacementDecision,
   decideMission, place, planMissionNudge, missionSessionTitle,
 } from './mission-model';
+import { pickNewSession, cseToSessionSid } from './mission-native';
 import { listMissions, putMission } from './mission-store';
 import { runAdjust } from './mission-adjust';
 import { getProjectSettings } from '../project-settings';
@@ -212,6 +213,37 @@ async function driveExecutor(m: Mission, directive: string): Promise<void> {
   const sid = m.binding?.sessionId;
   if (!sid) return;
   await cloudDrive({ sid, text: directive });
+}
+
+// ---------------------------------------------------------------------------
+// Native executor (worktree / shared) — deps-injected for testability
+// ---------------------------------------------------------------------------
+
+export interface NativeStartDeps {
+  ensureWorktree: (repo: string, dir: string, branch: string) => Promise<string>;
+  launch: (cwd: string) => Promise<{ sessionId: string | null; tmuxSession: string }>;
+  listAccount: () => Promise<Array<{ sid: string; status?: string }>>;
+  baseline: string[];
+  drive: (sid: string, text: string) => Promise<void>;
+}
+
+export async function startNativeExecutor(m: Mission, decision: any, deps: NativeStartDeps): Promise<MissionBinding> {
+  const branch = decision.branch || `mission/${m.id}`;
+  const dir = decision.env === 'shared' ? (decision.repo || '.') : `.claude/worktrees/mission-${m.id}`;
+  const cwd = decision.env === 'shared' ? (decision.repo || '.') : await deps.ensureWorktree(decision.repo, dir, branch);
+  const launched = await deps.launch(cwd);
+  const uuid = launched.sessionId;
+  if (!uuid) throw new Error('native launch did not resolve a session id');
+  const cur = await deps.listAccount().catch(() => []);
+  const hit = pickNewSession(deps.baseline, cur);
+  const kind = m.binding?.kind === 'orchestrator' ? 'orchestrator' : 'worker';
+  const binding: MissionBinding = { sessionId: uuid, node: decision.host || 'local', kind, boundAt: Date.now() };
+  if (hit) {
+    const sid = cseToSessionSid(hit.sid);
+    binding.ccr = { cse: hit.sid, sid, webUrl: `https://claude.ai/code/${sid}`, tmuxSession: launched.tmuxSession };
+    await deps.drive(sid, `Mission: ${m.title}\n\nObjective:\n${m.objective}`).catch(() => {});
+  }
+  return binding;
 }
 
 /** Register the scheduled-job handler. Reads live config each run; assembles real deps. */
