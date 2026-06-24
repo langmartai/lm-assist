@@ -35,13 +35,21 @@ export interface ProjectSettings {
   autoResumeMaxAttempts: number;
   /** Whether the elected monitor scans remote cloud CCRs. Default true. */
   autoResumeRemoteScan: boolean;
+  /** Enable the super Mission Controller scheduled job. Default true. */
+  missionControllerEnabled: boolean;
+  /** Base interval (minutes) between Mission Controller ticks. Default 5. */
+  missionControllerIntervalMin: number;
+  /** Max `continue` nudges to a parked mission before marking it blocked. Default 6. */
+  missionControllerMaxNudges: number;
+  /** Model for the adjust reasoning step. Default 'claude-opus-4-8[1m]'. */
+  missionControllerModel: string;
 }
 
 // ── Constants ──────────────────────────────────────────
 
 const SETTINGS_FILE = path.join(getDataDir(), 'project-settings.json');
 
-const DEFAULTS: ProjectSettings = {
+export const DEFAULTS: ProjectSettings = {
   excludedPaths: [],
   knowledgeEnabled: false,
   dataServiceEnabled: false,
@@ -53,6 +61,10 @@ const DEFAULTS: ProjectSettings = {
   autoResumeIntervalMin: 5,
   autoResumeMaxAttempts: 6,
   autoResumeRemoteScan: true,
+  missionControllerEnabled: true,
+  missionControllerIntervalMin: 5,
+  missionControllerMaxNudges: 6,
+  missionControllerModel: 'claude-opus-4-8[1m]',
 };
 
 // ── Mtime Cache ──────────────────────────────────────────
@@ -86,6 +98,10 @@ export function getProjectSettings(): ProjectSettings {
       autoResumeIntervalMin: typeof data.autoResumeIntervalMin === 'number' ? data.autoResumeIntervalMin : DEFAULTS.autoResumeIntervalMin,
       autoResumeMaxAttempts: typeof data.autoResumeMaxAttempts === 'number' ? data.autoResumeMaxAttempts : DEFAULTS.autoResumeMaxAttempts,
       autoResumeRemoteScan: typeof data.autoResumeRemoteScan === 'boolean' ? data.autoResumeRemoteScan : DEFAULTS.autoResumeRemoteScan,
+      missionControllerEnabled: typeof data.missionControllerEnabled === 'boolean' ? data.missionControllerEnabled : DEFAULTS.missionControllerEnabled,
+      missionControllerIntervalMin: typeof data.missionControllerIntervalMin === 'number' ? data.missionControllerIntervalMin : DEFAULTS.missionControllerIntervalMin,
+      missionControllerMaxNudges: typeof data.missionControllerMaxNudges === 'number' ? data.missionControllerMaxNudges : DEFAULTS.missionControllerMaxNudges,
+      missionControllerModel: typeof data.missionControllerModel === 'string' ? data.missionControllerModel : DEFAULTS.missionControllerModel,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -114,6 +130,10 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     autoResumeIntervalMin: typeof partial.autoResumeIntervalMin === 'number' ? partial.autoResumeIntervalMin : current.autoResumeIntervalMin,
     autoResumeMaxAttempts: typeof partial.autoResumeMaxAttempts === 'number' ? partial.autoResumeMaxAttempts : current.autoResumeMaxAttempts,
     autoResumeRemoteScan: typeof partial.autoResumeRemoteScan === 'boolean' ? partial.autoResumeRemoteScan : current.autoResumeRemoteScan,
+    missionControllerEnabled: typeof partial.missionControllerEnabled === 'boolean' ? partial.missionControllerEnabled : current.missionControllerEnabled,
+    missionControllerIntervalMin: typeof partial.missionControllerIntervalMin === 'number' ? partial.missionControllerIntervalMin : current.missionControllerIntervalMin,
+    missionControllerMaxNudges: typeof partial.missionControllerMaxNudges === 'number' ? partial.missionControllerMaxNudges : current.missionControllerMaxNudges,
+    missionControllerModel: typeof partial.missionControllerModel === 'string' ? partial.missionControllerModel : current.missionControllerModel,
   };
 
   // Ensure parent directory exists

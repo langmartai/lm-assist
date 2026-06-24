@@ -1,0 +1,235 @@
+import { test } from 'node:test';
+import assert from 'node:assert';
+import { handleSessionRead, handleSessionDrive, handleSessionControl } from '../routes/core/mission.routes';
+import type { SessionOpsDeps } from '../routes/core/mission.routes';
+import type { SupervisorDeps } from '../mission/mission-controller';
+import type { ControllerSession } from '../mission/mission-store';
+
+function makeStubDeps(overrides: Partial<SessionOpsDeps> = {}): SessionOpsDeps {
+  return {
+    cloudRead: async (opts) => ({ sid: opts.sid, messages: [{ role: 'assistant', text: 'hello' }], pendingQuestion: null }),
+    cloudDrive: async (opts) => ({ delivered: true, sid: opts.sid }),
+    cloudStop: async (sid) => ({ stopped: true, sid }),
+    nativeRead: async (_sid) => ({ messages: [{ role: 'user', content: 'native msg' }] }),
+    nativeDrive: async (_sid, _text) => {},
+    nativeInterrupt: async (_sid) => {},
+    nativeStop: async (_sid) => {},
+    clearController: async () => {},
+    getControllerSession: async () => null,
+    resolve: (sid) => ({
+      sid,
+      transport: sid.startsWith('session_') ? 'cloud' : 'native',
+      missionId: null,
+      role: 'worker' as const,
+    }),
+    ...overrides,
+  };
+}
+
+// -- read tests --
+
+test('handleSessionRead dispatches to cloudRead for session_ sid', async () => {
+  let called = false;
+  const deps = makeStubDeps({
+    cloudRead: async (opts) => { called = true; return { sid: opts.sid, messages: [], pendingQuestion: null }; },
+  });
+  const r = await handleSessionRead('session_x', undefined, deps);
+  assert.ok(r.success);
+  assert.ok(called, 'cloudRead should be called');
+});
+
+test('handleSessionRead dispatches to nativeRead for uuid sid', async () => {
+  let called = false;
+  const deps = makeStubDeps({
+    nativeRead: async (_sid) => { called = true; return { messages: [] }; },
+  });
+  const r = await handleSessionRead('4e15ac46-1234-477f-9dae-0001', undefined, deps);
+  assert.ok(r.success);
+  assert.ok(called, 'nativeRead should be called');
+});
+
+// FIX 3: native read maps content -> text
+test('handleSessionRead native: normalizes content -> text', async () => {
+  const deps = makeStubDeps({
+    nativeRead: async (_sid) => ({
+      messages: [
+        { role: 'user', content: 'hello from native' },
+        { role: 'assistant', content: 'reply from native' },
+      ],
+    }),
+  });
+  const r = await handleSessionRead('4e15ac46-fix3-477f-0000-0001', undefined, deps);
+  assert.ok(r.success);
+  const msgs = (r as any).data?.messages as Array<{ role: string; text: string }>;
+  assert.equal(msgs.length, 2);
+  assert.equal(msgs[0].role, 'user');
+  assert.equal(msgs[0].text, 'hello from native');
+  assert.equal(msgs[1].role, 'assistant');
+  assert.equal(msgs[1].text, 'reply from native');
+  // content field must NOT be on the normalized output
+  assert.equal((msgs[0] as any).content, undefined);
+});
+
+// FIX 3: cloud read passes text through (not content)
+test('handleSessionRead cloud: messages keep .text field', async () => {
+  const deps = makeStubDeps({
+    cloudRead: async (opts) => ({
+      sid: opts.sid,
+      messages: [{ role: 'assistant', text: 'cloud text', type: 'assistant' }],
+      pendingQuestion: null,
+    }),
+  });
+  const r = await handleSessionRead('session_fix3', undefined, deps);
+  assert.ok(r.success);
+  const msgs = (r as any).data?.messages as Array<{ role: string; text: string }>;
+  assert.equal(msgs[0].text, 'cloud text');
+  assert.equal(msgs[0].role, 'assistant');
+});
+
+// -- drive tests --
+
+test('handleSessionDrive dispatches to cloudDrive for cloud transport', async () => {
+  let called = false;
+  const deps = makeStubDeps({
+    cloudDrive: async (opts) => { called = true; return { delivered: true, sid: opts.sid }; },
+  });
+  const r = await handleSessionDrive('session_y', 'do thing', deps);
+  assert.ok(r.success);
+  assert.ok(called, 'cloudDrive should be called');
+});
+
+test('handleSessionDrive dispatches to nativeDrive for native transport', async () => {
+  let called = false;
+  const deps = makeStubDeps({
+    nativeDrive: async (_sid, _text) => { called = true; },
+  });
+  const r = await handleSessionDrive('4e15ac46-9999-477f-0000-0001', 'go', deps);
+  assert.ok(r.success);
+  assert.ok(called, 'nativeDrive should be called');
+});
+
+// -- control tests --
+
+test('handleSessionControl stop calls cloudStop for cloud session', async () => {
+  let called = false;
+  const deps = makeStubDeps({
+    cloudStop: async (sid) => { called = true; return { stopped: true, sid }; },
+  });
+  const r = await handleSessionControl('session_z', 'stop', deps);
+  assert.ok(r.success);
+  assert.ok(called, 'cloudStop should be called');
+});
+
+test('handleSessionControl stop calls nativeStop for native session', async () => {
+  let called = false;
+  const deps = makeStubDeps({
+    nativeStop: async (_sid) => { called = true; },
+  });
+  const r = await handleSessionControl('4e15ac46-aaaa-477f-bbbb-0001', 'stop', deps);
+  assert.ok(r.success);
+  assert.ok(called, 'nativeStop should be called');
+});
+
+test('handleSessionControl interrupt calls cloudDrive for cloud session', async () => {
+  let driveCalled = false;
+  const deps = makeStubDeps({
+    cloudDrive: async (opts) => { driveCalled = true; return { delivered: true, sid: opts.sid }; },
+  });
+  const r = await handleSessionControl('session_i', 'interrupt', deps);
+  assert.ok(r.success);
+  assert.ok(driveCalled, 'cloudDrive should be called for interrupt');
+});
+
+test('handleSessionControl interrupt calls nativeInterrupt for native session', async () => {
+  let called = false;
+  const deps = makeStubDeps({
+    nativeInterrupt: async (_sid) => { called = true; },
+  });
+  const r = await handleSessionControl('4e15ac46-cccc-477f-dddd-0001', 'interrupt', deps);
+  assert.ok(r.success);
+  assert.ok(called, 'nativeInterrupt should be called');
+});
+
+// FIX 1: restart checks getControllerSession, not role from resolver
+test('handleSessionControl restart: no stored controller -> INVALID_INPUT', async () => {
+  const deps = makeStubDeps({
+    // getControllerSession returns null => not a controller
+    getControllerSession: async () => null,
+  });
+  const r = await handleSessionControl('session_w', 'restart', deps);
+  assert.equal(r.success, false);
+  assert.equal((r as any).error?.code, 'INVALID_INPUT');
+});
+
+test('handleSessionControl restart: stored controller sessionId matches -> calls clearController', async () => {
+  let cleared = false;
+  const deps = makeStubDeps({
+    getControllerSession: async () => ({
+      sessionId: 'session_ctrl',
+      cse: null,
+      node: 'gw1',
+      tmux: 'lm-ctrl',
+      startedAt: 1000,
+    }),
+    clearController: async () => { cleared = true; },
+  });
+  const r = await handleSessionControl('session_ctrl', 'restart', deps);
+  assert.ok(r.success, 'restart should succeed when sid matches controller sessionId');
+  assert.ok(cleared, 'clearController should be called');
+});
+
+test('handleSessionControl restart: stored controller cse matches -> calls clearController', async () => {
+  let cleared = false;
+  const deps = makeStubDeps({
+    getControllerSession: async () => ({
+      sessionId: 'session_ctrl',
+      cse: 'session_cse_ctrl',
+      node: 'gw1',
+      tmux: 'lm-ctrl',
+      startedAt: 1000,
+    }),
+    clearController: async () => { cleared = true; },
+  });
+  // Drive via the cse sid
+  const r = await handleSessionControl('session_cse_ctrl', 'restart', deps);
+  assert.ok(r.success, 'restart should succeed when sid matches controller cse');
+  assert.ok(cleared, 'clearController should be called');
+});
+
+test('handleSessionControl restart: stored controller but different sid -> INVALID_INPUT', async () => {
+  const deps = makeStubDeps({
+    getControllerSession: async () => ({
+      sessionId: 'session_ctrl',
+      cse: null,
+      node: 'gw1',
+      tmux: 'lm-ctrl',
+      startedAt: 1000,
+    }),
+  });
+  // sid is NOT the controller session
+  const r = await handleSessionControl('session_some_worker', 'restart', deps);
+  assert.equal(r.success, false);
+  assert.equal((r as any).error?.code, 'INVALID_INPUT');
+});
+
+// FIX 2: test teardown calls the tmux dep (via supervisor test — stub assertion)
+// (The real teardown uses tmuxTerminalBackend.close which is tested via integration;
+//  here we verify the supervisor's teardown dep is invoked with the cs.tmux name.)
+test('supervisor teardown dep is called with cs.tmux', async () => {
+  const { runSupervisorTick } = require('../mission/mission-controller') as typeof import('../mission/mission-controller');
+  const cs: ControllerSession = { node: 'gw1', sessionId: 'session_ctrl', cse: null, tmux: 'lmcc-test123', startedAt: 1000 };
+  let tornDownWith: string | null = null;
+  const deps: SupervisorDeps = {
+    amMonitor: async () => ({ isMonitor: false, monitorNodeId: 'gw2' }),
+    getControllerSession: async () => cs,
+    putControllerSession: async () => {},
+    isLive: () => false,
+    launch: async () => cs,
+    drive: async () => {},
+    teardown: async (c) => { tornDownWith = c.tmux; },
+    driveIntervalMin: 5,
+    now: Date.now(),
+  };
+  await runSupervisorTick(deps);
+  assert.equal(tornDownWith, 'lmcc-test123', 'teardown should be called with the controller cs.tmux name');
+});

@@ -119,6 +119,7 @@ export class ApiRelayHandler {
     '/mcp',          // MCP StreamableHTTP endpoint + /mcp/* (relayed from the hub for connector routing)
     '/mcp-call',     // generic expanded-tool shim
     '/session-messages', // cross-node session-to-session messaging (node-routed)
+    '/mission',       // mission CRUD + controller-session operability (node-routed: chat with the leader's controller from any node)
     '/data',          // generic data service (access-key gated; see routes/core/data.routes.ts)
     '/memory',        // cross-node memory sync (export/ingest; access-key in body when relayed)
   ];
@@ -154,6 +155,24 @@ export class ApiRelayHandler {
     const normalizedPath = requestPath.split('?')[0]; // Remove query string
     const ext = path.extname(normalizedPath).toLowerCase();
     return ApiRelayHandler.WEB_ASSET_EXTENSIONS.has(ext);
+  }
+
+  /**
+   * Check if an API path is relay-allowed (exported for testing).
+   * Matches `ALLOWED_API_PREFIXES` + service routes + web assets + root.
+   */
+  static isApiPathAllowed(requestPath: string): boolean {
+    if (!requestPath || !requestPath.startsWith('/')) return false;
+    if (requestPath.includes('..') || requestPath.includes('//')) return false;
+    const normalizedPath = requestPath.split('?')[0];
+    if (normalizedPath === '/') return true;
+    // web asset check (extension)
+    const ext = path.extname(normalizedPath).toLowerCase();
+    if (ApiRelayHandler.WEB_ASSET_EXTENSIONS.has(ext)) return true;
+    // allowed API prefixes
+    return ApiRelayHandler.ALLOWED_API_PREFIXES.some(
+      (prefix) => normalizedPath === prefix || normalizedPath.startsWith(prefix + '/')
+    );
   }
 
   /**
@@ -485,4 +504,12 @@ export class ApiRelayHandler {
     });
     this.pendingRequests.clear();
   }
+}
+
+/**
+ * Standalone export of the path-allow check for unit tests.
+ * Delegates to the static method so logic lives in one place.
+ */
+export function isApiPathAllowed(requestPath: string): boolean {
+  return ApiRelayHandler.isApiPathAllowed(requestPath);
 }

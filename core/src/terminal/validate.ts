@@ -170,6 +170,7 @@ export function parseCCLaunch(body: unknown): CCLaunchInput {
     model: asOptString(b.model, 'model', { maxLen: 64 }),
     extraFlags: asStringArray(b.extraFlags ?? b.flags, 'extraFlags'),
     skipPermissions: asBool(b.skipPermissions, 'skipPermissions', true),
+    remoteControl: b.remoteControl === true,
     cols: asInt(b.cols, 'cols', 220, { min: 20, max: 1000 }),
     rows: asInt(b.rows, 'rows', 60, { min: 5, max: 500 }),
     readyPattern: asOptString(b.readyPattern, 'readyPattern', { maxLen: 256 }) ?? 'ctx:',

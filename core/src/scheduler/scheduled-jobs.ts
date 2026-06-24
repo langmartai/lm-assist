@@ -276,6 +276,21 @@ export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
       createdAt: at,
       updatedAt: at,
     },
+    {
+      id: 'mission-controller',
+      name: 'Super Mission Controller',
+      description: 'Fleet-elected loop: lifecycle check every ~1 min (prompt failover) + adapt-DRIVE every ~5 min (missionControllerIntervalMin). The 1-min tick only launches/tears down; the costly drive pass is gated internally by driveDue.',
+      type: 'mission-controller',
+      enabled: true,
+      intervalMinutes: 1,
+      config: {},
+      lastRunAt: null,
+      lastResult: null,
+      lastStatus: null,
+      builtin: true,
+      createdAt: at,
+      updatedAt: at,
+    },
   ];
 }
 
@@ -390,6 +405,11 @@ class ScheduledJobs {
     {
       const { registerStallMonitor } = require('../monitor/stall-monitor');
       registerStallMonitor(this);
+    }
+
+    {
+      const { registerMissionController } = require('../mission/mission-controller');
+      registerMissionController(this);
     }
   }
 

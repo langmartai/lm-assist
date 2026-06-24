@@ -22,6 +22,8 @@ const TOPIC_TOOLS: Record<string, string[]> = {
   github: ['github_query', 'github_mutate'],
   files: ['fs_drives', 'fs_list', 'fs_stat', 'fs_read', 'transfer_queue', 'transfer_send_file', 'transfer_list_remote', 'transfer_stats'],
   roles: ['set_role', 'report_status', 'worker_status', 'list_workers', 'decide_gate'],
+  missions: ['mission_create', 'mission_list', 'mission_update', 'mission_control_status'],
+  'mission-controller': ['mission_place', 'mission_executor_status', 'mission_sessions', 'mission_session_read', 'mission_session_drive', 'mission_session_control'],
 };
 
 // Ordered so the multi-node model + combination workflows surface first in the index.
@@ -255,6 +257,51 @@ CROSS-NODE: pass \`node=\` the host whose gh auth/repo you want (auth + checkout
 • \`transfer_queue\` / \`transfer_send_file\` / \`transfer_list_remote\` / \`transfer_stats\` → move files BETWEEN hosts.
 CROSS-NODE: fs_* take \`node=\` to browse/read a specific host; transfer_send_file moves a file from one node to another (workflow #8).
 GOTCHA: fs_read REFUSES credential/secret paths (.ssh/.aws/.env/tokens/keys, the lm-assist key) by design.`,
+
+  missions: `# Guide: missions — durable goals the fleet drives to done
+A **Mission** is a durable, cross-project record of WHAT to achieve. The fleet-elected **super Mission Controller** (ONE node — lowest online gateway-id) binds ONE primary executor and, every few minutes, reads its feedback, ADAPTS the mission (revises objective/plan from the results — not a binary done/failed), and pushes it toward done. It places executors to avoid conflict — isolate (cloud > git worktree+branch) when possible, else serialize on shared resources; \`dependsOn\` orders missions. Fully autonomous BUT it never auto-approves a human gate or a material pivot (those PAUSE for you).
+
+EXECUTORS: a mission's worker is either a **cloud** CCR session, or a **native** local session the controller launches in a git worktree with \`claude --remote-control\` (the session self-registers a cloud handle so it's remotely controllable — the controller reads from its local transcript and drives it via the cloud relay). An executor may be an **orchestrator** that spawns **sub-workers** under the same mission. Controller-spawned sessions are titled \`Mission: <title> · <id>\`.
+
+CONNECT + DRIVE: you can watch and drive a mission's executor (and an orchestrator's sub-workers) DIRECTLY, alongside the autonomous controller (it keeps adapting in the background). The Missions web page lists each mission's sessions (\`GET /mission/:id/sessions\` → the primary executor + sub-workers), each with an Open button → a live transcript + a prompt box. Connect/drive a cloud session via the \`ccr_cloud_*\` tools — see guide("ccr"); a native session via the terminal/session tools — see guide("terminals").
+
+Tools: \`mission_create\` (title+objective; optional projects/dependsOn/env{isolation:cloud|worktree|shared}), \`mission_list\`, \`mission_update\` (refine/pause/resume/mark done/edit objective), \`mission_control_status\` (which node is elected + its last tick).
+Requires the data service enabled (cross-node mission store). Settings: missionControllerEnabled, missionControllerIntervalMin, missionControllerMaxNudges, missionControllerModel.`,
+
+  'mission-controller': `# Guide: mission-controller — the autonomous controller agent loop contract
+YOU ARE the fleet-elected Mission Controller agent, running in a native session under supervisor oversight. The supervisor sends you a pass directive every \`missionControllerIntervalMin\` minutes. On each pass, follow this loop:
+
+LOOP CONTRACT (one pass):
+1. \`mission_list\` → get all missions and their status.
+2. For each ACTIVE mission:
+   a. \`mission_place(id)\` → placement decision. If \`go:false\` (dependency/resource) → skip this mission for this pass (do NOT spawn).
+   b. If \`go:true\` and no executor → spawn one (cloud: \`ccr_cloud_start\`; native: worktree via \`terminal_open_tab\` + \`--remote-control\`); bind it via \`mission_update\`.
+   c. If executor exists → \`mission_executor_status(id)\` → read liveness. If stalled/dead → rebind (step b). If alive and idle → \`mission_session_drive(sid, nextDirective)\` to nudge.
+   d. Read executor output: \`mission_session_read(sid)\` → extract results/progress → \`mission_update(id, ...)\ to adapt objective/plan/nextSteps based on what the executor reported.
+   e. Gate handling: if \`mission_executor_status\` returns \`gate!=null\` → surface the gate, pause the mission (\`mission_update({status:'paused'})\`), and STOP. Wait for a human to \`decide_gate\`.
+   f. Done: if executor reports completion → \`mission_update({status:'done', ...})\`.
+3. Await the next pass (do nothing further — let the supervisor drive the cadence).
+
+HARD RULES (never violate):
+- **Never auto-approve a \`need_approval\` gate or a material pivot.** These require human judgment. Pause the mission and surface the reason.
+- **Respect \`mission_place\` verdicts.** Never spawn an executor when \`go:false\` — dependency ordering and resource isolation are enforced as code.
+- **One executor per mission** unless you are orchestrating sub-workers (and even then, bind them explicitly).
+- **Await the next pass** after completing the loop — do not loop autonomously or re-drive missions without a supervisor nudge.
+- **Never hard-code mission IDs or assume a fixed list.** Always start with \`mission_list\`.
+
+TOOLS AVAILABLE (mission scope):
+- \`mission_list\` — get all missions
+- \`mission_place(id)\` — rail: placement decision (call before spawning)
+- \`mission_executor_status(id)\` — rail: executor liveness
+- \`mission_update(id, ...)\` — adapt mission state / mark done / paused / blocked
+- \`mission_sessions(missionId?)\` — list operable sessions for a mission
+- \`mission_session_read(sid, lastN?)\` — read executor transcript
+- \`mission_session_drive(sid, text)\` — send a directive to an executor
+- \`mission_session_control(sid, action)\` — interrupt / stop / restart (restart: controller only)
+- \`decide_gate(sessionId, taskId, decision)\` — agree or reject a pending gate
+- \`ccr_cloud_start\`, \`ccr_cloud_drive\`, \`ccr_cloud_stop\` — cloud executor lifecycle
+
+SELF-HEAL: if lm-assist Core is not running on this host, start it (\`lm-assist start\`) before calling any tools. See guide("install") if lm-assist is not installed.`,
 };
 
 /** Synonyms + every tool name → its topic, so guide("data_get") or guide("storage") both resolve. */
@@ -265,6 +312,8 @@ const ALIASES: Record<string, string> = {
   workflow: 'workflows', combo: 'workflows', combos: 'workflows', combination: 'workflows', combinations: 'workflows', recipe: 'workflows', recipes: 'workflows', 'use-case': 'workflows', 'use case': 'workflows',
   install: 'install', build: 'install', setup: 'install', clone: 'install', deploy: 'install', 'from-source': 'install', 'from-repo': 'install', 'not-installed': 'install', 'core.sh': 'install', npm: 'install', 'dev-run': 'install', 'prod-run': 'install',
   roles: 'roles', role: 'roles', worker: 'roles', orchestrator: 'roles', 'agree-gate': 'roles', gate: 'roles',
+  missions: 'missions', mission: 'missions', goal: 'missions', goals: 'missions',
+  'mission-controller': 'mission-controller', 'mission_controller': 'mission-controller', 'controller-agent': 'mission-controller', 'controller-loop': 'mission-controller',
   storage: 'data', store: 'data', query: 'data', database: 'data', db: 'data', records: 'data',
   session: 'sessions', history: 'sessions', dag: 'sessions',
   memory: 'knowledge', search: 'knowledge',
@@ -296,6 +345,8 @@ const BLURB: Record<string, string> = {
   account: 'Claude Code OAuth + claude.ai account / usage / active sessions (per node)',
   github: 'query/mutate GitHub via the user gh auth',
   files: 'list/stat/read files + transfer files between hosts',
+  missions: 'durable cross-project goals — the fleet-elected Mission Controller launches/binds an executor (cloud, or native via claude --remote-control), adapts + pushes to done, places to avoid conflict; watch+drive executors & sub-workers directly; never auto-approves gates/pivots',
+  'mission-controller': 'the controller agent loop contract — the exact per-pass workflow, hard rules (never auto-approve gates/pivots), and tool usage for the autonomous controller session',
 };
 
 function buildIndex(): string {
@@ -319,7 +370,7 @@ const INDEX = buildIndex();
 
 /** The whole skill in ONE response — every playbook concatenated (stays in sync with GUIDES). */
 function buildBootstrap(): string {
-  const order = ['orientation', 'cross-node', 'workflows', 'install', 'roles', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'github', 'files'];
+  const order = ['orientation', 'cross-node', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'github', 'files'];
   const header = [
     '# lm-assist — capability bootstrap (you have now loaded ALL use cases for this session)',
     '',
@@ -372,3 +423,6 @@ export const GUIDE_HANDLERS: Record<string, (args: Record<string, unknown>) => P
   bootstrap: handleBootstrap,
   guide: handleGuide,
 };
+
+/** Exported for unit tests — access the raw GUIDES map without going through the HTTP handler. */
+export const GUIDES_TEST_EXPORT: Record<string, string> = GUIDES;

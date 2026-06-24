@@ -16,6 +16,7 @@ import { randomBytes } from 'crypto';
 import { getRecord, listRecords, putRecord, stampOrchestrator } from '../../worker-role/worker-store';
 import { applySetRole, applyReportStatus, decideGate, liveness } from '../../worker-role/model';
 import type { WorkerRecord, TaskStatus } from '../../worker-role/types';
+import { findMissionBySession, mirrorProgress } from '../../mission/mission-store';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string; details?: unknown }; }
 const ok = <T>(data: T): Envelope => ({ success: true, data });
@@ -77,7 +78,19 @@ export function createWorkerRoutes(_ctx: RouteContext): RouteHandler[] {
           { taskId, status: sv as TaskStatus | undefined, progress: str(b.progress), detail: str(b.detail), reason: str(b.reason) },
           Date.now(),
         );
-        return ok(putRecord(rec));
+        const out = putRecord(rec);
+        // Best-effort: mirror progress into a bound mission (cross-node source of truth).
+        try {
+          const m = await findMissionBySession(sessionId);
+          if (m) {
+            const task = rec.tasks.find((t) => t.id === taskId);
+            await mirrorProgress(
+              m.id,
+              { percent: task?.status === 'done' ? 100 : 0, summary: task?.progress || task?.detail || '', updatedAt: Date.now() },
+            );
+          }
+        } catch { /* mirroring must never fail the status report */ }
+        return ok(out);
       },
     },
 

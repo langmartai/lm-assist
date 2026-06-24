@@ -19,6 +19,7 @@ import {
   Database,
   Clock,
   MonitorPlay,
+  Target,
 } from 'lucide-react';
 import { useExperiment } from '@/hooks/useExperiment';
 import { usePlatform } from '@/hooks/usePlatform';
@@ -33,6 +34,7 @@ const baseNavItems = [
   { href: '/projects', icon: FolderOpen, label: 'Projects' },
   { href: '/knowledge', icon: BookOpen, label: 'Knowledge' },
   { href: '/data', icon: Database, label: 'Data' },
+  { href: '/missions', icon: Target, label: 'Missions' },
   { href: '/scheduler', icon: Clock, label: 'Scheduler' },
   { href: '/ccr', icon: MonitorPlay, label: 'CCR Remote' },
   { href: '/skills', icon: Zap, label: 'Skills' },

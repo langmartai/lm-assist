@@ -16,6 +16,7 @@ import * as tmux from './tmux';
 import * as inspector from './inspector';
 import { withSessionLock } from './mutex';
 import { TerminalError } from './errors';
+import { decideOnboardingKeys } from './onboarding-prompts';
 import type { CCLaunchInput, CCPivotInput, CCPromptInput, CCSessionState, CCPhase, SlashCommandInput, SelectChoiceInput, AwaitIdleInput } from './types';
 
 function assertPosix(): void {
@@ -27,12 +28,17 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+export function remoteControlFlags(rc?: boolean): string[] {
+  return rc ? ['--remote-control'] : [];
+}
+
 function buildLaunchCmd(opts: CCLaunchInput): string {
   // Use the same binary resolution as the SDK runner (handles ~/.local/bin
   // installs that aren't on PATH for service-managed lm-assist).
   const bin = getClaudeBinaryPath();
   const flags: string[] = [
     ...(opts.skipPermissions ? ['--dangerously-skip-permissions'] : []),
+    ...remoteControlFlags(opts.remoteControl),
     ...opts.extraFlags,                              // MERGED with default, not replaced
     ...(opts.model ? ['--model', opts.model] : []),
   ];
@@ -61,29 +67,55 @@ export async function launch(session: string, opts: CCLaunchInput): Promise<{
     const cmd = buildLaunchCmd(opts);
     tmux.sendKeysUnlocked(session, { keys: cmd, literal: false, enter: true, paneQualifier: null });
 
-    // Wait for either: ready footer (ctx:), trust prompt, or timeout.
-    const ready = await inspector.awaitPhase(session, 'idle', { timeoutMs: opts.readyTimeoutMs });
-    if (ready.reached) {
-      return { ready: true, finalPhase: ready.finalPhase, trustPromptHandled, elapsedMs: Date.now() - start };
+    // Poll loop: wait for idle, handling onboarding prompts and trust prompt as they appear.
+    const pollMs = 200;
+    const deadline = Date.now() + opts.readyTimeoutMs;
+    const DEAD_THRESHOLD = 5;
+    let consecutiveDead = 0;
+    let finalPhase: CCPhase = 'unknown';
+    while (Date.now() < deadline) {
+      const state = inspector.getCCState(session);
+      finalPhase = state.phase;
+
+      if (state.phase === 'idle') {
+        return { ready: true, finalPhase, trustPromptHandled, elapsedMs: Date.now() - start };
+      }
+
+      // Dismiss known onboarding prompts (e.g. fullscreen renderer?).
+      const screen = state.lastSnapshot?.text ?? (tmux.exists(session) ? tmux.capture(session, { paneQualifier: null, lines: null, start: null }) : '');
+      const onboardingAction = decideOnboardingKeys(screen);
+      if (onboardingAction !== null) {
+        tmux.sendKeysUnlocked(session, {
+          keys: onboardingAction.keys,
+          literal: true,
+          enter: onboardingAction.enter,
+          paneQualifier: null,
+        });
+        await new Promise((r) => setTimeout(r, pollMs));
+        continue;
+      }
+
+      // Handle workspace trust prompt when autoAcceptTrust is set.
+      if (state.phase === 'trust-prompt' && opts.autoAcceptTrust) {
+        // Default selection in the trust prompt is "Yes, I trust this folder".
+        // Sending Enter accepts it.
+        tmux.sendKeysUnlocked(session, { keys: 'Enter', literal: false, enter: false, paneQualifier: null });
+        trustPromptHandled = true;
+        await new Promise((r) => setTimeout(r, pollMs));
+        continue;
+      }
+
+      if (state.phase === 'dead') {
+        consecutiveDead++;
+        if (consecutiveDead >= DEAD_THRESHOLD) break;
+      } else {
+        consecutiveDead = 0;
+      }
+
+      await new Promise((r) => setTimeout(r, pollMs));
     }
 
-    // Not idle — check what we ARE in.
-    const state = inspector.getCCState(session);
-    if (state.phase === 'trust-prompt' && opts.autoAcceptTrust) {
-      // Default selection in the trust prompt is "Yes, I trust this folder".
-      // Sending Enter accepts it.
-      tmux.sendKeysUnlocked(session, { keys: 'Enter', literal: false, enter: false, paneQualifier: null });
-      trustPromptHandled = true;
-      const after = await inspector.awaitPhase(session, 'idle', { timeoutMs: opts.readyTimeoutMs });
-      return {
-        ready: after.reached,
-        finalPhase: after.finalPhase,
-        trustPromptHandled,
-        elapsedMs: Date.now() - start,
-      };
-    }
-
-    return { ready: false, finalPhase: state.phase, trustPromptHandled, elapsedMs: Date.now() - start };
+    return { ready: false, finalPhase, trustPromptHandled, elapsedMs: Date.now() - start };
   });
 }
 

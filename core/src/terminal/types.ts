@@ -169,6 +169,8 @@ export interface CCLaunchInput {
   extraFlags: string[];
   /** Set false to NOT pass --dangerously-skip-permissions. Default true. */
   skipPermissions: boolean;
+  /** Pass --remote-control to enable remote-control mode. Default false. */
+  remoteControl?: boolean;
   cols: number;
   rows: number;
   /** Indicator pattern for "ready" — default 'ctx:'. */

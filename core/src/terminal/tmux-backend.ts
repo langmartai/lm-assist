@@ -104,6 +104,7 @@ export const tmuxCcController: CcController = {
       model: null,
       extraFlags: opts.resume ? ['--resume', opts.resume] : [],
       skipPermissions: opts.skipPermissions ?? true,
+      remoteControl: opts.remoteControl === true,
       cols: 200,
       rows: 50,
       readyPattern: 'ctx:',

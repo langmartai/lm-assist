@@ -1,0 +1,223 @@
+/**
+ * Mission MCP tools — 4 core tools + 6 session/rail tools that proxy the /mission REST routes.
+ *
+ * Core tools:
+ *   mission_create         — create a new mission (POST /mission)
+ *   mission_list           — list all missions (GET /mission)
+ *   mission_update         — update a mission (POST /mission/:id)
+ *   mission_control_status — elected controller + last tick (GET /mission/controller)
+ *
+ * Rail tools (deterministic guardrails):
+ *   mission_place          — placement decision for a mission (GET /mission/:id/place)
+ *   mission_executor_status — executor liveness (GET /mission/:id/executor-status)
+ *
+ * Operability tools:
+ *   mission_sessions       — list all operable sessions (GET /mission/sessions)
+ *   mission_session_read   — read session transcript (POST /mission/session/:sid/read)
+ *   mission_session_drive  — send a message to a session (POST /mission/session/:sid/drive)
+ *   mission_session_control — control a session (POST /mission/session/:sid/control)
+ *
+ * Wiring: registered in EXPANDED_TOOL_DEFS + EXPANDED_HANDLERS (expanded.ts),
+ * scoped in configure.ts TOOL_SCOPES.
+ */
+import type { McpToolResult } from '../configure';
+import { ok, err, workerGet, workerPost } from './_passthrough';
+import { currentMcpContext } from '../principal-context';
+
+export function withActorHint(args: Record<string, unknown>, toolUseId: string | undefined): Record<string, unknown> {
+  return { ...args, _actor: { channel: 'mcp', toolUseId: toolUseId ?? null } };
+}
+
+const S = { type: 'string' as const };
+const SARR = { type: 'array' as const, items: { type: 'string' as const } };
+const obj = (props: Record<string, unknown>, required: string[] = []) => ({
+  type: 'object' as const,
+  properties: props,
+  required,
+});
+const pretty = (v: unknown): McpToolResult => ok(JSON.stringify(v, null, 2));
+
+export const MISSION_TOOL_DEFS = [
+  {
+    name: 'mission_create',
+    description:
+      'Create a Mission (durable WHAT-to-achieve). The fleet-elected Mission Controller will ' +
+      'place an executor and push it to done. Spans any project(s).',
+    inputSchema: obj(
+      {
+        title: S,
+        objective: S,
+        projects: SARR,
+        dependsOn: SARR,
+        plan: S,
+        nextSteps: SARR,
+        env: obj({
+          isolation: { ...S, enum: ['cloud', 'worktree', 'shared'] },
+          host: S,
+          repo: S,
+          branch: S,
+          resources: SARR,
+          exclusive: { type: 'boolean' as const },
+        }),
+      },
+      ['title', 'objective'],
+    ),
+  },
+  {
+    name: 'mission_list',
+    description: 'List all missions and their status/progress/binding.',
+    inputSchema: obj({}),
+  },
+  {
+    name: 'mission_update',
+    description:
+      'Update a mission (objective/title/plan/nextSteps/status/env/dependsOn). ' +
+      'Use to refine, pause, or unblock.',
+    inputSchema: obj(
+      {
+        id: S,
+        title: S,
+        objective: S,
+        plan: S,
+        status: {
+          ...S,
+          enum: ['draft', 'active', 'waiting', 'paused', 'blocked', 'done', 'failed'],
+        },
+        nextSteps: SARR,
+        dependsOn: SARR,
+        projects: SARR,
+      },
+      ['id'],
+    ),
+  },
+  {
+    name: 'mission_control_status',
+    description: 'Who is the elected Mission Controller right now + its last tick result.',
+    inputSchema: obj({}),
+  },
+  // --- Rail tools ---
+  {
+    name: 'mission_place',
+    description: 'Check placement decision for a mission: dependency gate → resource conflict → isolation. Returns {go, reason?, env?, host?, branch?, lease?, waitOn?, conflictWith?}. Call before spawning an executor.',
+    inputSchema: obj({ id: S }, ['id']),
+  },
+  {
+    name: 'mission_executor_status',
+    description: 'Get the current executor liveness for a mission: {alive, idle, serverStalled, gate?, status}. Deterministic — reads cloudStatus / local verdict.',
+    inputSchema: obj({ id: S }, ['id']),
+  },
+  // --- Operability tools ---
+  {
+    name: 'mission_sessions',
+    description: 'List all operable mission sessions: the controller session + every active mission\'s orchestrator + sub-workers. Each row: {sid, missionId, role, transport, status?, webUrl?}. Optionally filter by missionId.',
+    inputSchema: obj({ missionId: S }),
+  },
+  {
+    name: 'mission_session_read',
+    description: 'Read the transcript of a mission session (cloud CCR or native). Returns {messages:[...]}. Use lastN to limit the number of messages.',
+    inputSchema: obj({ sid: S, lastN: { type: 'number' as const } }, ['sid']),
+  },
+  {
+    name: 'mission_session_drive',
+    description: 'Send a message to a mission session (cloud or native). The session receives the text as an injected prompt. Write tool — creates a turn.',
+    inputSchema: obj({ sid: S, text: S }, ['sid', 'text']),
+  },
+  {
+    name: 'mission_session_control',
+    description: 'Control a mission session: action=interrupt (stop current action), stop (terminate), restart (controller only — supervisor relaunches next tick). Non-controller restart returns an error.',
+    inputSchema: obj({ sid: S, action: { ...S, enum: ['interrupt', 'stop', 'restart'] } }, ['sid', 'action']),
+  },
+] as const;
+
+export const MISSION_HANDLERS: Record<
+  string,
+  (args: Record<string, unknown>) => Promise<McpToolResult>
+> = {
+  mission_create: async (a) => {
+    try {
+      return pretty(await workerPost('/mission', withActorHint(a, currentMcpContext()?.toolUseId)));
+    } catch (e) { return err((e as Error).message); }
+  },
+
+  mission_list: async () => {
+    try {
+      return pretty(await workerGet('/mission'));
+    } catch (e) {
+      return err((e as Error).message);
+    }
+  },
+
+  mission_update: async (a) => {
+    try {
+      const id = String(a.id || '');
+      if (!id) return err('id is required');
+      return pretty(await workerPost(`/mission/${encodeURIComponent(id)}`, withActorHint(a, currentMcpContext()?.toolUseId)));
+    } catch (e) { return err((e as Error).message); }
+  },
+
+  mission_control_status: async () => {
+    try {
+      return pretty(await workerGet('/mission/controller'));
+    } catch (e) {
+      return err((e as Error).message);
+    }
+  },
+
+  // --- Rail tools ---
+  mission_place: async (a) => {
+    try {
+      const id = String(a.id || '');
+      if (!id) return err('id is required');
+      return pretty(await workerGet(`/mission/${encodeURIComponent(id)}/place`));
+    } catch (e) { return err((e as Error).message); }
+  },
+
+  mission_executor_status: async (a) => {
+    try {
+      const id = String(a.id || '');
+      if (!id) return err('id is required');
+      return pretty(await workerGet(`/mission/${encodeURIComponent(id)}/executor-status`));
+    } catch (e) { return err((e as Error).message); }
+  },
+
+  // --- Operability tools ---
+  mission_sessions: async (a) => {
+    try {
+      const missionId = a.missionId ? String(a.missionId) : undefined;
+      const url = missionId ? `/mission/sessions?missionId=${encodeURIComponent(missionId)}` : '/mission/sessions';
+      return pretty(await workerGet(url));
+    } catch (e) { return err((e as Error).message); }
+  },
+
+  mission_session_read: async (a) => {
+    try {
+      const sid = String(a.sid || '');
+      if (!sid) return err('sid is required');
+      // Coerce lastN: MCP args arrive as strings over the connector
+      const rawLastN = a.lastN;
+      const lastN = typeof rawLastN === 'number' ? rawLastN : (typeof rawLastN === 'string' ? parseInt(rawLastN, 10) : undefined);
+      return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/read`, { lastN }));
+    } catch (e) { return err((e as Error).message); }
+  },
+
+  mission_session_drive: async (a) => {
+    try {
+      const sid = String(a.sid || '');
+      if (!sid) return err('sid is required');
+      const text = String(a.text || '');
+      if (!text) return err('text is required');
+      // withActorHint so drive is attributed to the caller's MCP session
+      return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/drive`, withActorHint({ text }, currentMcpContext()?.toolUseId)));
+    } catch (e) { return err((e as Error).message); }
+  },
+
+  mission_session_control: async (a) => {
+    try {
+      const sid = String(a.sid || '');
+      if (!sid) return err('sid is required');
+      const action = String(a.action || '');
+      if (!action) return err('action is required');
+      return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/control`, { action }));
+    } catch (e) { return err((e as Error).message); }
+  },
+};

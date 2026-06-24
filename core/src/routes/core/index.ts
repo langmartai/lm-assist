@@ -53,6 +53,7 @@ import { createRemoteControlRoutes } from './remote-control.routes';
 import { createDataRoutes } from './data.routes';
 import { createSchedulerRoutes } from './scheduler.routes';
 import { createWorkerRoutes } from './worker.routes';
+import { createMissionRoutes } from './mission.routes';
 import { createMonitorStallsRoutes } from './monitor-stalls.routes';
 
 /**
@@ -106,6 +107,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createDataRoutes(ctx),
     ...createSchedulerRoutes(ctx),
     ...createWorkerRoutes(ctx),
+    ...createMissionRoutes(ctx),
     ...createMonitorStallsRoutes(ctx),
   ];
 }
