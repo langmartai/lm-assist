@@ -602,8 +602,11 @@ export function registerMissionController(
           const hub = getHubConfig();
           const fsmod = require('fs') as typeof import('fs');
           const osmod = require('os') as typeof import('os');
+          // Fixed paths (no timestamp prefix) so each relaunch/failover overwrites
+          // in place — the mcp file holds the hub bearer key, so we must NOT
+          // accumulate copies in /tmp. Single controller per node → no race.
           const writeFile = (name: string, body: string): string => {
-            const p = path.join(osmod.tmpdir(), `${Date.now()}-${name}`);
+            const p = path.join(osmod.tmpdir(), name);
             fsmod.writeFileSync(p, body, { mode: 0o600 });
             return p;
           };

@@ -683,20 +683,22 @@ export function MissionsPage() {
       setChatSendBusy(true);
       setChatSendError(null);
       try {
-        const res = await apiFetch<{ success?: boolean; data?: { delivered?: boolean }; error?: { message?: string } }>(
+        // apiFetch unwraps {success,data}; a backend failure (e.g. controller not
+        // idle) is an HTTP 4xx → fetchJson throws → handled in catch below.
+        await apiFetch(
           `/mission/session/${encodeURIComponent(sid)}/drive`,
           { method: 'POST', body: { text, node: leader?.node ?? undefined } },
         );
-        // Surface a backend-reported failure (e.g. controller busy / not idle).
-        if ((res as any)?.success === false) {
-          setChatSendError((res as any)?.error?.message || 'Send failed — controller may be busy. Retry.');
-        } else {
-          setChatDraft('');
-          // Poll immediately after send
-          setTimeout(() => readControllerChat(sid, leader), 600);
-        }
+        setChatDraft('');
+        // Poll immediately after send
+        setTimeout(() => readControllerChat(sid, leader), 600);
       } catch (e) {
-        setChatSendError((e as Error)?.message || 'Send failed — controller may be busy. Retry.');
+        // Surface a clean message: pull error.message out of an "API 4xx: {json}" body if present.
+        const raw = (e as Error)?.message || '';
+        let msg = raw;
+        const m = raw.match(/\{.*\}/s);
+        if (m) { try { msg = JSON.parse(m[0])?.error?.message || raw; } catch { /* keep raw */ } }
+        setChatSendError(msg || 'Send failed — controller may be busy. Retry.');
       } finally {
         setChatSendBusy(false);
       }
@@ -736,6 +738,7 @@ export function MissionsPage() {
         chatPollerRef.current = null;
       }
       setChatMessages([]);
+      setChatSendError(null);
       return;
     }
     const sid = cs.cse ?? cs.sessionId;
