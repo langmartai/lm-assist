@@ -1,6 +1,6 @@
 {
   "name": "lm-assist",
-  "version": "0.1.77-mc.5",
+  "version": "0.1.78",
   "description": "Observability platform for Claude Code and Agent SDK — monitor, debug, and control AI coding agents",
   "author": {
     "name": "langmartai"
