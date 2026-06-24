@@ -7,6 +7,16 @@ import type { DataRecord } from '../data/types';
 import { getHubConfig } from '../hub-client/hub-config';
 
 const DATASET = 'missions';
+const CONTROLLER_ID = '__controller__';
+
+/** Controller session state — stored in the missions dataset under reserved key __controller__. */
+export interface ControllerSession {
+  node: string;
+  sessionId: string;
+  cse: string | null;
+  tmux: string;
+  startedAt: number;
+}
 
 /** The seam the store reads/writes through. Tests inject an in-memory fake. */
 export interface MissionDataPort {
@@ -23,7 +33,15 @@ function missionToRecord(m: Mission): DataRecord {
   const now = new Date().toISOString();
   return { id: m.id, version: 0, fields: { ...m } as Record<string, unknown>, createdAt: now, updatedAt: now };
 }
+function isControllerFields(fields: Record<string, unknown>): boolean {
+  // Controller records have node+sessionId+tmux+startedAt but no title — distinguish from missions.
+  return !!(fields.node && fields.sessionId && fields.tmux && !fields.title);
+}
 function recordToMission(fields: Record<string, unknown>): Mission {
+  if (isControllerFields(fields)) {
+    // Shouldn't be called on controller records from normal list/get path — but guard just in case.
+    return fields as unknown as Mission;
+  }
   return withActorBackfill(fields as unknown as Mission);
 }
 
@@ -82,10 +100,38 @@ export async function getMission(id: string, port: MissionDataPort = defaultPort
   return port.get(id);
 }
 export async function listMissions(port: MissionDataPort = defaultPort()): Promise<Mission[]> {
-  return port.list();
+  const all = await port.list();
+  return all.filter((m) => m.id !== CONTROLLER_ID);
 }
 export async function listActiveMissions(port: MissionDataPort = defaultPort()): Promise<Mission[]> {
-  return (await port.list()).filter((m) => m.status === 'active' || m.status === 'waiting');
+  const all = await port.list();
+  return all.filter((m) => m.id !== CONTROLLER_ID && (m.status === 'active' || m.status === 'waiting'));
+}
+
+// ---------------------------------------------------------------------------
+// Controller session state (reserved key __controller__ in missions dataset)
+// ---------------------------------------------------------------------------
+
+/** Get the persisted controller session (null if none or not started). */
+export async function getControllerSession(port: MissionDataPort = defaultPort()): Promise<ControllerSession | null> {
+  const raw = await port.get(CONTROLLER_ID);
+  if (!raw) return null;
+  // The raw record was stored as a mission-shaped object wrapping ControllerSession in its fields.
+  // But MissionDataPort.get() returns Mission — we stored the ControllerSession in the fields slot.
+  // We stored it via put() using a cast, so `raw` is actually the ControllerSession fields.
+  const f = raw as unknown as Record<string, unknown>;
+  if (!f.sessionId) return null;
+  return { node: f.node as string, sessionId: f.sessionId as string, cse: (f.cse as string | null) ?? null, tmux: f.tmux as string, startedAt: f.startedAt as number };
+}
+
+/** Persist a controller session (null clears it). */
+export async function putControllerSession(cs: ControllerSession | null, port: MissionDataPort = defaultPort()): Promise<void> {
+  if (cs === null) {
+    await port.del(CONTROLLER_ID);
+    return;
+  }
+  // Store ControllerSession by casting it as a Mission (the port doesn't inspect the shape beyond id).
+  await port.put({ id: CONTROLLER_ID, ...cs } as unknown as Mission);
 }
 export async function putMission(m: Mission, port: MissionDataPort = defaultPort()): Promise<Mission> {
   m.updatedAt = Date.now();
