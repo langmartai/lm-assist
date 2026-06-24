@@ -50,6 +50,22 @@ export function coarseActor(channel: ActorChannel, node: string, now: number): M
   return { kind: channel === 'controller' ? 'controller' : 'user', channel, node, at: now };
 }
 
+/** Read-path back-compat: fill any missing provenance on a (possibly legacy) mission record. */
+export function withActorBackfill(m: Mission): Mission {
+  const node = m.ownerNode ?? 'unknown';
+  if (!m.createdBy) m.createdBy = { kind: 'user', channel: 'api', node, at: m.createdAt ?? 0 };
+  if (!m.lastUpdatedBy) m.lastUpdatedBy = m.createdBy;
+  if (Array.isArray(m.adjustments)) {
+    for (const a of m.adjustments) {
+      if (!a.actor) {
+        const k = a.by === 'controller' ? 'controller' : 'user';
+        a.actor = { kind: k, channel: k === 'controller' ? 'controller' : 'user', node, at: a.at };
+      }
+    }
+  }
+  return m;
+}
+
 export interface Mission {
   id: string;
   title: string;

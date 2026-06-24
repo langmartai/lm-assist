@@ -1,5 +1,6 @@
 /** Cross-node mission store backed by the data service (dataset `missions`, syncMode:'full'). */
 import type { Mission, MissionBinding, MissionProgress, MissionResult, MissionAdjustment } from './mission-model';
+import { withActorBackfill } from './mission-model';
 import { getDataService } from '../data/data-service';
 import type { CallCtx } from '../data/data-service';
 import type { DataRecord } from '../data/types';
@@ -23,7 +24,7 @@ function missionToRecord(m: Mission): DataRecord {
   return { id: m.id, version: 0, fields: { ...m } as Record<string, unknown>, createdAt: now, updatedAt: now };
 }
 function recordToMission(fields: Record<string, unknown>): Mission {
-  return fields as unknown as Mission;
+  return withActorBackfill(fields as unknown as Mission);
 }
 
 let ensured = false;
