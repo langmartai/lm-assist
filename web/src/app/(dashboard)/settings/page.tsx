@@ -328,6 +328,10 @@ export default function SettingsPage() {
   const [upgradeComplete, setUpgradeComplete] = useState(false);
   const upgradeTerminalRef = useRef<HTMLDivElement | null>(null);
   const upgradePollRef = useRef(false);
+  const [sourceKind, setSourceKind] = useState<'latest' | 'version' | 'github' | 'tgz'>('latest');
+  const [sourceValue, setSourceValue] = useState('');
+  const [currentSource, setCurrentSource] = useState<{ kind: string; source: string } | null>(null);
+  const [isCustomBuild, setIsCustomBuild] = useState(false);
 
   // remote knowledge sync state
   const [knowledgeSettings, setKnowledgeSettings] = useState<{ remoteSyncEnabled: boolean; syncIntervalMinutes: number; lastSyncTimestamps: Record<string, string>; reviewModel: 'haiku' | 'sonnet' | 'opus'; autoReview: boolean; autoExploreGeneration: boolean; autoGenericDiscovery: boolean; genericValidationModel: 'haiku' | 'sonnet' | 'opus'; discoveryIntervalMinutes: number; discoveryBatchSize: number } | null>(null);
@@ -974,12 +978,24 @@ export default function SettingsPage() {
         if (json.success) {
           setLatestNpmVersion(json.data.latestVersion);
           setUpdateAvailable(json.data.updateAvailable);
+          setCurrentSource(json.data.currentSource ?? null);
+          setIsCustomBuild(!!json.data.isCustomBuild);
         }
       }
     } catch {} finally {
       setIsCheckingUpdate(false);
     }
   }, [tierAgentUrl]);
+
+  const buildSource = () => {
+    if (sourceKind === 'latest') return undefined;
+    const v = sourceValue.trim();
+    if (!v) return undefined;
+    if (sourceKind === 'version') return v;
+    if (sourceKind === 'github') return v;
+    if (sourceKind === 'tgz') return v;
+    return undefined;
+  };
 
   const handleUpgrade = useCallback(async () => {
     setIsUpgrading(true);
@@ -988,7 +1004,12 @@ export default function SettingsPage() {
     upgradePollRef.current = true;
 
     try {
-      const res = await workerFetch(tierAgentUrl + '/dev-mode/upgrade', { method: 'POST' });
+      const source = buildSource();
+      const res = await workerFetch(tierAgentUrl + '/dev-mode/upgrade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(source ? { source } : {}),
+      });
       const json = await res.json();
       if (!json.success) {
         setUpgradeLines([json.error?.message || 'Failed to start upgrade']);
@@ -3719,6 +3740,38 @@ export default function SettingsPage() {
                     <div style={{ fontSize: 10, color: 'var(--color-status-green)', marginTop: -4 }}>
                       Up to date
                     </div>
+                  )}
+                  {currentSource && (
+                    <div className="text-xs text-gray-400 mb-2">
+                      Installed source: <span className="text-gray-200">{currentSource.source}</span> ({currentSource.kind}{isCustomBuild ? ' build' : ''})
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 mb-2">
+                    <select
+                      value={sourceKind}
+                      onChange={(e) => setSourceKind(e.target.value as 'latest' | 'version' | 'github' | 'tgz')}
+                      className="bg-gray-800 text-gray-100 text-sm rounded px-2 py-1"
+                    >
+                      <option value="latest">Latest published (npm)</option>
+                      <option value="version">Specific version</option>
+                      <option value="github">GitHub ref / release URL</option>
+                      <option value="tgz">Local .tgz path</option>
+                    </select>
+                    {sourceKind !== 'latest' && (
+                      <input
+                        value={sourceValue}
+                        onChange={(e) => setSourceValue(e.target.value)}
+                        placeholder={
+                          sourceKind === 'version' ? '0.1.76' :
+                          sourceKind === 'github' ? 'github:langmartai/lm-assist#v0.1.76' :
+                          '/abs/path/lm-assist-0.1.76.tgz'
+                        }
+                        className="flex-1 bg-gray-800 text-gray-100 text-sm rounded px-2 py-1"
+                      />
+                    )}
+                  </div>
+                  {isCustomBuild && sourceKind === 'latest' && (
+                    <div className="text-xs text-amber-400 mb-2">Upgrading to Latest published will REPLACE your current custom build.</div>
                   )}
                   <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
                     <button
