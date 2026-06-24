@@ -54,6 +54,12 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# ─── Enforce --published and --dev mutual exclusivity ───
+if [ -n "$PUBLISHED" ] && [ "$MODE" = "dev" ]; then
+  warn "--published implies a prod (registry) install — ignoring --dev"
+  MODE="prod"
+fi
+
 write_marker() { # $1=kind $2=source $3=version
   node -e "const fs=require('fs'),os=require('os'),path=require('path');const d=process.env.LM_ASSIST_DATA_DIR||path.join(os.homedir(),'.lm-assist');fs.mkdirSync(d,{recursive:true});fs.writeFileSync(path.join(d,'install-source.json'),JSON.stringify({kind:'$1',source:'$2',version:${3:-null},installedAt:new Date().toISOString()},null,2),{mode:0o600});" 2>/dev/null || true
 }
