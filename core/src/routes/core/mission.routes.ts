@@ -1,7 +1,8 @@
 /** Mission CRUD + controller status. Bare {success,data}/{success,error} envelope (like worker.routes). */
 import type { RouteHandler, RouteContext } from '../index';
 import { randomBytes } from 'crypto';
-import { newMission, Mission, MissionStatus, Isolation, coarseActor } from '../../mission/mission-model';
+import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActor } from '../../mission/mission-model';
+import { resolveMcpActor } from '../../mission/mission-actor';
 import {
   MissionDataPort, getMission, listMissions, putMission, thisNode,
 } from '../../mission/mission-store';
@@ -24,13 +25,21 @@ const VALID_STATUS = new Set<MissionStatus>(['draft', 'active', 'waiting', 'paus
 
 // --- testable handlers (port-injected) ---
 
-export async function handleCreate(b: Record<string, unknown>, ownerNode: string, port?: MissionDataPort): Promise<Envelope> {
+async function actorFor(b: Record<string, unknown>): Promise<MissionActor> {
+  const hint = b._actor as { channel?: string; toolUseId?: string | null } | undefined;
+  delete (b as any)._actor;
+  if (hint && hint.channel === 'mcp') return resolveMcpActor(hint.toolUseId, thisNode(), Date.now());
+  return coarseActor('user', thisNode(), Date.now());
+}
+
+export async function handleCreate(b: Record<string, unknown>, ownerNode: string, port?: MissionDataPort, actor?: MissionActor): Promise<Envelope> {
+  const who = actor ?? await actorFor(b);
   const title = str(b.title);
   const objective = str(b.objective);
   if (!title || !objective) return fail('INVALID_INPUT', 'title and objective are required');
   const env = (b.env && typeof b.env === 'object') ? b.env as Record<string, unknown> : {};
   const m = newMission({
-    title, objective, ownerNode, createdBy: coarseActor('api', ownerNode, Date.now()),
+    title, objective, ownerNode, createdBy: who,
     projects: arr(b.projects), dependsOn: arr(b.dependsOn),
     plan: str(b.plan), nextSteps: arr(b.nextSteps),
     env: {
@@ -53,7 +62,8 @@ export async function handleGet(id: string, port?: MissionDataPort): Promise<Env
   return m ? ok(m) : fail('NOT_FOUND', `no mission ${id}`);
 }
 
-export async function handlePatch(id: string, b: Record<string, unknown>, port?: MissionDataPort): Promise<Envelope> {
+export async function handlePatch(id: string, b: Record<string, unknown>, port?: MissionDataPort, actor?: MissionActor): Promise<Envelope> {
+  const who = actor ?? await actorFor(b);
   const m = await getMission(id, port);
   if (!m) return fail('NOT_FOUND', `no mission ${id}`);
   if (str(b.objective)) m.objective = str(b.objective)!;
@@ -73,7 +83,8 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
     if (arr(e.resources)) m.env.resources = arr(e.resources)!;
     if (e.exclusive !== undefined) m.env.exclusive = e.exclusive === true || e.exclusive === 'true';
   }
-  m.adjustments.push({ at: Date.now(), trigger: 'user-edit', change: 'mission updated via API', by: 'user', actor: coarseActor('user', 'unknown', Date.now()) });
+  m.lastUpdatedBy = who;
+  m.adjustments.push({ at: Date.now(), trigger: 'user-edit', change: 'mission updated via API', by: 'user', actor: who });
   await putMission(m, port);
   return ok(m);
 }
