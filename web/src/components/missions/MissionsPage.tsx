@@ -160,6 +160,34 @@ interface SessionMessage {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+/** Resolve a session message to plain text (read API returns {role,text}; other sources use content). */
+function resolveMsgText(msg: SessionMessage): string {
+  if (typeof msg.text === 'string') return msg.text;
+  if (typeof msg.content === 'string') return msg.content;
+  if (Array.isArray(msg.content)) {
+    return msg.content
+      .map((c) => (typeof c === 'object' && c?.type === 'text' ? c.text : ''))
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
+}
+
+/**
+ * Heartbeat = the controller's autonomous-pass noise we hide from the chat so it
+ * stays a usable interface: the standing pass directive, the ⟦HEARTBEAT⟧ idle
+ * replies, and empty / tool-only turns. Meaningful exchanges (user messages, real
+ * actions, answers) are kept.
+ */
+function isHeartbeatMsg(msg: SessionMessage): boolean {
+  const text = resolveMsgText(msg).trim();
+  if (!text) return true;
+  if (/^\[\d+ tool call\(s\)\]$/.test(text)) return true;
+  if (text.startsWith('⟦HEARTBEAT⟧')) return true;
+  if (text.startsWith('Run a controller pass now:')) return true;
+  return false;
+}
+
 const STATUS_COLORS: Record<MissionStatus, string> = {
   draft: 'var(--color-text-tertiary)',
   active: 'var(--color-status-green)',
@@ -287,6 +315,7 @@ export function MissionsPage() {
   const [chatMessages, setChatMessages] = useState<SessionMessage[]>([]);
   const [chatDraft, setChatDraft] = useState('');
   const [chatSendBusy, setChatSendBusy] = useState(false);
+  const [chatSendError, setChatSendError] = useState<string | null>(null);
   const [chatControlBusy, setChatControlBusy] = useState<Record<string, boolean>>({});
   const chatPollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
@@ -652,7 +681,10 @@ export function MissionsPage() {
       const text = chatDraft.trim();
       if (!text) return;
       setChatSendBusy(true);
+      setChatSendError(null);
       try {
+        // apiFetch unwraps {success,data}; a backend failure (e.g. controller not
+        // idle) is an HTTP 4xx → fetchJson throws → handled in catch below.
         await apiFetch(
           `/mission/session/${encodeURIComponent(sid)}/drive`,
           { method: 'POST', body: { text, node: leader?.node ?? undefined } },
@@ -660,8 +692,13 @@ export function MissionsPage() {
         setChatDraft('');
         // Poll immediately after send
         setTimeout(() => readControllerChat(sid, leader), 600);
-      } catch {
-        // silently ignore
+      } catch (e) {
+        // Surface a clean message: pull error.message out of an "API 4xx: {json}" body if present.
+        const raw = (e as Error)?.message || '';
+        let msg = raw;
+        const m = raw.match(/\{.*\}/s);
+        if (m) { try { msg = JSON.parse(m[0])?.error?.message || raw; } catch { /* keep raw */ } }
+        setChatSendError(msg || 'Send failed — controller may be busy. Retry.');
       } finally {
         setChatSendBusy(false);
       }
@@ -701,6 +738,7 @@ export function MissionsPage() {
         chatPollerRef.current = null;
       }
       setChatMessages([]);
+      setChatSendError(null);
       return;
     }
     const sid = cs.cse ?? cs.sessionId;
@@ -1354,6 +1392,10 @@ export function MissionsPage() {
   // Derive the session id used to address the controller (cse preferred for cloud sessions).
   const controllerSid = cs ? (cs.cse ?? cs.sessionId) : null;
 
+  // Show only meaningful chat — hide the controller's autonomous heartbeat/pass noise.
+  const visibleChat = chatMessages.filter((m) => !isHeartbeatMsg(m));
+  const heartbeatCount = chatMessages.length - visibleChat.length;
+
   // Failover state: controllerSession is stale when it belongs to a different node than the
   // current elected leader. This happens during the ~1-min window after election flips but
   // before the new leader's supervisor has launched its controller session.
@@ -1639,24 +1681,16 @@ export function MissionsPage() {
                 )}
               </div>
             )}
-            {cs && chatMessages.length === 0 && (
+            {cs && visibleChat.length === 0 && (
               <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', textAlign: 'center', padding: '16px 0' }}>
-                No messages yet — the controller is running
+                {heartbeatCount > 0
+                  ? 'Controller is running idle background passes — send a message to give it work.'
+                  : 'No messages yet — the controller is running'}
               </div>
             )}
-            {chatMessages.map((msg, i) => {
+            {visibleChat.map((msg, i) => {
               const msgRole = (msg.role as string) ?? (msg.type as string) ?? 'msg';
-              let text = '';
-              if (typeof msg.text === 'string') {
-                text = msg.text;
-              } else if (typeof msg.content === 'string') {
-                text = msg.content;
-              } else if (Array.isArray(msg.content)) {
-                text = msg.content
-                  .map((c) => (typeof c === 'object' && c?.type === 'text' ? c.text : ''))
-                  .filter(Boolean)
-                  .join('\n');
-              }
+              const text = resolveMsgText(msg);
               const isUser = msgRole === 'user';
               const isAssistant = msgRole === 'assistant';
               return (
@@ -1695,6 +1729,11 @@ export function MissionsPage() {
                 </div>
               );
             })}
+            {cs && heartbeatCount > 0 && (
+              <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center', padding: '4px 0', fontStyle: 'italic' }}>
+                · controller idle ({heartbeatCount} background pass{heartbeatCount === 1 ? '' : 'es'} hidden) ·
+              </div>
+            )}
           </div>
 
           {/* Chat composer — hidden when failing over (stale/dead controllerSession) */}
@@ -1715,11 +1754,12 @@ export function MissionsPage() {
                   className="input"
                   value={chatDraft}
                   rows={3}
-                  placeholder="Type a message to the controller… (Ctrl/Cmd+Enter to send)"
+                  placeholder="Type a message to the controller… (Enter to send, Shift+Enter for newline)"
                   style={{ flex: 1, resize: 'vertical', fontSize: 12 }}
-                  onChange={(e) => setChatDraft(e.target.value)}
+                  onChange={(e) => { setChatDraft(e.target.value); if (chatSendError) setChatSendError(null); }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    // Plain Enter sends; Shift+Enter inserts a newline. (Ctrl/Cmd+Enter also sends.)
+                    if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
                       sendControllerChat(controllerSid, leader);
                     }
@@ -1729,16 +1769,22 @@ export function MissionsPage() {
                   className="btn btn-primary btn-sm"
                   onClick={() => sendControllerChat(controllerSid, leader)}
                   disabled={chatSendBusy || !chatDraft.trim()}
-                  title="Send (Ctrl/Cmd+Enter)"
-                  style={{ height: 'auto', alignSelf: 'stretch' }}
+                  title="Send (Enter)"
+                  style={{ height: 'auto', alignSelf: 'stretch', display: 'flex', alignItems: 'center', gap: 4 }}
                 >
                   {chatSendBusy ? (
                     <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />
                   ) : (
                     <Send size={13} />
                   )}
+                  Send
                 </button>
               </div>
+              {chatSendError && (
+                <div style={{ fontSize: 11, color: 'var(--color-status-red, #e5484d)', paddingTop: 2 }}>
+                  {chatSendError}
+                </div>
+              )}
               {/* Control buttons row */}
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 <button

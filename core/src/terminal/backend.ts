@@ -102,6 +102,10 @@ export interface CcLaunchOpts {
   autoTrust?: boolean;
   skipPermissions?: boolean;
   remoteControl?: boolean | string;
+  /** Optional: path to a file passed as --append-system-prompt-file (controller bootstrap). */
+  appendSystemPromptFile?: string;
+  /** Optional: path to an MCP config JSON passed as --mcp-config (controller bootstrap). */
+  mcpConfigPath?: string;
 }
 
 export interface CcAutoHandleOut {

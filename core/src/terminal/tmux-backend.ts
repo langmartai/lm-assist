@@ -110,6 +110,8 @@ export const tmuxCcController: CcController = {
       readyPattern: 'ctx:',
       readyTimeoutMs: opts.waitMs ?? 30000,
       autoAcceptTrust: opts.autoTrust !== false,
+      appendSystemPromptFile: opts.appendSystemPromptFile,
+      mcpConfigPath: opts.mcpConfigPath,
     } as any);
     // Correlate the new tmux session to its registered Claude sessionId.
     const live = listLiveSessions().find((s) => s.tmuxSession === name);

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { decideSupervisor, runSupervisorTick, discoverNewCse } from '../mission/mission-controller';
+import { decideSupervisor, runSupervisorTick, discoverNewCse, isDriveDue } from '../mission/mission-controller';
 import type { SupervisorDeps } from '../mission/mission-controller';
 import type { ControllerSession } from '../mission/mission-store';
 
@@ -11,6 +11,23 @@ import type { ControllerSession } from '../mission/mission-store';
 test('decideSupervisor: not monitor -> teardown (regardless of live/driveDue)', () => {
   assert.equal(decideSupervisor({ isMonitor: false, live: false, driveDue: false }).action, 'teardown');
   assert.equal(decideSupervisor({ isMonitor: false, live: true, driveDue: true }).action, 'teardown');
+});
+
+// ---------------------------------------------------------------------------
+// pure isDriveDue — active vs idle cadence
+// ---------------------------------------------------------------------------
+const T0 = 1_000_000_000_000;
+test('isDriveDue: idle (0 missions), 6min < idle=15 -> not due', () => {
+  assert.equal(isDriveDue({ lastDriveAt: T0 - 6 * 60_000, now: T0, activeCount: 0, activeMin: 5, idleMin: 15 }), false);
+});
+test('isDriveDue: active (1 mission), 6min >= active=5 -> due', () => {
+  assert.equal(isDriveDue({ lastDriveAt: T0 - 6 * 60_000, now: T0, activeCount: 1, activeMin: 5, idleMin: 15 }), true);
+});
+test('isDriveDue: idle, 16min >= idle=15 -> due', () => {
+  assert.equal(isDriveDue({ lastDriveAt: T0 - 16 * 60_000, now: T0, activeCount: 0, activeMin: 5, idleMin: 15 }), true);
+});
+test('isDriveDue: never driven -> due regardless of count', () => {
+  assert.equal(isDriveDue({ lastDriveAt: null, now: T0, activeCount: 0, activeMin: 5, idleMin: 15 }), true);
 });
 
 test('decideSupervisor: monitor + not live -> launch (regardless of driveDue)', () => {

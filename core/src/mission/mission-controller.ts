@@ -7,6 +7,8 @@ import { pickNewSession, cseToSessionSid, isNativeBinding } from './mission-nati
 import { listMissions, putMission, thisNode, getControllerSession, putControllerSession, ControllerSession } from './mission-store';
 import { runAdjust } from './mission-adjust';
 import { getProjectSettings } from '../project-settings';
+import { deriveHubMcpUrl, upsertHubMcpServer } from '../utils/claude-mcp-config';
+import { getHubConfig } from '../hub-client/hub-config';
 import { amIMonitor } from '../monitor/stall-election';
 import { cloudStart, cloudDrive, cloudRead, cloudStatus, cloudListAccount } from '../terminal/ccr-cloud';
 import { getCcController } from '../terminal/backend';
@@ -324,6 +326,60 @@ export const CONTROLLER_PASS_DIRECTIVE =
   'then await the next pass.';
 
 /**
+ * Guarded system prompt for the Mission Controller agent. Passed at launch via
+ * --append-system-prompt-file so the controller's role, scope, and heartbeat
+ * convention are reliable on any node (not dependent on connector inheritance).
+ *
+ * The `⟦HEARTBEAT⟧` convention keeps the chat clean: idle passes collapse to a
+ * single marker line the web filters out, while real actions/answers narrate
+ * normally and stay visible.
+ */
+export const CONTROLLER_SYSTEM_PROMPT = [
+  'You are the **Mission Controller** — a fleet-elected agent. Your SOLE job is to drive',
+  '*missions* to completion through the `mission_*` tools (mission_list, mission_place,',
+  'mission_executor_status, …) and the executor sessions you spawn. You NEVER edit code,',
+  'run builds, or touch unrelated systems yourself — you only orchestrate missions and',
+  'their executors through tools.',
+  '',
+  'On each controller pass: call `mission_list`; for every active mission, assess its',
+  'executor (`mission_executor_status`), place/spawn/drive/adapt as needed (`mission_place`',
+  'and session drive), and mark it done when complete.',
+  '',
+  'HEARTBEAT: when a pass finds no actionable work (no active missions, or nothing changed),',
+  'reply with EXACTLY one line beginning `⟦HEARTBEAT⟧` and nothing else',
+  '(e.g. `⟦HEARTBEAT⟧ idle — 0 active missions`). When you take a real action or answer the',
+  'user, narrate normally and DO NOT use that marker.',
+  '',
+  'The user may message you directly in this session — treat their messages as authoritative',
+  'instructions (create/pause/adjust missions, answer questions) and reply substantively.',
+  'The mission store is cross-node shared; you run on the elected leader node.',
+].join('\n');
+
+/**
+ * Pure builder for the controller launch extras (system-prompt file + optional
+ * hub-MCP keystone config file). `writeFile(name, body)` persists a file and
+ * returns its path — injected so this stays unit-testable (no fs).
+ *
+ * Always writes the system-prompt file. Writes the MCP config file only when an
+ * apiKey is present AND a hub MCP URL can be derived from hubUrl; otherwise the
+ * controller still gets its tools via connector inheritance (non-fatal).
+ */
+export function buildControllerLaunchExtras(args: {
+  hubUrl: string | null;
+  apiKey: string | null;
+  writeFile: (name: string, body: string) => string;
+}): { appendSystemPromptFile: string; mcpConfigPath?: string } {
+  const appendSystemPromptFile = args.writeFile('mission-controller-sp.txt', CONTROLLER_SYSTEM_PROMPT);
+  const out: { appendSystemPromptFile: string; mcpConfigPath?: string } = { appendSystemPromptFile };
+  const mcpUrl = deriveHubMcpUrl(args.hubUrl);
+  if (args.apiKey && mcpUrl) {
+    const cfg = upsertHubMcpServer({}, { url: mcpUrl, key: args.apiKey });
+    out.mcpConfigPath = args.writeFile('mission-controller-mcp.json', JSON.stringify(cfg, null, 2));
+  }
+  return out;
+}
+
+/**
  * Pure decision table — what should the supervisor do on this tick?
  *
  * `driveDue` separates the cheap lifecycle check (run every ~1 min for prompt
@@ -342,6 +398,23 @@ export function decideSupervisor(input: { isMonitor: boolean; live: boolean; dri
   return { action: 'idle' };
 }
 
+/**
+ * Pure drive-cadence gate. When there are active missions the controller drives
+ * at the (fast) active cadence; when idle (0 active missions) it drives at the
+ * slower idle cadence so the heartbeat is infrequent. Never-driven → always due.
+ */
+export function isDriveDue(input: {
+  lastDriveAt: number | null;
+  now: number;
+  activeCount: number;
+  activeMin: number;
+  idleMin: number;
+}): boolean {
+  if (!input.lastDriveAt) return true;
+  const intervalMin = input.activeCount > 0 ? input.activeMin : input.idleMin;
+  return input.now - input.lastDriveAt >= intervalMin * 60_000;
+}
+
 /** Deps interface for runSupervisorTick — all IO points are injectable for tests. */
 export interface SupervisorDeps {
   amMonitor: () => Promise<{ isMonitor: boolean; monitorNodeId: string | null }>;
@@ -353,6 +426,10 @@ export interface SupervisorDeps {
   teardown: (cs: ControllerSession) => Promise<void>;
   /** The adapt cadence in minutes (from project settings). Used to compute driveDue. */
   driveIntervalMin: number;
+  /** Idle drive cadence (min) when there are no active missions. Default = driveIntervalMin (no change). */
+  idleDriveIntervalMin?: number;
+  /** Count of active missions — picks active vs idle cadence. Default = () => 1 (always active). */
+  activeMissionCount?: () => Promise<number>;
   /** Current time in ms. Injected for deterministic tests. */
   now: number;
 }
@@ -373,8 +450,21 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   const cs = await deps.getControllerSession();
   const live = cs ? deps.isLive(cs) : false;
 
-  // Drive is due when: no lastDriveAt yet, OR driveIntervalMin has elapsed.
-  const driveDue = !cs?.lastDriveAt || (deps.now - cs.lastDriveAt >= deps.driveIntervalMin * 60_000);
+  // Drive cadence: fast when there are active missions, slow (idle) otherwise.
+  // Only evaluated when monitor+live (the only case decideSupervisor uses it),
+  // so the active-mission count is read lazily. Defaults reproduce the prior
+  // single-cadence behavior (count=1, idle=active) for existing callers/tests.
+  let driveDue = false;
+  if (isMonitor && live && cs) {
+    const activeCount = deps.activeMissionCount ? await deps.activeMissionCount() : 1;
+    driveDue = isDriveDue({
+      lastDriveAt: cs.lastDriveAt ?? null,
+      now: deps.now,
+      activeCount,
+      activeMin: deps.driveIntervalMin,
+      idleMin: deps.idleDriveIntervalMin ?? deps.driveIntervalMin,
+    });
+  }
 
   const { action } = decideSupervisor({ isMonitor, live, driveDue });
 
@@ -495,13 +585,48 @@ export function registerMissionController(
         return !!v.inTmux;
       },
       driveIntervalMin: getProjectSettings().missionControllerIntervalMin,
+      idleDriveIntervalMin: getProjectSettings().missionControllerIdleIntervalMin,
+      activeMissionCount: async () => {
+        const { listActiveMissions } = require('./mission-store') as typeof import('./mission-store');
+        return (await listActiveMissions()).length;
+      },
       now: Date.now(),
       launch: async () => {
         const { tmuxCcController } = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
         const cwd = controllerCwd();
+        // Build the controller bootstrap extras (guarded system prompt + hub-MCP
+        // keystone). Non-fatal: on any failure, launch without extras (the
+        // controller still works via connector inheritance).
+        let extras: { appendSystemPromptFile?: string; mcpConfigPath?: string } = {};
+        try {
+          const hub = getHubConfig();
+          const fsmod = require('fs') as typeof import('fs');
+          const { getDataDir } = require('../utils/path-utils') as typeof import('../utils/path-utils');
+          // The mcp file holds the hub bearer key — write it to the user-private
+          // lm-assist data dir (where hub.json's key already lives), NOT a
+          // world-writable /tmp. Fixed path (overwrite in place, no accumulation)
+          // + unlink-then-O_EXCL create (refuses a planted symlink/file, so a
+          // predictable path can't be exploited for a symlink-swap attack).
+          const dir = path.join(getDataDir(), 'controller');
+          fsmod.mkdirSync(dir, { recursive: true, mode: 0o700 });
+          const writeFile = (name: string, body: string): string => {
+            const p = path.join(dir, name);
+            try { fsmod.unlinkSync(p); } catch { /* not present — fine */ }
+            const fd = fsmod.openSync(p, fsmod.constants.O_WRONLY | fsmod.constants.O_CREAT | fsmod.constants.O_EXCL, 0o600);
+            try { fsmod.writeFileSync(fd, body); } finally { fsmod.closeSync(fd); }
+            return p;
+          };
+          extras = buildControllerLaunchExtras({ hubUrl: hub.hubUrl || null, apiKey: hub.apiKey || null, writeFile });
+        } catch (e) {
+          console.debug(`[mission-supervisor] controller bootstrap extras failed: ${(e as Error).message}`);
+        }
         // Capture cloud baseline BEFORE launching so we can detect the new cse afterward.
         const baselineArr = await cloudListAccount().then((ss) => ss.map((s2) => s2.sid)).catch(() => [] as string[]);
-        const launched = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true });
+        const launched = await tmuxCcController.launch({
+          cwd, remoteControl: true, skipPermissions: true, autoTrust: true,
+          appendSystemPromptFile: extras.appendSystemPromptFile,
+          mcpConfigPath: extras.mcpConfigPath,
+        });
         const sessionId = (launched.sessionId as string | null) ?? '';
         const tmux = (launched.tmuxSession as string) ?? '';
         // Poll cloudListAccount up to 20 times (~40s) for the new --remote-control cse to register.

@@ -182,6 +182,10 @@ export interface CCLaunchInput {
    * Default true (mirrors --dangerously-skip-permissions semantics).
    */
   autoAcceptTrust: boolean;
+  /** Optional: path to a file passed as --append-system-prompt-file (controller bootstrap). */
+  appendSystemPromptFile?: string;
+  /** Optional: path to an MCP config JSON passed as --mcp-config (controller bootstrap). */
+  mcpConfigPath?: string;
 }
 
 export interface CCPromptInput {

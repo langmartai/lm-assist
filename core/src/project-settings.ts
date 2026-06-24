@@ -39,6 +39,8 @@ export interface ProjectSettings {
   missionControllerEnabled: boolean;
   /** Base interval (minutes) between Mission Controller ticks. Default 5. */
   missionControllerIntervalMin: number;
+  /** Idle drive cadence (min) when there are no active missions. Default 15. */
+  missionControllerIdleIntervalMin: number;
   /** Max `continue` nudges to a parked mission before marking it blocked. Default 6. */
   missionControllerMaxNudges: number;
   /** Model for the adjust reasoning step. Default 'claude-opus-4-8[1m]'. */
@@ -63,6 +65,7 @@ export const DEFAULTS: ProjectSettings = {
   autoResumeRemoteScan: true,
   missionControllerEnabled: true,
   missionControllerIntervalMin: 5,
+  missionControllerIdleIntervalMin: 15,
   missionControllerMaxNudges: 6,
   missionControllerModel: 'claude-opus-4-8[1m]',
 };
@@ -100,6 +103,7 @@ export function getProjectSettings(): ProjectSettings {
       autoResumeRemoteScan: typeof data.autoResumeRemoteScan === 'boolean' ? data.autoResumeRemoteScan : DEFAULTS.autoResumeRemoteScan,
       missionControllerEnabled: typeof data.missionControllerEnabled === 'boolean' ? data.missionControllerEnabled : DEFAULTS.missionControllerEnabled,
       missionControllerIntervalMin: typeof data.missionControllerIntervalMin === 'number' ? data.missionControllerIntervalMin : DEFAULTS.missionControllerIntervalMin,
+      missionControllerIdleIntervalMin: typeof data.missionControllerIdleIntervalMin === 'number' ? data.missionControllerIdleIntervalMin : DEFAULTS.missionControllerIdleIntervalMin,
       missionControllerMaxNudges: typeof data.missionControllerMaxNudges === 'number' ? data.missionControllerMaxNudges : DEFAULTS.missionControllerMaxNudges,
       missionControllerModel: typeof data.missionControllerModel === 'string' ? data.missionControllerModel : DEFAULTS.missionControllerModel,
     };
@@ -132,6 +136,7 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     autoResumeRemoteScan: typeof partial.autoResumeRemoteScan === 'boolean' ? partial.autoResumeRemoteScan : current.autoResumeRemoteScan,
     missionControllerEnabled: typeof partial.missionControllerEnabled === 'boolean' ? partial.missionControllerEnabled : current.missionControllerEnabled,
     missionControllerIntervalMin: typeof partial.missionControllerIntervalMin === 'number' ? partial.missionControllerIntervalMin : current.missionControllerIntervalMin,
+    missionControllerIdleIntervalMin: typeof partial.missionControllerIdleIntervalMin === 'number' ? partial.missionControllerIdleIntervalMin : current.missionControllerIdleIntervalMin,
     missionControllerMaxNudges: typeof partial.missionControllerMaxNudges === 'number' ? partial.missionControllerMaxNudges : current.missionControllerMaxNudges,
     missionControllerModel: typeof partial.missionControllerModel === 'string' ? partial.missionControllerModel : current.missionControllerModel,
   };
