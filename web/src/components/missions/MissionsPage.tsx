@@ -1414,6 +1414,24 @@ export function MissionsPage() {
     : (controller?.election.monitorNodeId ? shortId(controller.election.monitorNodeId) : null);
   const isControllerLive = !!cs;
 
+  // Derive the session id used to address the controller (cse preferred for cloud sessions).
+  const controllerSid = cs ? (cs.cse ?? cs.sessionId) : null;
+
+  // Failover state: controllerSession is stale when it belongs to a different node than the
+  // current elected leader. This happens during the ~1-min window after election flips but
+  // before the new leader's supervisor has launched its controller session.
+  const isFailingOver = (() => {
+    if (!controller) return false;
+    const electedLeaderNode = controller.leader?.node ?? controller.election.monitorNodeId ?? null;
+    if (!electedLeaderNode) return false;
+    // If controllerSession exists but points at a dead/old node → stale
+    if (cs && cs.node !== electedLeaderNode) return true;
+    // If no controllerSession yet AND there is an elected leader → in-progress failover
+    if (!cs && electedLeaderNode) return true;
+    return false;
+  })();
+  const failoverLeaderLabel = leader ? (leader.host || leader.node || 'unknown') : leaderLabel;
+
   return (
     <div
       style={{
@@ -1616,7 +1634,43 @@ export function MissionsPage() {
               gap: 6,
             }}
           >
-            {!cs && !loading && (
+            {/* Failover banner: shown when controllerSession is stale (node != elected leader) */}
+            {isFailingOver && !loading && (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  height: '100%',
+                  gap: 8,
+                  color: 'var(--color-text-tertiary)',
+                }}
+              >
+                <RefreshCw size={28} style={{ color: 'var(--color-status-orange)', animation: 'spin 2s linear infinite' }} />
+                <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-status-orange)' }}>
+                  Failing over — electing controller
+                </div>
+                <div style={{ fontSize: 12, textAlign: 'center' }}>
+                  New leader: <strong>{failoverLeaderLabel}</strong>
+                  <br />
+                  Supervisor will launch the controller on its next tick (~1 min)
+                </div>
+                {effectiveController && (
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={runTick}
+                    disabled={tickBusy}
+                    style={{ marginTop: 4 }}
+                    title="Force a supervisor tick on the new leader now"
+                  >
+                    {tickBusy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={13} />}
+                    {' '}Force tick now
+                  </button>
+                )}
+              </div>
+            )}
+            {!cs && !isFailingOver && !loading && (
               <div
                 style={{
                   display: 'flex',
@@ -1704,8 +1758,8 @@ export function MissionsPage() {
             })}
           </div>
 
-          {/* Chat composer */}
-          {cs && controllerSid && (
+          {/* Chat composer — hidden when failing over (stale/dead controllerSession) */}
+          {cs && controllerSid && !isFailingOver && (
             <div
               style={{
                 padding: '10px 16px',
