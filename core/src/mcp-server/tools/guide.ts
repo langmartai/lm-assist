@@ -257,10 +257,14 @@ CROSS-NODE: pass \`node=\` the host whose gh auth/repo you want (auth + checkout
 CROSS-NODE: fs_* take \`node=\` to browse/read a specific host; transfer_send_file moves a file from one node to another (workflow #8).
 GOTCHA: fs_read REFUSES credential/secret paths (.ssh/.aws/.env/tokens/keys, the lm-assist key) by design.`,
 
-  missions: `# Guide: missions — durable goals pushed to done by the fleet
-A **Mission** is a durable record of WHAT to achieve (cross-project). The fleet-elected **super Mission Controller** binds ONE executor (cloud/native, orchestrator/worker), reads its feedback every few minutes, ADAPTS the mission (revises the objective/plan from results — not a binary done/failed), and pushes it toward done. It places executors to avoid conflicts: isolated (cloud > git worktree+branch) when possible, else serialized on shared resources; dependencies are ordered (\`dependsOn\`). It NEVER auto-approves a human gate or a material pivot (those pause).
+  missions: `# Guide: missions — durable goals the fleet drives to done
+A **Mission** is a durable, cross-project record of WHAT to achieve. The fleet-elected **super Mission Controller** (ONE node — lowest online gateway-id) binds ONE primary executor and, every few minutes, reads its feedback, ADAPTS the mission (revises objective/plan from the results — not a binary done/failed), and pushes it toward done. It places executors to avoid conflict — isolate (cloud > git worktree+branch) when possible, else serialize on shared resources; \`dependsOn\` orders missions. Fully autonomous BUT it never auto-approves a human gate or a material pivot (those PAUSE for you).
 
-Tools: \`mission_create\` (title+objective, optional projects/dependsOn/env), \`mission_list\`, \`mission_update\` (refine/pause/unblock), \`mission_control_status\` (who's elected + last tick).
+EXECUTORS: a mission's worker is either a **cloud** CCR session, or a **native** local session the controller launches in a git worktree with \`claude --remote-control\` (the session self-registers a cloud handle so it's remotely controllable — the controller reads from its local transcript and drives it via the cloud relay). An executor may be an **orchestrator** that spawns **sub-workers** under the same mission. Controller-spawned sessions are titled \`Mission: <title> · <id>\`.
+
+CONNECT + DRIVE: you can watch and drive a mission's executor (and an orchestrator's sub-workers) DIRECTLY, alongside the autonomous controller (it keeps adapting in the background). The Missions web page lists each mission's sessions (\`GET /mission/:id/sessions\` → the primary executor + sub-workers), each with an Open button → a live transcript + a prompt box. Connect/drive a cloud session via the \`ccr_cloud_*\` tools — see guide("ccr"); a native session via the terminal/session tools — see guide("terminals").
+
+Tools: \`mission_create\` (title+objective; optional projects/dependsOn/env{isolation:cloud|worktree|shared}), \`mission_list\`, \`mission_update\` (refine/pause/resume/mark done/edit objective), \`mission_control_status\` (which node is elected + its last tick).
 Requires the data service enabled (cross-node mission store). Settings: missionControllerEnabled, missionControllerIntervalMin, missionControllerMaxNudges, missionControllerModel.`,
 };
 
@@ -304,7 +308,7 @@ const BLURB: Record<string, string> = {
   account: 'Claude Code OAuth + claude.ai account / usage / active sessions (per node)',
   github: 'query/mutate GitHub via the user gh auth',
   files: 'list/stat/read files + transfer files between hosts',
-  missions: 'durable cross-project goals — fleet-elected Mission Controller binds one executor, adapts, pushes to done; never auto-approves gates/pivots',
+  missions: 'durable cross-project goals — the fleet-elected Mission Controller launches/binds an executor (cloud, or native via claude --remote-control), adapts + pushes to done, places to avoid conflict; watch+drive executors & sub-workers directly; never auto-approves gates/pivots',
 };
 
 function buildIndex(): string {
