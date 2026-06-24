@@ -3,12 +3,16 @@ import {
   Mission, MissionBinding, ExecutorState, ExecutorOutput, AdjustResult, PlacementDecision,
   decideMission, place, planMissionNudge, missionSessionTitle,
 } from './mission-model';
-import { pickNewSession, cseToSessionSid } from './mission-native';
+import { pickNewSession, cseToSessionSid, isNativeBinding } from './mission-native';
 import { listMissions, putMission } from './mission-store';
 import { runAdjust } from './mission-adjust';
 import { getProjectSettings } from '../project-settings';
 import { amIMonitor } from '../monitor/stall-election';
-import { cloudStart, cloudDrive, cloudRead, cloudStatus } from '../terminal/ccr-cloud';
+import { cloudStart, cloudDrive, cloudRead, cloudStatus, cloudListAccount } from '../terminal/ccr-cloud';
+import { gitCommand } from '../checkpoint/git-utils';
+import * as path from 'path';
+import { sessionVerdict } from '../terminal/cc-sessions';
+import { AgentSessionStore } from '../agent-session-store';
 
 export interface MissionTickDeps {
   now: number;
@@ -202,17 +206,73 @@ async function startCloudExecutor(m: Mission, decision: PlacementDecision): Prom
       boundAt: Date.now(),
     };
   }
-  // Native (worktree/shared) auto-start is phase-2 (spec §8).
-  // Surface clearly; the per-mission try/catch keeps the mission as-is.
-  throw new Error(
-    `native executor auto-start not implemented for env=${decision.go ? (decision as any).env : 'n/a'} (assign manually for now)`,
-  );
+  // Native (worktree / shared) executor — launch via tmux with --remote-control.
+  const decisionAny = decision as any;
+  const repoRaw: string = (decision.go ? decisionAny.repo : null) || process.cwd();
+  const repoAbs = path.isAbsolute(repoRaw) ? repoRaw : path.resolve(process.cwd(), repoRaw);
+  const baselineArr = await cloudListAccount().then((ss) => ss.map((s) => s.sid)).catch(() => [] as string[]);
+  const { tmuxCcController } = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
+  const realNativeDeps: NativeStartDeps = {
+    ensureWorktree: async (repo: string, dir: string, branch: string): Promise<string> => {
+      const absRepo = path.isAbsolute(repo) ? repo : path.resolve(process.cwd(), repo);
+      const absDir = path.isAbsolute(dir) ? dir : path.resolve(absRepo, dir);
+      try {
+        gitCommand(['worktree', 'add', absDir, '-b', branch], absRepo);
+      } catch (err) {
+        const msg = (err as Error).message || '';
+        // If the worktree/branch already exists, that's fine — just reuse it.
+        if (!/already exists|already checked out|is already/i.test(msg)) throw err;
+        console.debug(`[mission-controller] ensureWorktree: reusing existing worktree/branch (${msg.slice(0, 80)})`);
+      }
+      return absDir;
+    },
+    launch: async (cwd: string): Promise<{ sessionId: string | null; tmuxSession: string }> => {
+      const res = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true });
+      return {
+        sessionId: (res.sessionId as string | null) ?? null,
+        tmuxSession: res.tmuxSession as string,
+      };
+    },
+    listAccount: cloudListAccount,
+    baseline: baselineArr,
+    drive: async (sid: string, text: string): Promise<void> => {
+      await cloudDrive({ sid, text }).catch((e: Error) => {
+        console.debug(`[mission-controller] drive to ${sid} failed: ${e.message}`);
+      });
+    },
+  };
+  return startNativeExecutor(m, { ...(decision.go ? decision : {}), repo: repoAbs }, realNativeDeps);
 }
 
 async function driveExecutor(m: Mission, directive: string): Promise<void> {
   const sid = m.binding?.sessionId;
   if (!sid) return;
   await cloudDrive({ sid, text: directive });
+}
+
+// ---------------------------------------------------------------------------
+// Native read executor — deps-injected for testability
+// ---------------------------------------------------------------------------
+
+export interface NativeReadDeps {
+  /** Return an object with `driveable` boolean for a given sessionId. */
+  verdict: (sessionId: string) => { driveable: boolean };
+  /** Return the full local conversation as `{ messages: Array<{ text: string }> }`. */
+  readConversation: (sessionId: string) => Promise<{ messages: Array<{ text: string }> }>;
+}
+
+/**
+ * Read the state of a locally-running (native) executor.
+ * Uses `computeNewOutput` in the same way as `readCloudExecutor`.
+ */
+export async function readNativeExecutor(m: Mission, deps: NativeReadDeps): Promise<ExecutorState> {
+  const uuid = m.binding?.sessionId;
+  if (!uuid) return { alive: false, serverStalled: false, gate: null, newOutput: null, idle: true };
+  const v = deps.verdict(uuid);
+  const alive = !!v.driveable;
+  const read = await deps.readConversation(uuid).catch(() => ({ messages: [] as Array<{ text: string }> }));
+  const { newOutput } = computeNewOutput(read.messages, m.control.lastOutputCursor ?? 0);
+  return { alive, serverStalled: false, gate: null, newOutput, idle: !newOutput };
 }
 
 // ---------------------------------------------------------------------------
@@ -268,10 +328,35 @@ export function registerMissionController(
           monitorNodeId: mon.monitorNodeId,
         })),
       listAll: () => listMissions(),
-      readExecutor: (m) => readCloudExecutor(m),
+      readExecutor: (m) => {
+        if (isNativeBinding(m.binding)) {
+          // Lazy-create a session store so we can look up the local conversation.
+          const store = new AgentSessionStore({ projectPath: process.cwd(), persist: false });
+          const realReadDeps: NativeReadDeps = {
+            verdict: (sid) => {
+              const v = sessionVerdict(sid);
+              return { driveable: v.inTmux };
+            },
+            readConversation: async (sid) => {
+              const res = await store.getConversation({ sessionId: sid });
+              const msgs = res?.messages ?? [];
+              return { messages: msgs.map((msg) => ({ text: msg.content })) };
+            },
+          };
+          return readNativeExecutor(m, realReadDeps);
+        }
+        return readCloudExecutor(m);
+      },
       adjust: (m, out) => runAdjust(m, out, s.missionControllerModel),
       startExecutor: (m, dec) => startCloudExecutor(m, dec),
-      drive: (m, directive) => driveExecutor(m, directive),
+      drive: (m, directive) => {
+        const sid = m.binding?.sessionId;
+        if (!sid) return Promise.resolve();
+        if (isNativeBinding(m.binding)) {
+          return cloudDrive({ sid: m.binding!.ccr!.sid, text: directive }).then(() => undefined);
+        }
+        return driveExecutor(m, directive);
+      },
       save: (m) => putMission(m).then(() => undefined),
     });
     if (r.skipped) return { result: 'not the mission controller (skipped)', status: 'skipped' };
