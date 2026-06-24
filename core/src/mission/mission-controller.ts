@@ -126,6 +126,20 @@ export async function runMissionTick(
 
 const SERVER_STALL = /overloaded|rate.?limit|server error|529|503|502|500/i;
 
+/**
+ * Pure cursor math over the FULL transcript. `prevCursor` (= `m.control.lastOutputCursor`)
+ * is an ABSOLUTE high-water mark; `messages` MUST be the full transcript (not a tail slice),
+ * else the cursor caps at the slice length and adjust never re-fires past it.
+ */
+export function computeNewOutput(
+  messages: { text: string }[],
+  prevCursor: number,
+): { cursor: number; newOutput: ExecutorOutput | null } {
+  const cursor = messages.length; // absolute position in the FULL transcript
+  if (cursor <= prevCursor) return { cursor, newOutput: null };
+  return { cursor, newOutput: { cursor, messages: messages.slice(prevCursor).map((m) => m.text), results: [] } };
+}
+
 async function readCloudExecutor(m: Mission): Promise<ExecutorState> {
   const sid = m.binding?.sessionId;
   if (!sid) return { alive: false, serverStalled: false, gate: null, newOutput: null, idle: true };
@@ -134,21 +148,18 @@ async function readCloudExecutor(m: Mission): Promise<ExecutorState> {
   );
   const live = account.find((a) => a.sid === sid);
   if (!live) return { alive: false, serverStalled: false, gate: null, newOutput: null, idle: true };
-  const read = await cloudRead({ sid, lastN: 20 }).catch(
+  // Full transcript (no lastN) — the cursor is an ABSOLUTE high-water mark, so a tail
+  // slice would cap it and stop adjust from re-firing once the session passes the cap.
+  const read = await cloudRead({ sid }).catch(
     () => ({ messages: [] as Array<{ text: string }>, pendingQuestion: null as null }),
   );
-  const prevCursor = m.control.lastOutputCursor ?? 0;
-  const cursor = read.messages.length;
   const lastText = read.messages.length ? read.messages[read.messages.length - 1].text : '';
   const serverStalled = SERVER_STALL.test(lastText);
   const gate = read.pendingQuestion
     ? { taskId: 'cloud', reason: 'pending question / approval' }
     : null;
-  const hasNew = cursor > prevCursor;
-  const newOutput: ExecutorOutput | null = hasNew
-    ? { cursor, messages: read.messages.slice(prevCursor).map((x) => x.text), results: [] }
-    : null;
-  return { alive: true, serverStalled, gate, newOutput, idle: !hasNew };
+  const { newOutput } = computeNewOutput(read.messages, m.control.lastOutputCursor ?? 0);
+  return { alive: true, serverStalled, gate, newOutput, idle: !newOutput };
 }
 
 async function startCloudExecutor(m: Mission, decision: PlacementDecision): Promise<MissionBinding> {
