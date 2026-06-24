@@ -398,6 +398,27 @@ function controllerCwd(): string {
   return (s as any).missionControllerRepo || process.cwd();
 }
 
+/**
+ * Pure helper: discover a new CSE that appeared after a launch by comparing a baseline
+ * against a sequence of snapshots. Returns the new sid as soon as it appears in any snapshot,
+ * or null if it never appears.
+ *
+ * @param baseline  - sids that existed BEFORE the launch
+ * @param snapshots - successive polls of cloudListAccount (each is an array of {sid,...})
+ * @param pickFn    - selection function (default: pickNewSession)
+ */
+export function discoverNewCse(
+  baseline: string[],
+  snapshots: Array<Array<{ sid: string; status?: string }>>,
+  pickFn: (base: string[], cur: Array<{ sid: string; status?: string }>) => { sid: string } | null = pickNewSession,
+): { sid: string } | null {
+  for (const snap of snapshots) {
+    const hit = pickFn(baseline, snap);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 /** Register the scheduled-job handler. Uses the supervisor (Wave 2). */
 export function registerMissionController(
   jobs: { registerHandler: (t: string, fn: any) => void },
@@ -423,14 +444,20 @@ export function registerMissionController(
       launch: async () => {
         const { tmuxCcController } = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
         const cwd = controllerCwd();
+        // Capture cloud baseline BEFORE launching so we can detect the new cse afterward.
+        const baselineArr = await cloudListAccount().then((ss) => ss.map((s2) => s2.sid)).catch(() => [] as string[]);
         const launched = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true });
         const sessionId = (launched.sessionId as string | null) ?? '';
         const tmux = (launched.tmuxSession as string) ?? '';
-        // Try to discover the cloud cse for this session (optional)
-        const baselineArr = await cloudListAccount().then((ss) => ss.map((s2) => s2.sid)).catch(() => [] as string[]);
-        const cur = await cloudListAccount().catch(() => [] as Array<{ sid: string; status?: string }>);
-        const { pickNewSession: pns } = require('./mission-native') as typeof import('./mission-native');
-        const hit = pns(baselineArr, cur);
+        // Poll cloudListAccount up to 20 times (~40s) for the new --remote-control cse to register.
+        const POLL_ATTEMPTS = 20;
+        const POLL_INTERVAL_MS = 2000;
+        let hit: { sid: string } | null = null;
+        for (let i = 0; i < POLL_ATTEMPTS && !hit; i++) {
+          if (i > 0) await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
+          const cur = await cloudListAccount().catch(() => [] as Array<{ sid: string; status?: string }>);
+          hit = pickNewSession(baselineArr, cur);
+        }
         const cs: ControllerSession = {
           node: thisNode(),
           sessionId: hit ? hit.sid : sessionId,
