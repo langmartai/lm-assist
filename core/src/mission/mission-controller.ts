@@ -323,11 +323,23 @@ export const CONTROLLER_PASS_DIRECTIVE =
   'for each, call mission_place, spawn/drive/adapt/decide as needed; ' +
   'then await the next pass.';
 
-/** Pure decision table — what should the supervisor do on this tick? */
-export function decideSupervisor(input: { isMonitor: boolean; live: boolean }): { action: 'teardown' | 'launch' | 'drive' | 'idle' } {
+/**
+ * Pure decision table — what should the supervisor do on this tick?
+ *
+ * `driveDue` separates the cheap lifecycle check (run every ~1 min for prompt
+ * failover) from the costly adapt-DRIVE pass (run every ~5 min).
+ *
+ * Decision table:
+ *   !isMonitor                      → teardown  (not the leader)
+ *   isMonitor && !live              → launch     (no live session; always launch regardless of driveDue)
+ *   isMonitor && live && driveDue   → drive      (time for another adapt pass)
+ *   isMonitor && live && !driveDue  → idle       (lifecycle OK, drive cadence not yet elapsed)
+ */
+export function decideSupervisor(input: { isMonitor: boolean; live: boolean; driveDue: boolean }): { action: 'teardown' | 'launch' | 'drive' | 'idle' } {
   if (!input.isMonitor) return { action: 'teardown' };
   if (!input.live) return { action: 'launch' };
-  return { action: 'drive' };
+  if (input.driveDue) return { action: 'drive' };
+  return { action: 'idle' };
 }
 
 /** Deps interface for runSupervisorTick — all IO points are injectable for tests. */
@@ -339,17 +351,32 @@ export interface SupervisorDeps {
   launch: () => Promise<ControllerSession>;
   drive: (cs: ControllerSession) => Promise<void>;
   teardown: (cs: ControllerSession) => Promise<void>;
+  /** The adapt cadence in minutes (from project settings). Used to compute driveDue. */
+  driveIntervalMin: number;
+  /** Current time in ms. Injected for deterministic tests. */
+  now: number;
 }
 
 /**
  * The supervisor tick: elect → reconcile the controller session → drive or launch or teardown.
+ *
+ * Lifecycle (launch/teardown) runs on every tick (~1 min) for prompt failover.
+ * The costly adapt-DRIVE pass only fires when `driveDue` — i.e. driveIntervalMin has elapsed
+ * since the last drive (stored as `cs.lastDriveAt`). This decouples failover speed from
+ * drive cadence: a new leader can launch its controller within ~1 min while drives still
+ * run every ~5 min.
+ *
  * Called by `registerMissionController`'s scheduled handler (replaces `runMissionTick`).
  */
 export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action: string; controllerSession: ControllerSession | null }> {
   const { isMonitor } = await deps.amMonitor();
   const cs = await deps.getControllerSession();
   const live = cs ? deps.isLive(cs) : false;
-  const { action } = decideSupervisor({ isMonitor, live });
+
+  // Drive is due when: no lastDriveAt yet, OR driveIntervalMin has elapsed.
+  const driveDue = !cs?.lastDriveAt || (deps.now - cs.lastDriveAt >= deps.driveIntervalMin * 60_000);
+
+  const { action } = decideSupervisor({ isMonitor, live, driveDue });
 
   if (action === 'teardown') {
     if (cs) {
@@ -360,14 +387,23 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   }
 
   if (action === 'launch') {
+    // Launch with lastDriveAt unset so the next tick triggers a drive immediately.
     const newCs = await deps.launch();
     await deps.putControllerSession(newCs);
     return { action: 'launch', controllerSession: newCs };
   }
 
+  if (action === 'idle') {
+    // Lifecycle is fine, drive cadence not yet elapsed — nothing to do.
+    return { action: 'idle', controllerSession: cs };
+  }
+
   // action === 'drive'
   await deps.drive(cs!);
-  return { action: 'drive', controllerSession: cs };
+  // Stamp lastDriveAt and persist so the next tick knows when we last drove.
+  const updatedCs: ControllerSession = { ...cs!, lastDriveAt: deps.now };
+  await deps.putControllerSession(updatedCs);
+  return { action: 'drive', controllerSession: updatedCs };
 }
 
 /**
@@ -419,10 +455,27 @@ export function discoverNewCse(
   return null;
 }
 
-/** Register the scheduled-job handler. Uses the supervisor (Wave 2). */
+/**
+ * Register the scheduled-job handler AND force the job's tick interval to
+ * `missionControllerLifecycleMin` (default 1 min) so that lifecycle reconciliation
+ * (launch/teardown on leader election) is prompt regardless of what the persisted
+ * interval was. The costly adapt-DRIVE pass is still gated by `missionControllerIntervalMin`
+ * (default 5 min) via `driveDue` inside `runSupervisorTick`.
+ */
 export function registerMissionController(
-  jobs: { registerHandler: (t: string, fn: any) => void },
+  jobs: { registerHandler: (t: string, fn: any) => void; upsertJob?: (patch: any) => any },
 ): void {
+  // Force the lifecycle-tick interval to 1 min so a new leader relaunches its controller
+  // promptly after election. This overrides any stale 5-min value that may be persisted
+  // from an older deployment. We upsert only intervalMinutes — other fields are preserved.
+  if (jobs.upsertJob) {
+    try {
+      jobs.upsertJob({ id: 'mission-controller', intervalMinutes: 1 });
+    } catch {
+      // Best-effort — if upsert fails (e.g. job not yet seeded), the seed will set it to 1 via makeBuiltinJobs
+    }
+  }
+
   jobs.registerHandler('mission-controller', async (_config: any, _ctx: any) => {
     const s = getProjectSettings();
     if (!s.missionControllerEnabled || !s.dataServiceEnabled) {
@@ -441,6 +494,8 @@ export function registerMissionController(
         const v = sessionVerdict(cs.sessionId);
         return !!v.inTmux;
       },
+      driveIntervalMin: getProjectSettings().missionControllerIntervalMin,
+      now: Date.now(),
       launch: async () => {
         const { tmuxCcController } = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
         const cwd = controllerCwd();

@@ -5,27 +5,35 @@ import type { SupervisorDeps } from '../mission/mission-controller';
 import type { ControllerSession } from '../mission/mission-store';
 
 // ---------------------------------------------------------------------------
-// pure decideSupervisor — decision table
+// pure decideSupervisor — decision table (updated for driveDue)
 // ---------------------------------------------------------------------------
 
-test('decideSupervisor: not monitor -> teardown', () => {
-  const d = decideSupervisor({ isMonitor: false, live: false });
-  assert.equal(d.action, 'teardown');
+test('decideSupervisor: not monitor -> teardown (regardless of live/driveDue)', () => {
+  assert.equal(decideSupervisor({ isMonitor: false, live: false, driveDue: false }).action, 'teardown');
+  assert.equal(decideSupervisor({ isMonitor: false, live: true, driveDue: true }).action, 'teardown');
 });
 
-test('decideSupervisor: monitor + not live -> launch', () => {
-  const d = decideSupervisor({ isMonitor: true, live: false });
-  assert.equal(d.action, 'launch');
+test('decideSupervisor: monitor + not live -> launch (regardless of driveDue)', () => {
+  assert.equal(decideSupervisor({ isMonitor: true, live: false, driveDue: false }).action, 'launch');
+  assert.equal(decideSupervisor({ isMonitor: true, live: false, driveDue: true }).action, 'launch');
 });
 
-test('decideSupervisor: monitor + live -> drive', () => {
-  const d = decideSupervisor({ isMonitor: true, live: true });
+test('decideSupervisor: monitor + live + driveDue -> drive', () => {
+  const d = decideSupervisor({ isMonitor: true, live: true, driveDue: true });
   assert.equal(d.action, 'drive');
+});
+
+test('decideSupervisor: monitor + live + NOT driveDue -> idle', () => {
+  const d = decideSupervisor({ isMonitor: true, live: true, driveDue: false });
+  assert.equal(d.action, 'idle');
 });
 
 // ---------------------------------------------------------------------------
 // runSupervisorTick with stub deps
 // ---------------------------------------------------------------------------
+
+const NOW = 1_000_000_000;
+const DRIVE_INTERVAL_MIN = 5;
 
 const cs: ControllerSession = { node: 'gw1', sessionId: 'session_ctrl', cse: null, tmux: 'lm-ctrl', startedAt: 1000 };
 
@@ -38,6 +46,8 @@ function makeStubDeps(overrides: Partial<SupervisorDeps>): SupervisorDeps {
     launch: async () => cs,
     drive: async (_cs) => {},
     teardown: async (_cs) => {},
+    driveIntervalMin: DRIVE_INTERVAL_MIN,
+    now: NOW,
     ...overrides,
   };
 }
@@ -56,7 +66,7 @@ test('runSupervisorTick: not monitor + existing cs -> calls teardown + clears', 
   assert.ok(cleared, 'putControllerSession(null) should be called after teardown');
 });
 
-test('runSupervisorTick: monitor + no live session -> calls launch + putControllerSession', async () => {
+test('runSupervisorTick: monitor + no live session -> calls launch + putControllerSession (lastDriveAt absent)', async () => {
   let launched = false;
   let persisted: ControllerSession | null = null;
   const deps = makeStubDeps({
@@ -66,22 +76,82 @@ test('runSupervisorTick: monitor + no live session -> calls launch + putControll
     launch: async () => { launched = true; return cs; },
     putControllerSession: async (x) => { persisted = x; },
   });
-  await runSupervisorTick(deps);
+  const r = await runSupervisorTick(deps);
   assert.ok(launched, 'launch should be called when no live session');
   assert.ok(persisted !== null, 'putControllerSession should persist the new cs');
   assert.equal((persisted as ControllerSession).sessionId, 'session_ctrl');
+  // lastDriveAt must NOT be set on launch — next tick drives immediately
+  assert.equal((persisted as ControllerSession).lastDriveAt, undefined);
+  assert.equal(r.action, 'launch');
 });
 
-test('runSupervisorTick: monitor + live session -> calls drive', async () => {
+test('runSupervisorTick: monitor + live + driveDue -> calls drive + stamps lastDriveAt', async () => {
   let driven = false;
+  let persisted: ControllerSession | null = null;
+  // lastDriveAt is old enough → driveDue = true
+  const staleCs: ControllerSession = { ...cs, lastDriveAt: NOW - DRIVE_INTERVAL_MIN * 60_000 - 1 };
   const deps = makeStubDeps({
     amMonitor: async () => ({ isMonitor: true, monitorNodeId: 'gw1' }),
-    getControllerSession: async () => cs,
+    getControllerSession: async () => staleCs,
+    isLive: (_cs) => true,
+    drive: async (_cs) => { driven = true; },
+    putControllerSession: async (x) => { persisted = x; },
+  });
+  const r = await runSupervisorTick(deps);
+  assert.ok(driven, 'drive should be called when live and driveDue');
+  assert.equal(r.action, 'drive');
+  assert.ok(persisted !== null, 'putControllerSession called after drive');
+  assert.equal((persisted as ControllerSession).lastDriveAt, NOW, 'lastDriveAt stamped with now');
+});
+
+test('runSupervisorTick: monitor + live + NOT driveDue -> idle (no drive)', async () => {
+  let driven = false;
+  let persisted: ControllerSession | null = null;
+  // lastDriveAt is recent → driveDue = false
+  const freshCs: ControllerSession = { ...cs, lastDriveAt: NOW - 1000 }; // 1s ago << 5 min
+  const deps = makeStubDeps({
+    amMonitor: async () => ({ isMonitor: true, monitorNodeId: 'gw1' }),
+    getControllerSession: async () => freshCs,
+    isLive: (_cs) => true,
+    drive: async (_cs) => { driven = true; },
+    putControllerSession: async (x) => { persisted = x; },
+  });
+  const r = await runSupervisorTick(deps);
+  assert.ok(!driven, 'drive must NOT be called when not driveDue');
+  assert.equal(r.action, 'idle');
+  assert.ok(persisted === null, 'putControllerSession should NOT be called on idle');
+});
+
+test('runSupervisorTick: monitor + live + no lastDriveAt -> driveDue=true -> drive', async () => {
+  let driven = false;
+  // cs has no lastDriveAt → always due
+  const noDriveCs: ControllerSession = { node: 'gw1', sessionId: 'session_ctrl', cse: null, tmux: 'lm-ctrl', startedAt: 1000 };
+  const deps = makeStubDeps({
+    amMonitor: async () => ({ isMonitor: true, monitorNodeId: 'gw1' }),
+    getControllerSession: async () => noDriveCs,
     isLive: (_cs) => true,
     drive: async (_cs) => { driven = true; },
   });
-  await runSupervisorTick(deps);
-  assert.ok(driven, 'drive should be called when live session exists');
+  const r = await runSupervisorTick(deps);
+  assert.ok(driven, 'drive should fire when lastDriveAt is absent');
+  assert.equal(r.action, 'drive');
+});
+
+test('runSupervisorTick: monitor + NOT live (dead leader session) -> launch regardless of driveDue', async () => {
+  // Simulates the failover: leader changed, controllerSession exists but isLive=false
+  let launched = false;
+  const deadCs: ControllerSession = { ...cs, lastDriveAt: NOW - 10_000 }; // recent, but dead
+  const deps = makeStubDeps({
+    amMonitor: async () => ({ isMonitor: true, monitorNodeId: 'gw1' }),
+    getControllerSession: async () => deadCs,
+    isLive: (_cs) => false,
+    launch: async () => { launched = true; return cs; },
+    driveIntervalMin: DRIVE_INTERVAL_MIN,
+    now: NOW,
+  });
+  const r = await runSupervisorTick(deps);
+  assert.ok(launched, 'should launch when not live, even if driveDue would be false');
+  assert.equal(r.action, 'launch');
 });
 
 // ---------------------------------------------------------------------------

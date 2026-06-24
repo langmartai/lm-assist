@@ -279,10 +279,10 @@ export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
     {
       id: 'mission-controller',
       name: 'Super Mission Controller',
-      description: 'Fleet-elected loop that reads each executor, adapts the mission, and pushes every mission toward done (liveness/adjust/placement).',
+      description: 'Fleet-elected loop: lifecycle check every ~1 min (prompt failover) + adapt-DRIVE every ~5 min (missionControllerIntervalMin). The 1-min tick only launches/tears down; the costly drive pass is gated internally by driveDue.',
       type: 'mission-controller',
       enabled: true,
-      intervalMinutes: 5,
+      intervalMinutes: 1,
       config: {},
       lastRunAt: null,
       lastResult: null,

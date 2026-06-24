@@ -16,6 +16,8 @@ export interface ControllerSession {
   cse: string | null;
   tmux: string;
   startedAt: number;
+  /** Unix-ms of the last full adapt-DRIVE pass (set by supervisor on 'drive'). Absent = never driven. */
+  lastDriveAt?: number;
 }
 
 /** The seam the store reads/writes through. Tests inject an in-memory fake. */

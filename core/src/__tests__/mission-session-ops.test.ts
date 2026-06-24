@@ -227,6 +227,8 @@ test('supervisor teardown dep is called with cs.tmux', async () => {
     launch: async () => cs,
     drive: async () => {},
     teardown: async (c) => { tornDownWith = c.tmux; },
+    driveIntervalMin: 5,
+    now: Date.now(),
   };
   await runSupervisorTick(deps);
   assert.equal(tornDownWith, 'lmcc-test123', 'teardown should be called with the controller cs.tmux name');
