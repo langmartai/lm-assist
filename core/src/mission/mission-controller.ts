@@ -7,6 +7,8 @@ import { pickNewSession, cseToSessionSid, isNativeBinding } from './mission-nati
 import { listMissions, putMission, thisNode, getControllerSession, putControllerSession, ControllerSession } from './mission-store';
 import { runAdjust } from './mission-adjust';
 import { getProjectSettings } from '../project-settings';
+import { deriveHubMcpUrl, upsertHubMcpServer } from '../utils/claude-mcp-config';
+import { getHubConfig } from '../hub-client/hub-config';
 import { amIMonitor } from '../monitor/stall-election';
 import { cloudStart, cloudDrive, cloudRead, cloudStatus, cloudListAccount } from '../terminal/ccr-cloud';
 import { getCcController } from '../terminal/backend';
@@ -324,6 +326,60 @@ export const CONTROLLER_PASS_DIRECTIVE =
   'then await the next pass.';
 
 /**
+ * Guarded system prompt for the Mission Controller agent. Passed at launch via
+ * --append-system-prompt-file so the controller's role, scope, and heartbeat
+ * convention are reliable on any node (not dependent on connector inheritance).
+ *
+ * The `⟦HEARTBEAT⟧` convention keeps the chat clean: idle passes collapse to a
+ * single marker line the web filters out, while real actions/answers narrate
+ * normally and stay visible.
+ */
+export const CONTROLLER_SYSTEM_PROMPT = [
+  'You are the **Mission Controller** — a fleet-elected agent. Your SOLE job is to drive',
+  '*missions* to completion through the `mission_*` tools (mission_list, mission_place,',
+  'mission_executor_status, …) and the executor sessions you spawn. You NEVER edit code,',
+  'run builds, or touch unrelated systems yourself — you only orchestrate missions and',
+  'their executors through tools.',
+  '',
+  'On each controller pass: call `mission_list`; for every active mission, assess its',
+  'executor (`mission_executor_status`), place/spawn/drive/adapt as needed (`mission_place`',
+  'and session drive), and mark it done when complete.',
+  '',
+  'HEARTBEAT: when a pass finds no actionable work (no active missions, or nothing changed),',
+  'reply with EXACTLY one line beginning `⟦HEARTBEAT⟧` and nothing else',
+  '(e.g. `⟦HEARTBEAT⟧ idle — 0 active missions`). When you take a real action or answer the',
+  'user, narrate normally and DO NOT use that marker.',
+  '',
+  'The user may message you directly in this session — treat their messages as authoritative',
+  'instructions (create/pause/adjust missions, answer questions) and reply substantively.',
+  'The mission store is cross-node shared; you run on the elected leader node.',
+].join('\n');
+
+/**
+ * Pure builder for the controller launch extras (system-prompt file + optional
+ * hub-MCP keystone config file). `writeFile(name, body)` persists a file and
+ * returns its path — injected so this stays unit-testable (no fs).
+ *
+ * Always writes the system-prompt file. Writes the MCP config file only when an
+ * apiKey is present AND a hub MCP URL can be derived from hubUrl; otherwise the
+ * controller still gets its tools via connector inheritance (non-fatal).
+ */
+export function buildControllerLaunchExtras(args: {
+  hubUrl: string | null;
+  apiKey: string | null;
+  writeFile: (name: string, body: string) => string;
+}): { appendSystemPromptFile: string; mcpConfigPath?: string } {
+  const appendSystemPromptFile = args.writeFile('mission-controller-sp.txt', CONTROLLER_SYSTEM_PROMPT);
+  const out: { appendSystemPromptFile: string; mcpConfigPath?: string } = { appendSystemPromptFile };
+  const mcpUrl = deriveHubMcpUrl(args.hubUrl);
+  if (args.apiKey && mcpUrl) {
+    const cfg = upsertHubMcpServer({}, { url: mcpUrl, key: args.apiKey });
+    out.mcpConfigPath = args.writeFile('mission-controller-mcp.json', JSON.stringify(cfg, null, 2));
+  }
+  return out;
+}
+
+/**
  * Pure decision table — what should the supervisor do on this tick?
  *
  * `driveDue` separates the cheap lifecycle check (run every ~1 min for prompt
@@ -499,9 +555,30 @@ export function registerMissionController(
       launch: async () => {
         const { tmuxCcController } = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
         const cwd = controllerCwd();
+        // Build the controller bootstrap extras (guarded system prompt + hub-MCP
+        // keystone). Non-fatal: on any failure, launch without extras (the
+        // controller still works via connector inheritance).
+        let extras: { appendSystemPromptFile?: string; mcpConfigPath?: string } = {};
+        try {
+          const hub = getHubConfig();
+          const fsmod = require('fs') as typeof import('fs');
+          const osmod = require('os') as typeof import('os');
+          const writeFile = (name: string, body: string): string => {
+            const p = path.join(osmod.tmpdir(), `${Date.now()}-${name}`);
+            fsmod.writeFileSync(p, body, { mode: 0o600 });
+            return p;
+          };
+          extras = buildControllerLaunchExtras({ hubUrl: hub.hubUrl || null, apiKey: hub.apiKey || null, writeFile });
+        } catch (e) {
+          console.debug(`[mission-supervisor] controller bootstrap extras failed: ${(e as Error).message}`);
+        }
         // Capture cloud baseline BEFORE launching so we can detect the new cse afterward.
         const baselineArr = await cloudListAccount().then((ss) => ss.map((s2) => s2.sid)).catch(() => [] as string[]);
-        const launched = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true });
+        const launched = await tmuxCcController.launch({
+          cwd, remoteControl: true, skipPermissions: true, autoTrust: true,
+          appendSystemPromptFile: extras.appendSystemPromptFile,
+          mcpConfigPath: extras.mcpConfigPath,
+        });
         const sessionId = (launched.sessionId as string | null) ?? '';
         const tmux = (launched.tmuxSession as string) ?? '';
         // Poll cloudListAccount up to 20 times (~40s) for the new --remote-control cse to register.
