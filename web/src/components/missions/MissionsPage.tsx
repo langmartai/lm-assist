@@ -12,8 +12,10 @@ import {
   CheckCircle,
   ChevronDown,
   ChevronRight,
+  Plug,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
+import { CcrCloudView } from '@/components/ccr/CcrCloudView';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -164,6 +166,9 @@ export function MissionsPage() {
 
   // Per-mission objective editing
   const [objDraft, setObjDraft] = useState<Record<string, string>>({});
+
+  // Connect/drive a mission's cloud executor inline
+  const [connectSid, setConnectSid] = useState<string | null>(null);
 
   // ── Data loading ──
   const fetchAll = useCallback(async () => {
@@ -915,7 +920,37 @@ export function MissionsPage() {
                         <CheckCircle size={13} /> Mark done
                       </button>
                     )}
+                    {m.binding?.sessionId && /^session_/.test(m.binding.sessionId) && (
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() =>
+                          setConnectSid(
+                            connectSid === m.binding!.sessionId ? null : m.binding!.sessionId,
+                          )
+                        }
+                        title={
+                          connectSid === m.binding!.sessionId
+                            ? 'Disconnect from executor'
+                            : 'Connect to executor session'
+                        }
+                      >
+                        <Plug size={13} />
+                        {connectSid === m.binding!.sessionId ? ' Disconnect' : ' Connect'}
+                      </button>
+                    )}
                   </div>
+
+                  {/* Inline executor view — shown beneath action row when connected */}
+                  {m.binding?.sessionId &&
+                    /^session_/.test(m.binding.sessionId) &&
+                    connectSid === m.binding.sessionId && (
+                      <CcrCloudView
+                        sid={m.binding.sessionId}
+                        webUrl={`https://claude.ai/code/${m.binding.sessionId}`}
+                        apiFetch={apiFetch}
+                        onClose={() => setConnectSid(null)}
+                      />
+                    )}
                 </div>
               );
             })}

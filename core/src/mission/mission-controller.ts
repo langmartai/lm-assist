@@ -1,7 +1,7 @@
 /** The super Mission Controller tick: election → per-mission liveness/adjust/placement. */
 import {
   Mission, MissionBinding, ExecutorState, ExecutorOutput, AdjustResult, PlacementDecision,
-  decideMission, place, planMissionNudge,
+  decideMission, place, planMissionNudge, missionSessionTitle,
 } from './mission-model';
 import { listMissions, putMission } from './mission-store';
 import { runAdjust } from './mission-adjust';
@@ -192,7 +192,7 @@ async function startCloudExecutor(m: Mission, decision: PlacementDecision): Prom
       repo: m.env.repo,
       setup: true,
       role: m.binding?.kind === 'orchestrator' ? 'orchestrator' : 'worker',
-      title: m.title,
+      title: missionSessionTitle(m),
     });
     return {
       sessionId: res.sid,

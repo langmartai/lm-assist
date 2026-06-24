@@ -53,6 +53,11 @@ export interface Mission {
   updatedAt: number;
 }
 
+/** Display name for a controller-spawned executor session — identifiable + traceable to the mission. */
+export function missionSessionTitle(m: Mission): string {
+  return `Mission: ${m.title} · ${m.id.replace(/^mission_/, '')}`;
+}
+
 export interface NewMissionInput {
   title: string;
   objective: string;
