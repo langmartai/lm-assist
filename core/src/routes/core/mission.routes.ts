@@ -147,6 +147,25 @@ export async function handleSessions(
 }
 
 // ---------------------------------------------------------------------------
+// GET /mission/controller — election + job + controllerSession (Task 9)
+// ---------------------------------------------------------------------------
+
+export async function handleGetController(
+  port?: MissionDataPort,
+  getElection?: () => Promise<{ isMonitor: boolean; monitorNodeId: string | null }>,
+  getJob?: () => unknown,
+): Promise<Envelope> {
+  const doGetElection = getElection ?? (() => amIMonitor());
+  const doGetJob = getJob ?? (() => getScheduledJobs().getJob('mission-controller'));
+  const [election, controllerSession] = await Promise.all([
+    doGetElection(),
+    getControllerSession(port),
+  ]);
+  const job = doGetJob();
+  return ok({ election, job, controllerSession });
+}
+
+// ---------------------------------------------------------------------------
 // All sessions list: controller + every active mission's orchestrator/workers
 // ---------------------------------------------------------------------------
 
@@ -350,11 +369,7 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     // /mission/sessions — all operable sessions (controller + orchestrators + workers)
     { method: 'GET', pattern: /^\/mission\/sessions$/, handler: async () => handleAllSessions() },
     // controller BEFORE :id/:id/sessions so literals win
-    { method: 'GET', pattern: /^\/mission\/controller$/, handler: async () => {
-        const election = await amIMonitor();
-        const job = getScheduledJobs().getJob('mission-controller');
-        return ok({ election, job });
-      } },
+    { method: 'GET', pattern: /^\/mission\/controller$/, handler: async () => handleGetController() },
     // rail routes: /place and /executor-status BEFORE /:id so literals win
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/place$/, handler: async (req) => handlePlace(req.params.id) },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/executor-status$/, handler: async (req) => handleExecutorStatus(req.params.id) },
