@@ -581,6 +581,10 @@ npm view lm-assist version   # Should show new version
 - The upgrade script: plugin install → kill services → `npm install -g lm-assist@latest` → restart services
 - Upgrade log: `~/.cache/lm-assist/upgrade.log`
 
+### Install/upgrade sources (published vs custom)
+
+Every surface supports both: **published** (`lm-assist@latest`/`@<ver>` from npm) and **custom** (a GitHub-Release tgz, `github:…#ref`, a local `.tgz`, or a source build). The current install is tracked in `~/.lm-assist/install-source.json` (`{kind:'published'|'custom',source,version}`) and shown by `lm-assist version`, `GET /dev-mode/check-update` (`currentSource`/`isCustomBuild`), and the Settings UI. `lm-assist version` only prompts an upgrade when npm latest is GREATER (no downgrade nudges) and warns when on a custom build. Installers (`install.sh`/`install.ps1`) prefer the prebuilt GitHub-Release tgz for the ref, fall back to source-build, and take `--published [<ver>]` for the registry. CLI: `lm-assist upgrade --from <tgz|dir|version|github:…#ref|release-url>`.
+
 ### Running Modes: npm Package vs Dev Repo
 
 lm-assist has two independent environments that can run simultaneously on separate ports:
