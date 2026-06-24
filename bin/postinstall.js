@@ -99,4 +99,11 @@ try {
   dim('Claude Code CLI not found — install claude-code-multisession plugin manually in Claude Code');
 }
 
+// 4. Record published install marker (best effort)
+try {
+  const pkgVer = require(path.join(__dirname, '..', 'package.json')).version;
+  require(path.join(__dirname, '..', 'core', 'dist', 'utils', 'install-source.js'))
+    .recordInstallSource({ kind: 'published', source: 'lm-assist@' + pkgVer, version: pkgVer });
+} catch { /* best effort */ }
+
 log('Setup complete. Open a new Claude Code session and try /sessions');

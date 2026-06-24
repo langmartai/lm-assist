@@ -19,10 +19,16 @@
 
 import type { RouteHandler, RouteContext } from '../index';
 import { spawn, execFileSync } from '../../utils/exec';
+import { readInstallSource } from '../../utils/install-source';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as crypto from 'crypto';
+
+export function buildSourceFields() {
+  const currentSource = readInstallSource();
+  return { currentSource, isCustomBuild: currentSource?.kind === 'custom' };
+}
 
 const CLAUDE_SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.json');
 const INSTALLED_PLUGINS_FILE = path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json');
@@ -707,7 +713,7 @@ export function createDevModeRoutes(_ctx: RouteContext): RouteHandler[] {
         // Cache for 5 minutes
         if (updateCheckCache && now - updateCheckCache.fetchedAt < 5 * 60 * 1000) {
           const { currentVersion, latestVersion, updateAvailable } = updateCheckCache;
-          return { success: true, data: { currentVersion, latestVersion, updateAvailable } };
+          return { success: true, data: { currentVersion, latestVersion, updateAvailable, ...buildSourceFields() } };
         }
 
         const currentVersion = getNpmVersion();
@@ -738,7 +744,7 @@ export function createDevModeRoutes(_ctx: RouteContext): RouteHandler[] {
         const result = { currentVersion, latestVersion, updateAvailable, fetchedAt: now };
         updateCheckCache = result;
 
-        return { success: true, data: { currentVersion, latestVersion, updateAvailable } };
+        return { success: true, data: { currentVersion, latestVersion, updateAvailable, ...buildSourceFields() } };
       },
     },
 
