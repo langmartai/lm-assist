@@ -987,16 +987,6 @@ export default function SettingsPage() {
     }
   }, [tierAgentUrl]);
 
-  const buildSource = () => {
-    if (sourceKind === 'latest') return undefined;
-    const v = sourceValue.trim();
-    if (!v) return undefined;
-    if (sourceKind === 'version') return v;
-    if (sourceKind === 'github') return v;
-    if (sourceKind === 'tgz') return v;
-    return undefined;
-  };
-
   const handleUpgrade = useCallback(async () => {
     setIsUpgrading(true);
     setUpgradeLines([]);
@@ -1004,7 +994,11 @@ export default function SettingsPage() {
     upgradePollRef.current = true;
 
     try {
-      const source = buildSource();
+      const source = (() => {
+        if (sourceKind === 'latest') return undefined;
+        const v = sourceValue.trim();
+        return v || undefined;
+      })();
       const res = await workerFetch(tierAgentUrl + '/dev-mode/upgrade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1084,7 +1078,7 @@ export default function SettingsPage() {
 
     // Give the server a few seconds to die before polling
     setTimeout(pollHealth, 3000);
-  }, [tierAgentUrl, fetchDevModeStatus]);
+  }, [tierAgentUrl, fetchDevModeStatus, sourceKind, sourceValue]);
 
   // Auto-scroll upgrade terminal
   useEffect(() => {
