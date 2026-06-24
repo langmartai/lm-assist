@@ -7,9 +7,10 @@ test('cseToSessionSid converts cse_ to session_', () => {
   assert.strictEqual(cseToSessionSid('session_01ABC'), 'session_01ABC');
 });
 
-test('isNativeBinding true only when ccr present', () => {
+test('isNativeBinding true only for local UUID sessions (ccr optional)', () => {
   assert.strictEqual(isNativeBinding({ sessionId: 'uuid', node: 'n', kind: 'worker', ccr: { cse: 'cse_x', sid: 'session_x' } } as any), true);
   assert.strictEqual(isNativeBinding({ sessionId: 'session_x', node: 'n', kind: 'worker' } as any), false);
+  assert.strictEqual(isNativeBinding({ sessionId: 'uuid-no-ccr', node: 'n', kind: 'worker' } as any), true);
   assert.strictEqual(isNativeBinding(null), false);
 });
 

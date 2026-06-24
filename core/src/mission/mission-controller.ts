@@ -9,6 +9,7 @@ import { runAdjust } from './mission-adjust';
 import { getProjectSettings } from '../project-settings';
 import { amIMonitor } from '../monitor/stall-election';
 import { cloudStart, cloudDrive, cloudRead, cloudStatus, cloudListAccount } from '../terminal/ccr-cloud';
+import { getCcController } from '../terminal/backend';
 import { gitCommand } from '../checkpoint/git-utils';
 import * as path from 'path';
 import { sessionVerdict } from '../terminal/cc-sessions';
@@ -353,7 +354,10 @@ export function registerMissionController(
         const sid = m.binding?.sessionId;
         if (!sid) return Promise.resolve();
         if (isNativeBinding(m.binding)) {
-          return cloudDrive({ sid: m.binding!.ccr!.sid, text: directive }).then(() => undefined);
+          const ccr = m.binding?.ccr;
+          if (ccr) return cloudDrive({ sid: ccr.sid, text: directive }).then(() => undefined);
+          // no ccr yet: drive the local session by its UUID (same-host)
+          return getCcController().prompt(m.binding!.sessionId!, directive).then(() => undefined);
         }
         return driveExecutor(m, directive);
       },

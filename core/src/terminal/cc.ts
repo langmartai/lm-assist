@@ -82,7 +82,7 @@ export async function launch(session: string, opts: CCLaunchInput): Promise<{
       }
 
       // Dismiss known onboarding prompts (e.g. fullscreen renderer?).
-      const screen = state.lastSnapshot?.text ?? tmux.capture(session, { paneQualifier: null, lines: null, start: null });
+      const screen = state.lastSnapshot?.text ?? (tmux.exists(session) ? tmux.capture(session, { paneQualifier: null, lines: null, start: null }) : '');
       const onboardingAction = decideOnboardingKeys(screen);
       if (onboardingAction !== null) {
         tmux.sendKeysUnlocked(session, {
