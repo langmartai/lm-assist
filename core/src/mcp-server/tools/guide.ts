@@ -22,6 +22,7 @@ const TOPIC_TOOLS: Record<string, string[]> = {
   github: ['github_query', 'github_mutate'],
   files: ['fs_drives', 'fs_list', 'fs_stat', 'fs_read', 'transfer_queue', 'transfer_send_file', 'transfer_list_remote', 'transfer_stats'],
   roles: ['set_role', 'report_status', 'worker_status', 'list_workers', 'decide_gate'],
+  missions: ['mission_create', 'mission_list', 'mission_update', 'mission_control_status'],
 };
 
 // Ordered so the multi-node model + combination workflows surface first in the index.
@@ -255,6 +256,12 @@ CROSS-NODE: pass \`node=\` the host whose gh auth/repo you want (auth + checkout
 • \`transfer_queue\` / \`transfer_send_file\` / \`transfer_list_remote\` / \`transfer_stats\` → move files BETWEEN hosts.
 CROSS-NODE: fs_* take \`node=\` to browse/read a specific host; transfer_send_file moves a file from one node to another (workflow #8).
 GOTCHA: fs_read REFUSES credential/secret paths (.ssh/.aws/.env/tokens/keys, the lm-assist key) by design.`,
+
+  missions: `# Guide: missions — durable goals pushed to done by the fleet
+A **Mission** is a durable record of WHAT to achieve (cross-project). The fleet-elected **super Mission Controller** binds ONE executor (cloud/native, orchestrator/worker), reads its feedback every few minutes, ADAPTS the mission (revises the objective/plan from results — not a binary done/failed), and pushes it toward done. It places executors to avoid conflicts: isolated (cloud > git worktree+branch) when possible, else serialized on shared resources; dependencies are ordered (\`dependsOn\`). It NEVER auto-approves a human gate or a material pivot (those pause).
+
+Tools: \`mission_create\` (title+objective, optional projects/dependsOn/env), \`mission_list\`, \`mission_update\` (refine/pause/unblock), \`mission_control_status\` (who's elected + last tick).
+Requires the data service enabled (cross-node mission store). Settings: missionControllerEnabled, missionControllerIntervalMin, missionControllerMaxNudges, missionControllerModel.`,
 };
 
 /** Synonyms + every tool name → its topic, so guide("data_get") or guide("storage") both resolve. */
@@ -265,6 +272,7 @@ const ALIASES: Record<string, string> = {
   workflow: 'workflows', combo: 'workflows', combos: 'workflows', combination: 'workflows', combinations: 'workflows', recipe: 'workflows', recipes: 'workflows', 'use-case': 'workflows', 'use case': 'workflows',
   install: 'install', build: 'install', setup: 'install', clone: 'install', deploy: 'install', 'from-source': 'install', 'from-repo': 'install', 'not-installed': 'install', 'core.sh': 'install', npm: 'install', 'dev-run': 'install', 'prod-run': 'install',
   roles: 'roles', role: 'roles', worker: 'roles', orchestrator: 'roles', 'agree-gate': 'roles', gate: 'roles',
+  missions: 'missions', mission: 'missions', 'mission-controller': 'missions', 'mission_controller': 'missions', goal: 'missions', goals: 'missions',
   storage: 'data', store: 'data', query: 'data', database: 'data', db: 'data', records: 'data',
   session: 'sessions', history: 'sessions', dag: 'sessions',
   memory: 'knowledge', search: 'knowledge',
@@ -296,6 +304,7 @@ const BLURB: Record<string, string> = {
   account: 'Claude Code OAuth + claude.ai account / usage / active sessions (per node)',
   github: 'query/mutate GitHub via the user gh auth',
   files: 'list/stat/read files + transfer files between hosts',
+  missions: 'durable cross-project goals — fleet-elected Mission Controller binds one executor, adapts, pushes to done; never auto-approves gates/pivots',
 };
 
 function buildIndex(): string {
@@ -319,7 +328,7 @@ const INDEX = buildIndex();
 
 /** The whole skill in ONE response — every playbook concatenated (stays in sync with GUIDES). */
 function buildBootstrap(): string {
-  const order = ['orientation', 'cross-node', 'workflows', 'install', 'roles', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'github', 'files'];
+  const order = ['orientation', 'cross-node', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'github', 'files'];
   const header = [
     '# lm-assist — capability bootstrap (you have now loaded ALL use cases for this session)',
     '',
