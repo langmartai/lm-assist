@@ -8,9 +8,9 @@
 
 For each **active** mission, every supervisor tick (~1 min, non-LLM), read its executor state cheaply (`readExecutorState(m)` — transcript/verdict read, NO LLM) and classify:
 
-- **MATERIAL change → ENGAGE** (drive the controller LLM):
-  - executor **verdict** change: `done` / `blocked` / `needs_approval` (vs last-engaged verdict), or
-  - executor **liveness** drop: was live, now died/finished/not-driveable.
+- **MATERIAL change → ENGAGE** (drive the controller LLM). The detector is **token-free**, so it uses cheap proxies for "something material happened" (the controller determines the precise verdict once engaged):
+  - executor **liveness drop**: was live, now died/finished/not-driveable (≈ the executor finished), or
+  - a **new status marker** in the transcript since the last cursor: a `⟦WORKER-STATUS⟧` block or an agree-gate / `need_approval` / `blocked` / `done` marker (the worker-role-protocol signals the executor prints) — a cheap string scan of the new output, no LLM.
 - **New or updated mission** (a mission with no/stale binding, or `updatedAt` advanced) → **ENGAGE** (the controller must place/re-place it). [Functional necessity — a new mission must not wait for the safety interval.]
 - **Long safety interval** (default `missionControllerSafetyIntervalMin = 45`) elapsed since last engagement → **ENGAGE** (catch-all re-sync, near-zero cost).
 - **Interim progress** (executor still running, **new transcript output** beyond the last cursor, but **no** material change) → **DO NOT engage**. Instead surface a **filtered** update on the mission record (token-free: the last meaningful non-empty output line, truncated). The controller sees it only when it next engages for a real reason.
