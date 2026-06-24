@@ -378,13 +378,33 @@ export function getPsPidPpidOutput(): string {
 /**
  * Get the path to the Claude binary (cross-platform).
  * Windows: relies on 'claude' being in PATH.
- * POSIX: uses ~/.local/bin/claude.
+ * POSIX: probes the common install locations in order (the official-installer
+ * ~/.local/bin first, then the npm-global /usr/local/bin and /usr/bin), and
+ * falls back to bare 'claude' (PATH-resolved at exec) when none exist — so a
+ * node where claude isn't at ~/.local/bin (e.g. an npm-global /usr/bin/claude)
+ * still launches instead of failing with "No such file or directory".
  */
+/** Pure: pick the first existing candidate (installer ~/.local/bin, then npm-global
+ *  /usr/local/bin and /usr/bin), else bare 'claude' (PATH-resolved at exec). Exported for tests. */
+export function resolveClaudeBinary(homedir: string, exists: (p: string) => boolean): string {
+  const candidates = [
+    path.join(homedir, '.local/bin/claude'),
+    '/usr/local/bin/claude',
+    '/usr/bin/claude',
+  ];
+  for (const c of candidates) {
+    if (exists(c)) return c;
+  }
+  return 'claude';
+}
+
 export function getClaudeBinaryPath(): string {
   if (IS_WINDOWS) {
     return 'claude';
   }
-  return path.join(os.homedir(), '.local/bin/claude');
+  return resolveClaudeBinary(os.homedir(), (p) => {
+    try { return fs.existsSync(p); } catch { return false; }
+  });
 }
 
 // ============================================================================
