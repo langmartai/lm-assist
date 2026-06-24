@@ -19,6 +19,7 @@ export interface MissionBinding {
   node: string | null;
   kind: ExecutorKind | null;
   boundAt?: number;
+  ccr?: { cse: string; sid: string; webUrl?: string | null; tmuxSession?: string };
 }
 export interface MissionProgress { percent: number; summary: string; updatedAt: number; }
 export interface MissionControl {
