@@ -601,13 +601,19 @@ export function registerMissionController(
         try {
           const hub = getHubConfig();
           const fsmod = require('fs') as typeof import('fs');
-          const osmod = require('os') as typeof import('os');
-          // Fixed paths (no timestamp prefix) so each relaunch/failover overwrites
-          // in place — the mcp file holds the hub bearer key, so we must NOT
-          // accumulate copies in /tmp. Single controller per node → no race.
+          const { getDataDir } = require('../utils/path-utils') as typeof import('../utils/path-utils');
+          // The mcp file holds the hub bearer key — write it to the user-private
+          // lm-assist data dir (where hub.json's key already lives), NOT a
+          // world-writable /tmp. Fixed path (overwrite in place, no accumulation)
+          // + unlink-then-O_EXCL create (refuses a planted symlink/file, so a
+          // predictable path can't be exploited for a symlink-swap attack).
+          const dir = path.join(getDataDir(), 'controller');
+          fsmod.mkdirSync(dir, { recursive: true, mode: 0o700 });
           const writeFile = (name: string, body: string): string => {
-            const p = path.join(osmod.tmpdir(), name);
-            fsmod.writeFileSync(p, body, { mode: 0o600 });
+            const p = path.join(dir, name);
+            try { fsmod.unlinkSync(p); } catch { /* not present — fine */ }
+            const fd = fsmod.openSync(p, fsmod.constants.O_WRONLY | fsmod.constants.O_CREAT | fsmod.constants.O_EXCL, 0o600);
+            try { fsmod.writeFileSync(fd, body); } finally { fsmod.closeSync(fd); }
             return p;
           };
           extras = buildControllerLaunchExtras({ hubUrl: hub.hubUrl || null, apiKey: hub.apiKey || null, writeFile });
