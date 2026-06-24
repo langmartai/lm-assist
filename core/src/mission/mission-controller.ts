@@ -197,8 +197,8 @@ export function registerMissionController(
 ): void {
   jobs.registerHandler('mission-controller', async (_config: any, _ctx: any) => {
     const s = getProjectSettings();
-    if (!s.missionControllerEnabled) {
-      return { result: 'mission controller disabled', status: 'skipped' };
+    if (!s.missionControllerEnabled || !s.dataServiceEnabled) {
+      return { result: 'mission controller disabled (or data service off)', status: 'skipped' };
     }
     const r = await runMissionTick({
       now: Date.now(),
