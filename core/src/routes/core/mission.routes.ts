@@ -88,7 +88,7 @@ export async function handleSessions(
   const m = await getMission(id, port);
   if (!m) return fail('NOT_FOUND', `no mission ${id}`);
   const sessions: MissionSession[] = [];
-  const primarySid = m.binding?.sessionId || null;
+  const primarySid = m.binding ? (m.binding.ccr?.sid || m.binding.sessionId) : null;
   if (primarySid) {
     sessions.push({ sid: primarySid, kind: m.binding!.kind === 'orchestrator' ? 'orchestrator' : 'worker', role: 'primary', lastContact: m.binding!.boundAt });
     for (const w of listWorkers()) {

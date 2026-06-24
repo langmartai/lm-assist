@@ -105,6 +105,27 @@ test('orchestrator self-match excluded from sub-workers', async () => {
   assert.strictEqual(sessions[1].role, 'sub');
 });
 
+test('native executor: ccr.sid used as primary sid when present', async () => {
+  const port = fakePort();
+  const m = makeMission('m5', {
+    binding: {
+      sessionId: 'uuid-local',
+      node: 'gw4-1',
+      kind: 'worker',
+      boundAt: 4000,
+      ccr: { cse: 'cse_x', sid: 'session_x' },
+    },
+  });
+  await port.put(m);
+
+  const res = await handleSessions('m5', port, () => []);
+  assert.strictEqual(res.success, true);
+  const sessions = (res.data as any).sessions as any[];
+  assert.strictEqual(sessions.length, 1);
+  assert.strictEqual(sessions[0].sid, 'session_x');
+  assert.strictEqual(sessions[0].role, 'primary');
+});
+
 test('binding with worker kind shows worker in primary row', async () => {
   const port = fakePort();
   const m = makeMission('m4', {
