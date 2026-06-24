@@ -90,3 +90,44 @@ export function newMission(input: NewMissionInput, now: number, genId: () => str
     updatedAt: now,
   };
 }
+
+export type PlacementDecision =
+  | { go: false; reason: 'dependency'; waitOn: string[] }
+  | { go: false; reason: 'resource'; conflictWith: string }
+  | { go: true; env: 'cloud' }
+  | { go: true; env: 'worktree'; host: string; repo: string; branch: string }
+  | { go: true; env: 'shared'; lease: string };
+
+function isRunning(m: Mission): boolean {
+  return m.status === 'active' && !!m.binding?.sessionId;
+}
+
+/** Resolve where a mission's executor may run: dependency gate → resource conflict → isolation. */
+export function place(m: Mission, all: Mission[]): PlacementDecision {
+  // 1) ordering gate — a dependency is met only if it exists AND is done.
+  const unmet = m.dependsOn.filter((id) => {
+    const dep = all.find((x) => x.id === id);
+    return !dep || dep.status !== 'done';
+  });
+  if (unmet.length > 0) return { go: false, reason: 'dependency', waitOn: unmet };
+
+  // 2) resource conflict — same host, same resource. A running holder always blocks;
+  //    an exclusive resource (either side) is reserved even when its holder is idle/paused.
+  for (const res of m.env.resources) {
+    const holder = all.find(
+      (a) =>
+        a.id !== m.id &&
+        a.env.host === m.env.host &&
+        a.env.resources.includes(res) &&
+        (isRunning(a) || a.env.exclusive === true || m.env.exclusive === true),
+    );
+    if (holder) return { go: false, reason: 'resource', conflictWith: holder.id };
+  }
+
+  // 3) isolate: cloud (separate VM) > worktree (branchable repo); else explicitly shared.
+  if (m.env.isolation === 'cloud') return { go: true, env: 'cloud' };
+  if (m.env.isolation === 'worktree') {
+    return { go: true, env: 'worktree', host: m.env.host ?? '', repo: m.env.repo ?? '', branch: m.env.branch ?? `mission/${m.id}` };
+  }
+  return { go: true, env: 'shared', lease: m.env.resources.join(',') || m.id };
+}
