@@ -1,7 +1,7 @@
 /** Mission CRUD + controller status. Bare {success,data}/{success,error} envelope (like worker.routes). */
 import type { RouteHandler, RouteContext } from '../index';
 import { randomBytes } from 'crypto';
-import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActor } from '../../mission/mission-model';
+import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActor, place, ExecutorState } from '../../mission/mission-model';
 import { resolveMcpActor } from '../../mission/mission-actor';
 import {
   MissionDataPort, getMission, listMissions, putMission, thisNode,
@@ -89,6 +89,39 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
   return ok(m);
 }
 
+// ---------------------------------------------------------------------------
+// Rail handlers (place + executor-status)
+// ---------------------------------------------------------------------------
+
+export async function handlePlace(id: string, port?: MissionDataPort): Promise<Envelope> {
+  const m = await getMission(id, port);
+  if (!m) return fail('NOT_FOUND', `no mission ${id}`);
+  const all = await listMissions(port);
+  return ok(place(m, all));
+}
+
+export async function handleExecutorStatus(
+  id: string,
+  port?: MissionDataPort,
+  readExec?: (m: Mission) => Promise<ExecutorState>,
+): Promise<Envelope> {
+  const m = await getMission(id, port);
+  if (!m) return fail('NOT_FOUND', `no mission ${id}`);
+  const defaultReadExec = async (mission: Mission): Promise<ExecutorState> => {
+    const { readExecutorState } = require('../../mission/mission-controller') as typeof import('../../mission/mission-controller');
+    return readExecutorState(mission);
+  };
+  const doRead = readExec ?? defaultReadExec;
+  const s = await doRead(m);
+  return ok({
+    alive: s.alive,
+    idle: s.idle,
+    serverStalled: s.serverStalled,
+    gate: s.gate,
+    status: s.newOutput ? 'has-output' : 'idle',
+  });
+}
+
 export interface MissionSession { sid: string; kind: 'orchestrator' | 'worker'; role: 'primary' | 'sub'; lastContact?: number; }
 
 export async function handleSessions(
@@ -121,6 +154,9 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
         const job = getScheduledJobs().getJob('mission-controller');
         return ok({ election, job });
       } },
+    // rail routes: /place and /executor-status BEFORE /:id so literals win
+    { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/place$/, handler: async (req) => handlePlace(req.params.id) },
+    { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/executor-status$/, handler: async (req) => handleExecutorStatus(req.params.id) },
     // /mission/:id/sessions BEFORE /mission/:id so the literal suffix wins
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/sessions$/, handler: async (req) => handleSessions(req.params.id) },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handleGet(req.params.id) },

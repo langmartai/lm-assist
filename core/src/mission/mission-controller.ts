@@ -313,6 +313,29 @@ export async function startNativeExecutor(m: Mission, decision: any, deps: Nativ
   return binding;
 }
 
+/**
+ * Read the executor state for a mission using the real cloud/native deps.
+ * Exported so the rail route `handleExecutorStatus` can call it without duplicating logic.
+ */
+export async function readExecutorState(m: Mission): Promise<ExecutorState> {
+  if (isNativeBinding(m.binding)) {
+    const store = new AgentSessionStore({ projectPath: process.cwd(), persist: false });
+    const realReadDeps: NativeReadDeps = {
+      verdict: (sid) => {
+        const v = sessionVerdict(sid);
+        return { driveable: v.inTmux };
+      },
+      readConversation: async (sid) => {
+        const res = await store.getConversation({ sessionId: sid });
+        const msgs = res?.messages ?? [];
+        return { messages: msgs.map((msg) => ({ text: msg.content })) };
+      },
+    };
+    return readNativeExecutor(m, realReadDeps);
+  }
+  return readCloudExecutor(m);
+}
+
 /** Register the scheduled-job handler. Reads live config each run; assembles real deps. */
 export function registerMissionController(
   jobs: { registerHandler: (t: string, fn: any) => void },
