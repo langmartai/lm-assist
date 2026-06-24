@@ -111,6 +111,12 @@ interface ControllerSession {
   startedAt: number;
 }
 
+interface ControllerLeader {
+  node: string | null;
+  host: string | null;
+  isSelf: boolean;
+}
+
 interface ControllerStatus {
   election: {
     isMonitor: boolean;
@@ -127,6 +133,7 @@ interface ControllerStatus {
     } | null;
   };
   controllerSession?: ControllerSession | null;
+  leader?: ControllerLeader | null;
 }
 
 type SessionTransport = 'cloud' | 'native';
@@ -202,6 +209,30 @@ export function MissionsPage() {
     [apiClient, proxy.machineId],
   );
 
+  /**
+   * leaderFetch — targets the leader node for controller chat read/drive/control.
+   * When leader.isSelf is true (or leader is null/unknown) → falls back to apiFetch (local).
+   * When leader.isSelf is false → passes leader.node as machineId, routing via the hub
+   * machine-proxy exactly as CcrCloudView does for cross-node session views.
+   */
+  const leaderFetch = useCallback(
+    async <T,>(
+      leader: ControllerLeader | null | undefined,
+      path: string,
+      opts?: { method?: string; body?: unknown },
+    ): Promise<T> => {
+      if (!leader || leader.isSelf || !leader.node) {
+        return apiFetch<T>(path, opts);
+      }
+      return apiClient.fetchPath<T>(path, {
+        method: opts?.method,
+        body: opts?.body,
+        machineId: leader.node,
+      });
+    },
+    [apiClient, apiFetch],
+  );
+
   // ── State ──
   const [missions, setMissions] = useState<Mission[]>([]);
   const [controller, setController] = useState<ControllerStatus | null>(null);
@@ -272,6 +303,17 @@ export function MissionsPage() {
 
   // Collapsible contributors
   const [contributorsExpanded, setContributorsExpanded] = useState<Set<string>>(new Set());
+
+  // ── Chat (controller) ──
+  const [chatMessages, setChatMessages] = useState<SessionMessage[]>([]);
+  const [chatDraft, setChatDraft] = useState('');
+  const [chatSendBusy, setChatSendBusy] = useState(false);
+  const [chatControlBusy, setChatControlBusy] = useState<Record<string, boolean>>({});
+  const chatPollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Sidebar/create toggle (secondary)
+  const [showItemsSidebar, setShowItemsSidebar] = useState(true);
 
   // ── Repo/branch fetching ──
 
@@ -601,6 +643,109 @@ export function MissionsPage() {
     [apiFetch],
   );
 
+  // ── Controller chat helpers ──
+
+  const readControllerChat = useCallback(
+    async (sid: string, leader: ControllerLeader | null | undefined) => {
+      try {
+        const res = await leaderFetch<{ data?: { messages: SessionMessage[] }; messages?: SessionMessage[] }>(
+          leader,
+          `/mission/session/${encodeURIComponent(sid)}/read`,
+          { method: 'POST', body: { lastN: 30 } },
+        );
+        const msgs = (res as any).data?.messages ?? (res as any).messages ?? [];
+        setChatMessages(msgs);
+        // Auto-scroll to bottom
+        setTimeout(() => {
+          if (chatScrollRef.current) {
+            chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+          }
+        }, 50);
+      } catch {
+        // silently ignore — keep last messages
+      }
+    },
+    [leaderFetch],
+  );
+
+  const sendControllerChat = useCallback(
+    async (sid: string, leader: ControllerLeader | null | undefined) => {
+      const text = chatDraft.trim();
+      if (!text) return;
+      setChatSendBusy(true);
+      try {
+        await leaderFetch(
+          leader,
+          `/mission/session/${encodeURIComponent(sid)}/drive`,
+          { method: 'POST', body: { text } },
+        );
+        setChatDraft('');
+        // Poll immediately after send
+        setTimeout(() => readControllerChat(sid, leader), 600);
+      } catch {
+        // silently ignore
+      } finally {
+        setChatSendBusy(false);
+      }
+    },
+    [leaderFetch, chatDraft, readControllerChat],
+  );
+
+  const controllerChatControl = useCallback(
+    async (sid: string, leader: ControllerLeader | null | undefined, action: 'interrupt' | 'stop' | 'restart') => {
+      setChatControlBusy((p) => ({ ...p, [action]: true }));
+      try {
+        await leaderFetch(
+          leader,
+          `/mission/session/${encodeURIComponent(sid)}/control`,
+          { method: 'POST', body: { action } },
+        );
+        if (action === 'restart') {
+          setControllerSessionDismissed(true);
+        }
+      } catch {
+        // silently ignore
+      } finally {
+        setChatControlBusy((p) => ({ ...p, [action]: false }));
+      }
+    },
+    [leaderFetch],
+  );
+
+  // Start/stop the chat poller when the controller session changes
+  useEffect(() => {
+    const cs = controller?.controllerSession;
+    const leader = controller?.leader;
+    if (!cs) {
+      if (chatPollerRef.current) {
+        clearInterval(chatPollerRef.current);
+        chatPollerRef.current = null;
+      }
+      setChatMessages([]);
+      return;
+    }
+    const sid = cs.cse ?? cs.sessionId;
+    // Initial read
+    readControllerChat(sid, leader);
+    // Poll every 4s
+    if (chatPollerRef.current) clearInterval(chatPollerRef.current);
+    chatPollerRef.current = setInterval(() => readControllerChat(sid, leader), 4000);
+    return () => {
+      if (chatPollerRef.current) {
+        clearInterval(chatPollerRef.current);
+        chatPollerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [controller?.controllerSession?.sessionId, controller?.controllerSession?.cse]);
+
+  // Cleanup chat poller on unmount
+  useEffect(() => {
+    return () => {
+      if (chatPollerRef.current) clearInterval(chatPollerRef.current);
+    };
+  }, []);
+
   // Open/close operate panel and start/stop polling
   const openOperatePanel = useCallback(
     (sid: string) => {
@@ -911,7 +1056,313 @@ export function MissionsPage() {
     ],
   );
 
+  // ── Render helpers ──
+
+  /** Render a single mission item (used in sidebar) */
+  const renderMissionItem = useCallback(
+    (m: Mission) => {
+      const isBusy = busy.has(m.id);
+      const isExpanded = expanded.has(m.id);
+      const objEdit = objDraft[m.id];
+      const hasDetail =
+        m.plan ||
+        (m.nextSteps?.length ?? 0) > 0 ||
+        m.adjustments.length > 0 ||
+        m.results.length > 0;
+      const contribExpanded = contributorsExpanded.has(m.id);
+
+      return (
+        <div
+          key={m.id}
+          className="card"
+          style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}
+        >
+          {/* Top row: title + status */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)', flex: '1 1 auto' }}>
+              {m.title}
+            </span>
+            <span className={`badge ${STATUS_BADGE[m.status]}`}>{m.status}</span>
+            {m.binding ? (
+              <span
+                className="badge badge-outline"
+                style={{ fontSize: 10 }}
+                title={`Session: ${m.binding.sessionId ?? '—'} on ${m.binding.node ?? '—'}`}
+              >
+                {m.binding.kind ?? 'bound'} · {shortId(m.binding.sessionId)}
+              </span>
+            ) : (
+              <span className="badge badge-default">unbound</span>
+            )}
+            {isBusy && <Loader2 size={13} style={{ animation: 'spin 1s linear infinite', color: 'var(--color-text-tertiary)' }} />}
+          </div>
+
+          {/* Objective — editable */}
+          <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
+            <textarea
+              className="input"
+              value={objEdit ?? m.objective}
+              rows={2}
+              style={{ width: '100%', resize: 'vertical', fontSize: 11 }}
+              onChange={(e) => setObjDraft((p) => ({ ...p, [m.id]: e.target.value }))}
+            />
+            {objEdit !== undefined && objEdit !== m.objective && (
+              <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  disabled={isBusy}
+                  onClick={() => {
+                    updateMission(m.id, { objective: objEdit });
+                    setObjDraft((p) => { const n = { ...p }; delete n[m.id]; return n; });
+                  }}
+                >
+                  Save
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setObjDraft((p) => { const n = { ...p }; delete n[m.id]; return n; })}
+                >
+                  Discard
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Progress bar */}
+          {m.progress && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+                <div style={{ flex: 1, height: 4, background: 'var(--color-bg-elevated)', borderRadius: 2, overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      width: `${Math.min(100, m.progress.percent)}%`,
+                      height: '100%',
+                      background: STATUS_COLORS[m.status],
+                      borderRadius: 2,
+                      transition: 'width 0.3s ease',
+                    }}
+                  />
+                </div>
+                <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', minWidth: 28 }}>
+                  {m.progress.percent}%
+                </span>
+              </div>
+              {m.progress.summary && (
+                <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>{m.progress.summary}</div>
+              )}
+            </div>
+          )}
+
+          {/* Meta row */}
+          <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <span>
+              <span style={{ fontFamily: 'var(--font-mono)' }}>
+                {m.env.isolation}{m.env.repo ? ` · ${m.env.repo}` : ''}
+              </span>
+            </span>
+            <span>id: <span style={{ fontFamily: 'var(--font-mono)' }}>{m.id}</span></span>
+            {m.control.waitReason && (
+              <span style={{ color: 'var(--color-status-orange)' }}>waiting: {m.control.waitReason}</span>
+            )}
+          </div>
+
+          {/* Provenance */}
+          {(m.createdBy || m.adjustments.length > 0) && (
+            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {m.createdBy && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 3, flexWrap: 'wrap' }}>
+                  <span>by</span>
+                  <span style={{ color: 'var(--color-text-secondary)' }}>{renderActorLink(m.createdBy, m)}</span>
+                  <span>via {m.createdBy.channel}</span>
+                </div>
+              )}
+              {m.adjustments.length > 0 && (
+                <div>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    style={{ padding: '0 2px', fontSize: 10 }}
+                    onClick={() => toggleContributors(m.id)}
+                  >
+                    {contribExpanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+                    {' '}Contributors ({m.adjustments.length})
+                  </button>
+                  {contribExpanded && (
+                    <div style={{ marginTop: 3, paddingLeft: 8, borderLeft: '2px solid var(--color-border-subtle)', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      {m.adjustments.slice().reverse().map((adj, i) => (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 3, flexWrap: 'wrap' }}>
+                          <span>{fmtTime(adj.at)}</span>
+                          <span>·</span>
+                          <span style={{ color: 'var(--color-text-secondary)' }}>
+                            {adj.actor ? renderActorLink(adj.actor, m) : adj.by}
+                          </span>
+                          <span>—</span>
+                          <span>{adj.change}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Detail toggle */}
+          {hasDetail && (
+            <button
+              className="btn btn-ghost btn-sm"
+              style={{ alignSelf: 'flex-start', padding: '0 4px', fontSize: 11 }}
+              onClick={() => toggleExpand(m.id)}
+            >
+              {isExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />} detail
+            </button>
+          )}
+
+          {isExpanded && (
+            <div style={{ background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border-subtle)', borderRadius: 'var(--radius-sm)', padding: 8, fontSize: 11, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {m.plan && (
+                <div>
+                  <div style={{ fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 3 }}>Plan</div>
+                  <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--color-text-secondary)', margin: 0, fontFamily: 'inherit' }}>{m.plan}</pre>
+                </div>
+              )}
+              {(m.nextSteps?.length ?? 0) > 0 && (
+                <div>
+                  <div style={{ fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 3 }}>Next steps</div>
+                  <ul style={{ margin: 0, paddingLeft: 14 }}>
+                    {m.nextSteps!.map((s, i) => <li key={i} style={{ color: 'var(--color-text-secondary)' }}>{s}</li>)}
+                  </ul>
+                </div>
+              )}
+              {m.results.length > 0 && (
+                <div>
+                  <div style={{ fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 3 }}>Results</div>
+                  {m.results.map((r, i) => (
+                    <div key={i} style={{ color: 'var(--color-text-tertiary)', marginBottom: 2 }}>
+                      {fmtTime(r.at)} · {r.ref}{r.summary ? ` — ${r.summary}` : ''}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {m.adjustments.length > 0 && (
+                <div>
+                  <div style={{ fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 3 }}>
+                    Audit trail ({m.adjustments.length})
+                  </div>
+                  <div style={{ maxHeight: 120, overflow: 'auto', fontFamily: 'var(--font-mono)', fontSize: 10 }}>
+                    {m.adjustments.slice().reverse().map((a, i) => (
+                      <div key={i} style={{ color: 'var(--color-text-tertiary)', marginBottom: 2 }}>
+                        [{fmtTime(a.at)}]{' '}
+                        <span style={{ color: 'var(--color-text-secondary)' }}>{a.by}</span>
+                        {' · '}{a.trigger} → {a.change}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Action buttons */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', borderTop: '1px solid var(--color-border-subtle)', paddingTop: 8 }}>
+            {m.status === 'active' && (
+              <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => updateMission(m.id, { status: 'paused' })} title="Pause">
+                <Pause size={11} /> Pause
+              </button>
+            )}
+            {(m.status === 'paused' || m.status === 'blocked' || m.status === 'waiting') && (
+              <button className="btn btn-primary btn-sm" disabled={isBusy} onClick={() => updateMission(m.id, { status: 'active' })} title="Resume">
+                <Play size={11} /> Resume
+              </button>
+            )}
+            {m.status !== 'done' && m.status !== 'failed' && (
+              <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => updateMission(m.id, { status: 'done' })} title="Mark done">
+                <CheckCircle size={11} /> Done
+              </button>
+            )}
+            {m.binding?.sessionId && (
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => toggleSessionsExpand(m.id, !!m.binding?.sessionId)}
+                title={sessionsExpanded.has(m.id) ? 'Hide sessions' : 'Show sessions'}
+              >
+                <Plug size={11} />
+                {sessionsExpanded.has(m.id) ? ' Sessions ▲' : ' Sessions ▾'}
+                {sessionsFetching.has(m.id) && <Loader2 size={10} style={{ marginLeft: 3, animation: 'spin 1s linear infinite' }} />}
+              </button>
+            )}
+          </div>
+
+          {/* Session list */}
+          {sessionsExpanded.has(m.id) && m.binding?.sessionId && (() => {
+            const mSessions = sessionsByMission[m.id] ?? [];
+            return (
+              <div style={{ background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border-subtle)', borderRadius: 'var(--radius-sm)', padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3 }}>Sessions</div>
+                {mSessions.length === 0 && !sessionsFetching.has(m.id) && (
+                  <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>No sessions found (binding: {m.binding.sessionId})</div>
+                )}
+                {mSessions.map((s) => {
+                  const isCloud = /^session_/.test(s.sid);
+                  const shortSid = s.sid.replace(/^session_/, '').slice(0, 8);
+                  const label = `${s.role} · ${s.kind} · ${shortSid}`;
+                  const isOpen = connectSid === s.sid;
+                  return (
+                    <div key={s.sid} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontFamily: 'var(--font-mono)' }}>
+                      <span style={{ flex: 1, color: 'var(--color-text-secondary)' }}>{label}</span>
+                      {isCloud ? (
+                        <button
+                          className={`btn btn-sm ${isOpen ? 'btn-primary' : 'btn-ghost'}`}
+                          onClick={() => setConnectSid(isOpen ? null : s.sid)}
+                        >
+                          <Plug size={10} />{isOpen ? ' Close' : ' Open'}
+                        </button>
+                      ) : (
+                        <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>(local)</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+
+          {/* Inline cloud view */}
+          {connectSid && (() => {
+            const mSessions = sessionsByMission[m.id] ?? [];
+            const owns = mSessions.some((s) => s.sid === connectSid) ||
+              (m.binding?.sessionId === connectSid && mSessions.length === 0);
+            const ownsActor = !owns && connectSid && (
+              (m.createdBy?.kind === 'ccr' && m.createdBy?.id === connectSid) ||
+              m.adjustments.some((adj) => adj.actor?.kind === 'ccr' && adj.actor?.id === connectSid)
+            );
+            return (owns || ownsActor) && /^session_/.test(connectSid) ? (
+              <CcrCloudView
+                sid={connectSid}
+                webUrl={`https://claude.ai/code/${connectSid}`}
+                apiFetch={apiFetch}
+                onClose={() => setConnectSid(null)}
+              />
+            ) : null;
+          })()}
+        </div>
+      );
+    },
+    [
+      busy, expanded, objDraft, contributorsExpanded, sessionsExpanded, sessionsFetching,
+      sessionsByMission, connectSid, updateMission, toggleExpand, toggleContributors,
+      toggleSessionsExpand, renderActorLink, apiFetch,
+    ],
+  );
+
   // ── Render ──
+  const cs = controller?.controllerSession ?? null;
+  const leader = controller?.leader ?? null;
+  const controllerSid = cs ? (cs.cse ?? cs.sessionId) : null;
+  const leaderLabel = leader
+    ? (leader.host || leader.node || 'unknown')
+    : (controller?.election.monitorNodeId ? shortId(controller.election.monitorNodeId) : null);
+  const isControllerLive = !!cs;
+
   return (
     <div
       style={{
@@ -925,37 +1376,60 @@ export function MissionsPage() {
       {/* ── Header ── */}
       <div
         style={{
-          padding: '16px 20px',
+          padding: '12px 20px',
           borderBottom: '1px solid var(--color-border-default)',
           display: 'flex',
           alignItems: 'center',
-          gap: 12,
+          gap: 10,
+          flexWrap: 'wrap',
         }}
       >
-        <Target size={20} style={{ color: 'var(--color-accent)' }} />
-        <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+        <Target size={18} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
+        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-text-primary)' }}>
           Missions
         </div>
-        <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>
-          Mission Controller
-        </span>
+
+        {/* ── Leader badge ── */}
+        {controller && leaderLabel && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '3px 10px',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--color-bg-elevated)',
+              border: '1px solid var(--color-border-subtle)',
+              fontSize: 12,
+              color: 'var(--color-text-secondary)',
+            }}
+          >
+            <span
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: '50%',
+                background: isControllerLive ? 'var(--color-status-green)' : 'var(--color-text-tertiary)',
+                flexShrink: 0,
+              }}
+            />
+            Leader: <span style={{ fontWeight: 600, color: 'var(--color-text-primary)' }}>{leaderLabel}</span>
+            {' '}· promoted
+            {!isControllerLive && <span style={{ color: 'var(--color-text-tertiary)', marginLeft: 4 }}>(no controller)</span>}
+          </div>
+        )}
+
         <div style={{ flex: 1 }} />
-        <button
-          className="btn btn-ghost btn-sm"
-          onClick={fetchAll}
-          disabled={loading}
-          title="Refresh"
-        >
-          <RefreshCw
-            size={14}
-            style={loading ? { animation: 'spin 1s linear infinite' } : undefined}
-          />
+        <button className="btn btn-ghost btn-sm" onClick={fetchAll} disabled={loading} title="Refresh">
+          <RefreshCw size={13} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} />
         </button>
         <button
-          className="btn btn-primary btn-sm"
-          onClick={() => setShowCreate((v) => !v)}
+          className="btn btn-ghost btn-sm"
+          onClick={() => setShowItemsSidebar((v) => !v)}
+          title={showItemsSidebar ? 'Hide missions sidebar' : 'Show missions sidebar'}
         >
-          <Plus size={14} /> New mission
+          {showItemsSidebar ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+          {' '}Missions
         </button>
       </div>
 
@@ -963,8 +1437,8 @@ export function MissionsPage() {
       {error && (
         <div
           style={{
-            margin: '12px 20px 0',
-            padding: '8px 12px',
+            margin: '8px 16px 0',
+            padding: '6px 10px',
             borderRadius: 'var(--radius-md)',
             background: 'var(--color-bg-elevated)',
             border: '1px solid var(--color-status-red)',
@@ -976,993 +1450,512 @@ export function MissionsPage() {
           }}
         >
           <span style={{ flex: 1 }}>{error}</span>
-          <button className="btn btn-ghost btn-sm" onClick={() => setError(null)}>
-            <X size={12} />
-          </button>
+          <button className="btn btn-ghost btn-sm" onClick={() => setError(null)}><X size={12} /></button>
         </div>
       )}
 
-      <div style={{ flex: 1, overflow: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
-
-        {/* ── Controller status card ── */}
-        {controller && (
-          <div className="card" style={{ padding: 14 }}>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                marginBottom: 8,
-                flexWrap: 'wrap',
-              }}
-            >
-              <span
-                style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}
-              >
-                Controller
-              </span>
-              {controller.election.isMonitor ? (
-                <span className="badge badge-green">this node is monitor</span>
-              ) : (
-                <span className="badge badge-default">
-                  monitor: {shortId(controller.election.monitorNodeId)}
-                </span>
-              )}
-              <span className={`badge ${controller.job.enabled ? 'badge-green' : 'badge-default'}`}>
-                {controller.job.enabled ? `enabled · every ${controller.job.intervalMinutes}m` : 'disabled'}
-              </span>
-              <div style={{ flex: 1 }} />
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={runTick}
-                disabled={tickBusy}
-                title="Run controller tick now"
-              >
-                {tickBusy ? (
-                  <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />
-                ) : (
-                  <Play size={13} />
-                )}{' '}
-                Run tick now
-              </button>
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', display: 'flex', flexDirection: 'column', gap: 3 }}>
-              <div>
-                self: <span style={{ fontFamily: 'var(--font-mono)' }}>{controller.election.selfId}</span>
-              </div>
-              {controller.job.lastRun ? (
-                <div>
-                  last tick:{' '}
-                  <span>{fmtTime(controller.job.lastRun.at)}</span>{' '}
-                  <span
-                    style={{
-                      color:
-                        controller.job.lastRun.status === 'ok'
-                          ? 'var(--color-status-green)'
-                          : 'var(--color-status-red)',
-                      fontWeight: 600,
-                    }}
-                  >
-                    {controller.job.lastRun.status}
-                  </span>{' '}
-                  — {controller.job.lastRun.result}
-                </div>
-              ) : (
-                <div>last tick: never</div>
-              )}
-              {tickResult && (
-                <div style={{ color: 'var(--color-accent)', marginTop: 2 }}>
-                  tick result: {tickResult}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ── Controller session panel (Wave 2) ── */}
-        {controller?.controllerSession ? (
-          <div className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
-                Mission Controller
-              </span>
+      {/* ── Two-pane body ── */}
+      <div
+        style={{
+          flex: 1,
+          display: 'flex',
+          overflow: 'hidden',
+          gap: 0,
+        }}
+      >
+        {/* ── PRIMARY PANE: Controller chat ── */}
+        <div
+          style={{
+            flex: showItemsSidebar ? '1 1 0' : '1 1 100%',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            borderRight: showItemsSidebar ? '1px solid var(--color-border-default)' : 'none',
+            minWidth: 0,
+          }}
+        >
+          {/* Chat header */}
+          <div
+            style={{
+              padding: '10px 16px',
+              borderBottom: '1px solid var(--color-border-subtle)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              flexShrink: 0,
+            }}
+          >
+            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+              Mission Controller
+            </span>
+            {isControllerLive ? (
               <span className="badge badge-green">live</span>
-              <span
-                style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--color-text-tertiary)' }}
-              >
-                {controller.controllerSession.node}
+            ) : (
+              <span className="badge badge-default">offline</span>
+            )}
+            {cs && (
+              <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--color-text-tertiary)' }}>
+                {cs.node} · {shortId(controllerSid)}
               </span>
-              <div style={{ flex: 1 }} />
+            )}
+            <div style={{ flex: 1 }} />
+            {/* Controller status: tick + job info */}
+            {controller && (
+              <>
+                <span className={`badge ${controller.job.enabled ? 'badge-green' : 'badge-default'}`} style={{ fontSize: 10 }}>
+                  {controller.job.enabled ? `every ${controller.job.intervalMinutes}m` : 'disabled'}
+                </span>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={runTick}
+                  disabled={tickBusy}
+                  title="Run controller tick now"
+                  style={{ fontSize: 11 }}
+                >
+                  {tickBusy ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={11} />}
+                  {' '}Tick
+                </button>
+              </>
+            )}
+            {/* Cloud view button for cloud sessions */}
+            {cs && controllerSid && /^(session_|cse_)/.test(controllerSid) && (
               <button
                 className={`btn btn-sm ${controllerSessionOpen ? 'btn-primary' : 'btn-ghost'}`}
                 onClick={() => {
                   setControllerSessionOpen((v) => {
-                    if (v) setControllerSessionDismissed(true); // user is closing — don't auto-reopen
+                    if (v) setControllerSessionDismissed(true);
                     return !v;
                   });
                 }}
+                style={{ fontSize: 11 }}
               >
-                <Plug size={12} /> {controllerSessionOpen ? 'Close' : 'Open session'}
+                <Target size={11} /> {controllerSessionOpen ? 'Close view' : 'Cloud view'}
               </button>
+            )}
+          </div>
+
+          {/* Tick result */}
+          {tickResult && (
+            <div style={{ padding: '4px 16px', fontSize: 11, color: 'var(--color-accent)', background: 'var(--color-bg-elevated)', borderBottom: '1px solid var(--color-border-subtle)' }}>
+              Tick: {tickResult}
             </div>
-            {controllerSessionOpen && (() => {
-              const cs = controller.controllerSession!;
-              const viewSid = cs.cse ?? cs.sessionId;
-              const isCloud = /^(session_|cse_)/.test(viewSid);
+          )}
+
+          {/* Cloud view (optional) */}
+          {controllerSessionOpen && cs && controllerSid && /^(session_|cse_)/.test(controllerSid) && (
+            <div style={{ padding: '8px 16px', borderBottom: '1px solid var(--color-border-subtle)', flexShrink: 0 }}>
+              <CcrCloudView
+                sid={controllerSid}
+                webUrl={`https://claude.ai/code/${controllerSid}`}
+                apiFetch={apiFetch}
+                onClose={() => { setControllerSessionOpen(false); setControllerSessionDismissed(true); }}
+              />
+            </div>
+          )}
+
+          {/* Chat transcript area */}
+          <div
+            ref={chatScrollRef}
+            style={{
+              flex: 1,
+              overflow: 'auto',
+              padding: '12px 16px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+            }}
+          >
+            {!cs && !loading && (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  height: '100%',
+                  gap: 8,
+                  color: 'var(--color-text-tertiary)',
+                }}
+              >
+                <AlertCircle size={28} style={{ color: 'var(--color-text-tertiary)' }} />
+                <div style={{ fontSize: 13, fontWeight: 500 }}>No mission controller running</div>
+                <div style={{ fontSize: 12, textAlign: 'center' }}>
+                  {controller
+                    ? 'Supervisor will launch the controller on the next tick'
+                    : 'Loading controller status…'}
+                </div>
+                {controller && (
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={runTick}
+                    disabled={tickBusy}
+                    style={{ marginTop: 4 }}
+                  >
+                    {tickBusy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={13} />}
+                    {' '}Run tick now
+                  </button>
+                )}
+              </div>
+            )}
+            {cs && chatMessages.length === 0 && (
+              <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', textAlign: 'center', padding: '16px 0' }}>
+                No messages yet — the controller is running
+              </div>
+            )}
+            {chatMessages.map((msg, i) => {
+              const msgRole = (msg.role as string) ?? (msg.type as string) ?? 'msg';
+              let text = '';
+              if (typeof msg.content === 'string') {
+                text = msg.content;
+              } else if (Array.isArray(msg.content)) {
+                text = msg.content
+                  .map((c) => (typeof c === 'object' && c?.type === 'text' ? c.text : ''))
+                  .filter(Boolean)
+                  .join('\n');
+              }
+              const isUser = msgRole === 'user';
+              const isAssistant = msgRole === 'assistant';
               return (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {isCloud ? (
-                    <CcrCloudView
-                      sid={viewSid}
-                      webUrl={`https://claude.ai/code/${viewSid}`}
-                      apiFetch={apiFetch}
-                      onClose={() => { setControllerSessionOpen(false); setControllerSessionDismissed(true); }}
-                    />
-                  ) : (
-                    <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                      Native session: <span style={{ fontFamily: 'var(--font-mono)' }}>{viewSid}</span>
-                      {cs.tmux && <span> · tmux: <span style={{ fontFamily: 'var(--font-mono)' }}>{cs.tmux}</span></span>}
-                    </div>
-                  )}
-                  {/* Operate panel for the controller session itself */}
-                  {renderOperatePanel({
-                    sid: cs.sessionId,
-                    missionId: null,
-                    role: 'controller',
-                    transport: isCloud ? 'cloud' : 'native',
-                  })}
+                <div
+                  key={i}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: isUser ? 'flex-end' : 'flex-start',
+                    gap: 2,
+                  }}
+                >
+                  <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', paddingRight: isUser ? 0 : 0 }}>
+                    {isUser ? 'you' : isAssistant ? 'controller' : msgRole}
+                  </span>
+                  <div
+                    style={{
+                      maxWidth: '82%',
+                      padding: '6px 10px',
+                      borderRadius: 'var(--radius-md)',
+                      background: isUser
+                        ? 'var(--color-accent)'
+                        : 'var(--color-bg-elevated)',
+                      color: isUser
+                        ? '#fff'
+                        : 'var(--color-text-primary)',
+                      fontSize: 12,
+                      lineHeight: 1.5,
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      border: isUser ? 'none' : '1px solid var(--color-border-subtle)',
+                    }}
+                  >
+                    {text || '(no text)'}
+                  </div>
                 </div>
               );
-            })()}
+            })}
           </div>
-        ) : (
-          !loading && controller && (
+
+          {/* Chat composer */}
+          {cs && controllerSid && (
             <div
               style={{
-                padding: '8px 12px',
-                border: '1px solid var(--color-border-subtle)',
-                borderRadius: 'var(--radius-sm)',
-                fontSize: 12,
-                color: 'var(--color-text-tertiary)',
+                padding: '10px 16px',
+                borderTop: '1px solid var(--color-border-subtle)',
                 display: 'flex',
-                alignItems: 'center',
+                flexDirection: 'column',
                 gap: 6,
+                flexShrink: 0,
+                background: 'var(--color-bg-root)',
               }}
             >
-              <AlertCircle size={13} /> Controller not running — supervisor will launch on next tick
-            </div>
-          )
-        )}
-
-        {/* ── All sessions panel (fleet operability) ── */}
-        <div className="card" style={{ padding: 14 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
-              All Sessions
-            </span>
-            {allSessions.length > 0 && (
-              <span className="badge badge-outline">{allSessions.length}</span>
-            )}
-            <div style={{ flex: 1 }} />
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={toggleAllSessions}
-              title={allSessionsExpanded ? 'Collapse' : 'Show all mission sessions'}
-            >
-              {allSessionsLoading ? (
-                <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />
-              ) : allSessionsExpanded ? (
-                <ChevronDown size={12} />
-              ) : (
-                <ChevronRight size={12} />
-              )}
-              {allSessionsExpanded ? ' Collapse' : ' Expand'}
-            </button>
-            {allSessionsExpanded && (
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={fetchAllSessions}
-                disabled={allSessionsLoading}
-                title="Refresh sessions list"
-              >
-                <RefreshCw size={12} />
-              </button>
-            )}
-          </div>
-          {allSessionsExpanded && (
-            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {allSessions.length === 0 && !allSessionsLoading && (
-                <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>
-                  No active sessions
-                </div>
-              )}
-              {allSessions.map((s) => renderOperatePanel(s))}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+                <textarea
+                  className="input"
+                  value={chatDraft}
+                  rows={3}
+                  placeholder="Type a message to the controller… (Ctrl/Cmd+Enter to send)"
+                  style={{ flex: 1, resize: 'vertical', fontSize: 12 }}
+                  onChange={(e) => setChatDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                      e.preventDefault();
+                      sendControllerChat(controllerSid, leader);
+                    }
+                  }}
+                />
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={() => sendControllerChat(controllerSid, leader)}
+                  disabled={chatSendBusy || !chatDraft.trim()}
+                  title="Send (Ctrl/Cmd+Enter)"
+                  style={{ height: 'auto', alignSelf: 'stretch' }}
+                >
+                  {chatSendBusy ? (
+                    <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />
+                  ) : (
+                    <Send size={13} />
+                  )}
+                </button>
+              </div>
+              {/* Control buttons row */}
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => controllerChatControl(controllerSid, leader, 'interrupt')}
+                  disabled={!!chatControlBusy['interrupt']}
+                  title="Interrupt controller"
+                >
+                  {chatControlBusy['interrupt'] ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <AlertCircle size={11} />} Interrupt
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => controllerChatControl(controllerSid, leader, 'stop')}
+                  disabled={!!chatControlBusy['stop']}
+                  title="Stop controller"
+                >
+                  {chatControlBusy['stop'] ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Square size={11} />} Stop
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => controllerChatControl(controllerSid, leader, 'restart')}
+                  disabled={!!chatControlBusy['restart']}
+                  title="Restart controller (supervisor will relaunch)"
+                >
+                  {chatControlBusy['restart'] ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <RotateCcw size={11} />} Restart
+                </button>
+              </div>
             </div>
           )}
         </div>
 
-        {/* ── Create form ── */}
-        {showCreate && (
+        {/* ── SECONDARY PANE: Mission items sidebar ── */}
+        {showItemsSidebar && (
           <div
-            className="card"
-            style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}
+            style={{
+              width: 340,
+              flexShrink: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            }}
           >
+            {/* Sidebar header */}
             <div
-              style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 2 }}
+              style={{
+                padding: '10px 14px',
+                borderBottom: '1px solid var(--color-border-subtle)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                flexShrink: 0,
+              }}
             >
-              New Mission
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-start' }}>
-              <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', flex: '1 1 200px' }}>
-                title *
-                <br />
-                <input
-                  className="input"
-                  value={form.title}
-                  placeholder="e.g. Migrate auth module"
-                  style={{ width: '100%' }}
-                  onChange={(e) => setForm({ ...form, title: e.target.value })}
-                />
-              </label>
-              <label style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
-                isolation
-                <br />
-                <select
-                  className="input"
-                  value={form.isolation}
-                  onChange={(e) =>
-                    setForm({ ...form, isolation: e.target.value as Isolation })
-                  }
-                >
-                  <option value="cloud">cloud</option>
-                  <option value="worktree">worktree</option>
-                  <option value="shared">shared</option>
-                </select>
-              </label>
-            </div>
-            <label style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
-              objective * — what the mission must accomplish
-              <br />
-              <textarea
-                className="input"
-                value={form.objective}
-                placeholder="Describe the goal in detail…"
-                rows={3}
-                style={{ width: '100%', resize: 'vertical' }}
-                onChange={(e) => setForm({ ...form, objective: e.target.value })}
-              />
-            </label>
-
-            {/* ── Repo / Branch pickers ── */}
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              {/* Repo */}
-              <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', flex: '1 1 180px' }}>
-                repo (optional)
-                <br />
-                {reposLoading ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-                    <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />
-                    <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>loading repos…</span>
-                  </div>
-                ) : reposError || repos.length === 0 ? (
-                  <>
-                    <input
-                      className="input"
-                      value={repoText}
-                      placeholder="owner/repo"
-                      style={{ width: '100%' }}
-                      onChange={(e) => setRepoText(e.target.value)}
-                    />
-                    {reposError && (
-                      <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                        couldn&apos;t load repos — type manually
-                      </span>
-                    )}
-                  </>
-                ) : customRepo ? (
-                  <>
-                    <input
-                      className="input"
-                      value={repoText}
-                      placeholder="owner/repo"
-                      style={{ width: '100%' }}
-                      onChange={(e) => setRepoText(e.target.value)}
-                    />
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      style={{ marginTop: 2, fontSize: 11 }}
-                      onClick={() => { setCustomRepo(false); setRepoText(''); }}
-                    >
-                      pick from list
-                    </button>
-                  </>
-                ) : (
-                  <select
-                    className="input"
-                    value={selectedRepo}
-                    style={{ width: '100%' }}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      if (v === '__custom__') {
-                        setCustomRepo(true);
-                        setSelectedRepo('');
-                        setBranches([]);
-                        setSelectedBranch('');
-                      } else {
-                        setSelectedRepo(v);
-                        setSelectedBranch('');
-                        setBranches([]);
-                        if (v) fetchBranches(v);
-                      }
-                    }}
-                  >
-                    <option value="">— none —</option>
-                    {repos.map((r) => (
-                      <option key={r} value={r}>{r}</option>
-                    ))}
-                    <option value="__custom__">— custom —</option>
-                  </select>
-                )}
-              </label>
-
-              {/* Branch */}
-              <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', flex: '1 1 180px' }}>
-                branch (optional)
-                <br />
-                {branchesLoading ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-                    <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />
-                    <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>loading branches…</span>
-                  </div>
-                ) : customBranch ? (
-                  <>
-                    <input
-                      className="input"
-                      value={branchText}
-                      placeholder="branch name"
-                      style={{ width: '100%' }}
-                      onChange={(e) => setBranchText(e.target.value)}
-                    />
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      style={{ marginTop: 2, fontSize: 11 }}
-                      onClick={() => { setCustomBranch(false); setBranchText(''); }}
-                    >
-                      pick from list
-                    </button>
-                  </>
-                ) : branches.length > 0 ? (
-                  <select
-                    className="input"
-                    value={selectedBranch}
-                    style={{ width: '100%' }}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      if (v === '__custom__') {
-                        setCustomBranch(true);
-                        setSelectedBranch('');
-                      } else {
-                        setSelectedBranch(v);
-                      }
-                    }}
-                  >
-                    <option value="">— none —</option>
-                    {branches.map((b) => (
-                      <option key={b} value={b}>{b}</option>
-                    ))}
-                    <option value="__custom__">— custom —</option>
-                  </select>
-                ) : (
-                  <input
-                    className="input"
-                    value={branchText}
-                    placeholder="branch name"
-                    style={{ width: '100%' }}
-                    onChange={(e) => setBranchText(e.target.value)}
-                  />
-                )}
-              </label>
-            </div>
-
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', flex: '1 1 180px' }}>
-                projects (comma-separated, optional)
-                <br />
-                <input
-                  className="input"
-                  value={form.projects}
-                  placeholder="owner/repo, …"
-                  style={{ width: '100%' }}
-                  onChange={(e) => setForm({ ...form, projects: e.target.value })}
-                />
-              </label>
-              <label style={{ fontSize: 12, color: 'var(--color-text-secondary)', flex: '1 1 180px' }}>
-                depends on (mission IDs, comma-separated)
-                <br />
-                <input
-                  className="input"
-                  value={form.dependsOn}
-                  placeholder="ms-abc123, …"
-                  style={{ width: '100%' }}
-                  onChange={(e) => setForm({ ...form, dependsOn: e.target.value })}
-                />
-              </label>
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                className="btn btn-primary btn-sm"
-                disabled={creating || !form.title.trim() || !form.objective.trim()}
-                onClick={createMission}
-              >
-                {creating ? (
-                  <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
-                ) : (
-                  'Create'
-                )}
-              </button>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                Missions
+              </span>
+              {missions.length > 0 && (
+                <span className="badge badge-outline">{missions.length}</span>
+              )}
+              <div style={{ flex: 1 }} />
               <button
                 className="btn btn-ghost btn-sm"
-                onClick={() => {
-                  setShowCreate(false);
-                  setForm({
-                    title: '',
-                    objective: '',
-                    isolation: 'cloud',
-                    projects: '',
-                    dependsOn: '',
-                  });
-                }}
+                onClick={toggleAllSessions}
+                title={allSessionsExpanded ? 'Hide all sessions' : 'All sessions'}
               >
-                Cancel
+                <Plug size={12} />
               </button>
             </div>
-          </div>
-        )}
 
-        {/* ── Mission list ── */}
-        {loading && missions.length === 0 ? (
-          <div className="empty-state">
-            <Loader2 size={24} style={{ animation: 'spin 1s linear infinite' }} />
-            <span style={{ fontSize: 12 }}>Loading…</span>
-          </div>
-        ) : missions.length === 0 ? (
-          <div className="empty-state">
-            <Target size={32} className="empty-state-icon" />
-            <div>No missions yet</div>
-            <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>
-              Create a mission to get started.
-            </div>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {missions.map((m) => {
-              const isBusy = busy.has(m.id);
-              const isExpanded = expanded.has(m.id);
-              const objEdit = objDraft[m.id];
-              const hasDetail =
-                m.plan ||
-                (m.nextSteps?.length ?? 0) > 0 ||
-                m.adjustments.length > 0 ||
-                m.results.length > 0;
+            <div style={{ flex: 1, overflow: 'auto', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
 
-              const contribExpanded = contributorsExpanded.has(m.id);
-
-              return (
-                <div
-                  key={m.id}
-                  className="card"
-                  style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}
-                >
-                  {/* Top row: title + status + binding */}
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 10,
-                      flexWrap: 'wrap',
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 600,
-                        color: 'var(--color-text-primary)',
-                        flex: '1 1 auto',
-                      }}
-                    >
-                      {m.title}
-                    </span>
-                    <span className={`badge ${STATUS_BADGE[m.status]}`}>{m.status}</span>
-                    {m.binding ? (
-                      <span
-                        className="badge badge-outline"
-                        title={`Session: ${m.binding.sessionId ?? '—'} on ${m.binding.node ?? '—'}`}
-                      >
-                        {m.binding.kind ?? 'bound'} · {shortId(m.binding.sessionId)} ·{' '}
-                        {shortId(m.binding.node)}
-                      </span>
-                    ) : (
-                      <span className="badge badge-default">unbound</span>
-                    )}
-                    {isBusy && (
-                      <Loader2
-                        size={14}
-                        style={{
-                          animation: 'spin 1s linear infinite',
-                          color: 'var(--color-text-tertiary)',
-                        }}
-                      />
-                    )}
-                  </div>
-
-                  {/* Objective — editable */}
-                  <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
-                    <textarea
-                      className="input"
-                      value={objEdit ?? m.objective}
-                      rows={2}
-                      style={{ width: '100%', resize: 'vertical', fontSize: 12 }}
-                      onChange={(e) =>
-                        setObjDraft((p) => ({ ...p, [m.id]: e.target.value }))
-                      }
-                    />
-                    {objEdit !== undefined && objEdit !== m.objective && (
-                      <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                        <button
-                          className="btn btn-ghost btn-sm"
-                          disabled={isBusy}
-                          onClick={() => {
-                            updateMission(m.id, { objective: objEdit });
-                            setObjDraft((p) => {
-                              const n = { ...p };
-                              delete n[m.id];
-                              return n;
-                            });
-                          }}
-                        >
-                          Save objective
-                        </button>
-                        <button
-                          className="btn btn-ghost btn-sm"
-                          onClick={() =>
-                            setObjDraft((p) => {
-                              const n = { ...p };
-                              delete n[m.id];
-                              return n;
-                            })
-                          }
-                        >
-                          Discard
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Progress bar */}
-                  {m.progress && (
-                    <div>
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 8,
-                          marginBottom: 4,
-                        }}
-                      >
-                        <div
-                          style={{
-                            flex: 1,
-                            height: 6,
-                            background: 'var(--color-bg-elevated)',
-                            borderRadius: 3,
-                            overflow: 'hidden',
-                          }}
-                        >
-                          <div
-                            style={{
-                              width: `${Math.min(100, m.progress.percent)}%`,
-                              height: '100%',
-                              background: STATUS_COLORS[m.status],
-                              borderRadius: 3,
-                              transition: 'width 0.3s ease',
-                            }}
-                          />
-                        </div>
-                        <span
-                          style={{
-                            fontSize: 11,
-                            color: 'var(--color-text-tertiary)',
-                            minWidth: 32,
-                          }}
-                        >
-                          {m.progress.percent}%
-                        </span>
-                      </div>
-                      {m.progress.summary && (
-                        <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                          {m.progress.summary}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Meta row: env, projects, depends */}
-                  <div
-                    style={{
-                      fontSize: 11,
-                      color: 'var(--color-text-tertiary)',
-                      display: 'flex',
-                      flexWrap: 'wrap',
-                      gap: 12,
-                    }}
-                  >
-                    <span>
-                      isolation:{' '}
-                      <span style={{ fontFamily: 'var(--font-mono)' }}>
-                        {m.env.isolation}
-                        {m.env.host ? ` @ ${m.env.host}` : ''}
-                        {m.env.repo ? ` · ${m.env.repo}` : ''}
-                        {m.env.resources.length > 0
-                          ? ` · resources: ${m.env.resources.join(', ')}`
-                          : ''}
-                      </span>
-                    </span>
-                    {m.projects.length > 0 && (
-                      <span>projects: {m.projects.join(', ')}</span>
-                    )}
-                    {m.dependsOn.length > 0 && (
-                      <span>depends: {m.dependsOn.map(shortId).join(', ')}</span>
-                    )}
-                    <span>id: <span style={{ fontFamily: 'var(--font-mono)' }}>{m.id}</span></span>
-                    <span>updated: {fmtTime(m.updatedAt)}</span>
-                    {m.control.nudgeCount > 0 && (
-                      <span>
-                        nudges: {m.control.nudgeCount} · backoff step: {m.control.backoffStep}
-                      </span>
-                    )}
-                    {m.control.waitReason && (
-                      <span style={{ color: 'var(--color-status-orange)' }}>
-                        waiting: {m.control.waitReason}
-                      </span>
-                    )}
-                  </div>
-
-                  {/* ── Provenance: created by + contributors ── */}
-                  {(m.createdBy || m.adjustments.length > 0) && (
-                    <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', display: 'flex', flexDirection: 'column', gap: 3 }}>
-                      {m.createdBy && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-                          <span>Created by</span>
-                          <span style={{ color: 'var(--color-text-secondary)' }}>
-                            {renderActorLink(m.createdBy, m)}
-                          </span>
-                          <span style={{ color: 'var(--color-text-tertiary)' }}>
-                            via {m.createdBy.channel}
-                          </span>
-                        </div>
-                      )}
-                      {m.adjustments.length > 0 && (
-                        <div>
-                          <button
-                            className="btn btn-ghost btn-sm"
-                            style={{ padding: '0 2px', fontSize: 11 }}
-                            onClick={() => toggleContributors(m.id)}
-                          >
-                            {contribExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-                            {' '}Contributors ({m.adjustments.length})
-                          </button>
-                          {contribExpanded && (
-                            <div
-                              style={{
-                                marginTop: 4,
-                                paddingLeft: 8,
-                                borderLeft: '2px solid var(--color-border-subtle)',
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: 2,
-                              }}
-                            >
-                              {m.adjustments
-                                .slice()
-                                .reverse()
-                                .map((adj, i) => (
-                                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-                                    <span style={{ color: 'var(--color-text-tertiary)' }}>
-                                      {fmtTime(adj.at)}
-                                    </span>
-                                    <span>·</span>
-                                    <span style={{ color: 'var(--color-text-tertiary)' }}>
-                                      {adj.actor ? adj.actor.channel : adj.by}
-                                    </span>
-                                    <span>·</span>
-                                    <span style={{ color: 'var(--color-text-secondary)' }}>
-                                      {adj.actor ? renderActorLink(adj.actor, m) : adj.by}
-                                    </span>
-                                    <span>—</span>
-                                    <span style={{ color: 'var(--color-text-tertiary)' }}>{adj.change}</span>
-                                  </div>
-                                ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Expand detail: plan, nextSteps, adjustments, results */}
-                  {hasDetail && (
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      style={{ alignSelf: 'flex-start', padding: '0 4px' }}
-                      onClick={() => toggleExpand(m.id)}
-                    >
-                      {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />} detail
+              {/* ── All sessions panel (fleet operability) ── */}
+              {allSessionsExpanded && (
+                <div className="card" style={{ padding: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>All Sessions</span>
+                    {allSessions.length > 0 && <span className="badge badge-outline">{allSessions.length}</span>}
+                    <div style={{ flex: 1 }} />
+                    <button className="btn btn-ghost btn-sm" onClick={fetchAllSessions} disabled={allSessionsLoading}>
+                      <RefreshCw size={11} style={allSessionsLoading ? { animation: 'spin 1s linear infinite' } : undefined} />
                     </button>
+                    <button className="btn btn-ghost btn-sm" onClick={toggleAllSessions}><X size={11} /></button>
+                  </div>
+                  {allSessions.length === 0 && !allSessionsLoading && (
+                    <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>No active sessions</div>
                   )}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                    {allSessions.map((s) => renderOperatePanel(s))}
+                  </div>
+                </div>
+              )}
 
-                  {isExpanded && (
-                    <div
-                      style={{
-                        background: 'var(--color-bg-elevated)',
-                        border: '1px solid var(--color-border-subtle)',
-                        borderRadius: 'var(--radius-sm)',
-                        padding: 10,
-                        fontSize: 12,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 10,
-                      }}
-                    >
-                      {m.plan && (
-                        <div>
-                          <div
-                            style={{
-                              fontWeight: 600,
-                              color: 'var(--color-text-secondary)',
-                              marginBottom: 4,
-                            }}
-                          >
-                            Plan
-                          </div>
-                          <pre
-                            style={{
-                              whiteSpace: 'pre-wrap',
-                              wordBreak: 'break-word',
-                              color: 'var(--color-text-secondary)',
-                              margin: 0,
-                              fontFamily: 'inherit',
-                            }}
-                          >
-                            {m.plan}
-                          </pre>
-                        </div>
-                      )}
-                      {(m.nextSteps?.length ?? 0) > 0 && (
-                        <div>
-                          <div
-                            style={{
-                              fontWeight: 600,
-                              color: 'var(--color-text-secondary)',
-                              marginBottom: 4,
-                            }}
-                          >
-                            Next steps
-                          </div>
-                          <ul style={{ margin: 0, paddingLeft: 16 }}>
-                            {m.nextSteps!.map((s, i) => (
-                              <li key={i} style={{ color: 'var(--color-text-secondary)' }}>
-                                {s}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      {m.results.length > 0 && (
-                        <div>
-                          <div
-                            style={{
-                              fontWeight: 600,
-                              color: 'var(--color-text-secondary)',
-                              marginBottom: 4,
-                            }}
-                          >
-                            Results
-                          </div>
-                          {m.results.map((r, i) => (
-                            <div
-                              key={i}
-                              style={{ color: 'var(--color-text-tertiary)', marginBottom: 2 }}
-                            >
-                              {fmtTime(r.at)} · {r.ref}
-                              {r.summary ? ` — ${r.summary}` : ''}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {m.adjustments.length > 0 && (
-                        <div>
-                          <div
-                            style={{
-                              fontWeight: 600,
-                              color: 'var(--color-text-secondary)',
-                              marginBottom: 4,
-                            }}
-                          >
-                            Controller audit trail ({m.adjustments.length})
-                          </div>
-                          <div
-                            style={{
-                              maxHeight: 160,
-                              overflow: 'auto',
-                              fontFamily: 'var(--font-mono)',
-                              fontSize: 11,
-                            }}
-                          >
-                            {m.adjustments
-                              .slice()
-                              .reverse()
-                              .map((a, i) => (
-                                <div
-                                  key={i}
-                                  style={{
-                                    color: 'var(--color-text-tertiary)',
-                                    marginBottom: 2,
-                                  }}
-                                >
-                                  [{fmtTime(a.at)}]{' '}
-                                  <span style={{ color: 'var(--color-text-secondary)' }}>
-                                    {a.by}
-                                  </span>{' '}
-                                  · {a.trigger} → {a.change}
-                                </div>
-                              ))}
-                          </div>
-                        </div>
-                      )}
+              {/* ── + New mission (collapsible) ── */}
+              <div className="card" style={{ padding: 10 }}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  style={{ width: '100%', justifyContent: 'flex-start', gap: 6, fontSize: 12 }}
+                  onClick={() => setShowCreate((v) => !v)}
+                >
+                  {showCreate ? <ChevronDown size={12} /> : <Plus size={12} />}
+                  {showCreate ? 'Cancel new mission' : '+ New mission'}
+                </button>
+
+                {showCreate && (
+                  <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'flex-start' }}>
+                      <label style={{ fontSize: 11, color: 'var(--color-text-secondary)', flex: '1 1 140px' }}>
+                        title *
+                        <br />
+                        <input
+                          className="input"
+                          value={form.title}
+                          placeholder="e.g. Migrate auth module"
+                          style={{ width: '100%' }}
+                          onChange={(e) => setForm({ ...form, title: e.target.value })}
+                        />
+                      </label>
+                      <label style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                        isolation
+                        <br />
+                        <select
+                          className="input"
+                          value={form.isolation}
+                          onChange={(e) => setForm({ ...form, isolation: e.target.value as Isolation })}
+                        >
+                          <option value="cloud">cloud</option>
+                          <option value="worktree">worktree</option>
+                          <option value="shared">shared</option>
+                        </select>
+                      </label>
                     </div>
-                  )}
+                    <label style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                      objective *
+                      <br />
+                      <textarea
+                        className="input"
+                        value={form.objective}
+                        placeholder="Describe the goal…"
+                        rows={3}
+                        style={{ width: '100%', resize: 'vertical' }}
+                        onChange={(e) => setForm({ ...form, objective: e.target.value })}
+                      />
+                    </label>
 
-                  {/* Action buttons */}
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      flexWrap: 'wrap',
-                      borderTop: '1px solid var(--color-border-subtle)',
-                      paddingTop: 10,
-                    }}
-                  >
-                    {m.status === 'active' && (
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        disabled={isBusy}
-                        onClick={() => updateMission(m.id, { status: 'paused' })}
-                        title="Pause mission"
-                      >
-                        <Pause size={13} /> Pause
-                      </button>
-                    )}
-                    {(m.status === 'paused' || m.status === 'blocked' || m.status === 'waiting') && (
+                    {/* Repo / Branch pickers */}
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <label style={{ fontSize: 11, color: 'var(--color-text-secondary)', flex: '1 1 120px' }}>
+                        repo (optional)
+                        <br />
+                        {reposLoading ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 3 }}>
+                            <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} />
+                            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>loading…</span>
+                          </div>
+                        ) : reposError || repos.length === 0 ? (
+                          <>
+                            <input className="input" value={repoText} placeholder="owner/repo" style={{ width: '100%' }} onChange={(e) => setRepoText(e.target.value)} />
+                            {reposError && <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>type manually</span>}
+                          </>
+                        ) : customRepo ? (
+                          <>
+                            <input className="input" value={repoText} placeholder="owner/repo" style={{ width: '100%' }} onChange={(e) => setRepoText(e.target.value)} />
+                            <button className="btn btn-ghost btn-sm" style={{ marginTop: 2, fontSize: 10 }} onClick={() => { setCustomRepo(false); setRepoText(''); }}>list</button>
+                          </>
+                        ) : (
+                          <select
+                            className="input"
+                            value={selectedRepo}
+                            style={{ width: '100%' }}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              if (v === '__custom__') { setCustomRepo(true); setSelectedRepo(''); setBranches([]); setSelectedBranch(''); }
+                              else { setSelectedRepo(v); setSelectedBranch(''); setBranches([]); if (v) fetchBranches(v); }
+                            }}
+                          >
+                            <option value="">— none —</option>
+                            {repos.map((r) => <option key={r} value={r}>{r}</option>)}
+                            <option value="__custom__">— custom —</option>
+                          </select>
+                        )}
+                      </label>
+                      <label style={{ fontSize: 11, color: 'var(--color-text-secondary)', flex: '1 1 120px' }}>
+                        branch (optional)
+                        <br />
+                        {branchesLoading ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 3 }}>
+                            <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} />
+                          </div>
+                        ) : customBranch ? (
+                          <>
+                            <input className="input" value={branchText} placeholder="branch" style={{ width: '100%' }} onChange={(e) => setBranchText(e.target.value)} />
+                            <button className="btn btn-ghost btn-sm" style={{ marginTop: 2, fontSize: 10 }} onClick={() => { setCustomBranch(false); setBranchText(''); }}>list</button>
+                          </>
+                        ) : branches.length > 0 ? (
+                          <select
+                            className="input"
+                            value={selectedBranch}
+                            style={{ width: '100%' }}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              if (v === '__custom__') { setCustomBranch(true); setSelectedBranch(''); }
+                              else { setSelectedBranch(v); }
+                            }}
+                          >
+                            <option value="">— none —</option>
+                            {branches.map((b) => <option key={b} value={b}>{b}</option>)}
+                            <option value="__custom__">— custom —</option>
+                          </select>
+                        ) : (
+                          <input className="input" value={branchText} placeholder="branch" style={{ width: '100%' }} onChange={(e) => setBranchText(e.target.value)} />
+                        )}
+                      </label>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <label style={{ fontSize: 11, color: 'var(--color-text-secondary)', flex: '1 1 120px' }}>
+                        projects (optional)
+                        <br />
+                        <input className="input" value={form.projects} placeholder="owner/repo, …" style={{ width: '100%' }} onChange={(e) => setForm({ ...form, projects: e.target.value })} />
+                      </label>
+                      <label style={{ fontSize: 11, color: 'var(--color-text-secondary)', flex: '1 1 120px' }}>
+                        depends on
+                        <br />
+                        <input className="input" value={form.dependsOn} placeholder="ms-abc123, …" style={{ width: '100%' }} onChange={(e) => setForm({ ...form, dependsOn: e.target.value })} />
+                      </label>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6 }}>
                       <button
                         className="btn btn-primary btn-sm"
-                        disabled={isBusy}
-                        onClick={() => updateMission(m.id, { status: 'active' })}
-                        title="Resume mission"
+                        disabled={creating || !form.title.trim() || !form.objective.trim()}
+                        onClick={createMission}
                       >
-                        <Play size={13} /> Resume
+                        {creating ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : 'Create'}
                       </button>
-                    )}
-                    {m.status !== 'done' && m.status !== 'failed' && (
                       <button
                         className="btn btn-ghost btn-sm"
-                        disabled={isBusy}
-                        onClick={() => updateMission(m.id, { status: 'done' })}
-                        title="Mark as done"
+                        onClick={() => { setShowCreate(false); setForm({ title: '', objective: '', isolation: 'cloud', projects: '', dependsOn: '' }); }}
                       >
-                        <CheckCircle size={13} /> Mark done
+                        Cancel
                       </button>
-                    )}
-                    {m.binding?.sessionId && (
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => toggleSessionsExpand(m.id, !!m.binding?.sessionId)}
-                        title={sessionsExpanded.has(m.id) ? 'Hide sessions' : 'Show sessions'}
-                      >
-                        <Plug size={13} />
-                        {sessionsExpanded.has(m.id) ? ' Sessions ▲' : ' Sessions ▾'}
-                        {sessionsFetching.has(m.id) && (
-                          <Loader2 size={11} style={{ marginLeft: 4, animation: 'spin 1s linear infinite' }} />
-                        )}
-                      </button>
-                    )}
+                    </div>
                   </div>
+                )}
+              </div>
 
-                  {/* Session list — expanded on demand */}
-                  {sessionsExpanded.has(m.id) && m.binding?.sessionId && (() => {
-                    const mSessions = sessionsByMission[m.id] ?? [];
-                    return (
-                      <div
-                        style={{
-                          background: 'var(--color-bg-elevated)',
-                          border: '1px solid var(--color-border-subtle)',
-                          borderRadius: 'var(--radius-sm)',
-                          padding: '8px 10px',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: 4,
-                        }}
-                      >
-                        <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginBottom: 4 }}>
-                          Sessions
-                        </div>
-                        {mSessions.length === 0 && !sessionsFetching.has(m.id) && (
-                          <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                            No sessions found (binding: {m.binding.sessionId})
-                          </div>
-                        )}
-                        {mSessions.map((s) => {
-                          const isCloud = /^session_/.test(s.sid);
-                          const shortSid = s.sid.replace(/^session_/, '').slice(0, 8);
-                          const label = `${s.role} · ${s.kind} · ${shortSid}`;
-                          const isOpen = connectSid === s.sid;
-                          return (
-                            <div
-                              key={s.sid}
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 8,
-                                fontSize: 12,
-                                fontFamily: 'var(--font-mono)',
-                              }}
-                            >
-                              <span style={{ flex: 1, color: 'var(--color-text-secondary)' }}>
-                                {label}
-                              </span>
-                              {isCloud ? (
-                                <button
-                                  className={`btn btn-sm ${isOpen ? 'btn-primary' : 'btn-ghost'}`}
-                                  onClick={() => setConnectSid(isOpen ? null : s.sid)}
-                                  title={isOpen ? 'Close session view' : 'Open session view'}
-                                >
-                                  <Plug size={11} />
-                                  {isOpen ? ' Close' : ' Open'}
-                                </button>
-                              ) : (
-                                <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                                  (local)
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    );
-                  })()}
-
-                  {/* Inline cloud session view — shown for whichever session is open, if it belongs to this mission */}
-                  {connectSid && (() => {
-                    const mSessions = sessionsByMission[m.id] ?? [];
-                    const owns = mSessions.some((s) => s.sid === connectSid) ||
-                      (m.binding?.sessionId === connectSid && mSessions.length === 0);
-                    // Also open when a provenance actor (ccr kind) triggered the connect
-                    const ownsActor = !owns && connectSid && (
-                      (m.createdBy?.kind === 'ccr' && m.createdBy?.id === connectSid) ||
-                      m.adjustments.some((adj) => adj.actor?.kind === 'ccr' && adj.actor?.id === connectSid)
-                    );
-                    return (owns || ownsActor) && /^session_/.test(connectSid) ? (
-                      <CcrCloudView
-                        sid={connectSid}
-                        webUrl={`https://claude.ai/code/${connectSid}`}
-                        apiFetch={apiFetch}
-                        onClose={() => setConnectSid(null)}
-                      />
-                    ) : null;
-                  })()}
+              {/* ── Mission list ── */}
+              {loading && missions.length === 0 ? (
+                <div className="empty-state">
+                  <Loader2 size={20} style={{ animation: 'spin 1s linear infinite' }} />
                 </div>
-              );
-            })}
+              ) : missions.length === 0 ? (
+                <div className="empty-state" style={{ fontSize: 12 }}>
+                  <Target size={24} className="empty-state-icon" />
+                  <div>No missions yet</div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {missions.map((m) => renderMissionItem(m))}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
