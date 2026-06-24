@@ -284,6 +284,11 @@ export function MissionsPage() {
   // Once the user manually closes the panel, don't auto-reopen it on subsequent polls.
   const [controllerSessionDismissed, setControllerSessionDismissed] = useState(false);
 
+  // When the leader is a remote node, this holds the leader's controller status
+  // (fetched via leaderFetch on the same cadence as fetchAll).
+  // null = not yet fetched / leader is self / no leader.
+  const [leaderController, setLeaderController] = useState<ControllerStatus | null>(null);
+
   // Fleet-wide operable sessions list
   const [allSessions, setAllSessions] = useState<OperableSession[]>([]);
   const [allSessionsLoading, setAllSessionsLoading] = useState(false);
@@ -415,20 +420,52 @@ export function MissionsPage() {
         const raw = ctrlRes.value as any;
         const ctrl = (raw.data ?? raw) as ControllerStatus;
         setController(ctrl);
-        // Auto-open controller session if present — but only if the user hasn't dismissed it.
-        if (ctrl?.controllerSession) {
-          setControllerSessionOpen((prev) => (prev ? true : false));
-          // We read dismissed via the ref so the callback captures the latest value without stale closure.
-          setControllerSessionDismissed((dismissed) => {
-            if (!dismissed) setControllerSessionOpen(true);
-            return dismissed;
-          });
+
+        // FIX 1: if the leader is a remote node, also fetch its controller status
+        // so we can gate the chat on the leader's controllerSession, not the local one.
+        const ldr = ctrl?.leader;
+        if (ldr && ldr.node && !ldr.isSelf) {
+          try {
+            const ldrRaw = await leaderFetch<{ data?: ControllerStatus } | ControllerStatus>(
+              ldr,
+              '/mission/controller',
+            );
+            const ldrCtrl = ((ldrRaw as any).data ?? ldrRaw) as ControllerStatus;
+            setLeaderController(ldrCtrl);
+            // Auto-open from leader's controllerSession
+            if (ldrCtrl?.controllerSession) {
+              setControllerSessionDismissed((dismissed) => {
+                if (!dismissed) setControllerSessionOpen(true);
+                return dismissed;
+              });
+            }
+          } catch {
+            // Non-fatal: fall back to local controller status
+            setLeaderController(null);
+            // Auto-open from local controllerSession as fallback
+            if (ctrl?.controllerSession) {
+              setControllerSessionDismissed((dismissed) => {
+                if (!dismissed) setControllerSessionOpen(true);
+                return dismissed;
+              });
+            }
+          }
+        } else {
+          // Leader is self or unknown — clear any stale remote controller status
+          setLeaderController(null);
+          // Auto-open controller session if present — but only if the user hasn't dismissed it.
+          if (ctrl?.controllerSession) {
+            setControllerSessionDismissed((dismissed) => {
+              if (!dismissed) setControllerSessionOpen(true);
+              return dismissed;
+            });
+          }
         }
       }
     } finally {
       setLoading(false);
     }
-  }, [apiFetch, fetchMissionSessions]);
+  }, [apiFetch, leaderFetch, fetchMissionSessions]);
 
   // Initial load + 5s auto-refresh
   useEffect(() => {
@@ -712,9 +749,14 @@ export function MissionsPage() {
     [leaderFetch],
   );
 
-  // Start/stop the chat poller when the controller session changes
+  // Start/stop the chat poller when the controller session changes.
+  // Uses effectiveController (leader's status when remote, local otherwise) so the
+  // poller activates against the leader's session regardless of which node we're on.
   useEffect(() => {
-    const cs = controller?.controllerSession;
+    // effectiveController is leaderController ?? controller (computed in render section
+    // but we need it here too — derive inline from the same sources).
+    const effCtrl = leaderController ?? controller;
+    const cs = effCtrl?.controllerSession;
     const leader = controller?.leader;
     if (!cs) {
       if (chatPollerRef.current) {
@@ -737,7 +779,14 @@ export function MissionsPage() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [controller?.controllerSession?.sessionId, controller?.controllerSession?.cse]);
+  }, [
+    leaderController?.controllerSession?.sessionId,
+    leaderController?.controllerSession?.cse,
+    controller?.controllerSession?.sessionId,
+    controller?.controllerSession?.cse,
+    controller?.leader?.node,
+    controller?.leader?.isSelf,
+  ]);
 
   // Cleanup chat poller on unmount
   useEffect(() => {
@@ -1355,9 +1404,11 @@ export function MissionsPage() {
   );
 
   // ── Render ──
-  const cs = controller?.controllerSession ?? null;
+  // FIX 1: use the leader's controllerSession (and election/job) as the authoritative source
+  // when the leader is a remote node. Fall back to local controller when self or no leader.
+  const effectiveController = leaderController ?? controller;
+  const cs = effectiveController?.controllerSession ?? null;
   const leader = controller?.leader ?? null;
-  const controllerSid = cs ? (cs.cse ?? cs.sessionId) : null;
   const leaderLabel = leader
     ? (leader.host || leader.node || 'unknown')
     : (controller?.election.monitorNodeId ? shortId(controller.election.monitorNodeId) : null);
@@ -1500,10 +1551,10 @@ export function MissionsPage() {
             )}
             <div style={{ flex: 1 }} />
             {/* Controller status: tick + job info */}
-            {controller && (
+            {effectiveController && (
               <>
-                <span className={`badge ${controller.job.enabled ? 'badge-green' : 'badge-default'}`} style={{ fontSize: 10 }}>
-                  {controller.job.enabled ? `every ${controller.job.intervalMinutes}m` : 'disabled'}
+                <span className={`badge ${effectiveController.job.enabled ? 'badge-green' : 'badge-default'}`} style={{ fontSize: 10 }}>
+                  {effectiveController.job.enabled ? `every ${effectiveController.job.intervalMinutes}m` : 'disabled'}
                 </span>
                 <button
                   className="btn btn-ghost btn-sm"
@@ -1584,7 +1635,7 @@ export function MissionsPage() {
                     ? 'Supervisor will launch the controller on the next tick'
                     : 'Loading controller status…'}
                 </div>
-                {controller && (
+                {effectiveController && (
                   <button
                     className="btn btn-primary btn-sm"
                     onClick={runTick}
