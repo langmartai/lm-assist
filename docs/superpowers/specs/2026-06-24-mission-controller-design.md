@@ -34,6 +34,7 @@ Three nouns, by analogy to a scheduler job (where `description` = WHAT and the s
 | Autonomy boundary | The controller may **refine/re-scope autonomously** (logged in `adjustments[]`). A **material pivot** (direction change away from the original objective) and any executor `need_approval` gate **pause for the human** — the controller never auto-approves a gate or performs an irreversible/outward action itself. |
 | Placement | **Isolate when possible** (cloud > worktree+branch), **serialize when sharing is unavoidable** (lease on the shared resource). Driven by `dependsOn[]` + `env.resources[]`. |
 | Storage | The Mission records live in a **data-service dataset** (`missions`, `syncMode:'full'`) — the only cross-node-synced persistence — so any elected node sees all missions. Requires `dataServiceEnabled`. |
+| Adjust reasoning | **opus-4.8** (`claude-opus-4-8[1m]`) with **max thinking** — adaptive extended thinking + `effort:'high'`. The **model is overridable** (`missionControllerModel`) so a newer/more capable model can be adopted later without code changes; the max-thinking/effort knobs are model-agnostic and stay on. |
 
 ---
 
@@ -217,7 +218,18 @@ If the mission is alive, idle, and has **no new output** (not started yet, or pa
 
 ### 4.4 The adjust (reasoning) step — `core/src/mission/mission-adjust.ts`
 
-A one-shot `createSdkRunner({ trackChanges:false }).execute(prompt, { model: cfg.model, maxTurns:1, outputConfig:{ format:{ type:'json_schema', schema: ADJUST_SCHEMA } } })`. **Must** load the SDK via the existing ESM-import indirection (the runner already does; new code must not statically `import`/`require` the SDK). Default `cfg.model = 'claude-opus-4-8[1m]'`, overridable via `missionControllerModel`. **Cost gate:** only invoked when phase A finds new output — most ticks never call it.
+A one-shot, **max-reasoning** call:
+
+```ts
+createSdkRunner({ trackChanges:false }).execute(prompt, {
+  model: cfg.model,                                   // default 'claude-opus-4-8[1m]'
+  maxTurns: 1,
+  extendedThinking: { enabled: true, type: 'adaptive' },   // Opus 4.6+/4.8 max (adaptive) thinking
+  outputConfig: { effort: 'high', format: { type: 'json_schema', schema: ADJUST_SCHEMA } },
+})
+```
+
+**Must** load the SDK via the existing ESM-import indirection (the runner already does; new code must not statically `import`/`require` the SDK). `cfg.model` comes from `missionControllerModel` (default `'claude-opus-4-8[1m]'`) and is the **single knob to adopt a newer model later**; the `adaptive` thinking + `effort:'high'` settings are model-agnostic and stay on. **Cost gate:** only invoked when phase A finds new output — most ticks never call it.
 
 ```
 prompt  = mission.objective + mission.plan/nextSteps + the NEW feedback/results since last tick
@@ -256,7 +268,7 @@ MCP number/bool args arrive as **strings** over the connector — coerce in the 
 ### 4.8 Registration + settings toggle
 
 - `scheduled-jobs.ts` `registerDefaults()` → lazy-`require` and call `registerMissionController(this)`. `makeBuiltinJobs(nowMs)` seeds a built-in job `{ type:'mission-controller', enabled:true, intervalMinutes: <missionControllerIntervalMin default 5> }`.
-- `project-settings.ts`: add to `ProjectSettings`, `DEFAULTS`, and the per-field read/write guards: `missionControllerEnabled` (default `true`), `missionControllerIntervalMin` (default `5`), `missionControllerMaxNudges` (default `6`), `missionControllerModel` (default `'claude-opus-4-8[1m]'`). The handler reads them live each run.
+- `project-settings.ts`: add to `ProjectSettings`, `DEFAULTS`, and the per-field read/write guards: `missionControllerEnabled` (default `true`), `missionControllerIntervalMin` (default `5`), `missionControllerMaxNudges` (default `6`), `missionControllerModel` (default `'claude-opus-4-8[1m]'` — change this one field to adopt a newer model when available; max-thinking/effort stay on regardless). The handler reads them live each run.
 
 ---
 
