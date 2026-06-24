@@ -8,7 +8,7 @@ const mk = (over: Partial<Mission>): Mission => ({
   env: { isolation: 'cloud', resources: [] }, binding: null, progress: null,
   control: { nudgeCount: 0, backoffStep: 0 }, results: [], adjustments: [],
   status: 'active', ownerNode: 'gw4-1', createdAt: 0, updatedAt: 0, ...over,
-});
+} as unknown as Mission);
 const deadState: ExecutorState = { alive: false, serverStalled: false, gate: null, newOutput: null, idle: true };
 
 function deps(over: Partial<MissionTickDeps> & { missions: Mission[] }): MissionTickDeps {

@@ -32,7 +32,23 @@ export interface MissionControl {
   gaveUp?: boolean;
 }
 export interface MissionResult { at: number; ref: string; summary?: string; }
-export interface MissionAdjustment { at: number; trigger: string; change: string; by: 'controller' | 'user'; }
+export interface MissionAdjustment { at: number; trigger: string; change: string; by: 'controller' | 'user'; actor: MissionActor; }
+
+export type ActorKind = 'local-session' | 'ccr' | 'claudeai-conversation' | 'controller' | 'user';
+export type ActorChannel = 'mcp' | 'controller' | 'user' | 'api';
+export interface MissionActor {
+  kind: ActorKind;
+  id?: string | null;
+  node?: string | null;
+  channel: ActorChannel;
+  label?: string;
+  toolUseId?: string | null;
+  at: number;
+}
+/** Fallback actor when the caller can't be resolved to a session/conversation. */
+export function coarseActor(channel: ActorChannel, node: string, now: number): MissionActor {
+  return { kind: channel === 'controller' ? 'controller' : 'user', channel, node, at: now };
+}
 
 export interface Mission {
   id: string;
@@ -48,6 +64,8 @@ export interface Mission {
   control: MissionControl;
   results: MissionResult[];
   adjustments: MissionAdjustment[];
+  createdBy: MissionActor;
+  lastUpdatedBy: MissionActor;
   status: MissionStatus;
   ownerNode: string;
   createdAt: number;
@@ -63,6 +81,7 @@ export interface NewMissionInput {
   title: string;
   objective: string;
   ownerNode: string;
+  createdBy: MissionActor;
   projects?: string[];
   dependsOn?: string[];
   env?: Partial<MissionEnv>;
@@ -92,6 +111,8 @@ export function newMission(input: NewMissionInput, now: number, genId: () => str
     control: { nudgeCount: 0, backoffStep: 0 },
     results: [],
     adjustments: [],
+    createdBy: input.createdBy,
+    lastUpdatedBy: input.createdBy,
     status: 'active',
     ownerNode: input.ownerNode,
     createdAt: now,

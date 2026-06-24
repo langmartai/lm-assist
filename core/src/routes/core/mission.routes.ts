@@ -1,7 +1,7 @@
 /** Mission CRUD + controller status. Bare {success,data}/{success,error} envelope (like worker.routes). */
 import type { RouteHandler, RouteContext } from '../index';
 import { randomBytes } from 'crypto';
-import { newMission, Mission, MissionStatus, Isolation } from '../../mission/mission-model';
+import { newMission, Mission, MissionStatus, Isolation, coarseActor } from '../../mission/mission-model';
 import {
   MissionDataPort, getMission, listMissions, putMission, thisNode,
 } from '../../mission/mission-store';
@@ -30,7 +30,7 @@ export async function handleCreate(b: Record<string, unknown>, ownerNode: string
   if (!title || !objective) return fail('INVALID_INPUT', 'title and objective are required');
   const env = (b.env && typeof b.env === 'object') ? b.env as Record<string, unknown> : {};
   const m = newMission({
-    title, objective, ownerNode,
+    title, objective, ownerNode, createdBy: coarseActor('api', ownerNode, Date.now()),
     projects: arr(b.projects), dependsOn: arr(b.dependsOn),
     plan: str(b.plan), nextSteps: arr(b.nextSteps),
     env: {
@@ -73,7 +73,7 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
     if (arr(e.resources)) m.env.resources = arr(e.resources)!;
     if (e.exclusive !== undefined) m.env.exclusive = e.exclusive === true || e.exclusive === 'true';
   }
-  m.adjustments.push({ at: Date.now(), trigger: 'user-edit', change: 'mission updated via API', by: 'user' });
+  m.adjustments.push({ at: Date.now(), trigger: 'user-edit', change: 'mission updated via API', by: 'user', actor: coarseActor('user', 'unknown', Date.now()) });
   await putMission(m, port);
   return ok(m);
 }

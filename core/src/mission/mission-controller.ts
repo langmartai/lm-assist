@@ -1,7 +1,7 @@
 /** The super Mission Controller tick: election → per-mission liveness/adjust/placement. */
 import {
   Mission, MissionBinding, ExecutorState, ExecutorOutput, AdjustResult, PlacementDecision,
-  decideMission, place, planMissionNudge, missionSessionTitle,
+  decideMission, place, planMissionNudge, missionSessionTitle, MissionActor, coarseActor,
 } from './mission-model';
 import { pickNewSession, cseToSessionSid, isNativeBinding } from './mission-native';
 import { listMissions, putMission } from './mission-store';
@@ -33,7 +33,7 @@ function setWaiting(m: Mission, pd: Extract<PlacementDecision, { go: false }>): 
 }
 
 function addAdjustment(m: Mission, now: number, trigger: string, change: string): void {
-  m.adjustments.push({ at: now, trigger, change, by: 'controller' });
+  m.adjustments.push({ at: now, trigger, change, by: 'controller', actor: coarseActor('controller', 'unknown', now) });
 }
 
 async function processMission(m: Mission, all: Mission[], d: MissionTickDeps): Promise<void> {

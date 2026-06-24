@@ -21,7 +21,7 @@ const mk = (over: Partial<Mission>): Mission => ({
   env: { isolation: 'cloud', resources: [] }, binding: null, progress: null,
   control: { nudgeCount: 0, backoffStep: 0 }, results: [], adjustments: [],
   status: 'active', ownerNode: 'gw4-1', createdAt: 0, updatedAt: 0, ...over,
-});
+} as unknown as Mission);
 
 test('put + get round-trip', async () => {
   const p = fakePort();
@@ -47,7 +47,7 @@ test('mirrorProgress + recordAdjustment append', async () => {
   const p = fakePort();
   await putMission(mk({ id: 'a' }), p);
   await mirrorProgress('a', { percent: 50, summary: 'half', updatedAt: 1 }, [{ at: 1, ref: 'r1' }], p);
-  await recordAdjustment('a', { at: 2, trigger: 'revise', change: 'narrowed', by: 'controller' }, p);
+  await recordAdjustment('a', { at: 2, trigger: 'revise', change: 'narrowed', by: 'controller', actor: { kind: 'controller', channel: 'controller', at: 2 } }, p);
   const got = await getMission('a', p);
   assert.strictEqual(got?.progress?.percent, 50);
   assert.strictEqual(got?.results.length, 1);

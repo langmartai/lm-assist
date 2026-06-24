@@ -8,7 +8,7 @@ const mission: Mission = {
   projects: [], dependsOn: [], env: { isolation: 'cloud', resources: [] }, binding: null, progress: null,
   control: { nudgeCount: 0, backoffStep: 0 }, results: [], adjustments: [],
   status: 'active', ownerNode: 'gw4-1', createdAt: 0, updatedAt: 0,
-};
+} as unknown as Mission;
 const out: ExecutorOutput = { cursor: 3, messages: ['finished step1, blocked on auth'], results: [{ ref: 'pr#1', summary: 'opened PR' }] };
 
 test('buildAdjustPrompt includes objective and new output', () => {
