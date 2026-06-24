@@ -20,6 +20,13 @@ import { CcrCloudView } from '@/components/ccr/CcrCloudView';
 // ── Types ──────────────────────────────────────────────────────────────────
 
 type MissionStatus = 'draft' | 'active' | 'waiting' | 'paused' | 'blocked' | 'done' | 'failed';
+
+interface MissionSession {
+  sid: string;
+  kind: 'orchestrator' | 'worker';
+  role: 'primary' | 'sub';
+  lastContact?: number;
+}
 type Isolation = 'cloud' | 'worktree' | 'shared';
 
 interface MissionEnv {
@@ -170,7 +177,31 @@ export function MissionsPage() {
   // Connect/drive a mission's cloud executor inline
   const [connectSid, setConnectSid] = useState<string | null>(null);
 
+  // Per-mission session list (populated on demand)
+  const [sessionsByMission, setSessionsByMission] = useState<Record<string, MissionSession[]>>({});
+  const [sessionsExpanded, setSessionsExpanded] = useState<Set<string>>(new Set());
+  const [sessionsFetching, setSessionsFetching] = useState<Set<string>>(new Set());
+
   // ── Data loading ──
+
+  const fetchMissionSessions = useCallback(
+    async (missionId: string) => {
+      setSessionsFetching((prev) => { const n = new Set(prev); n.add(missionId); return n; });
+      try {
+        const res = await apiFetch<{ sessions: MissionSession[] } | { data: { sessions: MissionSession[] } }>(
+          `/mission/${encodeURIComponent(missionId)}/sessions`,
+        );
+        const sessions = (res as any).sessions ?? (res as any).data?.sessions ?? [];
+        setSessionsByMission((prev) => ({ ...prev, [missionId]: sessions }));
+      } catch {
+        // silently ignore — sessions list stays empty
+      } finally {
+        setSessionsFetching((prev) => { const n = new Set(prev); n.delete(missionId); return n; });
+      }
+    },
+    [apiFetch],
+  );
+
   const fetchAll = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -184,6 +215,14 @@ export function MissionsPage() {
         const raw = missionsRes.value as any;
         const list: Mission[] = Array.isArray(raw) ? raw : raw.missions ?? raw.data ?? [];
         setMissions(list);
+        // Re-fetch sessions for any already-expanded missions that have bindings
+        setSessionsExpanded((expanded) => {
+          for (const mid of expanded) {
+            const m = list.find((x) => x.id === mid);
+            if (m?.binding?.sessionId) fetchMissionSessions(mid);
+          }
+          return expanded;
+        });
       } else {
         setError(missionsRes.reason instanceof Error ? missionsRes.reason.message : String(missionsRes.reason));
       }
@@ -195,7 +234,7 @@ export function MissionsPage() {
     } finally {
       setLoading(false);
     }
-  }, [apiFetch]);
+  }, [apiFetch, fetchMissionSessions]);
 
   // Initial load + 5s auto-refresh
   useEffect(() => {
@@ -220,6 +259,25 @@ export function MissionsPage() {
       else n.add(id);
       return n;
     });
+
+  const toggleSessionsExpand = useCallback(
+    (missionId: string, hasBinding: boolean) => {
+      setSessionsExpanded((prev) => {
+        const n = new Set(prev);
+        if (n.has(missionId)) {
+          n.delete(missionId);
+        } else {
+          n.add(missionId);
+          if (hasBinding) {
+            // fetch (or re-fetch) on expand
+            fetchMissionSessions(missionId);
+          }
+        }
+        return n;
+      });
+    },
+    [fetchMissionSessions],
+  );
 
   // ── Actions ──
   const updateMission = useCallback(
@@ -920,37 +978,98 @@ export function MissionsPage() {
                         <CheckCircle size={13} /> Mark done
                       </button>
                     )}
-                    {m.binding?.sessionId && /^session_/.test(m.binding.sessionId) && (
+                    {m.binding?.sessionId && (
                       <button
                         className="btn btn-ghost btn-sm"
-                        onClick={() =>
-                          setConnectSid(
-                            connectSid === m.binding!.sessionId ? null : m.binding!.sessionId,
-                          )
-                        }
-                        title={
-                          connectSid === m.binding!.sessionId
-                            ? 'Disconnect from executor'
-                            : 'Connect to executor session'
-                        }
+                        onClick={() => toggleSessionsExpand(m.id, !!m.binding?.sessionId)}
+                        title={sessionsExpanded.has(m.id) ? 'Hide sessions' : 'Show sessions'}
                       >
                         <Plug size={13} />
-                        {connectSid === m.binding!.sessionId ? ' Disconnect' : ' Connect'}
+                        {sessionsExpanded.has(m.id) ? ' Sessions ▲' : ' Sessions ▾'}
+                        {sessionsFetching.has(m.id) && (
+                          <Loader2 size={11} style={{ marginLeft: 4, animation: 'spin 1s linear infinite' }} />
+                        )}
                       </button>
                     )}
                   </div>
 
-                  {/* Inline executor view — shown beneath action row when connected */}
-                  {m.binding?.sessionId &&
-                    /^session_/.test(m.binding.sessionId) &&
-                    connectSid === m.binding.sessionId && (
+                  {/* Session list — expanded on demand */}
+                  {sessionsExpanded.has(m.id) && m.binding?.sessionId && (() => {
+                    const mSessions = sessionsByMission[m.id] ?? [];
+                    return (
+                      <div
+                        style={{
+                          background: 'var(--color-bg-elevated)',
+                          border: '1px solid var(--color-border-subtle)',
+                          borderRadius: 'var(--radius-sm)',
+                          padding: '8px 10px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 4,
+                        }}
+                      >
+                        <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginBottom: 4 }}>
+                          Sessions
+                        </div>
+                        {mSessions.length === 0 && !sessionsFetching.has(m.id) && (
+                          <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+                            No sessions found (binding: {m.binding.sessionId})
+                          </div>
+                        )}
+                        {mSessions.map((s) => {
+                          const isCloud = /^session_/.test(s.sid);
+                          const shortSid = s.sid.replace(/^session_/, '').slice(0, 8);
+                          const label = `${s.role} · ${s.kind} · ${shortSid}`;
+                          const isOpen = connectSid === s.sid;
+                          return (
+                            <div
+                              key={s.sid}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 8,
+                                fontSize: 12,
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            >
+                              <span style={{ flex: 1, color: 'var(--color-text-secondary)' }}>
+                                {label}
+                              </span>
+                              {isCloud ? (
+                                <button
+                                  className={`btn btn-sm ${isOpen ? 'btn-primary' : 'btn-ghost'}`}
+                                  onClick={() => setConnectSid(isOpen ? null : s.sid)}
+                                  title={isOpen ? 'Close session view' : 'Open session view'}
+                                >
+                                  <Plug size={11} />
+                                  {isOpen ? ' Close' : ' Open'}
+                                </button>
+                              ) : (
+                                <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+                                  (local)
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Inline cloud session view — shown for whichever session is open, if it belongs to this mission */}
+                  {connectSid && (() => {
+                    const mSessions = sessionsByMission[m.id] ?? [];
+                    const owns = mSessions.some((s) => s.sid === connectSid) ||
+                      (m.binding?.sessionId === connectSid && mSessions.length === 0);
+                    return owns && /^session_/.test(connectSid) ? (
                       <CcrCloudView
-                        sid={m.binding.sessionId}
-                        webUrl={`https://claude.ai/code/${m.binding.sessionId}`}
+                        sid={connectSid}
+                        webUrl={`https://claude.ai/code/${connectSid}`}
                         apiFetch={apiFetch}
                         onClose={() => setConnectSid(null)}
                       />
-                    )}
+                    ) : null;
+                  })()}
                 </div>
               );
             })}

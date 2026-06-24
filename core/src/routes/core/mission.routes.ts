@@ -7,6 +7,8 @@ import {
 } from '../../mission/mission-store';
 import { amIMonitor } from '../../monitor/stall-election';
 import { getScheduledJobs } from '../../scheduler/scheduled-jobs';
+import { listRecords } from '../../worker-role/worker-store';
+import type { WorkerRecord } from '../../worker-role/types';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string }; }
 const ok = <T>(data: T): Envelope => ({ success: true, data });
@@ -76,16 +78,40 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
   return ok(m);
 }
 
+export interface MissionSession { sid: string; kind: 'orchestrator' | 'worker'; role: 'primary' | 'sub'; lastContact?: number; }
+
+export async function handleSessions(
+  id: string,
+  port?: MissionDataPort,
+  listWorkers: () => WorkerRecord[] = listRecords,
+): Promise<Envelope> {
+  const m = await getMission(id, port);
+  if (!m) return fail('NOT_FOUND', `no mission ${id}`);
+  const sessions: MissionSession[] = [];
+  const primarySid = m.binding?.sessionId || null;
+  if (primarySid) {
+    sessions.push({ sid: primarySid, kind: m.binding!.kind === 'orchestrator' ? 'orchestrator' : 'worker', role: 'primary', lastContact: m.binding!.boundAt });
+    for (const w of listWorkers()) {
+      if (w.orchestrator?.id === primarySid && w.sessionId !== primarySid) {
+        sessions.push({ sid: w.sessionId, kind: 'worker', role: 'sub', lastContact: w.orchestrator?.lastContact });
+      }
+    }
+  }
+  return ok({ sessions });
+}
+
 export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
     { method: 'POST', pattern: /^\/mission$/, handler: async (req) => handleCreate((req.body || {}) as Record<string, unknown>, thisNode()) },
     { method: 'GET', pattern: /^\/mission$/, handler: async () => handleList() },
-    // controller BEFORE :id so the literal wins
+    // controller BEFORE :id/:id/sessions so literals win
     { method: 'GET', pattern: /^\/mission\/controller$/, handler: async () => {
         const election = await amIMonitor();
         const job = getScheduledJobs().getJob('mission-controller');
         return ok({ election, job });
       } },
+    // /mission/:id/sessions BEFORE /mission/:id so the literal suffix wins
+    { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/sessions$/, handler: async (req) => handleSessions(req.params.id) },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handleGet(req.params.id) },
     { method: 'PATCH', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>) },
     // POST /mission/:id — same semantics as PATCH, accepts MCP workerPost (POST-only)
