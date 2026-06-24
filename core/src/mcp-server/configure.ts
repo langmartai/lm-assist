@@ -246,6 +246,11 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   worker_status: 'read',
   list_workers: 'read',
   decide_gate: 'admin',
+  // mission controller
+  mission_create: 'write',
+  mission_list: 'read',
+  mission_update: 'write',
+  mission_control_status: 'read',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */

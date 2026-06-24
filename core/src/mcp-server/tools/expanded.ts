@@ -49,6 +49,7 @@ import { SCHEDULER_TOOL_DEFS, SCHEDULER_HANDLERS } from './scheduler';
 import { GUIDE_TOOL_DEFS, GUIDE_HANDLERS } from './guide';
 import { SESSION_STATUS_TOOL_DEFS, SESSION_STATUS_HANDLERS } from '../mcp-session-resolver';
 import { WORKER_ROLE_TOOL_DEFS, WORKER_ROLE_HANDLERS } from './worker-role';
+import { MISSION_TOOL_DEFS, MISSION_HANDLERS } from './mission';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -906,6 +907,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...SESSION_STATUS_TOOL_DEFS,
   // worker role — set_role / report_status / worker_status / list_workers / decide_gate
   ...WORKER_ROLE_TOOL_DEFS,
+  // mission controller — mission_create / mission_list / mission_update / mission_control_status
+  ...MISSION_TOOL_DEFS,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -1650,4 +1653,6 @@ export const EXPANDED_HANDLERS: Record<
   ...SESSION_STATUS_HANDLERS,
   // worker role
   ...WORKER_ROLE_HANDLERS,
+  // mission controller
+  ...MISSION_HANDLERS,
 };

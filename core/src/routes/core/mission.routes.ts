@@ -88,5 +88,7 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
       } },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handleGet(req.params.id) },
     { method: 'PATCH', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>) },
+    // POST /mission/:id — same semantics as PATCH, accepts MCP workerPost (POST-only)
+    { method: 'POST', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>) },
   ];
 }
