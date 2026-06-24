@@ -4,8 +4,9 @@ import { randomBytes } from 'crypto';
 import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActor, place, ExecutorState } from '../../mission/mission-model';
 import { resolveMcpActor } from '../../mission/mission-actor';
 import {
-  MissionDataPort, getMission, listMissions, putMission, thisNode,
+  MissionDataPort, getMission, listMissions, putMission, thisNode, getControllerSession,
 } from '../../mission/mission-store';
+import { resolveMissionSession } from '../../mission/mission-session-resolver';
 import { amIMonitor } from '../../monitor/stall-election';
 import { getScheduledJobs } from '../../scheduler/scheduled-jobs';
 import { listRecords } from '../../worker-role/worker-store';
@@ -144,10 +145,72 @@ export async function handleSessions(
   return ok({ sessions });
 }
 
+// ---------------------------------------------------------------------------
+// All sessions list: controller + every active mission's orchestrator/workers
+// ---------------------------------------------------------------------------
+
+export interface AllSessionRow {
+  sid: string;
+  missionId: string | null;
+  role: 'controller' | 'orchestrator' | 'worker';
+  transport: 'cloud' | 'native';
+  status?: string;
+  webUrl?: string | null;
+}
+
+export async function handleAllSessions(
+  port?: MissionDataPort,
+  listWorkers: () => WorkerRecord[] = listRecords,
+  controllerSid?: string | null,
+): Promise<Envelope> {
+  const all = await listMissions(port);
+  const activeMissions = all.filter((m) => m.status === 'active' || m.status === 'waiting');
+  const sessions: AllSessionRow[] = [];
+
+  // Prepend the controller session row (if any)
+  const ctrlSid = controllerSid ?? (await getControllerSession(port))?.sessionId ?? null;
+  if (ctrlSid) {
+    const resolved = resolveMissionSession(ctrlSid, activeMissions, ctrlSid);
+    sessions.push({ sid: ctrlSid, missionId: null, role: 'controller', transport: resolved.transport });
+  }
+
+  // Add orchestrators and their sub-workers for each active mission
+  for (const m of activeMissions) {
+    if (!m.binding?.sessionId) continue;
+    const primarySid = m.binding.ccr?.sid || m.binding.sessionId;
+    const webUrl = m.binding.ccr?.webUrl ?? null;
+    const resolved = resolveMissionSession(primarySid, activeMissions, ctrlSid);
+    sessions.push({
+      sid: primarySid,
+      missionId: m.id,
+      role: resolved.role === 'controller' ? 'orchestrator' : resolved.role,
+      transport: resolved.transport,
+      webUrl,
+    });
+    // Sub-workers
+    for (const w of listWorkers()) {
+      if (w.orchestrator?.id === primarySid && w.sessionId !== primarySid) {
+        const wResolved = resolveMissionSession(w.sessionId, activeMissions, ctrlSid);
+        sessions.push({
+          sid: w.sessionId,
+          missionId: m.id,
+          role: 'worker',
+          transport: wResolved.transport,
+        });
+      }
+    }
+  }
+
+  return ok({ sessions });
+}
+
 export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
     { method: 'POST', pattern: /^\/mission$/, handler: async (req) => handleCreate((req.body || {}) as Record<string, unknown>, thisNode()) },
     { method: 'GET', pattern: /^\/mission$/, handler: async () => handleList() },
+    // literal routes BEFORE /:id so literals win
+    // /mission/sessions — all operable sessions (controller + orchestrators + workers)
+    { method: 'GET', pattern: /^\/mission\/sessions$/, handler: async () => handleAllSessions() },
     // controller BEFORE :id/:id/sessions so literals win
     { method: 'GET', pattern: /^\/mission\/controller$/, handler: async () => {
         const election = await amIMonitor();
