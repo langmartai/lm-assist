@@ -12,6 +12,11 @@
  */
 import type { McpToolResult } from '../configure';
 import { ok, err, workerGet, workerPost } from './_passthrough';
+import { currentMcpContext } from '../principal-context';
+
+export function withActorHint(args: Record<string, unknown>, toolUseId: string | undefined): Record<string, unknown> {
+  return { ...args, _actor: { channel: 'mcp', toolUseId: toolUseId ?? null } };
+}
 
 const S = { type: 'string' as const };
 const SARR = { type: 'array' as const, items: { type: 'string' as const } };
@@ -88,10 +93,8 @@ export const MISSION_HANDLERS: Record<
 > = {
   mission_create: async (a) => {
     try {
-      return pretty(await workerPost('/mission', a));
-    } catch (e) {
-      return err((e as Error).message);
-    }
+      return pretty(await workerPost('/mission', withActorHint(a, currentMcpContext()?.toolUseId)));
+    } catch (e) { return err((e as Error).message); }
   },
 
   mission_list: async () => {
@@ -106,10 +109,8 @@ export const MISSION_HANDLERS: Record<
     try {
       const id = String(a.id || '');
       if (!id) return err('id is required');
-      return pretty(await workerPost(`/mission/${encodeURIComponent(id)}`, a));
-    } catch (e) {
-      return err((e as Error).message);
-    }
+      return pretty(await workerPost(`/mission/${encodeURIComponent(id)}`, withActorHint(a, currentMcpContext()?.toolUseId)));
+    } catch (e) { return err((e as Error).message); }
   },
 
   mission_control_status: async () => {
