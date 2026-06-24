@@ -592,6 +592,21 @@ async function main() {
     if (fs.existsSync(fromScript)) lmBin = fromScript;
   }
 
+  // Record the install source so `lm-assist version` / check-update / the UI can show it.
+  if (npmOk && freshNpmRoot) {
+    try {
+      const pkgDir = path.join(freshNpmRoot, 'lm-assist');
+      const isrc = require(path.join(pkgDir, 'core', 'dist', 'utils', 'install-source.js'));
+      const cls = isrc.classifyInstallSource(source.spec || '');
+      let ver = null;
+      try { ver = require(path.join(pkgDir, 'package.json')).version; } catch (e) { /* ignore */ }
+      isrc.recordInstallSource({ kind: cls.kind, source: cls.source, version: ver });
+      log('Recorded install source: ' + cls.source + ' (' + cls.kind + ')');
+    } catch (e) {
+      log('Could not record install source (non-fatal): ' + (e && e.message));
+    }
+  }
+
   if (lmBin) {
     // Use `restart`, not `start`. Something (the web start hook / a self-heal)
     // can respawn the core DURING `npm install` — before the package files are
