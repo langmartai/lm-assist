@@ -150,6 +150,9 @@ interface OperableSession {
 
 interface SessionMessage {
   role?: string;
+  // Mission session reads (`/mission/session/:sid/read`) return `{ role, text }`.
+  // Other session sources may use `content` (string or content-block array).
+  text?: string;
   content?: string | Array<{ type?: string; text?: string }>;
   type?: string;
   [key: string]: unknown;
@@ -900,7 +903,9 @@ export function MissionsPage() {
                 {msgs.map((msg, i) => {
                   const msgRole = (msg.role as string) ?? (msg.type as string) ?? 'msg';
                   let text = '';
-                  if (typeof msg.content === 'string') {
+                  if (typeof msg.text === 'string') {
+                    text = msg.text;
+                  } else if (typeof msg.content === 'string') {
                     text = msg.content;
                   } else if (Array.isArray(msg.content)) {
                     text = msg.content
@@ -1642,7 +1647,9 @@ export function MissionsPage() {
             {chatMessages.map((msg, i) => {
               const msgRole = (msg.role as string) ?? (msg.type as string) ?? 'msg';
               let text = '';
-              if (typeof msg.content === 'string') {
+              if (typeof msg.text === 'string') {
+                text = msg.text;
+              } else if (typeof msg.content === 'string') {
                 text = msg.content;
               } else if (Array.isArray(msg.content)) {
                 text = msg.content
