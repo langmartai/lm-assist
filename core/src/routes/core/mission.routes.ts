@@ -150,19 +150,56 @@ export async function handleSessions(
 // GET /mission/controller — election + job + controllerSession (Task 9)
 // ---------------------------------------------------------------------------
 
+export interface LeaderInfo {
+  node: string | null;
+  host: string | null;
+  isSelf: boolean;
+}
+
+/** Default leader-host resolver: fetches /api/tier-agent/machines via the hub and maps gatewayId → hostname. Non-fatal (returns null on any error). */
+async function defaultGetLeaderHost(node: string | null): Promise<string | null> {
+  if (!node) return null;
+  try {
+    const { getHubConfig } = require('../../hub-client/hub-config') as typeof import('../../hub-client/hub-config');
+    const cfg = getHubConfig();
+    const base = (cfg.hubUrl || '').replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
+    if (!base) return null;
+    const res = await fetch(`${base}/api/tier-agent/machines`, {
+      headers: { Authorization: `Bearer ${cfg.apiKey}` },
+    });
+    if (!res.ok) return null;
+    const json = await res.json() as any;
+    const machines: any[] = Array.isArray(json) ? json : (json.machines || json.data || []);
+    const match = machines.find((m: any) => (m.gatewayId || m.machineId || m.id) === node);
+    return match ? ((match.hostname || match.machineHostname || null) as string | null) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function handleGetController(
   port?: MissionDataPort,
   getElection?: () => Promise<{ isMonitor: boolean; monitorNodeId: string | null }>,
   getJob?: () => unknown,
+  getLeaderHost?: (node: string | null) => Promise<string | null>,
 ): Promise<Envelope> {
   const doGetElection = getElection ?? (() => amIMonitor());
   const doGetJob = getJob ?? (() => getScheduledJobs().getJob('mission-controller'));
+  const doGetLeaderHost = getLeaderHost ?? defaultGetLeaderHost;
   const [election, controllerSession] = await Promise.all([
     doGetElection(),
     getControllerSession(port),
   ]);
   const job = doGetJob();
-  return ok({ election, job, controllerSession });
+  const leaderNode = election.monitorNodeId ?? null;
+  const selfId = thisNode();
+  const host = await doGetLeaderHost(leaderNode);
+  const leader: LeaderInfo = {
+    node: leaderNode,
+    host,
+    isSelf: leaderNode !== null && leaderNode === selfId,
+  };
+  return ok({ election, job, controllerSession, leader });
 }
 
 // ---------------------------------------------------------------------------

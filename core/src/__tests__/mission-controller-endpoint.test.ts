@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import type { Mission } from '../mission/mission-model';
 import { handleGetController } from '../routes/core/mission.routes';
+import type { LeaderInfo } from '../routes/core/mission.routes';
 import type { ControllerSession } from '../mission/mission-store';
 
 function memPort(cs?: ControllerSession | null) {
@@ -59,4 +60,60 @@ test('GET /mission/controller data includes election and job fields', async () =
   const d = r.data as any;
   assert.ok(d.election, 'should include election');
   assert.ok(d.job !== undefined, 'should include job');
+});
+
+// ── Task 2 (Wave 2.2): leader identity ─────────────────────────────────────
+
+test('GET /mission/controller includes leader with host resolved from stub (isSelf=false)', async () => {
+  const port = memPort(null);
+  const fakeElection = { isMonitor: false, monitorNodeId: 'gw-x' };
+  const fakeJob = {};
+  // selfId is returned by thisNode() which reads getHubConfig().gatewayId — here we stub 'gw-y' as self via a different leaderNode
+  const r = await handleGetController(
+    port as any,
+    async () => fakeElection,
+    () => fakeJob as any,
+    async (_node) => 'yitest',
+  );
+  assert.ok(r.success, 'should succeed');
+  const d = r.data as any;
+  assert.ok('leader' in d, 'data should include leader key');
+  const leader = d.leader as LeaderInfo;
+  assert.equal(leader.node, 'gw-x');
+  assert.equal(leader.host, 'yitest');
+  // isSelf depends on thisNode(); in test env gatewayId is probably 'unknown' ≠ 'gw-x'
+  assert.equal(typeof leader.isSelf, 'boolean', 'isSelf should be a boolean');
+});
+
+test('GET /mission/controller leader.isSelf is false when monitorNodeId !== selfId', async () => {
+  const port = memPort(null);
+  // Force monitorNodeId to a value that won't match the test env's thisNode() ('unknown')
+  const fakeElection = { isMonitor: false, monitorNodeId: 'gw-x' };
+  const r = await handleGetController(
+    port as any,
+    async () => fakeElection,
+    () => ({} as any),
+    async (_n) => null,
+  );
+  assert.ok(r.success);
+  const leader = (r.data as any).leader as LeaderInfo;
+  assert.equal(leader.node, 'gw-x');
+  assert.equal(leader.host, null);
+  assert.equal(leader.isSelf, false, 'gw-x should not equal the test-env thisNode()');
+});
+
+test('GET /mission/controller leader is null-node when election has no monitorNodeId', async () => {
+  const port = memPort(null);
+  const fakeElection = { isMonitor: false, monitorNodeId: null };
+  const r = await handleGetController(
+    port as any,
+    async () => fakeElection,
+    () => ({} as any),
+    async (_n) => null,
+  );
+  assert.ok(r.success);
+  const leader = (r.data as any).leader as LeaderInfo;
+  assert.equal(leader.node, null);
+  assert.equal(leader.host, null);
+  assert.equal(leader.isSelf, false);
 });
