@@ -138,8 +138,9 @@ const TERMINAL_CLOUD_STATUSES = ['stopped', 'completed', 'failed', 'error', 'arc
 /** Is a bound cloud executor still alive? Non-terminal status = alive; within the
  *  startup grace window after boundAt, treat as alive (pending/just-started/transient). */
 export function executorLiveness(opts: { status: string | null; boundAt: number | undefined; now: number; graceMs: number }): boolean {
-  if (opts.status && !TERMINAL_CLOUD_STATUSES.includes(opts.status)) return true;
-  if (opts.boundAt && (opts.now - opts.boundAt) < opts.graceMs) return true; // grace: starting up or transient status fetch
+  if (opts.status && TERMINAL_CLOUD_STATUSES.includes(opts.status)) return false; // confirmed terminal: no grace
+  if (opts.status && !TERMINAL_CLOUD_STATUSES.includes(opts.status)) return true; // confirmed alive
+  if (opts.boundAt && (opts.now - opts.boundAt) < opts.graceMs) return true; // unknown/missing status: grace
   return false;
 }
 
@@ -173,7 +174,7 @@ async function readCloudExecutor(m: Mission): Promise<ExecutorState> {
   const read = await cloudRead({ sid }).catch(
     () => ({ messages: [] as Array<{ text: string }>, pendingQuestion: null as null }),
   );
-  const { newOutput } = computeNewOutput(read.messages, m.control.lastOutputCursor || 0);
+  const { newOutput } = computeNewOutput(read.messages, m.control.lastOutputCursor ?? 0);
   const lastText = read.messages.length ? read.messages[read.messages.length - 1].text : '';
   return {
     alive: true,
