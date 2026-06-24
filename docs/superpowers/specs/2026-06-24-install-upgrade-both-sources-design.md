@@ -23,6 +23,7 @@ Gaps:
 |---|---|
 | UI source picker | **Guided dropdown + conditional field**: a `<select>` (Latest published / Specific version / GitHub ref / Local .tgz path) that reveals the matching input; the UI assembles the `source` string and POSTs `{source}`. |
 | Source tracking | **Full tracking now**: every install/upgrade writes an install-source marker; `version` + `check-update` + the UI read it and warn before replacing a custom build. |
+| Installer custom source | **Prefer the prebuilt GitHub-Release tgz; fall back to source-build.** Default prod installs the prebuilt release asset directly (fast, carries the pins); only clones+builds when no release asset exists for the ref. `--published` → npm registry; `--source-build` forces a build. (A v0.1.76 Release with `lm-assist-0.1.76.tgz` is already published.) |
 
 ---
 
@@ -60,12 +61,16 @@ The functions above. `classifyInstallSource` is pure (table-tested); `record`/`r
 ### 4.2 `core/scripts/upgrade.js` — write the marker after a successful install
 After the install step succeeds, `require('<pkgDir>/core/dist/utils/install-source.js').recordInstallSource({ kind: source.isCustom ? 'custom' : 'published', source: source.label, version: <newly-installed version> })`. `source.isCustom`/`source.label` already exist from `resolveSource()`. (Best-effort; wrapped in try/catch — a marker-write failure must not fail the upgrade.)
 
-### 4.3 `install.sh` + `install.ps1` — add a **published** mode + write the marker
-- New flag: **`--published [<version>]`** (and env `LM_ASSIST_PUBLISHED=1` / `LM_ASSIST_PUBLISHED=<version>`). When set: skip clone/pack; `npm install -g lm-assist@${version:-latest}` (after the plugin step). Mutually exclusive with `--dev` (published implies prod).
-- After install, write `~/.lm-assist/install-source.json`:
-  - published mode → `{ kind:"published", source:"lm-assist@<ver|latest>" }`
-  - source build → `{ kind:"custom", source:"github:langmartai/lm-assist#<ref|branch>" }` (use `$REF` if set, else the checked-out branch/sha).
-  Write via a small inline `node -e`/here-doc (JSON), or call the compiled `install-source.js` if dist exists. Keep `install.ps1` pure ASCII.
+### 4.3 `install.sh` + `install.ps1` — THREE prod sources: published, prebuilt-release, source-build
+The prod path resolves a source in this order (`--dev` stays source-build):
+1. **`--published [<version>]`** (env `LM_ASSIST_PUBLISHED=1|<version>`): skip clone; `npm install -g lm-assist@${version:-latest}` from the **npm registry**. Marker `{kind:"published", source:"lm-assist@<ver|latest>"}`.
+2. **Prebuilt GitHub-Release tgz — the DEFAULT prod custom path (prefer this; no clone/build):** for the requested ref (default = the **latest** release; or `--ref <tag>`), resolve the prebuilt asset and `npm install -g <url>`:
+   - default/latest → GitHub API `repos/langmartai/lm-assist/releases/latest` (public, `curl`/`Invoke-RestMethod`) → the `lm-assist-*.tgz` asset's `browser_download_url`.
+   - a tag `<v>` → construct `https://github.com/langmartai/lm-assist/releases/download/<v>/lm-assist-<ver>.tgz` (ver = tag without leading `v`) and **HEAD-check it's 200** before use.
+   - Marker `{kind:"custom", source:"<release-url>"}`.
+3. **Source-build FALLBACK:** if no release asset exists for the ref (HEAD ≠ 200 / no release), or `--source-build` is forced, do the current clone → `npm pack` → `npm install -g ./tgz` (honoring `--ref`). Marker `{kind:"custom", source:"github:langmartai/lm-assist#<ref|branch>"}`.
+
+So default prod = fast prebuilt-release install, transparently falling back to source-build; `--published` overrides to the registry; `--source-build` forces a build. `--published` is mutually exclusive with `--ref`/`--dev`. Marker write = a small inline JSON write (`node -e` on Linux / a here-string on Windows) — no dist dependency. Keep `install.ps1` pure ASCII.
 
 ### 4.4 `bin/lm-assist.js` `version` — direction guard + show source
 - Read the marker (`require('<root>/core/dist/utils/install-source.js').readInstallSource()`), print `  Source:     <source> (<kind>)`.
