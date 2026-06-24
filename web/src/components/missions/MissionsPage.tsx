@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Target,
   RefreshCw,
@@ -13,6 +13,10 @@ import {
   ChevronDown,
   ChevronRight,
   Plug,
+  Send,
+  Square,
+  RotateCcw,
+  AlertCircle,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { CcrCloudView } from '@/components/ccr/CcrCloudView';
@@ -99,6 +103,14 @@ interface Mission {
   lastUpdatedBy?: MissionActor;
 }
 
+interface ControllerSession {
+  node: string;
+  sessionId: string;
+  cse: string | null;
+  tmux: string;
+  startedAt: number;
+}
+
 interface ControllerStatus {
   election: {
     isMonitor: boolean;
@@ -114,6 +126,26 @@ interface ControllerStatus {
       result: string;
     } | null;
   };
+  controllerSession?: ControllerSession | null;
+}
+
+type SessionTransport = 'cloud' | 'native';
+type SessionRole = 'controller' | 'orchestrator' | 'worker';
+
+interface OperableSession {
+  sid: string;
+  missionId: string | null;
+  role: SessionRole;
+  transport: SessionTransport;
+  status?: string;
+  webUrl?: string;
+}
+
+interface SessionMessage {
+  role?: string;
+  content?: string | Array<{ type?: string; text?: string }>;
+  type?: string;
+  [key: string]: unknown;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -214,6 +246,27 @@ export function MissionsPage() {
   const [sessionsByMission, setSessionsByMission] = useState<Record<string, MissionSession[]>>({});
   const [sessionsExpanded, setSessionsExpanded] = useState<Set<string>>(new Set());
   const [sessionsFetching, setSessionsFetching] = useState<Set<string>>(new Set());
+
+  // ── Controller session (Wave 2) ──
+  // auto-opened on load when controllerSession is present
+  const [controllerSessionOpen, setControllerSessionOpen] = useState(false);
+
+  // Fleet-wide operable sessions list
+  const [allSessions, setAllSessions] = useState<OperableSession[]>([]);
+  const [allSessionsLoading, setAllSessionsLoading] = useState(false);
+  const [allSessionsExpanded, setAllSessionsExpanded] = useState(false);
+
+  // Per-operable-session operate panel: sid -> open state
+  const [operatePanelSid, setOperatePanelSid] = useState<string | null>(null);
+  // Per-sid: live messages from read
+  const [operateMessages, setOperateMessages] = useState<Record<string, SessionMessage[]>>({});
+  const [operateReadBusy, setOperateReadBusy] = useState<Record<string, boolean>>({});
+  // Per-sid: drive input text
+  const [operateDriveText, setOperateDriveText] = useState<Record<string, string>>({});
+  const [operateDriveBusy, setOperateDriveBusy] = useState<Record<string, boolean>>({});
+  // Per-sid: control busy
+  const [operateControlBusy, setOperateControlBusy] = useState<Record<string, boolean>>({});
+  const operatePollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Collapsible contributors
   const [contributorsExpanded, setContributorsExpanded] = useState<Set<string>>(new Set());
@@ -316,7 +369,16 @@ export function MissionsPage() {
 
       if (ctrlRes.status === 'fulfilled') {
         const raw = ctrlRes.value as any;
-        setController((raw.data ?? raw) as ControllerStatus);
+        const ctrl = (raw.data ?? raw) as ControllerStatus;
+        setController(ctrl);
+        // Auto-open controller session on first load if present
+        if (ctrl?.controllerSession) {
+          setControllerSessionOpen((prev) => {
+            // Only default-open once (when going from no-session to having one)
+            if (!prev) return true;
+            return prev;
+          });
+        }
       }
     } finally {
       setLoading(false);
@@ -447,6 +509,119 @@ export function MissionsPage() {
     }
   }, [apiFetch, fetchAll]);
 
+  // ── All sessions (fleet operability) ──
+  const fetchAllSessions = useCallback(async () => {
+    setAllSessionsLoading(true);
+    try {
+      const res = await apiFetch<{ data?: { sessions: OperableSession[] }; sessions?: OperableSession[] }>(
+        '/mission/sessions',
+      );
+      const sessions = (res as any).data?.sessions ?? (res as any).sessions ?? [];
+      setAllSessions(sessions);
+    } catch {
+      // silently ignore
+    } finally {
+      setAllSessionsLoading(false);
+    }
+  }, [apiFetch]);
+
+  // Open all-sessions panel: fetch on expand
+  const toggleAllSessions = useCallback(() => {
+    setAllSessionsExpanded((prev) => {
+      if (!prev) fetchAllSessions();
+      return !prev;
+    });
+  }, [fetchAllSessions]);
+
+  // ── Operate panel helpers ──
+  const readSession = useCallback(
+    async (sid: string) => {
+      setOperateReadBusy((p) => ({ ...p, [sid]: true }));
+      try {
+        const res = await apiFetch<{ data?: { messages: SessionMessage[] }; messages?: SessionMessage[] }>(
+          `/mission/session/${encodeURIComponent(sid)}/read`,
+          { method: 'POST', body: { lastN: 20 } },
+        );
+        const msgs = (res as any).data?.messages ?? (res as any).messages ?? [];
+        setOperateMessages((p) => ({ ...p, [sid]: msgs }));
+      } catch {
+        // silently ignore
+      } finally {
+        setOperateReadBusy((p) => ({ ...p, [sid]: false }));
+      }
+    },
+    [apiFetch],
+  );
+
+  const driveSession = useCallback(
+    async (sid: string) => {
+      const text = operateDriveText[sid]?.trim();
+      if (!text) return;
+      setOperateDriveBusy((p) => ({ ...p, [sid]: true }));
+      try {
+        await apiFetch(`/mission/session/${encodeURIComponent(sid)}/drive`, {
+          method: 'POST',
+          body: { text },
+        });
+        setOperateDriveText((p) => ({ ...p, [sid]: '' }));
+        // Refresh messages after sending
+        setTimeout(() => readSession(sid), 800);
+      } catch {
+        // silently ignore
+      } finally {
+        setOperateDriveBusy((p) => ({ ...p, [sid]: false }));
+      }
+    },
+    [apiFetch, operateDriveText, readSession],
+  );
+
+  const controlSession = useCallback(
+    async (sid: string, action: 'interrupt' | 'stop' | 'restart') => {
+      setOperateControlBusy((p) => ({ ...p, [`${sid}:${action}`]: true }));
+      try {
+        await apiFetch(`/mission/session/${encodeURIComponent(sid)}/control`, {
+          method: 'POST',
+          body: { action },
+        });
+        if (action === 'restart') {
+          setControllerSessionOpen(false);
+        }
+      } catch {
+        // silently ignore
+      } finally {
+        setOperateControlBusy((p) => ({ ...p, [`${sid}:${action}`]: false }));
+      }
+    },
+    [apiFetch],
+  );
+
+  // Open/close operate panel and start/stop polling
+  const openOperatePanel = useCallback(
+    (sid: string) => {
+      setOperatePanelSid(sid);
+      readSession(sid);
+      // Poll every 5s while panel is open
+      if (operatePollerRef.current) clearInterval(operatePollerRef.current);
+      operatePollerRef.current = setInterval(() => readSession(sid), 5000);
+    },
+    [readSession],
+  );
+
+  const closeOperatePanel = useCallback(() => {
+    setOperatePanelSid(null);
+    if (operatePollerRef.current) {
+      clearInterval(operatePollerRef.current);
+      operatePollerRef.current = null;
+    }
+  }, []);
+
+  // Cleanup poller on unmount
+  useEffect(() => {
+    return () => {
+      if (operatePollerRef.current) clearInterval(operatePollerRef.current);
+    };
+  }, []);
+
   // ── Actor link renderer ──
   const renderActorLink = useCallback(
     (actor: MissionActor, m: Mission) => {
@@ -497,6 +672,237 @@ export function MissionsPage() {
       );
     },
     [connectSid],
+  );
+
+  // ── Operate panel renderer ──
+  const renderOperatePanel = useCallback(
+    (session: OperableSession) => {
+      const { sid, role, transport, status } = session;
+      const isOpen = operatePanelSid === sid;
+      const msgs = operateMessages[sid] ?? [];
+      const readBusy = !!operateReadBusy[sid];
+      const driveBusy = !!operateDriveBusy[sid];
+      const driveTxt = operateDriveText[sid] ?? '';
+
+      const busyKey = (a: string) => !!operateControlBusy[`${sid}:${a}`];
+
+      const shortSid = sid.length > 12 ? sid.slice(0, 10) + '…' : sid;
+
+      return (
+        <div
+          key={sid}
+          style={{
+            border: '1px solid var(--color-border-subtle)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '8px 10px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            background: role === 'controller' ? 'var(--color-bg-elevated)' : undefined,
+          }}
+        >
+          {/* Row header */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span
+              style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--color-text-secondary)', flex: '1 1 auto' }}
+            >
+              {shortSid}
+            </span>
+            <span className={`badge ${role === 'controller' ? 'badge-green' : 'badge-outline'}`}>{role}</span>
+            <span className="badge badge-default">{transport}</span>
+            {status && <span className="badge badge-default">{status}</span>}
+            <button
+              className={`btn btn-sm ${isOpen ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => (isOpen ? closeOperatePanel() : openOperatePanel(sid))}
+              title={isOpen ? 'Close operate panel' : 'Open operate panel'}
+            >
+              <Plug size={11} /> {isOpen ? 'Close' : 'Operate'}
+            </button>
+            {/* Cloud sessions: open in CcrCloudView */}
+            {transport === 'cloud' && /^(session_|cse_)/.test(sid) && (
+              <button
+                className={`btn btn-sm ${connectSid === sid ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => setConnectSid(connectSid === sid ? null : sid)}
+                title="Open session view"
+              >
+                <Target size={11} /> View
+              </button>
+            )}
+          </div>
+
+          {/* Operate panel body */}
+          {isOpen && (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+                paddingTop: 6,
+                borderTop: '1px solid var(--color-border-subtle)',
+              }}
+            >
+              {/* Live messages */}
+              <div
+                style={{
+                  maxHeight: 180,
+                  overflow: 'auto',
+                  background: 'var(--color-bg-root)',
+                  border: '1px solid var(--color-border-subtle)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '6px 8px',
+                  fontSize: 11,
+                  fontFamily: 'var(--font-mono)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 3,
+                }}
+              >
+                {readBusy && msgs.length === 0 && (
+                  <div style={{ color: 'var(--color-text-tertiary)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> loading…
+                  </div>
+                )}
+                {msgs.length === 0 && !readBusy && (
+                  <div style={{ color: 'var(--color-text-tertiary)' }}>No messages</div>
+                )}
+                {msgs.map((msg, i) => {
+                  const msgRole = (msg.role as string) ?? (msg.type as string) ?? 'msg';
+                  let text = '';
+                  if (typeof msg.content === 'string') {
+                    text = msg.content;
+                  } else if (Array.isArray(msg.content)) {
+                    text = msg.content
+                      .map((c) => (typeof c === 'object' && c?.type === 'text' ? c.text : ''))
+                      .filter(Boolean)
+                      .join(' ');
+                  }
+                  const preview = text.length > 200 ? text.slice(0, 200) + '…' : text;
+                  return (
+                    <div key={i} style={{ display: 'flex', gap: 6 }}>
+                      <span
+                        style={{
+                          color:
+                            msgRole === 'user'
+                              ? 'var(--color-accent)'
+                              : msgRole === 'assistant'
+                              ? 'var(--color-status-green)'
+                              : 'var(--color-text-tertiary)',
+                          minWidth: 60,
+                        }}
+                      >
+                        {msgRole}
+                      </span>
+                      <span style={{ color: 'var(--color-text-secondary)', wordBreak: 'break-word', flex: 1 }}>
+                        {preview || '(no text)'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Refresh + send message */}
+              <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => readSession(sid)}
+                  disabled={readBusy}
+                  title="Refresh messages"
+                >
+                  <RefreshCw size={11} style={readBusy ? { animation: 'spin 1s linear infinite' } : undefined} />
+                </button>
+                <textarea
+                  className="input"
+                  value={driveTxt}
+                  rows={2}
+                  placeholder="Send a message…"
+                  style={{ flex: 1, resize: 'vertical', fontSize: 11 }}
+                  onChange={(e) =>
+                    setOperateDriveText((p) => ({ ...p, [sid]: e.target.value }))
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                      e.preventDefault();
+                      driveSession(sid);
+                    }
+                  }}
+                />
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={() => driveSession(sid)}
+                  disabled={driveBusy || !driveTxt.trim()}
+                  title="Send message (Ctrl/Cmd+Enter)"
+                >
+                  {driveBusy ? (
+                    <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} />
+                  ) : (
+                    <Send size={11} />
+                  )}
+                </button>
+              </div>
+
+              {/* Control buttons */}
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => controlSession(sid, 'interrupt')}
+                  disabled={busyKey('interrupt')}
+                  title="Interrupt session"
+                >
+                  {busyKey('interrupt') ? (
+                    <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} />
+                  ) : (
+                    <AlertCircle size={11} />
+                  )}{' '}
+                  Interrupt
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => controlSession(sid, 'stop')}
+                  disabled={busyKey('stop')}
+                  title="Stop session"
+                >
+                  {busyKey('stop') ? (
+                    <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} />
+                  ) : (
+                    <Square size={11} />
+                  )}{' '}
+                  Stop
+                </button>
+                {role === 'controller' && (
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => controlSession(sid, 'restart')}
+                    disabled={busyKey('restart')}
+                    title="Restart controller (supervisor will relaunch)"
+                  >
+                    {busyKey('restart') ? (
+                      <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} />
+                    ) : (
+                      <RotateCcw size={11} />
+                    )}{' '}
+                    Restart
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    },
+    [
+      operatePanelSid,
+      operateMessages,
+      operateReadBusy,
+      operateDriveBusy,
+      operateDriveText,
+      operateControlBusy,
+      connectSid,
+      closeOperatePanel,
+      openOperatePanel,
+      readSession,
+      driveSession,
+      controlSession,
+    ],
   );
 
   // ── Render ──
@@ -646,6 +1052,123 @@ export function MissionsPage() {
             </div>
           </div>
         )}
+
+        {/* ── Controller session panel (Wave 2) ── */}
+        {controller?.controllerSession ? (
+          <div className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                Mission Controller
+              </span>
+              <span className="badge badge-green">live</span>
+              <span
+                style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--color-text-tertiary)' }}
+              >
+                {controller.controllerSession.node}
+              </span>
+              <div style={{ flex: 1 }} />
+              <button
+                className={`btn btn-sm ${controllerSessionOpen ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => setControllerSessionOpen((v) => !v)}
+              >
+                <Plug size={12} /> {controllerSessionOpen ? 'Close' : 'Open session'}
+              </button>
+            </div>
+            {controllerSessionOpen && (() => {
+              const cs = controller.controllerSession!;
+              const viewSid = cs.cse ?? cs.sessionId;
+              const isCloud = /^(session_|cse_)/.test(viewSid);
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {isCloud ? (
+                    <CcrCloudView
+                      sid={viewSid}
+                      webUrl={`https://claude.ai/code/${viewSid}`}
+                      apiFetch={apiFetch}
+                      onClose={() => setControllerSessionOpen(false)}
+                    />
+                  ) : (
+                    <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+                      Native session: <span style={{ fontFamily: 'var(--font-mono)' }}>{viewSid}</span>
+                      {cs.tmux && <span> · tmux: <span style={{ fontFamily: 'var(--font-mono)' }}>{cs.tmux}</span></span>}
+                    </div>
+                  )}
+                  {/* Operate panel for the controller session itself */}
+                  {renderOperatePanel({
+                    sid: cs.sessionId,
+                    missionId: null,
+                    role: 'controller',
+                    transport: isCloud ? 'cloud' : 'native',
+                  })}
+                </div>
+              );
+            })()}
+          </div>
+        ) : (
+          !loading && controller && (
+            <div
+              style={{
+                padding: '8px 12px',
+                border: '1px solid var(--color-border-subtle)',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: 12,
+                color: 'var(--color-text-tertiary)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+              }}
+            >
+              <AlertCircle size={13} /> Controller not running — supervisor will launch on next tick
+            </div>
+          )
+        )}
+
+        {/* ── All sessions panel (fleet operability) ── */}
+        <div className="card" style={{ padding: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+              All Sessions
+            </span>
+            {allSessions.length > 0 && (
+              <span className="badge badge-outline">{allSessions.length}</span>
+            )}
+            <div style={{ flex: 1 }} />
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={toggleAllSessions}
+              title={allSessionsExpanded ? 'Collapse' : 'Show all mission sessions'}
+            >
+              {allSessionsLoading ? (
+                <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />
+              ) : allSessionsExpanded ? (
+                <ChevronDown size={12} />
+              ) : (
+                <ChevronRight size={12} />
+              )}
+              {allSessionsExpanded ? ' Collapse' : ' Expand'}
+            </button>
+            {allSessionsExpanded && (
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={fetchAllSessions}
+                disabled={allSessionsLoading}
+                title="Refresh sessions list"
+              >
+                <RefreshCw size={12} />
+              </button>
+            )}
+          </div>
+          {allSessionsExpanded && (
+            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {allSessions.length === 0 && !allSessionsLoading && (
+                <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>
+                  No active sessions
+                </div>
+              )}
+              {allSessions.map((s) => renderOperatePanel(s))}
+            </div>
+          )}
+        </div>
 
         {/* ── Create form ── */}
         {showCreate && (
