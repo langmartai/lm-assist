@@ -97,9 +97,25 @@ function loadSm() {
   }
 }
 
+/** True only when npm `latest` is numerically GREATER than `installed` (no downgrade prompts). */
+function isNpmGreater(installed, latest) {
+  if (!installed || !latest) return false;
+  const a = String(installed).split('.').map((n) => parseInt(n, 10) || 0);
+  const b = String(latest).split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] || 0, y = b[i] || 0;
+    if (y > x) return true;
+    if (y < x) return false;
+  }
+  return false;
+}
+
 // Get command from argv
 const command = process.argv[2] || 'help';
 const args = process.argv.slice(3);
+
+// Test hatch: require() with LM_ASSIST_NO_RUN=1 exports helpers and skips CLI execution.
+if (process.env.LM_ASSIST_NO_RUN === '1') { module.exports = { isNpmGreater }; return; }
 
 const validCommands = ['start', 'stop', 'restart', 'status', 'logs', 'upgrade', 'version', 'storage', 'log', 'setup', 'login', 'logout', 'doctor', 'help'];
 
@@ -258,6 +274,11 @@ if (command === 'version') {
   console.log('lm-assist Version Info\n');
   console.log(`  Installed:  ${installedVersion || 'unknown'}`);
 
+  // Install source (best-effort)
+  let src = null;
+  try { src = require(path.join(projectRoot, 'core', 'dist', 'utils', 'install-source.js')).readInstallSource(); } catch { /* ignore */ }
+  if (src) console.log(`  Source:     ${src.source} (${src.kind}${src.kind === 'custom' ? ' build' : ''})`);
+
   // Latest version from npm registry
   try {
     const { execFileSync } = require('child_process');
@@ -265,8 +286,12 @@ if (command === 'version') {
       encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
     console.log(`  Latest:     ${latest}`);
-    if (installedVersion && latest && installedVersion !== latest) {
-      console.log(`  Update:     Run "lm-assist upgrade" to update`);
+    if (installedVersion && latest && isNpmGreater(installedVersion, latest)) {
+      console.log(`  Update:     Run "lm-assist upgrade" to update to ${latest}`);
+      if (src && src.kind === 'custom') {
+        console.log(`              (you're on a CUSTOM build — "lm-assist upgrade" installs npm latest and REPLACES it;`);
+        console.log(`               use "lm-assist upgrade --from <your tgz/github ref>" to stay on a custom build)`);
+      }
     }
   } catch {
     console.log('  Latest:     (could not check)');
