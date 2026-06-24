@@ -1,5 +1,7 @@
 /** Pure Mission model: types + constructors + decision/placement logic. No IO. */
 
+import { backoffMinutes } from '../monitor/stall-state';
+
 export type MissionStatus = 'draft' | 'active' | 'waiting' | 'paused' | 'blocked' | 'done' | 'failed';
 export type ExecutorKind = 'orchestrator' | 'worker';
 export type Isolation = 'cloud' | 'worktree' | 'shared';
@@ -135,4 +137,55 @@ export function place(m: Mission, all: Mission[]): PlacementDecision {
     return { go: true, env: 'worktree', host: m.env.host ?? '', repo: m.env.repo ?? '', branch: m.env.branch ?? `mission/${m.id}` };
   }
   return { go: true, env: 'shared', lease: m.env.resources.join(',') || m.id };
+}
+
+export interface ExecutorOutput {
+  cursor: number;
+  messages: string[];
+  results: Array<{ ref: string; summary?: string }>;
+}
+
+export interface ExecutorState {
+  alive: boolean;
+  serverStalled: boolean;
+  gate: { taskId: string; reason: string } | null;
+  newOutput: ExecutorOutput | null;
+  idle: boolean;
+}
+
+export type MissionDecision =
+  | { kind: 'rebind' }
+  | { kind: 'defer' }
+  | { kind: 'gate'; reason: string }
+  | { kind: 'adjust'; output: ExecutorOutput }
+  | { kind: 'place' };
+
+/** Pure phase dispatch for one mission given its executor's state. */
+export function decideMission(m: Mission, st: ExecutorState): MissionDecision {
+  const bound = !!m.binding?.sessionId;
+  if (bound && !st.alive) return { kind: 'rebind' };
+  if (st.serverStalled) return { kind: 'defer' };
+  if (st.gate) return { kind: 'gate', reason: st.gate.reason };
+  if (st.newOutput) return { kind: 'adjust', output: st.newOutput };
+  return { kind: 'place' };
+}
+
+export interface MissionNudgeCfg {
+  intervalMin: number;
+  maxNudges: number;
+}
+
+/** Capped, widening backoff for the parked-executor `continue` nudge (reuses backoffMinutes). */
+export function planMissionNudge(
+  control: MissionControl,
+  cfg: MissionNudgeCfg,
+  now: number,
+): { action: 'nudge' | 'wait' | 'giveup'; control: MissionControl } {
+  if (control.gaveUp) return { action: 'wait', control };
+  if (control.nudgeCount >= cfg.maxNudges) return { action: 'giveup', control: { ...control, gaveUp: true } };
+  if (control.nudgeCount > 0) {
+    const dueAt = (control.lastNudgeAt ?? 0) + backoffMinutes(control.backoffStep, cfg.intervalMin) * 60_000;
+    if (now < dueAt) return { action: 'wait', control };
+  }
+  return { action: 'nudge', control: { ...control, nudgeCount: control.nudgeCount + 1, lastNudgeAt: now, backoffStep: control.backoffStep + 1 } };
 }
