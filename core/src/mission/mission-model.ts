@@ -189,3 +189,58 @@ export function planMissionNudge(
   }
   return { action: 'nudge', control: { ...control, nudgeCount: control.nudgeCount + 1, lastNudgeAt: now, backoffStep: control.backoffStep + 1 } };
 }
+
+export type AdjustVerdict = 'continue' | 'revise' | 'done' | 'blocked' | 'gate';
+export interface AdjustResult {
+  verdict: AdjustVerdict;
+  revisedObjective: string | null;
+  revisedNextSteps: string[] | null;
+  isMaterialPivot: boolean;
+  nextDirective: string;
+  reason: string;
+}
+
+export const ADJUST_SCHEMA = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['continue', 'revise', 'done', 'blocked', 'gate'] },
+    revisedObjective: { type: ['string', 'null'] },
+    revisedNextSteps: { type: ['array', 'null'], items: { type: 'string' } },
+    isMaterialPivot: { type: 'boolean' },
+    nextDirective: { type: 'string' },
+    reason: { type: 'string' },
+  },
+  required: ['verdict', 'nextDirective'],
+} as const;
+
+const VERDICTS = new Set<AdjustVerdict>(['continue', 'revise', 'done', 'blocked', 'gate']);
+const DEFAULT_ADJUST: AdjustResult = {
+  verdict: 'continue', revisedObjective: null, revisedNextSteps: null,
+  isMaterialPivot: false, nextDirective: 'continue', reason: 'default (unparseable adjust result)',
+};
+
+function extractJson(raw: string): string {
+  const s = raw.indexOf('{');
+  const e = raw.lastIndexOf('}');
+  if (s === -1 || e === -1 || e < s) throw new Error('no json');
+  return raw.slice(s, e + 1);
+}
+
+/** Parse the adjust LLM output; never throws — defaults to a safe `continue`. */
+export function parseAdjustResult(raw: string): AdjustResult {
+  try {
+    const j = JSON.parse(extractJson(raw)) as Record<string, unknown>;
+    const verdict = VERDICTS.has(j.verdict as AdjustVerdict) ? (j.verdict as AdjustVerdict) : 'continue';
+    const directive = typeof j.nextDirective === 'string' && j.nextDirective.trim() ? (j.nextDirective as string) : 'continue';
+    return {
+      verdict,
+      revisedObjective: typeof j.revisedObjective === 'string' ? (j.revisedObjective as string) : null,
+      revisedNextSteps: Array.isArray(j.revisedNextSteps) ? (j.revisedNextSteps as unknown[]).filter((x) => typeof x === 'string') as string[] : null,
+      isMaterialPivot: j.isMaterialPivot === true,
+      nextDirective: directive,
+      reason: typeof j.reason === 'string' ? (j.reason as string) : '',
+    };
+  } catch {
+    return { ...DEFAULT_ADJUST };
+  }
+}
