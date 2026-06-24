@@ -251,6 +251,14 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   mission_list: 'read',
   mission_update: 'write',
   mission_control_status: 'read',
+  // mission rail tools (deterministic guardrails)
+  mission_place: 'read',
+  mission_executor_status: 'read',
+  // mission operability tools
+  mission_sessions: 'read',
+  mission_session_read: 'read',
+  mission_session_drive: 'write',
+  mission_session_control: 'admin',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */
