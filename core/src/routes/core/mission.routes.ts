@@ -1,0 +1,92 @@
+/** Mission CRUD + controller status. Bare {success,data}/{success,error} envelope (like worker.routes). */
+import type { RouteHandler, RouteContext } from '../index';
+import { randomBytes } from 'crypto';
+import { newMission, Mission, MissionStatus, Isolation } from '../../mission/mission-model';
+import {
+  MissionDataPort, getMission, listMissions, putMission, thisNode,
+} from '../../mission/mission-store';
+import { amIMonitor } from '../../monitor/stall-election';
+import { getScheduledJobs } from '../../scheduler/scheduled-jobs';
+
+interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string }; }
+const ok = <T>(data: T): Envelope => ({ success: true, data });
+const fail = (code: string, message: string): Envelope => ({ success: false, error: { code, message } });
+const genId = () => 'mission_' + randomBytes(4).toString('hex');
+const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+const arr = (v: unknown): string[] | undefined => {
+  if (Array.isArray(v)) return v.filter((x) => typeof x === 'string');
+  if (typeof v === 'string') { try { const j = JSON.parse(v); return Array.isArray(j) ? j.filter((x) => typeof x === 'string') : undefined; } catch { return undefined; } }
+  return undefined;
+};
+const VALID_STATUS = new Set<MissionStatus>(['draft', 'active', 'waiting', 'paused', 'blocked', 'done', 'failed']);
+
+// --- testable handlers (port-injected) ---
+
+export async function handleCreate(b: Record<string, unknown>, ownerNode: string, port?: MissionDataPort): Promise<Envelope> {
+  const title = str(b.title);
+  const objective = str(b.objective);
+  if (!title || !objective) return fail('INVALID_INPUT', 'title and objective are required');
+  const env = (b.env && typeof b.env === 'object') ? b.env as Record<string, unknown> : {};
+  const m = newMission({
+    title, objective, ownerNode,
+    projects: arr(b.projects), dependsOn: arr(b.dependsOn),
+    plan: str(b.plan), nextSteps: arr(b.nextSteps),
+    env: {
+      isolation: (str(env.isolation) as Isolation) ?? 'cloud',
+      host: str(env.host), repo: str(env.repo), branch: str(env.branch),
+      resources: arr(env.resources) ?? [],
+      exclusive: env.exclusive === true || env.exclusive === 'true',
+    },
+  }, Date.now(), genId);
+  await putMission(m, port);
+  return ok(m);
+}
+
+export async function handleList(port?: MissionDataPort): Promise<Envelope> {
+  return ok(await listMissions(port));
+}
+
+export async function handleGet(id: string, port?: MissionDataPort): Promise<Envelope> {
+  const m = await getMission(id, port);
+  return m ? ok(m) : fail('NOT_FOUND', `no mission ${id}`);
+}
+
+export async function handlePatch(id: string, b: Record<string, unknown>, port?: MissionDataPort): Promise<Envelope> {
+  const m = await getMission(id, port);
+  if (!m) return fail('NOT_FOUND', `no mission ${id}`);
+  if (str(b.objective)) m.objective = str(b.objective)!;
+  if (str(b.title)) m.title = str(b.title)!;
+  if (str(b.plan) !== undefined) m.plan = str(b.plan);
+  if (arr(b.nextSteps)) m.nextSteps = arr(b.nextSteps);
+  if (arr(b.dependsOn)) m.dependsOn = arr(b.dependsOn)!;
+  if (arr(b.projects)) m.projects = arr(b.projects)!;
+  const sv = str(b.status) as MissionStatus | undefined;
+  if (sv) { if (!VALID_STATUS.has(sv)) return fail('INVALID_INPUT', `invalid status "${sv}"`); m.status = sv; }
+  if (b.env && typeof b.env === 'object') {
+    const e = b.env as Record<string, unknown>;
+    if (str(e.isolation)) m.env.isolation = str(e.isolation) as Isolation;
+    if (str(e.host) !== undefined) m.env.host = str(e.host);
+    if (str(e.repo) !== undefined) m.env.repo = str(e.repo);
+    if (str(e.branch) !== undefined) m.env.branch = str(e.branch);
+    if (arr(e.resources)) m.env.resources = arr(e.resources)!;
+    if (e.exclusive !== undefined) m.env.exclusive = e.exclusive === true || e.exclusive === 'true';
+  }
+  m.adjustments.push({ at: Date.now(), trigger: 'user-edit', change: 'mission updated via API', by: 'user' });
+  await putMission(m, port);
+  return ok(m);
+}
+
+export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
+  return [
+    { method: 'POST', pattern: /^\/mission$/, handler: async (req) => handleCreate((req.body || {}) as Record<string, unknown>, thisNode()) },
+    { method: 'GET', pattern: /^\/mission$/, handler: async () => handleList() },
+    // controller BEFORE :id so the literal wins
+    { method: 'GET', pattern: /^\/mission\/controller$/, handler: async () => {
+        const election = await amIMonitor();
+        const job = getScheduledJobs().getJob('mission-controller');
+        return ok({ election, job });
+      } },
+    { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handleGet(req.params.id) },
+    { method: 'PATCH', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>) },
+  ];
+}
