@@ -1,7 +1,7 @@
 /** The super Mission Controller tick: election → per-mission liveness/adjust/placement. */
 import {
   Mission, MissionBinding, ExecutorState, ExecutorOutput, AdjustResult, PlacementDecision,
-  decideMission, place, planMissionNudge, missionSessionTitle, MissionActor, coarseActor,
+  decideMission, place, planMissionNudge, missionSessionTitle, MissionActor,
 } from './mission-model';
 import { pickNewSession, cseToSessionSid, isNativeBinding } from './mission-native';
 import { listMissions, putMission, thisNode } from './mission-store';
