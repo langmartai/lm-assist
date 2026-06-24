@@ -43,3 +43,15 @@ test('worktree placement defaults branch to mission/<id>', () => {
   const m = base({ id: 'a', env: { isolation: 'worktree', host: 'h1', repo: 'lm-assist', resources: [] } });
   assert.deepStrictEqual(place(m, [m]), { go: true, env: 'worktree', host: 'h1', repo: 'lm-assist', branch: 'mission/a' });
 });
+
+test('incoming exclusive mission is blocked by a non-terminal shared holder', () => {
+  const m = base({ id: 'a', env: { isolation: 'shared', host: 'h1', resources: ['gpu:0'], exclusive: true } });
+  const holder = base({ id: 'z', status: 'paused', env: { isolation: 'shared', host: 'h1', resources: ['gpu:0'] } });
+  assert.deepStrictEqual(place(m, [m, holder]), { go: false, reason: 'resource', conflictWith: 'z' });
+});
+
+test('a done holder releases the resource (no block)', () => {
+  const m = base({ id: 'a', env: { isolation: 'shared', host: 'h1', resources: ['gpu:0'], exclusive: true } });
+  const holder = base({ id: 'z', status: 'done', env: { isolation: 'shared', host: 'h1', resources: ['gpu:0'], exclusive: true } });
+  assert.deepStrictEqual(place(m, [m, holder]), { go: true, env: 'shared', lease: 'gpu:0' });
+});

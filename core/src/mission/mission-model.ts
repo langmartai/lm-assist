@@ -102,6 +102,10 @@ function isRunning(m: Mission): boolean {
   return m.status === 'active' && !!m.binding?.sessionId;
 }
 
+function isTerminal(m: Mission): boolean {
+  return m.status === 'done' || m.status === 'failed';
+}
+
 /** Resolve where a mission's executor may run: dependency gate → resource conflict → isolation. */
 export function place(m: Mission, all: Mission[]): PlacementDecision {
   // 1) ordering gate — a dependency is met only if it exists AND is done.
@@ -119,6 +123,7 @@ export function place(m: Mission, all: Mission[]): PlacementDecision {
         a.id !== m.id &&
         a.env.host === m.env.host &&
         a.env.resources.includes(res) &&
+        !isTerminal(a) &&
         (isRunning(a) || a.env.exclusive === true || m.env.exclusive === true),
     );
     if (holder) return { go: false, reason: 'resource', conflictWith: holder.id };
