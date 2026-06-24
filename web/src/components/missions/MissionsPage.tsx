@@ -209,30 +209,6 @@ export function MissionsPage() {
     [apiClient, proxy.machineId],
   );
 
-  /**
-   * leaderFetch — targets the leader node for controller chat read/drive/control.
-   * When leader.isSelf is true (or leader is null/unknown) → falls back to apiFetch (local).
-   * When leader.isSelf is false → passes leader.node as machineId, routing via the hub
-   * machine-proxy exactly as CcrCloudView does for cross-node session views.
-   */
-  const leaderFetch = useCallback(
-    async <T,>(
-      leader: ControllerLeader | null | undefined,
-      path: string,
-      opts?: { method?: string; body?: unknown },
-    ): Promise<T> => {
-      if (!leader || leader.isSelf || !leader.node) {
-        return apiFetch<T>(path, opts);
-      }
-      return apiClient.fetchPath<T>(path, {
-        method: opts?.method,
-        body: opts?.body,
-        machineId: leader.node,
-      });
-    },
-    [apiClient, apiFetch],
-  );
-
   // ── State ──
   const [missions, setMissions] = useState<Mission[]>([]);
   const [controller, setController] = useState<ControllerStatus | null>(null);
@@ -283,11 +259,6 @@ export function MissionsPage() {
   const [controllerSessionOpen, setControllerSessionOpen] = useState(false);
   // Once the user manually closes the panel, don't auto-reopen it on subsequent polls.
   const [controllerSessionDismissed, setControllerSessionDismissed] = useState(false);
-
-  // When the leader is a remote node, this holds the leader's controller status
-  // (fetched via leaderFetch on the same cadence as fetchAll).
-  // null = not yet fetched / leader is self / no leader.
-  const [leaderController, setLeaderController] = useState<ControllerStatus | null>(null);
 
   // Fleet-wide operable sessions list
   const [allSessions, setAllSessions] = useState<OperableSession[]>([]);
@@ -420,52 +391,19 @@ export function MissionsPage() {
         const raw = ctrlRes.value as any;
         const ctrl = (raw.data ?? raw) as ControllerStatus;
         setController(ctrl);
-
-        // FIX 1: if the leader is a remote node, also fetch its controller status
-        // so we can gate the chat on the leader's controllerSession, not the local one.
-        const ldr = ctrl?.leader;
-        if (ldr && ldr.node && !ldr.isSelf) {
-          try {
-            const ldrRaw = await leaderFetch<{ data?: ControllerStatus } | ControllerStatus>(
-              ldr,
-              '/mission/controller',
-            );
-            const ldrCtrl = ((ldrRaw as any).data ?? ldrRaw) as ControllerStatus;
-            setLeaderController(ldrCtrl);
-            // Auto-open from leader's controllerSession
-            if (ldrCtrl?.controllerSession) {
-              setControllerSessionDismissed((dismissed) => {
-                if (!dismissed) setControllerSessionOpen(true);
-                return dismissed;
-              });
-            }
-          } catch {
-            // Non-fatal: fall back to local controller status
-            setLeaderController(null);
-            // Auto-open from local controllerSession as fallback
-            if (ctrl?.controllerSession) {
-              setControllerSessionDismissed((dismissed) => {
-                if (!dismissed) setControllerSessionOpen(true);
-                return dismissed;
-              });
-            }
-          }
-        } else {
-          // Leader is self or unknown — clear any stale remote controller status
-          setLeaderController(null);
-          // Auto-open controller session if present — but only if the user hasn't dismissed it.
-          if (ctrl?.controllerSession) {
-            setControllerSessionDismissed((dismissed) => {
-              if (!dismissed) setControllerSessionOpen(true);
-              return dismissed;
-            });
-          }
+        // The local Core now server-side proxies the leader's controllerSession into the response
+        // (handleGetController proxies when !isMonitor). No browser-side cross-node fetch needed.
+        if (ctrl?.controllerSession) {
+          setControllerSessionDismissed((dismissed) => {
+            if (!dismissed) setControllerSessionOpen(true);
+            return dismissed;
+          });
         }
       }
     } finally {
       setLoading(false);
     }
-  }, [apiFetch, leaderFetch, fetchMissionSessions]);
+  }, [apiFetch, fetchMissionSessions]);
 
   // Initial load + 5s auto-refresh
   useEffect(() => {
@@ -685,10 +623,11 @@ export function MissionsPage() {
   const readControllerChat = useCallback(
     async (sid: string, leader: ControllerLeader | null | undefined) => {
       try {
-        const res = await leaderFetch<{ data?: { messages: SessionMessage[] }; messages?: SessionMessage[] }>(
-          leader,
+        // Pass node in the request body so the LOCAL Core proxies to the leader server-side.
+        // The browser never needs a hub Bearer token — only the server does.
+        const res = await apiFetch<{ data?: { messages: SessionMessage[] }; messages?: SessionMessage[] }>(
           `/mission/session/${encodeURIComponent(sid)}/read`,
-          { method: 'POST', body: { lastN: 30 } },
+          { method: 'POST', body: { lastN: 30, node: leader?.node ?? undefined } },
         );
         const msgs = (res as any).data?.messages ?? (res as any).messages ?? [];
         setChatMessages(msgs);
@@ -702,7 +641,7 @@ export function MissionsPage() {
         // silently ignore — keep last messages
       }
     },
-    [leaderFetch],
+    [apiFetch],
   );
 
   const sendControllerChat = useCallback(
@@ -711,10 +650,9 @@ export function MissionsPage() {
       if (!text) return;
       setChatSendBusy(true);
       try {
-        await leaderFetch(
-          leader,
+        await apiFetch(
           `/mission/session/${encodeURIComponent(sid)}/drive`,
-          { method: 'POST', body: { text } },
+          { method: 'POST', body: { text, node: leader?.node ?? undefined } },
         );
         setChatDraft('');
         // Poll immediately after send
@@ -725,17 +663,16 @@ export function MissionsPage() {
         setChatSendBusy(false);
       }
     },
-    [leaderFetch, chatDraft, readControllerChat],
+    [apiFetch, chatDraft, readControllerChat],
   );
 
   const controllerChatControl = useCallback(
     async (sid: string, leader: ControllerLeader | null | undefined, action: 'interrupt' | 'stop' | 'restart') => {
       setChatControlBusy((p) => ({ ...p, [action]: true }));
       try {
-        await leaderFetch(
-          leader,
+        await apiFetch(
           `/mission/session/${encodeURIComponent(sid)}/control`,
-          { method: 'POST', body: { action } },
+          { method: 'POST', body: { action, node: leader?.node ?? undefined } },
         );
         if (action === 'restart') {
           setControllerSessionDismissed(true);
@@ -746,17 +683,14 @@ export function MissionsPage() {
         setChatControlBusy((p) => ({ ...p, [action]: false }));
       }
     },
-    [leaderFetch],
+    [apiFetch],
   );
 
   // Start/stop the chat poller when the controller session changes.
-  // Uses effectiveController (leader's status when remote, local otherwise) so the
-  // poller activates against the leader's session regardless of which node we're on.
+  // The local Core server-side proxies the leader's controllerSession into the /mission/controller
+  // response, so controller.controllerSession is already authoritative — no leaderController needed.
   useEffect(() => {
-    // effectiveController is leaderController ?? controller (computed in render section
-    // but we need it here too — derive inline from the same sources).
-    const effCtrl = leaderController ?? controller;
-    const cs = effCtrl?.controllerSession;
+    const cs = controller?.controllerSession;
     const leader = controller?.leader;
     if (!cs) {
       if (chatPollerRef.current) {
@@ -780,8 +714,6 @@ export function MissionsPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    leaderController?.controllerSession?.sessionId,
-    leaderController?.controllerSession?.cse,
     controller?.controllerSession?.sessionId,
     controller?.controllerSession?.cse,
     controller?.leader?.node,
@@ -1404,9 +1336,9 @@ export function MissionsPage() {
   );
 
   // ── Render ──
-  // FIX 1: use the leader's controllerSession (and election/job) as the authoritative source
-  // when the leader is a remote node. Fall back to local controller when self or no leader.
-  const effectiveController = leaderController ?? controller;
+  // The local Core server-side proxies the leader's controllerSession into /mission/controller
+  // when this node is not the monitor. controller.controllerSession is always authoritative.
+  const effectiveController = controller;
   const cs = effectiveController?.controllerSession ?? null;
   const leader = controller?.leader ?? null;
   const leaderLabel = leader
