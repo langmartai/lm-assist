@@ -7,7 +7,7 @@ import { listMissions, putMission } from './mission-store';
 import { runAdjust } from './mission-adjust';
 import { getProjectSettings } from '../project-settings';
 import { amIMonitor } from '../monitor/stall-election';
-import { cloudStart, cloudDrive, cloudRead, cloudListAccount } from '../terminal/ccr-cloud';
+import { cloudStart, cloudDrive, cloudRead, cloudStatus } from '../terminal/ccr-cloud';
 
 export interface MissionTickDeps {
   now: number;
@@ -127,6 +127,23 @@ export async function runMissionTick(
 const SERVER_STALL = /overloaded|rate.?limit|server error|529|503|502|500/i;
 
 /**
+ * Terminal cloud session statuses. Everything else (active/idle/pending/running/disconnected/
+ * requires_action/unknown) is a LIVE state — the SESSION_STATUS_* enum's working values plus
+ * connection_status:disconnected (the UI reconnects) and the unknown fallback (don't kill on a
+ * transient read). `archived` is the confirmed terminal SESSION_STATUS_ value; the others cover
+ * how a cloud session can end (a deleted session 404s → cloudStatus throws → null → grace).
+ */
+const TERMINAL_CLOUD_STATUSES = ['stopped', 'completed', 'failed', 'error', 'archived'];
+
+/** Is a bound cloud executor still alive? Non-terminal status = alive; within the
+ *  startup grace window after boundAt, treat as alive (pending/just-started/transient). */
+export function executorLiveness(opts: { status: string | null; boundAt: number | undefined; now: number; graceMs: number }): boolean {
+  if (opts.status && !TERMINAL_CLOUD_STATUSES.includes(opts.status)) return true;
+  if (opts.boundAt && (opts.now - opts.boundAt) < opts.graceMs) return true; // grace: starting up or transient status fetch
+  return false;
+}
+
+/**
  * Pure cursor math over the FULL transcript. `prevCursor` (= `m.control.lastOutputCursor`)
  * is an ABSOLUTE high-water mark; `messages` MUST be the full transcript (not a tail slice),
  * else the cursor caps at the slice length and adjust never re-fires past it.
@@ -143,23 +160,28 @@ export function computeNewOutput(
 async function readCloudExecutor(m: Mission): Promise<ExecutorState> {
   const sid = m.binding?.sessionId;
   if (!sid) return { alive: false, serverStalled: false, gate: null, newOutput: null, idle: true };
-  const account = await cloudListAccount(100).catch(
-    () => [] as Array<{ sid: string; status: string }>,
-  );
-  const live = account.find((a) => a.sid === sid);
-  if (!live) return { alive: false, serverStalled: false, gate: null, newOutput: null, idle: true };
+  // Liveness via cloudStatus(sid) — it works with the `session_<id>` form cloudStart returns,
+  // whereas cloudListAccount returns the SAME session as `cse_<id>` (different prefix) so a
+  // membership test never matched → a pending executor looked dead → runaway re-start every tick.
+  const st = await cloudStatus(sid).catch(() => null);
+  const GRACE_MS = 120000;
+  if (!executorLiveness({ status: st?.status ?? null, boundAt: m.binding?.boundAt, now: Date.now(), graceMs: GRACE_MS })) {
+    return { alive: false, serverStalled: false, gate: null, newOutput: null, idle: true };
+  }
   // Full transcript (no lastN) — the cursor is an ABSOLUTE high-water mark, so a tail
   // slice would cap it and stop adjust from re-firing once the session passes the cap.
   const read = await cloudRead({ sid }).catch(
     () => ({ messages: [] as Array<{ text: string }>, pendingQuestion: null as null }),
   );
+  const { newOutput } = computeNewOutput(read.messages, m.control.lastOutputCursor || 0);
   const lastText = read.messages.length ? read.messages[read.messages.length - 1].text : '';
-  const serverStalled = SERVER_STALL.test(lastText);
-  const gate = read.pendingQuestion
-    ? { taskId: 'cloud', reason: 'pending question / approval' }
-    : null;
-  const { newOutput } = computeNewOutput(read.messages, m.control.lastOutputCursor ?? 0);
-  return { alive: true, serverStalled, gate, newOutput, idle: !newOutput };
+  return {
+    alive: true,
+    serverStalled: SERVER_STALL.test(lastText),
+    gate: read.pendingQuestion ? { taskId: 'cloud', reason: 'pending question / approval' } : null,
+    newOutput,
+    idle: !newOutput,
+  };
 }
 
 async function startCloudExecutor(m: Mission, decision: PlacementDecision): Promise<MissionBinding> {
