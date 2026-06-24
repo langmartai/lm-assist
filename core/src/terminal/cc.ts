@@ -27,12 +27,17 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+export function remoteControlFlags(rc?: boolean): string[] {
+  return rc ? ['--remote-control'] : [];
+}
+
 function buildLaunchCmd(opts: CCLaunchInput): string {
   // Use the same binary resolution as the SDK runner (handles ~/.local/bin
   // installs that aren't on PATH for service-managed lm-assist).
   const bin = getClaudeBinaryPath();
   const flags: string[] = [
     ...(opts.skipPermissions ? ['--dangerously-skip-permissions'] : []),
+    ...remoteControlFlags(opts.remoteControl),
     ...opts.extraFlags,                              // MERGED with default, not replaced
     ...(opts.model ? ['--model', opts.model] : []),
   ];
