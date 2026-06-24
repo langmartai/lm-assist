@@ -4,6 +4,7 @@ import {
   decideMission, place, planMissionNudge, missionSessionTitle, MissionActor,
 } from './mission-model';
 import { pickNewSession, cseToSessionSid, isNativeBinding } from './mission-native';
+import type { ExecNow } from './mission-engagement';
 import { listMissions, putMission, thisNode, getControllerSession, putControllerSession, ControllerSession } from './mission-store';
 import { runAdjust } from './mission-adjust';
 import { getProjectSettings } from '../project-settings';
@@ -517,6 +518,21 @@ export async function readExecutorState(m: Mission): Promise<ExecutorState> {
     return readNativeExecutor(m, realReadDeps);
   }
   return readCloudExecutor(m);
+}
+
+/**
+ * Wave 4 — token-free executor signal for change detection. Reuses readExecutorState's
+ * cheap read (liveness + gate + new output; NO LLM) and maps it to the engagement
+ * classifier's input (absolute cursor + the new output lines).
+ */
+export async function readExecutorSignal(m: Mission): Promise<ExecNow> {
+  const st = await readExecutorState(m);
+  return {
+    alive: st.alive,
+    gated: !!st.gate,
+    cursor: st.newOutput?.cursor ?? (m.control.lastOutputCursor ?? 0),
+    newLines: st.newOutput?.messages ?? [],
+  };
 }
 
 function controllerCwd(): string {

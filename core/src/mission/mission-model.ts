@@ -77,6 +77,8 @@ export interface Mission {
   env: MissionEnv;
   binding: MissionBinding | null;
   progress: MissionProgress | null;
+  /** Token-free interim executor progress (Wave 4) — surfaced by the supervisor, not the controller. */
+  interim?: { at: number; text: string };
   control: MissionControl;
   results: MissionResult[];
   adjustments: MissionAdjustment[];

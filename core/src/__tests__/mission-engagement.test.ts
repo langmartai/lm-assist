@@ -35,6 +35,12 @@ test('classify: first sighting (no prev) + new output → interim, not material'
   assert.equal(a.interim?.summary, 'world');
 });
 
+test('classify: marker present but cursor NOT advanced → not material (already seen, no re-engage)', () => {
+  const a = classifyExecutorActivity({ alive: true, gated: false, cursor: 5 }, { alive: true, gated: false, cursor: 5, newLines: ['⟦WORKER-STATUS⟧ done'] });
+  assert.equal(a.material, false);
+  assert.equal(a.interim, undefined);
+});
+
 test('classify: gate already open (no transition) → not material', () => {
   const a = classifyExecutorActivity({ alive: true, gated: true, cursor: 3 }, { alive: true, gated: true, cursor: 3, newLines: [] });
   assert.equal(a.material, false);
