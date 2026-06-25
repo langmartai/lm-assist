@@ -48,6 +48,31 @@ interface GitHubRepo {
   isPrivate: boolean;
   pushedAt: string;
 }
+interface RcController {
+  sid: string;
+  cse: string | null;
+  tmux?: string;
+  node?: string;
+  title?: string;
+  startedAt?: number;
+}
+interface RcExecutor {
+  sid: string;
+  cse?: string | null;
+  title?: string;
+  missionId?: string;
+  status?: string;
+}
+interface RcAccountSession {
+  sid: string;
+  status?: string;
+  title?: string;
+}
+interface RcData {
+  controller: RcController | null;
+  executors: RcExecutor[];
+  accountRc: RcAccountSession[];
+}
 
 const short = (id: string | null | undefined) => (id ? id.slice(0, 8) : '—');
 const base = (p?: string) => (p ? p.split('/').filter(Boolean).pop() || p : '');
@@ -111,6 +136,7 @@ export function CcrPage() {
   const [cloudBranch, setCloudBranch] = useState('');
   const [cloudSetup, setCloudSetup] = useState(false);
   const [cloudViewing, setCloudViewing] = useState<string | null>(null);
+  const [rcData, setRcData] = useState<RcData>({ controller: null, executors: [], accountRc: [] });
   const [starting, setStarting] = useState(false);
   const [cloudErr, setCloudErr] = useState<string | null>(null);
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
@@ -124,16 +150,18 @@ export function CcrPage() {
   const fetchAll = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [r, s, c, p] = await Promise.all([
+      const [r, s, c, p, rc] = await Promise.all([
         apiFetch<{ remotes: Remote[] }>('/ccr/remote').catch(() => ({ remotes: [] })),
         apiFetch<CcSession[] | { sessions: CcSession[] }>('/terminal/cc-sessions').catch(() => [] as CcSession[]),
         apiFetch<{ sessions: CloudSession[] }>('/ccr/cloud').catch(() => ({ sessions: [] })),
         apiFetch<{ repos: GitHubRepo[] }>('/ccr/cloud/repos').catch(() => ({ repos: [] })),
+        apiFetch<RcData>('/ccr/remote-control').catch(() => ({ controller: null, executors: [], accountRc: [] })),
       ]);
       setRemotes(r.remotes || []);
       setSessions(Array.isArray(s) ? s : (s.sessions || []));
       setCloudSessions(c.sessions || []);
       setRepos(p.repos || []); // already sorted most-recent-first by the backend
+      setRcData({ controller: rc.controller ?? null, executors: rc.executors ?? [], accountRc: rc.accountRc ?? [] });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally { setLoading(false); }
@@ -274,6 +302,101 @@ export function CcrPage() {
           </div>
         )}
 
+        {/* Remote-control sessions — Mission Controller + executors + other account RC sessions */}
+        {(() => {
+          const { controller: rcCtrl, executors: rcExec, accountRc } = rcData;
+          // Deduplicate accountRc: skip sids already shown as controller or executor
+          const knownSids = new Set<string>();
+          if (rcCtrl) { knownSids.add(rcCtrl.sid); if (rcCtrl.cse) knownSids.add(rcCtrl.cse); }
+          for (const ex of rcExec) { knownSids.add(ex.sid); if (ex.cse) knownSids.add(ex.cse); }
+          const dedupedRc = accountRc.filter((r) => !knownSids.has(r.sid));
+          const hasAny = !!rcCtrl || rcExec.length > 0 || dedupedRc.length > 0;
+          return (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <Radio size={15} style={{ color: 'var(--color-accent)' }} />
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>Remote-control sessions</div>
+                <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>Mission Controller, executors, and account remote-control sessions</span>
+              </div>
+              {!hasAny ? (
+                <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', marginBottom: 18 }}>No remote-control sessions.</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
+                  {/* Controller row */}
+                  {rcCtrl && (
+                    <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, flexWrap: 'wrap' }}>
+                      <Radio size={14} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
+                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                        {rcCtrl.title || 'Mission Controller'}
+                      </span>
+                      {rcCtrl.node && (
+                        <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>· {rcCtrl.node}</span>
+                      )}
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+                        {short(rcCtrl.cse ?? rcCtrl.sid)}
+                      </span>
+                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--color-status-green)', flexShrink: 0 }} />
+                      <div style={{ flex: 1 }} />
+                      {rcCtrl.cse ? (
+                        <button
+                          className={`btn btn-sm ${cloudViewing === rcCtrl.cse ? 'btn-primary' : 'btn-ghost'}`}
+                          onClick={() => setCloudViewing(cloudViewing === rcCtrl.cse ? null : rcCtrl.cse!)}
+                          title="Watch + drive here"
+                        >
+                          <Maximize2 size={13} /> Open
+                        </button>
+                      ) : (
+                        <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>driven from the Missions page</span>
+                      )}
+                    </div>
+                  )}
+                  {/* Executor rows */}
+                  {rcExec.map((ex) => {
+                    const openSid = ex.cse || (/^(session_|cse_)/.test(ex.sid) ? ex.sid : null);
+                    return (
+                      <div key={ex.sid} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, flexWrap: 'wrap' }}>
+                        <span className="badge badge-blue">executor</span>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>{ex.title || ex.sid}</span>
+                        {ex.missionId && (
+                          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--color-text-tertiary)' }} title={`Mission: ${ex.missionId}`}>
+                            {short(ex.missionId)}
+                          </span>
+                        )}
+                        {ex.status && <span className="badge badge-default">{ex.status}</span>}
+                        <div style={{ flex: 1 }} />
+                        {openSid && (
+                          <button
+                            className={`btn btn-sm ${cloudViewing === openSid ? 'btn-primary' : 'btn-ghost'}`}
+                            onClick={() => setCloudViewing(cloudViewing === openSid ? null : openSid)}
+                            title="Watch + drive here"
+                          >
+                            <Maximize2 size={13} /> Open
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {/* Other account RC rows (deduped) */}
+                  {dedupedRc.map((r) => (
+                    <div key={r.sid} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, flexWrap: 'wrap' }}>
+                      <span className="badge badge-outline">RC</span>
+                      <span style={{ fontSize: 13, color: 'var(--color-text-primary)' }}>{r.title || r.sid}</span>
+                      {r.status && <span className="badge badge-default">{r.status}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          );
+        })()}
+
+        {/* Inline cloud view from RC section (reuses the same cloudViewing state) */}
+        {cloudViewing && !cloudSessions.find((c) => c.sid === cloudViewing) && (
+          <div style={{ marginBottom: 12 }}>
+            <CcrCloudView sid={cloudViewing} webUrl={`https://claude.ai/code/${cloudViewing}`} apiFetch={apiFetch} onClose={() => setCloudViewing(null)} />
+          </div>
+        )}
+
         {/* Cloud CCR — claude runs in an Anthropic-cloud container (no local machine) */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <Cloud size={15} style={{ color: 'var(--color-accent)' }} />
@@ -322,7 +445,7 @@ export function CcrPage() {
           {cloudErr && <div style={{ fontSize: 11, color: 'var(--color-status-red)', display: 'flex', alignItems: 'center', gap: 6 }}><AlertTriangle size={12} /> {cloudErr}</div>}
         </div>
 
-        {cloudViewing && (
+        {cloudViewing && cloudSessions.find((c) => c.sid === cloudViewing) && (
           <div style={{ marginBottom: 12 }}>
             <CcrCloudView sid={cloudViewing} webUrl={cloudSessions.find((c) => c.sid === cloudViewing)?.webUrl} apiFetch={apiFetch} onClose={() => setCloudViewing(null)} />
           </div>

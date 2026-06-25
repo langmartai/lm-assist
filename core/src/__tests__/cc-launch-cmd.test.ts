@@ -41,3 +41,11 @@ test('buildLaunchCmd: only system-prompt extra → only that flag', () => {
   assert.ok(cmd.includes('--append-system-prompt-file'));
   assert.ok(!cmd.includes('--mcp-config'));
 });
+
+test('buildLaunchCmd: name → -n <name> (quoted), absent → no -n', () => {
+  const withName = buildLaunchCmd({ ...base, name: 'Mission Controller · host' } as never);
+  assert.ok(/ -n /.test(withName), 'has -n flag');
+  assert.ok(withName.includes('Mission Controller'), 'has the name');
+  const noName = buildLaunchCmd({ ...base } as never);
+  assert.ok(!/ -n /.test(noName), 'no -n when name absent');
+});

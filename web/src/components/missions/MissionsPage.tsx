@@ -101,6 +101,7 @@ interface Mission {
   updatedAt: number;
   createdBy?: MissionActor;
   lastUpdatedBy?: MissionActor;
+  interim?: { at: number; text: string };
 }
 
 interface ControllerSession {
@@ -1120,6 +1121,13 @@ export function MissionsPage() {
             )}
             {isBusy && <Loader2 size={13} style={{ animation: 'spin 1s linear infinite', color: 'var(--color-text-tertiary)' }} />}
           </div>
+
+          {/* Interim progress — shown for active missions with executor-written progress text */}
+          {m.status === 'active' && m.interim?.text && (
+            <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>
+              ⏳ working — {m.interim.text.length > 120 ? m.interim.text.slice(0, 120) + '…' : m.interim.text}
+            </div>
+          )}
 
           {/* Objective — editable */}
           <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>

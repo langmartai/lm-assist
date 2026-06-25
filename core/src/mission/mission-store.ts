@@ -8,6 +8,16 @@ import { getHubConfig } from '../hub-client/hub-config';
 
 const DATASET = 'missions';
 const CONTROLLER_ID = '__controller__';
+const ENGAGEMENT_ID = '__engagement__';
+/** Reserved record ids in the missions dataset that are NOT user missions. */
+const RESERVED_IDS = new Set([CONTROLLER_ID, ENGAGEMENT_ID]);
+
+/** Wave-4 engagement bookkeeping — stored under reserved key __engagement__. */
+export interface EngagementState {
+  lastEngagedAt: number | null;
+  lastActiveIds: string[];
+  seen: Record<string, { alive: boolean; gated: boolean; cursor: number }>;
+}
 
 /** Controller session state — stored in the missions dataset under reserved key __controller__. */
 export interface ControllerSession {
@@ -103,11 +113,11 @@ export async function getMission(id: string, port: MissionDataPort = defaultPort
 }
 export async function listMissions(port: MissionDataPort = defaultPort()): Promise<Mission[]> {
   const all = await port.list();
-  return all.filter((m) => m.id !== CONTROLLER_ID);
+  return all.filter((m) => !RESERVED_IDS.has(m.id));
 }
 export async function listActiveMissions(port: MissionDataPort = defaultPort()): Promise<Mission[]> {
   const all = await port.list();
-  return all.filter((m) => m.id !== CONTROLLER_ID && (m.status === 'active' || m.status === 'waiting'));
+  return all.filter((m) => !RESERVED_IDS.has(m.id) && (m.status === 'active' || m.status === 'waiting'));
 }
 
 // ---------------------------------------------------------------------------
@@ -163,5 +173,34 @@ export async function mirrorProgress(id: string, progress: MissionProgress, resu
   if (!m) return null;
   m.progress = progress;
   if (results.length) m.results.push(...results);
+  return putMission(m, port);
+}
+
+// ---------------------------------------------------------------------------
+// Wave-4 engagement state (reserved key __engagement__ in missions dataset)
+// ---------------------------------------------------------------------------
+
+/** Read the engagement bookkeeping (defaults when absent). */
+export async function getEngagementState(port: MissionDataPort = defaultPort()): Promise<EngagementState> {
+  const raw = await port.get(ENGAGEMENT_ID);
+  const f = (raw as unknown as Record<string, unknown> | null) || null;
+  if (!f) return { lastEngagedAt: null, lastActiveIds: [], seen: {} };
+  return {
+    lastEngagedAt: (f.lastEngagedAt as number | null) ?? null,
+    lastActiveIds: Array.isArray(f.lastActiveIds) ? (f.lastActiveIds as string[]) : [],
+    seen: (f.seen as EngagementState['seen']) ?? {},
+  };
+}
+
+/** Persist the engagement bookkeeping. */
+export async function putEngagementState(s: EngagementState, port: MissionDataPort = defaultPort()): Promise<void> {
+  await port.put({ id: ENGAGEMENT_ID, ...s } as unknown as Mission);
+}
+
+/** Set a mission's token-free interim progress line (Wave 4 — supervisor-written, not the controller). */
+export async function setMissionInterim(id: string, interim: { at: number; text: string }, port: MissionDataPort = defaultPort()): Promise<Mission | null> {
+  const m = await port.get(id);
+  if (!m) return null;
+  m.interim = interim;
   return putMission(m, port);
 }

@@ -222,3 +222,67 @@ test('discoverNewCse: empty snapshots returns null', () => {
   const hit = discoverNewCse(['cse_a'], []);
   assert.equal(hit, null);
 });
+
+// ---------------------------------------------------------------------------
+// Wave 4 — change-detection engagement (runSupervisorTick with engage deps)
+// ---------------------------------------------------------------------------
+const liveCs: ControllerSession = { node: 'gw1', sessionId: 'session_ctrl', cse: null, tmux: 'lm-ctrl', startedAt: 1000 };
+
+function engageDeps(over: Partial<SupervisorDeps>): SupervisorDeps {
+  return makeStubDeps({
+    getControllerSession: async () => liveCs,
+    isLive: () => true,
+    safetyIntervalMin: 45,
+    listActiveForEngage: async () => [],
+    readSignal: async () => ({ alive: true, gated: false, cursor: 0, newLines: [] }),
+    getEngagement: async () => ({ lastEngagedAt: NOW - 60_000, lastActiveIds: [], seen: {} }),
+    putEngagement: async () => {},
+    setInterim: async () => {},
+    ...over,
+  });
+}
+const mkM = (id: string): any => ({ id, status: 'active' });
+
+test('engage: 0 active missions, nothing changed, within safety → NOT drive (token-saving)', async () => {
+  const deps = engageDeps({});
+  const r = await runSupervisorTick(deps);
+  assert.notEqual(r.action, 'drive');
+  assert.equal(r.action, 'idle');
+});
+
+test('engage: a material change (liveness drop) → drive + lastEngagedAt stamped', async () => {
+  let saved: any = null;
+  const deps = engageDeps({
+    listActiveForEngage: async () => [mkM('m1')],
+    getEngagement: async () => ({ lastEngagedAt: NOW - 60_000, lastActiveIds: ['m1'], seen: { m1: { alive: true, gated: false, cursor: 3 } } }),
+    readSignal: async () => ({ alive: false, gated: false, cursor: 3, newLines: [] }),
+    putEngagement: async (s) => { saved = s; },
+  });
+  const r = await runSupervisorTick(deps);
+  assert.equal(r.action, 'drive');
+  assert.equal(saved.lastEngagedAt, NOW, 'lastEngagedAt stamped to now on engage');
+  assert.deepEqual(saved.lastActiveIds, ['m1']);
+});
+
+test('engage: interim-only progress → NOT drive but setInterim called with the latest line', async () => {
+  let interim: any = null;
+  const deps = engageDeps({
+    listActiveForEngage: async () => [mkM('m1')],
+    getEngagement: async () => ({ lastEngagedAt: NOW - 60_000, lastActiveIds: ['m1'], seen: { m1: { alive: true, gated: false, cursor: 3 } } }),
+    readSignal: async () => ({ alive: true, gated: false, cursor: 5, newLines: ['building', 'running tests'] }),
+    setInterim: async (_id, x) => { interim = x; },
+  });
+  const r = await runSupervisorTick(deps);
+  assert.notEqual(r.action, 'drive');
+  assert.equal(interim?.text, 'running tests');
+});
+
+test('engage: a NEW mission (active-set changed) → drive', async () => {
+  const deps = engageDeps({
+    listActiveForEngage: async () => [mkM('m1'), mkM('m2')],
+    getEngagement: async () => ({ lastEngagedAt: NOW - 60_000, lastActiveIds: ['m1'], seen: { m1: { alive: true, gated: false, cursor: 0 } } }),
+    readSignal: async (m: any) => ({ alive: true, gated: false, cursor: 0, newLines: [] }),
+  });
+  const r = await runSupervisorTick(deps);
+  assert.equal(r.action, 'drive');
+});
