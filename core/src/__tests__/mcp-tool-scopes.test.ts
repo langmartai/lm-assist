@@ -16,3 +16,8 @@ test('every MCP tool has a TOOL_SCOPES entry (assertScopesCoverTools does not th
 test('mission_session_answer is a write-scoped tool', () => {
   assert.equal(TOOL_SCOPES['mission_session_answer'], 'write');
 });
+
+test('mission_session_resume has a write scope', () => {
+  const { TOOL_SCOPES: scopes } = require('../mcp-server/configure');
+  assert.strictEqual(scopes['mission_session_resume'], 'write');
+});

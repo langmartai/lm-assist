@@ -140,6 +140,11 @@ export const MISSION_TOOL_DEFS = [
     description: 'Control a mission session: action=interrupt (stop current action), stop (terminate), restart (controller only — supervisor relaunches next tick). Non-controller restart returns an error.',
     inputSchema: obj({ sid: S, action: { ...S, enum: ['interrupt', 'stop', 'restart'] } }, ['sid', 'action']),
   },
+  {
+    name: 'mission_session_resume',
+    description: 'Resume a mission\'s worker session IN PLACE, preserving its context. Native → `claude --resume` + re-bridge (SAME sessionId); cloud → wake an idle worker (re-drive). Returns {resumed, transport, sid, reason}. reason: ok (resumed) | alive (already running) | conflict (live elsewhere, unsafe to resume) | gone (terminal — spawn a fresh worker as a SEPARATE action; this tool never auto-replaces). Pass missionId for native. Write tool — leader-anchored.',
+    inputSchema: obj({ sid: S, missionId: S }, ['sid']),
+  },
 ] as const;
 
 export const MISSION_HANDLERS: Record<
@@ -244,6 +249,16 @@ export const MISSION_HANDLERS: Record<
       const action = String(a.action || '');
       if (!action) return err('action is required');
       return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/control`, { action }));
+    } catch (e) { return err((e as Error).message); }
+  },
+
+  mission_session_resume: async (a) => {
+    try {
+      const sid = String(a.sid || '');
+      if (!sid) return err('sid is required');
+      const body: Record<string, unknown> = {};
+      if (a.missionId) body.missionId = String(a.missionId);
+      return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/resume`, body));
     } catch (e) { return err((e as Error).message); }
   },
 };
