@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   Target,
   RefreshCw,
@@ -1727,12 +1729,17 @@ export function MissionsPage() {
                         : 'var(--color-text-primary)',
                       fontSize: 12,
                       lineHeight: 1.5,
-                      whiteSpace: 'pre-wrap',
                       wordBreak: 'break-word',
                       border: isUser ? 'none' : '1px solid var(--color-border-subtle)',
                     }}
                   >
-                    {text || '(no text)'}
+                    {text ? (
+                      <div className="prose" style={{ fontSize: 12, lineHeight: 1.5 }}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+                      </div>
+                    ) : (
+                      <span style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>(no text)</span>
+                    )}
                   </div>
                 </div>
               );
