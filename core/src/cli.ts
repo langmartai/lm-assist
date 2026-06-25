@@ -53,6 +53,30 @@ const host = getArg(['--host', '-h'], '0.0.0.0')!;
 const extraCa = getArg(['--extra-ca'], process.env.LM_ASSIST_EXTRA_CA);
 if (extraCa) process.env.LM_ASSIST_EXTRA_CA = extraCa;
 
+// The Core's OWN outbound fetch (the cloud-API calls in ccr-cloud.ts run IN this
+// process, not a spawned helper) must also trust the extra CA — else behind an
+// MITM proxy (lm-proxy) every fetch fails with "self-signed certificate in chain".
+// NODE_EXTRA_CA_CERTS is read at Node startup, so if it isn't already set we re-exec
+// this process ONCE with it set. Fail-safe: any error falls through to a normal start.
+let _reExecedForCa = false;
+if ((command === 'serve' || command === 'server') && extraCa && !process.env.NODE_EXTRA_CA_CERTS) {
+  try {
+    const fsmod = require('fs') as typeof import('fs');
+    if (fsmod.existsSync(extraCa)) {
+      const cp = require('child_process') as typeof import('child_process');
+      const child = cp.spawn(process.execPath, process.argv.slice(1), {
+        stdio: 'inherit',
+        env: { ...process.env, NODE_EXTRA_CA_CERTS: extraCa },
+      });
+      _reExecedForCa = true;
+      const fwd = (sig: NodeJS.Signals) => { try { child.kill(sig); } catch { /* child already gone */ } };
+      process.on('SIGTERM', () => fwd('SIGTERM'));
+      process.on('SIGINT', () => fwd('SIGINT'));
+      child.on('exit', (code, signal) => process.exit(signal ? 1 : (code ?? 0)));
+    }
+  } catch { _reExecedForCa = false; }
+}
+
 async function main() {
   switch (command) {
     case 'serve':
@@ -249,7 +273,11 @@ Examples:
   `);
 }
 
-main().catch(err => {
-  console.error('Error:', err);
-  process.exit(1);
-});
+// Skip main() in the parent when we've re-exec'd a child with NODE_EXTRA_CA_CERTS;
+// the child runs the real Core, and this process just forwards signals + its exit.
+if (!_reExecedForCa) {
+  main().catch(err => {
+    console.error('Error:', err);
+    process.exit(1);
+  });
+}
