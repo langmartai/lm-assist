@@ -41,6 +41,8 @@ export interface ProjectSettings {
   missionControllerIntervalMin: number;
   /** Idle drive cadence (min) when there are no active missions. Default 15. */
   missionControllerIdleIntervalMin: number;
+  /** Wave 4: long safety interval (min) — engage the controller at least this often even with no change. Default 45. */
+  missionControllerSafetyIntervalMin: number;
   /** Max `continue` nudges to a parked mission before marking it blocked. Default 6. */
   missionControllerMaxNudges: number;
   /** Model for the adjust reasoning step. Default 'claude-opus-4-8[1m]'. */
@@ -66,6 +68,7 @@ export const DEFAULTS: ProjectSettings = {
   missionControllerEnabled: true,
   missionControllerIntervalMin: 5,
   missionControllerIdleIntervalMin: 15,
+  missionControllerSafetyIntervalMin: 45,
   missionControllerMaxNudges: 6,
   missionControllerModel: 'claude-opus-4-8[1m]',
 };
@@ -104,6 +107,7 @@ export function getProjectSettings(): ProjectSettings {
       missionControllerEnabled: typeof data.missionControllerEnabled === 'boolean' ? data.missionControllerEnabled : DEFAULTS.missionControllerEnabled,
       missionControllerIntervalMin: typeof data.missionControllerIntervalMin === 'number' ? data.missionControllerIntervalMin : DEFAULTS.missionControllerIntervalMin,
       missionControllerIdleIntervalMin: typeof data.missionControllerIdleIntervalMin === 'number' ? data.missionControllerIdleIntervalMin : DEFAULTS.missionControllerIdleIntervalMin,
+      missionControllerSafetyIntervalMin: typeof data.missionControllerSafetyIntervalMin === 'number' ? data.missionControllerSafetyIntervalMin : DEFAULTS.missionControllerSafetyIntervalMin,
       missionControllerMaxNudges: typeof data.missionControllerMaxNudges === 'number' ? data.missionControllerMaxNudges : DEFAULTS.missionControllerMaxNudges,
       missionControllerModel: typeof data.missionControllerModel === 'string' ? data.missionControllerModel : DEFAULTS.missionControllerModel,
     };
@@ -137,6 +141,7 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     missionControllerEnabled: typeof partial.missionControllerEnabled === 'boolean' ? partial.missionControllerEnabled : current.missionControllerEnabled,
     missionControllerIntervalMin: typeof partial.missionControllerIntervalMin === 'number' ? partial.missionControllerIntervalMin : current.missionControllerIntervalMin,
     missionControllerIdleIntervalMin: typeof partial.missionControllerIdleIntervalMin === 'number' ? partial.missionControllerIdleIntervalMin : current.missionControllerIdleIntervalMin,
+    missionControllerSafetyIntervalMin: typeof partial.missionControllerSafetyIntervalMin === 'number' ? partial.missionControllerSafetyIntervalMin : current.missionControllerSafetyIntervalMin,
     missionControllerMaxNudges: typeof partial.missionControllerMaxNudges === 'number' ? partial.missionControllerMaxNudges : current.missionControllerMaxNudges,
     missionControllerModel: typeof partial.missionControllerModel === 'string' ? partial.missionControllerModel : current.missionControllerModel,
   };

@@ -5,7 +5,8 @@ import {
 } from './mission-model';
 import { pickNewSession, cseToSessionSid, isNativeBinding } from './mission-native';
 import type { ExecNow } from './mission-engagement';
-import { listMissions, putMission, thisNode, getControllerSession, putControllerSession, ControllerSession } from './mission-store';
+import { listMissions, putMission, thisNode, getControllerSession, putControllerSession, ControllerSession, EngagementState } from './mission-store';
+import { classifyExecutorActivity, shouldEngage } from './mission-engagement';
 import { runAdjust } from './mission-adjust';
 import { getProjectSettings } from '../project-settings';
 import { deriveHubMcpUrl, upsertHubMcpServer } from '../utils/claude-mcp-config';
@@ -342,14 +343,20 @@ export const CONTROLLER_SYSTEM_PROMPT = [
   'run builds, or touch unrelated systems yourself — you only orchestrate missions and',
   'their executors through tools.',
   '',
-  'On each controller pass: call `mission_list`; for every active mission, assess its',
-  'executor (`mission_executor_status`), place/spawn/drive/adapt as needed (`mission_place`',
+  'You are **event-driven, not polling**: a non-LLM supervisor watches the executors for you',
+  'and drives you ONLY when something material happens — an executor finished, blocked, or',
+  'needs approval; a new mission was created; or a periodic safety check. Ongoing executor',
+  'progress is tracked for you and shown on each mission (`interim`) — you do NOT need to poll',
+  'it; look only if relevant to acting now.',
+  '',
+  'When driven, act on the CURRENT state: call `mission_list`; for every active mission assess',
+  'its executor (`mission_executor_status`), place/spawn/drive/adapt as needed (`mission_place`',
   'and session drive), and mark it done when complete.',
   '',
-  'HEARTBEAT: when a pass finds no actionable work (no active missions, or nothing changed),',
-  'reply with EXACTLY one line beginning `⟦HEARTBEAT⟧` and nothing else',
-  '(e.g. `⟦HEARTBEAT⟧ idle — 0 active missions`). When you take a real action or answer the',
-  'user, narrate normally and DO NOT use that marker.',
+  'HEARTBEAT: only on a safety-check drive where there is genuinely nothing to do (no active',
+  'missions, or nothing actionable), reply with EXACTLY one line beginning `⟦HEARTBEAT⟧` and',
+  'nothing else (e.g. `⟦HEARTBEAT⟧ idle — 0 active missions`). When you take a real action or',
+  'answer the user, narrate normally and DO NOT use that marker.',
   '',
   'The user may message you directly in this session — treat their messages as authoritative',
   'instructions (create/pause/adjust missions, answer questions) and reply substantively.',
@@ -433,6 +440,20 @@ export interface SupervisorDeps {
   activeMissionCount?: () => Promise<number>;
   /** Current time in ms. Injected for deterministic tests. */
   now: number;
+  // ── Wave 4 — change-detection engagement (all optional; when present, the drive
+  //    gate becomes change-based instead of time-based). Absent → Wave-3 isDriveDue. ──
+  /** List active missions to watch for change. */
+  listActiveForEngage?: () => Promise<Mission[]>;
+  /** Token-free executor signal for one mission. */
+  readSignal?: (m: Mission) => Promise<ExecNow>;
+  /** Read the engagement bookkeeping. */
+  getEngagement?: () => Promise<EngagementState>;
+  /** Persist the engagement bookkeeping. */
+  putEngagement?: (s: EngagementState) => Promise<void>;
+  /** Write a mission's token-free interim progress line (no engage). */
+  setInterim?: (id: string, x: { at: number; text: string }) => Promise<void>;
+  /** Long safety interval (min) — engage at least this often even with no change. Default 45. */
+  safetyIntervalMin?: number;
 }
 
 /**
@@ -446,25 +467,79 @@ export interface SupervisorDeps {
  *
  * Called by `registerMissionController`'s scheduled handler (replaces `runMissionTick`).
  */
+/**
+ * Wave 4 — the change-detection engagement evaluation (side-effecting). Reads each
+ * active executor cheaply (no LLM), classifies vs the last-seen record, surfaces
+ * interim progress WITHOUT engaging, persists the updated `seen` every tick, and
+ * returns whether a material change / new mission / safety interval means the
+ * controller should be driven. Caller guarantees the engagement deps are present.
+ */
+async function evaluateEngagement(deps: SupervisorDeps): Promise<boolean> {
+  const eng = await deps.getEngagement!();
+  const active = await deps.listActiveForEngage!();
+  const now = deps.now;
+  const curSeen: EngagementState['seen'] = {};
+  let materialCount = 0;
+  for (const m of active) {
+    let sig: ExecNow;
+    try {
+      sig = await deps.readSignal!(m);
+    } catch {
+      // A read failure for one mission must not sink the tick — carry forward prior state.
+      curSeen[m.id] = eng.seen[m.id] ?? { alive: true, gated: false, cursor: 0 };
+      continue;
+    }
+    const act = classifyExecutorActivity(eng.seen[m.id], sig);
+    curSeen[m.id] = { alive: sig.alive, gated: sig.gated, cursor: sig.cursor };
+    if (act.material) {
+      materialCount++;
+    } else if (act.interim && deps.setInterim) {
+      try { await deps.setInterim(m.id, { at: now, text: act.interim.summary }); } catch { /* best-effort */ }
+    }
+  }
+  const activeIds = active.map((m) => m.id);
+  const engage = shouldEngage({
+    now,
+    lastEngagedAt: eng.lastEngagedAt,
+    safetyIntervalMin: deps.safetyIntervalMin ?? 45,
+    materialCount,
+    activeIds,
+    lastActiveIds: eng.lastActiveIds,
+  });
+  // Persist `seen` every tick (cursor/liveness/gate tracking advances regardless);
+  // stamp lastEngagedAt + lastActiveIds only when we actually engage.
+  await deps.putEngagement!({
+    lastEngagedAt: engage ? now : eng.lastEngagedAt,
+    lastActiveIds: engage ? activeIds : eng.lastActiveIds,
+    seen: curSeen,
+  });
+  return engage;
+}
+
 export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action: string; controllerSession: ControllerSession | null }> {
   const { isMonitor } = await deps.amMonitor();
   const cs = await deps.getControllerSession();
   const live = cs ? deps.isLive(cs) : false;
 
-  // Drive cadence: fast when there are active missions, slow (idle) otherwise.
-  // Only evaluated when monitor+live (the only case decideSupervisor uses it),
-  // so the active-mission count is read lazily. Defaults reproduce the prior
-  // single-cadence behavior (count=1, idle=active) for existing callers/tests.
+  // Drive gate. Wave 4 (when the engagement deps are present): change-based — the
+  // non-LLM detector reads each active executor cheaply, surfaces interim progress
+  // WITHOUT engaging, and drives only on a material change / new mission / safety
+  // interval. Otherwise (Wave-3 fallback): time-based isDriveDue. Only evaluated
+  // when monitor+live (the only case decideSupervisor uses driveDue).
   let driveDue = false;
   if (isMonitor && live && cs) {
-    const activeCount = deps.activeMissionCount ? await deps.activeMissionCount() : 1;
-    driveDue = isDriveDue({
-      lastDriveAt: cs.lastDriveAt ?? null,
-      now: deps.now,
-      activeCount,
-      activeMin: deps.driveIntervalMin,
-      idleMin: deps.idleDriveIntervalMin ?? deps.driveIntervalMin,
-    });
+    if (deps.listActiveForEngage && deps.readSignal && deps.getEngagement && deps.putEngagement) {
+      driveDue = await evaluateEngagement(deps);
+    } else {
+      const activeCount = deps.activeMissionCount ? await deps.activeMissionCount() : 1;
+      driveDue = isDriveDue({
+        lastDriveAt: cs.lastDriveAt ?? null,
+        now: deps.now,
+        activeCount,
+        activeMin: deps.driveIntervalMin,
+        idleMin: deps.idleDriveIntervalMin ?? deps.driveIntervalMin,
+      });
+    }
   }
 
   const { action } = decideSupervisor({ isMonitor, live, driveDue });
@@ -605,6 +680,25 @@ export function registerMissionController(
       activeMissionCount: async () => {
         const { listActiveMissions } = require('./mission-store') as typeof import('./mission-store');
         return (await listActiveMissions()).length;
+      },
+      // Wave 4 — change-detection engagement deps (replaces the time-based gate above).
+      safetyIntervalMin: getProjectSettings().missionControllerSafetyIntervalMin,
+      listActiveForEngage: async () => {
+        const { listActiveMissions } = require('./mission-store') as typeof import('./mission-store');
+        return listActiveMissions();
+      },
+      readSignal: (m) => readExecutorSignal(m),
+      getEngagement: async () => {
+        const { getEngagementState } = require('./mission-store') as typeof import('./mission-store');
+        return getEngagementState();
+      },
+      putEngagement: async (s) => {
+        const { putEngagementState } = require('./mission-store') as typeof import('./mission-store');
+        return putEngagementState(s);
+      },
+      setInterim: async (id, x) => {
+        const { setMissionInterim } = require('./mission-store') as typeof import('./mission-store');
+        await setMissionInterim(id, x);
       },
       now: Date.now(),
       launch: async () => {
