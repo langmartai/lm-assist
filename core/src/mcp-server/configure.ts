@@ -258,6 +258,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   mission_sessions: 'read',
   mission_session_read: 'read',
   mission_session_drive: 'write',
+  mission_session_answer: 'write',
   mission_session_control: 'admin',
 };
 
