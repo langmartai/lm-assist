@@ -442,19 +442,32 @@ export async function handleSessionRead(sid: string, lastN?: number, deps?: Sess
   try {
     if (r.transport === 'cloud') {
       const result = await d.cloudRead({ sid, lastN });
-      // Cloud messages already have { role, text } from CloudTranscriptMsg — pass through as-is.
-      const normalized = result.messages.map((m) => ({
-        role: (m as any).role ?? 'assistant',
-        text: (m as any).text ?? (m as any).content ?? '',
-      }));
+      // Cloud messages already have { role, text, tools? } from CloudTranscriptMsg — pass tools through.
+      const normalized = result.messages.map((m) => {
+        const out: { role: string; text: string; tools?: string[] } = {
+          role: (m as any).role ?? 'assistant',
+          text: (m as any).text ?? (m as any).content ?? '',
+        };
+        const tools = (m as any).tools;
+        if (Array.isArray(tools) && tools.length > 0) out.tools = tools;
+        return out;
+      });
       return ok({ messages: normalized });
     } else {
       const result = await d.nativeRead(sid);
-      // Native ConversationMessage has { role, content } — normalize content -> text for a uniform shape.
-      const normalized = result.messages.map((m) => ({
-        role: m.role,
-        text: m.content,
-      }));
+      // Native ConversationMessage has { role, content, toolCalls? } — normalize content -> text
+      // and map toolCalls[].name to tools: string[] for a uniform shape.
+      const normalized = result.messages.map((m) => {
+        const out: { role: string; text: string; tools?: string[] } = {
+          role: m.role,
+          text: m.content,
+        };
+        const toolCalls = (m as any).toolCalls as Array<{ name: string }> | undefined;
+        if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+          out.tools = toolCalls.map((tc) => tc.name);
+        }
+        return out;
+      });
       return ok({ messages: normalized });
     }
   } catch (e) {

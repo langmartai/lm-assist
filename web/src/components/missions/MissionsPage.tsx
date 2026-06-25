@@ -19,6 +19,7 @@ import {
   Square,
   RotateCcw,
   AlertCircle,
+  Wrench,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { CcrCloudView } from '@/components/ccr/CcrCloudView';
@@ -153,11 +154,13 @@ interface OperableSession {
 
 interface SessionMessage {
   role?: string;
-  // Mission session reads (`/mission/session/:sid/read`) return `{ role, text }`.
+  // Mission session reads (`/mission/session/:sid/read`) return `{ role, text, tools? }`.
   // Other session sources may use `content` (string or content-block array).
   text?: string;
   content?: string | Array<{ type?: string; text?: string }>;
   type?: string;
+  /** Tool names used in this turn (from CloudTranscriptMsg.tools or native toolCalls[].name). */
+  tools?: string[];
   [key: string]: unknown;
 }
 
@@ -178,16 +181,19 @@ function resolveMsgText(msg: SessionMessage): string {
 
 /**
  * Heartbeat = the controller's autonomous-pass noise we hide from the chat so it
- * stays a usable interface: the standing pass directive, the ⟦HEARTBEAT⟧ idle
- * replies, and empty / tool-only turns. Meaningful exchanges (user messages, real
- * actions, answers) are kept.
+ * stays a usable interface: the standing pass directive and ⟦HEARTBEAT⟧ idle replies.
+ * Tool-call turns are now shown (as badges) so the user can see what the controller
+ * did. A truly empty turn (no text AND no tools) is still dropped.
  */
 function isHeartbeatMsg(msg: SessionMessage): boolean {
   const text = resolveMsgText(msg).trim();
-  if (!text) return true;
-  if (/^\[\d+ tool call\(s\)\]$/.test(text)) return true;
-  if (text.startsWith('⟦HEARTBEAT⟧')) return true;
+  const hasTools = Array.isArray(msg.tools) && msg.tools.length > 0;
+  // Drop truly empty turns (no text and no tools).
+  if (!text && !hasTools) return true;
+  // Drop the standing pass directive sent every tick.
   if (text.startsWith('Run a controller pass now:')) return true;
+  // Drop idle ⟦HEARTBEAT⟧ replies.
+  if (text.startsWith('⟦HEARTBEAT⟧')) return true;
   return false;
 }
 
@@ -1738,7 +1744,18 @@ export function MissionsPage() {
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
                       </div>
                     ) : (
-                      <span style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>(no text)</span>
+                      !msg.tools?.length && (
+                        <span style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>(no text)</span>
+                      )
+                    )}
+                    {msg.tools && msg.tools.length > 0 && (
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: text ? 4 : 0 }}>
+                        {msg.tools.map((t, ti) => (
+                          <span key={ti} className="badge badge-outline" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10.5 }}>
+                            <Wrench size={10} /> {t}
+                          </span>
+                        ))}
+                      </div>
                     )}
                   </div>
                 </div>

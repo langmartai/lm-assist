@@ -71,6 +71,45 @@ test('handleSessionRead native: normalizes content -> text', async () => {
   assert.equal((msgs[0] as any).content, undefined);
 });
 
+// CHANGE 1: cloud read exposes tools[] per message
+test('handleSessionRead cloud: messages with tools include tools array', async () => {
+  const deps = makeStubDeps({
+    cloudRead: async (opts) => ({
+      sid: opts.sid,
+      messages: [
+        { role: 'assistant', text: 'I will search', type: 'assistant', tools: ['Bash', 'Read'] },
+        { role: 'assistant', text: 'plain reply', type: 'assistant' },
+      ],
+      pendingQuestion: null,
+    }),
+  });
+  const r = await handleSessionRead('session_tools_cloud', undefined, deps);
+  assert.ok(r.success);
+  const msgs = (r as any).data?.messages as Array<{ role: string; text: string; tools?: string[] }>;
+  assert.equal(msgs.length, 2);
+  assert.deepEqual(msgs[0].tools, ['Bash', 'Read'], 'tools should be passed through from cloud message');
+  assert.equal(msgs[1].tools, undefined, 'message without tools should not have tools field');
+});
+
+// CHANGE 1: native read exposes tools[] from toolCalls[].name
+test('handleSessionRead native: messages with toolCalls expose tools by name', async () => {
+  const deps = makeStubDeps({
+    nativeRead: async (_sid) => ({
+      messages: [
+        { role: 'assistant', content: '[2 tool call(s)]', toolCalls: [{ id: 'tu1', name: 'Bash' }, { id: 'tu2', name: 'Read' }] },
+        { role: 'user', content: 'do the thing' },
+      ],
+    }),
+  });
+  const r = await handleSessionRead('4e15ac46-tools-native-0001', undefined, deps);
+  assert.ok(r.success);
+  const msgs = (r as any).data?.messages as Array<{ role: string; text: string; tools?: string[] }>;
+  assert.equal(msgs.length, 2);
+  assert.deepEqual(msgs[0].tools, ['Bash', 'Read'], 'tool names should be extracted from toolCalls');
+  assert.equal(msgs[0].text, '[2 tool call(s)]', 'text should remain unchanged');
+  assert.equal(msgs[1].tools, undefined, 'user message with no toolCalls should not have tools field');
+});
+
 // FIX 3: cloud read passes text through (not content)
 test('handleSessionRead cloud: messages keep .text field', async () => {
   const deps = makeStubDeps({

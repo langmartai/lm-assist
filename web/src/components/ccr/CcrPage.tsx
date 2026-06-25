@@ -309,7 +309,7 @@ export function CcrPage() {
           const knownSids = new Set<string>();
           if (rcCtrl) { knownSids.add(rcCtrl.sid); if (rcCtrl.cse) knownSids.add(rcCtrl.cse); }
           for (const ex of rcExec) { knownSids.add(ex.sid); if (ex.cse) knownSids.add(ex.cse); }
-          const dedupedRc = accountRc.filter((r) => !knownSids.has(r.sid));
+          const dedupedRc = accountRc.filter((r) => !knownSids.has(r.sid) && r.status === 'active');
           const hasAny = !!rcCtrl || rcExec.length > 0 || dedupedRc.length > 0;
           return (
             <>
