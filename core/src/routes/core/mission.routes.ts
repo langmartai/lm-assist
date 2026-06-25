@@ -48,7 +48,7 @@ export function realLeaderAnchor(): LeaderAnchorDeps {
  * leader (or no anchor / no leader / proxy failed) → the caller handles locally.
  * No loop: a proxied request reaching the leader sees isMonitor=true → null → local.
  */
-async function anchorToLeader(leader: LeaderAnchorDeps | undefined, method: 'GET' | 'POST', path: string, body?: unknown): Promise<Envelope | null> {
+async function anchorToLeader(leader: LeaderAnchorDeps | undefined, method: 'GET' | 'POST', path: string, body?: unknown, failClosed = false): Promise<Envelope | null> {
   if (!leader) return null;
   let election: { isMonitor: boolean; monitorNodeId: string | null };
   try { election = await leader.getElection(); } catch { return null; }
@@ -59,7 +59,14 @@ async function anchorToLeader(leader: LeaderAnchorDeps | undefined, method: 'GET
       : await leader.proxyPost(election.monitorNodeId, path, body ?? {});
     if (result && typeof result === 'object' && 'success' in (result as object)) return result as Envelope;
     return ok((result as { data?: unknown })?.data ?? result);
-  } catch { return null; }
+  } catch (e) {
+    // Writes are fail-CLOSED: a mission MUST land on the leader. Falling back to a
+    // LOCAL write on a proxy error would either strand the mission on a non-leader
+    // or (if the leader committed but the response was lost) create a duplicate.
+    // Return a clear error so the caller retries (e.g. after a ~1-min failover).
+    if (failClosed) return fail('LEADER_UNREACHABLE', `mission leader unreachable; retry shortly (${(e as Error).message})`);
+    return null; // reads fall back to the local (synced) store
+  }
 }
 
 // --- testable handlers (port-injected) ---
@@ -72,7 +79,7 @@ async function actorFor(b: Record<string, unknown>): Promise<MissionActor> {
 }
 
 export async function handleCreate(b: Record<string, unknown>, ownerNode: string, port?: MissionDataPort, actor?: MissionActor, leader?: LeaderAnchorDeps): Promise<Envelope> {
-  const anchored = await anchorToLeader(leader, 'POST', '/mission', b);
+  const anchored = await anchorToLeader(leader, 'POST', '/mission', b, true);
   if (anchored) return anchored;
   const who = actor ?? await actorFor(b);
   const title = str(b.title);
@@ -106,7 +113,7 @@ export async function handleGet(id: string, port?: MissionDataPort): Promise<Env
 }
 
 export async function handlePatch(id: string, b: Record<string, unknown>, port?: MissionDataPort, actor?: MissionActor, leader?: LeaderAnchorDeps): Promise<Envelope> {
-  const anchored = await anchorToLeader(leader, 'POST', `/mission/${encodeURIComponent(id)}`, b);
+  const anchored = await anchorToLeader(leader, 'POST', `/mission/${encodeURIComponent(id)}`, b, true);
   if (anchored) return anchored;
   const who = actor ?? await actorFor(b);
   const m = await getMission(id, port);

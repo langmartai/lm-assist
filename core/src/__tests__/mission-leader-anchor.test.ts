@@ -56,6 +56,31 @@ test('handlePatch on a NON-leader → proxies POST /mission/:id', async () => {
   assert.deepEqual(calls[0].slice(0, 3), ['POST', 'gw-leader', '/mission/mission_x']);
 });
 
+test('handleCreate proxy FAILS on a non-leader → fail-closed (no local duplicate)', async () => {
+  const port = fakePort();
+  const leader: LeaderAnchorDeps = {
+    getElection: async () => ({ isMonitor: false, monitorNodeId: 'gw-leader' }),
+    proxyGet: async () => { throw new Error('hub timeout'); },
+    proxyPost: async () => { throw new Error('hub timeout'); },
+  };
+  const env = await handleCreate({ title: 'T', objective: 'O' }, 'gw-self', port, undefined, leader);
+  assert.equal((env as any).success, false, 'returns an error, not a local create');
+  assert.equal((env as any).error.code, 'LEADER_UNREACHABLE');
+  assert.equal((await port.list()).length, 0, 'NOT written locally (no duplicate risk)');
+});
+
+test('handleList proxy FAILS on a non-leader → falls back to local (reads tolerate)', async () => {
+  const port = fakePort();
+  const leader: LeaderAnchorDeps = {
+    getElection: async () => ({ isMonitor: false, monitorNodeId: 'gw-leader' }),
+    proxyGet: async () => { throw new Error('hub timeout'); },
+    proxyPost: async () => { throw new Error('hub timeout'); },
+  };
+  const env = await handleList(port, leader);
+  assert.equal((env as any).success, true, 'reads fall back to local on proxy error');
+  assert.deepEqual((env as any).data, []);
+});
+
 test('no leader dep (tests/direct) → always local', async () => {
   const port = fakePort();
   const env = await handleCreate({ title: 'T', objective: 'O' }, 'gw-self', port);
