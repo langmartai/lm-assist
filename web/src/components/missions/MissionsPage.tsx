@@ -177,8 +177,6 @@ type TabAliveStatus = 'checking' | 'alive' | 'dead' | 'resuming' | 'gone' | 'con
 
 interface TabState {
   alive: TabAliveStatus;
-  /** If resumed native session provides a different sid, swap to this. */
-  resolvedSid?: string;
   autoCloseAt?: number | null;
   notice?: string | null;
 }

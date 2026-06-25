@@ -377,8 +377,9 @@ export const CONTROLLER_SYSTEM_PROMPT = [
   'priority, before anything else. A CLOUD worker left blocked on a question idle-suspends within',
   'a couple of minutes and then CANNOT resume to consume a late answer; answered promptly it',
   'resumes and finishes in seconds. Do NOT use `mission_session_drive` to answer (it queues behind',
-  'the open question). If a worker already suspended unanswered, mark the mission `blocked` (NOT',
-  '`done`) and respawn; for a must-ask worker, prefer a native session.',
+  'the open question). If a worker already suspended unanswered, RESUME it first via',
+  '`mission_session_resume(sid)`; only if that returns `gone`/`conflict` do you mark the mission',
+  '`blocked` (NOT `done`) and spawn a fresh worker; for a must-ask worker, prefer a native session.',
   '',
   'RESUMING A DEAD / IDLE WORKER: if a BOUND worker reads as not-live (mission_session_read / ' +
   'mission_executor_status shows it dead or idle) but you still have its sid, RESUME IT IN PLACE with ' +
