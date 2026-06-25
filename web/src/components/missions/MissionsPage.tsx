@@ -197,6 +197,52 @@ function isHeartbeatMsg(msg: SessionMessage): boolean {
   return false;
 }
 
+/** Strip the `mcp__<server>__` prefix so a tool reads as just its name (mission_list). */
+function shortToolName(t: string): string {
+  return t.replace(/^mcp__.*?__/, '');
+}
+
+/** A message's MEANINGFUL text — treats the bare "[N tool call(s)]" placeholder as empty. */
+function meaningfulText(msg: SessionMessage): string {
+  const t = resolveMsgText(msg).trim();
+  return /^\[\d+ tool call\(s\)\]$/.test(t) ? '' : resolveMsgText(msg);
+}
+
+/**
+ * A run of tool calls renders as ONE minimal line (the tool names) and expands
+ * on click to the full badge list — so consecutive tool calls between messages
+ * don't sprawl the chat.
+ */
+function ToolGroupLine({ tools }: { tools: string[] }) {
+  const [open, setOpen] = useState(false);
+  if (!tools.length) return null;
+  const names = tools.map(shortToolName);
+  const preview = names.slice(0, 4).join(', ') + (names.length > 4 ? ` +${names.length - 4}` : '');
+  return (
+    <div style={{ alignSelf: 'flex-start', maxWidth: '82%', margin: '1px 0' }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        title={open ? 'collapse tool calls' : 'expand tool calls'}
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'none', border: 'none', cursor: 'pointer', padding: '1px 2px', fontSize: 10.5, color: 'var(--color-text-tertiary)' }}
+      >
+        <span style={{ fontSize: 8, width: 8 }}>{open ? '▾' : '▸'}</span>
+        <Wrench size={10} />
+        <span>{open ? `${tools.length} tool call${tools.length > 1 ? 's' : ''}` : preview}</span>
+      </button>
+      {open && (
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3, paddingLeft: 6 }}>
+          {names.map((t, ti) => (
+            <span key={ti} className="badge badge-outline" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10.5 }}>
+              <Wrench size={10} /> {t}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const STATUS_COLORS: Record<MissionStatus, string> = {
   draft: 'var(--color-text-tertiary)',
   active: 'var(--color-status-green)',
@@ -1412,6 +1458,24 @@ export function MissionsPage() {
   const visibleChat = chatMessages.filter((m) => !isHeartbeatMsg(m));
   const heartbeatCount = chatMessages.length - visibleChat.length;
 
+  // Group the chat: meaningful text messages render as bubbles; runs of tool-only
+  // turns (and a message's own tools) collapse into one minimal expandable line.
+  type ChatGroup = { kind: 'msg'; msg: SessionMessage; text: string } | { kind: 'tools'; tools: string[] };
+  const chatGroups: ChatGroup[] = [];
+  {
+    let pending: string[] = [];
+    const flush = () => { if (pending.length) { chatGroups.push({ kind: 'tools', tools: pending }); pending = []; } };
+    for (const m of visibleChat) {
+      const t = meaningfulText(m);
+      const tools = Array.isArray(m.tools) ? m.tools : [];
+      if (!t && tools.length) { pending.push(...tools); continue; } // tool-only turn → accumulate
+      flush();
+      chatGroups.push({ kind: 'msg', msg: m, text: t });
+      if (tools.length) pending.push(...tools); // a message's own tools collapse after it
+    }
+    flush();
+  }
+
   // Failover state: controllerSession is stale when it belongs to a different node than the
   // current elected leader. This happens during the ~1-min window after election flips but
   // before the new leader's supervisor has launched its controller session.
@@ -1704,14 +1768,16 @@ export function MissionsPage() {
                   : 'No messages yet — the controller is running'}
               </div>
             )}
-            {visibleChat.map((msg, i) => {
+            {chatGroups.map((g, i) => {
+              if (g.kind === 'tools') return <ToolGroupLine key={`t${i}`} tools={g.tools} />;
+              const msg = g.msg;
+              const text = g.text;
               const msgRole = (msg.role as string) ?? (msg.type as string) ?? 'msg';
-              const text = resolveMsgText(msg);
               const isUser = msgRole === 'user';
               const isAssistant = msgRole === 'assistant';
               return (
                 <div
-                  key={i}
+                  key={`m${i}`}
                   style={{
                     display: 'flex',
                     flexDirection: 'column',
@@ -1744,18 +1810,7 @@ export function MissionsPage() {
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
                       </div>
                     ) : (
-                      !msg.tools?.length && (
-                        <span style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>(no text)</span>
-                      )
-                    )}
-                    {msg.tools && msg.tools.length > 0 && (
-                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: text ? 4 : 0 }}>
-                        {msg.tools.map((t, ti) => (
-                          <span key={ti} className="badge badge-outline" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10.5 }}>
-                            <Wrench size={10} /> {t}
-                          </span>
-                        ))}
-                      </div>
+                      <span style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>(no text)</span>
                     )}
                   </div>
                 </div>
