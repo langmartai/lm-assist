@@ -6,6 +6,26 @@
 import { getHubConfig } from '../hub-client/hub-config';
 import type { PeerClient, NodeInfo, ManifestEntry, DataRecord } from './types';
 
+// ── Peer selection helper ────────────────────────────────────────────────────
+
+/**
+ * Pure helper: given the raw machines array from the hub `/api/tier-agent/machines`
+ * endpoint, return only online peers (status === 'online') excluding this node.
+ *
+ * Keeping this as a standalone pure function makes it trivial to unit-test without
+ * any network or hub dependency.
+ */
+export function selectSyncPeers(machines: any[], selfId: string): NodeInfo[] {
+  return machines
+    .filter((m) => (m.status || '').toLowerCase() === 'online')
+    .map((m: any) => ({
+      node: (m.gatewayId || m.machineId || m.id) as string,
+      hostname: (m.hostname || m.machineHostname || '') as string,
+      platform: (m.platform || m.machineOS || m.os || '') as string,
+    }))
+    .filter((m) => m.node && m.node !== selfId);
+}
+
 // ── Hub HTTP Helpers ─────────────────────────────────────────────────────────
 
 function getHubHttpUrl(): string {
@@ -133,13 +153,7 @@ export class HubPeerClient implements PeerClient {
   async listPeers(): Promise<NodeInfo[]> {
     const json = await hubFetch('/api/tier-agent/machines') as any;
     const machines: any[] = Array.isArray(json) ? json : (json.machines || json.data || []);
-    return machines
-      .map((m: any) => ({
-        node: (m.gatewayId || m.machineId || m.id) as string,
-        hostname: (m.hostname || m.machineHostname || '') as string,
-        platform: (m.platform || m.machineOS || m.os || '') as string,
-      }))
-      .filter((m) => m.node && m.node !== this.nodeId);
+    return selectSyncPeers(machines, this.nodeId);
   }
 
   async manifest(node: string): Promise<{ node: string; datasets: ManifestEntry[] }> {
