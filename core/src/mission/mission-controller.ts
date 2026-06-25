@@ -785,6 +785,37 @@ export function registerMissionController(
     };
 
     const r = await runSupervisorTick(realDeps);
+
+    // Reaper sweep: auto-close resumed native sessions that have been idle past the threshold.
+    // Only the leader runs the sweep (non-leaders return skipped=true above, but we also
+    // gate here to be explicit about the leader-only contract).
+    const { isMonitor: amMonitorNow } = await amIMonitor().catch(() => ({ isMonitor: false }));
+    if (amMonitorNow) {
+      try {
+        const { sweepIdle } = require('./mission-session-reaper') as typeof import('./mission-session-reaper');
+        const idleMin = getProjectSettings().missionSessionIdleCloseMin ?? 30;
+        await sweepIdle({
+          now: Date.now(),
+          idleMin,
+          close: async (sid: string) => {
+            // Resolve sid → tmuxSession via sessionVerdict, then kill via tmuxTerminalBackend.
+            const verdict = sessionVerdict(sid);
+            const tmuxSid = verdict.tmuxSession;
+            if (tmuxSid) {
+              const backend = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
+              await backend.tmuxTerminalBackend.close(tmuxSid);
+            } else {
+              // Fallback: try getCcController().close() which uses the sid directly.
+              await getCcController().close(sid).catch(() => {});
+            }
+          },
+        });
+      } catch (e) {
+        // Best-effort: never crash the tick because of the reaper.
+        console.debug(`[mission-controller] reaper sweep failed: ${(e as Error).message}`);
+      }
+    }
+
     return { result: `supervisor action=${r.action}`, controllerSession: r.controllerSession, status: 'ok' };
   });
 }

@@ -1,6 +1,7 @@
 /** Mission CRUD + controller status. Bare {success,data}/{success,error} envelope (like worker.routes). */
 import type { RouteHandler, RouteContext } from '../index';
 import { randomBytes } from 'crypto';
+import { touchActivity, trackResumedNative } from '../../mission/mission-session-reaper';
 import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActor, place, ExecutorState } from '../../mission/mission-model';
 import { resolveMcpActor } from '../../mission/mission-actor';
 import {
@@ -454,6 +455,8 @@ export async function handleSessionRead(sid: string, lastN?: number, deps?: Sess
       });
       return ok({ messages: normalized });
     } else {
+      // Best-effort: refresh the idle timer for resumed native sessions.
+      try { touchActivity(sid, Date.now()); } catch { /* best-effort */ }
       const result = await d.nativeRead(sid);
       // Native ConversationMessage has { role, content, toolCalls? } — normalize content -> text
       // and map toolCalls[].name to tools: string[] for a uniform shape.
@@ -493,6 +496,8 @@ export async function handleSessionDrive(sid: string, text: string, deps?: Sessi
       const result = await d.cloudDrive({ sid, text });
       return ok({ delivered: result.delivered });
     } else {
+      // Best-effort: refresh the idle timer for resumed native sessions.
+      try { touchActivity(sid, Date.now()); } catch { /* best-effort */ }
       await d.nativeDrive(sid, text);
       return ok({ delivered: true });
     }
@@ -740,7 +745,10 @@ export async function handleSessionResume(
   // Native: relaunch via the injected dep
   try {
     const launched = await d.relaunch(body.missionId);
-    const autoCloseAt = Date.now() + d.idleMin * 60_000;
+    const now = Date.now();
+    const autoCloseAt = now + d.idleMin * 60_000;
+    // Best-effort: start tracking the new session in the reaper.
+    try { trackResumedNative(launched.sid, body.missionId, now); } catch { /* best-effort */ }
     return ok({ resumed: true, sid: launched.sid, transport: 'native', autoCloseAt });
   } catch (e) {
     return fail('RELAUNCH_ERROR', (e as Error).message);
