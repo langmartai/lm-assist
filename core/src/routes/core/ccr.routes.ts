@@ -28,6 +28,38 @@ function fail(code: string, message: string, details?: unknown) {
   return { success: false, error: { code, message, details } } as Envelope;
 }
 
+// ── Wave 5 — remote-control session list (controller + mission executors named
+//    from the mission store, + other local RC sessions from the account list) ──
+export interface RemoteControlListDeps {
+  getController: () => Promise<{ sessionId: string; cse: string | null; tmux: string; node: string; startedAt: number } | null>;
+  listMissions: () => Promise<Array<Record<string, unknown>>>;
+  listAccount: () => Promise<Array<{ sid: string; status: string; title?: string }>>;
+}
+
+/**
+ * Lists local remote-control-connected sessions for the CCR view:
+ *  - controller: the Mission Controller (named reliably from the ControllerSession record),
+ *  - executors: each mission's bound executor (named via missionSessionTitle),
+ *  - accountRc: other account code/RC sessions (`/v1/code/sessions`), titled by claude.
+ * DI-testable; never throws on a sub-source failure (degrades to null/[]).
+ */
+export async function handleRemoteControlList(deps: RemoteControlListDeps): Promise<Envelope> {
+  const { missionSessionTitle } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
+  const c = await deps.getController().catch(() => null);
+  const controller = c
+    ? { sid: c.sessionId, cse: c.cse, tmux: c.tmux, node: c.node, title: 'Mission Controller', startedAt: c.startedAt }
+    : null;
+  const missions = await deps.listMissions().catch(() => [] as Array<Record<string, unknown>>);
+  const executors = missions
+    .filter((m) => (m as any).binding?.sessionId)
+    .map((m) => {
+      const b = (m as any).binding;
+      return { sid: b.sessionId as string, cse: (b.ccr?.sid ?? null) as string | null, title: missionSessionTitle(m as any), missionId: (m as any).id as string, status: (m as any).status as string };
+    });
+  const accountRc = await deps.listAccount().catch(() => [] as Array<{ sid: string; status: string; title?: string }>);
+  return ok({ controller, executors, accountRc });
+}
+
 async function envelope<T>(fn: () => Promise<T> | T): Promise<Envelope> {
   try {
     const data = await fn();
@@ -250,6 +282,24 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'GET',
       pattern: /^\/ccr\/remote$/,
       handler: async () => envelope(() => ({ remotes: ccr.list() })),
+    },
+
+    // GET /ccr/remote-control — local remote-control sessions: the Mission Controller +
+    // mission executors (named from the mission store) + other account RC/code sessions.
+    {
+      method: 'GET',
+      pattern: /^\/ccr\/remote-control$/,
+      handler: async () => handleRemoteControlList({
+        getController: () => {
+          const { getControllerSession } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+          return getControllerSession();
+        },
+        listMissions: () => {
+          const { listMissions } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+          return listMissions() as unknown as Promise<Array<Record<string, unknown>>>;
+        },
+        listAccount: () => ccrCloud.cloudListAccount(),
+      }),
     },
 
     // GET /ccr/remote/:id — single remote
