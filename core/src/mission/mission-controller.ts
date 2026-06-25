@@ -553,6 +553,10 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   }
 
   if (action === 'launch') {
+    // Defensive dedupe: if a prior controller record exists but we're (re)launching (it was deemed
+    // !live, or its bridge failed), tear down its tmux FIRST so a relaunch never stacks a second
+    // controller on top of a still-running one (belt-and-suspenders with the isLive fix).
+    if (cs) { try { await deps.teardown(cs); } catch { /* best-effort */ } }
     // Launch with lastDriveAt unset so the next tick triggers a drive immediately.
     const newCs = await deps.launch();
     await deps.putControllerSession(newCs);
@@ -672,6 +676,16 @@ export function registerMissionController(
       getControllerSession: () => getControllerSession(),
       putControllerSession: (cs) => putControllerSession(cs),
       isLive: (cs) => {
+        // cs.sessionId may be a cse_ (cloud handle) once the bridge registers — sessionVerdict
+        // CANNOT resolve a cse_ to a tmux, so it would report !inTmux and the supervisor would
+        // relaunch a NEW controller EVERY tick (runaway duplicate proliferation — observed: 9
+        // controllers in 18 min). The record carries the tmux name; check that session directly.
+        if (cs.tmux) {
+          try {
+            const tmuxMod = require('../terminal/tmux') as typeof import('../terminal/tmux');
+            return tmuxMod.exists(cs.tmux);
+          } catch { /* fall through to the verdict path */ }
+        }
         const v = sessionVerdict(cs.sessionId);
         return !!v.inTmux;
       },

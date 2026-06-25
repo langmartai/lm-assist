@@ -83,6 +83,22 @@ test('runSupervisorTick: not monitor + existing cs -> calls teardown + clears', 
   assert.ok(cleared, 'putControllerSession(null) should be called after teardown');
 });
 
+test('runSupervisorTick: monitor + STALE existing cs + !live -> tears down old controller BEFORE launching', async () => {
+  const order: string[] = [];
+  const deps = makeStubDeps({
+    amMonitor: async () => ({ isMonitor: true, monitorNodeId: 'gw1' }),
+    getControllerSession: async () => cs,           // a prior controller record exists
+    isLive: () => false,                            // but it's deemed not live → relaunch
+    teardown: async (_cs) => { order.push('teardown'); },
+    launch: async () => { order.push('launch'); return cs; },
+  });
+  const r = await runSupervisorTick(deps);
+  assert.equal(r.action, 'launch');
+  // The stale controller MUST be torn down before the new one launches — else duplicates pile up
+  // every tick (the proliferation bug).
+  assert.deepEqual(order, ['teardown', 'launch']);
+});
+
 test('runSupervisorTick: monitor + no live session -> calls launch + putControllerSession (lastDriveAt absent)', async () => {
   let launched = false;
   let persisted: ControllerSession | null = null;
