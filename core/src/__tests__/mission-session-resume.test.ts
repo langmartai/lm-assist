@@ -70,13 +70,14 @@ test('handleSessionStatus: cloud sid → alive=false when cloudStatus returns te
   assert.strictEqual(d.alive, false);
 });
 
-test('handleSessionStatus: cloud sid → alive=false when cloudStatus throws', async () => {
+test('handleSessionStatus: cloud sid → alive=true (grace) when cloudStatus THROWS (transient, not terminal)', async () => {
   const deps = makeStatusDeps();
-  const r = await handleSessionStatus('session_gone', deps, undefined, undefined, async () => { throw new Error('not found'); });
+  const r = await handleSessionStatus('session_gone', deps, undefined, undefined, async () => { throw new Error('429 rate limited'); });
   assert.ok(r.success);
   const d = (r as any).data;
   assert.strictEqual(d.transport, 'cloud');
-  assert.strictEqual(d.alive, false);
+  // A thrown status is a transport/transient error, not a confirmed terminal status → grace (alive).
+  assert.strictEqual(d.alive, true);
 });
 
 test('handleSessionStatus: native sid → alive=true when inTmux=true', async () => {
@@ -153,11 +154,23 @@ test('handleSessionResume: cloud gone (terminal status) → resumed=false, reaso
   assert.strictEqual(d.reason, 'gone');
 });
 
-test('handleSessionResume: cloud gone (cloudStatus throws) → resumed=false, reason=gone', async () => {
+test('handleSessionResume: cloud cloudStatus THROWS (transient) → resumed=true (grace), NOT gone', async () => {
   const deps = makeResumeDeps({
-    cloudStatus: async () => { throw new Error('404 not found'); },
+    cloudStatus: async () => { throw new Error('503 service unavailable'); },
   });
-  const r = await handleSessionResume('session_404', {}, deps);
+  const r = await handleSessionResume('session_blip', {}, deps);
+  assert.ok(r.success, JSON.stringify(r));
+  const d = (r as any).data;
+  // A transient error must NOT permanently mark the session gone — treat as still running.
+  assert.strictEqual(d.resumed, true);
+  assert.strictEqual(d.reason, undefined);
+});
+
+test('handleSessionResume: cloud TERMINAL status → resumed=false, reason=gone', async () => {
+  const deps = makeResumeDeps({
+    cloudStatus: async () => ({ status: 'archived' } as any),
+  });
+  const r = await handleSessionResume('session_archived', {}, deps);
   assert.ok(r.success, JSON.stringify(r));
   const d = (r as any).data;
   assert.strictEqual(d.resumed, false);

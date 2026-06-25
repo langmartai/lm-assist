@@ -614,7 +614,10 @@ export async function handleSessionStatus(
       const alive = !TERMINAL_CLOUD_STATUSES.includes(st.status);
       return ok({ transport: 'cloud', alive });
     } catch {
-      return ok({ transport: 'cloud', alive: false });
+      // A thrown cloudStatus is a TRANSPORT/transient error (429/5xx/network), NOT a
+      // confirmed terminal status — treat as alive (grace) so a blip doesn't falsely
+      // prompt resume. (Mirrors executorLiveness's grace window.)
+      return ok({ transport: 'cloud', alive: true });
     }
   } else {
     const getVerdict: NativeVerdictFn = nativeVerdict ?? ((s) => {
@@ -654,6 +657,16 @@ function defaultSessionResumeDeps(): SessionResumeDeps {
       const { getMission } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
       const m = missionId ? await getMission(missionId) : null;
       if (!m) throw new Error(`mission ${missionId} not found for relaunch`);
+      // C1: re-check the mission's CURRENT binding liveness — if it's still alive,
+      // DON'T relaunch (a stale tab sid + a live executor would otherwise spawn a
+      // duplicate agent on the same worktree/branch).
+      const curSid = m.binding?.sessionId;
+      if (curSid) {
+        try {
+          const { sessionVerdict } = require('../../terminal/cc-sessions') as typeof import('../../terminal/cc-sessions');
+          if (sessionVerdict(curSid).inTmux) return { sid: curSid, boundAt: m.binding?.boundAt ?? Date.now() };
+        } catch { /* not resolvable → fall through to relaunch */ }
+      }
       const { startNativeExecutor } = require('../../mission/mission-controller') as typeof import('../../mission/mission-controller');
       const { place } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
       const { listMissions: lm } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
@@ -696,6 +709,11 @@ function defaultSessionResumeDeps(): SessionResumeDeps {
       const repoAbs = pathmod.isAbsolute(repoRaw) ? repoRaw : pathmod.resolve(process.cwd(), repoRaw);
       const binding = await startNativeExecutor(m, { ...(pd.go ? pd : {}), repo: repoAbs }, nativeDeps);
       if (!binding.sessionId) throw new Error('native relaunch did not resolve a session id');
+      // C1: persist the new binding so the controller + GET /mission/:id/sessions converge
+      // on it — else the next supervisor tick re-reads the OLD dead sid → rebinds → a 3rd executor.
+      const { putMission: pm } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+      m.binding = { ...binding, boundAt: binding.boundAt ?? Date.now() };
+      try { await pm(m); } catch { /* best-effort persist */ }
       return { sid: binding.sessionId, boundAt: binding.boundAt ?? Date.now() };
     },
     idleMin: (() => {
@@ -738,7 +756,9 @@ export async function handleSessionResume(
       }
       return ok({ resumed: true, sid, transport: 'cloud' });
     } catch {
-      return ok({ resumed: false, reason: 'gone', transport: 'cloud' });
+      // Transient cloudStatus error — NOT a confirmed terminal status. Treat as still
+      // running (the user can retry) rather than declaring it permanently gone.
+      return ok({ resumed: true, sid, transport: 'cloud', note: 'status-unknown' });
     }
   }
 
@@ -777,7 +797,13 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     // Optional body field `node`: if set and != thisNode(), the local Core proxies to that node
     // server-side (browser never gets the hub Bearer token).
     // /mission/session/:sid/status and /resume BEFORE /read|drive|control (literal suffix wins)
-    { method: 'GET', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/status$/, handler: async (req) => handleSessionStatus(req.params.sid) },
+    { method: 'GET', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/status$/, handler: async (req) => {
+        // I2: honor ?node= so a native session's liveness is checked on its OWN node
+        // (not whatever node serves the browser's Core) — else a remote-but-alive
+        // session reads as dead → a false resume prompt → a duplicate executor.
+        const node = typeof req.query?.node === 'string' ? req.query.node : undefined;
+        return handleSessionStatus(req.params.sid, undefined, node);
+      } },
     { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/status$/, handler: async (req) => {
         const b = (req.body || {}) as Record<string, unknown>;
         const node = typeof b.node === 'string' ? b.node : undefined;

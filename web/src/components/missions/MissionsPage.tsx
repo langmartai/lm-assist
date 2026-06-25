@@ -18,6 +18,7 @@ import {
   AlertCircle,
   Cloud,
   Monitor,
+  Send,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { CcrCloudView } from '@/components/ccr/CcrCloudView';
