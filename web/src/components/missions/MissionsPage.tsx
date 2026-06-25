@@ -2188,7 +2188,7 @@ export function MissionsPage() {
 
               {/* ── All sessions panel (fleet operability) ── */}
               {allSessionsExpanded && (
-                <div className="card" style={{ padding: 10 }}>
+                <div className="card" style={{ padding: 10, flexShrink: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>All Sessions</span>
                     {allSessions.length > 0 && <span className="badge badge-outline">{allSessions.length}</span>}
@@ -2208,7 +2208,7 @@ export function MissionsPage() {
               )}
 
               {/* ── + New mission (collapsible) ── */}
-              <div className="card" style={{ padding: 10 }}>
+              <div className="card" style={{ padding: 10, flexShrink: 0 }}>
                 <button
                   className="btn btn-ghost btn-sm"
                   style={{ width: '100%', justifyContent: 'flex-start', gap: 6, fontSize: 12 }}
