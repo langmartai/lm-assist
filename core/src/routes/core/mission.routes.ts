@@ -108,7 +108,12 @@ export async function handleList(port?: MissionDataPort, leader?: LeaderAnchorDe
   return ok(await listMissions(port));
 }
 
-export async function handleGet(id: string, port?: MissionDataPort): Promise<Envelope> {
+export async function handleGet(id: string, port?: MissionDataPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  // Leader-anchored READ: missions live on the elected leader, so a non-leader node proxies the
+  // single-get to it (mirrors handleList) — else GET /mission/:id 404s off-leader (the mission
+  // detail tab broke this way: the list is anchored but the single-get wasn't).
+  const anchored = await anchorToLeader(leader, 'GET', `/mission/${encodeURIComponent(id)}`);
+  if (anchored) return anchored;
   const m = await getMission(id, port);
   return m ? ok(m) : fail('NOT_FOUND', `no mission ${id}`);
 }
@@ -181,7 +186,11 @@ export async function handleSessions(
   id: string,
   port?: MissionDataPort,
   listWorkers: () => WorkerRecord[] = listRecords,
+  leader?: LeaderAnchorDeps,
 ): Promise<Envelope> {
+  // Leader-anchored READ (same reason as handleGet): the binding + worker records live on the leader.
+  const anchored = await anchorToLeader(leader, 'GET', `/mission/${encodeURIComponent(id)}/sessions`);
+  if (anchored) return anchored;
   const m = await getMission(id, port);
   if (!m) return fail('NOT_FOUND', `no mission ${id}`);
   const sessions: MissionSession[] = [];
@@ -1041,8 +1050,8 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/place$/, handler: async (req) => handlePlace(req.params.id) },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/executor-status$/, handler: async (req) => handleExecutorStatus(req.params.id) },
     // /mission/:id/sessions BEFORE /mission/:id so the literal suffix wins
-    { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/sessions$/, handler: async (req) => handleSessions(req.params.id) },
-    { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handleGet(req.params.id) },
+    { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/sessions$/, handler: async (req) => handleSessions(req.params.id, undefined, undefined, realLeaderAnchor()) },
+    { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handleGet(req.params.id, undefined, realLeaderAnchor()) },
     { method: 'PATCH', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, realLeaderAnchor()) },
     // POST /mission/:id — same semantics as PATCH, accepts MCP workerPost (POST-only)
     { method: 'POST', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, realLeaderAnchor()) },

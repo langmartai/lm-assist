@@ -88,8 +88,8 @@ function parseCcrId(raw: string | undefined): string {
 }
 
 function parseCloudSid(raw: string | undefined): string {
-  if (!raw || typeof raw !== 'string' || !/^session_[A-Za-z0-9]+$/.test(raw)) {
-    throw new TerminalError('INVALID_INPUT', 'cloud sid must look like session_…');
+  if (!raw || typeof raw !== 'string' || !/^(?:session_|cse_)[A-Za-z0-9]+$/.test(raw)) {
+    throw new TerminalError('INVALID_INPUT', 'cloud sid must look like session_… or cse_…');
   }
   return raw;
 }
@@ -227,7 +227,7 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
     // POST /ccr/cloud/:sid/drive — send a follow-up turn
     {
       method: 'POST',
-      pattern: /^\/ccr\/cloud\/(?<sid>session_[^/]+)\/drive$/,
+      pattern: /^\/ccr\/cloud\/(?<sid>(?:session_|cse_)[^/]+)\/drive$/,
       handler: async (req) => envelope(async () => {
         const sid = parseCloudSid(req.params.sid);
         const body = (req.body || {}) as { text?: unknown; reBootstrap?: unknown; role?: unknown; primaryRepo?: unknown };
@@ -242,34 +242,34 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
     // answer = an option's label (a click) OR arbitrary text (free input) — both supported.
     {
       method: 'POST',
-      pattern: /^\/ccr\/cloud\/(?<sid>session_[^/]+)\/answer$/,
+      pattern: /^\/ccr\/cloud\/(?<sid>(?:session_|cse_)[^/]+)\/answer$/,
       handler: async (req) => envelope(async () => {
         const sid = parseCloudSid(req.params.sid);
-        const body = (req.body || {}) as { answer?: unknown; toolUseId?: unknown };
+        const body = (req.body || {}) as { answer?: unknown; toolUseId?: unknown; requestId?: unknown };
         const answer = typeof body.answer === 'string' ? body.answer : '';
         if (!answer.trim()) throw new TerminalError('INVALID_INPUT', 'answer is required');
-        return await ccrCloud.cloudAnswer({ sid, answer, toolUseId: typeof body.toolUseId === 'string' ? body.toolUseId : undefined });
+        return await ccrCloud.cloudAnswer({ sid, answer, toolUseId: typeof body.toolUseId === 'string' ? body.toolUseId : undefined, requestId: typeof body.requestId === 'string' ? body.requestId : undefined });
       }),
     },
 
     // POST /ccr/cloud/:sid/stop — delete the cloud session
     {
       method: 'POST',
-      pattern: /^\/ccr\/cloud\/(?<sid>session_[^/]+)\/stop$/,
+      pattern: /^\/ccr\/cloud\/(?<sid>(?:session_|cse_)[^/]+)\/stop$/,
       handler: async (req) => envelope(async () => ccrCloud.cloudStop(parseCloudSid(req.params.sid))),
     },
 
     // GET /ccr/cloud/:sid/status — raw cloud session status
     {
       method: 'GET',
-      pattern: /^\/ccr\/cloud\/(?<sid>session_[^/]+)\/status$/,
+      pattern: /^\/ccr\/cloud\/(?<sid>(?:session_|cse_)[^/]+)\/status$/,
       handler: async (req) => envelope(async () => ccrCloud.cloudStatus(parseCloudSid(req.params.sid))),
     },
 
     // GET /ccr/cloud/:sid — read the transcript (teleport-events). ?lastN= limits.
     {
       method: 'GET',
-      pattern: /^\/ccr\/cloud\/(?<sid>session_[^/]+)$/,
+      pattern: /^\/ccr\/cloud\/(?<sid>(?:session_|cse_)[^/]+)$/,
       handler: async (req) => envelope(async () => {
         const sid = parseCloudSid(req.params.sid);
         const lastN = Number(req.query?.lastN);

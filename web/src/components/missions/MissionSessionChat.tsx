@@ -127,6 +127,13 @@ interface MissionSessionChatProps {
    * Defaults to false which gives a fixed 360 px max-height scrollable area.
    */
   heightFill?: boolean;
+  /**
+   * Optional prefix prepended to every message the user SENDS (the drive/send
+   * composer only — NOT the answer path).  Used by the mission detail tab so the
+   * controller knows a chat message is about a specific mission
+   * (e.g. `[mission ms-abc "Title"] `).
+   */
+  missionTag?: string;
 }
 
 type ChatGroup =
@@ -157,7 +164,7 @@ function buildChatGroups(messages: SessionMessage[]): ChatGroup[] {
   return groups;
 }
 
-export function MissionSessionChat({ sid, node, apiFetch, heightFill = false }: MissionSessionChatProps) {
+export function MissionSessionChat({ sid, node, apiFetch, heightFill = false, missionTag }: MissionSessionChatProps) {
   const [messages, setMessages] = useState<SessionMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [sendBusy, setSendBusy] = useState(false);
@@ -227,7 +234,7 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false }: 
     try {
       await apiFetch(
         `/mission/session/${encodeURIComponent(sid)}/drive`,
-        { method: 'POST', body: { text, node: node ?? undefined } },
+        { method: 'POST', body: { text: (missionTag ?? '') + text, node: node ?? undefined } },
       );
       setDraft('');
       // Poll immediately after send
@@ -243,7 +250,7 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false }: 
     } finally {
       setSendBusy(false);
     }
-  }, [apiFetch, sid, node, draft, readMessages]);
+  }, [apiFetch, sid, node, draft, readMessages, missionTag]);
 
   // ── Answer a pending AskUserQuestion ──
 

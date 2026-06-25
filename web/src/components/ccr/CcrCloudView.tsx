@@ -8,7 +8,7 @@ import { Loader2, X, Send, RefreshCw, Wrench, User, Cloud, ExternalLink, HelpCir
 type ApiFetch = <T>(path: string, opts?: { method?: string; body?: unknown }) => Promise<T>;
 interface CloudMsg { role: string; type: string; text: string; tools?: string[] }
 interface QOption { label: string; description?: string }
-interface PendingQuestion { toolUseId: string; questions: Array<{ header?: string; question?: string; multiSelect?: boolean; options?: QOption[] }> }
+interface PendingQuestion { toolUseId: string; requestId?: string; questions: Array<{ header?: string; question?: string; multiSelect?: boolean; options?: QOption[] }> }
 
 /** Native viewer for a CLOUD CCR session (claude runs in an Anthropic-cloud container).
  *  Renders the teleport-events transcript and drives via /ccr/cloud/:sid/drive. */
@@ -52,11 +52,13 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose }: {
     const a = text.trim(); if (!a) return;
     setAnswering(true); setErr(null);
     try {
-      await apiFetch(`/ccr/cloud/${encodeURIComponent(sid)}/answer`, { method: 'POST', body: { answer: a } });
+      // requestId/toolUseId thread through for a --remote-control bridge session (controller/executor);
+      // for a cloud session they're ignored (the backend auto-resolves the tool_use_id from teleport).
+      await apiFetch(`/ccr/cloud/${encodeURIComponent(sid)}/answer`, { method: 'POST', body: { answer: a, toolUseId: pendingQ?.toolUseId, requestId: pendingQ?.requestId } });
       setPendingQ(null); setCustomAnswer(''); setSent(`answered: ${a.slice(0, 50)}`); setTimeout(() => setSent(null), 4000); setTimeout(load, 1500);
     } catch (e) { setErr(`answer failed: ${e instanceof Error ? e.message : String(e)}`); }
     finally { setAnswering(false); }
-  }, [apiFetch, sid, load]);
+  }, [apiFetch, sid, load, pendingQ]);
 
   // Stable 5s poll via a ref — apiFetch/apiClient identity churn (hybrid/proxy mode) must not reset
   // the interval and fire overlapping fetches that race and show stale data.

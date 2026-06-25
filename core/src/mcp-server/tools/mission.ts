@@ -114,13 +114,18 @@ export const MISSION_TOOL_DEFS = [
   },
   {
     name: 'mission_session_read',
-    description: 'Read the transcript of a mission session (cloud CCR or native). Returns {messages:[...]}. Use lastN to limit the number of messages.',
+    description: 'Read the transcript of a mission session (cloud CCR or native). Returns {messages:[...], pendingQuestion}. `pendingQuestion` (when non-null) is an AskUserQuestion the session is BLOCKED on — {toolUseId, requestId?, questions:[{header,question,options}]}; answer it with mission_session_answer (NOT mission_session_drive). Works for a `--remote-control` (bridge) controller/executor too. Use lastN to limit messages.',
     inputSchema: obj({ sid: S, lastN: { type: 'number' as const } }, ['sid']),
   },
   {
     name: 'mission_session_drive',
-    description: 'Send a message to a mission session (cloud or native). The session receives the text as an injected prompt. Write tool — creates a turn.',
+    description: 'Send a message to a mission session (cloud or native). The session receives the text as an injected prompt. Write tool — creates a turn. NOTE: if the session is blocked on a `pendingQuestion`, use mission_session_answer, not this.',
     inputSchema: obj({ sid: S, text: S }, ['sid', 'text']),
+  },
+  {
+    name: 'mission_session_answer',
+    description: 'Answer the PENDING AskUserQuestion a mission session is blocked on (surfaced as `pendingQuestion` by mission_session_read). `answer` = an option LABEL (a "click") OR any free TEXT (a custom reply) — both supported. Works for cloud, native (tmux), AND `--remote-control` bridge sessions (the controller/executor); the bridge requestId auto-resolves (or pass requestId/toolUseId). Write tool — leader-anchored.',
+    inputSchema: obj({ sid: S, answer: S, toolUseId: S, requestId: S }, ['sid', 'answer']),
   },
   {
     name: 'mission_session_control',
@@ -208,6 +213,19 @@ export const MISSION_HANDLERS: Record<
       if (!text) return err('text is required');
       // withActorHint so drive is attributed to the caller's MCP session
       return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/drive`, withActorHint({ text }, currentMcpContext()?.toolUseId)));
+    } catch (e) { return err((e as Error).message); }
+  },
+
+  mission_session_answer: async (a) => {
+    try {
+      const sid = String(a.sid || '');
+      if (!sid) return err('sid is required');
+      const answer = String(a.answer || '');
+      if (!answer) return err('answer is required');
+      const body: Record<string, unknown> = { answer };
+      if (a.toolUseId) body.toolUseId = String(a.toolUseId);
+      if (a.requestId) body.requestId = String(a.requestId);
+      return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/answer`, withActorHint(body, currentMcpContext()?.toolUseId)));
     } catch (e) { return err((e as Error).message); }
   },
 

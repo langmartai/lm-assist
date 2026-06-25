@@ -19,10 +19,12 @@ import {
   Cloud,
   Monitor,
   Send,
+  ListChecks,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { CcrCloudView } from '@/components/ccr/CcrCloudView';
 import { MissionSessionChat } from './MissionSessionChat';
+import { MissionDetailView } from './MissionDetailView';
 import type { SessionMessage } from './MissionSessionChat';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -163,6 +165,11 @@ interface SessionTab {
   node?: string | null;
   /** Mission id used when resuming a native session. */
   missionId?: string | null;
+  /**
+   * Tab kind. `undefined`/`'session'` = a session view (cloud or native).
+   * `'mission'` = the mission detail tab (sid holds the missionId; no liveness check).
+   */
+  kind?: 'session' | 'mission';
 }
 
 type TabAliveStatus = 'checking' | 'alive' | 'dead' | 'resuming' | 'gone' | 'confirm-resume';
@@ -264,6 +271,9 @@ export function MissionsPage() {
 
   // Per-mission objective editing
   const [objDraft, setObjDraft] = useState<Record<string, string>>({});
+
+  // Mission whose title is hovered (for the clickable-title underline affordance)
+  const [hoverTitleId, setHoverTitleId] = useState<string | null>(null);
 
   // Connect/drive a mission's cloud executor inline
   const [connectSid, setConnectSid] = useState<string | null>(null);
@@ -758,6 +768,18 @@ export function MissionsPage() {
     [checkAndHandleTabLiveness],
   );
 
+  /**
+   * Open a mission detail tab (deduped by missionId-as-sid). A mission tab does
+   * NOT participate in liveness checking — it renders MissionDetailView directly.
+   */
+  const openMissionTab = useCallback((missionId: string, title: string) => {
+    setOpenTabs((prev) => {
+      if (prev.some((t) => t.sid === missionId)) return prev;
+      return [...prev, { sid: missionId, title, transport: 'native', kind: 'mission', missionId }];
+    });
+    setActiveTabSid(missionId);
+  }, []);
+
   /** Close a tab; if it was active, fall back to the controller (null). */
   const closeTab = useCallback((sid: string) => {
     setOpenTabs((prev) => prev.filter((t) => t.sid !== sid));
@@ -1119,8 +1141,28 @@ export function MissionsPage() {
         >
           {/* Top row: title + status */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)', flex: '1 1 auto' }}>
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={() => openMissionTab(m.id, m.title)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openMissionTab(m.id, m.title); } }}
+              onMouseEnter={() => setHoverTitleId(m.id)}
+              onMouseLeave={() => setHoverTitleId((cur) => (cur === m.id ? null : cur))}
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: hoverTitleId === m.id ? 'var(--color-accent)' : 'var(--color-text-primary)',
+                flex: '1 1 auto',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+                textDecoration: hoverTitleId === m.id ? 'underline' : 'none',
+              }}
+              title="Open mission detail tab"
+            >
               {m.title}
+              <ListChecks size={11} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />
             </span>
             <span className={`badge ${STATUS_BADGE[m.status]}`}>{m.status}</span>
             {m.binding ? (
@@ -1399,8 +1441,8 @@ export function MissionsPage() {
     },
     [
       busy, expanded, objDraft, contributorsExpanded, sessionsExpanded, sessionsFetching,
-      sessionsByMission, connectSid, activeTabSid, tabStates, openSessionTab,
-      updateMission, toggleExpand, toggleContributors, toggleSessionsExpand, renderActorLink, apiFetch,
+      sessionsByMission, connectSid, activeTabSid, tabStates, openSessionTab, openMissionTab,
+      hoverTitleId, updateMission, toggleExpand, toggleContributors, toggleSessionsExpand, renderActorLink, apiFetch,
     ],
   );
 
@@ -1606,15 +1648,17 @@ export function MissionsPage() {
                       gap: 5,
                     }}
                     onClick={() => setActiveTabSid(tab.sid)}
-                    title={`${tab.title} (${tab.transport})`}
+                    title={tab.kind === 'mission' ? `Mission: ${tab.title}` : `${tab.title} (${tab.transport})`}
                   >
-                    {tab.transport === 'cloud'
+                    {tab.kind === 'mission'
+                      ? <ListChecks size={10} />
+                      : tab.transport === 'cloud'
                       ? <Cloud size={10} />
                       : <Monitor size={10} />
                     }
                     <span style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }}>{tab.title}</span>
-                    {/* Status dot */}
-                    {ts && (
+                    {/* Status dot — session tabs only (mission tabs have no liveness) */}
+                    {tab.kind !== 'mission' && ts && (
                       <span
                         style={{
                           width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
@@ -1644,6 +1688,26 @@ export function MissionsPage() {
           {activeTabSid !== null && (() => {
             const tab = openTabs.find((t) => t.sid === activeTabSid);
             if (!tab) return null;
+
+            // Mission detail tab — render the editable detail view (no liveness check).
+            if (tab.kind === 'mission') {
+              return (
+                <MissionDetailView
+                  missionId={tab.sid}
+                  apiFetch={apiFetch}
+                  controllerSid={controllerSid}
+                  controllerNode={leader?.node ?? null}
+                  onOpenSession={(s) =>
+                    openSessionTab({
+                      ...s,
+                      // Derive transport from the sid (cloud sessions are session_/cse_-prefixed).
+                      transport: /^(session_|cse_)/.test(s.sid) ? 'cloud' : 'native',
+                    })
+                  }
+                />
+              );
+            }
+
             const ts = tabStates[tab.sid] ?? { alive: 'checking' };
 
             // Checking/resuming spinner

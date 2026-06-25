@@ -59,6 +59,13 @@ export function isCloudSid(sid: string | undefined | null): boolean {
   return typeof sid === 'string' && /^session_[A-Za-z0-9]+$/.test(sid);
 }
 
+/** Accept either a cloud sid (`session_…`) or a bridge cse (`cse_…`) — the same code session,
+ *  two prefixes. The cloud read/answer/drive/status/stop ops work for both (a bridge falls back
+ *  to the client `/events` channel). */
+export function isCloudOrBridge(sid: string | undefined | null): boolean {
+  return typeof sid === 'string' && /^(?:session_|cse_)[A-Za-z0-9]+$/.test(sid);
+}
+
 /** A `sources` entry: a GitHub repo the cloud container clones (the standard seed). */
 export function buildGitHubSource(url: string, revision?: string) {
   return { type: 'git_repository' as const, url, ...(revision ? { revision } : {}) };
@@ -558,14 +565,23 @@ export async function cloudStart(opts: { prompt?: string; repo?: string; branch?
 
 /** Drive a follow-up turn into a cloud session. */
 export async function cloudDrive(opts: { sid: string; text: string; reBootstrap?: boolean; role?: CloudRole; primaryRepo?: string }): Promise<{ delivered: boolean; sid: string; eventId?: string }> {
-  if (!isCloudSid(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_…');
+  if (!isCloudOrBridge(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_… or cse_…');
   let text = (opts.text || '').toString();
   if (!text.trim()) throw new TerminalError('INVALID_INPUT', 'text is required');
   // Resume self-heal: prepend the bootstrap/self-heal instruction so a re-engaged (possibly rebooted)
   // container ensures lm-assist is up (restart/install) before doing the new turn.
   if (opts.reBootstrap) text = buildBootstrapInstruction({ role: opts.role, primaryRepo: opts.primaryRepo }) + text;
   const res = await anthropicOAuthPost(`/v1/sessions/${opts.sid}/events`, { events: [buildDriveEvent(opts.sid, text)] }, await ccrOpts());
-  assertOk(res, 'cloud drive');
+  // Bridge fallback: a `--remote-control` session isn't driveable on the cloud `/v1/sessions` ingress;
+  // drive it as a CLIENT user-event on `/v1/code/sessions/{cse}/events` (the backend relays it to the
+  // worker, the same path the web UI types into). Lets the CCR page drive a controller/executor too.
+  if (res.status < 200 || res.status >= 300) {
+    const cse = toBridgeCse(opts.sid);
+    const ev = { ...buildDriveEvent(cse, text), type: 'user' as const };
+    const cr = await anthropicOAuthPost(`/v1/code/sessions/${cse}/events`, { events: [{ payload: ev }] }, await ccrOpts());
+    assertOk(cr, 'cloud drive (bridge)');
+    return { delivered: true, sid: opts.sid };
+  }
   const r = res.body && Array.isArray(res.body.results) ? res.body.results[0] : undefined;
   return { delivered: true, sid: opts.sid, eventId: r?.event_id };
 }
@@ -578,19 +594,28 @@ function isRequiresAction(sessionBody: any): boolean {
 
 /** Read a cloud session's transcript (teleport-events) + any pending question awaiting an answer. */
 export async function cloudRead(opts: { sid: string; lastN?: number }): Promise<{ sid: string; messages: CloudTranscriptMsg[]; pendingQuestion: PendingQuestion | null }> {
-  if (!isCloudSid(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_…');
+  if (!isCloudOrBridge(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_… or cse_…');
   const ccr = await ccrOpts();
   const [res, st] = await Promise.all([
-    anthropicOAuthGet(`/v1/code/sessions/${opts.sid}/teleport-events`, ccr),
+    anthropicOAuthGet(`/v1/code/sessions/${opts.sid}/teleport-events`, ccr).catch(() => null),
     anthropicOAuthGet(`/v1/code/sessions/${opts.sid}`, ccr).catch(() => null),
   ]);
-  assertOk(res, 'cloud read');
-  const events = ((res.body as { data?: any[] })?.data) || [];
-  let messages = parseTeleportTranscript(res.body);
+  // Teleport-tolerant: a `--remote-control` bridge cse has no transcript here (404/empty) — don't
+  // throw; just yield no messages and rely on the client `/events` pending-question fallback below.
+  const teleportOk = !!res && res.status >= 200 && res.status < 300;
+  const events = teleportOk ? (((res!.body as { data?: any[] })?.data) || []) : [];
+  let messages = teleportOk ? parseTeleportTranscript(res!.body) : [];
   if (opts.lastN && opts.lastN > 0) messages = messages.slice(-opts.lastN);
   // Gate on worker_status: a client-sent tool_result doesn't reliably appear in teleport-events,
   // so only surface a pending question when the worker is actually blocked (requires_action).
-  const pendingQuestion = isRequiresAction(st?.body) ? findPendingQuestion(events) : null;
+  let pendingQuestion: PendingQuestion | null = isRequiresAction(st?.body) ? findPendingQuestion(events) : null;
+  // Bridge fallback: a `--remote-control` session's AskUserQuestion is a can_use_tool relayed via
+  // the CLIENT /events channel — it's NOT in teleport-events. When teleport shows nothing pending,
+  // check the client event log (resolution-tracked, so no false positives). Lets the CCR page's
+  // CcrCloudView surface a bridge controller/executor's question, not just cloud sessions.
+  if (!pendingQuestion) {
+    try { const cr = await cloudClientEventsRead(opts.sid); if (cr.pendingQuestion) pendingQuestion = cr.pendingQuestion; } catch { /* best-effort */ }
+  }
   return { sid: opts.sid, messages, pendingQuestion };
 }
 
@@ -599,8 +624,8 @@ export async function cloudRead(opts: { sid: string; lastN?: number }): Promise<
  * `answer` = an option's label (a CLICK) or arbitrary text (free INPUT) — both handled. The
  * tool_use_id auto-resolves from the session's pending question unless given explicitly.
  */
-export async function cloudAnswer(opts: { sid: string; answer: string; toolUseId?: string }): Promise<{ answered: boolean; sid: string; toolUseId: string; mode: 'option' | 'input'; sentContent: string }> {
-  if (!isCloudSid(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_…');
+export async function cloudAnswer(opts: { sid: string; answer: string; toolUseId?: string; requestId?: string }): Promise<{ answered: boolean; sid: string; toolUseId: string; mode: 'option' | 'input'; sentContent: string; transport?: 'cloud' | 'bridge' }> {
+  if (!isCloudOrBridge(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_… or cse_…');
   const answer = (opts.answer || '').toString();
   if (!answer.trim()) throw new TerminalError('INVALID_INPUT', 'answer is required');
   const ccr = await ccrOpts();
@@ -614,18 +639,24 @@ export async function cloudAnswer(opts: { sid: string; answer: string; toolUseId
   // so we don't re-answer an already-resolved question. An explicit toolUseId always proceeds.
   const pending = isRequiresAction(st?.body) ? findPendingQuestion(events) : null;
   const toolUseId = opts.toolUseId || pending?.toolUseId;
-  if (!toolUseId) throw new TerminalError('PRECONDITION_FAILED', 'no pending question to answer (the worker is not awaiting input) — use ccr_cloud_drive for a normal turn, or pass tool_use_id explicitly');
+  if (!toolUseId) {
+    // No teleport tool_use → this is a `--remote-control` bridge session whose AskUserQuestion is a
+    // can_use_tool on the CLIENT /events channel. Answer there (control_response, auto-resolving the
+    // requestId/questions). Makes the CCR page (CcrCloudView) able to answer a controller/executor.
+    const r = await cloudClientEventsAnswer({ cse: opts.sid, answer, requestId: opts.requestId });
+    return { answered: r.answered, sid: opts.sid, toolUseId: r.requestId, mode: r.mode, sentContent: answer, transport: 'bridge' };
+  }
   const q = pending?.questions?.[0];
   const isOption = !!(q?.options || []).find((o) => o.label === answer.trim() || o.label?.toLowerCase() === answer.trim().toLowerCase());
   const content = formatAnswerContent(pending?.questions || [], answer);
   const post = await anthropicOAuthPost(`/v1/sessions/${opts.sid}/events`, { events: [buildAnswerEvent(opts.sid, toolUseId, content)] }, await ccrOpts());
   assertOk(post, 'cloud answer');
-  return { answered: true, sid: opts.sid, toolUseId, mode: isOption ? 'option' : 'input', sentContent: content };
+  return { answered: true, sid: opts.sid, toolUseId, mode: isOption ? 'option' : 'input', sentContent: content, transport: 'cloud' };
 }
 
 /** Get raw cloud session status. */
 export async function cloudStatus(sid: string): Promise<{ sid: string; status: string; connectionStatus?: string; raw: any }> {
-  if (!isCloudSid(sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_…');
+  if (!isCloudOrBridge(sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_… or cse_…');
   const res = await anthropicOAuthGet(`/v1/code/sessions/${sid}`, await ccrOpts());
   assertOk(res, 'cloud status');
   const b = res.body as Record<string, any>;
@@ -635,7 +666,7 @@ export async function cloudStatus(sid: string): Promise<{ sid: string; status: s
 
 /** Stop (delete) a cloud session and drop it from the registry. */
 export async function cloudStop(sid: string): Promise<{ stopped: boolean; sid: string }> {
-  if (!isCloudSid(sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_…');
+  if (!isCloudOrBridge(sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_… or cse_…');
   const res = await anthropicOAuthDelete(`/v1/sessions/${sid}`, await ccrOpts());
   // 404 = already gone; treat as stopped (idempotent)
   if (res.status !== 404) assertOk(res, 'cloud stop');
