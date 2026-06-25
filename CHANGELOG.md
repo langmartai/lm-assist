@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.103] — missions sidebar search/filter/pagination + resumed-session idle-timeout setting (2026-06-26)
+
+- **Missions sidebar** is now searchable, filterable, scrollable, and paginated:
+  - **Keyword search** across title/objective/id/status; **space = AND** (every space-separated term
+    must match).
+  - **Status**, **transport** (cloud/native), and **recency** (Any time / 1 day / 3 days / 7 days)
+    filters, all ANDed with the search.
+  - Missions **sorted by recency** (most recent first); **top 50 shown** with a **"Load N more (X/Y)"**
+    button for the rest. Pagination resets to 50 whenever a filter/search changes.
+- **Configurable resumed-session idle timeout:** `PUT /project-settings` now accepts
+  `missionSessionIdleCloseMin` (validated, clamped **1–1440** min), and a new **"Mission Control"**
+  card in **Settings → Experiment** exposes it (default 30). The reaper reads it live, so a change
+  applies on the next supervisor sweep — no restart.
+
 ## [0.1.102] — resume a mission's worker session in place (2026-06-26)
 
 - **A mission's bound worker (executor) session can now be RESUMED in place**, preserving its
