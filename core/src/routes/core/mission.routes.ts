@@ -647,6 +647,11 @@ export async function handleSessionControl(sid: string, action: string, deps?: S
       if (!isController) {
         return fail('INVALID_INPUT', 'restart is controller-only — clear the controller session so the supervisor relaunches');
       }
+      // Kill the OLD controller's tmux BEFORE clearing the record. Otherwise the supervisor sees
+      // an empty record (!live) and launches a fresh controller while the old one is still running
+      // → TWO concurrent controllers (observed: a restart left the 10h-old controller alive next to
+      // the new one). Best-effort: the relaunch proceeds even if the stop fails.
+      try { await d.nativeStop(ctrl!.sessionId); } catch { /* best-effort — supervisor still relaunches */ }
       await d.clearController();
       return ok({ action: 'restart', scheduled: true });
     }

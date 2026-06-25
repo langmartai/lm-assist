@@ -202,8 +202,8 @@ test('handleSessionControl restart: no stored controller -> INVALID_INPUT', asyn
   assert.equal((r as any).error?.code, 'INVALID_INPUT');
 });
 
-test('handleSessionControl restart: stored controller sessionId matches -> calls clearController', async () => {
-  let cleared = false;
+test('handleSessionControl restart: stored controller sessionId matches -> STOPS old controller, then clears', async () => {
+  const calls: string[] = [];
   const deps = makeStubDeps({
     getControllerSession: async () => ({
       sessionId: 'session_ctrl',
@@ -212,11 +212,14 @@ test('handleSessionControl restart: stored controller sessionId matches -> calls
       tmux: 'lm-ctrl',
       startedAt: 1000,
     }),
-    clearController: async () => { cleared = true; },
+    // The old controller's tmux MUST be killed before the record is cleared, else the supervisor
+    // relaunches a fresh controller while the old one is still running (duplicate controllers).
+    nativeStop: async (sid: string) => { calls.push(`stop:${sid}`); },
+    clearController: async () => { calls.push('clear'); },
   });
   const r = await handleSessionControl('session_ctrl', 'restart', deps);
   assert.ok(r.success, 'restart should succeed when sid matches controller sessionId');
-  assert.ok(cleared, 'clearController should be called');
+  assert.deepStrictEqual(calls, ['stop:session_ctrl', 'clear'], 'must stop the old controller BEFORE clearing the record');
 });
 
 test('handleSessionControl restart: stored controller cse matches -> calls clearController', async () => {
