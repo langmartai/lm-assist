@@ -236,6 +236,36 @@ export function MissionsPage() {
 
   // ── State ──
   const [missions, setMissions] = useState<Mission[]>([]);
+  // ── Missions sidebar: search + filters + pagination ──
+  const [missionSearch, setMissionSearch] = useState('');
+  const [missionStatusFilter, setMissionStatusFilter] = useState<'all' | MissionStatus>('all');
+  const [missionTransportFilter, setMissionTransportFilter] = useState<'all' | 'cloud' | 'native'>('all');
+  const [missionRecencyFilter, setMissionRecencyFilter] = useState<'all' | '1d' | '3d' | '7d'>('all');
+  const [missionVisibleCount, setMissionVisibleCount] = useState(50);
+  /** Reset the page size to the top 50 whenever a filter/search changes. */
+  const resetMissionPage = () => setMissionVisibleCount(50);
+  const missionTransportOf = (m: Mission): 'cloud' | 'native' | null => {
+    const sid = m.binding?.sessionId;
+    return sid ? (/^(session_|cse_)/.test(sid) ? 'cloud' : 'native') : null;
+  };
+  // Filter (status AND transport AND recency AND keyword) → sort by recency (most recent first).
+  // Keyword search: space-separated terms are ANDed across title/objective/id/status (case-insensitive).
+  const _missionTerms = missionSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const _missionRecencyMs =
+    missionRecencyFilter === '1d' ? 86_400_000 :
+    missionRecencyFilter === '3d' ? 3 * 86_400_000 :
+    missionRecencyFilter === '7d' ? 7 * 86_400_000 : 0;
+  const filteredMissions = missions
+    .filter((m) => missionStatusFilter === 'all' || m.status === missionStatusFilter)
+    .filter((m) => missionTransportFilter === 'all' || missionTransportOf(m) === missionTransportFilter)
+    .filter((m) => _missionRecencyMs === 0 || Date.now() - (m.updatedAt || m.createdAt || 0) <= _missionRecencyMs)
+    .filter((m) => {
+      if (_missionTerms.length === 0) return true;
+      const hay = `${m.title} ${m.objective} ${m.id} ${m.status}`.toLowerCase();
+      return _missionTerms.every((t) => hay.includes(t));
+    })
+    .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+  const visibleMissions = filteredMissions.slice(0, missionVisibleCount);
   const [controller, setController] = useState<ControllerStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -2120,6 +2150,40 @@ export function MissionsPage() {
               </button>
             </div>
 
+            {/* ── Search + filters (fixed; the list below scrolls) ── */}
+            <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--color-border-subtle)', display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
+              <input
+                className="input"
+                value={missionSearch}
+                placeholder="Search missions…  (space = AND)"
+                style={{ width: '100%', fontSize: 12 }}
+                onChange={(e) => { setMissionSearch(e.target.value); resetMissionPage(); }}
+              />
+              <div style={{ display: 'flex', gap: 6 }}>
+                <select className="input" value={missionStatusFilter} style={{ flex: 1, fontSize: 11, minWidth: 0 }} title="Filter by status" onChange={(e) => { setMissionStatusFilter(e.target.value as 'all' | MissionStatus); resetMissionPage(); }}>
+                  <option value="all">All status</option>
+                  <option value="active">active</option>
+                  <option value="waiting">waiting</option>
+                  <option value="paused">paused</option>
+                  <option value="blocked">blocked</option>
+                  <option value="done">done</option>
+                  <option value="failed">failed</option>
+                  <option value="draft">draft</option>
+                </select>
+                <select className="input" value={missionTransportFilter} style={{ flex: 1, fontSize: 11, minWidth: 0 }} title="Filter by worker transport" onChange={(e) => { setMissionTransportFilter(e.target.value as 'all' | 'cloud' | 'native'); resetMissionPage(); }}>
+                  <option value="all">All type</option>
+                  <option value="cloud">cloud</option>
+                  <option value="native">native</option>
+                </select>
+                <select className="input" value={missionRecencyFilter} style={{ flex: 1, fontSize: 11, minWidth: 0 }} title="Filter by recency (last updated)" onChange={(e) => { setMissionRecencyFilter(e.target.value as 'all' | '1d' | '3d' | '7d'); resetMissionPage(); }}>
+                  <option value="all">Any time</option>
+                  <option value="1d">1 day</option>
+                  <option value="3d">3 days</option>
+                  <option value="7d">7 days</option>
+                </select>
+              </div>
+            </div>
+
             <div style={{ flex: 1, overflow: 'auto', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
 
               {/* ── All sessions panel (fleet operability) ── */}
@@ -2296,7 +2360,7 @@ export function MissionsPage() {
                 )}
               </div>
 
-              {/* ── Mission list ── */}
+              {/* ── Mission list (filtered · sorted by recency · top 50 + load more) ── */}
               {loading && missions.length === 0 ? (
                 <div className="empty-state">
                   <Loader2 size={20} style={{ animation: 'spin 1s linear infinite' }} />
@@ -2306,9 +2370,25 @@ export function MissionsPage() {
                   <Target size={24} className="empty-state-icon" />
                   <div>No missions yet</div>
                 </div>
+              ) : visibleMissions.length === 0 ? (
+                <div className="empty-state" style={{ fontSize: 12 }}>
+                  <Target size={24} className="empty-state-icon" />
+                  <div>No missions match</div>
+                </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {missions.map((m) => renderMissionItem(m))}
+                  {visibleMissions.map((m) => renderMissionItem(m))}
+                  {filteredMissions.length > visibleMissions.length && (
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      style={{ width: '100%', justifyContent: 'center', gap: 6, fontSize: 11 }}
+                      onClick={() => setMissionVisibleCount((c) => c + 50)}
+                      title="Load more missions"
+                    >
+                      <ChevronDown size={13} /> Load {Math.min(50, filteredMissions.length - visibleMissions.length)} more
+                      <span style={{ color: 'var(--color-text-tertiary)' }}>({visibleMissions.length}/{filteredMissions.length})</span>
+                    </button>
+                  )}
                 </div>
               )}
             </div>

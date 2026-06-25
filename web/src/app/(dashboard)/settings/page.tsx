@@ -349,6 +349,8 @@ export default function SettingsPage() {
   // excluded projects state
   const [excludedPaths, setExcludedPaths] = useState<string[]>([]);
   const [knowledgeEnabled, setKnowledgeEnabled] = useState(true);
+  // Minutes a resumed native mission session stays alive while idle before the reaper auto-closes it.
+  const [missionSessionIdleCloseMin, setMissionSessionIdleCloseMin] = useState(30);
   const [allProjects, setAllProjects] = useState<{ path: string }[]>([]);
   const [showAddProject, setShowAddProject] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
@@ -1108,6 +1110,7 @@ export default function SettingsPage() {
         if (j.success) {
           setExcludedPaths(j.data.excludedPaths || []);
           setKnowledgeEnabled(j.data.knowledgeEnabled !== false);
+          if (typeof j.data.missionSessionIdleCloseMin === 'number') setMissionSessionIdleCloseMin(j.data.missionSessionIdleCloseMin);
         }
       }).catch(() => {});
     }
@@ -3704,6 +3707,45 @@ export default function SettingsPage() {
                   </div>
                   <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', margin: 0, lineHeight: 1.5 }}>
                     Controls visibility of: Session Dashboard nav, FlowGraph tab in session detail, and experimental settings below.
+                  </p>
+                </div>
+              </SectionCard>
+            )}
+
+            {/* Mission Control — resumed-session idle timeout */}
+            {activeTab === 'experiment' && !proxy.isProxied && localStatus?.healthy && (
+              <SectionCard title="Mission Control" icon={Layers}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-text-primary)' }}>
+                    Resumed session idle timeout
+                  </label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input
+                      type="number"
+                      className="input"
+                      min={1}
+                      max={1440}
+                      value={missionSessionIdleCloseMin}
+                      style={{ width: 110, fontSize: 12 }}
+                      onChange={(e) => setMissionSessionIdleCloseMin(Number(e.target.value))}
+                      onBlur={async (e) => {
+                        // Read the live DOM value (not the React state) so a save right after typing
+                        // isn't lost to a stale closure before the re-render.
+                        const v = Math.max(1, Math.min(1440, Math.round(Number(e.target.value) || 30)));
+                        setMissionSessionIdleCloseMin(v);
+                        try {
+                          await workerFetch(tierAgentUrl + '/project-settings', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ missionSessionIdleCloseMin: v }),
+                          });
+                        } catch {}
+                      }}
+                    />
+                    <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>minutes (1–1440)</span>
+                  </div>
+                  <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', margin: 0, lineHeight: 1.5 }}>
+                    A resumed mission worker session auto-closes after this many idle minutes (default 30). Activity (read/drive) resets the timer. Applies on the next supervisor sweep — no restart.
                   </p>
                 </div>
               </SectionCard>

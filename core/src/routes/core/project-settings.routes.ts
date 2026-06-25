@@ -29,11 +29,19 @@ export function createProjectSettingsRoutes(_ctx: RouteContext): RouteHandler[] 
       handler: async (req) => {
         const body = req.body || {};
         const prevSettings = getProjectSettings();
+        // missionSessionIdleCloseMin — minutes a resumed native mission session stays alive while
+        // idle before the reaper auto-closes it. Validate + clamp to a sane range (1–1440 min).
+        let missionSessionIdleCloseMin: number | undefined;
+        if (body.missionSessionIdleCloseMin !== undefined) {
+          const n = Number(body.missionSessionIdleCloseMin);
+          if (Number.isFinite(n)) missionSessionIdleCloseMin = Math.max(1, Math.min(1440, Math.round(n)));
+        }
         const updated = saveProjectSettings({
           excludedPaths: body.excludedPaths,
           knowledgeEnabled: body.knowledgeEnabled,
           memorySyncEnabled: body.memorySyncEnabled,
           crossProjectSignpostEnabled: body.crossProjectSignpostEnabled,
+          missionSessionIdleCloseMin,
         });
 
         // Live-apply the memory-sync toggle: re-resolve the autosync daemon mode (no restart).
