@@ -38,3 +38,56 @@ export function decideNativeResume(v: { connectStrategy: string; safeToCreateTmu
   if (v.connectStrategy === 'refuse') return 'conflict';
   return 'gone';
 }
+
+// ── resumeWorker orchestrator (Task 2) ────────────────────────────────────────
+
+export interface ResumeWorkerDeps {
+  /** Resolve transport for a sid (pure). */
+  resolve: (sid: string) => { transport: 'cloud' | 'native'; missionId: string | null };
+  /** Read cloud session status. */
+  cloudStatus: (sid: string) => Promise<{ sid: string; status: string; connectionStatus?: string; raw: any }>;
+  /** Wake an idle cloud worker (cloudDrive with reBootstrap). Best-effort. */
+  cloudWake: (sid: string) => Promise<void>;
+  /** Native liveness/safety verdict (sessionVerdict). */
+  nativeVerdict: (sid: string) => { connectStrategy: string; safeToCreateTmux: boolean; inTmux: boolean };
+  /** Resume a native worker IN PLACE: `claude --resume <sid>` + re-bridge + re-bind.
+   *  MUST return the SAME sid (continuity); only the bridge cse changes. */
+  resumeNative: (missionId: string | undefined, sid: string) => Promise<{ sid: string; boundAt: number }>;
+}
+
+/**
+ * Resume a mission's bound worker IN PLACE. Resume-only: a terminal/unrecoverable session
+ * returns { resumed:false, reason:'gone'|'conflict' } and does NOT spawn a replacement.
+ */
+export async function resumeWorker(sid: string, missionId: string | undefined, deps: ResumeWorkerDeps): Promise<ResumeResult> {
+  const { transport } = deps.resolve(sid);
+
+  if (transport === 'cloud') {
+    let st: { status: string; raw: any };
+    try {
+      st = await deps.cloudStatus(sid);
+    } catch {
+      // Transient (429/5xx/network): NOT a confirmed terminal status → grace.
+      return { resumed: true, transport: 'cloud', sid, reason: 'status-unknown' };
+    }
+    const action = decideCloudResume({ status: st.status, workerStatus: st.raw?.worker_status });
+    if (action === 'gone') return { resumed: false, transport: 'cloud', sid, reason: 'gone' };
+    if (action === 'noop') return { resumed: true, transport: 'cloud', sid, reason: 'alive' };
+    try { await deps.cloudWake(sid); } catch { /* best-effort wake */ }
+    return { resumed: true, transport: 'cloud', sid, reason: 'ok' };
+  }
+
+  // native
+  let v: { connectStrategy: string; safeToCreateTmux: boolean; inTmux: boolean };
+  try {
+    v = deps.nativeVerdict(sid);
+  } catch {
+    return { resumed: false, transport: 'native', sid, reason: 'gone' };
+  }
+  const action = decideNativeResume(v);
+  if (action === 'attach') return { resumed: true, transport: 'native', sid, reason: 'alive' };
+  if (action === 'conflict') return { resumed: false, transport: 'native', sid, reason: 'conflict' };
+  if (action === 'gone') return { resumed: false, transport: 'native', sid, reason: 'gone' };
+  const launched = await deps.resumeNative(missionId, sid); // resumeNative preserves sid
+  return { resumed: true, transport: 'native', sid: launched.sid, reason: 'ok' };
+}
