@@ -351,6 +351,62 @@ export interface SessionOpsDeps {
   clearController: () => Promise<void>;
   getControllerSession: () => Promise<{ sessionId: string; cse: string | null } | null>;
   resolve: (sid: string) => ResolvedSession;
+  /**
+   * Resolve a native session's bridge cse_… (a `--remote-control` session — the controller
+   * or a mission-bound native worker), or null. Optional: when present, a native read whose
+   * local transcript shows no pending question falls back to the bridge worker/events channel.
+   */
+  bridgeCseFor?: (sid: string) => Promise<string | null>;
+  /** Read a bridge session's worker/events channel for a pending AskUserQuestion. */
+  workerEventsRead?: (cse: string) => Promise<{ pendingQuestion: import('../../terminal/ccr-cloud').PendingControlRequest | null }>;
+}
+
+/**
+ * Resolve a native session's bridge cse_… (a `claude --remote-control` session — the controller
+ * or a mission-bound native worker), or null. In order:
+ *   1. the elected controller-session record (when its cse is populated);
+ *   2. the session's OWN local transcript, which records `{type:'bridge-session', bridgeSessionId:'cse_…'}`
+ *      on every bridge (re)connect — the robust general source (the controller record's cse is often
+ *      null, but the transcript always has it for a remote-control session);
+ *   3. a mission binding's ccr bridge webUrl.
+ * Best-effort → null. Shared by the read + answer default deps.
+ */
+async function defaultBridgeCseFor(sid: string): Promise<string | null> {
+  try {
+    const { getControllerSession: gcs } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+    const ctrl = await gcs();
+    if (ctrl && ctrl.sessionId === sid && ctrl.cse) return ctrl.cse;
+  } catch { /* best-effort */ }
+  // 2) the session's transcript records its bridge cse (works for the controller + native executors)
+  try {
+    const { sessionVerdict } = require('../../terminal/cc-sessions') as typeof import('../../terminal/cc-sessions');
+    const { extractBridgeCse } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
+    const jsonl = sessionVerdict(sid).jsonl;
+    if (jsonl) {
+      const fs = require('fs') as typeof import('fs');
+      const text = fs.readFileSync(jsonl, 'utf-8');
+      const lines: Array<{ type?: string; bridgeSessionId?: string }> = [];
+      for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        try { lines.push(JSON.parse(line)); } catch { /* skip */ }
+      }
+      const cse = extractBridgeCse(lines);
+      if (cse) return cse;
+    }
+  } catch { /* best-effort */ }
+  // 3) a mission binding's ccr webUrl
+  try {
+    const { listMissions } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+    const { cseFromWebUrl } = require('../../terminal/ccr-manager') as typeof import('../../terminal/ccr-manager');
+    for (const m of await listMissions()) {
+      const b = m.binding as { sessionId?: string; ccr?: { webUrl?: string | null } } | null;
+      if (b && b.sessionId === sid && b.ccr?.webUrl) {
+        const cse = cseFromWebUrl(b.ccr.webUrl);
+        if (cse) return cse;
+      }
+    }
+  } catch { /* best-effort */ }
+  return null;
 }
 
 function defaultSessionOpsDeps(): SessionOpsDeps {
@@ -415,6 +471,12 @@ function defaultSessionOpsDeps(): SessionOpsDeps {
     resolve: (sid) => {
       // Sync fallback — resolve with no missions (full list too expensive here without a port)
       return resolveMissionSession(sid, [], null);
+    },
+    bridgeCseFor: defaultBridgeCseFor,
+    workerEventsRead: async (cse) => {
+      const { cloudClientEventsRead } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
+      const r = await cloudClientEventsRead(cse);
+      return { pendingQuestion: r.pendingQuestion };
     },
   };
 }
@@ -498,6 +560,19 @@ export async function handleSessionRead(sid: string, lastN?: number, deps?: Sess
         const { extractPendingQuestion } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
         pendingQuestion = extractPendingQuestion(rawMsgs);
       } catch { /* best-effort: non-fatal */ }
+      // A `--remote-control` (bridge) session's AskUserQuestion is intercepted by the bridge
+      // and relayed to claude.ai — it is NOT in the local .jsonl. When the transcript shows no
+      // pending question and this native session has a bridge cse, read the worker/events
+      // channel (observer-only fan-out replay) and surface that question instead.
+      if (!pendingQuestion && d.bridgeCseFor && d.workerEventsRead) {
+        try {
+          const cse = await d.bridgeCseFor(sid);
+          if (cse) {
+            const wr = await d.workerEventsRead(cse);
+            if (wr.pendingQuestion) pendingQuestion = wr.pendingQuestion;
+          }
+        } catch { /* best-effort: non-fatal */ }
+      }
       return ok({ messages: normalized, pendingQuestion });
     }
   } catch (e) {
@@ -598,6 +673,13 @@ export interface SessionAnswerDeps {
   /** Resolve tmux session name for a native sid (throws if not in tmux). */
   nativeTmuxSession: (sid: string) => string;
   resolve: (sid: string) => ResolvedSession;
+  /** Resolve a native session's bridge cse_… (controller / mission-bound native worker), or null. */
+  bridgeCseFor?: (sid: string) => Promise<string | null>;
+  /**
+   * Answer a pending AskUserQuestion on a bridge session via its worker/events channel
+   * (protocol-native control_response — works with no local tmux and from any node).
+   */
+  workerEventsAnswer?: (opts: { cse: string; answer: string; requestId?: string }) => Promise<unknown>;
 }
 
 function defaultSessionAnswerDeps(): SessionAnswerDeps {
@@ -633,6 +715,11 @@ function defaultSessionAnswerDeps(): SessionAnswerDeps {
       return v.tmuxSession;
     },
     resolve: (sid) => resolveMissionSession(sid, [], null),
+    bridgeCseFor: defaultBridgeCseFor,
+    workerEventsAnswer: (opts) => {
+      const { cloudClientEventsAnswer } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
+      return cloudClientEventsAnswer(opts);
+    },
   };
 }
 
@@ -653,7 +740,7 @@ function defaultSessionAnswerDeps(): SessionAnswerDeps {
  */
 export async function handleSessionAnswer(
   sid: string,
-  body: { answer: string; toolUseId?: string },
+  body: { answer: string; toolUseId?: string; requestId?: string },
   deps?: SessionAnswerDeps,
   node?: string,
   leader?: LeaderAnchorDeps,
@@ -686,7 +773,18 @@ export async function handleSessionAnswer(
       const result = await d.cloudAnswer({ sid, answer, toolUseId: body.toolUseId });
       return ok({ answered: true, transport: 'cloud', result });
     } else {
-      // Native: resolve the pending question's options to map answer → digit.
+      // Native: prefer the bridge worker/events channel for a `--remote-control` session
+      // (protocol-native control_response — works with no local tmux, and cross-node). The
+      // bridge auto-resolves the pending control_request's request_id when not given.
+      if (d.bridgeCseFor && d.workerEventsAnswer) {
+        const cse = await d.bridgeCseFor(sid).catch(() => null);
+        if (cse) {
+          const result = await d.workerEventsAnswer({ cse, answer, requestId: body.requestId });
+          return ok({ answered: true, transport: 'bridge', cse, result });
+        }
+      }
+      // Fall back to raw tmux send-keys for a pure-local native session with no bridge:
+      // resolve the pending question's options to map answer → 1-based index digit.
       const pending = await d.nativeGetPendingQuestion(sid);
       const options = pending?.questions?.[0]?.options ?? [];
       const optIdx = options.findIndex(
@@ -987,14 +1085,16 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
         const node = typeof b.node === 'string' ? b.node : undefined;
         return handleSessionControl(req.params.sid, action, undefined, node);
       } },
-    // POST /mission/session/:sid/answer — answer a pending AskUserQuestion (native: tmux send-keys; cloud: cloudAnswer).
-    // Leader-anchored (write). Optional body field `node` for cross-node proxy.
+    // POST /mission/session/:sid/answer — answer a pending AskUserQuestion (bridge: worker/events
+    // control_response; native: tmux send-keys; cloud: cloudAnswer). Leader-anchored (write).
+    // Optional body fields: `requestId` (the bridge control_request id), `node` (cross-node proxy).
     { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/answer$/, handler: async (req) => {
         const b = (req.body || {}) as Record<string, unknown>;
         const answer = typeof b.answer === 'string' ? b.answer : '';
         const toolUseId = typeof b.toolUseId === 'string' ? b.toolUseId : undefined;
+        const requestId = typeof b.requestId === 'string' ? b.requestId : undefined;
         const node = typeof b.node === 'string' ? b.node : undefined;
-        return handleSessionAnswer(req.params.sid, { answer, toolUseId }, undefined, node);
+        return handleSessionAnswer(req.params.sid, { answer, toolUseId, requestId }, undefined, node);
       } },
   ];
 }

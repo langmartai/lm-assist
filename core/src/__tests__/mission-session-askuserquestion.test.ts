@@ -428,3 +428,84 @@ test('handleSessionAnswer: node === self → executes locally', async () => {
   assert.ok(r.success);
   assert.strictEqual(proxyCalled, false, 'should not proxy when node === self');
 });
+
+// ---------------------------------------------------------------------------
+// 4. Bridge (--remote-control) worker/events wiring — read + answer
+// ---------------------------------------------------------------------------
+
+test('handleSessionRead native bridge: no .jsonl pending → reads pendingQuestion off worker/events', async () => {
+  let readCse: string | null = null;
+  const bridgePq = { toolUseId: 'toolu_brg', requestId: 'req-abc-123', questions: [{ question: 'Pick', header: 'B', options: [{ label: 'Red' }] }] };
+  const deps = makeReadDeps({
+    nativeRawMessages: async (_sid) => ([]),               // local transcript shows nothing pending
+    nativeRead: async (_sid) => ({ messages: [{ role: 'assistant', content: 'working' }] }),
+    bridgeCseFor: async (_sid) => 'cse_ctrl',
+    workerEventsRead: async (cse) => { readCse = cse; return { pendingQuestion: bridgePq }; },
+  });
+  const r = await handleSessionRead('native-ctrl-uuid', undefined, deps);
+  assert.ok(r.success);
+  const data = (r as any).data;
+  assert.strictEqual(readCse, 'cse_ctrl', 'should read the bridge cse');
+  assert.strictEqual(data.pendingQuestion?.toolUseId, 'toolu_brg');
+  assert.strictEqual(data.pendingQuestion?.requestId, 'req-abc-123', 'requestId rides along for the answer');
+});
+
+test('handleSessionRead native bridge: .jsonl pending present → worker/events NOT consulted', async () => {
+  let workerCalled = false;
+  const rawMsgs = [makeAssistantMsg([makeToolUse('tu-local', 'AskUserQuestion', { questions: SAMPLE_QUESTIONS })])];
+  const deps = makeReadDeps({
+    nativeRawMessages: async (_sid) => rawMsgs,
+    bridgeCseFor: async (_sid) => 'cse_ctrl',
+    workerEventsRead: async (_cse) => { workerCalled = true; return { pendingQuestion: null }; },
+  });
+  const r = await handleSessionRead('native-ctrl-uuid', undefined, deps);
+  assert.ok(r.success);
+  assert.strictEqual((r as any).data.pendingQuestion?.toolUseId, 'tu-local');
+  assert.strictEqual(workerCalled, false, 'transcript pending question wins; bridge not read');
+});
+
+test('handleSessionRead native bridge: bridgeCseFor null → worker/events NOT consulted, pending null', async () => {
+  let workerCalled = false;
+  const deps = makeReadDeps({
+    nativeRawMessages: async (_sid) => ([]),
+    bridgeCseFor: async (_sid) => null,
+    workerEventsRead: async (_cse) => { workerCalled = true; return { pendingQuestion: null }; },
+  });
+  const r = await handleSessionRead('native-plain-uuid', undefined, deps);
+  assert.ok(r.success);
+  assert.strictEqual((r as any).data.pendingQuestion, null);
+  assert.strictEqual(workerCalled, false, 'no bridge cse → no worker/events read');
+});
+
+test('handleSessionAnswer native bridge: cse present → answers via worker/events (control_response), not tmux', async () => {
+  let answeredWith: Record<string, unknown> | null = null;
+  let tmuxUsed = false;
+  const deps = makeAnswerDeps({
+    bridgeCseFor: async (_sid) => 'cse_ctrl',
+    workerEventsAnswer: async (opts) => { answeredWith = opts as unknown as Record<string, unknown>; return { answered: true, mode: 'option' }; },
+    nativeSendKeys: async (_t, _k) => { tmuxUsed = true; },
+  });
+  const r = await handleSessionAnswer('native-ctrl-uuid', { answer: 'Red', requestId: 'req-xyz' }, deps, undefined, STUB_LEADER_IS_SELF);
+  assert.ok(r.success);
+  assert.strictEqual((r as any).data?.transport, 'bridge');
+  assert.strictEqual((r as any).data?.cse, 'cse_ctrl');
+  assert.strictEqual(answeredWith!['cse'], 'cse_ctrl');
+  assert.strictEqual(answeredWith!['answer'], 'Red');
+  assert.strictEqual(answeredWith!['requestId'], 'req-xyz');
+  assert.strictEqual(tmuxUsed, false, 'bridge path must not fall through to tmux');
+});
+
+test('handleSessionAnswer native bridge: no cse → falls back to tmux send-keys', async () => {
+  let tmuxKeys: string | null = null;
+  const deps = makeAnswerDeps({
+    bridgeCseFor: async (_sid) => null,
+    workerEventsAnswer: async (_opts) => { throw new Error('should not be called'); },
+    nativeGetPendingQuestion: async (_sid) => ({ toolUseId: 'tu', questions: [{ header: 'C', options: [{ label: 'Red' }, { label: 'Blue' }] }] }),
+    nativeTmuxSession: (_sid) => 'lmcc-plain',
+    nativeSendKeys: async (_t, keys) => { tmuxKeys = keys; },
+  });
+  const r = await handleSessionAnswer('native-plain-uuid', { answer: 'Blue' }, deps, undefined, STUB_LEADER_IS_SELF);
+  assert.ok(r.success);
+  assert.strictEqual((r as any).data?.transport, 'native');
+  assert.strictEqual(tmuxKeys, '2', 'tmux fallback resolves option index');
+});

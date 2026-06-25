@@ -660,3 +660,238 @@ export async function cloudListAccount(limit = 50): Promise<Array<{ sid: string;
     title: s.title,
   })).filter((s) => s.sid);
 }
+
+// ===========================================================================
+// Remote-control "worker/events" channel
+// ---------------------------------------------------------------------------
+// A `claude --remote-control` session (e.g. the mission controller) is a LOCAL
+// session ALSO bridged to claude.ai. An AskUserQuestion is a `can_use_tool`
+// permission INTERCEPTED by the bridge and relayed over this channel — so it is
+// NOT in the local .jsonl nor in teleport-events. The truth is on:
+//
+//   POST /v1/code/sessions/{cse}/worker/events                 (write an event)
+//   GET  /v1/code/sessions/{cse}/worker/events/stream?from_sequence_num=N (SSE read)
+//   GET  /v1/code/sessions/{cse}/worker                        (snapshot → worker_epoch)
+//
+// The question is a control_request{can_use_tool, AskUserQuestion}; the answer is
+// a control_response{success, behavior:allow, updatedInput.answers:{qText:label}}
+// echoing the request_id. The real claude-code client sends NO anthropic-beta and
+// NO x-organization-uuid here — only Authorization + anthropic-version +
+// anthropic-client-platform + the claude-code UA. See memory:
+// remote-control-worker-events-protocol. Pure helpers are unit-tested in
+// __tests__/ccr-worker-events.test.ts; the network functions are live-verified.
+// ===========================================================================
+
+export interface WorkerEvent {
+  eventId?: string;
+  sequenceNum?: number;
+  eventType?: string;
+  /** 'client' (claude.ai / us) vs 'worker' (the local --remote-control bridge). */
+  source?: string;
+  payload?: any;
+  createdAt?: string;
+}
+
+/** A pending AskUserQuestion read off the worker/events channel — carries the control_request's request_id. */
+export interface PendingControlRequest extends PendingQuestion {
+  requestId: string;
+}
+
+/** Parse an SSE worker/events stream body into structured events (skips `:keepalive` heartbeats). Pure. */
+export function parseWorkerEventStream(raw: string): WorkerEvent[] {
+  const out: WorkerEvent[] = [];
+  if (!raw) return out;
+  for (const block of raw.split('\n\n')) {
+    let dataLine: string | null = null;
+    for (const ln of block.split('\n')) {
+      const t = ln.replace(/^﻿/, '');
+      if (t.startsWith(':')) continue; // :keepalive / SSE comments
+      if (t.startsWith('data:')) dataLine = (dataLine ?? '') + t.slice(5).trimStart();
+    }
+    if (dataLine === null) continue;
+    let ev: any;
+    try { ev = JSON.parse(dataLine); } catch { continue; }
+    if (!ev || typeof ev !== 'object') continue;
+    out.push({
+      eventId: ev.event_id,
+      sequenceNum: ev.sequence_num != null ? Number(ev.sequence_num) : undefined,
+      eventType: ev.event_type,
+      source: ev.source,
+      payload: ev.payload,
+      createdAt: ev.created_at,
+    });
+  }
+  return out;
+}
+
+/**
+ * Find the LATEST unanswered AskUserQuestion control_request in an event list. A
+ * control_request is "resolved" once a `control_response` echoes its request_id OR a
+ * `control_cancel_request` names it (the dialog was superseded/cancelled). Returns the
+ * question carrying the control_request's request_id (needed to build the answer) + the
+ * AskUserQuestion tool_use_id. Works on both the worker SSE events and the client `/events`
+ * payloads (same `payload.type` discriminator). Expects OLDEST-first order: the last
+ * unresolved request wins (client `/events` is newest-first → reverse before calling). Pure.
+ */
+export function findPendingControlRequest(events: WorkerEvent[]): PendingControlRequest | null {
+  let pending: PendingControlRequest | null = null;
+  const resolved = new Set<string>();
+  for (const e of events || []) {
+    const p = e?.payload || {};
+    if (p.type === 'control_request') {
+      const req = p.request || {};
+      if (req.tool_name === 'AskUserQuestion' && p.request_id) {
+        pending = {
+          requestId: String(p.request_id),
+          toolUseId: String(req.tool_use_id || p.request_id),
+          questions: (req.input?.questions as PendingQuestion['questions']) || [],
+        };
+      }
+    } else if (p.type === 'control_response') {
+      const rid = p.response?.request_id;
+      if (rid) resolved.add(String(rid));
+    } else if (p.type === 'control_cancel_request') {
+      const rid = p.request_id;
+      if (rid) resolved.add(String(rid));
+    }
+  }
+  return pending && !resolved.has(pending.requestId) ? pending : null;
+}
+
+/**
+ * Map an answer to the control_response `answers` object: keyed by the question
+ * TEXT → the chosen option label (canonical-cased on a case-insensitive match),
+ * or the verbatim free text when no option matches. Single-question (the common
+ * AskUserQuestion case). Pure.
+ */
+export function buildAnswersMap(questions: PendingQuestion['questions'], answer: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const a = (answer || '').trim();
+  const q0 = questions?.[0];
+  if (!q0) return out;
+  const key = q0.question || q0.header || 'question';
+  const opt = (q0.options || []).find((o) => o.label === a || o.label?.toLowerCase() === a.toLowerCase());
+  out[key] = opt ? opt.label : answer;
+  return out;
+}
+
+/** Build the worker/events control_response payload that answers an AskUserQuestion. Pure. */
+export function buildControlResponse(opts: { sessionId: string; requestId: string; questions: PendingQuestion['questions']; answer: string; uuid?: string }) {
+  return {
+    type: 'control_response' as const,
+    response: {
+      subtype: 'success' as const,
+      request_id: opts.requestId,
+      response: {
+        behavior: 'allow' as const,
+        updatedInput: {
+          questions: opts.questions || [],
+          answers: buildAnswersMap(opts.questions, opts.answer),
+          annotations: {} as Record<string, unknown>,
+        },
+        updatedPermissions: [] as unknown[],
+      },
+    },
+    session_id: opts.sessionId,
+    uuid: opts.uuid || randomUUID(),
+  };
+}
+
+/**
+ * Extract the bridge cse_… that a `claude --remote-control` session records in its OWN local
+ * transcript as `{type:'bridge-session', bridgeSessionId:'cse_…'}` lines (written on every
+ * bridge (re)connect). Returns the LATEST. This is the robust, general source of a native
+ * session's bridge handle — controller AND native executors both write it; a pure-local
+ * (non-remote-control) session has none → null. Pure.
+ */
+export function extractBridgeCse(rawLines: Array<{ type?: string; bridgeSessionId?: string }>): string | null {
+  let cse: string | null = null;
+  for (const l of rawLines || []) {
+    if (l && l.type === 'bridge-session' && typeof l.bridgeSessionId === 'string' && /^cse_[A-Za-z0-9]+$/.test(l.bridgeSessionId)) {
+      cse = l.bridgeSessionId;
+    }
+  }
+  return cse;
+}
+
+/** Derive a bridge cse_… from a sid that may already be `cse_…` or the `session_…` form. */
+export function toBridgeCse(idOrCse: string): string {
+  return (idOrCse || '').replace(/^session_/, 'cse_');
+}
+
+// ---------------------------------------------------------------------------
+// CLIENT side of the relay — read/answer a bridge session's pending question.
+// ---------------------------------------------------------------------------
+// IMPORTANT: lm-assist acts as the CLIENT (what the claude.ai web UI does), NOT
+// the worker. The worker endpoints (`/worker/events`) require the bridge's own
+// session-scoped, epoch-bound worker JWT (iss:ccr-service, minted via POST
+// /bridge, which BUMPS the epoch) — not third-party usable without disrupting
+// the live bridge, and a freshly-minted JWT's stream won't even replay the
+// already-pending question (epoch-scoped). The CLIENT endpoints instead use our
+// ordinary account OAuth token (ccrOpts) and the backend relays our events down
+// to the worker — verified live on 123:
+//
+//   read   GET  /v1/code/sessions/{cse}/events[?cursor=]   -> { data:[event…], next_cursor }
+//   answer POST /v1/code/sessions/{cse}/events { events:[{payload}] }
+//
+// `data` is NEWEST-first and includes the worker's control_request (AskUserQuestion)
+// plus control_response / control_cancel_request resolutions. See memory:
+// remote-control-worker-events-protocol + claudeai-web-ui-ccr-code-sessions.
+
+/** One client `/events` row (the shape the web UI consumes). */
+interface ClientEvent { event_type?: string; payload?: any; created_at?: string }
+
+/**
+ * Read a bridge session's CLIENT event log and extract any pending AskUserQuestion.
+ * Pages newest→older via `next_cursor` (a blocked worker's question is among the most
+ * recent events, so the default 1 page suffices; `maxPages` bounds a busy session).
+ * Account-authed (ccrOpts). Returns null pending on a missing/closed session rather than throwing.
+ */
+export async function cloudClientEventsRead(cse: string, opts: { maxPages?: number } = {}): Promise<{ events: ClientEvent[]; pendingQuestion: PendingControlRequest | null }> {
+  const bridge = toBridgeCse(cse);
+  const maxPages = Math.max(1, opts.maxPages ?? 2);
+  const collected: ClientEvent[] = [];
+  let cursor = '';
+  try {
+    const ccr = await ccrOpts();
+    for (let page = 0; page < maxPages; page++) {
+      const res = await anthropicOAuthGet(`/v1/code/sessions/${bridge}/events`, { ...ccr, query: cursor ? `cursor=${encodeURIComponent(cursor)}` : undefined });
+      if (res.status < 200 || res.status >= 300) break;
+      const body = res.body as { data?: ClientEvent[]; next_cursor?: string };
+      const data = body?.data || [];
+      collected.push(...data);
+      const next = body?.next_cursor;
+      if (!next || next === cursor || data.length === 0) break;
+      cursor = next;
+    }
+  } catch { /* best-effort → return what we have */ }
+  // `data` is newest-first; findPendingControlRequest wants oldest-first (last unresolved wins).
+  const oldestFirst = collected.slice().reverse();
+  return { events: collected, pendingQuestion: findPendingControlRequest(oldestFirst as WorkerEvent[]) };
+}
+
+/**
+ * Answer a pending AskUserQuestion on a bridge session by POSTing a control_response to
+ * the CLIENT events endpoint (account-authed — the backend relays it down to the worker's
+ * stream, exactly as the web UI does). Auto-resolves the pending request_id/questions from
+ * the client log unless given. `cse` = the cloud handle of the `--remote-control` session.
+ */
+export async function cloudClientEventsAnswer(opts: { cse: string; answer: string; requestId?: string; questions?: PendingQuestion['questions'] }): Promise<{ answered: boolean; cse: string; requestId: string; mode: 'option' | 'input' }> {
+  const cse = toBridgeCse(opts.cse);
+  const answer = (opts.answer || '').toString();
+  if (!answer.trim()) throw new TerminalError('INVALID_INPUT', 'answer is required');
+  let requestId = opts.requestId;
+  let questions = opts.questions;
+  if (!requestId || !questions) {
+    const { pendingQuestion } = await cloudClientEventsRead(cse);
+    if (!pendingQuestion) throw new TerminalError('PRECONDITION_FAILED', 'no pending AskUserQuestion on the bridge to answer (the worker is not awaiting input)');
+    requestId = requestId || pendingQuestion.requestId;
+    questions = questions || pendingQuestion.questions;
+  }
+  const q0 = questions?.[0];
+  const isOption = !!(q0?.options || []).find((o) => o.label === answer.trim() || o.label?.toLowerCase() === answer.trim().toLowerCase());
+  const payload = buildControlResponse({ sessionId: cse, requestId: requestId!, questions: questions!, answer });
+  const res = await anthropicOAuthPost(`/v1/code/sessions/${cse}/events`, { events: [{ payload }] }, await ccrOpts());
+  assertOk(res, 'client events answer');
+  return { answered: true, cse, requestId: requestId!, mode: isOption ? 'option' : 'input' };
+}

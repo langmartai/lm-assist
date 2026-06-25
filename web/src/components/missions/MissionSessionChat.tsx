@@ -10,6 +10,8 @@ import { Loader2, Send, Wrench, HelpCircle } from 'lucide-react';
 interface QOption { label: string; description?: string }
 interface PendingQuestion {
   toolUseId: string;
+  /** Present for a `--remote-control` (bridge) session: the worker/events control_request id the answer echoes. */
+  requestId?: string;
   questions: Array<{ header?: string; question?: string; multiSelect?: boolean; options?: QOption[] }>;
 }
 
@@ -253,7 +255,7 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false }: 
     try {
       await apiFetch(`/mission/session/${encodeURIComponent(sid)}/answer`, {
         method: 'POST',
-        body: { answer: a, toolUseId: pendingQ.toolUseId, node: node ?? undefined },
+        body: { answer: a, toolUseId: pendingQ.toolUseId, requestId: pendingQ.requestId, node: node ?? undefined },
       });
       setPendingQ(null);
       setCustomAnswer('');
