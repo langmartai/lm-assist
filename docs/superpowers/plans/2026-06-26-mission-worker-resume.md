@@ -33,7 +33,9 @@
 | `core/src/mcp-server/tools/mission.ts` | new `mission_session_resume` tool def + handler |
 | `core/src/mcp-server/configure.ts` | `mission_session_resume: 'write'` scope |
 | `core/src/__tests__/mcp-tool-scopes.test.ts` | asserts the new tool has a scope |
-| `core/src/mission/mission-controller.ts` | supervisor resumes a bound-dead worker before any replacement; loop guard |
+| `core/src/mission/mission-controller.ts` | controller AGENT playbook (`CONTROLLER_SYSTEM_PROMPT` + `CONTROLLER_PASS_DIRECTIVE`) — resume-first via `mission_session_resume` |
+| `core/src/mcp-server/tools/guide.ts` | `guide("missions")` step e2 — resume-first before respawn |
+| `core/src/mission/__tests__` (`mission-guide.test.ts`) | asserts the resume-first playbook text |
 | `web/src/components/missions/MissionsPage.tsx` | handle `ok`/`alive`/`conflict`/`gone` + "Start fresh worker" |
 
 ---
@@ -577,99 +579,72 @@ git commit -m "feat(mission-resume): mission_session_resume MCP tool + write sco
 
 ---
 
-## Task 5: Controller — resume a bound-dead worker before any replacement (loop-guarded)
+## Task 5: Controller playbook — resume a dead/idle worker via `mission_session_resume` (resume-first)
 
 **Files:**
-- Modify: `core/src/mission/mission-controller.ts`
-- Test: `core/src/__tests__/mission-supervisor.test.ts` (existing supervisor test file)
+- Modify: `core/src/mission/mission-controller.ts` (`CONTROLLER_SYSTEM_PROMPT` ~line 379, `CONTROLLER_PASS_DIRECTIVE` ~line 364)
+- Modify: `core/src/mcp-server/tools/guide.ts` (the `missions` topic — the suspended-worker guidance, step e2)
+- Test: `core/src/__tests__/mission-guide.test.ts` (existing — already asserts `missions`-topic + controller-prompt content)
+
+**Why a playbook update, NOT an in-process supervisor change:** the PRODUCTION controller is an AGENT — a native `claude --remote-control` session launched + driven by `runSupervisorTick` (the in-process `runMissionTick`/`processMission` loop is LEGACY: `mission-controller.ts:534` says `runSupervisorTick` "replaces `runMissionTick`", and `runMissionTick` has NO production caller). The agent resumes a worker by calling the **`mission_session_resume` MCP tool** (Task 4). So the controller-resume capability is delivered by TEACHING the agent (its system prompt + pass directive + the `guide("missions")` playbook) to RESUME a dead/idle bound worker in place before spawning a fresh one. No in-process supervisor code changes; no `tryResumeBoundWorker`, no `MissionBinding.lastResumeAttempt`, no `processMission` edit.
 
 **Interfaces:**
-- Consumes: `resumeWorker` + `ResumeWorkerDeps` (Task 2); the controller's existing `cloudStatus`, `cloudDrive`, `sessionVerdict`, `startNativeExecutor`, `cloudListAccount`. The binding type `MissionBinding` gains an optional `lastResumeAttempt?: number`.
-- Produces: a `tryResumeBoundWorker(mission, deps): Promise<ResumeResult | null>` helper, and the supervisor tick calling it for a bound-but-dead worker BEFORE any spawn-fresh path.
+- Consumes: the `mission_session_resume(sid)` tool from Task 4 (`{resumed, transport, sid, reason}`, `reason ∈ ok|alive|gone|conflict|status-unknown`).
+- Produces: updated prompt/guide constants + a regression test asserting the resume-first guidance is present.
 
-> Context for the implementer: read the supervisor entry (`runSupervisorTick` / `decideSupervisor`) and the dead-worker handling in `mission-controller.ts` (`readCloudExecutor` returns `alive:false` for a dead bound cloud worker, `executorLiveness` at :156). Today a dead bound worker is silently replaced by a fresh `startCloudExecutor`/`startNativeExecutor`. The change: when a mission has a binding whose worker is NOT live, call `tryResumeBoundWorker` FIRST. On `ok`/`alive` keep the same worker; on `gone`/`conflict` do NOT auto-spawn — record the attempt and leave it for the controller LLM's explicit adapt/spawn pass.
+- [ ] **Step 1: Write the failing regression test**
 
-- [ ] **Step 1: Write the failing test**
-
-In `core/src/__tests__/mission-supervisor.test.ts`, add a test that a bound-but-dead worker triggers `resumeWorker` and that a second consecutive tick does NOT re-attempt when the prior result was `gone` (the loop guard). Use the injected-deps form of `tryResumeBoundWorker` (or the supervisor decision), asserting:
+Read `core/src/__tests__/mission-guide.test.ts` first to match how it imports the controller prompt + reads the `missions` guide topic. Add two tests (adapt the topic-read to whatever helper that file already uses):
 
 ```typescript
-test('supervisor: bound-dead worker → tries resume once; gone result is not retried next tick (loop guard)', async () => {
-  const { tryResumeBoundWorker } = require('../mission/mission-controller');
-  let calls = 0;
-  const deps = {
-    resolve: () => ({ transport: 'cloud' as const, missionId: 'm1' }),
-    cloudStatus: async (sid: string) => { calls++; return { sid, status: 'stopped', raw: {} }; },
-    cloudWake: async () => {},
-    nativeVerdict: () => ({ connectStrategy: 'none', safeToCreateTmux: false, inTmux: false }),
-    resumeNative: async (_m: any, sid: string) => ({ sid, boundAt: 0 }),
-    now: () => 1000,
-  };
-  const mission: any = { id: 'm1', binding: { sessionId: 'session_dead', kind: 'worker', boundAt: 0 } };
-  const r1 = await tryResumeBoundWorker(mission, deps);
-  assert.strictEqual(r1?.reason, 'gone');
-  assert.strictEqual(typeof mission.binding.lastResumeAttempt, 'number');
-  // Second tick, same binding + prior gone → guard skips (no second cloudStatus call).
-  const r2 = await tryResumeBoundWorker(mission, deps);
-  assert.strictEqual(r2, null, 'guard should skip re-resume of an unchanged gone binding');
-  assert.strictEqual(calls, 1, 'cloudStatus should have been called exactly once');
+test('controller system prompt teaches resume-first via mission_session_resume', () => {
+  const { CONTROLLER_SYSTEM_PROMPT } = require('../mission/mission-controller');
+  assert.ok(CONTROLLER_SYSTEM_PROMPT.includes('mission_session_resume'), 'system prompt must name mission_session_resume');
+  assert.match(CONTROLLER_SYSTEM_PROMPT, /do NOT spawn a fresh|resume[^.]*before[^.]*(fresh|spawn)/i);
+});
+
+test('guide("missions") teaches resume via mission_session_resume', () => {
+  // Use the SAME topic-read helper the rest of this file uses (read the file to confirm the import).
+  const topicText = readMissionsGuideTopic(); // ← replace with this file's existing accessor
+  assert.ok(topicText.includes('mission_session_resume'), 'missions guide must mention mission_session_resume');
 });
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `cd /home/ubuntu/lm-assist/core && npm run build:test 2>&1 | tail -3`
-Expected: TS error — `tryResumeBoundWorker` not exported from `mission-controller`.
+Run: `cd /home/ubuntu/lm-assist/core && (export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm use 20 >/dev/null; npm run build:test && node --test dist-test/__tests__/mission-guide.test.js 2>&1 | grep -E "not ok|# fail")`
+Expected: the two new tests FAIL (the prompt/guide don't mention `mission_session_resume` yet).
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: Implement the playbook edits**
 
-In `core/src/mission/mission-controller.ts`:
-
-(a) Add the optional field to the binding (in the `MissionBinding` type — check `core/src/types`/`mission-model.ts` for where it's declared; add `lastResumeAttempt?: number`).
-
-(b) Add the guarded helper + export it:
-
-```typescript
-import { resumeWorker, type ResumeWorkerDeps } from './mission-resume';
-
-/**
- * Resume a mission's bound-but-dead worker IN PLACE before any replacement is considered.
- * Loop guard: attempt at most once per unchanged binding while the last result was gone/conflict.
- * Returns the ResumeResult, or null when the guard skipped (no attempt this tick).
- */
-export async function tryResumeBoundWorker(
-  mission: Mission,
-  deps: ResumeWorkerDeps & { now: () => number },
-): Promise<import('./mission-resume').ResumeResult | null> {
-  const b = mission.binding;
-  if (!b?.sessionId) return null;
-  // Guard: if we already attempted on THIS binding and it was unrecoverable, don't retry.
-  if (b.lastResumeAttempt && (b as any)._lastResumeReason && ['gone', 'conflict'].includes((b as any)._lastResumeReason)) {
-    return null;
-  }
-  const r = await resumeWorker(b.sessionId, mission.id, deps);
-  b.lastResumeAttempt = deps.now();
-  (b as any)._lastResumeReason = r.reason;
-  return r;
-}
+(a) `CONTROLLER_SYSTEM_PROMPT` (`mission-controller.ts`) — add a section right after the existing "ANSWERING A WORKER FAST" block (each line is a string element in the array, matching the surrounding style):
+```
+'RESUMING A DEAD / IDLE WORKER: if a BOUND worker reads as not-live (mission_session_read / ' +
+'mission_executor_status shows it dead or idle) but you still have its sid, RESUME IT IN PLACE with ' +
+'`mission_session_resume(sid)` FIRST — it revives the SAME session (cloud: wakes an idle worker; ' +
+'native: `claude --resume` + re-bridge), preserving its transcript/context. Do NOT spawn a fresh ' +
+'worker for a resumable one. ONLY if mission_session_resume returns reason `gone` (terminal / ' +
+'unrecoverable) or `conflict` (the session is live elsewhere, unsafe to resume) do you spawn a FRESH ' +
+'executor (the separate explicit step) via ccr_cloud_start + re-bind. Resume-first preserves context; respawn loses it.',
 ```
 
-(c) In the supervisor tick, where a bound worker is found dead (today → spawn fresh), call `tryResumeBoundWorker(mission, realResumeDeps)` first. The real deps reuse the controller's existing `cloudStatus`/`cloudDrive(reBootstrap)`/`sessionVerdict`, and a `resumeNative` built like Task 3's `defaultSessionResumeDeps.resumeNative` (extract that into a shared `buildDefaultResumeDeps(idleMin)` exported from `mission.routes.ts` OR duplicate-free by importing it — prefer exporting `buildDefaultResumeDeps` from a small new `core/src/mission/mission-resume-deps.ts` so BOTH the route and the controller share ONE real-deps builder; if extraction is risky mid-task, the controller may build its own deps inline). On `ok`/`alive` → keep the (resumed) worker and continue. On `gone`/`conflict`/null → do NOT call `startCloudExecutor`/`startNativeExecutor` automatically; leave the mission for the controller LLM's adapt pass (the existing separate spawn path).
+(b) `CONTROLLER_PASS_DIRECTIVE` (`mission-controller.ts`) — add a resume-first clause before the existing "drive/adapt/decide" clause (keep all existing wording; just insert):
+```
+'… mission_session_answer; if a BOUND worker is not live, FIRST mission_session_resume(sid) to revive it in place (spawn a fresh one ONLY on reason gone/conflict); drive/adapt/decide as needed; then await the next pass.'
+```
 
-> Note for the reviewer: this is the behavioral change — the supervisor no longer silently respawns a dead bound worker; it resumes, and on failure surfaces rather than replaces. A fresh binding (after an explicit spawn) clears `lastResumeAttempt`/`_lastResumeReason`, re-arming the guard.
+(c) `guide("missions")` step e2 (`guide.ts`) — the current text tells a suspended worker case to "report honestly (blocked, NOT done) and respawn fresh." Refine it: FIRST try `mission_session_resume(sid)` to revive it in place (cloud wake / native `--resume`); report `blocked` + spawn fresh ONLY if it returns `gone`/`conflict`. Keep the "answer FAST / cloud idle-suspend timing" warning intact — resume-first is the addition, not a replacement of the answer-fast guidance.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/ubuntu/lm-assist/core && npm run build:test && node --test --test-reporter=spec dist-test/__tests__/mission-supervisor.test.js 2>&1 | grep -E "# (tests|pass|fail)|not ok"`
-Expected: `# fail 0`.
+Run the Step 2 command → `# fail 0` for the two new tests. Then `cd /home/ubuntu/lm-assist && ./core.sh build` → exit 0 (the prompt constants must compile). Also confirm you didn't break the file's existing assertions (run the whole `mission-guide.test.js` → `# fail 0`).
 
-- [ ] **Step 5: Run the FULL core suite (catch scope/integration regressions) + commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-cd /home/ubuntu/lm-assist/core && npm test 2>&1 | grep -E "# (tests|pass|fail)" | tail -3
 cd /home/ubuntu/lm-assist
-git add core/src/mission/mission-controller.ts core/src/__tests__/mission-supervisor.test.ts core/src/mission/mission-resume-deps.ts 2>/dev/null
-git commit -m "feat(mission-resume): controller resumes a bound-dead worker before replacement (loop-guarded)"
+git add core/src/mission/mission-controller.ts core/src/mcp-server/tools/guide.ts core/src/__tests__/mission-guide.test.ts
+git commit -m "feat(mission-resume): controller playbook resumes a dead worker via mission_session_resume (resume-first)"
 ```
 
 ---
