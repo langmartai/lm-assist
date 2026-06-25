@@ -9,6 +9,7 @@ import {
 } from '../../mission/mission-store';
 import { resolveMissionSession, ResolvedSession } from '../../mission/mission-session-resolver';
 import type { Transport, SessionRole } from '../../mission/mission-session-resolver';
+import { resumeWorker, type ResumeWorkerDeps } from '../../mission/mission-resume';
 import { amIMonitor } from '../../monitor/stall-election';
 import { getScheduledJobs } from '../../scheduler/scheduled-jobs';
 import { listRecords } from '../../worker-role/worker-store';
@@ -935,87 +936,72 @@ export async function handleSessionStatus(
   }
 }
 
-/** Deps for handleSessionResume — injected for testability. */
-export interface SessionResumeDeps {
-  /** Resolve transport for a sid (pure sync). */
-  resolve: (sid: string) => { sid: string; transport: Transport; missionId: string | null; role: SessionRole };
-  /** Check cloud session liveness (throws or returns terminal status → gone). */
-  cloudStatus: CloudStatusFn;
-  /** Relaunch a native session for the given missionId; returns the new sid. */
-  relaunch: (missionId: string | undefined) => Promise<{ sid: string; boundAt: number }>;
+/** Deps for handleSessionResume — injected for testability. Mirrors ResumeWorkerDeps + idleMin. */
+export interface SessionResumeDeps extends ResumeWorkerDeps {
   /** Idle minutes before auto-close (from project settings). */
   idleMin: number;
 }
 
 function defaultSessionResumeDeps(): SessionResumeDeps {
   return {
-    resolve: (sid) => resolveMissionSession(sid, [], null),
+    resolve: (sid) => {
+      const r = resolveMissionSession(sid, [], null);
+      return { transport: r.transport, missionId: r.missionId };
+    },
     cloudStatus: (sid) => {
       const { cloudStatus } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
       return cloudStatus(sid);
     },
-    relaunch: async (missionId) => {
-      const { getMission } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+    cloudWake: async (sid) => {
+      const { cloudDrive } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
+      await cloudDrive({ sid, text: 'Resume: continue your task where you left off.', reBootstrap: true });
+    },
+    nativeVerdict: (sid) => {
+      const { sessionVerdict } = require('../../terminal/cc-sessions') as typeof import('../../terminal/cc-sessions');
+      const v = sessionVerdict(sid);
+      return { connectStrategy: v.connectStrategy, safeToCreateTmux: v.safeToCreateTmux, inTmux: v.inTmux };
+    },
+    resumeNative: async (missionId, sid) => {
+      const { getMission, putMission } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
       const m = missionId ? await getMission(missionId) : null;
-      if (!m) throw new Error(`mission ${missionId} not found for relaunch`);
-      // C1: re-check the mission's CURRENT binding liveness — if it's still alive,
-      // DON'T relaunch (a stale tab sid + a live executor would otherwise spawn a
-      // duplicate agent on the same worktree/branch).
-      const curSid = m.binding?.sessionId;
-      if (curSid) {
-        try {
-          const { sessionVerdict } = require('../../terminal/cc-sessions') as typeof import('../../terminal/cc-sessions');
-          if (sessionVerdict(curSid).inTmux) return { sid: curSid, boundAt: m.binding?.boundAt ?? Date.now() };
-        } catch { /* not resolvable → fall through to relaunch */ }
-      }
+      if (!m) throw new Error(`mission ${missionId} not found for resume`);
       const { startNativeExecutor } = require('../../mission/mission-controller') as typeof import('../../mission/mission-controller');
       const { place } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
       const { listMissions: lm } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
-      const all = await lm();
-      const pd = place(m, all);
-      if (!pd.go) throw new Error(`mission ${missionId} not placeable for relaunch: ${(pd as any).reason}`);
-      // Build native start deps (same pattern as mission-controller.ts startCloudExecutor native path)
       const { cloudListAccount, cloudDrive } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
-      const { pickNewSession, cseToSessionSid } = require('../../mission/mission-native') as typeof import('../../mission/mission-native');
       const { tmuxCcController } = require('../../terminal/tmux-backend') as typeof import('../../terminal/tmux-backend');
       const { gitCommand } = require('../../checkpoint/git-utils') as typeof import('../../checkpoint/git-utils');
       const { missionSessionTitle } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
       const pathmod = require('path') as typeof import('path');
+      const all = await lm();
+      const pd = place(m, all);
+      if (!pd.go) throw new Error(`mission ${missionId} not placeable for resume: ${(pd as any).reason}`);
       const baselineArr = await cloudListAccount().then((ss: Array<{ sid: string }>) => ss.map((s) => s.sid)).catch(() => [] as string[]);
       const nativeDeps = {
         ensureWorktree: async (repo: string, dir: string, branch: string): Promise<string> => {
           const absRepo = pathmod.isAbsolute(repo) ? repo : pathmod.resolve(process.cwd(), repo);
           const absDir = pathmod.isAbsolute(dir) ? dir : pathmod.resolve(absRepo, dir);
-          try {
-            gitCommand(['worktree', 'add', absDir, '-b', branch], absRepo);
-          } catch (err) {
-            if (!/already exists|already checked out|is already/i.test((err as Error).message || '')) throw err;
-          }
+          try { gitCommand(['worktree', 'add', absDir, '-b', branch], absRepo); }
+          catch (err) { if (!/already exists|already checked out|is already/i.test((err as Error).message || '')) throw err; }
           return absDir;
         },
+        // CHANGE (a): pass resume: sid → `claude --resume <sid>` continues the SAME session.
         launch: async (cwd: string): Promise<{ sessionId: string | null; tmuxSession: string }> => {
-          const res = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true, name: missionSessionTitle(m) });
+          const res = await tmuxCcController.launch({ cwd, resume: sid, remoteControl: true, skipPermissions: true, autoTrust: true, name: missionSessionTitle(m) });
           return { sessionId: (res.sessionId as string | null) ?? null, tmuxSession: res.tmuxSession as string };
         },
         listAccount: cloudListAccount,
         baseline: baselineArr,
-        drive: async (sid: string, text: string) => {
-          await cloudDrive({ sid, text }).catch((e: Error) => {
-            console.debug(`[mission-resume] drive to ${sid} failed: ${e.message}`);
-          });
-        },
+        drive: async (s: string, text: string) => { await cloudDrive({ sid: s, text }).catch(() => {}); },
       };
       const decisionAny = pd as any;
       const repoRaw: string = (pd.go ? decisionAny.repo : null) || process.cwd();
       const repoAbs = pathmod.isAbsolute(repoRaw) ? repoRaw : pathmod.resolve(process.cwd(), repoRaw);
       const binding = await startNativeExecutor(m, { ...(pd.go ? pd : {}), repo: repoAbs }, nativeDeps);
-      if (!binding.sessionId) throw new Error('native relaunch did not resolve a session id');
-      // C1: persist the new binding so the controller + GET /mission/:id/sessions converge
-      // on it — else the next supervisor tick re-reads the OLD dead sid → rebinds → a 3rd executor.
-      const { putMission: pm } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
-      m.binding = { ...binding, boundAt: binding.boundAt ?? Date.now() };
-      try { await pm(m); } catch { /* best-effort persist */ }
-      return { sid: binding.sessionId, boundAt: binding.boundAt ?? Date.now() };
+      // CHANGE (b): PRESERVE the original sessionId (continuity); only the bridge cse is new.
+      m.binding = { ...binding, sessionId: sid, boundAt: binding.boundAt ?? Date.now() };
+      try { await putMission(m); } catch { /* best-effort persist */ }
+      return { sid, boundAt: m.binding.boundAt ?? Date.now() };
     },
     idleMin: (() => {
       const { getProjectSettings } = require('../../project-settings') as typeof import('../../project-settings');
@@ -1046,34 +1032,15 @@ export async function handleSessionResume(
   if (anchored) return anchored;
 
   const d = deps ?? defaultSessionResumeDeps();
-  const r = d.resolve(sid);
-
-  if (r.transport === 'cloud') {
-    // Cloud: check if alive; if so, it's already running (nothing to do)
-    try {
-      const st = await d.cloudStatus(sid);
-      if (TERMINAL_CLOUD_STATUSES.includes(st.status)) {
-        return ok({ resumed: false, reason: 'gone', transport: 'cloud' });
-      }
-      return ok({ resumed: true, sid, transport: 'cloud' });
-    } catch {
-      // Transient cloudStatus error — NOT a confirmed terminal status. Treat as still
-      // running (the user can retry) rather than declaring it permanently gone.
-      return ok({ resumed: true, sid, transport: 'cloud', note: 'status-unknown' });
-    }
-  }
-
-  // Native: relaunch via the injected dep
-  try {
-    const launched = await d.relaunch(body.missionId);
+  const result = await resumeWorker(sid, body.missionId, d);
+  // Stamp autoCloseAt + reaper tracking only for a freshly-resumed native session.
+  if (result.transport === 'native' && result.resumed && result.reason === 'ok') {
     const now = Date.now();
     const autoCloseAt = now + d.idleMin * 60_000;
-    // Best-effort: start tracking the new session in the reaper.
-    try { trackResumedNative(launched.sid, body.missionId, now); } catch { /* best-effort */ }
-    return ok({ resumed: true, sid: launched.sid, transport: 'native', autoCloseAt });
-  } catch (e) {
-    return fail('RELAUNCH_ERROR', (e as Error).message);
+    try { trackResumedNative(result.sid, body.missionId, now); } catch { /* best-effort */ }
+    return ok({ ...result, autoCloseAt });
   }
+  return ok(result);
 }
 
 export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {

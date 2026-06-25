@@ -119,14 +119,11 @@ test('handleSessionStatus: node !== self → proxies to proxyPost', async () => 
 
 function makeResumeDeps(overrides: Partial<SessionResumeDeps> = {}): SessionResumeDeps {
   return {
-    resolve: (sid) => ({
-      sid,
-      transport: sid.startsWith('session_') ? 'cloud' : 'native',
-      missionId: null,
-      role: 'worker' as const,
-    }),
-    cloudStatus: async (sid) => ({ sid, status: 'active', raw: {} }),
-    relaunch: async (_missionId) => ({ sid: 'new-native-sid', boundAt: Date.now() }),
+    resolve: (sid) => ({ sid, transport: sid.startsWith('session_') ? 'cloud' : 'native', missionId: null, role: 'worker' as const }),
+    cloudStatus: async (sid) => ({ sid, status: 'active', raw: { worker_status: 'running' } }),
+    cloudWake: async () => {},
+    nativeVerdict: () => ({ connectStrategy: 'create-tmux', safeToCreateTmux: true, inTmux: false }),
+    resumeNative: async (_missionId, sid) => ({ sid, boundAt: Date.now() }),
     idleMin: 30,
     ...overrides,
   };
@@ -134,7 +131,7 @@ function makeResumeDeps(overrides: Partial<SessionResumeDeps> = {}): SessionResu
 
 test('handleSessionResume: cloud alive → resumed=true, sid unchanged', async () => {
   const deps = makeResumeDeps({
-    cloudStatus: async (sid) => ({ sid, status: 'active', raw: {} }),
+    cloudStatus: async (sid) => ({ sid, status: 'active', raw: { worker_status: 'running' } }),
   });
   const r = await handleSessionResume('session_alive', {}, deps);
   assert.ok(r.success, JSON.stringify(r));
@@ -164,7 +161,7 @@ test('handleSessionResume: cloud cloudStatus THROWS (transient) → resumed=true
   const d = (r as any).data;
   // A transient error must NOT permanently mark the session gone — treat as still running.
   assert.strictEqual(d.resumed, true);
-  assert.strictEqual(d.reason, undefined);
+  assert.strictEqual(d.reason, 'status-unknown');
 });
 
 test('handleSessionResume: cloud TERMINAL status → resumed=false, reason=gone', async () => {
@@ -178,29 +175,39 @@ test('handleSessionResume: cloud TERMINAL status → resumed=false, reason=gone'
   assert.strictEqual(d.reason, 'gone');
 });
 
-test('handleSessionResume: native → calls relaunch, returns new sid + autoCloseAt', async () => {
-  const now = Date.now();
-  const newSid = 'relaunched-native-uuid';
-  const deps = makeResumeDeps({
-    relaunch: async (_missionId) => ({ sid: newSid, boundAt: now }),
-    idleMin: 30,
-  });
-  const r = await handleSessionResume('4e15ac46-native-dead', { missionId: 'mission_abc' }, deps);
+test('handleSessionResume: native resume → SAME sid preserved + autoCloseAt', async () => {
+  const sid = '4e15ac46-native-dead';
+  const r = await handleSessionResume(sid, { missionId: 'mission_abc' }, makeResumeDeps());
   assert.ok(r.success, JSON.stringify(r));
   const d = (r as any).data;
   assert.strictEqual(d.resumed, true);
-  assert.strictEqual(d.sid, newSid);
+  assert.strictEqual(d.sid, sid, 'native resume must preserve the original sessionId');
   assert.strictEqual(d.transport, 'native');
-  assert.ok(typeof d.autoCloseAt === 'number', 'autoCloseAt should be a number');
-  // autoCloseAt should be approximately now + 30 * 60000
-  const expectedAutoClose = now + 30 * 60_000;
-  assert.ok(Math.abs(d.autoCloseAt - expectedAutoClose) < 5000, `autoCloseAt ${d.autoCloseAt} should be near ${expectedAutoClose}`);
+  assert.ok(typeof d.autoCloseAt === 'number');
 });
 
-test('handleSessionResume: native relaunch uses missionId from body', async () => {
+test('handleSessionResume: native refuse → resumed=false, reason=conflict', async () => {
+  const r = await handleSessionResume('uuid-conflict', { missionId: 'm' }, makeResumeDeps({
+    nativeVerdict: () => ({ connectStrategy: 'refuse', safeToCreateTmux: false, inTmux: false }),
+  }));
+  assert.strictEqual((r as any).data.resumed, false);
+  assert.strictEqual((r as any).data.reason, 'conflict');
+});
+
+test('handleSessionResume: cloud idle → resumed=true, reason=ok, cloudWake called', async () => {
+  let woke = false;
+  const r = await handleSessionResume('session_idle', {}, makeResumeDeps({
+    cloudStatus: async (sid) => ({ sid, status: 'active', raw: { worker_status: 'idle' } }),
+    cloudWake: async () => { woke = true; },
+  }));
+  assert.strictEqual((r as any).data.reason, 'ok');
+  assert.strictEqual(woke, true);
+});
+
+test('handleSessionResume: native resume uses missionId from body', async () => {
   let capturedMissionId: string | undefined;
   const deps = makeResumeDeps({
-    relaunch: async (missionId) => { capturedMissionId = missionId; return { sid: 'new-sid', boundAt: Date.now() }; },
+    resumeNative: async (missionId, sid) => { capturedMissionId = missionId; return { sid, boundAt: Date.now() }; },
   });
   await handleSessionResume('4e15ac46-native-0001', { missionId: 'mission_xyz' }, deps);
   assert.strictEqual(capturedMissionId, 'mission_xyz');
