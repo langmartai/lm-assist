@@ -16,6 +16,8 @@ import {
   Square,
   RotateCcw,
   AlertCircle,
+  Cloud,
+  Monitor,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { CcrCloudView } from '@/components/ccr/CcrCloudView';
@@ -150,6 +152,28 @@ interface OperableSession {
   webUrl?: string;
 }
 
+// ── Session-tab types ──────────────────────────────────────────────────────
+
+interface SessionTab {
+  sid: string;
+  title: string;
+  transport: SessionTransport;
+  /** Node that owns this session (for cross-node proxy on read/drive). */
+  node?: string | null;
+  /** Mission id used when resuming a native session. */
+  missionId?: string | null;
+}
+
+type TabAliveStatus = 'checking' | 'alive' | 'dead' | 'resuming' | 'gone' | 'confirm-resume';
+
+interface TabState {
+  alive: TabAliveStatus;
+  /** If resumed native session provides a different sid, swap to this. */
+  resolvedSid?: string;
+  autoCloseAt?: number | null;
+  notice?: string | null;
+}
+
 
 const STATUS_COLORS: Record<MissionStatus, string> = {
   draft: 'var(--color-text-tertiary)',
@@ -276,6 +300,13 @@ export function MissionsPage() {
 
   // ── Chat (controller) ── control actions (interrupt/stop/restart) stay here
   const [chatControlBusy, setChatControlBusy] = useState<Record<string, boolean>>({});
+
+  // ── Session tabs (Wave 6) ──
+  const [openTabs, setOpenTabs] = useState<SessionTab[]>([]);
+  /** null = Mission Controller (tab 0); otherwise the sid of the open session tab. */
+  const [activeTabSid, setActiveTabSid] = useState<string | null>(null);
+  /** Per-tab alive status + resume state, keyed by sid. */
+  const [tabStates, setTabStates] = useState<Record<string, TabState>>({});
 
   // Sidebar/create toggle (secondary)
   const [showItemsSidebar, setShowItemsSidebar] = useState(true);
@@ -656,6 +687,128 @@ export function MissionsPage() {
       if (operatePollerRef.current) clearInterval(operatePollerRef.current);
     };
   }, []);
+
+  // ── Tab handlers (Wave 6) ──
+
+  /** Check liveness and, if closed, trigger the appropriate resume flow. */
+  const checkAndHandleTabLiveness = useCallback(
+    async (tab: SessionTab) => {
+      const sid = tab.sid;
+      setTabStates((p) => ({ ...p, [sid]: { ...p[sid], alive: 'checking' } }));
+      try {
+        const nodeParam = tab.node ? `?node=${encodeURIComponent(tab.node)}` : '';
+        const res = await apiFetch<{ data?: { transport: SessionTransport; alive: boolean }; transport?: SessionTransport; alive?: boolean }>(
+          `/mission/session/${encodeURIComponent(sid)}/status${nodeParam}`,
+        );
+        const transport = (res as any).data?.transport ?? (res as any).transport ?? tab.transport;
+        const alive = (res as any).data?.alive ?? (res as any).alive ?? false;
+
+        if (alive) {
+          setTabStates((p) => ({ ...p, [sid]: { alive: 'alive' } }));
+          return;
+        }
+
+        // Not alive — handle by transport
+        if (transport === 'cloud') {
+          // Auto-resume cloud session
+          setTabStates((p) => ({ ...p, [sid]: { alive: 'resuming' } }));
+          try {
+            const resumeRes = await apiFetch<{ data?: { resumed: boolean; sid?: string; transport?: string; reason?: string }; resumed?: boolean; sid?: string; reason?: string }>(
+              `/mission/session/${encodeURIComponent(sid)}/resume`,
+              { method: 'POST', body: { missionId: tab.missionId ?? undefined, node: tab.node ?? undefined } },
+            );
+            const d = (resumeRes as any).data ?? resumeRes;
+            if (d?.resumed) {
+              setTabStates((p) => ({ ...p, [sid]: { alive: 'alive' } }));
+            } else {
+              setTabStates((p) => ({ ...p, [sid]: { alive: 'gone', notice: 'Session ended — cannot resume.' } }));
+            }
+          } catch {
+            setTabStates((p) => ({ ...p, [sid]: { alive: 'gone', notice: 'Session ended — cannot resume.' } }));
+          }
+        } else {
+          // Native — show confirm prompt
+          setTabStates((p) => ({ ...p, [sid]: { alive: 'confirm-resume' } }));
+        }
+      } catch {
+        // If status check fails, assume alive to avoid blocking the user
+        setTabStates((p) => ({ ...p, [sid]: { alive: 'alive' } }));
+      }
+    },
+    [apiFetch],
+  );
+
+  /** Open a session as a new tab (deduped by sid), then set it active and check liveness. */
+  const openSessionTab = useCallback(
+    (tab: SessionTab) => {
+      setOpenTabs((prev) => {
+        if (prev.some((t) => t.sid === tab.sid)) return prev;
+        return [...prev, tab];
+      });
+      setActiveTabSid(tab.sid);
+      // Trigger liveness check — first time only (avoid re-checking on re-activate)
+      setTabStates((prev) => {
+        if (prev[tab.sid]) return prev;
+        return { ...prev, [tab.sid]: { alive: 'checking' } };
+      });
+      // Async liveness check (fire-and-forget; updates tabStates)
+      checkAndHandleTabLiveness(tab);
+    },
+    [checkAndHandleTabLiveness],
+  );
+
+  /** Close a tab; if it was active, fall back to the controller (null). */
+  const closeTab = useCallback((sid: string) => {
+    setOpenTabs((prev) => prev.filter((t) => t.sid !== sid));
+    setTabStates((prev) => {
+      const n = { ...prev };
+      delete n[sid];
+      return n;
+    });
+    setActiveTabSid((cur) => (cur === sid ? null : cur));
+  }, []);
+
+  /** Confirm-resume a native session: POST .../resume, swap tab sid on success. */
+  const confirmResumeNative = useCallback(
+    async (tab: SessionTab) => {
+      const sid = tab.sid;
+      setTabStates((p) => ({ ...p, [sid]: { alive: 'resuming' } }));
+      try {
+        const res = await apiFetch<{ data?: { resumed: boolean; sid?: string; autoCloseAt?: number; reason?: string }; resumed?: boolean; sid?: string; autoCloseAt?: number }>(
+          `/mission/session/${encodeURIComponent(sid)}/resume`,
+          { method: 'POST', body: { missionId: tab.missionId ?? undefined, node: tab.node ?? undefined } },
+        );
+        const d = (res as any).data ?? res;
+        if (d?.resumed && d?.sid) {
+          const newSid = d.sid as string;
+          const autoCloseAt: number | undefined = d.autoCloseAt;
+          // Swap the tab to the new sid
+          setOpenTabs((prev) =>
+            prev.map((t) => (t.sid === sid ? { ...t, sid: newSid } : t)),
+          );
+          setActiveTabSid(newSid);
+          setTabStates((p) => {
+            const n = { ...p };
+            delete n[sid];
+            n[newSid] = {
+              alive: 'alive',
+              resolvedSid: newSid,
+              autoCloseAt: autoCloseAt ?? null,
+              notice: autoCloseAt
+                ? `Session resumed — auto-closes after 30 min idle.`
+                : null,
+            };
+            return n;
+          });
+        } else {
+          setTabStates((p) => ({ ...p, [sid]: { alive: 'gone', notice: 'Failed to resume session.' } }));
+        }
+      } catch (e) {
+        setTabStates((p) => ({ ...p, [sid]: { alive: 'gone', notice: `Resume failed: ${(e as Error).message}` } }));
+      }
+    },
+    [apiFetch],
+  );
 
   // ── Actor link renderer ──
   const renderActorLink = useCallback(
@@ -1185,65 +1338,68 @@ export function MissionsPage() {
             )}
           </div>
 
-          {/* Session list */}
+          {/* Session list — with tab-open buttons */}
           {sessionsExpanded.has(m.id) && m.binding?.sessionId && (() => {
             const mSessions = sessionsByMission[m.id] ?? [];
             return (
-              <div style={{ background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border-subtle)', borderRadius: 'var(--radius-sm)', padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <div style={{ background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border-subtle)', borderRadius: 'var(--radius-sm)', padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3 }}>Sessions</div>
                 {mSessions.length === 0 && !sessionsFetching.has(m.id) && (
                   <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>No sessions found (binding: {m.binding.sessionId})</div>
                 )}
                 {mSessions.map((s) => {
-                  const isCloud = /^session_/.test(s.sid);
-                  const shortSid = s.sid.replace(/^session_/, '').slice(0, 8);
-                  const label = `${s.role} · ${s.kind} · ${shortSid}`;
-                  const isOpen = connectSid === s.sid;
+                  const isCloud = /^(session_|cse_)/.test(s.sid);
+                  const transport: SessionTransport = isCloud ? 'cloud' : 'native';
+                  const shortSid = s.sid.replace(/^(session_|cse_)/, '').slice(0, 8);
+                  const roleLabel = s.kind === 'orchestrator' ? 'orchestrator' : 'worker';
+                  const title = `${roleLabel} · ${shortSid}`;
+                  const isTabActive = activeTabSid === s.sid;
                   return (
-                    <div key={s.sid} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontFamily: 'var(--font-mono)' }}>
-                      <span style={{ flex: 1, color: 'var(--color-text-secondary)' }}>{label}</span>
-                      {isCloud ? (
-                        <button
-                          className={`btn btn-sm ${isOpen ? 'btn-primary' : 'btn-ghost'}`}
-                          onClick={() => setConnectSid(isOpen ? null : s.sid)}
-                        >
-                          <Plug size={10} />{isOpen ? ' Close' : ' Open'}
-                        </button>
-                      ) : (
-                        <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>(local)</span>
+                    <button
+                      key={s.sid}
+                      className={`btn ${isTabActive ? 'btn-primary' : 'btn-ghost'} btn-sm`}
+                      style={{ justifyContent: 'flex-start', gap: 6, fontSize: 11, fontFamily: 'var(--font-mono)', textAlign: 'left' }}
+                      onClick={() => openSessionTab({ sid: s.sid, title, transport, node: m.binding?.node ?? null, missionId: m.id })}
+                      title={`Open ${title} in a tab`}
+                    >
+                      {/* Transport badge */}
+                      {isCloud
+                        ? <Cloud size={10} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
+                        : <Monitor size={10} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />
+                      }
+                      {/* Role badge */}
+                      <span className={`badge ${s.kind === 'orchestrator' ? 'badge-green' : 'badge-outline'}`} style={{ fontSize: 9 }}>
+                        {roleLabel}
+                      </span>
+                      <span style={{ flex: 1, color: 'var(--color-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {shortSid}
+                      </span>
+                      {/* Live/closed dot — if tab state known */}
+                      {tabStates[s.sid] && (
+                        <span
+                          style={{
+                            width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                            background: tabStates[s.sid].alive === 'alive'
+                              ? 'var(--color-status-green)'
+                              : tabStates[s.sid].alive === 'checking' || tabStates[s.sid].alive === 'resuming'
+                              ? 'var(--color-status-orange)'
+                              : 'var(--color-text-tertiary)',
+                          }}
+                        />
                       )}
-                    </div>
+                    </button>
                   );
                 })}
               </div>
             );
-          })()}
-
-          {/* Inline cloud view */}
-          {connectSid && (() => {
-            const mSessions = sessionsByMission[m.id] ?? [];
-            const owns = mSessions.some((s) => s.sid === connectSid) ||
-              (m.binding?.sessionId === connectSid && mSessions.length === 0);
-            const ownsActor = !owns && connectSid && (
-              (m.createdBy?.kind === 'ccr' && m.createdBy?.id === connectSid) ||
-              m.adjustments.some((adj) => adj.actor?.kind === 'ccr' && adj.actor?.id === connectSid)
-            );
-            return (owns || ownsActor) && /^session_/.test(connectSid) ? (
-              <CcrCloudView
-                sid={connectSid}
-                webUrl={`https://claude.ai/code/${connectSid}`}
-                apiFetch={apiFetch}
-                onClose={() => setConnectSid(null)}
-              />
-            ) : null;
           })()}
         </div>
       );
     },
     [
       busy, expanded, objDraft, contributorsExpanded, sessionsExpanded, sessionsFetching,
-      sessionsByMission, connectSid, updateMission, toggleExpand, toggleContributors,
-      toggleSessionsExpand, renderActorLink, apiFetch,
+      sessionsByMission, connectSid, activeTabSid, tabStates, openSessionTab,
+      updateMission, toggleExpand, toggleContributors, toggleSessionsExpand, renderActorLink, apiFetch,
     ],
   );
 
@@ -1376,7 +1532,7 @@ export function MissionsPage() {
           gap: 0,
         }}
       >
-        {/* ── PRIMARY PANE: Controller chat ── */}
+        {/* ── PRIMARY PANE: Controller chat + session tabs ── */}
         <div
           style={{
             flex: showItemsSidebar ? '1 1 0' : '1 1 100%',
@@ -1387,212 +1543,400 @@ export function MissionsPage() {
             minWidth: 0,
           }}
         >
-          {/* Chat header */}
+          {/* ── Tab bar ── */}
           <div
             style={{
-              padding: '10px 16px',
-              borderBottom: '1px solid var(--color-border-subtle)',
               display: 'flex',
-              alignItems: 'center',
-              gap: 8,
+              alignItems: 'stretch',
+              borderBottom: '1px solid var(--color-border-subtle)',
+              background: 'var(--color-bg-elevated)',
+              overflowX: 'auto',
               flexShrink: 0,
             }}
           >
-            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+            {/* Tab 0: Mission Controller */}
+            <button
+              className={`btn btn-ghost btn-sm`}
+              style={{
+                borderRadius: 0,
+                borderBottom: activeTabSid === null ? '2px solid var(--color-accent)' : '2px solid transparent',
+                padding: '7px 14px',
+                fontSize: 12,
+                fontWeight: activeTabSid === null ? 600 : 400,
+                color: activeTabSid === null ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+                whiteSpace: 'nowrap',
+              }}
+              onClick={() => setActiveTabSid(null)}
+              title="Mission Controller chat"
+            >
               Mission Controller
-            </span>
-            {isControllerLive ? (
-              <span className="badge badge-green">live</span>
-            ) : (
-              <span className="badge badge-default">offline</span>
-            )}
-            {cs && (
-              <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--color-text-tertiary)' }}>
-                {cs.node} · {shortId(controllerSid)}
-              </span>
-            )}
-            <div style={{ flex: 1 }} />
-            {/* Controller status: tick + job info */}
-            {effectiveController && (
-              <>
-                <span className={`badge ${effectiveController.job.enabled ? 'badge-green' : 'badge-default'}`} style={{ fontSize: 10 }}>
-                  {effectiveController.job.enabled ? `every ${effectiveController.job.intervalMinutes}m` : 'disabled'}
-                </span>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={runTick}
-                  disabled={tickBusy}
-                  title="Run controller tick now"
-                  style={{ fontSize: 11 }}
+              {isControllerLive && (
+                <span
+                  style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--color-status-green)', marginLeft: 5, flexShrink: 0, display: 'inline-block' }}
+                />
+              )}
+            </button>
+
+            {/* Session tabs */}
+            {openTabs.map((tab) => {
+              const ts = tabStates[tab.sid];
+              const isActive = activeTabSid === tab.sid;
+              return (
+                <div
+                  key={tab.sid}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    borderBottom: isActive ? '2px solid var(--color-accent)' : '2px solid transparent',
+                    borderLeft: '1px solid var(--color-border-subtle)',
+                  }}
                 >
-                  {tickBusy ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={11} />}
-                  {' '}Tick
-                </button>
-              </>
-            )}
-            {/* Cloud view button for cloud sessions */}
-            {cs && controllerSid && /^(session_|cse_)/.test(controllerSid) && (
-              <button
-                className={`btn btn-sm ${controllerSessionOpen ? 'btn-primary' : 'btn-ghost'}`}
-                onClick={() => {
-                  setControllerSessionOpen((v) => {
-                    if (v) setControllerSessionDismissed(true);
-                    return !v;
-                  });
-                }}
-                style={{ fontSize: 11 }}
-              >
-                <Target size={11} /> {controllerSessionOpen ? 'Close view' : 'Cloud view'}
-              </button>
-            )}
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    style={{
+                      borderRadius: 0,
+                      padding: '7px 10px',
+                      fontSize: 12,
+                      fontWeight: isActive ? 600 : 400,
+                      color: isActive ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+                      whiteSpace: 'nowrap',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 5,
+                    }}
+                    onClick={() => setActiveTabSid(tab.sid)}
+                    title={`${tab.title} (${tab.transport})`}
+                  >
+                    {tab.transport === 'cloud'
+                      ? <Cloud size={10} />
+                      : <Monitor size={10} />
+                    }
+                    <span style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }}>{tab.title}</span>
+                    {/* Status dot */}
+                    {ts && (
+                      <span
+                        style={{
+                          width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
+                          background: ts.alive === 'alive'
+                            ? 'var(--color-status-green)'
+                            : ts.alive === 'checking' || ts.alive === 'resuming'
+                            ? 'var(--color-status-orange)'
+                            : 'var(--color-text-tertiary)',
+                        }}
+                      />
+                    )}
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    style={{ borderRadius: 0, padding: '7px 6px', color: 'var(--color-text-tertiary)' }}
+                    onClick={() => closeTab(tab.sid)}
+                    title={`Close ${tab.title}`}
+                  >
+                    <X size={10} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
 
-          {/* Tick result */}
-          {tickResult && (
-            <div style={{ padding: '4px 16px', fontSize: 11, color: 'var(--color-accent)', background: 'var(--color-bg-elevated)', borderBottom: '1px solid var(--color-border-subtle)' }}>
-              Tick: {tickResult}
-            </div>
-          )}
+          {/* ── Active tab: session view ── */}
+          {activeTabSid !== null && (() => {
+            const tab = openTabs.find((t) => t.sid === activeTabSid);
+            if (!tab) return null;
+            const ts = tabStates[tab.sid] ?? { alive: 'checking' };
 
-          {/* Cloud view (optional) */}
-          {controllerSessionOpen && cs && controllerSid && /^(session_|cse_)/.test(controllerSid) && (
-            <div style={{ padding: '8px 16px', borderBottom: '1px solid var(--color-border-subtle)', flexShrink: 0 }}>
-              <CcrCloudView
-                sid={controllerSid}
-                webUrl={`https://claude.ai/code/${controllerSid}`}
-                apiFetch={apiFetch}
-                onClose={() => { setControllerSessionOpen(false); setControllerSessionDismissed(true); }}
-              />
-            </div>
-          )}
+            // Checking/resuming spinner
+            if (ts.alive === 'checking' || ts.alive === 'resuming') {
+              return (
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: 'var(--color-text-tertiary)' }}>
+                  <Loader2 size={20} style={{ animation: 'spin 1s linear infinite', color: 'var(--color-status-orange)' }} />
+                  <div style={{ fontSize: 12 }}>
+                    {ts.alive === 'resuming' ? 'Resuming session…' : 'Checking session status…'}
+                  </div>
+                </div>
+              );
+            }
 
-          {/* State banners (failover / offline) — shown when no live session chat */}
-          <div
-            style={{
-              flex: (!cs || isFailingOver) ? 1 : undefined,
-              overflow: 'auto',
-              padding: '12px 16px',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 6,
-            }}
-          >
-            {/* Failover banner: shown when controllerSession is stale (node != elected leader) */}
-            {isFailingOver && !loading && (
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  height: '100%',
-                  gap: 8,
-                  color: 'var(--color-text-tertiary)',
-                }}
-              >
-                <RefreshCw size={28} style={{ color: 'var(--color-status-orange)', animation: 'spin 2s linear infinite' }} />
-                <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-status-orange)' }}>
-                  Failing over — electing controller
-                </div>
-                <div style={{ fontSize: 12, textAlign: 'center' }}>
-                  New leader: <strong>{failoverLeaderLabel}</strong>
-                  <br />
-                  Supervisor will launch the controller on its next tick (~1 min)
-                </div>
-                {effectiveController && (
-                  <button
-                    className="btn btn-primary btn-sm"
-                    onClick={runTick}
-                    disabled={tickBusy}
-                    style={{ marginTop: 4 }}
-                    title="Force a supervisor tick on the new leader now"
-                  >
-                    {tickBusy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={13} />}
-                    {' '}Force tick now
+            // Gone — cannot resume
+            if (ts.alive === 'gone') {
+              return (
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: 'var(--color-text-tertiary)', padding: 24 }}>
+                  <AlertCircle size={24} style={{ color: 'var(--color-text-tertiary)' }} />
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>{ts.notice ?? 'Session ended — cannot resume.'}</div>
+                  <button className="btn btn-ghost btn-sm" onClick={() => closeTab(tab.sid)}>
+                    <X size={12} /> Close tab
                   </button>
+                </div>
+              );
+            }
+
+            // Confirm-resume for native sessions
+            if (ts.alive === 'confirm-resume') {
+              return (
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, color: 'var(--color-text-secondary)', padding: 24 }}>
+                  <AlertCircle size={24} style={{ color: 'var(--color-status-orange)' }} />
+                  <div style={{ fontSize: 13, fontWeight: 500, textAlign: 'center' }}>
+                    This session is closed.
+                  </div>
+                  <div style={{ fontSize: 12, textAlign: 'center', color: 'var(--color-text-tertiary)' }}>
+                    Resume it? It will auto-close after 30 min idle.
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={() => confirmResumeNative(tab)}
+                    >
+                      <Play size={12} /> Resume
+                    </button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => closeTab(tab.sid)}>
+                      <X size={12} /> Cancel
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+
+            // Alive — render the session view
+            // Show auto-close notice if applicable
+            const notice = ts.notice;
+
+            return (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+                {notice && (
+                  <div style={{ padding: '5px 14px', fontSize: 11, color: 'var(--color-status-orange)', background: 'var(--color-bg-elevated)', borderBottom: '1px solid var(--color-border-subtle)', flexShrink: 0 }}>
+                    ⏱ {notice}
+                  </div>
+                )}
+                {tab.transport === 'cloud' ? (
+                  <CcrCloudView
+                    sid={tab.sid}
+                    webUrl={`https://claude.ai/code/${tab.sid}`}
+                    apiFetch={apiFetch}
+                    onClose={() => closeTab(tab.sid)}
+                  />
+                ) : (
+                  <MissionSessionChat
+                    sid={tab.sid}
+                    node={tab.node ?? undefined}
+                    apiFetch={apiFetch}
+                    heightFill
+                  />
                 )}
               </div>
-            )}
-            {!cs && !isFailingOver && !loading && (
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  height: '100%',
-                  gap: 8,
-                  color: 'var(--color-text-tertiary)',
-                }}
-              >
-                <AlertCircle size={28} style={{ color: 'var(--color-text-tertiary)' }} />
-                <div style={{ fontSize: 13, fontWeight: 500 }}>No mission controller running</div>
-                <div style={{ fontSize: 12, textAlign: 'center' }}>
-                  {controller
-                    ? 'Supervisor will launch the controller on the next tick'
-                    : 'Loading controller status…'}
-                </div>
-                {effectiveController && (
-                  <button
-                    className="btn btn-primary btn-sm"
-                    onClick={runTick}
-                    disabled={tickBusy}
-                    style={{ marginTop: 4 }}
-                  >
-                    {tickBusy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={13} />}
-                    {' '}Run tick now
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
+            );
+          })()}
 
-          {/* Controller chat — rendered via MissionSessionChat when a controller session is live */}
-          {cs && controllerSid && !isFailingOver && (
+          {/* ── Controller tab content (activeTabSid === null) ── */}
+          {activeTabSid === null && (
             <>
-              <MissionSessionChat
-                sid={controllerSid}
-                node={leader?.node ?? undefined}
-                apiFetch={apiFetch}
-                heightFill
-              />
-              {/* Control buttons row (interrupt/stop/restart stay in MissionsPage — controller-specific) */}
+              {/* Chat header */}
               <div
                 style={{
-                  padding: '6px 16px 10px',
-                  borderTop: '1px solid var(--color-border-subtle)',
+                  padding: '10px 16px',
+                  borderBottom: '1px solid var(--color-border-subtle)',
                   display: 'flex',
-                  gap: 6,
-                  flexWrap: 'wrap',
+                  alignItems: 'center',
+                  gap: 8,
                   flexShrink: 0,
-                  background: 'var(--color-bg-root)',
                 }}
               >
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => controllerChatControl(controllerSid, leader, 'interrupt')}
-                  disabled={!!chatControlBusy['interrupt']}
-                  title="Interrupt controller"
-                >
-                  {chatControlBusy['interrupt'] ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <AlertCircle size={11} />} Interrupt
-                </button>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => controllerChatControl(controllerSid, leader, 'stop')}
-                  disabled={!!chatControlBusy['stop']}
-                  title="Stop controller"
-                >
-                  {chatControlBusy['stop'] ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Square size={11} />} Stop
-                </button>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => controllerChatControl(controllerSid, leader, 'restart')}
-                  disabled={!!chatControlBusy['restart']}
-                  title="Restart controller (supervisor will relaunch)"
-                >
-                  {chatControlBusy['restart'] ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <RotateCcw size={11} />} Restart
-                </button>
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                  Mission Controller
+                </span>
+                {isControllerLive ? (
+                  <span className="badge badge-green">live</span>
+                ) : (
+                  <span className="badge badge-default">offline</span>
+                )}
+                {cs && (
+                  <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--color-text-tertiary)' }}>
+                    {cs.node} · {shortId(controllerSid)}
+                  </span>
+                )}
+                <div style={{ flex: 1 }} />
+                {/* Controller status: tick + job info */}
+                {effectiveController && (
+                  <>
+                    <span className={`badge ${effectiveController.job.enabled ? 'badge-green' : 'badge-default'}`} style={{ fontSize: 10 }}>
+                      {effectiveController.job.enabled ? `every ${effectiveController.job.intervalMinutes}m` : 'disabled'}
+                    </span>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={runTick}
+                      disabled={tickBusy}
+                      title="Run controller tick now"
+                      style={{ fontSize: 11 }}
+                    >
+                      {tickBusy ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={11} />}
+                      {' '}Tick
+                    </button>
+                  </>
+                )}
+                {/* Cloud view button for cloud sessions */}
+                {cs && controllerSid && /^(session_|cse_)/.test(controllerSid) && (
+                  <button
+                    className={`btn btn-sm ${controllerSessionOpen ? 'btn-primary' : 'btn-ghost'}`}
+                    onClick={() => {
+                      setControllerSessionOpen((v) => {
+                        if (v) setControllerSessionDismissed(true);
+                        return !v;
+                      });
+                    }}
+                    style={{ fontSize: 11 }}
+                  >
+                    <Target size={11} /> {controllerSessionOpen ? 'Close view' : 'Cloud view'}
+                  </button>
+                )}
               </div>
+
+              {/* Tick result */}
+              {tickResult && (
+                <div style={{ padding: '4px 16px', fontSize: 11, color: 'var(--color-accent)', background: 'var(--color-bg-elevated)', borderBottom: '1px solid var(--color-border-subtle)' }}>
+                  Tick: {tickResult}
+                </div>
+              )}
+
+              {/* Cloud view (optional) */}
+              {controllerSessionOpen && cs && controllerSid && /^(session_|cse_)/.test(controllerSid) && (
+                <div style={{ padding: '8px 16px', borderBottom: '1px solid var(--color-border-subtle)', flexShrink: 0 }}>
+                  <CcrCloudView
+                    sid={controllerSid}
+                    webUrl={`https://claude.ai/code/${controllerSid}`}
+                    apiFetch={apiFetch}
+                    onClose={() => { setControllerSessionOpen(false); setControllerSessionDismissed(true); }}
+                  />
+                </div>
+              )}
+
+              {/* State banners (failover / offline) — shown when no live session chat */}
+              <div
+                style={{
+                  flex: (!cs || isFailingOver) ? 1 : undefined,
+                  overflow: 'auto',
+                  padding: '12px 16px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6,
+                }}
+              >
+                {/* Failover banner: shown when controllerSession is stale (node != elected leader) */}
+                {isFailingOver && !loading && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      height: '100%',
+                      gap: 8,
+                      color: 'var(--color-text-tertiary)',
+                    }}
+                  >
+                    <RefreshCw size={28} style={{ color: 'var(--color-status-orange)', animation: 'spin 2s linear infinite' }} />
+                    <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-status-orange)' }}>
+                      Failing over — electing controller
+                    </div>
+                    <div style={{ fontSize: 12, textAlign: 'center' }}>
+                      New leader: <strong>{failoverLeaderLabel}</strong>
+                      <br />
+                      Supervisor will launch the controller on its next tick (~1 min)
+                    </div>
+                    {effectiveController && (
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={runTick}
+                        disabled={tickBusy}
+                        style={{ marginTop: 4 }}
+                        title="Force a supervisor tick on the new leader now"
+                      >
+                        {tickBusy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={13} />}
+                        {' '}Force tick now
+                      </button>
+                    )}
+                  </div>
+                )}
+                {!cs && !isFailingOver && !loading && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      height: '100%',
+                      gap: 8,
+                      color: 'var(--color-text-tertiary)',
+                    }}
+                  >
+                    <AlertCircle size={28} style={{ color: 'var(--color-text-tertiary)' }} />
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>No mission controller running</div>
+                    <div style={{ fontSize: 12, textAlign: 'center' }}>
+                      {controller
+                        ? 'Supervisor will launch the controller on the next tick'
+                        : 'Loading controller status…'}
+                    </div>
+                    {effectiveController && (
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={runTick}
+                        disabled={tickBusy}
+                        style={{ marginTop: 4 }}
+                      >
+                        {tickBusy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={13} />}
+                        {' '}Run tick now
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Controller chat — rendered via MissionSessionChat when a controller session is live */}
+              {cs && controllerSid && !isFailingOver && (
+                <>
+                  <MissionSessionChat
+                    sid={controllerSid}
+                    node={leader?.node ?? undefined}
+                    apiFetch={apiFetch}
+                    heightFill
+                  />
+                  {/* Control buttons row (interrupt/stop/restart stay in MissionsPage — controller-specific) */}
+                  <div
+                    style={{
+                      padding: '6px 16px 10px',
+                      borderTop: '1px solid var(--color-border-subtle)',
+                      display: 'flex',
+                      gap: 6,
+                      flexWrap: 'wrap',
+                      flexShrink: 0,
+                      background: 'var(--color-bg-root)',
+                    }}
+                  >
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => controllerChatControl(controllerSid, leader, 'interrupt')}
+                      disabled={!!chatControlBusy['interrupt']}
+                      title="Interrupt controller"
+                    >
+                      {chatControlBusy['interrupt'] ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <AlertCircle size={11} />} Interrupt
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => controllerChatControl(controllerSid, leader, 'stop')}
+                      disabled={!!chatControlBusy['stop']}
+                      title="Stop controller"
+                    >
+                      {chatControlBusy['stop'] ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Square size={11} />} Stop
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => controllerChatControl(controllerSid, leader, 'restart')}
+                      disabled={!!chatControlBusy['restart']}
+                      title="Restart controller (supervisor will relaunch)"
+                    >
+                      {chatControlBusy['restart'] ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <RotateCcw size={11} />} Restart
+                    </button>
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>
