@@ -25,6 +25,43 @@ const arr = (v: unknown): string[] | undefined => {
 };
 const VALID_STATUS = new Set<MissionStatus>(['draft', 'active', 'waiting', 'paused', 'blocked', 'done', 'failed']);
 
+// --- leader-anchoring (missions live on the elected leader) ---
+// Missions must live on the leader's store: the leader's supervisor drives them
+// and every node's leader-aware view reads them. So create/update/list executed
+// on a NON-leader node proxy to the leader server-side (the browser/connector
+// never needs a hub token). This is robust even if cross-node sync lags.
+export interface LeaderAnchorDeps {
+  getElection: () => Promise<{ isMonitor: boolean; monitorNodeId: string | null }>;
+  proxyGet: (node: string, path: string) => Promise<unknown>;
+  proxyPost: (node: string, path: string, body: unknown) => Promise<unknown>;
+}
+export function realLeaderAnchor(): LeaderAnchorDeps {
+  return {
+    getElection: () => amIMonitor(),
+    proxyGet: (n, p) => { const { proxyGet } = require('../../data/peer-client') as typeof import('../../data/peer-client'); return proxyGet(n, p); },
+    proxyPost: (n, p, b) => { const { proxyPost } = require('../../data/peer-client') as typeof import('../../data/peer-client'); return proxyPost(n, p, b); },
+  };
+}
+/**
+ * If a leader-anchor dep is provided AND this node is not the leader, proxy the
+ * op to the leader and return its envelope. Returns null when this node IS the
+ * leader (or no anchor / no leader / proxy failed) → the caller handles locally.
+ * No loop: a proxied request reaching the leader sees isMonitor=true → null → local.
+ */
+async function anchorToLeader(leader: LeaderAnchorDeps | undefined, method: 'GET' | 'POST', path: string, body?: unknown): Promise<Envelope | null> {
+  if (!leader) return null;
+  let election: { isMonitor: boolean; monitorNodeId: string | null };
+  try { election = await leader.getElection(); } catch { return null; }
+  if (election.isMonitor || !election.monitorNodeId) return null;
+  try {
+    const result = method === 'GET'
+      ? await leader.proxyGet(election.monitorNodeId, path)
+      : await leader.proxyPost(election.monitorNodeId, path, body ?? {});
+    if (result && typeof result === 'object' && 'success' in (result as object)) return result as Envelope;
+    return ok((result as { data?: unknown })?.data ?? result);
+  } catch { return null; }
+}
+
 // --- testable handlers (port-injected) ---
 
 async function actorFor(b: Record<string, unknown>): Promise<MissionActor> {
@@ -34,7 +71,9 @@ async function actorFor(b: Record<string, unknown>): Promise<MissionActor> {
   return coarseActor('user', thisNode(), Date.now());
 }
 
-export async function handleCreate(b: Record<string, unknown>, ownerNode: string, port?: MissionDataPort, actor?: MissionActor): Promise<Envelope> {
+export async function handleCreate(b: Record<string, unknown>, ownerNode: string, port?: MissionDataPort, actor?: MissionActor, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'POST', '/mission', b);
+  if (anchored) return anchored;
   const who = actor ?? await actorFor(b);
   const title = str(b.title);
   const objective = str(b.objective);
@@ -55,7 +94,9 @@ export async function handleCreate(b: Record<string, unknown>, ownerNode: string
   return ok(m);
 }
 
-export async function handleList(port?: MissionDataPort): Promise<Envelope> {
+export async function handleList(port?: MissionDataPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'GET', '/mission');
+  if (anchored) return anchored;
   return ok(await listMissions(port));
 }
 
@@ -64,7 +105,9 @@ export async function handleGet(id: string, port?: MissionDataPort): Promise<Env
   return m ? ok(m) : fail('NOT_FOUND', `no mission ${id}`);
 }
 
-export async function handlePatch(id: string, b: Record<string, unknown>, port?: MissionDataPort, actor?: MissionActor): Promise<Envelope> {
+export async function handlePatch(id: string, b: Record<string, unknown>, port?: MissionDataPort, actor?: MissionActor, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'POST', `/mission/${encodeURIComponent(id)}`, b);
+  if (anchored) return anchored;
   const who = actor ?? await actorFor(b);
   const m = await getMission(id, port);
   if (!m) return fail('NOT_FOUND', `no mission ${id}`);
@@ -488,8 +531,8 @@ export async function handleSessionControl(sid: string, action: string, deps?: S
 
 export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
-    { method: 'POST', pattern: /^\/mission$/, handler: async (req) => handleCreate((req.body || {}) as Record<string, unknown>, thisNode()) },
-    { method: 'GET', pattern: /^\/mission$/, handler: async () => handleList() },
+    { method: 'POST', pattern: /^\/mission$/, handler: async (req) => handleCreate((req.body || {}) as Record<string, unknown>, thisNode(), undefined, undefined, realLeaderAnchor()) },
+    { method: 'GET', pattern: /^\/mission$/, handler: async () => handleList(undefined, realLeaderAnchor()) },
     // literal routes BEFORE /:id so literals win
     // /mission/sessions — all operable sessions (controller + orchestrators + workers)
     { method: 'GET', pattern: /^\/mission\/sessions$/, handler: async () => handleAllSessions() },
@@ -501,9 +544,9 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     // /mission/:id/sessions BEFORE /mission/:id so the literal suffix wins
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/sessions$/, handler: async (req) => handleSessions(req.params.id) },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handleGet(req.params.id) },
-    { method: 'PATCH', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>) },
+    { method: 'PATCH', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, realLeaderAnchor()) },
     // POST /mission/:id — same semantics as PATCH, accepts MCP workerPost (POST-only)
-    { method: 'POST', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>) },
+    { method: 'POST', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, realLeaderAnchor()) },
     // Session operability routes (read / drive / control) — literal /session/:sid/ prefix
     // Optional body field `node`: if set and != thisNode(), the local Core proxies to that node
     // server-side (browser never gets the hub Bearer token).
