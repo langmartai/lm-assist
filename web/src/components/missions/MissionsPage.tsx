@@ -1457,8 +1457,10 @@ export function MissionsPage() {
     : (controller?.election.monitorNodeId ? shortId(controller.election.monitorNodeId) : null);
   const isControllerLive = !!cs;
 
-  // Derive the session id used to address the controller (cse preferred for cloud sessions).
-  const controllerSid = cs ? (cs.cse ?? cs.sessionId) : null;
+  // Prefer the NATIVE session uuid (its .jsonl holds the full transcript) over the cse (cloud handle,
+  // sparse client-events). Reading the controller chat via the cse showed "No turns yet"; the native
+  // sid reads the complete transcript and still surfaces the bridge pendingQuestion (bridgeCseFor).
+  const controllerSid = cs ? (cs.sessionId ?? cs.cse) : null;
 
   // Failover state: controllerSession is stale when it belongs to a different node than the
   // current elected leader. This happens during the ~1-min window after election flips but

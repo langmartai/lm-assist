@@ -766,7 +766,12 @@ export function registerMissionController(
         }
         const cs: ControllerSession = {
           node: thisNode(),
-          sessionId: hit ? hit.sid : sessionId,
+          // Keep the NATIVE session uuid as sessionId (the .jsonl that holds the full transcript) and
+          // the cloud handle separately as cse. Previously sessionId was overwritten with the cse once
+          // the bridge registered → the mission web chat read the controller via the cse (cloud path,
+          // sparse client-events) and showed "No turns yet" while the 200-line native transcript was
+          // unreachable. Fall back to the cse only when no native uuid resolved.
+          sessionId: sessionId || (hit ? hit.sid : ''),
           cse: hit ? hit.sid : null,
           tmux,
           startedAt: Date.now(),
