@@ -106,6 +106,8 @@ export interface CcLaunchOpts {
   appendSystemPromptFile?: string;
   /** Optional: path to an MCP config JSON passed as --mcp-config (controller bootstrap). */
   mcpConfigPath?: string;
+  /** Optional: display name passed as -n (session title — picker / terminal / account list). */
+  name?: string;
 }
 
 export interface CcAutoHandleOut {

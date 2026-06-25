@@ -39,6 +39,9 @@ export function buildLaunchCmd(opts: CCLaunchInput): string {
   const flags: string[] = [
     ...(opts.skipPermissions ? ['--dangerously-skip-permissions'] : []),
     ...remoteControlFlags(opts.remoteControl),
+    // Optional display name (-n) — titles the session (picker / terminal title /
+    // the account /v1/code/sessions title), so RC sessions are identifiable.
+    ...(opts.name ? ['-n', opts.name] : []),
     // Optional file-path flags (controller bootstrap). File paths only — never
     // an inline prompt, since this string is run as a shell command.
     ...(opts.appendSystemPromptFile ? ['--append-system-prompt-file', opts.appendSystemPromptFile] : []),

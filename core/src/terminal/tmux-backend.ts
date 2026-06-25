@@ -112,6 +112,7 @@ export const tmuxCcController: CcController = {
       autoAcceptTrust: opts.autoTrust !== false,
       appendSystemPromptFile: opts.appendSystemPromptFile,
       mcpConfigPath: opts.mcpConfigPath,
+      name: opts.name,
     } as any);
     // Correlate the new tmux session to its registered Claude sessionId.
     const live = listLiveSessions().find((s) => s.tmuxSession === name);
