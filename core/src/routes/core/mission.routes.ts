@@ -549,6 +549,204 @@ export async function handleSessionControl(sid: string, action: string, deps?: S
   }
 }
 
+// ---------------------------------------------------------------------------
+// isIdleExpired — pure helper (exported for reaper + tests)
+// ---------------------------------------------------------------------------
+
+export function isIdleExpired(opts: { lastActivityAt: number; now: number; idleMin: number }): boolean {
+  return (opts.now - opts.lastActivityAt) > opts.idleMin * 60_000;
+}
+
+// ---------------------------------------------------------------------------
+// Session status + resume
+// ---------------------------------------------------------------------------
+
+/** Terminal cloud session statuses (mirrors mission-controller.ts). */
+const TERMINAL_CLOUD_STATUSES = ['stopped', 'completed', 'failed', 'error', 'archived'];
+
+export type CloudStatusFn = (sid: string) => Promise<{ sid: string; status: string; raw: any }>;
+export type NativeVerdictFn = (sid: string) => Promise<{ inTmux: boolean; tmuxSession: string | null; driveable: boolean }>;
+
+/**
+ * handleSessionStatus: resolve transport, check liveness.
+ * Signature mirrors handleSessionRead (DI + cross-node proxy).
+ *
+ * @param deps        Session ops deps (resolver via deps.resolve)
+ * @param node        Target node — if set and != thisNode(), proxy to that node
+ * @param nativeVerdict  Injected native liveness check (default: sessionVerdict from cc-sessions)
+ * @param cloudStatusFn  Injected cloud liveness check (default: cloudStatus from ccr-cloud)
+ * @param proxyDeps   Cross-node proxy deps (default: proxyPost from peer-client)
+ */
+export async function handleSessionStatus(
+  sid: string,
+  deps?: SessionOpsDeps,
+  node?: string,
+  nativeVerdict?: NativeVerdictFn,
+  cloudStatusFn?: CloudStatusFn,
+  proxyDeps?: SessionProxyDeps,
+): Promise<Envelope> {
+  const self = thisNode();
+  if (node && node !== self) {
+    const pd = proxyDeps ?? defaultSessionProxyDeps();
+    try {
+      const result = await pd.proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/status`, {}) as any;
+      return proxyEnvelope(result);
+    } catch (e) {
+      return fail('PROXY_ERROR', (e as Error).message);
+    }
+  }
+
+  const d = deps ?? defaultSessionOpsDeps();
+  const r = d.resolve(sid);
+
+  if (r.transport === 'cloud') {
+    const getStatus: CloudStatusFn = cloudStatusFn ?? ((s) => {
+      const { cloudStatus } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
+      return cloudStatus(s);
+    });
+    try {
+      const st = await getStatus(sid);
+      const alive = !TERMINAL_CLOUD_STATUSES.includes(st.status);
+      return ok({ transport: 'cloud', alive });
+    } catch {
+      return ok({ transport: 'cloud', alive: false });
+    }
+  } else {
+    const getVerdict: NativeVerdictFn = nativeVerdict ?? ((s) => {
+      const { sessionVerdict } = require('../../terminal/cc-sessions') as typeof import('../../terminal/cc-sessions');
+      const v = sessionVerdict(s);
+      return Promise.resolve({ inTmux: v.inTmux, tmuxSession: v.tmuxSession, driveable: v.inTmux });
+    });
+    try {
+      const v = await getVerdict(sid);
+      return ok({ transport: 'native', alive: v.inTmux });
+    } catch {
+      return ok({ transport: 'native', alive: false });
+    }
+  }
+}
+
+/** Deps for handleSessionResume — injected for testability. */
+export interface SessionResumeDeps {
+  /** Resolve transport for a sid (pure sync). */
+  resolve: (sid: string) => { sid: string; transport: Transport; missionId: string | null; role: SessionRole };
+  /** Check cloud session liveness (throws or returns terminal status → gone). */
+  cloudStatus: CloudStatusFn;
+  /** Relaunch a native session for the given missionId; returns the new sid. */
+  relaunch: (missionId: string | undefined) => Promise<{ sid: string; boundAt: number }>;
+  /** Idle minutes before auto-close (from project settings). */
+  idleMin: number;
+}
+
+function defaultSessionResumeDeps(): SessionResumeDeps {
+  return {
+    resolve: (sid) => resolveMissionSession(sid, [], null),
+    cloudStatus: (sid) => {
+      const { cloudStatus } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
+      return cloudStatus(sid);
+    },
+    relaunch: async (missionId) => {
+      const { getMission } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+      const m = missionId ? await getMission(missionId) : null;
+      if (!m) throw new Error(`mission ${missionId} not found for relaunch`);
+      const { startNativeExecutor } = require('../../mission/mission-controller') as typeof import('../../mission/mission-controller');
+      const { place } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
+      const { listMissions: lm } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+      const all = await lm();
+      const pd = place(m, all);
+      if (!pd.go) throw new Error(`mission ${missionId} not placeable for relaunch: ${(pd as any).reason}`);
+      // Build native start deps (same pattern as mission-controller.ts startCloudExecutor native path)
+      const { cloudListAccount, cloudDrive } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
+      const { pickNewSession, cseToSessionSid } = require('../../mission/mission-native') as typeof import('../../mission/mission-native');
+      const { tmuxCcController } = require('../../terminal/tmux-backend') as typeof import('../../terminal/tmux-backend');
+      const { gitCommand } = require('../../checkpoint/git-utils') as typeof import('../../checkpoint/git-utils');
+      const { missionSessionTitle } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
+      const pathmod = require('path') as typeof import('path');
+      const baselineArr = await cloudListAccount().then((ss: Array<{ sid: string }>) => ss.map((s) => s.sid)).catch(() => [] as string[]);
+      const nativeDeps = {
+        ensureWorktree: async (repo: string, dir: string, branch: string): Promise<string> => {
+          const absRepo = pathmod.isAbsolute(repo) ? repo : pathmod.resolve(process.cwd(), repo);
+          const absDir = pathmod.isAbsolute(dir) ? dir : pathmod.resolve(absRepo, dir);
+          try {
+            gitCommand(['worktree', 'add', absDir, '-b', branch], absRepo);
+          } catch (err) {
+            if (!/already exists|already checked out|is already/i.test((err as Error).message || '')) throw err;
+          }
+          return absDir;
+        },
+        launch: async (cwd: string): Promise<{ sessionId: string | null; tmuxSession: string }> => {
+          const res = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true, name: missionSessionTitle(m) });
+          return { sessionId: (res.sessionId as string | null) ?? null, tmuxSession: res.tmuxSession as string };
+        },
+        listAccount: cloudListAccount,
+        baseline: baselineArr,
+        drive: async (sid: string, text: string) => {
+          await cloudDrive({ sid, text }).catch((e: Error) => {
+            console.debug(`[mission-resume] drive to ${sid} failed: ${e.message}`);
+          });
+        },
+      };
+      const decisionAny = pd as any;
+      const repoRaw: string = (pd.go ? decisionAny.repo : null) || process.cwd();
+      const repoAbs = pathmod.isAbsolute(repoRaw) ? repoRaw : pathmod.resolve(process.cwd(), repoRaw);
+      const binding = await startNativeExecutor(m, { ...(pd.go ? pd : {}), repo: repoAbs }, nativeDeps);
+      if (!binding.sessionId) throw new Error('native relaunch did not resolve a session id');
+      return { sid: binding.sessionId, boundAt: binding.boundAt ?? Date.now() };
+    },
+    idleMin: (() => {
+      const { getProjectSettings } = require('../../project-settings') as typeof import('../../project-settings');
+      return getProjectSettings().missionSessionIdleCloseMin ?? 30;
+    })(),
+  };
+}
+
+/**
+ * handleSessionResume: reactivate a cloud session (if alive) or relaunch a native session.
+ * Leader-anchored (resume is a write — must land on the leader).
+ *
+ * @param sid        Session id
+ * @param body       Optional { missionId } for native relaunch
+ * @param deps       Injected deps (default: defaultSessionResumeDeps)
+ * @param node       Target node (for cross-node proxy; unused in route — resume proxied via leader)
+ * @param leader     Leader-anchor deps (default: realLeaderAnchor)
+ */
+export async function handleSessionResume(
+  sid: string,
+  body: { missionId?: string },
+  deps?: SessionResumeDeps,
+  node?: string,
+  leader?: LeaderAnchorDeps,
+): Promise<Envelope> {
+  // Leader-anchor: resume is a write (relaunching a session must run on the leader)
+  const anchored = await anchorToLeader(leader, 'POST', `/mission/session/${encodeURIComponent(sid)}/resume`, body, true);
+  if (anchored) return anchored;
+
+  const d = deps ?? defaultSessionResumeDeps();
+  const r = d.resolve(sid);
+
+  if (r.transport === 'cloud') {
+    // Cloud: check if alive; if so, it's already running (nothing to do)
+    try {
+      const st = await d.cloudStatus(sid);
+      if (TERMINAL_CLOUD_STATUSES.includes(st.status)) {
+        return ok({ resumed: false, reason: 'gone', transport: 'cloud' });
+      }
+      return ok({ resumed: true, sid, transport: 'cloud' });
+    } catch {
+      return ok({ resumed: false, reason: 'gone', transport: 'cloud' });
+    }
+  }
+
+  // Native: relaunch via the injected dep
+  try {
+    const launched = await d.relaunch(body.missionId);
+    const autoCloseAt = Date.now() + d.idleMin * 60_000;
+    return ok({ resumed: true, sid: launched.sid, transport: 'native', autoCloseAt });
+  } catch (e) {
+    return fail('RELAUNCH_ERROR', (e as Error).message);
+  }
+}
+
 export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
     { method: 'POST', pattern: /^\/mission$/, handler: async (req) => handleCreate((req.body || {}) as Record<string, unknown>, thisNode(), undefined, undefined, realLeaderAnchor()) },
@@ -570,6 +768,18 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     // Session operability routes (read / drive / control) — literal /session/:sid/ prefix
     // Optional body field `node`: if set and != thisNode(), the local Core proxies to that node
     // server-side (browser never gets the hub Bearer token).
+    // /mission/session/:sid/status and /resume BEFORE /read|drive|control (literal suffix wins)
+    { method: 'GET', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/status$/, handler: async (req) => handleSessionStatus(req.params.sid) },
+    { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/status$/, handler: async (req) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const node = typeof b.node === 'string' ? b.node : undefined;
+        return handleSessionStatus(req.params.sid, undefined, node);
+      } },
+    { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/resume$/, handler: async (req) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const missionId = typeof b.missionId === 'string' ? b.missionId : undefined;
+        return handleSessionResume(req.params.sid, { missionId }, undefined, undefined, realLeaderAnchor());
+      } },
     { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/read$/, handler: async (req) => {
         const b = (req.body || {}) as Record<string, unknown>;
         const lastN = typeof b.lastN === 'number' ? b.lastN : (typeof b.lastN === 'string' ? parseInt(b.lastN, 10) : undefined);

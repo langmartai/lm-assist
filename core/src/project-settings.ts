@@ -47,6 +47,8 @@ export interface ProjectSettings {
   missionControllerMaxNudges: number;
   /** Model for the adjust reasoning step. Default 'claude-opus-4-8[1m]'. */
   missionControllerModel: string;
+  /** Idle minutes before an auto-resumed local (native) session is auto-closed. Default 30. */
+  missionSessionIdleCloseMin: number;
 }
 
 // ── Constants ──────────────────────────────────────────
@@ -71,6 +73,7 @@ export const DEFAULTS: ProjectSettings = {
   missionControllerSafetyIntervalMin: 45,
   missionControllerMaxNudges: 6,
   missionControllerModel: 'claude-opus-4-8[1m]',
+  missionSessionIdleCloseMin: 30,
 };
 
 // ── Mtime Cache ──────────────────────────────────────────
@@ -110,6 +113,7 @@ export function getProjectSettings(): ProjectSettings {
       missionControllerSafetyIntervalMin: typeof data.missionControllerSafetyIntervalMin === 'number' ? data.missionControllerSafetyIntervalMin : DEFAULTS.missionControllerSafetyIntervalMin,
       missionControllerMaxNudges: typeof data.missionControllerMaxNudges === 'number' ? data.missionControllerMaxNudges : DEFAULTS.missionControllerMaxNudges,
       missionControllerModel: typeof data.missionControllerModel === 'string' ? data.missionControllerModel : DEFAULTS.missionControllerModel,
+      missionSessionIdleCloseMin: typeof data.missionSessionIdleCloseMin === 'number' ? data.missionSessionIdleCloseMin : DEFAULTS.missionSessionIdleCloseMin,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -144,6 +148,7 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     missionControllerSafetyIntervalMin: typeof partial.missionControllerSafetyIntervalMin === 'number' ? partial.missionControllerSafetyIntervalMin : current.missionControllerSafetyIntervalMin,
     missionControllerMaxNudges: typeof partial.missionControllerMaxNudges === 'number' ? partial.missionControllerMaxNudges : current.missionControllerMaxNudges,
     missionControllerModel: typeof partial.missionControllerModel === 'string' ? partial.missionControllerModel : current.missionControllerModel,
+    missionSessionIdleCloseMin: typeof partial.missionSessionIdleCloseMin === 'number' ? partial.missionSessionIdleCloseMin : current.missionSessionIdleCloseMin,
   };
 
   // Ensure parent directory exists
