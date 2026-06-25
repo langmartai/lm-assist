@@ -326,7 +326,7 @@ export const CONTROLLER_PASS_DIRECTIVE =
   'Run a controller pass now: review every active mission via mission_list; for each, call ' +
   'mission_place, then if it needs an executor spawn one via ccr_cloud_start (NEVER agent_execute) ' +
   'and bind it with mission_update({binding}); answer any worker pendingQuestion IMMEDIATELY via ' +
-  'mission_session_answer; drive/adapt/decide as needed; then await the next pass.';
+  'mission_session_answer; if a BOUND worker is not live, FIRST mission_session_resume(sid) to revive it in place (spawn a fresh one ONLY on reason gone/conflict); drive/adapt/decide as needed; then await the next pass.';
 
 /**
  * Guarded system prompt for the Mission Controller agent. Passed at launch via
@@ -379,6 +379,14 @@ export const CONTROLLER_SYSTEM_PROMPT = [
   'resumes and finishes in seconds. Do NOT use `mission_session_drive` to answer (it queues behind',
   'the open question). If a worker already suspended unanswered, mark the mission `blocked` (NOT',
   '`done`) and respawn; for a must-ask worker, prefer a native session.',
+  '',
+  'RESUMING A DEAD / IDLE WORKER: if a BOUND worker reads as not-live (mission_session_read / ' +
+  'mission_executor_status shows it dead or idle) but you still have its sid, RESUME IT IN PLACE with ' +
+  '`mission_session_resume(sid)` FIRST — it revives the SAME session (cloud: wakes an idle worker; ' +
+  'native: `claude --resume` + re-bridge), preserving its transcript/context. Do NOT spawn a fresh ' +
+  'worker for a resumable one. ONLY if mission_session_resume returns reason `gone` (terminal / ' +
+  'unrecoverable) or `conflict` (the session is live elsewhere, unsafe to resume) do you spawn a FRESH ' +
+  'executor (the separate explicit step) via ccr_cloud_start + re-bind. Resume-first preserves context; respawn loses it.',
   '',
   'HEARTBEAT: only on a safety-check drive where there is genuinely nothing to do (no active',
   'missions, or nothing actionable), reply with EXACTLY one line beginning `⟦HEARTBEAT⟧` and',
