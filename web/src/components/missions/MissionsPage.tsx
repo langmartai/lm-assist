@@ -173,12 +173,10 @@ interface SessionTab {
   kind?: 'session' | 'mission';
 }
 
-type TabAliveStatus = 'checking' | 'alive' | 'dead' | 'resuming' | 'gone' | 'confirm-resume';
+type TabAliveStatus = 'checking' | 'alive' | 'dead' | 'resuming' | 'gone' | 'confirm-resume' | 'resume-gone' | 'resume-conflict';
 
 interface TabState {
   alive: TabAliveStatus;
-  /** If resumed native session provides a different sid, swap to this. */
-  resolvedSid?: string;
   autoCloseAt?: number | null;
   notice?: string | null;
 }
@@ -732,7 +730,12 @@ export function MissionsPage() {
               { method: 'POST', body: { missionId: tab.missionId ?? undefined, node: tab.node ?? undefined } },
             );
             const d = (resumeRes as any).data ?? resumeRes;
-            if (d?.resumed) {
+            const reason = d?.reason as string | undefined;
+            if (reason === 'gone') {
+              setTabStates((p) => ({ ...p, [sid]: { alive: 'resume-gone', notice: "Can't resume — this worker is gone." } }));
+            } else if (reason === 'conflict') {
+              setTabStates((p) => ({ ...p, [sid]: { alive: 'resume-conflict', notice: "This session is live elsewhere and can't be safely resumed." } }));
+            } else if (d?.resumed) {
               setTabStates((p) => ({ ...p, [sid]: { alive: 'alive' } }));
             } else {
               setTabStates((p) => ({ ...p, [sid]: { alive: 'gone', notice: 'Session ended — cannot resume.' } }));
@@ -794,38 +797,33 @@ export function MissionsPage() {
     setActiveTabSid((cur) => (cur === sid ? null : cur));
   }, []);
 
-  /** Confirm-resume a native session: POST .../resume, swap tab sid on success. */
+  /** Confirm-resume a native session: POST .../resume, keep the same sid (backend preserves it). */
   const confirmResumeNative = useCallback(
     async (tab: SessionTab) => {
       const sid = tab.sid;
       setTabStates((p) => ({ ...p, [sid]: { alive: 'resuming' } }));
       try {
-        const res = await apiFetch<{ data?: { resumed: boolean; sid?: string; autoCloseAt?: number; reason?: string }; resumed?: boolean; sid?: string; autoCloseAt?: number }>(
+        const res = await apiFetch<{ data?: { resumed: boolean; sid?: string; autoCloseAt?: number; reason?: string }; resumed?: boolean; sid?: string; autoCloseAt?: number; reason?: string }>(
           `/mission/session/${encodeURIComponent(sid)}/resume`,
           { method: 'POST', body: { missionId: tab.missionId ?? undefined, node: tab.node ?? undefined } },
         );
         const d = (res as any).data ?? res;
-        if (d?.resumed && d?.sid) {
-          const newSid = d.sid as string;
+        const reason = d?.reason as string | undefined;
+        if (reason === 'gone') {
+          setTabStates((p) => ({ ...p, [sid]: { alive: 'resume-gone', notice: "Can't resume — this worker is gone." } }));
+        } else if (reason === 'conflict') {
+          setTabStates((p) => ({ ...p, [sid]: { alive: 'resume-conflict', notice: "This session is live elsewhere and can't be safely resumed." } }));
+        } else if (d?.resumed) {
+          // Native resume preserves the same sid — no tab swap needed.
           const autoCloseAt: number | undefined = d.autoCloseAt;
-          // Swap the tab to the new sid
-          setOpenTabs((prev) =>
-            prev.map((t) => (t.sid === sid ? { ...t, sid: newSid } : t)),
-          );
-          setActiveTabSid(newSid);
-          setTabStates((p) => {
-            const n = { ...p };
-            delete n[sid];
-            n[newSid] = {
+          setTabStates((p) => ({
+            ...p,
+            [sid]: {
               alive: 'alive',
-              resolvedSid: newSid,
               autoCloseAt: autoCloseAt ?? null,
-              notice: autoCloseAt
-                ? `Session resumed — auto-closes after 30 min idle.`
-                : null,
-            };
-            return n;
-          });
+              notice: autoCloseAt ? `Session resumed — auto-closes after 30 min idle.` : null,
+            },
+          }));
         } else {
           setTabStates((p) => ({ ...p, [sid]: { alive: 'gone', notice: 'Failed to resume session.' } }));
         }
@@ -1762,6 +1760,53 @@ export function MissionsPage() {
                       <X size={12} /> Cancel
                     </button>
                   </div>
+                </div>
+              );
+            }
+
+            // Resume-gone — session permanently gone; offer "Start fresh worker"
+            if (ts.alive === 'resume-gone') {
+              return (
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: 'var(--color-text-tertiary)', padding: 24 }}>
+                  <AlertCircle size={24} style={{ color: 'var(--color-text-tertiary)' }} />
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>{ts.notice ?? "Can't resume — this worker is gone."}</div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                    {tab.missionId && (
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={async () => {
+                          try {
+                            // Clear the mission binding so the controller spawns a fresh worker.
+                            await apiFetch(`/mission/${encodeURIComponent(tab.missionId!)}`, {
+                              method: 'POST',
+                              body: { binding: null },
+                            });
+                          } catch {
+                            // Best-effort — proceed to close tab regardless.
+                          }
+                          closeTab(tab.sid);
+                        }}
+                      >
+                        <RefreshCw size={12} /> Start fresh worker
+                      </button>
+                    )}
+                    <button className="btn btn-ghost btn-sm" onClick={() => closeTab(tab.sid)}>
+                      <X size={12} /> Close tab
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+
+            // Resume-conflict — session is live elsewhere; do NOT offer fresh spawn
+            if (ts.alive === 'resume-conflict') {
+              return (
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: 'var(--color-text-tertiary)', padding: 24 }}>
+                  <AlertCircle size={24} style={{ color: 'var(--color-status-orange)' }} />
+                  <div style={{ fontSize: 13, fontWeight: 500, textAlign: 'center' }}>{ts.notice ?? "This session is live elsewhere and can't be safely resumed."}</div>
+                  <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => closeTab(tab.sid)}>
+                    <X size={12} /> Close tab
+                  </button>
                 </div>
               );
             }

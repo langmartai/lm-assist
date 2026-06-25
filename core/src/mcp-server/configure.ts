@@ -260,6 +260,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   mission_session_drive: 'write',
   mission_session_answer: 'write',
   mission_session_control: 'admin',
+  mission_session_resume: 'write',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */
