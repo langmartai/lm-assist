@@ -38,6 +38,23 @@ test('get unknown id fails', async () => {
   assert.strictEqual(r.success, false);
 });
 
+test('mission_update binds a spawned executor (binding) — required for the supervisor to monitor it', async () => {
+  const port = fakePort();
+  const created = await handleCreate({ title: 'Bind me', objective: 'do work' }, 'gw4-1', port);
+  const id = (created.data as Mission).id;
+  // The controller spawns a cloud worker then binds it. Without binding support the mission stays
+  // unbound → the supervisor can't monitor it → its pendingQuestion never triggers fast engagement.
+  const bound = await handlePatch(id, { binding: { sessionId: 'session_worker123', kind: 'worker' } }, port);
+  const b = (bound.data as Mission).binding;
+  assert.ok(b, 'binding should be set');
+  assert.strictEqual(b!.sessionId, 'session_worker123');
+  assert.strictEqual(b!.kind, 'worker');
+  assert.ok(typeof b!.boundAt === 'number');
+  // binding:null unbinds.
+  const unbound = await handlePatch(id, { binding: null }, port);
+  assert.strictEqual((unbound.data as Mission).binding, null);
+});
+
 test('create requires title and objective', async () => {
   const r = await handleCreate({ title: '' }, 'gw4-1', fakePort());
   assert.strictEqual(r.success, false);

@@ -2,7 +2,7 @@
 import type { RouteHandler, RouteContext } from '../index';
 import { randomBytes } from 'crypto';
 import { touchActivity, trackResumedNative } from '../../mission/mission-session-reaper';
-import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActor, place, ExecutorState } from '../../mission/mission-model';
+import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActor, place, ExecutorState, MissionBinding } from '../../mission/mission-model';
 import { resolveMcpActor } from '../../mission/mission-actor';
 import {
   MissionDataPort, getMission, listMissions, putMission, thisNode, getControllerSession,
@@ -140,6 +140,32 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
     if (str(e.branch) !== undefined) m.env.branch = str(e.branch);
     if (arr(e.resources)) m.env.resources = arr(e.resources)!;
     if (e.exclusive !== undefined) m.env.exclusive = e.exclusive === true || e.exclusive === 'true';
+  }
+  // Bind a spawned executor to the mission. WITHOUT this the controller could ccr_cloud_start a
+  // worker but had no way to attach it (the guide said "bind via mission_update" but the field was
+  // never accepted) → the mission stayed unbound → the supervisor couldn't monitor it → a worker's
+  // pendingQuestion never triggered the fast gate-engagement → the cloud worker idle-suspended
+  // before being answered. `binding:{sessionId,kind,node?,ccr?}` (sessionId=null to unbind).
+  if (b.binding !== undefined && (b.binding === null || typeof b.binding === 'object')) {
+    const bn = (b.binding || {}) as Record<string, unknown>;
+    const sid = str(bn.sessionId);
+    if (b.binding === null || sid === undefined) {
+      m.binding = null;
+    } else {
+      const k = str(bn.kind);
+      const binding: MissionBinding = {
+        sessionId: sid,
+        node: str(bn.node) ?? thisNode(),
+        kind: (k === 'orchestrator' || k === 'worker') ? k : 'worker',
+        boundAt: Date.now(),
+      };
+      if (bn.ccr && typeof bn.ccr === 'object') {
+        const cc = bn.ccr as Record<string, unknown>;
+        const cse = str(cc.cse); const csid = str(cc.sid);
+        if (cse && csid) binding.ccr = { cse, sid: csid, webUrl: str(cc.webUrl) ?? null };
+      }
+      m.binding = binding;
+    }
   }
   m.lastUpdatedBy = who;
   m.adjustments.push({ at: Date.now(), trigger: 'user-edit', change: 'mission updated via API', by: 'user', actor: who });

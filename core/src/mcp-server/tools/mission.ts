@@ -71,8 +71,11 @@ export const MISSION_TOOL_DEFS = [
   {
     name: 'mission_update',
     description:
-      'Update a mission (objective/title/plan/nextSteps/status/env/dependsOn). ' +
-      'Use to refine, pause, or unblock.',
+      'Update a mission (objective/title/plan/nextSteps/status/env/dependsOn/binding). ' +
+      'Use to refine, pause, unblock, or BIND a spawned executor. After you ccr_cloud_start (or natively launch) a worker, ' +
+      'call mission_update({id, binding:{sessionId:"<the worker sid>", kind:"worker"|"orchestrator"}}) so the supervisor ' +
+      'can MONITOR it — binding is REQUIRED for the supervisor to detect the worker\'s pendingQuestion and engage you to ' +
+      'answer it FAST (a cloud worker left unanswered idle-suspends and cannot resume). Pass binding:null to unbind.',
     inputSchema: obj(
       {
         id: S,
@@ -86,6 +89,11 @@ export const MISSION_TOOL_DEFS = [
         nextSteps: SARR,
         dependsOn: SARR,
         projects: SARR,
+        binding: {
+          type: 'object' as const,
+          description: 'Bind a spawned executor: {sessionId, kind:"worker"|"orchestrator", node?}. Required so the supervisor monitors it + answers its question fast.',
+          properties: { sessionId: { type: 'string' as const }, kind: { type: 'string' as const, enum: ['worker', 'orchestrator'] }, node: { type: 'string' as const } },
+        },
       },
       ['id'],
     ),
