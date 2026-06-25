@@ -1,8 +1,6 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import {
   Target,
   RefreshCw,
@@ -15,14 +13,14 @@ import {
   ChevronDown,
   ChevronRight,
   Plug,
-  Send,
   Square,
   RotateCcw,
   AlertCircle,
-  Wrench,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { CcrCloudView } from '@/components/ccr/CcrCloudView';
+import { MissionSessionChat } from './MissionSessionChat';
+import type { SessionMessage } from './MissionSessionChat';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -152,96 +150,6 @@ interface OperableSession {
   webUrl?: string;
 }
 
-interface SessionMessage {
-  role?: string;
-  // Mission session reads (`/mission/session/:sid/read`) return `{ role, text, tools? }`.
-  // Other session sources may use `content` (string or content-block array).
-  text?: string;
-  content?: string | Array<{ type?: string; text?: string }>;
-  type?: string;
-  /** Tool names used in this turn (from CloudTranscriptMsg.tools or native toolCalls[].name). */
-  tools?: string[];
-  [key: string]: unknown;
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-/** Resolve a session message to plain text (read API returns {role,text}; other sources use content). */
-function resolveMsgText(msg: SessionMessage): string {
-  if (typeof msg.text === 'string') return msg.text;
-  if (typeof msg.content === 'string') return msg.content;
-  if (Array.isArray(msg.content)) {
-    return msg.content
-      .map((c) => (typeof c === 'object' && c?.type === 'text' ? c.text : ''))
-      .filter(Boolean)
-      .join('\n');
-  }
-  return '';
-}
-
-/**
- * Heartbeat = the controller's autonomous-pass noise we hide from the chat so it
- * stays a usable interface: the standing pass directive and ⟦HEARTBEAT⟧ idle replies.
- * Tool-call turns are now shown (as badges) so the user can see what the controller
- * did. A truly empty turn (no text AND no tools) is still dropped.
- */
-function isHeartbeatMsg(msg: SessionMessage): boolean {
-  const text = resolveMsgText(msg).trim();
-  const hasTools = Array.isArray(msg.tools) && msg.tools.length > 0;
-  // Drop truly empty turns (no text and no tools).
-  if (!text && !hasTools) return true;
-  // Drop the standing pass directive sent every tick.
-  if (text.startsWith('Run a controller pass now:')) return true;
-  // Drop idle ⟦HEARTBEAT⟧ replies.
-  if (text.startsWith('⟦HEARTBEAT⟧')) return true;
-  return false;
-}
-
-/** Strip the `mcp__<server>__` prefix so a tool reads as just its name (mission_list). */
-function shortToolName(t: string): string {
-  return t.replace(/^mcp__.*?__/, '');
-}
-
-/** A message's MEANINGFUL text — treats the bare "[N tool call(s)]" placeholder as empty. */
-function meaningfulText(msg: SessionMessage): string {
-  const t = resolveMsgText(msg).trim();
-  return /^\[\d+ tool call\(s\)\]$/.test(t) ? '' : resolveMsgText(msg);
-}
-
-/**
- * A run of tool calls renders as ONE minimal line (the tool names) and expands
- * on click to the full badge list — so consecutive tool calls between messages
- * don't sprawl the chat.
- */
-function ToolGroupLine({ tools }: { tools: string[] }) {
-  const [open, setOpen] = useState(false);
-  if (!tools.length) return null;
-  const names = tools.map(shortToolName);
-  const preview = names.slice(0, 4).join(', ') + (names.length > 4 ? ` +${names.length - 4}` : '');
-  return (
-    <div style={{ alignSelf: 'flex-start', maxWidth: '82%', margin: '1px 0' }}>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        title={open ? 'collapse tool calls' : 'expand tool calls'}
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'none', border: 'none', cursor: 'pointer', padding: '1px 2px', fontSize: 10.5, color: 'var(--color-text-tertiary)' }}
-      >
-        <span style={{ fontSize: 8, width: 8 }}>{open ? '▾' : '▸'}</span>
-        <Wrench size={10} />
-        <span>{open ? `${tools.length} tool call${tools.length > 1 ? 's' : ''}` : preview}</span>
-      </button>
-      {open && (
-        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3, paddingLeft: 6 }}>
-          {names.map((t, ti) => (
-            <span key={ti} className="badge badge-outline" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10.5 }}>
-              <Wrench size={10} /> {t}
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 const STATUS_COLORS: Record<MissionStatus, string> = {
   draft: 'var(--color-text-tertiary)',
@@ -366,14 +274,8 @@ export function MissionsPage() {
   // Collapsible contributors
   const [contributorsExpanded, setContributorsExpanded] = useState<Set<string>>(new Set());
 
-  // ── Chat (controller) ──
-  const [chatMessages, setChatMessages] = useState<SessionMessage[]>([]);
-  const [chatDraft, setChatDraft] = useState('');
-  const [chatSendBusy, setChatSendBusy] = useState(false);
-  const [chatSendError, setChatSendError] = useState<string | null>(null);
+  // ── Chat (controller) ── control actions (interrupt/stop/restart) stay here
   const [chatControlBusy, setChatControlBusy] = useState<Record<string, boolean>>({});
-  const chatPollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
   // Sidebar/create toggle (secondary)
   const [showItemsSidebar, setShowItemsSidebar] = useState(true);
@@ -707,60 +609,6 @@ export function MissionsPage() {
 
   // ── Controller chat helpers ──
 
-  const readControllerChat = useCallback(
-    async (sid: string, leader: ControllerLeader | null | undefined) => {
-      try {
-        // Pass node in the request body so the LOCAL Core proxies to the leader server-side.
-        // The browser never needs a hub Bearer token — only the server does.
-        const res = await apiFetch<{ data?: { messages: SessionMessage[] }; messages?: SessionMessage[] }>(
-          `/mission/session/${encodeURIComponent(sid)}/read`,
-          { method: 'POST', body: { lastN: 30, node: leader?.node ?? undefined } },
-        );
-        const msgs = (res as any).data?.messages ?? (res as any).messages ?? [];
-        setChatMessages(msgs);
-        // Auto-scroll to bottom
-        setTimeout(() => {
-          if (chatScrollRef.current) {
-            chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
-          }
-        }, 50);
-      } catch {
-        // silently ignore — keep last messages
-      }
-    },
-    [apiFetch],
-  );
-
-  const sendControllerChat = useCallback(
-    async (sid: string, leader: ControllerLeader | null | undefined) => {
-      const text = chatDraft.trim();
-      if (!text) return;
-      setChatSendBusy(true);
-      setChatSendError(null);
-      try {
-        // apiFetch unwraps {success,data}; a backend failure (e.g. controller not
-        // idle) is an HTTP 4xx → fetchJson throws → handled in catch below.
-        await apiFetch(
-          `/mission/session/${encodeURIComponent(sid)}/drive`,
-          { method: 'POST', body: { text, node: leader?.node ?? undefined } },
-        );
-        setChatDraft('');
-        // Poll immediately after send
-        setTimeout(() => readControllerChat(sid, leader), 600);
-      } catch (e) {
-        // Surface a clean message: pull error.message out of an "API 4xx: {json}" body if present.
-        const raw = (e as Error)?.message || '';
-        let msg = raw;
-        const m = raw.match(/\{.*\}/s);
-        if (m) { try { msg = JSON.parse(m[0])?.error?.message || raw; } catch { /* keep raw */ } }
-        setChatSendError(msg || 'Send failed — controller may be busy. Retry.');
-      } finally {
-        setChatSendBusy(false);
-      }
-    },
-    [apiFetch, chatDraft, readControllerChat],
-  );
-
   const controllerChatControl = useCallback(
     async (sid: string, leader: ControllerLeader | null | undefined, action: 'interrupt' | 'stop' | 'restart') => {
       setChatControlBusy((p) => ({ ...p, [action]: true }));
@@ -781,47 +629,6 @@ export function MissionsPage() {
     [apiFetch],
   );
 
-  // Start/stop the chat poller when the controller session changes.
-  // The local Core server-side proxies the leader's controllerSession into the /mission/controller
-  // response, so controller.controllerSession is already authoritative — no leaderController needed.
-  useEffect(() => {
-    const cs = controller?.controllerSession;
-    const leader = controller?.leader;
-    if (!cs) {
-      if (chatPollerRef.current) {
-        clearInterval(chatPollerRef.current);
-        chatPollerRef.current = null;
-      }
-      setChatMessages([]);
-      setChatSendError(null);
-      return;
-    }
-    const sid = cs.cse ?? cs.sessionId;
-    // Initial read
-    readControllerChat(sid, leader);
-    // Poll every 4s
-    if (chatPollerRef.current) clearInterval(chatPollerRef.current);
-    chatPollerRef.current = setInterval(() => readControllerChat(sid, leader), 4000);
-    return () => {
-      if (chatPollerRef.current) {
-        clearInterval(chatPollerRef.current);
-        chatPollerRef.current = null;
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    controller?.controllerSession?.sessionId,
-    controller?.controllerSession?.cse,
-    controller?.leader?.node,
-    controller?.leader?.isSelf,
-  ]);
-
-  // Cleanup chat poller on unmount
-  useEffect(() => {
-    return () => {
-      if (chatPollerRef.current) clearInterval(chatPollerRef.current);
-    };
-  }, []);
 
   // Open/close operate panel and start/stop polling
   const openOperatePanel = useCallback(
@@ -1454,28 +1261,6 @@ export function MissionsPage() {
   // Derive the session id used to address the controller (cse preferred for cloud sessions).
   const controllerSid = cs ? (cs.cse ?? cs.sessionId) : null;
 
-  // Show only meaningful chat — hide the controller's autonomous heartbeat/pass noise.
-  const visibleChat = chatMessages.filter((m) => !isHeartbeatMsg(m));
-  const heartbeatCount = chatMessages.length - visibleChat.length;
-
-  // Group the chat: meaningful text messages render as bubbles; runs of tool-only
-  // turns (and a message's own tools) collapse into one minimal expandable line.
-  type ChatGroup = { kind: 'msg'; msg: SessionMessage; text: string } | { kind: 'tools'; tools: string[] };
-  const chatGroups: ChatGroup[] = [];
-  {
-    let pending: string[] = [];
-    const flush = () => { if (pending.length) { chatGroups.push({ kind: 'tools', tools: pending }); pending = []; } };
-    for (const m of visibleChat) {
-      const t = meaningfulText(m);
-      const tools = Array.isArray(m.tools) ? m.tools : [];
-      if (!t && tools.length) { pending.push(...tools); continue; } // tool-only turn → accumulate
-      flush();
-      chatGroups.push({ kind: 'msg', msg: m, text: t });
-      if (tools.length) pending.push(...tools); // a message's own tools collapse after it
-    }
-    flush();
-  }
-
   // Failover state: controllerSession is stale when it belongs to a different node than the
   // current elected leader. This happens during the ~1-min window after election flips but
   // before the new leader's supervisor has launched its controller session.
@@ -1681,11 +1466,10 @@ export function MissionsPage() {
             </div>
           )}
 
-          {/* Chat transcript area */}
+          {/* State banners (failover / offline) — shown when no live session chat */}
           <div
-            ref={chatScrollRef}
             style={{
-              flex: 1,
+              flex: (!cs || isFailingOver) ? 1 : undefined,
               overflow: 'auto',
               padding: '12px 16px',
               display: 'flex',
@@ -1761,119 +1545,29 @@ export function MissionsPage() {
                 )}
               </div>
             )}
-            {cs && visibleChat.length === 0 && (
-              <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', textAlign: 'center', padding: '16px 0' }}>
-                {heartbeatCount > 0
-                  ? 'Controller is running idle background passes — send a message to give it work.'
-                  : 'No messages yet — the controller is running'}
-              </div>
-            )}
-            {chatGroups.map((g, i) => {
-              if (g.kind === 'tools') return <ToolGroupLine key={`t${i}`} tools={g.tools} />;
-              const msg = g.msg;
-              const text = g.text;
-              const msgRole = (msg.role as string) ?? (msg.type as string) ?? 'msg';
-              const isUser = msgRole === 'user';
-              const isAssistant = msgRole === 'assistant';
-              return (
-                <div
-                  key={`m${i}`}
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: isUser ? 'flex-end' : 'flex-start',
-                    gap: 2,
-                  }}
-                >
-                  <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', paddingRight: isUser ? 0 : 0 }}>
-                    {isUser ? 'you' : isAssistant ? 'controller' : msgRole}
-                  </span>
-                  <div
-                    style={{
-                      maxWidth: '82%',
-                      padding: '6px 10px',
-                      borderRadius: 'var(--radius-md)',
-                      background: isUser
-                        ? 'var(--color-accent)'
-                        : 'var(--color-bg-elevated)',
-                      color: isUser
-                        ? '#fff'
-                        : 'var(--color-text-primary)',
-                      fontSize: 12,
-                      lineHeight: 1.5,
-                      wordBreak: 'break-word',
-                      border: isUser ? 'none' : '1px solid var(--color-border-subtle)',
-                    }}
-                  >
-                    {text ? (
-                      <div className="prose" style={{ fontSize: 12, lineHeight: 1.5 }}>
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
-                      </div>
-                    ) : (
-                      <span style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>(no text)</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-            {cs && heartbeatCount > 0 && (
-              <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center', padding: '4px 0', fontStyle: 'italic' }}>
-                · controller idle ({heartbeatCount} background pass{heartbeatCount === 1 ? '' : 'es'} hidden) ·
-              </div>
-            )}
           </div>
 
-          {/* Chat composer — hidden when failing over (stale/dead controllerSession) */}
+          {/* Controller chat — rendered via MissionSessionChat when a controller session is live */}
           {cs && controllerSid && !isFailingOver && (
-            <div
-              style={{
-                padding: '10px 16px',
-                borderTop: '1px solid var(--color-border-subtle)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 6,
-                flexShrink: 0,
-                background: 'var(--color-bg-root)',
-              }}
-            >
-              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-                <textarea
-                  className="input"
-                  value={chatDraft}
-                  rows={3}
-                  placeholder="Type a message to the controller… (Enter to send, Shift+Enter for newline)"
-                  style={{ flex: 1, resize: 'vertical', fontSize: 12 }}
-                  onChange={(e) => { setChatDraft(e.target.value); if (chatSendError) setChatSendError(null); }}
-                  onKeyDown={(e) => {
-                    // Plain Enter sends; Shift+Enter inserts a newline. (Ctrl/Cmd+Enter also sends.)
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      sendControllerChat(controllerSid, leader);
-                    }
-                  }}
-                />
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={() => sendControllerChat(controllerSid, leader)}
-                  disabled={chatSendBusy || !chatDraft.trim()}
-                  title="Send (Enter)"
-                  style={{ height: 'auto', alignSelf: 'stretch', display: 'flex', alignItems: 'center', gap: 4 }}
-                >
-                  {chatSendBusy ? (
-                    <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />
-                  ) : (
-                    <Send size={13} />
-                  )}
-                  Send
-                </button>
-              </div>
-              {chatSendError && (
-                <div style={{ fontSize: 11, color: 'var(--color-status-red, #e5484d)', paddingTop: 2 }}>
-                  {chatSendError}
-                </div>
-              )}
-              {/* Control buttons row */}
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <>
+              <MissionSessionChat
+                sid={controllerSid}
+                node={leader?.node ?? undefined}
+                apiFetch={apiFetch}
+                heightFill
+              />
+              {/* Control buttons row (interrupt/stop/restart stay in MissionsPage — controller-specific) */}
+              <div
+                style={{
+                  padding: '6px 16px 10px',
+                  borderTop: '1px solid var(--color-border-subtle)',
+                  display: 'flex',
+                  gap: 6,
+                  flexWrap: 'wrap',
+                  flexShrink: 0,
+                  background: 'var(--color-bg-root)',
+                }}
+              >
                 <button
                   className="btn btn-ghost btn-sm"
                   onClick={() => controllerChatControl(controllerSid, leader, 'interrupt')}
@@ -1899,7 +1593,7 @@ export function MissionsPage() {
                   {chatControlBusy['restart'] ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <RotateCcw size={11} />} Restart
                 </button>
               </div>
-            </div>
+            </>
           )}
         </div>
 
