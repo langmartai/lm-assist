@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.101] — mission page: expand large UI elements to a full-screen overlay (2026-06-26)
+
+- **Any large element on the mission page can now be maximized to a full-screen overlay** for
+  comfortable viewing/editing, and collapsed back (Esc or a Collapse button). One reusable
+  `FullScreenOverlay` (portal to `document.body`, covers the viewport incl. the nav; body scroll
+  locked) serves every element; a `Maximize2` `ExpandIconButton` is the affordance.
+- **Text fields (Objective / Plan / Next steps)** expand into a `MarkdownSplitEditor` — an
+  Edit / Split / Preview toggle with a large textarea + a live `react-markdown` preview. The editor
+  binds to the SAME draft state as the inline field, so Save, dirty-tracking, and edit persistence
+  are unchanged; Next steps previews as a bullet list. Save + the "saved" indicator live in the
+  overlay header.
+- **Mission chat** and the **executor/session view** expand to full-screen too (reusing
+  `MissionSessionChat` / `CcrCloudView`); `CcrCloudView` gained an optional `fill` prop so it grows
+  to fill the overlay (inline rendering unchanged).
+- Web-only change. Browser-verified on the dev web: split editor + live preview, live edit → preview
+  update, Save persisted, Esc + Collapse, Next steps `<ul>`, full-screen chat.
+
 ## [0.1.100] — cloud-worker AskUserQuestion answer goes to the CLIENT control_response channel (2026-06-25)
 
 - **Root-cause fix: a cloud mission worker (`ccr_cloud_start`, `/v1/sessions` BYOC) blocked on
