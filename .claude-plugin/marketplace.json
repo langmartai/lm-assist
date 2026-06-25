@@ -12,7 +12,7 @@
   "plugins": [
     {
       "name": "claude-code-multisession",
-      "version": "0.1.101",
+      "version": "0.1.102",
       "source": {
         "source": "url",
         "url": "https://github.com/langmartai/claude-code-multisession.git",

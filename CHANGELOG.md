@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.102] — resume a mission's worker session in place (2026-06-26)
+
+- **A mission's bound worker (executor) session can now be RESUMED in place**, preserving its
+  context, instead of being status-checked (cloud) or replaced by a fresh session (native).
+  - **Native** worker → `claude --resume <sid> --remote-control` in the same worktree — **keeps the
+    original `sessionId`** (transcript continues) and re-bridges to the cloud relay. (Was: a brand-new
+    session, losing context.) The `--resume` + `--remote-control` composition + sid-preservation are
+    live-proven.
+  - **Cloud** worker → wakes an idle worker (re-drive + `reBootstrap`); reports `gone` if terminal.
+  - **Resume-only:** a terminal/unrecoverable session reports `gone` (or `conflict` for a native session
+    that's live-but-unattachable); spawning a fresh worker stays a separate explicit action.
+- Surfaces: the REST `POST /mission/session/:sid/resume` route now truly resumes; a new
+  **`mission_session_resume`** MCP tool; the **controller agent's playbook** (system prompt +
+  `guide("missions")`) now resumes-first before respawning; and the **Missions web UI** handles
+  `ok`/`alive`/`conflict`/`gone` (with a "Start fresh worker" button on `gone`).
+- New `core/src/mission/mission-resume.ts` (`decideCloudResume`/`decideNativeResume` + `resumeWorker`);
+  `handleSessionResume` delegates to it. 42 tests across 4 suites.
+
 ## [0.1.101] — mission page: expand large UI elements to a full-screen overlay (2026-06-26)
 
 - **Any large element on the mission page can now be maximized to a full-screen overlay** for
