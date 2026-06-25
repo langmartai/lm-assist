@@ -12,6 +12,21 @@ import {
   MessageSquare,
 } from 'lucide-react';
 import { MissionSessionChat } from './MissionSessionChat';
+import { FullScreenOverlay, ExpandIconButton } from './FullScreenOverlay';
+import { MarkdownSplitEditor } from './MarkdownSplitEditor';
+
+/** Which large element is currently expanded full-screen (null = none). */
+type ExpandTarget = 'objective' | 'plan' | 'nextSteps' | 'chat';
+
+/** Next steps render as a bullet list in the Markdown preview. */
+function nextStepsToMarkdown(v: string): string {
+  return v
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => `- ${s}`)
+    .join('\n');
+}
 
 // ── Types (mirror MissionsPage.tsx — do not invent fields) ───────────────────
 
@@ -104,6 +119,9 @@ export function MissionDetailView({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
+
+  // Which large element is expanded to a full-screen overlay (null = none).
+  const [expanded, setExpanded] = useState<ExpandTarget | null>(null);
 
   // Editable draft state + the last-loaded baseline (to detect user edits).
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -243,6 +261,18 @@ export function MissionDetailView({
 
   const d = draft ?? draftFromMission(mission);
 
+  // Field map for the full-screen editor overlay — binds to the SAME draft setters the inline
+  // textareas use, so edits made in the overlay flow back to Save / dirty-tracking unchanged.
+  const fieldMap: Record<
+    'objective' | 'plan' | 'nextSteps',
+    { label: string; value: string; set: (v: string) => void; mono?: boolean; transform?: (v: string) => string }
+  > = {
+    objective: { label: 'Objective', value: d.objective, set: (v) => setDraft((p) => ({ ...(p ?? d), objective: v })) },
+    plan: { label: 'Plan', value: d.plan, set: (v) => setDraft((p) => ({ ...(p ?? d), plan: v })), mono: true },
+    nextSteps: { label: 'Next steps', value: d.nextSteps, set: (v) => setDraft((p) => ({ ...(p ?? d), nextSteps: v })), transform: nextStepsToMarkdown },
+  };
+  const expandedField = expanded && expanded !== 'chat' ? fieldMap[expanded] : null;
+
   return (
     <div
       style={{
@@ -303,8 +333,11 @@ export function MissionDetailView({
             />
           </label>
 
-          <label style={{ fontSize: 11, color: 'var(--color-text-secondary)', display: 'flex', flexDirection: 'column', gap: 3 }}>
-            Objective
+          <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ flex: 1 }}>Objective</span>
+              <ExpandIconButton onClick={() => setExpanded('objective')} title="Expand Objective" />
+            </div>
             <textarea
               className="input"
               value={d.objective}
@@ -312,10 +345,13 @@ export function MissionDetailView({
               style={{ width: '100%', resize: 'vertical', fontSize: 12 }}
               onChange={(e) => setDraft((p) => ({ ...(p ?? d), objective: e.target.value }))}
             />
-          </label>
+          </div>
 
-          <label style={{ fontSize: 11, color: 'var(--color-text-secondary)', display: 'flex', flexDirection: 'column', gap: 3 }}>
-            Plan
+          <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ flex: 1 }}>Plan</span>
+              <ExpandIconButton onClick={() => setExpanded('plan')} title="Expand Plan" />
+            </div>
             <textarea
               className="input"
               value={d.plan}
@@ -324,10 +360,13 @@ export function MissionDetailView({
               style={{ width: '100%', resize: 'vertical', fontSize: 12, fontFamily: 'var(--font-mono)' }}
               onChange={(e) => setDraft((p) => ({ ...(p ?? d), plan: e.target.value }))}
             />
-          </label>
+          </div>
 
-          <label style={{ fontSize: 11, color: 'var(--color-text-secondary)', display: 'flex', flexDirection: 'column', gap: 3 }}>
-            Next steps <span style={{ color: 'var(--color-text-tertiary)' }}>(one per line)</span>
+          <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ flex: 1 }}>Next steps <span style={{ color: 'var(--color-text-tertiary)' }}>(one per line)</span></span>
+              <ExpandIconButton onClick={() => setExpanded('nextSteps')} title="Expand Next steps" />
+            </div>
             <textarea
               className="input"
               value={d.nextSteps}
@@ -336,7 +375,7 @@ export function MissionDetailView({
               style={{ width: '100%', resize: 'vertical', fontSize: 12 }}
               onChange={(e) => setDraft((p) => ({ ...(p ?? d), nextSteps: e.target.value }))}
             />
-          </label>
+          </div>
 
           {/* Save + status buttons */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -482,6 +521,8 @@ export function MissionDetailView({
             <MessageSquare size={13} style={{ color: 'var(--color-accent)' }} />
             <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>Mission chat</span>
             <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>→ Mission Controller</span>
+            <div style={{ flex: 1 }} />
+            {controllerSid && <ExpandIconButton onClick={() => setExpanded('chat')} title="Expand Mission chat" />}
           </div>
           {controllerSid ? (
             <MissionSessionChat
@@ -498,6 +539,57 @@ export function MissionDetailView({
           )}
         </div>
       </div>
+
+      {/* ── Full-screen overlay: expanded text field (editor + Markdown preview) ── */}
+      {expandedField && (
+        <FullScreenOverlay
+          title={
+            <>
+              {expandedField.label} — <span style={{ color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{mission.title}</span>
+            </>
+          }
+          onClose={() => setExpanded(null)}
+          headerExtra={
+            <>
+              <button className="btn btn-primary btn-sm" disabled={!isDirty || saving} onClick={saveFields} title="Save mission fields">
+                {saving ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Save size={11} />} Save
+              </button>
+              {saved && (
+                <span style={{ fontSize: 11, color: 'var(--color-status-green)', display: 'flex', alignItems: 'center', gap: 3 }}>
+                  <CheckCircle size={11} /> saved
+                </span>
+              )}
+            </>
+          }
+        >
+          <MarkdownSplitEditor
+            value={expandedField.value}
+            onChange={expandedField.set}
+            previewTransform={expandedField.transform}
+            mono={expandedField.mono}
+          />
+        </FullScreenOverlay>
+      )}
+
+      {/* ── Full-screen overlay: expanded mission chat ── */}
+      {expanded === 'chat' && controllerSid && (
+        <FullScreenOverlay
+          title={
+            <>
+              Mission chat — <span style={{ color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{mission.title}</span>
+            </>
+          }
+          onClose={() => setExpanded(null)}
+        >
+          <MissionSessionChat
+            sid={controllerSid}
+            node={controllerNode ?? undefined}
+            apiFetch={apiFetch}
+            heightFill
+            missionTag={`[mission ${missionId} "${mission.title}"] `}
+          />
+        </FullScreenOverlay>
+      )}
     </div>
   );
 }

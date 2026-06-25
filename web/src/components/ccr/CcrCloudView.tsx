@@ -12,8 +12,8 @@ interface PendingQuestion { toolUseId: string; requestId?: string; questions: Ar
 
 /** Native viewer for a CLOUD CCR session (claude runs in an Anthropic-cloud container).
  *  Renders the teleport-events transcript and drives via /ccr/cloud/:sid/drive. */
-export function CcrCloudView({ sid, webUrl, apiFetch, onClose }: {
-  sid: string; webUrl?: string; apiFetch: ApiFetch; onClose: () => void;
+export function CcrCloudView({ sid, webUrl, apiFetch, onClose, fill }: {
+  sid: string; webUrl?: string; apiFetch: ApiFetch; onClose: () => void; fill?: boolean;
 }) {
   const [messages, setMessages] = useState<CloudMsg[]>([]);
   const [loading, setLoading] = useState(true);
@@ -83,7 +83,7 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose }: {
   }, [apiFetch, sid, prompt, load]);
 
   return (
-    <div className="card" style={{ marginTop: 8, padding: 0, display: 'flex', flexDirection: 'column', maxHeight: 520, overflow: 'hidden', border: '1px solid var(--color-accent)' }}>
+    <div className="card" style={{ marginTop: fill ? 0 : 8, padding: 0, display: 'flex', flexDirection: 'column', ...(fill ? { flex: 1, minHeight: 0, height: '100%', maxHeight: 'none' as const } : { maxHeight: 520 }), overflow: 'hidden', border: fill ? 'none' : '1px solid var(--color-accent)' }}>
       <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--color-border-default)', display: 'flex', alignItems: 'center', gap: 10 }}>
         <Cloud size={14} style={{ color: 'var(--color-accent)' }} />
         <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)' }}>cloud session</span>

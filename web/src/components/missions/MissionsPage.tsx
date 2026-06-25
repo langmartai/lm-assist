@@ -25,6 +25,7 @@ import { useAppMode } from '@/contexts/AppModeContext';
 import { CcrCloudView } from '@/components/ccr/CcrCloudView';
 import { MissionSessionChat } from './MissionSessionChat';
 import { MissionDetailView } from './MissionDetailView';
+import { FullScreenOverlay, ExpandIconButton } from './FullScreenOverlay';
 import type { SessionMessage } from './MissionSessionChat';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -316,6 +317,8 @@ export function MissionsPage() {
   const [openTabs, setOpenTabs] = useState<SessionTab[]>([]);
   /** null = Mission Controller (tab 0); otherwise the sid of the open session tab. */
   const [activeTabSid, setActiveTabSid] = useState<string | null>(null);
+  /** sid of the session tab currently expanded to a full-screen overlay (null = none). */
+  const [expandedSessionSid, setExpandedSessionSid] = useState<string | null>(null);
   /** Per-tab alive status + resume state, keyed by sid. */
   const [tabStates, setTabStates] = useState<Record<string, TabState>>({});
 
@@ -1767,29 +1770,55 @@ export function MissionsPage() {
             // Show auto-close notice if applicable
             const notice = ts.notice;
 
+            const isExpanded = expandedSessionSid === tab.sid;
+            const sessionView = (filled: boolean) =>
+              tab.transport === 'cloud' ? (
+                <CcrCloudView
+                  sid={tab.sid}
+                  webUrl={`https://claude.ai/code/${tab.sid}`}
+                  apiFetch={apiFetch}
+                  onClose={() => closeTab(tab.sid)}
+                  fill={filled}
+                />
+              ) : (
+                <MissionSessionChat sid={tab.sid} node={tab.node ?? undefined} apiFetch={apiFetch} heightFill />
+              );
             return (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
-                {notice && (
-                  <div style={{ padding: '5px 14px', fontSize: 11, color: 'var(--color-status-orange)', background: 'var(--color-bg-elevated)', borderBottom: '1px solid var(--color-border-subtle)', flexShrink: 0 }}>
-                    ⏱ {notice}
+              <>
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+                  {/* Thin header strip with the expand affordance */}
+                  <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--color-border-subtle)', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-secondary)' }}>Session</span>
+                    <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--color-text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tab.sid}</span>
+                    <div style={{ flex: 1 }} />
+                    <ExpandIconButton onClick={() => setExpandedSessionSid(tab.sid)} title="Expand session full screen" />
                   </div>
+                  {notice && (
+                    <div style={{ padding: '5px 14px', fontSize: 11, color: 'var(--color-status-orange)', background: 'var(--color-bg-elevated)', borderBottom: '1px solid var(--color-border-subtle)', flexShrink: 0 }}>
+                      ⏱ {notice}
+                    </div>
+                  )}
+                  {isExpanded ? (
+                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--color-text-tertiary)', fontSize: 12, padding: 24, textAlign: 'center' }}>
+                      Viewing full screen — press Esc or Collapse to return.
+                    </div>
+                  ) : (
+                    sessionView(false)
+                  )}
+                </div>
+                {isExpanded && (
+                  <FullScreenOverlay
+                    title={
+                      <>
+                        Session — <span style={{ color: 'var(--color-text-tertiary)', fontWeight: 400, fontFamily: 'var(--font-mono)' }}>{tab.sid}</span>
+                      </>
+                    }
+                    onClose={() => setExpandedSessionSid(null)}
+                  >
+                    {sessionView(true)}
+                  </FullScreenOverlay>
                 )}
-                {tab.transport === 'cloud' ? (
-                  <CcrCloudView
-                    sid={tab.sid}
-                    webUrl={`https://claude.ai/code/${tab.sid}`}
-                    apiFetch={apiFetch}
-                    onClose={() => closeTab(tab.sid)}
-                  />
-                ) : (
-                  <MissionSessionChat
-                    sid={tab.sid}
-                    node={tab.node ?? undefined}
-                    apiFetch={apiFetch}
-                    heightFill
-                  />
-                )}
-              </div>
+              </>
             );
           })()}
 
