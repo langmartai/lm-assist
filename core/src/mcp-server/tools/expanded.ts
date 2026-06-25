@@ -429,7 +429,12 @@ export const agentExecuteToolDef = {
     "ADMIN / high-risk — runs real code. cwd is restricted to directories under the " +
     "worker's own home dir. Requires out-of-band confirmation before it executes. " +
     'Runs in the BACKGROUND — returns immediately with an executionId; poll ' +
-    '`get_execution(id=...)` for status and the result.',
+    '`get_execution(id=...)` for status and the result. ' +
+    '🚫 NOT for running a MISSION worker/executor: this is a one-shot SDK agent — you CANNOT ' +
+    'see or answer an AskUserQuestion it raises, so any worker that must ask a question is ' +
+    'unreachable. To run a mission executor use `ccr_cloud_start` (a monitorable session) + ' +
+    '`mission_update({binding})`, and answer its questions with `mission_session_answer`. ' +
+    'Use agent_execute only for a fire-and-forget side task with NO interaction.',
   annotations: { readOnlyHint: false, destructiveHint: true },
   inputSchema: {
     type: 'object' as const,

@@ -323,9 +323,10 @@ export async function startNativeExecutor(m: Mission, decision: any, deps: Nativ
 
 /** The standing directive sent to the controller agent each pass. */
 export const CONTROLLER_PASS_DIRECTIVE =
-  'Run a controller pass now: review every active mission via mission_list; ' +
-  'for each, call mission_place, spawn/drive/adapt/decide as needed; ' +
-  'then await the next pass.';
+  'Run a controller pass now: review every active mission via mission_list; for each, call ' +
+  'mission_place, then if it needs an executor spawn one via ccr_cloud_start (NEVER agent_execute) ' +
+  'and bind it with mission_update({binding}); answer any worker pendingQuestion IMMEDIATELY via ' +
+  'mission_session_answer; drive/adapt/decide as needed; then await the next pass.';
 
 /**
  * Guarded system prompt for the Mission Controller agent. Passed at launch via
@@ -352,6 +353,25 @@ export const CONTROLLER_SYSTEM_PROMPT = [
   'When driven, act on the CURRENT state: call `mission_list`; for every active mission assess',
   'its executor (`mission_executor_status`), place/spawn/drive/adapt as needed (`mission_place`',
   'and session drive), and mark it done when complete.',
+  '',
+  'SPAWNING AN EXECUTOR (do it EXACTLY this way — there is NO dedicated "spawn" tool, so do NOT',
+  'improvise): to run a mission worker, start a SESSION you can monitor and answer:',
+  '  • cloud (PREFERRED, simplest): `ccr_cloud_start({prompt})` → returns a `session_…` sid.',
+  '  • native: a `--remote-control` worktree session (never idle-suspends).',
+  'Then IMMEDIATELY `mission_update({id, binding:{sessionId, kind:"worker"}})` to attach it — an',
+  'UNBOUND worker is invisible to the supervisor, so its question is never surfaced to you.',
+  '🚫 NEVER use `agent_execute` (or any one-shot agent tool) to run a mission worker. It cannot',
+  'surface or let you answer an `AskUserQuestion`, so any worker that must ask a question is',
+  'permanently unreachable through it. `agent_execute` is ONLY for fire-and-forget side tasks',
+  'with no interaction — never for a mission executor.',
+  '',
+  'ANSWERING A WORKER FAST: if `mission_session_read(sid)` shows a `pendingQuestion`, answer it',
+  'IMMEDIATELY with `mission_session_answer(sid, answer)` (an option label or free text) — top',
+  'priority, before anything else. A CLOUD worker left blocked on a question idle-suspends within',
+  'a couple of minutes and then CANNOT resume to consume a late answer; answered promptly it',
+  'resumes and finishes in seconds. Do NOT use `mission_session_drive` to answer (it queues behind',
+  'the open question). If a worker already suspended unanswered, mark the mission `blocked` (NOT',
+  '`done`) and respawn; for a must-ask worker, prefer a native session.',
   '',
   'HEARTBEAT: only on a safety-check drive where there is genuinely nothing to do (no active',
   'missions, or nothing actionable), reply with EXACTLY one line beginning `⟦HEARTBEAT⟧` and',
