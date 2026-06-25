@@ -151,7 +151,11 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
 // Rail handlers (place + executor-status)
 // ---------------------------------------------------------------------------
 
-export async function handlePlace(id: string, port?: MissionDataPort): Promise<Envelope> {
+export async function handlePlace(id: string, port?: MissionDataPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  // Leader-anchored READ: the mission lives on the leader, so a non-leader proxies (else "no mission"
+  // — the controller hit exactly this: mission_list showed it but mission_place reported no mission).
+  const anchored = await anchorToLeader(leader, 'GET', `/mission/${encodeURIComponent(id)}/place`);
+  if (anchored) return anchored;
   const m = await getMission(id, port);
   if (!m) return fail('NOT_FOUND', `no mission ${id}`);
   const all = await listMissions(port);
@@ -162,7 +166,11 @@ export async function handleExecutorStatus(
   id: string,
   port?: MissionDataPort,
   readExec?: (m: Mission) => Promise<ExecutorState>,
+  leader?: LeaderAnchorDeps,
 ): Promise<Envelope> {
+  // Leader-anchored READ (same as handlePlace): mission + binding live on the leader.
+  const anchored = await anchorToLeader(leader, 'GET', `/mission/${encodeURIComponent(id)}/executor-status`);
+  if (anchored) return anchored;
   const m = await getMission(id, port);
   if (!m) return fail('NOT_FOUND', `no mission ${id}`);
   const defaultReadExec = async (mission: Mission): Promise<ExecutorState> => {
@@ -1047,8 +1055,8 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     // controller BEFORE :id/:id/sessions so literals win
     { method: 'GET', pattern: /^\/mission\/controller$/, handler: async () => handleGetController() },
     // rail routes: /place and /executor-status BEFORE /:id so literals win
-    { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/place$/, handler: async (req) => handlePlace(req.params.id) },
-    { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/executor-status$/, handler: async (req) => handleExecutorStatus(req.params.id) },
+    { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/place$/, handler: async (req) => handlePlace(req.params.id, undefined, realLeaderAnchor()) },
+    { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/executor-status$/, handler: async (req) => handleExecutorStatus(req.params.id, undefined, undefined, realLeaderAnchor()) },
     // /mission/:id/sessions BEFORE /mission/:id so the literal suffix wins
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/sessions$/, handler: async (req) => handleSessions(req.params.id, undefined, undefined, realLeaderAnchor()) },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handleGet(req.params.id, undefined, realLeaderAnchor()) },
