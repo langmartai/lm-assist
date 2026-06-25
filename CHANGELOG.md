@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.100] — cloud-worker AskUserQuestion answer goes to the CLIENT control_response channel (2026-06-25)
+
+- **Root-cause fix: a cloud mission worker (`ccr_cloud_start`, `/v1/sessions` BYOC) blocked on
+  AskUserQuestion never proceeded after being answered.** `cloudAnswer` keyed off the teleport
+  `tool_use_id` first and POSTed a `tool_result` to the `/v1/sessions/{sid}/events` **drive** channel —
+  but such a worker's AskUserQuestion is a `can_use_tool` **control_request** that resolves ONLY via a
+  `control_response` on the CLIENT channel `/v1/code/sessions/{sid}/events` (the web-UI path; the backend
+  relays it to the worker). The drive-channel `tool_result` was silently ignored → the worker idle-suspended
+  → the mission stuck `blocked` (mis-attributed to a "cloud infra bug"). Verified live on 123: a
+  control_response wakes the worker and it writes its file; a drive `tool_result` does nothing.
+- **Fix:** `cloudAnswer` now reads the client events channel first and prefers the control_response path
+  whenever a client control_request is pending (or an explicit `requestId` is given) — regardless of a
+  teleport tool_use. Falls back to the drive-channel `tool_result` only for a legacy teleport-only tool_use.
+  Extracted the decision into a pure, unit-tested `chooseAnswerTransport()`. This makes the Mission
+  Controller's `ccr_cloud_answer` actually resolve a worker's question so the mission completes.
+- A worker answered LATE (already idle-suspended) wakes and re-asks a fresh question; the controller's
+  next engage answers that one while connected and the worker proceeds — self-healing in ≤2 rounds.
+
 ## [Unreleased]
 
 ### CCR — bootstrap/guide now teaches operating Claude Code Remote sessions + the `ccr/` deploy fix (2026-06-21)

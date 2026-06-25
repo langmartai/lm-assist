@@ -620,38 +620,82 @@ export async function cloudRead(opts: { sid: string; lastN?: number }): Promise<
 }
 
 /**
- * Answer a pending question (AskUserQuestion) in a cloud session by POSTing a tool_result.
- * `answer` = an option's label (a CLICK) or arbitrary text (free INPUT) — both handled. The
- * tool_use_id auto-resolves from the session's pending question unless given explicitly.
+ * Decide which transport resolves a cloud/bridge session's pending AskUserQuestion.
+ *
+ *  - `'client'` — POST a `control_response` to the CLIENT channel `/v1/code/sessions/{sid}/events`.
+ *    A cloud BYOC worker (spawned via `/v1/sessions`) AND a `--remote-control` bridge BOTH surface
+ *    AskUserQuestion as a `can_use_tool` **control_request** there, resolved ONLY by a control_response
+ *    (the backend relays it down to the worker — exactly what the claude.ai web UI does). This is the
+ *    canonical path. VERIFIED live (123): a tool_result on the drive channel below is silently ignored
+ *    by such a worker — it idle-suspends and never proceeds; a control_response wakes it and it writes.
+ *  - `'cloud'` — POST a `tool_result` to the DRIVE channel `/v1/sessions/{sid}/events`. Fallback for a
+ *    legacy / teleport-only session whose AskUserQuestion is a plain tool_use awaiting a tool_result
+ *    (NO control_request on the client channel).
+ *  - `'none'` — nothing pending to answer.
+ *
+ * The client path is preferred whenever a client control_request is pending (or an explicit requestId
+ * is supplied) — REGARDLESS of whether teleport-events also shows the tool_use. The old code keyed off
+ * the teleport tool_use first, so a cloud worker (which has BOTH) wrongly took the drive path and the
+ * answer never reached it. See memory: remote-control-worker-events-protocol.
+ */
+export function chooseAnswerTransport(opts: { hasClientControlRequest: boolean; explicitRequestId?: boolean; hasTeleportToolUse: boolean }): 'client' | 'cloud' | 'none' {
+  if (opts.hasClientControlRequest || opts.explicitRequestId) return 'client';
+  if (opts.hasTeleportToolUse) return 'cloud';
+  return 'none';
+}
+
+/**
+ * Answer a pending question (AskUserQuestion) in a cloud/bridge session.
+ * `answer` = an option's label (a CLICK) or arbitrary text (free INPUT) — both handled.
+ *
+ * Prefers the CLIENT control_response path (see {@link chooseAnswerTransport}): a cloud BYOC worker's
+ * AskUserQuestion is a `can_use_tool` control_request resolved on `/v1/code/sessions/{sid}/events`, NOT
+ * a tool_result on the `/v1/sessions/{sid}/events` drive channel. Falls back to the tool_result/drive
+ * path only for a legacy teleport-only tool_use with no client control_request.
  */
 export async function cloudAnswer(opts: { sid: string; answer: string; toolUseId?: string; requestId?: string }): Promise<{ answered: boolean; sid: string; toolUseId: string; mode: 'option' | 'input'; sentContent: string; transport?: 'cloud' | 'bridge' }> {
   if (!isCloudOrBridge(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_… or cse_…');
   const answer = (opts.answer || '').toString();
   if (!answer.trim()) throw new TerminalError('INVALID_INPUT', 'answer is required');
+
+  // Look for a pending control_request on the CLIENT channel first — that's how AskUserQuestion
+  // surfaces for cloud BYOC workers + bridges, and how it must be resolved. Best-effort: a network
+  // hiccup here falls through to the teleport read below rather than failing the answer.
+  let clientPending: PendingControlRequest | null = null;
+  try { clientPending = (await cloudClientEventsRead(opts.sid)).pendingQuestion; } catch { /* fall through to teleport */ }
+
+  // Teleport read only matters for the drive-channel fallback (a tool_use awaiting a tool_result).
+  // Gate on requires_action so we don't re-answer an already-resolved teleport question.
   const ccr = await ccrOpts();
   const [res, st] = await Promise.all([
-    anthropicOAuthGet(`/v1/code/sessions/${opts.sid}/teleport-events`, ccr),
+    anthropicOAuthGet(`/v1/code/sessions/${opts.sid}/teleport-events`, ccr).catch(() => null),
     anthropicOAuthGet(`/v1/code/sessions/${opts.sid}`, ccr).catch(() => null),
   ]);
-  assertOk(res, 'cloud read');
-  const events = ((res.body as { data?: any[] })?.data) || [];
-  // Auto-resolve the pending tool_use_id only when the worker is actually blocked (requires_action),
-  // so we don't re-answer an already-resolved question. An explicit toolUseId always proceeds.
-  const pending = isRequiresAction(st?.body) ? findPendingQuestion(events) : null;
-  const toolUseId = opts.toolUseId || pending?.toolUseId;
-  if (!toolUseId) {
-    // No teleport tool_use → this is a `--remote-control` bridge session whose AskUserQuestion is a
-    // can_use_tool on the CLIENT /events channel. Answer there (control_response, auto-resolving the
-    // requestId/questions). Makes the CCR page (CcrCloudView) able to answer a controller/executor.
-    const r = await cloudClientEventsAnswer({ cse: opts.sid, answer, requestId: opts.requestId });
+  const events = (res && res.status >= 200 && res.status < 300 ? ((res.body as { data?: any[] })?.data) : []) || [];
+  const teleportPending = isRequiresAction(st?.body) ? findPendingQuestion(events) : null;
+  const teleportToolUseId = opts.toolUseId || teleportPending?.toolUseId;
+
+  const transport = chooseAnswerTransport({
+    hasClientControlRequest: !!clientPending,
+    explicitRequestId: !!opts.requestId,
+    hasTeleportToolUse: !!teleportToolUseId,
+  });
+
+  if (transport === 'client') {
+    // control_response on /v1/code/sessions/{sid}/events — the backend relays it to the worker.
+    const r = await cloudClientEventsAnswer({ cse: opts.sid, answer, requestId: opts.requestId || clientPending?.requestId, questions: clientPending?.questions });
     return { answered: r.answered, sid: opts.sid, toolUseId: r.requestId, mode: r.mode, sentContent: answer, transport: 'bridge' };
   }
-  const q = pending?.questions?.[0];
+  if (transport === 'none') {
+    throw new TerminalError('PRECONDITION_FAILED', 'no pending question to answer (neither a client control_request nor a teleport tool_use)');
+  }
+  // transport === 'cloud': legacy teleport tool_use → tool_result on the drive channel.
+  const q = teleportPending?.questions?.[0];
   const isOption = !!(q?.options || []).find((o) => o.label === answer.trim() || o.label?.toLowerCase() === answer.trim().toLowerCase());
-  const content = formatAnswerContent(pending?.questions || [], answer);
-  const post = await anthropicOAuthPost(`/v1/sessions/${opts.sid}/events`, { events: [buildAnswerEvent(opts.sid, toolUseId, content)] }, await ccrOpts());
+  const content = formatAnswerContent(teleportPending?.questions || [], answer);
+  const post = await anthropicOAuthPost(`/v1/sessions/${opts.sid}/events`, { events: [buildAnswerEvent(opts.sid, teleportToolUseId!, content)] }, await ccrOpts());
   assertOk(post, 'cloud answer');
-  return { answered: true, sid: opts.sid, toolUseId, mode: isOption ? 'option' : 'input', sentContent: content, transport: 'cloud' };
+  return { answered: true, sid: opts.sid, toolUseId: teleportToolUseId!, mode: isOption ? 'option' : 'input', sentContent: content, transport: 'cloud' };
 }
 
 /** Get raw cloud session status. */

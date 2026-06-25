@@ -6,6 +6,7 @@ import {
   buildAnswersMap,
   buildControlResponse,
   extractBridgeCse,
+  chooseAnswerTransport,
 } from '../terminal/ccr-cloud';
 
 // SSE bodies modeled on real lm-proxy captures of /v1/code/sessions/{cse}/worker/events/stream.
@@ -163,4 +164,29 @@ test('buildControlResponse: builds the success/allow payload echoing request_id 
   assert.equal(p.uuid, 'fixed-uuid');
   // questions are echoed back in updatedInput
   assert.equal(p.response.response.updatedInput.questions[0].question, 'Pick a test color');
+});
+
+// ── chooseAnswerTransport ────────────────────────────────────────────────────
+// The root-cause fix: a cloud BYOC worker's AskUserQuestion appears BOTH as a client
+// control_request AND as a teleport tool_use. It must be answered via the client
+// control_response path; the old logic keyed off teleport first and the answer never landed.
+
+test('chooseAnswerTransport: client control_request wins even when teleport also has the tool_use (the bug)', () => {
+  assert.equal(chooseAnswerTransport({ hasClientControlRequest: true, hasTeleportToolUse: true }), 'client');
+});
+
+test('chooseAnswerTransport: client control_request alone → client (bridge / cse_ session)', () => {
+  assert.equal(chooseAnswerTransport({ hasClientControlRequest: true, hasTeleportToolUse: false }), 'client');
+});
+
+test('chooseAnswerTransport: an explicit requestId forces the client path', () => {
+  assert.equal(chooseAnswerTransport({ hasClientControlRequest: false, explicitRequestId: true, hasTeleportToolUse: true }), 'client');
+});
+
+test('chooseAnswerTransport: teleport tool_use only (no client control_request) → cloud drive fallback', () => {
+  assert.equal(chooseAnswerTransport({ hasClientControlRequest: false, hasTeleportToolUse: true }), 'cloud');
+});
+
+test('chooseAnswerTransport: nothing pending → none', () => {
+  assert.equal(chooseAnswerTransport({ hasClientControlRequest: false, hasTeleportToolUse: false }), 'none');
 });
