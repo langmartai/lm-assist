@@ -12,6 +12,7 @@ function makeStubDeps(overrides: Partial<SessionOpsDeps> = {}): SessionOpsDeps {
     cloudDrive: async (opts) => ({ delivered: true, sid: opts.sid }),
     cloudStop: async (sid) => ({ stopped: true, sid }),
     nativeRead: async (_sid) => ({ messages: [{ role: 'user', content: 'native msg' }] }),
+    nativeRawMessages: async (_sid) => ([]),
     nativeDrive: async (_sid, _text) => {},
     nativeInterrupt: async (_sid) => {},
     nativeStop: async (_sid) => {},

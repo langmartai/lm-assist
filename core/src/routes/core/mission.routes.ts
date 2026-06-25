@@ -343,6 +343,8 @@ export interface SessionOpsDeps {
   cloudDrive: (opts: { sid: string; text: string }) => Promise<{ delivered: boolean; sid: string }>;
   cloudStop: (sid: string) => Promise<{ stopped: boolean; sid: string }>;
   nativeRead: (sid: string) => Promise<{ messages: Array<{ role: string; content: string; [k: string]: unknown }> }>;
+  /** Return raw JSONL line objects for a native session (each parsed line, for pendingQuestion extraction). */
+  nativeRawMessages: (sid: string) => Promise<Array<{ message?: { content?: unknown[] } }>>;
   nativeDrive: (sid: string, text: string) => Promise<void>;
   nativeInterrupt: (sid: string) => Promise<void>;
   nativeStop: (sid: string) => Promise<void>;
@@ -372,6 +374,22 @@ function defaultSessionOpsDeps(): SessionOpsDeps {
       const res = await store.getConversation({ sessionId: sid });
       const msgs = (res?.messages ?? []) as unknown as Array<{ role: string; content: string; [k: string]: unknown }>;
       return { messages: msgs };
+    },
+    nativeRawMessages: async (sid) => {
+      // Read the raw JSONL file for the session (each parsed line) for pendingQuestion extraction.
+      const { sessionVerdict } = require('../../terminal/cc-sessions') as typeof import('../../terminal/cc-sessions');
+      const verdict = sessionVerdict(sid);
+      const jsonl = verdict.jsonl;
+      if (!jsonl) return [];
+      const fs = require('fs') as typeof import('fs');
+      let text = '';
+      try { text = fs.readFileSync(jsonl, 'utf-8'); } catch { return []; }
+      const lines: Array<{ message?: { content?: unknown[] } }> = [];
+      for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        try { lines.push(JSON.parse(line)); } catch { /* skip */ }
+      }
+      return lines;
     },
     nativeDrive: async (sid, text) => {
       const { getCcController } = require('../../terminal/backend') as typeof import('../../terminal/backend');
@@ -453,7 +471,9 @@ export async function handleSessionRead(sid: string, lastN?: number, deps?: Sess
         if (Array.isArray(tools) && tools.length > 0) out.tools = tools;
         return out;
       });
-      return ok({ messages: normalized });
+      // Pass through the cloud pendingQuestion (already computed by cloudRead).
+      const pendingQuestion = result.pendingQuestion ?? null;
+      return ok({ messages: normalized, pendingQuestion });
     } else {
       // Best-effort: refresh the idle timer for resumed native sessions.
       try { touchActivity(sid, Date.now()); } catch { /* best-effort */ }
@@ -471,7 +491,14 @@ export async function handleSessionRead(sid: string, lastN?: number, deps?: Sess
         }
         return out;
       });
-      return ok({ messages: normalized });
+      // Extract pendingQuestion from raw JSONL (tool_use / tool_result blocks).
+      let pendingQuestion: import('../../terminal/ccr-cloud').PendingQuestion | null = null;
+      try {
+        const rawMsgs = await d.nativeRawMessages(sid);
+        const { extractPendingQuestion } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
+        pendingQuestion = extractPendingQuestion(rawMsgs);
+      } catch { /* best-effort: non-fatal */ }
+      return ok({ messages: normalized, pendingQuestion });
     }
   } catch (e) {
     return fail('READ_ERROR', (e as Error).message);
@@ -551,6 +578,134 @@ export async function handleSessionControl(sid: string, action: string, deps?: S
     return fail('INVALID_INPUT', `unknown action "${action}"`);
   } catch (e) {
     return fail('CONTROL_ERROR', (e as Error).message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// handleSessionAnswer — answer a pending AskUserQuestion
+// ---------------------------------------------------------------------------
+
+export interface SessionAnswerDeps {
+  /** Call cloudAnswer for cloud sessions. */
+  cloudAnswer: (opts: { sid: string; answer: string; toolUseId?: string }) => Promise<unknown>;
+  /**
+   * Send keys to a native tmux session to answer an AskUserQuestion.
+   * `tmuxSession` = the tmux session name. `keys` = the key sequence(s) to send (e.g. "2" then "Enter").
+   */
+  nativeSendKeys: (tmuxSession: string, keys: string) => Promise<void>;
+  /** Get the pending question (with options) for a native session — to resolve index for an option label. */
+  nativeGetPendingQuestion: (sid: string) => Promise<import('../../terminal/ccr-cloud').PendingQuestion | null>;
+  /** Resolve tmux session name for a native sid (throws if not in tmux). */
+  nativeTmuxSession: (sid: string) => string;
+  resolve: (sid: string) => ResolvedSession;
+}
+
+function defaultSessionAnswerDeps(): SessionAnswerDeps {
+  return {
+    cloudAnswer: (opts) => {
+      const { cloudAnswer: ca } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
+      return ca(opts);
+    },
+    nativeSendKeys: async (tmuxSession, keys) => {
+      const tmux = require('../../terminal/tmux') as typeof import('../../terminal/tmux');
+      // Send keys literally (digit or text), then Enter.
+      await tmux.sendKeys(tmuxSession, { keys, literal: true, enter: true, paneQualifier: null });
+    },
+    nativeGetPendingQuestion: async (sid) => {
+      const { sessionVerdict } = require('../../terminal/cc-sessions') as typeof import('../../terminal/cc-sessions');
+      const { extractPendingQuestion } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
+      const verdict = sessionVerdict(sid);
+      if (!verdict.jsonl) return null;
+      const fs = require('fs') as typeof import('fs');
+      let text = '';
+      try { text = fs.readFileSync(verdict.jsonl, 'utf-8'); } catch { return null; }
+      const lines: Array<{ message?: { content?: unknown[] } }> = [];
+      for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        try { lines.push(JSON.parse(line)); } catch { /* skip */ }
+      }
+      return extractPendingQuestion(lines);
+    },
+    nativeTmuxSession: (sid) => {
+      const { sessionVerdict } = require('../../terminal/cc-sessions') as typeof import('../../terminal/cc-sessions');
+      const v = sessionVerdict(sid);
+      if (!v.tmuxSession) throw new Error(`session ${sid} is not in a tmux pane`);
+      return v.tmuxSession;
+    },
+    resolve: (sid) => resolveMissionSession(sid, [], null),
+  };
+}
+
+/**
+ * Answer a pending AskUserQuestion in a mission session.
+ * Leader-anchored (write, failClosed): must run on the leader node.
+ *
+ * - cloud → delegates to cloudAnswer
+ * - native → resolves the option index (1-based) for an option label, then sends the digit + Enter
+ *            via raw tmux send-keys (NOT cc.prompt which asserts idle).
+ *
+ * @param sid     Session id
+ * @param body    { answer: string; toolUseId?: string }
+ * @param deps    Injected deps (default: defaultSessionAnswerDeps)
+ * @param node    Target node (for cross-node proxy)
+ * @param leader  Leader-anchor deps
+ * @param proxyDeps Cross-node proxy deps
+ */
+export async function handleSessionAnswer(
+  sid: string,
+  body: { answer: string; toolUseId?: string },
+  deps?: SessionAnswerDeps,
+  node?: string,
+  leader?: LeaderAnchorDeps,
+  proxyDeps?: SessionProxyDeps,
+): Promise<Envelope> {
+  const answer = (body.answer || '').toString().trim();
+  if (!answer) return fail('INVALID_INPUT', 'answer is required');
+
+  // Leader-anchor: answering a question is a write — must land on the leader.
+  const anchored = await anchorToLeader(leader ?? realLeaderAnchor(), 'POST', `/mission/session/${encodeURIComponent(sid)}/answer`, body, true);
+  if (anchored) return anchored;
+
+  // Cross-node proxy: if `node` is set and != self, proxy to the target node.
+  const self = thisNode();
+  if (node && node !== self) {
+    const pd = proxyDeps ?? defaultSessionProxyDeps();
+    try {
+      const result = await pd.proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/answer`, body) as any;
+      return proxyEnvelope(result);
+    } catch (e) {
+      return fail('PROXY_ERROR', (e as Error).message);
+    }
+  }
+
+  const d = deps ?? defaultSessionAnswerDeps();
+  const r = d.resolve(sid);
+
+  try {
+    if (r.transport === 'cloud') {
+      const result = await d.cloudAnswer({ sid, answer, toolUseId: body.toolUseId });
+      return ok({ answered: true, transport: 'cloud', result });
+    } else {
+      // Native: resolve the pending question's options to map answer → digit.
+      const pending = await d.nativeGetPendingQuestion(sid);
+      const options = pending?.questions?.[0]?.options ?? [];
+      const optIdx = options.findIndex(
+        (o) => o.label === answer || o.label?.toLowerCase() === answer.toLowerCase(),
+      );
+      let keys: string;
+      if (optIdx >= 0) {
+        // 1-based index digit (AskUserQuestion dialogs use 1-based numbering).
+        keys = String(optIdx + 1);
+      } else {
+        // Free text / fallback: send the answer text directly.
+        keys = answer;
+      }
+      const tmuxSession = d.nativeTmuxSession(sid);
+      await d.nativeSendKeys(tmuxSession, keys);
+      return ok({ answered: true, transport: 'native', keys, mode: optIdx >= 0 ? 'option' : 'input' });
+    }
+  } catch (e) {
+    return fail('ANSWER_ERROR', (e as Error).message);
   }
 }
 
@@ -831,6 +986,15 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
         const action = typeof b.action === 'string' ? b.action : '';
         const node = typeof b.node === 'string' ? b.node : undefined;
         return handleSessionControl(req.params.sid, action, undefined, node);
+      } },
+    // POST /mission/session/:sid/answer — answer a pending AskUserQuestion (native: tmux send-keys; cloud: cloudAnswer).
+    // Leader-anchored (write). Optional body field `node` for cross-node proxy.
+    { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/answer$/, handler: async (req) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const answer = typeof b.answer === 'string' ? b.answer : '';
+        const toolUseId = typeof b.toolUseId === 'string' ? b.toolUseId : undefined;
+        const node = typeof b.node === 'string' ? b.node : undefined;
+        return handleSessionAnswer(req.params.sid, { answer, toolUseId }, undefined, node);
       } },
   ];
 }

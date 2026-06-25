@@ -37,6 +37,7 @@ function makeStatusDeps(overrides: Partial<SessionOpsDeps> = {}): SessionOpsDeps
     cloudDrive: async (opts) => ({ delivered: true, sid: opts.sid }),
     cloudStop: async (sid) => ({ stopped: true, sid }),
     nativeRead: async (_sid) => ({ messages: [] }),
+    nativeRawMessages: async (_sid) => ([]),
     nativeDrive: async () => {},
     nativeInterrupt: async () => {},
     nativeStop: async () => {},

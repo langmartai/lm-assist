@@ -220,6 +220,29 @@ export function findPendingQuestion(events: Array<{ payload?: { message?: { cont
 }
 
 /**
+ * Scan raw native JSONL messages (each line parsed as { message?: { content?: any[] } }) for the
+ * LAST UNANSWERED AskUserQuestion tool_use. Mirrors findPendingQuestion but for the native .jsonl
+ * format where content is at `msg.message.content` rather than `event.payload.message.content`.
+ * Pure and testable.
+ */
+export function extractPendingQuestion(rawMessages: Array<{ message?: { content?: any[] } }>): PendingQuestion | null {
+  let pending: PendingQuestion | null = null;
+  const answered = new Set<string>();
+  for (const msg of rawMessages || []) {
+    const c = msg?.message?.content;
+    if (!Array.isArray(c)) continue;
+    for (const b of c) {
+      if (b?.type === 'tool_use' && b?.name === 'AskUserQuestion' && b?.id) {
+        pending = { toolUseId: b.id, questions: (b.input?.questions as PendingQuestion['questions']) || [] };
+      } else if (b?.type === 'tool_result' && b?.tool_use_id) {
+        answered.add(b.tool_use_id);
+      }
+    }
+  }
+  return pending && !answered.has(pending.toolUseId) ? pending : null;
+}
+
+/**
  * Build the tool_result content for an AskUserQuestion answer. EXPLICIT on purpose: a bare option
  * label was empirically under-specified (the model pushed to main instead of branching), so we
  * spell out the SELECTED option (label + description) for a click, or the verbatim free text for an
