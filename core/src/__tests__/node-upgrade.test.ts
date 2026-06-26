@@ -20,6 +20,8 @@ test('source wins over ref', () => {
 test('neither → error (downgrade guard)', () => {
   const r = resolveUpgradeSource();
   assert.ok(!r.ok && /DOWNGRADE/.test(r.error));
+  // Guard message must convey it is a SAFE no-op (nothing upgraded), not a destructive action.
+  assert.ok(!r.ok && /nothing|no-op|rejected/i.test(r.error));
 });
 
 test('empty/whitespace source → error', () => {
