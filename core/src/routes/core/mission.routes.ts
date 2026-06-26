@@ -17,11 +17,14 @@ import { listRecords } from '../../worker-role/worker-store';
 import type { WorkerRecord } from '../../worker-role/types';
 import { filterMissions, FilterError, type MissionFilter, type MissionSort } from '../../mission/mission-filter';
 import { neighbors, subgraphEdges, toNode, type Direction } from '../../mission/mission-traverse';
+import { newView, normalizeView, validateView, type MissionView } from '../../mission/mission-views';
+import { getView, listViews, putView, deleteView, type MissionViewPort } from '../../mission/mission-views-store';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string }; }
 const ok = <T>(data: T): Envelope => ({ success: true, data });
 const fail = (code: string, message: string): Envelope => ({ success: false, error: { code, message } });
 const genId = () => 'mission_' + randomBytes(4).toString('hex');
+const genViewId = () => 'view_' + randomBytes(4).toString('hex');
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 const arr = (v: unknown): string[] | undefined => {
   if (Array.isArray(v)) return v.filter((x) => typeof x === 'string');
@@ -269,6 +272,63 @@ export async function handleGraph(b: Record<string, unknown>, port?: MissionData
     const byId = new Map(all.map((m) => [m.id, m]));
     const nodes = [...nodeIds].map((id) => byId.get(id)).filter(Boolean).map((m) => toNode(m!));
     return ok({ nodes, edges: subgraphEdges(nodeIds, all) });
+  } catch (e) { if (e instanceof FilterError) return fail(e.code, e.message); throw e; }
+}
+
+// ---------------------------------------------------------------------------
+// View handlers (dashboard saved views)
+// ---------------------------------------------------------------------------
+
+export async function handleViewSet(b: Record<string, unknown>, port?: MissionViewPort, actor?: MissionActor, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'POST', '/mission/views', b, true);
+  if (anchored) return anchored;
+  const who = actor ?? await actorFor(b);
+  const id = str(b.id);
+  const existing = id ? await getView(id, port) : null;
+  const base: MissionView = existing
+    ? { ...existing, name: str(b.name) ?? existing.name, query: (b.query as MissionView['query']) ?? existing.query, display: (b.display as MissionView['display']) ?? existing.display, lastUpdatedBy: who }
+    : newView({ name: str(b.name) ?? '', query: b.query as MissionView['query'], display: b.display as MissionView['display'], createdBy: who }, Date.now(), genViewId);
+  const view = normalizeView(base);
+  const v = validateView(view);
+  if (!v.ok) return fail('INVALID_VIEW', v.message);
+  await putView(view, port);
+  return ok(view);
+}
+
+export async function handleViewList(port?: MissionViewPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'GET', '/mission/views');
+  if (anchored) return anchored;
+  return ok({ views: await listViews(port) });
+}
+
+export async function handleViewGet(id: string, port?: MissionViewPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'GET', `/mission/views/${encodeURIComponent(id)}`);
+  if (anchored) return anchored;
+  const view = await getView(id, port);
+  return view ? ok(view) : fail('NOT_FOUND', `no view ${id}`);
+}
+
+export async function handleViewDelete(id: string, port?: MissionViewPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'POST', `/mission/views/${encodeURIComponent(id)}/delete`, {}, true);
+  if (anchored) return anchored;
+  await deleteView(id, port);
+  return ok({ deleted: id });
+}
+
+export async function handleViewGraph(id: string, viewPort?: MissionViewPort, missionPort?: MissionDataPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'GET', `/mission/views/${encodeURIComponent(id)}/graph`);
+  if (anchored) return anchored;
+  const view = await getView(id, viewPort);
+  if (!view) return fail('NOT_FOUND', `no view ${id}`);
+  try {
+    const all = await listMissions(missionPort);
+    const matches = filterMissions(all, view.query?.filter);
+    const nodeIds = new Set(matches.map((m) => m.id));
+    const exp = view.query?.expand;
+    if (exp?.direction) for (const m of matches) for (const n of neighbors(m.id, all, { direction: exp.direction, depth: exp.depth ?? 1 }).neighbors) nodeIds.add(n.id);
+    const byId = new Map(all.map((m) => [m.id, m]));
+    const nodes = [...nodeIds].map((x) => byId.get(x)).filter(Boolean).map((m) => toNode(m!));
+    return ok({ view, nodes, edges: subgraphEdges(nodeIds, all) });
   } catch (e) { if (e instanceof FilterError) return fail(e.code, e.message); throw e; }
 }
 
@@ -1173,6 +1233,9 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     // graph-query literals — MUST be before POST /mission/:id (which would match id='query'/'graph')
     { method: 'POST', pattern: /^\/mission\/query$/, handler: async (req) => handleQuery((req.body || {}) as Record<string, unknown>, undefined, realLeaderAnchor()) },
     { method: 'POST', pattern: /^\/mission\/graph$/, handler: async (req) => handleGraph((req.body || {}) as Record<string, unknown>, undefined, realLeaderAnchor()) },
+    // view literals — MUST be before /mission/:id patterns (else POST /mission/views matches POST /mission/:id)
+    { method: 'POST', pattern: /^\/mission\/views$/, handler: async (req) => handleViewSet((req.body || {}) as Record<string, unknown>, undefined, undefined, realLeaderAnchor()) },
+    { method: 'GET', pattern: /^\/mission\/views$/, handler: async () => handleViewList(undefined, realLeaderAnchor()) },
     // rail routes: /place and /executor-status BEFORE /:id so literals win
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/place$/, handler: async (req) => handlePlace(req.params.id, undefined, realLeaderAnchor()) },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/executor-status$/, handler: async (req) => handleExecutorStatus(req.params.id, undefined, undefined, realLeaderAnchor()) },
@@ -1190,6 +1253,11 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
       } },
     // /mission/:id/neighbors BEFORE bare GET /mission/:id so suffix wins
     { method: 'POST', pattern: /^\/mission\/(?<id>[^/]+)\/neighbors$/, handler: async (req) => handleNeighbors(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, realLeaderAnchor()) },
+    // view suffix routes — /graph BEFORE /views/:id; both before bare GET /mission/:id
+    { method: 'GET', pattern: /^\/mission\/views\/(?<id>[^/]+)\/graph$/, handler: async (req) => handleViewGraph(req.params.id, undefined, undefined, realLeaderAnchor()) },
+    { method: 'POST', pattern: /^\/mission\/views\/(?<id>[^/]+)\/delete$/, handler: async (req) => handleViewDelete(req.params.id, undefined, realLeaderAnchor()) },
+    { method: 'DELETE', pattern: /^\/mission\/views\/(?<id>[^/]+)$/, handler: async (req) => handleViewDelete(req.params.id, undefined, realLeaderAnchor()) },
+    { method: 'GET', pattern: /^\/mission\/views\/(?<id>[^/]+)$/, handler: async (req) => handleViewGet(req.params.id, undefined, realLeaderAnchor()) },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handleGet(req.params.id, undefined, realLeaderAnchor()) },
     { method: 'PATCH', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, realLeaderAnchor()) },
     // POST /mission/:id — same semantics as PATCH, accepts MCP workerPost (POST-only)
