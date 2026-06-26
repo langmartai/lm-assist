@@ -155,3 +155,126 @@ export async function pollForCloudConnection(
     waited += intervalMs;
   }
 }
+
+// ── Orchestrator ──────────────────────────────────────────────────────────────
+
+export interface EnsureResult {
+  ok: boolean;
+  state: 'connected' | 'already-connected' | 'needs-force' | 'gone' | 'kill-failed' | 'error';
+  sid: string;
+  via?: 'resume-dead' | 'inject' | 'kill-resume';
+  cse?: string;
+  attempts?: number;
+  reason: string;
+}
+
+export interface EnsureDeps {
+  now: () => number;
+  verdict: (sid: string) => {
+    live: boolean; inTmux: boolean; connectStrategy: string;
+    tmuxTarget: string | null; pid: number | null; updatedAt: string | undefined;
+  };
+  isWindows: boolean;
+  windowsDriveable: (pid: number) => Promise<boolean>;
+  isConnected: (sid: string, title?: string) => Promise<boolean>;
+  listCloud: () => Promise<CloudSession[]>;
+  inject: (target: InjectTarget) => Promise<{ ok: boolean; error?: string }>;
+  clearInput: (target: InjectTarget) => Promise<void>;
+  pollConnection: (excludeSids: Set<string>, title?: string) => Promise<{ connected: boolean; sid?: string }>;
+  killOwner: (pid: number) => Promise<{ killed: boolean }>;
+  resumeDead: (sid: string) => Promise<{ ok: boolean; cse?: string; error?: string }>;
+  verifyDriveable: (sid: string) => Promise<boolean>;
+  bindCse: (sid: string, cse: string) => Promise<void>;
+}
+
+const DEFAULT_IDLE_THRESHOLD_MS = 30 * 60 * 1000;
+
+export async function ensureRemoteControlled(
+  sid: string,
+  opts: { force?: boolean; idleThresholdMs?: number; title?: string },
+  deps: EnsureDeps,
+): Promise<EnsureResult> {
+  const force = !!opts.force;
+  const idleThresholdMs = opts.idleThresholdMs ?? DEFAULT_IDLE_THRESHOLD_MS;
+
+  let v: ReturnType<EnsureDeps['verdict']>;
+  try { v = deps.verdict(sid); }
+  catch (e) { return { ok: false, state: 'error', sid, reason: `verdict failed: ${(e as Error).message}` }; }
+
+  if (v.connectStrategy === 'none') {
+    return { ok: false, state: 'gone', sid, reason: 'no transcript and no live process on this host' };
+  }
+
+  // DEAD → resume-dead (existing safe path)
+  if (!v.live) return finishResume(sid, deps, 'resume-dead', 0);
+
+  // ALREADY CONNECTED? (best-effort; toggle safety)
+  const alreadyConnected = await deps.isConnected(sid, opts.title).catch(() => false);
+
+  let windowsDriveable = false;
+  if (deps.isWindows && v.pid) windowsDriveable = await deps.windowsDriveable(v.pid).catch(() => false);
+  const reachable = classifyReachability(v, { isWindows: deps.isWindows, windowsDriveable });
+  const idle = idleMs(v.updatedAt, deps.now());
+  const action = decideLiveAction({ live: v.live, alreadyConnected, reachable, idleMs: idle, idleThresholdMs, force });
+
+  if (action === 'already-connected') {
+    const ok = await deps.verifyDriveable(sid).catch(() => false);
+    return ok
+      ? { ok: true, state: 'already-connected', sid, reason: 'session already remote-controlled and driveable' }
+      : { ok: false, state: 'error', sid, reason: 'reported connected but not driveable' };
+  }
+
+  const target: InjectTarget = reachable === 'windows'
+    ? { via: 'windows', pid: v.pid ?? undefined }
+    : { via: 'tmux', tmuxTarget: v.tmuxTarget ?? undefined };
+
+  if (action === 'inject-tmux' || action === 'inject-windows') {
+    let attempts = 0;
+    for (let i = 0; i < 2; i++) {
+      attempts++;
+      const baseline = new Set((await deps.listCloud().catch(() => [] as CloudSession[])).map((s) => s.sid));
+      const inj = await deps.inject(target).catch((e) => ({ ok: false, error: (e as Error).message }));
+      if (!inj.ok) continue;
+      const r = await deps.pollConnection(baseline, opts.title).catch(() => ({ connected: false as const }));
+      if (r.connected) {
+        if (r.sid) await deps.bindCse(sid, r.sid).catch(() => {});
+        return { ok: true, state: 'connected', sid, via: 'inject', cse: r.sid, attempts, reason: `connected via /remote-control inject (attempt ${attempts})` };
+      }
+    }
+    // inject exhausted → kill policy
+    if (killEligibility({ idleMs: idle, idleThresholdMs, force }) === 'needs-force') {
+      await deps.clearInput(target).catch(() => {});
+      return { ok: false, state: 'needs-force', sid, attempts, reason: 'inject failed and session is actively busy; pass force:true to kill-and-resume' };
+    }
+    return killThenResume(sid, v.pid, deps, attempts);
+  }
+
+  if (action === 'needs-force') {
+    return { ok: false, state: 'needs-force', sid, reason: 'live session is unreachable (headless) and actively busy; pass force:true to kill-and-resume' };
+  }
+
+  // action === 'kill'
+  return killThenResume(sid, v.pid, deps, 0);
+}
+
+async function killThenResume(sid: string, pid: number | null, deps: EnsureDeps, attempts: number): Promise<EnsureResult> {
+  if (!pid) return { ok: false, state: 'error', sid, attempts, reason: 'no owner pid to kill' };
+  const k = await deps.killOwner(pid).catch(() => ({ killed: false }));
+  // INVARIANT: never resume over a live process — if killOwner reports killed:false, stop here
+  if (!k.killed) return { ok: false, state: 'kill-failed', sid, attempts, reason: 'owner process did not terminate; NOT resuming over a live process' };
+  // re-verify the process is actually gone before resuming (invariant: catches the case where the
+  // target pid died but another process still owns the transcript / verdict still reports live)
+  let stillLive = false;
+  try { stillLive = deps.verdict(sid).live; } catch { stillLive = false; }
+  if (stillLive) return { ok: false, state: 'kill-failed', sid, attempts, reason: 'process still live after kill; aborting resume' };
+  return finishResume(sid, deps, 'kill-resume', attempts);
+}
+
+async function finishResume(sid: string, deps: EnsureDeps, via: 'resume-dead' | 'kill-resume', attempts: number): Promise<EnsureResult> {
+  const r = await deps.resumeDead(sid).catch((e) => ({ ok: false, error: (e as Error).message } as { ok: boolean; cse?: string; error?: string }));
+  if (r.ok && await deps.verifyDriveable(sid).catch(() => false)) {
+    if (r.cse) await deps.bindCse(sid, r.cse).catch(() => {});
+    return { ok: true, state: 'connected', sid, via, cse: r.cse, attempts, reason: via === 'resume-dead' ? 'resumed dead session and connected' : 'killed idle/forced session and resumed' };
+  }
+  return { ok: false, state: 'error', sid, attempts, reason: `${via} failed: ${r.error || 'not driveable after resume'}` };
+}
