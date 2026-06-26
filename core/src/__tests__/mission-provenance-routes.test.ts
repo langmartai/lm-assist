@@ -5,7 +5,7 @@ import type { Mission } from '../mission/mission-model';
 
 function memPort() {
   const db = new Map<string, Mission>();
-  return { db, get: async (id: string) => db.get(id) ?? null, list: async () => [...db.values()], put: async (m: Mission) => { db.set(m.id, m); } };
+  return { db, get: async (id: string) => { const v = db.get(id); return v ? JSON.parse(JSON.stringify(v)) : null; }, list: async () => [...db.values()], put: async (m: Mission) => { db.set(m.id, JSON.parse(JSON.stringify(m))); } };
 }
 const ccrActor = { kind: 'ccr' as const, id: 'cse_1', channel: 'mcp' as const, at: 1 };
 
@@ -22,7 +22,7 @@ test('_actor in body never leaks into mission fields', async () => {
   assert.ok(!('_actor' in (r.data as any)));
 });
 
-test('patch sets lastUpdatedBy and appends an attributed adjustment', async () => {
+test('patch sets lastUpdatedBy and records an attributed history entry', async () => {
   const port = memPort();
   await handleCreate({ title: 't', objective: 'o' }, 'gw4-n', port as any, ccrActor);
   const id = (await port.list())[0].id;
@@ -30,5 +30,5 @@ test('patch sets lastUpdatedBy and appends an attributed adjustment', async () =
   const r = await handlePatch(id, { title: 't2' }, port as any, userActor);
   const m = r.data as Mission;
   assert.equal(m.lastUpdatedBy.kind, 'user');
-  assert.equal(m.adjustments[m.adjustments.length - 1].actor.kind, 'user');
+  assert.equal(m.history[m.history.length - 1].actor.kind, 'user');
 });

@@ -51,6 +51,8 @@ export const MISSION_TOOL_DEFS = [
         dependsOn: SARR,
         plan: S,
         nextSteps: SARR,
+        tags: { type: 'object' as const },
+        parentId: S,
         env: obj({
           isolation: { ...S, enum: ['cloud', 'worktree', 'shared'] },
           host: S,
@@ -89,6 +91,8 @@ export const MISSION_TOOL_DEFS = [
         nextSteps: SARR,
         dependsOn: SARR,
         projects: SARR,
+        tags: { type: 'object' as const },
+        parentId: S,
         binding: {
           type: 'object' as const,
           description: 'Bind a spawned executor: {sessionId, kind:"worker"|"orchestrator", node?}. Required so the supervisor monitors it + answers its question fast.',

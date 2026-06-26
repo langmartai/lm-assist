@@ -4,6 +4,7 @@ import { randomBytes } from 'crypto';
 import { touchActivity, trackResumedNative } from '../../mission/mission-session-reaper';
 import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActor, place, ExecutorState, MissionBinding } from '../../mission/mission-model';
 import { resolveMcpActor } from '../../mission/mission-actor';
+import { normalizeTags, validateParent, validateDependsOn } from '../../mission/mission-graph';
 import {
   MissionDataPort, getMission, listMissions, putMission, thisNode, getControllerSession,
 } from '../../mission/mission-store';
@@ -88,10 +89,12 @@ export async function handleCreate(b: Record<string, unknown>, ownerNode: string
   const objective = str(b.objective);
   if (!title || !objective) return fail('INVALID_INPUT', 'title and objective are required');
   const env = (b.env && typeof b.env === 'object') ? b.env as Record<string, unknown> : {};
+  const tags = (b.tags && typeof b.tags === 'object') ? normalizeTags(b.tags as Record<string, string[]>) : {};
+  const parentId = (b.parentId === null || b.parentId === '') ? null : (str(b.parentId) ?? null);
   const m = newMission({
     title, objective, ownerNode, createdBy: who,
     projects: arr(b.projects), dependsOn: arr(b.dependsOn),
-    plan: str(b.plan), nextSteps: arr(b.nextSteps),
+    plan: str(b.plan), nextSteps: arr(b.nextSteps), tags, parentId,
     env: {
       isolation: (str(env.isolation) as Isolation) ?? 'cloud',
       host: str(env.host), repo: str(env.repo), branch: str(env.branch),
@@ -99,6 +102,11 @@ export async function handleCreate(b: Record<string, unknown>, ownerNode: string
       exclusive: env.exclusive === true || env.exclusive === 'true',
     },
   }, Date.now(), genId);
+  const all = await listMissions(port);
+  const pv = validateParent(m.id, m.parentId, all);
+  if (!pv.ok) return fail(pv.code, pv.message);
+  const dv = validateDependsOn(m.id, m.dependsOn, [...all, m]);
+  if (!dv.ok) return fail(dv.code, dv.message);
   await putMission(m, port, { actor: who });
   return ok(m);
 }
@@ -129,8 +137,20 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
   if (str(b.title)) m.title = str(b.title)!;
   if (str(b.plan) !== undefined) m.plan = str(b.plan);
   if (arr(b.nextSteps)) m.nextSteps = arr(b.nextSteps);
-  if (arr(b.dependsOn)) m.dependsOn = arr(b.dependsOn)!;
+  if (arr(b.dependsOn)) {
+    const deps = arr(b.dependsOn)!;
+    const dv = validateDependsOn(m.id, deps, await listMissions(port));
+    if (!dv.ok) return fail(dv.code, dv.message);
+    m.dependsOn = deps;
+  }
   if (arr(b.projects)) m.projects = arr(b.projects)!;
+  if (b.tags && typeof b.tags === 'object') m.tags = normalizeTags(b.tags as Record<string, string[]>);
+  if (b.parentId !== undefined) {
+    const pid = (b.parentId === null || b.parentId === '') ? null : (str(b.parentId) ?? null);
+    const pv = validateParent(m.id, pid, await listMissions(port));
+    if (!pv.ok) return fail(pv.code, pv.message);
+    m.parentId = pid;
+  }
   const sv = str(b.status) as MissionStatus | undefined;
   if (sv) { if (!VALID_STATUS.has(sv)) return fail('INVALID_INPUT', `invalid status "${sv}"`); m.status = sv; }
   if (b.env && typeof b.env === 'object') {
@@ -168,9 +188,7 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
       m.binding = binding;
     }
   }
-  m.lastUpdatedBy = who;
-  m.adjustments.push({ at: Date.now(), trigger: 'user-edit', change: 'mission updated via API', by: 'user', actor: who });
-  await putMission(m, port);
+  await putMission(m, port, { actor: who });
   return ok(m);
 }
 
