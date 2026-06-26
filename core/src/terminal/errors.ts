@@ -18,6 +18,7 @@ export type TerminalErrorCode =
   | 'SPAWN_FAILED'
   | 'REGISTRY_ERROR'
   | 'CONFLICT'
+  | 'INTERNAL_ERROR'
   | 'UPSTREAM_ERROR';
 
 export class TerminalError extends Error {
@@ -47,6 +48,7 @@ export function httpStatusFor(code: TerminalErrorCode): number {
     case 'TMUX_NOT_INSTALLED': return 503;
     case 'TIMEOUT': return 504;
     case 'UPSTREAM_ERROR': return 502;
+    case 'INTERNAL_ERROR': return 500;
     case 'POSTCONDITION_FAILED':
     case 'SESSION_DIED':
     case 'TMUX_ERROR':

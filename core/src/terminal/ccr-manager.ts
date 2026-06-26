@@ -16,7 +16,7 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { spawn } from '../utils/exec';
 import { execFileSync } from '../utils/exec';
-import { TerminalError } from './errors';
+import { TerminalError, type TerminalErrorCode } from './errors';
 import { sessionVerdict } from './cc-sessions';
 import type { ConnectStrategy } from './cc-sessions';
 import { anthropicOAuthPost, getOrganizationUuid } from '../utils/claude-oauth';
@@ -43,7 +43,8 @@ export interface CcrRecord {
   jsonl: string | null;
   pid: number | null;
   webUrl: string | null;
-  strategy?: ConnectStrategy;
+  /** 'inject' = native /remote-control connect (no tmux owned). */
+  strategy?: ConnectStrategy | 'inject';
   /** tmux session backing a `connect`; set for both attach-existing and create-tmux. */
   tmuxSession?: string;
   /** true only when WE created the tmux (create-tmux) — stop() may kill it. Never kill a user's existing tmux. */
@@ -266,11 +267,12 @@ export async function startMirror({ sessionId }: { sessionId: string }): Promise
  * Connect to a session via two-way bridge.
  *
  * SAFETY GATE — enforced strictly:
- *   attach-existing  → attach existing tmux pane (no new tmux)
- *   create-tmux      → only if safeToCreateTmux===true (no live owner)
- *   refuse           → throws CONFLICT (HTTP 409); DO NOT SPAWN
- *   none             → throws SESSION_NOT_FOUND (HTTP 404)
+ *   LIVE session (attach-existing OR refuse) → ensureRemoteControlled ladder:
+ *     inject /remote-control in place; kill-and-resume only when idle or force:true
+ *   create-tmux  → only if safeToCreateTmux===true (no live owner)
+ *   none         → throws SESSION_NOT_FOUND (HTTP 404)
  */
+
 /** Best-effort: read the session's recorded cwd from its transcript (first entry with a cwd). */
 /** Auto-accept Claude Code's folder-trust prompt if a freshly-resumed session blocks on it. */
 async function acceptTrustIfPrompted(tmuxSession: string): Promise<void> {
@@ -298,18 +300,34 @@ function resolveSessionCwd(jsonlPath: string): string {
   return os.homedir();
 }
 
-export async function connect({ sessionId }: { sessionId: string }): Promise<CcrRecord> {
-  const v = sessionVerdict(sessionId);
+/**
+ * Map an EnsureResult state to a TerminalError code+message, or null on success.
+ * Used by connect() to surface clear errors from the ensure ladder.
+ */
+export function mapEnsureToConnectError(state: string): { code: TerminalErrorCode; message: string } | null {
+  switch (state) {
+    case 'connected':
+    case 'already-connected': return null;
+    case 'needs-force': return { code: 'CONFLICT', message: 'live session is busy/unreachable; pass force:true to kill-and-resume (idle sessions auto-kill)' };
+    case 'kill-failed': return { code: 'CONFLICT', message: 'owner process did not terminate; not resuming over a live process' };
+    case 'gone': return { code: 'SESSION_NOT_FOUND', message: 'no transcript and no live process on this host' };
+    default: return { code: 'INTERNAL_ERROR', message: 'remote-control connect failed' };
+  }
+}
 
-  if (v.connectStrategy === 'refuse') {
-    throw new TerminalError('CONFLICT', v.reason, { verdict: v });
-  }
-  if (v.connectStrategy === 'none') {
-    throw new TerminalError('SESSION_NOT_FOUND', v.reason, { verdict: v });
-  }
+/**
+ * Spawn the tmux bridge for a DEAD (or freshly-killed) session.
+ * Handles both 'attach-existing' (live in tmux) and 'create-tmux' (no live owner)
+ * strategies verbatim from the original connect() body.
+ *
+ * IMPORTANT: Only call this for a dead session (create-tmux verdict) or as the
+ * resumeDead callback after a kill — NEVER directly for a live session.
+ */
+async function connectDeadCreateTmux(sessionId: string): Promise<CcrRecord> {
+  const v = sessionVerdict(sessionId);
+  const jsonlPath = v.jsonl!;
 
   let tmuxSession: string;
-  const jsonlPath = v.jsonl!;
 
   if (v.connectStrategy === 'attach-existing') {
     tmuxSession = v.tmuxSession!;
@@ -359,6 +377,67 @@ export async function connect({ sessionId }: { sessionId: string }): Promise<Ccr
   data[id] = rec;
   saveRegistry(data);
   return rec;
+}
+
+/**
+ * Build and save a CcrRecord for a native /remote-control connection (no tmux owned).
+ * webUrl is derived from e.cse so that cseFromWebUrl(rec.webUrl) === e.cse, which
+ * means ccr_drive's cloud path resolves the right cse.
+ */
+async function recordForLiveConnection(
+  sessionId: string,
+  e: { state: string; cse?: string },
+): Promise<CcrRecord> {
+  const id = newCcrId();
+  // e.cse is 'cse_<X>'; webUrl must be 'https://claude.ai/code/session_<X>'
+  // so that cseFromWebUrl(webUrl) round-trips back to e.cse.
+  const webUrl = e.cse ? `https://claude.ai/code/${e.cse.replace(/^cse_/, 'session_')}` : null;
+  const rec: CcrRecord = {
+    id,
+    mode: 'connected',
+    sessionId,
+    jsonl: null,
+    pid: null,
+    webUrl,
+    strategy: 'inject',
+    ownsTmux: false,
+    logFile: null,
+    startedAt: new Date().toISOString(),
+  };
+  const data = loadRegistry();
+  data[id] = rec;
+  saveRegistry(data);
+  return rec;
+}
+
+export async function connect({ sessionId, force }: { sessionId: string; force?: boolean }): Promise<CcrRecord> {
+  const v = sessionVerdict(sessionId);
+
+  if (v.connectStrategy === 'none') {
+    throw new TerminalError('SESSION_NOT_FOUND', v.reason, { verdict: v });
+  }
+
+  // LIVE session (attach-existing OR refuse) → inject-first / kill-gated ladder
+  if (v.live) {
+    const { buildEnsureDeps } = require('./live-rc-connect-deps') as typeof import('./live-rc-connect-deps');
+    const { ensureRemoteControlled } = require('./live-rc-connect') as typeof import('./live-rc-connect');
+    const deps = buildEnsureDeps({
+      // resumeDead here means: process already died between verdict and now →
+      // use the existing create-tmux bridge path. Build inline to avoid recursion.
+      resumeDead: async (sid) => {
+        const rec = await connectDeadCreateTmux(sid);
+        return { ok: !!rec.webUrl, cse: cseFromWebUrl(rec.webUrl) ?? undefined };
+      },
+    });
+    const e = await ensureRemoteControlled(sessionId, { force }, deps);
+    const errMap = mapEnsureToConnectError(e.state);
+    if (errMap) throw new TerminalError(errMap.code, errMap.message, { ensure: e });
+    // success → return a CcrRecord describing the live /remote-control connection
+    return await recordForLiveConnection(sessionId, e);
+  }
+
+  // DEAD (create-tmux) — unchanged path
+  return connectDeadCreateTmux(sessionId);
 }
 
 /** List all registered remotes with liveness. */

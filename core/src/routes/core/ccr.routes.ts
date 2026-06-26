@@ -135,10 +135,10 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'POST',
       pattern: /^\/ccr\/connect$/,
       handler: async (req) => {
-        const body = (req.body || {}) as { sessionId?: unknown };
+        const body = (req.body || {}) as { sessionId?: unknown; force?: unknown };
         try {
           const sessionId = parseSessionId(body.sessionId as string | undefined);
-          const data = await ccr.connect({ sessionId });
+          const data = await ccr.connect({ sessionId, force: body.force === true });
           return ok(data);
         } catch (e: unknown) {
           if (e instanceof TerminalError) {

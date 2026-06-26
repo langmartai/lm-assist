@@ -541,10 +541,13 @@ export const ccrMirrorToolDef = {
 export const ccrConnectToolDef = {
   name: 'ccr_connect',
   description:
-    'Connect a Claude Code session for TWO-WAY remote control via claude.ai/code. Enforces the safety gate: attaches an existing tmux, or spawns a new `claude --resume` tmux ONLY when no live process owns the session storage; refuses (CONFLICT) otherwise to avoid corrupting the append-only transcript. Returns the web URL.',
+    'Connect a Claude Code session for TWO-WAY remote control via claude.ai/code. For a LIVE session it injects /remote-control to connect in place; if the input is unreachable (headless) it kill-and-resumes only when idle or force:true. For a DEAD session it spawns a new `claude --resume` tmux ONLY when no live process owns the session storage. Returns the web URL.',
   inputSchema: {
     type: 'object' as const,
-    properties: { session_id: { type: 'string', description: 'Claude Code session UUID.' } },
+    properties: {
+      session_id: { type: 'string', description: 'Claude Code session UUID.' },
+      force: { type: 'boolean', description: 'Kill-and-resume a live, unreachable, actively-busy session (idle sessions auto-kill). Default false.' },
+    },
     required: ['session_id'],
   },
 };
@@ -1336,7 +1339,10 @@ async function handleCcrMirror(args: Record<string, unknown>): Promise<McpToolRe
 async function handleCcrConnect(args: Record<string, unknown>): Promise<McpToolResult> {
   const sid = String(args.session_id || '').trim();
   if (!sid) return err('session_id is required.');
-  try { return renderRaw(await workerPostRaw('/ccr/connect', { sessionId: sid })); }
+  const body: Record<string, unknown> = { sessionId: sid };
+  // Connector bool args can arrive as strings — coerce.
+  if (args.force === true || args.force === 'true') body.force = true;
+  try { return renderRaw(await workerPostRaw('/ccr/connect', body)); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 async function handleCcrRemoteStop(args: Record<string, unknown>): Promise<McpToolResult> {
