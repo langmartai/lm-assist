@@ -50,6 +50,7 @@ import { GUIDE_TOOL_DEFS, GUIDE_HANDLERS } from './guide';
 import { SESSION_STATUS_TOOL_DEFS, SESSION_STATUS_HANDLERS } from '../mcp-session-resolver';
 import { WORKER_ROLE_TOOL_DEFS, WORKER_ROLE_HANDLERS } from './worker-role';
 import { MISSION_TOOL_DEFS, MISSION_HANDLERS } from './mission';
+import { MISSION_QUERY_TOOL_DEFS, MISSION_QUERY_HANDLERS } from './mission-query';
 import { CLAUDEAI_LOGIN_TOOL_DEFS, CLAUDEAI_LOGIN_HANDLERS } from './claudeai-login';
 import { NODE_BUILDS_TOOL_DEFS, NODE_BUILDS_HANDLERS } from './node-builds';
 import { NODE_UPGRADE_TOOL_DEFS, NODE_UPGRADE_HANDLERS } from './node-upgrade';
@@ -920,6 +921,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...WORKER_ROLE_TOOL_DEFS,
   // mission controller — mission_create / mission_list / mission_update / mission_control_status
   ...MISSION_TOOL_DEFS,
+  // mission graph-query — mission_query / mission_neighbors / mission_graph
+  ...MISSION_QUERY_TOOL_DEFS,
   // auth: guided re-login for cookie + OAuth
   ...CLAUDEAI_LOGIN_TOOL_DEFS,
   // fleet build/upgrade tracking — per-node build version (read, pull)
@@ -1675,6 +1678,8 @@ export const EXPANDED_HANDLERS: Record<
   ...WORKER_ROLE_HANDLERS,
   // mission controller
   ...MISSION_HANDLERS,
+  // mission graph-query
+  ...MISSION_QUERY_HANDLERS,
   // auth: guided re-login for cookie + OAuth
   ...CLAUDEAI_LOGIN_HANDLERS,
   // fleet build/upgrade tracking
