@@ -34,6 +34,14 @@ export interface MissionControl {
 export interface MissionResult { at: number; ref: string; summary?: string; }
 export interface MissionAdjustment { at: number; trigger: string; change: string; by: 'controller' | 'user'; actor: MissionActor; }
 
+export interface FieldDiff { from: unknown; to: unknown; }
+export interface MissionChange {
+  rev: number;
+  at: number;
+  actor: MissionActor;
+  changes: Record<string, FieldDiff>;
+}
+
 export type ActorKind = 'local-session' | 'ccr' | 'claudeai-conversation' | 'controller' | 'user';
 export type ActorChannel = 'mcp' | 'controller' | 'user' | 'api';
 export interface MissionActor {
@@ -55,6 +63,10 @@ export function withActorBackfill(m: Mission): Mission {
   const node = m.ownerNode ?? 'unknown';
   if (!m.createdBy) m.createdBy = { kind: 'user', channel: 'api', node, at: m.createdAt ?? 0 };
   if (!m.lastUpdatedBy) m.lastUpdatedBy = m.createdBy;
+  if (!m.tags || typeof m.tags !== 'object') m.tags = {};
+  if (m.parentId === undefined) m.parentId = null;
+  if (typeof m.rev !== 'number') m.rev = 1;
+  if (!Array.isArray(m.history)) m.history = [];
   if (Array.isArray(m.adjustments)) {
     for (const a of m.adjustments) {
       if (!a.actor) {
@@ -74,6 +86,8 @@ export interface Mission {
   nextSteps?: string[];
   projects: string[];
   dependsOn: string[];
+  tags: Record<string, string[]>;
+  parentId: string | null;
   env: MissionEnv;
   binding: MissionBinding | null;
   progress: MissionProgress | null;
@@ -84,6 +98,8 @@ export interface Mission {
   adjustments: MissionAdjustment[];
   createdBy: MissionActor;
   lastUpdatedBy: MissionActor;
+  rev: number;
+  history: MissionChange[];
   status: MissionStatus;
   ownerNode: string;
   createdAt: number;
@@ -102,6 +118,8 @@ export interface NewMissionInput {
   createdBy: MissionActor;
   projects?: string[];
   dependsOn?: string[];
+  tags?: Record<string, string[]>;
+  parentId?: string | null;
   env?: Partial<MissionEnv>;
   plan?: string;
   nextSteps?: string[];
@@ -116,6 +134,8 @@ export function newMission(input: NewMissionInput, now: number, genId: () => str
     nextSteps: input.nextSteps,
     projects: input.projects ?? [],
     dependsOn: input.dependsOn ?? [],
+    tags: input.tags ?? {},
+    parentId: input.parentId ?? null,
     env: {
       isolation: input.env?.isolation ?? 'cloud',
       host: input.env?.host,
@@ -131,6 +151,8 @@ export function newMission(input: NewMissionInput, now: number, genId: () => str
     adjustments: [],
     createdBy: input.createdBy,
     lastUpdatedBy: input.createdBy,
+    rev: 1,
+    history: [],
     status: 'active',
     ownerNode: input.ownerNode,
     createdAt: now,

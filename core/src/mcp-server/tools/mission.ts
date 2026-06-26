@@ -51,6 +51,8 @@ export const MISSION_TOOL_DEFS = [
         dependsOn: SARR,
         plan: S,
         nextSteps: SARR,
+        tags: { type: 'object' as const },
+        parentId: S,
         env: obj({
           isolation: { ...S, enum: ['cloud', 'worktree', 'shared'] },
           host: S,
@@ -89,6 +91,8 @@ export const MISSION_TOOL_DEFS = [
         nextSteps: SARR,
         dependsOn: SARR,
         projects: SARR,
+        tags: { type: 'object' as const },
+        parentId: S,
         binding: {
           type: 'object' as const,
           description: 'Bind a spawned executor: {sessionId, kind:"worker"|"orchestrator", node?}. Required so the supervisor monitors it + answers its question fast.',
@@ -144,6 +148,21 @@ export const MISSION_TOOL_DEFS = [
     name: 'mission_session_resume',
     description: 'Resume a mission\'s worker session IN PLACE, preserving its context. Native → `claude --resume` + re-bridge (SAME sessionId); cloud → wake an idle worker (re-drive). Returns {resumed, transport, sid, reason}. reason: ok (resumed) | alive (already running) | needs-force (live session actively busy, not safe to kill without force) | kill-failed (process did not terminate) | conflict (live elsewhere, unsafe to resume) | gone (terminal — spawn a fresh worker as a SEPARATE action; this tool never auto-replaces). Pass missionId for native. Pass force:true to kill-and-resume a live, unreachable, actively-busy worker (idle workers are auto-killed). Write tool — leader-anchored.',
     inputSchema: obj({ sid: S, missionId: S, force: { type: 'boolean' as const } }, ['sid']),
+  },
+  {
+    name: 'mission_tag',
+    description:
+      'Add/remove/set a mission\'s tags by dimension (e.g. project/feature/component) without read-modify-write. ' +
+      '{id, add?:{dim:[vals]}, remove?:{dim:[vals]}, set?:{dim:[vals]}}. set replaces a dimension; add/remove merge or subtract. ' +
+      'Recorded in the mission history with provenance.',
+    inputSchema: obj({ id: S, add: { type: 'object' as const }, remove: { type: 'object' as const }, set: { type: 'object' as const } }, ['id']),
+  },
+  {
+    name: 'mission_history',
+    description:
+      'Page a mission\'s full version history (UNBOUNDED — beyond the recent entries embedded in the mission record). ' +
+      'Each entry: {rev, at, actor, changes:{field:{from,to}}}. {id, limit?(default 50), beforeRev?(page older)}. Newest-first.',
+    inputSchema: obj({ id: S, limit: { type: 'number' as const }, beforeRev: { type: 'number' as const } }, ['id']),
   },
 ] as const;
 
@@ -260,6 +279,31 @@ export const MISSION_HANDLERS: Record<
       if (a.missionId) body.missionId = String(a.missionId);
       if (a.force !== undefined) body.force = a.force === true || a.force === 'true';
       return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/resume`, body));
+    } catch (e) { return err((e as Error).message); }
+  },
+
+  mission_tag: async (a) => {
+    try {
+      const id = String(a.id || '');
+      if (!id) return err('id is required');
+      const body: Record<string, unknown> = {};
+      if (a.add) body.add = a.add;
+      if (a.remove) body.remove = a.remove;
+      if (a.set) body.set = a.set;
+      return pretty(await workerPost(`/mission/${encodeURIComponent(id)}/tags`, withActorHint(body, currentMcpContext()?.toolUseId)));
+    } catch (e) { return err((e as Error).message); }
+  },
+
+  mission_history: async (a) => {
+    try {
+      const id = String(a.id || '');
+      if (!id) return err('id is required');
+      const num = (v: unknown) => typeof v === 'number' ? v : (typeof v === 'string' && v.trim() ? parseInt(v, 10) : undefined);
+      const qs = new URLSearchParams();
+      const limit = num(a.limit); const beforeRev = num(a.beforeRev);
+      if (limit != null && !Number.isNaN(limit)) qs.set('limit', String(limit));
+      if (beforeRev != null && !Number.isNaN(beforeRev)) qs.set('beforeRev', String(beforeRev));
+      return pretty(await workerGet(`/mission/${encodeURIComponent(id)}/history${qs.toString() ? `?${qs}` : ''}`));
     } catch (e) { return err((e as Error).message); }
   },
 };
