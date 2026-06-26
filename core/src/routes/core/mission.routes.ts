@@ -4,7 +4,7 @@ import { randomBytes } from 'crypto';
 import { touchActivity, trackResumedNative } from '../../mission/mission-session-reaper';
 import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActor, place, ExecutorState, MissionBinding } from '../../mission/mission-model';
 import { resolveMcpActor } from '../../mission/mission-actor';
-import { normalizeTags, validateParent, validateDependsOn } from '../../mission/mission-graph';
+import { normalizeTags, mergeTags, validateParent, validateDependsOn } from '../../mission/mission-graph';
 import {
   MissionDataPort, getMission, listMissions, putMission, thisNode, getControllerSession,
 } from '../../mission/mission-store';
@@ -188,6 +188,18 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
       m.binding = binding;
     }
   }
+  await putMission(m, port, { actor: who });
+  return ok(m);
+}
+
+export async function handleTag(id: string, b: Record<string, unknown>, port?: MissionDataPort, actor?: MissionActor, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'POST', `/mission/${encodeURIComponent(id)}/tags`, b, true);
+  if (anchored) return anchored;
+  const who = actor ?? await actorFor(b);
+  const m = await getMission(id, port);
+  if (!m) return fail('NOT_FOUND', `no mission ${id}`);
+  const asMap = (v: unknown) => (v && typeof v === 'object' && !Array.isArray(v)) ? v as Record<string, string[]> : undefined;
+  m.tags = mergeTags(m.tags ?? {}, { add: asMap(b.add), remove: asMap(b.remove), set: asMap(b.set) });
   await putMission(m, port, { actor: who });
   return ok(m);
 }
@@ -1095,6 +1107,8 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/executor-status$/, handler: async (req) => handleExecutorStatus(req.params.id, undefined, undefined, realLeaderAnchor()) },
     // /mission/:id/sessions BEFORE /mission/:id so the literal suffix wins
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/sessions$/, handler: async (req) => handleSessions(req.params.id, undefined, undefined, realLeaderAnchor()) },
+    // /mission/:id/tags BEFORE /mission/:id so the literal suffix wins
+    { method: 'POST', pattern: /^\/mission\/(?<id>[^/]+)\/tags$/, handler: async (req) => handleTag(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, realLeaderAnchor()) },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handleGet(req.params.id, undefined, realLeaderAnchor()) },
     { method: 'PATCH', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, realLeaderAnchor()) },
     // POST /mission/:id — same semantics as PATCH, accepts MCP workerPost (POST-only)
