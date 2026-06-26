@@ -377,6 +377,7 @@ export class TierRestServer {
       this.server.listen(this.options.port, this.options.host, () => {
         profiler.end('httpListen');
         console.log(`lm-assist API server listening on http://${this.options.host}:${this.options.port}`);
+        try { require('./monitor/build-history').recordBuild(); } catch (e) { console.error('[Server] build-history record failed:', (e as any)?.message); }
         resolve();
       });
     });

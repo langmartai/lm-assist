@@ -51,6 +51,7 @@ import { SESSION_STATUS_TOOL_DEFS, SESSION_STATUS_HANDLERS } from '../mcp-sessio
 import { WORKER_ROLE_TOOL_DEFS, WORKER_ROLE_HANDLERS } from './worker-role';
 import { MISSION_TOOL_DEFS, MISSION_HANDLERS } from './mission';
 import { CLAUDEAI_LOGIN_TOOL_DEFS, CLAUDEAI_LOGIN_HANDLERS } from './claudeai-login';
+import { NODE_BUILDS_TOOL_DEFS, NODE_BUILDS_HANDLERS } from './node-builds';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -920,6 +921,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...MISSION_TOOL_DEFS,
   // auth: guided re-login for cookie + OAuth
   ...CLAUDEAI_LOGIN_TOOL_DEFS,
+  // fleet build/upgrade tracking — per-node build version (read, pull)
+  ...NODE_BUILDS_TOOL_DEFS,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -1671,4 +1674,6 @@ export const EXPANDED_HANDLERS: Record<
   ...MISSION_HANDLERS,
   // auth: guided re-login for cookie + OAuth
   ...CLAUDEAI_LOGIN_HANDLERS,
+  // fleet build/upgrade tracking
+  ...NODE_BUILDS_HANDLERS,
 };
