@@ -42,10 +42,12 @@ export function defaultDeps(): AuthSnapshotDeps {
   const cookie = require('../utils/claudeai-session') as typeof import('../utils/claudeai-session');
   return {
     refreshOAuth: async () => {
-      try { const before = oauth.readClaudeOAuth(); await oauth.getValidAccessToken();
-            const after = oauth.readClaudeOAuth();
-            return { refreshed: !!(before && after && before.accessToken !== after.accessToken) }; }
-      catch { return { refreshed: false }; }
+      try {
+        const { getProjectSettings } = require('../project-settings') as typeof import('../project-settings');
+        const intervalMin = getProjectSettings().authMonitorIntervalMin ?? 15;
+        const r = await oauth.ensureFreshAccessToken(oauth.renewBufferMs(intervalMin));
+        return { refreshed: r.refreshed };
+      } catch { return { refreshed: false }; }
     },
     oauthStatus: () => { const s = oauth.getOAuthStatus(); return { present: s.present, expired: !!s.expired, msUntilExpiry: s.msUntilExpiry, subscriptionType: s.subscriptionType, rateLimitTier: s.rateLimitTier }; },
     cookieStatus: () => { const s = cookie.getClaudeAISessionStatus(); const id = s.identity?.userId || s.identity?.orgUuid || s.identity?.anonymousId; return { present: s.present, hasSessionKey: s.hasSessionKey, hasCfClearance: s.hasCfClearance, hasCfBm: s.hasCfBm, identity: id }; },

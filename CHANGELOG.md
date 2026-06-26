@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.107] — proactive OAuth auto-renew (2026-06-26)
+
+Proactive Claude Code OAuth auto-renew: the auth-monitor now refreshes the token a full interval before expiry (keeps the rotating refresh_token alive even when Claude Code is never run); new `POST /claude-code/oauth-renew` API + `claudeai_login which=oauth` triggers a renew.
+
 ## [0.1.106] — auth-monitor + guided login + allNodes sweep (2026-06-26)
 
 ### Added
