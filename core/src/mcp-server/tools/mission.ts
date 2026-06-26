@@ -142,8 +142,8 @@ export const MISSION_TOOL_DEFS = [
   },
   {
     name: 'mission_session_resume',
-    description: 'Resume a mission\'s worker session IN PLACE, preserving its context. Native → `claude --resume` + re-bridge (SAME sessionId); cloud → wake an idle worker (re-drive). Returns {resumed, transport, sid, reason}. reason: ok (resumed) | alive (already running) | conflict (live elsewhere, unsafe to resume) | gone (terminal — spawn a fresh worker as a SEPARATE action; this tool never auto-replaces). Pass missionId for native. Write tool — leader-anchored.',
-    inputSchema: obj({ sid: S, missionId: S }, ['sid']),
+    description: 'Resume a mission\'s worker session IN PLACE, preserving its context. Native → `claude --resume` + re-bridge (SAME sessionId); cloud → wake an idle worker (re-drive). Returns {resumed, transport, sid, reason}. reason: ok (resumed) | alive (already running) | needs-force (live session actively busy, not safe to kill without force) | kill-failed (process did not terminate) | conflict (live elsewhere, unsafe to resume) | gone (terminal — spawn a fresh worker as a SEPARATE action; this tool never auto-replaces). Pass missionId for native. Pass force:true to kill-and-resume a live, unreachable, actively-busy worker (idle workers are auto-killed). Write tool — leader-anchored.',
+    inputSchema: obj({ sid: S, missionId: S, force: { type: 'boolean' as const } }, ['sid']),
   },
 ] as const;
 
@@ -258,6 +258,7 @@ export const MISSION_HANDLERS: Record<
       if (!sid) return err('sid is required');
       const body: Record<string, unknown> = {};
       if (a.missionId) body.missionId = String(a.missionId);
+      if (a.force !== undefined) body.force = a.force === true || a.force === 'true';
       return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/resume`, body));
     } catch (e) { return err((e as Error).message); }
   },

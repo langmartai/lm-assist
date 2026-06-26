@@ -4,7 +4,7 @@
 /** Terminal cloud session statuses (mirrors mission-controller.ts / mission.routes.ts). */
 export const TERMINAL_CLOUD_STATUSES = ['stopped', 'completed', 'failed', 'error', 'archived'];
 
-export type ResumeReason = 'ok' | 'alive' | 'gone' | 'conflict' | 'status-unknown';
+export type ResumeReason = 'ok' | 'alive' | 'gone' | 'conflict' | 'status-unknown' | 'needs-force' | 'kill-failed';
 
 export interface ResumeResult {
   resumed: boolean;
@@ -53,13 +53,22 @@ export interface ResumeWorkerDeps {
   /** Resume a native worker IN PLACE: `claude --resume <sid>` + re-bridge + re-bind.
    *  MUST return the SAME sid (continuity); only the bridge cse changes. */
   resumeNative: (missionId: string | undefined, sid: string) => Promise<{ sid: string; boundAt: number }>;
+  /** Inject-first / kill-gated connect for a LIVE native worker. Provided by the
+   *  route layer (wires ensureRemoteControlled). Optional: when absent, resumeWorker
+   *  falls back to the legacy attach/conflict verdict mapping. */
+  ensureLive?: (sid: string, opts: { force?: boolean; missionId?: string }) => Promise<{ ok: boolean; state: string; sid: string; reason: string }>;
 }
 
 /**
  * Resume a mission's bound worker IN PLACE. Resume-only: a terminal/unrecoverable session
  * returns { resumed:false, reason:'gone'|'conflict' } and does NOT spawn a replacement.
  */
-export async function resumeWorker(sid: string, missionId: string | undefined, deps: ResumeWorkerDeps): Promise<ResumeResult> {
+export async function resumeWorker(
+  sid: string,
+  missionId: string | undefined,
+  deps: ResumeWorkerDeps,
+  opts?: { force?: boolean },
+): Promise<ResumeResult> {
   const { transport } = deps.resolve(sid);
 
   if (transport === 'cloud') {
@@ -85,9 +94,31 @@ export async function resumeWorker(sid: string, missionId: string | undefined, d
     return { resumed: false, transport: 'native', sid, reason: 'gone' };
   }
   const action = decideNativeResume(v);
-  if (action === 'attach') return { resumed: true, transport: 'native', sid, reason: 'alive' };
-  if (action === 'conflict') return { resumed: false, transport: 'native', sid, reason: 'conflict' };
   if (action === 'gone') return { resumed: false, transport: 'native', sid, reason: 'gone' };
-  const launched = await deps.resumeNative(missionId, sid); // resumeNative preserves sid
-  return { resumed: true, transport: 'native', sid: launched.sid, reason: 'ok' };
+  if (action === 'resume') {
+    // dead, transcript present, safe → claude --resume + re-bridge (preserves sid)
+    const launched = await deps.resumeNative(missionId, sid);
+    return { resumed: true, transport: 'native', sid: launched.sid, reason: 'ok' };
+  }
+  // action is 'attach' or 'conflict' → a LIVE native worker → inject-first / kill-gated ladder
+  if (deps.ensureLive) {
+    const e = await deps.ensureLive(sid, { force: opts?.force, missionId });
+    return mapEnsureToResume(e, sid);
+  }
+  // fallback (no ensureLive wired): legacy verdict mapping
+  return action === 'attach'
+    ? { resumed: true, transport: 'native', sid, reason: 'alive' }
+    : { resumed: false, transport: 'native', sid, reason: 'conflict' };
+}
+
+/** Map an ensureRemoteControlled result onto the ResumeResult contract. */
+function mapEnsureToResume(e: { state: string; sid: string }, sid: string): ResumeResult {
+  switch (e.state) {
+    case 'connected': return { resumed: true, transport: 'native', sid: e.sid || sid, reason: 'ok' };
+    case 'already-connected': return { resumed: true, transport: 'native', sid: e.sid || sid, reason: 'alive' };
+    case 'needs-force': return { resumed: false, transport: 'native', sid, reason: 'needs-force' };
+    case 'kill-failed': return { resumed: false, transport: 'native', sid, reason: 'kill-failed' };
+    case 'gone': return { resumed: false, transport: 'native', sid, reason: 'gone' };
+    default: return { resumed: false, transport: 'native', sid, reason: 'status-unknown' };
+  }
 }
