@@ -1,0 +1,121 @@
+/**
+ * node_upgrade MCP tool — trigger a per-node lm-assist upgrade to a SPECIFIED
+ * prebuilt build via the relay (complements node_builds which shows builds).
+ *
+ * Thin proxy to POST /dev-mode/upgrade. The cross-node `node` param is handled
+ * by the relay/_passthrough layer, so the handler just does workerPost.
+ *
+ * Registered in EXPANDED_TOOL_DEFS + EXPANDED_HANDLERS (expanded.ts),
+ * scoped 'admin' in configure.ts TOOL_SCOPES (destructive — restarts services).
+ */
+import { ok, err, workerPost, type McpToolResult } from './_passthrough';
+
+const DOWNGRADE_MSG =
+  'source is required: pass a prebuilt .tgz path/URL, a GitHub release URL, or ' +
+  'github:owner/repo#ref (or a ref=). Omitting installs npm latest which would DOWNGRADE ' +
+  'this fleet — we never publish to npm.';
+
+/**
+ * Resolve the upgrade source from explicit source string or a ref shorthand.
+ * PURE — no I/O.
+ *
+ * Returns { ok: true, source } when a valid source is found, or
+ * { ok: false, error } when the call would be a downgrade / the guard fires.
+ */
+export function resolveUpgradeSource(
+  source?: string,
+  ref?: string,
+): { ok: true; source: string } | { ok: false; error: string } {
+  const trimmed = (source ?? '').trim();
+
+  if (trimmed) {
+    // Guard obvious downgrade footguns — all of these resolve to npm latest.
+    if (trimmed === 'latest' || trimmed === 'lm-assist@latest' || trimmed === 'lm-assist') {
+      return { ok: false, error: DOWNGRADE_MSG };
+    }
+    return { ok: true, source: trimmed };
+  }
+
+  const trimmedRef = (ref ?? '').trim();
+  if (trimmedRef) {
+    return { ok: true, source: `github:langmartai/lm-assist#${trimmedRef}` };
+  }
+
+  return { ok: false, error: DOWNGRADE_MSG };
+}
+
+export const nodeUpgradeToolDef = {
+  name: 'node_upgrade',
+  description:
+    'Upgrade a node\'s lm-assist build to a SPECIFIED prebuilt source (then confirm with ' +
+    'node_builds). source = a prebuilt .tgz path (absolute, ON the target node) / .tgz URL / ' +
+    'GitHub release URL / github:owner/repo#ref (builds from source, slower). NEVER omit — ' +
+    'that installs npm latest, which DOWNGRADES this fleet (we don\'t publish). ' +
+    'Dispatches the detached upgrade + RESTARTS the node\'s Core/Web, so it returns ' +
+    'immediately (\'Upgrade started\'); poll node_builds + GET /dev-mode/upgrade-log to ' +
+    'confirm (~30-60s for a .tgz; minutes for github:). ' +
+    'NOTE: cleanest on standard nodes (`lm-assist restart`); a systemd-managed or ' +
+    'Windows-scheduled-task Core may need its own restart path.',
+  annotations: { readOnlyHint: false, destructiveHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      source: {
+        type: 'string',
+        description:
+          'Prebuilt .tgz path (absolute, ON the target node), .tgz URL, GitHub release URL, ' +
+          'or npm spec. REQUIRED (omit = npm latest = DOWNGRADE). Wins over ref.',
+      },
+      ref: {
+        type: 'string',
+        description:
+          'Git ref shorthand — expands to github:langmartai/lm-assist#<ref>. Only used when ' +
+          'source is absent. Slower (builds from source).',
+      },
+      node: {
+        type: 'string',
+        description: 'Target node id/hostId (from list_nodes/node_builds). Omit for the current node.',
+      },
+    },
+  },
+};
+
+interface UpgradeResult {
+  message?: string;
+  pid?: number;
+  source?: string;
+}
+
+export async function handleNodeUpgrade(
+  args: Record<string, unknown>,
+): Promise<McpToolResult> {
+  try {
+    const r = resolveUpgradeSource(
+      args.source != null ? String(args.source) : undefined,
+      args.ref != null ? String(args.ref) : undefined,
+    );
+    if (!r.ok) return err(r.error);
+
+    const data = await workerPost<UpgradeResult>('/dev-mode/upgrade', { source: r.source });
+    const message = data?.message ?? 'Upgrade started';
+    const pid = data?.pid;
+    const usedSource = data?.source ?? r.source;
+    return ok(
+      `${message}\n` +
+        `source: ${usedSource}\n` +
+        (pid != null ? `pid: ${pid}\n` : '') +
+        `Poll node_builds and GET /dev-mode/upgrade-log to confirm (~30-60s for a .tgz).`,
+    );
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+export const NODE_UPGRADE_TOOL_DEFS = [nodeUpgradeToolDef] as const;
+
+export const NODE_UPGRADE_HANDLERS: Record<
+  string,
+  (args: Record<string, unknown>) => Promise<McpToolResult>
+> = {
+  node_upgrade: handleNodeUpgrade,
+};

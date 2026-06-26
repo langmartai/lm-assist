@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.110] — node_upgrade MCP tool (2026-06-26)
+
+node_upgrade MCP tool: trigger a per-node lm-assist upgrade to a specified prebuilt source (.tgz/URL/github:ref) via the relay, then confirm with node_builds. Refuses to default to npm latest (would downgrade — we don't publish).
+
 ## [0.1.109] — per-node build/upgrade tracking (2026-06-26)
 
 Node build/upgrade tracking: each node records its lm-assist build version (and detects upgrades) on Core start; new `node_builds` MCP tool + `GET /node/build` show the fleet's builds + when each last upgraded — confirm a deploy landed across all nodes.

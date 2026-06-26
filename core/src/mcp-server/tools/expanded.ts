@@ -52,6 +52,7 @@ import { WORKER_ROLE_TOOL_DEFS, WORKER_ROLE_HANDLERS } from './worker-role';
 import { MISSION_TOOL_DEFS, MISSION_HANDLERS } from './mission';
 import { CLAUDEAI_LOGIN_TOOL_DEFS, CLAUDEAI_LOGIN_HANDLERS } from './claudeai-login';
 import { NODE_BUILDS_TOOL_DEFS, NODE_BUILDS_HANDLERS } from './node-builds';
+import { NODE_UPGRADE_TOOL_DEFS, NODE_UPGRADE_HANDLERS } from './node-upgrade';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -923,6 +924,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...CLAUDEAI_LOGIN_TOOL_DEFS,
   // fleet build/upgrade tracking — per-node build version (read, pull)
   ...NODE_BUILDS_TOOL_DEFS,
+  // fleet upgrade — trigger a per-node upgrade to a specified prebuilt source (admin)
+  ...NODE_UPGRADE_TOOL_DEFS,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -1676,4 +1679,6 @@ export const EXPANDED_HANDLERS: Record<
   ...CLAUDEAI_LOGIN_HANDLERS,
   // fleet build/upgrade tracking
   ...NODE_BUILDS_HANDLERS,
+  // fleet upgrade — trigger a per-node upgrade to a specified prebuilt source
+  ...NODE_UPGRADE_HANDLERS,
 };

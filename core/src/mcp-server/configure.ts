@@ -265,6 +265,8 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   claudeai_login: 'admin',
   // fleet build/upgrade tracking (read, pull)
   node_builds: 'read',
+  // fleet upgrade — trigger per-node upgrade to specified build (admin: restarts services)
+  node_upgrade: 'admin',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */
