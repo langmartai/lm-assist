@@ -57,7 +57,7 @@
 - **`mission_graph({ filter?, expand? })` → `{ nodes: MissionNode[], edges: MissionEdge[] }`** — `filterMissions` selects matches; `expand = { direction?, depth? }` optionally adds their neighbors; the node set = matches ∪ expanded; `edges = subgraphEdges(nodeIds)`. The drawable graph.
 - **`MissionNode`** (lightweight, maps to web `DagNode`): `{ id, title, status, tags, parentId, progressPercent? }`.
 
-**Routes:** `GET /mission/query`, `GET /mission/:id/neighbors`, `GET /mission/graph` (all leader-anchored reads; complex filters may also be accepted via POST body to avoid URL-encoding large specs — the route accepts both query-string and JSON body for `filter`/`expand`).
+**Routes:** `POST /mission/query`, `POST /mission/:id/neighbors`, `POST /mission/graph` — **POST is canonical** (the `filter`/`expand` JSON rides the request body to avoid URL-encoding large specs, and MCP reaches them via `workerPost`). These are **reads despite the verb**: they leader-anchor with `failClosed=false` (fall back to the local synced copy). No GET aliases (sub-project 4 calls the POST endpoints + the `GET /mission/views/:id/graph` render route).
 
 ---
 
