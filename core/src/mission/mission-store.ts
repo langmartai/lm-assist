@@ -3,6 +3,7 @@ import type { Mission, MissionBinding, MissionProgress, MissionResult, MissionAd
 import { withActorBackfill } from './mission-model';
 import { appendHistory } from './mission-history';
 import { getDataService } from '../data/data-service';
+import { getProjectSettings } from '../project-settings';
 import type { CallCtx } from '../data/data-service';
 import type { DataRecord } from '../data/types';
 import { getHubConfig } from '../hub-client/hub-config';
@@ -216,7 +217,7 @@ export async function putMission(
   // Reserved records (__controller__/__engagement__) are not real missions — never version them.
   if (RESERVED_IDS.has(m.id)) { m.updatedAt = Date.now(); await port.put(m); return m; }
   const prev = await port.get(m.id);
-  const { mission, change } = appendHistory(m, prev, opts.actor, opts.inlineCap ?? 50);
+  const { mission, change } = appendHistory(m, prev, opts.actor, opts.inlineCap ?? (getProjectSettings().missionHistoryInlineCap ?? 50));
   mission.updatedAt = Date.now();
   await port.put(mission);
   if (change) {

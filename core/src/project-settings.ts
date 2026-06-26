@@ -49,6 +49,8 @@ export interface ProjectSettings {
   missionControllerModel: string;
   /** Idle minutes before an auto-resumed local (native) session is auto-closed. Default 30. */
   missionSessionIdleCloseMin: number;
+  /** Max inline history entries kept on the mission record itself. Default 50. */
+  missionHistoryInlineCap: number;
   /** Periodic auth-monitor: refresh OAuth + track cookie health into a snapshot. Default true. */
   authMonitorEnabled: boolean;
   /** Minutes between auth-monitor checks. Default 15. */
@@ -78,6 +80,7 @@ export const DEFAULTS: ProjectSettings = {
   missionControllerMaxNudges: 6,
   missionControllerModel: 'claude-opus-4-8[1m]',
   missionSessionIdleCloseMin: 30,
+  missionHistoryInlineCap: 50,
   authMonitorEnabled: true,
   authMonitorIntervalMin: 15,
 };
@@ -120,6 +123,7 @@ export function getProjectSettings(): ProjectSettings {
       missionControllerMaxNudges: typeof data.missionControllerMaxNudges === 'number' ? data.missionControllerMaxNudges : DEFAULTS.missionControllerMaxNudges,
       missionControllerModel: typeof data.missionControllerModel === 'string' ? data.missionControllerModel : DEFAULTS.missionControllerModel,
       missionSessionIdleCloseMin: typeof data.missionSessionIdleCloseMin === 'number' ? data.missionSessionIdleCloseMin : DEFAULTS.missionSessionIdleCloseMin,
+      missionHistoryInlineCap: typeof data.missionHistoryInlineCap === 'number' ? data.missionHistoryInlineCap : DEFAULTS.missionHistoryInlineCap,
       authMonitorEnabled: typeof data.authMonitorEnabled === 'boolean' ? data.authMonitorEnabled : DEFAULTS.authMonitorEnabled,
       authMonitorIntervalMin: typeof data.authMonitorIntervalMin === 'number' ? data.authMonitorIntervalMin : DEFAULTS.authMonitorIntervalMin,
     };
@@ -157,6 +161,7 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     missionControllerMaxNudges: typeof partial.missionControllerMaxNudges === 'number' ? partial.missionControllerMaxNudges : current.missionControllerMaxNudges,
     missionControllerModel: typeof partial.missionControllerModel === 'string' ? partial.missionControllerModel : current.missionControllerModel,
     missionSessionIdleCloseMin: typeof partial.missionSessionIdleCloseMin === 'number' ? partial.missionSessionIdleCloseMin : current.missionSessionIdleCloseMin,
+    missionHistoryInlineCap: typeof partial.missionHistoryInlineCap === 'number' ? partial.missionHistoryInlineCap : current.missionHistoryInlineCap,
     authMonitorEnabled: typeof partial.authMonitorEnabled === 'boolean' ? partial.authMonitorEnabled : current.authMonitorEnabled,
     authMonitorIntervalMin: typeof partial.authMonitorIntervalMin === 'number' ? partial.authMonitorIntervalMin : current.authMonitorIntervalMin,
   };

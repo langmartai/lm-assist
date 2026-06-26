@@ -1126,8 +1126,10 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     { method: 'POST', pattern: /^\/mission\/(?<id>[^/]+)\/tags$/, handler: async (req) => handleTag(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, realLeaderAnchor()) },
     // /mission/:id/history BEFORE /mission/:id so the literal suffix wins
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/history$/, handler: async (req) => {
-        const limit = req.query?.limit ? parseInt(String(req.query.limit), 10) : undefined;
-        const beforeRev = req.query?.beforeRev ? parseInt(String(req.query.beforeRev), 10) : undefined;
+        const rawLimit = req.query?.limit != null ? parseInt(String(req.query.limit), 10) : undefined;
+        const limit = rawLimit != null && !Number.isNaN(rawLimit) ? rawLimit : undefined;
+        const rawBeforeRev = req.query?.beforeRev != null ? parseInt(String(req.query.beforeRev), 10) : undefined;
+        const beforeRev = rawBeforeRev != null && !Number.isNaN(rawBeforeRev) ? rawBeforeRev : undefined;
         return handleHistory(req.params.id, { limit, beforeRev }, realLeaderAnchor());
       } },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handleGet(req.params.id, undefined, realLeaderAnchor()) },
