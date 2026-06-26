@@ -16,7 +16,7 @@ import { getScheduledJobs } from '../../scheduler/scheduled-jobs';
 import { listRecords } from '../../worker-role/worker-store';
 import type { WorkerRecord } from '../../worker-role/types';
 import { filterMissions, FilterError, type MissionFilter, type MissionSort } from '../../mission/mission-filter';
-import { neighbors, subgraphEdges, toNode, type Direction } from '../../mission/mission-traverse';
+import { neighbors, subgraphEdges, toNode, type Direction, type MissionNode, type MissionEdge } from '../../mission/mission-traverse';
 import { newView, normalizeView, validateView, type MissionView } from '../../mission/mission-views';
 import { getView, listViews, putView, deleteView, type MissionViewPort } from '../../mission/mission-views-store';
 
@@ -254,24 +254,39 @@ export async function handleNeighbors(id: string, b: Record<string, unknown>, po
   return ok({ mission: m, neighbors: r.neighbors.map(toNode), edges: r.edges });
 }
 
+/**
+ * Shared pure graph-build: filter missions, optionally expand neighbor BFS, return {nodes,edges}.
+ * Used by both handleGraph (MCP/REST) and handleViewGraph (saved-view render) so they are identical
+ * in behavior. Key contract: `expand` needs only to be a non-null object (no `direction` required —
+ * direction defaults to 'all'); depth is coerced from string (MCP delivers numbers as strings).
+ */
+function buildGraph(
+  all: Mission[],
+  filter: MissionFilter[] | undefined,
+  expand: { direction?: unknown; depth?: unknown } | undefined,
+): { nodes: MissionNode[]; edges: MissionEdge[] } {
+  const matches = filterMissions(all, filter);
+  const nodeIds = new Set(matches.map((m) => m.id));
+  if (expand && typeof expand === 'object') {
+    const dir = (typeof expand.direction === 'string' && DIRS.has(expand.direction as Direction))
+      ? (expand.direction as Direction)
+      : 'all';
+    // MCP delivers numeric args as STRINGS over the connector — coerce (mirrors handleNeighbors).
+    const depthRaw = typeof expand.depth === 'number' ? expand.depth : (typeof expand.depth === 'string' ? parseInt(expand.depth, 10) : 1);
+    const depth = !Number.isNaN(depthRaw) ? depthRaw : 1;
+    for (const m of matches) for (const n of neighbors(m.id, all, { direction: dir, depth }).neighbors) nodeIds.add(n.id);
+  }
+  const byId = new Map(all.map((m) => [m.id, m]));
+  const nodes = [...nodeIds].map((id) => byId.get(id)).filter(Boolean).map((m) => toNode(m!));
+  return { nodes, edges: subgraphEdges(nodeIds, all) };
+}
+
 export async function handleGraph(b: Record<string, unknown>, port?: MissionDataPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
   const anchored = await anchorToLeader(leader, 'POST', '/mission/graph', b, false);
   if (anchored) return anchored;
   try {
     const all = await listMissions(port);
-    const matches = filterMissions(all, asFilter(b.filter));
-    const nodeIds = new Set(matches.map((m) => m.id));
-    const exp = b.expand as { direction?: string; depth?: number | string } | undefined;
-    if (exp && typeof exp === 'object') {
-      const dir = (typeof exp.direction === 'string' && DIRS.has(exp.direction as Direction)) ? (exp.direction as Direction) : 'all';
-      // MCP delivers numeric args as STRINGS over the connector — coerce (mirrors handleNeighbors).
-      const depthRaw = typeof exp.depth === 'number' ? exp.depth : (typeof exp.depth === 'string' ? parseInt(exp.depth, 10) : 1);
-      const depth = !Number.isNaN(depthRaw) ? depthRaw : 1;
-      for (const m of matches) for (const n of neighbors(m.id, all, { direction: dir, depth }).neighbors) nodeIds.add(n.id);
-    }
-    const byId = new Map(all.map((m) => [m.id, m]));
-    const nodes = [...nodeIds].map((id) => byId.get(id)).filter(Boolean).map((m) => toNode(m!));
-    return ok({ nodes, edges: subgraphEdges(nodeIds, all) });
+    return ok(buildGraph(all, asFilter(b.filter), b.expand as { direction?: unknown; depth?: unknown } | undefined));
   } catch (e) { if (e instanceof FilterError) return fail(e.code, e.message); throw e; }
 }
 
@@ -322,13 +337,7 @@ export async function handleViewGraph(id: string, viewPort?: MissionViewPort, mi
   if (!view) return fail('NOT_FOUND', `no view ${id}`);
   try {
     const all = await listMissions(missionPort);
-    const matches = filterMissions(all, view.query?.filter);
-    const nodeIds = new Set(matches.map((m) => m.id));
-    const exp = view.query?.expand;
-    if (exp?.direction) for (const m of matches) for (const n of neighbors(m.id, all, { direction: exp.direction, depth: exp.depth ?? 1 }).neighbors) nodeIds.add(n.id);
-    const byId = new Map(all.map((m) => [m.id, m]));
-    const nodes = [...nodeIds].map((x) => byId.get(x)).filter(Boolean).map((m) => toNode(m!));
-    return ok({ view, nodes, edges: subgraphEdges(nodeIds, all) });
+    return ok({ view, ...buildGraph(all, view.query?.filter, view.query?.expand) });
   } catch (e) { if (e instanceof FilterError) return fail(e.code, e.message); throw e; }
 }
 

@@ -27,6 +27,21 @@ test('view set rejects an empty name', async () => {
   assert.equal(r.error!.code, 'INVALID_VIEW');
 });
 
+test('view render with expand.depth but no direction defaults direction to "all"', async () => {
+  // Regression: handleViewGraph previously only expanded if exp.direction was set;
+  // a saved view with {depth:1} and NO direction did no expansion. buildGraph now
+  // defaults direction to 'all', matching handleGraph behavior.
+  const vp = viewPort();
+  const mp = missionPort([mk('a', { status: 'active', parentId: 'b' }), mk('b', { status: 'done' })]);
+  const set = await handleViewSet({ name: 'X', query: { filter: [{ field: 'status', op: 'eq', value: 'active' }], expand: { depth: 1 } } }, vp as any, actor);
+  const id = (set.data as MissionView).id;
+  const r = await handleViewGraph(id, vp as any, mp as any);
+  assert.equal(r.success, true);
+  const d = r.data as { nodes: Array<{ id: string }> };
+  // 'a' matches the filter; expansion (default direction=all) must pull in parent 'b'.
+  assert.deepEqual(d.nodes.map((n) => n.id).sort(), ['a', 'b']);
+});
+
 test('view render runs the query → {view, nodes, edges}', async () => {
   const vp = viewPort();
   const mp = missionPort([mk('a', { status: 'active', dependsOn: ['b'] }), mk('b', { status: 'done' })]);
