@@ -34,7 +34,7 @@ export function MissionGraphCanvas({ nodes, edges, display, selectedId, onSelect
   const renderNode = ({ node, x, y, width, height, selected }: { node: DagNode; x: number; y: number; width: number; height: number; selected: boolean }) => {
     const dimmed = node.metadata.highlighted === false;
     const accent = (node.metadata.groupColor as string) || STATUS_COLOR[node.metadata.status as string] || '#6b7280';
-    const fields = (display?.nodeFields?.length ? display.nodeFields : ['status']) as string[];
+    const fields = (display?.nodeFields?.length ? display.nodeFields : ['status', 'progress']) as string[];
     return (
       <foreignObject x={x} y={y} width={width} height={height}>
         <div
