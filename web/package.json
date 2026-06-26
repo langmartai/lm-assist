@@ -9,7 +9,8 @@
     "dev": "next dev --turbopack -p 3848",
     "build": "next build",
     "start": "next start -p 3848",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test": "vitest run"
   },
   "dependencies": {
     "@types/dompurify": "^3.0.5",
@@ -33,6 +34,7 @@
     "eslint": "^9",
     "eslint-config-next": "15.5.4",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^2.1.9"
   }
 }
