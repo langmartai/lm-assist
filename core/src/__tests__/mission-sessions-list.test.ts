@@ -27,6 +27,10 @@ function makeActiveMission(id: string, orchestratorSid: string): Mission {
     objective: 'test',
     projects: [],
     dependsOn: [],
+    tags: {},
+    parentId: null,
+    rev: 1,
+    history: [],
     env: { isolation: 'cloud', resources: [] },
     binding: {
       sessionId: orchestratorSid,
