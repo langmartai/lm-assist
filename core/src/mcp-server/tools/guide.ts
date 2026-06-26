@@ -7,6 +7,7 @@
 // tool descriptions. Content is hand-curated here.
 import type { McpToolResult } from '../configure';
 import { ok } from './_passthrough';
+import type { AuthSnapshot } from '../../monitor/auth-monitor';
 
 /** topic → the tools it covers (drives the index + tool-name → topic resolution). */
 const TOPIC_TOOLS: Record<string, string[]> = {
@@ -351,6 +352,9 @@ const BLURB: Record<string, string> = {
   'mission-controller': 'the controller agent loop contract — the exact per-pass workflow, hard rules (never auto-approve gates/pivots), and tool usage for the autonomous controller session',
 };
 
+/** Separator line used between sections in the bootstrap output (reused by the auth block). */
+const sep = '\n\n' + '─'.repeat(64) + '\n\n';
+
 function buildIndex(): string {
   const lines = [
     '# lm-assist — tool playbooks (call `guide(topic=...)` for any of these)',
@@ -378,14 +382,64 @@ function buildBootstrap(): string {
     '',
     'You called `bootstrap`, so the COMPLETE set of lm-assist use-case playbooks is below — you do not need to look anything else up to start. lm-assist COMPLEMENTS your local CLAUDE.md / memory / skills (it does NOT replace them; they work together — see ORIENTATION). Every tool takes an optional `node` (omit = the default host; pass it, after `list_nodes`, to target another machine). To re-read ONE topic later, call `guide(topic=...)`.',
   ].join('\n');
-  const sep = '\n\n' + '\u2500'.repeat(64) + '\n\n';
   const sections = order.filter((k) => GUIDES[k]).map((k) => GUIDES[k]);
   return header + sep + sections.join(sep);
 }
 const BOOTSTRAP = buildBootstrap();
 
+// ── Pure helpers (exported for unit tests) ──────────────────────────────────
+
+/**
+ * Returns true when the snapshot is absent, malformed, or older than 2× the
+ * configured monitor interval — at which point the caller should fall back to
+ * a fresh lightAuthSnapshot() (file-only, no network).
+ */
+export function authSnapshotIsStale(snap: AuthSnapshot | null, now: number, intervalMin: number): boolean {
+  if (!snap || typeof snap.checkedAt !== 'number') return true;
+  return (now - snap.checkedAt) > 2 * intervalMin * 60_000;
+}
+
+/**
+ * Renders a compact auth-status block for a node.  No secrets — only
+ * flags/expiry/reason/identity.  Dead/absent creds append a claudeai_login(…)
+ * hint; healthy creds get no hint.  `cookie.reason === 'unprobed'` is treated
+ * as "configured but not live-checked" — NOT a hard failure.
+ */
+export function formatAuthBlock(snap: AuthSnapshot, nodeLabel: string): string {
+  const o = snap.oauth;
+  const oauthLine = !o.present
+    ? 'OAuth: — none (no ~/.claude/.credentials.json)'
+    : o.expired
+      ? 'OAuth: ✗ EXPIRED — run Claude Code on this node, or claudeai_login(which="oauth")'
+      : `OAuth: ✓ valid${typeof o.msUntilExpiry === 'number' ? ` (expires in ${Math.max(0, Math.round(o.msUntilExpiry / 3600_000))}h)` : ''}${o.refreshedThisCheck ? ', refreshed' : ''}`;
+  const c = snap.cookie;
+  const cookieLine = !c.configured
+    ? 'claude.ai cookie: — not configured — claudeai_login(which="cookie")'
+    : c.reason === 'unprobed'
+      ? `claude.ai cookie: ✓ configured (not live-checked)${c.identity ? ` (${c.identity})` : ''} — auth_status to verify`
+      : c.ok
+        ? `claude.ai cookie: ✓ ok${c.identity ? ` (${c.identity})` : ''}`
+        : `claude.ai cookie: ✗ ${c.reason} — claudeai_login(which="cookie")`;
+  return [`## Auth status — ${nodeLabel}`, oauthLine, cookieLine, 'Fleet: auth_status(allNodes:true) · re-login: guide("login")'].join('\n');
+}
+
+// ── bootstrap auth block (per-call, network-free) ───────────────────────────
+
+async function authBlock(): Promise<string> {
+  try {
+    const { loadAuthSnapshot } = require('../../monitor/auth-store') as typeof import('../../monitor/auth-store');
+    const { lightAuthSnapshot } = require('../../monitor/auth-monitor') as typeof import('../../monitor/auth-monitor');
+    const { getProjectSettings } = require('../../project-settings') as typeof import('../../project-settings');
+    const os = require('os') as typeof import('os');
+    const intervalMin = getProjectSettings().authMonitorIntervalMin ?? 15;
+    let snap = loadAuthSnapshot();
+    if (authSnapshotIsStale(snap, Date.now(), intervalMin)) snap = lightAuthSnapshot(); // file-only, no network
+    return '\n' + sep + '\n' + formatAuthBlock(snap!, os.hostname());
+  } catch { return ''; }
+}
+
 async function handleBootstrap(_args: Record<string, unknown>): Promise<McpToolResult> {
-  return ok(BOOTSTRAP);
+  return ok(BOOTSTRAP + (await authBlock()));
 }
 
 async function handleGuide(args: Record<string, unknown>): Promise<McpToolResult> {

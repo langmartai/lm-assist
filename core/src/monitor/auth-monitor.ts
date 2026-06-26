@@ -54,6 +54,15 @@ export function defaultDeps(): AuthSnapshotDeps {
   };
 }
 
+export function lightAuthSnapshot(): AuthSnapshot {
+  const d = defaultDeps();
+  let oauth: AuthSnapshot['oauth'] = { present: false, expired: false, refreshedThisCheck: false };
+  try { const o = d.oauthStatus(); oauth = { present: o.present, expired: o.expired, msUntilExpiry: o.msUntilExpiry, refreshedThisCheck: false, subscriptionType: o.subscriptionType, rateLimitTier: o.rateLimitTier }; } catch { /* degraded */ }
+  let cookie: AuthSnapshot['cookie'] = { configured: false, ok: false, reason: 'unprobed' };
+  try { const cs = d.cookieStatus(); cookie = { configured: !!cs.present, ok: !!cs.hasSessionKey, reason: cs.present ? 'unprobed' : 'session_not_configured', hasSessionKey: cs.hasSessionKey, hasCfClearance: cs.hasCfClearance, hasCfBm: cs.hasCfBm, identity: cs.identity }; } catch { /* degraded */ }
+  return { checkedAt: Date.now(), oauth, cookie };
+}
+
 export function registerAuthMonitor(jobs: { registerHandler: (t: string, fn: (config: any, ctx: any) => Promise<any>) => void }): void {
   jobs.registerHandler('auth-monitor', async () => {
     const { getProjectSettings } = require('../project-settings') as typeof import('../project-settings');
