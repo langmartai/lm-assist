@@ -55,6 +55,7 @@ import { createSchedulerRoutes } from './scheduler.routes';
 import { createWorkerRoutes } from './worker.routes';
 import { createMissionRoutes } from './mission.routes';
 import { createMonitorStallsRoutes } from './monitor-stalls.routes';
+import { createNodeRoutes } from './node.routes';
 
 /**
  * Create all core routes
@@ -109,5 +110,6 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createWorkerRoutes(ctx),
     ...createMissionRoutes(ctx),
     ...createMonitorStallsRoutes(ctx),
+    ...createNodeRoutes(ctx),
   ];
 }

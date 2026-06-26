@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.109] — per-node build/upgrade tracking (2026-06-26)
+
+Node build/upgrade tracking: each node records its lm-assist build version (and detects upgrades) on Core start; new `node_builds` MCP tool + `GET /node/build` show the fleet's builds + when each last upgraded — confirm a deploy landed across all nodes.
+
 ## [0.1.108] — cookie TTL surfacing (2026-06-26)
 
 Cookie TTL surfacing: the browser capture now persists the claude.ai cookies' expiry; auth_status / bootstrap / claudeai_login show when the sessionKey expires (when a browser re-login is due). Existing sessions show 'TTL unknown' until the next capture/login.
