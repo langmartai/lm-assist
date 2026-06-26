@@ -67,6 +67,15 @@
 - A worker answered LATE (already idle-suspended) wakes and re-asks a fresh question; the controller's
   next engage answers that one while connected and the worker proceeds — self-healing in ≤2 rounds.
 
+## [0.1.105] — live-session remote-control connect (2026-06-26)
+
+### Added
+- Live-session remote-control connect: `ccr_connect` / `mission_session_resume` now
+  reconnect a LIVE local session in place by injecting `/remote-control` (tmux on
+  Linux, AttachConsole on Windows). Headless/unreachable live sessions are
+  kill-and-resumed only when idle ≥ missionSessionIdleCloseMin, or with `force:true`;
+  never resumed over a running process. New `force` param on both surfaces.
+
 ## [Unreleased]
 
 ### CCR — bootstrap/guide now teaches operating Claude Code Remote sessions + the `ccr/` deploy fix (2026-06-21)
