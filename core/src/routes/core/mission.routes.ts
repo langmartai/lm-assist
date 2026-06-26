@@ -15,6 +15,8 @@ import { amIMonitor } from '../../monitor/stall-election';
 import { getScheduledJobs } from '../../scheduler/scheduled-jobs';
 import { listRecords } from '../../worker-role/worker-store';
 import type { WorkerRecord } from '../../worker-role/types';
+import { filterMissions, FilterError, type MissionFilter, type MissionSort } from '../../mission/mission-filter';
+import { neighbors, subgraphEdges, toNode, type Direction } from '../../mission/mission-traverse';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string }; }
 const ok = <T>(data: T): Envelope => ({ success: true, data });
@@ -217,6 +219,57 @@ export async function handleHistory(
   const anchored = await anchorToLeader(leader, 'GET', path);
   if (anchored) return anchored;
   return ok({ history: await listHistory(id, opts) });
+}
+
+// ---------------------------------------------------------------------------
+// Graph-query handlers (filter / neighbors / graph) — read-only
+// ---------------------------------------------------------------------------
+
+function asFilter(v: unknown): MissionFilter[] | undefined { return Array.isArray(v) ? (v as MissionFilter[]) : undefined; }
+function asSort(v: unknown): MissionSort[] | undefined { return Array.isArray(v) ? (v as MissionSort[]) : undefined; }
+const DIRS = new Set<Direction>(['parents', 'children', 'dependencies', 'dependents', 'all']);
+
+export async function handleQuery(b: Record<string, unknown>, port?: MissionDataPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'POST', '/mission/query', b, false);
+  if (anchored) return anchored;
+  try {
+    const limit = typeof b.limit === 'number' ? b.limit : (typeof b.limit === 'string' ? parseInt(b.limit, 10) : undefined);
+    const missions = filterMissions(await listMissions(port), asFilter(b.filter), { sort: asSort(b.sort), limit: limit != null && !Number.isNaN(limit) ? limit : undefined });
+    return ok({ missions });
+  } catch (e) { if (e instanceof FilterError) return fail(e.code, e.message); throw e; }
+}
+
+export async function handleNeighbors(id: string, b: Record<string, unknown>, port?: MissionDataPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const dir = (typeof b.direction === 'string' && DIRS.has(b.direction as Direction)) ? (b.direction as Direction) : 'all';
+  const depth = typeof b.depth === 'number' ? b.depth : (typeof b.depth === 'string' ? parseInt(b.depth, 10) : 1);
+  const anchored = await anchorToLeader(leader, 'POST', `/mission/${encodeURIComponent(id)}/neighbors`, { direction: dir, depth }, false);
+  if (anchored) return anchored;
+  const m = await getMission(id, port);
+  if (!m) return fail('NOT_FOUND', `no mission ${id}`);
+  const all = await listMissions(port);
+  const r = neighbors(id, all, { direction: dir, depth: !Number.isNaN(depth) ? depth : 1 });
+  return ok({ mission: m, neighbors: r.neighbors.map(toNode), edges: r.edges });
+}
+
+export async function handleGraph(b: Record<string, unknown>, port?: MissionDataPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'POST', '/mission/graph', b, false);
+  if (anchored) return anchored;
+  try {
+    const all = await listMissions(port);
+    const matches = filterMissions(all, asFilter(b.filter));
+    const nodeIds = new Set(matches.map((m) => m.id));
+    const exp = b.expand as { direction?: string; depth?: number | string } | undefined;
+    if (exp && typeof exp === 'object') {
+      const dir = (typeof exp.direction === 'string' && DIRS.has(exp.direction as Direction)) ? (exp.direction as Direction) : 'all';
+      // MCP delivers numeric args as STRINGS over the connector — coerce (mirrors handleNeighbors).
+      const depthRaw = typeof exp.depth === 'number' ? exp.depth : (typeof exp.depth === 'string' ? parseInt(exp.depth, 10) : 1);
+      const depth = !Number.isNaN(depthRaw) ? depthRaw : 1;
+      for (const m of matches) for (const n of neighbors(m.id, all, { direction: dir, depth }).neighbors) nodeIds.add(n.id);
+    }
+    const byId = new Map(all.map((m) => [m.id, m]));
+    const nodes = [...nodeIds].map((id) => byId.get(id)).filter(Boolean).map((m) => toNode(m!));
+    return ok({ nodes, edges: subgraphEdges(nodeIds, all) });
+  } catch (e) { if (e instanceof FilterError) return fail(e.code, e.message); throw e; }
 }
 
 // ---------------------------------------------------------------------------
@@ -1117,6 +1170,9 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     { method: 'GET', pattern: /^\/mission\/sessions$/, handler: async () => handleAllSessions() },
     // controller BEFORE :id/:id/sessions so literals win
     { method: 'GET', pattern: /^\/mission\/controller$/, handler: async () => handleGetController() },
+    // graph-query literals — MUST be before POST /mission/:id (which would match id='query'/'graph')
+    { method: 'POST', pattern: /^\/mission\/query$/, handler: async (req) => handleQuery((req.body || {}) as Record<string, unknown>, undefined, realLeaderAnchor()) },
+    { method: 'POST', pattern: /^\/mission\/graph$/, handler: async (req) => handleGraph((req.body || {}) as Record<string, unknown>, undefined, realLeaderAnchor()) },
     // rail routes: /place and /executor-status BEFORE /:id so literals win
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/place$/, handler: async (req) => handlePlace(req.params.id, undefined, realLeaderAnchor()) },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/executor-status$/, handler: async (req) => handleExecutorStatus(req.params.id, undefined, undefined, realLeaderAnchor()) },
@@ -1132,6 +1188,8 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
         const beforeRev = rawBeforeRev != null && !Number.isNaN(rawBeforeRev) ? rawBeforeRev : undefined;
         return handleHistory(req.params.id, { limit, beforeRev }, realLeaderAnchor());
       } },
+    // /mission/:id/neighbors BEFORE bare GET /mission/:id so suffix wins
+    { method: 'POST', pattern: /^\/mission\/(?<id>[^/]+)\/neighbors$/, handler: async (req) => handleNeighbors(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, realLeaderAnchor()) },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handleGet(req.params.id, undefined, realLeaderAnchor()) },
     { method: 'PATCH', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, realLeaderAnchor()) },
     // POST /mission/:id — same semantics as PATCH, accepts MCP workerPost (POST-only)
