@@ -50,6 +50,7 @@ import { GUIDE_TOOL_DEFS, GUIDE_HANDLERS } from './guide';
 import { SESSION_STATUS_TOOL_DEFS, SESSION_STATUS_HANDLERS } from '../mcp-session-resolver';
 import { WORKER_ROLE_TOOL_DEFS, WORKER_ROLE_HANDLERS } from './worker-role';
 import { MISSION_TOOL_DEFS, MISSION_HANDLERS } from './mission';
+import { CLAUDEAI_LOGIN_TOOL_DEFS, CLAUDEAI_LOGIN_HANDLERS } from './claudeai-login';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -917,6 +918,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...WORKER_ROLE_TOOL_DEFS,
   // mission controller — mission_create / mission_list / mission_update / mission_control_status
   ...MISSION_TOOL_DEFS,
+  // auth: guided re-login for cookie + OAuth
+  ...CLAUDEAI_LOGIN_TOOL_DEFS,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -1666,4 +1669,6 @@ export const EXPANDED_HANDLERS: Record<
   ...WORKER_ROLE_HANDLERS,
   // mission controller
   ...MISSION_HANDLERS,
+  // auth: guided re-login for cookie + OAuth
+  ...CLAUDEAI_LOGIN_HANDLERS,
 };

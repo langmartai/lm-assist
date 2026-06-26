@@ -25,7 +25,8 @@ export const authStatusToolDef = {
     'claude.ai cookie powers list_claudeai_conversations / read_conversation / ' +
     'claudeai_completion; the Claude Code OAuth token powers agent_execute. Returns, ' +
     'per surface: configured?, valid?, identity / expiry, and a reason+hint when ' +
-    'something is wrong. Use `which` to scope to one surface. Read-only.',
+    'something is wrong. Use `which` to scope to one surface. Set `allNodes:true` for ' +
+    'a compact fleet-wide sweep (one line per connected node). Read-only.',
   annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,
@@ -33,7 +34,11 @@ export const authStatusToolDef = {
       which: {
         type: 'string',
         enum: ['all', 'claude_ai', 'claude_code'],
-        description: 'Which credential surface to check (default all).',
+        description: 'Which credential surface to check (default all). Ignored when allNodes:true.',
+      },
+      allNodes: {
+        type: 'boolean',
+        description: 'Sweep every connected node and return a compact per-node summary (oauth+cookie flags). Ignores `which`.',
       },
     },
   },
@@ -113,7 +118,76 @@ async function claudeCodeSection(): Promise<string[]> {
   return out;
 }
 
+/**
+ * Compact per-node auth summary row for the allNodes fleet sweep.
+ * `oauth` and `cookie` are human-readable flags — no secrets.
+ */
+export function formatAllNodes(rows: Array<{node: string; oauth: string; cookie: string}>): string {
+  if (rows.length === 0) return 'No nodes found.';
+  return rows.map((r) => `${r.node}  oauth:${r.oauth}  cookie:${r.cookie}`).join('\n');
+}
+
+interface NodeEntry { nodeId: string; hostname: string; isSelf: boolean; }
+
+/** Best-effort fleet sweep: get all nodes from hub, probe each, build rows. */
+async function sweepAllNodes(): Promise<McpToolResult> {
+  const { getHubConfig } = require('../../hub-client/hub-config') as typeof import('../../hub-client/hub-config');
+  const cfg = getHubConfig();
+  const selfId = cfg.gatewayId || cfg.machineId;
+  const selfHostname = cfg.hostname || selfId || 'this-node';
+
+  // Start with just self in case hub is not reachable.
+  let nodes: NodeEntry[] = [{ nodeId: selfId, hostname: selfHostname, isSelf: true }];
+  try {
+    const hm = await workerGet<{machines: unknown[]}>('/hub/machines');
+    const machineList: unknown[] = Array.isArray(hm) ? hm : ((hm as any).machines || []);
+    const hubNodes: NodeEntry[] = (machineList as any[])
+      .map((m: any) => ({
+        nodeId: String(m.gatewayId || m.machineId || m.id || ''),
+        hostname: String(m.hostname || m.machineHostname || m.gatewayId || m.machineId || m.id || ''),
+        isSelf: (m.gatewayId || m.machineId || m.id) === selfId,
+      }))
+      .filter((m) => m.nodeId);
+    if (hubNodes.length > 0) {
+      nodes = hubNodes;
+      if (!nodes.some((n) => n.isSelf)) {
+        nodes.unshift({ nodeId: selfId, hostname: selfHostname, isSelf: true });
+      }
+    }
+  } catch { /* hub not configured or not connected — sweep self only */ }
+
+  const rows = await Promise.all(nodes.map(async (m) => {
+    const label = m.hostname || m.nodeId;
+    try {
+      let healthzData: {ok?: boolean; reason?: string} = {};
+      let oauthData: {present?: boolean; expired?: boolean} = {};
+      if (m.isSelf) {
+        [healthzData, oauthData] = await Promise.all([
+          workerGet<{ok?: boolean; reason?: string}>('/claude-ai/healthz').catch(() => ({})),
+          workerGet<{present?: boolean; expired?: boolean}>('/claude-code/oauth-status').catch(() => ({})),
+        ]);
+      } else {
+        const { proxyGet } = require('../../data/peer-client') as typeof import('../../data/peer-client');
+        const [h, o] = await Promise.all([
+          (proxyGet(m.nodeId, '/claude-ai/healthz') as Promise<unknown>).catch(() => null),
+          (proxyGet(m.nodeId, '/claude-code/oauth-status') as Promise<unknown>).catch(() => null),
+        ]);
+        healthzData = ((h as any)?.data ?? (h as any)) || {};
+        oauthData = ((o as any)?.data ?? (o as any)) || {};
+      }
+      const oauthStr = !oauthData.present ? 'none' : oauthData.expired ? 'EXPIRED' : 'valid';
+      const cookieStr = healthzData.ok ? 'ok' : (healthzData.reason || '?');
+      return { node: label, oauth: oauthStr, cookie: cookieStr };
+    } catch { return { node: label, oauth: '?', cookie: '?' }; }
+  }));
+
+  return ok(formatAllNodes(rows));
+}
+
 async function handleAuthStatus(args: Record<string, unknown>): Promise<McpToolResult> {
+  if (args.allNodes === true || args.allNodes === 'true') {
+    return sweepAllNodes();
+  }
   const which = String(args.which || 'all');
   if (!['all', 'claude_ai', 'claude_code'].includes(which)) {
     return err('which must be one of: all, claude_ai, claude_code.');

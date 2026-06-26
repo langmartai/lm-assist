@@ -291,6 +291,7 @@ export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
       createdAt: at,
       updatedAt: at,
     },
+    { id: 'auth-monitor', name: 'Auth monitor', description: 'Refresh Claude Code OAuth + track claude.ai cookie health into a per-node snapshot (browser-free).', type: 'auth-monitor', enabled: true, intervalMinutes: 15, config: {}, lastRunAt: null, lastResult: null, lastStatus: null, builtin: true, createdAt: at, updatedAt: at },
   ];
 }
 
@@ -410,6 +411,11 @@ class ScheduledJobs {
     {
       const { registerMissionController } = require('../mission/mission-controller');
       registerMissionController(this);
+    }
+
+    {
+      const { registerAuthMonitor } = require('../monitor/auth-monitor');
+      registerAuthMonitor(this);
     }
   }
 

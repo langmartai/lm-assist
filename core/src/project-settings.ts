@@ -49,6 +49,10 @@ export interface ProjectSettings {
   missionControllerModel: string;
   /** Idle minutes before an auto-resumed local (native) session is auto-closed. Default 30. */
   missionSessionIdleCloseMin: number;
+  /** Periodic auth-monitor: refresh OAuth + track cookie health into a snapshot. Default true. */
+  authMonitorEnabled: boolean;
+  /** Minutes between auth-monitor checks. Default 15. */
+  authMonitorIntervalMin: number;
 }
 
 // ── Constants ──────────────────────────────────────────
@@ -74,6 +78,8 @@ export const DEFAULTS: ProjectSettings = {
   missionControllerMaxNudges: 6,
   missionControllerModel: 'claude-opus-4-8[1m]',
   missionSessionIdleCloseMin: 30,
+  authMonitorEnabled: true,
+  authMonitorIntervalMin: 15,
 };
 
 // ── Mtime Cache ──────────────────────────────────────────
@@ -114,6 +120,8 @@ export function getProjectSettings(): ProjectSettings {
       missionControllerMaxNudges: typeof data.missionControllerMaxNudges === 'number' ? data.missionControllerMaxNudges : DEFAULTS.missionControllerMaxNudges,
       missionControllerModel: typeof data.missionControllerModel === 'string' ? data.missionControllerModel : DEFAULTS.missionControllerModel,
       missionSessionIdleCloseMin: typeof data.missionSessionIdleCloseMin === 'number' ? data.missionSessionIdleCloseMin : DEFAULTS.missionSessionIdleCloseMin,
+      authMonitorEnabled: typeof data.authMonitorEnabled === 'boolean' ? data.authMonitorEnabled : DEFAULTS.authMonitorEnabled,
+      authMonitorIntervalMin: typeof data.authMonitorIntervalMin === 'number' ? data.authMonitorIntervalMin : DEFAULTS.authMonitorIntervalMin,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -149,6 +157,8 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     missionControllerMaxNudges: typeof partial.missionControllerMaxNudges === 'number' ? partial.missionControllerMaxNudges : current.missionControllerMaxNudges,
     missionControllerModel: typeof partial.missionControllerModel === 'string' ? partial.missionControllerModel : current.missionControllerModel,
     missionSessionIdleCloseMin: typeof partial.missionSessionIdleCloseMin === 'number' ? partial.missionSessionIdleCloseMin : current.missionSessionIdleCloseMin,
+    authMonitorEnabled: typeof partial.authMonitorEnabled === 'boolean' ? partial.authMonitorEnabled : current.authMonitorEnabled,
+    authMonitorIntervalMin: typeof partial.authMonitorIntervalMin === 'number' ? partial.authMonitorIntervalMin : current.authMonitorIntervalMin,
   };
 
   // Ensure parent directory exists

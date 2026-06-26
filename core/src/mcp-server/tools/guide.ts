@@ -7,6 +7,7 @@
 // tool descriptions. Content is hand-curated here.
 import type { McpToolResult } from '../configure';
 import { ok } from './_passthrough';
+import type { AuthSnapshot } from '../../monitor/auth-monitor';
 
 /** topic → the tools it covers (drives the index + tool-name → topic resolution). */
 const TOPIC_TOOLS: Record<string, string[]> = {
@@ -268,6 +269,15 @@ CONNECT + DRIVE: you can watch and drive a mission's executor (and an orchestrat
 Tools: \`mission_create\` (title+objective; optional projects/dependsOn/env{isolation:cloud|worktree|shared}), \`mission_list\`, \`mission_update\` (refine/pause/resume/mark done/edit objective), \`mission_control_status\` (which node is elected + its last tick), \`mission_session_resume(sid, force?)\` (revive a dead/idle bound worker in place — resume-first before spawning fresh; returns \`{resumed, reason}\` where \`reason: ok|alive|gone|conflict|status-unknown|needs-force|kill-failed\`. Resume is inject-first: a live worker reconnects via /remote-control in place; pass \`force:true\` only after a needs-force (idle workers auto-kill)).
 Requires the data service enabled (cross-node mission store). Settings: missionControllerEnabled, missionControllerIntervalMin, missionControllerMaxNudges, missionControllerModel.`,
 
+  login: `# Guide: log in / re-login for a node (cookie + OAuth)
+Two credentials per host (see auth_status): the claude.ai WEB cookie and the Claude Code OAuth token.
+• Status: \`auth_status\` (this node) · \`auth_status(allNodes:true)\` (fleet) · bootstrap shows the local node.
+• Fix either: \`claudeai_login(which="cookie"|"oauth"|"all", node=…)\`.
+  - cookie: on a node WITH a desktop browser it opens Chrome for YOU to log in, then captures the session (it never types your password); headless → it returns the exact manual steps (DevTools → copy Cookie header → ~/.claude/claudeai-session.json). The cookie is IP-PINNED to the host that captured it.
+  - oauth: auto-refreshes via the refresh token (auth-monitor / on use); if it stays expired, run Claude Code on that host to re-login (interactive).
+• The auth-monitor job keeps OAuth fresh + the cookie status current automatically (browser-free); it can't mint a dead cookie — that needs your login.
+• Connector down but cookie valid? reconnect the claude.ai MCP connector (see the connector-reconnect recipe).`,
+
   'mission-controller': `# Guide: mission-controller — the autonomous controller agent loop contract
 YOU ARE the fleet-elected Mission Controller agent, running in a native session under supervisor oversight. The supervisor sends you a pass directive every \`missionControllerIntervalMin\` minutes. On each pass, follow this loop:
 
@@ -324,6 +334,7 @@ const ALIASES: Record<string, string> = {
   ccr: 'ccr', remote: 'ccr', mirror: 'ccr', 'claude-code-remote': 'ccr', drive: 'ccr', 'remote-control': 'ccr',
   node: 'nodes', host: 'nodes', machine: 'nodes', 'port-forward': 'nodes', ports: 'nodes',
   claudeai: 'claude-ai', 'claude.ai': 'claude-ai', connector: 'claude-ai', connectors: 'claude-ai',
+  login: 'login', relogin: 'login', 're-login': 'login', signin: 'login', 'sign-in': 'login',
   auth: 'account', usage: 'account', oauth: 'account',
   gh: 'github', git: 'github',
   file: 'files', fs: 'files', transfer: 'files',
@@ -344,12 +355,16 @@ const BLURB: Record<string, string> = {
   ccr: 'CCR — view/drive a Claude Code session from claude.ai/code (load=replay, mirror=live view, connect=two-way; safety-gated)',
   nodes: 'list hosts, target a specific machine, port-forward',
   'claude-ai': "read/operate the user's claude.ai web account + manage this connector's tools",
+  login: 'guided re-login per node — fix the claude.ai cookie (browser-capture or manual steps) and/or the Claude Code OAuth token; auth-monitor keeps OAuth fresh automatically',
   account: 'Claude Code OAuth + claude.ai account / usage / active sessions (per node)',
   github: 'query/mutate GitHub via the user gh auth',
   files: 'list/stat/read files + transfer files between hosts',
   missions: 'durable cross-project goals — the fleet-elected Mission Controller launches/binds an executor (cloud, or native via claude --remote-control), adapts + pushes to done, places to avoid conflict; watch+drive executors & sub-workers directly; never auto-approves gates/pivots',
   'mission-controller': 'the controller agent loop contract — the exact per-pass workflow, hard rules (never auto-approve gates/pivots), and tool usage for the autonomous controller session',
 };
+
+/** Separator line used between sections in the bootstrap output (reused by the auth block). */
+const sep = '\n\n' + '─'.repeat(64) + '\n\n';
 
 function buildIndex(): string {
   const lines = [
@@ -372,20 +387,70 @@ const INDEX = buildIndex();
 
 /** The whole skill in ONE response — every playbook concatenated (stays in sync with GUIDES). */
 function buildBootstrap(): string {
-  const order = ['orientation', 'cross-node', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'github', 'files'];
+  const order = ['orientation', 'cross-node', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'login', 'github', 'files'];
   const header = [
     '# lm-assist — capability bootstrap (you have now loaded ALL use cases for this session)',
     '',
     'You called `bootstrap`, so the COMPLETE set of lm-assist use-case playbooks is below — you do not need to look anything else up to start. lm-assist COMPLEMENTS your local CLAUDE.md / memory / skills (it does NOT replace them; they work together — see ORIENTATION). Every tool takes an optional `node` (omit = the default host; pass it, after `list_nodes`, to target another machine). To re-read ONE topic later, call `guide(topic=...)`.',
   ].join('\n');
-  const sep = '\n\n' + '\u2500'.repeat(64) + '\n\n';
   const sections = order.filter((k) => GUIDES[k]).map((k) => GUIDES[k]);
   return header + sep + sections.join(sep);
 }
 const BOOTSTRAP = buildBootstrap();
 
+// ── Pure helpers (exported for unit tests) ──────────────────────────────────
+
+/**
+ * Returns true when the snapshot is absent, malformed, or older than 2× the
+ * configured monitor interval — at which point the caller should fall back to
+ * a fresh lightAuthSnapshot() (file-only, no network).
+ */
+export function authSnapshotIsStale(snap: AuthSnapshot | null, now: number, intervalMin: number): boolean {
+  if (!snap || typeof snap.checkedAt !== 'number') return true;
+  return (now - snap.checkedAt) > 2 * intervalMin * 60_000;
+}
+
+/**
+ * Renders a compact auth-status block for a node.  No secrets — only
+ * flags/expiry/reason/identity.  Dead/absent creds append a claudeai_login(…)
+ * hint; healthy creds get no hint.  `cookie.reason === 'unprobed'` is treated
+ * as "configured but not live-checked" — NOT a hard failure.
+ */
+export function formatAuthBlock(snap: AuthSnapshot, nodeLabel: string): string {
+  const o = snap.oauth;
+  const oauthLine = !o.present
+    ? 'OAuth: — none (no ~/.claude/.credentials.json)'
+    : o.expired
+      ? 'OAuth: ✗ EXPIRED — run Claude Code on this node, or claudeai_login(which="oauth")'
+      : `OAuth: ✓ valid${typeof o.msUntilExpiry === 'number' ? ` (expires in ${Math.max(0, Math.round(o.msUntilExpiry / 3600_000))}h)` : ''}${o.refreshedThisCheck ? ', refreshed' : ''}`;
+  const c = snap.cookie;
+  const cookieLine = !c.configured
+    ? 'claude.ai cookie: — not configured — claudeai_login(which="cookie")'
+    : c.reason === 'unprobed'
+      ? `claude.ai cookie: ✓ configured (not live-checked)${c.identity ? ` (${c.identity})` : ''} — auth_status to verify`
+      : c.ok
+        ? `claude.ai cookie: ✓ ok${c.identity ? ` (${c.identity})` : ''}`
+        : `claude.ai cookie: ✗ ${c.reason} — claudeai_login(which="cookie")`;
+  return [`## Auth status — ${nodeLabel}`, oauthLine, cookieLine, 'Fleet: auth_status(allNodes:true) · re-login: guide("login")'].join('\n');
+}
+
+// ── bootstrap auth block (per-call, network-free) ───────────────────────────
+
+async function authBlock(): Promise<string> {
+  try {
+    const { loadAuthSnapshot } = require('../../monitor/auth-store') as typeof import('../../monitor/auth-store');
+    const { lightAuthSnapshot } = require('../../monitor/auth-monitor') as typeof import('../../monitor/auth-monitor');
+    const { getProjectSettings } = require('../../project-settings') as typeof import('../../project-settings');
+    const os = require('os') as typeof import('os');
+    const intervalMin = getProjectSettings().authMonitorIntervalMin ?? 15;
+    let snap = loadAuthSnapshot();
+    if (authSnapshotIsStale(snap, Date.now(), intervalMin)) snap = lightAuthSnapshot(); // file-only, no network
+    return '\n' + sep + '\n' + formatAuthBlock(snap!, os.hostname());
+  } catch { return ''; }
+}
+
 async function handleBootstrap(_args: Record<string, unknown>): Promise<McpToolResult> {
-  return ok(BOOTSTRAP);
+  return ok(BOOTSTRAP + (await authBlock()));
 }
 
 async function handleGuide(args: Record<string, unknown>): Promise<McpToolResult> {
