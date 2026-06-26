@@ -99,7 +99,7 @@ export async function handleCreate(b: Record<string, unknown>, ownerNode: string
       exclusive: env.exclusive === true || env.exclusive === 'true',
     },
   }, Date.now(), genId);
-  await putMission(m, port);
+  await putMission(m, port, { actor: who });
   return ok(m);
 }
 

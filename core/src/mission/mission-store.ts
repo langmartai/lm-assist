@@ -1,6 +1,7 @@
 /** Cross-node mission store backed by the data service (dataset `missions`, syncMode:'full'). */
-import type { Mission, MissionBinding, MissionProgress, MissionResult, MissionAdjustment, MissionChange } from './mission-model';
+import type { Mission, MissionBinding, MissionProgress, MissionResult, MissionAdjustment, MissionChange, MissionActor } from './mission-model';
 import { withActorBackfill } from './mission-model';
+import { appendHistory } from './mission-history';
 import { getDataService } from '../data/data-service';
 import type { CallCtx } from '../data/data-service';
 import type { DataRecord } from '../data/types';
@@ -207,10 +208,21 @@ export async function putControllerSession(cs: ControllerSession | null, port: M
   // Store ControllerSession by casting it as a Mission (the port doesn't inspect the shape beyond id).
   await port.put({ id: CONTROLLER_ID, ...cs } as unknown as Mission);
 }
-export async function putMission(m: Mission, port: MissionDataPort = defaultPort()): Promise<Mission> {
-  m.updatedAt = Date.now();
-  await port.put(m);
-  return m;
+export async function putMission(
+  m: Mission,
+  port: MissionDataPort = defaultPort(),
+  opts: { actor?: MissionActor; historyPort?: MissionHistoryPort; inlineCap?: number } = {},
+): Promise<Mission> {
+  // Reserved records (__controller__/__engagement__) are not real missions — never version them.
+  if (RESERVED_IDS.has(m.id)) { m.updatedAt = Date.now(); await port.put(m); return m; }
+  const prev = await port.get(m.id);
+  const { mission, change } = appendHistory(m, prev, opts.actor, opts.inlineCap ?? 50);
+  mission.updatedAt = Date.now();
+  await port.put(mission);
+  if (change) {
+    try { await appendMissionHistory(mission.id, change, opts.historyPort); } catch { /* best-effort durable spill */ }
+  }
+  return mission;
 }
 export async function deleteMission(id: string, port: MissionDataPort = defaultPort()): Promise<void> {
   await port.del(id);
