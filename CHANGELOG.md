@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.106] — auth-monitor + guided login + allNodes sweep (2026-06-26)
+
+### Added
+- Auth monitor: a browser-free periodic job refreshes the Claude Code OAuth token and tracks claude.ai cookie health into a per-node snapshot (`~/.lm-assist/auth-status.json`); `authMonitorEnabled`/`authMonitorIntervalMin` settings.
+- bootstrap now reports the local node's auth status; `auth_status(allNodes:true)` sweeps the fleet.
+- `claudeai_login` MCP tool + `guide("login")` — guided cookie (browser-capture/manual) + OAuth re-login, per node.
+
 ## [0.1.103] — missions sidebar search/filter/pagination + resumed-session idle-timeout setting (2026-06-26)
 
 - **Missions sidebar** is now searchable, filterable, scrollable, and paginated:

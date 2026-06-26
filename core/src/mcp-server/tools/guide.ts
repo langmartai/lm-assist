@@ -269,6 +269,15 @@ CONNECT + DRIVE: you can watch and drive a mission's executor (and an orchestrat
 Tools: \`mission_create\` (title+objective; optional projects/dependsOn/env{isolation:cloud|worktree|shared}), \`mission_list\`, \`mission_update\` (refine/pause/resume/mark done/edit objective), \`mission_control_status\` (which node is elected + its last tick), \`mission_session_resume(sid, force?)\` (revive a dead/idle bound worker in place — resume-first before spawning fresh; returns \`{resumed, reason}\` where \`reason: ok|alive|gone|conflict|status-unknown|needs-force|kill-failed\`. Resume is inject-first: a live worker reconnects via /remote-control in place; pass \`force:true\` only after a needs-force (idle workers auto-kill)).
 Requires the data service enabled (cross-node mission store). Settings: missionControllerEnabled, missionControllerIntervalMin, missionControllerMaxNudges, missionControllerModel.`,
 
+  login: `# Guide: log in / re-login for a node (cookie + OAuth)
+Two credentials per host (see auth_status): the claude.ai WEB cookie and the Claude Code OAuth token.
+• Status: \`auth_status\` (this node) · \`auth_status(allNodes:true)\` (fleet) · bootstrap shows the local node.
+• Fix either: \`claudeai_login(which="cookie"|"oauth"|"all", node=…)\`.
+  - cookie: on a node WITH a desktop browser it opens Chrome for YOU to log in, then captures the session (it never types your password); headless → it returns the exact manual steps (DevTools → copy Cookie header → ~/.claude/claudeai-session.json). The cookie is IP-PINNED to the host that captured it.
+  - oauth: auto-refreshes via the refresh token (auth-monitor / on use); if it stays expired, run Claude Code on that host to re-login (interactive).
+• The auth-monitor job keeps OAuth fresh + the cookie status current automatically (browser-free); it can't mint a dead cookie — that needs your login.
+• Connector down but cookie valid? reconnect the claude.ai MCP connector (see the connector-reconnect recipe).`,
+
   'mission-controller': `# Guide: mission-controller — the autonomous controller agent loop contract
 YOU ARE the fleet-elected Mission Controller agent, running in a native session under supervisor oversight. The supervisor sends you a pass directive every \`missionControllerIntervalMin\` minutes. On each pass, follow this loop:
 
@@ -325,6 +334,7 @@ const ALIASES: Record<string, string> = {
   ccr: 'ccr', remote: 'ccr', mirror: 'ccr', 'claude-code-remote': 'ccr', drive: 'ccr', 'remote-control': 'ccr',
   node: 'nodes', host: 'nodes', machine: 'nodes', 'port-forward': 'nodes', ports: 'nodes',
   claudeai: 'claude-ai', 'claude.ai': 'claude-ai', connector: 'claude-ai', connectors: 'claude-ai',
+  login: 'login', relogin: 'login', 're-login': 'login', signin: 'login', 'sign-in': 'login',
   auth: 'account', usage: 'account', oauth: 'account',
   gh: 'github', git: 'github',
   file: 'files', fs: 'files', transfer: 'files',
@@ -345,6 +355,7 @@ const BLURB: Record<string, string> = {
   ccr: 'CCR — view/drive a Claude Code session from claude.ai/code (load=replay, mirror=live view, connect=two-way; safety-gated)',
   nodes: 'list hosts, target a specific machine, port-forward',
   'claude-ai': "read/operate the user's claude.ai web account + manage this connector's tools",
+  login: 'guided re-login per node — fix the claude.ai cookie (browser-capture or manual steps) and/or the Claude Code OAuth token; auth-monitor keeps OAuth fresh automatically',
   account: 'Claude Code OAuth + claude.ai account / usage / active sessions (per node)',
   github: 'query/mutate GitHub via the user gh auth',
   files: 'list/stat/read files + transfer files between hosts',
@@ -376,7 +387,7 @@ const INDEX = buildIndex();
 
 /** The whole skill in ONE response — every playbook concatenated (stays in sync with GUIDES). */
 function buildBootstrap(): string {
-  const order = ['orientation', 'cross-node', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'github', 'files'];
+  const order = ['orientation', 'cross-node', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'login', 'github', 'files'];
   const header = [
     '# lm-assist — capability bootstrap (you have now loaded ALL use cases for this session)',
     '',
