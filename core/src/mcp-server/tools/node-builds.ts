@@ -42,7 +42,33 @@ export function formatBuilds(
     .join('\n');
 }
 
-interface NodeEntry { nodeId: string; hostname: string; isSelf: boolean; }
+export interface NodeEntry { nodeId: string; hostname: string; isSelf: boolean; }
+
+/**
+ * Build the fleet node list to sweep from the raw hub machine list.
+ * PURE — no I/O. Filters to ONLINE nodes only (offline/stale/duplicate gateway
+ * registrations would otherwise clutter the output as 'v?' rows — same online
+ * filter peer-client's selectSyncPeers uses), maps each to a NodeEntry, and
+ * guarantees the self node is present even if it is absent/offline in the list.
+ */
+export function selectFleetNodes(
+  machineList: any[],
+  selfId: string,
+  selfHostname: string,
+): NodeEntry[] {
+  const online: NodeEntry[] = (machineList || [])
+    .filter((m: any) => String(m?.status || '').toLowerCase() === 'online')
+    .map((m: any) => ({
+      nodeId: String(m.gatewayId || m.machineId || m.id || ''),
+      hostname: String(m.hostname || m.machineHostname || m.gatewayId || m.machineId || m.id || ''),
+      isSelf: (m.gatewayId || m.machineId || m.id) === selfId,
+    }))
+    .filter((m: NodeEntry) => m.nodeId);
+  if (!online.some((n) => n.isSelf)) {
+    online.unshift({ nodeId: selfId, hostname: selfHostname, isSelf: true });
+  }
+  return online;
+}
 
 interface BuildData {
   node?: string;
@@ -60,19 +86,9 @@ async function sweepNodes(): Promise<McpToolResult> {
   try {
     const hm = await workerGet<{ machines: unknown[] }>('/hub/machines');
     const machineList: unknown[] = Array.isArray(hm) ? hm : ((hm as any).machines || []);
-    const hubNodes: NodeEntry[] = (machineList as any[])
-      .map((m: any) => ({
-        nodeId: String(m.gatewayId || m.machineId || m.id || ''),
-        hostname: String(m.hostname || m.machineHostname || m.gatewayId || m.machineId || m.id || ''),
-        isSelf: (m.gatewayId || m.machineId || m.id) === selfId,
-      }))
-      .filter((m) => m.nodeId);
-    if (hubNodes.length > 0) {
-      nodes = hubNodes;
-      if (!nodes.some((n) => n.isSelf)) {
-        nodes.unshift({ nodeId: selfId, hostname: selfHostname, isSelf: true });
-      }
-    }
+    // Online-only: offline/stale/duplicate gateway registrations would show as 'v?' noise.
+    const fleet = selectFleetNodes(machineList as any[], selfId, selfHostname);
+    if (fleet.length > 0) nodes = fleet;
   } catch { /* hub not configured or unreachable — sweep self only */ }
 
   const rows = await Promise.all(
