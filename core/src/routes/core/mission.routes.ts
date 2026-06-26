@@ -6,7 +6,7 @@ import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActo
 import { resolveMcpActor } from '../../mission/mission-actor';
 import { normalizeTags, mergeTags, validateParent, validateDependsOn } from '../../mission/mission-graph';
 import {
-  MissionDataPort, getMission, listMissions, putMission, thisNode, getControllerSession,
+  MissionDataPort, getMission, listMissions, putMission, thisNode, getControllerSession, listMissionHistory,
 } from '../../mission/mission-store';
 import { resolveMissionSession, ResolvedSession } from '../../mission/mission-session-resolver';
 import type { Transport, SessionRole } from '../../mission/mission-session-resolver';
@@ -202,6 +202,21 @@ export async function handleTag(id: string, b: Record<string, unknown>, port?: M
   m.tags = mergeTags(m.tags ?? {}, { add: asMap(b.add), remove: asMap(b.remove), set: asMap(b.set) });
   await putMission(m, port, { actor: who });
   return ok(m);
+}
+
+export async function handleHistory(
+  id: string,
+  opts: { limit?: number; beforeRev?: number },
+  leader?: LeaderAnchorDeps,
+  listHistory: typeof listMissionHistory = listMissionHistory,
+): Promise<Envelope> {
+  const qs = new URLSearchParams();
+  if (opts.limit != null) qs.set('limit', String(opts.limit));
+  if (opts.beforeRev != null) qs.set('beforeRev', String(opts.beforeRev));
+  const path = `/mission/${encodeURIComponent(id)}/history${qs.toString() ? `?${qs}` : ''}`;
+  const anchored = await anchorToLeader(leader, 'GET', path);
+  if (anchored) return anchored;
+  return ok({ history: await listHistory(id, opts) });
 }
 
 // ---------------------------------------------------------------------------
@@ -1109,6 +1124,12 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/sessions$/, handler: async (req) => handleSessions(req.params.id, undefined, undefined, realLeaderAnchor()) },
     // /mission/:id/tags BEFORE /mission/:id so the literal suffix wins
     { method: 'POST', pattern: /^\/mission\/(?<id>[^/]+)\/tags$/, handler: async (req) => handleTag(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, realLeaderAnchor()) },
+    // /mission/:id/history BEFORE /mission/:id so the literal suffix wins
+    { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/history$/, handler: async (req) => {
+        const limit = req.query?.limit ? parseInt(String(req.query.limit), 10) : undefined;
+        const beforeRev = req.query?.beforeRev ? parseInt(String(req.query.beforeRev), 10) : undefined;
+        return handleHistory(req.params.id, { limit, beforeRev }, realLeaderAnchor());
+      } },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handleGet(req.params.id, undefined, realLeaderAnchor()) },
     { method: 'PATCH', pattern: /^\/mission\/(?<id>[^/]+)$/, handler: async (req) => handlePatch(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, realLeaderAnchor()) },
     // POST /mission/:id — same semantics as PATCH, accepts MCP workerPost (POST-only)

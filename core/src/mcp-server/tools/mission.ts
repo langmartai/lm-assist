@@ -157,6 +157,13 @@ export const MISSION_TOOL_DEFS = [
       'Recorded in the mission history with provenance.',
     inputSchema: obj({ id: S, add: { type: 'object' as const }, remove: { type: 'object' as const }, set: { type: 'object' as const } }, ['id']),
   },
+  {
+    name: 'mission_history',
+    description:
+      'Page a mission\'s full version history (UNBOUNDED — beyond the recent entries embedded in the mission record). ' +
+      'Each entry: {rev, at, actor, changes:{field:{from,to}}}. {id, limit?(default 50), beforeRev?(page older)}. Newest-first.',
+    inputSchema: obj({ id: S, limit: { type: 'number' as const }, beforeRev: { type: 'number' as const } }, ['id']),
+  },
 ] as const;
 
 export const MISSION_HANDLERS: Record<
@@ -284,6 +291,19 @@ export const MISSION_HANDLERS: Record<
       if (a.remove) body.remove = a.remove;
       if (a.set) body.set = a.set;
       return pretty(await workerPost(`/mission/${encodeURIComponent(id)}/tags`, withActorHint(body, currentMcpContext()?.toolUseId)));
+    } catch (e) { return err((e as Error).message); }
+  },
+
+  mission_history: async (a) => {
+    try {
+      const id = String(a.id || '');
+      if (!id) return err('id is required');
+      const num = (v: unknown) => typeof v === 'number' ? v : (typeof v === 'string' && v.trim() ? parseInt(v, 10) : undefined);
+      const qs = new URLSearchParams();
+      const limit = num(a.limit); const beforeRev = num(a.beforeRev);
+      if (limit != null && !Number.isNaN(limit)) qs.set('limit', String(limit));
+      if (beforeRev != null && !Number.isNaN(beforeRev)) qs.set('beforeRev', String(beforeRev));
+      return pretty(await workerGet(`/mission/${encodeURIComponent(id)}/history${qs.toString() ? `?${qs}` : ''}`));
     } catch (e) { return err((e as Error).message); }
   },
 };

@@ -262,6 +262,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   mission_session_control: 'admin',
   mission_session_resume: 'write',
   mission_tag: 'write',
+  mission_history: 'read',
   // auth: guided re-login for cookie + OAuth
   claudeai_login: 'admin',
   // fleet build/upgrade tracking (read, pull)
