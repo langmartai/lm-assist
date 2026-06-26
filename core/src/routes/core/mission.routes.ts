@@ -943,6 +943,52 @@ export interface SessionResumeDeps extends ResumeWorkerDeps {
 }
 
 function defaultSessionResumeDeps(): SessionResumeDeps {
+  // The existing native resume body (claude --resume <sid> --remote-control in the
+  // mission worktree, preserves sid) — unchanged, just lifted to a named const so
+  // both resumeNative and ensureLive.resumeDead can reuse it.
+  const resumeNativeImpl = async (missionId: string | undefined, sid: string): Promise<{ sid: string; boundAt: number }> => {
+    const { getMission, putMission } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+    const m = missionId ? await getMission(missionId) : null;
+    if (!m) throw new Error(`mission ${missionId} not found for resume`);
+    const { startNativeExecutor } = require('../../mission/mission-controller') as typeof import('../../mission/mission-controller');
+    const { place } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
+    const { listMissions: lm } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+    const { cloudListAccount, cloudDrive } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
+    const { tmuxCcController } = require('../../terminal/tmux-backend') as typeof import('../../terminal/tmux-backend');
+    const { gitCommand } = require('../../checkpoint/git-utils') as typeof import('../../checkpoint/git-utils');
+    const { missionSessionTitle } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
+    const pathmod = require('path') as typeof import('path');
+    const all = await lm();
+    const pd = place(m, all);
+    if (!pd.go) throw new Error(`mission ${missionId} not placeable for resume: ${(pd as any).reason}`);
+    const baselineArr = await cloudListAccount().then((ss: Array<{ sid: string }>) => ss.map((s) => s.sid)).catch(() => [] as string[]);
+    const nativeDeps = {
+      ensureWorktree: async (repo: string, dir: string, branch: string): Promise<string> => {
+        const absRepo = pathmod.isAbsolute(repo) ? repo : pathmod.resolve(process.cwd(), repo);
+        const absDir = pathmod.isAbsolute(dir) ? dir : pathmod.resolve(absRepo, dir);
+        try { gitCommand(['worktree', 'add', absDir, '-b', branch], absRepo); }
+        catch (err) { if (!/already exists|already checked out|is already/i.test((err as Error).message || '')) throw err; }
+        return absDir;
+      },
+      // CHANGE (a): pass resume: sid → `claude --resume <sid>` continues the SAME session.
+      launch: async (cwd: string): Promise<{ sessionId: string | null; tmuxSession: string }> => {
+        const res = await tmuxCcController.launch({ cwd, resume: sid, remoteControl: true, skipPermissions: true, autoTrust: true, name: missionSessionTitle(m) });
+        return { sessionId: (res.sessionId as string | null) ?? null, tmuxSession: res.tmuxSession as string };
+      },
+      listAccount: cloudListAccount,
+      baseline: baselineArr,
+      drive: async (s: string, text: string) => { await cloudDrive({ sid: s, text }).catch(() => {}); },
+    };
+    const decisionAny = pd as any;
+    const repoRaw: string = (pd.go ? decisionAny.repo : null) || process.cwd();
+    const repoAbs = pathmod.isAbsolute(repoRaw) ? repoRaw : pathmod.resolve(process.cwd(), repoRaw);
+    const binding = await startNativeExecutor(m, { ...(pd.go ? pd : {}), repo: repoAbs }, nativeDeps);
+    // CHANGE (b): PRESERVE the original sessionId (continuity); only the bridge cse is new.
+    m.binding = { ...binding, sessionId: sid, boundAt: binding.boundAt ?? Date.now() };
+    try { await putMission(m); } catch { /* best-effort persist */ }
+    return { sid, boundAt: m.binding.boundAt ?? Date.now() };
+  };
+
   return {
     resolve: (sid) => {
       const r = resolveMissionSession(sid, [], null);
@@ -961,47 +1007,21 @@ function defaultSessionResumeDeps(): SessionResumeDeps {
       const v = sessionVerdict(sid);
       return { connectStrategy: v.connectStrategy, safeToCreateTmux: v.safeToCreateTmux, inTmux: v.inTmux };
     },
-    resumeNative: async (missionId, sid) => {
-      const { getMission, putMission } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
-      const m = missionId ? await getMission(missionId) : null;
-      if (!m) throw new Error(`mission ${missionId} not found for resume`);
-      const { startNativeExecutor } = require('../../mission/mission-controller') as typeof import('../../mission/mission-controller');
-      const { place } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
-      const { listMissions: lm } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
-      const { cloudListAccount, cloudDrive } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
-      const { tmuxCcController } = require('../../terminal/tmux-backend') as typeof import('../../terminal/tmux-backend');
-      const { gitCommand } = require('../../checkpoint/git-utils') as typeof import('../../checkpoint/git-utils');
-      const { missionSessionTitle } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
-      const pathmod = require('path') as typeof import('path');
-      const all = await lm();
-      const pd = place(m, all);
-      if (!pd.go) throw new Error(`mission ${missionId} not placeable for resume: ${(pd as any).reason}`);
-      const baselineArr = await cloudListAccount().then((ss: Array<{ sid: string }>) => ss.map((s) => s.sid)).catch(() => [] as string[]);
-      const nativeDeps = {
-        ensureWorktree: async (repo: string, dir: string, branch: string): Promise<string> => {
-          const absRepo = pathmod.isAbsolute(repo) ? repo : pathmod.resolve(process.cwd(), repo);
-          const absDir = pathmod.isAbsolute(dir) ? dir : pathmod.resolve(absRepo, dir);
-          try { gitCommand(['worktree', 'add', absDir, '-b', branch], absRepo); }
-          catch (err) { if (!/already exists|already checked out|is already/i.test((err as Error).message || '')) throw err; }
-          return absDir;
+    resumeNative: resumeNativeImpl,
+    ensureLive: async (sid, o) => {
+      const { buildEnsureDeps } = require('../../terminal/live-rc-connect-deps') as typeof import('../../terminal/live-rc-connect-deps');
+      const { ensureRemoteControlled } = require('../../terminal/live-rc-connect') as typeof import('../../terminal/live-rc-connect');
+      const { getProjectSettings } = require('../../project-settings') as typeof import('../../project-settings');
+      const idleMin = getProjectSettings().missionSessionIdleCloseMin ?? 30;
+      const ensureDeps = buildEnsureDeps({
+        // If the process already died between verdict and now, resume it the normal
+        // way (same worktree, --resume sid, re-bridge). cse is unknown here → null.
+        resumeDead: async (s) => {
+          await resumeNativeImpl(o.missionId, s);
+          return { ok: true };
         },
-        // CHANGE (a): pass resume: sid → `claude --resume <sid>` continues the SAME session.
-        launch: async (cwd: string): Promise<{ sessionId: string | null; tmuxSession: string }> => {
-          const res = await tmuxCcController.launch({ cwd, resume: sid, remoteControl: true, skipPermissions: true, autoTrust: true, name: missionSessionTitle(m) });
-          return { sessionId: (res.sessionId as string | null) ?? null, tmuxSession: res.tmuxSession as string };
-        },
-        listAccount: cloudListAccount,
-        baseline: baselineArr,
-        drive: async (s: string, text: string) => { await cloudDrive({ sid: s, text }).catch(() => {}); },
-      };
-      const decisionAny = pd as any;
-      const repoRaw: string = (pd.go ? decisionAny.repo : null) || process.cwd();
-      const repoAbs = pathmod.isAbsolute(repoRaw) ? repoRaw : pathmod.resolve(process.cwd(), repoRaw);
-      const binding = await startNativeExecutor(m, { ...(pd.go ? pd : {}), repo: repoAbs }, nativeDeps);
-      // CHANGE (b): PRESERVE the original sessionId (continuity); only the bridge cse is new.
-      m.binding = { ...binding, sessionId: sid, boundAt: binding.boundAt ?? Date.now() };
-      try { await putMission(m); } catch { /* best-effort persist */ }
-      return { sid, boundAt: m.binding.boundAt ?? Date.now() };
+      });
+      return ensureRemoteControlled(sid, { force: o.force, idleThresholdMs: idleMin * 60 * 1000 }, ensureDeps);
     },
     idleMin: (() => {
       const { getProjectSettings } = require('../../project-settings') as typeof import('../../project-settings');
@@ -1022,7 +1042,7 @@ function defaultSessionResumeDeps(): SessionResumeDeps {
  */
 export async function handleSessionResume(
   sid: string,
-  body: { missionId?: string },
+  body: { missionId?: string; force?: boolean },
   deps?: SessionResumeDeps,
   node?: string,
   leader?: LeaderAnchorDeps,
@@ -1032,7 +1052,7 @@ export async function handleSessionResume(
   if (anchored) return anchored;
 
   const d = deps ?? defaultSessionResumeDeps();
-  const result = await resumeWorker(sid, body.missionId, d);
+  const result = await resumeWorker(sid, body.missionId, d, { force: !!body.force });
   // Stamp autoCloseAt + reaper tracking only for a freshly-resumed native session.
   if (result.transport === 'native' && result.resumed && result.reason === 'ok') {
     const now = Date.now();
@@ -1078,9 +1098,8 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
         return handleSessionStatus(req.params.sid, undefined, node);
       } },
     { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/resume$/, handler: async (req) => {
-        const b = (req.body || {}) as Record<string, unknown>;
-        const missionId = typeof b.missionId === 'string' ? b.missionId : undefined;
-        return handleSessionResume(req.params.sid, { missionId }, undefined, undefined, realLeaderAnchor());
+        const body = (req.body || {}) as { missionId?: string; force?: boolean };
+        return handleSessionResume(req.params.sid, body, undefined, undefined, realLeaderAnchor());
       } },
     { method: 'POST', pattern: /^\/mission\/session\/(?<sid>[^/]+)\/read$/, handler: async (req) => {
         const b = (req.body || {}) as Record<string, unknown>;

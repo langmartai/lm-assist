@@ -326,7 +326,7 @@ export const CONTROLLER_PASS_DIRECTIVE =
   'Run a controller pass now: review every active mission via mission_list; for each, call ' +
   'mission_place, then if it needs an executor spawn one via ccr_cloud_start (NEVER agent_execute) ' +
   'and bind it with mission_update({binding}); answer any worker pendingQuestion IMMEDIATELY via ' +
-  'mission_session_answer; if a BOUND worker is not live, FIRST mission_session_resume(sid) to revive it in place (spawn a fresh one ONLY on reason gone/conflict); drive/adapt/decide as needed; then await the next pass.';
+  'mission_session_answer; if a BOUND worker is not live, FIRST mission_session_resume(sid) to revive it in place (force:true only after a needs-force; spawn fresh ONLY on reason gone/conflict); drive/adapt/decide as needed; then await the next pass.';
 
 /**
  * Guarded system prompt for the Mission Controller agent. Passed at launch via
@@ -378,16 +378,19 @@ export const CONTROLLER_SYSTEM_PROMPT = [
   'a couple of minutes and then CANNOT resume to consume a late answer; answered promptly it',
   'resumes and finishes in seconds. Do NOT use `mission_session_drive` to answer (it queues behind',
   'the open question). If a worker already suspended unanswered, RESUME it first via',
-  '`mission_session_resume(sid)`; only if that returns `gone`/`conflict` do you mark the mission',
+  '`mission_session_resume(sid)`; only if that returns `gone`/`conflict`/`kill-failed` do you mark the mission',
   '`blocked` (NOT `done`) and spawn a fresh worker; for a must-ask worker, prefer a native session.',
   '',
-  'RESUMING A DEAD / IDLE WORKER: if a BOUND worker reads as not-live (mission_session_read / ' +
-  'mission_executor_status shows it dead or idle) but you still have its sid, RESUME IT IN PLACE with ' +
-  '`mission_session_resume(sid)` FIRST — it revives the SAME session (cloud: wakes an idle worker; ' +
-  'native: `claude --resume` + re-bridge), preserving its transcript/context. Do NOT spawn a fresh ' +
-  'worker for a resumable one. ONLY if mission_session_resume returns reason `gone` (terminal / ' +
-  'unrecoverable) or `conflict` (the session is live elsewhere, unsafe to resume) do you spawn a FRESH ' +
-  'executor (the separate explicit step) via ccr_cloud_start + re-bind. Resume-first preserves context; respawn loses it.',
+  'RESUMING / RECONNECTING A WORKER (resume-only, inject-first): ALWAYS prefer ' +
+  '`mission_session_resume(sid)` — it reconnects the SAME session in place, so do NOT spawn a ' +
+  'fresh worker for a resumable one. A LIVE worker is ' +
+  'reconnected by injecting `/remote-control` into its terminal (no restart, context preserved); ' +
+  'you do NOT need to do anything special — the tool handles it. If the worker is unreachable ' +
+  '(headless) AND actively busy, the tool returns reason:"needs-force". Only then, and only if ' +
+  'you are sure the work is stuck, re-call with `force:true` to kill-and-resume. An IDLE ' +
+  'unreachable worker is auto-killed-and-resumed (no force needed). reason:"kill-failed" = the ' +
+  'process would not die; do NOT keep retrying — surface it. reason:"gone" = terminal; spawn a ' +
+  'FRESH worker as a separate, explicit action. Resume-first preserves context; respawn loses it.',
   '',
   'HEARTBEAT: only on a safety-check drive where there is genuinely nothing to do (no active',
   'missions, or nothing actionable), reply with EXACTLY one line beginning `⟦HEARTBEAT⟧` and',
