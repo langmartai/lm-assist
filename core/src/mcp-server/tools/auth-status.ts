@@ -14,6 +14,7 @@
  * read in configure.ts TOOL_SCOPES.
  */
 import { ok, err, workerGet, type McpToolResult } from './_passthrough';
+import { describeCookieTtl } from '../../utils/claudeai-session';
 
 export const authStatusToolDef = {
   name: 'auth_status',
@@ -66,6 +67,8 @@ interface Healthz {
   sessionConfigured?: boolean;
   identity?: { email?: string; full_name?: string; uuid?: string } | null;
   cookieFreshness?: { hasSessionKey?: boolean; hasCfClearance?: boolean; hasCfBm?: boolean };
+  /** sessionKey expiry epoch ms; null = session cookie; undefined = legacy capture. */
+  sessionKeyExpiresAt?: number | null;
 }
 
 interface OAuthStatus {
@@ -88,6 +91,8 @@ async function claudeAiSection(): Promise<string[]> {
       out.push(`claude.ai web session: OK (${who})`);
       const c = h.cookieFreshness || {};
       out.push(`  cookies: sessionKey ${c.hasSessionKey ? '✓' : '✗'}  cf_clearance ${c.hasCfClearance ? '✓' : '✗'}  cf_bm ${c.hasCfBm ? '✓' : '✗'}`);
+      const ttl = describeCookieTtl(h.sessionKeyExpiresAt, !!c.hasSessionKey, Date.now());
+      out.push(`  ${ttl}`);
     } else {
       out.push(`claude.ai web session: NOT USABLE — ${h.reason || 'unknown'}${h.sessionConfigured ? '' : ' (not configured)'}`);
       if (h.hint) out.push(`  → ${h.hint}`);

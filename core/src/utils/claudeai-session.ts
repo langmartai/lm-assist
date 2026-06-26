@@ -64,6 +64,16 @@ export interface ClaudeAISessionConfig {
   secChUa?: string;
   secChUaMobile?: string;
   secChUaPlatform?: string;
+  /**
+   * Per-cookie expiry in epoch milliseconds, written by the CDP browser
+   * capture path. Null = session cookie (no fixed expiry). Absent = old
+   * capture format (TTL unknown until next recapture).
+   */
+  cookieExpiries?: {
+    sessionKey?: number | null;
+    cf_clearance?: number | null;
+    __cf_bm?: number | null;
+  };
 }
 
 export interface ClaudeAIIdentity {
@@ -129,21 +139,63 @@ export interface ClaudeAISessionStatus {
   hasCfBm?: boolean;
   identity?: ClaudeAIIdentity;
   cookieNames?: string[];
+  /**
+   * Expiry of the sessionKey in epoch ms.
+   *   undefined = no cookieExpiries in file (legacy capture; TTL unknown — recapture to learn).
+   *   null      = session cookie (no fixed expiry; lives until logout).
+   *   number    = absolute epoch ms expiry timestamp.
+   * Only set when hasSessionKey is true.
+   */
+  sessionKeyExpiresAt?: number | null;
 }
 
 export function getClaudeAISessionStatus(): ClaudeAISessionStatus {
   const cfg = readClaudeAISession();
   if (!cfg) return { present: false, sessionPath: SESSION_PATH };
   const cookies = parseCookieString(cfg.cookie);
+  const hasSessionKey = typeof cookies['sessionKey'] === 'string' && cookies['sessionKey'].startsWith('sk-ant-sid');
+  // sessionKeyExpiresAt: undefined = legacy file (no cookieExpiries → TTL unknown)
+  //   null = session cookie (no fixed expiry)  number = fixed expiry epoch ms.
+  // Only populated when sessionKey is present; legacy files without cookieExpiries → undefined.
+  let sessionKeyExpiresAt: number | null | undefined;
+  if (hasSessionKey) {
+    if (cfg.cookieExpiries !== undefined) {
+      sessionKeyExpiresAt = cfg.cookieExpiries.sessionKey ?? null;
+    }
+    // else: undefined (legacy)
+  }
   return {
     present: true,
     sessionPath: SESSION_PATH,
-    hasSessionKey: typeof cookies['sessionKey'] === 'string' && cookies['sessionKey'].startsWith('sk-ant-sid'),
+    hasSessionKey,
     hasCfClearance: typeof cookies['cf_clearance'] === 'string' && cookies['cf_clearance'].length > 0,
     hasCfBm: typeof cookies['__cf_bm'] === 'string' && cookies['__cf_bm'].length > 0,
     identity: deriveIdentity(cfg),
     cookieNames: Object.keys(cookies).sort(),
+    sessionKeyExpiresAt,
   };
+}
+
+/**
+ * Describe the sessionKey TTL in human-readable form. Pure; no I/O.
+ *
+ * @param sessionKeyExpiresAt  Epoch ms, null (session cookie), or undefined (legacy file).
+ * @param hasSessionKey        Whether a sessionKey is present at all.
+ * @param now                  Current epoch ms (for testability).
+ */
+export function describeCookieTtl(
+  sessionKeyExpiresAt: number | null | undefined,
+  hasSessionKey: boolean,
+  now: number,
+): string {
+  if (!hasSessionKey) return 'no sessionKey';
+  if (sessionKeyExpiresAt === undefined) return 'TTL unknown (recapture to learn)';
+  if (sessionKeyExpiresAt === null) return 'session cookie (no fixed expiry; until logout)';
+  const ms = sessionKeyExpiresAt - now;
+  if (ms <= 0) return 'sessionKey EXPIRED';
+  const days = Math.floor(ms / 86_400_000);
+  const hrs = Math.floor((ms % 86_400_000) / 3_600_000);
+  return days >= 1 ? `sessionKey expires in ${days}d ${hrs}h` : `sessionKey expires in ${hrs}h`;
 }
 
 export interface ClaudeAIProbeResult {

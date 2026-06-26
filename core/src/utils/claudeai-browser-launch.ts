@@ -435,6 +435,20 @@ interface CDPCookie {
   sameSite?: string;
 }
 
+/**
+ * Convert a CDP cookie's `expires` field (epoch SECONDS) to a millisecond
+ * timestamp, or return null for session cookies / cookies with no fixed expiry.
+ *
+ * CDP semantics:
+ *   - `session: true`   → session cookie (lives until logout); no fixed expiry.
+ *   - `expires <= 0`    → no fixed expiry (e.g. -1 from Chrome for session cookies).
+ *   - `expires > 0`     → epoch seconds; multiply by 1000 for ms.
+ */
+export function cdpExpiresToMs(c: { expires: number; session: boolean } | undefined): number | null {
+  if (!c || c.session || !(c.expires > 0)) return null;
+  return Math.round(c.expires * 1000);
+}
+
 export interface CaptureResult {
   ok: true;
   /** Per-profile session file actually written. */
@@ -452,6 +466,11 @@ export interface CaptureResult {
   accountEmail?: string;
   /** orgUuid derived from lastActiveOrg cookie. */
   orgUuid?: string;
+  /**
+   * Expiry of the sessionKey cookie in epoch ms, or null if it is a session
+   * cookie (no fixed expiry). Undefined if the cookie was not captured.
+   */
+  sessionKeyExpiresAt?: number | null;
 }
 
 export interface CaptureError {
@@ -574,6 +593,11 @@ export async function captureSession(opts: {
     chromeUserAgent: version['User-Agent'] || null,
     chromeBrowser: version['Browser'] || null,
     cookieNames: analyzed.cookieNames,
+    cookieExpiries: {
+      sessionKey: cdpExpiresToMs(analyzed.byName.get('sessionKey')),
+      cf_clearance: cdpExpiresToMs(analyzed.byName.get('cf_clearance')),
+      __cf_bm: cdpExpiresToMs(analyzed.byName.get('__cf_bm')),
+    },
   };
 
   try {
@@ -602,6 +626,7 @@ export async function captureSession(opts: {
     hasSessionKey: analyzed.hasSessionKey,
     hasCfClearance: analyzed.hasCfClearance,
     orgUuid: analyzed.orgUuid,
+    sessionKeyExpiresAt: cdpExpiresToMs(analyzed.byName.get('sessionKey')),
   };
 }
 
