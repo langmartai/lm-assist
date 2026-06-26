@@ -36,3 +36,33 @@ export async function buildAuthSnapshot(deps: AuthSnapshotDeps): Promise<AuthSna
 
   return { checkedAt: deps.now(), oauth, cookie };
 }
+
+export function defaultDeps(): AuthSnapshotDeps {
+  const oauth = require('../utils/claude-oauth') as typeof import('../utils/claude-oauth');
+  const cookie = require('../utils/claudeai-session') as typeof import('../utils/claudeai-session');
+  return {
+    refreshOAuth: async () => {
+      try { const before = oauth.readClaudeOAuth(); await oauth.getValidAccessToken();
+            const after = oauth.readClaudeOAuth();
+            return { refreshed: !!(before && after && before.accessToken !== after.accessToken) }; }
+      catch { return { refreshed: false }; }
+    },
+    oauthStatus: () => { const s = oauth.getOAuthStatus(); return { present: s.present, expired: !!s.expired, msUntilExpiry: s.msUntilExpiry, subscriptionType: s.subscriptionType, rateLimitTier: s.rateLimitTier }; },
+    cookieStatus: () => { const s = cookie.getClaudeAISessionStatus(); const id = s.identity?.userId || s.identity?.orgUuid || s.identity?.anonymousId; return { present: s.present, hasSessionKey: s.hasSessionKey, hasCfClearance: s.hasCfClearance, hasCfBm: s.hasCfBm, identity: id }; },
+    cookieProbe: async () => { const p = await cookie.probeClaudeAISession(); return { ok: p.ok, reason: p.reason, hint: p.hint }; },
+    now: () => Date.now(),
+  };
+}
+
+export function registerAuthMonitor(jobs: { registerHandler: (t: string, fn: (config: any, ctx: any) => Promise<any>) => void }): void {
+  jobs.registerHandler('auth-monitor', async () => {
+    const { getProjectSettings } = require('../project-settings') as typeof import('../project-settings');
+    if (!getProjectSettings().authMonitorEnabled) return { result: 'auth-monitor disabled', status: 'skipped' };
+    const { saveAuthSnapshot } = require('./auth-store') as typeof import('./auth-store');
+    const snap = await buildAuthSnapshot(defaultDeps());
+    saveAuthSnapshot(snap);
+    const o = snap.oauth.present ? (snap.oauth.expired ? 'expired' : 'ok') + (snap.oauth.refreshedThisCheck ? '(refreshed)' : '') : 'none';
+    const c = snap.cookie.configured ? (snap.cookie.ok ? 'ok' : snap.cookie.reason) : 'none';
+    return { result: `oauth=${o} cookie=${c}`, status: 'ok' };
+  });
+}

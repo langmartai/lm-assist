@@ -36,12 +36,19 @@ export function createProjectSettingsRoutes(_ctx: RouteContext): RouteHandler[] 
           const n = Number(body.missionSessionIdleCloseMin);
           if (Number.isFinite(n)) missionSessionIdleCloseMin = Math.max(1, Math.min(1440, Math.round(n)));
         }
+        let authMonitorIntervalMin: number | undefined;
+        if (body.authMonitorIntervalMin !== undefined) {
+          const n = Number(body.authMonitorIntervalMin);
+          if (Number.isFinite(n)) authMonitorIntervalMin = Math.max(1, Math.min(1440, Math.round(n)));
+        }
         const updated = saveProjectSettings({
           excludedPaths: body.excludedPaths,
           knowledgeEnabled: body.knowledgeEnabled,
           memorySyncEnabled: body.memorySyncEnabled,
           crossProjectSignpostEnabled: body.crossProjectSignpostEnabled,
           missionSessionIdleCloseMin,
+          authMonitorEnabled: body.authMonitorEnabled,
+          authMonitorIntervalMin,
         });
 
         // Live-apply the memory-sync toggle: re-resolve the autosync daemon mode (no restart).
