@@ -255,6 +255,7 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
               hasCfClearance: status.hasCfClearance,
               hasCfBm: status.hasCfBm,
             },
+            sessionKeyExpiresAt: status.sessionKeyExpiresAt,
             probe,
           },
         };

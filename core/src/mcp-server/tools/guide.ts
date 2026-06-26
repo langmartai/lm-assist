@@ -8,6 +8,7 @@
 import type { McpToolResult } from '../configure';
 import { ok } from './_passthrough';
 import type { AuthSnapshot } from '../../monitor/auth-monitor';
+import { describeCookieTtl } from '../../utils/claudeai-session';
 
 /** topic → the tools it covers (drives the index + tool-name → topic resolution). */
 const TOPIC_TOOLS: Record<string, string[]> = {
@@ -424,12 +425,13 @@ export function formatAuthBlock(snap: AuthSnapshot, nodeLabel: string): string {
       ? 'OAuth: ✗ EXPIRED — run Claude Code on this node, or claudeai_login(which="oauth")'
       : `OAuth: ✓ valid${typeof o.msUntilExpiry === 'number' ? ` (expires in ${Math.max(0, Math.round(o.msUntilExpiry / 3600_000))}h)` : ''}${o.refreshedThisCheck ? ', refreshed' : ''}`;
   const c = snap.cookie;
+  const ttl = describeCookieTtl(c.sessionKeyExpiresAt, !!c.hasSessionKey, Date.now());
   const cookieLine = !c.configured
     ? 'claude.ai cookie: — not configured — claudeai_login(which="cookie")'
     : c.reason === 'unprobed'
-      ? `claude.ai cookie: ✓ configured (not live-checked)${c.identity ? ` (${c.identity})` : ''} — auth_status to verify`
+      ? `claude.ai cookie: ✓ configured (not live-checked)${c.identity ? ` (${c.identity})` : ''} · ${ttl} — auth_status to verify`
       : c.ok
-        ? `claude.ai cookie: ✓ ok${c.identity ? ` (${c.identity})` : ''}`
+        ? `claude.ai cookie: ✓ ok${c.identity ? ` (${c.identity})` : ''} · ${ttl}`
         : `claude.ai cookie: ✗ ${c.reason} — claudeai_login(which="cookie")`;
   return [`## Auth status — ${nodeLabel}`, oauthLine, cookieLine, 'Fleet: auth_status(allNodes:true) · re-login: guide("login")'].join('\n');
 }

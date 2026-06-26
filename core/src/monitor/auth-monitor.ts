@@ -1,13 +1,22 @@
 export interface AuthSnapshot {
   checkedAt: number;
   oauth: { present: boolean; expired: boolean; msUntilExpiry?: number; refreshedThisCheck: boolean; subscriptionType?: string; rateLimitTier?: string };
-  cookie: { configured: boolean; ok: boolean; reason: string; hasSessionKey?: boolean; hasCfClearance?: boolean; hasCfBm?: boolean; identity?: string; hint?: string };
+  cookie: {
+    configured: boolean; ok: boolean; reason: string;
+    hasSessionKey?: boolean; hasCfClearance?: boolean; hasCfBm?: boolean;
+    identity?: string; hint?: string;
+    /**
+     * sessionKey expiry epoch ms (or null = session cookie; undefined = legacy/unknown).
+     * See describeCookieTtl() in claudeai-session.ts for rendering.
+     */
+    sessionKeyExpiresAt?: number | null;
+  };
 }
 
 export interface AuthSnapshotDeps {
   refreshOAuth: () => Promise<{ refreshed: boolean }>;           // wraps getValidAccessToken()
   oauthStatus: () => { present: boolean; expired: boolean; msUntilExpiry?: number; subscriptionType?: string; rateLimitTier?: string }; // getOAuthStatus()
-  cookieStatus: () => { present: boolean; hasSessionKey?: boolean; hasCfClearance?: boolean; hasCfBm?: boolean; identity?: string };     // getClaudeAISessionStatus()
+  cookieStatus: () => { present: boolean; hasSessionKey?: boolean; hasCfClearance?: boolean; hasCfBm?: boolean; identity?: string; sessionKeyExpiresAt?: number | null }; // getClaudeAISessionStatus()
   cookieProbe: () => Promise<{ ok: boolean; reason: string; hint?: string }>; // probeClaudeAISession()
   now: () => number;
 }
@@ -31,6 +40,7 @@ export async function buildAuthSnapshot(deps: AuthSnapshotDeps): Promise<AuthSna
       configured: !!cs.present, ok: !!probe.ok, reason: probe.ok ? 'ok' : (probe.reason || 'unknown'),
       hasSessionKey: cs.hasSessionKey, hasCfClearance: cs.hasCfClearance, hasCfBm: cs.hasCfBm,
       identity: cs.identity, hint: probe.hint,
+      sessionKeyExpiresAt: cs.sessionKeyExpiresAt,
     };
   } catch { /* degraded */ }
 
@@ -50,7 +60,7 @@ export function defaultDeps(): AuthSnapshotDeps {
       } catch { return { refreshed: false }; }
     },
     oauthStatus: () => { const s = oauth.getOAuthStatus(); return { present: s.present, expired: !!s.expired, msUntilExpiry: s.msUntilExpiry, subscriptionType: s.subscriptionType, rateLimitTier: s.rateLimitTier }; },
-    cookieStatus: () => { const s = cookie.getClaudeAISessionStatus(); const id = s.identity?.userId || s.identity?.orgUuid || s.identity?.anonymousId; return { present: s.present, hasSessionKey: s.hasSessionKey, hasCfClearance: s.hasCfClearance, hasCfBm: s.hasCfBm, identity: id }; },
+    cookieStatus: () => { const s = cookie.getClaudeAISessionStatus(); const id = s.identity?.userId || s.identity?.orgUuid || s.identity?.anonymousId; return { present: s.present, hasSessionKey: s.hasSessionKey, hasCfClearance: s.hasCfClearance, hasCfBm: s.hasCfBm, identity: id, sessionKeyExpiresAt: s.sessionKeyExpiresAt }; },
     cookieProbe: async () => { const p = await cookie.probeClaudeAISession(); return { ok: p.ok, reason: p.reason, hint: p.hint }; },
     now: () => Date.now(),
   };
@@ -61,7 +71,7 @@ export function lightAuthSnapshot(): AuthSnapshot {
   let oauth: AuthSnapshot['oauth'] = { present: false, expired: false, refreshedThisCheck: false };
   try { const o = d.oauthStatus(); oauth = { present: o.present, expired: o.expired, msUntilExpiry: o.msUntilExpiry, refreshedThisCheck: false, subscriptionType: o.subscriptionType, rateLimitTier: o.rateLimitTier }; } catch { /* degraded */ }
   let cookie: AuthSnapshot['cookie'] = { configured: false, ok: false, reason: 'unprobed' };
-  try { const cs = d.cookieStatus(); cookie = { configured: !!cs.present, ok: !!cs.hasSessionKey, reason: cs.present ? 'unprobed' : 'session_not_configured', hasSessionKey: cs.hasSessionKey, hasCfClearance: cs.hasCfClearance, hasCfBm: cs.hasCfBm, identity: cs.identity }; } catch { /* degraded */ }
+  try { const cs = d.cookieStatus(); cookie = { configured: !!cs.present, ok: !!cs.hasSessionKey, reason: cs.present ? 'unprobed' : 'session_not_configured', hasSessionKey: cs.hasSessionKey, hasCfClearance: cs.hasCfClearance, hasCfBm: cs.hasCfBm, identity: cs.identity, sessionKeyExpiresAt: cs.sessionKeyExpiresAt }; } catch { /* degraded */ }
   return { checkedAt: Date.now(), oauth, cookie };
 }
 

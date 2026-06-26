@@ -13,6 +13,7 @@
  * in configure.ts TOOL_SCOPES (drives the node's browser with skip-permissions).
  */
 import { ok, err, workerGet, workerPost, type McpToolResult } from './_passthrough';
+import { describeCookieTtl } from '../../utils/claudeai-session';
 
 /**
  * Pure decision function — determines what cookie action to take based on the
@@ -115,11 +116,14 @@ async function handleClaudeaiLogin(args: Record<string, unknown>): Promise<McpTo
       }
     }
     // Re-report final state
-    const post = await workerGet<{ ok?: boolean; reason?: string }>('/claude-ai/healthz').catch(() => ({}));
+    const post = await workerGet<{ ok?: boolean; reason?: string; sessionKeyExpiresAt?: number | null; cookieFreshness?: { hasSessionKey?: boolean } }>('/claude-ai/healthz').catch(() => ({}));
     const postOk = !!((post as { ok?: boolean }).ok);
     const postReason = (post as { reason?: string }).reason;
+    const postHasKey = !!((post as { cookieFreshness?: { hasSessionKey?: boolean } }).cookieFreshness?.hasSessionKey);
+    const postExpiry = (post as { sessionKeyExpiresAt?: number | null }).sessionKeyExpiresAt;
+    const ttl = postOk ? ` · ${describeCookieTtl(postExpiry, postHasKey, Date.now())}` : '';
     out.push(
-      `\nNow: claude.ai cookie ${postOk ? 'OK' : 'NOT usable' + (postReason ? ` (${postReason})` : '')}. (auth_status for full detail.)`,
+      `\nNow: claude.ai cookie ${postOk ? `OK${ttl}` : 'NOT usable' + (postReason ? ` (${postReason})` : '')}. (auth_status for full detail.)`,
     );
     return ok(out.join('\n'));
   } catch (e) {

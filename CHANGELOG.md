@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.108] — cookie TTL surfacing (2026-06-26)
+
+Cookie TTL surfacing: the browser capture now persists the claude.ai cookies' expiry; auth_status / bootstrap / claudeai_login show when the sessionKey expires (when a browser re-login is due). Existing sessions show 'TTL unknown' until the next capture/login.
+
 ## [0.1.107] — proactive OAuth auto-renew (2026-06-26)
 
 Proactive Claude Code OAuth auto-renew: the auth-monitor now refreshes the token a full interval before expiry (keeps the rotating refresh_token alive even when Claude Code is never run); new `POST /claude-code/oauth-renew` API + `claudeai_login which=oauth` triggers a renew.
