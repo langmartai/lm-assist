@@ -1,5 +1,5 @@
 /** Cross-node mission store backed by the data service (dataset `missions`, syncMode:'full'). */
-import type { Mission, MissionBinding, MissionProgress, MissionResult, MissionAdjustment } from './mission-model';
+import type { Mission, MissionBinding, MissionProgress, MissionResult, MissionAdjustment, MissionChange } from './mission-model';
 import { withActorBackfill } from './mission-model';
 import { getDataService } from '../data/data-service';
 import type { CallCtx } from '../data/data-service';
@@ -11,6 +11,22 @@ const CONTROLLER_ID = '__controller__';
 const ENGAGEMENT_ID = '__engagement__';
 /** Reserved record ids in the missions dataset that are NOT user missions. */
 const RESERVED_IDS = new Set([CONTROLLER_ID, ENGAGEMENT_ID]);
+
+const HISTORY_DATASET = 'mission-history';
+
+export interface MissionHistoryRecord {
+  id: string;            // `${missionId}:${rev}`
+  missionId: string;
+  rev: number;
+  at: number;
+  actor: import('./mission-model').MissionActor;
+  changes: Record<string, { from: unknown; to: unknown }>;
+}
+export interface MissionHistoryPort {
+  isEnabled(): boolean;
+  put(rec: MissionHistoryRecord): Promise<void>;
+  query(missionId: string, opts: { limit?: number; beforeRev?: number }): Promise<MissionHistoryRecord[]>;
+}
 
 /** Wave-4 engagement bookkeeping — stored under reserved key __engagement__. */
 export interface EngagementState {
@@ -104,6 +120,52 @@ function livePort(): MissionDataPort {
 
 let _default: MissionDataPort | null = null;
 function defaultPort(): MissionDataPort { return _default ?? (_default = livePort()); }
+
+let historyEnsured = false;
+async function ensureHistoryDataset(svc: ReturnType<typeof getDataService>): Promise<void> {
+  if (historyEnsured) return;
+  try {
+    await svc.createDataset(systemCtx(), {
+      id: HISTORY_DATASET, backend: 'cache', title: 'Mission History',
+      visibility: 'cross-node-readable', syncMode: 'full', config: { kind: 'cache' },
+    } as any);
+  } catch { /* already exists — fine */ }
+  historyEnsured = true;
+}
+
+function liveHistoryPort(): MissionHistoryPort {
+  return {
+    isEnabled: () => getDataService().isEnabled(),
+    put: async (rec) => {
+      const svc = getDataService();
+      if (!svc.isEnabled()) return;
+      await ensureHistoryDataset(svc);
+      const now = new Date().toISOString();
+      await svc.put(systemCtx(), HISTORY_DATASET, { id: rec.id, version: 0, fields: { ...rec } as Record<string, unknown>, createdAt: now, updatedAt: now });
+    },
+    query: async (missionId, opts) => {
+      const svc = getDataService();
+      if (!svc.isEnabled()) return [];
+      await ensureHistoryDataset(svc);
+      const filter: Array<{ field: string; op: string; value: unknown }> = [{ field: 'missionId', op: 'eq', value: missionId }];
+      if (typeof opts.beforeRev === 'number') filter.push({ field: 'rev', op: 'lt', value: opts.beforeRev });
+      const r = await svc.query(systemCtx(), HISTORY_DATASET, { filter, sort: [{ field: 'rev', dir: 'desc' }], limit: opts.limit ?? 50 } as any);
+      return r.ok ? r.value.records.map((rec) => rec.fields as unknown as MissionHistoryRecord) : [];
+    },
+  };
+}
+let _historyDefault: MissionHistoryPort | null = null;
+function defaultHistoryPort(): MissionHistoryPort { return _historyDefault ?? (_historyDefault = liveHistoryPort()); }
+
+/** Best-effort durable append of one change to the unbounded mission-history dataset. */
+export async function appendMissionHistory(missionId: string, change: MissionChange, port: MissionHistoryPort = defaultHistoryPort()): Promise<void> {
+  if (!port.isEnabled()) return;
+  await port.put({ id: `${missionId}:${change.rev}`, missionId, rev: change.rev, at: change.at, actor: change.actor, changes: change.changes });
+}
+/** Page the full history trail, newest-first. */
+export async function listMissionHistory(missionId: string, opts: { limit?: number; beforeRev?: number } = {}, port: MissionHistoryPort = defaultHistoryPort()): Promise<MissionHistoryRecord[]> {
+  return port.query(missionId, opts);
+}
 
 /** This node's id, for stamping `ownerNode` on new missions. */
 export function thisNode(): string { return getHubConfig().gatewayId ?? 'unknown'; }
