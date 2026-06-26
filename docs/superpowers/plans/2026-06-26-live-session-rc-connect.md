@@ -17,7 +17,7 @@
 - **Kill is gated.** Auto-kill only when `idleMs >= idleThresholdMs` (default 30 min, from `missionSessionIdleCloseMin`). An actively-busy unreachable session is killed only with `force:true`; otherwise return `needs-force` with no side effects.
 - **Leader-anchored writes.** The mission resume surface stays leader-anchored.
 - Bare `{ success, data }` mission routes via `ok()`/`fail()`; `ccr` routes via `envelope()`/`TerminalError`. Adding a param to an existing MCP tool needs no new `TOOL_SCOPES` entry (`ccr_connect` and `mission_session_resume` already exist); do not remove their scopes.
-- Build after TS edits: `./core.sh build`. Run a test file: `node --test --import tsx core/src/__tests__/<file>.test.ts` (match how the repo runs node:test — see Task 1 Step 2).
+- Build after TS edits: `./core.sh build`. **Test runner — `tsx` is NOT installed.** Use: `cd /home/ubuntu/lm-assist/core && npm run build:test && node --test --test-reporter=spec dist-test/__tests__/<file>.test.js` — `build:test` runs `tsc -p tsconfig.test.json` compiling `core/src/**/*.test.ts` → `core/dist-test/`. In a RED step (module/symbol not yet created) the failure surfaces as a tsc "Cannot find module"/"has no exported member" compile error — that is the expected failing state. The `node --test --import tsx …` lines inside the task steps are STALE; substitute this runner.
 
 ---
 
