@@ -49,6 +49,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import {
   getOAuthStatus,
+  ensureFreshAccessToken,
+  renewBufferMs,
   anthropicOAuthGet,
   getOauthCliRoles,
   getOauthAccountSettings,
@@ -1717,6 +1719,24 @@ export function createClaudeCodeRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'GET',
       pattern: /^\/claude-code\/oauth-status$/,
       handler: async () => ({ success: true, data: getOAuthStatus() }),
+    },
+
+    // POST /claude-code/oauth-renew — proactively renew the Claude Code OAuth token.
+    // Pass ?force=true (query) or { force: true } (body) to force a refresh regardless
+    // of expiry. Without force, uses a 15-min proactive buffer (same as auth-monitor).
+    // Returns: { renewed: bool, ...getOAuthStatus() fields } — no secrets.
+    {
+      method: 'POST',
+      pattern: /^\/claude-code\/oauth-renew$/,
+      handler: async (req) => {
+        const force = (req.query?.force === 'true') || ((req.body as any)?.force === true);
+        try {
+          const r = await ensureFreshAccessToken(force ? Number.MAX_SAFE_INTEGER : renewBufferMs(15));
+          return { success: true, data: { renewed: r.refreshed, ...getOAuthStatus() } };
+        } catch (e) {
+          return { success: false, error: (e as Error).message };
+        }
+      },
     },
 
     // GET /claude-code/usage — proxies GET https://api.anthropic.com/api/oauth/usage

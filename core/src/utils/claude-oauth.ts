@@ -195,7 +195,29 @@ function writeCredsAtomic(next: ClaudeOAuthCreds): void {
   fs.renameSync(tmp, CREDS_PATH);
 }
 
-export async function getValidAccessToken(): Promise<ClaudeOAuthCreds> {
+/**
+ * Compute a proactive renewal buffer (milliseconds) so the token is refreshed
+ * at least one monitor interval before it would otherwise expire.
+ *
+ * @param intervalMin  Monitor interval in minutes (e.g. 15).
+ * @param marginMin    Extra safety margin in minutes (default 5).
+ */
+export function renewBufferMs(intervalMin: number, marginMin = 5): number {
+  return Math.max(1, Math.round(intervalMin) + marginMin) * 60_000;
+}
+
+/**
+ * Ensure the stored OAuth token is fresh.  Mirrors the body of the former
+ * `getValidAccessToken()` but also returns a `refreshed` flag so callers
+ * can distinguish a cache-hit from an actual network refresh.
+ *
+ * @param bufferMs  How many ms before `expiresAt` the token is considered
+ *                  stale and should be refreshed.  Defaults to the same
+ *                  5-min buffer used by `getValidAccessToken`.
+ */
+export async function ensureFreshAccessToken(
+  bufferMs: number = REFRESH_BUFFER_MS,
+): Promise<{ creds: ClaudeOAuthCreds; refreshed: boolean }> {
   if (!isPlatformSupported()) {
     throw new Error('Claude OAuth credentials are stored in Keychain on macOS; not supported.');
   }
@@ -203,7 +225,7 @@ export async function getValidAccessToken(): Promise<ClaudeOAuthCreds> {
   if (!creds) {
     throw new Error(`No Claude Code OAuth credentials at ${CREDS_PATH}. Run 'claude /login' first.`);
   }
-  if (!isTokenExpired(creds)) return creds;
+  if (!isTokenExpired(creds, bufferMs)) return { creds, refreshed: false };
 
   const data = await postTokenRefresh(creds.refreshToken);
   const refreshed: ClaudeOAuthCreds = {
@@ -222,7 +244,11 @@ export async function getValidAccessToken(): Promise<ClaudeOAuthCreds> {
     // is visible without breaking the request.
     process.stderr.write(`[claude-oauth] persist failed: ${(err as Error).message}\n`);
   }
-  return refreshed;
+  return { creds: refreshed, refreshed: true };
+}
+
+export async function getValidAccessToken(): Promise<ClaudeOAuthCreds> {
+  return (await ensureFreshAccessToken()).creds;
 }
 
 export interface OAuthStatus {

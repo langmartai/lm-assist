@@ -70,6 +70,9 @@ async function handleClaudeaiLogin(args: Record<string, unknown>): Promise<McpTo
   const out: string[] = [];
   try {
     if (which === 'oauth' || which === 'all') {
+      // Proactively attempt a renew before reading status — keeps the rotating
+      // refresh_token alive even when Claude Code itself is never run.
+      await workerPost('/claude-code/oauth-renew', {}).catch(() => null);
       const o = await workerGet<{ present?: boolean; expired?: boolean }>('/claude-code/oauth-status').catch(() => ({}));
       if (!o || !(o as { present?: boolean }).present) {
         out.push('OAuth: not present — run Claude Code on this node to log in (OAuth login is interactive).');
@@ -79,7 +82,7 @@ async function handleClaudeaiLogin(args: Record<string, unknown>): Promise<McpTo
           'if it stays expired, run Claude Code to re-login.',
         );
       } else {
-        out.push('OAuth: valid.');
+        out.push('OAuth: valid (renewed if it was near expiry).');
       }
     }
     if (which === 'cookie' || which === 'all') {
