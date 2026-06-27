@@ -3,7 +3,7 @@ import type { RouteHandler, RouteContext } from '../index';
 import { randomBytes } from 'crypto';
 import { touchActivity, trackResumedNative } from '../../mission/mission-session-reaper';
 import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActor, place, ExecutorState, MissionBinding } from '../../mission/mission-model';
-import { resolveMcpActor } from '../../mission/mission-actor';
+import { resolveMcpActor, upgradeControllerActor } from '../../mission/mission-actor';
 import { normalizeTags, mergeTags, validateParent, validateDependsOn } from '../../mission/mission-graph';
 import {
   MissionDataPort, getMission, listMissions, putMission, thisNode, getControllerSession, listMissionHistory,
@@ -19,6 +19,8 @@ import { filterMissions, FilterError, type MissionFilter, type MissionSort } fro
 import { neighbors, subgraphEdges, toNode, type Direction, type MissionNode, type MissionEdge } from '../../mission/mission-traverse';
 import { newView, normalizeView, validateView, type MissionView } from '../../mission/mission-views';
 import { getView, listViews, putView, deleteView, type MissionViewPort } from '../../mission/mission-views-store';
+import { computeSchedule } from '../../mission/mission-scheduler';
+import { recentExternalChanges } from '../../mission/mission-changes';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string }; }
 const ok = <T>(data: T): Envelope => ({ success: true, data });
@@ -82,7 +84,11 @@ async function anchorToLeader(leader: LeaderAnchorDeps | undefined, method: 'GET
 async function actorFor(b: Record<string, unknown>): Promise<MissionActor> {
   const hint = b._actor as { channel?: string; toolUseId?: string | null } | undefined;
   delete (b as any)._actor;
-  if (hint && hint.channel === 'mcp') return resolveMcpActor(hint.toolUseId, thisNode(), Date.now());
+  if (hint && hint.channel === 'mcp') {
+    const resolved = await resolveMcpActor(hint.toolUseId, thisNode(), Date.now());
+    const ctrl = await getControllerSession().catch(() => null);
+    return upgradeControllerActor(resolved, ctrl?.sessionId);
+  }
   return coarseActor('user', thisNode(), Date.now());
 }
 
@@ -288,6 +294,23 @@ export async function handleGraph(b: Record<string, unknown>, port?: MissionData
     const all = await listMissions(port);
     return ok(buildGraph(all, asFilter(b.filter), b.expand as { direction?: unknown; depth?: unknown } | undefined));
   } catch (e) { if (e instanceof FilterError) return fail(e.code, e.message); throw e; }
+}
+
+export async function handleSchedule(b: Record<string, unknown>, port?: MissionDataPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'POST', '/mission/schedule', b, false);
+  if (anchored) return anchored;
+  const all = await listMissions(port);
+  return ok(computeSchedule(all));
+}
+
+export async function handleChanges(b: Record<string, unknown>, port?: MissionDataPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'POST', '/mission/changes', b, false);
+  if (anchored) return anchored;
+  const all = await listMissions(port);
+  const sinceRev = (b.sinceRev && typeof b.sinceRev === 'object') ? (b.sinceRev as Record<string, number>) : undefined;
+  const sinceTsRaw = typeof b.sinceTs === 'number' ? b.sinceTs : (typeof b.sinceTs === 'string' ? parseInt(b.sinceTs, 10) : undefined);
+  const sinceTs = sinceTsRaw != null && !Number.isNaN(sinceTsRaw) ? sinceTsRaw : undefined;
+  return ok({ changes: recentExternalChanges(all, { sinceRev, sinceTs }) });
 }
 
 // ---------------------------------------------------------------------------
@@ -1242,6 +1265,8 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     // graph-query literals — MUST be before POST /mission/:id (which would match id='query'/'graph')
     { method: 'POST', pattern: /^\/mission\/query$/, handler: async (req) => handleQuery((req.body || {}) as Record<string, unknown>, undefined, realLeaderAnchor()) },
     { method: 'POST', pattern: /^\/mission\/graph$/, handler: async (req) => handleGraph((req.body || {}) as Record<string, unknown>, undefined, realLeaderAnchor()) },
+    { method: 'POST', pattern: /^\/mission\/schedule$/, handler: async (req) => handleSchedule((req.body || {}) as Record<string, unknown>, undefined, realLeaderAnchor()) },
+    { method: 'POST', pattern: /^\/mission\/changes$/, handler: async (req) => handleChanges((req.body || {}) as Record<string, unknown>, undefined, realLeaderAnchor()) },
     // view literals — MUST be before /mission/:id patterns (else POST /mission/views matches POST /mission/:id)
     { method: 'POST', pattern: /^\/mission\/views$/, handler: async (req) => handleViewSet((req.body || {}) as Record<string, unknown>, undefined, undefined, realLeaderAnchor()) },
     { method: 'GET', pattern: /^\/mission\/views$/, handler: async () => handleViewList(undefined, realLeaderAnchor()) },

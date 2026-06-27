@@ -31,3 +31,15 @@ export async function resolveMcpActor(
     return coarse;
   }
 }
+
+/**
+ * Stamp channel:'controller' on a write that originates from the elected controller session,
+ * so it is distinguishable from a human MCP edit (used by recentExternalChanges to exclude it).
+ * Pure: callers pass the current controller session id (e.g. (await getControllerSession())?.sessionId).
+ */
+export function upgradeControllerActor(actor: MissionActor, controllerSessionId: string | null | undefined): MissionActor {
+  if (controllerSessionId && actor.kind === 'local-session' && actor.id === controllerSessionId) {
+    return { ...actor, kind: 'controller', channel: 'controller' };
+  }
+  return actor;
+}

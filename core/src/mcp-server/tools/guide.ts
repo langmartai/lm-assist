@@ -314,6 +314,8 @@ TOOLS AVAILABLE (mission scope):
 - \`decide_gate(sessionId, taskId, decision)\` — agree or reject a pending gate
 - \`ccr_cloud_start\`, \`ccr_cloud_drive\`, \`ccr_cloud_stop\` — cloud executor lifecycle
 
+SCHEDULING INTELLIGENCE (sub-project 3): each pass, FIRST call mission_changes (react to external edits before acting), THEN mission_schedule for the deterministic plan {ready, blocked[{id,reason}], serializeGroups, epicRollups, containers}. Act on ready; never spawn for a container (schedule its children, apply epicRollups status via mission_update); take all dependency/resource/serialize/epic gating from mission_schedule. You OWN the ctl: tag dimensions (ctl:readiness, ctl:serialize-group, ctl:phase) — write them via mission_tag to record/serialize; NEVER write author dims (project/feature/component). To serialize two same-area missions with no dependsOn, tag them the same ctl:serialize-group.
+
 SELF-HEAL: if lm-assist Core is not running on this host, start it (\`lm-assist start\`) before calling any tools. See guide("install") if lm-assist is not installed.`,
 };
 

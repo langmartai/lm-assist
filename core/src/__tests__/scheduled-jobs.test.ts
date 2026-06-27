@@ -245,3 +245,13 @@ test('SAFETY: the cleanup-test-conversations built-in ships DISABLED + dryRun', 
   assert.deepEqual(cleanup!.config.ids, [], 'seeds an empty verified id list — the only delete mechanism');
   assert.equal(cleanup!.config.patterns, undefined, 'no name patterns — direct id match only');
 });
+
+test('makeBuiltinJobs seeds an enabled mission-controller job at interval 1 (lifecycle tick)', () => {
+  const jobs = makeBuiltinJobs(1000);
+  const mc = jobs.find((j) => j.id === 'mission-controller');
+  assert.ok(mc, 'mission-controller builtin present');
+  assert.strictEqual(mc!.type, 'mission-controller');
+  assert.strictEqual(mc!.enabled, true);
+  assert.strictEqual(mc!.intervalMinutes, 1, 'lifecycle tick interval must be 1 min for prompt failover');
+  assert.strictEqual(mc!.builtin, true);
+});

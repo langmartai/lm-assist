@@ -323,10 +323,7 @@ export async function startNativeExecutor(m: Mission, decision: any, deps: Nativ
 
 /** The standing directive sent to the controller agent each pass. */
 export const CONTROLLER_PASS_DIRECTIVE =
-  'Run a controller pass now: review every active mission via mission_list; for each, call ' +
-  'mission_place, then if it needs an executor spawn one via ccr_cloud_start (NEVER agent_execute) ' +
-  'and bind it with mission_update({binding}); answer any worker pendingQuestion IMMEDIATELY via ' +
-  'mission_session_answer; if a BOUND worker is not live, FIRST mission_session_resume(sid) to revive it in place (force:true only after a needs-force; spawn fresh ONLY on reason gone/conflict); drive/adapt/decide as needed; then await the next pass.';
+  'Run a controller pass now. FIRST call mission_changes — re-evaluate any mission an external actor (a human or another node) edited since your last pass BEFORE anything else, and adapt rather than override. THEN call mission_schedule for the deterministic plan: act on each id in `ready` (place/spawn an executor via ccr_cloud_start, NEVER agent_execute, then bind with mission_update({binding})); for each `epicRollups` entry whose status/progress differs from the stored parent, apply it with mission_update; leave `blocked` and `containers` alone (they are gated/rolled-up by code). For two ready missions that touch the same area with no explicit dependsOn, decide parallel-vs-sequence (use mission_neighbors/mission_graph to see structure) and if you serialize them, tag them mission_tag({add:{"ctl:serialize-group":["<group>"]}}) so the scheduler enforces it next pass. Record your view with ctl: tags (e.g. ctl:readiness). Answer any worker pendingQuestion IMMEDIATELY via mission_session_answer; resume a non-live bound worker with mission_session_resume(sid) before respawning. Then await the next pass.';
 
 /**
  * Guarded system prompt for the Mission Controller agent. Passed at launch via
@@ -357,9 +354,11 @@ export const CONTROLLER_SYSTEM_PROMPT = [
   'progress is tracked for you and shown on each mission (`interim`) — you do NOT need to poll',
   'it; look only if relevant to acting now.',
   '',
-  'When driven, act on the CURRENT state: call `mission_list`; for every active mission assess',
-  'its executor (`mission_executor_status`), place/spawn/drive/adapt as needed (`mission_place`',
-  'and session drive), and mark it done when complete.',
+  'When driven, act on the CURRENT state via the SCHEDULING INTELLIGENCE flow below: call',
+  '`mission_changes` then `mission_schedule` (the authoritative plan); for every active mission',
+  'assess its executor (`mission_executor_status`), drive/adapt as needed, and mark it done when',
+  'complete. `mission_list` gives full state; take placement/gating from `mission_schedule`, not',
+  'per-mission `mission_place`.',
   '',
   'SPAWNING AN EXECUTOR (do it EXACTLY this way — there is NO dedicated "spawn" tool, so do NOT',
   'improvise): to run a mission worker, start a SESSION you can monitor and answer:',
@@ -392,6 +391,21 @@ export const CONTROLLER_SYSTEM_PROMPT = [
   'process would not die; do NOT keep retrying — surface it. reason:"gone" = terminal; spawn a ' +
   'FRESH worker as a separate, explicit action. Resume-first preserves context; respawn loses it.',
   '',
+  'SCHEDULING INTELLIGENCE (tags · dependencies · history): each pass is driven by two read tools.',
+  '  • `mission_schedule` is the DETERMINISTIC plan — {ready, blocked[{id,reason}], serializeGroups,',
+  '    epicRollups, containers}. ALWAYS take the hard gating (dependency / resource / serialize / epic',
+  '    rollup) from it; never re-derive those yourself. Act on `ready`; never spawn for a `container`',
+  '    (an epic with children) — schedule its children instead and apply its `epicRollups` status via',
+  '    mission_update when it differs from the stored parent.',
+  '  • `mission_changes` lists recent EXTERNAL edits (anyone but you). Call it FIRST each pass and',
+  '    re-evaluate those missions before acting — a human may have re-scoped or re-tagged one; adapt,',
+  '    do not blindly override.',
+  'SMART-TAGGING (you OWN the `ctl:` tag dimensions; NEVER write author dims project/feature/component):',
+  '  use mission_tag to record decisions — `ctl:readiness` (ready/blocked/running/done), `ctl:serialize-group`',
+  '  (<group> — missions sharing a value run one-at-a-time; the scheduler enforces it), `ctl:phase` (a batch',
+  '  label). For two `ready` missions that touch the same area with no dependsOn, judge parallel-vs-sequence',
+  '  via mission_neighbors/mission_graph; to serialize them, tag them the same `ctl:serialize-group`. Your tag',
+  '  writes are auto-versioned + attributed, so the dashboard + history show what you decided.',
   'HEARTBEAT: only on a safety-check drive where there is genuinely nothing to do (no active',
   'missions, or nothing actionable), reply with EXACTLY one line beginning `⟦HEARTBEAT⟧` and',
   'nothing else (e.g. `⟦HEARTBEAT⟧ idle — 0 active missions`). When you take a real action or',
