@@ -263,6 +263,8 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   mission_session_resume: 'write',
   mission_tag: 'write',
   mission_history: 'read',
+  mission_schedule: 'read',
+  mission_changes: 'read',
   mission_query: 'read',
   mission_neighbors: 'read',
   mission_graph: 'read',
