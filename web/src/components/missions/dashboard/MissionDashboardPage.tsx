@@ -70,7 +70,7 @@ export function MissionDashboardPage() {
         <div className="relative flex-1">
           {loading && <div className="absolute left-2 top-2 z-10 text-xs text-neutral-500">Loading…</div>}
           {error && <div className="absolute left-2 top-2 z-10 text-xs text-red-400">{error}</div>}
-          <MissionGraphCanvas nodes={filteredNodes} edges={filteredEdges} display={view?.display} selectedId={selectedId} onSelect={setSelectedId} />
+          <MissionGraphCanvas nodes={filteredNodes} edges={filteredEdges} strategy={'clusters'} selectedId={selectedId} liveIds={new Set()} display={view?.display} onSelect={setSelectedId} />
         </div>
         <MissionNodeDetail nodeId={selectedId} edges={graph?.edges ?? []} onSelect={setSelectedId} onClose={() => setSelectedId(null)} />
       </div>
