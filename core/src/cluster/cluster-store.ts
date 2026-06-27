@@ -3,13 +3,26 @@
 // Publishes THIS node's {gatewayId,cluster,hostname,ts} into node-clusters;
 // peers pull it via the cross-node sync (M5 / data-service syncMode:'full', scope:'fleet').
 import { getDataService, type CallCtx } from '../data/data-service';
+import { getDatasetRegistry } from '../data/dataset-registry';
 import { getHubConfig } from '../hub-client/hub-config';
 import { getMyCluster, clusterName } from './cluster-config';
 import type { ClusterRecord } from './cluster-map';
-import type { DataRecord } from '../data/types';
+import type { DataRecord, AclRule } from '../data/types';
 
 const NODE_CLUSTERS = 'node-clusters';
 const CLUSTER_META = 'cluster-meta';
+
+// Relayed cross-node sync requests resolve to a 'cloud' principal (api-relay tags
+// x-relay-source:hub → access-manager.resolvePrincipal → {type:'cloud'}), which is
+// granted ONLY what a matching ACL rule allows. Without an ACL these datasets are
+// invisible to peers in the sync manifest (syncManifest/evaluateGrants → no read),
+// so the map never converges. Grant fleet-wide READ ('*') so any peer can pull it;
+// keep writes local (each node publishes only its OWN record via systemCtx/local).
+// Mirrors system-datasets.ts GATING_ACL.
+export const CLUSTER_ACL: AclRule[] = [
+  { principal: '*', actions: ['read', 'query', 'search'] },
+  { principal: 'local', actions: ['write', 'delete', 'manage'] },
+];
 
 // Mirror mission-store.ts:60 — same pattern for a "system" internal caller.
 function systemCtx(): CallCtx { return { principal: { type: 'local' } } as CallCtx; }
@@ -55,8 +68,9 @@ export async function ensureClusterDatasets(): Promise<void> {
     [CLUSTER_META, 'Cluster Meta'],
   ] as const) {
     try {
-      // cross-node-readable: cloud callers can read via connector with an access key.
-      // syncMode:'full' + scope:'fleet': converges across ALL clusters (no cluster boundary).
+      // visibility cross-node-readable + acl '*':read → relayed peers (cloud principals)
+      // can pull the dataset to converge. syncMode:'full' + scope:'fleet': converges
+      // across ALL clusters (no cluster boundary).
       await svc.createDataset(systemCtx(), {
         id,
         backend: 'cache',
@@ -64,9 +78,16 @@ export async function ensureClusterDatasets(): Promise<void> {
         visibility: 'cross-node-readable',
         syncMode: 'full',
         scope: 'fleet',
+        acl: CLUSTER_ACL,
         config: { kind: 'cache' },
       } as any);
     } catch { /* already exists — fine (mirror mission-store ensureDataset) */ }
+    // Ensure the ACL is present even on datasets created by an earlier build: 0.1.120
+    // created these WITHOUT an acl, so relayed 'cloud' peers got no read grant and the
+    // dataset was omitted from the cross-node sync manifest → the map never converged.
+    // Idempotent in-place patch of the existing descriptor (getDatasetRegistry() is the
+    // same instance the data service uses). No-ops if the dataset isn't registered.
+    try { getDatasetRegistry().update(id, { acl: CLUSTER_ACL }); } catch { /* not registered yet */ }
   }
   ensured = true;
 }
