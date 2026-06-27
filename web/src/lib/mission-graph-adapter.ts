@@ -109,3 +109,18 @@ export function buildFilter(state: {
   const expand = dir && dir !== 'none' ? { direction: dir, depth: state.expand?.depth ?? 1 } : undefined;
   return { filter, expand };
 }
+
+/** Given matching node ids, return them plus every node in the same connected component (undirected edges). */
+export function expandToComponents(nodes: MissionNode[], edges: MissionEdge[], matchIds: Set<string>): Set<string> {
+  const ids = nodes.map((n) => n.id);
+  const idSet = new Set(ids);
+  const parent = new Map<string, string>();
+  for (const id of ids) parent.set(id, id);
+  const find = (x: string): string => { let r = x; while (parent.get(r) !== r) r = parent.get(r)!; while (parent.get(x) !== r) { const n = parent.get(x)!; parent.set(x, r); x = n; } return r; };
+  for (const e of edges) if (idSet.has(e.from) && idSet.has(e.to)) { const ra = find(e.from), rb = find(e.to); if (ra !== rb) parent.set(ra, rb); }
+  const matchRoots = new Set<string>();
+  for (const m of matchIds) if (idSet.has(m)) matchRoots.add(find(m));
+  const out = new Set<string>();
+  for (const id of ids) if (matchRoots.has(find(id))) out.add(id);
+  return out;
+}

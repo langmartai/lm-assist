@@ -1,5 +1,5 @@
-import { test, expect } from 'vitest';
-import { toDagGraph, matchesHighlight, colorForGroup, applyQuickFilters, matchesSearch, buildFilter } from '@/lib/mission-graph-adapter';
+import { test, expect, describe, it } from 'vitest';
+import { toDagGraph, matchesHighlight, colorForGroup, applyQuickFilters, matchesSearch, buildFilter, expandToComponents } from '@/lib/mission-graph-adapter';
 import type { MissionNode, MissionEdge } from '@/lib/mission-graph-types';
 
 const mn = (id: string, over: Partial<MissionNode> = {}): MissionNode => ({ id, title: id, status: 'active', tags: {}, parentId: null, ...over });
@@ -69,4 +69,27 @@ test('buildFilter: empty selections → empty filter; direction none → no expa
 });
 test('buildFilter: a real direction → expand with depth default 1', () => {
   expect(buildFilter({ expand: { direction: 'dependencies' } }).expand).toEqual({ direction: 'dependencies', depth: 1 });
+});
+
+const N = (id: string): MissionNode => ({ id, title: id, status: 'active', tags: {}, parentId: null });
+const ME = (from: string, to: string): MissionEdge => ({ from, to, type: 'dependsOn' });
+
+describe('expandToComponents', () => {
+  const nodes = ['a', 'b', 'c', 'd', 'e'].map(N);
+  const edges = [ME('a', 'b'), ME('b', 'c'), ME('d', 'e')];
+
+  it('expands a match to its whole connected component', () => {
+    const out = expandToComponents(nodes, edges, new Set(['a']));
+    expect([...out].sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('unions components for matches in different groups', () => {
+    const out = expandToComponents(nodes, edges, new Set(['a', 'd']));
+    expect([...out].sort()).toEqual(['a', 'b', 'c', 'd', 'e']);
+  });
+
+  it('a match with no edges returns just itself', () => {
+    const out = expandToComponents([...nodes, N('x')], edges, new Set(['x']));
+    expect([...out]).toEqual(['x']);
+  });
 });
