@@ -61,11 +61,19 @@ export function DagGraph({ graph, layoutOptions, selectedNodeId, highlightDepth 
     return () => cancelAnimationFrame(timer);
   }, [layout]);
 
+  // Zoom toward a focal point (fx,fy in container px), adjusting pan so that point stays fixed.
+  const zoomAt = useCallback((factor: number, fx: number, fy: number) => {
+    const nz = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom * factor));
+    const ratio = nz / zoom;
+    setPan({ x: fx - (fx - pan.x) * ratio, y: fy - (fy - pan.y) * ratio });
+    setZoom(nz);
+  }, [zoom, pan]);
+
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    setZoom(z => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * delta)));
-  }, []);
+    const rect = containerRef.current?.getBoundingClientRect();
+    zoomAt(e.deltaY > 0 ? 0.9 : 1.1, rect ? e.clientX - rect.left : 0, rect ? e.clientY - rect.top : 0);
+  }, [zoomAt]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
@@ -106,6 +114,12 @@ export function DagGraph({ graph, layoutOptions, selectedNodeId, highlightDepth 
     setZoom(newZoom);
     setPan({ x: cx, y: cy });
   }, [layout.width, layout.height]);
+
+  // Zoom in/out from the viewport center (used by the +/- buttons).
+  const zoomBy = useCallback((factor: number) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    zoomAt(factor, rect ? rect.width / 2 : 0, rect ? rect.height / 2 : 0);
+  }, [zoomAt]);
 
   // Multi-level connection highlighting
   const { connectedEdgeIds, connectedNodeIds } = useMemo(() => {
@@ -171,7 +185,7 @@ export function DagGraph({ graph, layoutOptions, selectedNodeId, highlightDepth 
       }}>
         <button
           className="btn btn-sm btn-ghost"
-          onClick={() => setZoom(z => Math.min(MAX_ZOOM, z * 1.2))}
+          onClick={() => zoomBy(1.2)}
           title="Zoom in"
           style={{ padding: '2px 6px', fontSize: 12, lineHeight: 1 }}
         >
@@ -179,7 +193,7 @@ export function DagGraph({ graph, layoutOptions, selectedNodeId, highlightDepth 
         </button>
         <button
           className="btn btn-sm btn-ghost"
-          onClick={() => setZoom(z => Math.max(MIN_ZOOM, z * 0.8))}
+          onClick={() => zoomBy(0.8)}
           title="Zoom out"
           style={{ padding: '2px 6px', fontSize: 12, lineHeight: 1 }}
         >

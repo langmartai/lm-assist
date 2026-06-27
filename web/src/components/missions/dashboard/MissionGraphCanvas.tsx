@@ -27,6 +27,17 @@ export function MissionGraphCanvas({ nodes, edges, display, selectedId, onSelect
     return [...seen.entries()].map(([value, color]) => ({ value, color }));
   }, [graph, display?.groupBy]);
 
+  // Per-node relationship counts from the drawn edges (parent edge {from:parent,to:child}; dependsOn {from:mission,to:dep}).
+  const relsById = useMemo(() => {
+    const m = new Map<string, { deps: number; children: number; dependents: number }>();
+    const get = (id: string) => { let r = m.get(id); if (!r) { r = { deps: 0, children: 0, dependents: 0 }; m.set(id, r); } return r; };
+    for (const e of edges) {
+      if (e.type === 'parent') get(e.from).children += 1;
+      else { get(e.from).deps += 1; get(e.to).dependents += 1; }
+    }
+    return m;
+  }, [edges]);
+
   if (graph.nodes.length === 0) {
     return <div className="flex h-full items-center justify-center text-neutral-500">No missions match this view.</div>;
   }
@@ -44,17 +55,25 @@ export function MissionGraphCanvas({ nodes, edges, display, selectedId, onSelect
           onClick={() => onSelect(node.id === selectedId ? null : node.id)}
         >
           <div className="truncate font-medium text-neutral-100">{node.label}</div>
-          <div className="mt-0.5 flex flex-wrap gap-1 text-[10px] text-neutral-400">
+          <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[10px] text-neutral-400">
             {fields.map((f) => (
               <span key={f}>{f === 'status' ? String(node.metadata.status) : f === 'progress' ? `${node.metadata.progressPercent ?? 0}%` : String((node.metadata as Record<string, unknown>)[f] ?? '')}</span>
             ))}
             {(() => {
               const t = node.metadata.tags as Record<string, string[]> | undefined;
-              const count = t ? Object.values(t).reduce((a, v) => a + v.length, 0) : 0;
-              const gb = display?.groupBy ? (t?.[display.groupBy] ?? [])[0] : null;
-              return gb ? <span className="text-neutral-500">#{gb}</span> : count > 0 ? <span className="text-neutral-600">🏷{count}</span> : null;
+              const major = t ? (display?.groupBy ? (t[display.groupBy] ?? [])[0] : (Object.entries(t).find(([d]) => !d.startsWith('ctl:'))?.[1] ?? [])[0]) : undefined;
+              return major ? <span className="rounded bg-neutral-800 px-1 text-[9px] text-neutral-300">{major}</span> : null;
             })()}
           </div>
+          {(() => {
+            const r = relsById.get(node.id);
+            const parts: string[] = [];
+            if (node.metadata.parentId) parts.push('↑parent');
+            if (r?.deps) parts.push(`⛓${r.deps}`);
+            if (r?.children) parts.push(`▽${r.children}`);
+            if (r?.dependents) parts.push(`${r.dependents}blk`);
+            return parts.length ? <div className="mt-0.5 truncate text-[9px] text-neutral-500">{parts.join(' · ')}</div> : null;
+          })()}
         </div>
       </foreignObject>
     );
