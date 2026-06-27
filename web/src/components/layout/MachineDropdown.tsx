@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { ChevronDown, Monitor, Globe, ExternalLink } from 'lucide-react';
 import { useMachineContext } from '@/contexts/MachineContext';
 import { useAppMode } from '@/contexts/AppModeContext';
+import { useClusters, clusterBadge } from '@/hooks/useClusters';
 import { detectAppMode, workerFetch } from '@/lib/api-client';
 import { getPlatformEmoji, getHubDomain } from '@/lib/utils';
 
@@ -18,6 +19,7 @@ export function MachineDropdown() {
     isSingleMachine,
   } = useMachineContext();
   const { hubConnected, mode, proxy, hubUrl } = useAppMode();
+  const { clusterByGateway } = useClusters();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -148,6 +150,12 @@ export function MachineDropdown() {
                   {getPlatformEmoji(m.platform)}
                 </span>
                 <span className="machine-dropdown-item-label">{m.hostname}</span>
+                {(() => {
+                  const cl = clusterByGateway.get(m.gatewayId || m.id);
+                  return cl && cl !== 'default' ? (
+                    <span className={`badge ${clusterBadge(cl)}`} style={{ fontSize: 9, padding: '1px 6px' }}>{cl}</span>
+                  ) : null;
+                })()}
                 {shouldOpenCloud && <ExternalLink size={11} className="machine-dropdown-external" />}
                 <span
                   className={`machine-dropdown-status ${m.status}`}
