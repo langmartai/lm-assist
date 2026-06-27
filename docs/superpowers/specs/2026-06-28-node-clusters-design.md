@@ -69,7 +69,11 @@ New `core/src/routes/core/cluster.routes.ts` + tools in a new `core/src/mcp-serv
 
 - **`session_status` + `bootstrap`** report `cluster: '<myCluster>'` and a one-line shared-vs-within summary.
 - **`guide("clusters")`** — new topic: what a cluster is, the shared-vs-within table, `cluster_assign`/`unassign`/`list`, and "build/release one cluster at a time" via `node_upgrade … cluster:'<name>'`.
-- **Mission controller** — `mission-controller.ts` `CONTROLLER_SYSTEM_PROMPT` gains one line: "You control missions for YOUR cluster (`<name>`) only; other clusters have their own controller." Its election + anchor are already cluster-scoped via `listOnlineNodeIds`. The controller label includes the cluster: `Mission Controller · <hostname> · <cluster>`.
+- **Mission controller** — three cluster behaviors:
+  1. **Election + anchor** are already cluster-scoped via `listOnlineNodeIds` (each cluster runs one controller on its own leader). Label includes the cluster: `Mission Controller · <hostname> · <cluster>`.
+  2. **Placement is restricted to the cluster (the key ask).** When the controller binds/spawns an executor for a mission whose `env.host` names a node, it verifies that host is in its cluster (`sameClusterIds` over the live online set). An out-of-cluster (or unknown) host is a **placement error**: the controller does NOT spawn cross-cluster — it leaves the mission unbound and flags it `ctl:placement-error` (surfaced in the pass) so a human/another node can fix `env.host`. `local`/`thisNode()` bindings and controller-spawned `cloud` sessions are inherently in-cluster (the controller itself is a cluster node, and cloud executors report back only to it). So **every job/session the controller assigns lands within its cluster.**
+  3. **Write-time guard:** `handleCreate`/`handleUpdate` (`mission.routes.ts`) validate `env.host` against the caller node's cluster map — an out-of-cluster host is rejected with `HOST_NOT_IN_CLUSTER` (the caller can assign the node to the cluster first, or pick an in-cluster host). This stops a bad placement before it reaches the controller.
+  4. **Prompt:** `CONTROLLER_SYSTEM_PROMPT` gains: "You control missions for YOUR cluster (`<name>`) ONLY, and you place every executor on a node in your cluster (or cloud/local) — never on another cluster's host. Other clusters have their own controller."
 
 ## Out of scope (YAGNI)
 
@@ -89,7 +93,8 @@ New `core/src/routes/core/cluster.routes.ts` + tools in a new `core/src/mcp-serv
   - `sync-engine` peer selection by `scope`: `'fleet'` → all peers; `'cluster'` → same-cluster only; existing fleet (all `default`) unchanged.
   - `selectFleetNodes` with `target` (`self-cluster`/`all`/named).
 - **Route/tool tests:** `cluster_list` shape; `cluster_assign`/`unassign` resolve + proxy (mocked peer client); unknown-node guard.
-- **Multi-node smoke (117/123/107 on the prod hub):** assign 117+123 → cluster `release`, 107 → cluster `dev`; verify (a) two independent leaders (`cluster_list`), (b) a mission created in `release` is invisible in `dev` and vice-versa, (c) memory written on 107 appears on 117 (shared), (d) `node_upgrade cluster:'dev'` touches only 107. Then reassign all → `default` and confirm fleet-wide behavior returns.
+- **Mission-placement guard:** the controller's bind step refuses an out-of-cluster `env.host` (mission left unbound + `ctl:placement-error`, no spawn); accepts an in-cluster host, `local`, and `cloud`. `handleCreate`/`handleUpdate` reject an out-of-cluster `env.host` with `HOST_NOT_IN_CLUSTER` and accept an in-cluster one (cluster filter injected for the test).
+- **Multi-node smoke (117/123/107 on the prod hub):** assign 117+123 → cluster `release`, 107 → cluster `dev`; verify (a) two independent leaders (`cluster_list`), (b) a mission created in `release` is invisible in `dev` and vice-versa, (c) memory written on 107 appears on 117 (shared), (d) `node_upgrade cluster:'dev'` touches only 107, (e) **placement** — a `dev` mission with `env.host:107` binds on 107; a `dev` mission with `env.host:117` is refused (`HOST_NOT_IN_CLUSTER` at write, or `ctl:placement-error` at the controller). Then reassign all → `default` and confirm fleet-wide behavior returns.
 
 ## Risks
 
