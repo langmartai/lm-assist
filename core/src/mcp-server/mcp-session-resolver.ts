@@ -207,18 +207,28 @@ export async function enrichBootstrapWithIdentity(result: McpToolResult): Promis
 
 function pretty(v: unknown): string { return JSON.stringify(v, null, 2); }
 
+function getNodeClusterInfo(): { cluster: string; otherClusters?: Array<{ name: string; description?: string; status?: string }> } {
+  try {
+    const { getMyCluster } = require('../cluster/cluster-config') as typeof import('../cluster/cluster-config');
+    return { cluster: getMyCluster() };
+  } catch { return { cluster: 'default' }; }
+}
+
 async function handleSessionStatus(_args: Record<string, unknown>): Promise<McpToolResult> {
   const c = await resolveCallerCandidates();
   const bootstrapped = (id?: string) => (id ? !!REGISTRY.get(id)?.bootstrappedAt : false);
+  const clusterInfo = getNodeClusterInfo();
   return { content: [{ type: 'text', text: pretty(c.precise && c.claudeCode ? {
     note: 'PRECISE: this MCP call carried a tool-call id (_meta["claudecode/toolUseId"]) that matched the calling conversation exactly — no guessing.',
     callerType: 'claude-code',
     claudeCodeSession: { ...c.claudeCode, matchedBy: 'tool-call-id', bootstrapped: bootstrapped(c.claudeCode.id) },
+    ...clusterInfo,
     howTo: 'If you have not bootstrapped, call bootstrap() once to load all lm-assist capabilities.',
   } : {
     note: 'No tool-call id on this call. These are the most-recently-active candidates resolved from the node APIs — PICK the one matching your runtime (claude.ai conversation vs Claude Code session). Heuristic by recency.',
     claudeAiConversation: c.claudeAi ? { ...c.claudeAi, bootstrapped: bootstrapped(c.claudeAi.id) } : 'unavailable (claude.ai not configured on this node)',
     claudeCodeSession: c.claudeCode ? { ...c.claudeCode, bootstrapped: bootstrapped(c.claudeCode.id) } : 'none recent',
+    ...clusterInfo,
     howTo: 'If you have not bootstrapped, call bootstrap() once to load all lm-assist capabilities.',
   }) }] };
 }
