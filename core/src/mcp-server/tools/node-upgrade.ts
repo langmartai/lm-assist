@@ -2,15 +2,13 @@
  * node_upgrade MCP tool — trigger a per-node lm-assist upgrade to a SPECIFIED
  * prebuilt build via the relay (complements node_builds which shows builds).
  *
- * Supports cluster-wide upgrades via the `cluster` parameter (default: self-cluster).
- * Fans out POST /dev-mode/upgrade to each node in the target cluster, same pattern
- * as node_builds sweep. The `node` param is handled by relay/_passthrough if present.
+ * Thin proxy to POST /dev-mode/upgrade. The cross-node `node` param is handled
+ * by the relay/_passthrough layer, so the handler just does workerPost.
  *
  * Registered in EXPANDED_TOOL_DEFS + EXPANDED_HANDLERS (expanded.ts),
  * scoped 'admin' in configure.ts TOOL_SCOPES (destructive — restarts services).
  */
-import { ok, err, workerPost, workerGet, type McpToolResult } from './_passthrough';
-import { type ClusterRecord } from '../../cluster/cluster-map';
+import { ok, err, workerPost, type McpToolResult } from './_passthrough';
 
 const DOWNGRADE_MSG =
   'source is required — nothing was upgraded, this call was rejected on purpose. Pass a ' +
@@ -99,100 +97,6 @@ interface UpgradeResult {
   source?: string;
 }
 
-interface NodeEntry { nodeId: string; hostname: string; isSelf: boolean; }
-
-/**
- * Sweep nodes in target cluster and post upgrade to each.
- * Fans out GET /hub/machines, builds clusterFilter (same pattern as node_builds),
- * then POST /dev-mode/upgrade to each node in the cluster (via workerPost for self,
- * proxyPost for remote nodes). Aggregates results and formats as a summary.
- */
-async function sweepNodesForUpgrade(
-  source: string,
-  cluster: string,
-): Promise<McpToolResult> {
-  const { getHubConfig } = require('../../hub-client/hub-config') as typeof import('../../hub-client/hub-config');
-  const { getClusterRecords } = require('../../cluster/cluster-store') as typeof import('../../cluster/cluster-store');
-  const { getMyCluster } = require('../../cluster/cluster-config') as typeof import('../../cluster/cluster-config');
-  const { selectFleetNodes } = require('./node-builds') as typeof import('./node-builds');
-
-  const cfg = getHubConfig();
-  const selfId = cfg.gatewayId || cfg.machineId;
-  const selfHostname = cfg.hostname || selfId || 'this-node';
-
-  let nodes: NodeEntry[] = [{ nodeId: selfId, hostname: selfHostname, isSelf: true }];
-  try {
-    const hm = await workerGet<{ machines: unknown[] }>('/hub/machines');
-    const machineList: unknown[] = Array.isArray(hm) ? hm : ((hm as any).machines || []);
-
-    // Build cluster filter (mirror node_builds pattern exactly)
-    let clusterFilter: { records: ClusterRecord[]; selfCluster: string; target: 'self-cluster' | 'all' | string } | undefined;
-    if (cluster && cluster !== 'self-cluster' && cluster !== 'all') {
-      // Named cluster — fetch records to resolve
-      const records = await getClusterRecords();
-      const selfCluster = getMyCluster();
-      clusterFilter = { records, selfCluster, target: cluster };
-    } else if (cluster === 'all') {
-      clusterFilter = { records: [], selfCluster: '', target: 'all' };
-    } else if (cluster === 'self-cluster' || !cluster) {
-      // Default: self-cluster
-      const records = await getClusterRecords();
-      const selfCluster = getMyCluster();
-      clusterFilter = { records, selfCluster, target: 'self-cluster' };
-    }
-
-    const fleet = selectFleetNodes(machineList as any[], selfId, selfHostname, clusterFilter);
-    if (fleet.length > 0) nodes = fleet;
-  } catch { /* hub not configured or unreachable — sweep self only */ }
-
-  const rows = await Promise.all(
-    nodes.map(async (m) => {
-      const label = m.hostname || m.nodeId;
-      try {
-        let data: UpgradeResult = {};
-        if (m.isSelf) {
-          data = await workerPost<UpgradeResult>('/dev-mode/upgrade', { source }).catch(() => ({}));
-        } else {
-          const { proxyPost } = require('../../data/peer-client') as typeof import('../../data/peer-client');
-          // proxyPost carries no timeout — race it so a TCP-hung remote node
-          // degrades to an error row in ~10s instead of stalling Promise.all ~75s.
-          const raw = await Promise.race([
-            proxyPost(m.nodeId, '/dev-mode/upgrade', { source }) as Promise<unknown>,
-            new Promise<unknown>((_, rej) => setTimeout(() => rej(new Error('timeout')), 10000)),
-          ]).catch(() => null);
-          data = ((raw as any)?.data ?? (raw as any)) || {};
-        }
-        return {
-          node: label,
-          status: 'started',
-          message: data.message ?? 'Upgrade started',
-          pid: data.pid,
-        };
-      } catch (e) {
-        return {
-          node: label,
-          status: 'failed',
-          error: e instanceof Error ? e.message : String(e),
-        };
-      }
-    }),
-  );
-
-  // Format results
-  const output = rows
-    .map((r) => {
-      if (r.status === 'failed') {
-        return `${r.node}  FAILED: ${r.error}`;
-      }
-      return `${r.node}  ${r.message}${r.pid ? ` (pid: ${r.pid})` : ''}`;
-    })
-    .join('\n');
-
-  return ok(
-    output + '\n\nPoll node_builds and GET /dev-mode/upgrade-log to confirm (~30-60s for a .tgz).',
-  );
-}
-
 export async function handleNodeUpgrade(
   args: Record<string, unknown>,
 ): Promise<McpToolResult> {
@@ -203,11 +107,16 @@ export async function handleNodeUpgrade(
     );
     if (!r.ok) return err(r.error);
 
-    // Extract cluster parameter (default: self-cluster)
-    const clusterArg = typeof args.cluster === 'string' ? args.cluster : 'self-cluster';
-
-    // Sweep nodes in target cluster
-    return await sweepNodesForUpgrade(r.source, clusterArg);
+    const data = await workerPost<UpgradeResult>('/dev-mode/upgrade', { source: r.source });
+    const message = data?.message ?? 'Upgrade started';
+    const pid = data?.pid;
+    const usedSource = data?.source ?? r.source;
+    return ok(
+      `${message}\n` +
+        `source: ${usedSource}\n` +
+        (pid != null ? `pid: ${pid}\n` : '') +
+        `Poll node_builds and GET /dev-mode/upgrade-log to confirm (~30-60s for a .tgz).`,
+    );
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
