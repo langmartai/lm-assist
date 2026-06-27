@@ -21,6 +21,9 @@ import { newView, normalizeView, validateView, type MissionView } from '../../mi
 import { getView, listViews, putView, deleteView, type MissionViewPort } from '../../mission/mission-views-store';
 import { computeSchedule } from '../../mission/mission-scheduler';
 import { recentExternalChanges } from '../../mission/mission-changes';
+import { placementAllowed } from '../../mission/mission-controller';
+import { getClusterRecords } from '../../cluster/cluster-store';
+import { getMyCluster } from '../../cluster/cluster-config';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string }; }
 const ok = <T>(data: T): Envelope => ({ success: true, data });
@@ -100,6 +103,13 @@ export async function handleCreate(b: Record<string, unknown>, ownerNode: string
   const objective = str(b.objective);
   if (!title || !objective) return fail('INVALID_INPUT', 'title and objective are required');
   const env = (b.env && typeof b.env === 'object') ? b.env as Record<string, unknown> : {};
+  const envHost = str(env.host);
+  if (envHost) {
+    const records = await getClusterRecords();
+    if (!placementAllowed(envHost, records, thisNode(), getMyCluster())) {
+      return fail('HOST_NOT_IN_CLUSTER', `host "${envHost}" is not in this node's cluster`);
+    }
+  }
   const tags = (b.tags && typeof b.tags === 'object') ? normalizeTags(b.tags as Record<string, string[]>) : {};
   const parentId = (b.parentId === null || b.parentId === '') ? null : (str(b.parentId) ?? null);
   const m = newMission({
@@ -167,7 +177,13 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
   if (b.env && typeof b.env === 'object') {
     const e = b.env as Record<string, unknown>;
     if (str(e.isolation)) m.env.isolation = str(e.isolation) as Isolation;
-    if (str(e.host) !== undefined) m.env.host = str(e.host);
+    if (str(e.host) !== undefined) {
+      const newHost = str(e.host);
+      if (newHost && !placementAllowed(newHost, await getClusterRecords(), thisNode(), getMyCluster())) {
+        return fail('HOST_NOT_IN_CLUSTER', `host "${newHost}" is not in this node's cluster`);
+      }
+      m.env.host = newHost;
+    }
     if (str(e.repo) !== undefined) m.env.repo = str(e.repo);
     if (str(e.branch) !== undefined) m.env.branch = str(e.branch);
     if (arr(e.resources)) m.env.resources = arr(e.resources)!;

@@ -26,6 +26,7 @@ const TOPIC_TOOLS: Record<string, string[]> = {
   roles: ['set_role', 'report_status', 'worker_status', 'list_workers', 'decide_gate'],
   missions: ['mission_create', 'mission_list', 'mission_update', 'mission_control_status'],
   'mission-controller': ['mission_place', 'mission_executor_status', 'mission_sessions', 'mission_session_read', 'mission_session_drive', 'mission_session_control'],
+  clusters: ['cluster_list', 'cluster_assign', 'cluster_unassign', 'cluster_describe'],
 };
 
 // Ordered so the multi-node model + combination workflows surface first in the index.
@@ -279,6 +280,38 @@ Two credentials per host (see auth_status): the claude.ai WEB cookie and the Cla
 • The auth-monitor job keeps OAuth fresh + the cookie status current automatically (browser-free); it can't mint a dead cookie — that needs your login.
 • Connector down but cookie valid? reconnect the claude.ai MCP connector (see the connector-reconnect recipe).`,
 
+  clusters: `# Guide: clusters — isolated fleet partitions
+CONCEPT: a **cluster** is an isolated partition of the fleet with its own leader, mission-controller, and within-cluster data-service sync. Every node belongs to EXACTLY ONE cluster. Unassigned nodes default to the \`default\` cluster. Clusters are identified by a short name (e.g. \`prod\`, \`staging\`, \`default\`).
+
+SHARED-VS-WITHIN TABLE:
+  WITHIN a cluster (scoped to members of the same cluster):
+  - Leader election (lowest online gateway-id in the cluster)
+  - Mission control (the elected Mission Controller drives missions within the cluster)
+  - Data-service dataset sync (syncMode:'partial'/scope:'cluster' datasets replicate only within)
+  - Build / upgrade fan-out: \`node_builds(cluster:'<name>')\` fans out to ONE cluster; \`node_upgrade\` upgrades a single node (loop per node for a cluster rollout)
+
+  FLEET-WIDE (shared across ALL clusters, no cluster boundary):
+  - Cluster map + node identity / enrollment (node-clusters dataset, scope:'fleet')
+  - Node visibility (list_nodes shows all online nodes regardless of cluster)
+  - Sessions, projects, Claude Code history (per-node, not cluster-scoped)
+  - claude.ai account access
+  - Per-node ops (agent_execute, terminal, fs, transfer, auth_status, etc.) — always per-node, not cluster-scoped
+  - MEMORY and KNOWLEDGE — fleet-wide, not cluster-scoped
+
+TOOLS:
+  - \`cluster_list\` → all known clusters (name, description, status, member count)
+  - \`cluster_assign(node, cluster)\` → assign a node to a cluster (or 'default')
+  - \`cluster_unassign(node)\` → remove a node's cluster assignment (returns it to 'default')
+  - \`cluster_describe(name, description?, status?)\` → annotate a cluster with a description and optional status
+
+BUILD / RELEASE ONE CLUSTER AT A TIME:
+  Use \`node_builds(cluster:'<name>')\` to fan out a build check or upgrade trigger to ONE cluster's nodes before promoting to the rest.
+  Use \`node_upgrade(node:'<id>')\` to upgrade a single node by id; loop over cluster members for a per-cluster rollout.
+  This lets you validate a release in a staging cluster before touching prod.
+
+SCOPE NORM (respect other clusters):
+  Each cluster may declare its own scope via \`cluster_describe\`. RESPECT it — do NOT operate on another cluster's nodes, missions, or datasets unless the user explicitly asks. Treat a cluster annotated as frozen, release, or busy as off-limits by default. When a task involves nodes in cluster A, confirm before touching cluster B.`,
+
   'mission-controller': `# Guide: mission-controller — the autonomous controller agent loop contract
 YOU ARE the fleet-elected Mission Controller agent, running in a native session under supervisor oversight. The supervisor sends you a pass directive every \`missionControllerIntervalMin\` minutes. On each pass, follow this loop:
 
@@ -329,6 +362,7 @@ const ALIASES: Record<string, string> = {
   roles: 'roles', role: 'roles', worker: 'roles', orchestrator: 'roles', 'agree-gate': 'roles', gate: 'roles',
   missions: 'missions', mission: 'missions', goal: 'missions', goals: 'missions',
   'mission-controller': 'mission-controller', 'mission_controller': 'mission-controller', 'controller-agent': 'mission-controller', 'controller-loop': 'mission-controller',
+  cluster: 'clusters', clusters: 'clusters', partition: 'clusters', partitions: 'clusters', 'fleet-partition': 'clusters',
   storage: 'data', store: 'data', query: 'data', database: 'data', db: 'data', records: 'data',
   session: 'sessions', history: 'sessions', dag: 'sessions',
   memory: 'knowledge', search: 'knowledge',
@@ -364,6 +398,7 @@ const BLURB: Record<string, string> = {
   files: 'list/stat/read files + transfer files between hosts',
   missions: 'durable cross-project goals — the fleet-elected Mission Controller launches/binds an executor (cloud, or native via claude --remote-control), adapts + pushes to done, places to avoid conflict; watch+drive executors & sub-workers directly; never auto-approves gates/pivots',
   'mission-controller': 'the controller agent loop contract — the exact per-pass workflow, hard rules (never auto-approve gates/pivots), and tool usage for the autonomous controller session',
+  clusters: 'isolated fleet partitions — concept, shared-vs-within table, cluster_list/assign/unassign/describe, build one cluster at a time, respect-other-clusters scope norm',
 };
 
 /** Separator line used between sections in the bootstrap output (reused by the auth block). */
@@ -390,7 +425,7 @@ const INDEX = buildIndex();
 
 /** The whole skill in ONE response — every playbook concatenated (stays in sync with GUIDES). */
 function buildBootstrap(): string {
-  const order = ['orientation', 'cross-node', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'login', 'github', 'files'];
+  const order = ['orientation', 'cross-node', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'login', 'github', 'files', 'clusters'];
   const header = [
     '# lm-assist — capability bootstrap (you have now loaded ALL use cases for this session)',
     '',
@@ -453,8 +488,26 @@ async function authBlock(): Promise<string> {
   } catch { return ''; }
 }
 
+async function clusterBlock(): Promise<string> {
+  try {
+    const { getMyCluster } = require('../../cluster/cluster-config') as typeof import('../../cluster/cluster-config');
+    const { getClusterMeta } = require('../../cluster/cluster-store') as typeof import('../../cluster/cluster-store');
+    const myCluster = getMyCluster();
+    let roster = '';
+    try {
+      const metas = await getClusterMeta();
+      const others = metas.filter((m) => m.name !== myCluster);
+      if (others.length > 0) {
+        roster = '\nOther clusters: ' + others.map((m) => `${m.name}${m.description ? ' (' + m.description + ')' : ''}${m.status ? ' [' + m.status + ']' : ''}`).join('; ');
+      }
+    } catch { /* data service not enabled — no roster */ }
+    return '\n\n## This node\'s cluster\ncluster: ' + myCluster + roster + '\nSee guide("clusters") for the shared-vs-within table + scope norm.';
+  } catch { return ''; }
+}
+
 async function handleBootstrap(_args: Record<string, unknown>): Promise<McpToolResult> {
-  return ok(BOOTSTRAP + (await authBlock()));
+  const [auth, cluster] = await Promise.all([authBlock(), clusterBlock()]);
+  return ok(BOOTSTRAP + auth + cluster);
 }
 
 async function handleGuide(args: Record<string, unknown>): Promise<McpToolResult> {

@@ -4,7 +4,9 @@
 // This is network code — unit-tested indirectly via the live e2e (Task 8).
 
 import { getHubConfig } from '../hub-client/hub-config';
+import { sameClusterIds } from '../cluster/cluster-map';
 import type { PeerClient, NodeInfo, ManifestEntry, DataRecord } from './types';
+import type { ClusterRecord } from '../cluster/cluster-map';
 
 // ── Peer selection helper ────────────────────────────────────────────────────
 
@@ -24,6 +26,19 @@ export function selectSyncPeers(machines: any[], selfId: string): NodeInfo[] {
       platform: (m.platform || m.machineOS || m.os || '') as string,
     }))
     .filter((m) => m.node && m.node !== selfId);
+}
+
+/**
+ * Pure helper: filter online ids to those in the same cluster as selfCluster.
+ * Delegates to sameClusterIds for deterministic cluster membership resolution.
+ */
+export function filterOnlineToCluster(
+  allOnline: string[],
+  records: ClusterRecord[],
+  selfId: string | null,
+  selfCluster: string,
+): string[] {
+  return sameClusterIds(allOnline, records, selfId, selfCluster);
 }
 
 // ── Hub HTTP Helpers ─────────────────────────────────────────────────────────
@@ -231,14 +246,23 @@ export class HubPeerClient implements PeerClient {
   }
 }
 
-/** All fleet machine gateway-ids currently `status:"online"` (INCLUDING this node). */
+/** Online gateway-ids IN THIS NODE'S CLUSTER (including self). */
 export async function listOnlineNodeIds(): Promise<string[]> {
   const json = (await hubFetch('/api/tier-agent/machines')) as any;
   const machines: any[] = Array.isArray(json) ? json : json.machines || json.data || [];
-  return machines
+  const allOnline = machines
     .filter((m) => (m.status || '').toLowerCase() === 'online')
     .map((m) => (m.gatewayId || m.machineId || m.id) as string)
     .filter((id): id is string => typeof id === 'string' && !!id);
+
+  const selfId = getHubConfig().gatewayId || getHubConfig().machineId || null;
+
+  // Lazy-import to avoid circular dependency with cluster-store
+  const { getClusterRecords } = await import('../cluster/cluster-store');
+  const { getMyCluster } = await import('../cluster/cluster-config');
+
+  const records = await getClusterRecords().catch(() => []);
+  return filterOnlineToCluster(allOnline, records, selfId, getMyCluster());
 }
 
 // ── Factory ──────────────────────────────────────────────────────────────────

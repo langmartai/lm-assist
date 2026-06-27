@@ -44,6 +44,7 @@ export interface DatasetDescriptor {
   readOnly?: boolean;         // HARD cap to read/query/search for EVERY principal
   sensitive?: boolean;        // never exposed to cloud; never synced
   syncMode?: SyncMode;        // 'none' (default) | 'full' | 'partial'
+  scope?: 'cluster' | 'fleet'; // sync reach: 'cluster' (default) only within-cluster; 'fleet' across all clusters
   origin?: NodeOrigin;        // when set, this is a remote replica (read-only; written by sync engine)
   config: BackendConfig;
   acl: AclRule[];
@@ -123,6 +124,7 @@ export interface ManifestEntry {
   syncMode: SyncMode;
   ownerNode: string;
   backend: BackendKind;
+  scope?: 'cluster' | 'fleet';
 }
 
 export interface PeerClient {

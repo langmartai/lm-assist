@@ -104,7 +104,7 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
         const r = await svc().createDataset({ principal: p }, {
           id: b.id, backend: b.backend ?? 'cache', title: b.title,
           visibility: b.visibility, readOnly: b.readOnly, sensitive: b.sensitive,
-          config: b.config ?? { kind: 'cache' }, acl: b.acl, syncMode: b.syncMode, system: b.system,
+          config: b.config ?? { kind: 'cache' }, acl: b.acl, syncMode: b.syncMode, system: b.system, scope: b.scope,
         });
         if (!r.ok) return wrapError(r.code, r.reason, start);
         return wrapResponse({ dataset: r.value }, start);

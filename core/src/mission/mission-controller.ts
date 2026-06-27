@@ -6,6 +6,9 @@ import {
 import { pickNewSession, cseToSessionSid, isNativeBinding } from './mission-native';
 import type { ExecNow } from './mission-engagement';
 import { listMissions, putMission, thisNode, getControllerSession, putControllerSession, ControllerSession, EngagementState } from './mission-store';
+import { clusterOf, type ClusterRecord } from '../cluster/cluster-map';
+import { getClusterRecords } from '../cluster/cluster-store';
+import { getMyCluster } from '../cluster/cluster-config';
 import { classifyExecutorActivity, shouldEngage } from './mission-engagement';
 import { runAdjust } from './mission-adjust';
 import { getProjectSettings } from '../project-settings';
@@ -19,6 +22,37 @@ import * as path from 'path';
 import { sessionVerdict } from '../terminal/cc-sessions';
 import { AgentSessionStore } from '../agent-session-store';
 
+/**
+ * Resolve a host string (which may be a hostname/label OR a gatewayId) to the
+ * canonical gatewayId used by clusterOf. Pure — no I/O.
+ * Unknown hosts fall through unchanged so clusterOf resolves them to 'default'.
+ */
+export function resolveHostToId(host: string, records: ClusterRecord[]): string {
+  // host may already be a gatewayId
+  if (records.some((r) => r.gatewayId === host)) return host;
+  // or it may be a hostname/label that maps to one
+  const byHost = records.find((r) => r.hostname === host);
+  return byHost ? byHost.gatewayId : host; // unknown falls through (clusterOf → 'default' → rejected, as intended)
+}
+
+/**
+ * Pure placement guard: returns true if a host is allowed for this cluster.
+ * Passes through undefined / 'local' / 'cloud' (no specific node required).
+ * host may be a gatewayId OR a hostname/label — resolveHostToId normalises it
+ * before the cluster lookup so hostname-pinned missions resolve correctly.
+ * An unknown host (not in records and not self) resolves to 'default' — allowed
+ * only when selfCluster is also 'default'.
+ */
+export function placementAllowed(
+  host: string | undefined,
+  records: ClusterRecord[],
+  selfId: string | null,
+  selfCluster: string,
+): boolean {
+  if (!host || host === 'local' || host === 'cloud') return true;
+  return clusterOf(resolveHostToId(host, records), records, selfId, selfCluster) === selfCluster;
+}
+
 export interface MissionTickDeps {
   now: number;
   cfg: { intervalMin: number; maxNudges: number; model: string };
@@ -29,6 +63,25 @@ export interface MissionTickDeps {
   startExecutor: (m: Mission, decision: PlacementDecision) => Promise<MissionBinding>;
   drive: (m: Mission, directive: string) => Promise<void>;
   save: (m: Mission) => Promise<void>;
+}
+
+/**
+ * Cluster placement guard (async). Returns true when it is OK to spawn.
+ * If denied: tags the mission with `ctl:placement-error`, persists via d.save(m),
+ * logs the skip, and returns false so the caller can return early.
+ */
+async function checkPlacement(m: Mission, d: MissionTickDeps): Promise<boolean> {
+  const records = await getClusterRecords();
+  if (placementAllowed(m.env.host, records, thisNode(), getMyCluster())) return true;
+  // Refused — tag the mission and skip spawn
+  if (!m.tags) m.tags = {};
+  const h = m.env.host ?? 'unknown';
+  const existing = m.tags['ctl:placement-error'] ?? [];
+  if (!existing.includes(h)) existing.push(h);
+  m.tags['ctl:placement-error'] = existing;
+  await d.save(m);
+  console.info(`[mission-controller] placement blocked for ${m.id}: host "${h}" not in this cluster — tagged ctl:placement-error`);
+  return false;
 }
 
 function setWaiting(m: Mission, pd: Extract<PlacementDecision, { go: false }>): void {
@@ -66,6 +119,7 @@ async function processMission(m: Mission, all: Mission[], d: MissionTickDeps): P
   if (decision.kind === 'rebind') {
     const pd = place(m, all);
     if (!pd.go) { setWaiting(m, pd); await d.save(m); return; }
+    if (!await checkPlacement(m, d)) return;
     m.binding = await d.startExecutor(m, pd);
     m.status = 'active';
     await d.save(m);
@@ -104,6 +158,7 @@ async function processMission(m: Mission, all: Mission[], d: MissionTickDeps): P
   if (!pd.go) { setWaiting(m, pd); await d.save(m); return; }
   if (m.status === 'waiting') m.status = 'active'; // dependency unblocked
   if (!bound) {
+    if (!await checkPlacement(m, d)) return;
     m.binding = await d.startExecutor(m, pd);
     m.status = 'active';
     await d.save(m);
@@ -406,6 +461,9 @@ export const CONTROLLER_SYSTEM_PROMPT = [
   '  label). For two `ready` missions that touch the same area with no dependsOn, judge parallel-vs-sequence',
   '  via mission_neighbors/mission_graph; to serialize them, tag them the same `ctl:serialize-group`. Your tag',
   '  writes are auto-versioned + attributed, so the dashboard + history show what you decided.',
+  'CLUSTER SCOPE: You control missions for YOUR cluster ONLY, and you place every executor on a',
+  'node in your cluster (or cloud/local) — never on another cluster\'s host.',
+  '',
   'HEARTBEAT: only on a safety-check drive where there is genuinely nothing to do (no active',
   'missions, or nothing actionable), reply with EXACTLY one line beginning `⟦HEARTBEAT⟧` and',
   'nothing else (e.g. `⟦HEARTBEAT⟧ idle — 0 active missions`). When you take a real action or',
@@ -799,7 +857,7 @@ export function registerMissionController(
         }
         // Capture cloud baseline BEFORE launching so we can detect the new cse afterward.
         const baselineArr = await cloudListAccount().then((ss) => ss.map((s2) => s2.sid)).catch(() => [] as string[]);
-        const controllerName = `Mission Controller · ${getHubConfig().hostname}`;
+        const controllerName = `Mission Controller · ${getHubConfig().hostname} · ${getMyCluster()}`;
         const launched = await tmuxCcController.launch({
           cwd, remoteControl: true, skipPermissions: true, autoTrust: true,
           appendSystemPromptFile: extras.appendSystemPromptFile,
