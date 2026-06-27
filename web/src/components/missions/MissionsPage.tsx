@@ -96,6 +96,8 @@ interface Mission {
   nextSteps?: string[];
   projects: string[];
   dependsOn: string[];
+  tags: Record<string, string[]>;
+  parentId: string | null;
   env: MissionEnv;
   binding: MissionBinding | null;
   progress: MissionProgress | null;
@@ -261,7 +263,8 @@ export function MissionsPage() {
     .filter((m) => _missionRecencyMs === 0 || Date.now() - (m.updatedAt || m.createdAt || 0) <= _missionRecencyMs)
     .filter((m) => {
       if (_missionTerms.length === 0) return true;
-      const hay = `${m.title} ${m.objective} ${m.id} ${m.status}`.toLowerCase();
+      const tagValues = Object.values(m.tags ?? {}).flat().join(' ');
+      const hay = `${m.title} ${m.objective} ${m.id} ${m.status} ${tagValues}`.toLowerCase();
       return _missionTerms.every((t) => hay.includes(t));
     })
     .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
@@ -1301,6 +1304,16 @@ export function MissionsPage() {
               <span style={{ color: 'var(--color-status-orange)' }}>waiting: {m.control.waitReason}</span>
             )}
           </div>
+
+                    {(Object.keys(m.tags ?? {}).length > 0 || m.parentId || (m.dependsOn?.length ?? 0) > 0) && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4, fontSize: 10 }}>
+                        {Object.entries(m.tags ?? {}).flatMap(([dim, vals]) => vals.map((v) => (
+                          <span key={`${dim}:${v}`} style={{ background: dim.startsWith('ctl:') ? 'var(--color-bg-elevated, #1e293b)' : 'var(--color-bg-surface, #0f172a)', color: dim.startsWith('ctl:') ? '#fbbf24' : 'var(--color-text-tertiary, #94a3b8)', border: '1px solid var(--color-border, #334155)', borderRadius: 4, padding: '1px 5px' }} title={dim}>{dim.replace(/^ctl:/, '')}: {v}</span>
+                        )))}
+                        {m.parentId && <span style={{ color: 'var(--color-text-tertiary, #94a3b8)' }} title={`parent ${m.parentId}`}>↑ parent</span>}
+                        {(m.dependsOn?.length ?? 0) > 0 && <span style={{ color: 'var(--color-text-tertiary, #94a3b8)' }} title={m.dependsOn.join(', ')}>⛓ {m.dependsOn.length} dep</span>}
+                      </div>
+                    )}
 
           {/* Provenance */}
           {(m.createdBy || m.adjustments.length > 0) && (
