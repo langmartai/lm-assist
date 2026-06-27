@@ -67,10 +67,14 @@ export function useClusters() {
   }, [refresh]);
 
   // gatewayId -> cluster name, for badging nodes in the dropdown/elsewhere.
+  // Keyed by BOTH gatewayId and hostname so a node string in either form resolves.
   const clusterByGateway = useMemo(() => {
     const m = new Map<string, string>();
     for (const c of data?.clusters ?? []) {
-      for (const mem of c.members) m.set(mem.gatewayId, c.name);
+      for (const mem of c.members) {
+        m.set(mem.gatewayId, c.name);
+        if (mem.hostname) m.set(mem.hostname, c.name);
+      }
     }
     return m;
   }, [data]);

@@ -22,6 +22,7 @@ import {
   ListChecks,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
+import { useClusters, clusterBadge } from '@/hooks/useClusters';
 import { CcrCloudView } from '@/components/ccr/CcrCloudView';
 import { MissionSessionChat } from './MissionSessionChat';
 import { MissionDetailView } from './MissionDetailView';
@@ -225,6 +226,7 @@ function labelOf(actor: MissionActor): string {
 
 export function MissionsPage() {
   const { apiClient, proxy } = useAppMode();
+  const { clusterByGateway } = useClusters();
 
   const apiFetch = useCallback(
     async <T,>(path: string, opts?: { method?: string; body?: unknown }): Promise<T> =>
@@ -1226,6 +1228,14 @@ export function MissionsPage() {
             ) : (
               <span className="badge badge-default">unbound</span>
             )}
+            {(() => {
+              const node = m.binding?.node;
+              if (!node) return null;
+              const cl = clusterByGateway.get(node);
+              return cl ? (
+                <span className={`badge ${clusterBadge(cl)}`} style={{ fontSize: 9 }} title={`executor cluster: ${cl}`}>⬡ {cl}</span>
+              ) : null;
+            })()}
             {isBusy && <Loader2 size={13} style={{ animation: 'spin 1s linear infinite', color: 'var(--color-text-tertiary)' }} />}
           </div>
 
@@ -1503,6 +1513,7 @@ export function MissionsPage() {
       busy, expanded, objDraft, contributorsExpanded, sessionsExpanded, sessionsFetching,
       sessionsByMission, connectSid, activeTabSid, tabStates, openSessionTab, openMissionTab,
       hoverTitleId, updateMission, toggleExpand, toggleContributors, toggleSessionsExpand, renderActorLink, apiFetch,
+      clusterByGateway,
     ],
   );
 

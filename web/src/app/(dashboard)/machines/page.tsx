@@ -2,6 +2,7 @@
 
 import { useMachineContext } from '@/contexts/MachineContext';
 import { useAppMode } from '@/contexts/AppModeContext';
+import { useClusters, clusterBadge } from '@/hooks/useClusters';
 import { detectAppMode, workerFetch } from '@/lib/api-client';
 import { CrossRefStats } from '@/components/shared/CrossRefStats';
 import { Monitor, LayoutDashboard } from 'lucide-react';
@@ -13,6 +14,7 @@ type FilterType = 'all' | 'online' | 'offline';
 export default function MachinesPage() {
   const { machines, isLoading } = useMachineContext();
   const { mode, proxy, hubUrl } = useAppMode();
+  const { clusterByGateway } = useClusters();
   const [filter, setFilter] = useState<FilterType>('online');
 
   const openDashboard = async (machine: typeof machines[0]) => {
@@ -121,6 +123,12 @@ export default function MachinesPage() {
                         {machine.osVersion}
                       </span>
                     )}
+                    {(() => {
+                      const cl = clusterByGateway.get(machine.gatewayId || machine.id);
+                      return cl ? (
+                        <span className={`badge ${clusterBadge(cl)}`} style={{ fontSize: 10 }} title={`cluster: ${cl}`}>{cl}</span>
+                      ) : null;
+                    })()}
                   </div>
                   <CrossRefStats
                     compact

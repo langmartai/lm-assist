@@ -81,6 +81,12 @@ export function MachineDropdown() {
           <Globe size={13} />
         )}
         <span>{triggerLabel}</span>
+        {(() => {
+          const cl = selectedMachine ? clusterByGateway.get(selectedMachine.gatewayId || selectedMachine.id) : null;
+          return cl ? (
+            <span className={`badge ${clusterBadge(cl)}`} style={{ fontSize: 9, padding: '1px 5px' }} title={`cluster: ${cl}`}>{cl}</span>
+          ) : null;
+        })()}
         <ChevronDown
           size={12}
           className={`machine-dropdown-chevron${open ? ' open' : ''}`}
@@ -152,8 +158,8 @@ export function MachineDropdown() {
                 <span className="machine-dropdown-item-label">{m.hostname}</span>
                 {(() => {
                   const cl = clusterByGateway.get(m.gatewayId || m.id);
-                  return cl && cl !== 'default' ? (
-                    <span className={`badge ${clusterBadge(cl)}`} style={{ fontSize: 9, padding: '1px 6px' }}>{cl}</span>
+                  return cl ? (
+                    <span className={`badge ${clusterBadge(cl)}`} style={{ fontSize: 9, padding: '1px 6px' }} title={`cluster: ${cl}`}>{cl}</span>
                   ) : null;
                 })()}
                 {shouldOpenCloud && <ExternalLink size={11} className="machine-dropdown-external" />}
