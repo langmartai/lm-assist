@@ -21,5 +21,10 @@ export function useMissionViews() {
     }
   }, [apiClient, proxy.machineId]);
   useEffect(() => { void refresh(); }, [refresh]);
-  return { views, loading, error, refresh };
+  const saveView = useCallback(async (body: { id?: string; name: string; query: MissionView['query']; display: MissionView['display'] }) => {
+    const v = await apiClient.fetchPath<MissionView>('/mission/views', { method: 'POST', body, machineId: proxy.machineId || undefined });
+    await refresh();
+    return v;
+  }, [apiClient, proxy.machineId, refresh]);
+  return { views, loading, error, refresh, saveView };
 }
