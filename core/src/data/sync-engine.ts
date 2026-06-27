@@ -91,6 +91,10 @@ export class SyncEngine {
       }
 
       for (const m of entries) {
+        // Scope-aware filtering: skip if this dataset shouldn't be pulled from this peer
+        // This guard is checked FIRST, before any syncMode handling, to ensure cluster isolation
+        if (!shouldPullDataset(m.scope, peer.node, records, selfId, selfCluster)) continue;
+
         if (m.syncMode === 'partial') {
           // Register the descriptor so local code knows the dataset exists as partial
           // (enables read-through in DataService.get), but do NOT eagerly pull records.
@@ -104,7 +108,7 @@ export class SyncEngine {
             backend: m.backend,
             ownerNode: m.ownerNode,
             syncMode: 'partial',
-            scope: m.scope,
+            scope: m.scope ?? 'cluster',
             config: { kind: m.backend } as BackendConfig,
             origin,
           });
@@ -112,9 +116,6 @@ export class SyncEngine {
         }
         // 'none' and any unknown modes are skipped entirely
         if (m.syncMode !== 'full') continue;
-
-        // Scope-aware filtering: skip if this dataset shouldn't be pulled from this peer
-        if (!shouldPullDataset(m.scope, peer.node, records, selfId, selfCluster)) continue;
 
         try {
           const r = await this.pullOne(peer, m);
