@@ -50,6 +50,9 @@ interface MissionDetail {
   ownerNode?: string;
   interim?: { at: number; text: string } | null;
   control?: { waitReason?: string };
+  tags?: Record<string, string[]>;
+  parentId?: string | null;
+  dependsOn?: string[];
 }
 
 /** Mission session row from GET /mission/:id/sessions. */
@@ -376,6 +379,16 @@ export function MissionDetailView({
               onChange={(e) => setDraft((p) => ({ ...(p ?? d), nextSteps: e.target.value }))}
             />
           </div>
+
+          {(mission.tags && Object.keys(mission.tags).length > 0) || mission.parentId || (mission.dependsOn?.length ?? 0) > 0 ? (
+            <div style={{ marginTop: 8, fontSize: 11, color: 'var(--color-text-secondary)' }}>
+              {Object.entries(mission.tags ?? {}).map(([dim, vals]) => (
+                <div key={dim} style={{ marginBottom: 2 }}><span style={{ color: dim.startsWith('ctl:') ? '#fbbf24' : 'var(--color-text-tertiary)' }}>{dim}:</span> {vals.join(', ')}</div>
+              ))}
+              {mission.parentId && <div>parent: {mission.parentId}</div>}
+              {(mission.dependsOn?.length ?? 0) > 0 && <div>depends on: {mission.dependsOn!.join(', ')}</div>}
+            </div>
+          ) : null}
 
           {/* Save + status buttons */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>

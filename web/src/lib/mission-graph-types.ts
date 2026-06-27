@@ -9,3 +9,11 @@ export interface MissionView {
   display: MissionViewDisplay;
   createdAt: number; updatedAt: number;
 }
+export interface MissionChange { rev: number; at: number; actor: { kind: string; channel: string; label?: string; id?: string | null }; changes: Record<string, { from: unknown; to: unknown }>; }
+export interface MissionFull {
+  id: string; title: string; status: string;
+  objective?: string; plan?: string; nextSteps?: string[];
+  tags?: Record<string, string[]>; parentId?: string | null; dependsOn?: string[];
+  progress?: { percent?: number; summary?: string } | null;
+  history?: MissionChange[];
+}

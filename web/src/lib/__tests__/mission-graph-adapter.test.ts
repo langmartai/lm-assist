@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { toDagGraph, matchesHighlight, colorForGroup, applyQuickFilters } from '@/lib/mission-graph-adapter';
+import { toDagGraph, matchesHighlight, colorForGroup, applyQuickFilters, matchesSearch, buildFilter } from '@/lib/mission-graph-adapter';
 import type { MissionNode, MissionEdge } from '@/lib/mission-graph-types';
 
 const mn = (id: string, over: Partial<MissionNode> = {}): MissionNode => ({ id, title: id, status: 'active', tags: {}, parentId: null, ...over });
@@ -43,4 +43,30 @@ test('applyQuickFilters narrows by status + tag', () => {
   const nodes = [mn('a', { status: 'active', tags: { component: ['web'] } }), mn('b', { status: 'done' })];
   expect(applyQuickFilters(nodes, { statuses: ['active'] }).map((n) => n.id)).toEqual(['a']);
   expect(applyQuickFilters(nodes, { tags: { component: ['web'] } }).map((n) => n.id)).toEqual(['a']);
+});
+
+const node = (over: Partial<import('@/lib/mission-graph-types').MissionNode> = {}) =>
+  ({ id: 'm1', title: 'Auth epic', status: 'active', tags: { project: ['web'] }, parentId: null, ...over });
+
+test('matchesSearch: empty query matches all', () => {
+  expect(matchesSearch(node() as any, '')).toBe(true);
+});
+test('matchesSearch: ANDs space-separated terms over title/id/status/tags', () => {
+  expect(matchesSearch(node() as any, 'auth web')).toBe(true);   // title + tag value
+  expect(matchesSearch(node() as any, 'auth missing')).toBe(false);
+  expect(matchesSearch(node() as any, 'active')).toBe(true);     // status
+  expect(matchesSearch(node({ id: 'mission_abc' }) as any, 'abc')).toBe(true); // id
+});
+test('buildFilter: status + tags → MissionFilter[] with op:in', () => {
+  const r = buildFilter({ statuses: ['active', 'done'], tags: { project: ['web'] } });
+  expect(r.filter).toContainEqual({ field: 'status', op: 'in', value: ['active', 'done'] });
+  expect(r.filter).toContainEqual({ field: 'tags.project', op: 'in', value: ['web'] });
+  expect(r.expand).toBeUndefined();
+});
+test('buildFilter: empty selections → empty filter; direction none → no expand', () => {
+  expect(buildFilter({}).filter).toEqual([]);
+  expect(buildFilter({ expand: { direction: 'none', depth: 2 } }).expand).toBeUndefined();
+});
+test('buildFilter: a real direction → expand with depth default 1', () => {
+  expect(buildFilter({ expand: { direction: 'dependencies' } }).expand).toEqual({ direction: 'dependencies', depth: 1 });
 });

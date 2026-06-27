@@ -48,6 +48,12 @@ export function MissionGraphCanvas({ nodes, edges, display, selectedId, onSelect
             {fields.map((f) => (
               <span key={f}>{f === 'status' ? String(node.metadata.status) : f === 'progress' ? `${node.metadata.progressPercent ?? 0}%` : String((node.metadata as Record<string, unknown>)[f] ?? '')}</span>
             ))}
+            {(() => {
+              const t = node.metadata.tags as Record<string, string[]> | undefined;
+              const count = t ? Object.values(t).reduce((a, v) => a + v.length, 0) : 0;
+              const gb = display?.groupBy ? (t?.[display.groupBy] ?? [])[0] : null;
+              return gb ? <span className="text-neutral-500">#{gb}</span> : count > 0 ? <span className="text-neutral-600">🏷{count}</span> : null;
+            })()}
           </div>
         </div>
       </foreignObject>

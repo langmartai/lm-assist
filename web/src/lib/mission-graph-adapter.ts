@@ -84,3 +84,28 @@ export function applyQuickFilters(nodes: MissionNode[], qf: { statuses?: string[
     return true;
   });
 }
+
+/** Space-separated terms ANDed; each matches case-insensitively against title/id/status/tag values. */
+export function matchesSearch(node: MissionNode, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const tagVals = Object.values(node.tags ?? {}).flat().join(' ');
+  const hay = `${node.title} ${node.id} ${node.status} ${tagVals}`.toLowerCase();
+  return q.split(/\s+/).every((term) => hay.includes(term));
+}
+
+/** Build a server MissionFilter[] + expand from the friendly filter-editor state (status/tag multi-selects + expand). */
+export function buildFilter(state: {
+  statuses?: string[];
+  tags?: Record<string, string[]>;
+  expand?: { direction?: string; depth?: number };
+}): { filter: MissionFilter[]; expand?: { direction?: string; depth?: number } } {
+  const filter: MissionFilter[] = [];
+  if (state.statuses?.length) filter.push({ field: 'status', op: 'in', value: state.statuses });
+  if (state.tags) for (const [dim, vals] of Object.entries(state.tags)) {
+    if (vals.length) filter.push({ field: `tags.${dim}`, op: 'in', value: vals });
+  }
+  const dir = state.expand?.direction;
+  const expand = dir && dir !== 'none' ? { direction: dir, depth: state.expand?.depth ?? 1 } : undefined;
+  return { filter, expand };
+}
