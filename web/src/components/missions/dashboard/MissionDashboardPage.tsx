@@ -27,10 +27,10 @@ export function MissionDashboardPage() {
   const { graph, view, loading, error, refresh } = useMissionGraph(source);
 
   const rawNodes = useMemo(() => graph?.nodes ?? [], [graph]);
-  const filteredNodes = useMemo(
-    () => applyQuickFilters(rawNodes, { statuses, tags }).filter((n) => matchesSearch(n, search)),
-    [rawNodes, statuses, tags, search],
-  );
+  const filteredNodes = useMemo(() => {
+    const base = expand.direction !== 'none' ? rawNodes : applyQuickFilters(rawNodes, { statuses, tags });
+    return base.filter((n) => matchesSearch(n, search));
+  }, [rawNodes, statuses, tags, search, expand.direction]);
   const nodeIds = useMemo(() => new Set(filteredNodes.map((n) => n.id)), [filteredNodes]);
   const filteredEdges = useMemo(() => (graph?.edges ?? []).filter((e) => nodeIds.has(e.from) && nodeIds.has(e.to)), [graph, nodeIds]);
 
@@ -43,7 +43,7 @@ export function MissionDashboardPage() {
     return out;
   });
   const selectView = (id: string | null) => { setActiveId(id); setSelectedId(null); setStatuses([]); setTags({}); setSearch(''); setExpand({ direction: 'none', depth: 1 }); };
-  const resetFilter = () => { setActiveId(null); setStatuses([]); setTags({}); setExpand({ direction: 'none', depth: 1 }); };
+  const resetFilter = () => { setActiveId(null); setStatuses([]); setTags({}); setExpand({ direction: 'none', depth: 1 }); setSearch(''); };
   const onSaveView = async () => {
     const name = typeof window !== 'undefined' ? window.prompt('View name?') : null;
     if (!name) return;

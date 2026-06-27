@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { toDagGraph, matchesHighlight, colorForGroup, applyQuickFilters } from '@/lib/mission-graph-adapter';
+import { toDagGraph, matchesHighlight, colorForGroup, applyQuickFilters, matchesSearch, buildFilter } from '@/lib/mission-graph-adapter';
 import type { MissionNode, MissionEdge } from '@/lib/mission-graph-types';
 
 const mn = (id: string, over: Partial<MissionNode> = {}): MissionNode => ({ id, title: id, status: 'active', tags: {}, parentId: null, ...over });
@@ -44,8 +44,6 @@ test('applyQuickFilters narrows by status + tag', () => {
   expect(applyQuickFilters(nodes, { statuses: ['active'] }).map((n) => n.id)).toEqual(['a']);
   expect(applyQuickFilters(nodes, { tags: { component: ['web'] } }).map((n) => n.id)).toEqual(['a']);
 });
-
-import { matchesSearch, buildFilter } from '@/lib/mission-graph-adapter';
 
 const node = (over: Partial<import('@/lib/mission-graph-types').MissionNode> = {}) =>
   ({ id: 'm1', title: 'Auth epic', status: 'active', tags: { project: ['web'] }, parentId: null, ...over });

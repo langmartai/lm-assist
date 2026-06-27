@@ -10,7 +10,7 @@ export type ScheduleData = {
   epicRollups: { parentId: string; status: string; progressPercent: number; childCount: number; doneCount: number }[];
   containers: string[];
 };
-export type SessionInfo = { sid: string; status?: string; transport?: string; node?: string | null };
+export type SessionInfo = { sid: string; kind?: string; role?: string; lastContact?: number };
 
 export function useMissionDetail(id: string | null) {
   const { apiClient, proxy } = useAppMode();
@@ -21,7 +21,7 @@ export function useMissionDetail(id: string | null) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!id) { setMission(null); setSchedule(null); setSessions([]); setError(null); return; }
+    if (!id) { setMission(null); setSchedule(null); setSessions([]); setError(null); setLoading(false); return; }
     let cancelled = false;
     setLoading(true); setError(null);
     const mid = proxy.machineId || undefined;

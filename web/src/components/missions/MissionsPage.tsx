@@ -96,8 +96,8 @@ interface Mission {
   nextSteps?: string[];
   projects: string[];
   dependsOn: string[];
-  tags: Record<string, string[]>;
-  parentId: string | null;
+  tags?: Record<string, string[]>;
+  parentId?: string | null;
   env: MissionEnv;
   binding: MissionBinding | null;
   progress: MissionProgress | null;

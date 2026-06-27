@@ -40,10 +40,6 @@ export function MissionNodeDetail({ nodeId, edges, onSelect, onClose }: {
     : serial ? `Serialized in "${serial.group}"${serial.running && serial.running !== nodeId ? ' (queued)' : ''}`
     : null;
 
-  const Chip = ({ id }: { id: string }) => (
-    <button onClick={() => onSelect(id)} className="rounded border border-neutral-700 px-1.5 py-0.5 text-[11px] text-blue-300 hover:border-blue-400 hover:text-blue-200" title={id}>{id}</button>
-  );
-
   return (
     <div className="w-80 shrink-0 overflow-y-auto border-l border-neutral-800 p-4 text-sm">
       <div className="mb-2 flex items-start justify-between gap-2">
@@ -77,10 +73,10 @@ export function MissionNodeDetail({ nodeId, edges, onSelect, onClose }: {
       {(parentId || dependsOn.length || children.length || dependents.length) ? (
         <Section title="Relationships">
           <div className="space-y-1 text-xs">
-            {parentId && <div className="flex flex-wrap items-center gap-1"><span className="text-neutral-500">parent:</span> <Chip id={parentId} /></div>}
-            {dependsOn.length > 0 && <div className="flex flex-wrap items-center gap-1"><span className="text-neutral-500">depends on:</span> {dependsOn.map((d) => <Chip key={d} id={d} />)}</div>}
-            {dependents.length > 0 && <div className="flex flex-wrap items-center gap-1"><span className="text-neutral-500">blocks:</span> {dependents.map((d) => <Chip key={d} id={d} />)}</div>}
-            {children.length > 0 && <div className="flex flex-wrap items-center gap-1"><span className="text-neutral-500">children:</span> {children.map((d) => <Chip key={d} id={d} />)}</div>}
+            {parentId && <div className="flex flex-wrap items-center gap-1"><span className="text-neutral-500">parent:</span> <Chip id={parentId} onSelect={onSelect} /></div>}
+            {dependsOn.length > 0 && <div className="flex flex-wrap items-center gap-1"><span className="text-neutral-500">depends on:</span> {dependsOn.map((d) => <Chip key={d} id={d} onSelect={onSelect} />)}</div>}
+            {dependents.length > 0 && <div className="flex flex-wrap items-center gap-1"><span className="text-neutral-500">blocks:</span> {dependents.map((d) => <Chip key={d} id={d} onSelect={onSelect} />)}</div>}
+            {children.length > 0 && <div className="flex flex-wrap items-center gap-1"><span className="text-neutral-500">children:</span> {children.map((d) => <Chip key={d} id={d} onSelect={onSelect} />)}</div>}
           </div>
         </Section>
       ) : null}
@@ -97,7 +93,7 @@ export function MissionNodeDetail({ nodeId, edges, onSelect, onClose }: {
 
       {sessions.length > 0 && (
         <Section title="Sessions">
-          <div className="space-y-1 text-[11px] text-neutral-400">{sessions.map((s) => <div key={s.sid}>{s.sid.slice(0, 12)} · {s.status ?? s.transport ?? ''}</div>)}</div>
+          <div className="space-y-1 text-[11px] text-neutral-400">{sessions.map((s) => <div key={s.sid}>{s.sid.slice(0, 12)} · {s.kind ?? s.role ?? ''}</div>)}</div>
         </Section>
       )}
 
@@ -113,4 +109,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       {children}
     </div>
   );
+}
+
+function Chip({ id, onSelect }: { id: string; onSelect: (id: string | null) => void }) {
+  return <button onClick={() => onSelect(id)} className="rounded border border-neutral-700 px-1.5 py-0.5 text-[11px] text-blue-300 hover:border-blue-400 hover:text-blue-200" title={id}>{id}</button>;
 }
