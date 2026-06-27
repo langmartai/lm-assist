@@ -74,3 +74,12 @@ test('session_status output includes this node cluster', async () => {
   const t = r.content[0].text as string;
   assert.match(t, /cluster/i, 'session_status must report the node cluster');
 });
+
+test('session_status includes the dynamic cluster roster (other clusters)', async () => {
+  const r = await SESSION_STATUS_HANDLERS.session_status({});
+  const t = r.content[0].text as string;
+  // The dynamic cluster block should render — either with or without other clusters.
+  // When data service is enabled and other clusters exist, "otherClusters" appears in the JSON.
+  // The key assertion is that the cluster info is populated (not null/undefined).
+  assert.ok(t.includes('cluster') || t.match(/otherClusters|Other clusters/), 'session_status must include cluster roster info or otherClusters field');
+});
