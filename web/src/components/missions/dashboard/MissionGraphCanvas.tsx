@@ -2,7 +2,7 @@
 'use client';
 import { useMemo, useRef, useState, useEffect, useCallback } from 'react';
 import { computeMissionLayout, type MissionLayoutStrategy } from '@/lib/mission-layout';
-import { colorForGroup } from '@/lib/mission-graph-adapter';
+import { colorForGroup, matchesHighlight } from '@/lib/mission-graph-adapter';
 import { MissionCard } from './MissionCard';
 import type { MissionNode, MissionEdge, MissionViewDisplay } from '@/lib/mission-graph-types';
 
@@ -69,6 +69,17 @@ export function MissionGraphCanvas({ nodes, edges, strategy, selectedId, liveIds
     for (const e of edges) { if (e.type === 'parent') get(e.from).children += 1; else { get(e.from).deps += 1; get(e.to).dependents += 1; } }
     return m;
   }, [edges]);
+
+  // 1-hop neighborhood of the selected node — for click-to-isolate dimming + edge emphasis.
+  const connectedToSelected = useMemo(() => {
+    if (!selectedId) return null;
+    const set = new Set<string>([selectedId]);
+    for (const e of edges) {
+      if (e.from === selectedId) set.add(e.to);
+      if (e.to === selectedId) set.add(e.from);
+    }
+    return set;
+  }, [selectedId, edges]);
 
   const fitToView = useCallback(() => {
     const el = containerRef.current;
@@ -171,7 +182,12 @@ export function MissionGraphCanvas({ nodes, edges, strategy, selectedId, liveIds
             const bc = { x: b.x + layout.nodeW / 2, y: b.y + layout.nodeH / 2 };
             const p1 = borderPoint(a.x, a.y, layout.nodeW, layout.nodeH, bc.x, bc.y);
             const p2 = borderPoint(b.x, b.y, layout.nodeW, layout.nodeH, ac.x, ac.y);
-            return <line key={i} x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} stroke="#475569" strokeWidth={1.2} strokeOpacity={0.5} markerEnd="url(#mg-arrow)" />;
+            const hot = !!selectedId && (e.from === selectedId || e.to === selectedId);
+            return <line key={i} x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y}
+              stroke={hot ? '#3b82f6' : '#475569'}
+              strokeWidth={hot ? 2 : 1.2}
+              strokeOpacity={hot ? 0.95 : (selectedId ? 0.12 : 0.5)}
+              markerEnd="url(#mg-arrow)" />;
           })}
         </svg>
         {nodes.map((n) => {
@@ -180,13 +196,17 @@ export function MissionGraphCanvas({ nodes, edges, strategy, selectedId, liveIds
           const t = n.tags ?? {};
           const majorTag = display?.groupBy ? (t[display.groupBy] ?? [])[0] : (Object.entries(t).find(([d]) => !d.startsWith('ctl:'))?.[1] ?? [])[0];
           const accent = (display?.groupBy ? colorForGroup((t[display.groupBy] ?? [])[0] ?? '∅') : undefined) || STATUS_COLOR[n.status] || '#6b7280';
+          const dimmed =
+            (layout.dimmed?.has(n.id) ?? false) ||
+            (!!connectedToSelected && !connectedToSelected.has(n.id)) ||
+            (display?.highlight?.length ? !matchesHighlight(n, display.highlight) : false);
           return (
             <MissionCard
               key={n.id}
               node={n}
               x={p.x} y={p.y} width={layout.nodeW} height={layout.nodeH}
               selected={n.id === selectedId}
-              dimmed={layout.dimmed?.has(n.id) ?? false}
+              dimmed={dimmed}
               live={liveIds.has(n.id)}
               rels={relsById.get(n.id) ?? { deps: 0, children: 0, dependents: 0 }}
               accent={accent}
