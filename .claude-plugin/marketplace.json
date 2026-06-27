@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "langmartai",
-  "description": "Claude Code plugins \u2014 multi-session management, web dashboard, and observability platform",
+  "description": "Claude Code plugins — multi-session management, web dashboard, and observability platform",
   "owner": {
     "name": "langmartai"
   },
@@ -36,7 +36,7 @@
     },
     {
       "name": "lm-assist",
-      "version": "0.1.122",
+      "version": "0.1.123",
       "source": "./",
       "description": "Observability platform for Claude Code and Agent SDK. 155+ API endpoints, 15 insight views, web terminal, session/project summaries, prompt queue, auto-learning.",
       "category": "productivity",
