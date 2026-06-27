@@ -2,12 +2,15 @@
 import { useMemo, useState } from 'react';
 import { useMissionViews } from '@/hooks/useMissionViews';
 import { useMissionGraph, type GraphSource } from '@/hooks/useMissionGraph';
-import { applyQuickFilters, matchesSearch, buildFilter } from '@/lib/mission-graph-adapter';
+import { applyQuickFilters, matchesSearch, buildFilter, expandToComponents } from '@/lib/mission-graph-adapter';
+import type { MissionLayoutStrategy } from '@/lib/mission-layout';
 import { MissionGraphCanvas } from './MissionGraphCanvas';
 import { MissionViewPicker } from './MissionViewPicker';
 import { MissionFilterEditor, type ExpandState } from './MissionFilterEditor';
 import { MissionSearchBox } from './MissionSearchBox';
 import { MissionNodeDetail } from './MissionNodeDetail';
+import { MissionLayoutPicker } from './MissionLayoutPicker';
+import { useMissionActivity } from '@/hooks/useMissionActivity';
 
 export function MissionDashboardPage() {
   const { views, loading: viewsLoading, refresh: refreshViews, saveView } = useMissionViews();
@@ -17,6 +20,8 @@ export function MissionDashboardPage() {
   const [expand, setExpand] = useState<ExpandState>({ direction: 'none', depth: 1 });
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [strategy, setStrategy] = useState<MissionLayoutStrategy>('clusters');
+  const { liveIds } = useMissionActivity();
 
   // server source: a saved view, OR ad-hoc — with a server-side filter only when expand/scope is active
   const source: GraphSource = useMemo(() => {
@@ -29,8 +34,12 @@ export function MissionDashboardPage() {
   const rawNodes = useMemo(() => graph?.nodes ?? [], [graph]);
   const filteredNodes = useMemo(() => {
     const base = expand.direction !== 'none' ? rawNodes : applyQuickFilters(rawNodes, { statuses, tags });
-    return base.filter((n) => matchesSearch(n, search));
-  }, [rawNodes, statuses, tags, search, expand.direction]);
+    const matched = base.filter((n) => matchesSearch(n, search));
+    if (!search.trim()) return matched;
+    // search active → reveal each match's whole connected group (over the full graph edges)
+    const reveal = expandToComponents(rawNodes, graph?.edges ?? [], new Set(matched.map((n) => n.id)));
+    return rawNodes.filter((n) => reveal.has(n.id));
+  }, [rawNodes, statuses, tags, search, expand.direction, graph]);
   const nodeIds = useMemo(() => new Set(filteredNodes.map((n) => n.id)), [filteredNodes]);
   const filteredEdges = useMemo(() => (graph?.edges ?? []).filter((e) => nodeIds.has(e.from) && nodeIds.has(e.to)), [graph, nodeIds]);
 
@@ -66,11 +75,12 @@ export function MissionDashboardPage() {
           <MissionViewPicker views={views} activeId={activeId} onSelect={selectView} onRefresh={() => { refreshViews(); refresh(); }} loading={viewsLoading} />
           <MissionSearchBox value={search} onChange={setSearch} />
           <MissionFilterEditor nodes={rawNodes} statuses={statuses} tags={tags} onToggleStatus={toggleStatus} onToggleTag={toggleTag} expand={expand} onExpandChange={setExpand} onReset={resetFilter} onSaveView={onSaveView} />
+          <MissionLayoutPicker strategy={strategy} onChange={setStrategy} hasSelection={!!selectedId} />
         </div>
         <div className="relative flex-1">
           {loading && <div className="absolute left-2 top-2 z-10 text-xs text-neutral-500">Loading…</div>}
           {error && <div className="absolute left-2 top-2 z-10 text-xs text-red-400">{error}</div>}
-          <MissionGraphCanvas nodes={filteredNodes} edges={filteredEdges} strategy={'clusters'} selectedId={selectedId} liveIds={new Set()} display={view?.display} onSelect={setSelectedId} />
+          <MissionGraphCanvas nodes={filteredNodes} edges={filteredEdges} strategy={strategy} selectedId={selectedId} liveIds={liveIds} display={view?.display} onSelect={setSelectedId} />
         </div>
         <MissionNodeDetail nodeId={selectedId} edges={graph?.edges ?? []} onSelect={setSelectedId} onClose={() => setSelectedId(null)} />
       </div>
