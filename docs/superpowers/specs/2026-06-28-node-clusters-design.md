@@ -62,10 +62,20 @@ New `core/src/routes/core/cluster.routes.ts` + tools in a new `core/src/mcp-serv
 - **`cluster_list`** (scope `read`, `GET /cluster/list`) → `{ clusters: [{ name, leader, controller, members: [{ gatewayId, hostname, online }] }], myCluster }`. Built from the `node-clusters` map ∪ the live `/machines` online set; leader = lowest online id per cluster; controller = that cluster's mission controller (if any).
 - **`cluster_assign`** (scope `write`, `POST /cluster/assign` `{ node, cluster }`) → resolves `node` (gatewayId or hostname via the map/machines), proxies to that node's `POST /cluster/self` `{ cluster }` (sets its local identity + republishes its record). Auto-creates the cluster (a cluster is just a name that ≥1 node claims). Returns the updated assignment.
 - **`cluster_unassign`** (scope `write`, `POST /cluster/unassign` `{ node }`) → assign to `'default'`.
+- **`cluster_describe`** (scope `write`, `POST /cluster/describe` `{ cluster?, description, status? }`, default `cluster` = caller's own) → upserts the cluster's self-description (see §4). Leader-anchored write into the `cluster-meta` dataset. This is how a cluster "reports what it does."
 - **`POST /cluster/self`** `{ cluster }` (loopback/fleet-internal only, like the memory-sync routes) — the local setter the proxy hits; calls `setMyCluster` + republishes.
 - Guard unknown node ⇒ `BAD_NODE`; invalid name ⇒ normalized (never errors).
 
-### 4. Bootstrap + mission-controller awareness
+### 4. Cluster self-description (advisory scope — "what this cluster does")
+
+A cluster can publish an optional, human/LLM-readable statement of its purpose / current work, so that when it's visible to **another cluster or any session**, the LLM understands its scope and **leaves it alone** unless explicitly told otherwise. This is *advisory*, not a hard lock — it shapes LLM behavior, it doesn't block calls.
+
+- **Storage:** a second fleet-wide-synced dataset `cluster-meta` (`syncMode:'full', scope:'fleet'`), keyed by cluster name: `{ name, description, status?, updatedBy, ts }` (LWW). `description` = free text ("what this cluster does / is currently working on"); `status` = optional short advisory tag (e.g. `release`, `dev`, `frozen`, `busy`, `idle`). Both optional; absent ⇒ no description.
+- **Maintained via MCP:** `cluster_describe` (above). The mission controller MAY also call it each pass to reflect its cluster's current focus (e.g. "releasing 0.1.x; soak in progress") — optional, controller-prompt note.
+- **Surfaced everywhere the topology is:** `cluster_list` and `cluster_status` include each cluster's `description`+`status`; `bootstrap`/`session_status` show **this** cluster's description AND a one-line roster of the other clusters' purposes.
+- **The behavioral norm** (in `guide("clusters")` + bootstrap): "Each cluster may declare its scope. Respect it — do NOT operate on another cluster's nodes, missions, or data unless the user explicitly asks; treat a `frozen`/`release`/`busy` cluster as off-limits by default. Your own cluster is the one whose work is yours."
+
+### 5. Bootstrap + mission-controller awareness
 
 - **`session_status` + `bootstrap`** report `cluster: '<myCluster>'` and a one-line shared-vs-within summary.
 - **`guide("clusters")`** — new topic: what a cluster is, the shared-vs-within table, `cluster_assign`/`unassign`/`list`, and "build/release one cluster at a time" via `node_upgrade … cluster:'<name>'`.
@@ -94,6 +104,7 @@ New `core/src/routes/core/cluster.routes.ts` + tools in a new `core/src/mcp-serv
   - `selectFleetNodes` with `target` (`self-cluster`/`all`/named).
 - **Route/tool tests:** `cluster_list` shape; `cluster_assign`/`unassign` resolve + proxy (mocked peer client); unknown-node guard.
 - **Mission-placement guard:** the controller's bind step refuses an out-of-cluster `env.host` (mission left unbound + `ctl:placement-error`, no spawn); accepts an in-cluster host, `local`, and `cloud`. `handleCreate`/`handleUpdate` reject an out-of-cluster `env.host` with `HOST_NOT_IN_CLUSTER` and accept an in-cluster one (cluster filter injected for the test).
+- **Cluster self-description:** `cluster_describe` upserts `{description,status}` into `cluster-meta` (LWW by `ts`); `cluster_list`/`cluster_status` echo it; `bootstrap`/`session_status` include this cluster's description + the other-cluster roster. Default-target = caller's own cluster when `cluster` omitted.
 - **Multi-node smoke (117/123/107 on the prod hub):** assign 117+123 → cluster `release`, 107 → cluster `dev`; verify (a) two independent leaders (`cluster_list`), (b) a mission created in `release` is invisible in `dev` and vice-versa, (c) memory written on 107 appears on 117 (shared), (d) `node_upgrade cluster:'dev'` touches only 107, (e) **placement** — a `dev` mission with `env.host:107` binds on 107; a `dev` mission with `env.host:117` is refused (`HOST_NOT_IN_CLUSTER` at write, or `ctl:placement-error` at the controller). Then reassign all → `default` and confirm fleet-wide behavior returns.
 
 ## Risks
