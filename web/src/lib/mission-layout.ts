@@ -72,6 +72,48 @@ function layoutComponentFlow(ids: string[], edges: { from: string; to: string; t
   return { pos, w: r.width, h: r.height };
 }
 
+/** Radial layout: centerId at the middle, others on concentric rings by hop distance. */
+function layoutComponentRadial(ids: string[], edges: { from: string; to: string }[], centerId: string, nodeW: number, nodeH: number, gap: number): Block {
+  const idSet = new Set(ids);
+  const adj = new Map<string, string[]>();
+  for (const id of ids) adj.set(id, []);
+  for (const e of edges) if (idSet.has(e.from) && idSet.has(e.to)) { adj.get(e.from)!.push(e.to); adj.get(e.to)!.push(e.from); }
+
+  const ring = new Map<string, number>([[centerId, 0]]);
+  let frontier = [centerId];
+  const seen = new Set([centerId]);
+  while (frontier.length) {
+    const next: string[] = [];
+    for (const u of frontier) for (const v of adj.get(u) || []) if (!seen.has(v)) { seen.add(v); ring.set(v, ring.get(u)! + 1); next.push(v); }
+    frontier = next;
+  }
+  let maxRing = 0;
+  for (const r of ring.values()) maxRing = Math.max(maxRing, r);
+  for (const id of ids) if (!ring.has(id)) ring.set(id, maxRing + 1); // disconnected-within-component guard
+  maxRing = 0;
+  for (const r of ring.values()) maxRing = Math.max(maxRing, r);
+
+  const byRing = new Map<number, string[]>();
+  for (const id of ids) { const r = ring.get(id)!; const g = byRing.get(r) ?? []; g.push(id); byRing.set(r, g); }
+
+  const ringStep = Math.max(nodeW, nodeH) + gap + 40;
+  const center = maxRing * ringStep + Math.max(nodeW, nodeH);
+  const pos = new Map<string, { x: number; y: number }>();
+  for (const [r, members] of byRing) {
+    if (r === 0) { pos.set(members[0], { x: center - nodeW / 2, y: center - nodeH / 2 }); continue; }
+    const radius = r * ringStep;
+    members.forEach((id, i) => {
+      const ang = (2 * Math.PI * i) / members.length - Math.PI / 2;
+      pos.set(id, { x: center + radius * Math.cos(ang) - nodeW / 2, y: center + radius * Math.sin(ang) - nodeH / 2 });
+    });
+  }
+  // normalize to origin and compute bounds
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of pos.values()) { minX = Math.min(minX, p.x); minY = Math.min(minY, p.y); maxX = Math.max(maxX, p.x + nodeW); maxY = Math.max(maxY, p.y + nodeH); }
+  for (const p of pos.values()) { p.x -= minX; p.y -= minY; }
+  return { pos, w: maxX - minX, h: maxY - minY };
+}
+
 /** Pack singletons into a sqrt-ish grid. */
 function layoutSingletons(ids: string[], nodeW: number, nodeH: number, gap: number): Block {
   const cols = Math.max(1, Math.ceil(Math.sqrt(ids.length)));
@@ -107,15 +149,33 @@ export function computeMissionLayout(input: MissionLayoutInput): MissionLayoutRe
   const singles = comps.filter((c) => c.length === 1).map((c) => c[0]);
   const dimmed = new Set<string>();
 
+  const focusComp = (input.strategy === 'focus' && input.selectedId)
+    ? multi.find((c) => c.includes(input.selectedId!)) ?? null
+    : null;
+
   type Tagged = Block & { ids: string[]; liveCount: number };
   const multiBlocks: Tagged[] = multi.map((comp) => {
-    const block = layoutComponentFlow(comp, input.edges, nodeW, nodeH);
+    let block: Block;
+    if (input.strategy === 'hubs') {
+      block = layoutComponentRadial(comp, input.edges, highestDegree(comp, input.edges), nodeW, nodeH, gap);
+    } else if (focusComp && comp === focusComp) {
+      block = layoutComponentRadial(comp, input.edges, input.selectedId!, nodeW, nodeH, gap);
+    } else {
+      block = layoutComponentFlow(comp, input.edges, nodeW, nodeH);
+      if (focusComp) for (const id of comp) dimmed.add(id); // non-focused components are dimmed
+    }
     const liveCount = input.liveIds ? comp.filter((id) => input.liveIds!.has(id)).length : 0;
     return { ...block, ids: comp, liveCount };
   });
 
-  // ordering: clusters = size desc
-  multiBlocks.sort((a, b) => b.ids.length - a.ids.length);
+  // ordering: clusters = size desc, focus = focused first
+  if (focusComp) {
+    multiBlocks.sort((a, b) => (b.ids === focusComp ? 1 : 0) - (a.ids === focusComp ? 1 : 0) || b.ids.length - a.ids.length);
+  } else {
+    multiBlocks.sort((a, b) => b.ids.length - a.ids.length);
+  }
+
+  if (focusComp) for (const id of singles) dimmed.add(id);
 
   const ordered: Block[] = [...multiBlocks];
   if (singles.length) ordered.push(layoutSingletons(singles, nodeW, nodeH, gap));

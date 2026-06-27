@@ -52,3 +52,38 @@ describe('computeMissionLayout — clusters', () => {
     for (const e of edges) { expect(r.positions.has(e.from)).toBe(true); expect(r.positions.has(e.to)).toBe(true); }
   });
 });
+
+describe('computeMissionLayout — hubs & focus', () => {
+  // star: hub connected to 4 leaves
+  const star = { nodes: ['h', 'l1', 'l2', 'l3', 'l4'].map((id) => ({ id })), edges: [E('h', 'l1'), E('h', 'l2'), E('h', 'l3'), E('h', 'l4')] };
+
+  it('hubs: the highest-degree node sits closest to the component centroid', () => {
+    const r = computeMissionLayout({ ...star, strategy: 'hubs' });
+    const center = (id: string) => { const p = r.positions.get(id)!; return { x: p.x + r.nodeW / 2, y: p.y + r.nodeH / 2 }; };
+    const ids = ['h', 'l1', 'l2', 'l3', 'l4'];
+    const cx = ids.reduce((s, id) => s + center(id).x, 0) / ids.length;
+    const cy = ids.reduce((s, id) => s + center(id).y, 0) / ids.length;
+    const dist = (id: string) => { const c = center(id); return Math.hypot(c.x - cx, c.y - cy); };
+    const hubDist = dist('h');
+    for (const l of ['l1', 'l2', 'l3', 'l4']) expect(hubDist).toBeLessThanOrEqual(dist(l) + 1);
+  });
+
+  it('focus: selected node is the centroid of its component; other components are dimmed', () => {
+    const two = {
+      nodes: ['h', 'l1', 'l2', 'x', 'y'].map((id) => ({ id })),
+      edges: [E('h', 'l1'), E('h', 'l2'), E('x', 'y')],
+      strategy: 'focus' as const,
+      selectedId: 'l1',
+    };
+    const r = computeMissionLayout(two);
+    // l1's component is {h,l1,l2}; x and y are in another component → dimmed
+    expect(r.dimmed?.has('x')).toBe(true);
+    expect(r.dimmed?.has('y')).toBe(true);
+    expect(r.dimmed?.has('l1')).toBe(false);
+  });
+
+  it('focus with no selection === clusters (no dimming)', () => {
+    const r = computeMissionLayout({ ...star, strategy: 'focus', selectedId: null });
+    expect(r.dimmed).toBeUndefined();
+  });
+});
