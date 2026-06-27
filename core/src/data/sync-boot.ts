@@ -8,6 +8,7 @@ import type { DatasetUpdatedMessage } from '../hub-client';
 import { getSyncQueue } from './sync-queue';
 import { getSyncEngine } from './data-service';
 import { thisNodeId } from './paths';
+import { publishSelf } from '../cluster/cluster-store';
 
 let _started = false;
 let _flushTimer: NodeJS.Timeout | null = null;
@@ -40,6 +41,7 @@ export function startDataSync(): void {
   // Periodic reconcile (self-heal / pull full datasets)
   _reconcileTimer = setInterval(() => {
     getSyncEngine().reconcile().catch(() => {});
+    publishSelf().catch(() => {});
   }, reconcileMs);
   if (_reconcileTimer.unref) _reconcileTimer.unref();
 
@@ -53,6 +55,7 @@ export function startDataSync(): void {
   // Initial reconcile shortly after boot so a fresh node converges quickly
   _initTimer = setTimeout(() => {
     getSyncEngine().reconcile().catch(() => {});
+    publishSelf().catch(() => {});
   }, 2000);
   if (_initTimer.unref) _initTimer.unref();
 }
