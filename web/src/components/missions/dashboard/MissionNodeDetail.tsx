@@ -17,7 +17,7 @@ export function MissionNodeDetail({ node, onClose }: { node: MissionNode | null;
           <div key={dim} className="text-xs">{dim}: {vals.join(', ')}</div>
         ))}
       </div>
-      <Link href="/missions" className="mt-3 inline-block text-xs text-blue-400 hover:underline">Open in Missions →</Link>
+      <Link href={`/missions?mission=${encodeURIComponent(node.id)}`} className="mt-3 inline-block text-xs text-blue-400 hover:underline">Open in Missions →</Link>
     </div>
   );
 }

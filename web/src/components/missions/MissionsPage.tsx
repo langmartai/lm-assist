@@ -359,10 +359,10 @@ export function MissionsPage() {
     setReposLoading(true);
     setReposError(false);
     try {
-      const res = await apiFetch<{ repos: Array<string | { slug?: string; full_name?: string }> }>('/ccr/cloud/repos');
+      const res = await apiFetch<{ repos: Array<string | { repo?: string; slug?: string; full_name?: string }> }>('/ccr/cloud/repos');
       const list = (res?.repos ?? []).map((r) =>
-        typeof r === 'string' ? r : r.slug ?? r.full_name ?? String(r),
-      );
+        typeof r === 'string' ? r : r.repo ?? r.slug ?? r.full_name ?? String(r),
+      ).filter((s): s is string => !!s && s !== '[object Object]');
       setRepos(list);
       if (list.length === 0) setReposError(true); // empty → fall back to text
     } catch {
@@ -815,6 +815,22 @@ export function MissionsPage() {
     });
     setActiveTabSid(missionId);
   }, []);
+
+  /**
+   * Deep-link: open the mission tab named by `?mission=<id>` once the mission list has loaded.
+   * Fires once (ref-guarded). Source: the Mission Graph dashboard's "Open in Missions →" link.
+   * Reads `window.location.search` (not `useSearchParams`) to avoid a Suspense-boundary requirement.
+   */
+  const deepLinkHandledRef = useRef(false);
+  useEffect(() => {
+    if (deepLinkHandledRef.current || typeof window === 'undefined') return;
+    const mid = new URLSearchParams(window.location.search).get('mission');
+    if (!mid) { deepLinkHandledRef.current = true; return; }
+    if (missions.length === 0) return; // wait for the list before resolving the title
+    deepLinkHandledRef.current = true;
+    const m = missions.find((x) => x.id === mid);
+    if (m) openMissionTab(m.id, m.title);
+  }, [missions, openMissionTab]);
 
   /** Close a tab; if it was active, fall back to the controller (null). */
   const closeTab = useCallback((sid: string) => {
