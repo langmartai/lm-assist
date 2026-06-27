@@ -32,7 +32,13 @@ export function DagGraph({ graph, layoutOptions, selectedNodeId, highlightDepth 
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
+  // Ref mirror of `dragging` so the move handler reads the live value even when a
+  // fast drag fires mousemove before React re-renders (a stale-closure pan drop).
+  const draggingRef = useRef(false);
   const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  // True once the pointer has moved past a small threshold during a drag, so a
+  // pan gesture is not mistaken for a node click (see onClickCapture below).
+  const movedRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const layout = useMemo(() => computeDagLayout(graph, layoutOptions), [graph, layoutOptions]);
@@ -69,29 +75,41 @@ export function DagGraph({ graph, layoutOptions, selectedNodeId, highlightDepth 
     setZoom(nz);
   }, [zoom, pan]);
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    const rect = containerRef.current?.getBoundingClientRect();
-    zoomAt(e.deltaY > 0 ? 0.9 : 1.1, rect ? e.clientX - rect.left : 0, rect ? e.clientY - rect.top : 0);
+  // Wheel-to-zoom toward the cursor. Attached as a NON-passive native listener so
+  // preventDefault() actually suppresses the page scroll — React's onWheel is passive
+  // at the root, which would let the wheel both zoom and scroll the page.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      zoomAt(e.deltaY > 0 ? 0.9 : 1.1, e.clientX - rect.left, e.clientY - rect.top);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
   }, [zoomAt]);
 
+  // Free panning: a left-drag anywhere (including over nodes) pans the canvas.
+  // Click-vs-drag is disambiguated by movedRef so a stationary click still selects.
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
-    const target = e.target as SVGElement;
-    if (target.tagName === 'rect' || target.tagName === 'text' || target.tagName === 'circle') return;
+    movedRef.current = false;
+    draggingRef.current = true;
     setDragging(true);
     dragStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
   }, [pan]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!dragging) return;
-    setPan({
-      x: dragStart.current.panX + (e.clientX - dragStart.current.x),
-      y: dragStart.current.panY + (e.clientY - dragStart.current.y),
-    });
-  }, [dragging]);
+    if (!draggingRef.current) return;
+    const dx = e.clientX - dragStart.current.x;
+    const dy = e.clientY - dragStart.current.y;
+    if (!movedRef.current && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) movedRef.current = true;
+    setPan({ x: dragStart.current.panX + dx, y: dragStart.current.panY + dy });
+  }, []);
 
   const handleMouseUp = useCallback(() => {
+    draggingRef.current = false;
     setDragging(false);
   }, []);
 
@@ -167,11 +185,12 @@ export function DagGraph({ graph, layoutOptions, selectedNodeId, highlightDepth 
     <div
       ref={containerRef}
       style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}
-      onWheel={handleWheel}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
+      onClickCapture={(e) => { if (movedRef.current) e.stopPropagation(); }}
+      onDoubleClick={fitToView}
     >
       {/* Controls */}
       <div style={{
@@ -269,8 +288,8 @@ export function DagGraph({ graph, layoutOptions, selectedNodeId, highlightDepth 
                 d={d}
                 fill="none"
                 stroke={highlighted ? 'var(--color-accent, #3b82f6)' : 'var(--color-border-default, #334155)'}
-                strokeWidth={highlighted ? 2 : 1.5}
-                strokeOpacity={highlighted ? 1 : selectedNodeId ? 0.15 : 0.6}
+                strokeWidth={highlighted ? 2 : 1.2}
+                strokeOpacity={highlighted ? 1 : selectedNodeId ? 0.12 : 0.45}
                 markerEnd={highlighted ? 'url(#dag-arrowhead-hl)' : 'url(#dag-arrowhead)'}
               />
             );
@@ -283,7 +302,12 @@ export function DagGraph({ graph, layoutOptions, selectedNodeId, highlightDepth 
             const dimmed = !!selectedNodeId && !isConnected;
             if (renderNode) {
               return (
-                <g key={ln.id} opacity={dimmed ? 0.25 : 1}>
+                <g
+                  key={ln.id}
+                  opacity={dimmed ? 0.25 : 1}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => onNodeClick?.(ln.node)}
+                >
                   {renderNode({
                     node: ln.node,
                     x: ln.x,

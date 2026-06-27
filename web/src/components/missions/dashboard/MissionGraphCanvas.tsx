@@ -17,6 +17,9 @@ export function MissionGraphCanvas({ nodes, edges, display, selectedId, onSelect
   onSelect: (id: string | null) => void;
 }) {
   const graph = useMemo(() => toDagGraph({ nodes, edges }, display), [nodes, edges, display]);
+  // Roomier cards than the DAG default (these show 3 lines: title, fields+tag, relationships).
+  // Memoized so the layout reference stays stable — an inline object would re-fit every render.
+  const layoutOptions = useMemo(() => ({ nodeH: 76, nodeGap: 24 }), []);
   const groups = useMemo(() => {
     if (!display?.groupBy) return [] as Array<{ value: string; color: string }>;
     const seen = new Map<string, string>();
@@ -49,10 +52,8 @@ export function MissionGraphCanvas({ nodes, edges, display, selectedId, onSelect
     return (
       <foreignObject x={x} y={y} width={width} height={height}>
         <div
-          className="h-full w-full overflow-hidden rounded-md border bg-neutral-900 px-2 py-1 text-xs"
+          className="h-full w-full cursor-pointer overflow-hidden rounded-md border bg-neutral-900 px-2 py-1 text-xs"
           style={{ opacity: dimmed ? 0.35 : 1, borderColor: selected ? '#fff' : accent, borderLeftWidth: 4 }}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => onSelect(node.id === selectedId ? null : node.id)}
         >
           <div className="truncate font-medium text-neutral-100">{node.label}</div>
           <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[10px] text-neutral-400">
@@ -83,6 +84,7 @@ export function MissionGraphCanvas({ nodes, edges, display, selectedId, onSelect
     <div className="relative h-full w-full">
       <DagGraph
         graph={graph}
+        layoutOptions={layoutOptions}
         selectedNodeId={selectedId}
         onNodeClick={(n) => onSelect(n.id === selectedId ? null : n.id)}
         renderNode={renderNode}
