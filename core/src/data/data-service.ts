@@ -276,7 +276,7 @@ export class DataService {
   }
 
   /** Returns descriptor stubs for datasets this node advertises as syncable (syncMode !== 'none'). */
-  syncManifest(p: Principal): Array<{ id: string; syncMode: SyncMode; ownerNode: string; backend: BackendKind }> {
+  syncManifest(p: Principal): Array<{ id: string; syncMode: SyncMode; ownerNode: string; backend: BackendKind; scope: 'cluster' | 'fleet' }> {
     const readActions: DataAction[] = ['read'];
     const out = [];
     for (const d of this.deps.datasets.list()) {
@@ -285,7 +285,7 @@ export class DataService {
       if (syncMode === 'none') continue;
       const actions = this.deps.manager.evaluateGrants(p, d, readActions);
       if (!actions.length) continue;
-      out.push({ id: d.id, syncMode, ownerNode: d.ownerNode, backend: d.backend });
+      out.push({ id: d.id, syncMode, ownerNode: d.ownerNode, backend: d.backend, scope: (d.scope ?? 'cluster') });
     }
     return out;
   }

@@ -17,6 +17,7 @@ export interface CreateDatasetInput {
   readOnly?: boolean;
   sensitive?: boolean;
   syncMode?: import('./types').SyncMode;
+  scope?: 'cluster' | 'fleet';
   config: BackendConfig;
   acl?: AclRule[];
   system?: boolean;
@@ -27,6 +28,7 @@ export interface UpsertReplicaInput {
   backend: BackendKind;
   ownerNode: string;
   syncMode: SyncMode;
+  scope?: 'cluster' | 'fleet';
   config: BackendConfig;
   origin: NodeOrigin;
   title?: string;
@@ -89,6 +91,7 @@ export class DatasetRegistry {
       readOnly: input.readOnly,
       sensitive: input.sensitive,
       syncMode: input.syncMode ?? 'none',
+      scope: input.scope ?? 'cluster',
       config: input.config,
       acl: input.acl ?? [],
       createdAt: now,
@@ -141,6 +144,7 @@ export class DatasetRegistry {
       ownerNode: input.ownerNode,
       visibility: 'local-only',
       syncMode: input.syncMode,
+      scope: input.scope ?? 'cluster',
       origin: input.origin,
       config: input.config,
       acl: [],
