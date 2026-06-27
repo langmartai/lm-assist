@@ -99,3 +99,26 @@ describe('computeMissionLayout — hubs & focus', () => {
     expect(r.dimmed?.has('l1')).toBe(true);
   });
 });
+
+describe('computeMissionLayout — recent', () => {
+  it('packs a component with a live mission before a non-live component', () => {
+    const r = computeMissionLayout({
+      nodes: ['a', 'b', 'c', 'd'].map((id) => ({ id })),
+      edges: [E('a', 'b'), E('c', 'd')],
+      strategy: 'recent',
+      liveIds: new Set(['c']), // component {c,d} is live
+    });
+    // {c,d} should be packed at a smaller origin (top-left) than {a,b}
+    const minY = (ids: string[]) => Math.min(...ids.map((id) => r.positions.get(id)!.y));
+    expect(minY(['c', 'd'])).toBeLessThan(minY(['a', 'b']));
+  });
+
+  it('recent with no liveIds falls back to size order (=== clusters)', () => {
+    const base = { nodes: ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id })), edges: [E('a', 'b'), E('b', 'c'), E('d', 'e')] };
+    const recent = computeMissionLayout({ ...base, strategy: 'recent' });
+    const clusters = computeMissionLayout({ ...base, strategy: 'clusters' });
+    for (const id of ['a', 'b', 'c', 'd', 'e']) {
+      expect(recent.positions.get(id)).toEqual(clusters.positions.get(id));
+    }
+  });
+});

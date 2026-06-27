@@ -168,9 +168,11 @@ export function computeMissionLayout(input: MissionLayoutInput): MissionLayoutRe
     return { ...block, ids: comp, liveCount };
   });
 
-  // ordering: clusters = size desc, focus = focused first
+  // ordering: clusters = size desc, focus = focused first, recent = live-then-size
   if (focusComp) {
     multiBlocks.sort((a, b) => (b.ids === focusComp ? 1 : 0) - (a.ids === focusComp ? 1 : 0) || b.ids.length - a.ids.length);
+  } else if (input.strategy === 'recent') {
+    multiBlocks.sort((a, b) => (b.liveCount > 0 ? 1 : 0) - (a.liveCount > 0 ? 1 : 0) || b.liveCount - a.liveCount || b.ids.length - a.ids.length);
   } else {
     multiBlocks.sort((a, b) => b.ids.length - a.ids.length);
   }
