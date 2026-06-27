@@ -3,7 +3,7 @@ import type { RouteHandler, RouteContext } from '../index';
 import { randomBytes } from 'crypto';
 import { touchActivity, trackResumedNative } from '../../mission/mission-session-reaper';
 import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActor, place, ExecutorState, MissionBinding } from '../../mission/mission-model';
-import { resolveMcpActor } from '../../mission/mission-actor';
+import { resolveMcpActor, upgradeControllerActor } from '../../mission/mission-actor';
 import { normalizeTags, mergeTags, validateParent, validateDependsOn } from '../../mission/mission-graph';
 import {
   MissionDataPort, getMission, listMissions, putMission, thisNode, getControllerSession, listMissionHistory,
@@ -82,7 +82,11 @@ async function anchorToLeader(leader: LeaderAnchorDeps | undefined, method: 'GET
 async function actorFor(b: Record<string, unknown>): Promise<MissionActor> {
   const hint = b._actor as { channel?: string; toolUseId?: string | null } | undefined;
   delete (b as any)._actor;
-  if (hint && hint.channel === 'mcp') return resolveMcpActor(hint.toolUseId, thisNode(), Date.now());
+  if (hint && hint.channel === 'mcp') {
+    const resolved = await resolveMcpActor(hint.toolUseId, thisNode(), Date.now());
+    const ctrl = await getControllerSession().catch(() => null);
+    return upgradeControllerActor(resolved, ctrl?.sessionId);
+  }
   return coarseActor('user', thisNode(), Date.now());
 }
 
