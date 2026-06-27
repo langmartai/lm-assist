@@ -170,16 +170,24 @@ export class SyncEngine {
     const backend = this.deps.backends.get(m.backend);
     if (!backend) return { applied: 0, skipped: 0 };
 
-    // Compute watermark = max updatedAt of records already in local replica
+    // Compute watermark = max updatedAt of records already in local replica.
+    // EXCEPTION: fleet-scoped metadata datasets (node-clusters, cluster-meta) are tiny
+    // and MULTI-WRITER — every node writes its OWN record. A single global per-dataset
+    // watermark drops a peer's older record once ANOTHER peer's (or self's) newer record
+    // advances `since` past it, so the map never fully converges (stale members, and
+    // hostname→gatewayId resolution for cluster_assign breaks). They're cheap to re-pull
+    // whole, so always full-sync them (since=undefined) and let importBatch LWW reconcile.
     const local = await backend.exportSince(m.id);
-    const since = local.length
-      ? local.reduce(
-          (mx, r) => (r.updatedAt > mx ? r.updatedAt : mx),
-          local[0].updatedAt,
-        )
-      : undefined;
+    const since = m.scope === 'fleet'
+      ? undefined
+      : local.length
+        ? local.reduce(
+            (mx, r) => (r.updatedAt > mx ? r.updatedAt : mx),
+            local[0].updatedAt,
+          )
+        : undefined;
 
-    // Fetch only records newer than watermark
+    // Fetch records newer than the watermark (or ALL records for fleet datasets)
     const peerRecords = await this.deps.peers.exportFrom(peer.node, m.id, since);
     return backend.importBatch(m.id, peerRecords, origin);
   }
