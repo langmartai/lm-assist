@@ -23,8 +23,23 @@ import { sessionVerdict } from '../terminal/cc-sessions';
 import { AgentSessionStore } from '../agent-session-store';
 
 /**
+ * Resolve a host string (which may be a hostname/label OR a gatewayId) to the
+ * canonical gatewayId used by clusterOf. Pure — no I/O.
+ * Unknown hosts fall through unchanged so clusterOf resolves them to 'default'.
+ */
+export function resolveHostToId(host: string, records: ClusterRecord[]): string {
+  // host may already be a gatewayId
+  if (records.some((r) => r.gatewayId === host)) return host;
+  // or it may be a hostname/label that maps to one
+  const byHost = records.find((r) => r.hostname === host);
+  return byHost ? byHost.gatewayId : host; // unknown falls through (clusterOf → 'default' → rejected, as intended)
+}
+
+/**
  * Pure placement guard: returns true if a host is allowed for this cluster.
  * Passes through undefined / 'local' / 'cloud' (no specific node required).
+ * host may be a gatewayId OR a hostname/label — resolveHostToId normalises it
+ * before the cluster lookup so hostname-pinned missions resolve correctly.
  * An unknown host (not in records and not self) resolves to 'default' — allowed
  * only when selfCluster is also 'default'.
  */
@@ -35,7 +50,7 @@ export function placementAllowed(
   selfCluster: string,
 ): boolean {
   if (!host || host === 'local' || host === 'cloud') return true;
-  return clusterOf(host, records, selfId, selfCluster) === selfCluster;
+  return clusterOf(resolveHostToId(host, records), records, selfId, selfCluster) === selfCluster;
 }
 
 export interface MissionTickDeps {
@@ -842,7 +857,7 @@ export function registerMissionController(
         }
         // Capture cloud baseline BEFORE launching so we can detect the new cse afterward.
         const baselineArr = await cloudListAccount().then((ss) => ss.map((s2) => s2.sid)).catch(() => [] as string[]);
-        const controllerName = `Mission Controller · ${getHubConfig().hostname}`;
+        const controllerName = `Mission Controller · ${getHubConfig().hostname} · ${getMyCluster()}`;
         const launched = await tmuxCcController.launch({
           cwd, remoteControl: true, skipPermissions: true, autoTrust: true,
           appendSystemPromptFile: extras.appendSystemPromptFile,

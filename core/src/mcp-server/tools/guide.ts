@@ -288,7 +288,7 @@ SHARED-VS-WITHIN TABLE:
   - Leader election (lowest online gateway-id in the cluster)
   - Mission control (the elected Mission Controller drives missions within the cluster)
   - Data-service dataset sync (syncMode:'partial'/scope:'cluster' datasets replicate only within)
-  - Build / upgrade fan-out: \`node_upgrade\` and \`node_builds(cluster:'<name>')\` target ONE cluster
+  - Build / upgrade fan-out: \`node_builds(cluster:'<name>')\` fans out to ONE cluster; \`node_upgrade\` upgrades a single node (loop per node for a cluster rollout)
 
   FLEET-WIDE (shared across ALL clusters, no cluster boundary):
   - Cluster map + node identity / enrollment (node-clusters dataset, scope:'fleet')
@@ -305,8 +305,8 @@ TOOLS:
   - \`cluster_describe(name, description?, status?)\` → annotate a cluster with a description and optional status
 
 BUILD / RELEASE ONE CLUSTER AT A TIME:
-  Use \`node_upgrade(cluster:'<name>')\` to roll a build upgrade to nodes in ONE cluster before promoting to the rest.
-  Use \`node_builds(cluster:'<name>')\` to fan out a build check or trigger to one cluster's nodes.
+  Use \`node_builds(cluster:'<name>')\` to fan out a build check or upgrade trigger to ONE cluster's nodes before promoting to the rest.
+  Use \`node_upgrade(node:'<id>')\` to upgrade a single node by id; loop over cluster members for a per-cluster rollout.
   This lets you validate a release in a staging cluster before touching prod.
 
 SCOPE NORM (respect other clusters):
