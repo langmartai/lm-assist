@@ -100,6 +100,7 @@ export function MissionGraphCanvas({ nodes, edges, strategy, selectedId, liveIds
     const mid = (t: TouchList) => rectXY((t[0].clientX + t[1].clientX) / 2, (t[0].clientY + t[1].clientY) / 2);
     const onTouchStart = (e: TouchEvent) => {
       if (e.touches.length === 2) {
+        draggingRef.current = false;
         const m = mid(e.touches);
         pinchRef.current = { dist: dist(e.touches), zoom, cx: m.x, cy: m.y };
       } else if (e.touches.length === 1) {
@@ -111,6 +112,7 @@ export function MissionGraphCanvas({ nodes, edges, strategy, selectedId, liveIds
       if (e.touches.length === 2 && pinchRef.current) {
         e.preventDefault();
         const pr = pinchRef.current;
+        if (!pr.dist) return;
         const ratio = dist(e.touches) / pr.dist;
         const nz = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, pr.zoom * ratio));
         const r = nz / zoom;
