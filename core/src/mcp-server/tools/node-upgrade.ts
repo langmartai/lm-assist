@@ -83,6 +83,10 @@ export const nodeUpgradeToolDef = {
         type: 'string',
         description: 'Target node id/hostId (from list_nodes/node_builds). Omit for the current node.',
       },
+      cluster: {
+        type: 'string',
+        description: '"self-cluster" (default) | "all" | "<name>" — only upgrade nodes in a specific cluster',
+      },
     },
   },
 };

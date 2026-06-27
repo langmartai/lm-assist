@@ -9,6 +9,7 @@
  * scoped 'read' in configure.ts TOOL_SCOPES.
  */
 import { ok, err, workerGet, type McpToolResult } from './_passthrough';
+import { clusterOf, type ClusterRecord } from '../../cluster/cluster-map';
 
 export const nodeBuildsToolDef = {
   name: 'node_builds',
@@ -20,7 +21,12 @@ export const nodeBuildsToolDef = {
   annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,
-    properties: {},
+    properties: {
+      cluster: {
+        type: 'string',
+        description: '"self-cluster" (default) | "all" | "<name>" — target a specific cluster',
+      },
+    },
   },
 };
 
@@ -50,11 +56,17 @@ export interface NodeEntry { nodeId: string; hostname: string; isSelf: boolean; 
  * registrations would otherwise clutter the output as 'v?' rows — same online
  * filter peer-client's selectSyncPeers uses), maps each to a NodeEntry, and
  * guarantees the self node is present even if it is absent/offline in the list.
+ *
+ * Optional clusterFilter enables cluster targeting:
+ * - omitted or target='all' → all online nodes (backward compatible)
+ * - target='self-cluster' → nodes in selfCluster only
+ * - target='<name>' → nodes in that named cluster
  */
 export function selectFleetNodes(
   machineList: any[],
   selfId: string,
   selfHostname: string,
+  clusterFilter?: { records: ClusterRecord[]; selfCluster: string; target: 'self-cluster' | 'all' | string },
 ): NodeEntry[] {
   const online: NodeEntry[] = (machineList || [])
     .filter((m: any) => String(m?.status || '').toLowerCase() === 'online')
@@ -67,7 +79,11 @@ export function selectFleetNodes(
   if (!online.some((n) => n.isSelf)) {
     online.unshift({ nodeId: selfId, hostname: selfHostname, isSelf: true });
   }
-  return online;
+  if (!clusterFilter || clusterFilter.target === 'all') {
+    return online;
+  }
+  const want = clusterFilter.target === 'self-cluster' ? clusterFilter.selfCluster : clusterFilter.target;
+  return online.filter((n) => clusterOf(n.nodeId, clusterFilter.records, selfId, clusterFilter.selfCluster) === want);
 }
 
 interface BuildData {
@@ -76,8 +92,10 @@ interface BuildData {
   upgradedAt?: string | null;
 }
 
-async function sweepNodes(): Promise<McpToolResult> {
+async function sweepNodes(cluster?: string): Promise<McpToolResult> {
   const { getHubConfig } = require('../../hub-client/hub-config') as typeof import('../../hub-client/hub-config');
+  const { getClusterRecords } = require('../../cluster/cluster-store') as typeof import('../../cluster/cluster-store');
+  const { getMyCluster } = require('../../cluster/cluster-config') as typeof import('../../cluster/cluster-config');
   const cfg = getHubConfig();
   const selfId = cfg.gatewayId || cfg.machineId;
   const selfHostname = cfg.hostname || selfId || 'this-node';
@@ -87,7 +105,21 @@ async function sweepNodes(): Promise<McpToolResult> {
     const hm = await workerGet<{ machines: unknown[] }>('/hub/machines');
     const machineList: unknown[] = Array.isArray(hm) ? hm : ((hm as any).machines || []);
     // Online-only: offline/stale/duplicate gateway registrations would show as 'v?' noise.
-    const fleet = selectFleetNodes(machineList as any[], selfId, selfHostname);
+    let clusterFilter: { records: ClusterRecord[]; selfCluster: string; target: 'self-cluster' | 'all' | string } | undefined;
+    if (cluster && cluster !== 'self-cluster' && cluster !== 'all') {
+      // Named cluster — fetch records to resolve
+      const records = await getClusterRecords();
+      const selfCluster = getMyCluster();
+      clusterFilter = { records, selfCluster, target: cluster };
+    } else if (cluster === 'all') {
+      clusterFilter = { records: [], selfCluster: '', target: 'all' };
+    } else if (cluster === 'self-cluster' || !cluster) {
+      // Default: self-cluster
+      const records = await getClusterRecords();
+      const selfCluster = getMyCluster();
+      clusterFilter = { records, selfCluster, target: 'self-cluster' };
+    }
+    const fleet = selectFleetNodes(machineList as any[], selfId, selfHostname, clusterFilter);
     if (fleet.length > 0) nodes = fleet;
   } catch { /* hub not configured or unreachable — sweep self only */ }
 
@@ -122,9 +154,10 @@ async function sweepNodes(): Promise<McpToolResult> {
   return ok(formatBuilds(rows));
 }
 
-async function handleNodeBuilds(_args: Record<string, unknown>): Promise<McpToolResult> {
+async function handleNodeBuilds(args: Record<string, unknown>): Promise<McpToolResult> {
   try {
-    return await sweepNodes();
+    const cluster = typeof args.cluster === 'string' ? args.cluster : undefined;
+    return await sweepNodes(cluster);
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
