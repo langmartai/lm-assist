@@ -7,6 +7,23 @@ import type { BackendRegistry } from './backend-registry';
 import type {
   PeerClient, SyncStatus, ManifestEntry, NodeInfo, NodeOrigin, BackendConfig,
 } from './types';
+import { clusterOf, type ClusterRecord } from '../cluster/cluster-map';
+
+/**
+ * Pure helper: decide whether to pull a dataset from a peer based on scope + cluster membership.
+ * - 'fleet' scope: always pull (true)
+ * - 'cluster' or undefined (defaults to cluster): pull only if peer is in same cluster (return clusterOf(peerNode) === selfCluster)
+ */
+export function shouldPullDataset(
+  scope: 'cluster' | 'fleet' | undefined,
+  peerNode: string,
+  records: ClusterRecord[],
+  selfId: string | null,
+  selfCluster: string,
+): boolean {
+  if (scope === 'fleet') return true;
+  return clusterOf(peerNode, records, selfId, selfCluster) === selfCluster;
+}
 
 export class SyncEngine {
   private _status: SyncStatus = {
@@ -46,6 +63,21 @@ export class SyncEngine {
       s.errors.push('listPeers: ' + (e instanceof Error ? e.message : String(e)));
     }
 
+    // Resolve cluster context once per run (for scope-aware filtering)
+    let records: ClusterRecord[] = [];
+    let selfCluster = 'default';
+    try {
+      // Lazy import to avoid circular dependency: sync-engine ↔ cluster-store ↔ data-service
+      const { getClusterRecords } = await import('../cluster/cluster-store');
+      const { getMyCluster } = await import('../cluster/cluster-config');
+      records = await getClusterRecords();
+      selfCluster = getMyCluster();
+    } catch (e) {
+      // Cluster data not available; proceed with defaults (all peers resolve to 'default' cluster)
+    }
+
+    const selfId = this.deps.nodeId;
+
     for (const peer of peers) {
       if (peer.node === this.deps.nodeId) continue;
       s.peersChecked++;
@@ -72,6 +104,7 @@ export class SyncEngine {
             backend: m.backend,
             ownerNode: m.ownerNode,
             syncMode: 'partial',
+            scope: m.scope,
             config: { kind: m.backend } as BackendConfig,
             origin,
           });
@@ -79,6 +112,10 @@ export class SyncEngine {
         }
         // 'none' and any unknown modes are skipped entirely
         if (m.syncMode !== 'full') continue;
+
+        // Scope-aware filtering: skip if this dataset shouldn't be pulled from this peer
+        if (!shouldPullDataset(m.scope, peer.node, records, selfId, selfCluster)) continue;
+
         try {
           const r = await this.pullOne(peer, m);
           s.datasetsReplicated++;
@@ -118,12 +155,13 @@ export class SyncEngine {
       os: peer.platform,
     };
 
-    // Ensure a local replica descriptor exists
+    // Ensure a local replica descriptor exists, preserving scope
     this.deps.datasets.upsertReplica({
       id: m.id,
       backend: m.backend,
       ownerNode: m.ownerNode,
       syncMode: m.syncMode,
+      scope: m.scope ?? 'cluster',
       config: { kind: m.backend } as BackendConfig,
       origin,
     });
@@ -141,7 +179,7 @@ export class SyncEngine {
       : undefined;
 
     // Fetch only records newer than watermark
-    const records = await this.deps.peers.exportFrom(peer.node, m.id, since);
-    return backend.importBatch(m.id, records, origin);
+    const peerRecords = await this.deps.peers.exportFrom(peer.node, m.id, since);
+    return backend.importBatch(m.id, peerRecords, origin);
   }
 }
