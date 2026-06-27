@@ -123,6 +123,7 @@ export class ApiRelayHandler {
     '/data',          // generic data service (access-key gated; see routes/core/data.routes.ts)
     '/memory',        // cross-node memory sync (export/ingest; access-key in body when relayed)
     '/node',          // per-node build/upgrade info (node_builds fans GET /node/build to every node)
+    '/cluster',       // cross-node cluster assignment (cluster_assign proxies POST /cluster/self to the target node)
   ];
 
   /**
