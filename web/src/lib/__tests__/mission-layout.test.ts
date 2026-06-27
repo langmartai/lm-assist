@@ -86,4 +86,16 @@ describe('computeMissionLayout — hubs & focus', () => {
     const r = computeMissionLayout({ ...star, strategy: 'focus', selectedId: null });
     expect(r.dimmed).toBeUndefined();
   });
+
+  it('focus on a standalone (singleton) mission dims everything else but not itself', () => {
+    const r = computeMissionLayout({
+      nodes: ['h', 'l1', 'solo'].map((id) => ({ id })),
+      edges: [E('h', 'l1')],
+      strategy: 'focus' as const,
+      selectedId: 'solo',
+    });
+    expect(r.dimmed?.has('solo')).toBe(false);
+    expect(r.dimmed?.has('h')).toBe(true);
+    expect(r.dimmed?.has('l1')).toBe(true);
+  });
 });

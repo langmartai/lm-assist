@@ -149,8 +149,9 @@ export function computeMissionLayout(input: MissionLayoutInput): MissionLayoutRe
   const singles = comps.filter((c) => c.length === 1).map((c) => c[0]);
   const dimmed = new Set<string>();
 
-  const focusComp = (input.strategy === 'focus' && input.selectedId)
-    ? multi.find((c) => c.includes(input.selectedId!)) ?? null
+  const focusComp: string[] | null = (input.strategy === 'focus' && input.selectedId)
+    ? (multi.find((c) => c.includes(input.selectedId!))
+        ?? (singles.includes(input.selectedId!) ? [input.selectedId!] : null))
     : null;
 
   type Tagged = Block & { ids: string[]; liveCount: number };
@@ -162,7 +163,6 @@ export function computeMissionLayout(input: MissionLayoutInput): MissionLayoutRe
       block = layoutComponentRadial(comp, input.edges, input.selectedId!, nodeW, nodeH, gap);
     } else {
       block = layoutComponentFlow(comp, input.edges, nodeW, nodeH);
-      if (focusComp) for (const id of comp) dimmed.add(id); // non-focused components are dimmed
     }
     const liveCount = input.liveIds ? comp.filter((id) => input.liveIds!.has(id)).length : 0;
     return { ...block, ids: comp, liveCount };
@@ -175,7 +175,7 @@ export function computeMissionLayout(input: MissionLayoutInput): MissionLayoutRe
     multiBlocks.sort((a, b) => b.ids.length - a.ids.length);
   }
 
-  if (focusComp) for (const id of singles) dimmed.add(id);
+  if (focusComp) { const fs = new Set(focusComp); for (const id of ids) if (!fs.has(id)) dimmed.add(id); }
 
   const ordered: Block[] = [...multiBlocks];
   if (singles.length) ordered.push(layoutSingletons(singles, nodeW, nodeH, gap));
