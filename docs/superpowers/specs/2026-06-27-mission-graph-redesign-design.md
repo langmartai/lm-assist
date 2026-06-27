@@ -59,7 +59,8 @@ export interface MissionLayoutInput {
   edges: { from: string; to: string; type: 'parent' | 'dependsOn' }[];
   strategy: MissionLayoutStrategy;
   selectedId?: string | null;                           // for 'focus'
-  activity?: Map<string, number>;                       // missionId -> lastContact ms, for 'recent'
+  liveIds?: Set<string>;                                 // mission ids with a live bound session, for 'recent' + live dot
+                                                         // (GET /mission/sessions has no timestamp; liveness is binary presence)
   nodeW?: number; nodeH?: number; gap?: number;         // defaults 200 / 76 / 28
 }
 
@@ -86,7 +87,7 @@ The result carries positions (+ an optional `dimmed` set for focus); the canvas 
 3. **Singletons block:** all singletons packed into a grid (columns = `ceil(sqrt(n))`), as one block with its own bounding box.
 4. **Block ordering** (which block goes first in packing):
    - **clusters / hubs / focus:** components by node count descending; singleton block last.
-   - **recent:** components by `max(activity.lastContact among members)` descending (missing = 0); singleton block ordered by its own max activity among singletons (also last on ties).
+   - **recent:** components that contain ≥1 live mission (member in `liveIds`) first, ordered by live-member count desc, then size desc; non-live components after by size desc; singleton block last (but a live singleton sorts ahead of non-live singletons within that block's grid order). `/mission/sessions` has no timestamp, so "recent" = "has live work now", per the chosen intent.
    - **focus:** the selected mission's component first (centered), others after, singleton block last.
 5. **Block packing (shelf/row bin-packer):** place blocks left→right with `gap` between; when the row width would exceed a target width `T = max(viewportHint, sqrt(totalBlockArea * 1.6))`, wrap to a new row whose y = previous rows' max height + gap. Translate each block's local node coords by the block's packed origin → global `positions`.
 6. **Bounds:** `width/height` = max packed extent + padding.
@@ -99,7 +100,7 @@ Edges are always intra-component (connected components share no edges), so every
 - N singletons (no edges) → one grid block, `ceil(sqrt(N))` columns.
 - `hubs`: the highest-degree node is at its component's centroid (closer to block center than any leaf).
 - `focus` with a `selectedId`: selected node is the centroid of its component; a node in another component is flagged/positioned in a non-focused block. No `selectedId` → identical to `clusters`.
-- `recent`: component containing the highest-`lastContact` mission is packed before a stale component (smaller global x/y origin).
+- `recent`: a component containing a live mission (id in `liveIds`) is packed before a non-live component (smaller global x/y origin); no `liveIds` → falls back to size order (=== `clusters` ordering).
 - Empty input → `{width:0,height:0,positions:empty}` (canvas shows empty state).
 - All edges resolve to a position for both endpoints (no orphan edges).
 
@@ -167,7 +168,7 @@ This keeps "type to find a mission and see its related missions" working while l
 
 ### `useMissionActivity.ts` (new hook)
 
-Fetches `GET /mission/sessions` once (and on refresh), returns `Map<missionId, {lastContact:number, live:boolean}>` (`live` = has an active/waiting bound session; `lastContact` = max across that mission's rows). Memoized/stable. Feeds the Recent strategy ordering and the live dot. Failure → empty map (graph still renders; Recent falls back to size order, no dots).
+Fetches `GET /mission/sessions` once (and on refresh) → `{ sessions: {missionId}[] }`, returns a stable `Set<string>` of mission ids that have a live bound session (`liveIds`). Memoized. Feeds the Recent strategy ordering and the live dot. Failure → empty set (graph still renders; Recent falls back to size order, no dots).
 
 ## Out of scope (YAGNI)
 
