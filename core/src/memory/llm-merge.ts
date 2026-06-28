@@ -35,30 +35,27 @@ export function extractMerged(raw: string): string {
   return s;
 }
 
+/** Memory-merge model on the claude.ai conversation API. A focused merge task —
+ *  sonnet is plenty (the frontmatter-validation guard rejects bad output → defer,
+ *  so an imperfect merge never corrupts live memory). Override via MEMORY_MERGE_MODEL. */
+const MERGE_MODEL = process.env.MEMORY_MERGE_MODEL || 'claude-sonnet-4-6';
+
 /**
- * Default runner: a METERED Anthropic API key (ANTHROPIC_API_KEY) → /v1/messages.
- * It deliberately does NOT use the Claude Code OAuth token: that credential is for
- * Claude Code's own flow, not raw inference — calling /v1/messages with it misuses
- * the subscription (and is rate-limited). With no API key set, this throws → llmMerge
- * returns null → the conflict is DEFERRED (0 cost), never auto-merged.
+ * Default runner: the SANCTIONED claude.ai web conversation API (session cookie),
+ * NOT the Claude Code OAuth token (which is for Claude Code's own flow, not raw
+ * inference). Each merge spins up a THROWAWAY conversation tagged for auto-deletion
+ * (`autoDeleteHours: 1` → `[lm-autodel]` marker → swept by the cleanup-test-conversations
+ * job), sends the merge prompt, and returns the reply text. With no claude.ai session
+ * configured it throws → llmMerge returns null → the conflict is DEFERRED (0 cost).
  */
 async function defaultRunner(system: string, user: string): Promise<string> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('no ANTHROPIC_API_KEY — LLM merge skipped (conflict deferred)');
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 8000, system, messages: [{ role: 'user', content: user }] }),
-    signal: AbortSignal.timeout(60_000),
-  });
-  if (!res.ok) throw new Error(`/v1/messages ${res.status}`);
-  const body = (await res.json()) as { content?: Array<{ type: string; text: string }> };
-  const blocks = body?.content;
-  const text = Array.isArray(blocks) ? blocks.filter((b) => b?.type === 'text').map((b) => b.text).join('') : '';
+  const { createConversation, sendMessage } = await import('../utils/claudeai-session');
+  const { randomUUID } = await import('node:crypto');
+  const convUuid = randomUUID();
+  await createConversation({ uuid: convUuid, name: 'lm-assist memory-merge (auto)', model: MERGE_MODEL, autoDeleteHours: 1 });
+  // claude.ai conversations have no separate `system` param — fold it into the prompt.
+  const res = await sendMessage(convUuid, `${system}\n\n${user}`, { model: MERGE_MODEL });
+  const text = (res?.text || '').trim();
   if (!text) throw new Error('empty completion');
   return text;
 }
