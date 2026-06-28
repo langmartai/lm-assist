@@ -26,12 +26,12 @@ A `resultOriginTag()` helper (in `core/src/mcp-server/fleet-identity.ts`) reads 
 ## Part B — per-resource project + GitHub repo (where the tool knows it)
 
 The resource-returning tools surface each item's own project + repo from the resource, not the handler:
-- **sessions** (`list_recent_sessions`, `get_execution`, session detail) → for each session's `cwd`: the project name (basename) + the git remote `owner/repo` (best-effort: read `<cwd>/.git/config`, parse `[remote "origin"] url`, normalize `git@…:owner/repo.git` / `https://…/owner/repo(.git)` → `owner/repo`). Cache per cwd.
-- **missions** (`mission_list`, mission detail) → the mission's `primaryRepo`/`env` if present; else its session cwd's project/repo.
-- **github tools** (`github_query`/`github_mutate`) → the repo is already in the call/result; ensure it's shown.
+- **sessions** (`list_recent_sessions`, `get_execution`, session detail) → for each session's `cwd`: the project name (basename) + the git remote `owner/repo` (best-effort: read `<cwd>/.git/config`, parse `[remote "origin"] url`, normalize `git@…:owner/repo.git` / `https://…/owner/repo(.git)` → `owner/repo`). Cache per cwd. **This is the only place new wiring is needed** — `get_execution` first gains a `cwd` field on its status response so the handler has something to resolve.
+- **missions** (`mission_list`, mission detail) → **already covered, no new wiring.** These tools return the raw mission JSON, which already carries `env.repo` + `projects[]` + `binding.sessionId`; the repo/project provenance is therefore already present in the output. (A derived session-cwd fallback was considered but is redundant given the raw fields — YAGNI.)
+- **github tools** (`github_query`/`github_mutate`) → **already covered, no new wiring.** The repo is in the call args and echoed in the result `data`.
 - **data** (`data_catalog`/`data_get`/`data_query`) → dataset + node (already shown) — no change.
 
-A shared pure helper `repoOf(cwd: string): { project: string; repo?: string } | null` in a new `core/src/utils/repo-id.ts`, reused by sessions + missions. Per-resource fields are added to the existing result payloads (additive), not the footer.
+A shared pure helper `repoOf(cwd: string): { project: string; repo?: string } | null` in a new `core/src/utils/repo-id.ts`, reused by the session tools. `normalizeRemoteUrl` only emits `owner/repo` for HOSTED remotes (scp-style or `scheme://host/…`); a bare local path yields project-only. Per-resource fields are added to the existing result payloads (additive), not the footer.
 
 ## Components
 

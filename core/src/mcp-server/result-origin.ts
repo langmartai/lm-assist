@@ -44,7 +44,11 @@ export function withOriginTag(result: McpToolResult): McpToolResult {
   if (result.isError) return result;
   const first = result.content?.[0];
   if (!first || first.type !== 'text' || typeof first.text !== 'string') return result;
-  if (first.text.includes('FLEET / CONNECTOR IDENTITY')) return result;
+  // Skip results that LEAD with the FLEET / CONNECTOR IDENTITY block (bootstrap/
+  // session_status/guide) so they aren't double-tagged. Start-anchored so a result
+  // that merely echoes the phrase mid-text (e.g. search over these source files)
+  // still gets its footer.
+  if (first.text.trimStart().startsWith('FLEET / CONNECTOR IDENTITY')) return result;
   const tagged = { ...first, text: `${first.text}\n\n${resultOriginTag()}` };
   return { ...result, content: [tagged, ...result.content.slice(1)] };
 }

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseOriginRepo, repoOf, repoLabel } from '../utils/repo-id';
+import { parseOriginRepo, repoOf } from '../utils/repo-id';
 
 const SRC = join(__dirname, '..', '..', 'src'); // compiled test at core/dist-test/__tests__/
 const src = (rel: string) => readFileSync(join(SRC, rel), 'utf8');
@@ -35,6 +35,15 @@ test('parseOriginRepo — no origin / garbage → null', () => {
   assert.equal(parseOriginRepo(''), null);
 });
 
+test('parseOriginRepo — trailing slash after .git is stripped', () => {
+  assert.equal(parseOriginRepo(cfg('https://github.com/owner/repo.git/')), 'owner/repo');
+});
+
+test('parseOriginRepo — bare local path (no host) → null, not a bogus owner/repo', () => {
+  assert.equal(parseOriginRepo(cfg('/srv/git/myrepo.git')), null);
+  assert.equal(parseOriginRepo(cfg('file:///srv/git/myrepo.git')), null);
+});
+
 test('repoOf — git cwd yields project leaf + repo (injected reader)', () => {
   const r = repoOf('/home/ubuntu/lm-assist', () => cfg('git@github.com:langmartai/lm-assist.git'));
   assert.deepEqual(r, { project: 'lm-assist', repo: 'langmartai/lm-assist' });
@@ -53,12 +62,6 @@ test('repoOf — non-git cwd (reader throws) yields project only', () => {
 test('repoOf — empty/invalid cwd → null', () => {
   assert.equal(repoOf(''), null);
   assert.equal(repoOf(undefined), null);
-});
-
-test('repoLabel — compact forms', () => {
-  // repoLabel reads the local disk (memoized); a non-existent cwd → project only or ''.
-  assert.equal(repoLabel(''), '');
-  assert.equal(repoLabel('/definitely/not/a/real/dir/zzz-scratch'), 'zzz-scratch');
 });
 
 test('wiring — session resource tools surface project/repo via repoOfCached', () => {

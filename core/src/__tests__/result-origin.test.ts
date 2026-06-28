@@ -2,7 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { formatResultOriginTag, withOriginTag } from '../mcp-server/result-origin';
+import { formatResultOriginTag, resultOriginTag, withOriginTag } from '../mcp-server/result-origin';
+import { runWithMcpContext } from '../mcp-server/principal-context';
+import { getHubConfig } from '../hub-client/hub-config';
+import { hubHostOf } from '../mcp-server/fleet-identity';
 import type { McpToolResult } from '../mcp-server/configure';
 
 test('formatResultOriginTag — relayed form names the hub and carries node + cluster', () => {
@@ -60,6 +63,23 @@ test('withOriginTag — leaves non-text results unchanged', () => {
   const r = { content: [{ type: 'image', text: '' }] } as unknown as McpToolResult;
   const out = withOriginTag(r);
   assert.equal(out, r, 'non-text first content is returned as-is');
+});
+
+test('resultOriginTag — no MCP context resolves to the LOCAL form', () => {
+  const tag = resultOriginTag();
+  assert.match(tag, /· LOCAL ·/, 'no principal → local/direct call');
+});
+
+test('resultOriginTag — a cloud principal selects the @hub form (or LOCAL when no hub configured)', () => {
+  const tag = runWithMcpContext({ principal: { type: 'cloud' } as never }, () => resultOriginTag());
+  let hubHost: string | null = null;
+  try { hubHost = hubHostOf(getHubConfig().hubUrl); } catch { /* no hub */ }
+  if (hubHost) {
+    assert.ok(tag.startsWith(`⟦lm-assist@${hubHost} ·`), `relayed → names the hub, got: ${tag}`);
+    assert.ok(!tag.includes('· LOCAL ·'), 'relayed form must not say LOCAL');
+  } else {
+    assert.match(tag, /· LOCAL ·/, 'relayed but no hub configured → LOCAL');
+  }
 });
 
 test('wiring — both MCP dispatch surfaces append the origin tag', () => {

@@ -12,18 +12,21 @@ export interface RepoId {
   repo?: string;
 }
 
-/** PURE — normalize a git remote URL to `owner/repo` (no host, no `.git`). null if <2 path segments. */
+/**
+ * PURE — normalize a HOSTED git remote URL to `owner/repo` (no host, no `.git`).
+ * Accepts scp-style (`git@host:owner/repo(.git)`) and url-style
+ * (`scheme://host/owner/repo(.git)`). Returns null for a bare local path (no
+ * host segment — e.g. `/srv/git/x.git`, `file:///srv/x.git`) or <2 path segments.
+ */
 function normalizeRemoteUrl(rawUrl: string): string | null {
   let u = rawUrl.trim();
   if (!u) return null;
   const scp = u.match(/^[^/@]+@[^/:]+:(.+)$/); // git@host:owner/repo(.git)
-  if (scp) {
-    u = scp[1];
-  } else {
-    const url = u.match(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\/(.+)$/i); // scheme://host/owner/repo(.git)
-    if (url) u = url[1];
-  }
-  u = u.replace(/\.git$/i, '').replace(/\/+$/, '');
+  const url = scp ? null : u.match(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\/(.+)$/i); // scheme://host/owner/repo(.git)
+  if (scp) u = scp[1];
+  else if (url) u = url[1];
+  else return null; // not a hosted remote (local path / unrecognized) → no owner/repo
+  u = u.replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, ''); // strip trailing /, then .git, then any leftover /
   const parts = u.split('/').filter(Boolean);
   if (parts.length < 2) return null;
   return parts.slice(-2).join('/');
@@ -86,11 +89,4 @@ export function repoOfCached(cwd: string | undefined | null): RepoId | null {
   const r = repoOf(cwd);
   memo.set(key, r);
   return r;
-}
-
-/** Compact one-line label: `project · owner/repo`, or `project`, or '' when unknown. */
-export function repoLabel(cwd: string | undefined | null): string {
-  const r = repoOfCached(cwd);
-  if (!r) return '';
-  return r.repo ? `${r.project} · ${r.repo}` : r.project;
 }
