@@ -40,8 +40,9 @@ export function handleListNodes(): McpToolResult {
     `  status: online (this node)`,
     '',
     'Note: this worker can only report itself. When connected through the ' +
-      'langmart MCP connector, the hub returns every node you have online and ' +
-      'routes per-tool `node` selectors to the right host.',
+      'lm-assist MCP connector, the hub returns every node IN THIS FLEET (this ' +
+      "connector's hub) and routes per-tool `node` selectors to the right host. " +
+      'Other lm-assist connectors are other fleets — see guide("connectors").',
   ].join('\n');
   return ok(text);
 }

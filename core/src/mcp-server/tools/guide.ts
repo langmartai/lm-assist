@@ -1,5 +1,5 @@
 // core/src/mcp-server/tools/guide.ts
-// `guide` — a self-documenting bootstrap tool. The langmart MCP connector is always
+// `guide` — a self-documenting bootstrap tool. The lm-assist MCP connector is always
 // reachable even when a local Claude Code SKILL isn't installed, so we ship the
 // "skill" (curated, use-case playbooks for the other lm-assist tools) THROUGH the
 // connector: an LLM calls guide(topic=...) to learn the exact recipe — single-node,
@@ -7,6 +7,7 @@
 // tool descriptions. Content is hand-curated here.
 import type { McpToolResult } from '../configure';
 import { ok } from './_passthrough';
+import { fleetIdentity } from '../fleet-identity';
 import type { AuthSnapshot } from '../../monitor/auth-monitor';
 import { describeCookieTtl } from '../../utils/claudeai-session';
 
@@ -64,7 +65,19 @@ LOCAL-ONLY (NOT reachable cross-node over this connector — you are a "cloud" p
 
 ACCESS KEYS ARE PER-NODE: a data access key is valid ONLY on the node that issued it. To read data on node B: \`data_request_access(node=B, ...)\` → use that key with \`node=B\`. A node-A key used on node B → KEY_WRONG_NODE.
 
-CROSS-NODE DATA SYNC: a dataset with visibility \`synced\` (+ syncMode full/partial) REPLICATES between hosts (version + last-write-wins). \`cross-node-readable\` lets a cloud caller read it on any node (with a key). So: write on A → it appears on B after sync; OR read A's data directly with \`node=A\`. Trigger a pull locally on a host with data_sync (local-only).`,
+CROSS-NODE DATA SYNC: a dataset with visibility \`synced\` (+ syncMode full/partial) REPLICATES between hosts (version + last-write-wins). \`cross-node-readable\` lets a cloud caller read it on any node (with a key). So: write on A → it appears on B after sync; OR read A's data directly with \`node=A\`. Trigger a pull locally on a host with data_sync (local-only).
+
+MULTIPLE lm-assist connectors? Each connector = a SEPARATE FLEET (a different hub); its \`list_nodes\` is its membership and nodes do NOT cross. See guide("connectors").`,
+
+  connectors: `# Guide: connectors — which fleet THIS connector serves (multi-fleet)
+CONNECTORS (multi-fleet): Each lm-assist MCP connector = ONE fleet (one hub). \`list_nodes\` is the
+authoritative membership for THIS fleet. Other lm-assist connectors you may have are OTHER fleets —
+you cannot reach their nodes from here, and a hostname may exist in more than one fleet.
+RULE: a node-targeted tool routes to THIS fleet; before a node-scoped WRITE (cluster_assign,
+agent_execute@node, terminal driving on a node, transfer_send_file) confirm the node is in this
+\`list_nodes\`. A BAD_NODE / "no online node matches" error means it's NOT in this fleet — switch to
+that fleet's connector. Cluster ops (cluster_assign / cluster_list / cluster_unassign) only affect
+THIS fleet. The block above (FLEET / CONNECTOR IDENTITY) names this connector's hub + node + cluster.`,
 
   workflows: `# Guide: combination workflows (multi-tool; single + cross node)
 End-to-end recipes. Each step names a tool; add \`node=<host>\` to target another machine (see guide "cross-node").
@@ -381,6 +394,7 @@ for (const [topic, tools] of Object.entries(TOPIC_TOOLS)) for (const t of tools)
 const BLURB: Record<string, string> = {
   orientation: 'what lm-assist IS + how it WORKS WITH (complements, not replaces) your local CLAUDE.md / memory / skills (READ FIRST)',
   'cross-node': 'single-node vs cross-node model — node targeting, per-node keys, sync, local-only (READ for multi-machine)',
+  connectors: 'which FLEET this connector serves (hub + node + cluster) + multi-connector disambiguation — read if you have more than one lm-assist connector',
   workflows: 'combination recipes that chain tools across features + nodes (investigate→store, run-agent→capture, query→drill, …)',
   install: 'install & build lm-assist FROM THE REPO on this host — dev + prod, every gotcha (for a container/host with NO local lm-assist)',
   roles: 'worker role + orchestration — set_role, the ⟦WORKER-STATUS⟧ print contract, the 3 report channels, and the agree-gate',
@@ -408,7 +422,7 @@ function buildIndex(): string {
   const lines = [
     '# lm-assist — tool playbooks (call `guide(topic=...)` for any of these)',
     '',
-    'You are connected to lm-assist over the langmart MCP connector. These tools operate on Claude Code sessions, a structured data service, remote agents, terminals, and claude.ai — across one or more machines ("nodes"). Call `bootstrap` (no args) ONCE to load EVERY use case into this session; or `guide(topic=...)` for a single copy-pasteable recipe (a tool name works too, e.g. guide(topic="data_get")). New here? read `orientation` (what this is + how it works WITH — complements — your local CLAUDE.md/memory/skills), then `cross-node` and `workflows`.',
+    'You are connected to lm-assist over the lm-assist MCP connector. These tools operate on Claude Code sessions, a structured data service, remote agents, terminals, and claude.ai — across one or more machines ("nodes"). Call `bootstrap` (no args) ONCE to load EVERY use case into this session; or `guide(topic=...)` for a single copy-pasteable recipe (a tool name works too, e.g. guide(topic="data_get")). New here? read `orientation` (what this is + how it works WITH — complements — your local CLAUDE.md/memory/skills), then `cross-node` and `workflows`.',
     '',
     '## Golden rules (ALL tools)',
     '- **Node targeting:** every tool takes an optional `node` (hostId or hostname). Omit it for the DEFAULT host (single-node, the common case). Pass it to act on another machine; call `list_nodes` when the user means "my server"/"the other machine". Management ops (data create/drop/sync/keys, raw SQL) are LOCAL-ONLY — not over this connector. See guide("cross-node").',
@@ -425,7 +439,7 @@ const INDEX = buildIndex();
 
 /** The whole skill in ONE response — every playbook concatenated (stays in sync with GUIDES). */
 function buildBootstrap(): string {
-  const order = ['orientation', 'cross-node', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'login', 'github', 'files', 'clusters'];
+  const order = ['orientation', 'cross-node', 'connectors', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'login', 'github', 'files', 'clusters'];
   const header = [
     '# lm-assist — capability bootstrap (you have now loaded ALL use cases for this session)',
     '',
@@ -507,16 +521,18 @@ async function clusterBlock(): Promise<string> {
 
 async function handleBootstrap(_args: Record<string, unknown>): Promise<McpToolResult> {
   const [auth, cluster] = await Promise.all([authBlock(), clusterBlock()]);
-  return ok(BOOTSTRAP + auth + cluster);
+  return ok(fleetIdentity() + '\n\n' + BOOTSTRAP + auth + cluster);
 }
 
 async function handleGuide(args: Record<string, unknown>): Promise<McpToolResult> {
   const raw = String((args.topic ?? args.use_case ?? args.tool ?? '') as string).trim().toLowerCase();
   if (!raw || raw === 'index' || raw === 'help' || raw === 'list' || raw === 'topics') return ok(INDEX);
   const key = (GUIDES[raw] ? raw : undefined) ?? ALIASES[raw];
-  if (key && GUIDES[key]) return ok(GUIDES[key]);
+  // `connectors` is dynamic: prepend the live fleet identity so the body names THIS hub/node/cluster.
+  const body = (k: string): string => (k === 'connectors' ? fleetIdentity() + '\n\n' + GUIDES[k] : GUIDES[k]);
+  if (key && GUIDES[key]) return ok(body(key));
   const sub = Object.keys(GUIDES).find((k) => k.includes(raw) || raw.includes(k));
-  if (sub) return ok(GUIDES[sub]);
+  if (sub) return ok(body(sub));
   return ok(`No guide titled "${args.topic ?? args.use_case ?? args.tool}". Pick a topic below.\n\n${INDEX}`);
 }
 
