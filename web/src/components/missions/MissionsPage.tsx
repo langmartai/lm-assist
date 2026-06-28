@@ -1533,6 +1533,15 @@ export function MissionsPage() {
   // sparse client-events). Reading the controller chat via the cse showed "No turns yet"; the native
   // sid reads the complete transcript and still surfaces the bridge pendingQuestion (bridgeCseFor).
   const controllerSid = cs ? (cs.sessionId ?? cs.cse) : null;
+  // The controller's CLOUD/CCR session id for the "Open in Claude app" deep-link.
+  // A cloud controller's controllerSid is already cloud; a NATIVE controller with a
+  // --remote-control bridge keeps its CCR session in cs.cse (cse_… → session_…), so fall
+  // back to that — otherwise the link never shows for a native-with-bridge controller.
+  const controllerCloudSid = cs
+    ? (controllerSid && /^(session_|cse_)/.test(controllerSid)
+        ? controllerSid
+        : (cs.cse ? cs.cse.replace(/^cse_/, 'session_') : null))
+    : null;
 
   // Failover state: controllerSession is stale when it belongs to a different node than the
   // current elected leader. This happens during the ~1-min window after election flips but
@@ -1984,11 +1993,12 @@ export function MissionsPage() {
                     </button>
                   </>
                 )}
-                {/* Direct deep-link: open the controller's CCR session in the native Claude app */}
-                {cs && controllerSid && /^(session_|cse_)/.test(controllerSid) && (
+                {/* Direct deep-link: open the controller's CCR session in the native Claude app
+                    — shows for a cloud controller AND a native controller with a CCR bridge. */}
+                {controllerCloudSid && (
                   <a
                     className="btn btn-ghost btn-sm"
-                    href={`https://claude.ai/code/${controllerSid}`}
+                    href={`https://claude.ai/code/${controllerCloudSid}`}
                     target="_blank"
                     rel="noreferrer"
                     title="Open this controller's CCR session in the Claude app"
