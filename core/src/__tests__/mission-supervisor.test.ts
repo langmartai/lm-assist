@@ -257,6 +257,14 @@ function engageDeps(over: Partial<SupervisorDeps>): SupervisorDeps {
     getEngagement: async () => ({ lastEngagedAt: NOW - 60_000, lastActiveIds: [], seen: {} }),
     putEngagement: async () => {},
     setInterim: async () => {},
+    // Cluster deps for the orphaned-worker migration list (only consulted on the roster-change
+    // branch; with the default empty active set they yield no candidates → base directive).
+    listClusterRecords: async () => [
+      { gatewayId: 'gw1', cluster: 'release' },
+      { gatewayId: 'gw2', cluster: 'release' },
+    ],
+    myCluster: () => 'release',
+    selfId: () => 'gw1',
     ...over,
   });
 }
@@ -373,4 +381,40 @@ test('engage: FIRST roster observation (no lastRosterKey) → records baseline, 
   assert.equal(r.action, 'idle', 'first observation must not spuriously drive');
   assert.equal(drivenWith, 'UNSET', 'drive must NOT be called on the first roster observation');
   assert.equal(saved.lastRosterKey, 'gw1,gw2', 'baseline roster key recorded for next-tick comparison');
+});
+
+test('engage: roster change WITH an out-of-cluster active worker → directive lists the worker to MIGRATE', async () => {
+  let drivenWith: string | undefined = 'UNSET';
+  // A bound, active worker pinned to gw9-other, which sits in a DIFFERENT cluster ('dev') than
+  // this node's 'release' — so the roster change orphans it and it must be migrated, not killed.
+  const orphan: any = {
+    id: 'm-orphan',
+    status: 'active',
+    env: { host: 'gw9-other' },
+    binding: { sessionId: 'session_orphan', node: 'gw9-other', kind: 'worker' },
+  };
+  const deps = engageDeps({
+    listActiveForEngage: async () => [orphan],
+    // No material change for the orphan — the ONLY engage trigger is the roster-key change.
+    readSignal: async () => ({ alive: true, gated: false, cursor: 0, newLines: [] }),
+    getEngagement: async () => ({
+      lastEngagedAt: NOW - 60_000,
+      lastActiveIds: ['m-orphan'],
+      seen: { 'm-orphan': { alive: true, gated: false, cursor: 0 } },
+      lastRosterKey: 'gw1,gw2',
+    }),
+    rosterKey: async () => 'gw1',           // gw2 left → membership changed
+    listClusterRecords: async () => [
+      { gatewayId: 'gw1', cluster: 'release' },
+      { gatewayId: 'gw9-other', cluster: 'dev' }, // the orphan's node is in another cluster
+    ],
+    myCluster: () => 'release',
+    selfId: () => 'gw1',
+    drive: async (_cs, directive) => { drivenWith = directive; },
+  });
+  const r = await runSupervisorTick(deps);
+  assert.equal(r.action, 'drive', 'a roster change must force a drive');
+  assert.ok(drivenWith!.startsWith(CONTROLLER_ROSTER_CHANGED_DIRECTIVE), 'directive starts with the roster-changed base');
+  assert.ok(drivenWith!.includes('session_orphan'), 'directive names the orphaned session to migrate');
+  assert.ok(drivenWith!.includes('m-orphan'), 'directive names the orphaned mission');
 });
