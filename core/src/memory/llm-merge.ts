@@ -49,15 +49,22 @@ const MERGE_MODEL = process.env.MEMORY_MERGE_MODEL || 'claude-sonnet-4-6';
  * configured it throws → llmMerge returns null → the conflict is DEFERRED (0 cost).
  */
 async function defaultRunner(system: string, user: string): Promise<string> {
-  const { createConversation, sendMessage } = await import('../utils/claudeai-session');
+  const { createConversation, sendMessage, deleteConversation } = await import('../utils/claudeai-session');
   const { randomUUID } = await import('node:crypto');
   const convUuid = randomUUID();
   await createConversation({ uuid: convUuid, name: 'lm-assist memory-merge (auto)', model: MERGE_MODEL, autoDeleteHours: 1 });
-  // claude.ai conversations have no separate `system` param — fold it into the prompt.
-  const res = await sendMessage(convUuid, `${system}\n\n${user}`, { model: MERGE_MODEL });
-  const text = (res?.text || '').trim();
-  if (!text) throw new Error('empty completion');
-  return text;
+  try {
+    // claude.ai conversations have no separate `system` param — fold it into the prompt.
+    const res = await sendMessage(convUuid, `${system}\n\n${user}`, { model: MERGE_MODEL });
+    const text = (res?.text || '').trim();
+    if (!text) throw new Error('empty completion');
+    return text;
+  } finally {
+    // Delete the throwaway conversation NOW — don't leave it in Recents. The
+    // `autoDeleteHours` name marker is only a fallback: the cleanup sweep removes
+    // VERIFIED ids, not arbitrary expired tags, so tagged convs otherwise linger.
+    try { await deleteConversation(convUuid); } catch { /* fallback: the [lm-autodel] marker */ }
+  }
 }
 
 export async function llmMerge(input: LlmMergeInput, runner: MergeRunner = defaultRunner): Promise<string | null> {
