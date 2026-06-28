@@ -9,6 +9,7 @@ import { listMissions, putMission, thisNode, getControllerSession, putController
 import { clusterOf, type ClusterRecord } from '../cluster/cluster-map';
 import { getClusterRecords } from '../cluster/cluster-store';
 import { getMyCluster } from '../cluster/cluster-config';
+import { fleetIdentity } from '../mcp-server/fleet-identity';
 import { classifyExecutorActivity, shouldEngage } from './mission-engagement';
 import { runAdjust } from './mission-adjust';
 import { getProjectSettings } from '../project-settings';
@@ -488,7 +489,9 @@ export function buildControllerLaunchExtras(args: {
   apiKey: string | null;
   writeFile: (name: string, body: string) => string;
 }): { appendSystemPromptFile: string; mcpConfigPath?: string } {
-  const appendSystemPromptFile = args.writeFile('mission-controller-sp.txt', CONTROLLER_SYSTEM_PROMPT);
+  // Lead with the fleet/connector identity so the controller knows its fleet + cluster boundary
+  // (it places executors only within its cluster; this names the boundary). Dynamic at launch.
+  const appendSystemPromptFile = args.writeFile('mission-controller-sp.txt', fleetIdentity() + '\n\n' + CONTROLLER_SYSTEM_PROMPT);
   const out: { appendSystemPromptFile: string; mcpConfigPath?: string } = { appendSystemPromptFile };
   const mcpUrl = deriveHubMcpUrl(args.hubUrl);
   if (args.apiKey && mcpUrl) {
