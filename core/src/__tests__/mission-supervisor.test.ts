@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { decideSupervisor, runSupervisorTick, discoverNewCse, isDriveDue } from '../mission/mission-controller';
+import {
+  decideSupervisor, runSupervisorTick, discoverNewCse, isDriveDue,
+  computeRosterKey, CONTROLLER_ROSTER_CHANGED_DIRECTIVE, CONTROLLER_PASS_DIRECTIVE,
+} from '../mission/mission-controller';
 import type { SupervisorDeps } from '../mission/mission-controller';
 import type { ControllerSession } from '../mission/mission-store';
 
@@ -301,4 +304,73 @@ test('engage: a NEW mission (active-set changed) → drive', async () => {
   });
   const r = await runSupervisorTick(deps);
   assert.equal(r.action, 'drive');
+});
+
+// ---------------------------------------------------------------------------
+// Cluster-roster change → force-engage + roster-changed directive
+// ---------------------------------------------------------------------------
+
+test('computeRosterKey: sorted gatewayIds filtered to the given cluster', () => {
+  const records = [
+    { gatewayId: 'b', cluster: 'x' },
+    { gatewayId: 'a', cluster: 'x' },
+    { gatewayId: 'c', cluster: 'y' },
+  ];
+  assert.equal(computeRosterKey(records, 'x'), 'a,b');
+  assert.equal(computeRosterKey(records, 'y'), 'c');
+  assert.equal(computeRosterKey(records, 'z'), '', 'no in-cluster members → empty key');
+});
+
+test('computeRosterKey: order-independent (same membership → same key)', () => {
+  const a = computeRosterKey([{ gatewayId: 'gw2', cluster: 'c' }, { gatewayId: 'gw1', cluster: 'c' }], 'c');
+  const b = computeRosterKey([{ gatewayId: 'gw1', cluster: 'c' }, { gatewayId: 'gw2', cluster: 'c' }], 'c');
+  assert.equal(a, b);
+  assert.equal(a, 'gw1,gw2');
+});
+
+test('engage: in-cluster roster CHANGED → force drive + roster-changed directive + persist new key', async () => {
+  let drivenWith: string | undefined = 'UNSET';
+  let saved: any = null;
+  // No missions, recently engaged, same (empty) active set, nothing material →
+  // shouldEngage would be FALSE; the ONLY trigger here is the roster-key change.
+  const deps = engageDeps({
+    listActiveForEngage: async () => [],
+    getEngagement: async () => ({ lastEngagedAt: NOW - 60_000, lastActiveIds: [], seen: {}, lastRosterKey: 'gw1,gw2' }),
+    rosterKey: async () => 'gw1,gw3', // a node left, another joined → membership changed
+    putEngagement: async (s) => { saved = s; },
+    drive: async (_cs, directive) => { drivenWith = directive; },
+  });
+  const r = await runSupervisorTick(deps);
+  assert.equal(r.action, 'drive', 'a roster change must force a drive');
+  assert.equal(drivenWith, CONTROLLER_ROSTER_CHANGED_DIRECTIVE, 'drive must use the roster-changed directive');
+  assert.notEqual(drivenWith, CONTROLLER_PASS_DIRECTIVE);
+  assert.equal(saved.lastRosterKey, 'gw1,gw3', 'new roster key persisted so the change fires exactly once');
+  assert.equal(saved.lastEngagedAt, NOW, 'lastEngagedAt stamped on the forced engage');
+});
+
+test('engage: in-cluster roster UNCHANGED → does NOT force drive (idle)', async () => {
+  const deps = engageDeps({
+    listActiveForEngage: async () => [],
+    getEngagement: async () => ({ lastEngagedAt: NOW - 60_000, lastActiveIds: [], seen: {}, lastRosterKey: 'gw1,gw2' }),
+    rosterKey: async () => 'gw1,gw2', // unchanged
+  });
+  const r = await runSupervisorTick(deps);
+  assert.notEqual(r.action, 'drive');
+  assert.equal(r.action, 'idle');
+});
+
+test('engage: FIRST roster observation (no lastRosterKey) → records baseline, does NOT spuriously drive', async () => {
+  let drivenWith: string | undefined = 'UNSET';
+  let saved: any = null;
+  const deps = engageDeps({
+    listActiveForEngage: async () => [],
+    getEngagement: async () => ({ lastEngagedAt: NOW - 60_000, lastActiveIds: [], seen: {} }), // lastRosterKey undefined
+    rosterKey: async () => 'gw1,gw2',
+    putEngagement: async (s) => { saved = s; },
+    drive: async (_cs, directive) => { drivenWith = directive; },
+  });
+  const r = await runSupervisorTick(deps);
+  assert.equal(r.action, 'idle', 'first observation must not spuriously drive');
+  assert.equal(drivenWith, 'UNSET', 'drive must NOT be called on the first roster observation');
+  assert.equal(saved.lastRosterKey, 'gw1,gw2', 'baseline roster key recorded for next-tick comparison');
 });

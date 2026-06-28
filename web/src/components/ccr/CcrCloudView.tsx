@@ -3,7 +3,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Loader2, X, Send, RefreshCw, Wrench, User, Cloud, ExternalLink, HelpCircle } from 'lucide-react';
+import { Loader2, X, Send, RefreshCw, Wrench, User, Cloud, ExternalLink, HelpCircle, Eye, EyeOff } from 'lucide-react';
+import { isInjectedMessageText } from '@/lib/injected-message';
 
 type ApiFetch = <T>(path: string, opts?: { method?: string; body?: unknown }) => Promise<T>;
 interface CloudMsg { role: string; type: string; text: string; tools?: string[] }
@@ -26,6 +27,7 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose, fill }: {
   const [answering, setAnswering] = useState(false);
   const [customAnswer, setCustomAnswer] = useState('');
   const [gone, setGone] = useState(false); // session deleted/ended — stop polling, show a clean state
+  const [hideInjected, setHideInjected] = useState(true); // "Only user ↔ assistant" — default ON
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
 
@@ -82,6 +84,12 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose, fill }: {
     finally { setSending(false); }
   }, [apiFetch, sid, prompt, load]);
 
+  // "Only user ↔ assistant": always drop truly-empty turns (no text AND no tools);
+  // when the toggle is ON, also drop lm-assist-injected scaffolding.
+  const nonEmpty = messages.filter((m) => (m.text && m.text.trim().length > 0) || (m.tools && m.tools.length > 0));
+  const visibleMessages = hideInjected ? nonEmpty.filter((m) => !isInjectedMessageText(m.text || '')) : nonEmpty;
+  const injectedHiddenCount = nonEmpty.length - visibleMessages.length;
+
   return (
     <div className="card" style={{ marginTop: fill ? 0 : 8, padding: 0, display: 'flex', flexDirection: 'column', ...(fill ? { flex: 1, minHeight: 0, height: '100%', maxHeight: 'none' as const } : { maxHeight: 520 }), overflow: 'hidden', border: fill ? 'none' : '1px solid var(--color-accent)' }}>
       <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--color-border-default)', display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -89,7 +97,11 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose, fill }: {
         <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)' }}>cloud session</span>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--color-text-tertiary)' }}>{sid.replace('session_', '').slice(0, 10)}</span>
         <div style={{ flex: 1 }} />
-        {webUrl && <a className="btn btn-ghost btn-sm" href={webUrl} target="_blank" rel="noreferrer" title="Open on claude.ai/code"><ExternalLink size={12} /></a>}
+        {webUrl && <a className="btn btn-ghost btn-sm" href={webUrl} target="_blank" rel="noreferrer" title="Open in Claude app"><ExternalLink size={12} /></a>}
+        <button className="btn btn-ghost btn-sm" onClick={() => setHideInjected((v) => !v)}
+          title={hideInjected ? 'Showing only user ↔ assistant — click to show injected turns' : 'Showing all turns — click to hide injected'}>
+          {hideInjected ? <EyeOff size={12} /> : <Eye size={12} />} <span style={{ fontSize: 10.5 }}>only user ↔ assistant</span>
+        </button>
         <button className="btn btn-ghost btn-sm" onClick={() => setLive((v) => !v)} title={live ? 'Auto-refresh on (5s)' : 'paused'}>
           <RefreshCw size={12} style={live ? { animation: 'spin 3s linear infinite' } : undefined} /> {live ? 'live' : 'paused'}
         </button>
@@ -106,7 +118,16 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose, fill }: {
           <div style={{ fontSize: 12, color: 'var(--color-status-red)' }}>{err}</div>
         ) : !messages.length ? (
           <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>No turns yet — the cloud container is booting; replies appear here.</div>
-        ) : messages.map((m, i) => <CloudMessage key={i} m={m} />)}
+        ) : (
+          <>
+            {visibleMessages.map((m, i) => <CloudMessage key={i} m={m} />)}
+            {injectedHiddenCount > 0 && (
+              <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center', padding: '4px 0', fontStyle: 'italic' }}>
+                · {injectedHiddenCount} injected message{injectedHiddenCount === 1 ? '' : 's'} hidden ·
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       {!gone && (

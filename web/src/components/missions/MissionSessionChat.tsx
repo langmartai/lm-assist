@@ -3,7 +3,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Loader2, Send, Wrench, HelpCircle } from 'lucide-react';
+import { Loader2, Send, Wrench, HelpCircle, Eye, EyeOff } from 'lucide-react';
+import { isInjectedMessageText } from '@/lib/injected-message';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -172,6 +173,7 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false, mi
   const [pendingQ, setPendingQ] = useState<PendingQuestion | null>(null);
   const [answering, setAnswering] = useState(false);
   const [customAnswer, setCustomAnswer] = useState('');
+  const [hideInjected, setHideInjected] = useState(true); // "Only user ↔ assistant" — default ON
   const pollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -282,14 +284,38 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false, mi
 
   // ── Derived render data ──
 
-  const visibleMessages = messages.filter((m) => !isHeartbeatMsg(m));
-  const heartbeatCount = messages.length - visibleMessages.length;
+  // Always drop truly-empty turns (no text AND no tools); tool-only turns stay
+  // (shown as badges). The "Only user ↔ assistant" toggle additionally hides
+  // lm-assist-injected scaffolding (worker-status / heartbeat / bootstrap / the
+  // standing controller-pass directive) — subsuming the old heartbeat filter.
+  const nonEmptyMessages = messages.filter((m) => {
+    const hasText = resolveMsgText(m).trim().length > 0;
+    const hasTools = Array.isArray(m.tools) && m.tools.length > 0;
+    return hasText || hasTools;
+  });
+  const visibleMessages = hideInjected
+    ? nonEmptyMessages.filter((m) => !isInjectedMessageText(resolveMsgText(m)))
+    : nonEmptyMessages;
+  const injectedHiddenCount = nonEmptyMessages.length - visibleMessages.length;
   const chatGroups = buildChatGroups(visibleMessages);
 
   // ── Render ──
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: heightFill ? '1 1 0' : undefined, overflow: 'hidden', minHeight: 0 }}>
+      {/* Toolbar: "Only user ↔ assistant" filter (default ON — hides injected scaffolding) */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', padding: '6px 16px 0', flexShrink: 0 }}>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={() => setHideInjected((v) => !v)}
+          title={hideInjected ? 'Showing only user ↔ assistant — click to show injected turns' : 'Showing all turns — click to hide injected'}
+          style={{ gap: 4, fontSize: 10.5 }}
+        >
+          {hideInjected ? <EyeOff size={11} /> : <Eye size={11} />} Only user ↔ assistant
+        </button>
+      </div>
+
       {/* Transcript */}
       <div
         ref={scrollRef}
@@ -306,7 +332,7 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false, mi
       >
         {visibleMessages.length === 0 && (
           <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', textAlign: 'center', padding: '16px 0' }}>
-            {heartbeatCount > 0
+            {injectedHiddenCount > 0
               ? 'Session is running idle background passes — send a message to give it work.'
               : 'No messages yet'}
           </div>
@@ -361,9 +387,9 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false, mi
           );
         })}
 
-        {heartbeatCount > 0 && (
+        {injectedHiddenCount > 0 && (
           <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center', padding: '4px 0', fontStyle: 'italic' }}>
-            · idle ({heartbeatCount} background pass{heartbeatCount === 1 ? '' : 'es'} hidden) ·
+            · {injectedHiddenCount} injected message{injectedHiddenCount === 1 ? '' : 's'} hidden ·
           </div>
         )}
       </div>

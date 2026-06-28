@@ -10,6 +10,7 @@ import {
   Cloud,
   Monitor,
   MessageSquare,
+  ExternalLink,
 } from 'lucide-react';
 import { MissionSessionChat } from './MissionSessionChat';
 import { FullScreenOverlay, ExpandIconButton } from './FullScreenOverlay';
@@ -466,54 +467,70 @@ export function MissionDetailView({
                 const isLive = typeof s.lastContact === 'number' && Date.now() - s.lastContact < LIVE_WINDOW_MS;
                 const title = `${roleLabel} · ${shortSid}`;
                 return (
-                  <button
-                    key={s.sid}
-                    className="btn btn-ghost btn-sm"
-                    style={{ justifyContent: 'flex-start', gap: 6, fontSize: 11, textAlign: 'left' }}
-                    onClick={() =>
-                      onOpenSession({
-                        sid: s.sid,
-                        title,
-                        node: mission.binding?.node ?? mission.ownerNode ?? null,
-                        missionId: mission.id,
-                      })
-                    }
-                    title={`Open ${title} in a tab`}
-                  >
-                    {/* Liveness dot */}
-                    <span
-                      style={{
-                        width: 7,
-                        height: 7,
-                        borderRadius: '50%',
-                        flexShrink: 0,
-                        background: isLive ? 'var(--color-status-green)' : 'var(--color-text-tertiary)',
-                      }}
-                      title={isLive ? 'live' : 'idle'}
-                    />
-                    {/* Transport icon */}
-                    {isCloud ? (
-                      <Cloud size={11} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
-                    ) : (
-                      <Monitor size={11} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />
-                    )}
-                    {/* Kind badge */}
-                    <span className={`badge ${s.kind === 'orchestrator' ? 'badge-blue' : 'badge-default'}`} style={{ fontSize: 9 }}>
-                      {roleLabel}
-                      {s.role === 'sub' ? ' · sub' : ''}
-                    </span>
-                    {/* Executor badge */}
-                    {isExecutor && (
-                      <span className="badge badge-green" style={{ fontSize: 9 }}>
-                        executor
+                  // Row = the open-in-tab <button> + (for cloud sessions) a deep-link <a>.
+                  // An <a> cannot nest inside a <button>, so they sit side by side in a flex row.
+                  <div key={s.sid} style={{ display: 'flex', alignItems: 'stretch', gap: 4 }}>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      style={{ flex: 1, minWidth: 0, justifyContent: 'flex-start', gap: 6, fontSize: 11, textAlign: 'left' }}
+                      onClick={() =>
+                        onOpenSession({
+                          sid: s.sid,
+                          title,
+                          node: mission.binding?.node ?? mission.ownerNode ?? null,
+                          missionId: mission.id,
+                        })
+                      }
+                      title={`Open ${title} in a tab`}
+                    >
+                      {/* Liveness dot */}
+                      <span
+                        style={{
+                          width: 7,
+                          height: 7,
+                          borderRadius: '50%',
+                          flexShrink: 0,
+                          background: isLive ? 'var(--color-status-green)' : 'var(--color-text-tertiary)',
+                        }}
+                        title={isLive ? 'live' : 'idle'}
+                      />
+                      {/* Transport icon */}
+                      {isCloud ? (
+                        <Cloud size={11} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
+                      ) : (
+                        <Monitor size={11} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />
+                      )}
+                      {/* Kind badge */}
+                      <span className={`badge ${s.kind === 'orchestrator' ? 'badge-blue' : 'badge-default'}`} style={{ fontSize: 9 }}>
+                        {roleLabel}
+                        {s.role === 'sub' ? ' · sub' : ''}
                       </span>
+                      {/* Executor badge */}
+                      {isExecutor && (
+                        <span className="badge badge-green" style={{ fontSize: 9 }}>
+                          executor
+                        </span>
+                      )}
+                      {/* Short sid */}
+                      <span style={{ flex: 1, color: 'var(--color-text-secondary)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {shortSid}
+                      </span>
+                      <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>{transport}</span>
+                    </button>
+                    {/* Cloud sessions: open natively in the Claude desktop app (handles claude.ai/code URLs). */}
+                    {isCloud && (
+                      <a
+                        className="btn btn-ghost btn-sm"
+                        href={`https://claude.ai/code/${s.sid}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="Open in Claude app"
+                        style={{ flexShrink: 0, alignItems: 'center' }}
+                      >
+                        <ExternalLink size={12} />
+                      </a>
                     )}
-                    {/* Short sid */}
-                    <span style={{ flex: 1, color: 'var(--color-text-secondary)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {shortSid}
-                    </span>
-                    <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>{transport}</span>
-                  </button>
+                  </div>
                 );
               })}
             </div>

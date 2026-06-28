@@ -54,6 +54,20 @@ export function placementAllowed(
   return clusterOf(resolveHostToId(host, records), records, selfId, selfCluster) === selfCluster;
 }
 
+/**
+ * Pure: a stable key for THIS node's in-cluster roster — the SORTED gatewayIds of
+ * the cluster records whose cluster === `cluster`, joined by ','. Two ticks produce
+ * the same key iff the in-cluster node membership is identical (order-independent),
+ * so the supervisor can cheaply detect when its cluster's roster changed.
+ */
+export function computeRosterKey(records: ClusterRecord[], cluster: string): string {
+  return records
+    .filter((r) => r.cluster === cluster)
+    .map((r) => r.gatewayId)
+    .sort()
+    .join(',');
+}
+
 export interface MissionTickDeps {
   now: number;
   cfg: { intervalMin: number; maxNudges: number; model: string };
@@ -381,6 +395,13 @@ export async function startNativeExecutor(m: Mission, decision: any, deps: Nativ
 export const CONTROLLER_PASS_DIRECTIVE =
   'Run a controller pass now. FIRST call mission_changes — re-evaluate any mission an external actor (a human or another node) edited since your last pass BEFORE anything else, and adapt rather than override. THEN call mission_schedule for the deterministic plan: act on each id in `ready` (place/spawn an executor via ccr_cloud_start, NEVER agent_execute, then bind with mission_update({binding})); for each `epicRollups` entry whose status/progress differs from the stored parent, apply it with mission_update; leave `blocked` and `containers` alone (they are gated/rolled-up by code). For two ready missions that touch the same area with no explicit dependsOn, decide parallel-vs-sequence (use mission_neighbors/mission_graph to see structure) and if you serialize them, tag them mission_tag({add:{"ctl:serialize-group":["<group>"]}}) so the scheduler enforces it next pass. Record your view with ctl: tags (e.g. ctl:readiness). Answer any worker pendingQuestion IMMEDIATELY via mission_session_answer; resume a non-live bound worker with mission_session_resume(sid) before respawning. Then await the next pass.';
 
+/** Drive sent INSTEAD of CONTROLLER_PASS_DIRECTIVE when the supervisor detected that this
+ *  node's cluster roster (in-cluster node membership) changed since the last pass. Tells the
+ *  controller to re-scope its cluster before the normal pass. Orphaned workers KEEP RUNNING —
+ *  the controller RELEASES (does not kill) any whose node left, and re-adopts any now-in-cluster. */
+export const CONTROLLER_ROSTER_CHANGED_DIRECTIVE =
+  '⟦CLUSTER ROSTER CHANGED⟧ Your cluster\'s node membership just changed. Re-read your scope (call cluster_list), re-evaluate which executors/workers are still IN your cluster, RELEASE/forget any worker whose node left your cluster (it keeps running and will be picked up by its new cluster\'s controller — do NOT kill it), and PICK UP / re-place any now-in-cluster worker or pending task. Then run a normal controller pass (mission_changes → mission_schedule).';
+
 /**
  * Guarded system prompt for the Mission Controller agent. Passed at launch via
  * --append-system-prompt-file so the controller's role, scope, and heartbeat
@@ -544,7 +565,10 @@ export interface SupervisorDeps {
   putControllerSession: (cs: ControllerSession | null) => Promise<void>;
   isLive: (cs: ControllerSession) => boolean;
   launch: () => Promise<ControllerSession>;
-  drive: (cs: ControllerSession) => Promise<void>;
+  /** Drive the live controller. `directive` defaults to CONTROLLER_PASS_DIRECTIVE; the
+   *  supervisor passes CONTROLLER_ROSTER_CHANGED_DIRECTIVE when a cluster-roster change
+   *  triggered the engagement. */
+  drive: (cs: ControllerSession, directive?: string) => Promise<void>;
   teardown: (cs: ControllerSession) => Promise<void>;
   /** The adapt cadence in minutes (from project settings). Used to compute driveDue. */
   driveIntervalMin: number;
@@ -568,6 +592,11 @@ export interface SupervisorDeps {
   setInterim?: (id: string, x: { at: number; text: string }) => Promise<void>;
   /** Long safety interval (min) — engage at least this often even with no change. Default 45. */
   safetyIntervalMin?: number;
+  /** Current stable key of THIS node's in-cluster roster (sorted in-cluster gatewayIds).
+   *  When present, evaluateEngagement force-engages on a change vs the persisted lastRosterKey
+   *  so the controller re-scopes its cluster. Production wires it to computeRosterKey over
+   *  getClusterRecords()+getMyCluster(); omitted → no roster-change trigger (unchanged behavior). */
+  rosterKey?: () => Promise<string>;
 }
 
 /**
@@ -585,10 +614,12 @@ export interface SupervisorDeps {
  * Wave 4 — the change-detection engagement evaluation (side-effecting). Reads each
  * active executor cheaply (no LLM), classifies vs the last-seen record, surfaces
  * interim progress WITHOUT engaging, persists the updated `seen` every tick, and
- * returns whether a material change / new mission / safety interval means the
- * controller should be driven. Caller guarantees the engagement deps are present.
+ * returns whether a material change / new mission / safety interval / cluster-roster
+ * change means the controller should be driven (plus an optional `reason` so the
+ * caller can pick a roster-specific directive). Caller guarantees the engagement deps
+ * are present.
  */
-async function evaluateEngagement(deps: SupervisorDeps): Promise<boolean> {
+async function evaluateEngagement(deps: SupervisorDeps): Promise<{ engage: boolean; reason?: 'roster-change' }> {
   const eng = await deps.getEngagement!();
   const active = await deps.listActiveForEngage!();
   const now = deps.now;
@@ -612,7 +643,7 @@ async function evaluateEngagement(deps: SupervisorDeps): Promise<boolean> {
     }
   }
   const activeIds = active.map((m) => m.id);
-  const engage = shouldEngage({
+  let engage = shouldEngage({
     now,
     lastEngagedAt: eng.lastEngagedAt,
     safetyIntervalMin: deps.safetyIntervalMin ?? 45,
@@ -620,14 +651,37 @@ async function evaluateEngagement(deps: SupervisorDeps): Promise<boolean> {
     activeIds,
     lastActiveIds: eng.lastActiveIds,
   });
+
+  // ── Cluster-roster change — ADDITIONAL force-engage trigger ──
+  // When THIS node's in-cluster node membership changes, drive the controller so it
+  // re-scopes its cluster (release out-of-cluster workers, adopt now-in-cluster ones).
+  // The very first observation only records the baseline (no spurious boot-time drive).
+  // Best-effort: a roster read failure must never sink the tick.
+  let reason: 'roster-change' | undefined;
+  let nextRosterKey = eng.lastRosterKey;
+  if (deps.rosterKey) {
+    try {
+      const rosterKey = await deps.rosterKey();
+      if (eng.lastRosterKey === undefined) {
+        nextRosterKey = rosterKey;          // baseline — record without forcing a drive
+      } else if (eng.lastRosterKey !== rosterKey) {
+        engage = true;                      // membership changed → re-scope the cluster now
+        reason = 'roster-change';
+        nextRosterKey = rosterKey;
+      }
+    } catch { /* leave lastRosterKey unchanged on a read failure */ }
+  }
+
   // Persist `seen` every tick (cursor/liveness/gate tracking advances regardless);
-  // stamp lastEngagedAt + lastActiveIds only when we actually engage.
+  // stamp lastEngagedAt + lastActiveIds only when we actually engage; carry/advance
+  // lastRosterKey so a detected roster change fires exactly once.
   await deps.putEngagement!({
     lastEngagedAt: engage ? now : eng.lastEngagedAt,
     lastActiveIds: engage ? activeIds : eng.lastActiveIds,
     seen: curSeen,
+    lastRosterKey: nextRosterKey,
   });
-  return engage;
+  return { engage, reason };
 }
 
 export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action: string; controllerSession: ControllerSession | null }> {
@@ -641,9 +695,12 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   // interval. Otherwise (Wave-3 fallback): time-based isDriveDue. Only evaluated
   // when monitor+live (the only case decideSupervisor uses driveDue).
   let driveDue = false;
+  let driveReason: 'roster-change' | undefined;
   if (isMonitor && live && cs) {
     if (deps.listActiveForEngage && deps.readSignal && deps.getEngagement && deps.putEngagement) {
-      driveDue = await evaluateEngagement(deps);
+      const ev = await evaluateEngagement(deps);
+      driveDue = ev.engage;
+      driveReason = ev.reason;
     } else {
       const activeCount = deps.activeMissionCount ? await deps.activeMissionCount() : 1;
       driveDue = isDriveDue({
@@ -682,8 +739,10 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
     return { action: 'idle', controllerSession: cs };
   }
 
-  // action === 'drive'
-  await deps.drive(cs!);
+  // action === 'drive' — pick the roster-changed directive when a cluster-roster change
+  // triggered this engagement, else the standard pass directive.
+  const directive = driveReason === 'roster-change' ? CONTROLLER_ROSTER_CHANGED_DIRECTIVE : CONTROLLER_PASS_DIRECTIVE;
+  await deps.drive(cs!, directive);
   // Stamp lastDriveAt and persist so the next tick knows when we last drove.
   const updatedCs: ControllerSession = { ...cs!, lastDriveAt: deps.now };
   await deps.putControllerSession(updatedCs);
@@ -828,6 +887,9 @@ export function registerMissionController(
         const { setMissionInterim } = require('./mission-store') as typeof import('./mission-store');
         await setMissionInterim(id, x);
       },
+      // Roster-change trigger — the stable key of this node's in-cluster membership.
+      // A change vs the persisted lastRosterKey force-engages the controller to re-scope.
+      rosterKey: async () => computeRosterKey(await getClusterRecords(), getMyCluster()),
       now: Date.now(),
       launch: async () => {
         const { tmuxCcController } = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
@@ -892,14 +954,15 @@ export function registerMissionController(
         };
         return cs;
       },
-      drive: async (cs) => {
+      drive: async (cs, directive) => {
+        const text = directive ?? CONTROLLER_PASS_DIRECTIVE;
         const sid = cs.cse || cs.sessionId;
         if (cs.cse) {
-          await cloudDrive({ sid, text: CONTROLLER_PASS_DIRECTIVE }).catch((e: Error) => {
+          await cloudDrive({ sid, text }).catch((e: Error) => {
             console.debug(`[mission-supervisor] drive to ${sid} failed: ${e.message}`);
           });
         } else {
-          await getCcController().prompt(cs.sessionId, CONTROLLER_PASS_DIRECTIVE).catch((e: Error) => {
+          await getCcController().prompt(cs.sessionId, text).catch((e: Error) => {
             console.debug(`[mission-supervisor] native drive to ${cs.sessionId} failed: ${e.message}`);
           });
         }
