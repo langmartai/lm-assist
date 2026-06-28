@@ -20,6 +20,7 @@ import {
   Monitor,
   Send,
   ListChecks,
+  ExternalLink,
 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { useClusters, clusterBadge } from '@/hooks/useClusters';
@@ -1982,6 +1983,19 @@ export function MissionsPage() {
                       {' '}Tick
                     </button>
                   </>
+                )}
+                {/* Direct deep-link: open the controller's CCR session in the native Claude app */}
+                {cs && controllerSid && /^(session_|cse_)/.test(controllerSid) && (
+                  <a
+                    className="btn btn-ghost btn-sm"
+                    href={`https://claude.ai/code/${controllerSid}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="Open this controller's CCR session in the Claude app"
+                    style={{ fontSize: 11 }}
+                  >
+                    <ExternalLink size={11} /> Open in Claude app
+                  </a>
                 )}
                 {/* Cloud view button for cloud sessions */}
                 {cs && controllerSid && /^(session_|cse_)/.test(controllerSid) && (
