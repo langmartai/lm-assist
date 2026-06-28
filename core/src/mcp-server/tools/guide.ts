@@ -1,5 +1,5 @@
 // core/src/mcp-server/tools/guide.ts
-// `guide` — a self-documenting bootstrap tool. The langmart MCP connector is always
+// `guide` — a self-documenting bootstrap tool. The lm-assist MCP connector is always
 // reachable even when a local Claude Code SKILL isn't installed, so we ship the
 // "skill" (curated, use-case playbooks for the other lm-assist tools) THROUGH the
 // connector: an LLM calls guide(topic=...) to learn the exact recipe — single-node,
@@ -7,6 +7,7 @@
 // tool descriptions. Content is hand-curated here.
 import type { McpToolResult } from '../configure';
 import { ok } from './_passthrough';
+import { fleetIdentity } from '../fleet-identity';
 import type { AuthSnapshot } from '../../monitor/auth-monitor';
 import { describeCookieTtl } from '../../utils/claudeai-session';
 
@@ -408,7 +409,7 @@ function buildIndex(): string {
   const lines = [
     '# lm-assist — tool playbooks (call `guide(topic=...)` for any of these)',
     '',
-    'You are connected to lm-assist over the langmart MCP connector. These tools operate on Claude Code sessions, a structured data service, remote agents, terminals, and claude.ai — across one or more machines ("nodes"). Call `bootstrap` (no args) ONCE to load EVERY use case into this session; or `guide(topic=...)` for a single copy-pasteable recipe (a tool name works too, e.g. guide(topic="data_get")). New here? read `orientation` (what this is + how it works WITH — complements — your local CLAUDE.md/memory/skills), then `cross-node` and `workflows`.',
+    'You are connected to lm-assist over the lm-assist MCP connector. These tools operate on Claude Code sessions, a structured data service, remote agents, terminals, and claude.ai — across one or more machines ("nodes"). Call `bootstrap` (no args) ONCE to load EVERY use case into this session; or `guide(topic=...)` for a single copy-pasteable recipe (a tool name works too, e.g. guide(topic="data_get")). New here? read `orientation` (what this is + how it works WITH — complements — your local CLAUDE.md/memory/skills), then `cross-node` and `workflows`.',
     '',
     '## Golden rules (ALL tools)',
     '- **Node targeting:** every tool takes an optional `node` (hostId or hostname). Omit it for the DEFAULT host (single-node, the common case). Pass it to act on another machine; call `list_nodes` when the user means "my server"/"the other machine". Management ops (data create/drop/sync/keys, raw SQL) are LOCAL-ONLY — not over this connector. See guide("cross-node").',
@@ -507,7 +508,7 @@ async function clusterBlock(): Promise<string> {
 
 async function handleBootstrap(_args: Record<string, unknown>): Promise<McpToolResult> {
   const [auth, cluster] = await Promise.all([authBlock(), clusterBlock()]);
-  return ok(BOOTSTRAP + auth + cluster);
+  return ok(fleetIdentity() + '\n\n' + BOOTSTRAP + auth + cluster);
 }
 
 async function handleGuide(args: Record<string, unknown>): Promise<McpToolResult> {
