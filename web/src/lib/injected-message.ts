@@ -37,3 +37,50 @@ export function isInjectedMessageText(text: string): boolean {
     t.includes('⟦BOOTSTRAP')
   );
 }
+
+/**
+ * Span-aware transcript filter for the "Only user ↔ assistant" toggle.
+ *
+ * `isInjectedMessageText` alone hides the injected USER directives (e.g. the
+ * standing "Run a controller pass now…"), but the ASSISTANT turns that RESPOND
+ * to a hidden directive — the controller's "Running the pass…", its tool-call
+ * turns, and its summary — carry ordinary text and would stay visible. A reply
+ * to a hidden prompt is noise, so we hide the whole exchange: an injected user
+ * turn opens a HIDDEN SPAN that also swallows every following non-user
+ * (assistant / tool) turn, until the next user turn. A genuine user turn (incl.
+ * `[mission …]`) CLOSES the span — it and its responses stay visible. A non-user
+ * turn whose own text is injected (a stray ⟦HEARTBEAT⟧ reply) is hidden too,
+ * preserving the old per-message behavior.
+ *
+ * Safe because the mission read API folds tool calls into `tools[]` and emits NO
+ * tool-result user turns — so every `user`-role message is a real conversational
+ * turn, not a tool result (verified against a live controller transcript
+ * 2026-06-29). Role resolves from `role`, falling back to `type`, matching the
+ * chat renderers.
+ */
+export function filterInjectedExchanges<T extends { role?: string; type?: string }>(
+  messages: T[],
+  getText: (m: T) => string,
+): T[] {
+  const out: T[] = [];
+  let hidingResponses = false;
+  for (const m of messages) {
+    const role = m.role || m.type || '';
+    const injected = isInjectedMessageText(getText(m));
+    if (role === 'user') {
+      // A user turn always (re)decides the span: injected → open it (and drop the
+      // directive); genuine → close it (and keep the turn).
+      if (injected) {
+        hidingResponses = true;
+        continue;
+      }
+      hidingResponses = false;
+      out.push(m);
+    } else {
+      // assistant / tool / other: hidden while inside a span, or if itself injected.
+      if (hidingResponses || injected) continue;
+      out.push(m);
+    }
+  }
+  return out;
+}

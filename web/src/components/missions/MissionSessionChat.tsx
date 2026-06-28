@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Loader2, Send, Wrench, HelpCircle, Eye, EyeOff } from 'lucide-react';
-import { isInjectedMessageText } from '@/lib/injected-message';
+import { filterInjectedExchanges } from '@/lib/injected-message';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -293,8 +293,11 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false, mi
     const hasTools = Array.isArray(m.tools) && m.tools.length > 0;
     return hasText || hasTools;
   });
+  // Span-aware: hides each injected directive AND the assistant turns that respond
+  // to it (a reply to a hidden controller-pass prompt is noise), not just the
+  // directive itself. A genuine `[mission …]` user turn keeps its responses.
   const visibleMessages = hideInjected
-    ? nonEmptyMessages.filter((m) => !isInjectedMessageText(resolveMsgText(m)))
+    ? filterInjectedExchanges(nonEmptyMessages, resolveMsgText)
     : nonEmptyMessages;
   const injectedHiddenCount = nonEmptyMessages.length - visibleMessages.length;
   const chatGroups = buildChatGroups(visibleMessages);

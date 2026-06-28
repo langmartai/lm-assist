@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Loader2, X, Send, RefreshCw, Wrench, User, Cloud, ExternalLink, HelpCircle, Eye, EyeOff } from 'lucide-react';
-import { isInjectedMessageText } from '@/lib/injected-message';
+import { filterInjectedExchanges } from '@/lib/injected-message';
 
 type ApiFetch = <T>(path: string, opts?: { method?: string; body?: unknown }) => Promise<T>;
 interface CloudMsg { role: string; type: string; text: string; tools?: string[] }
@@ -87,7 +87,8 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose, fill }: {
   // "Only user ↔ assistant": always drop truly-empty turns (no text AND no tools);
   // when the toggle is ON, also drop lm-assist-injected scaffolding.
   const nonEmpty = messages.filter((m) => (m.text && m.text.trim().length > 0) || (m.tools && m.tools.length > 0));
-  const visibleMessages = hideInjected ? nonEmpty.filter((m) => !isInjectedMessageText(m.text || '')) : nonEmpty;
+  // Span-aware: also hides the assistant responses to a hidden injected directive.
+  const visibleMessages = hideInjected ? filterInjectedExchanges(nonEmpty, (m) => m.text || '') : nonEmpty;
   const injectedHiddenCount = nonEmpty.length - visibleMessages.length;
 
   return (
