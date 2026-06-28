@@ -21,6 +21,7 @@
 //
 // Bounded everywhere: resolved only for bootstrap/session_status, cached, timeout-guarded, graceful.
 import type { McpToolResult } from './configure';
+import { fleetIdentity } from './fleet-identity';
 import { listConversations } from '../utils/claudeai-session';
 import { getSessionCache } from '../session-cache';
 import { currentMcpContext } from './principal-context';
@@ -233,7 +234,7 @@ async function handleSessionStatus(_args: Record<string, unknown>): Promise<McpT
   const c = await resolveCallerCandidates();
   const bootstrapped = (id?: string) => (id ? !!REGISTRY.get(id)?.bootstrappedAt : false);
   const clusterInfo = await getNodeClusterInfo();
-  return { content: [{ type: 'text', text: pretty(c.precise && c.claudeCode ? {
+  const obj = c.precise && c.claudeCode ? {
     note: 'PRECISE: this MCP call carried a tool-call id (_meta["claudecode/toolUseId"]) that matched the calling conversation exactly — no guessing.',
     callerType: 'claude-code',
     claudeCodeSession: { ...c.claudeCode, matchedBy: 'tool-call-id', bootstrapped: bootstrapped(c.claudeCode.id) },
@@ -245,7 +246,9 @@ async function handleSessionStatus(_args: Record<string, unknown>): Promise<McpT
     claudeCodeSession: c.claudeCode ? { ...c.claudeCode, bootstrapped: bootstrapped(c.claudeCode.id) } : 'none recent',
     ...clusterInfo,
     howTo: 'If you have not bootstrapped, call bootstrap() once to load all lm-assist capabilities.',
-  }) }] };
+  };
+  // Lead with the fleet/connector identity so a conversation knows WHICH fleet it is on.
+  return { content: [{ type: 'text', text: fleetIdentity() + '\n\n' + pretty(obj) }] };
 }
 
 export const SESSION_STATUS_TOOL_DEFS = [
