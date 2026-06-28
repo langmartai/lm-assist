@@ -9,15 +9,15 @@ const input = {
   peer: '---\nname: fact\ntype: project\n---\npeer change',
 };
 
-test('buildMergePrompt includes base/local/peer, filename, and the merge rules (no Claude Code impersonation)', () => {
+test('buildMergePrompt references the attached files + merge rules (bodies ride as attachments, not inline)', () => {
   const { system, user } = buildMergePrompt(input);
   assert.doesNotMatch(system, /You are Claude Code/);
   assert.match(system, /merge two diverged versions/i);
   assert.match(system, /lose NO information/i);
   assert.match(user, /fact\.md/);
-  assert.match(user, /base body/);
-  assert.match(user, /local change/);
-  assert.match(user, /peer change/);
+  assert.match(user, /attached/i);
+  // the file BODIES are not inlined in the prompt — they go in the attachments channel
+  assert.doesNotMatch(user, /base body|local change|peer change/);
 });
 
 test('extractMerged strips a ``` fence the model may add', () => {

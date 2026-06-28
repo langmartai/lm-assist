@@ -9,7 +9,7 @@
  */
 
 export interface LlmMergeInput { filename: string; base: string; local: string; peer: string }
-export type MergeRunner = (system: string, user: string) => Promise<string>;
+export type MergeRunner = (system: string, user: string, input: LlmMergeInput) => Promise<string>;
 
 export function buildMergePrompt(input: LlmMergeInput): { system: string; user: string } {
   const system =
@@ -19,11 +19,9 @@ export function buildMergePrompt(input: LlmMergeInput): { system: string; user: 
     'block (--- … ---) merging its fields sensibly; output ONLY the merged file content — no commentary, ' +
     'no code fences.';
   const user =
-    `File: ${input.filename}\n\n` +
-    `=== BASE (common ancestor) ===\n${input.base}\n\n` +
-    `=== VERSION A (local) ===\n${input.local}\n\n` +
-    `=== VERSION B (peer) ===\n${input.peer}\n\n` +
-    'Return the merged file.';
+    `Three versions of "${input.filename}" are attached: base.md (the common ancestor), ` +
+    'local.md, and peer.md. Merge local.md and peer.md into ONE coherent file, using base.md ' +
+    'as the ancestor. Return the merged file.';
   return { system, user };
 }
 
@@ -48,14 +46,35 @@ const MERGE_MODEL = process.env.MEMORY_MERGE_MODEL || 'claude-sonnet-4-6';
  * job), sends the merge prompt, and returns the reply text. With no claude.ai session
  * configured it throws → llmMerge returns null → the conflict is DEFERRED (0 cost).
  */
-async function defaultRunner(system: string, user: string): Promise<string> {
+/** A claude.ai TEXT attachment ({@link sendMessage} `attachments` channel) — the
+ *  reliable channel for markdown/source (the `files` upload channel is for binaries
+ *  and often fails to auto-extract text). Shape verified live against claude.ai. */
+function textAttachment(name: string, content: string) {
+  return {
+    file_name: name,
+    file_type: 'text/markdown',
+    file_size: Buffer.byteLength(content, 'utf8'),
+    extracted_content: content,
+    origin: 'user_upload',
+    kind: 'file',
+  };
+}
+
+async function defaultRunner(system: string, user: string, input: LlmMergeInput): Promise<string> {
   const { createConversation, sendMessage, deleteConversation } = await import('../utils/claudeai-session');
   const { randomUUID } = await import('node:crypto');
   const convUuid = randomUUID();
   await createConversation({ uuid: convUuid, name: 'lm-assist memory-merge (auto)', model: MERGE_MODEL, autoDeleteHours: 1 });
   try {
-    // claude.ai conversations have no separate `system` param — fold it into the prompt.
-    const res = await sendMessage(convUuid, `${system}\n\n${user}`, { model: MERGE_MODEL });
+    // The three versions ride as ATTACHMENTS (not inlined in the prompt) — keeps the
+    // prompt small and lets the model see each file directly. claude.ai conversations
+    // have no separate `system` param, so fold the instructions into the prompt.
+    const attachments = [
+      textAttachment('base.md', input.base),
+      textAttachment('local.md', input.local),
+      textAttachment('peer.md', input.peer),
+    ];
+    const res = await sendMessage(convUuid, `${system}\n\n${user}`, { model: MERGE_MODEL, attachments });
     const text = (res?.text || '').trim();
     if (!text) throw new Error('empty completion');
     return text;
@@ -70,7 +89,7 @@ async function defaultRunner(system: string, user: string): Promise<string> {
 export async function llmMerge(input: LlmMergeInput, runner: MergeRunner = defaultRunner): Promise<string | null> {
   try {
     const { system, user } = buildMergePrompt(input);
-    const merged = extractMerged(await runner(system, user));
+    const merged = extractMerged(await runner(system, user, input));
     if (!merged) return null;
     // If the inputs were valid memory files (frontmatter), the merge must be too — don't corrupt live memory.
     const { parseFrontmatter, isValidMemoryFrontmatter } = await import('../utils/frontmatter');
