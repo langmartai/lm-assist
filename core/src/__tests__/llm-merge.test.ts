@@ -9,9 +9,10 @@ const input = {
   peer: '---\nname: fact\ntype: project\n---\npeer change',
 };
 
-test('buildMergePrompt includes base/local/peer, filename, and the Claude Code preamble', () => {
+test('buildMergePrompt includes base/local/peer, filename, and the merge rules (no Claude Code impersonation)', () => {
   const { system, user } = buildMergePrompt(input);
-  assert.match(system, /Claude Code/);
+  assert.doesNotMatch(system, /You are Claude Code/);
+  assert.match(system, /merge two diverged versions/i);
   assert.match(system, /lose NO information/i);
   assert.match(user, /fact\.md/);
   assert.match(user, /base body/);

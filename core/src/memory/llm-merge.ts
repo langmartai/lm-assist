@@ -11,13 +11,9 @@
 export interface LlmMergeInput { filename: string; base: string; local: string; peer: string }
 export type MergeRunner = (system: string, user: string) => Promise<string>;
 
-// Claude Code OAuth /v1/messages requires the system prompt to begin with this identity line.
-const CLAUDE_CODE_PREAMBLE = "You are Claude Code, Anthropic's official CLI for Claude.";
-
 export function buildMergePrompt(input: LlmMergeInput): { system: string; user: string } {
   const system =
-    CLAUDE_CODE_PREAMBLE +
-    '\n\nYou merge two diverged versions of a single Markdown memory file into ONE coherent version. ' +
+    'You merge two diverged versions of a single Markdown memory file into ONE coherent version. ' +
     'Rules: lose NO information; combine complementary facts; if the versions contradict, keep the more ' +
     'specific statement (note the other only if it adds value); preserve a single valid YAML frontmatter ' +
     'block (--- … ---) merging its fields sensibly; output ONLY the merged file content — no commentary, ' +
@@ -39,20 +35,30 @@ export function extractMerged(raw: string): string {
   return s;
 }
 
-/** Default runner: Claude Code OAuth → /v1/messages (no separate API key). Best-effort. */
+/**
+ * Default runner: a METERED Anthropic API key (ANTHROPIC_API_KEY) → /v1/messages.
+ * It deliberately does NOT use the Claude Code OAuth token: that credential is for
+ * Claude Code's own flow, not raw inference — calling /v1/messages with it misuses
+ * the subscription (and is rate-limited). With no API key set, this throws → llmMerge
+ * returns null → the conflict is DEFERRED (0 cost), never auto-merged.
+ */
 async function defaultRunner(system: string, user: string): Promise<string> {
-  const { anthropicOAuthPost } = await import('../utils/claude-oauth');
-  const res = await anthropicOAuthPost(
-    '/v1/messages',
-    { model: 'claude-sonnet-4-6', max_tokens: 8000, system, messages: [{ role: 'user', content: user }] },
-    // /v1/messages REQUIRES anthropic-version; without it the API rejects the
-    // request with 400 ("anthropic-version: header is required") BEFORE inference,
-    // which silently broke every memory merge (→ conflicts deferred, 0 resolved, 0 tokens).
-    { timeoutMs: 60_000, extraHeaders: { 'anthropic-version': '2023-06-01' } },
-  );
-  if (res.status !== 200) throw new Error(`/v1/messages ${res.status}`);
-  const blocks = (res.body as any)?.content;
-  const text = Array.isArray(blocks) ? blocks.filter((b: any) => b?.type === 'text').map((b: any) => b.text).join('') : '';
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('no ANTHROPIC_API_KEY — LLM merge skipped (conflict deferred)');
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 8000, system, messages: [{ role: 'user', content: user }] }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) throw new Error(`/v1/messages ${res.status}`);
+  const body = (await res.json()) as { content?: Array<{ type: string; text: string }> };
+  const blocks = body?.content;
+  const text = Array.isArray(blocks) ? blocks.filter((b) => b?.type === 'text').map((b) => b.text).join('') : '';
   if (!text) throw new Error('empty completion');
   return text;
 }
