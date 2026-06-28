@@ -48,6 +48,7 @@ import { REFRESH_CONNECTOR_TOOL_DEFS, REFRESH_CONNECTOR_HANDLERS } from './refre
 import { SCHEDULER_TOOL_DEFS, SCHEDULER_HANDLERS } from './scheduler';
 import { GUIDE_TOOL_DEFS, GUIDE_HANDLERS } from './guide';
 import { SESSION_STATUS_TOOL_DEFS, SESSION_STATUS_HANDLERS } from '../mcp-session-resolver';
+import { repoOfCached } from '../../utils/repo-id';
 import { WORKER_ROLE_TOOL_DEFS, WORKER_ROLE_HANDLERS } from './worker-role';
 import { MISSION_TOOL_DEFS, MISSION_HANDLERS } from './mission';
 import { MISSION_QUERY_TOOL_DEFS, MISSION_QUERY_HANDLERS } from './mission-query';
@@ -1004,6 +1005,11 @@ async function handleGetExecution(args: Record<string, unknown>): Promise<McpToo
         };
       }
     } catch { /* result optional — status alone is still useful */ }
+    // Per-resource project/repo provenance from the execution's cwd (additive).
+    if (typeof merged.cwd === 'string' && merged.cwd) {
+      const rid = repoOfCached(merged.cwd);
+      if (rid) merged = { ...merged, project: rid.project, ...(rid.repo ? { repo: rid.repo } : {}) };
+    }
     return ok(pretty(merged));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));

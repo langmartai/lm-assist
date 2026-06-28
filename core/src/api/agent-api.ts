@@ -592,6 +592,7 @@ export function createAgentApiImpl(deps: AgentApiDeps): AgentApi {
         claudeSessionUrl: entry.handle.sessionId
           ? `/sessions/${entry.handle.sessionId}`
           : undefined,
+        cwd: entry.request.cwd || undefined,
       };
     },
 
