@@ -18,6 +18,7 @@ import {
   publishSelf,
 } from '../../cluster/cluster-store';
 import { proxyPost } from '../../data/peer-client';
+import { getSyncEngine } from '../../data/data-service';
 import { getHubConfig } from '../../hub-client/hub-config';
 import { isLoopbackAddress } from '../../auth/enroll-exempt';
 
@@ -114,9 +115,11 @@ export function createClusterRoutes(_ctx: RouteContext): RouteHandler[] {
         if (targetId === selfId) {
           setMyCluster(b.cluster);
           await publishSelf();
+          getSyncEngine().reconcile().catch(() => {}); // pull peers now so this node's view converges (push isn't hub-relayed)
           return wrapResponse({ assigned: true, node: selfId, cluster: getMyCluster() }, start);
         }
         const result = await proxyPost(targetId, '/cluster/self', { cluster: b.cluster });
+        getSyncEngine().reconcile().catch(() => {}); // pull the target's just-changed record now — no manual /data/sync needed
         return wrapResponse(result, start);
       },
     },
@@ -137,9 +140,11 @@ export function createClusterRoutes(_ctx: RouteContext): RouteHandler[] {
         if (targetId === selfId) {
           setMyCluster('default');
           await publishSelf();
+          getSyncEngine().reconcile().catch(() => {}); // pull peers now so this node's view converges
           return wrapResponse({ assigned: true, node: selfId, cluster: 'default' }, start);
         }
         const result = await proxyPost(targetId, '/cluster/self', { cluster: 'default' });
+        getSyncEngine().reconcile().catch(() => {}); // pull the target's just-changed record now
         return wrapResponse(result, start);
       },
     },
