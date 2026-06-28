@@ -191,14 +191,21 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false, mi
       );
       const msgs = (res as any).data?.messages ?? (res as any).messages ?? [];
       const pq: PendingQuestion | null = (res as any).data?.pendingQuestion ?? (res as any).pendingQuestion ?? null;
+      // Stick to the bottom ONLY if the user is already there. A 4 s poll must not
+      // yank a user who has scrolled up to read history back down. Capture the
+      // at-bottom state from the CURRENT DOM, before setMessages re-renders. On the
+      // first read (no scroll container yet) default to true so we land at the end.
+      const el = scrollRef.current;
+      const wasAtBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 80;
       setMessages(msgs);
       setPendingQ(pq);
-      // Auto-scroll to bottom
-      setTimeout(() => {
-        if (scrollRef.current) {
-          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-        }
-      }, 50);
+      if (wasAtBottom) {
+        setTimeout(() => {
+          if (scrollRef.current) {
+            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+          }
+        }, 50);
+      }
     } catch {
       // silently ignore — keep last messages
     }

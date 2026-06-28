@@ -29,12 +29,18 @@ export function isInjectedMessageText(text: string): boolean {
   if (t.startsWith('[lm-assist bootstrap]')) return true;
   // The standing controller-pass directive (prefix match, punctuation-agnostic).
   if (t.startsWith('Run a controller pass now')) return true;
-  // Bracketed status / bootstrap banners — anywhere in the text.
+  // Any ⟦…⟧ machine banner that OPENS the message — heartbeat, worker-status,
+  // bootstrap, the cluster-change notice (⟦CLUSTER-CHANGE⟧) and the controller's
+  // ⟦CLUSTER ROSTER CHANGED⟧ directive, and any future marker. The ⟦ (U+27E6) is
+  // reserved for lm-assist scaffolding; genuine prose does not start with it.
+  if (t.startsWith('⟦')) return true;
+  // …and a banner appearing LATER in the text (e.g. a provenance footer).
   return (
     t.includes('⟦WORKER-STATUS⟧') ||
     t.includes('⟦HEARTBEAT⟧') ||
     t.includes('⟦lm-assist') ||
-    t.includes('⟦BOOTSTRAP')
+    t.includes('⟦BOOTSTRAP') ||
+    t.includes('⟦CLUSTER')
   );
 }
 

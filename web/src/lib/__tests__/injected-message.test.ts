@@ -16,6 +16,24 @@ test('isInjectedMessageText — controller directive + banners are injected; [mi
   expect(isInjectedMessageText('Doing the work now.')).toBe(false);
 });
 
+test('isInjectedMessageText — cluster-change + cluster-roster-changed banners are injected', () => {
+  // ⟦CLUSTER-CHANGE⟧ notice injected into active workers when the node moves cluster.
+  expect(isInjectedMessageText('⟦CLUSTER-CHANGE⟧ This node moved from cluster "stage" to "prod". …')).toBe(true);
+  // ⟦CLUSTER ROSTER CHANGED⟧ directive the supervisor drives into the controller.
+  expect(isInjectedMessageText("⟦CLUSTER ROSTER CHANGED⟧ Your cluster's node membership just changed. …")).toBe(true);
+  // Any ⟦…⟧ opener is treated as a banner (future-proofing).
+  expect(isInjectedMessageText('⟦SOME-NEW-MARKER⟧ whatever')).toBe(true);
+});
+
+test('filterInjectedExchanges — a ⟦CLUSTER ROSTER CHANGED⟧ directive hides its response too', () => {
+  const msgs: M[] = [
+    { role: 'user', text: "⟦CLUSTER ROSTER CHANGED⟧ Your cluster's node membership just changed. …" },
+    { role: 'assistant', text: 'Re-reading my scope and migrating workers.' },
+    { role: 'assistant', text: '[1 tool call(s)]' },
+  ];
+  expect(filterInjectedExchanges(msgs, text)).toEqual([]);
+});
+
 // ── filterInjectedExchanges (span-aware: hides a directive AND its responses) ──
 
 test('hides an injected directive AND every assistant response that follows it', () => {

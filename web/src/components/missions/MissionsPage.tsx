@@ -2126,7 +2126,7 @@ export function MissionsPage() {
 
               {/* Controller chat — rendered via MissionSessionChat when a controller session is live */}
               {cs && controllerSid && !isFailingOver && (
-                <>
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
                   <MissionSessionChat
                     sid={controllerSid}
                     node={leader?.node ?? undefined}
@@ -2170,7 +2170,7 @@ export function MissionsPage() {
                       {chatControlBusy['restart'] ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <RotateCcw size={11} />} Restart
                     </button>
                   </div>
-                </>
+                </div>
               )}
             </>
           )}
