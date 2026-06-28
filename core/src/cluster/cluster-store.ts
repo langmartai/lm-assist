@@ -94,6 +94,16 @@ export async function ensureClusterDatasets(): Promise<void> {
 
 // ── Write ─────────────────────────────────────────────────────────────────────
 
+/** Push pending fleet-dataset writes to peers IMMEDIATELY (don't wait for the batched flush
+ *  timer, ≤ dataSyncPeriodSec) so a cluster change converges in a round-trip. Lazy import
+ *  breaks the sync-boot ↔ cluster-store import cycle; best-effort (never throws). */
+async function forceFlush(): Promise<void> {
+  try {
+    const { flushNow } = await import('../data/sync-boot');
+    flushNow();
+  } catch { /* best-effort */ }
+}
+
 /** Publish THIS node's cluster membership into `node-clusters`. */
 export async function publishSelf(): Promise<void> {
   const svc = getDataService();
@@ -111,6 +121,7 @@ export async function publishSelf(): Promise<void> {
       ts: Date.now(),
     }),
   );
+  await forceFlush(); // announce the membership change to peers now (don't wait for the flush timer)
 }
 
 // ── Read ──────────────────────────────────────────────────────────────────────
@@ -163,4 +174,5 @@ export async function setClusterMeta(
     CLUSTER_META,
     rec(n, { name: n, description, status, ts: Date.now() }),
   );
+  await forceFlush(); // announce the cluster-meta change to peers now
 }

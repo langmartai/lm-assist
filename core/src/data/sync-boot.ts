@@ -26,16 +26,7 @@ export function startDataSync(): void {
   const node = thisNodeId();
 
   // Batched periodic flush -> emit dataset_updated per dirty dataset
-  _flushTimer = setInterval(() => {
-    try {
-      const batches = getSyncQueue().flush();
-      if (!batches.length) return;
-      const hub = getHubClient();
-      for (const b of batches) {
-        hub.sendDatasetUpdated({ node, dataset: b.dataset, recordIds: b.recordIds, ts: Date.now() });
-      }
-    } catch { /* best-effort */ }
-  }, periodMs);
+  _flushTimer = setInterval(() => { flushNow(); }, periodMs);
   if (_flushTimer.unref) _flushTimer.unref();
 
   // Periodic reconcile (self-heal / pull full datasets)
@@ -66,4 +57,23 @@ export function stopDataSync(): void {
   if (_initTimer) clearTimeout(_initTimer);
   _flushTimer = _reconcileTimer = _initTimer = null;
   _started = false;
+}
+
+/**
+ * Flush all dirty datasets NOW — emit `dataset_updated` per dirty batch so peers pull the
+ * delta in a round-trip instead of waiting for the batched flush timer (≤ dataSyncPeriodSec,
+ * default 15s). Used by the periodic flush timer AND called directly after a write that must
+ * converge fast — e.g. a cluster membership change (see cluster-store.publishSelf /
+ * setClusterMeta). Best-effort: an empty queue or a missing/disconnected hub is a silent no-op.
+ */
+export function flushNow(): void {
+  try {
+    const batches = getSyncQueue().flush();
+    if (!batches.length) return;
+    const hub = getHubClient();
+    const node = thisNodeId();
+    for (const b of batches) {
+      hub.sendDatasetUpdated({ node, dataset: b.dataset, recordIds: b.recordIds, ts: Date.now() });
+    }
+  } catch { /* best-effort */ }
 }
