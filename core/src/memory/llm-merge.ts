@@ -45,7 +45,10 @@ async function defaultRunner(system: string, user: string): Promise<string> {
   const res = await anthropicOAuthPost(
     '/v1/messages',
     { model: 'claude-sonnet-4-6', max_tokens: 8000, system, messages: [{ role: 'user', content: user }] },
-    { timeoutMs: 60_000 },
+    // /v1/messages REQUIRES anthropic-version; without it the API rejects the
+    // request with 400 ("anthropic-version: header is required") BEFORE inference,
+    // which silently broke every memory merge (→ conflicts deferred, 0 resolved, 0 tokens).
+    { timeoutMs: 60_000, extraHeaders: { 'anthropic-version': '2023-06-01' } },
   );
   if (res.status !== 200) throw new Error(`/v1/messages ${res.status}`);
   const blocks = (res.body as any)?.content;
