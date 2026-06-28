@@ -4,7 +4,6 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Shield, Globe, LogIn, Loader2, CheckCircle, XCircle, Info } from 'lucide-react';
 import { detectAppMode, detectProxyInfo, workerFetch } from '@/lib/api-client';
-import { getHubDomain } from '@/lib/utils';
 
 type VerifyStatus = 'idle' | 'waiting' | 'verifying' | 'success' | 'error';
 
@@ -12,8 +11,9 @@ export default function LanBlockedPage() {
   const router = useRouter();
   const [verifyStatus, setVerifyStatus] = useState<VerifyStatus>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [hubConfigured, setHubConfigured] = useState<boolean | null>(null);
+  const [cloudBound, setCloudBound] = useState<boolean | null>(null);
   const [hubDomain, setHubDomain] = useState('langmart.ai');
+  const [expired, setExpired] = useState(false);
 
   // If user is actually local (localhost or same-machine LAN IP), redirect to dashboard
   useEffect(() => {
@@ -36,17 +36,26 @@ export default function LanBlockedPage() {
       .catch(() => { /* not local or API unreachable — stay on blocked page */ });
   }, [router]);
 
-  // Check if hub is configured (device has a cloud account bound)
+  // "Session expired" vs first-time visit — the dashboard guard appends
+  // ?expired=1 when it removes a stale/invalid cached token.
   useEffect(() => {
-    const apiPort = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
-    workerFetch(`http://${window.location.hostname}:${apiPort}/hub/status`)
+    try {
+      setExpired(new URLSearchParams(window.location.search).get('expired') === '1');
+    } catch { /* ignore */ }
+  }, []);
+
+  // Is a cloud account bound to this device, and which hub to sign in against?
+  // Read the web's OWN same-origin /api/server — reachable from a LAN browser
+  // WITHOUT the worker token (unlike /hub/status, which 401s for the exact
+  // audience of this page and used to hide the Sign In button entirely).
+  useEffect(() => {
+    fetch('/api/server')
       .then(r => r.json())
-      .then(data => {
-        const d = data.data || data;
-        setHubConfigured(d.authenticated === true);
-        if (d.hubUrl) setHubDomain(getHubDomain(d.hubUrl));
+      .then(d => {
+        setCloudBound(d.cloudBound === true);
+        if (d.hubDomain) setHubDomain(d.hubDomain);
       })
-      .catch(() => setHubConfigured(false));
+      .catch(() => setCloudBound(false));
   }, []);
 
   // Listen for postMessage from the OAuth popup (verify mode)
@@ -113,8 +122,10 @@ export default function LanBlockedPage() {
     );
   }, [hubDomain]);
 
-  const showSignIn = hubConfigured === true;
-  const showManualSteps = hubConfigured !== true;
+  const showSignIn = cloudBound === true;
+  // Only when we KNOW no account is bound (explicit false, not while loading) —
+  // avoids the manual-steps flashing before /api/server resolves.
+  const showManualSteps = cloudBound === false;
 
   return (
     <div
@@ -168,7 +179,9 @@ export default function LanBlockedPage() {
         {/* Title */}
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 8 }}>
-            {verifyStatus === 'success' ? 'Access Granted' : 'Access Restricted'}
+            {verifyStatus === 'success'
+              ? 'Access Granted'
+              : expired ? 'Session Expired' : 'Access Restricted'}
           </h1>
           <p
             style={{
@@ -181,7 +194,9 @@ export default function LanBlockedPage() {
           >
             {verifyStatus === 'success'
               ? 'Identity verified. Redirecting to dashboard...'
-              : 'This dashboard requires authentication for local network access.'}
+              : expired
+                ? 'Your access expired or is no longer valid. Sign in again to continue.'
+                : 'This dashboard requires authentication for local network access.'}
           </p>
         </div>
 

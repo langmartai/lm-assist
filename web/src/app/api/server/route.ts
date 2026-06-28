@@ -4,14 +4,40 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir, networkInterfaces } from 'os';
 import { randomBytes } from 'crypto';
 import path from 'path';
+import { getHubDomain } from '@/lib/utils';
 
 const CONFIG_DIR = path.join(homedir(), '.lm-assist');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'assist-config.json');
+// Hub config — prod uses hub.json, dev uses hub-dev.json. We only read the
+// non-secret fields (hubUrl + whether an apiKey is present) to tell the
+// /lan-blocked page if a cloud account is bound and which hub to sign in against.
+const HUB_FILE = path.join(CONFIG_DIR, 'hub.json');
+const HUB_DEV_FILE = path.join(CONFIG_DIR, 'hub-dev.json');
 
 interface AssistConfig {
   lanEnabled?: boolean;
   lanAuthEnabled?: boolean;
   lanAccessToken?: string;
+}
+
+interface HubConfig {
+  hubUrl?: string;
+  apiKey?: string;
+}
+
+function readHubConfig(): HubConfig {
+  // Dev web (:3200) pairs with hub-dev.json; prod web with hub.json. Prefer the
+  // matching one, fall back to the other (single-install hosts have only one).
+  const devFirst = process.env.NEXT_PUBLIC_LOCAL_API_PORT === '3200';
+  const order = devFirst ? [HUB_DEV_FILE, HUB_FILE] : [HUB_FILE, HUB_DEV_FILE];
+  for (const f of order) {
+    try {
+      return JSON.parse(readFileSync(f, 'utf8')) as HubConfig;
+    } catch {
+      /* try next */
+    }
+  }
+  return {};
 }
 
 /**
@@ -126,6 +152,7 @@ export async function GET() {
   const coreScript = path.join(tierDir, 'core.sh');
   const exists = existsSync(coreScript);
   const config = readConfig();
+  const hub = readHubConfig();
 
   return NextResponse.json({
     tierAgentDir: tierDir,
@@ -133,6 +160,10 @@ export async function GET() {
     localIp: getLocalIp(),
     lanEnabled: config.lanEnabled ?? true,
     lanAuthEnabled: config.lanAuthEnabled ?? true,
+    // For the /lan-blocked page (reachable same-origin, no worker token):
+    // is a cloud account bound to this device, and which hub to sign in against.
+    cloudBound: !!hub.apiKey,
+    hubDomain: getHubDomain(hub.hubUrl),
   });
 }
 

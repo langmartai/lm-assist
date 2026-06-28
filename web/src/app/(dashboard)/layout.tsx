@@ -72,8 +72,10 @@ function useLanAuthGuard() {
         if (result.valid) {
           setChecked(true);
         } else {
+          // Had a token but it's stale/invalid — clear it and flag `expired` so the
+          // block page shows "sign in again" instead of the generic restricted copy.
           localStorage.removeItem('assist_access_key');
-          router.replace('/lan-blocked');
+          router.replace('/lan-blocked?expired=1');
         }
       } catch {
         // Can't reach server config — allow through (fail open on network error)
