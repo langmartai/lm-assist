@@ -560,6 +560,9 @@ export interface AgentExecutionStatusResponse {
 
   /** URL to Claude Code session (for progress details) */
   claudeSessionUrl?: string;
+
+  /** Working directory the execution ran in (for project/repo provenance) */
+  cwd?: string;
 }
 
 /**

@@ -11,6 +11,7 @@
 
 import { getSessionCache, isRealUserPrompt } from '../../session-cache';
 import { getKnowledgeStore } from '../../knowledge/store';
+import { repoOfCached } from '../../utils/repo-id';
 
 // ─── Tool Definition (canonical source: definitions.ts) ─────────────
 
@@ -171,8 +172,10 @@ async function handleSession(id: string, section?: string, offset = 0, limit = 1
   const cd = session.cacheData;
   const lines: string[] = [];
 
+  const rid = repoOfCached(cd.cwd);
+  const repoStr = rid?.repo ? ` (${rid.repo})` : '';
   lines.push(`Session ${id}`);
-  lines.push(`Project: ${cd.cwd || 'unknown'} | Model: ${cd.model} | Turns: ${cd.numTurns} | Cost: $${cd.totalCostUsd.toFixed(2)}`);
+  lines.push(`Project: ${cd.cwd || 'unknown'}${repoStr} | Model: ${cd.model} | Turns: ${cd.numTurns} | Cost: $${cd.totalCostUsd.toFixed(2)}`);
   lines.push('');
 
   // User prompts summary

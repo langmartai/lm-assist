@@ -42,6 +42,7 @@ function asScopes(v: unknown): ToolScope[] {
 }
 import { dispatch } from './mcp.routes';
 import { runWithMcpContext } from '../../mcp-server/principal-context';
+import { withOriginTag } from '../../mcp-server/result-origin';
 import { getDataService } from '../../data/data-service';
 
 export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
@@ -327,7 +328,10 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
             return wrapError('MCP_UNKNOWN_TOOL', `Unknown expanded tool: ${tool}`, start);
           }
           const principal = getDataService().resolvePrincipal(req);
-          const result = await runWithMcpContext({ principal }, () => handler(body.args || {}));
+          // Tag the result with its origin INSIDE the context so resultOriginTag()
+          // reads this call's principal (relayed vs local).
+          const result = await runWithMcpContext({ principal }, async () =>
+            withOriginTag(await handler(body.args || {})));
           return wrapResponse(result, start);
         } catch (err) {
           return wrapError('MCP_CALL_ERROR', err instanceof Error ? err.message : String(err), start);

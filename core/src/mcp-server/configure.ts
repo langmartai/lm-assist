@@ -336,6 +336,7 @@ The only ordering (a safety boundary, not a ranking of lm-assist vs local): the 
 FIRST, call the bootstrap tool (no arguments), ONCE — it loads ALL lm-assist use cases into this session in one response, so you actively know what you can do and how (instead of reverse-engineering tools as you go). To re-read a single topic later: guide(topic="orientation"/"cross-node"/"workflows"/a feature/a tool name). Every tool takes an optional node; omit for the default host, or pass it (after list_nodes) to target another machine.`;
 
 import { enrichBootstrapWithIdentity } from './mcp-session-resolver';
+import { withOriginTag } from './result-origin';
 
 export function configureMcpServer(server: Server, dispatch: McpToolDispatcher): void {
   assertScopesCoverTools();
@@ -361,6 +362,9 @@ export function configureMcpServer(server: Server, dispatch: McpToolDispatcher):
     if (name === 'bootstrap' && !result.isError) {
       try { result = await enrichBootstrapWithIdentity(result); } catch { /* never break bootstrap */ }
     }
+    // Append the per-result origin tag (connector·node·cluster, local-aware) so the
+    // LLM routes follow-up calls to the SAME connector / respects the cluster scope.
+    try { result = withOriginTag(result); } catch { /* never break a result over a tag */ }
     logToolCall(name, args, Date.now() - t0, result);
     // The SDK's CallToolResult type includes optional fields (task tracking,
     // structured content, etc.) that our handlers never produce; widen the

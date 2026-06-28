@@ -7,6 +7,7 @@
  */
 
 import { getSessionCache, isRealUserPrompt } from '../../session-cache';
+import { repoOfCached } from '../../utils/repo-id';
 
 export { listRecentSessionsToolDef } from './definitions';
 
@@ -76,6 +77,9 @@ export async function handleListRecentSessions(args: Record<string, unknown>): P
     const allPrompts = (cd?.userPrompts || []).filter(isRealUserPrompt);
 
     lines.push(`━━━ ${sid}  ·  ${when}  ·  ${allPrompts.length} user prompts ━━━`);
+    // Per-resource project/repo provenance (which codebase this session ran in).
+    const rid = repoOfCached(cd?.cwd);
+    if (rid) lines.push(`  project: ${rid.project}${rid.repo ? `  ·  repo: ${rid.repo}` : ''}`);
     if (allPrompts.length === 0) {
       lines.push('  (no real user prompts in cache)');
     } else {
