@@ -68,6 +68,41 @@ export function computeRosterKey(records: ClusterRecord[], cluster: string): str
     .join(',');
 }
 
+/**
+ * A bound, active executor whose host just left THIS node's cluster — the controller must
+ * ACTIVELY MIGRATE it (not kill it) onto an in-cluster node.
+ *   • `sid`       — the operable session id (cloud `binding.ccr.sid` when present, else `binding.sessionId`)
+ *   • `host`      — the (now out-of-cluster) node the worker is bound to (`'unknown'` if unresolved)
+ *   • `transport` — `'native'` (a local --remote-control worktree session, re-placed via env.host)
+ *                   vs `'cloud'` (a `session_…` cloud session, resumed on an in-cluster node)
+ */
+export interface MigrationCandidate { missionId: string; sid: string; host: string; transport: 'cloud' | 'native'; }
+
+/**
+ * Pure: from the active missions, the bound executors whose host is NOT in this node's cluster
+ * (`placementAllowed` === false). These are the workers a roster change orphaned — the controller
+ * should migrate each onto an in-cluster node (keeping it running until its replacement is up),
+ * NOT kill it. Unbound missions, terminal/non-active missions, and undefined/`'local'`/`'cloud'`/
+ * in-cluster hosts are excluded. No I/O — trivially testable.
+ */
+export function computeMigrationCandidates(
+  missions: Mission[],
+  records: ClusterRecord[],
+  selfId: string | null,
+  selfCluster: string,
+): MigrationCandidate[] {
+  const out: MigrationCandidate[] = [];
+  for (const m of missions) {
+    const b = m.binding;
+    if (!b?.sessionId) continue;                                  // unbound — nothing to migrate
+    if (m.status !== 'active' && m.status !== 'waiting') continue; // only live missions
+    const host = b.node ?? m.env.host ?? undefined;
+    if (placementAllowed(host, records, selfId, selfCluster)) continue; // still in-cluster (or local/cloud)
+    out.push({ missionId: m.id, sid: b.ccr?.sid || b.sessionId, host: host ?? 'unknown', transport: isNativeBinding(b) ? 'native' : 'cloud' });
+  }
+  return out;
+}
+
 export interface MissionTickDeps {
   now: number;
   cfg: { intervalMin: number; maxNudges: number; model: string };
@@ -397,10 +432,12 @@ export const CONTROLLER_PASS_DIRECTIVE =
 
 /** Drive sent INSTEAD of CONTROLLER_PASS_DIRECTIVE when the supervisor detected that this
  *  node's cluster roster (in-cluster node membership) changed since the last pass. Tells the
- *  controller to re-scope its cluster before the normal pass. Orphaned workers KEEP RUNNING —
- *  the controller RELEASES (does not kill) any whose node left, and re-adopts any now-in-cluster. */
+ *  controller to re-scope its cluster before the normal pass and ACTIVELY MIGRATE the workers
+ *  orphaned by the change: each KEEPS RUNNING until its in-cluster replacement is up (never
+ *  killed), the controller re-adopts any now-in-cluster worker, and — when the supervisor knows
+ *  the specific orphaned sessions — they are appended below as an explicit migration list. */
 export const CONTROLLER_ROSTER_CHANGED_DIRECTIVE =
-  '⟦CLUSTER ROSTER CHANGED⟧ Your cluster\'s node membership just changed. Re-read your scope (call cluster_list), re-evaluate which executors/workers are still IN your cluster, RELEASE/forget any worker whose node left your cluster (it keeps running and will be picked up by its new cluster\'s controller — do NOT kill it), and PICK UP / re-place any now-in-cluster worker or pending task. Then run a normal controller pass (mission_changes → mission_schedule).';
+  '⟦CLUSTER ROSTER CHANGED⟧ Your cluster\'s node membership just changed. Re-read your scope (call cluster_list), then re-evaluate every executor/worker: RE-ADOPT any that is now IN your cluster, and ACTIVELY MIGRATE any whose node just LEFT your cluster onto an in-cluster node (or cloud) — do NOT kill it and do NOT merely forget it; keep it RUNNING until its in-cluster replacement is up, then retire the original so no in-flight work is dropped. Also place any pending in-cluster task. Then run a normal controller pass (mission_changes → mission_schedule). If a list of specific workers to migrate follows below, act on each of them FIRST.';
 
 /**
  * Guarded system prompt for the Mission Controller agent. Passed at launch via
@@ -597,6 +634,15 @@ export interface SupervisorDeps {
    *  so the controller re-scopes its cluster. Production wires it to computeRosterKey over
    *  getClusterRecords()+getMyCluster(); omitted → no roster-change trigger (unchanged behavior). */
   rosterKey?: () => Promise<string>;
+  /** Fetch this node's cluster records (gatewayId→cluster map). When present together with
+   *  myCluster + selfId, a roster-change engagement computes the orphaned-worker migration list
+   *  (computeMigrationCandidates) so the controller's directive can name the exact sessions to
+   *  migrate. Production wires it to getClusterRecords. Omitted → no migration list (base directive). */
+  listClusterRecords?: () => Promise<ClusterRecord[]>;
+  /** This node's cluster name (wired to getMyCluster). Used with listClusterRecords + selfId. */
+  myCluster?: () => string;
+  /** This node's own gatewayId / self identity (wired to thisNode). Used with listClusterRecords + myCluster. */
+  selfId?: () => string | null;
 }
 
 /**
@@ -616,10 +662,13 @@ export interface SupervisorDeps {
  * interim progress WITHOUT engaging, persists the updated `seen` every tick, and
  * returns whether a material change / new mission / safety interval / cluster-roster
  * change means the controller should be driven (plus an optional `reason` so the
- * caller can pick a roster-specific directive). Caller guarantees the engagement deps
- * are present.
+ * caller can pick a roster-specific directive, and — on a roster change — the
+ * `migrationCandidates` list of orphaned workers the controller must actively migrate).
+ * Caller guarantees the engagement deps are present.
  */
-async function evaluateEngagement(deps: SupervisorDeps): Promise<{ engage: boolean; reason?: 'roster-change' }> {
+async function evaluateEngagement(
+  deps: SupervisorDeps,
+): Promise<{ engage: boolean; reason?: 'roster-change'; migrationCandidates?: MigrationCandidate[] }> {
   const eng = await deps.getEngagement!();
   const active = await deps.listActiveForEngage!();
   const now = deps.now;
@@ -658,6 +707,7 @@ async function evaluateEngagement(deps: SupervisorDeps): Promise<{ engage: boole
   // The very first observation only records the baseline (no spurious boot-time drive).
   // Best-effort: a roster read failure must never sink the tick.
   let reason: 'roster-change' | undefined;
+  let migrationCandidates: MigrationCandidate[] | undefined;
   let nextRosterKey = eng.lastRosterKey;
   if (deps.rosterKey) {
     try {
@@ -668,6 +718,15 @@ async function evaluateEngagement(deps: SupervisorDeps): Promise<{ engage: boole
         engage = true;                      // membership changed → re-scope the cluster now
         reason = 'roster-change';
         nextRosterKey = rosterKey;
+        // Compute the orphaned-worker migration list ONCE (best-effort) so the caller can
+        // enrich the roster-changed directive with the exact sessions to migrate. A failure
+        // here must never sink the tick — leave migrationCandidates undefined (base directive).
+        if (deps.listClusterRecords && deps.myCluster && deps.selfId) {
+          try {
+            const records = await deps.listClusterRecords();
+            migrationCandidates = computeMigrationCandidates(active, records, deps.selfId(), deps.myCluster());
+          } catch { /* best-effort — leave migrationCandidates undefined on error */ }
+        }
       }
     } catch { /* leave lastRosterKey unchanged on a read failure */ }
   }
@@ -681,7 +740,7 @@ async function evaluateEngagement(deps: SupervisorDeps): Promise<{ engage: boole
     seen: curSeen,
     lastRosterKey: nextRosterKey,
   });
-  return { engage, reason };
+  return { engage, reason, migrationCandidates };
 }
 
 export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action: string; controllerSession: ControllerSession | null }> {
@@ -696,11 +755,13 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   // when monitor+live (the only case decideSupervisor uses driveDue).
   let driveDue = false;
   let driveReason: 'roster-change' | undefined;
+  let driveCands: MigrationCandidate[] | undefined;
   if (isMonitor && live && cs) {
     if (deps.listActiveForEngage && deps.readSignal && deps.getEngagement && deps.putEngagement) {
       const ev = await evaluateEngagement(deps);
       driveDue = ev.engage;
       driveReason = ev.reason;
+      driveCands = ev.migrationCandidates;
     } else {
       const activeCount = deps.activeMissionCount ? await deps.activeMissionCount() : 1;
       driveDue = isDriveDue({
@@ -740,8 +801,17 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   }
 
   // action === 'drive' — pick the roster-changed directive when a cluster-roster change
-  // triggered this engagement, else the standard pass directive.
-  const directive = driveReason === 'roster-change' ? CONTROLLER_ROSTER_CHANGED_DIRECTIVE : CONTROLLER_PASS_DIRECTIVE;
+  // triggered this engagement (enriched with the EXACT workers to migrate, when known),
+  // else the standard pass directive.
+  let directive = CONTROLLER_PASS_DIRECTIVE;
+  if (driveReason === 'roster-change') {
+    directive = CONTROLLER_ROSTER_CHANGED_DIRECTIVE;
+    if (driveCands && driveCands.length) {
+      directive += '\n\nWorkers to MIGRATE now (their node left your cluster — migrate each onto an in-cluster node; do NOT kill them):\n'
+        + driveCands.map((c) => `- mission ${c.missionId} · session ${c.sid} · was on ${c.host} · ${c.transport}`).join('\n')
+        + '\n\nFor each — CLOUD: call mission_session_resume(sid) so an in-cluster node takes over driving the same session, then mission_update its binding host to an in-cluster node. NATIVE: mission_update(env.host=<an in-cluster host from cluster_list>) then mission_session_resume(sid, missionId) (or mission_place) to re-place it in-cluster. Keep the orphaned session running until its replacement is up, then retire it. Never drop in-flight work.';
+    }
+  }
   await deps.drive(cs!, directive);
   // Stamp lastDriveAt and persist so the next tick knows when we last drove.
   const updatedCs: ControllerSession = { ...cs!, lastDriveAt: deps.now };
@@ -890,6 +960,12 @@ export function registerMissionController(
       // Roster-change trigger — the stable key of this node's in-cluster membership.
       // A change vs the persisted lastRosterKey force-engages the controller to re-scope.
       rosterKey: async () => computeRosterKey(await getClusterRecords(), getMyCluster()),
+      // Cluster records + identity — on a roster change, evaluateEngagement uses these to
+      // compute the orphaned-worker migration list (the exact sessions whose node left the
+      // cluster) so the roster-changed directive can tell the controller which to migrate.
+      listClusterRecords: getClusterRecords,
+      myCluster: getMyCluster,
+      selfId: thisNode,
       now: Date.now(),
       launch: async () => {
         const { tmuxCcController } = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
