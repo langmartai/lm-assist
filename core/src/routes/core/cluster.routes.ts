@@ -21,6 +21,7 @@ import { proxyPost } from '../../data/peer-client';
 import { getSyncEngine } from '../../data/data-service';
 import { getHubConfig } from '../../hub-client/hub-config';
 import { isLoopbackAddress } from '../../auth/enroll-exempt';
+import { notifyLocalWorkersOfClusterChange } from '../../worker-role/cluster-change-notify';
 
 // ── Pure helper (exported for unit tests) ────────────────────────────────────
 
@@ -113,9 +114,15 @@ export function createClusterRoutes(_ctx: RouteContext): RouteHandler[] {
         const targetId = resolveNodeId(b.node, records, online);
         if (!targetId) return wrapError('BAD_NODE', `unknown node: ${b.node}`, start);
         if (targetId === selfId) {
-          setMyCluster(b.cluster);
+          const oldCluster = getMyCluster();
+          const cluster = setMyCluster(b.cluster);
           await publishSelf();
           getSyncEngine().reconcile().catch(() => {}); // pull peers now so this node's view converges (push isn't hub-relayed)
+          if (oldCluster !== cluster) {
+            // Fire-and-forget: tell LOCAL active workers this node moved cluster so a
+            // controller/orchestrator can re-place them. Helper never throws.
+            notifyLocalWorkersOfClusterChange(oldCluster, cluster).catch(() => {});
+          }
           return wrapResponse({ assigned: true, node: selfId, cluster: getMyCluster() }, start);
         }
         const result = await proxyPost(targetId, '/cluster/self', { cluster: b.cluster });
@@ -138,9 +145,14 @@ export function createClusterRoutes(_ctx: RouteContext): RouteHandler[] {
         const targetId = resolveNodeId(b.node, records, online);
         if (!targetId) return wrapError('BAD_NODE', `unknown node: ${b.node}`, start);
         if (targetId === selfId) {
+          const oldCluster = getMyCluster();
           setMyCluster('default');
           await publishSelf();
           getSyncEngine().reconcile().catch(() => {}); // pull peers now so this node's view converges
+          if (oldCluster !== 'default') {
+            // Fire-and-forget: notify LOCAL active workers; new cluster is 'default'.
+            notifyLocalWorkersOfClusterChange(oldCluster, 'default').catch(() => {});
+          }
           return wrapResponse({ assigned: true, node: selfId, cluster: 'default' }, start);
         }
         const result = await proxyPost(targetId, '/cluster/self', { cluster: 'default' });
@@ -176,8 +188,14 @@ export function createClusterRoutes(_ctx: RouteContext): RouteHandler[] {
         }
         const b = (req.body || {}) as { cluster?: string };
         if (!b.cluster) return wrapError('INVALID_INPUT', 'cluster is required', start);
+        const oldCluster = getMyCluster();
         const cluster = setMyCluster(b.cluster);
         await publishSelf();
+        if (oldCluster !== cluster) {
+          // Fire-and-forget: notify LOCAL active workers this node moved cluster so a
+          // controller/orchestrator can re-place them. Helper never throws.
+          notifyLocalWorkersOfClusterChange(oldCluster, cluster).catch(() => {});
+        }
         return wrapResponse({ cluster }, start);
       },
     },

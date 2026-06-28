@@ -35,6 +35,10 @@ export interface EngagementState {
   lastEngagedAt: number | null;
   lastActiveIds: string[];
   seen: Record<string, { alive: boolean; gated: boolean; cursor: number }>;
+  /** Stable key of THIS node's in-cluster roster (sorted gatewayIds). When it changes,
+   *  the supervisor force-engages the controller so it re-scopes its cluster. Absent
+   *  until the first observation (which sets the baseline without a spurious drive). */
+  lastRosterKey?: string;
 }
 
 /** Controller session state — stored in the missions dataset under reserved key __controller__. */
@@ -264,6 +268,7 @@ export async function getEngagementState(port: MissionDataPort = defaultPort()):
     lastEngagedAt: (f.lastEngagedAt as number | null) ?? null,
     lastActiveIds: Array.isArray(f.lastActiveIds) ? (f.lastActiveIds as string[]) : [],
     seen: (f.seen as EngagementState['seen']) ?? {},
+    lastRosterKey: typeof f.lastRosterKey === 'string' ? (f.lastRosterKey as string) : undefined,
   };
 }
 
