@@ -9,7 +9,7 @@ const GIT_OK = async () => ({ git: { branch: 'main', worktree: '/r', upstream: '
 test('buildSnapshot — assembles sessions, tags managed, attaches git + ports', async () => {
   const snap = await buildSnapshot({
     sessions: () => [
-      { sessionId: 'sess-A', cacheData: { cwd: '/r', fileMtime: 1000, isActive: true, title: 'A' } },
+      { sessionId: 'sess-A', cacheData: { cwd: '/r', fileMtime: 1000, customTitle: 'A' } },
       { sessionId: 'session_cloud1', cacheData: { cwd: '/r', fileMtime: 900 } },
     ],
     bound: async () => new Map([['sess-A', 'mission-7']]),
@@ -24,6 +24,8 @@ test('buildSnapshot — assembles sessions, tags managed, attaches git + ports',
   const a = snap.sessions.find((s) => s.sessionId === 'sess-A')!;
   assert.equal(a.managed, 'mission-7');
   assert.equal(a.transport, 'native');
+  assert.equal(a.title, 'A');
+  assert.equal(a.isActive, true);    // now=2000, fileMtime=1000 → age 1000ms < ACTIVE_MS
   assert.deepEqual(a.openChanges, ['a.ts']);
   const c = snap.sessions.find((s) => s.sessionId === 'session_cloud1')!;
   assert.equal(c.managed, null);

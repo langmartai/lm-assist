@@ -4,6 +4,7 @@ import { collectPorts } from './port-survey';
 import { runCmd } from './run-cmd';
 
 const RECENT_MS = 30 * 60 * 1000;
+const ACTIVE_MS = 5 * 60 * 1000;
 const CAP_SESSIONS = 15;
 const GIT_PARALLEL = 4;
 
@@ -16,7 +17,7 @@ function relAge(ms: number, now: number): string {
 }
 
 export interface BuildDeps {
-  sessions: () => Array<{ sessionId: string; cacheData: { cwd?: string; fileMtime?: number; isActive?: boolean; title?: string } }>;
+  sessions: () => Array<{ sessionId: string; cacheData: { cwd?: string; fileMtime?: number; customTitle?: string; slug?: string } }>;
   bound: () => Promise<Map<string, string>>;                 // sessionId/cse/sid → missionId
   identity: () => { node: string; host: string; cluster: string };
   gitFor: (cwd: string) => Promise<Awaited<ReturnType<typeof collectGitState>>>;
@@ -28,7 +29,7 @@ export async function buildSnapshot(deps: BuildDeps): Promise<NodeFootprint> {
   const id = deps.identity();
   const now = deps.now();
   const recent = deps.sessions()
-    .filter((s) => s.cacheData?.isActive || (s.cacheData?.fileMtime ?? 0) >= now - RECENT_MS)
+    .filter((s) => (s.cacheData?.fileMtime ?? 0) >= now - RECENT_MS)
     .sort((a, b) => (b.cacheData?.fileMtime ?? 0) - (a.cacheData?.fileMtime ?? 0))
     .slice(0, CAP_SESSIONS);
 
@@ -49,12 +50,12 @@ export async function buildSnapshot(deps: BuildDeps): Promise<NodeFootprint> {
     const cloud = /^(session_|cse_)/.test(s.sessionId);
     return {
       cluster: id.cluster, node: id.node, host: id.host,
-      sessionId: s.sessionId, title: s.cacheData?.title,
+      sessionId: s.sessionId, title: s.cacheData?.customTitle ?? s.cacheData?.slug,
       transport: cloud ? 'cloud' : 'native',
       managed: boundMap.get(s.sessionId) ?? null,
       cwd, repo: g.repo, git: g.git,
       openChanges: g.openChanges, openChangesTruncated: g.openChangesTruncated,
-      lastActiveRel: relAge(s.cacheData?.fileMtime ?? now, now), isActive: !!s.cacheData?.isActive,
+      lastActiveRel: relAge(s.cacheData?.fileMtime ?? now, now), isActive: (now - (s.cacheData?.fileMtime ?? 0)) < ACTIVE_MS,
     };
   });
 

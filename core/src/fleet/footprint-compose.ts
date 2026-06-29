@@ -1,6 +1,16 @@
 import type { NodeFootprint, ComposedFootprints } from './footprint-types';
 
 const COMPOSED_TTL_MS = 5000;
+const PEER_TIMEOUT_MS = 2500;
+
+/** Race a promise against a hard deadline that rejects after `ms`. */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`peer timeout after ${ms}ms`)), ms);
+  });
+  return Promise.race([p, deadline]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
 
 export function mergeComposed(
   self: NodeFootprint,
@@ -42,7 +52,7 @@ export async function getComposed(scope: 'cluster' | 'fleet', deps: ComposeDeps)
 
   const peers = await Promise.all(peerIds.map(async (n) => {
     try {
-      const res = (await deps.proxyGet(n, '/fleet/session-footprints/local')) as { data?: NodeFootprint } | NodeFootprint;
+      const res = (await withTimeout(deps.proxyGet(n, '/fleet/session-footprints/local'), PEER_TIMEOUT_MS)) as { data?: NodeFootprint } | NodeFootprint;
       const snap = (res as any)?.data ?? res;
       return { node: n, snap: snap && (snap as NodeFootprint).node ? (snap as NodeFootprint) : null };
     } catch {

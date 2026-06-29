@@ -2,7 +2,7 @@ import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import { wrapResponse } from '../../api/helpers';
 import { getLocalSnapshot } from '../../fleet/session-footprint-collector';
 import { getComposed, type ComposeDeps } from '../../fleet/footprint-compose';
-import { proxyGet, listOnlineNodeIds } from '../../data/peer-client';
+import { proxyGet, listAllOnlineNodeIds } from '../../data/peer-client';
 import { getClusterRecords } from '../../cluster/cluster-store';
 import { getMyCluster } from '../../cluster/cluster-config';
 import { thisNode } from '../../mission/mission-store'; // exports thisNode()=gatewayId; data/paths only has thisNodeId()
@@ -10,7 +10,7 @@ import { thisNode } from '../../mission/mission-store'; // exports thisNode()=ga
 export function composeDeps(): ComposeDeps {
   return {
     getLocal: getLocalSnapshot,
-    listOnline: listOnlineNodeIds,
+    listOnline: listAllOnlineNodeIds,
     clusterOf: async () => {
       const recs = await getClusterRecords();
       return new Map(recs.map((r) => [r.gatewayId, r.cluster]));

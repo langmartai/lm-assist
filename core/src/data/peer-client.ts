@@ -246,15 +246,24 @@ export class HubPeerClient implements PeerClient {
   }
 }
 
-/** Online gateway-ids IN THIS NODE'S CLUSTER (including self). */
-export async function listOnlineNodeIds(): Promise<string[]> {
+/** Shared fetch: all online gateway-ids fleet-wide (no cluster filter). */
+async function fetchAllOnlineIds(): Promise<string[]> {
   const json = (await hubFetch('/api/tier-agent/machines')) as any;
   const machines: any[] = Array.isArray(json) ? json : json.machines || json.data || [];
-  const allOnline = machines
+  return machines
     .filter((m) => (m.status || '').toLowerCase() === 'online')
     .map((m) => (m.gatewayId || m.machineId || m.id) as string)
     .filter((id): id is string => typeof id === 'string' && !!id);
+}
 
+/** All online gateway-ids fleet-wide (no cluster filter). Used by scope=fleet fan-out. */
+export async function listAllOnlineNodeIds(): Promise<string[]> {
+  return fetchAllOnlineIds();
+}
+
+/** Online gateway-ids IN THIS NODE'S CLUSTER (including self). */
+export async function listOnlineNodeIds(): Promise<string[]> {
+  const allOnline = await fetchAllOnlineIds();
   const selfId = getHubConfig().gatewayId || getHubConfig().machineId || null;
 
   // Lazy-import to avoid circular dependency with cluster-store
