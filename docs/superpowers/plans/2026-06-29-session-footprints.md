@@ -822,7 +822,7 @@ git commit -m "feat(fleet): composed cross-fleet merge + relay fan-out"
 - Test: `core/src/__tests__/fleet/wiring.test.ts`
 
 **Interfaces:**
-- Consumes: `getLocalSnapshot` (Task 3), `getComposed` (Task 4), `wrapResponse` (`core/src/api/helpers.ts`), `proxyGet`/`listOnlineNodeIds` (`core/src/data/peer-client.ts`), `getClusterRecords` (`core/src/cluster/cluster-store.ts`), `getMyCluster` (`core/src/cluster/cluster-config.ts`), `thisNode` (`core/src/data/paths.ts`).
+- Consumes: `getLocalSnapshot` (Task 3), `getComposed` (Task 4), `wrapResponse` (`core/src/api/helpers.ts`), `proxyGet`/`listOnlineNodeIds` (`core/src/data/peer-client.ts`), `getClusterRecords` (`core/src/cluster/cluster-store.ts`), `getMyCluster` (`core/src/cluster/cluster-config.ts`), `thisNode` (`core/src/mission/mission-store.ts` — returns the gatewayId; NOTE `data/paths.ts` only exports `thisNodeId()`, not `thisNode`).
 - Produces: `createFleetRoutes(ctx: RouteContext): RouteHandler[]`.
 
 - [ ] **Step 1: Write the failing test** — `core/src/__tests__/fleet/wiring.test.ts`
@@ -867,7 +867,7 @@ import { getComposed, type ComposeDeps } from '../../fleet/footprint-compose';
 import { proxyGet, listOnlineNodeIds } from '../../data/peer-client';
 import { getClusterRecords } from '../../cluster/cluster-store';
 import { getMyCluster } from '../../cluster/cluster-config';
-import { thisNode } from '../../data/paths';
+import { thisNode } from '../../mission/mission-store'; // exports thisNode()=gatewayId; data/paths only has thisNodeId()
 
 function composeDeps(): ComposeDeps {
   return {
