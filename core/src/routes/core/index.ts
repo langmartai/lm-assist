@@ -57,6 +57,7 @@ import { createMissionRoutes } from './mission.routes';
 import { createMonitorStallsRoutes } from './monitor-stalls.routes';
 import { createNodeRoutes } from './node.routes';
 import { createClusterRoutes } from './cluster.routes';
+import { createFleetRoutes } from './fleet.routes';
 
 /**
  * Create all core routes
@@ -113,5 +114,6 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createMonitorStallsRoutes(ctx),
     ...createNodeRoutes(ctx),
     ...createClusterRoutes(ctx),
+    ...createFleetRoutes(ctx),
   ];
 }
