@@ -68,7 +68,10 @@ export function createRuleSyncRoutes(_ctx: RouteContext): RouteHandler[] {
         try {
           const { getRuleAutoSyncDaemon } = require('../../rules/autosync');
           daemonStatus = getRuleAutoSyncDaemon().getStatus();
-        } catch { /* daemon not yet wired */ }
+        } catch (e: any) {
+          // Only swallow MODULE_NOT_FOUND (daemon not yet wired); surface real errors.
+          if ((e as any)?.code !== 'MODULE_NOT_FOUND') return wrapError('RULE_SYNC_STATUS_FAILED', String(e), start);
+        }
         return wrapResponse({
           config: { ruleSyncEnabled: getProjectSettings().ruleSyncEnabled, nodeMode: readMemorySyncConfig().nodeMode },
           daemon: daemonStatus,

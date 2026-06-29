@@ -157,6 +157,17 @@ export class TierRestServer {
         console.warn('[Server] Memory autosync daemon init failed:', e);
       }
 
+      // Start the cross-node RULE autosync daemon (own chokidar v3 watch of ~/.claude/rules/*.md;
+      // pull-based fleet-wide reconcile). On by default (ruleSyncEnabled; env RULE_AUTOSYNC overrides).
+      try {
+        const { getRuleAutoSyncDaemon } = require('./rules/autosync');
+        const rd = getRuleAutoSyncDaemon();
+        rd.start();
+        console.log(`[Server] Rule autosync daemon: mode=${rd.getMode()}`);
+      } catch (e) {
+        console.warn('[Server] Rule autosync daemon init failed:', e);
+      }
+
       // Cross-project memory signposts: write the managed _cross-project.md (+ a MEMORY.md pointer)
       // into every project on start, and refresh when the project set changes. Default ON; per-node
       // local (never cross-node synced). Lets an LLM recalling memory know to use the langmart MCP

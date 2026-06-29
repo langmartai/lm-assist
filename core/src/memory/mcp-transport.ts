@@ -95,6 +95,21 @@ export async function slugsByRemote(node: string, remoteKey: string): Promise<st
   return raw && Array.isArray(raw.slugs) ? raw.slugs : [];
 }
 
+import type { IngestRule } from '../rules/rule-sync';
+
+/** Pure: body for POST /rules/export (key in body because the hub proxy strips the x-lm-access-key header). */
+export function rulesExportBody(key: string) {
+  return { key };
+}
+
+/** Pull a peer node's own USER rules (relayed, key in body). Returns null on any failure. */
+export async function pullRulesExport(node: string, key: string): Promise<{ host: string; platform: string; rules: IngestRule[] } | null> {
+  const j = await relayPost(node, '/rules/export', rulesExportBody(key));
+  const raw = j && (j.data || j);
+  if (!raw || !Array.isArray(raw.rules)) return null;
+  return { host: String(raw.host || node), platform: String(raw.platform || ''), rules: raw.rules };
+}
+
 /** Fleet node ids (excluding self), from the hub machine list. Empty on any failure. */
 export async function listFleetNodes(): Promise<string[]> {
   try {

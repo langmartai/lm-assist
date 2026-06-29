@@ -49,6 +49,7 @@ export function createProjectSettingsRoutes(_ctx: RouteContext): RouteHandler[] 
           missionSessionIdleCloseMin,
           authMonitorEnabled: body.authMonitorEnabled,
           authMonitorIntervalMin,
+          ruleSyncEnabled: body.ruleSyncEnabled,
         });
 
         // Live-apply the memory-sync toggle: re-resolve the autosync daemon mode (no restart).
@@ -70,6 +71,16 @@ export function createProjectSettingsRoutes(_ctx: RouteContext): RouteHandler[] 
             console.log(`[ProjectSettings] crossProjectSignpostEnabled=${updated.crossProjectSignpostEnabled}`);
           } catch (err: any) {
             console.error('[ProjectSettings] signpost toggle error:', err?.message);
+          }
+        }
+
+        // Live-apply the rule-sync toggle: re-resolve the rule-autosync daemon mode (no restart).
+        if (prevSettings.ruleSyncEnabled !== updated.ruleSyncEnabled) {
+          try {
+            const mode = require('../../rules/autosync').getRuleAutoSyncDaemon().refreshMode();
+            console.log(`[ProjectSettings] ruleSyncEnabled=${updated.ruleSyncEnabled} → rule-autosync mode=${mode}`);
+          } catch (err: any) {
+            console.error('[ProjectSettings] rule-sync toggle error:', err?.message);
           }
         }
 
