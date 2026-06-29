@@ -18,12 +18,27 @@ export function parseSs(stdout: string): PortHold[] {
   return out;
 }
 
-export function parseWinPorts(stdout: string): PortHold[] {
+/**
+ * Parse `netstat -ano` (Windows) → listening TCP ports + owning PID.
+ * We use netstat, not PowerShell `Get-NetTCPConnection`, because it is a plain
+ * cmd built-in that stays fast even on boxes whose PowerShell subsystem is
+ * degraded (where a 2 s-timeout PS call returns nothing → empty ports). netstat
+ * gives the PID but not the process name, so `proc` is null on Windows.
+ * Lines look like:  `  TCP    0.0.0.0:3100   0.0.0.0:0   LISTENING   178680`
+ * (IPv6 local addresses appear as `[::]:3100`; UDP rows have no LISTENING state).
+ */
+export function parseNetstat(stdout: string): PortHold[] {
   const out: PortHold[] = [];
   for (const line of stdout.split('\n')) {
-    const m = line.match(/"?(\d+)"?\s*,\s*"?(\d+)"?/);
-    if (!m) continue; // skips the header row
-    out.push({ port: parseInt(m[1], 10), proto: 'tcp', pid: parseInt(m[2], 10), proc: null });
+    const cols = line.trim().split(/\s+/); // Proto Local Foreign State PID
+    if (cols.length < 5) continue;
+    if (!/^TCP/i.test(cols[0])) continue;
+    if (cols[3] !== 'LISTENING') continue;
+    const local = cols[1];
+    const port = parseInt(local.slice(local.lastIndexOf(':') + 1), 10);
+    if (!Number.isFinite(port)) continue;
+    const pid = parseInt(cols[4], 10);
+    out.push({ port, proto: 'tcp', pid: Number.isFinite(pid) ? pid : null, proc: null });
   }
   return out;
 }
@@ -31,10 +46,8 @@ export function parseWinPorts(stdout: string): PortHold[] {
 export async function collectPorts(run: RunCmd, platform: NodeJS.Platform): Promise<PortHold[]> {
   try {
     if (platform === 'win32') {
-      const r = await run('powershell', ['-NoProfile', '-Command',
-        'Get-NetTCPConnection -State Listen | Select-Object LocalPort,OwningProcess | ConvertTo-Csv -NoTypeInformation'],
-        { timeoutMs: TIMEOUT });
-      return r.code === 0 ? parseWinPorts(r.stdout) : [];
+      const r = await run('netstat', ['-ano'], { timeoutMs: TIMEOUT });
+      return r.code === 0 ? parseNetstat(r.stdout) : [];
     }
     const r = await run('ss', ['-H', '-tlnp'], { timeoutMs: TIMEOUT });
     return r.code === 0 ? parseSs(r.stdout) : [];

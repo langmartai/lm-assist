@@ -125,6 +125,7 @@ export class ApiRelayHandler {
     '/node',          // per-node build/upgrade info (node_builds fans GET /node/build to every node)
     '/cluster',       // cross-node cluster assignment (cluster_assign proxies POST /cluster/self to the target node)
     '/fleet',         // cross-node session/resource survey (session_footprints composes peers' /fleet/session-footprints/local)
+    '/lifecycle',     // graceful exit/restart of a node's Core/Web (node_lifecycle → POST /lifecycle/{exit,restart})
   ];
 
   /**

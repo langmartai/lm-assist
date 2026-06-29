@@ -58,6 +58,7 @@ import { NODE_BUILDS_TOOL_DEFS, NODE_BUILDS_HANDLERS } from './node-builds';
 import { NODE_UPGRADE_TOOL_DEFS, NODE_UPGRADE_HANDLERS } from './node-upgrade';
 import { CLUSTER_TOOL_DEFS, CLUSTER_HANDLERS } from './cluster';
 import { sessionFootprintsToolDef, handleSessionFootprints } from './session-footprints';
+import { nodeLifecycleToolDef, handleNodeLifecycle } from './lifecycle';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -939,6 +940,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...CLUSTER_TOOL_DEFS,
   // fleet session footprints (read — cross-fleet survey)
   sessionFootprintsToolDef,
+  // node lifecycle (admin — graceful exit/restart, no force-kill)
+  nodeLifecycleToolDef,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -1707,4 +1710,6 @@ export const EXPANDED_HANDLERS: Record<
   ...CLUSTER_HANDLERS,
   // fleet session footprints (read — cross-fleet survey)
   session_footprints: handleSessionFootprints,
+  // node lifecycle (admin — graceful exit/restart, no force-kill)
+  node_lifecycle: handleNodeLifecycle,
 };

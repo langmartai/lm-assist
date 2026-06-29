@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { parseSs, parseWinPorts, collectPorts } from '../../fleet/port-survey';
+import { parseSs, parseNetstat, collectPorts } from '../../fleet/port-survey';
 import type { RunCmd } from '../../fleet/run-cmd';
 
 test('parseSs — extracts port, pid, proc from ss -H -tlnp lines', () => {
@@ -17,17 +17,30 @@ test('parseSs — extracts port, pid, proc from ss -H -tlnp lines', () => {
   ]);
 });
 
-test('parseWinPorts — "port,pid" CSV lines (header skipped)', () => {
-  const stdout = '"LocalPort","OwningProcess"\n"3848","4021"\n"3100","777"\n';
-  assert.deepEqual(parseWinPorts(stdout), [
+test('parseNetstat — listening TCP rows → {port,pid}; IPv6 + non-LISTENING/UDP skipped', () => {
+  const stdout = [
+    'Active Connections',
+    '',
+    '  Proto  Local Address          Foreign Address        State           PID',
+    '  TCP    0.0.0.0:3100           0.0.0.0:0              LISTENING       178680',
+    '  TCP    [::]:3848              [::]:0                 LISTENING       4021',
+    '  TCP    10.0.1.107:58007       172.67.158.86:443      ESTABLISHED     161104',
+    '  UDP    0.0.0.0:5353           *:*                                    1234',
+  ].join('\n');
+  assert.deepEqual(parseNetstat(stdout), [
+    { port: 3100, proto: 'tcp', pid: 178680, proc: null },
     { port: 3848, proto: 'tcp', pid: 4021, proc: null },
-    { port: 3100, proto: 'tcp', pid: 777, proc: null },
   ]);
 });
 
-test('collectPorts — POSIX uses ss; failure → []', async () => {
-  const run: RunCmd = async (cmd) => (cmd === 'ss' ? { stdout: 'LISTEN 0 511 0.0.0.0:8080 0.0.0.0:* users:(("x",pid=5,fd=1))', code: 0 } : { stdout: '', code: 1 });
-  assert.deepEqual(await collectPorts(run, 'linux'), [{ port: 8080, proto: 'tcp', pid: 5, proc: 'x' }]);
+test('collectPorts — POSIX uses ss; Windows uses netstat; failure → []', async () => {
+  const ssRun: RunCmd = async (cmd) => (cmd === 'ss' ? { stdout: 'LISTEN 0 511 0.0.0.0:8080 0.0.0.0:* users:(("x",pid=5,fd=1))', code: 0 } : { stdout: '', code: 1 });
+  assert.deepEqual(await collectPorts(ssRun, 'linux'), [{ port: 8080, proto: 'tcp', pid: 5, proc: 'x' }]);
+
+  const nsRun: RunCmd = async (cmd) => (cmd === 'netstat' ? { stdout: '  TCP    0.0.0.0:9000   0.0.0.0:0   LISTENING   42', code: 0 } : { stdout: '', code: 1 });
+  assert.deepEqual(await collectPorts(nsRun, 'win32'), [{ port: 9000, proto: 'tcp', pid: 42, proc: null }]);
+
   const bad: RunCmd = async () => ({ stdout: '', code: 1 });
   assert.deepEqual(await collectPorts(bad, 'linux'), []);
+  assert.deepEqual(await collectPorts(bad, 'win32'), []);
 });
