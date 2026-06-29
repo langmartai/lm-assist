@@ -5,6 +5,7 @@
 
 import { spawn } from 'child_process';
 import * as path from 'path';
+import * as fs from 'fs';
 
 export type LifecycleTarget = 'core' | 'web' | 'both';
 export type LifecycleAction = 'exit' | 'restart';
@@ -36,6 +37,12 @@ export function relauncherArgs(helperPath: string, port: number, execPath: strin
 /** Spawn the detached relauncher (a committed helper script — no eval/code-gen) that waits
  *  for the core port to free, then re-spawns the core. Inherits env (so a --extra-ca node
  *  restarts with NODE_EXTRA_CA_CERTS still set). Best-effort. */
+/** True when this core is running as a systemd unit (its detached children share the unit's
+ *  cgroup and get killed on stop unless they escape it). Pure-ish (reads env + /run). */
+export function isSystemdManaged(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !!env.INVOCATION_ID && fs.existsSync('/run/systemd/system');
+}
+
 export function spawnCoreRelauncher(): void {
   const { cliPath, serveArgs, port } = coreServeInvocation();
   const helperPath = path.join(__dirname, 'relaunch-helper.js'); // sibling of lifecycle.js in core/dist
@@ -48,6 +55,13 @@ export function spawnCoreRelauncher(): void {
 export function scheduleCoreExit(relaunch: boolean, delayMs = 500): void {
   setTimeout(() => {
     try { const { getHubClient } = require('./hub-client'); getHubClient().disconnect().catch(() => {}); } catch { /* ignore */ }
+    if (relaunch && isSystemdManaged()) {
+      // systemd owns this unit; a self-spawned child would be killed with the unit's cgroup on
+      // stop. Exit NON-ZERO so Restart=on-failure/always relaunches us cleanly. (If the unit is
+      // Restart=no this degrades to a plain shutdown — use `systemctl restart` on such nodes.)
+      setTimeout(() => process.exit(1), 200);
+      return;
+    }
     if (relaunch) {
       try { spawnCoreRelauncher(); }
       catch (e) { console.error('[lifecycle] relauncher spawn failed — core will exit WITHOUT self-respawn (supervisor must restart it):', (e as Error)?.message); }

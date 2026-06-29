@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { normalizeTarget, coreServeInvocation, relauncherArgs } from '../lifecycle';
+import { normalizeTarget, coreServeInvocation, relauncherArgs, isSystemdManaged } from '../lifecycle';
 
 test('normalizeTarget — defaults to core; passes web/both; rejects junk', () => {
   assert.equal(normalizeTarget(undefined), 'core');
@@ -24,6 +24,11 @@ test('coreServeInvocation — reads cli path + serve args + --port (preserves --
 test('coreServeInvocation — falls back to API_PORT then 3100', () => {
   assert.equal(coreServeInvocation(['node', 'cli.js', 'serve'], { API_PORT: '3200' }).port, 3200);
   assert.equal(coreServeInvocation(['node', 'cli.js', 'serve'], {}).port, 3100);
+});
+
+test('isSystemdManaged — false without INVOCATION_ID (so non-systemd nodes self-respawn)', () => {
+  assert.equal(isSystemdManaged({}), false);
+  assert.equal(isSystemdManaged({ INVOCATION_ID: '' }), false);
 });
 
 test('relauncherArgs — passes config as ARGV (no code-gen), preserving --extra-ca order', () => {
