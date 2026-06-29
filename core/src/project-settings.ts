@@ -55,6 +55,8 @@ export interface ProjectSettings {
   authMonitorEnabled: boolean;
   /** Minutes between auth-monitor checks. Default 15. */
   authMonitorIntervalMin: number;
+  /** Cross-node rule sync: when true the autosync daemon syncs ~/.claude/rules across fleet nodes. Default true. */
+  ruleSyncEnabled: boolean;
 }
 
 // ── Constants ──────────────────────────────────────────
@@ -83,6 +85,7 @@ export const DEFAULTS: ProjectSettings = {
   missionHistoryInlineCap: 50,
   authMonitorEnabled: true,
   authMonitorIntervalMin: 15,
+  ruleSyncEnabled: true,
 };
 
 // ── Mtime Cache ──────────────────────────────────────────
@@ -126,6 +129,7 @@ export function getProjectSettings(): ProjectSettings {
       missionHistoryInlineCap: typeof data.missionHistoryInlineCap === 'number' ? data.missionHistoryInlineCap : DEFAULTS.missionHistoryInlineCap,
       authMonitorEnabled: typeof data.authMonitorEnabled === 'boolean' ? data.authMonitorEnabled : DEFAULTS.authMonitorEnabled,
       authMonitorIntervalMin: typeof data.authMonitorIntervalMin === 'number' ? data.authMonitorIntervalMin : DEFAULTS.authMonitorIntervalMin,
+      ruleSyncEnabled: typeof data.ruleSyncEnabled === 'boolean' ? data.ruleSyncEnabled : DEFAULTS.ruleSyncEnabled,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -164,6 +168,7 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     missionHistoryInlineCap: typeof partial.missionHistoryInlineCap === 'number' ? partial.missionHistoryInlineCap : current.missionHistoryInlineCap,
     authMonitorEnabled: typeof partial.authMonitorEnabled === 'boolean' ? partial.authMonitorEnabled : current.authMonitorEnabled,
     authMonitorIntervalMin: typeof partial.authMonitorIntervalMin === 'number' ? partial.authMonitorIntervalMin : current.authMonitorIntervalMin,
+    ruleSyncEnabled: typeof partial.ruleSyncEnabled === 'boolean' ? partial.ruleSyncEnabled : current.ruleSyncEnabled,
   };
 
   // Ensure parent directory exists

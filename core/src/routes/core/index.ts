@@ -43,6 +43,7 @@ import { createMemoryReconcileRoutes } from './memory-reconcile.routes';
 import { createMemoryValidateRoutes } from './memory-validate.routes';
 import { createMemorySyncRoutes } from './memory-sync.routes';
 import { createRuleMapRoutes } from './rule-map.routes';
+import { createRuleSyncRoutes } from './rule-sync.routes';
 import { createBrowserRoutes } from './browser.routes';
 import { createCcrRoutes } from './ccr.routes';
 import { createTerminalStdRoutes } from './terminal-std.routes';
@@ -101,6 +102,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createMemoryValidateRoutes(ctx),
     ...createMemorySyncRoutes(ctx),
     ...createRuleMapRoutes(ctx),
+    ...createRuleSyncRoutes(ctx),
     ...createBrowserRoutes(ctx),
     ...createCcrRoutes(ctx),
     ...createTerminalStdRoutes(ctx),
