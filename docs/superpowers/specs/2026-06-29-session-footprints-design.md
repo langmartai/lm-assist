@@ -74,6 +74,8 @@ interface PortHold { port: number; proto: 'tcp' | 'udp'; pid: number | null; pro
 interface NodeFootprint {
   node: string; cluster: string; host: string;
   snapshotAgeSec: number; reachable: boolean;
+  warming: boolean;               // no snapshot computed yet (cold) — fills within seconds
+  stale: boolean;                 // snapshot older than the TTL (a refresh has been kicked)
   sessions: SessionFootprint[];
   ports: PortHold[];              // node-level (ports-only decision), listening sockets
 }
@@ -83,6 +85,7 @@ interface ComposedFootprints {
   scope: 'cluster' | 'fleet';
   nodes: NodeFootprint[];
   unreachable: string[];          // node ids that could not be refreshed and had no cached snapshot
+  partial: boolean;               // true if any node is warming/stale/unreachable — picture is incomplete
 }
 ```
 
@@ -90,23 +93,30 @@ Ports are **node-level** (the ports-only decision), not attributed per session.
 
 ## Freshness, caching, async (the hybrid)
 
-All of the following keep every call **non-blocking** and bounded.
+### THE HARD RULE — the request path never awaits a collector
 
-**Async collectors.** Every subprocess uses promisified `execFile` (never any `*Sync`). Each command has a **~2s timeout**; on timeout/error that field returns empty and the snapshot still returns (best-effort, never throws). Per-session git scans run with **bounded parallelism** (e.g. 4 at a time).
+**The MCP tool and the REST handler MUST NOT `await` any `git`/`ss`/`Get-NetTCPConnection` subprocess.** A request only ever **reads the in-memory snapshot and returns** — instantly. All collector work (which can be slow: a large repo's `git status`, a busy index, resolving `origin/HEAD`) runs in a **background refresher**, decoupled from serving. This holds even when the snapshot is cold or stale: the handler returns what it has (possibly empty/`warming`) and *kicks* a background refresh it does not wait on. So no git/port command time is ever on the response path.
 
-**Layered cache:**
-1. **Per-cwd/worktree git cache** (TTL ~10s) — N sessions in the same repo ⇒ one git scan.
-2. **Per-node snapshot cache** (TTL ~10s) — the whole local `NodeFootprint`.
+**Background refresher (where all subprocess work lives).** A per-node refresher recomputes the local `NodeFootprint` off the request path:
+- **Lazy + keep-warm:** starts on the first access; while there is recent demand (last access < ~2 min) it re-runs every ~15s so the cache stays warm; it idles out when demand stops, so an unused node does no perpetual scanning.
+- **On-access kick:** a request that finds the snapshot stale/cold also triggers a refresh (in addition to the timer), single-flight.
+- **Single-flight:** a refresh already in progress is shared — concurrent requests never spawn duplicate `git`/`ss` processes.
+- **Async + bounded:** every subprocess is promisified `execFile` (never `*Sync`), **~2s timeout**, per-session git scans bounded-parallel (~4); a timed-out/failed command yields an empty field, the snapshot still publishes (best-effort, never throws).
+
+**Caches (all reads, never block):**
+1. **Per-cwd/worktree git cache** (TTL ~10s) — N sessions in one repo ⇒ one git scan.
+2. **Per-node snapshot** — the live in-memory `NodeFootprint` the refresher publishes; the request reads this.
 3. **Composed-result cache** (TTL ~5s) on the handler node.
-4. **Last-known peer snapshot retained** — a slow/unreachable peer in a composed call is served from its last snapshot (flagged `reachable:false`, with `snapshotAgeSec`) rather than dropped; only a peer with no prior snapshot lands in `unreachable[]`.
+4. **Last-known peer snapshot retained** — a slow/unreachable peer is served from its last snapshot (flagged `reachable:false`, with `snapshotAgeSec`) rather than dropped; a peer with no prior snapshot lands in `unreachable[]`.
 
-**Single-flight.** A recompute already in progress for a given node/cwd is shared by concurrent callers — no duplicate `git`/`ss` processes pile up.
+**Freshness metadata, always returned:** `snapshotAgeSec`, `stale` (older than TTL), `warming` (no snapshot computed yet). The first survey right after Core boot may be `warming` / local-only and fills within a few seconds — acceptable for the controller's ~1-min cadence, and the keep-warm timer makes it rare in practice.
 
-**Stale-while-revalidate.** A stale-but-present cache returns **immediately** and triggers a **background** refresh for the next call. `snapshotAgeSec` always tells the caller how fresh the data is.
+**Composed call — also no git on the path.** Because every node's `/local` is a pure cache read, the composed handler only ever pays **bounded network**, never command time:
+- Serve the ~5s composed cache when warm (instant).
+- On a miss: fan out to online peers' `/local` (self in-process; peers via the relay proxy) with a **~2.5s per-node timeout** and `Promise.allSettled`, so one slow/dead node never blocks the result; merge → `ComposedFootprints`, cache it. Each peer `/local` returns its cached snapshot immediately, so this awaits only relay round-trips (async — other API/MCP requests keep being served), not git.
+- `scope=cluster` (default): online ids from the hub `/machines`, filtered to my cluster via `getClusterRecords()`; `scope=fleet`: all online.
 
-**Why not the dataset sync:** the cross-node data-service sync is pull-based (default ~300s reconcile) — far too stale for "what's running right now." Freshness comes from the **direct relay fan-out** to peers' `/local`, not the dataset sync. No persisted/synced snapshot is introduced.
-
-**Composed flow** (`scope=cluster` default): resolve online node ids (hub `/machines`), filter to my cluster via `getClusterRecords()` (or all for `fleet`); for each, GET `/fleet/session-footprints/local` — self in-process, peers via the relay proxy — with a **~2.5s per-node timeout**, `Promise.allSettled` so one slow/dead node never blocks the result; merge into `ComposedFootprints`.
+**Why not the dataset sync:** the cross-node data-service sync is pull-based (default ~300s reconcile) — far too stale for "what's running right now," and would couple freshness to a slow timer. Freshness comes from the **direct relay fan-out** to peers' already-warm `/local`. No persisted/synced snapshot is introduced.
 
 ## Collectors (per node; all degrade gracefully)
 
@@ -136,7 +146,7 @@ All of the following keep every call **non-blocking** and bounded.
 
 Append to `CONTROLLER_PASS_DIRECTIVE`, before acting on `mission_schedule.ready`:
 
-> Before you place/spawn an executor, call `session_footprints` (your cluster). For each candidate placement, AVOID a node/repo/branch/worktree that an **unmanaged** recent session occupies — especially one with `openChanges` overlapping the mission's repo/branch, or whose branch is `pushed:false` (its work isn't on the remote yet) — and avoid a port an exclusive service holds. If the only available placement collides, **defer**: leave the mission `ready`, tag it `ctl:deferred-contention` with the conflicting session, and revisit next pass rather than spawn into a conflict. Mission-managed sessions (`managed` set) are your own executors — not foreign; never treat them as conflicts.
+> Before you place/spawn an executor, call `session_footprints` (your cluster). For each candidate placement, AVOID a node/repo/branch/worktree that an **unmanaged** recent session occupies — especially one with `openChanges` overlapping the mission's repo/branch, or whose branch is `pushed:false` (its work isn't on the remote yet) — and avoid a port an exclusive service holds. If the only available placement collides, **defer**: leave the mission `ready`, tag it `ctl:deferred-contention` with the conflicting session, and revisit next pass rather than spawn into a conflict. Mission-managed sessions (`managed` set) are your own executors — not foreign; never treat them as conflicts. If the survey comes back `partial`/`warming` (a node not yet surveyed this boot), treat the unknown nodes as clear but re-check next pass — do not block all placement on incomplete data.
 
 Add a one-line pointer in `CONTROLLER_SYSTEM_PROMPT` naming the tool. `place()` and the deterministic scheduler are unchanged.
 
@@ -154,7 +164,8 @@ Add a one-line pointer in `CONTROLLER_SYSTEM_PROMPT` naming the tool. `place()` 
 - `openChanges` union + dedupe + cap + `openChangesTruncated`.
 - `ss -H -tlnp` parsing and `Get-NetTCPConnection` parsing → `PortHold`.
 - managed/unmanaged tagging (native sid, cloud cse/sid) against bindings.
-- snapshot staleness decision (fresh / stale-present → SWR / absent → compute) and single-flight coalescing.
+- **request handler never awaits a collector**: with a slow/blocking subprocess stub, the handler still returns synchronously from cache (cold ⇒ `warming:true` + a refresh is kicked but not awaited); the background refresher later publishes the snapshot.
+- staleness/freshness flags (`warming`/`stale`/`snapshotAgeSec`), single-flight coalescing (one in-flight refresh shared), and keep-warm start-on-access + idle-out.
 - composed merge: self + peers, per-node failure → `reachable:false` + last-known, no-snapshot → `unreachable[]`.
 
 **Integration:**
