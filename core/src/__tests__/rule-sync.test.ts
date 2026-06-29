@@ -23,6 +23,15 @@ test('readOwnRules excludes synced.* + credential-shaped names, hashes the whole
   assert.equal(got[0].contentHash, sha('---\nname: p\nos: linux\n---\nbody'));
 });
 
+test('credential filter is precise — excludes api_key.md but keeps keyboard-shortcuts.md / monkey.md', () => {
+  const dir = tmp('cred-');
+  fs.writeFileSync(path.join(dir, 'api_key.md'), 'x');             // excluded (credential-shaped)
+  fs.writeFileSync(path.join(dir, 'keyboard-shortcuts.md'), 'x');  // kept — 'key' embedded in 'keyboard'
+  fs.writeFileSync(path.join(dir, 'monkey.md'), 'x');              // kept — 'key' embedded in 'monkey'
+  const files = readOwnRules(dir).map(r => r.file).sort();
+  assert.deepEqual(files, ['keyboard-shortcuts.md', 'monkey.md']);
+});
+
 test('sanitizeBasename flattens separators, rejects traversal/absolute', () => {
   assert.equal(sanitizeBasename('foo.md'), 'foo.md');
   assert.equal(sanitizeBasename('sub/foo.md'), 'sub-foo.md');
