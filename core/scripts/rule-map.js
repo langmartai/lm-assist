@@ -10,6 +10,7 @@
  *   node core/scripts/rule-map.js [--level brief|complete] [--projects a,b]
  *        [--nodes windows-desk,linux-117] [--category lesson,config]
  *        [--scope user|project] [--paths <glob-substr>] [--always]
+ *        [--os <plat>] [--os-dependent] [--active]
  *        [--q query] [--limit N] [--record <id>] [--stats]
  *        [--snapshot] [--changes [--commit]] [--duplicates]
  *        [--format json|md] [--port 3100]
@@ -19,7 +20,7 @@ const path = require('path');
 const os = require('os');
 const http = require('http');
 const { loopbackAuthHeader } = require('./lib/loopback-auth');
-const { extractRule } = require(path.join(__dirname, '..', 'dist', 'rules', 'rule-extract'));
+const { extractRule, normalizeOsList } = require(path.join(__dirname, '..', 'dist', 'rules', 'rule-extract'));
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
@@ -33,6 +34,10 @@ const fCats = list(opt('category'));
 const fScope = opt('scope');                       // 'user' | 'project'
 const fPaths = (opt('paths') || '').toLowerCase(); // substring match against any glob
 const fAlways = has('always');                     // loadCondition === 'always'
+let fOs = opt('os');                               // platform filter (friendly or canonical)
+if (fOs) { try { fOs = normalizeOsList([fOs])[0]; } catch {} }
+const fOsDependent = has('os-dependent');
+const fActive = has('active');
 const q = (opt('q') || '').toLowerCase().split(/\s+/).filter(Boolean);
 const limit = parseInt(opt('limit', '0'), 10);
 const wantRecord = opt('record');
@@ -52,6 +57,7 @@ function fetchProjects() {
 }
 
 function resolveMyHostId(projectPath) {
+  if (process.env.LM_HOST_ID) return process.env.LM_HOST_ID;
   const hf = path.join(projectPath, 'memory', '_hosts.md');
   try {
     const txt = fs.readFileSync(hf, 'utf8');
@@ -65,7 +71,7 @@ function resolveMyHostId(projectPath) {
 }
 
 /** Recursively walk a .claude/rules dir, emitting one record per .md file. */
-function readRulesDir(rootDir, node, source, project, scope, out) {
+function readRulesDir(rootDir, node, source, project, scope, out, opts) {
   const walk = (dir) => {
     let entries; try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
@@ -74,9 +80,14 @@ function readRulesDir(rootDir, node, source, project, scope, out) {
       if (!e.isFile() || !e.name.endsWith('.md')) continue;
       let content, st; try { content = fs.readFileSync(fp, 'utf8'); st = fs.statSync(fp); } catch { continue; }
       const relpath = path.relative(rootDir, fp).split(path.sep).join('/');
-      try {
-        out.push(extractRule({ node, project, source, scope, relpath, content, mtimeMs: st.mtimeMs, size: st.size }));
-      } catch {}
+      let rec;
+      try { rec = extractRule({ node, project, source, scope, relpath, content, mtimeMs: st.mtimeMs, size: st.size }); } catch { continue; }
+      if (opts && opts.detectSynced) {
+        const m = path.basename(relpath).match(/^synced\.([A-Za-z0-9_-]+)\.(.+)$/);
+        if (m) { rec = Object.assign({}, rec, { node: m[1], source: 'repo:' + m[1] }); }
+      }
+      if (opts && opts.forceInactive) rec = Object.assign({}, rec, { active: false });
+      out.push(rec);
     }
   };
   walk(rootDir);
@@ -85,10 +96,12 @@ function readRulesDir(rootDir, node, source, project, scope, out) {
 async function collect() {
   const projects = await fetchProjects();
   const home = os.homedir();
+  const claudeDir = process.env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
+  const dataDir = process.env.LM_ASSIST_DATA_DIR || path.join(home, '.lm-assist');
   const recs = [];
   // USER rules — machine-wide, apply to every project on this node.
   const myHost = resolveMyHostId((projects[0] && projects[0].projectPath) || '');
-  readRulesDir(path.join(home, '.claude', 'rules'), myHost, 'live', USER_PROJECT, 'user', recs);
+  readRulesDir(path.join(claudeDir, 'rules'), myHost, 'live', USER_PROJECT, 'user', recs, { detectSynced: true });
   // PROJECT rules — per project, committed under <projectRoot>/.claude/rules.
   for (const p of projects) {
     if (!p.projectPath) continue;
@@ -101,6 +114,12 @@ async function collect() {
       readRulesDir(path.join(repoBase, h, '.claude', 'rules'), h, 'repo:' + h, p.projectId, 'project', recs);
     }
   }
+  // Inert mirror of wrong-OS synced rules — rules-mirror/<host>/*.md (active:false, source repo:<host>).
+  const mirrorRoot = path.join(dataDir, 'rules-mirror');
+  let mhosts; try { mhosts = fs.readdirSync(mirrorRoot, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name); } catch { mhosts = []; }
+  for (const h of mhosts) {
+    readRulesDir(path.join(mirrorRoot, h), h, 'repo:' + h, USER_PROJECT, 'user', recs, { forceInactive: true });
+  }
   return recs;
 }
 
@@ -112,6 +131,9 @@ function match(r) {
   if (fAlways && r.loadCondition !== 'always') return false;
   if (fPaths && !(r.paths || []).some(g => g.toLowerCase().includes(fPaths))) return false;
   if (q.length) { const hay = (r.title + ' ' + r.brief + ' ' + r.complete + ' ' + (r.paths || []).join(' ')).toLowerCase(); if (!q.every(t => hay.includes(t))) return false; }
+  if (fOs && !((r.os || []).length === 0 || (r.os || []).includes(fOs))) return false;
+  if (fOsDependent && !r.osDependent) return false;
+  if (fActive && !r.active) return false;
   return true;
 }
 
@@ -175,14 +197,14 @@ function appendLog(obj){ fs.appendFileSync(CHLOG, JSON.stringify(obj) + String.f
 
   if (wantStats) {
     const by = (k) => recs.reduce((m, r) => (m[r[k]] = (m[r[k]] || 0) + 1, m), {});
-    console.log(JSON.stringify({ total: recs.length, byProject: by('project'), byNode: by('node'), byScope: by('scope'), byLoadCondition: by('loadCondition'), byCategory: by('category') }, null, 2));
+    console.log(JSON.stringify({ total: recs.length, byProject: by('project'), byNode: by('node'), byScope: by('scope'), byLoadCondition: by('loadCondition'), byCategory: by('category'), active: recs.filter(r => r.active).length, osDependent: recs.filter(r => r.osDependent).length }, null, 2));
     return;
   }
 
   if (limit) recs = recs.slice(0, limit);
 
   if (format === 'json') {
-    console.log(JSON.stringify(recs.map(r => level === 'complete' ? r : { recordId: r.recordId, node: r.node, project: r.project, scope: r.scope, file: r.file, title: r.title, brief: r.brief, category: r.category, loadCondition: r.loadCondition, paths: r.paths, recordedAtMs: r.recordedAtMs }), null, 2));
+    console.log(JSON.stringify(recs.map(r => level === 'complete' ? r : { recordId: r.recordId, node: r.node, project: r.project, source: r.source, scope: r.scope, file: r.file, title: r.title, brief: r.brief, category: r.category, loadCondition: r.loadCondition, paths: r.paths, os: r.os, osDependent: r.osDependent, active: r.active, recordedAtMs: r.recordedAtMs }), null, 2));
   } else {
     for (const r of recs) {
       const cond = r.loadCondition === 'always' ? 'always' : 'paths:' + r.paths.join('|');

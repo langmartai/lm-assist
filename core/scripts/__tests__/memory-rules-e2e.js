@@ -644,6 +644,110 @@ await test(
   }
 );
 
+// TC-OS1: OS-tagged rule emits os/osDependent/active fields correctly
+await test(
+  "TC-OS1: OS-tagged rule emits os=['win32'], osDependent=true, active=(platform===win32)",
+  async function () {
+    var tempRulePath = path.join(os.homedir(), ".claude", "rules", "e2e-os-windows.md");
+    var tempContent =
+      "---\nname: E2E OS Windows Rule\nos: windows\ndescription: Temp OS rule for e2e\n---\n\nWindows-only rule.\n";
+
+    var testPassed = true;
+    var testError = null;
+    try {
+      fs.writeFileSync(tempRulePath, tempContent);
+      await new Promise(function (r) { setTimeout(r, 200); });
+
+      var rulesAfter = JSON.parse(runScript(RULE_SCRIPT, ["--scope", "user", "--q", "e2e-os"]));
+      var osRule = rulesAfter.find(function (r) {
+        return r.file === "e2e-os-windows.md";
+      });
+      if (!osRule) {
+        testPassed = false;
+        testError = "e2e-os-windows.md rule not found in output";
+      } else {
+        // os should be normalized to ['win32']
+        if (!Array.isArray(osRule.os) || osRule.os.length !== 1 || osRule.os[0] !== "win32") {
+          testPassed = false;
+          testError = "os should be ['win32'], got: " + JSON.stringify(osRule.os);
+        } else if (osRule.osDependent !== true) {
+          testPassed = false;
+          testError = "osDependent should be true, got: " + osRule.osDependent;
+        } else {
+          var expectedActive = process.platform === "win32";
+          if (osRule.active !== expectedActive) {
+            testPassed = false;
+            testError = "active should be " + expectedActive + " on " + process.platform + ", got: " + osRule.active;
+          }
+        }
+      }
+    } finally {
+      try { fs.unlinkSync(tempRulePath); } catch (e) {}
+    }
+
+    if (!testPassed) throw new Error(testError);
+  }
+);
+
+// TC-OS2: --active and --os-dependent filters work on OS-tagged rules
+await test(
+  "TC-OS2: --active hides win-only rule on non-Windows; --os-dependent shows it; --os linux shows linux rule",
+  async function () {
+    var winRulePath = path.join(os.homedir(), ".claude", "rules", "e2e-os-filter-win.md");
+    var linuxRulePath = path.join(os.homedir(), ".claude", "rules", "e2e-os-filter-linux.md");
+    var winContent =
+      "---\nname: E2E OS Filter Win\nos: windows\ndescription: Temp win filter rule\n---\n\nWindows filter test.\n";
+    var linuxContent =
+      "---\nname: E2E OS Filter Linux\nos: linux\ndescription: Temp linux filter rule\n---\n\nLinux filter test.\n";
+
+    var testPassed = true;
+    var testError = null;
+    try {
+      fs.writeFileSync(winRulePath, winContent);
+      fs.writeFileSync(linuxRulePath, linuxContent);
+      await new Promise(function (r) { setTimeout(r, 200); });
+
+      // --os-dependent: both OS-tagged rules should appear
+      var depRules = JSON.parse(runScript(RULE_SCRIPT, ["--scope", "user", "--os-dependent", "--q", "e2e-os-filter"]));
+      var hasWin = depRules.some(function (r) { return r.file === "e2e-os-filter-win.md"; });
+      var hasLinux = depRules.some(function (r) { return r.file === "e2e-os-filter-linux.md"; });
+      if (!hasWin || !hasLinux) {
+        testPassed = false;
+        testError = "--os-dependent should include both OS-tagged rules; hasWin=" + hasWin + " hasLinux=" + hasLinux;
+      }
+
+      // --os linux: should include the linux rule but not the win rule
+      if (testPassed) {
+        var osLinux = JSON.parse(runScript(RULE_SCRIPT, ["--scope", "user", "--os", "linux", "--q", "e2e-os-filter"]));
+        var linuxIn = osLinux.some(function (r) { return r.file === "e2e-os-filter-linux.md"; });
+        var winInLinux = osLinux.some(function (r) { return r.file === "e2e-os-filter-win.md"; });
+        if (!linuxIn) {
+          testPassed = false;
+          testError = "--os linux should include the linux rule";
+        } else if (winInLinux) {
+          testPassed = false;
+          testError = "--os linux should NOT include the windows rule";
+        }
+      }
+
+      // --active: win rule should be inactive (not active) on non-Windows
+      if (testPassed && process.platform !== "win32") {
+        var activeRules = JSON.parse(runScript(RULE_SCRIPT, ["--scope", "user", "--active", "--q", "e2e-os-filter"]));
+        var winInActive = activeRules.some(function (r) { return r.file === "e2e-os-filter-win.md"; });
+        if (winInActive) {
+          testPassed = false;
+          testError = "--active should hide the windows rule on " + process.platform;
+        }
+      }
+    } finally {
+      try { fs.unlinkSync(winRulePath); } catch (e) {}
+      try { fs.unlinkSync(linuxRulePath); } catch (e) {}
+    }
+
+    if (!testPassed) throw new Error(testError);
+  }
+);
+
 // TC-17: Autosync observe mode
 await test(
   "TC-17: Autosync observe mode: mode=observe, running, log has started, no commit/push",
