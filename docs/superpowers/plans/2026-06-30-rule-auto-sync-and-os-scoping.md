@@ -1133,6 +1133,12 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Consumes: `extractRule`, `normalizeOsList` from `../dist/rules/rule-extract` (the latter newly required).
 - Produces: JSON records gain `os`, `osDependent`, `active`; new flags `--os <plat>`, `--os-dependent`, `--active`; mirror-dir scan (`~/.lm-assist/rules-mirror/<host>/`, source `repo:<host>`, active:false); `synced.<host>.*` live-dir detection (node/source rewrite).
 
+**HOST-ID ALIGNMENT (orchestrator decision — implement exactly this):**
+- Attribute SYNCED rules (`synced.<host>.*` in the live dir + `rules-mirror/<host>/*`) to `<host>` parsed from the path — that host IS the producer's `selfHostId()` (`rule-sync.ts`: `LM_HOST_ID > gatewayId > os.hostname()`). Set `source: repo:<host>`. (This is the steps below.)
+- For LOCAL (non-synced) rules, KEEP `resolveMyHostId()` attribution — but add `if (process.env.LM_HOST_ID) return process.env.LM_HOST_ID;` as its FIRST line, so it matches memory's `resolveHostId` (LM_HOST_ID first) and `selfHostId()`. This makes local + synced + memory labels agree whenever `LM_HOST_ID` is set.
+- DO NOT add `--self-host` route plumbing and DO NOT change resolveMyHostId's other tiers — out of scope. Without `LM_HOST_ID`, a node whose gatewayId≠hostname may show its local rules under its hostname and its synced copies (on peers) under its gatewayId — a cosmetic label divergence IDENTICAL to memory's, acceptable + documented.
+- Add a test: with `LM_HOST_ID=gw-test` in the env, a local `own.md` is attributed `node: 'gw-test'`.
+
 - [ ] **Step 1: Write the failing test** — `core/src/__tests__/rule-map-os.test.ts`:
 ```ts
 import { test } from 'node:test';
