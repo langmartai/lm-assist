@@ -57,6 +57,7 @@ import { CLAUDEAI_LOGIN_TOOL_DEFS, CLAUDEAI_LOGIN_HANDLERS } from './claudeai-lo
 import { NODE_BUILDS_TOOL_DEFS, NODE_BUILDS_HANDLERS } from './node-builds';
 import { NODE_UPGRADE_TOOL_DEFS, NODE_UPGRADE_HANDLERS } from './node-upgrade';
 import { CLUSTER_TOOL_DEFS, CLUSTER_HANDLERS } from './cluster';
+import { sessionFootprintsToolDef, handleSessionFootprints } from './session-footprints';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -936,6 +937,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...NODE_UPGRADE_TOOL_DEFS,
   // cluster management (list:read, assign/unassign/describe:write)
   ...CLUSTER_TOOL_DEFS,
+  // fleet session footprints (read — cross-fleet survey)
+  sessionFootprintsToolDef,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -1702,4 +1705,6 @@ export const EXPANDED_HANDLERS: Record<
   ...NODE_UPGRADE_HANDLERS,
   // cluster management
   ...CLUSTER_HANDLERS,
+  // fleet session footprints (read — cross-fleet survey)
+  session_footprints: handleSessionFootprints,
 };

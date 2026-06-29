@@ -7,7 +7,7 @@ import { getClusterRecords } from '../../cluster/cluster-store';
 import { getMyCluster } from '../../cluster/cluster-config';
 import { thisNode } from '../../mission/mission-store'; // exports thisNode()=gatewayId; data/paths only has thisNodeId()
 
-function composeDeps(): ComposeDeps {
+export function composeDeps(): ComposeDeps {
   return {
     getLocal: getLocalSnapshot,
     listOnline: listOnlineNodeIds,

@@ -283,6 +283,8 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   cluster_assign: 'write',
   cluster_unassign: 'write',
   cluster_describe: 'write',
+  // fleet session footprints (read — non-blocking survey)
+  session_footprints: 'read',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */
