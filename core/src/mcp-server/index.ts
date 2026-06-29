@@ -38,7 +38,6 @@ import {
   mcpGenericCall,
 } from './api-client';
 import { EXPANDED_HANDLERS } from './tools/expanded';
-import { handleSessionFootprints } from './tools/session-footprints';
 
 // ─── Server Setup ──────────────────────────────────────────────────
 
@@ -56,7 +55,6 @@ const dispatch: McpToolDispatcher = async (name, args) => {
     case 'detail':                       return mcpDetail(args);
     case 'feedback':                     return mcpFeedback(args);
     case 'list_recent_sessions':         return mcpListRecentSessions(args);
-    case 'session_footprints':           return handleSessionFootprints(args);
     case 'list_projects':                return mcpListProjects(args);
     case 'search_memory':                return mcpSearchMemory(args);
     case 'list_claudeai_conversations':  return mcpListClaudeaiConversations(args);

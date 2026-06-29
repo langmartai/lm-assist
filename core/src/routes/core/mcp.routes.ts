@@ -34,7 +34,6 @@ import { handleSearch } from '../../mcp-server/tools/search';
 import { handleDetail } from '../../mcp-server/tools/detail';
 import { handleFeedback } from '../../mcp-server/tools/feedback';
 import { handleListRecentSessions } from '../../mcp-server/tools/list-recent-sessions';
-import { handleSessionFootprints } from '../../mcp-server/tools/session-footprints';
 import { handleListProjects } from '../../mcp-server/tools/list-projects';
 import { handleSearchMemory } from '../../mcp-server/tools/search-memory';
 import { handleListClaudeaiConversations } from '../../mcp-server/tools/list-claudeai-conversations';
@@ -53,7 +52,6 @@ export const dispatch: McpToolDispatcher = async (name, args) => {
     case 'detail':                       return handleDetail(args);
     case 'feedback':                     return handleFeedback(args);
     case 'list_recent_sessions':         return handleListRecentSessions(args);
-    case 'session_footprints':           return handleSessionFootprints(args);
     case 'list_projects':                return handleListProjects(args);
     case 'search_memory':                return handleSearchMemory(args);
     case 'list_claudeai_conversations':  return handleListClaudeaiConversations(args);
