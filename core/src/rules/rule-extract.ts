@@ -18,6 +18,7 @@
  * See docs/plans/2026-06-06-rules-map-and-sync.md
  */
 import { createHash } from 'crypto';
+import * as os from 'os';
 import { parseFrontmatter } from '../utils/frontmatter';
 import { categorize, RecordType } from '../memory/record-extract';
 
@@ -39,6 +40,10 @@ export interface RuleRecord {
   scope: RuleScope;       // 'user' (machine-wide) | 'project' (committed)
   paths: string[];        // the path globs; [] = always-on
   loadCondition: LoadCondition;  // 'always' | 'path-scoped'
+  // OS-applicability dimension (sync placement decided against the serving platform)
+  os: string[];           // canonical platform list ([] = all platforms)
+  osDependent: boolean;   // os.length > 0 — the per-rule "OS-dependent or not" tag
+  active: boolean;        // os.length === 0 || os.includes(servingPlatform)
   priority: number;       // load order: user rules BEFORE project rules (project wins on conflict)
   originSessionId?: string;
   recordedAtMs: number;   // file mtime
@@ -58,6 +63,8 @@ export interface ExtractInput {
   content: string;
   mtimeMs: number;
   size: number;
+  /** serving platform for the active computation; default os.platform() */
+  platform?: string;
 }
 
 // User rules load BEFORE project rules, so project rules win on conflict.
@@ -150,6 +157,88 @@ export function parsePaths(content: string): string[] {
   return out;
 }
 
+/** Friendly → canonical (Node os.platform()) OS normalization map. */
+const OS_NORMALIZE: Record<string, string> = {
+  windows: 'win32', win: 'win32', win32: 'win32',
+  mac: 'darwin', macos: 'darwin', osx: 'darwin', darwin: 'darwin',
+  linux: 'linux',
+};
+
+/** Canonicalize one token; unknown tokens are kept verbatim (lowercased) for forward-compat. */
+function normalizeOsToken(t: string): string {
+  const k = t.trim().toLowerCase();
+  return OS_NORMALIZE[k] || k;
+}
+
+/** Canonical, de-duplicated platform list from raw os: tokens. */
+export function normalizeOsList(tokens: string[]): string[] {
+  const out: string[] = [];
+  for (const t of tokens) {
+    const v = normalizeOsToken(t);
+    if (v && !out.includes(v)) out.push(v);
+  }
+  return out;
+}
+
+/**
+ * Parse the `os:` YAML list out of the raw frontmatter block — IDENTICAL shape to parsePaths
+ * (block list, inline flow list `os: [a, b]`, single scalar `os: windows`). parseFrontmatter()
+ * collapses unknown keys to a scalar string, so we parse it ourselves from the raw block.
+ */
+export function parseOs(content: string): string[] {
+  const normalized = content.replace(/\r\n/g, '\n');
+  const stripped = normalized.startsWith('﻿') ? normalized.slice(1) : normalized;
+  if (!stripped.startsWith('---\n') && !stripped.startsWith('---\r')) return [];
+  const lines = stripped.split('\n');
+  let end = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === '---' || lines[i] === '---\r') { end = i; break; }
+  }
+  if (end === -1) return [];
+  const fm = lines.slice(1, end);
+
+  const clean = (s: string): string => {
+    let v = s.trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+    return v.trim();
+  };
+
+  const out: string[] = [];
+  for (let i = 0; i < fm.length; i++) {
+    const line = fm[i].replace(/\r$/, '');
+    const m = line.match(/^(\s*)os\s*:\s*(.*)$/);
+    if (!m) continue;
+    const inline = m[2].trim();
+    if (inline) {
+      if (inline.startsWith('[') && inline.endsWith(']')) {
+        for (const part of inline.slice(1, -1).split(',')) {
+          const v = clean(part);
+          if (v) out.push(v);
+        }
+      } else {
+        const v = clean(inline);
+        if (v) out.push(v);
+      }
+      return out;
+    }
+    const baseIndent = m[1].length;
+    for (let j = i + 1; j < fm.length; j++) {
+      const bl = fm[j].replace(/\r$/, '');
+      if (!bl.trim()) continue;
+      const indent = bl.length - bl.trimStart().length;
+      const item = bl.trim();
+      if (item.startsWith('- ') || item === '-') {
+        const v = clean(item.replace(/^-\s*/, ''));
+        if (v) out.push(v);
+        continue;
+      }
+      if (indent <= baseIndent) break;
+    }
+    return out;
+  }
+  return out;
+}
+
 /** A single rule file -> exactly one record. */
 export function extractRule(inp: ExtractInput): RuleRecord {
   const { frontmatter, body } = parseFrontmatter(inp.content);
@@ -159,6 +248,9 @@ export function extractRule(inp: ExtractInput): RuleRecord {
   const complete = body.trim() || inp.content.trim();
   const paths = parsePaths(inp.content);
   const loadCondition: LoadCondition = paths.length ? 'path-scoped' : 'always';
+  const osList = normalizeOsList(parseOs(inp.content));
+  const servingPlatform = inp.platform || os.platform();
+  const active = osList.length === 0 || osList.includes(servingPlatform);
   // Rules carry no memory `type`; treat as 'project' for the categorizer axis.
   const catType: RecordType = 'project';
   return {
@@ -170,6 +262,7 @@ export function extractRule(inp: ExtractInput): RuleRecord {
     scope: inp.scope,
     paths,
     loadCondition,
+    os: osList, osDependent: osList.length > 0, active,
     priority: inp.scope === 'user' ? PRIORITY_USER : PRIORITY_PROJECT,
     originSessionId: (frontmatter as { originSessionId?: string }).originSessionId,
     recordedAtMs: inp.mtimeMs, lastValidatedMs: inp.mtimeMs, validity: 'current' as const,
