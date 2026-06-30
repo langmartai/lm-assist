@@ -168,6 +168,16 @@ export class TierRestServer {
         console.warn('[Server] Rule autosync daemon init failed:', e);
       }
 
+      // Eager-warm the session-footprint cache ~3s after boot so the FIRST cross-fleet survey
+      // (and any peer's proxyGet of /fleet/session-footprints/local) returns populated data
+      // instead of a one-shot `warming` snapshot. Deferred + best-effort (lazy warm still applies).
+      try {
+        const warmFp = setTimeout(() => {
+          try { require('./fleet/session-footprint-collector').getLocalSnapshot(); } catch { /* deps not ready — lazy warm covers it */ }
+        }, 3000);
+        if (warmFp.unref) warmFp.unref();
+      } catch { /* ignore */ }
+
       // Cross-project memory signposts: write the managed _cross-project.md (+ a MEMORY.md pointer)
       // into every project on start, and refresh when the project set changes. Default ON; per-node
       // local (never cross-node synced). Lets an LLM recalling memory know to use the langmart MCP

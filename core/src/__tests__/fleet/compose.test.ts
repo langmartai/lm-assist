@@ -13,6 +13,20 @@ test('mergeComposed — self + reachable peer; unreachable peer (no snap) → un
   assert.equal(r.scope, 'cluster');
 });
 
+test('mergeComposed — a STALE-but-reachable peer (data present, SWR) is NOT partial', () => {
+  // stale = cached snapshot past soft-TTL, refresh kicked — the data is COMPLETE, not missing.
+  const r = mergeComposed(node({ node: 'self', stale: true, snapshotAgeSec: 14 }),
+    [{ node: 'p1', snap: node({ node: 'p1', stale: true, snapshotAgeSec: 14 }) }], 'fleet', 5);
+  assert.equal(r.partial, false);
+  assert.deepEqual(r.unreachable, []);
+});
+
+test('mergeComposed — a WARMING peer (no data yet) IS partial', () => {
+  const r = mergeComposed(node({ node: 'self' }),
+    [{ node: 'p1', snap: node({ node: 'p1', warming: true }) }], 'fleet', 5);
+  assert.equal(r.partial, true);
+});
+
 test('mergeComposed — all fresh & reachable → partial false', () => {
   const r = mergeComposed(node({ node: 'self' }), [{ node: 'p1', snap: node({ node: 'p1' }) }], 'fleet', 5);
   assert.equal(r.partial, false);

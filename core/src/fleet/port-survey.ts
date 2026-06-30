@@ -43,14 +43,32 @@ export function parseNetstat(stdout: string): PortHold[] {
   return out;
 }
 
+/**
+ * Collapse duplicate listeners on the same (proto, port) — `ss`/`netstat` emit a separate
+ * row for the IPv4 (`0.0.0.0:p`) and IPv6 (`[::]:p`) socket of the same service, which would
+ * otherwise list every port twice (and ~double the footprint payload). Keep one per (proto,
+ * port), preferring the row that carries a pid/proc (one family may show the owner while the
+ * other doesn't, e.g. `ss` without sudo).
+ */
+export function dedupePorts(ports: PortHold[]): PortHold[] {
+  const byKey = new Map<string, PortHold>();
+  for (const p of ports) {
+    const k = `${p.proto}:${p.port}`;
+    const cur = byKey.get(k);
+    if (!cur) { byKey.set(k, p); continue; }
+    if (cur.pid == null && p.pid != null) byKey.set(k, p); // upgrade to the entry with owner info
+  }
+  return Array.from(byKey.values());
+}
+
 export async function collectPorts(run: RunCmd, platform: NodeJS.Platform): Promise<PortHold[]> {
   try {
     if (platform === 'win32') {
       const r = await run('netstat', ['-ano'], { timeoutMs: TIMEOUT });
-      return r.code === 0 ? parseNetstat(r.stdout) : [];
+      return r.code === 0 ? dedupePorts(parseNetstat(r.stdout)) : [];
     }
     const r = await run('ss', ['-H', '-tlnp'], { timeoutMs: TIMEOUT });
-    return r.code === 0 ? parseSs(r.stdout) : [];
+    return r.code === 0 ? dedupePorts(parseSs(r.stdout)) : [];
   } catch {
     return [];
   }

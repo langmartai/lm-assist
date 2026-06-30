@@ -24,7 +24,10 @@ export function mergeComposed(
     if (p.snap) nodes.push(p.snap);
     else unreachable.push(p.node);
   }
-  const partial = unreachable.length > 0 || nodes.some((n) => n.warming || n.stale || !n.reachable);
+  // `partial` means data is MISSING — an unreachable peer or a node still `warming` (no snapshot
+  // yet). A `stale` snapshot (SWR: past soft-TTL, refresh kicked) still carries COMPLETE data, so
+  // it must NOT mark the composed result partial — otherwise every result is perpetually partial.
+  const partial = unreachable.length > 0 || nodes.some((n) => n.warming || !n.reachable);
   return { generatedAt: now, scope, nodes, unreachable, partial };
 }
 

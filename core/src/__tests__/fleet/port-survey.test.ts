@@ -1,7 +1,39 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { parseSs, parseNetstat, collectPorts } from '../../fleet/port-survey';
+import { parseSs, parseNetstat, collectPorts, dedupePorts } from '../../fleet/port-survey';
 import type { RunCmd } from '../../fleet/run-cmd';
+
+test('dedupePorts — collapses (proto,port) duplicates, prefers the entry carrying a pid', () => {
+  assert.deepEqual(dedupePorts([
+    { port: 80, proto: 'tcp', pid: null, proc: null },     // v4, no pid
+    { port: 80, proto: 'tcp', pid: 5, proc: 'nginx' },     // v6, has pid → wins
+    { port: 80, proto: 'tcp', pid: 9, proc: 'other' },     // later pid ignored (first non-null wins)
+    { port: 22, proto: 'tcp', pid: 7, proc: 'sshd' },
+  ]), [
+    { port: 80, proto: 'tcp', pid: 5, proc: 'nginx' },
+    { port: 22, proto: 'tcp', pid: 7, proc: 'sshd' },
+  ]);
+});
+
+test('collectPorts — dedups IPv4+IPv6 listeners on the same port (ss + netstat)', async () => {
+  const ssRun: RunCmd = async (cmd) => (cmd === 'ss' ? { stdout: [
+    'LISTEN 0 511 0.0.0.0:3100 0.0.0.0:* users:(("node",pid=12,fd=1))',
+    'LISTEN 0 511 [::]:3100 [::]:* users:(("node",pid=12,fd=2))',   // dup (v6)
+    'LISTEN 0 128 0.0.0.0:22 0.0.0.0:*',                            // no pid
+    'LISTEN 0 128 [::]:22 [::]:* users:(("sshd",pid=7,fd=3))',      // dup (v6) WITH pid → preferred
+  ].join('\n'), code: 0 } : { stdout: '', code: 1 });
+  const r = (await collectPorts(ssRun, 'linux')).sort((a, b) => a.port - b.port);
+  assert.deepEqual(r, [
+    { port: 22, proto: 'tcp', pid: 7, proc: 'sshd' },
+    { port: 3100, proto: 'tcp', pid: 12, proc: 'node' },
+  ]);
+
+  const nsRun: RunCmd = async (cmd) => (cmd === 'netstat' ? { stdout: [
+    '  TCP    0.0.0.0:3100   0.0.0.0:0   LISTENING   100',
+    '  TCP    [::]:3100      [::]:0      LISTENING   100',           // dup (v6)
+  ].join('\n'), code: 0 } : { stdout: '', code: 1 });
+  assert.deepEqual(await collectPorts(nsRun, 'win32'), [{ port: 3100, proto: 'tcp', pid: 100, proc: null }]);
+});
 
 test('parseSs — extracts port, pid, proc from ss -H -tlnp lines', () => {
   const stdout = [
