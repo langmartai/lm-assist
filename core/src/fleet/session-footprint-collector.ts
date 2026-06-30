@@ -44,17 +44,31 @@ export async function buildSnapshot(deps: BuildDeps): Promise<NodeFootprint> {
     batch.forEach((c, j) => { if (res[j]) gitByCwd.set(c, res[j]!); });
   }
 
+  // Collapse openChanges to once per worktree: sessions sharing a worktree carry an identical (and
+  // potentially long) list, so keep it on the first (most-recent — `recent` is sorted desc) session
+  // and have siblings reference it. The git block stays per-session, so collision detection is intact.
+  const canonicalByWorktree = new Map<string, string>();
   const sessions: SessionFootprint[] = recent.map((s) => {
     const cwd = s.cacheData?.cwd ?? '';
     const g = (cwd && gitByCwd.get(cwd)) || { git: { branch: null, worktree: null, upstream: null, ahead: 0, dirty: 0, pushed: false }, openChanges: [], openChangesTruncated: false, repo: null };
     const cloud = /^(session_|cse_)/.test(s.sessionId);
+    let openChanges = g.openChanges;
+    let openChangesTruncated = g.openChangesTruncated;
+    let openChangesSharedWith: string | undefined;
+    const wt = g.git.worktree;
+    if (wt && openChanges.length > 0) {
+      const canonical = canonicalByWorktree.get(wt);
+      if (canonical) { openChanges = []; openChangesTruncated = false; openChangesSharedWith = canonical; }
+      else canonicalByWorktree.set(wt, s.sessionId);
+    }
     return {
       cluster: id.cluster, node: id.node, host: id.host,
       sessionId: s.sessionId, title: s.cacheData?.customTitle ?? s.cacheData?.slug,
       transport: cloud ? 'cloud' : 'native',
       managed: boundMap.get(s.sessionId) ?? null,
       cwd, repo: g.repo, git: g.git,
-      openChanges: g.openChanges, openChangesTruncated: g.openChangesTruncated,
+      openChanges, openChangesTruncated,
+      ...(openChangesSharedWith ? { openChangesSharedWith } : {}),
       lastActiveRel: relAge(s.cacheData?.fileMtime ?? now, now), isActive: (now - (s.cacheData?.fileMtime ?? 0)) < ACTIVE_MS,
     };
   });

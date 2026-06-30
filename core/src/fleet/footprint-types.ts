@@ -20,6 +20,10 @@ export interface SessionFootprint {
   git: GitState;
   openChanges: string[];
   openChangesTruncated: boolean;
+  /** Set when this session shares another session's worktree on this node: its identical openChanges
+   *  list is elided (kept once, on the referenced sessionId) to slim the payload. The git block
+   *  (worktree/branch/dirty/…) stays per-session, so collision detection is unaffected. */
+  openChangesSharedWith?: string;
   lastActiveRel: string;
   isActive: boolean;
 }
