@@ -816,7 +816,9 @@ export const ruleMapToolDef = {
     'Query the cross-project/node RULES map (.claude/rules/ path-scoped rules). Returns ' +
     'ACTUAL rule records from disk — never fabricated. Supports the same brief/complete ' +
     'levels and filters as memory_map, plus scope (user/project), paths (glob substring), ' +
-    'and always (load-always rules only). Pass stats=true for count summary. Read-only.',
+    'and always (load-always rules only). Pass stats=true for count summary. ' +
+    'Records carry os/osDependent/active and source (live vs repo:<host>); filter with ' +
+    'scope, paths, always, os, os_dependent, active. Read-only.',
   annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,
@@ -829,8 +831,70 @@ export const ruleMapToolDef = {
       q: { type: 'string', description: 'Keyword query over rule title+brief+complete+paths.' },
       limit: { type: 'number', description: 'Max records to return (0 = all).' },
       stats: { type: 'boolean', description: 'Return count/stats summary only instead of records.' },
+      os: { type: 'string', description: 'Filter to rules matching this OS slug (e.g. windows, linux, macos).' },
+      os_dependent: { type: 'boolean', description: 'If true, only return rules that declare an os constraint.' },
+      active: { type: 'boolean', description: 'If true, only return rules active on the current OS.' },
     },
   },
+};
+
+export const ruleRecordToolDef = {
+  name: 'rule_record',
+  description:
+    'Fetch one complete RULE record by its recordId (from rule_map output) — the full rule text ' +
+    'plus its scope, os/active, and load condition. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: { recordId: { type: 'string', description: 'The record id from a prior rule_map result.' } },
+    required: ['recordId'],
+  },
+};
+
+export const ruleSyncStatusToolDef = {
+  name: 'rule_sync_status',
+  description:
+    "Show this node's cross-node RULE-sync state: whether rule auto-sync is enabled, the node mode " +
+    '(persistent vs ephemeral), and the live rule-autosync daemon status (mode + counts of ' +
+    'reconciles/applied/removed/errors). Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: { type: 'object' as const, properties: {} },
+};
+
+export const ruleCrossHostToolDef = {
+  name: 'rule_cross_host',
+  description:
+    'Search USER rules across ALL hosts (this node\'s own rules plus every synced/mirrored peer rule), ' +
+    'ranked by query, each tagged with `active` (applies to this OS) and `presentLocally` (this host ' +
+    'authors an equivalent rule). Use for "what rule does any of my machines have about X". Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: { query: { type: 'string', description: 'Relevance query over rule title+brief+complete+paths.' } },
+    required: ['query'],
+  },
+};
+
+export const ruleImportCandidatesToolDef = {
+  name: 'rule_import_candidates',
+  description:
+    'List rules from OTHER hosts (synced or inert mirror copies) that this host does not itself author — ' +
+    'a preview of what auto-sync brings in (it usually already applied them). Optionally ranked by a ' +
+    'query. Read-only (suggests; does not import).',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: { query: { type: 'string', description: 'Optional relevance query to rank candidates.' } },
+  },
+};
+
+export const ruleProjectsToolDef = {
+  name: 'rule_projects',
+  description:
+    'Summarize where rules live across the fleet — counts by host (node), scope (user/project), ' +
+    'load condition, and category. The rules analog of memory_projects. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: { type: 'object' as const, properties: {} },
 };
 
 export const memorySyncStatusToolDef = {
@@ -869,6 +933,11 @@ export const EXPANDED_TOOL_DEFS = [
   memoryMapToolDef,
   memoryRecordToolDef,
   ruleMapToolDef,
+  ruleRecordToolDef,
+  ruleSyncStatusToolDef,
+  ruleCrossHostToolDef,
+  ruleImportCandidatesToolDef,
+  ruleProjectsToolDef,
   // write
   claudeaiCreateConversationToolDef,
   claudeaiCompletionToolDef,
@@ -1597,11 +1666,66 @@ async function handleRuleMap(args: Record<string, unknown>): Promise<McpToolResu
   if (args.q) argv.push('--q', String(args.q));
   if (args.limit) argv.push('--limit', String(args.limit));
   if (args.stats) argv.push('--stats');
+  if (args.os) argv.push('--os', String(args.os));
+  if (args.os_dependent) argv.push('--os-dependent');
+  if (args.active) argv.push('--active');
   try {
     return ok(await runCli(argv));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
+}
+
+async function handleRuleRecord(args: Record<string, unknown>): Promise<McpToolResult> {
+  const id = String(args.recordId || '').trim();
+  if (!id) return err('recordId is required.');
+  try { return ok(await runCli([cliPath('rule-map.js'), '--port', apiPort(), '--record', id])); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+
+async function handleRuleSyncStatus(): Promise<McpToolResult> {
+  try {
+    return ok(pretty(await workerGet('/rules/sync/status')));
+  } catch {
+    try {
+      const { getProjectSettings } = await import('../../project-settings');
+      return ok(pretty({ config: { ruleSyncEnabled: getProjectSettings().ruleSyncEnabled }, daemon: null, note: 'Core unreachable — on-disk setting only' }));
+    } catch (e) {
+      return err(e instanceof Error ? e.message : String(e));
+    }
+  }
+}
+
+/** Run rule-map.js and JSON-parse its record array (shared by the thin cross-host views). */
+async function ruleMapRecords(extra: string[]): Promise<any[]> {
+  const out = await runCli([cliPath('rule-map.js'), '--port', apiPort(), '--format', 'json', '--level', 'brief', ...extra]);
+  try { const j = JSON.parse(out); return Array.isArray(j) ? j : []; } catch { return []; }
+}
+
+async function handleRuleCrossHost(args: Record<string, unknown>): Promise<McpToolResult> {
+  const q = String(args.query || '').trim();
+  if (!q) return err('query is required.');
+  try {
+    const recs = await ruleMapRecords(['--q', q]);
+    const localTitles = new Set(recs.filter((r) => r.source === 'live').map((r) => String(r.title || '').toLowerCase()));
+    const records = recs.map((r) => ({ ...r, presentLocally: localTitles.has(String(r.title || '').toLowerCase()) }));
+    return ok(pretty({ query: q, total: records.length, records }));
+  } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+
+async function handleRuleImportCandidates(args: Record<string, unknown>): Promise<McpToolResult> {
+  const q = String(args.query || '').trim();
+  try {
+    const recs = await ruleMapRecords(q ? ['--q', q] : []);
+    const localTitles = new Set(recs.filter((r) => r.source === 'live').map((r) => String(r.title || '').toLowerCase()));
+    const candidates = recs.filter((r) => typeof r.source === 'string' && r.source.startsWith('repo:') && !localTitles.has(String(r.title || '').toLowerCase()));
+    return ok(pretty({ query: q || null, total: candidates.length, candidates }));
+  } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+
+async function handleRuleProjects(): Promise<McpToolResult> {
+  try { return ok(await runCli([cliPath('rule-map.js'), '--port', apiPort(), '--format', 'json', '--stats'])); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 
 /**
@@ -1653,6 +1777,11 @@ export const EXPANDED_HANDLERS: Record<
   memory_map: handleMemoryMap,
   memory_record: handleMemoryRecord,
   rule_map: handleRuleMap,
+  rule_record: handleRuleRecord,
+  rule_sync_status: () => handleRuleSyncStatus(),
+  rule_cross_host: handleRuleCrossHost,
+  rule_import_candidates: handleRuleImportCandidates,
+  rule_projects: () => handleRuleProjects(),
   // multi-node (worker-side fallback; hub answers the full list when connected)
   list_nodes: async () => handleListNodes(),
   // github (read: github_query, write: github_mutate) — dispatch to /github/<action>
