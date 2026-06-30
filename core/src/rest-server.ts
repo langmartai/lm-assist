@@ -478,7 +478,12 @@ export class TierRestServer {
       // there is no browser Origin (blocks drive-by CSRF); the keypack is the credential.
       // LAN/remote/browser callers still need the token. See enroll-exempt.ts.
       const enrollExempt = isEnrollExempt(req.method, authPath, req.socket.remoteAddress, req.headers['origin']);
-      if (apiAuthEnabled() && authPath !== '/health' && !exemptLocal && !enrollExempt) {
+      // The WhatsApp Cloud API webhook is called by Meta's servers, which
+      // cannot present the lm-assist token. It carries its own auth: a verify
+      // token on the GET handshake and an HMAC-SHA256 body signature on POST
+      // (see core/src/whatsapp/webhook.ts), enforced inside the route handler.
+      const whatsappWebhookExempt = authPath === '/whatsapp/webhook';
+      if (apiAuthEnabled() && authPath !== '/health' && !exemptLocal && !enrollExempt && !whatsappWebhookExempt) {
         const rawKey = req.headers['x-api-key'];
         const providedKey = (Array.isArray(rawKey) ? rawKey[0] : rawKey) || this.getQueryParam(req.url || '', 'apiKey');
         const okAuth = isValidToken(providedKey) || (this.options.apiKey && providedKey === this.options.apiKey);
@@ -584,34 +589,39 @@ export class TierRestServer {
 
   private async parseRequest(req: http.IncomingMessage): Promise<ParsedRequest> {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
+    const { body, rawBody } = await this.parseBody(req);
 
     return {
       method: req.method || 'GET',
       path: url.pathname,
       params: {},
       query: Object.fromEntries(url.searchParams),
-      body: await this.parseBody(req),
+      body,
+      rawBody,
       headers: req.headers,
       clientIp: req.socket?.remoteAddress || undefined,
     };
   }
 
-  private parseBody(req: http.IncomingMessage): Promise<any> {
+  private parseBody(req: http.IncomingMessage): Promise<{ body: any; rawBody: string }> {
     return new Promise((resolve) => {
       // GET has no body. DELETE *can* have one per RFC 7231 §4.3.5 and is
       // commonly used (e.g. cookie/storage filters); parse it like POST/PUT.
       if (req.method === 'GET') {
-        resolve({});
+        resolve({ body: {}, rawBody: '' });
         return;
       }
 
       let body = '';
       req.on('data', (chunk) => (body += chunk));
       req.on('end', () => {
+        // Keep the raw bytes alongside the parsed value: HMAC webhook
+        // verification (WhatsApp) signs the exact body, which a re-stringify
+        // of the parsed object would not reproduce.
         try {
-          resolve(body ? JSON.parse(body) : {});
+          resolve({ body: body ? JSON.parse(body) : {}, rawBody: body });
         } catch {
-          resolve({});
+          resolve({ body: {}, rawBody: body });
         }
       });
     });

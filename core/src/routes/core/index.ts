@@ -60,6 +60,7 @@ import { createNodeRoutes } from './node.routes';
 import { createClusterRoutes } from './cluster.routes';
 import { createFleetRoutes } from './fleet.routes';
 import { createLifecycleRoutes } from './lifecycle.routes';
+import { createWhatsappRoutes } from './whatsapp.routes';
 
 /**
  * Create all core routes
@@ -119,5 +120,6 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createClusterRoutes(ctx),
     ...createFleetRoutes(ctx),
     ...createLifecycleRoutes(ctx),
+    ...createWhatsappRoutes(ctx),
   ];
 }

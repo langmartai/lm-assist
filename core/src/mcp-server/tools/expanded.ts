@@ -59,6 +59,7 @@ import { NODE_UPGRADE_TOOL_DEFS, NODE_UPGRADE_HANDLERS } from './node-upgrade';
 import { CLUSTER_TOOL_DEFS, CLUSTER_HANDLERS } from './cluster';
 import { sessionFootprintsToolDef, handleSessionFootprints } from './session-footprints';
 import { nodeLifecycleToolDef, handleNodeLifecycle } from './lifecycle';
+import { WHATSAPP_TOOL_DEFS, WHATSAPP_HANDLERS } from './whatsapp';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -973,6 +974,8 @@ export const EXPANDED_TOOL_DEFS = [
   ccrCloudListToolDef,
   // port forward (node-to-node TCP tunnel)
   ...PORT_FORWARD_TOOL_DEFS,
+  // whatsapp cloud-api connector (send: write; chats/messages/search/status: read)
+  ...WHATSAPP_TOOL_DEFS,
   ...TRANSFER_TOOL_DEFS,
   ...FS_INSPECT_TOOL_DEFS,
   // session-to-session messaging (send: write/admin; list+status: read)
@@ -1810,6 +1813,8 @@ export const EXPANDED_HANDLERS: Record<
   ccr_cloud_list: () => handleCcrCloudList(),
   // port forward (open/list/close node-to-node TCP tunnel)
   ...PORT_FORWARD_HANDLERS,
+  // whatsapp cloud-api connector
+  ...WHATSAPP_HANDLERS,
   ...TRANSFER_HANDLERS,
   ...FS_INSPECT_HANDLERS,
   // session-to-session messaging

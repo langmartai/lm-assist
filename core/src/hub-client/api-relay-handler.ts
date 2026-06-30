@@ -127,6 +127,7 @@ export class ApiRelayHandler {
     '/cluster',       // cross-node cluster assignment (cluster_assign proxies POST /cluster/self to the target node)
     '/fleet',         // cross-node session/resource survey (session_footprints composes peers' /fleet/session-footprints/local)
     '/lifecycle',     // graceful exit/restart of a node's Core/Web (node_lifecycle → POST /lifecycle/{exit,restart})
+    '/whatsapp',      // whatsapp cloud-api connector (send/chats/messages/search/status; webhook is reached directly by Meta, not via the hub)
   ];
 
   /**

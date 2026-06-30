@@ -291,6 +291,12 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   cluster_describe: 'write',
   // fleet session footprints (read — non-blocking survey)
   session_footprints: 'read',
+  // whatsapp cloud-api connector (send mutates/spends; the rest are reads)
+  whatsapp_send: 'write',
+  whatsapp_list_chats: 'read',
+  whatsapp_read_messages: 'read',
+  whatsapp_search: 'read',
+  whatsapp_status: 'read',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */
