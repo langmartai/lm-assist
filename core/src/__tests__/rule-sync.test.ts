@@ -116,6 +116,24 @@ test('applyIngest rejects oversize (>64 KB) and traversal filenames', () => {
   assert.ok(!fs.existsSync(path.join(rulesDir, 'synced.117.big.md')));
 });
 
+// ── F6: isFile guard in sweep() ─────────────────────────────────────────────
+
+test('sweep() does not throw and skips directories matching the synced prefix', () => {
+  const rulesDir = tmp('sweep-dir-'); const mirrorRoot = tmp('sweep-dir-m-');
+  // Create a DIRECTORY whose name matches the sweep predicate (synced.<host>.*)
+  // This can occur if someone manually creates or if the FS is in an unexpected state.
+  const matchingDir = path.join(rulesDir, 'synced.117.mydir');
+  fs.mkdirSync(matchingDir, { recursive: true });
+  fs.writeFileSync(path.join(matchingDir, 'some.md'), 'content');
+
+  // applyIngest with empty rule set → sweep tries to remove synced.117.* not in the want set
+  // Without isFile guard, unlinkSync on a directory throws EISDIR; with guard it skips cleanly
+  assert.doesNotThrow(() => {
+    applyIngest('117', 'linux', [], 'linux', { rulesDir, mirrorRoot });
+  }, 'sweep must not throw on a directory matching the predicate');
+  assert.ok(fs.existsSync(matchingDir), 'directory should be preserved (skipped, not deleted)');
+});
+
 test('applyIngest dedups byte-identical re-ingest (no rewrite churn)', () => {
   const rulesDir = tmp('ai-dedup-'); const mirrorRoot = tmp('ai-dedup-m-');
   const rule = { file: 'a.md', content: 'A', contentHash: sha('A'), os: [] as string[] };

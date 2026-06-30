@@ -26,8 +26,8 @@ const CREDENTIAL_PATTERNS: RegExp[] = [/token/i, /(?<![a-zA-Z])key(?![a-zA-Z])/i
 
 function sha256(s: string): string { return createHash('sha256').update(s).digest('hex'); }
 
-export function rulesRoot(rulesDir?: string): string { return rulesDir || path.join(getClaudeConfigDir(), 'rules'); }
-export function mirrorRootDir(mirrorRoot?: string): string { return mirrorRoot || path.join(getDataDir(), 'rules-mirror'); }
+function rulesRoot(rulesDir?: string): string { return rulesDir || path.join(getClaudeConfigDir(), 'rules'); }
+function mirrorRootDir(mirrorRoot?: string): string { return mirrorRoot || path.join(getDataDir(), 'rules-mirror'); }
 
 /** LM_HOST_ID > hub gatewayId > hostname. Used to attribute this node's exported rules. */
 export function selfHostId(): string {
@@ -168,7 +168,12 @@ function sweep(dir: string, pred: (name: string) => boolean): number {
   try { names = fs.readdirSync(dir); } catch { return 0; }
   for (const n of names) {
     if (!pred(n)) continue;
-    try { fs.unlinkSync(path.join(dir, n)); removed++; } catch { /* */ }
+    const full = path.join(dir, n);
+    try {
+      if (!fs.statSync(full).isFile()) continue;  // F6: skip directories matching the prefix
+      fs.unlinkSync(full);
+      removed++;
+    } catch { /* unwritable or vanished — skip */ }
   }
   return removed;
 }

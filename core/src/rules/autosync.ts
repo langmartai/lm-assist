@@ -63,6 +63,7 @@ export interface RuleSyncStatus {
 export class RuleAutoSyncDaemon {
   private mode: RuleSyncMode;
   private started = false;
+  private reconciling = false;  // F3: single-flight guard
   private watcher: FSWatcher | null = null;
   private debounce: NodeJS.Timeout | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -76,17 +77,10 @@ export class RuleAutoSyncDaemon {
   }
 
   getMode(): RuleSyncMode { return this.mode; }
-  refreshMode(): RuleSyncMode { this.mode = resolveMode(); return this.mode; }
 
-  /** Idempotent. Watches own rules + a periodic reconcile timer. Harmless in observe/off (no writes). */
-  start(): void {
-    if (this.started) return;
-    if (this.mode === 'off') {
-      this.log('daemon-off', { reason: 'RULE_AUTOSYNC=off / ruleSyncEnabled=false' });
-      this.started = true;
-      return;
-    }
-
+  /** F2: Lazily create the fs watcher + periodic reconcile timer. Idempotent — no-op if already running. */
+  private initWatcherAndTimer(): void {
+    if (this.timer) return; // already running
     const rulesDir = path.join(getClaudeConfigDir(), 'rules');
     try {
       // chokidar v3 API (CommonJS). Ignore synced.* (own export excludes them → no self-trigger loop).
@@ -101,21 +95,53 @@ export class RuleAutoSyncDaemon {
       this.counts.errors++;
       this.log('watch-init-failed', { error: String(err) });
     }
-
     const periodMs = Math.max(60_000, (Number(process.env.RULE_RECONCILE_SEC) || 300) * 1000);
     this.timer = setInterval(() => {
       void this.reconcile().catch(() => { /* best-effort */ });
     }, periodMs);
     this.timer.unref?.();
-
-    this.started = true;
-    this.log('started', { mode: this.mode, rulesDir, periodMs });
-
+    this.log('watcher-timer-init', { mode: this.mode, rulesDir, periodMs });
     if (this.mode === 'on') {
       setTimeout(() => {
         void this.reconcile().catch(() => { /* best-effort */ });
       }, 15_000).unref?.();
     }
+  }
+
+  /** F2: Tear down watcher + timer. Idempotent. */
+  private teardownWatcherAndTimer(): void {
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    if (this.watcher) { try { void this.watcher.close(); } catch { /* */ } this.watcher = null; }
+    this.log('watcher-timer-stopped', {});
+  }
+
+  /** F2: Update mode from env/settings; handle off→on (lazy init) and on/observe→off (teardown). */
+  refreshMode(): RuleSyncMode {
+    const prev = this.mode;
+    this.mode = resolveMode();
+    if (this.started && prev !== this.mode) {
+      if (this.mode === 'off') {
+        this.teardownWatcherAndTimer();
+      } else if (prev === 'off') {
+        // off → on/observe: lazily create watcher + timer now
+        this.initWatcherAndTimer();
+        this.log('mode-changed-off-to-active', { mode: this.mode });
+      }
+      // observe ↔ on: watcher+timer stay; mode already updated so reconcile() acts accordingly
+    }
+    return this.mode;
+  }
+
+  /** Idempotent. Watches own rules + a periodic reconcile timer. Harmless in observe/off (no writes). */
+  start(): void {
+    if (this.started) return;
+    this.started = true;
+    if (this.mode === 'off') {
+      this.log('daemon-off', { reason: 'RULE_AUTOSYNC=off / ruleSyncEnabled=false' });
+      return;
+    }
+    this.initWatcherAndTimer();
+    this.log('started', { mode: this.mode });
   }
 
   private scheduleReconcile(): void {
@@ -124,51 +150,58 @@ export class RuleAutoSyncDaemon {
       this.debounce = null;
       void this.reconcile().catch(() => { /* */ });
     }, DEBOUNCE_MS);
+    this.debounce.unref?.();  // F4: don't prevent process exit
   }
 
   /** Pull every online fleet node's own rules and apply locally through the OS router. */
   async reconcile(): Promise<void> {
-    if (this.mode !== 'on') {
-      this.log('would-reconcile', { note: 'observe/off — no transport, no writes' });
-      return;
-    }
-    const key = getHubConfig().apiKey || '';
-    if (!key) {
-      this.log('skip-no-key', { note: 'node not enrolled (no hub apiKey)' });
-      return;
-    }
-    let fleet: string[] = [];
+    if (this.reconciling) return;  // F3: single-flight guard — coalesce overlapping calls
+    this.reconciling = true;
     try {
-      fleet = await transport.listFleetNodes();
-    } catch (e) {
-      this.counts.errors++;
-      this.log('fleet-error', { error: String(e) });
-      return;
-    }
-    if (!fleet.length) {
-      this.log('reconcile-no-peers', {});
-      return;
-    }
-
-    this.counts.reconciles++;
-    const localPlatform = os.platform();
-    for (const node of fleet) {
+      if (this.mode !== 'on') {
+        this.log('would-reconcile', { note: 'observe/off — no transport, no writes' });
+        return;
+      }
+      const key = getHubConfig().apiKey || '';
+      if (!key) {
+        this.log('skip-no-key', { note: 'node not enrolled (no hub apiKey)' });
+        return;
+      }
+      let fleet: string[] = [];
       try {
-        const exp = await transport.pullRulesExport(node, key);
-        if (!exp) {
-          this.log('pull-empty', { node });
-          continue;
-        }
-        this.counts.pulled++;
-        const res = applyIngest(exp.host || node, exp.platform, exp.rules, localPlatform);
-        this.counts.applied += res.applied;
-        this.counts.removed += res.removed;
-        this.counts.fetched++;
-        this.log('reconciled', { node: exp.host || node, ...res });
+        fleet = await transport.listFleetNodes();
       } catch (e) {
         this.counts.errors++;
-        this.log('reconcile-error', { node, error: String(e) });
+        this.log('fleet-error', { error: String(e) });
+        return;
       }
+      if (!fleet.length) {
+        this.log('reconcile-no-peers', {});
+        return;
+      }
+
+      this.counts.reconciles++;
+      const localPlatform = os.platform();
+      for (const node of fleet) {
+        try {
+          const exp = await transport.pullRulesExport(node, key);
+          if (!exp) {
+            this.log('pull-empty', { node });
+            continue;
+          }
+          this.counts.pulled++;
+          const res = applyIngest(exp.host || node, exp.platform, exp.rules, localPlatform);
+          this.counts.applied += res.applied;
+          this.counts.removed += res.removed;
+          this.counts.fetched++;
+          this.log('reconciled', { node: exp.host || node, ...res });
+        } catch (e) {
+          this.counts.errors++;
+          this.log('reconcile-error', { node, error: String(e) });
+        }
+      }
+    } finally {
+      this.reconciling = false;  // F3: always release guard
     }
   }
 

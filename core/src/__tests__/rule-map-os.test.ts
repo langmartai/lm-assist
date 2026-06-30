@@ -19,6 +19,10 @@ test('rule-map emits os/osDependent/active, detects synced.<host>.*, scans the m
   if (!fs.existsSync(DIST)) { t.skip('dist not built — run ./core.sh build'); return; }
   const CLAUDE = fs.mkdtempSync(path.join(os.tmpdir(), 'rmo-claude-'));
   const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'rmo-data-'));
+  t.after(() => {
+    try { fs.rmSync(CLAUDE, { recursive: true, force: true }); } catch { /* */ }
+    try { fs.rmSync(DATA, { recursive: true, force: true }); } catch { /* */ }
+  });
   const rulesDir = path.join(CLAUDE, 'rules');
   fs.mkdirSync(rulesDir, { recursive: true });
   fs.writeFileSync(path.join(rulesDir, 'own.md'), '---\nname: own\nos: ' + process.platform.replace('win32', 'windows').replace('darwin', 'mac') + '\n---\nbody');
@@ -65,6 +69,10 @@ test('rule-map attributes local rule to LM_HOST_ID when set', (t) => {
   if (!fs.existsSync(DIST)) { t.skip('dist not built — run ./core.sh build'); return; }
   const CLAUDE = fs.mkdtempSync(path.join(os.tmpdir(), 'rmo-hostid-'));
   const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'rmo-hostid-data-'));
+  t.after(() => {
+    try { fs.rmSync(CLAUDE, { recursive: true, force: true }); } catch { /* */ }
+    try { fs.rmSync(DATA, { recursive: true, force: true }); } catch { /* */ }
+  });
   const rulesDir = path.join(CLAUDE, 'rules');
   fs.mkdirSync(rulesDir, { recursive: true });
   fs.writeFileSync(path.join(rulesDir, 'own.md'), '---\nname: own\n---\nbody');

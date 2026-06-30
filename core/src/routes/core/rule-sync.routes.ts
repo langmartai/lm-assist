@@ -41,6 +41,9 @@ export function createRuleSyncRoutes(_ctx: RouteContext): RouteHandler[] {
         const start = Date.now();
         const b = (req.body || {}) as { key?: string };
         if (!authorized(req, b.key)) return wrapError('FORBIDDEN', 'not authorized for rule sync', start);
+        if (getProjectSettings().ruleSyncEnabled === false) {
+          return wrapResponse({ disabled: true, reason: 'ruleSyncEnabled=false' }, start);
+        }
         return wrapResponse({ host: selfHostId(), platform: os.platform(), rules: readOwnRules() }, start);
       },
     },
@@ -51,6 +54,9 @@ export function createRuleSyncRoutes(_ctx: RouteContext): RouteHandler[] {
         const start = Date.now();
         const b = (req.body || {}) as { sourceHost?: string; sourcePlatform?: string; rules?: IngestRule[]; key?: string };
         if (!authorized(req, b.key)) return wrapError('FORBIDDEN', 'not authorized for rule sync', start);
+        if (getProjectSettings().ruleSyncEnabled === false) {
+          return wrapResponse({ disabled: true, reason: 'ruleSyncEnabled=false' }, start);
+        }
         if (!b.sourceHost || !Array.isArray(b.rules)) {
           return wrapError('INVALID_INPUT', 'sourceHost and rules[] are required', start);
         }

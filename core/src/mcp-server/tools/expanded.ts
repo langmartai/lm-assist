@@ -864,7 +864,7 @@ export const ruleSyncStatusToolDef = {
 export const ruleCrossHostToolDef = {
   name: 'rule_cross_host',
   description:
-    'Search USER rules across ALL hosts (this node\'s own rules plus every synced/mirrored peer rule), ' +
+    'Search user + project rules across ALL hosts (this node\'s own rules plus every synced/mirrored peer rule), ' +
     'ranked by query, each tagged with `active` (applies to this OS) and `presentLocally` (this host ' +
     'authors an equivalent rule). Use for "what rule does any of my machines have about X". Read-only.',
   annotations: { readOnlyHint: true },
@@ -878,7 +878,7 @@ export const ruleCrossHostToolDef = {
 export const ruleImportCandidatesToolDef = {
   name: 'rule_import_candidates',
   description:
-    'List rules from OTHER hosts (synced or inert mirror copies) that this host does not itself author — ' +
+    'List user + project rules from OTHER hosts (synced or inert mirror copies) that this host does not itself author — ' +
     'a preview of what auto-sync brings in (it usually already applied them). Optionally ranked by a ' +
     'query. Read-only (suggests; does not import).',
   annotations: { readOnlyHint: true },
@@ -1689,7 +1689,12 @@ async function handleRuleSyncStatus(): Promise<McpToolResult> {
   } catch {
     try {
       const { getProjectSettings } = await import('../../project-settings');
-      return ok(pretty({ config: { ruleSyncEnabled: getProjectSettings().ruleSyncEnabled }, daemon: null, note: 'Core unreachable — on-disk setting only' }));
+      const { readMemorySyncConfig } = await import('../../memory/node-mode');
+      return ok(pretty({
+        config: { ruleSyncEnabled: getProjectSettings().ruleSyncEnabled, nodeMode: readMemorySyncConfig().nodeMode },
+        daemon: null,
+        note: 'Core unreachable — on-disk setting only',
+      }));
     } catch (e) {
       return err(e instanceof Error ? e.message : String(e));
     }
@@ -1724,7 +1729,8 @@ async function handleRuleImportCandidates(args: Record<string, unknown>): Promis
 }
 
 async function handleRuleProjects(): Promise<McpToolResult> {
-  try { return ok(await runCli([cliPath('rule-map.js'), '--port', apiPort(), '--format', 'json', '--stats'])); }
+  // F5: drop redundant --format json alongside --stats (rule-map.js ignores it for stats output)
+  try { return ok(await runCli([cliPath('rule-map.js'), '--port', apiPort(), '--stats'])); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 

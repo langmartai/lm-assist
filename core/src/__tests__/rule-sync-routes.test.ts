@@ -79,3 +79,55 @@ test('ingest validates required fields', async () => {
   assert.equal(r.success, false);
   assert.equal(r.error.code, 'INVALID_INPUT');
 });
+
+// ── F1: ruleSyncEnabled=false disables export + ingest ──────────────────────
+
+test('export returns disabled when ruleSyncEnabled=false', async () => {
+  const ps = require('../project-settings');
+  const orig = ps.getProjectSettings;
+  ps.getProjectSettings = () => ({ ruleSyncEnabled: false });
+  try {
+    seed();
+    const r: any = await route('POST', /export/).handler(localReq('/rules/export', {}), {} as any);
+    assert.equal(r.success, true, `expected success response, got: ${JSON.stringify(r)}`);
+    assert.equal(r.data.disabled, true, 'disabled flag must be true');
+    assert.ok(!r.data.rules, 'should not return rules when disabled');
+  } finally {
+    ps.getProjectSettings = orig;
+  }
+});
+
+test('ingest returns disabled when ruleSyncEnabled=false', async () => {
+  const ps = require('../project-settings');
+  const orig = ps.getProjectSettings;
+  ps.getProjectSettings = () => ({ ruleSyncEnabled: false });
+  try {
+    const body = { sourceHost: '117', rules: [] };
+    const r: any = await route('POST', /ingest/).handler(localReq('/rules/ingest', body), {} as any);
+    assert.equal(r.success, true, `expected success response, got: ${JSON.stringify(r)}`);
+    assert.equal(r.data.disabled, true, 'disabled flag must be true');
+  } finally {
+    ps.getProjectSettings = orig;
+  }
+});
+
+test('export and ingest work normally when ruleSyncEnabled=true', async () => {
+  const ps = require('../project-settings');
+  const orig = ps.getProjectSettings;
+  ps.getProjectSettings = () => ({ ruleSyncEnabled: true });
+  try {
+    seed();
+    const expR: any = await route('POST', /export/).handler(localReq('/rules/export', {}), {} as any);
+    assert.equal(expR.success, true);
+    assert.ok(Array.isArray(expR.data.rules), 'rules array present');
+    assert.ok(!expR.data.disabled, 'not disabled when enabled=true');
+
+    const sha = (s: string) => require('crypto').createHash('sha256').update(s).digest('hex');
+    const ingBody = { sourceHost: '117', rules: [{ file: 'x.md', content: 'X', contentHash: sha('X'), os: [] }] };
+    const ingR: any = await route('POST', /ingest/).handler(localReq('/rules/ingest', ingBody), {} as any);
+    assert.equal(ingR.success, true);
+    assert.ok(!ingR.data.disabled, 'not disabled when enabled=true');
+  } finally {
+    ps.getProjectSettings = orig;
+  }
+});
