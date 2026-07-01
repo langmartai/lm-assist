@@ -182,6 +182,11 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   // github endpoint (read = query, write = mutate)
   github_query: 'read',
   github_mutate: 'write',
+  // elevated worker (Windows-only): status reads; exec/grant/revoke are admin
+  elevated_status: 'read',
+  elevated_exec: 'admin',
+  elevated_grant: 'admin',
+  elevated_revoke: 'admin',
   // ccr — Claude Code remote support
   cc_sessions: 'read',
   ccr_preflight: 'read',

@@ -62,6 +62,7 @@ import { createFabricRoutes } from './fabric.routes';
 import { createFleetRoutes } from './fleet.routes';
 import { createLifecycleRoutes } from './lifecycle.routes';
 import { createWhatsappRoutes } from './whatsapp.routes';
+import { createElevatedRoutes } from './elevated.routes';
 
 /**
  * Create all core routes
@@ -123,5 +124,6 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createFleetRoutes(ctx),
     ...createLifecycleRoutes(ctx),
     ...createWhatsappRoutes(ctx),
+    ...createElevatedRoutes(ctx),
   ];
 }

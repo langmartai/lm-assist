@@ -61,6 +61,7 @@ import { NODE_STATUS_TOOL_DEFS, NODE_STATUS_HANDLERS } from './node-status';
 import { sessionFootprintsToolDef, handleSessionFootprints } from './session-footprints';
 import { nodeLifecycleToolDef, handleNodeLifecycle } from './lifecycle';
 import { WHATSAPP_TOOL_DEFS, WHATSAPP_HANDLERS } from './whatsapp';
+import { ELEVATED_TOOL_DEFS, ELEVATED_HANDLERS } from './elevated';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -957,6 +958,8 @@ export const EXPANDED_TOOL_DEFS = [
   deleteConversationToolDef,
   // github (read: github_query, write: github_mutate)
   ...GITHUB_TOOL_DEFS,
+  // elevated worker (Windows-only: status read; exec/grant/revoke admin)
+  ...ELEVATED_TOOL_DEFS,
   // ccr — Claude Code remote support
   ccSessionsToolDef,
   ccrPreflightToolDef,
@@ -1806,6 +1809,8 @@ export const EXPANDED_HANDLERS: Record<
   list_nodes: async () => handleListNodes(),
   // github (read: github_query, write: github_mutate) — dispatch to /github/<action>
   ...GITHUB_HANDLERS,
+  // elevated worker (Windows-only) — each wraps an /elevated/* loopback route
+  ...ELEVATED_HANDLERS,
   // ccr — Claude Code remote support
   cc_sessions: () => handleCcSessions(),
   ccr_preflight: handleCcrPreflight,
