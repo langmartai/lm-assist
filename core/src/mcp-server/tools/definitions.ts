@@ -376,11 +376,15 @@ export const readConversationToolDef = {
 export const NODE_PARAM = {
   type: 'string' as const,
   description:
-    'Target a specific lm-assist node/host when the user has more than one connected ' +
-    '(e.g. a laptop and a server, or two machines). Pass the node\'s hostId or hostname ' +
-    'as returned by `list_nodes`. Omit to use the default (most-recently-connected) ' +
-    'node — correct for the common single-node case. Use this when the user says "on my ' +
-    'server", "the other machine", "node X", etc.',
+    'Target a specific lm-assist node/host. Nodes are grouped into CLUSTERS (see ' +
+    '`cluster_list`; e.g. prod, stage) and a call is SERVED BY the target node, so its ' +
+    'results — sessions, cloud CCR sessions, registries, files — are SCOPED to that ' +
+    'node/cluster. Pass the node\'s hostId or hostname from `list_nodes`. Omit to use the ' +
+    'default (most-recently-connected) node in YOUR cluster — correct for the single-node ' +
+    'case. IMPORTANT: if a read comes back EMPTY or "not found", the item may simply live ' +
+    'on ANOTHER node/cluster rather than being absent — call `list_nodes` / `cluster_list` ' +
+    'and retry with `node=<a node on that cluster>` BEFORE concluding it does not exist. ' +
+    'Use when the user says "on my server", "the other machine", "prod", "node X", etc.',
 };
 
 export const listNodesToolDef = {

@@ -1524,8 +1524,16 @@ async function handleCcrCloudStop(args: Record<string, unknown>): Promise<McpToo
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 async function handleCcrCloudList(): Promise<McpToolResult> {
-  try { return ok(pretty(await workerGet('/ccr/cloud'))); }
-  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+  try {
+    const data: any = await workerGet('/ccr/cloud');
+    const empty = !data || !Array.isArray(data.sessions) || data.sessions.length === 0;
+    const hint = empty
+      ? '\n\nNote: cloud CCR sessions are per-node/cluster (this reply is only THIS node\'s registry). '
+        + 'If you expected sessions, they may be on another node/cluster — call list_nodes / cluster_list '
+        + 'and retry ccr_cloud_list with node=<a node on that cluster>.'
+      : '';
+    return ok(pretty(data) + hint);
+  } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 // ─── claude.ai marketplace + plugin handlers ─────────────────────────────
 
