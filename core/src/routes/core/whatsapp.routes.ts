@@ -21,14 +21,14 @@ import type { RouteContext, RouteHandler, ParsedRequest } from '../index';
 import {
   readWhatsappConfig,
   writeWhatsappConfig,
-  isConfigured,
   graphVersion,
   WA_CONFIG_FILE,
   CONFIG_FIELDS,
   type WhatsappConfig,
 } from '../../whatsapp/config';
 import * as store from '../../whatsapp/store';
-import { sendMessage } from '../../whatsapp/client';
+import { hubConfigured, hubSend } from '../../whatsapp/hub-api';
+import { syncFromHub } from '../../whatsapp/sync';
 import { verifyChallenge, verifySignature, ingestEvent } from '../../whatsapp/webhook';
 
 function clampInt(v: unknown, def: number, min: number, max: number): number {
@@ -77,16 +77,19 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/whatsapp\/status$/,
       handler: async () => {
         const cfg = readWhatsappConfig();
+        // Best-effort catch-up so the reported counts reflect the hub's store.
+        await syncFromHub();
         return {
           success: true,
           data: {
-            configured: isConfigured(cfg),
-            phoneNumberId: cfg.phoneNumberId || null,
+            // The hub owns the Meta credentials + send/receive; this connector is
+            // "configured" as long as it can reach the hub.
+            configured: hubConfigured(),
+            backend: 'hub',
+            hubConfigured: hubConfigured(),
             displayPhoneNumber: cfg.displayPhoneNumber || null,
             businessAccountId: cfg.businessAccountId || null,
             graphApiVersion: graphVersion(cfg),
-            webhookVerifyTokenSet: Boolean(cfg.verifyToken),
-            appSecretSet: Boolean(cfg.appSecret),
             ...store.stats(),
           },
         };
@@ -112,7 +115,7 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
         return {
           success: true,
           data: {
-            configured: isConfigured(next),
+            configured: Boolean(next.phoneNumberId && next.accessToken),
             savedTo: WA_CONFIG_FILE,
             set: {
               phoneNumberId: Boolean(next.phoneNumberId),
@@ -139,6 +142,9 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!body.text && !body.template) {
           return { success: false, error: '`text` or `template` is required' };
         }
+        if (!hubConfigured()) {
+          return { success: false, error: 'Hub not configured — WhatsApp send is performed by the hub (run `lm-assist setup`).' };
+        }
         try {
           const template = body.template
             ? {
@@ -148,8 +154,12 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
               }
             : undefined;
           const text = body.text !== undefined ? String(body.text) : undefined;
-          const { messageId } = await sendMessage({ to, text, template, previewUrl: Boolean(body.previewUrl) });
+          // The hub owns the Meta credentials and performs the Graph API call +
+          // durable persistence. We hold no token; we just call the hub.
+          const { messageId } = await hubSend({ to, text, template, previewUrl: Boolean(body.previewUrl) });
 
+          // Reflect the send in the local cache immediately (idempotent by id with
+          // the copy we will later pull from the hub).
           const ts = Math.floor(Date.now() / 1000);
           store.addOutbound({
             id: messageId || `out-${ts}-${to}`,
@@ -175,6 +185,8 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/whatsapp\/chats$/,
       handler: async (req: ParsedRequest) => {
         const limit = clampInt(req.query?.limit, 30, 1, 200);
+        // Pull anything the hub stored while we were offline before answering.
+        await syncFromHub();
         return { success: true, data: { chats: store.listChats(limit) } };
       },
     },
@@ -189,6 +201,7 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
           return { success: false, error: '`chat` query param (counterparty phone) is required' };
         }
         const limit = clampInt(req.query?.limit, 30, 1, 500);
+        await syncFromHub();
         const messages = store.getMessages(chat, limit);
         if (req.query?.markRead === 'true') store.markChatRead(chat);
         return { success: true, data: { chatId: chat, messages } };
@@ -203,6 +216,7 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
         const q = String(req.query?.q || '').trim();
         if (!q) return { success: false, error: '`q` query param is required' };
         const limit = clampInt(req.query?.limit, 20, 1, 100);
+        await syncFromHub();
         return { success: true, data: { query: q, results: store.search(q, limit) } };
       },
     },

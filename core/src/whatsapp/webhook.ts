@@ -49,8 +49,8 @@ export function verifySignature(rawBody: string, signatureHeader?: string): bool
   }
 }
 
-/** Pull a human-readable body out of any inbound message type. */
-function extractText(m: Record<string, any>): string | undefined {
+/** Pull a human-readable body out of any message type (inbound or outbound). */
+export function extractText(m: Record<string, any>): string | undefined {
   switch (m.type) {
     case 'text':
       return m.text?.body;
