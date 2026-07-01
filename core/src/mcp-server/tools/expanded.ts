@@ -34,6 +34,7 @@ import { PORT_FORWARD_TOOL_DEFS, PORT_FORWARD_HANDLERS } from './port-forward';
 import { TRANSFER_TOOL_DEFS, TRANSFER_HANDLERS } from './transfer';
 import { FS_INSPECT_TOOL_DEFS, FS_INSPECT_HANDLERS } from './fs-inspect';
 import { SESSION_MESSAGING_TOOL_DEFS, SESSION_MESSAGING_HANDLERS } from './session-messaging';
+import { WHATSAPP_TOOL_DEFS, WHATSAPP_HANDLERS } from './whatsapp';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -705,6 +706,8 @@ export const EXPANDED_TOOL_DEFS = [
   deleteConversationToolDef,
   // github (read: github_query, write: github_mutate)
   ...GITHUB_TOOL_DEFS,
+  // whatsapp (read: whatsapp_query, write: whatsapp_send)
+  ...WHATSAPP_TOOL_DEFS,
   // ccr — Claude Code remote support
   ccSessionsToolDef,
   ccrPreflightToolDef,
@@ -1268,6 +1271,8 @@ export const EXPANDED_HANDLERS: Record<
   list_nodes: async () => handleListNodes(),
   // github (read: github_query, write: github_mutate) — dispatch to /github/<action>
   ...GITHUB_HANDLERS,
+  // whatsapp (read: whatsapp_query, write: whatsapp_send) — dispatch to /whatsapp/<action>
+  ...WHATSAPP_HANDLERS,
   // ccr — Claude Code remote support
   cc_sessions: () => handleCcSessions(),
   ccr_preflight: handleCcrPreflight,

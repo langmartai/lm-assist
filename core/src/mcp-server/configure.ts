@@ -169,6 +169,9 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   // github endpoint (read = query, write = mutate)
   github_query: 'read',
   github_mutate: 'write',
+  // whatsapp endpoint (read = query, write = send)
+  whatsapp_query: 'read',
+  whatsapp_send: 'write',
   // ccr — Claude Code remote support
   cc_sessions: 'read',
   ccr_preflight: 'read',
