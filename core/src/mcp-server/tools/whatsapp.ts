@@ -22,17 +22,19 @@ export const whatsappSendToolDef = {
   name: 'whatsapp_send',
   description:
     'Send a WhatsApp message via the user\'s WhatsApp Cloud API (Meta) business number. ' +
-    'Trigger words: "WhatsApp X", "send a WhatsApp to …", "text … on WhatsApp", "whatsapp ' +
-    'me when …". Pass `to` (recipient phone, international format — "+" and spaces are ' +
-    'stripped) and either `text` (free-form; only delivers within 24h of the recipient\'s ' +
-    'last inbound message) or `template` (a pre-approved template; the only way to start a ' +
-    'new conversation). Returns the messageId. Write tool — confirm the recipient + content.',
+    'Trigger words: "WhatsApp X", "send a WhatsApp to …", "text … on WhatsApp", "send this ' +
+    'file/voice note on WhatsApp". Pass `to` (recipient phone, international format — "+" and ' +
+    'spaces are stripped) and ONE of: `text` (free-form; only delivers within 24h of the ' +
+    'recipient\'s last inbound message), `template` (a pre-approved template; the only way to ' +
+    'start a new conversation), or `media` (send a file/image/voice note — give a local file ' +
+    '`path` on the node, or a public `link`). Returns the messageId. Write tool — confirm the ' +
+    'recipient + content.',
   annotations: { readOnlyHint: false },
   inputSchema: {
     type: 'object' as const,
     properties: {
       to: { type: 'string', description: 'Recipient phone in international format, e.g. "+14155551234".' },
-      text: { type: 'string', description: 'Message body (free-form text). Use this OR `template`.' },
+      text: { type: 'string', description: 'Message body (free-form text). Use this OR `template`/`media`.' },
       template: {
         type: 'object',
         description: 'Pre-approved template message (sends any time, unlike free-form text).',
@@ -43,9 +45,39 @@ export const whatsappSendToolDef = {
         },
         required: ['name'],
       },
+      media: {
+        type: 'object',
+        description: 'Send an attachment — an image, video, document, sticker, or audio/voice note.',
+        properties: {
+          path: { type: 'string', description: 'Local file path on the node to send (type + mime inferred from the extension).' },
+          link: { type: 'string', description: 'Public URL Meta can fetch (alternative to `path`).' },
+          type: { type: 'string', description: 'image | audio | video | document | sticker. Inferred from `path` if omitted.' },
+          caption: { type: 'string', description: 'Caption (image/video/document only).' },
+          filename: { type: 'string', description: 'Filename shown for documents (defaults to the file\'s basename).' },
+          voice: { type: 'boolean', description: 'For audio: send as a voice note (default false).' },
+        },
+      },
       previewUrl: { type: 'boolean', description: 'Render a link preview for URLs in `text` (default false).' },
     },
     required: ['to'],
+  },
+};
+
+export const whatsappGetMediaToolDef = {
+  name: 'whatsapp_get_media',
+  description:
+    'Download an inbound WhatsApp attachment (voice note, image, document, video) by its ' +
+    'media id — the id shown as "media <id>" next to a `[audio]`/`[document]` message in ' +
+    'whatsapp_read_messages. The hub resolves it against Meta and returns the bytes; this ' +
+    'saves the file on the node and returns the local path so you can open/transcribe it. ' +
+    'Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      id: { type: 'string', description: 'The media id from an inbound message (whatsapp_read_messages).' },
+    },
+    required: ['id'],
   },
 };
 
@@ -115,6 +147,7 @@ export const whatsappStatusToolDef = {
 
 export const WHATSAPP_TOOL_DEFS = [
   whatsappSendToolDef,
+  whatsappGetMediaToolDef,
   whatsappListChatsToolDef,
   whatsappReadMessagesToolDef,
   whatsappSearchToolDef,
@@ -131,6 +164,7 @@ interface WaMessageOut {
   timestamp: number;
   status?: string;
   contactName?: string;
+  mediaId?: string;
 }
 interface WaChatOut {
   chatId: string;
@@ -154,20 +188,37 @@ function fmtMessage(m: WaMessageOut): string {
   const who = m.direction === 'out' ? '→' : '←';
   const status = m.direction === 'out' && m.status ? ` [${m.status}]` : '';
   const text = m.text ?? `[${m.type}]`;
-  return `  ${fmtTime(m.timestamp)} ${who} ${text}${status}`;
+  // Surface the media id so the model can fetch it via whatsapp_get_media.
+  const media = m.mediaId ? ` (media ${m.mediaId})` : '';
+  return `  ${fmtTime(m.timestamp)} ${who} ${text}${media}${status}`;
 }
 
 async function handleSend(args: Record<string, unknown>): Promise<McpToolResult> {
   const to = String(args.to || '').trim();
   if (!to) return err('`to` (recipient phone) is required.');
-  if (!args.text && !args.template) return err('Provide `text` or `template`.');
+  if (!args.text && !args.template && !args.media) return err('Provide `text`, `template`, or `media`.');
   const body: Record<string, unknown> = { to };
   if (args.text !== undefined) body.text = String(args.text);
   if (args.template) body.template = args.template;
+  if (args.media) body.media = args.media;
   if (args.previewUrl) body.previewUrl = true;
   try {
     const data = await workerPost<{ messageId: string; to: string }>('/whatsapp/send', body);
-    return ok(`Sent WhatsApp message to ${data.to}${data.messageId ? ` (id ${data.messageId})` : ''}.`);
+    const what = args.media ? 'attachment' : 'message';
+    return ok(`Sent WhatsApp ${what} to ${data.to}${data.messageId ? ` (id ${data.messageId})` : ''}.`);
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleGetMedia(args: Record<string, unknown>): Promise<McpToolResult> {
+  const id = String(args.id || '').trim();
+  if (!id) return err('`id` (media id from an inbound message) is required.');
+  try {
+    const d = await workerGet<{ id: string; mime: string; bytes: number; path: string }>(
+      `/whatsapp/media?id=${encodeURIComponent(id)}`,
+    );
+    return ok(`Downloaded WhatsApp media ${d.id} (${d.mime}, ${d.bytes} bytes) → ${d.path}`);
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -261,6 +312,7 @@ async function handleStatus(): Promise<McpToolResult> {
 
 export const WHATSAPP_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
   whatsapp_send: handleSend,
+  whatsapp_get_media: handleGetMedia,
   whatsapp_list_chats: handleListChats,
   whatsapp_read_messages: handleReadMessages,
   whatsapp_search: handleSearch,

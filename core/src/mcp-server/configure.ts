@@ -293,6 +293,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   session_footprints: 'read',
   // whatsapp cloud-api connector (send mutates/spends; the rest are reads)
   whatsapp_send: 'write',
+  whatsapp_get_media: 'read',
   whatsapp_list_chats: 'read',
   whatsapp_read_messages: 'read',
   whatsapp_search: 'read',

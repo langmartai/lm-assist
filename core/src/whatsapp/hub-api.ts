@@ -55,20 +55,42 @@ export interface HubSendTemplate {
   components?: unknown[];
 }
 
+export interface HubSendMedia {
+  /** image | audio | video | document | sticker (audio + voice:true = a voice note). */
+  type: string;
+  /** A hosted URL Meta can fetch. */
+  link?: string;
+  /** A previously-uploaded Meta media id. */
+  id?: string;
+  /** Inline bytes (base64) the hub uploads to Meta before sending. */
+  dataBase64?: string;
+  /** MIME type for an inline upload (e.g. "application/pdf", "audio/ogg"). */
+  mime?: string;
+  /** Filename shown for documents. */
+  filename?: string;
+  /** Caption for image/video/document. */
+  caption?: string;
+  /** Mark an audio message as a voice note. */
+  voice?: boolean;
+}
+
 export interface HubSendResult {
   messageId: string;
   raw: unknown;
 }
 
-/** Ask the hub to send a text or template message. Throws on hub/Graph failure. */
+/** Ask the hub to send a text, template, or media message. Throws on failure. */
 export async function hubSend(opts: {
   to: string;
   text?: string;
   template?: HubSendTemplate;
+  media?: HubSendMedia;
   previewUrl?: boolean;
 }): Promise<HubSendResult> {
   const body: Record<string, unknown> = { to: opts.to };
-  if (opts.template) {
+  if (opts.media) {
+    body.media = opts.media;
+  } else if (opts.template) {
     body.template = {
       name: opts.template.name,
       languageCode: opts.template.languageCode,
@@ -126,4 +148,26 @@ export async function hubHistory(
     events: Array.isArray(json.events) ? json.events : [],
     cursor: typeof json.cursor === 'number' ? json.cursor : sinceMs,
   };
+}
+
+/** Download an inbound media file's bytes from the hub (which resolves the id
+ *  against Meta and streams the bytes). Throws on hub/Meta failure. */
+export async function hubGetMedia(id: string): Promise<{ buffer: Buffer; mime: string }> {
+  const res = await hubFetch(`/api/whatsapp/media/${encodeURIComponent(id)}`, {
+    method: 'GET',
+    headers: { Accept: '*/*' },
+    timeoutMs: 60000,
+  });
+  if (!res.ok) {
+    let detail = '';
+    try {
+      detail = ': ' + JSON.stringify(await res.json());
+    } catch {
+      /* body not JSON */
+    }
+    throw new Error(`Hub media fetch failed (${res.status})${detail}`);
+  }
+  const mime = res.headers.get('content-type') || 'application/octet-stream';
+  const buffer = Buffer.from(await res.arrayBuffer());
+  return { buffer, mime };
 }

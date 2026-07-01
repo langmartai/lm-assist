@@ -17,19 +17,47 @@
  *   GET    /whatsapp/search?q=        substring search across message text
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import type { RouteContext, RouteHandler, ParsedRequest } from '../index';
 import {
   readWhatsappConfig,
   writeWhatsappConfig,
   graphVersion,
   WA_CONFIG_FILE,
+  WA_DATA_DIR,
   CONFIG_FIELDS,
   type WhatsappConfig,
 } from '../../whatsapp/config';
 import * as store from '../../whatsapp/store';
-import { hubConfigured, hubSend } from '../../whatsapp/hub-api';
+import { hubConfigured, hubSend, hubGetMedia, type HubSendMedia } from '../../whatsapp/hub-api';
 import { syncFromHub } from '../../whatsapp/sync';
 import { verifyChallenge, verifySignature, ingestEvent } from '../../whatsapp/webhook';
+
+/** Best-effort MIME + WhatsApp media-type from a filename extension. */
+const MIME_BY_EXT: Record<string, string> = {
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp',
+  '.gif': 'image/gif', '.mp4': 'video/mp4', '.3gp': 'video/3gpp',
+  '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.opus': 'audio/ogg', '.m4a': 'audio/mp4', '.amr': 'audio/amr', '.aac': 'audio/aac',
+  '.pdf': 'application/pdf', '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.txt': 'text/plain',
+};
+function mimeForFile(file: string): string {
+  return MIME_BY_EXT[path.extname(file).toLowerCase()] || 'application/octet-stream';
+}
+function mediaTypeForMime(mime: string): 'image' | 'audio' | 'video' | 'document' | 'sticker' {
+  if (mime.startsWith('image/')) return mime === 'image/webp' ? 'sticker' : 'image';
+  if (mime.startsWith('audio/')) return 'audio';
+  if (mime.startsWith('video/')) return 'video';
+  return 'document';
+}
+function extForMime(mime: string): string {
+  const hit = Object.entries(MIME_BY_EXT).find(([, v]) => v === mime);
+  return hit ? hit[0] : '';
+}
 
 function clampInt(v: unknown, def: number, min: number, max: number): number {
   const n = parseInt(String(v ?? ''), 10);
@@ -139,8 +167,8 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!to) {
           return { success: false, error: '`to` (recipient phone, international format) is required' };
         }
-        if (!body.text && !body.template) {
-          return { success: false, error: '`text` or `template` is required' };
+        if (!body.text && !body.template && !body.media) {
+          return { success: false, error: '`text`, `template`, or `media` is required' };
         }
         if (!hubConfigured()) {
           return { success: false, error: 'Hub not configured — WhatsApp send is performed by the hub (run `lm-assist setup`).' };
@@ -154,9 +182,49 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
               }
             : undefined;
           const text = body.text !== undefined ? String(body.text) : undefined;
+
+          // Media: a local file `path` on this node is read + base64-encoded so the
+          // hub uploads it; a `link`/`id` is passed straight through.
+          let media: HubSendMedia | undefined;
+          let mediaMarker = '';
+          if (body.media && typeof body.media === 'object') {
+            const m = body.media as Record<string, any>;
+            if (m.path) {
+              const file = String(m.path);
+              let buf: Buffer;
+              try {
+                buf = fs.readFileSync(file);
+              } catch {
+                return { success: false, error: `media file not readable: ${file}` };
+              }
+              const mime = m.mime ? String(m.mime) : mimeForFile(file);
+              media = {
+                type: m.type ? String(m.type) : mediaTypeForMime(mime),
+                dataBase64: buf.toString('base64'),
+                mime,
+                filename: m.filename ? String(m.filename) : path.basename(file),
+                caption: m.caption ? String(m.caption) : undefined,
+                voice: m.voice === true,
+              };
+            } else {
+              media = {
+                type: String(m.type || ''),
+                link: m.link ? String(m.link) : undefined,
+                id: m.id ? String(m.id) : undefined,
+                dataBase64: m.dataBase64 ? String(m.dataBase64) : undefined,
+                mime: m.mime ? String(m.mime) : undefined,
+                filename: m.filename ? String(m.filename) : undefined,
+                caption: m.caption ? String(m.caption) : undefined,
+                voice: m.voice === true,
+              };
+            }
+            if (!media.type) return { success: false, error: '`media.type` is required (image|audio|video|document|sticker)' };
+            mediaMarker = `[${media.type}${media.filename ? ' ' + media.filename : ''}]`;
+          }
+
           // The hub owns the Meta credentials and performs the Graph API call +
           // durable persistence. We hold no token; we just call the hub.
-          const { messageId } = await hubSend({ to, text, template, previewUrl: Boolean(body.previewUrl) });
+          const { messageId } = await hubSend({ to, text, template, media, previewUrl: Boolean(body.previewUrl) });
 
           // Reflect the send in the local cache immediately (idempotent by id with
           // the copy we will later pull from the hub).
@@ -167,12 +235,38 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
             direction: 'out',
             from: 'me',
             to,
-            type: template ? 'template' : 'text',
-            text: text ?? (template ? `[template ${template.name}]` : ''),
+            type: media ? media.type : template ? 'template' : 'text',
+            text: media ? (media.caption || mediaMarker) : text ?? (template ? `[template ${template!.name}]` : ''),
             timestamp: ts,
             status: 'sent',
           });
           return { success: true, data: { messageId, to } };
+        } catch (e) {
+          return { success: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+    },
+
+    // GET /whatsapp/media?id=<mediaId>&save=1 — download an inbound media file's
+    // bytes (the hub resolves the id against Meta and streams them). Saves under
+    // WA_DATA_DIR/media and returns the local path so an agent can open it.
+    {
+      method: 'GET',
+      pattern: /^\/whatsapp\/media$/,
+      handler: async (req: ParsedRequest) => {
+        const id = String(req.query?.id || '').trim();
+        if (!id) return { success: false, error: '`id` query param (media id) is required' };
+        if (!hubConfigured()) {
+          return { success: false, error: 'Hub not configured — media is fetched via the hub.' };
+        }
+        try {
+          const { buffer, mime } = await hubGetMedia(id);
+          const dir = path.join(WA_DATA_DIR, 'media');
+          fs.mkdirSync(dir, { recursive: true });
+          const safeId = id.replace(/[^A-Za-z0-9_.-]/g, '_');
+          const file = path.join(dir, `${safeId}${extForMime(mime)}`);
+          fs.writeFileSync(file, buffer);
+          return { success: true, data: { id, mime, bytes: buffer.length, path: file } };
         } catch (e) {
           return { success: false, error: e instanceof Error ? e.message : String(e) };
         }
