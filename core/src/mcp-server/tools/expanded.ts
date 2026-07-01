@@ -1514,13 +1514,7 @@ async function handleCcrCloudRead(args: Record<string, unknown>): Promise<McpToo
   // connector numeric args can arrive as strings — coerce.
   const lastN = Number(args.last_n);
   const qs = Number.isFinite(lastN) && lastN > 0 ? `?lastN=${Math.floor(lastN)}` : '';
-  try {
-    const data: any = await workerGet(`/ccr/cloud/${enc(sid)}${qs}`);
-    const msgs = (data && Array.isArray(data.messages)) ? data.messages : [];
-    const noContent = msgs.length === 0 || msgs.every((m: any) => !String((m && m.text) || '').trim());
-    const hint = noContent ? ' -- Note: read from the local node/cluster registry only; if this session looks empty or was not found it may live on another node/cluster - call list_nodes / cluster_list and retry ccr_cloud_read with node=<a node on that cluster>.' : '';
-    return ok(pretty(data) + hint);
-  }
+  try { return ok(pretty(await workerGet(`/ccr/cloud/${enc(sid)}${qs}`))); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 async function handleCcrCloudStop(args: Record<string, unknown>): Promise<McpToolResult> {
