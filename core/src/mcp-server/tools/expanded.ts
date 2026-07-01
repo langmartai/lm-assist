@@ -35,6 +35,7 @@ import { TRANSFER_TOOL_DEFS, TRANSFER_HANDLERS } from './transfer';
 import { FS_INSPECT_TOOL_DEFS, FS_INSPECT_HANDLERS } from './fs-inspect';
 import { SESSION_MESSAGING_TOOL_DEFS, SESSION_MESSAGING_HANDLERS } from './session-messaging';
 import { WHATSAPP_TOOL_DEFS, WHATSAPP_HANDLERS } from './whatsapp';
+import { ELEVATED_TOOL_DEFS, ELEVATED_HANDLERS } from './elevated';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -708,6 +709,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...GITHUB_TOOL_DEFS,
   // whatsapp (6-tool converged surface: status/list_chats/read_messages/search/get_media read, send write)
   ...WHATSAPP_TOOL_DEFS,
+  // elevated worker (Windows-only: status read; exec/grant/revoke admin)
+  ...ELEVATED_TOOL_DEFS,
   // ccr — Claude Code remote support
   ccSessionsToolDef,
   ccrPreflightToolDef,
@@ -1273,6 +1276,8 @@ export const EXPANDED_HANDLERS: Record<
   ...GITHUB_HANDLERS,
   // whatsapp (6-tool converged surface) — each wraps a /whatsapp/* loopback route
   ...WHATSAPP_HANDLERS,
+  // elevated worker (Windows-only) — each wraps an /elevated/* loopback route
+  ...ELEVATED_HANDLERS,
   // ccr — Claude Code remote support
   cc_sessions: () => handleCcSessions(),
   ccr_preflight: handleCcrPreflight,
