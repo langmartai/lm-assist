@@ -177,14 +177,41 @@ function jsLocate(name: string): string {
 function jsRead(n: number): string {
   return `
     const header = document.querySelector('#main header span[title]')?.getAttribute('title') || null;
-    const els = [...document.querySelectorAll('#main [data-pre-plain-text]')];
-    const msgs = els.slice(-${n}).map(r => {
-      const meta = r.getAttribute('data-pre-plain-text') || '';
-      const m = meta.match(/^\\[(.*?)\\]\\s*(.*?):\\s*$/);
-      const t = r.querySelector('span.selectable-text')?.innerText ?? r.innerText ?? '';
-      return { time: m ? m[1] : null, sender: m ? m[2] : null, text: (t||'').trim() };
-    });
-    return { header, messages: msgs };
+    // NOTE: WhatsApp Web virtualizes the message list — only rows near the viewport
+    // are in the DOM, so this reads the currently-rendered (most recent) messages.
+    const rows = [...document.querySelectorAll('#main [role="row"]')];
+    const out = [];
+    for (const row of rows) {
+      const pptEl = row.querySelector('[data-pre-plain-text]');
+      const ppt = pptEl ? pptEl.getAttribute('data-pre-plain-text') : '';
+      const textEl = row.querySelector('span.selectable-text');
+      const text = textEl ? textEl.innerText.trim() : '';
+      const aria = [...row.querySelectorAll('[aria-label]')].map(e => e.getAttribute('aria-label') || '');
+      const icons = [...row.querySelectorAll('[data-icon]')].map(e => e.getAttribute('data-icon') || '');
+      const hasIcon = (re) => icons.some(i => re.test(i));
+      const isVoice = hasIcon(/mic|ptt|audio-play/) || aria.some(a => /语音消息|voice message/i.test(a));
+      const isImage = !!row.querySelector('img[src^="blob:"], img[src^="data:"]') || aria.some(a => /图片|photo/i.test(a));
+      const isVideo = !!row.querySelector('video') || hasIcon(/media-play|video/) || aria.some(a => /视频|video/i.test(a));
+      const isDoc = hasIcon(/document|audio-download/) || aria.some(a => /文件|document/i.test(a));
+      // skip non-message rows (date separators, system notices, empty)
+      if (!ppt && !text && !isVoice && !isImage && !isVideo && !isDoc) continue;
+      const dur = (row.innerText.match(/\\b\\d{1,2}:\\d{2}\\b/) || [])[0] || null;
+      let type = 'text', body = text;
+      if (isVoice) { type = 'voice'; body = text || ('[voice message' + (dur ? ' ' + dur : '') + ']'); }
+      else if (isImage) { type = 'image'; body = text ? ('[image] ' + text) : '[image]'; }
+      else if (isVideo) { type = 'video'; body = text ? ('[video] ' + text) : '[video]'; }
+      else if (isDoc) {
+        type = 'document';
+        const fn = [...row.querySelectorAll('[title]')].map(e => e.getAttribute('title')).find(t => t && /\\.\\w{2,5}$/.test(t));
+        body = '[document' + (fn ? ': ' + fn : '') + ']';
+      } else if (!body) { continue; }
+      let time = null, sender = null;
+      const m = ppt.match(/^\\[(.*?)\\]\\s*(.*?):\\s*$/);
+      if (m) { time = m[1]; sender = m[2]; }
+      if (!sender) { const al = aria.find(a => /[:：]\\s*$/.test(a)); if (al) sender = al.replace(/[:：]\\s*$/, '').trim(); }
+      out.push({ time, sender, type, text: body });
+    }
+    return { header, messages: out.slice(-${n}) };
   `;
 }
 
