@@ -706,7 +706,7 @@ export const EXPANDED_TOOL_DEFS = [
   deleteConversationToolDef,
   // github (read: github_query, write: github_mutate)
   ...GITHUB_TOOL_DEFS,
-  // whatsapp (read: whatsapp_query, write: whatsapp_send)
+  // whatsapp (6-tool converged surface: status/list_chats/read_messages/search/get_media read, send write)
   ...WHATSAPP_TOOL_DEFS,
   // ccr — Claude Code remote support
   ccSessionsToolDef,
@@ -1271,7 +1271,7 @@ export const EXPANDED_HANDLERS: Record<
   list_nodes: async () => handleListNodes(),
   // github (read: github_query, write: github_mutate) — dispatch to /github/<action>
   ...GITHUB_HANDLERS,
-  // whatsapp (read: whatsapp_query, write: whatsapp_send) — dispatch to /whatsapp/<action>
+  // whatsapp (6-tool converged surface) — each wraps a /whatsapp/* loopback route
   ...WHATSAPP_HANDLERS,
   // ccr — Claude Code remote support
   cc_sessions: () => handleCcSessions(),
