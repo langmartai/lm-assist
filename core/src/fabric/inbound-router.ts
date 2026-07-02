@@ -26,6 +26,25 @@ interface CloseState {
   fired: boolean;
   reason?: string;
   forward: ((r?: string) => void) | null;
+  delivered: boolean;
+}
+
+/** Delivers a close to whatever `forward` callback is currently registered, via
+ *  queueMicrotask — never synchronously. Microtasks are FIFO: the data drain's
+ *  microtask is queued when the handler attaches onData (see makeReplayed), so a
+ *  close delivery queued in the same synchronous turn always runs AFTER it, giving
+ *  data-before-close ordering even when the underlying channel fires data then close
+ *  back-to-back (e.g. EOF right after the last chunk). Guarded by `delivered` so a
+ *  close is forwarded at most once, however many times this is called (real fire +
+ *  replay-on-attach) or however many times onClose is re-registered. */
+function deliverClose(closeState: CloseState): void {
+  queueMicrotask(() => {
+    if (closeState.delivered) return;
+    const cb = closeState.forward;
+    if (!cb) return;
+    closeState.delivered = true;
+    cb(closeState.reason);
+  });
 }
 
 export function routeInboundChannel(ch: RoutableChannel, routes: InboundRoutes, timeoutMs = 3000): void {
@@ -36,11 +55,11 @@ export function routeInboundChannel(ch: RoutableChannel, routes: InboundRoutes, 
   // Register immediately (not deferred to makeReplayed): a close can fire before
   // routing decides (up to timeoutMs) or before the handler attaches onClose. Capture
   // it into shared state so it can still be delivered once the handler does attach.
-  const closeState: CloseState = { fired: false, reason: undefined, forward: null };
+  const closeState: CloseState = { fired: false, reason: undefined, forward: null, delivered: false };
   ch.onClose((reason?: string) => {
     closeState.fired = true;
     closeState.reason = reason;
-    if (closeState.forward) closeState.forward(reason);
+    deliverClose(closeState);
   });
 
   let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => decide('fileTransfer'), timeoutMs);
@@ -67,7 +86,9 @@ export function routeInboundChannel(ch: RoutableChannel, routes: InboundRoutes, 
 
 /** Wrap `ch` so the handler's onData first receives `buffered` (in order), then live chunks;
  *  and its onClose delivers a close — already-fired or still-pending — to whichever
- *  callback was most recently registered (last wins, matching the underlying channel). */
+ *  callback was most recently registered (last wins, matching the underlying channel).
+ *  Close delivery always goes through deliverClose() (queueMicrotask, once-only) — never
+ *  synchronous — so it can never race ahead of a data drain queued in the same turn. */
 function makeReplayed(ch: RoutableChannel, buffered: Buffer[], closeState: CloseState): RoutableChannel {
   const wrapped: RoutableChannel = Object.create(ch);
   wrapped.onData = (cb: (d: Buffer) => void) => {
@@ -83,7 +104,7 @@ function makeReplayed(ch: RoutableChannel, buffered: Buffer[], closeState: Close
       try {
         while (buffered.length) {
           const d = buffered.shift() as Buffer;
-          try { cb(d); } catch (e) { console.debug('[fabric] inbound replay handler threw:', (e as Error)?.message); }
+          try { cb(d); } catch (e) { console.debug('[fabric] inbound replay handler threw:', String((e as Error)?.message ?? e)); }
         }
       } finally {
         draining = false;
@@ -92,11 +113,7 @@ function makeReplayed(ch: RoutableChannel, buffered: Buffer[], closeState: Close
   };
   wrapped.onClose = (cb: (r?: string) => void) => {
     closeState.forward = cb; // last registration wins
-    if (closeState.fired) {
-      queueMicrotask(() => {
-        if (closeState.forward === cb) cb(closeState.reason);
-      });
-    }
+    if (closeState.fired) deliverClose(closeState); // replay path — still microtask, still once-only
   };
   return wrapped;
 }

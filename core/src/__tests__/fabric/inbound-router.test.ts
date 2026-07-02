@@ -79,28 +79,36 @@ test('replay survives a throwing handler callback', async () => {
   const received: Buffer[] = [];
   let calls = 0;
   let routedTo = '';
-  routeInboundChannel(ch as never, {
-    fabric: (routed) => {
-      routedTo = 'fabric';
-      routed.onData((chunk: Buffer) => {
-        calls++;
-        if (calls === 1) throw new Error('boom on first replayed chunk');
-        received.push(chunk);
-      });
-    },
-    fileTransfer: () => { routedTo = 'WRONG'; },
-  });
-  const second = Buffer.from('second-chunk');
-  ch.feed(helloWire()); // pre-decision: decides fabric, buffers the hello, attaches the wrapped onData
-  ch.feed(second);      // still draining (pre-drain) — also buffered, not yet live
-  await new Promise((r) => setImmediate(r)); // flush the microtask drain
-  assert.equal(routedTo, 'fabric');
-  // hello's replay call threw and was isolated (not recorded); second was recorded despite it.
-  assert.deepEqual(received, [second]);
+  const originalDebug = console.debug;
+  let debugCalls = 0;
+  console.debug = (..._args: unknown[]) => { debugCalls++; };
+  try {
+    routeInboundChannel(ch as never, {
+      fabric: (routed) => {
+        routedTo = 'fabric';
+        routed.onData((chunk: Buffer) => {
+          calls++;
+          if (calls === 1) throw new Error('boom on first replayed chunk');
+          received.push(chunk);
+        });
+      },
+      fileTransfer: () => { routedTo = 'WRONG'; },
+    });
+    const second = Buffer.from('second-chunk');
+    ch.feed(helloWire()); // pre-decision: decides fabric, buffers the hello, attaches the wrapped onData
+    ch.feed(second);      // still draining (pre-drain) — also buffered, not yet live
+    await new Promise((r) => setImmediate(r)); // flush the microtask drain
+    assert.equal(routedTo, 'fabric');
+    // hello's replay call threw and was isolated (not recorded); second was recorded despite it.
+    assert.deepEqual(received, [second]);
+    assert.equal(debugCalls, 1); // the throw was logged exactly once, not left to crash the drain
 
-  const third = Buffer.from('third-chunk');
-  ch.feed(third); // now live (post-drain) — must still be delivered, not swallowed
-  assert.deepEqual(received, [second, third]);
+    const third = Buffer.from('third-chunk');
+    ch.feed(third); // now live (post-drain) — must still be delivered, not swallowed
+    assert.deepEqual(received, [second, third]);
+  } finally {
+    console.debug = originalDebug;
+  }
 });
 
 test('close before handler attach is replayed', async () => {
@@ -120,4 +128,42 @@ test('close before handler attach is replayed', async () => {
   assert.equal(routedTo, 'ft');
   assert.equal(closedCalled, true);
   assert.equal(closedReason, 'gone');
+});
+
+test('data then close in the same turn delivers data before close', async () => {
+  const ch = fakeChannel();
+  const log: string[] = [];
+  routeInboundChannel(ch as never, {
+    fabric: (routed) => {
+      const reader = new FrameReader();
+      routed.onData((chunk: Buffer) => {
+        for (const f of reader.push(chunk)) {
+          if (f.kind === 'control') log.push(`data:${(f.msg as { kind?: string }).kind ?? '?'}`);
+        }
+      });
+      routed.onClose(() => { log.push('close'); });
+    },
+    fileTransfer: () => { log.push('WRONG'); },
+  });
+  ch.feed(helloWire()); // decides fabric synchronously; attaches wrapped onData (queues drain microtask) + onClose
+  ch.fireClose('bye');  // same synchronous turn: underlying close fires right after data, matching real EOF-after-chunk
+  await new Promise((r) => setImmediate(r));
+  assert.ok(log.indexOf('data:hello') < log.indexOf('close'), `expected data before close, got: ${JSON.stringify(log)}`);
+  assert.equal(log.filter((e) => e === 'close').length, 1);
+});
+
+test('onClose last registration wins', async () => {
+  const ch = fakeChannel();
+  const fired: string[] = [];
+  routeInboundChannel(ch as never, {
+    fabric: (routed) => {
+      routed.onClose(() => { fired.push('A'); });
+      routed.onClose(() => { fired.push('B'); });
+    },
+    fileTransfer: () => { fired.push('WRONG'); },
+  });
+  ch.feed(helloWire()); // decides fabric synchronously; both onClose registrations happen before any close fires
+  ch.fireClose('x');
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(fired, ['B']);
 });
