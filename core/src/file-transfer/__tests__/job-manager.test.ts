@@ -31,7 +31,10 @@
  *       — the counterpart of (e) below, which covers the non-cooperative
  *       (stuck, ignores abort) executor instead;
  *   (e) the TTL sweep marks an expired job 'expired' even if its executor is
- *       stuck and never responds to abort.
+ *       stuck and never responds to abort;
+ *   (i) enqueueJob threads an optional forceMode onto the JobRecord the
+ *       executor receives, and leaves it undefined when omitted (review-fix:
+ *       forceMode restoration, task-7-report.md).
  *
  * (f)/(g)/(h) all run before (e) deliberately: (e)'s stuck-forever executor
  * permanently leaks one global concurrency slot (nothing ever decrements it,
@@ -241,6 +244,32 @@ test('retries a retriable failure and succeeds on the third attempt', { timeout:
     assert.equal(view.state, 'done');
     assert.equal(calls, 3, 'executor was invoked 3 times (2 failures + 1 success)');
     assert.equal(getJob(j0)!.attempts, 3);
+  } finally {
+    ka.stop();
+  }
+});
+
+test('enqueueJob threads an optional forceMode onto the JobRecord the executor receives; omitted stays undefined', { timeout: 8000 }, async () => {
+  const ka = keepAlive();
+  try {
+    freshStore();
+    const peer = 'i-peer';
+    const seen = new Map<string, 'direct' | 'relay' | undefined>();
+    _setExecutorForTest(async (job) => {
+      seen.set(job.jobId, job.forceMode);
+      return { bytes: job.size, mode: 'relay', via: null };
+    });
+
+    const withForce = enqueueJob({ peer, source: src('/l/force'), sink: snk('/r/force'), size: 1, forceMode: 'relay' });
+    const withoutForce = enqueueJob({ peer, source: src('/l/noforce'), sink: snk('/r/noforce'), size: 1 });
+
+    await drain([withForce, withoutForce]);
+
+    assert.equal(seen.get(withForce), 'relay', 'executor receives job.forceMode === \'relay\' when the caller requested it');
+    assert.equal(seen.get(withoutForce), undefined, 'executor receives job.forceMode === undefined when the caller omitted it (today\'s auto-negotiation)');
+    // Round-trips through the persisted/queryable JobRecord too, not just the live executor call.
+    assert.equal(getJob(withForce)!.forceMode, 'relay');
+    assert.equal(getJob(withoutForce)!.forceMode, undefined);
   } finally {
     ka.stop();
   }

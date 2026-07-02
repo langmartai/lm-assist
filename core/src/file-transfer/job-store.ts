@@ -12,6 +12,10 @@ export interface JobRecord {
   state: JobState; attempts: number; maxAttempts: number; bytesDone: number; resumeCount: number;
   enqueuedAt: number; startedAt?: number; endedAt?: number; deadlineAt: number;
   mode?: string; via?: string | null; error?: string; cancelReason?: string;
+  /** Optional caller-requested transport override, threaded to sendPath by the
+   * default executor. Backward-compatible: an old JSONL record written before
+   * this field existed loads as `undefined` ⇒ today's auto-negotiation. */
+  forceMode?: 'direct' | 'relay';
 }
 
 export function jobLogPath(): string {

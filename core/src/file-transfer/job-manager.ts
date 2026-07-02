@@ -67,6 +67,7 @@ let executor: Executor = async (job, signal, resumeFrom) => {
     signal,
     resumeFrom,
     resumable: resumeFrom > 0 || job.size >= RESUME_MIN_BYTES,
+    forceMode: job.forceMode,
   });
   // SendResult's mode/via are optional; Executor's are not (mode always
   // reflects the channel that finished the transfer) — default rather than
@@ -98,6 +99,7 @@ export function enqueueJob(p: {
   size: number;
   ttlMs?: number;
   maxAttempts?: number;
+  forceMode?: 'direct' | 'relay';
 }): string {
   const jobId = randomUUID();
   const now = Date.now();
@@ -114,6 +116,7 @@ export function enqueueJob(p: {
     resumeCount: 0,
     enqueuedAt: now,
     deadlineAt: now + (p.ttlMs ?? JOB_TTL),
+    forceMode: p.forceMode,
   };
   jobs.set(jobId, j);
   pushPending(p.peer, jobId);

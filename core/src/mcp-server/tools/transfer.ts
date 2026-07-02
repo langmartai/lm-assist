@@ -26,7 +26,7 @@ export const sendFileToolDef = {
       peerGatewayId: { type: 'string', description: 'Receiver node hostId/gatewayId (from list_nodes).' },
       localPath: { type: 'string', description: 'Absolute path of the file or directory to send (on the sender node).' },
       remotePath: { type: 'string', description: 'Destination path on the receiver: an ABSOLUTE path writes there directly (a target file path for a single file, or a target directory for a dir); a RELATIVE path lands under the receiver receive-root. Use fs_list / fs_stat to discover the target location first.' },
-      forceMode: { type: 'string', enum: ['direct', 'relay'], description: 'Optional: force transport path. Default auto. Accepted for backward compatibility; not yet honored by the durable job manager (auto-negotiation always applies to queued sends).' },
+      forceMode: { type: 'string', enum: ['direct', 'relay'], description: 'Optional: force the transport path instead of automatic negotiation (direct = best-effort UDP hole-punch, relay = hub only). Threaded through the durable job manager to the underlying send.' },
       wait: { type: 'boolean', description: 'Block until the job reaches a terminal state (sync), or return {jobId,state} if it times out first (see timeoutMs). Default false — enqueue and return a jobId immediately; poll transfer_status or transfer_queue.' },
       timeoutMs: { type: 'number', description: 'With wait:true, how long to block before returning the in-flight {jobId,state} instead of the final result. Default 120000ms.' },
       maxRetries: { type: 'number', description: 'Max job-level attempts before the job is marked failed (scheduler retries with backoff). Default 5.' },
@@ -153,8 +153,16 @@ async function handleSendFile(args: Record<string, unknown>): Promise<McpToolRes
           `  mode: ${d.mode ?? '-'} via ${d.via ?? '-'} (jobId ${d.jobId})`,
       );
     }
+    if (d.state === 'queued') {
+      return ok(
+        `Queued send to ${peerGatewayId} as "${remotePath}" — jobId ${d.jobId} (${d.state}).\n` +
+          `Poll transfer_status (or transfer_queue) for progress.`,
+      );
+    }
+    // wait:true timed out while the job was already picked up (e.g. 'active') —
+    // "Queued" would misleadingly suggest it hasn't started yet.
     return ok(
-      `Queued send to ${peerGatewayId} as "${remotePath}" — jobId ${d.jobId} (${d.state}).\n` +
+      `Send ${d.state} (jobId ${d.jobId}) to ${peerGatewayId} as "${remotePath}" — still running.\n` +
         `Poll transfer_status (or transfer_queue) for progress.`,
     );
   } catch (e) {
@@ -168,6 +176,7 @@ interface QJob {
   sink: { kind: string; path?: string; dataKey?: string };
   size?: number; bytesDone?: number; pct?: number; instantMBps?: number; avgMBps?: number;
   rttMs?: number | null; mode?: string; via?: string | null; error?: string;
+  attempts?: number; maxAttempts?: number;
 }
 /** SourceRef/SinkRef are a `{kind:'file',path}` | `{kind:'blob',dataKey}` union
  * (job-manager.ts) — the file adapter is the only one wired up today, but
@@ -180,6 +189,7 @@ function fmtJob(j: QJob): string {
   return `  [${j.state}] ${refPath(j.source)} -> ${j.peer}:${refPath(j.sink)}` +
     (j.state === 'active' ? ` ${j.pct ?? 0}% inst=${j.instantMBps ?? 0} avg=${j.avgMBps ?? 0}MB/s rtt=${j.rttMs ?? '-'}ms ${j.mode ?? '-'}/${j.via ?? '-'}` : '') +
     (j.state === 'done' ? ` ${j.bytesDone ?? j.size ?? 0}B ${j.mode ?? '-'}/${j.via ?? '-'}` : '') +
+    (j.state !== 'active' && j.state !== 'done' ? ` attempt ${j.attempts}/${j.maxAttempts}` : '') +
     (j.error ? ` ERROR: ${j.error}` : '') +
     ` (${j.jobId.slice(0, 8)})`;
 }

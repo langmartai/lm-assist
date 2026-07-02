@@ -76,10 +76,10 @@ export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
         }
         try {
           const o: { forceMode?: 'direct' | 'relay'; timeoutMs?: number; maxRetries?: number; ttlMs?: number } = {};
-          // forceMode is accepted for backward compatibility but not yet threaded
-          // through the job manager's executor (job-manager.ts's Executor signature
-          // carries no sendPath-opts pass-through) — direct/relay auto-negotiation
-          // is still what every queued send gets.
+          // forceMode (direct|relay), when given, is threaded onto the JobRecord
+          // and applied by the default executor's sendPath() call (job-manager.ts).
+          // Omitted => undefined => today's auto-negotiation (try direct, fall
+          // back to relay) — unchanged for every caller that doesn't pass it.
           if (b.forceMode === 'relay' || b.forceMode === 'direct') o.forceMode = b.forceMode;
           if (typeof b.timeoutMs === 'number') o.timeoutMs = b.timeoutMs;
           if (typeof b.maxRetries === 'number') o.maxRetries = b.maxRetries;
@@ -93,6 +93,7 @@ export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
             size,
             ttlMs: o.ttlMs,
             maxAttempts: o.maxRetries,
+            forceMode: o.forceMode,
           });
 
           // Default: ENQUEUE and return a jobId immediately (non-blocking). The
