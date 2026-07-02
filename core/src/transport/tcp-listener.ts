@@ -53,8 +53,9 @@ function readHello(socket: net.Socket): Promise<{ hello: TcpHello; leftover: Buf
     const timer = setTimeout(() => { cleanup(); reject(new Error('hello timeout')); }, HELLO_TIMEOUT_MS);
     const onData = (chunk: Buffer) => {
       buf = buf.length === 0 ? chunk : Buffer.concat([buf, chunk]);
-      if (buf.length > HELLO_MAX_BYTES + 4) { cleanup(); reject(new Error('hello too large')); return; }
       if (buf.length < 4) return;
+      // Bound the HELLO FRAME's declared size — NOT the buffer, which legitimately
+      // coalesces the hello with the transfer's following bytes (TCP is a stream).
       const len = buf.readUInt32BE(0);
       if (len > HELLO_MAX_BYTES) { cleanup(); reject(new Error('hello frame too large')); return; }
       if (buf.length < 4 + len) return;
