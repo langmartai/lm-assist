@@ -58,6 +58,7 @@ import { createMissionRoutes } from './mission.routes';
 import { createMonitorStallsRoutes } from './monitor-stalls.routes';
 import { createNodeRoutes } from './node.routes';
 import { createClusterRoutes } from './cluster.routes';
+import { createFabricRoutes } from './fabric.routes';
 import { createFleetRoutes } from './fleet.routes';
 import { createLifecycleRoutes } from './lifecycle.routes';
 import { createWhatsappRoutes } from './whatsapp.routes';
@@ -118,6 +119,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createMonitorStallsRoutes(ctx),
     ...createNodeRoutes(ctx),
     ...createClusterRoutes(ctx),
+    ...createFabricRoutes(ctx),
     ...createFleetRoutes(ctx),
     ...createLifecycleRoutes(ctx),
     ...createWhatsappRoutes(ctx),
