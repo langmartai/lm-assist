@@ -19,6 +19,8 @@ credentials/
 *.log
 .tier-agent/
 .session-cache/
+.claude/scheduled_tasks.lock
+.claude/worktrees/
 
 # OS
 .DS_Store

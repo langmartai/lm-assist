@@ -21,6 +21,10 @@ export interface ParsedRequest {
   params: Record<string, string>;
   query: Record<string, string>;
   body: any;
+  /** Raw (un-parsed) request body string, when one was read. Needed for HMAC
+   *  webhook signature verification where re-stringifying `body` would not
+   *  reproduce the exact bytes the sender signed. */
+  rawBody?: string;
   /** Lower-cased HTTP headers (populated by the server). */
   headers?: Record<string, string | string[] | undefined>;
   /** Client IP address from the TCP connection */

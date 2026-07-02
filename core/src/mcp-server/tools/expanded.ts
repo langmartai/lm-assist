@@ -59,6 +59,7 @@ import { NODE_UPGRADE_TOOL_DEFS, NODE_UPGRADE_HANDLERS } from './node-upgrade';
 import { CLUSTER_TOOL_DEFS, CLUSTER_HANDLERS } from './cluster';
 import { sessionFootprintsToolDef, handleSessionFootprints } from './session-footprints';
 import { nodeLifecycleToolDef, handleNodeLifecycle } from './lifecycle';
+import { WHATSAPP_TOOL_DEFS, WHATSAPP_HANDLERS } from './whatsapp';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -973,6 +974,8 @@ export const EXPANDED_TOOL_DEFS = [
   ccrCloudListToolDef,
   // port forward (node-to-node TCP tunnel)
   ...PORT_FORWARD_TOOL_DEFS,
+  // whatsapp cloud-api connector (send: write; chats/messages/search/status: read)
+  ...WHATSAPP_TOOL_DEFS,
   ...TRANSFER_TOOL_DEFS,
   ...FS_INSPECT_TOOL_DEFS,
   // session-to-session messaging (send: write/admin; list+status: read)
@@ -1521,8 +1524,16 @@ async function handleCcrCloudStop(args: Record<string, unknown>): Promise<McpToo
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 async function handleCcrCloudList(): Promise<McpToolResult> {
-  try { return ok(pretty(await workerGet('/ccr/cloud'))); }
-  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+  try {
+    const data: any = await workerGet('/ccr/cloud');
+    const empty = !data || !Array.isArray(data.sessions) || data.sessions.length === 0;
+    const hint = empty
+      ? '\n\nNote: cloud CCR sessions are per-node/cluster (this reply is only THIS node\'s registry). '
+        + 'If you expected sessions, they may be on another node/cluster — call list_nodes / cluster_list '
+        + 'and retry ccr_cloud_list with node=<a node on that cluster>.'
+      : '';
+    return ok(pretty(data) + hint);
+  } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 // ─── claude.ai marketplace + plugin handlers ─────────────────────────────
 
@@ -1810,6 +1821,8 @@ export const EXPANDED_HANDLERS: Record<
   ccr_cloud_list: () => handleCcrCloudList(),
   // port forward (open/list/close node-to-node TCP tunnel)
   ...PORT_FORWARD_HANDLERS,
+  // whatsapp cloud-api connector
+  ...WHATSAPP_HANDLERS,
   ...TRANSFER_HANDLERS,
   ...FS_INSPECT_HANDLERS,
   // session-to-session messaging
