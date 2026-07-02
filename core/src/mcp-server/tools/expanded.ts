@@ -57,6 +57,7 @@ import { CLAUDEAI_LOGIN_TOOL_DEFS, CLAUDEAI_LOGIN_HANDLERS } from './claudeai-lo
 import { NODE_BUILDS_TOOL_DEFS, NODE_BUILDS_HANDLERS } from './node-builds';
 import { NODE_UPGRADE_TOOL_DEFS, NODE_UPGRADE_HANDLERS } from './node-upgrade';
 import { CLUSTER_TOOL_DEFS, CLUSTER_HANDLERS } from './cluster';
+import { NODE_STATUS_TOOL_DEFS, NODE_STATUS_HANDLERS } from './node-status';
 import { sessionFootprintsToolDef, handleSessionFootprints } from './session-footprints';
 import { nodeLifecycleToolDef, handleNodeLifecycle } from './lifecycle';
 import { WHATSAPP_TOOL_DEFS, WHATSAPP_HANDLERS } from './whatsapp';
@@ -1010,6 +1011,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...NODE_UPGRADE_TOOL_DEFS,
   // cluster management (list:read, assign/unassign/describe:write)
   ...CLUSTER_TOOL_DEFS,
+  // general per-node status — every subsystem in one call (read)
+  ...NODE_STATUS_TOOL_DEFS,
   // fleet session footprints (read — cross-fleet survey)
   sessionFootprintsToolDef,
   // node lifecycle (admin — graceful exit/restart, no force-kill)
@@ -1856,6 +1859,8 @@ export const EXPANDED_HANDLERS: Record<
   ...NODE_UPGRADE_HANDLERS,
   // cluster management
   ...CLUSTER_HANDLERS,
+  // general per-node status — every subsystem in one call (read)
+  ...NODE_STATUS_HANDLERS,
   // fleet session footprints (read — cross-fleet survey)
   session_footprints: handleSessionFootprints,
   // node lifecycle (admin — graceful exit/restart, no force-kill)
