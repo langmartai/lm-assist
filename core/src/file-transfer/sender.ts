@@ -12,7 +12,7 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { randomUUID } from 'crypto';
-import { openChannel, Channel } from '../transport';
+import { openChannel, Channel, OpenChannelOpts } from '../transport';
 import { openBestChannel } from '../transport/open-best';
 import { TcpChannel } from '../transport/tcp-channel';
 import { FrameReader, encodeControl, encodeData } from './frame';
@@ -38,6 +38,19 @@ import type {
 } from './types';
 
 const DEFAULT_CHUNK = 32 * 1024;
+
+// sendPath opens its transport channel via openBestChannel(), which reaches
+// out to a real peer over the hub/transport stack — there is no way to unit
+// test abort/resume behavior against that without a live two-node network.
+// Route the open through a swappable indirection so tests can substitute a
+// stub Channel; production never calls the setter, so the default (the real
+// openBestChannel) is always what ships.
+type ChannelOpener = (peer: string, opts?: OpenChannelOpts) => Promise<Channel>;
+let channelOpener: ChannelOpener = openBestChannel;
+/** Test seam: override (pass null to restore) the channel opener sendPath uses. */
+export function _setChannelOpenerForTest(fn: ChannelOpener | null): void {
+  channelOpener = fn ?? openBestChannel;
+}
 
 interface WalkedEntry extends FileEntry {
   /** Absolute path on the local filesystem (undefined for synthetic dirs). */
@@ -150,11 +163,18 @@ export async function sendPath(
   let lastMode = '';
   let currentChannel: Channel | null = null;
   const attempt = async (forceMode?: 'direct' | 'relay'): Promise<SendResult> => {
-  const channel = await openBestChannel(peerGatewayId, forceMode ? { forceMode } : undefined);
+  const channel = await channelOpener(peerGatewayId, forceMode ? { forceMode } : undefined);
   currentChannel = channel;
   lastMode = channel.mode;
   const isTcp = channel instanceof TcpChannel; // kernel-TCP LAN path — reliable send IS the fast path
+  let onAbort: (() => void) | undefined;
   try {
+    if (opts?.signal) {
+      if (opts.signal.aborted) throw new TransferError('ABORTED', 'cancelled before start');
+      onAbort = () => { try { channel.close(); } catch { /* ignore */ } };
+      opts.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
     // FIREHOSE FAST PATH: single large file (> LARGE) + a confirmed direct path.
     // Wait briefly for the direct leg to confirm; if it does, run the rate-paced
     // firehose. If direct never confirms within the window, fall through to the
@@ -205,10 +225,12 @@ export async function sendPath(
         sha256PerEntry.push('');
         continue;
       }
+      const startOffset = (entries.length === 1 && opts?.resumeFrom) ? opts.resumeFrom : 0;
+      if (startOffset) sent = startOffset;
       await streamFile(channel, transferId, i, e.absPath, chunkSize, (n) => {
         sent += n;
         onProg(sent, totalBytes);
-      });
+      }, startOffset);
       sha256PerEntry.push(await sha256File(e.absPath));
     }
 
@@ -219,6 +241,7 @@ export async function sendPath(
     lastMode = channel.mode;
     return { bytes: totalBytes, entries: entries.length, mode: lastMode, via: channel.via };
   } finally {
+    if (opts?.signal && onAbort) opts.signal.removeEventListener('abort', onAbort);
     if (currentChannel === channel) currentChannel = null;
     channel.close();
   }
@@ -230,7 +253,10 @@ export async function sendPath(
     try {
       return await attempt(force);
     } catch (e) {
-      if (force === 'relay' || lastMode === 'relay') throw e;
+      // An abort must propagate immediately — never mask it behind a fresh
+      // relay attempt (that would silently retry past a cancellation and could
+      // take far longer than the caller's "reject fast" expectation).
+      if (opts?.signal?.aborted || force === 'relay' || lastMode === 'relay') throw e;
       return await attempt('relay');
     }
   };
@@ -250,7 +276,11 @@ export async function sendPath(
       return res;
     } catch (e) {
       lastErr = e;
-      const code = e instanceof TransferError ? e.code : classifyError(e);
+      let code = e instanceof TransferError ? e.code : classifyError(e);
+      // A channel close mid-`await done` (triggered by the abort listener)
+      // surfaces as a generic "channel closed" rejection classified TIMEOUT;
+      // when the caller's signal is what caused it, report it as ABORTED.
+      if (opts?.signal?.aborted) code = 'ABORTED';
       if (!isRetriable(code) || i === maxRetries) {
         const err = e instanceof TransferError ? e : new TransferError(code, errMsg(e), e);
         endTransfer(transferId, 'failed', err.message);
@@ -306,11 +336,12 @@ async function streamFile(
   absPath: string,
   chunkSize: number,
   onChunk: (n: number) => void,
+  startOffset = 0,
 ): Promise<void> {
   const fh = await fsp.open(absPath, 'r');
   try {
     const buf = Buffer.allocUnsafe(chunkSize);
-    let offset = 0;
+    let offset = startOffset;
     for (;;) {
       const { bytesRead } = await fh.read(buf, 0, chunkSize, offset);
       if (bytesRead <= 0) {
