@@ -14,6 +14,8 @@ import * as os from 'os';
 import { WebSocketClient } from './websocket-client';
 import { initTransport, onInboundChannel } from '../transport';
 import { handleIncomingTransfer } from '../file-transfer';
+import { initFabric, fabricAcceptInbound } from '../fabric';
+import { routeInboundChannel } from '../fabric/inbound-router';
 import { ApiRelayHandler, ApiRelayRequest, ServiceRoute } from './api-relay-handler';
 import { ConsoleRelayHandler } from './console-relay-handler';
 import { PortForwardHandler } from './port-forward-handler';
@@ -473,11 +475,17 @@ export class HubClient extends EventEmitter {
           stunHost: process.env.LM_ASSIST_STUN_HOST || new URL(this.options.hubUrl).hostname,
           stunPort: Number(process.env.LM_ASSIST_STUN_PORT) || 8087,
         });
+        initFabric(data.gatewayId);
         if (!this.transportInboundWired) {
           this.transportInboundWired = true;
           onInboundChannel((ch) => {
-            handleIncomingTransfer(ch, {}).catch((e) =>
-              console.error('[HubClient] inbound transfer failed:', e));
+            routeInboundChannel(ch as never, {
+              fabric: (routed) => fabricAcceptInbound(routed),
+              fileTransfer: (routed) => {
+                handleIncomingTransfer(routed as never, {}).catch((e) =>
+                  console.error('[HubClient] inbound transfer failed:', e));
+              },
+            });
           });
         }
       }

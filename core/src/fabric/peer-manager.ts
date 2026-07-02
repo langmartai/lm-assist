@@ -72,6 +72,8 @@ export class PeerManager {
         // 'legacy' links are NOT retried here (a legacy peer stays legacy until it
         // reconnects to the hub — the roster event path in a later wave re-HELLOs).
       }
+    } catch (e) {
+      console.debug('[fabric] reconcile error:', String((e as Error)?.message ?? e));
     } finally {
       this.reconciling = false;
     }
