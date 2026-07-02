@@ -163,10 +163,11 @@ export class TcpChannel implements Channel {
     socket.on('close', () => this.finishClose('closed'));
     socket.on('end', () => this.finishClose('ended'));
     socket.on('error', (err: Error) => this.finishClose('error: ' + err.message));
-    // Ensure flowing mode: the listener's readHello attaches then REMOVES its own
-    // 'data' listener, which pauses the socket in Node. Attaching ours above does
-    // not reliably auto-resume on all platforms (observed: Windows receiver stalls
-    // after the hello — only the pre-handoff bytes arrive). Resume explicitly.
+    // Ensure flowing mode: whoever hands us this socket (the HTTP upgrade handler,
+    // or the sender after reading the 101) had it with no 'data' listener, which
+    // leaves it paused in Node. Attaching ours above does not reliably auto-resume
+    // on all platforms (observed: Windows receiver stalls after the handshake —
+    // only the pre-handoff bytes arrive). Resume explicitly.
     try { socket.resume(); } catch { /* ignore */ }
 
     // Bytes consumed off the socket before wrapping (e.g. the listener's hello

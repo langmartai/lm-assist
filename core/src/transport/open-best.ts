@@ -13,9 +13,10 @@
 import * as net from 'net';
 import { openChannel, type Channel, type OpenChannelOpts } from './index';
 import { TcpChannel } from './tcp-channel';
-import { encodeTcpHello } from './tcp-listener';
+import { TCP_UPGRADE_PROTOCOL, TCP_UPGRADE_PATH } from './tcp-upgrade';
 
 const TCP_CONNECT_TIMEOUT_MS = 1500;
+const UPGRADE_HEAD_MAX = 4096; // a 101 response is tiny; anything larger is bogus
 
 function selfNode(): string {
   const { getHubConfig } = require('../hub-client/hub-config') as typeof import('../hub-client/hub-config');
@@ -31,23 +32,43 @@ function peerTcpEndpoint(peer: string): { host: string; port: number } | null {
   }
 }
 
-/** Try a direct TCP connection to the peer's advertised endpoint. Resolves a
- *  ready TcpChannel (hello already sent) or null on any failure/timeout. */
+/** Open a direct TCP channel to the peer's advertised endpoint (its Core API
+ *  port) via an HTTP `Upgrade: lm-tcp/1` handshake. Resolves a ready TcpChannel
+ *  once the peer answers `101`, or null on any failure/timeout/rejection. */
 function tryTcp(peer: string, ep: { host: string; port: number }): Promise<TcpChannel | null> {
   return new Promise((resolve) => {
     let settled = false;
-    const done = (ch: TcpChannel | null) => { if (!settled) { settled = true; resolve(ch); } };
     const socket = net.connect({ host: ep.host, port: ep.port });
-    const timer = setTimeout(() => { try { socket.destroy(); } catch { /* ignore */ } done(null); }, TCP_CONNECT_TIMEOUT_MS);
+    const timer = setTimeout(() => { fail(); }, TCP_CONNECT_TIMEOUT_MS);
+    let buf: Buffer = Buffer.alloc(0);
+
+    const cleanup = () => { clearTimeout(timer); socket.off('data', onData); socket.off('error', onErr); };
+    const done = (ch: TcpChannel | null) => { if (!settled) { settled = true; cleanup(); resolve(ch); } };
+    const fail = () => { try { socket.destroy(); } catch { /* ignore */ } done(null); };
+
+    const onData = (chunk: Buffer) => {
+      buf = Buffer.concat([buf, chunk]);
+      const end = buf.indexOf('\r\n\r\n');
+      if (end < 0) { if (buf.length > UPGRADE_HEAD_MAX) fail(); return; } // headers not complete yet
+      const statusLine = buf.subarray(0, buf.indexOf('\r\n')).toString('latin1');
+      if (!/\s101\s/.test(statusLine)) { fail(); return; } // not "HTTP/1.1 101 ..."
+      const leftover = buf.subarray(end + 4); // bytes past the response (normally none)
+      done(new TcpChannel(socket, peer, leftover.length ? { initialData: leftover } : {}));
+    };
+    const onErr = () => { fail(); };
+
     socket.once('connect', () => {
-      clearTimeout(timer);
       try {
         socket.setNoDelay(true);
-        socket.write(encodeTcpHello(selfNode())); // identify ourselves first
-      } catch { try { socket.destroy(); } catch { /* ignore */ } done(null); return; }
-      done(new TcpChannel(socket, peer));
+        socket.write(
+          `GET ${TCP_UPGRADE_PATH} HTTP/1.1\r\nHost: ${ep.host}\r\n` +
+          `Upgrade: ${TCP_UPGRADE_PROTOCOL}\r\nConnection: Upgrade\r\n` +
+          `x-lm-node: ${selfNode()}\r\n\r\n`,
+        );
+      } catch { fail(); }
     });
-    socket.once('error', () => { clearTimeout(timer); done(null); });
+    socket.on('data', onData);
+    socket.once('error', onErr);
   });
 }
 
