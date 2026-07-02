@@ -1,29 +1,42 @@
 /**
- * WhatsApp Cloud API Connector Routes
+ * WhatsApp Connector Routes (provider-aware: Meta Cloud API ↔ local CDP).
  *
- * The local control + data surface for the WhatsApp connector. The webhook
- * pair receives from Meta (no lm-assist token — see the auth-exempt carve-out
- * in rest-server.ts); everything else is reached on loopback by the WhatsApp
- * MCP tools (and remotely through the hub relay, which adds `/whatsapp` to its
- * allow-list).
+ * ONE local control + data surface that serves BOTH deployments, selected
+ * per-node by `whatsappProvider()` (config.ts, default 'meta'):
  *
- *   GET    /whatsapp/webhook          Meta verification handshake (echoes challenge)
- *   POST   /whatsapp/webhook          inbound messages + delivery receipts
- *   GET    /whatsapp/status           config presence + ingested counts
+ *   - meta — the Meta WhatsApp Cloud API via the hub. The webhook pair receives
+ *            inbound from Meta; send/media go through the hub relay. This is the
+ *            SERVER deployment and the default.
+ *   - cdp  — drive a logged-in WhatsApp Desktop / web.whatsapp.com session over
+ *            the Chrome DevTools Protocol (cdp-client.ts) and mirror what it
+ *            reads into the SHARED store. This is a LOCAL desktop node.
+ *
+ * Both providers back the SAME status / chats / messages / search / send / media
+ * endpoints + the shared store (whatsapp/store.ts), so the MCP tools are
+ * provider-agnostic (they just call `/whatsapp/*` on loopback).
+ *
+ *   GET    /whatsapp/webhook          Meta verification handshake (meta only)
+ *   POST   /whatsapp/webhook          inbound messages + delivery receipts (meta only)
+ *   GET    /whatsapp/status           provider + config/login state + ingested counts
  *   PUT    /whatsapp/config           set Cloud API credentials (never returns secrets)
- *   POST   /whatsapp/send             send a text or template message
- *   GET    /whatsapp/chats            list conversations (by counterparty)
+ *   POST   /whatsapp/send             send a message (meta: text/template/media; cdp: text)
+ *   GET    /whatsapp/media?id=        download an inbound media file (meta only)
+ *   GET    /whatsapp/chats            list conversations
  *   GET    /whatsapp/messages?chat=   read a conversation's messages
  *   GET    /whatsapp/search?q=        substring search across message text
+ *   POST   /whatsapp/login            launch WhatsApp Web + return login QR (cdp only)
+ *   GET    /whatsapp/login/status     poll the login browser (cdp only)
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import type { RouteContext, RouteHandler, ParsedRequest } from '../index';
 import {
   readWhatsappConfig,
   writeWhatsappConfig,
   graphVersion,
+  whatsappProvider,
   WA_CONFIG_FILE,
   WA_DATA_DIR,
   CONFIG_FIELDS,
@@ -33,6 +46,16 @@ import * as store from '../../whatsapp/store';
 import { hubConfigured, hubSend, hubGetMedia, type HubSendMedia } from '../../whatsapp/hub-api';
 import { syncFromHub } from '../../whatsapp/sync';
 import { verifyChallenge, verifySignature, ingestEvent } from '../../whatsapp/webhook';
+import {
+  cdpStatus,
+  syncFromCdp,
+  syncChat,
+  sendText,
+  getMedia as cdpGetMedia,
+  canonicalChatId,
+  WaError,
+} from '../../whatsapp/cdp-client';
+import { whatsappLogin, whatsappLoginStatus } from '../../whatsapp/login';
 
 /** Best-effort MIME + WhatsApp media-type from a filename extension. */
 const MIME_BY_EXT: Record<string, string> = {
@@ -70,10 +93,26 @@ function normalizePhone(v: unknown): string {
   return String(v ?? '').replace(/[^\d]/g, '');
 }
 
+/** Map a thrown CDP error to the structured { success:false, error } envelope. */
+function fail(e: unknown): { success: false; error: string; code?: string } {
+  if (e instanceof WaError) return { success: false, error: e.message, code: e.code };
+  return { success: false, error: e instanceof Error ? e.message : String(e) };
+}
+
+/** Uniform "this endpoint needs the CDP provider" rejection under meta. */
+function cdpOnly(what: string): { success: false; error: string; code: string } {
+  return {
+    success: false,
+    error: `WhatsApp ${what} is for the CDP/local-desktop provider; set WHATSAPP_PROVIDER=cdp to use it.`,
+    code: 'WRONG_PROVIDER',
+  };
+}
+
 export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
     // GET /whatsapp/webhook — Meta verification handshake. MUST echo the raw
     // challenge as text/plain, else Meta refuses to register the webhook.
+    // (Meta-only; inert under cdp because Meta never calls it there.)
     {
       method: 'GET',
       pattern: /^\/whatsapp\/webhook$/,
@@ -99,21 +138,47 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // GET /whatsapp/status — non-secret view of config + store counts.
+    // GET /whatsapp/status — provider-aware view of config/login + store counts.
     {
       method: 'GET',
       pattern: /^\/whatsapp\/status$/,
       handler: async () => {
+        if (whatsappProvider() === 'cdp') {
+          let loggedIn = false;
+          let self: string | null = null;
+          try {
+            const s = await cdpStatus();
+            loggedIn = s.loggedIn;
+            self = s.self;
+          } catch {
+            /* CDP unreachable — report loggedIn:false but still return store stats */
+          }
+          return {
+            success: true,
+            data: {
+              provider: 'cdp',
+              location: 'local',
+              host: os.hostname(),
+              backend: 'cdp-desktop',
+              self,
+              loggedIn,
+              ...store.stats(),
+            },
+          };
+        }
+        // meta
         const cfg = readWhatsappConfig();
         // Best-effort catch-up so the reported counts reflect the hub's store.
         await syncFromHub();
         return {
           success: true,
           data: {
+            provider: 'meta',
+            location: 'server',
+            backend: 'hub',
             // The hub owns the Meta credentials + send/receive; this connector is
             // "configured" as long as it can reach the hub.
             configured: hubConfigured(),
-            backend: 'hub',
             hubConfigured: hubConfigured(),
             displayPhoneNumber: cfg.displayPhoneNumber || null,
             businessAccountId: cfg.businessAccountId || null,
@@ -125,6 +190,7 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // PUT /whatsapp/config — set credentials. Echoes only which fields are set.
+    // (Meta credentials; unused under cdp but harmless to store.)
     {
       method: 'PUT',
       pattern: /^\/whatsapp\/config$/,
@@ -157,12 +223,49 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // POST /whatsapp/send — { to, text? , template?, previewUrl? }
+    // POST /whatsapp/send — { to, text?, template?, media?, previewUrl? }
+    //   meta: text (24h) / template / media via the hub.
+    //   cdp:  text only (template/media UNSUPPORTED).
     {
       method: 'POST',
       pattern: /^\/whatsapp\/send$/,
       handler: async (req: ParsedRequest) => {
         const body = (req.body || {}) as Record<string, any>;
+
+        if (whatsappProvider() === 'cdp') {
+          const to = String(body.to || '').trim();
+          if (!to) return { success: false, error: '`to` (recipient contact/group or phone) is required' };
+          if (body.template || body.media) {
+            return {
+              success: false,
+              error: 'template/media send is not supported on the local CDP WhatsApp provider (text only)',
+              code: 'UNSUPPORTED',
+            };
+          }
+          const text = body.text !== undefined ? String(body.text) : '';
+          if (!text) return { success: false, error: '`text` is required' };
+          try {
+            const { messageId, chatId, contactName } = await sendText(to, text);
+            const ts = Math.floor(Date.now() / 1000);
+            store.addOutbound({
+              id: messageId,
+              chatId,
+              direction: 'out',
+              from: 'me',
+              to: chatId,
+              type: 'text',
+              text,
+              timestamp: ts,
+              status: 'sent',
+              contactName: contactName || undefined,
+            });
+            return { success: true, data: { messageId, to: chatId } };
+          } catch (e) {
+            return fail(e);
+          }
+        }
+
+        // meta
         const to = normalizePhone(body.to);
         if (!to) {
           return { success: false, error: '`to` (recipient phone, international format) is required' };
@@ -247,15 +350,25 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // GET /whatsapp/media?id=<mediaId>&save=1 — download an inbound media file's
-    // bytes (the hub resolves the id against Meta and streams them). Saves under
-    // WA_DATA_DIR/media and returns the local path so an agent can open it.
+    // GET /whatsapp/media?id=<mediaId> — download an inbound media file's bytes.
+    //   meta: the hub resolves the id against Meta and streams them; saved under
+    //         WA_DATA_DIR/media, returns the local path.
+    //   cdp:  UNSUPPORTED (WhatsApp Web serves media as blob: URLs — follow-up).
     {
       method: 'GET',
       pattern: /^\/whatsapp\/media$/,
       handler: async (req: ParsedRequest) => {
         const id = String(req.query?.id || '').trim();
         if (!id) return { success: false, error: '`id` query param (media id) is required' };
+        if (whatsappProvider() === 'cdp') {
+          try {
+            await cdpGetMedia(id);
+            return { success: true, data: {} };
+          } catch (e) {
+            return fail(e);
+          }
+        }
+        // meta
         if (!hubConfigured()) {
           return { success: false, error: 'Hub not configured — media is fetched via the hub.' };
         }
@@ -273,28 +386,52 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // GET /whatsapp/chats?limit=
+    // GET /whatsapp/chats?limit= — sync (provider), then list conversations.
     {
       method: 'GET',
       pattern: /^\/whatsapp\/chats$/,
       handler: async (req: ParsedRequest) => {
         const limit = clampInt(req.query?.limit, 30, 1, 200);
-        // Pull anything the hub stored while we were offline before answering.
+        if (whatsappProvider() === 'cdp') {
+          try {
+            await syncFromCdp();
+          } catch (e) {
+            return fail(e);
+          }
+          return { success: true, data: { chats: store.listChats(limit) } };
+        }
+        // meta — pull anything the hub stored while we were offline before answering.
         await syncFromHub();
         return { success: true, data: { chats: store.listChats(limit) } };
       },
     },
 
-    // GET /whatsapp/messages?chat=<phone>&limit=&markRead=true
+    // GET /whatsapp/messages?chat=&limit=&markRead= — sync the conversation
+    //   (provider) then read it. meta keys by phone; cdp by canonical chat id
+    //   (contact/group name or phone).
     {
       method: 'GET',
       pattern: /^\/whatsapp\/messages$/,
       handler: async (req: ParsedRequest) => {
+        const limit = clampInt(req.query?.limit, 30, 1, 500);
+        if (whatsappProvider() === 'cdp') {
+          const rawChat = String(req.query?.chat || '').trim();
+          if (!rawChat) return { success: false, error: '`chat` query param (contact/group or phone) is required' };
+          const chatId = canonicalChatId(rawChat);
+          try {
+            await syncChat(rawChat);
+          } catch (e) {
+            return fail(e);
+          }
+          const messages = store.getMessages(chatId, limit);
+          if (req.query?.markRead === 'true') store.markChatRead(chatId);
+          return { success: true, data: { chatId, messages } };
+        }
+        // meta
         const chat = normalizePhone(req.query?.chat);
         if (!chat) {
           return { success: false, error: '`chat` query param (counterparty phone) is required' };
         }
-        const limit = clampInt(req.query?.limit, 30, 1, 500);
         await syncFromHub();
         const messages = store.getMessages(chat, limit);
         if (req.query?.markRead === 'true') store.markChatRead(chat);
@@ -302,7 +439,8 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // GET /whatsapp/search?q=<text>&limit=
+    // GET /whatsapp/search?q=&limit= — best-effort provider sync, then search
+    // the ingested/cached store.
     {
       method: 'GET',
       pattern: /^\/whatsapp\/search$/,
@@ -310,8 +448,56 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
         const q = String(req.query?.q || '').trim();
         if (!q) return { success: false, error: '`q` query param is required' };
         const limit = clampInt(req.query?.limit, 20, 1, 100);
-        await syncFromHub();
+        if (whatsappProvider() === 'cdp') {
+          // Best-effort catch-up; a down desktop must not block searching cache.
+          try {
+            await syncFromCdp();
+          } catch {
+            /* ignore — search over what is already ingested */
+          }
+        } else {
+          await syncFromHub();
+        }
         return { success: true, data: { query: q, results: store.search(q, limit) } };
+      },
+    },
+
+    // POST /whatsapp/login — cdp only. Launch a controlled Chrome at
+    //   web.whatsapp.com and return the login QR (linked-device pairing). Body:
+    //   { port?, headless?, profile? }. On Windows the native WhatsApp app owns
+    //   9222 — pass a different port. Returns { pid, port, cdpUrl, loggedIn,
+    //   qr?: { dataUrl, savedPath, capturedAt } }.
+    {
+      method: 'POST',
+      pattern: /^\/whatsapp\/login$/,
+      handler: async (req: ParsedRequest) => {
+        if (whatsappProvider() !== 'cdp') return cdpOnly('login');
+        const body = (req.body || {}) as Record<string, unknown>;
+        const port = typeof body.port === 'number' ? body.port : undefined;
+        const headless = typeof body.headless === 'boolean' ? body.headless : undefined;
+        const profile = typeof body.profile === 'string' ? body.profile : undefined;
+        const res = await whatsappLogin({ port, headless, profile });
+        if (!res.ok) {
+          return { success: false, error: res.message, code: res.code, hint: res.hint, installedBrowsers: res.installedBrowsers };
+        }
+        return { success: true, data: res };
+      },
+    },
+
+    // GET /whatsapp/login/status?port= — cdp only. Poll the login browser.
+    //   Returns { loggedIn, qr? } — `loggedIn` flips true after the user scans;
+    //   while pending it refreshes the QR (WhatsApp rotates it ~every 20s).
+    {
+      method: 'GET',
+      pattern: /^\/whatsapp\/login\/status$/,
+      handler: async (req: ParsedRequest) => {
+        if (whatsappProvider() !== 'cdp') return cdpOnly('login status');
+        const port = req.query?.port ? clampInt(req.query.port, 9222, 1, 65535) : undefined;
+        const res = await whatsappLoginStatus({ port });
+        if ('ok' in res && res.ok === false) {
+          return { success: false, error: res.message, code: res.code, hint: res.hint };
+        }
+        return { success: true, data: res };
       },
     },
   ];

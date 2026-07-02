@@ -297,13 +297,15 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   cluster_describe: 'write',
   // fleet session footprints (read — non-blocking survey)
   session_footprints: 'read',
-  // whatsapp cloud-api connector (send mutates/spends; the rest are reads)
+  // whatsapp connector (send mutates/spends; login launches a real browser =
+  // admin; the rest are reads). Provider-aware routes back both meta + cdp.
   whatsapp_send: 'write',
   whatsapp_get_media: 'read',
   whatsapp_list_chats: 'read',
   whatsapp_read_messages: 'read',
   whatsapp_search: 'read',
   whatsapp_status: 'read',
+  whatsapp_login: 'admin',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */
