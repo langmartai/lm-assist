@@ -15,7 +15,11 @@
  *       re-hash is correct — a wrong re-hash would sha-mismatch and FT_ERR);
  *   (c) FT_CANCEL deletes both the partial file and the sidecar (contrast
  *       with (a): an explicit cancel cleans up, a plain drop does not);
- *   (d) the stale-partial sweeper deletes an old sidecar+partial but leaves a
+ *   (d) a resumable transfer whose FT_END sha256 check fails deletes both the
+ *       partial file and the sidecar too — a corrupt partial must never be
+ *       resumable, else a resume would re-verify (and re-fail) the same
+ *       corrupted prefix forever;
+ *   (e) the stale-partial sweeper deletes an old sidecar+partial but leaves a
  *       fresh one alone.
  *
  * Checkpoint interval is overridden via the test-only seam
@@ -287,6 +291,55 @@ test('FT_CANCEL deletes the partial file and the sidecar', { timeout: 5000 }, as
 
     assert.equal(fs.existsSync(dest), false, 'partial file deleted on cancel');
     assert.equal(fs.existsSync(sidecar), false, 'sidecar deleted on cancel');
+  } finally {
+    _setCheckpointIntervalForTest(null);
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('resumable transfer: sha256 mismatch on FT_END deletes the corrupt partial AND the sidecar (no resume loop)', { timeout: 5000 }, async () => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'ft-shafail-'));
+  try {
+    const full = crypto.randomBytes(400_000);
+    const transferId = 'shafail-tx-1';
+    _setCheckpointIntervalForTest(50_000);
+
+    const { a, b } = makeFakePair();
+    const sent = captureControl(a);
+    const recvDone = handleIncomingTransfer(b, { root });
+
+    const meta: FtMeta = {
+      type: 'FT_META',
+      transferId,
+      root: '.',
+      entries: [{ relPath, size: full.length, mode: 0o644, isDir: false }],
+      totalBytes: full.length,
+      resumable: true,
+    };
+    a.send(encodeControl(meta));
+    // Drive the transfer to completion — every byte reaches the receiver —
+    // so this is NOT a mid-stream drop; the corruption is only discovered by
+    // the sha256 check at FT_END.
+    a.send(encodeData(transferId, 0, 0, full));
+
+    const dest = path.join(root, relPath);
+    const sidecar = dest + '.lmpart';
+    // Sanity: the checkpoint actually landed before FT_END, so the assertions
+    // below prove the fix deleted something real, not a no-op on absent files.
+    await waitFor(() => fs.existsSync(sidecar));
+    assert.ok(fs.existsSync(dest), 'sanity: partial file exists before FT_END');
+    assert.equal(fs.statSync(dest).size, full.length, 'sanity: full file was written to disk');
+
+    // Deliberately wrong sha256 so the receiver's verification fails.
+    const wrongSha = sha256(Buffer.from('this is not the right content'));
+    a.send(encodeControl({ type: 'FT_END', transferId, sha256PerEntry: [wrongSha] }));
+
+    await recvDone;
+
+    assert.ok(sent.some((m) => m.type === 'FT_ERR'), 'receiver sent FT_ERR on sha256 mismatch');
+    assert.ok(!sent.some((m) => m.type === 'FT_OK'), 'no FT_OK on a sha mismatch');
+    assert.equal(fs.existsSync(dest), false, 'corrupt partial file deleted on sha mismatch (resumable) — must not survive for a bogus resume');
+    assert.equal(fs.existsSync(sidecar), false, 'sidecar deleted on sha mismatch (resumable) — next attempt restarts from 0, does not loop forever re-verifying the same corrupt prefix');
   } finally {
     _setCheckpointIntervalForTest(null);
     await fsp.rm(root, { recursive: true, force: true });

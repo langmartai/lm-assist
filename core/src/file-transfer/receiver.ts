@@ -397,6 +397,14 @@ export function handleIncomingTransfer(
             const expected = end.sha256PerEntry[i];
             const actual = hashers.get(i)!.digest('hex');
             if (expected && expected !== actual) {
+              // Corrupt data: a resumable transfer must never resume from this
+              // checkpoint. Drop both the sidecar and the partial file so the
+              // next attempt restarts from 0 instead of re-verifying (and
+              // re-failing on) the same corrupted on-disk prefix forever.
+              if (resumeCheckpoint && resumeCheckpoint.entryIndex === i) {
+                rmSidecar(of.absPath);
+                await fsp.unlink(of.absPath).catch(() => {});
+              }
               await replyErr(
                 end.transferId,
                 'sha256 mismatch for ' + e.relPath,
