@@ -316,3 +316,35 @@ export class RttEstimator {
 ### Task C5: Phase-C build + full suites + live perf report
 - [ ] Build clean; run all transport `__tests__` (incl. C1 matrix + C2 benchmark) on Node v20; capture the C2 table + the C3 live before/after into `docs/` or the final report.
 - [ ] Deploy Phase A+C to 123/107 (+117); run C3 live; attach the perf report (best/worst envelope + the A0 direct-vs-relay delta).
+
+---
+
+## FOCUS (user directive 2026-07-02): Direct-TCP-for-LAN + Relay optimization
+
+These two are now the active deliverables (the ~100 MB/s LAN fix + the 2.5→~15-40 MB/s relay fix). DEFERRED (not cut): the reliable-UDP tuning A4/A5 (A0-A3 already landed and help the UDP/srflx path), the A-race/A-bind/A-roam criticals (correctness, do after), Phase B channel-reuse (TCP-for-LAN supersedes much of its intent), srflx measurement (needs a cross-NAT node). Phase C perf/reliability tests stay — they validate D+E.
+
+Measurement basis: LAN host-direct firehose = 9 MB/s (userspace-UDP ceiling); relay = 2.46 MB/s; **hub is only ~3.4ms away (measured) → relay is per-frame-overhead-bound, NOT geography-bound**; we send 3-4k tiny 1200B WS frames/sec where the TCP relay allows 16-64KB frames.
+
+### PHASE D — Direct-TCP for LAN (native speed)
+
+Design: a `TcpChannel` implementing the frozen `Channel` interface (`transport/index.ts`) over a real `net.Socket` with length-prefixed framing (reuse `file-transfer/frame.ts`'s `[4B len][payload]`). It does NOT wrap `ReliableConnection` — `send()` = frame + `socket.write` (honor backpressure via the write-return/`drain`), so the KERNEL's TCP does reliability at line rate. file-transfer's `sendPath` uses `channel.send`/`onData`/`onClose` unchanged → kernel-speed bulk.
+
+- **D1 — `transport/tcp-channel.ts`:** `TcpChannel` over a net.Socket: framed `send`/`onData`, `onClose`, `close`, `mode='bidi'`/`via='host'`/`rtt`; write-backpressure (pause the FT producer via a `writable`/`drain` signal). Unit-test over a local TCP socket pair (integrity + backpressure). `sendUnreliable`→maps to `send` (TCP reliable).
+- **D2 — TCP listener + auth:** each node binds a fabric TCP port (advertise host IP + port in the fabric HELLO / peer candidates). Inbound connections send a hello `{fromGatewayId, transferId, token}`; validate the token minted over the hub-authenticated relay control plane (or, under LAN-trust, the peerGatewayId+expected-transfer match). Loopback/LAN-bind only; reject unadvertised sources.
+- **D3 — `openBestChannel(peerGatewayId)`:** if the peer has a reachable `host` candidate AND its TCP port is advertised → `TcpChannel` (connect + hello); on connect-fail/timeout or no host candidate → fall back to today's `openChannel` (UDP/relay). Peer must be fabric-capable (else legacy → hybrid).
+- **D4 — file-transfer rides it + live measure:** `sender.ts` uses `openBestChannel`; verify 123→107 bulk now streams over TCP; measure MB/s (expect ~100). Port-forward migration = a follow-up.
+- Fallback ladder stays intact: TCP (LAN) → UDP direct (srflx) → relay. Nothing regresses for WAN peers.
+
+### PHASE E — Relay optimization (path-aware large frames)
+
+Root cause (measured): relay pushes 3-4k tiny 1200B WS frames/sec; the relay is TCP (WebSocket) where the 1200B UDP-MTU limit is meaningless.
+
+- **E1 — relay feature negotiation:** the fabric/transport HELLO advertises a `relay-batch/1` capability; only batch when BOTH peers support it (mixed-version safe — an old peer keeps getting per-datagram frames). Add to the existing HELLO feature list.
+- **E2 — relay batch framing:** new `RELAY_TAG_BATCH = 0x03` carrying `[0x03][count][ (len16 || datagram) × count ]`. On the send side, coalesce reliable datagrams queued for relay in the same tick into ONE big WS frame (target 16-64KB); on receive, `onRelayData` splits a batch and feeds each datagram to `reliable.onDatagram` unchanged (ARQ untouched, seq/ack intact). Only used when the peer advertised `relay-batch/1`.
+- **E3 — coalesced ACKs (A4, folded here):** ACK every 2nd in-order datagram or a 10ms timer, immediate on out-of-order — halves the reverse frame count over relay.
+- **E4 — path-aware window:** over relay (TCP-backed → no UDP congestion risk) use a large window (e.g. 512 / BDP-scaled); over direct-UDP keep the conservative/adaptive window (A2). `windowSize` becomes path-aware.
+- **E5 — (optional) compress the relay batch** (gzip; hub bandwidth is the scarce paid resource) — behind the same capability negotiation.
+- **E6 — live measure relay before/after** 123→hub→107; expect 2.5 → ~15-40 MB/s.
+
+### Phase D/E validation
+Run Phase C's reliability matrix + benchmark against both new paths; live before/after into `docs/perf/`. Perf-status reporting (C4) surfaces TCP-vs-UDP-vs-relay per peer.
