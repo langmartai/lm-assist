@@ -307,7 +307,11 @@ export class ApiRelayHandler {
     const targetPath = serviceMatch ? serviceMatch.resolvedPath : reqPath;
     const serviceDesc = serviceMatch ? serviceMatch.route.description : 'Tier-Agent API';
 
-    console.log(`[ApiRelayHandler] Relaying ${method} ${reqPath} -> localhost:${targetPort}${targetPath} [${serviceDesc}] (requestId: ${requestId})`);
+    // Per-request trace — one line per relayed call (the dominant log source on a
+    // hub node); gated behind LM_HUB_VERBOSE=1 so it doesn't fill the log.
+    if (process.env.LM_HUB_VERBOSE === '1') {
+      console.log(`[ApiRelayHandler] Relaying ${method} ${reqPath} -> localhost:${targetPort}${targetPath} [${serviceDesc}] (requestId: ${requestId})`);
+    }
 
     // Track if we've already responded (to prevent race condition with timeout)
     let hasResponded = false;
