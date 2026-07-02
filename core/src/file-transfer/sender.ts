@@ -314,6 +314,13 @@ async function streamFile(
       channel.send(encodeData(transferId, entryIndex, offset, slice));
       offset += bytesRead;
       onChunk(bytesRead);
+      // Over a kernel-TCP channel, honor socket backpressure: the loop can read
+      // + frame far faster than the peer drains, so without this it would flood
+      // the channel's internal queue. The UDP channel paces via its own send
+      // window, so this only applies to TcpChannel.
+      if (channel instanceof TcpChannel && !channel.isWritable()) {
+        await channel.whenWritable();
+      }
     }
   } finally {
     await fh.close();

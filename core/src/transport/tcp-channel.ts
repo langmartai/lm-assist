@@ -254,6 +254,16 @@ export class TcpChannel implements Channel {
     return this.socketWritable && !this.torndown && !this.closed;
   }
 
+  /** Await a writable socket — resolves immediately if writable, else on the
+   *  next drain (or immediately if the channel closed, so a producer loop
+   *  never hangs). Lets a producer that streams faster than the peer drains
+   *  (e.g. file-transfer's streamFile) pace itself instead of overflowing the
+   *  internal queue. */
+  whenWritable(): Promise<void> {
+    if (this.isWritable() || this.torndown || this.closed) return Promise.resolve();
+    return new Promise<void>((resolve) => { this.drainCbs.push(resolve); });
+  }
+
   /** TCP has no ICE-style confirmation ladder — the mere existence of a live,
    *  connected socket IS the confirmation. True once constructed, false once
    *  the channel starts or finishes closing. */
@@ -378,15 +388,23 @@ export class TcpChannel implements Channel {
     } catch {
       /* ignore */
     }
+    // Fire close callbacks ASYNC (setImmediate): finishClose is often called
+    // synchronously from inside a socket 'end'/'error' event, and a consumer's
+    // onClose handler (e.g. file-transfer's waitForReply) may reject a promise
+    // that is only awaited on the next tick — throwing/rejecting synchronously
+    // while unwinding through the socket event surfaces as an unhandled
+    // rejection and crashes the process. Deferring one tick lets the awaiter
+    // attach first. Also wake any pending whenWritable() waiters so a producer
+    // loop doesn't hang after a close.
+    const drains = this.drainCbs.slice(); this.drainCbs = [];
+    for (const d of drains) { try { d(); } catch { /* ignore */ } }
     const cbs = this.closeCbs.slice();
     this.closeCbs = [];
-    for (const cb of cbs) {
-      try {
-        cb(reason);
-      } catch {
-        /* ignore */
+    setImmediate(() => {
+      for (const cb of cbs) {
+        try { cb(reason); } catch { /* ignore */ }
       }
-    }
+    });
   }
 }
 
