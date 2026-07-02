@@ -23,8 +23,9 @@
  * State machine: RELAY → ONEWAY → BIDI (with fast demotion).
  *   RELAY  — relay floor only; all traffic via relay. openChannel resolves here.
  *   ONEWAY — our outbound direct confirmed for >=1 direction but NOT both.
- *            Bulk data (>CONTROL_DATAGRAM_MAX) rides direct when myDirectOut;
- *            control (<=256B) always relay + opportunistic direct.
+ *            Both data AND control (ACK/PING/FIN) ride direct when myDirectOut
+ *            is fresh (the same gate); relay is the fallback for either when
+ *            it is not.
  *   BIDI   — BOTH directions confirmed AND sustained. EVERYTHING (data, control,
  *            acks) rides direct both ways; the relay WS stays connected but idle.
  *
