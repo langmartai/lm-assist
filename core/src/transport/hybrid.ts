@@ -78,6 +78,14 @@ export const TRANSPORT_RELAY_MARKER = 0xfd;
 const RELAY_TAG_DATAGRAM = 0x00; // [0x00][reliable datagram]
 const RELAY_TAG_DPROBE_ACK = 0x01; // [0x01] — "your direct reaches me"
 const RELAY_TAG_CONTROL = 0x02; // [0x02][reliable datagram] — control/metadata on relay
+const RELAY_TAG_BATCH = 0x04; // [0x04]([2B len][tagged frame])* — many bulk frames coalesced into one WS message
+
+/** Coalesce bulk relay datagrams up to this many bytes into a single WS message.
+ *  The relay hub is per-MESSAGE limited (it forwards ~N tiny 1200B frames/sec),
+ *  so shipping ~54 datagrams as one 64KB message cuts the hub's frame rate ~50×.
+ *  Off via LM_RELAY_BATCH=0. */
+const RELAY_BATCH_MAX = 64 * 1024;
+const RELAY_BATCH_ENABLED = process.env.LM_RELAY_BATCH !== '0';
 
 /** Raw byte tags used on the direct UDP socket (before/around reliable). */
 const STUN_REQUEST = Buffer.from('LMSTUN'); // tiny probe to the hub STUN responder
@@ -268,12 +276,47 @@ export function openHybridChannel(
       opts.ws.sendBinary(hash, payload, TRANSPORT_RELAY_MARKER);
     };
 
+    // Bulk-frame coalescer: many small reliable datagrams pumped in one burst are
+    // gathered into a single ≤64KB WS message, so the (per-message-limited) hub
+    // forwards far fewer frames. Control/priority frames never batch (latency).
+    let batch: Buffer[] = [];
+    let batchBytes = 0;
+    let flushScheduled = false;
+    const flushBatch = (): void => {
+      flushScheduled = false;
+      if (batch.length === 0) return;
+      if (batch.length === 1) {
+        sendRelayFrame(batch[0]); // lone frame — no batch envelope
+      } else {
+        const parts: Buffer[] = [Buffer.from([RELAY_TAG_BATCH])];
+        for (const f of batch) {
+          const len = Buffer.allocUnsafe(2);
+          len.writeUInt16BE(f.length, 0);
+          parts.push(len, f);
+        }
+        sendRelayFrame(Buffer.concat(parts));
+      }
+      batch = [];
+      batchBytes = 0;
+    };
+
     const relaySendDatagram = (datagram: Buffer, priority = false, control = false): void => {
       // Tag 0x00 (bulk) or 0x02 (control/metadata): reliable datagram follows.
       const framed = Buffer.allocUnsafe(1 + datagram.length);
       framed.writeUInt8(control ? RELAY_TAG_CONTROL : RELAY_TAG_DATAGRAM, 0);
       datagram.copy(framed, 1);
-      sendRelayFrame(framed, priority);
+      if (!RELAY_BATCH_ENABLED || priority || control) {
+        flushBatch(); // keep ordering: drain any pending bulk before the priority frame
+        sendRelayFrame(framed, priority);
+        return;
+      }
+      // Bulk: accumulate; flush when full, and once per event-loop tick so a
+      // synchronous pump-burst coalesces but nothing ever lingers.
+      if (batchBytes + framed.length + 2 > RELAY_BATCH_MAX) flushBatch();
+      batch.push(framed);
+      batchBytes += framed.length + 2;
+      if (batchBytes >= RELAY_BATCH_MAX) { flushBatch(); return; }
+      if (!flushScheduled) { flushScheduled = true; setImmediate(flushBatch); }
     };
 
     const sendDprobeAck = (tag: string): void => {
@@ -336,6 +379,11 @@ export function openHybridChannel(
           relaySendDatagram(buf, /*priority*/ isControl, /*control*/ isControl);
         },
         onDeliver,
+        // Send window (unacked datagrams). Batching only fills 64KB messages when
+        // enough is in flight, so the default is 256 (was 64) — measured ~1.9× on
+        // the real relay with batching (2.2→4.0 MB/s), and no direct-UDP regression
+        // (that path is window-insensitive). Tunable via LM_RELIABLE_WINDOW.
+        windowSize: Number(process.env.LM_RELIABLE_WINDOW) || 256,
         onClose: (r) => {
           onClose(r);
           teardown(r);
@@ -392,10 +440,7 @@ export function openHybridChannel(
     };
 
     // ========================= RELAY =========================
-    const onRelayData = (msg: { channelHash: Buffer; payload: Buffer }): void => {
-      if (tornDown || !msg || !msg.channelHash) return;
-      if (msg.channelHash.toString('hex') !== hashHex) return;
-      const payload = msg.payload;
+    const handleRelayFrame = (payload: Buffer): void => {
       if (!payload || payload.length < 1) return;
       const tag = payload.readUInt8(0);
       if (tag === RELAY_TAG_DPROBE_ACK) {
@@ -422,6 +467,25 @@ export function openHybridChannel(
       if (tag === RELAY_TAG_DATAGRAM || tag === RELAY_TAG_CONTROL) {
         if (reliable) reliable.onDatagram(payload.subarray(1));
       }
+    };
+
+    const onRelayData = (msg: { channelHash: Buffer; payload: Buffer }): void => {
+      if (tornDown || !msg || !msg.channelHash) return;
+      if (msg.channelHash.toString('hex') !== hashHex) return;
+      const payload = msg.payload;
+      if (!payload || payload.length < 1) return;
+      if (payload.readUInt8(0) === RELAY_TAG_BATCH) {
+        // Split a coalesced message back into individual [tag][datagram] frames.
+        let off = 1;
+        while (off + 2 <= payload.length) {
+          const len = payload.readUInt16BE(off); off += 2;
+          if (off + len > payload.length) break; // truncated — drop the tail
+          handleRelayFrame(payload.subarray(off, off + len));
+          off += len;
+        }
+        return;
+      }
+      handleRelayFrame(payload);
     };
 
     const onRelayReady = (msg: { channelId: string }): void => {
