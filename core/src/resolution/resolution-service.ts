@@ -39,6 +39,7 @@ export class ResolutionService {
     let loc: Location | null = null;
     try { loc = await r.resolve(id); } catch { loc = null; }
     if (!loc) this.stats.negatives++;
+    this.cache.delete(key);              // reposition: a refreshed entry moves to MRU, not its stale slot
     this.cache.set(key, { loc, at: now });
     const cap = this.opts.cap ?? 500;
     while (this.cache.size > cap) this.cache.delete(this.cache.keys().next().value as string);

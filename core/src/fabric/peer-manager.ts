@@ -15,6 +15,7 @@ export interface PeerLinkLike {
   adopt(ch: unknown): void;
   close(): void;
   markPeerOffline(): void;
+  resetRetry?(): void;
   snapshot(): PeerLinkSnapshot;
 }
 
@@ -23,6 +24,7 @@ export interface PeerManagerDeps {
   makeLink(peer: string): PeerLinkLike;
   now(): number;
   reconcileMs?: number;               // default 30s
+  enabled?: () => boolean;            // runtime kill-switch — false closes all links and skips reconcile
 }
 
 export class PeerManager {
@@ -50,6 +52,11 @@ export class PeerManager {
     if (this.reconciling) return;       // reentrancy guard (interval + manual)
     this.reconciling = true;
     try {
+      if (this.deps.enabled && !this.deps.enabled()) {
+        for (const l of this.links.values()) l.close();
+        this.links.clear();
+        return;
+      }
       let online: string[];
       try { online = await this.deps.listPeers(); } catch { return; } // roster unavailable → keep current state
       const onlineSet = new Set(online);
@@ -77,6 +84,16 @@ export class PeerManager {
     } finally {
       this.reconciling = false;
     }
+  }
+
+  /**
+   * Hub re-auth (spec N5): links must re-establish on reconnect, not wait out a
+   * stale (possibly capped, up to 600s) backoff timer left over from the outage.
+   * Resets every failed link's backoff then kicks an immediate reconcile.
+   */
+  retryFailedNow(): void {
+    for (const l of this.links.values()) l.resetRetry?.();
+    void this.reconcile();
   }
 
   /** Inbound fabric channel from Task 4's demux — adopt on (or create) the peer's link. */

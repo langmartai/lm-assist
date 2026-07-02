@@ -55,3 +55,82 @@ test('acceptInbound adopts on the peer link (creating it if unknown)', async () 
   assert.deepEqual(links.get('gw4-z')!.calls, ['adopt']);
   assert.equal(pm.snapshot().length, 1);
 });
+
+test('reconcile with enabled:false closes existing links, clears the map, and skips listPeers/open', async () => {
+  const links = new Map<string, ReturnType<typeof fakeLink>>();
+  let listPeersCalls = 0;
+  let enabled = true;
+  const pm = new PeerManager({
+    listPeers: async () => { listPeersCalls++; return ['gw4-b']; },
+    makeLink: (p) => { const l = fakeLink(p); links.set(p, l); return l; },
+    now: () => 0,
+    enabled: () => enabled,
+  });
+  await pm.reconcile();                    // enabled=true → establishes gw4-b normally
+  assert.equal(pm.snapshot().length, 1);
+  assert.equal(links.get('gw4-b')!.calls.filter((c) => c === 'open').length, 1);
+  listPeersCalls = 0;                       // isolate the flip
+
+  enabled = false;
+  await pm.reconcile();
+  assert.ok(links.get('gw4-b')!.calls.includes('close'));
+  assert.equal(pm.snapshot().length, 0);
+  assert.equal(listPeersCalls, 0);          // roster not consulted on the disabled path
+  assert.equal(links.get('gw4-b')!.calls.filter((c) => c === 'open').length, 1); // not reopened
+});
+
+test('retryFailedNow resets a failed link and re-opens immediately despite fresh (un-elapsed) backoff', async () => {
+  const now = 700_000; // fixed "wall clock" past the 600s backoff cap, well past the 30s base
+  const l = fakeLink('gw4-b');
+  l.open = async () => { l.calls.push('open'); l.core.state = 'failed'; l.core.attempts += 1; l.core.since = now; };
+  (l as unknown as { resetRetry: () => void }).resetRetry = () => {
+    if (l.core.state === 'failed') { l.core.attempts = 0; l.core.since = 0; }
+  };
+  const pm = new PeerManager({ listPeers: async () => ['gw4-b'], makeLink: () => l, now: () => now });
+
+  await pm.reconcile();                     // new peer → open() unconditionally → failed, attempts=1, since=now (fresh)
+  assert.equal(l.calls.filter((c) => c === 'open').length, 1);
+
+  await pm.reconcile();                     // same `now` → backoff not elapsed → NOT retried
+  assert.equal(l.calls.filter((c) => c === 'open').length, 1);
+
+  pm.retryFailedNow();                      // resets attempts/since (since→0), then kicks reconcile
+  await new Promise((r) => setImmediate(r));
+  assert.equal(l.calls.filter((c) => c === 'open').length, 2);
+});
+
+test('stop() closes all links and clears the map', async () => {
+  const links = new Map<string, ReturnType<typeof fakeLink>>();
+  const pm = new PeerManager({
+    listPeers: async () => ['gw4-b', 'gw4-c'],
+    makeLink: (p) => { const l = fakeLink(p); links.set(p, l); return l; },
+    now: () => 0,
+  });
+  await pm.reconcile();
+  assert.equal(pm.snapshot().length, 2);
+
+  pm.stop();
+  assert.ok(links.get('gw4-b')!.calls.includes('close'));
+  assert.ok(links.get('gw4-c')!.calls.includes('close'));
+  assert.equal(pm.snapshot().length, 0);
+});
+
+test('roster failure keeps current state', async () => {
+  const links = new Map<string, ReturnType<typeof fakeLink>>();
+  let fail = false;
+  const pm = new PeerManager({
+    listPeers: async () => { if (fail) throw new Error('roster unavailable'); return ['gw4-b']; },
+    makeLink: (p) => { const l = fakeLink(p); links.set(p, l); return l; },
+    now: () => 0,
+  });
+  await pm.reconcile();                     // establishes gw4-b (fakeLink.open → connected)
+  assert.equal(links.get('gw4-b')!.core.state, 'connected');
+
+  fail = true;
+  await pm.reconcile();                     // roster unavailable → keep current state
+  const calls = links.get('gw4-b')!.calls;
+  assert.ok(!calls.includes('offline'));
+  assert.ok(!calls.includes('close'));
+  assert.equal(pm.snapshot().length, 1);
+  assert.equal(links.get('gw4-b')!.core.state, 'connected');
+});

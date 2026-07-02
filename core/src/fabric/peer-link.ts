@@ -154,6 +154,15 @@ export class PeerLink {
     this.markPeerOffline();
   }
 
+  /**
+   * Hub re-auth (spec N5): a failed link becomes immediately retryable. since=0
+   * makes the backoffMs gate in PeerManager.reconcile() pass on the very next
+   * tick (now - 0 >= any capped backoff), instead of waiting out the timer.
+   */
+  resetRetry(): void {
+    if (this.core.state === 'failed') this.core = { ...this.core, attempts: 0, since: 0 };
+  }
+
   snapshot(): PeerLinkSnapshot {
     const connected = this.core.state === 'connected' && !!this.ch;
     const degraded = connected && this.ch!.mode === 'relay';

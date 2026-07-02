@@ -88,3 +88,54 @@ test('sync-firing close does not stomp the legacy state', async () => {
   assert.equal(link.core.attempts, 0);
   assert.equal(link.snapshot().counters.helloTimeouts, 1);
 });
+
+test('markPeerOffline with sync-firing close does not pollute attempts', async () => {
+  // Same sync-close fake as above, but this one reaches 'connected' first (hello-ack replied),
+  // then markPeerOffline() closes it — the close() call fires onClose synchronously, and the
+  // pre-fix ordering let that reduce a 'channel-closed' (bumping attempts) before 'peer-offline'
+  // landed. attach()'s `this.ch === ch` guard (ch nulled BEFORE close()) must prevent that.
+  let closeCallback: ((reason?: string) => void) | null = null;
+  let dataCb: ((d: Buffer) => void) | null = null;
+  const syncCloseCh = {
+    mode: 'bidi' as const, via: 'host' as const, rtt: 3,
+    sendControl: () => {},
+    onData: (cb: (d: Buffer) => void) => { dataCb = cb; },
+    onClose: (cb: (r?: string) => void) => { closeCallback = cb; },
+    close: () => { if (closeCallback) closeCallback('sync'); }, // Sync fire
+  };
+  const reply = (b: Buffer) => dataCb && dataCb(b);
+  const link = new PeerLink('gw4-peer', { openChannel: async () => syncCloseCh as LinkChannel, selfNode: 'gw4-self', now: () => 1, helloTimeoutMs: 1000 });
+  const opening = link.open();
+  await new Promise((r) => setImmediate(r));
+  reply(ack());
+  await opening;
+  assert.equal(link.core.state, 'connected');
+
+  link.markPeerOffline();
+  assert.equal(link.core.state, 'idle');
+  assert.equal(link.core.attempts, 0);
+});
+
+test('resetRetry clears attempts/since only when failed; connected link is untouched', async () => {
+  const failedLink = new PeerLink('gw4-peer', { openChannel: async () => { throw new Error('down'); }, selfNode: 'gw4-self', now: () => 500 });
+  await failedLink.open();
+  assert.equal(failedLink.core.state, 'failed');
+  assert.equal(failedLink.core.attempts, 1);
+
+  failedLink.resetRetry();
+  assert.equal(failedLink.core.state, 'failed'); // resetRetry does not change state, only attempts/since
+  assert.equal(failedLink.core.attempts, 0);
+  assert.equal(failedLink.core.since, 0);
+
+  const f = fakeCh();
+  const connectedLink = new PeerLink('gw4-peer', { openChannel: async () => f.ch, selfNode: 'gw4-self', now: () => 1, helloTimeoutMs: 1000 });
+  const opening = connectedLink.open();
+  await new Promise((r) => setImmediate(r));
+  f.reply(ack());
+  await opening;
+  assert.equal(connectedLink.core.state, 'connected');
+  const before = { ...connectedLink.core };
+
+  connectedLink.resetRetry(); // no-op: link is not 'failed'
+  assert.deepEqual(connectedLink.core, before);
+});

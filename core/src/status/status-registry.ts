@@ -72,10 +72,11 @@ export function registerCoreStatusProviders(): void {
     if (!f.enabled) return { verdict: 'ok', summary: 'fabric disabled' };
     const by = (s: string) => f.peers.filter((p) => p.state === s).length;
     const direct = f.peers.filter((p) => p.pathInUse === 'direct').length;
+    const relay = f.peers.filter((p) => p.pathInUse === 'relay-floor').length;
     const verdict: StatusVerdict = by('failed') > 0 ? 'warn' : 'ok';
     return {
       verdict,
-      summary: `${f.peers.length} peers — ${direct} direct · ${by('degraded')} relay · ${by('legacy')} legacy · ${by('failed')} failed`,
+      summary: `${f.peers.length} peers — ${direct} direct · ${relay} relay · ${by('legacy')} legacy · ${by('failed')} failed`,
       detail: f,
     };
   });

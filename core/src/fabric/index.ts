@@ -23,11 +23,25 @@ interface FabricTestDeps {
 let mgr: PeerManager | null = null;
 let self = { node: '', cluster: 'default' };
 
+/**
+ * Shared kill-switch read (Fix 3): used both to gate PeerManager.reconcile() on
+ * every tick (mid-session flips take effect without a restart) and to report
+ * getFabricStatus() honestly. Any settings-read failure defaults to enabled —
+ * matches the pre-fix boot-time behavior of an unguarded getProjectSettings() call.
+ */
+function fabricSettingEnabled(): boolean {
+  try {
+    const { getProjectSettings } = require('../project-settings') as typeof import('../project-settings');
+    return getProjectSettings().fabricEnabled;
+  } catch {
+    return true;
+  }
+}
+
 export function initFabric(selfNode: string): void {
   // Lazy requires keep boot-order safe (settings/cluster/peer-client each read files).
-  const { getProjectSettings } = require('../project-settings') as typeof import('../project-settings');
-  if (!getProjectSettings().fabricEnabled) { stopFabric(); return; }
-  if (mgr && self.node === selfNode) return; // reconnect with same id → keep links
+  if (!fabricSettingEnabled()) { stopFabric(); return; }
+  if (mgr && self.node === selfNode) { mgr.retryFailedNow(); return; } // reconnect with same id → keep links, re-kick any failed ones now
   stopFabric();
   const { getMyCluster } = require('../cluster/cluster-config') as typeof import('../cluster/cluster-config');
   const { listOnlineNodeIds } = require('../data/peer-client') as typeof import('../data/peer-client');
@@ -40,6 +54,7 @@ export function initFabric(selfNode: string): void {
       now: () => Date.now(),
     }),
     now: () => Date.now(),
+    enabled: fabricSettingEnabled,
   });
   mgr.start();
 }
@@ -54,7 +69,8 @@ export function stopFabric(): void {
 }
 
 export function getFabricStatus(): FabricStatus {
-  return { enabled: !!mgr, self: { ...self }, peers: mgr ? mgr.snapshot() : [] };
+  const settingOn = fabricSettingEnabled();
+  return { enabled: !!mgr && settingOn, self: { ...self }, peers: mgr ? mgr.snapshot() : [] };
 }
 
 /** Inbound fabric channel (routed by inbound-router). */
