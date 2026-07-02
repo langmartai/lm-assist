@@ -70,3 +70,21 @@ test('open failure → failed with attempts', async () => {
   assert.equal(link.core.attempts, 1);
   assert.match(link.core.lastError ?? '', /hub not connected/);
 });
+
+test('sync-firing close does not stomp the legacy state', async () => {
+  // Build a fake channel whose close() synchronously invokes onClose callback
+  let closeCallback: ((reason?: string) => void) | null = null;
+  const syncCloseCh = {
+    mode: 'bidi' as const, via: 'host' as const, rtt: 3,
+    sendControl: () => {},
+    onData: () => {},
+    onClose: (cb: (r?: string) => void) => { closeCallback = cb; },
+    close: () => { if (closeCallback) closeCallback('sync'); }, // Sync fire
+  };
+  const link = new PeerLink('gw4-peer', { openChannel: async () => syncCloseCh as LinkChannel, selfNode: 'gw4-self', now: () => 1, helloTimeoutMs: 10 });
+  await link.open();
+  // Channel closed synchronously during hello-timeout, but state should stay 'legacy' not 'failed'
+  assert.equal(link.core.state, 'legacy');
+  assert.equal(link.core.attempts, 0);
+  assert.equal(link.snapshot().counters.helloTimeouts, 1);
+});

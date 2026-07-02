@@ -77,8 +77,8 @@ export class PeerLink {
     } else {
       this.counters.helloTimeouts++;
       this.reduce({ type: 'hello-timeout' });
+      this.ch = null; // null BEFORE close — Channel.close() fires onClose synchronously (reliable.ts teardown)
       try { ch.close(); } catch { /* best-effort */ }
-      this.ch = null;
     }
   }
 
@@ -144,7 +144,9 @@ export class PeerLink {
   }
 
   markPeerOffline(): void {
-    if (this.ch) { try { this.ch.close(); } catch { /* best-effort */ } this.ch = null; }
+    const ch2 = this.ch;
+    this.ch = null; // null BEFORE close — Channel.close() fires onClose synchronously (reliable.ts teardown)
+    if (ch2) { try { ch2.close(); } catch { /* best-effort */ } }
     this.reduce({ type: 'peer-offline' });
   }
 
