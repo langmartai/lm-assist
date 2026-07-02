@@ -24,6 +24,9 @@ export interface PeerLinkDeps {
   selfNode: string;
   now(): number;
   helloTimeoutMs?: number;
+  /** This node's direct-TCP endpoint to advertise in the HELLO, or null if it
+   *  runs no TCP listener. Read live at hello-build time. */
+  selfTcp?: () => import('./protocol').FabricTcpEndpoint | null;
 }
 
 export interface PeerLinkSnapshot {
@@ -50,8 +53,16 @@ export class PeerLink {
     this.core = { state: 'discovered', since: deps.now(), attempts: 0, lastError: null };
   }
 
+  private peerTcpEndpoint: import('./protocol').FabricTcpEndpoint | null = null;
+
+  /** The peer's advertised direct-TCP endpoint (from its HELLO), or null. */
+  peerTcp(): import('./protocol').FabricTcpEndpoint | null {
+    return this.peerTcpEndpoint;
+  }
+
   private hello(kind: FabricHello['kind']): Buffer {
-    return encodeFabricControl({ type: FABRIC_TAG, kind, version: FABRIC_VERSION, features: ['status'], node: this.deps.selfNode });
+    const tcp = this.deps.selfTcp?.() ?? undefined;
+    return encodeFabricControl({ type: FABRIC_TAG, kind, version: FABRIC_VERSION, features: ['status'], node: this.deps.selfNode, ...(tcp ? { tcp } : {}) });
   }
 
   private reduce(ev: Parameters<typeof reduceLink>[1]): void {
@@ -101,6 +112,7 @@ export class PeerLink {
         if (f.kind !== 'control') continue;
         const msg = parseFabricControl(f.msg);
         if (msg?.kind === 'hello') {
+          if (msg.tcp) this.peerTcpEndpoint = msg.tcp;
           ch.sendControl(this.hello('hello-ack'));
           this.reduce({ type: 'hello-ok' });
           this.counters.helloOk++;
@@ -128,7 +140,10 @@ export class PeerLink {
       ch.onData((chunk) => {
         let frames; try { frames = reader.push(chunk); } catch { return; }
         for (const f of frames) {
-          if (f.kind === 'control' && parseFabricControl(f.msg)) {
+          if (f.kind !== 'control') continue;
+          const msg = parseFabricControl(f.msg);
+          if (msg) {
+            if (msg.tcp) this.peerTcpEndpoint = msg.tcp;
             clearTimeout(timer);
             resolve(true);
             return;

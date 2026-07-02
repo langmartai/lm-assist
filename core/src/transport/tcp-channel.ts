@@ -73,6 +73,11 @@ export interface TcpChannelOptions {
   maxQueueBytes?: number;
   /** See DEFAULT_LINGER_MS. */
   lingerMs?: number;
+  /** Bytes already read off the socket before it was wrapped (e.g. a handshake
+   *  reader on the listener consumed the hello and left trailing bytes). Fed
+   *  through the frame reader on construction; frames that complete before a
+   *  consumer registers onData() are buffered and flushed on registration. */
+  initialData?: Buffer;
 }
 
 /**
@@ -124,6 +129,7 @@ export class TcpChannel implements Channel {
   private reader = new LengthPrefixedReader();
   private dataCb: ((data: Buffer) => void) | null = null;
   private unreliableCb: ((data: Buffer) => void) | null = null;
+  private pendingFrames: Buffer[] = []; // frames that arrived before onData() was registered
   private closeCbs: Array<(reason?: string) => void> = [];
   private drainCbs: Array<() => void> = [];
   private closed = false; // close() was called (graceful shutdown initiated)
@@ -157,6 +163,11 @@ export class TcpChannel implements Channel {
     socket.on('close', () => this.finishClose('closed'));
     socket.on('end', () => this.finishClose('ended'));
     socket.on('error', (err: Error) => this.finishClose('error: ' + err.message));
+
+    // Bytes consumed off the socket before wrapping (e.g. the listener's hello
+    // reader left trailing bytes): feed them through the reader now; completed
+    // frames buffer in pendingFrames until onData() registers.
+    if (opts.initialData && opts.initialData.length > 0) this.onSocketData(opts.initialData);
   }
 
   get mode(): 'bidi' {
@@ -201,6 +212,14 @@ export class TcpChannel implements Channel {
 
   onData(cb: (data: Buffer) => void): void {
     this.dataCb = cb;
+    if (this.pendingFrames.length > 0) {
+      const flush = this.pendingFrames;
+      this.pendingFrames = [];
+      for (const f of flush) {
+        cb(f);
+        if (this.unreliableCb) this.unreliableCb(f);
+      }
+    }
   }
 
   /**
@@ -273,8 +292,13 @@ export class TcpChannel implements Channel {
       return;
     }
     for (const f of frames) {
-      if (this.dataCb) this.dataCb(f);
-      if (this.unreliableCb) this.unreliableCb(f);
+      if (this.dataCb) {
+        this.dataCb(f);
+        if (this.unreliableCb) this.unreliableCb(f);
+      } else {
+        // No consumer yet — buffer until onData() registers (initialData/hello race).
+        this.pendingFrames.push(f);
+      }
     }
   }
 

@@ -16,6 +16,7 @@ export interface PeerLinkLike {
   close(): void;
   markPeerOffline(): void;
   resetRetry?(): void;
+  peerTcp?(): import('./protocol').FabricTcpEndpoint | null;
   snapshot(): PeerLinkSnapshot;
 }
 
@@ -28,6 +29,11 @@ export interface PeerManagerDeps {
 }
 
 export class PeerManager {
+  /** The peer's advertised direct-TCP endpoint from its live link, or null. */
+  peerTcp(peer: string): import('./protocol').FabricTcpEndpoint | null {
+    return this.links.get(peer)?.peerTcp?.() ?? null;
+  }
+
   private links = new Map<string, PeerLinkLike>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private reconciling = false;

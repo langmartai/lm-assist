@@ -52,6 +52,7 @@ export function initFabric(selfNode: string): void {
       openChannel: (p) => openChannel(p) as unknown as Promise<LinkChannel>,
       selfNode,
       now: () => Date.now(),
+      selfTcp: () => selfTcpEndpoint,
     }),
     now: () => Date.now(),
     enabled: fabricSettingEnabled,
@@ -66,6 +67,20 @@ function safeCluster(getMyCluster: () => string): string {
 export function stopFabric(): void {
   mgr?.stop();
   mgr = null;
+}
+
+/** This node's direct-TCP endpoint, set by the TCP listener at boot; advertised
+ *  to peers in the fabric HELLO so a same-LAN peer can open a kernel-TCP channel. */
+let selfTcpEndpoint: import('./protocol').FabricTcpEndpoint | null = null;
+
+export function setFabricSelfTcp(ep: import('./protocol').FabricTcpEndpoint | null): void {
+  selfTcpEndpoint = ep;
+}
+
+/** The peer's advertised direct-TCP endpoint (learned via its HELLO on the warm
+ *  fabric link), or null if unknown / peer runs no listener / not fabric-linked. */
+export function getPeerTcpEndpoint(peer: string): import('./protocol').FabricTcpEndpoint | null {
+  return mgr?.peerTcp(peer) ?? null;
 }
 
 export function getFabricStatus(): FabricStatus {

@@ -11,12 +11,21 @@ import { KIND_CONTROL } from '../file-transfer/frame';
 export const FABRIC_TAG = 'lm-fabric/1' as const;
 export const FABRIC_VERSION = 1 as const;
 
+export interface FabricTcpEndpoint {
+  host: string;
+  port: number;
+}
+
 export interface FabricHello {
   type: typeof FABRIC_TAG;
   kind: 'hello' | 'hello-ack';
   version: number;
   features: string[];
   node: string; // sender's gatewayId
+  /** The sender's direct-TCP endpoint (LAN host IP + port), if it runs a TCP
+   *  listener. Lets a same-LAN peer open a kernel-TCP channel for bulk instead
+   *  of the UDP path. Optional + additive — a W1 peer omits it. */
+  tcp?: FabricTcpEndpoint;
 }
 
 export type FabricControl = FabricHello;
@@ -38,11 +47,16 @@ export function parseFabricControl(msg: unknown): FabricHello | null {
   const m = msg as Record<string, unknown> | null;
   if (!m || m.type !== FABRIC_TAG) return null;
   if (m.kind !== 'hello' && m.kind !== 'hello-ack') return null;
-  return {
+  const out: FabricHello = {
     type: FABRIC_TAG,
     kind: m.kind,
     version: typeof m.version === 'number' ? m.version : 0,
     features: Array.isArray(m.features) ? (m.features as string[]) : [],
     node: typeof m.node === 'string' ? m.node : '',
   };
+  const tcp = m.tcp as Record<string, unknown> | undefined;
+  if (tcp && typeof tcp.host === 'string' && typeof tcp.port === 'number') {
+    out.tcp = { host: tcp.host, port: tcp.port };
+  }
+  return out;
 }
