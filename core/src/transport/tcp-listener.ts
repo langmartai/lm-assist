@@ -96,9 +96,15 @@ export function startTcpListener(deps: TcpListenerDeps): TcpListenerHandle {
     socket.setNoDelay(true);
     readHello(socket)
       .then(async ({ hello, leftover }) => {
-        const ok = await deps.isKnownPeer(hello.node);
-        if (!ok) { try { socket.destroy(); } catch { /* ignore */ } return; }
+        // Create the channel NOW, before the (async) isKnownPeer check. readHello
+        // removed its own 'data' listener, which pauses the socket; if we awaited
+        // isKnownPeer first, every byte the peer sends during that window would
+        // pile up unread and be lost — observed: only the final FT_END survives a
+        // ~100ms check, so the receiver sees "FT_END before FT_META". The channel
+        // buffers inbound frames into pendingFrames until onChannel wires onData.
         const channel = new TcpChannel(socket, hello.node, { initialData: leftover });
+        const ok = await deps.isKnownPeer(hello.node);
+        if (!ok) { channel.close(); return; }
         deps.onChannel(channel, hello.node);
       })
       .catch(() => { try { socket.destroy(); } catch { /* ignore */ } });

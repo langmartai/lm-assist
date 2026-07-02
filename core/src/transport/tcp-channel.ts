@@ -163,6 +163,11 @@ export class TcpChannel implements Channel {
     socket.on('close', () => this.finishClose('closed'));
     socket.on('end', () => this.finishClose('ended'));
     socket.on('error', (err: Error) => this.finishClose('error: ' + err.message));
+    // Ensure flowing mode: the listener's readHello attaches then REMOVES its own
+    // 'data' listener, which pauses the socket in Node. Attaching ours above does
+    // not reliably auto-resume on all platforms (observed: Windows receiver stalls
+    // after the hello — only the pre-handoff bytes arrive). Resume explicitly.
+    try { socket.resume(); } catch { /* ignore */ }
 
     // Bytes consumed off the socket before wrapping (e.g. the listener's hello
     // reader left trailing bytes): feed them through the reader now; completed
@@ -314,7 +319,11 @@ export class TcpChannel implements Channel {
 
   private writeFramed(framed: Buffer): boolean {
     if (this.torndown || this.closed) return false;
-    if (!this.socketWritable) {
+    // Order-preserving: if the socket is backpressured OR anything is already
+    // queued, this frame MUST queue behind it — otherwise a later frame (e.g.
+    // FT_END) written directly while the socket is momentarily writable would
+    // overtake still-queued data frames, truncating the stream at the receiver.
+    if (!this.socketWritable || this.sendQueue.length > 0) {
       this.enqueue(framed);
       return false;
     }

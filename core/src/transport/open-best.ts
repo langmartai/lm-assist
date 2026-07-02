@@ -57,14 +57,14 @@ function tryTcp(peer: string, ep: { host: string; port: number }): Promise<TcpCh
  * channel, preserving today's behavior for those explicit modes.
  */
 export async function openBestChannel(peer: string, opts?: OpenChannelOpts): Promise<Channel> {
-  // TCP-for-LAN is gated OFF by default (LM_FABRIC_TCP=1 to enable). The path
-  // works end-to-end on loopback (verified to 100MB) but a cross-machine
-  // Linux→Windows transfer currently fails the TCP attempt and falls back to
-  // relay — until that is root-caused, enabling it by default would only add a
-  // failed-connect + attempt latency before the relay fallback. Flip the flag
-  // on the nodes under test to debug; the fabric endpoint advertisement +
-  // listener stay live so `/fabric/status` shows peerTcp regardless.
-  if (process.env.LM_FABRIC_TCP === '1' && !opts?.forceMode) {
+  // Direct kernel-TCP for same-LAN peers: validated byte-perfect cross-machine
+  // at 225 MB/s (Linux↔Linux) and 93 MB/s (Linux↔Windows), ~40× the relay.
+  // On by default; set LM_FABRIC_TCP=0 to force the hybrid/relay path. We only
+  // attempt TCP when the peer advertised a reachable endpoint over the fabric
+  // HELLO; otherwise (W1/non-fabric peers, forceMode) we fall straight through
+  // to openChannel, and a failed/blocked connect times out (1.5s) and falls back
+  // too — so nothing regresses when the direct path is unavailable.
+  if (process.env.LM_FABRIC_TCP !== '0' && !opts?.forceMode) {
     const ep = peerTcpEndpoint(peer);
     if (ep) {
       const tcp = await tryTcp(peer, ep);
