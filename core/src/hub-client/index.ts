@@ -96,6 +96,7 @@ export class HubClient extends EventEmitter {
   private consoleRelayHandler: ConsoleRelayHandler | null = null;
   private portForwardHandler: PortForwardHandler | null = null;
   private transportInboundWired = false;
+  private tcpListenerStarted = false;
   private sessionCacheSync: SessionCacheSync | null = null;
   private config: HubConfig;
   private options: Required<Pick<HubClientOptions, 'hubUrl' | 'apiKey' | 'localApiPort' | 'autoReconnect' | 'reconnectDelay' | 'maxReconnectAttempts'>> & Pick<HubClientOptions, 'adminWebPort' | 'assistWebPort' | 'vibeCoderPort'>;
@@ -487,6 +488,37 @@ export class HubClient extends EventEmitter {
               },
             });
           });
+        }
+        // Direct-TCP listener (LAN native-speed bulk path). Ephemeral port,
+        // advertised to peers via the fabric HELLO so same-LAN transfers ride
+        // kernel TCP instead of the ~9 MB/s userspace-UDP path.
+        if (!this.tcpListenerStarted) {
+          this.tcpListenerStarted = true;
+          try {
+            const { startTcpListener } = require('../transport/tcp-listener') as typeof import('../transport/tcp-listener');
+            const { setFabricSelfTcp } = require('../fabric') as typeof import('../fabric');
+            const { listAllOnlineNodeIds } = require('../data/peer-client') as typeof import('../data/peer-client');
+            const nodeIp = this.getNodeInfo().ip;
+            startTcpListener({
+              port: Number(process.env.LM_FABRIC_TCP_PORT) || 3130, // fixed → a peer's cached endpoint stays valid across restarts
+              isKnownPeer: async (node) => { try { return (await listAllOnlineNodeIds()).includes(node); } catch { return false; } },
+              onChannel: (tcpCh) => {
+                handleIncomingTransfer(tcpCh as never, {}).catch((e) =>
+                  console.error('[HubClient] inbound TCP transfer failed:', e));
+              },
+              onListening: (port) => {
+                setFabricSelfTcp({ host: nodeIp, port });
+                console.log(`[HubClient] direct-TCP listener on ${nodeIp}:${port}`);
+                // Re-advertise once more after links have had time to connect —
+                // covers a link that came up in the boot race window before the
+                // endpoint was set (setFabricSelfTcp re-runs readvertiseAll).
+                const t = setTimeout(() => setFabricSelfTcp({ host: nodeIp, port }), 4000);
+                if (t.unref) t.unref();
+              },
+            });
+          } catch (e) {
+            console.debug('[HubClient] TCP listener start failed (relay/UDP still work):', (e as Error).message);
+          }
         }
       }
 

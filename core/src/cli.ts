@@ -17,6 +17,7 @@ import { startServer } from './index';
 import { getHubClient, isHubConfigured } from './hub-client';
 import { saveHubConnectionConfig } from './hub-client/hub-config';
 import { getStartupProfiler } from './startup-profiler';
+import { startLogRotation } from './utils/log-rotate';
 
 // Dev repo → 3200/3948, npm package → 3100/3848
 // Override with LM_ASSIST_PROD=true to use prod ports/identity from dev repo
@@ -101,6 +102,11 @@ async function main() {
 async function runServer() {
   const profiler = getStartupProfiler();
   profiler.start('total', 'Total Startup');
+
+  // Cap the redirected stdout/stderr log so a long-lived node can't grow it
+  // without bound (per-request relay logging reached 2.6 GB). Runs one pass now
+  // to shrink an already-huge log from a prior run, then every 5 minutes.
+  startLogRotation();
 
   const hubConfigured = isHubConfigured();
   const hubUrl = process.env.TIER_AGENT_HUB_URL || '';

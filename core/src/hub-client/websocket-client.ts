@@ -304,8 +304,9 @@ export class WebSocketClient extends EventEmitter {
       const message = JSON.parse(dataStr) as Record<string, unknown>;
       const messageType = message.type || message.event;
 
-      // Debug log all incoming messages except heartbeat responses
-      if (messageType !== 'heartbeat_ack' && messageType !== 'pong') {
+      // Per-message trace — fires for every relayed request on a busy hub node,
+      // so it's gated (LM_HUB_VERBOSE=1) to keep the log from ballooning.
+      if (process.env.LM_HUB_VERBOSE === '1' && messageType !== 'heartbeat_ack' && messageType !== 'pong') {
         console.log(`[WebSocketClient] Received message: type=${messageType}`);
       }
 

@@ -13,6 +13,8 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { randomUUID } from 'crypto';
 import { openChannel, Channel } from '../transport';
+import { openBestChannel } from '../transport/open-best';
+import { TcpChannel } from '../transport/tcp-channel';
 import { FrameReader, encodeControl, encodeData } from './frame';
 import { TransferError, classifyError, isRetriable } from './errors';
 import { beginTransfer, updateTransfer, setTransferMeta, endTransfer } from './transfer-stats';
@@ -148,9 +150,10 @@ export async function sendPath(
   let lastMode = '';
   let currentChannel: Channel | null = null;
   const attempt = async (forceMode?: 'direct' | 'relay'): Promise<SendResult> => {
-  const channel = await openChannel(peerGatewayId, forceMode ? { forceMode } : undefined);
+  const channel = await openBestChannel(peerGatewayId, forceMode ? { forceMode } : undefined);
   currentChannel = channel;
   lastMode = channel.mode;
+  const isTcp = channel instanceof TcpChannel; // kernel-TCP LAN path — reliable send IS the fast path
   try {
     // FIREHOSE FAST PATH: single large file (> LARGE) + a confirmed direct path.
     // Wait briefly for the direct leg to confirm; if it does, run the rate-paced
@@ -158,6 +161,7 @@ export async function sendPath(
     // existing reliable path on THIS channel (unchanged behavior).
     const firehoseEligible =
       process.env.LM_FIREHOSE !== '0' && // default-on for large (>10MB) single-file direct transfers; set LM_FIREHOSE=0 to disable
+      !isTcp && // over kernel TCP the plain reliable send() IS line-rate; firehose (UDP blast) is pointless
       forceMode !== 'relay' &&
       entries.length === 1 && !entries[0].isDir && totalBytes > LARGE;
     if (firehoseEligible && (await waitForDirect(channel, 3000))) {
@@ -173,6 +177,12 @@ export async function sendPath(
 
     const reader = new FrameReader();
     const done = waitForReply(channel, reader, transferId);
+    // Attach a handler NOW so a channel-close that rejects `done` before we
+    // reach `await done` below (e.g. the peer resets mid-stream) is not an
+    // unhandled rejection (which crashes the process). The real error is still
+    // surfaced by `await done` in the try/catch — a promise may carry many
+    // handlers.
+    done.catch(() => { /* real handling is at `await done` */ });
 
     // Announce ourselves as a file-transfer channel, then the manifest.
     channel.sendControl(encodeControl({ type: SUBSYSTEM_TAG } as never));
@@ -310,6 +320,13 @@ async function streamFile(
       channel.send(encodeData(transferId, entryIndex, offset, slice));
       offset += bytesRead;
       onChunk(bytesRead);
+      // Over a kernel-TCP channel, honor socket backpressure: the loop can read
+      // + frame far faster than the peer drains, so without this it would flood
+      // the channel's internal queue. The UDP channel paces via its own send
+      // window, so this only applies to TcpChannel.
+      if (channel instanceof TcpChannel && !channel.isWritable()) {
+        await channel.whenWritable();
+      }
     }
   } finally {
     await fh.close();

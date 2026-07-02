@@ -24,6 +24,9 @@ export interface PeerLinkDeps {
   selfNode: string;
   now(): number;
   helloTimeoutMs?: number;
+  /** This node's direct-TCP endpoint to advertise in the HELLO, or null if it
+   *  runs no TCP listener. Read live at hello-build time. */
+  selfTcp?: () => import('./protocol').FabricTcpEndpoint | null;
 }
 
 export interface PeerLinkSnapshot {
@@ -37,6 +40,8 @@ export interface PeerLinkSnapshot {
   lastError: string | null;
   attempts: number;
   counters: { helloOk: number; helloTimeouts: number; inboundAdopted: number };
+  /** Peer's advertised direct-TCP endpoint (from its HELLO), for diagnostics. */
+  peerTcp?: import('./protocol').FabricTcpEndpoint | null;
 }
 
 const DEFAULT_HELLO_TIMEOUT_MS = 5000;
@@ -50,8 +55,25 @@ export class PeerLink {
     this.core = { state: 'discovered', since: deps.now(), attempts: 0, lastError: null };
   }
 
+  private peerTcpEndpoint: import('./protocol').FabricTcpEndpoint | null = null;
+
+  /** The peer's advertised direct-TCP endpoint (from its HELLO), or null. */
+  peerTcp(): import('./protocol').FabricTcpEndpoint | null {
+    return this.peerTcpEndpoint;
+  }
+
+  /** Re-send our HELLO on the live link so a peer picks up a self field that
+   *  changed after the link came up (e.g. the TCP endpoint, which is set once
+   *  the listener binds — after initFabric already sent the first HELLO). */
+  readvertise(): void {
+    if (this.ch && this.core.state === 'connected') {
+      try { this.ch.sendControl(this.hello('hello')); } catch { /* best-effort */ }
+    }
+  }
+
   private hello(kind: FabricHello['kind']): Buffer {
-    return encodeFabricControl({ type: FABRIC_TAG, kind, version: FABRIC_VERSION, features: ['status'], node: this.deps.selfNode });
+    const tcp = this.deps.selfTcp?.() ?? undefined;
+    return encodeFabricControl({ type: FABRIC_TAG, kind, version: FABRIC_VERSION, features: ['status'], node: this.deps.selfNode, ...(tcp ? { tcp } : {}) });
   }
 
   private reduce(ev: Parameters<typeof reduceLink>[1]): void {
@@ -101,6 +123,7 @@ export class PeerLink {
         if (f.kind !== 'control') continue;
         const msg = parseFabricControl(f.msg);
         if (msg?.kind === 'hello') {
+          if (msg.tcp) this.peerTcpEndpoint = msg.tcp;
           ch.sendControl(this.hello('hello-ack'));
           this.reduce({ type: 'hello-ok' });
           this.counters.helloOk++;
@@ -128,7 +151,10 @@ export class PeerLink {
       ch.onData((chunk) => {
         let frames; try { frames = reader.push(chunk); } catch { return; }
         for (const f of frames) {
-          if (f.kind === 'control' && parseFabricControl(f.msg)) {
+          if (f.kind !== 'control') continue;
+          const msg = parseFabricControl(f.msg);
+          if (msg) {
+            if (msg.tcp) this.peerTcpEndpoint = msg.tcp;
             clearTimeout(timer);
             resolve(true);
             return;
@@ -178,6 +204,7 @@ export class PeerLink {
       lastError: this.core.lastError,
       attempts: this.core.attempts,
       counters: { ...this.counters },
+      peerTcp: this.peerTcpEndpoint,
     };
   }
 }
