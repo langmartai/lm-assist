@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as crypto from 'crypto';
+import * as path from 'path';
 
 export interface Source {
   size(): Promise<number>;
@@ -35,10 +36,11 @@ export class FileSource implements Source {
 
 export class FileSink implements Sink {
   async receivedBytes(destPath: string): Promise<number> {
-    try { return (await fsp.stat(destPath)).size; } catch { return 0; }
+    try { return (await fsp.stat(destPath)).size; }
+    catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return 0; throw e; }
   }
   async open(destPath: string, resumeFrom: number): Promise<OpenSink> {
-    await fsp.mkdir(require('path').dirname(destPath), { recursive: true });
+    await fsp.mkdir(path.dirname(destPath), { recursive: true });
     // resumeFrom>0 ⇒ keep existing bytes (r+); else truncate (w).
     const handle = await fsp.open(destPath, resumeFrom > 0 ? 'r+' : 'w');
     return {
