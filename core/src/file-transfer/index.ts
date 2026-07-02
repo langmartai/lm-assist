@@ -21,8 +21,9 @@
 export { sendPath, listRemote, requestFs } from './sender';
 export { TransferError, classifyError, isRetriable } from './errors';
 export { snapshotTransfers, getTransfer } from './transfer-stats';
-export { enqueueSend, snapshotQueue, getSendJob } from './send-queue';
-export type { SendJobView, SendJobState } from './send-queue';
+export { enqueueJob, cancelJob, getJob, snapshot, waitForJob, recover, RESUME_MIN_BYTES } from './job-manager';
+export type { JobView } from './job-manager';
+export type { JobState, JobRecord, SourceRef, SinkRef } from './job-store';
 export type { TransferStatView } from './transfer-stats';
 export type { TransferErrorCode } from './errors';
 export { handleIncomingTransfer, receiveRoot } from './receiver';

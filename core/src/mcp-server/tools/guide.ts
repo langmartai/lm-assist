@@ -23,7 +23,7 @@ const TOPIC_TOOLS: Record<string, string[]> = {
   'claude-ai': ['list_claudeai_conversations', 'read_conversation', 'claudeai_create_conversation', 'claudeai_completion', 'delete_conversation', 'claudeai_list_marketplaces', 'claudeai_list_marketplace_plugins', 'claudeai_list_plugins', 'claudeai_add_marketplace', 'claudeai_remove_marketplace', 'claudeai_set_plugin_enabled', 'list_claudeai_connectors', 'refresh_connector_tools', 'set_connector_tool_access'],
   account: ['auth_status', 'claude_code_usage', 'claude_code_account', 'claudeai_account', 'claudeai_active_sessions'],
   github: ['github_query', 'github_mutate'],
-  files: ['fs_drives', 'fs_list', 'fs_stat', 'fs_read', 'transfer_queue', 'transfer_send_file', 'transfer_list_remote', 'transfer_stats'],
+  files: ['fs_drives', 'fs_list', 'fs_stat', 'fs_read', 'transfer_queue', 'transfer_send_file', 'transfer_list_remote', 'transfer_stats', 'transfer_cancel', 'transfer_status'],
   roles: ['set_role', 'report_status', 'worker_status', 'list_workers', 'decide_gate'],
   missions: ['mission_create', 'mission_list', 'mission_update', 'mission_control_status'],
   'mission-controller': ['mission_place', 'mission_executor_status', 'mission_sessions', 'mission_session_read', 'mission_session_drive', 'mission_session_control'],
@@ -104,7 +104,7 @@ End-to-end recipes. Each step names a tool; add \`node=<host>\` to target anothe
    list_claudeai_conversations → read_conversation(uuid) → extract → data_put({the notes}). Push a reply instead: claudeai_completion(uuid, prompt).
 
 8) MOVE A FILE BETWEEN HOSTS
-   fs_list(path, node=A) → transfer_send_file (A→B) → transfer_stats (progress) → fs_stat(dest, node=B) to confirm. (fs_read refuses secret/credential paths.)
+   fs_list(path, node=A) → transfer_send_file (A→B, returns jobId) → transfer_status(jobId) or transfer_stats (progress) → fs_stat(dest, node=B) to confirm. transfer_cancel(jobId) to abort a queued/active send. (fs_read refuses secret/credential paths.)
 
 9) REACH A SERVICE ON ANOTHER HOST
    list_nodes → open_port_forward(node=B, remotePort=...) → use the forwarded local port → port_forward_stats → close_port_forward.
@@ -270,7 +270,8 @@ CROSS-NODE: pass \`node=\` the host whose gh auth/repo you want (auth + checkout
 
   files: `# Guide: files & transfer
 • \`fs_drives\` / \`fs_list(path)\` / \`fs_stat(path)\` → browse a host's filesystem. \`fs_read(path, offset?, maxBytes?)\` → read a file.
-• \`transfer_queue\` / \`transfer_send_file\` / \`transfer_list_remote\` / \`transfer_stats\` → move files BETWEEN hosts.
+• \`transfer_send_file\` → move a file/dir BETWEEN hosts. Runs through a durable job manager (survives peer drops + Core restarts, auto-retries, large single files resume) — returns a \`jobId\` immediately (default) or blocks with \`wait:true\` (returns the terminal result, or \`{jobId,state}\` if it times out first).
+• \`transfer_status(jobId)\` → poll ONE job by id. \`transfer_cancel(jobId)\` → cancel a queued/active job. \`transfer_queue\` → every job on a node. \`transfer_list_remote\` → list a peer directory. \`transfer_stats\` → live byte-level progress of active/recent transfers.
 CROSS-NODE: fs_* take \`node=\` to browse/read a specific host; transfer_send_file moves a file from one node to another (workflow #8).
 GOTCHA: fs_read REFUSES credential/secret paths (.ssh/.aws/.env/tokens/keys, the lm-assist key) by design.`,
 
