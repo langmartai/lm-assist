@@ -23,13 +23,24 @@
  *   (c) cancelling an active job -> executor observes signal.aborted -> 'cancelled';
  *   (d) a retriable failure twice, then success -> attempts increments, ends 'done';
  *   (f) recover() replays a persisted non-terminal record as 'queued';
+ *   (g) recover() also drops a terminal record past the retention window
+ *       while still re-queueing a non-terminal record seeded in that same
+ *       call (the drop and the re-queue are proven together, not in isolation);
+ *   (h) the TTL sweep against a *cooperative* (abort-responsive) executor
+ *       still disambiguates to 'expired' via cancelReason, not 'cancelled'
+ *       — the counterpart of (e) below, which covers the non-cooperative
+ *       (stuck, ignores abort) executor instead;
  *   (e) the TTL sweep marks an expired job 'expired' even if its executor is
  *       stuck and never responds to abort.
  *
- * (f) runs before (e) deliberately: (e)'s stuck-forever executor permanently
- * leaks one global concurrency slot (nothing ever decrements it, since
- * runJob's finally only runs once the executor promise settles) — ordering
- * it last keeps that leak from affecting any other test's cap accounting.
+ * (f)/(g)/(h) all run before (e) deliberately: (e)'s stuck-forever executor
+ * permanently leaks one global concurrency slot (nothing ever decrements it,
+ * since runJob's finally only runs once the executor promise settles) —
+ * ordering it last keeps that leak from affecting any other test's cap
+ * accounting. (f)/(g)/(h) never hit that problem themselves: (f)/(g)'s
+ * recovered jobs are driven to completion (or never dispatched at all, for
+ * the dropped record) and (h)'s executor is cooperative, so its promise
+ * settles and runJob's finally always runs.
  *
  * `_setStoreForTest` and `_sweepNowForTest` are test-only seams added beyond
  * the brief's transcribed code — see task-6-report.md for why.
@@ -290,6 +301,115 @@ test('recover() replays a persisted active job as queued', { timeout: 8000 }, as
     cancelJob(recoveredId); // still queued -> removed cleanly, no executor invocation
     for (const release of releases) release();
     await drain([occ0, occ1]);
+    ka.stop();
+  }
+});
+
+test('recover() drops a terminal record past retention while re-queueing a non-terminal one seeded alongside it', { timeout: 8000 }, async () => {
+  const ka = keepAlive();
+  try {
+    const peer = 'g-peer';
+    let dispatched = false;
+    const releases: Array<() => void> = [];
+    _setExecutorForTest(
+      (job, signal) =>
+        new Promise((resolve, reject) => {
+          dispatched = true;
+          signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+          releases.push(() => resolve({ bytes: job.size, mode: 'relay', via: null }));
+        }),
+    );
+
+    const store = freshStore();
+    const staleTerminalId = randomUUID();
+    const activeId = randomUUID();
+    const staleTerminal: JobRecord = {
+      jobId: staleTerminalId,
+      peer,
+      source: src('/l/stale'),
+      sink: snk('/r/stale'),
+      size: 10,
+      state: 'done', // terminal
+      attempts: 1,
+      maxAttempts: 5,
+      bytesDone: 10,
+      resumeCount: 0,
+      enqueuedAt: Date.now() - 3 * 3600_000,
+      startedAt: Date.now() - 3 * 3600_000,
+      endedAt: Date.now() - 2 * 3600_000, // 2h old — past the 1h default retention window
+      deadlineAt: Date.now() + 3600_000,
+    };
+    const activeRecord: JobRecord = {
+      jobId: activeId,
+      peer,
+      source: src('/l/active'),
+      sink: snk('/r/active'),
+      size: 10,
+      state: 'active', // non-terminal — simulates a job mid-flight when the process died
+      attempts: 1,
+      maxAttempts: 5,
+      bytesDone: 0,
+      resumeCount: 0,
+      enqueuedAt: Date.now() - 1000,
+      startedAt: Date.now() - 500,
+      deadlineAt: Date.now() + 3600_000,
+    };
+    store.append(staleTerminal);
+    store.append(activeRecord);
+
+    try {
+      recover();
+
+      assert.ok(
+        !snapshot().jobs.some((j) => j.jobId === staleTerminalId),
+        'terminal record past the retention window is dropped by recover(), absent from snapshot()',
+      );
+      assert.ok(
+        dispatched,
+        'the non-terminal record was re-queued and actually picked up by pump() (executor invoked), not just left inert',
+      );
+      assert.equal(getJob(activeId)!.state, 'active', 'recovered non-terminal job is running again, not dropped');
+    } finally {
+      for (const release of releases) release();
+      await drain([activeId]);
+    }
+  } finally {
+    ka.stop();
+  }
+});
+
+test('TTL sweep against a cooperative (abort-responsive) executor still lands expired, not cancelled', { timeout: 8000 }, async () => {
+  const ka = keepAlive();
+  try {
+    freshStore();
+    const peer = 'h-peer';
+    // Cooperative: unlike (e) below, this executor *does* respond to the
+    // abort signal by rejecting — so this exercises runJob's own catch
+    // (the ac.signal.aborted / cancelReason==='expired' disambiguation),
+    // not sweepOnce()'s force-expire fallback for a stuck executor.
+    _setExecutorForTest(
+      (_job, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('aborted by peer')), { once: true });
+        }),
+    );
+
+    const j0 = enqueueJob({ peer, source: src('/l/0'), sink: snk('/r/0'), size: 1, ttlMs: 0 });
+    assert.equal(getJob(j0)!.state, 'active', 'dispatched immediately — single job, well under caps');
+
+    _sweepNowForTest();
+
+    // The cooperative executor's rejection settles runJob's catch
+    // asynchronously (a microtask), unlike (e)'s stuck executor where
+    // sweepOnce() forces the state synchronously — so this must be awaited
+    // rather than asserted immediately after the sweep call.
+    const view = await waitForJob(j0, 5000);
+    assert.equal(
+      view.state,
+      'expired',
+      'TTL-triggered abort disambiguates via cancelReason to expired even when the executor cooperates, not cancelled',
+    );
+  } finally {
     ka.stop();
   }
 });

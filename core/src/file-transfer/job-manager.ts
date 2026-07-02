@@ -18,6 +18,7 @@
 import { randomUUID } from 'crypto';
 import { JobStore, jobLogPath, type JobRecord, type JobState, type SourceRef, type SinkRef } from './job-store';
 import { sendPath } from './sender';
+import { TransferError, isRetriable } from './errors';
 import { getTransfer } from './transfer-stats';
 
 const PER_PEER = Math.max(1, Number(process.env.LM_SEND_CONCURRENCY) || 2);
@@ -153,10 +154,17 @@ async function runJob(job: JobRecord): Promise<void> {
   if (resumeFrom > 0) job.resumeCount++;
   try {
     const res = await executor(job, ac.signal, resumeFrom);
-    job.state = 'done';
-    job.bytesDone = res.bytes;
-    job.mode = res.mode;
-    job.via = res.via;
+    // Symmetric with the catch's TERMINAL guard below: a sweeper force-expire
+    // can fire (and finalize job.state) while this executor call is still
+    // in flight, since sweepOnce() does not wait for it to settle. Without
+    // this guard, a *late-arriving success* would silently stomp that
+    // already-terminal state (e.g. 'expired') back to 'done'.
+    if (!TERMINAL.has(job.state)) {
+      job.state = 'done';
+      job.bytesDone = res.bytes;
+      job.mode = res.mode;
+      job.via = res.via;
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     // Guard against a late-arriving executor settlement racing a terminal
@@ -174,6 +182,15 @@ async function runJob(job: JobRecord): Promise<void> {
         job.state = job.cancelReason === 'expired' ? 'expired' : 'cancelled';
       } else if (Date.now() >= job.deadlineAt) {
         job.state = 'expired';
+        job.error = msg;
+      } else if (e instanceof TransferError && !isRetriable(e.code)) {
+        // Fast-fail: a definitively non-retryable error (per errors.ts —
+        // e.g. receiver REJECTED) should not burn through the full
+        // backoff+retry ladder — that's ~15s of delay plus 4 more attempts
+        // hitting a peer that has already refused. Checked before the
+        // attempts/maxAttempts branch so it fires on the *first*
+        // non-retryable failure, not the last one.
+        job.state = 'failed';
         job.error = msg;
       } else if (job.attempts >= job.maxAttempts) {
         job.state = 'failed';
