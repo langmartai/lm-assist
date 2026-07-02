@@ -24,7 +24,7 @@ export function jobLogPath(): string {
 export class JobStore {
   constructor(private readonly file: string = jobLogPath()) {}
   append(rec: JobRecord): void {
-    try { fs.appendFileSync(this.file, JSON.stringify(rec) + '\n'); } catch { /* best-effort durability */ }
+    try { fs.appendFileSync(this.file, JSON.stringify(rec) + '\n'); } catch (e) { console.error('[job-store] append failed (durability degraded):', (e as Error).message); }
   }
   loadAll(): JobRecord[] {
     let text = ''; try { text = fs.readFileSync(this.file, 'utf8'); } catch { return []; }
@@ -41,6 +41,6 @@ export class JobStore {
     try {
       fs.writeFileSync(tmp, live.map((r) => JSON.stringify(r)).join('\n') + (live.length ? '\n' : ''));
       fs.renameSync(tmp, this.file);
-    } catch { try { fs.unlinkSync(tmp); } catch { /* ignore */ } }
+    } catch (e) { console.error('[job-store] compact failed:', (e as Error).message); try { fs.unlinkSync(tmp); } catch { /* ignore */ } }
   }
 }
