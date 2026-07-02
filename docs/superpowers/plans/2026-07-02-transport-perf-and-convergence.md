@@ -33,6 +33,37 @@ core/src/transport/__tests__/*.test.ts NEW/MOD  rtt, fast-retransmit, backpressu
 
 ---
 
+## REVISION 2026-07-02 (post whole-subsystem review — READ FIRST)
+
+A deep review re-scoped Phase A. The ROOT-CAUSE of slow LAN transfers is **not** the RTO — it is that **ACKs always ride the relay**: `hybrid.ts` `makeReliable` `sendDatagram` routes every `isControl` datagram over `relaySendDatagram` unconditionally (hybrid.ts:301-302), and `reliable.ts` `sendControl` marks every ACK/PING/FIN control (reliable.ts:298). So on a confirmed BIDI direct link the 64×1200B window still only advances at relay-RTT → bulk one-directional throughput ≈ 77 KB / relayRTT no matter how fast the direct data path is. **New Task A0 fixes this and is the single highest-leverage change.**
+
+History gate (systematic-debugging): commit `cc369fb` (2026-06-08) already added RFC6298 RTT/RTO **plus cwnd/slow-start/IW=10/paced sends**, and was reverted 30 min later (`cddee1c`) with **no recorded reason**. Conclusion: the risky part is the congestion-control/pacing machinery. This plan deliberately implements ONLY the low-risk subset (adaptive RTO + fast-retransmit + coalesced ACK) and **NO cwnd / slow-start / send pacing**. Each change is independently fault-injection-tested on the in-process pair.
+
+Revised Phase A order: **A0** (ACK-over-direct, hybrid.ts — the throughput fix) → **A1** RttEstimator (done) → **A2** adaptive RTO+Karn → **A3** fast-retransmit → **A4** event timer + coalesced ACK → **A5** bounded queues + FIN retransmit → **A6** interop + port-forward inbound backpressure (+ exposeLan health-probe bind fix) → **Acleanup** delete orphaned `relay.ts` → **A7** build + suites + live re-test.
+
+### Task A0: Route ACK/control over the direct path when the direct leg is fresh (hybrid.ts)
+
+**Files:** Modify `core/src/transport/hybrid.ts` (`makeReliable`'s `sendDatagram`, ~296-311); Test `core/src/transport/__tests__/hybrid-ack-routing.test.ts`
+
+**Interfaces / behavior:** In `sendDatagram(buf, isControl)`: when `myDirectFresh() && peerUdp && socket` (the SAME freshness gate the DATA path uses), send the datagram over the **direct socket** — for control AND data. Only fall back to `relaySendDatagram` when the direct leg is not fresh. Rationale it's safe: cumulative ACKs are loss-tolerant (the next ACK/piggybacked-ack subsumes a lost one), and the sender's RTO retransmit + A3 fast-retransmit recover any straggler; worst case is exactly today's relay behavior. Keep the `priority=true` semantics for the relay-fallback control path (so control still jumps the relay backpressure queue when relay IS used). Do NOT change the datagram bytes (wire-compatible). This is what makes BIDI actually mean "acks ride direct" as hybrid.ts's own docblock already claims.
+
+- [ ] **Step 1: failing test** — build a hybrid-like harness (or unit-test the extracted routing predicate): with `myDirectFresh()==true`, assert a control datagram is handed to the direct `socket.send` path, NOT `relaySendDatagram`; with `myDirectFresh()==false`, assert it goes to relay. If hybrid.ts's internals are hard to unit-test directly, EXTRACT the routing decision into a pure exported helper `chooseDatagramPath({isControl, directFresh, hasPeer, hasSocket}): 'direct'|'relay'` and test that; then use it in both the data and control branches.
+- [ ] **Step 2: run → FAIL.**
+- [ ] **Step 3: implement** — extract `chooseDatagramPath` (pure), route both branches through it (direct when fresh regardless of isControl; relay otherwise, control keeping priority). 
+- [ ] **Step 4: run → PASS** + full existing `hybrid.test.js` green (the "relay goes quiet at BIDI" assertion should still hold and now be TRUER).
+- [ ] **Step 5: commit** `fix(transport): route ACKs/control over the direct path when confirmed — unblocks LAN throughput`.
+
+### Task Acleanup: Delete orphaned `relay.ts`
+
+**Files:** Delete `core/src/transport/relay.ts`; check `core/src/transport/index.ts` re-exports.
+
+`openRelayChannel` has ZERO non-test callers (superseded by hybrid.ts's inline relay, which uses an INCOMPATIBLE tagged 0xFD frame — relay.ts has no tag byte, a resurrection landmine). 
+- [ ] Grep-confirm zero callers (`grep -rn "openRelayChannel\|transport/relay" core/src --include=*.ts | grep -v relay.ts`); remove any re-export from `index.ts` (the `TRANSPORT_RELAY_MARKER`/`FIREHOSE_MARKER` re-exports come from hybrid.ts, NOT relay.ts — verify before deleting).
+- [ ] `git rm core/src/transport/relay.ts` (+ its test if any); build clean.
+- [ ] **Commit** `chore(transport): remove orphaned relay.ts (superseded by hybrid.ts inline relay; wire-incompatible landmine)`.
+
+---
+
 ## PHASE A — Correctness + LAN throughput (wire-compatible)
 
 ### Task A1: Pure RTT estimator (`rtt.ts`)
@@ -166,6 +197,7 @@ export class RttEstimator {
 
 **Interfaces:**
 - Interop test (no code change to reliable — this PROVES A2–A5 stayed wire-compatible): wire an in-process pair where one endpoint has the NEW policy and the other simulates OLD policy (ACK-every-packet, fixed RTO) — assert a bidirectional stream completes intact. (Simulate OLD by constructing a ReliableConnection with options that disable coalescing/fast-rt via a test-only flag, OR by hand-driving raw datagrams.)
+- ALSO fix the exposeLan health-probe bind (port-forward-handler.ts `probeForward` ~504): it hardcodes `127.0.0.1`/`::1` but an `exposeLan` forward binds its server to the node LAN IP (port-forward.routes.ts:54), so the loopback probe never connects and `health` freezes. Probe against `l.bindHost` (fall back to `127.0.0.1` only when bindHost is `0.0.0.0`/unset).
 - Port-forward fix: in `handleForwardData` (port-forward-handler.ts:524), check `socket.write(payload)` return. On `false`, buffer subsequent inbound payloads for that stream in a bounded per-stream queue and stop writing until the socket emits `'drain'`; resume draining then. If the per-stream buffer exceeds a hard cap (e.g. 4 MiB), tear the stream down (`notifyPeer:true`) — the local consumer can't keep up. (There is no per-stream WS pause since the WS is shared/multiplexed, so a bounded buffer + drain is the correct local mechanism; document that the sender side already pauses via `wireSocket`'s `bufferedAmount` check, so this closes the *other* direction.)
 
 - [ ] **Step 1: failing tests** — interop stream completes; and a port-forward stream whose fake local socket returns `write()===false` buffers then drains on `'drain'` (assert no data lost, ordering preserved), and exceeding the hard cap tears down.
