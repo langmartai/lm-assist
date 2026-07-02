@@ -30,12 +30,19 @@ interface CloseState {
 }
 
 /** Delivers a close to whatever `forward` callback is currently registered, via
- *  queueMicrotask — never synchronously. Microtasks are FIFO: the data drain's
- *  microtask is queued when the handler attaches onData (see makeReplayed), so a
- *  close delivery queued in the same synchronous turn always runs AFTER it, giving
- *  data-before-close ordering even when the underlying channel fires data then close
- *  back-to-back (e.g. EOF right after the last chunk). Guarded by `delivered` so a
- *  close is forwarded at most once, however many times this is called (real fire +
+ *  queueMicrotask — never synchronously. Delivery is only ever QUEUED once a forward
+ *  target exists (see the gated onClose below, and the replay gate in makeReplayed) —
+ *  an early close (no forward yet, e.g. mid multi-chunk frame or before routing decides)
+ *  just captures `fired`/`reason` and queues nothing. Because of that gating, whenever a
+ *  handler attaches onData before onClose (the pattern every routed handler in this file
+ *  follows), the drain microtask queued at onData-attach is always FIRST in the FIFO, so
+ *  a close queued in the same turn — at that onClose attach, or by a close firing after —
+ *  always runs after it: data-before-close ordering holds for that attach order. It is
+ *  NOT a universal guarantee: a handler that attaches onClose before onData would instead
+ *  get the close microtask queued first. Either way close still delivers exactly once,
+ *  after state capture, and any bytes still buffered/in-flight are drained to a handler
+ *  that has already observed the close — delivered, never lost. Guarded by `delivered` so
+ *  a close is forwarded at most once, however many times this is called (real fire +
  *  replay-on-attach) or however many times onClose is re-registered. */
 function deliverClose(closeState: CloseState): void {
   queueMicrotask(() => {
@@ -59,7 +66,7 @@ export function routeInboundChannel(ch: RoutableChannel, routes: InboundRoutes, 
   ch.onClose((reason?: string) => {
     closeState.fired = true;
     closeState.reason = reason;
-    deliverClose(closeState);
+    if (closeState.forward) deliverClose(closeState);
   });
 
   let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => decide('fileTransfer'), timeoutMs);
@@ -88,7 +95,13 @@ export function routeInboundChannel(ch: RoutableChannel, routes: InboundRoutes, 
  *  and its onClose delivers a close — already-fired or still-pending — to whichever
  *  callback was most recently registered (last wins, matching the underlying channel).
  *  Close delivery always goes through deliverClose() (queueMicrotask, once-only) — never
- *  synchronous — so it can never race ahead of a data drain queued in the same turn. */
+ *  synchronous — and is only queued once `closeState.forward` is set, which happens right
+ *  here. So for a handler that attaches onData before onClose (every routed handler in
+ *  this file), the drain microtask queued by wrapped.onData above is already in the FIFO
+ *  before this can queue the close microtask, and a close therefore never races ahead of
+ *  a data drain queued in the same turn. A close that fired before this attach (`fired`
+ *  true, forward still null until now) was captured but never queued — it is queued here,
+ *  on attach, and still delivers exactly once. */
 function makeReplayed(ch: RoutableChannel, buffered: Buffer[], closeState: CloseState): RoutableChannel {
   const wrapped: RoutableChannel = Object.create(ch);
   wrapped.onData = (cb: (d: Buffer) => void) => {

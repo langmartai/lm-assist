@@ -152,6 +152,29 @@ test('data then close in the same turn delivers data before close', async () => 
   assert.equal(log.filter((e) => e === 'close').length, 1);
 });
 
+test('close racing a still-buffering frame still delivers data before close', async () => {
+  const ch = fakeChannel();
+  const log: string[] = [];
+  let routedTo = '';
+  routeInboundChannel(ch as never, {
+    fabric: (routed) => {
+      routedTo = 'fabric';
+      routed.onData(() => { log.push('data'); });
+      routed.onClose(() => { log.push('close'); });
+    },
+    fileTransfer: () => { routedTo = 'WRONG'; },
+  });
+  const wire = helloWire();
+  ch.feed(wire.subarray(0, 5)); // partial — not enough for FrameReader to decode; routing not yet decided
+  ch.fireClose('mid');          // fires before any forward exists (mid multi-chunk frame) — must not jump the queue
+  ch.feed(wire.subarray(5));    // completes the frame -> decides fabric synchronously, attaches onData then onClose
+  await new Promise((r) => setImmediate(r));
+  assert.equal(routedTo, 'fabric');
+  assert.ok(log.includes('data'), `expected at least one data entry, got: ${JSON.stringify(log)}`);
+  assert.equal(log.filter((e) => e === 'close').length, 1, `expected exactly one close, got: ${JSON.stringify(log)}`);
+  assert.ok(log.lastIndexOf('data') < log.indexOf('close'), `expected every data entry before close, got: ${JSON.stringify(log)}`);
+});
+
 test('onClose last registration wins', async () => {
   const ch = fakeChannel();
   const fired: string[] = [];
