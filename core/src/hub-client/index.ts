@@ -500,7 +500,7 @@ export class HubClient extends EventEmitter {
             const { listAllOnlineNodeIds } = require('../data/peer-client') as typeof import('../data/peer-client');
             const nodeIp = this.getNodeInfo().ip;
             startTcpListener({
-              port: Number(process.env.LM_FABRIC_TCP_PORT) || 0,
+              port: Number(process.env.LM_FABRIC_TCP_PORT) || 3130, // fixed → a peer's cached endpoint stays valid across restarts
               isKnownPeer: async (node) => { try { return (await listAllOnlineNodeIds()).includes(node); } catch { return false; } },
               onChannel: (tcpCh) => {
                 handleIncomingTransfer(tcpCh as never, {}).catch((e) =>

@@ -40,6 +40,8 @@ export interface PeerLinkSnapshot {
   lastError: string | null;
   attempts: number;
   counters: { helloOk: number; helloTimeouts: number; inboundAdopted: number };
+  /** Peer's advertised direct-TCP endpoint (from its HELLO), for diagnostics. */
+  peerTcp?: import('./protocol').FabricTcpEndpoint | null;
 }
 
 const DEFAULT_HELLO_TIMEOUT_MS = 5000;
@@ -202,6 +204,7 @@ export class PeerLink {
       lastError: this.core.lastError,
       attempts: this.core.attempts,
       counters: { ...this.counters },
+      peerTcp: this.peerTcpEndpoint,
     };
   }
 }
