@@ -73,3 +73,51 @@ test('timeout with no decodable frame defaults to fileTransfer', async () => {
   await new Promise((r) => setTimeout(r, 40));
   assert.equal(routedTo, 'ft');
 });
+
+test('replay survives a throwing handler callback', async () => {
+  const ch = fakeChannel();
+  const received: Buffer[] = [];
+  let calls = 0;
+  let routedTo = '';
+  routeInboundChannel(ch as never, {
+    fabric: (routed) => {
+      routedTo = 'fabric';
+      routed.onData((chunk: Buffer) => {
+        calls++;
+        if (calls === 1) throw new Error('boom on first replayed chunk');
+        received.push(chunk);
+      });
+    },
+    fileTransfer: () => { routedTo = 'WRONG'; },
+  });
+  const second = Buffer.from('second-chunk');
+  ch.feed(helloWire()); // pre-decision: decides fabric, buffers the hello, attaches the wrapped onData
+  ch.feed(second);      // still draining (pre-drain) — also buffered, not yet live
+  await new Promise((r) => setImmediate(r)); // flush the microtask drain
+  assert.equal(routedTo, 'fabric');
+  // hello's replay call threw and was isolated (not recorded); second was recorded despite it.
+  assert.deepEqual(received, [second]);
+
+  const third = Buffer.from('third-chunk');
+  ch.feed(third); // now live (post-drain) — must still be delivered, not swallowed
+  assert.deepEqual(received, [second, third]);
+});
+
+test('close before handler attach is replayed', async () => {
+  const ch = fakeChannel();
+  let routedTo = '';
+  let closedCalled = false;
+  let closedReason: string | undefined;
+  routeInboundChannel(ch as never, {
+    fabric: () => { routedTo = 'WRONG'; },
+    fileTransfer: (routed) => {
+      routedTo = 'ft';
+      routed.onClose((reason?: string) => { closedCalled = true; closedReason = reason; });
+    },
+  }, 20);
+  ch.fireClose('gone'); // fires before routing decides and long before the handler attaches onClose
+  await new Promise((r) => setTimeout(r, 40)); // let the 20ms routing timeout fire -> routes to fileTransfer
+  assert.equal(routedTo, 'ft');
+  assert.equal(closedCalled, true);
+  assert.equal(closedReason, 'gone');
+});

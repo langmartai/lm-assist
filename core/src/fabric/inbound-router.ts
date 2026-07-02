@@ -20,17 +20,37 @@ export interface InboundRoutes {
   fileTransfer: (ch: RoutableChannel) => void;
 }
 
+/** Shared close state so a close that fires before routing decides — or before the
+ *  handler attaches its own onClose — is never dropped. */
+interface CloseState {
+  fired: boolean;
+  reason?: string;
+  forward: ((r?: string) => void) | null;
+}
+
 export function routeInboundChannel(ch: RoutableChannel, routes: InboundRoutes, timeoutMs = 3000): void {
   const reader = new FrameReader();
   const buffered: Buffer[] = [];
   let decided = false;
+
+  // Register immediately (not deferred to makeReplayed): a close can fire before
+  // routing decides (up to timeoutMs) or before the handler attaches onClose. Capture
+  // it into shared state so it can still be delivered once the handler does attach.
+  const closeState: CloseState = { fired: false, reason: undefined, forward: null };
+  ch.onClose((reason?: string) => {
+    closeState.fired = true;
+    closeState.reason = reason;
+    if (closeState.forward) closeState.forward(reason);
+  });
+
   let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => decide('fileTransfer'), timeoutMs);
+  timer?.unref?.();
 
   function decide(which: keyof InboundRoutes): void {
     if (decided) return;
     decided = true;
     if (timer) { clearTimeout(timer); timer = null; }
-    routes[which](makeReplayed(ch, buffered));
+    routes[which](makeReplayed(ch, buffered, closeState));
   }
 
   ch.onData((chunk: Buffer) => {
@@ -45,8 +65,10 @@ export function routeInboundChannel(ch: RoutableChannel, routes: InboundRoutes, 
   });
 }
 
-/** Wrap `ch` so the handler's onData first receives `buffered` (in order), then live chunks. */
-function makeReplayed(ch: RoutableChannel, buffered: Buffer[]): RoutableChannel {
+/** Wrap `ch` so the handler's onData first receives `buffered` (in order), then live chunks;
+ *  and its onClose delivers a close — already-fired or still-pending — to whichever
+ *  callback was most recently registered (last wins, matching the underlying channel). */
+function makeReplayed(ch: RoutableChannel, buffered: Buffer[], closeState: CloseState): RoutableChannel {
   const wrapped: RoutableChannel = Object.create(ch);
   wrapped.onData = (cb: (d: Buffer) => void) => {
     // Take over the underlying stream: append post-decision chunks to `buffered`
@@ -54,9 +76,27 @@ function makeReplayed(ch: RoutableChannel, buffered: Buffer[]): RoutableChannel 
     let draining = true;
     ch.onData((d: Buffer) => { if (draining) buffered.push(d); else cb(d); });
     queueMicrotask(() => {
-      while (buffered.length) cb(buffered.shift() as Buffer);
-      draining = false;
+      // Isolate each replayed chunk: a throw from the handler's own frame parsing
+      // (e.g. a malformed frame after a valid one) must not abort the drain — an
+      // uncaught throw here would leave `draining` stuck true forever, silently
+      // swallowing every live chunk from then on.
+      try {
+        while (buffered.length) {
+          const d = buffered.shift() as Buffer;
+          try { cb(d); } catch (e) { console.debug('[fabric] inbound replay handler threw:', (e as Error)?.message); }
+        }
+      } finally {
+        draining = false;
+      }
     });
+  };
+  wrapped.onClose = (cb: (r?: string) => void) => {
+    closeState.forward = cb; // last registration wins
+    if (closeState.fired) {
+      queueMicrotask(() => {
+        if (closeState.forward === cb) cb(closeState.reason);
+      });
+    }
   };
   return wrapped;
 }
