@@ -16,6 +16,7 @@ import { TierControlApiImpl, createControlApi } from './control-api';
 import { TierManager } from './tier-manager';
 import type { TierEvent } from './types/control-api';
 import { handleTtydProxyRequest, handleTtydProxyUpgrade, isTtydProxyPath } from './ttyd-proxy';
+import { isTcpUpgrade, handleTcpUpgrade } from './transport/tcp-upgrade';
 import { getStartupProfiler } from './startup-profiler';
 
 // Modular Routes
@@ -384,10 +385,14 @@ export class TierRestServer {
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => this.handleRequest(req, res));
 
-      // Handle WebSocket upgrades for ttyd proxy
+      // Handle upgrades: ttyd WebSocket proxy, or the lm-tcp file-transfer path
+      // (direct-TCP-for-LAN rides the Core port via an HTTP Upgrade — no
+      // dedicated listener port to open).
       this.server.on('upgrade', (req, socket, head) => {
         if (req.url && isTtydProxyPath(req.url)) {
           handleTtydProxyUpgrade(req, socket, head);
+        } else if (isTcpUpgrade(req)) {
+          handleTcpUpgrade(req, socket, head);
         } else {
           socket.destroy();
         }
