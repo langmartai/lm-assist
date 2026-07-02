@@ -509,6 +509,11 @@ export class HubClient extends EventEmitter {
               onListening: (port) => {
                 setFabricSelfTcp({ host: nodeIp, port });
                 console.log(`[HubClient] direct-TCP listener on ${nodeIp}:${port}`);
+                // Re-advertise once more after links have had time to connect —
+                // covers a link that came up in the boot race window before the
+                // endpoint was set (setFabricSelfTcp re-runs readvertiseAll).
+                const t = setTimeout(() => setFabricSelfTcp({ host: nodeIp, port }), 4000);
+                if (t.unref) t.unref();
               },
             });
           } catch (e) {

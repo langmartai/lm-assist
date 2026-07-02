@@ -75,6 +75,9 @@ let selfTcpEndpoint: import('./protocol').FabricTcpEndpoint | null = null;
 
 export function setFabricSelfTcp(ep: import('./protocol').FabricTcpEndpoint | null): void {
   selfTcpEndpoint = ep;
+  // The listener binds AFTER initFabric sent the first HELLOs, so re-advertise
+  // on every live link now that our endpoint is known.
+  mgr?.readvertiseAll();
 }
 
 /** The peer's advertised direct-TCP endpoint (learned via its HELLO on the warm

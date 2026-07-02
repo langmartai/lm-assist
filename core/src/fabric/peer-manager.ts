@@ -17,6 +17,7 @@ export interface PeerLinkLike {
   markPeerOffline(): void;
   resetRetry?(): void;
   peerTcp?(): import('./protocol').FabricTcpEndpoint | null;
+  readvertise?(): void;
   snapshot(): PeerLinkSnapshot;
 }
 
@@ -32,6 +33,12 @@ export class PeerManager {
   /** The peer's advertised direct-TCP endpoint from its live link, or null. */
   peerTcp(peer: string): import('./protocol').FabricTcpEndpoint | null {
     return this.links.get(peer)?.peerTcp?.() ?? null;
+  }
+
+  /** Re-send HELLO on every live link — used when a self field (TCP endpoint)
+   *  becomes available after links were already established. */
+  readvertiseAll(): void {
+    for (const l of this.links.values()) l.readvertise?.();
   }
 
   private links = new Map<string, PeerLinkLike>();

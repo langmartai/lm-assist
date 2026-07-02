@@ -60,6 +60,15 @@ export class PeerLink {
     return this.peerTcpEndpoint;
   }
 
+  /** Re-send our HELLO on the live link so a peer picks up a self field that
+   *  changed after the link came up (e.g. the TCP endpoint, which is set once
+   *  the listener binds — after initFabric already sent the first HELLO). */
+  readvertise(): void {
+    if (this.ch && this.core.state === 'connected') {
+      try { this.ch.sendControl(this.hello('hello')); } catch { /* best-effort */ }
+    }
+  }
+
   private hello(kind: FabricHello['kind']): Buffer {
     const tcp = this.deps.selfTcp?.() ?? undefined;
     return encodeFabricControl({ type: FABRIC_TAG, kind, version: FABRIC_VERSION, features: ['status'], node: this.deps.selfNode, ...(tcp ? { tcp } : {}) });
