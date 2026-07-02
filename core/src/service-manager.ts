@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as net from 'net';
 import * as os from 'os';
+import { rotateNow } from './utils/log-rotate';
 
 // ─── Paths ──────────────────────────────────────────────────
 
@@ -328,6 +329,12 @@ function spawnDetached(
   env?: Record<string, string>,
   cwd?: string,
 ): ChildProcess {
+  // Cap the log before (re)attaching to it. The old process is dead, so nothing
+  // holds the file — a plain rewrite works on every platform (the in-process
+  // rotator can't truncate Windows' cmd append handle, so this start-time pass is
+  // what bounds the log there). Keeps the recent tail; best-effort.
+  try { rotateNow(logFile); } catch { /* never block startup on log rotation */ }
+
   // On Windows, detached processes still get killed when an SSH session closes
   // because they remain in the session's Job Object. Use WMI to spawn outside the job.
   if (process.platform === 'win32') {
