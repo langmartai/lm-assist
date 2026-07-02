@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "langmartai",
-  "description": "Claude Code plugins — multi-session management, web dashboard, and observability platform",
+  "description": "Claude Code plugins \u2014 multi-session management, web dashboard, and observability platform",
   "owner": {
     "name": "langmartai"
   },
@@ -12,7 +12,7 @@
   "plugins": [
     {
       "name": "claude-code-multisession",
-      "version": "0.1.104",
+      "version": "0.1.134",
       "source": {
         "source": "url",
         "url": "https://github.com/langmartai/claude-code-multisession.git",
