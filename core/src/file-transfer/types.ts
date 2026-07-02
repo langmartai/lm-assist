@@ -235,6 +235,8 @@ export interface SendResult {
   mode?: string;
   /** Winning outbound candidate kind: 'host' | 'static' | 'srflx' | null. */
   via?: string | null;
+  /** Byte offset this transfer resumed from (0 = fresh / not resumed). */
+  resumedFrom?: number;
 }
 
 export interface SendOpts {

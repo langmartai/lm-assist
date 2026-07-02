@@ -26,6 +26,8 @@ import type {
   FtEnd,
   FtOk,
   FtErr,
+  FtResumeState,
+  FtCancel,
   DirEntry,
   FtList,
   FtListResult,
@@ -171,7 +173,15 @@ export async function sendPath(
   try {
     if (opts?.signal) {
       if (opts.signal.aborted) throw new TransferError('ABORTED', 'cancelled before start');
-      onAbort = () => { try { channel.close(); } catch { /* ignore */ } };
+      onAbort = () => {
+        // Tell the receiver this is an explicit CANCEL — delete the partial +
+        // sidecar — as opposed to a mere connection drop, which KEEPS the partial
+        // for resume. Best-effort (a relay may drop the queued frame on close;
+        // the receiver's stale-partial sweeper is the backstop); the direct/LAN
+        // path flushes it before teardown.
+        try { channel.sendControl(encodeControl({ type: 'FT_CANCEL', transferId, reason: 'cancelled' } as FtCancel)); } catch { /* ignore */ }
+        try { channel.close(); } catch { /* ignore */ }
+      };
       opts.signal.addEventListener('abort', onAbort, { once: true });
     }
 
@@ -196,7 +206,15 @@ export async function sendPath(
     }
 
     const reader = new FrameReader();
-    const done = waitForReply(channel, reader, transferId);
+    // Resume handshake: a resumable single-file transfer waits for the receiver's
+    // FT_RESUME_STATE (how much it durably holds) and streams from THAT offset —
+    // the receiver's checkpointed sidecar is authoritative. resumeStateP resolves
+    // when waitForReply sees the frame.
+    let resolveResume: ((n: number) => void) | null = null;
+    const resumeStateP = new Promise<number>((r) => { resolveResume = r; });
+    const done = waitForReply(channel, reader, transferId, (bytesDone) => {
+      resolveResume?.(bytesDone); resolveResume = null;
+    });
     // Attach a handler NOW so a channel-close that rejects `done` before we
     // reach `await done` below (e.g. the peer resets mid-stream) is not an
     // unhandled rejection (which crashes the process). The real error is still
@@ -207,14 +225,29 @@ export async function sendPath(
     // Announce ourselves as a file-transfer channel, then the manifest.
     channel.sendControl(encodeControl({ type: SUBSYSTEM_TAG } as never));
 
+    const singleFile = entries.length === 1 && !entries[0].isDir;
+    const wantResume = !!opts?.resumable && singleFile;
     const meta: FtMeta = {
       type: 'FT_META',
       transferId,
       root: remotePath,
       entries: entries.map(({ absPath: _abs, ...e }) => e),
       totalBytes,
+      ...(wantResume ? { resumable: true } : {}),
     };
     channel.sendControl(encodeControl(meta));
+
+    // For a resumable transfer, learn the receiver's durable offset before
+    // streaming. It always answers (0 for a fresh transfer); the timeout only
+    // guards a receiver that doesn't speak resume, falling back to the
+    // caller-supplied resumeFrom (or 0).
+    let resumeOffset = 0;
+    if (wantResume) {
+      resumeOffset = await Promise.race([
+        resumeStateP,
+        new Promise<number>((r) => { const t = setTimeout(() => r(opts?.resumeFrom ?? 0), 5000); t.unref?.(); }),
+      ]);
+    }
 
     // Stream file bytes.
     const sha256PerEntry: string[] = [];
@@ -228,8 +261,11 @@ export async function sendPath(
       // resumeFrom only ever applies to single-entry (whole-file) transfers —
       // a multi-entry (directory) transfer always starts each entry at 0. This
       // is intentional (resume is scoped to "resend this one file"), not an
-      // oversight, so don't be tempted to thread it across entries.
-      const startOffset = (entries.length === 1 && opts?.resumeFrom) ? opts.resumeFrom : 0;
+      // oversight, so don't be tempted to thread it across entries. For a
+      // resumable transfer the offset is the receiver's authoritative
+      // FT_RESUME_STATE (resumeOffset); otherwise fall back to opts.resumeFrom.
+      const startOffset = wantResume ? resumeOffset
+        : (singleFile && opts?.resumeFrom ? opts.resumeFrom : 0);
       if (startOffset) sent = startOffset;
       await streamFile(channel, transferId, i, e.absPath, chunkSize, (n) => {
         sent += n;
@@ -243,7 +279,7 @@ export async function sendPath(
 
     await done;
     lastMode = channel.mode;
-    return { bytes: totalBytes, entries: entries.length, mode: lastMode, via: channel.via };
+    return { bytes: totalBytes, entries: entries.length, mode: lastMode, via: channel.via, resumedFrom: wantResume ? resumeOffset : 0 };
   } finally {
     if (opts?.signal && onAbort) opts.signal.removeEventListener('abort', onAbort);
     if (currentChannel === channel) currentChannel = null;
@@ -379,6 +415,7 @@ function waitForReply(
   channel: Channel,
   reader: FrameReader,
   transferId: string,
+  onResumeState?: (bytesDone: number) => void,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -405,7 +442,14 @@ function waitForReply(
         if (f.kind !== 'control') {
           continue;
         }
-        const msg = f.msg as FtOk | FtErr;
+        const msg = f.msg as FtOk | FtErr | FtResumeState;
+        if (msg.type === 'FT_RESUME_STATE' && msg.transferId === transferId) {
+          // Receiver reports how much it durably holds — it is authoritative for
+          // the resume offset (its checkpointed sidecar), so honor it over any
+          // caller-supplied resumeFrom. Not terminal; keep waiting for FT_OK/ERR.
+          onResumeState?.(msg.bytesDone);
+          continue;
+        }
         if (msg.type === 'FT_OK' && msg.transferId === transferId) {
           finish();
           return;

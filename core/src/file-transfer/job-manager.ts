@@ -37,7 +37,7 @@ export type Executor = (
   job: JobRecord,
   signal: AbortSignal,
   resumeFrom: number,
-) => Promise<{ bytes: number; mode: string; via: string | null }>;
+) => Promise<{ bytes: number; mode: string; via: string | null; resumedFrom?: number }>;
 
 /** SourceRef/SinkRef also cover `{kind:'blob'}` (data-service refs); the
  * executor here only ever wraps sendPath, which needs a local filesystem
@@ -72,7 +72,7 @@ let executor: Executor = async (job, signal, resumeFrom) => {
   // SendResult's mode/via are optional; Executor's are not (mode always
   // reflects the channel that finished the transfer) — default rather than
   // let `undefined` leak into a field typed as required `string`.
-  return { bytes: res.bytes, mode: res.mode ?? 'unknown', via: res.via ?? null };
+  return { bytes: res.bytes, mode: res.mode ?? 'unknown', via: res.via ?? null, resumedFrom: res.resumedFrom ?? 0 };
 };
 export function _setExecutorForTest(e: Executor): void {
   executor = e;
@@ -153,8 +153,11 @@ async function runJob(job: JobRecord): Promise<void> {
   const ac = new AbortController();
   controllers.set(job.jobId, ac);
   persist(job);
+  // Hint offset only — used as a fallback if the receiver doesn't answer
+  // FT_RESUME_STATE. Normally the receiver's checkpointed sidecar is
+  // authoritative (the sender resumes from its reply), so this stays 0 and
+  // resumeCount is bumped from the ACTUAL resumed offset the executor reports.
   const resumeFrom = job.bytesDone > 0 && job.size >= RESUME_MIN_BYTES ? job.bytesDone : 0;
-  if (resumeFrom > 0) job.resumeCount++;
   try {
     const res = await executor(job, ac.signal, resumeFrom);
     // Symmetric with the catch's TERMINAL guard below: a sweeper force-expire
@@ -167,6 +170,7 @@ async function runJob(job: JobRecord): Promise<void> {
       job.bytesDone = res.bytes;
       job.mode = res.mode;
       job.via = res.via;
+      if (res.resumedFrom && res.resumedFrom > 0) job.resumeCount++;
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
