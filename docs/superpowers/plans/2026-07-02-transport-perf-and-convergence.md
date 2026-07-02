@@ -53,13 +53,41 @@ Revised Phase A order: **A0** (ACK-over-direct, hybrid.ts — the throughput fix
 - [ ] **Step 4: run → PASS** + full existing `hybrid.test.js` green (the "relay goes quiet at BIDI" assertion should still hold and now be TRUER).
 - [ ] **Step 5: commit** `fix(transport): route ACKs/control over the direct path when confirmed — unblocks LAN throughput`.
 
-### Task Acleanup: Delete orphaned `relay.ts`
+### Task A-race: Fix the answerer candidate race (index.ts §3.1)
+
+**Files:** Modify `core/src/transport/index.ts` (`answerHybrid` + the two inbound listeners); Test `core/src/transport/__tests__/answer-race.test.ts`
+
+**Verified bug:** `answerHybrid` claims `answeredChannels` on whichever of `transport_relay_open` (no STUN dep — arrives first, `peerUdp=undefined`) or `transport_offer` (STUN-gated, carries the real `udp` candidates) arrives first. The second is dropped. `peerCands` is only assigned `if (opts.initiator)` (hybrid.ts:600,611), so an answerer that claimed from `transport_relay_open` has `peerCands=[]` **forever** → never probes → its own outbound leg never goes direct. Cripples every fabric answerer-role link.
+
+**Fix direction:** let a late `transport_offer` deliver candidates to an already-answered channel. Add a module-level `Map<channelId, (udp)=>void>` that a constructed answerer registers (a setter that updates its `peerCands` + kicks `startProbing`); `transport_offer`'s listener, if the channel is already answered, calls that setter instead of being ignored. (Alternatively: on `transport_relay_open` wait a short bounded window (~250ms) for `transport_offer` before answering — simpler but adds latency. Prefer the setter.) Requires exposing a `setPeerCandidates(udp)` hook from `openHybridChannel`'s answerer path. Unit-test: fire relay_open then a later offer → the answerer ends with non-empty peerCands and probes.
+
+- [ ] Steps: failing test → run FAIL → implement the late-candidate setter path → PASS + hybrid suite green → commit `fix(transport): deliver late transport_offer candidates to the answerer (fixes permanent relay-only answerer legs)`.
+
+### Task A-bind: Fix fixed-port EADDRINUSE silent hang (hybrid.ts §2)
+
+**Files:** Modify `core/src/transport/hybrid.ts` (`setupDirect` socket bind ~567-572); Test `core/src/transport/__tests__/bind-error.test.ts`
+
+**Verified bug:** the UDP socket is created with no `reuseAddr`; `s.on('error', …)` swallows the error; `await s.once('listening')` never resolves on a failed bind → `setupDirect` hangs forever → channel silently relay-only. On a node with `LM_ASSIST_TRANSPORT_PORT` set, the 2nd+ concurrent channel (fabric opens one per peer) hangs. Regression vs the (dead) `holepunch.ts:166` which rejected on bind error.
+
+**Fix direction:** race the `'listening'` promise against `'error'` (and a bounded timeout, ~3s) — on error/timeout, log (under LM_TDEBUG), leave `socket=null`, and RETURN from setupDirect so the relay floor stands (direct simply unavailable for this channel) instead of hanging. Do NOT throw (relay must still work). Consider `dgram.createSocket({type:'udp4', reuseAddr:true})` so multiple channels CAN share a fixed port (SO_REUSEADDR/PORT) — but the primary fix is not-hanging. Test: bind twice to the same fixed port on an injected socket factory → the 2nd setupDirect resolves (relay-only) within the timeout, does not hang.
+
+- [ ] Steps: failing test → FAIL → implement race+timeout (+ reuseAddr) → PASS → commit `fix(transport): don't hang setupDirect on a failed/contended UDP bind (fixed-port nodes)`.
+
+### Task A-roam: Gate direct-datagram roaming to advertised candidates (hybrid.ts §4.2 hardening)
+
+**Files:** Modify `core/src/transport/hybrid.ts` (`adoptPeerSource` / `onUdpMessage`); Test extends an existing transport test.
+
+**Verified issue:** `adoptPeerSource` re-points `peerUdp` to whatever source last sent a probe/firehose/reliable datagram, with NO check that the source matches an advertised peer candidate — an on-LAN/off-path spoofer can redirect the victim's outbound sends or inject into the reliable stream. Full AEAD is the real fix (deferred to W2/encryption — see spec deferred list), but a cheap defense-in-depth now: **only roam to a source IP:port that appears in the peer's advertised candidate set** (`peerCands`) OR the STUN-observed srflx. Reject/ignore datagrams from unadvertised sources for the purpose of roaming (still may process a datagram whose source == current peerUdp). Document that this is hardening, not a substitute for AEAD.
+
+- [ ] Steps: failing test (a datagram from an unadvertised source does NOT change peerUdp; one from an advertised candidate does) → FAIL → implement the candidate-membership gate in `adoptPeerSource` → PASS → commit `fix(transport): gate direct-path roaming to advertised candidates (anti-spoof hardening)`.
+
+### Task Acleanup: Delete orphaned `relay.ts` AND `holepunch.ts`
 
 **Files:** Delete `core/src/transport/relay.ts`; check `core/src/transport/index.ts` re-exports.
 
-`openRelayChannel` has ZERO non-test callers (superseded by hybrid.ts's inline relay, which uses an INCOMPATIBLE tagged 0xFD frame — relay.ts has no tag byte, a resurrection landmine). 
+BOTH `relay.ts` (`openRelayChannel`) and `holepunch.ts` (`openHolePunchChannel`) have ZERO non-test callers (verified) — superseded by hybrid.ts's inline relay + ladder. relay.ts's 0xFD frame has no tag byte (wire-incompatible landmine); holepunch.ts is a stale pre-revision single-mode impl (its bind-error handling is the CORRECT behavior Task A-bind ports into hybrid.ts — port the good bit, then delete). 
 - [ ] Grep-confirm zero callers (`grep -rn "openRelayChannel\|transport/relay" core/src --include=*.ts | grep -v relay.ts`); remove any re-export from `index.ts` (the `TRANSPORT_RELAY_MARKER`/`FIREHOSE_MARKER` re-exports come from hybrid.ts, NOT relay.ts — verify before deleting).
-- [ ] `git rm core/src/transport/relay.ts` (+ its test if any); build clean.
+- [ ] `git rm core/src/transport/relay.ts core/src/transport/holepunch.ts` (+ any tests); build clean.
 - [ ] **Commit** `chore(transport): remove orphaned relay.ts (superseded by hybrid.ts inline relay; wire-incompatible landmine)`.
 
 ---

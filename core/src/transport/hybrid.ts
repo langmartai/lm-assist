@@ -116,6 +116,25 @@ const BIDI_SUSTAIN_CYCLES = 2;
 
 const CONTROL_DATAGRAM_MAX = 256;
 
+/**
+ * Pure routing decision for a single outbound reliable datagram (data OR
+ * control — ACK/PING/FIN). Direct is eligible whenever the outbound leg is
+ * confirmed fresh AND we have both a peer endpoint and a bound socket to send
+ * from — the SAME gate the bulk data path has always used. Control no longer
+ * gets an unconditional relay detour: cumulative ACKs are loss-tolerant (the
+ * next ACK/piggybacked-ack subsumes a lost one) and the sender's RTO
+ * retransmit covers any straggler, so routing control over a confirmed direct
+ * leg is safe and is what actually lets BIDI mean "everything rides direct".
+ */
+export function chooseDatagramPath(s: {
+  isControl: boolean;
+  directFresh: boolean;
+  hasPeer: boolean;
+  hasSocket: boolean;
+}): 'direct' | 'relay' {
+  return s.directFresh && s.hasPeer && s.hasSocket ? 'direct' : 'relay';
+}
+
 function hashChannelId(channelId: string): Buffer {
   return crypto.createHash('md5').update(channelId).digest().subarray(0, 8);
 }
@@ -294,21 +313,26 @@ export function openHybridChannel(
     const makeReliable = (): ReliableConnection => {
       return new ReliableConnection({
         sendDatagram: (buf: Buffer, isControl: boolean) => {
-          // CONTROL / METADATA PLANE: reliable ACK/PING/FIN + app control
-          // (FT_META/FT_END/FT_OK) ALWAYS ride the relay, with PRIORITY (bypass
-          // the data backpressure gate). The data path therefore always has
-          // authoritative, never-starved coordination state, regardless of mode.
-          if (isControl) {
-            relaySendDatagram(buf, /*priority*/ true, /*control*/ true);
-            return;
-          }
-          // BULK DATA PLANE: ride direct when our outbound leg is confirmed,
-          // else fall back to the relay floor (last resort). Read peer live.
+          // Route BOTH control (ACK/PING/FIN) and bulk data through the SAME
+          // freshness gate: direct when our outbound leg is confirmed fresh AND
+          // we have a live peer endpoint + bound socket, relay otherwise. This
+          // is what makes BIDI actually mean "everything rides direct" — a
+          // confirmed direct leg no longer detours ACKs through the relay.
           const p = peerUdp;
-          if (myDirectFresh() && p && socket) {
-            try { socket.send(buf, p.port, p.ip); return; } catch { /* fall through to relay */ }
+          const path = chooseDatagramPath({
+            isControl,
+            directFresh: myDirectFresh(),
+            hasPeer: !!p,
+            hasSocket: !!socket,
+          });
+          if (path === 'direct') {
+            try { socket!.send(buf, p!.port, p!.ip); return; } catch { /* fall through to relay */ }
           }
-          relaySendDatagram(buf);
+          // Relay fallback (either not fresh, or the direct send threw). Control
+          // keeps PRIORITY (bypasses the data backpressure gate) so coordination
+          // state is never starved behind a backlog of bulk relay data, exactly
+          // as when it rode the relay unconditionally.
+          relaySendDatagram(buf, /*priority*/ isControl, /*control*/ isControl);
         },
         onDeliver,
         onClose: (r) => {
