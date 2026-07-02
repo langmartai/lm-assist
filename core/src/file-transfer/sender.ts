@@ -177,6 +177,12 @@ export async function sendPath(
 
     const reader = new FrameReader();
     const done = waitForReply(channel, reader, transferId);
+    // Attach a handler NOW so a channel-close that rejects `done` before we
+    // reach `await done` below (e.g. the peer resets mid-stream) is not an
+    // unhandled rejection (which crashes the process). The real error is still
+    // surfaced by `await done` in the try/catch — a promise may carry many
+    // handlers.
+    done.catch(() => { /* real handling is at `await done` */ });
 
     // Announce ourselves as a file-transfer channel, then the manifest.
     channel.sendControl(encodeControl({ type: SUBSYSTEM_TAG } as never));
