@@ -24,7 +24,7 @@
  * and scoped in configure.ts TOOL_SCOPES.
  */
 
-import { ok, err, workerGet, workerPost, type McpToolResult } from './_passthrough';
+import { ok, err, workerGet, workerPost, workerPostRaw, type McpToolResult } from './_passthrough';
 
 export const whatsappSendToolDef = {
   name: 'whatsapp_send',
@@ -155,6 +155,29 @@ export const whatsappStatusToolDef = {
   inputSchema: { type: 'object' as const, properties: {} },
 };
 
+export const whatsappLoginToolDef = {
+  name: 'whatsapp_login',
+  description:
+    'Launch a controlled Chrome at web.whatsapp.com on THIS node and return the login QR so the ' +
+    'user can pair a linked device (WhatsApp on phone → Linked devices → Link a device). This is ' +
+    'how the LOCAL (CDP) WhatsApp connector gets a logged-in, driveable session — mainly for Linux ' +
+    '(no native WhatsApp app) and for re-pairing. ADMIN — it launches a real browser process. ' +
+    'Trigger words: "log in to WhatsApp", "pair WhatsApp Web", "show the WhatsApp QR", "re-link ' +
+    'WhatsApp". The browser stays open so the user can scan; it returns `loggedIn` plus, when a QR ' +
+    'is shown, the QR PNG\'s `savedPath` (surface that image FILE to the user — the base64 dataUrl ' +
+    'is also available but is large, do not paste it inline). After the user scans, poll ' +
+    'whatsapp_status (loggedIn:true) to confirm. On Windows the native WhatsApp app already owns ' +
+    'debug port 9222 — pass a different `port`.',
+  annotations: { readOnlyHint: false, destructiveHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      port: { type: 'number', description: 'Debug port for the launched browser (default 9222). Use a free port if 9222 is taken (e.g. by the native WhatsApp app).' },
+      headless: { type: 'boolean', description: 'Run without a window (default false). Headed is required to actually render/scan the QR.' },
+    },
+  },
+};
+
 export const WHATSAPP_TOOL_DEFS = [
   whatsappSendToolDef,
   whatsappGetMediaToolDef,
@@ -162,6 +185,7 @@ export const WHATSAPP_TOOL_DEFS = [
   whatsappReadMessagesToolDef,
   whatsappSearchToolDef,
   whatsappStatusToolDef,
+  whatsappLoginToolDef,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -317,6 +341,52 @@ async function handleStatus(): Promise<McpToolResult> {
   }
 }
 
+interface WaLoginOut {
+  pid: number;
+  port: number;
+  cdpUrl: string;
+  profileDir?: string;
+  loggedIn: boolean;
+  qr?: { savedPath: string; dataUrl: string; capturedAt: string };
+  note?: string;
+}
+
+async function handleLogin(args: Record<string, unknown>): Promise<McpToolResult> {
+  const body: Record<string, unknown> = {};
+  if (args.port !== undefined) body.port = Number(args.port);
+  if (typeof args.headless === 'boolean') body.headless = args.headless;
+  try {
+    // Use the raw helper so a launch failure surfaces its structured error
+    // (code + hint + installedBrowsers) instead of just a thrown message.
+    const resp = await workerPostRaw('/whatsapp/login', body);
+    if (resp.success === false) {
+      const parts = [String(resp.error || 'login failed')];
+      if (resp.code) parts.push(`(${resp.code})`);
+      if (resp.hint) parts.push(`Hint: ${resp.hint}`);
+      if (Array.isArray(resp.installedBrowsers)) parts.push(`Installed browsers: ${resp.installedBrowsers.join(', ') || '(none)'}`);
+      return err(parts.join(' '));
+    }
+    const d = (resp.data || {}) as WaLoginOut;
+    if (d.loggedIn) {
+      return ok(`WhatsApp is already logged in on this node (pid ${d.pid}, CDP ${d.cdpUrl}). No QR needed — the connector can drive it now.`);
+    }
+    const lines = [
+      `Launched WhatsApp Web login browser (pid ${d.pid}, CDP ${d.cdpUrl}).`,
+    ];
+    if (d.qr?.savedPath) {
+      lines.push(`Scan this QR with your phone (WhatsApp → Linked devices → Link a device):`);
+      lines.push(`  QR image: ${d.qr.savedPath}`);
+      lines.push(`(A base64 data URL of the QR is also available but is large — the saved PNG above is the one to surface.)`);
+      lines.push(`After scanning, run whatsapp_status to confirm loggedIn:true. Close the browser later via /browser/close pid ${d.pid}.`);
+    } else {
+      lines.push(d.note || 'No QR rendered yet — retry whatsapp_login, or check that the browser has a display + network.');
+    }
+    return ok(lines.join('\n'));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 export const WHATSAPP_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
   whatsapp_send: handleSend,
   whatsapp_get_media: handleGetMedia,
@@ -324,4 +394,5 @@ export const WHATSAPP_HANDLERS: Record<string, (args: Record<string, unknown>) =
   whatsapp_read_messages: handleReadMessages,
   whatsapp_search: handleSearch,
   whatsapp_status: () => handleStatus(),
+  whatsapp_login: handleLogin,
 };

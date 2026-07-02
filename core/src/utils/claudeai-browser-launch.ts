@@ -38,6 +38,17 @@ import {
 export interface LaunchOptions {
   /** Profile id ('Default', 'Profile 1', …) or 'isolated' for a fresh data dir. */
   profile?: string;
+  /**
+   * Explicit persistent user-data-dir. When set, OVERRIDES `profile`
+   * resolution: Chrome launches against this exact directory as a standalone
+   * persistent profile (created if missing). Use for a stable, named,
+   * login-surviving profile that is NOT one of the user's installed Chrome
+   * profiles — e.g. a dedicated WhatsApp-Web linked-device login profile.
+   * Relaunching with the same dir keeps the session. Refuses (profile_locked)
+   * if a Chrome is already running against it (SingletonLock). Additive: no
+   * existing caller passes this, so the claude.ai capture flow is unaffected.
+   */
+  userDataDir?: string;
   /** Debug port; defaults to 9222. */
   port?: number;
   /** Run hidden (no window). Useful for CI; humans want headless=false. */
@@ -244,7 +255,31 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<LaunchResu
   let profileDirectory: string | null = null;
   let profileSource: 'isolated' | 'existing';
 
-  if (profileChoice === 'isolated') {
+  if (opts.userDataDir) {
+    // Explicit persistent data dir — a standalone, login-surviving profile
+    // that is NOT one of the user's installed Chrome profiles. Treated like
+    // 'isolated' (fresh/dedicated data dir, no --profile-directory) but at a
+    // caller-chosen stable path so relaunching keeps the session.
+    userDataDir = opts.userDataDir;
+    profileSource = 'isolated';
+    try {
+      fs.mkdirSync(userDataDir, { recursive: true });
+    } catch (e) {
+      return {
+        ok: false,
+        code: 'spawn_failed',
+        message: `Cannot create persistent profile dir: ${(e as Error).message}`,
+      };
+    }
+    if (isUserDataDirLocked(userDataDir)) {
+      return {
+        ok: false,
+        code: 'profile_locked',
+        message: `Persistent profile dir is locked — another Chrome instance is running against it.`,
+        hint: 'Close that browser (or /browser/close its pid), then retry. Only one Chrome may own a user-data-dir at a time.',
+      };
+    }
+  } else if (profileChoice === 'isolated') {
     userDataDir = ISOLATED_PROFILE_DIR;
     profileSource = 'isolated';
     try {

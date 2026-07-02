@@ -176,6 +176,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   whatsapp_search: 'read',
   whatsapp_get_media: 'read',
   whatsapp_send: 'write',
+  whatsapp_login: 'admin',
   // ccr — Claude Code remote support
   cc_sessions: 'read',
   ccr_preflight: 'read',

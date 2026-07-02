@@ -23,6 +23,7 @@ import * as os from 'os';
 import { whatsappProvider } from '../../whatsapp/config';
 import * as store from '../../whatsapp/store';
 import { cdpStatus, syncFromCdp, syncChat, sendText, getMedia, canonicalChatId, WaError } from '../../whatsapp/cdp-client';
+import { whatsappLogin, whatsappLoginStatus } from '../../whatsapp/login';
 
 function clampInt(v: unknown, def: number, min: number, max: number): number {
   const n = parseInt(String(v ?? ''), 10);
@@ -150,6 +151,44 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
         } catch (e) {
           return fail(e);
         }
+      },
+    },
+
+    // POST /whatsapp/login — launch a controlled Chrome at web.whatsapp.com and
+    //   return the login QR (linked-device pairing). Body: { port?, headless?,
+    //   profile? }. The browser stays alive so the user can scan; close it later
+    //   via POST /browser/close {pid}. On Windows the native WhatsApp app owns
+    //   9222 — pass a different port. Returns { pid, port, cdpUrl, loggedIn,
+    //   qr?: { dataUrl, savedPath, capturedAt } }.
+    {
+      method: 'POST',
+      pattern: /^\/whatsapp\/login$/,
+      handler: async (req: ParsedRequest) => {
+        const body = (req.body || {}) as Record<string, unknown>;
+        const port = typeof body.port === 'number' ? body.port : undefined;
+        const headless = typeof body.headless === 'boolean' ? body.headless : undefined;
+        const profile = typeof body.profile === 'string' ? body.profile : undefined;
+        const res = await whatsappLogin({ port, headless, profile });
+        if (!res.ok) {
+          return { success: false, error: res.message, code: res.code, hint: res.hint, installedBrowsers: res.installedBrowsers };
+        }
+        return { success: true, data: res };
+      },
+    },
+
+    // GET /whatsapp/login/status?port= — poll the login browser. Returns
+    //   { loggedIn, qr? } — `loggedIn` flips true after the user scans; while
+    //   pending it refreshes the QR (WhatsApp rotates it ~every 20s).
+    {
+      method: 'GET',
+      pattern: /^\/whatsapp\/login\/status$/,
+      handler: async (req: ParsedRequest) => {
+        const port = req.query?.port ? clampInt(req.query.port, 9222, 1, 65535) : undefined;
+        const res = await whatsappLoginStatus({ port });
+        if ('ok' in res && res.ok === false) {
+          return { success: false, error: res.message, code: res.code, hint: res.hint };
+        }
+        return { success: true, data: res };
       },
     },
 
