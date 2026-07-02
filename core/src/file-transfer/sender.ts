@@ -225,12 +225,16 @@ export async function sendPath(
         sha256PerEntry.push('');
         continue;
       }
+      // resumeFrom only ever applies to single-entry (whole-file) transfers —
+      // a multi-entry (directory) transfer always starts each entry at 0. This
+      // is intentional (resume is scoped to "resend this one file"), not an
+      // oversight, so don't be tempted to thread it across entries.
       const startOffset = (entries.length === 1 && opts?.resumeFrom) ? opts.resumeFrom : 0;
       if (startOffset) sent = startOffset;
       await streamFile(channel, transferId, i, e.absPath, chunkSize, (n) => {
         sent += n;
         onProg(sent, totalBytes);
-      }, startOffset);
+      }, startOffset, opts?.signal);
       sha256PerEntry.push(await sha256File(e.absPath));
     }
 
@@ -337,12 +341,19 @@ async function streamFile(
   chunkSize: number,
   onChunk: (n: number) => void,
   startOffset = 0,
+  signal?: AbortSignal,
 ): Promise<void> {
   const fh = await fsp.open(absPath, 'r');
   try {
     const buf = Buffer.allocUnsafe(chunkSize);
     let offset = startOffset;
     for (;;) {
+      // Checked once per chunk (not just before the loop) so abort latency is
+      // bounded by chunkSize, not by how much of the file remains — otherwise
+      // a closed channel's send() silently no-ops (reliable.ts / tcp-channel.ts)
+      // and this loop would happily read+drop every remaining chunk to EOF
+      // before the outer await ever sees the rejection.
+      if (signal?.aborted) throw new TransferError('ABORTED', 'aborted mid-stream');
       const { bytesRead } = await fh.read(buf, 0, chunkSize, offset);
       if (bytesRead <= 0) {
         break;

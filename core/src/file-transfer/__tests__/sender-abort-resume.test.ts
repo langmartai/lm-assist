@@ -149,6 +149,102 @@ test('sendPath: abort signal fired after META rejects fast with TransferError co
   }
 });
 
+test('sendPath: abort mid-stream (maxRetries:1, genuinely in-progress) rejects ABORTED fast — no backoff, no full-file drain', { timeout: 6000 }, async () => {
+  // Regression guard for the streamFile-ignores-abort blocker: the first abort
+  // test above uses maxRetries: 0, so the retry loop's `i === maxRetries`
+  // short-circuit throws immediately regardless of whether ABORTED is
+  // retriable — isRetriable('ABORTED') is never actually exercised. It also
+  // aborts right after META, before any chunk has gone out, so it can't tell
+  // a per-chunk check apart from "no check at all".
+  //
+  // This test closes both gaps: maxRetries: 1 means the throw only happens
+  // fast because `!isRetriable('ABORTED')` is true (proving the retriability
+  // wiring), and the abort is triggered from inside onProgress once real
+  // chunks are flowing (a deliberately tiny explicit chunkSize over a 4MiB
+  // fixture, so 16384 chunks are in flight and ~16000+ remain unread at the
+  // abort point) — genuinely mid-stream, not just mid-setup.
+  //
+  // Note on why asserting code === 'ABORTED' alone would NOT catch the bug
+  // this guards against: sendPath's outer retry loop already forces
+  // `code = 'ABORTED'` whenever `opts.signal.aborted` is true, regardless of
+  // the underlying error — so even the pre-fix code (which lets streamFile
+  // silently drain to EOF, then fails later in `await done`) still ends up
+  // rejecting with code ABORTED. What actually distinguishes fixed from
+  // broken here is (1) elapsed time and (2) totalSent bytes: pre-fix,
+  // streamFile reads+sends every remaining chunk (this stub's send()
+  // ingests unconditionally, unlike the real reliable/tcp channels, so a
+  // silent no-op can't hide the extra reads) and then hashes the *entire*
+  // file, before unwinding.
+  //
+  // chunkSize is deliberately 256B (not the default 32KiB) so pre-fix drain
+  // time is large enough to clear the 1s assertion on its own — verified by
+  // hand: temporarily commenting out the `signal?.aborted` check in
+  // streamFile made this test fail on the elapsed assertion (~1.1-1.2s) at
+  // this chunk size, where a coarser 16KiB chunk (256 chunks) only pushed
+  // drain time to ~55-350ms — still "passing" the letter of the elapsed
+  // assertion despite the bug being present. The totalSent assertion below
+  // is the timing-independent backstop: pre-fix it always equals FILE_SIZE
+  // exactly, regardless of machine speed.
+  const ka = keepAlive();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sender-abort-mid-'));
+  const file = path.join(dir, 'payload.bin');
+  const CHUNK = 256;
+  const FILE_SIZE = 4 * 1024 * 1024; // 4MiB / 256B chunks = 16384 chunks in flight
+  fs.writeFileSync(file, crypto.randomBytes(FILE_SIZE));
+
+  const { channel, dataFrames } = makeStubChannel({ autoReplyOk: false });
+  let openCalls = 0;
+  _setChannelOpenerForTest(async () => { openCalls += 1; return channel; });
+
+  const ac = new AbortController();
+  const ABORT_AFTER_BYTES = 5 * CHUNK; // fire once 5 chunks (1.25KiB of 4MiB) are out — leaves ~16379 chunks unread
+  let abortStart = 0;
+  try {
+    const p = sendPath('stub-peer', file, 'remote/payload.bin', {
+      signal: ac.signal,
+      maxRetries: 1, // > 0 this time — exercises isRetriable('ABORTED') === false for real
+      chunkSize: CHUNK,
+      forceMode: 'relay', // skip the firehose-eligibility wait (stub never confirms direct)
+      timeoutMs: 1500,
+      onProgress: (sent) => {
+        // Guard so this only fires once: unfixed code keeps calling onProgress
+        // for every subsequent chunk (no abort check), which would otherwise
+        // keep rewinding abortStart to "just before the loop finally stopped"
+        // and hide the very latency this test exists to catch.
+        if (sent >= ABORT_AFTER_BYTES && !ac.signal.aborted) {
+          abortStart = Date.now();
+          ac.abort();
+        }
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await p;
+    } catch (e) {
+      caught = e;
+    }
+    const elapsed = Date.now() - abortStart;
+
+    assert.ok(abortStart > 0, 'onProgress fired and triggered the abort (stream was genuinely underway)');
+    assert.ok(caught instanceof TransferError, `rejects with a TransferError (got ${String(caught)})`);
+    assert.equal((caught as TransferError).code, 'ABORTED');
+    assert.ok(elapsed < 1000, `aborted well under the first backoff step (1s) — took ${elapsed}ms`);
+    assert.equal(openCalls, 1, 'no relay-fallback / retry re-attempt after an abort (channel opened exactly once, despite maxRetries:1)');
+
+    const totalSent = dataFrames.reduce((a, f) => a + f.bytes.length, 0);
+    assert.ok(
+      totalSent < FILE_SIZE / 4,
+      `stream stopped well short of EOF (sent ${totalSent} of ${FILE_SIZE} bytes) — proves abort latency is bounded, not proportional to remaining file size`,
+    );
+    assert.ok(totalSent >= ABORT_AFTER_BYTES, 'at least the chunks already in flight when abort fired went out');
+  } finally {
+    _setChannelOpenerForTest(null);
+    fs.rmSync(dir, { recursive: true, force: true });
+    ka.stop();
+  }
+});
+
 test('sendPath: resumeFrom streams only the tail starting at the given offset', { timeout: 5000 }, async () => {
   const ka = keepAlive();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sender-resume-'));
