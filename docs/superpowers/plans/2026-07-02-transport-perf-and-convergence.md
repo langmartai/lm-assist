@@ -6,13 +6,13 @@
 
 **Architecture:** Two phases. Phase A is localized to `core/src/transport/reliable.ts` + `core/src/hub-client/port-forward-handler.ts` and is **wire-format-compatible** (sender/receiver-local policy only — no new datagram types, no header changes), so it deploys without version-skew concerns and is verifiable on the in-process reliable test pair. Phase B adds stream multiplexing over one `ReliableConnection` and points file-transfer + port-forward at the fabric's `PeerManager` channel (Tier 3 — genuinely the start of W2 transmission), with the hub relay kept as the legacy/fallback path.
 
-**Tech Stack:** TypeScript (CommonJS), `node:test` + `assert/strict`, the existing in-process datagram-pair test harness in `core/src/__tests__/transport/`.
+**Tech Stack:** TypeScript (CommonJS), `node:test` + `assert/strict`, the existing in-process datagram-pair test harness in `core/src/transport/__tests__/`.
 
 ## Global Constraints
 
 - Branch: `feat/transport-perf-and-convergence`.
 - Node ≥ 20.9; run npm from repo ROOT or `core/`. No new dependencies. chokidar stays `^3.6.0`.
-- Build: `cd /home/ubuntu/lm-assist && ./core.sh build`. Focused test: `cd core && npm run build:test && node --test --test-reporter=spec dist-test/__tests__/transport/<file>.test.js` (use the Node v20 binary: `~/.nvm/versions/node/v20.19.6/bin/node` if the default is v18).
+- Build: `cd /home/ubuntu/lm-assist && ./core.sh build`. Focused test: `cd core && npm run build:test && node --test --test-reporter=spec dist-test/transport/__tests__/<file>.test.js` (use the Node v20 binary: `~/.nvm/versions/node/v20.19.6/bin/node` if the default is v18).
 - **Phase A changes MUST NOT change the wire format** — same `DATAGRAM_TYPE` set, same 11-byte header. Verify: an OLD-policy peer and a NEW-policy peer must still interoperate on the in-process pair (mixed-version test in Task A6).
 - The `ReliableConnection` is transport-agnostic (injected `sendDatagram`/`onDeliver`) — keep it so; never import a socket into it.
 - Deployed live on the fleet (0.1.134 on 117/123/107). Every phase ends with a live 123⇄107 file-transfer re-test.
@@ -28,7 +28,7 @@ core/src/transport/mux.ts              NEW  (Phase B) stream multiplexing framin
 core/src/transport/channel-pool.ts     NEW  (Phase B) get-or-open one shared fabric channel per peer
 core/src/file-transfer/sender.ts       MOD  (Phase B) ride the pooled fabric channel
 core/src/hub-client/port-forward-handler.ts MOD  (Phase B) ride the fabric channel; relay fallback
-core/src/__tests__/transport/*.test.ts NEW/MOD  rtt, fast-retransmit, backpressure, mux, mixed-version
+core/src/transport/__tests__/*.test.ts NEW/MOD  rtt, fast-retransmit, backpressure, mux, mixed-version
 ```
 
 ---
@@ -37,14 +37,14 @@ core/src/__tests__/transport/*.test.ts NEW/MOD  rtt, fast-retransmit, backpressu
 
 ### Task A1: Pure RTT estimator (`rtt.ts`)
 
-**Files:** Create `core/src/transport/rtt.ts`; Test `core/src/__tests__/transport/rtt.test.ts`
+**Files:** Create `core/src/transport/rtt.ts`; Test `core/src/transport/__tests__/rtt.test.ts`
 
 **Interfaces:**
 - Produces: `class RttEstimator` — `constructor(opts?: { minRtoMs?: number; maxRtoMs?: number })` (defaults minRtoMs=40, maxRtoMs=4000); `sample(rttMs: number): void` (RFC 6298: first sample SRTT=R, RTTVAR=R/2; subsequent RTTVAR=(1-1/4)·RTTVAR+1/4·|SRTT−R|, SRTT=(1-1/8)·SRTT+1/8·R); `rto(): number` = clamp(SRTT + max(1, 4·RTTVAR), min, max); `srtt(): number | null`; before any sample `rto()` returns a `initialRtoMs` default of 300.
 
 - [ ] **Step 1: failing test**
 ```ts
-// core/src/__tests__/transport/rtt.test.ts
+// core/src/transport/__tests__/rtt.test.ts
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { RttEstimator } from '../../transport/rtt';
@@ -70,7 +70,7 @@ test('rto never exceeds maxRtoMs', () => {
   assert.equal(e.rto(), 4000);
 });
 ```
-- [ ] **Step 2: run → FAIL** (module not found). `cd core && npm run build:test && node --test --test-reporter=spec dist-test/__tests__/transport/rtt.test.js`
+- [ ] **Step 2: run → FAIL** (module not found). `cd core && npm run build:test && node --test --test-reporter=spec dist-test/transport/__tests__/rtt.test.js`
 - [ ] **Step 3: implement** `rtt.ts` per the interface (pure; no timers, no Date).
 ```ts
 // core/src/transport/rtt.ts
@@ -106,7 +106,7 @@ export class RttEstimator {
 
 ### Task A2: Wire the estimator into ReliableConnection (adaptive RTO + Karn)
 
-**Files:** Modify `core/src/transport/reliable.ts`; Test `core/src/__tests__/transport/reliable-rto.test.ts`
+**Files:** Modify `core/src/transport/reliable.ts`; Test `core/src/transport/__tests__/reliable-rto.test.ts`
 
 **Interfaces:**
 - Consumes: `RttEstimator` (A1). Reuses the existing in-process pair helper from `reliable.test.ts` (a `sendDatagram` that hands the buffer to the peer's `onDatagram`, with injectable drop/delay).
@@ -120,7 +120,7 @@ export class RttEstimator {
 
 ### Task A3: Fast-retransmit on 3 duplicate ACKs
 
-**Files:** Modify `core/src/transport/reliable.ts`; Test `core/src/__tests__/transport/reliable-fastrt.test.ts`
+**Files:** Modify `core/src/transport/reliable.ts`; Test `core/src/transport/__tests__/reliable-fastrt.test.ts`
 
 **Interfaces:**
 - Behavior: track `lastAckSeen` + `dupAckCount`. In `processAck`, if the incoming `ack === lastAckSeen` and there is in-flight data, increment `dupAckCount`; on the **3rd** duplicate immediately retransmit the segment at `sendBase` (the gap) once, reset `dupAckCount` to 0 (avoid retransmit storms), and do NOT alter its RTO/backoff. If `ack` advances, set `lastAckSeen=ack`, `dupAckCount=0`.
@@ -133,7 +133,7 @@ export class RttEstimator {
 
 ### Task A4: Event-driven RTO timer + coalesced ACKs
 
-**Files:** Modify `core/src/transport/reliable.ts`; Test `core/src/__tests__/transport/reliable-timer-ack.test.ts`
+**Files:** Modify `core/src/transport/reliable.ts`; Test `core/src/transport/__tests__/reliable-timer-ack.test.ts`
 
 **Interfaces:**
 - Behavior 1 (timer): replace the `setInterval(rtoMs/2 poll)` with a single `setTimeout` armed for the **earliest** pending `sentAt+rto` deadline; re-arm on every send/ack/retransmit; clear when `inFlight` empties. Unref'd.
@@ -147,7 +147,7 @@ export class RttEstimator {
 
 ### Task A5: Bounded queues + FIN retransmit
 
-**Files:** Modify `core/src/transport/reliable.ts`; Test `core/src/__tests__/transport/reliable-bounds.test.ts`
+**Files:** Modify `core/src/transport/reliable.ts`; Test `core/src/transport/__tests__/reliable-bounds.test.ts`
 
 **Interfaces:**
 - Behavior 1 (waitQueue cap): add `maxQueueBytes` option (default 8 MiB). `send()` returns `boolean` — `false` when the queue is at/over the cap (caller should stop and await `onDrain`). Add an `onDrain?: () => void` callback fired when the queue drops below half the cap after having been over it. (Callers that ignore the return value still work — the queue just applies soft pressure; a HARD cap of 2× still refuses to grow past 16 MiB, dropping the connection with `teardown('send queue overflow')` to protect memory.)
@@ -162,7 +162,7 @@ export class RttEstimator {
 
 ### Task A6: Mixed-version interop guard + port-forward inbound backpressure
 
-**Files:** Modify `core/src/hub-client/port-forward-handler.ts`; Test `core/src/__tests__/transport/reliable-interop.test.ts` + `core/src/__tests__/port-forward/inbound-backpressure.test.ts`
+**Files:** Modify `core/src/hub-client/port-forward-handler.ts`; Test `core/src/transport/__tests__/reliable-interop.test.ts` + `core/src/hub-client/__tests__/inbound-backpressure.test.ts`
 
 **Interfaces:**
 - Interop test (no code change to reliable — this PROVES A2–A5 stayed wire-compatible): wire an in-process pair where one endpoint has the NEW policy and the other simulates OLD policy (ACK-every-packet, fixed RTO) — assert a bidirectional stream completes intact. (Simulate OLD by constructing a ReliableConnection with options that disable coalescing/fast-rt via a test-only flag, OR by hand-driving raw datagrams.)
@@ -176,7 +176,7 @@ export class RttEstimator {
 
 ### Task A7: Build, full transport+PF suites, live 123⇄107 re-test
 
-- [ ] Build clean (`./core.sh build`); run ALL of `dist-test/__tests__/transport/` + `dist-test/__tests__/port-forward/` + `dist-test/__tests__/file-transfer/` on Node v20 — record counts (known-flaky firehose "rate rises…spike" allowed).
+- [ ] Build clean (`./core.sh build`); run ALL of `dist-test/transport/__tests__/` + `dist-test/hub-client/__tests__/` + `dist-test/__tests__/file-transfer/` on Node v20 — record counts (known-flaky firehose "rate rises…spike" allowed).
 - [ ] Deploy Phase-A dist to 123 + 107 (dist-sync + restart; 107 via elevated worker per [[deployment_build_gotchas]]) — OR defer deploy to end of Phase B (note which).
 - [ ] Live: 2 MB + 50 MB `transfer_send_file` 123⇄107; record `mode`/`via`/avg MB/s vs the pre-change baseline (today's 2 MB ran `mode:relay`). Phase A alone won't change `mode` (that's Phase B) but SHOULD improve relay throughput materially via adaptive RTO/fast-rt.
 - [ ] Commit any fixes; push the branch.
