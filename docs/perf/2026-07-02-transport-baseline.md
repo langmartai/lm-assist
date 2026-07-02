@@ -19,3 +19,11 @@ Also: `rtt=-ms` — per-transfer RTT is not surfaced (Phase C / C4 reporting gap
 - **A2–A4 (adaptive RTO, fast-retransmit, coalesced ACK):** improve the relay/lossy worst-case (fewer spurious retransmits, faster loss recovery).
 
 This file is the "before"; re-run C3 after each deploy for the "after".
+
+## Firehose (bulk direct) measured — the current design's ceiling
+| Transfer | Path | Throughput | RTT |
+|---|---|---|---|
+| 30 MB (auto) | firehose, **bidi/host** | 5.24 MB/s | 1ms |
+| 100 MB (auto) | firehose, **bidi/host** | **9.28 MB/s** | 1ms |
+
+Firehose (raw UDP blast + FASP/LEDBAT paced) ramps with file size but tops out **~9 MB/s = ~8% of gigabit line rate**. RTT is genuinely 1ms — the LAN is fast; the software is the bottleneck. Root cause: userspace UDP in Node's single-threaded event loop — every 1100B chunk is a JS call + sendto syscall on both ends (~9k datagrams/s). A kernel TCP socket between the two host IPs would hit ~100 MB/s (GSO/GRO/sendfile offloads, C-speed ARQ). CONCLUSION: the UDP ARQ/firehose is structurally an order of magnitude short of native LAN speed → direct-TCP-for-LAN is the real fix.
