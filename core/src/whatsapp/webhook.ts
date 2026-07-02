@@ -30,13 +30,14 @@ export function verifyChallenge(query: Record<string, string>): { ok: boolean; c
 }
 
 /**
- * Constant-time verification of the POST body signature. If no app secret is
- * configured we skip the check (best-effort) — but log-worthy, so the status
- * endpoint surfaces `appSecretSet:false` to nudge the operator to set it.
+ * Constant-time verification of the POST body signature. Fails closed: with
+ * no app secret configured, or no signature header on the request, the event
+ * is rejected — the status endpoint separately surfaces `appSecretSet:false`
+ * to nudge the operator to set it.
  */
 export function verifySignature(rawBody: string, signatureHeader?: string): boolean {
   const cfg = readWhatsappConfig();
-  if (!cfg.appSecret) return true; // not yet hardened; status endpoint flags this
+  if (!cfg.appSecret) return false;
   if (!signatureHeader) return false;
   const expected = 'sha256=' + crypto.createHmac('sha256', cfg.appSecret).update(rawBody, 'utf8').digest('hex');
   const a = Buffer.from(signatureHeader);

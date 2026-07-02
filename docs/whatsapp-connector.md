@@ -70,9 +70,9 @@ ingested message/chat/unread counts.
 Meta must reach `…/whatsapp/webhook` over public HTTPS. The webhook is
 **exempt from the lm-assist API token** (Meta can't carry it); it authenticates
 with the verify token (GET handshake) and an **HMAC-SHA256 body signature**
-(`X-Hub-Signature-256`, keyed by the App Secret) on POST. **Set `appSecret`** —
-without it, inbound POSTs are accepted unsigned (`status` flags this as
-`appSecretSet:false`).
+(`X-Hub-Signature-256`, keyed by the App Secret) on POST. **Set `appSecret`
+before pointing Meta at this endpoint** — without it, inbound POSTs are
+rejected outright (`status` flags the missing config as `appSecretSet:false`).
 
 Expose the endpoint one of two ways:
 
