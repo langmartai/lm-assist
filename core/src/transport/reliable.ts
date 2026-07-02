@@ -8,7 +8,11 @@
  *
  * Guarantees over a lossy/reordering datagram channel:
  *   - 32-bit sequence numbers, cumulative ACK (ack = next-expected seq).
- *   - retransmit on RTO (~300ms base, exponential backoff, capped).
+ *   - adaptive retransmit timeout (RFC 6298 SRTT/RTTVAR via RttEstimator,
+ *     Karn's algorithm — a retransmitted segment's ACK is never sampled),
+ *     with the existing per-datagram exponential backoff on actual timeout
+ *     (capped at rtoMaxMs), PLUS fast-retransmit of the segment at the send
+ *     window's base on the 3rd duplicate ACK (no cwnd/slow-start/pacing).
  *   - in-order delivery to the consumer (a reorder buffer holds out-of-order
  *     DATA until the gap fills).
  *   - a send window (default 64 unacked datagrams) for flow control.
@@ -20,6 +24,8 @@
  *
  * `send(buf)` fragments an arbitrary-length payload across <=1200B datagrams.
  */
+
+import { RttEstimator } from './rtt';
 
 export const DATAGRAM_TYPE = {
   DATA: 0,
@@ -105,6 +111,11 @@ export class ReliableConnection {
   private readonly inFlight = new Map<number, PendingDatagram>();
   private readonly waitQueue: Array<{ payload: Buffer; control: boolean }> = []; // payloads waiting for window space
 
+  // --- adaptive RTO (A2) + fast-retransmit (A3) ---
+  private readonly rtt: RttEstimator;
+  private lastAckSeen: number | null = null;        // most recent ack value observed
+  private dupAckCount = 0;                          // consecutive duplicates of lastAckSeen
+
   // --- receive side ---
   private rcvNext = 0;                              // next in-order seq we expect to deliver
   private readonly reorderBuf = new Map<number, Buffer>(); // seq -> payload held out-of-order
@@ -127,6 +138,11 @@ export class ReliableConnection {
       keepaliveMs: options.keepaliveMs ?? 5000,
       idleTimeoutMs: options.idleTimeoutMs ?? 30000,
     };
+    // rtoMs stays the pre-sample initial via the estimator's own default
+    // (300ms, matching today's fixed base) — only the backoff ceiling is
+    // wired through, so per-datagram backoff (checkRetransmits) and the
+    // estimator's own cap never disagree.
+    this.rtt = new RttEstimator({ maxRtoMs: this.opts.rtoMaxMs });
     this.startKeepalive();
   }
 
@@ -152,7 +168,7 @@ export class ReliableConnection {
         seq,
         datagram,
         sentAt: Date.now(),
-        rto: this.opts.rtoMs,
+        rto: this.rtt.rto(),
         retries: 0,
         control,
       };
@@ -225,21 +241,66 @@ export class ReliableConnection {
     }
   }
 
-  /** Apply a cumulative ack: drop every in-flight datagram with seq < ack. */
+  /**
+   * Apply a cumulative ack: drop every in-flight datagram with seq < ack,
+   * sampling RTT for each (Karn's algorithm: only untouched — never
+   * retransmitted — datagrams count), then track duplicate acks to drive
+   * fast-retransmit.
+   */
   private processAck(ack: number): void {
-    if (this.inFlight.size === 0) {
-      this.sendBase = ack;
-      return;
-    }
-    for (const seq of Array.from(this.inFlight.keys())) {
-      if (seqLt(seq, ack)) {
-        this.inFlight.delete(seq);
+    const now = Date.now();
+
+    if (this.inFlight.size > 0) {
+      for (const seq of Array.from(this.inFlight.keys())) {
+        if (seqLt(seq, ack)) {
+          const pending = this.inFlight.get(seq)!;
+          // Karn's algorithm: a retransmitted segment's ACK is ambiguous
+          // (could be acking the original or a retransmit) — never sample it.
+          if (pending.retries === 0) {
+            this.rtt.sample(now - pending.sentAt);
+          }
+          this.inFlight.delete(seq);
+        }
       }
     }
     this.sendBase = ack;
+
+    if (this.lastAckSeen !== null && ack === this.lastAckSeen) {
+      // Same cumulative ack as last time: only a genuine duplicate if there's
+      // still unacked data outstanding (otherwise it's just a stray/keepalive
+      // ack repeating the fully-caught-up state).
+      if (this.inFlight.size > 0) {
+        this.dupAckCount += 1;
+        if (this.dupAckCount >= 3) {
+          this.dupAckCount = 0; // reset so we don't storm-retransmit
+          this.fastRetransmit();
+        }
+      }
+    } else {
+      this.lastAckSeen = ack;
+      this.dupAckCount = 0;
+    }
+
     // Window freed up — push more queued payloads.
     this.pumpWindow();
     if (this.inFlight.size === 0) this.clearRtoTimer();
+  }
+
+  /**
+   * Fast-retransmit: on the 3rd duplicate ACK, immediately resend the
+   * segment at sendBase (the gap the peer is stuck waiting on) once, without
+   * waiting for its RTO to elapse. Does not touch its rto/backoff — this is
+   * a separate signal from an actual timeout — but does mark it retried so
+   * Karn's algorithm excludes its eventual ACK from RTT sampling.
+   */
+  private fastRetransmit(): void {
+    const pending = this.inFlight.get(this.sendBase);
+    if (!pending) return; // nothing sitting at the gap right now
+    pending.retries += 1;
+    pending.sentAt = Date.now();
+    // Refresh the piggybacked ack to our latest rcvNext before resending.
+    pending.datagram.writeUInt32BE(this.rcvNext >>> 0, 5);
+    this.safeSend(pending.datagram, pending.control);
   }
 
   // ---- retransmission ----
@@ -348,5 +409,10 @@ export class ReliableConnection {
   /** Diagnostics: count of unacked datagrams currently in flight. */
   inFlightCount(): number {
     return this.inFlight.size;
+  }
+
+  /** Diagnostics: the adaptive RTO estimate currently in effect (ms). */
+  currentRto(): number {
+    return this.rtt.rto();
   }
 }
