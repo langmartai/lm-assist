@@ -267,3 +267,52 @@ export class RttEstimator {
 - Every throughput change is independently testable on the in-process pair with fault injection (drop/delay/reorder). ✓
 - The sync-onClose contract PeerLink depends on is preserved in A5 (only teardown timing moves, not its synchronicity). ✓
 - Memory-safety: waitQueue soft+hard cap, reorderBuf cap, port-forward inbound bounded buffer — all three unbounded paths the audit flagged are closed. ✓
+
+---
+
+## PHASE C — Performance + reliability characterization + perf-status reporting
+
+> Goal (user ask): find both **error-resilience** (does it stay correct + recover under faults) and **best/worst-case performance** (quantified throughput/latency envelope), and make transport **performance status reportable**. Runs after Phase A's reliable-layer fixes land so the numbers reflect the improved behavior; the harnesses (C1/C2) are test-only (no prod risk).
+
+### Task C1: Reliability / error-resilience test matrix (in-process pair)
+
+**Files:** Create `core/src/transport/__tests__/reliability-matrix.test.ts` (extends `makeLossyPair`).
+
+**What:** a parameterized sweep asserting **integrity** (every byte delivered, in order, sha256-verified) and **bounded resources** across a fault matrix:
+- drop ∈ {0, 0.05, 0.2, 0.5, 0.8}, reorder ∈ {0, 0.3}, per-datagram delay ∈ {0, 15ms, 200ms}, payload ∈ {1KB, 100KB, 2MB}.
+- Event faults: (a) mid-stream blackout — drop 100% for a 500ms window then resume → assert recovery + completion; (b) duplicate flood — replay every datagram 3× → assert dedup, no double-deliver; (c) out-of-order flood far ahead → assert `reorderBuf` size stays ≤ windowSize×2 (the A5 bound) and no OOM.
+- Each cell RECORDS: completion time, retransmit count, fast-retransmit count, max in-flight, max reorderBuf; FAIL if data lost/corrupted, if it doesn't complete within a generous deadline, or if a bound is exceeded.
+- [ ] failing test → FAIL → implement the matrix + a small per-cell metrics collector (expose the needed counters from ReliableConnection: `retransmits`, `fastRetransmits`, `maxInFlight`, `maxReorder` — add as diagnostics if absent) → PASS (all cells integrity-clean) → commit `test(transport): reliability/error-resilience matrix (drop/reorder/delay/blackout/dup/flood)`.
+
+### Task C2: Performance benchmark — best/typical/worst envelope
+
+**Files:** Create `core/src/transport/__tests__/perf-benchmark.test.ts`.
+
+**What:** measure reliable-layer throughput + latency over the in-process pair (deterministic, no real sockets) across a labeled envelope and PRINT a table; assert a FLOOR per condition so regressions are caught:
+- BEST (0% loss, ~1ms delay) · TYPICAL (5% loss, 15ms) · WORST (20% loss, 200ms) · EXTREME (50% loss, 200ms).
+- Metrics: throughput MB/s (2MB payload), p50/p99 per-chunk delivery latency, retransmit ratio.
+- Print a markdown table to stdout (the "performance report"). Assert e.g. BEST ≥ a floor, WORST completes < a ceiling. This quantifies the reliable-layer win from A2–A4 (adaptive RTO, fast-rt, coalesced ACK): capture the numbers on the pre-A2 baseline vs post to show the delta in the report.
+- NOTE: A0 (direct-vs-relay socket routing) is hybrid-level, not visible to the in-process pair — its win is measured LIVE in C3.
+- [ ] failing test → FAIL → implement benchmark + table print + floor asserts → PASS → commit `test(transport): best/typical/worst performance benchmark with regression floors`.
+
+### Task C3: Live fleet perf harness (real 123⇄107) — the real A0/Phase-B proof
+
+**Files:** Create `core/scripts/transport-perf.mjs` (a repeatable driver; not shipped in the tool surface).
+
+**What:** run a matrix of `transfer_send_file` 123⇄107 (sizes 1MB/10MB/100MB, direct vs `forceMode:relay`), capture per-run `mode`/`via`/avg MB/s/rttMs from `transfer_stats`, emit a before/after markdown table. Run it (a) on the current fleet build = BASELINE, (b) after Phase A deploy, (c) after Phase B deploy. This is where A0's ACK-over-direct win and Phase B's warm-channel-reuse win actually show up (the in-process tests can't see them).
+- [ ] implement the driver; capture the BASELINE now (pre-Phase-A) so the improvement is quantified; commit `test(transport): live fleet perf harness + captured baseline`.
+
+### Task C4: Transport perf-status reporting (the "ensure status can be reported" ask)
+
+**Files:** Modify `core/src/transport/reliable.ts` (+ `hybrid.ts`, `fabric/peer-link.ts`) to expose live perf counters; NEW `core/src/status` provider registration; Modify `core/src/routes/core/fabric.routes.ts` / a `transport` section; extend `transfer-stats.ts`.
+
+**What:**
+- Expose from `ReliableConnection` a `stats()` snapshot: `{bytesIn, bytesOut, retransmits, fastRetransmits, dupAcks, srttMs, rtoMs, windowInUse, windowSize, reorderDepth}`. From the hybrid `Channel`: `mode/via/rtt` (already) + the reliable `stats()`.
+- Register a **`transport` StatusRegistry provider** (W1 pattern) so `node_status(section="transport")` reports, per online peer: mode/via/rttMs, throughput (bytesOut/elapsed), retransmit ratio, window utilization, + count of active transfers — with a health verdict (`warn` if retransmit ratio high, or a peer is relay-only while a direct leg was expected).
+- Add a `perf` block per peer to `GET /fabric/status` (so the existing surface carries it) and a retransmit-ratio to `transfer_stats`.
+- MUST add a `TOOL_SCOPES` entry if any NEW MCP tool is introduced (prefer extending `node_status`, which already has `read` scope — no new tool needed).
+- [ ] failing tests (provider shape + reliable `stats()` counters increment under the C1 harness) → FAIL → implement counters + provider + route block → PASS → build → commit `feat(transport): live perf counters + transport status section (node_status/fabric status)`.
+
+### Task C5: Phase-C build + full suites + live perf report
+- [ ] Build clean; run all transport `__tests__` (incl. C1 matrix + C2 benchmark) on Node v20; capture the C2 table + the C3 live before/after into `docs/` or the final report.
+- [ ] Deploy Phase A+C to 123/107 (+117); run C3 live; attach the perf report (best/worst envelope + the A0 direct-vs-relay delta).
