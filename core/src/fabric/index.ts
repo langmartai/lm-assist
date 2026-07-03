@@ -347,7 +347,16 @@ async function attachFabricLink(selfNode: string, peer: string, link: PeerLink, 
   });
 
   // First-time bus catch-up from this peer (heals a partition / a boot gap).
-  try { void (require('../bus') as typeof import('../bus')).getBus().catchupPeer(peer).catch(() => {}); } catch { /* bus off */ }
+  // Gated on the peer's own advertised 'bus' HELLO feature — mirrors the same
+  // `link.peerHasFeature('bus')` check fabricBusPeers()/reconcile() already
+  // use for fan-out — so a peer that never advertised bus support (mixed
+  // version, or bus off on its side) never gets issued a catch-up RPC it
+  // can't (or shouldn't) serve. `peerFeatureList` is populated from the HELLO
+  // before PeerLink.onConnected fires (see peer-link.ts adopt()/
+  // awaitFabricReply()), so it's already current by this point.
+  if (link.peerHasFeature('bus')) {
+    try { void (require('../bus') as typeof import('../bus')).getBus().catchupPeer(peer).catch(() => {}); } catch { /* bus off */ }
+  }
 }
 
 /** Test/probe accessor: the live FabricLink for a connected peer, or null. */

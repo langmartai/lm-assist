@@ -46,10 +46,33 @@ export function createRpcServer(deps: RpcServerDeps): ServerHandler {
 
       if (env.kind !== 'req') return;
       const reqPath = env.headers.path ?? '/';
+      // Normalize BEFORE any routing decision — the SAME algorithm
+      // rest-server.ts's parseRequest uses (`new URL(req.url, base).pathname`),
+      // so a `..` / `%2e%2e` segment collapses HERE exactly as it will once
+      // loopbackDispatch's raw HTTP request line reaches the real router.
+      // Deciding the allow-list on the RAW reqPath (the pre-fix behavior) let a
+      // peer send e.g. `/bus/../hub/config`: the raw string passes a naive
+      // `startsWith('/bus/')` test, but the router normalizes it to
+      // `/hub/config` — a non-bus route — defeating the kill switch entirely
+      // at the fleet default (fabricRpcEnabled=false, busEnabled=true).
+      // `routedPath` is used for BOTH the allow-list decision AND the
+      // dispatched path below (see the dispatch call), so the two can never
+      // diverge regardless of what `deps.dispatch` does internally.
+      const routedPath = (() => {
+        try { return new URL(reqPath, 'http://localhost').pathname; } catch { return reqPath; }
+      })();
       // Kill-switch is checked BEFORE begin() — a disabled class never touches
       // idempotency. Bus catch-up (/bus/*) rides busEnabled, not the general RPC
-      // class, so the bus works without opening arbitrary peer RPC.
-      const allowed = deps.rpcEnabled() || (reqPath.startsWith('/bus/') && (deps.busEnabled?.() ?? false));
+      // class, so the bus works without opening arbitrary peer RPC. Scoped to
+      // the EXACT shape bus catch-up ever sends — `POST /bus/<topic>/since` —
+      // rather than a bare `/bus/` prefix: tighter allow-list surface for the
+      // same functionality, and safe even for a topic containing a literal
+      // '/': the only production caller (fabricBusCatchup, fabric/index.ts)
+      // always `encodeURIComponent()`s the topic before building this path,
+      // and a `%2F` never decodes back into a path-separating '/' during URL
+      // normalization (verified against Node's WHATWG URL implementation), so
+      // an encoded topic can never split into extra path segments here.
+      const allowed = deps.rpcEnabled() || (/^\/bus\/[^/]+\/since$/.test(routedPath) && (deps.busEnabled?.() ?? false));
       if (!allowed) { reply(errRes(503, 'rpc_disabled', 'fabric rpc class disabled')); return; }
 
       const reqId = env.headers.reqId ?? id;
@@ -69,12 +92,14 @@ export function createRpcServer(deps: RpcServerDeps): ServerHandler {
       let parsed: { body?: unknown; query?: Record<string, string> } = {};
       try { parsed = (decodeBody(env.payload) as typeof parsed) ?? {}; } catch { /* empty body */ }
       const method = env.headers.method ?? 'GET';
-      const path = env.headers.path ?? '/';
       const peerNode = deps.peerNodeOf(env);
 
       let result: DispatchResult;
       try {
-        result = await deps.dispatch({ method, path, body: parsed.body ?? null, query: parsed.query ?? {}, peerNode });
+        // routedPath (not the raw reqPath/env.headers.path) — the exact value
+        // the allow-list above just validated, so the dispatched target can
+        // never diverge from the security decision that permitted it.
+        result = await deps.dispatch({ method, path: routedPath, body: parsed.body ?? null, query: parsed.query ?? {}, peerNode });
       } catch (e) {
         const failRes = errRes(502, 'dispatch_failed', (e as Error).message);
         deps.idempotency.settle(reqId, failRes); // release any concurrent waiter
