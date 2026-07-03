@@ -178,6 +178,10 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   node_lifecycle: 'admin',
   node_status: 'read',
   fabric_probe: 'read',
+  // durable cross-node bus — publish / long-poll read / topics (spec §5 S1)
+  bus_publish: 'write',
+  bus_read: 'read',
+  bus_topics: 'read',
   // multi-node
   list_nodes: 'read',
   // github endpoint (read = query, write = mutate)

@@ -92,6 +92,15 @@ export async function workerGet<T = unknown>(routePath: string): Promise<T> {
   return unwrapEnvelope<T>(res, routePath);
 }
 
+/** GET with a caller-set timeout (long-poll reads exceed workerGet's 15s default). */
+export async function workerGetLong<T = unknown>(routePath: string, timeoutMs: number): Promise<T> {
+  const res = await fetch(`${BASE_URL}${routePath}`, {
+    headers: { ...lmAuthHeaders() },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  return unwrapEnvelope<T>(res, routePath);
+}
+
 /** POST an lm-assist route on loopback. Same envelope handling as workerGet. */
 export async function workerPost<T = unknown>(
   routePath: string,
