@@ -3,8 +3,12 @@
  * EXISTING route table by a loopback HTTP call carrying a {type:'peer',node}
  * principal (x-relay-source:'peer' + x-lm-peer-node) — the same mechanism the
  * hub's api-relay-handler uses, so existing handlers work unchanged. Idempotency
- * (T7) dedupes retries; a large `data` payload is handed to the bulk layer (T4)
- * and the `res` carries a handle instead of the bytes.
+ * (T7) dedupes retries via `IdempotencyCache.begin`/`settle`: a retry that lands
+ * AFTER the original completed replays the cached res; one that lands WHILE the
+ * original is still dispatching awaits that same in-flight result instead of
+ * re-invoking the route — exactly-once, not just once-per-non-concurrent-retry.
+ * A large `data` payload is handed to the bulk layer (T4) and the `res` carries
+ * a handle instead of the bytes.
  */
 import * as http from 'http';
 import { currentApiToken } from '../auth/api-token';
@@ -37,11 +41,23 @@ export function createRpcServer(deps: RpcServerDeps): ServerHandler {
         ({ kind: 'res', id, headers: { status, code, message }, payload: new Uint8Array() });
 
       if (env.kind !== 'req') return;
+      // Kill-switch is checked BEFORE begin() — a disabled rpc class never
+      // touches idempotency (nothing was claimed, so nothing needs settling).
       if (!deps.rpcEnabled()) { reply(errRes(503, 'rpc_disabled', 'fabric rpc class disabled')); return; }
 
       const reqId = env.headers.reqId ?? id;
-      const cached = deps.idempotency.get(reqId);
-      if (cached) { reply({ ...cached, id }); return; } // replay under the CURRENT correlation id
+      const begun = deps.idempotency.begin(reqId);
+      if (begun.kind === 'cached') { reply({ ...begun.res, id }); return; } // replay under the CURRENT correlation id
+      if (begun.kind === 'inflight') {
+        // A concurrent retry of the SAME reqId while the original dispatch is
+        // still running: await it instead of re-dispatching (exactly-once).
+        const res = await begun.wait;
+        reply({ ...res, id }); // replay under the CURRENT correlation id
+        return;
+      }
+      // begun.kind === 'new': this call owns the dispatch and MUST settle()
+      // on every terminal path below (success, dispatch-throw) or a
+      // concurrent waiter parked on `begun.wait` above hangs forever.
 
       let parsed: { body?: unknown; query?: Record<string, string> } = {};
       try { parsed = (decodeBody(env.payload) as typeof parsed) ?? {}; } catch { /* empty body */ }
@@ -53,7 +69,9 @@ export function createRpcServer(deps: RpcServerDeps): ServerHandler {
       try {
         result = await deps.dispatch({ method, path, body: parsed.body ?? null, query: parsed.query ?? {}, peerNode });
       } catch (e) {
-        reply(errRes(502, 'dispatch_failed', (e as Error).message));
+        const failRes = errRes(502, 'dispatch_failed', (e as Error).message);
+        deps.idempotency.settle(reqId, failRes); // release any concurrent waiter
+        reply(failRes);
         return;
       }
 
@@ -65,7 +83,7 @@ export function createRpcServer(deps: RpcServerDeps): ServerHandler {
       } else {
         res = { kind: 'res', id, headers: { status: result.status, 'content-type': 'application/json' }, payload: dataBytes };
       }
-      deps.idempotency.put(reqId, res);
+      deps.idempotency.settle(reqId, res);
       reply(res);
     })();
   };
