@@ -164,7 +164,12 @@ async function handleDataPut(args: Record<string, unknown>): Promise<McpToolResu
     metadata: (rec.metadata && typeof rec.metadata === 'object' ? rec.metadata : undefined) as Record<string, unknown> | undefined,
     createdAt: now, updatedAt: now,
   };
-  const r = await svc.put(ctx, dataset, record);
+  // numArg (not a raw `typeof === 'number'` check): the claude.ai connector -> hub relay
+  // serializes number-typed MCP args as strings (see numArg's own doc comment + every other
+  // numeric arg in this file), so a strict typeof check would silently drop ifVersion when
+  // called over that surface. numArg still preserves 0 as a valid CAS value (Number.isFinite).
+  const ifVersion = numArg(args.ifVersion);
+  const r = await svc.put(ctx, dataset, record, ifVersion !== undefined ? { ifVersion } : undefined);
   if (!r.ok) return err(`${r.code}: ${r.reason}`);
   return ok(pretty(r.value));
 }
@@ -326,7 +331,7 @@ export const DATA_TOOL_DEFS = [
     name: 'data_put',
     description: 'Write (upsert) a record into a data-service dataset. `record` is { id, fields, text?, metadata? }. Requires the write action (a key granting write, or local). ',
     annotations: { readOnlyHint: false },
-    inputSchema: { type: 'object' as const, properties: { dataset: STR('Dataset id.'), record: { type: 'object' as const, description: 'Record: { id, fields, text?, metadata? }.' }, key: STR('Access key granting write (omit if local).') }, required: ['dataset', 'record'] },
+    inputSchema: { type: 'object' as const, properties: { dataset: STR('Dataset id.'), record: { type: 'object' as const, description: 'Record: { id, fields, text?, metadata? }.' }, ifVersion: { type: 'number' as const, description: 'Optimistic-concurrency guard: write only if the stored version equals this (absent record ⇒ 0); else CONFLICT.' }, key: STR('Access key granting write (omit if local).') }, required: ['dataset', 'record'] },
   },
   {
     name: 'data_delete',
