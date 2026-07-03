@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import { getCacheDir } from '../utils/path-utils';
 import type { BusEvent, BusCursor } from './types';
 import { mergeCursor } from './types';
+import { eventsToEvict, retentionFromEnv, type RetentionPolicy } from './retention';
 
 export interface TopicSummary {
   topic: string;
@@ -145,6 +146,29 @@ export class BusStore {
 
   setCursor(subscriberId: string, topic: string, c: BusCursor): void {
     this.cursors.putSync([subscriberId, topic], mergeCursor(this.getCursor(subscriberId, topic), c));
+  }
+
+  /** Apply retention to every topic; returns the number of events removed. */
+  sweep(policy: RetentionPolicy = retentionFromEnv()): number {
+    const now = Date.now();
+    let removed = 0;
+    for (const topic of this.allTopicNames()) {
+      const evs: Array<{ origin: string; seq: number; at: number }> = [];
+      for (const { key, value } of this.events.getRange({ start: [topic] })) {
+        const k = key as [string, string, number];
+        if (!Array.isArray(k) || k[0] !== topic) break;
+        evs.push({ origin: k[1], seq: k[2], at: value.at });
+      }
+      for (const e of eventsToEvict(evs, policy, now)) {
+        // removeSync (not remove): same reason as putSync above — this class's API
+        // is synchronous throughout, and lmdb-js's async remove() would not be
+        // reflected in a get() called later in the same tick (e.g. the test that
+        // sweeps then immediately asserts the evicted key is gone).
+        this.events.removeSync([topic, e.origin, e.seq]);
+        removed++;
+      }
+    }
+    return removed;
   }
 
   close(): void {
