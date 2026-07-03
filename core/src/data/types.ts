@@ -4,11 +4,12 @@
 export type BackendKind = 'vector' | 'sql' | 'cache' | 'knowledge' | 'vectors' | 'file';
 export type DataAction = 'read' | 'query' | 'search' | 'write' | 'delete' | 'manage';
 export type NodeVisibility = 'local-only' | 'synced' | 'cross-node-readable';
-export type PrincipalType = 'local' | 'cloud';
+export type PrincipalType = 'local' | 'cloud' | 'peer';
 
 export interface Principal {
   type: PrincipalType;
   userId?: string; // present for cloud principals when the hub supplies one
+  node?: string;   // present for peer principals — the fabric gatewayId that issued the sync RPC
 }
 
 export interface NodeOrigin {

@@ -49,6 +49,17 @@ export class AccessManager {
     if (header(req, 'x-relay-source') === 'hub') {
       return { type: 'cloud', userId: header(req, 'x-lm-user-id') };
     }
+    // A fabric peer RPC arrives via the rpc-server's loopbackDispatch (127.0.0.1) carrying
+    // x-relay-source:'peer' + x-lm-peer-node. Honor a peer principal ONLY from a genuine loopback
+    // origin — that is the only path that can set this header (a non-loopback caller forging it must
+    // NOT get peer trust). Checked BEFORE the loopback→local branch precisely because a peer RPC IS
+    // loopback: without this, a peer sync call would resolve to LOCAL ROOT (the pre-W4 bug that made
+    // the /data/* fabric allow-list a root-access hole).
+    if (header(req, 'x-relay-source') === 'peer' && isLoopbackAddress(req.clientIp)) {
+      const node = header(req, 'x-lm-peer-node');
+      if (node) return { type: 'peer', node };
+      return { type: 'cloud' }; // malformed peer header → untrusted, never local
+    }
     // Not relayed: only a genuinely loopback caller (holding the local api-token) is trusted as
     // local root. Any other origin is treated as cloud (no userId) — never local root — which
     // defends the 0.0.0.0 bind if api-token auth is ever disabled.
