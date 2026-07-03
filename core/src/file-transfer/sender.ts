@@ -176,11 +176,18 @@ export async function sendPath(
       onAbort = () => {
         // Tell the receiver this is an explicit CANCEL — delete the partial +
         // sidecar — as opposed to a mere connection drop, which KEEPS the partial
-        // for resume. Best-effort (a relay may drop the queued frame on close;
-        // the receiver's stale-partial sweeper is the backstop); the direct/LAN
-        // path flushes it before teardown.
+        // for resume. Streaming has already stopped (the per-chunk signal check),
+        // so hold the channel open a short grace period after the FT_CANCEL so it
+        // actually flushes over the RELAY before teardown: an immediate close()
+        // drops a frame still queued on the relay socket, which would leave the
+        // receiver treating the cancel as a drop (partial kept until the 24h
+        // sweeper). The direct/LAN path flushes synchronously and doesn't need
+        // the grace, but the delay is harmless there. The sweeper remains the
+        // backstop if the frame is lost anyway.
         try { channel.sendControl(encodeControl({ type: 'FT_CANCEL', transferId, reason: 'cancelled' } as FtCancel)); } catch { /* ignore */ }
-        try { channel.close(); } catch { /* ignore */ }
+        const graceMs = Number(process.env.LM_CANCEL_FLUSH_MS) || 500;
+        const t = setTimeout(() => { try { channel.close(); } catch { /* ignore */ } }, graceMs);
+        if (typeof t.unref === 'function') t.unref();
       };
       opts.signal.addEventListener('abort', onAbort, { once: true });
     }
