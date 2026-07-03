@@ -29,12 +29,21 @@ export interface RpcServerDeps {
    *  catch-up is gated by busEnabled, not the general RPC class — the first scoped
    *  allow-list entry; W4 generalizes it). */
   busEnabled?: () => boolean;
+  /** When true, the EXACT data-sync routes (manifest/export/fetch) dispatch even if rpcEnabled()
+   *  is false (spec §5 S2 — gated by dataSyncViaFabric, not the general RPC class). W4's analogue
+   *  of the busEnabled allow-list; same URL-normalized routedPath guard. */
+  dataSyncEnabled?: () => boolean;
   peerNodeOf: (env: Envelope) => string;
   offload?: (bytes: Uint8Array, peerNode: string) => Promise<{ handle: unknown }>;
   offloadThreshold?: number; // bytes; default 8MB
 }
 
 const DEFAULT_OFFLOAD = 8 * 1024 * 1024;
+
+// EXACT shape of the only /data routes a peer may reach for sync — NEVER a bare `/data/` prefix
+// (the W3 CRITICAL lesson: a raw prefix let `/bus/../hub/config` normalize past a naive startsWith).
+// Matched against the URL-normalized `routedPath`, so a `..`/`%2e%2e` segment has already collapsed.
+const DATA_SYNC_ROUTES = /^\/data\/(?:sync\/manifest|[^/]+\/(?:export|fetch))$/;
 
 export function createRpcServer(deps: RpcServerDeps): ServerHandler {
   const threshold = deps.offloadThreshold ?? DEFAULT_OFFLOAD;
@@ -72,7 +81,15 @@ export function createRpcServer(deps: RpcServerDeps): ServerHandler {
       // and a `%2F` never decodes back into a path-separating '/' during URL
       // normalization (verified against Node's WHATWG URL implementation), so
       // an encoded topic can never split into extra path segments here.
-      const allowed = deps.rpcEnabled() || (/^\/bus\/[^/]+\/since$/.test(routedPath) && (deps.busEnabled?.() ?? false));
+      // Data sync (/data/sync/manifest, /data/:ds/export, /data/:ds/fetch) rides
+      // dataSyncEnabled (W4's dataSyncViaFabric), the same pattern as the bus
+      // branch above — scoped to DATA_SYNC_ROUTES's EXACT shape over the SAME
+      // normalized routedPath, never a bare `/data/` prefix, for the identical
+      // reason the bus entry isn't a bare `/bus/` prefix.
+      const allowed =
+        deps.rpcEnabled()
+        || (/^\/bus\/[^/]+\/since$/.test(routedPath) && (deps.busEnabled?.() ?? false))
+        || (DATA_SYNC_ROUTES.test(routedPath) && (deps.dataSyncEnabled?.() ?? false));
       if (!allowed) { reply(errRes(503, 'rpc_disabled', 'fabric rpc class disabled')); return; }
 
       const reqId = env.headers.reqId ?? id;

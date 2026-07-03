@@ -68,6 +68,9 @@ export interface ProjectSettings {
   fabricRelayBulkCapMBps: number;
   /** Message bus (spec §5 S1): durable cross-node topic log + fan-out over the fabric. Default true. */
   busEnabled: boolean;
+  /** Wave 4 (spec §5 S2): carry data-service sync (manifest/export/fetch) over the fabric with a
+   *  peer principal, else the legacy hub-HTTPS path. Default false — opt-in; off = pure legacy sync. */
+  dataSyncViaFabric: boolean;
 }
 
 // ── Constants ──────────────────────────────────────────
@@ -102,6 +105,7 @@ export const DEFAULTS: ProjectSettings = {
   fabricCompressionEnabled: true,
   fabricRelayBulkCapMBps: 5,
   busEnabled: true,
+  dataSyncViaFabric: false,
 };
 
 // ── Mtime Cache ──────────────────────────────────────────
@@ -151,6 +155,7 @@ export function getProjectSettings(): ProjectSettings {
       fabricCompressionEnabled: typeof data.fabricCompressionEnabled === 'boolean' ? data.fabricCompressionEnabled : DEFAULTS.fabricCompressionEnabled,
       fabricRelayBulkCapMBps: typeof data.fabricRelayBulkCapMBps === 'number' ? data.fabricRelayBulkCapMBps : DEFAULTS.fabricRelayBulkCapMBps,
       busEnabled: typeof data.busEnabled === 'boolean' ? data.busEnabled : DEFAULTS.busEnabled,
+      dataSyncViaFabric: typeof data.dataSyncViaFabric === 'boolean' ? data.dataSyncViaFabric : DEFAULTS.dataSyncViaFabric,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -195,6 +200,7 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     fabricCompressionEnabled: typeof partial.fabricCompressionEnabled === 'boolean' ? partial.fabricCompressionEnabled : current.fabricCompressionEnabled,
     fabricRelayBulkCapMBps: typeof partial.fabricRelayBulkCapMBps === 'number' ? partial.fabricRelayBulkCapMBps : current.fabricRelayBulkCapMBps,
     busEnabled: typeof partial.busEnabled === 'boolean' ? partial.busEnabled : current.busEnabled,
+    dataSyncViaFabric: typeof partial.dataSyncViaFabric === 'boolean' ? partial.dataSyncViaFabric : current.dataSyncViaFabric,
   };
 
   // Ensure parent directory exists

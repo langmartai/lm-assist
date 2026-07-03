@@ -131,6 +131,14 @@ export function initFabric(selfNode: string): void {
         selfNode,
         now: () => Date.now(),
         selfTcp: () => selfTcpEndpoint,
+        features: () => {
+          const { getProjectSettings } = require('../project-settings') as typeof import('../project-settings');
+          const s = getProjectSettings();
+          const f = ['status', 'rpc', 'comp-gzip'];
+          if (s.busEnabled) f.push('bus');            // follow-up (c): advertise bus only when enabled
+          if (s.dataSyncViaFabric) f.push('data');    // spec §5 S2.2: peer must advertise data to be fabric-eligible
+          return f;
+        },
       });
       link.onConnected((ch) => { void attachFabricLink(selfNode, peer, link, ch as FabricCapableChannel); });
       return link;
@@ -250,6 +258,7 @@ async function attachFabricLink(selfNode: string, peer: string, link: PeerLink, 
     idempotency: sharedIdempotency,
     rpcEnabled: () => settings().fabricRpcEnabled,
     busEnabled: () => settings().busEnabled,
+    dataSyncEnabled: () => settings().dataSyncViaFabric,
     peerNodeOf: () => peer,
     offloadThreshold: undefined, // default 8MB
     offload: async (bytes, peerNode) => {
@@ -386,6 +395,24 @@ export function fabricPublish(node: string, event: unknown): void {
 export async function fabricBusCatchup(node: string, topic: string, cursor: Record<string, number>): Promise<FabricResponse> {
   const { fabricRequestManaged } = require('./retry') as typeof import('./retry');
   return fabricRequestManaged({ node }, { method: 'POST', path: `/bus/${encodeURIComponent(topic)}/since`, body: { cursors: cursor } });
+}
+
+/** True iff we have a fabric link to `node` AND it advertised the `data` HELLO feature (Task 10).
+ *  Mirrors fabricBusPeers()'s peerHasFeature('bus') gate — a mixed-version peer without the data
+ *  feature is simply ineligible and the caller (FabricPeerClient) falls back to the hub path. */
+export function fabricDataPeer(node: string): boolean {
+  const link = peerLinks.get(node);
+  return !!(fabricLinks.has(node) && link?.peerHasFeature('data'));
+}
+
+/** Reliable data-service sync RPC over the fabric (spec §5 S2.2: fabricRequestManaged, NOT bare
+ *  fabricRequest). The RPC lands on the peer's route table as a read-only peer principal. */
+export async function fabricDataRequest(
+  node: string,
+  init: { method: string; path: string; body?: unknown; query?: Record<string, string> },
+): Promise<FabricResponse> {
+  const { fabricRequestManaged } = require('./retry') as typeof import('./retry');
+  return fabricRequestManaged({ node }, init);
 }
 
 /** Test seam: inject a FabricLink directly (bypasses the connect handshake —

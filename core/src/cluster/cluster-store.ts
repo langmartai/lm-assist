@@ -94,14 +94,12 @@ export async function ensureClusterDatasets(): Promise<void> {
 
 // ── Write ─────────────────────────────────────────────────────────────────────
 
-/** Push pending fleet-dataset writes to peers IMMEDIATELY (don't wait for the batched flush
- *  timer, ≤ dataSyncPeriodSec) so a cluster change converges in a round-trip. Lazy import
- *  breaks the sync-boot ↔ cluster-store import cycle; best-effort (never throws). */
+/** Historically flushed the dirty-record queue so a cluster change converged fast. W4 retired the
+ *  SyncQueue + the (already-dead) dataset_updated push: the DataService.put that writes node-clusters
+ *  now self-publishes a data:node-clusters change-notify onto the bus (within-cluster convergence),
+ *  and the 300s reconcile covers cross-cluster. So this is a no-op kept only for call-site stability. */
 async function forceFlush(): Promise<void> {
-  try {
-    const { flushNow } = await import('../data/sync-boot');
-    flushNow();
-  } catch { /* best-effort */ }
+  /* no-op — change-notify + reconcile replace the retired flushNow */
 }
 
 /** Publish THIS node's cluster membership into `node-clusters`. */

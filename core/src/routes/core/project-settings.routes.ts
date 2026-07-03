@@ -50,6 +50,8 @@ export function createProjectSettingsRoutes(_ctx: RouteContext): RouteHandler[] 
           authMonitorEnabled: body.authMonitorEnabled,
           authMonitorIntervalMin,
           ruleSyncEnabled: body.ruleSyncEnabled,
+          busEnabled: body.busEnabled,
+          dataSyncViaFabric: body.dataSyncViaFabric,
         });
 
         // Live-apply the memory-sync toggle: re-resolve the autosync daemon mode (no restart).

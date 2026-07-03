@@ -197,7 +197,8 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!svc().isEnabled()) return disabled(start);
         const rec = recordFromBody(req.body);
         if (!rec.id) return wrapError('BAD_REQUEST', 'record id is required', start);
-        const r = await svc().put(ctxOf(req), req.params.dataset, rec);
+        const ifVersion = typeof (req.body as any)?.ifVersion === 'number' ? (req.body as any).ifVersion : undefined;
+        const r = await svc().put(ctxOf(req), req.params.dataset, rec, ifVersion !== undefined ? { ifVersion } : undefined);
         if (!r.ok) return wrapError(r.code, r.reason, start);
         return wrapResponse(r.value, start);
       },
