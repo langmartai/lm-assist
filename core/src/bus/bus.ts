@@ -30,7 +30,20 @@ export interface BusDeps {
 
 export interface ReadResult { events: BusEvent[]; nextCursor: string; }
 
-interface Sub { subscriberId: string; topic: string; handler: (e: BusEvent) => void | Promise<void>; }
+interface Sub {
+  subscriberId: string;
+  topic: string;
+  handler: (e: BusEvent) => void | Promise<void>;
+  /** Per-subscriber delivery queue: events are dispatched one at a time, in enqueue order
+   *  (replay first, then live) — never concurrently. See dispatchTo for why this matters. */
+  chain: Promise<void>;
+  /** Origins whose delivery has failed at least once on THIS Sub instance. Blocks any further
+   *  cursor advance for that origin on this subscriber — a later same-origin success must never
+   *  max-merge the durable cursor past an earlier event that was never actually delivered. Only
+   *  cleared by a fresh subscribe() (a brand-new Sub with an empty set), whose replay re-attempts
+   *  from the un-advanced cursor: i.e. the latch clears when a replay redelivers the failed event. */
+  failedOrigins: Set<string>;
+}
 
 export class Bus {
   private store: BusStore;
@@ -83,27 +96,43 @@ export class Bus {
   }
 
   subscribe(subscriberId: string, topic: string, handler: (e: BusEvent) => void | Promise<void>): () => void {
-    const sub: Sub = { subscriberId, topic, handler };
+    if (!this.enabled()) return () => {}; // busEnabled=false: no replay, register nothing, inert unsubscribe
+    const sub: Sub = { subscriberId, topic, handler, chain: Promise.resolve(), failedOrigins: new Set() };
     this.subs.add(sub);
-    // Replay everything after the durable cursor (restart resumes exactly).
+    // Replay everything after the durable cursor (restart resumes exactly), serialized ahead of any live events.
     const missed = this.store.readSince(topic, this.store.getCursor(subscriberId, topic));
-    for (const e of missed) void this.dispatchTo(sub, e);
+    for (const e of missed) this.enqueue(sub, e);
     return () => { this.subs.delete(sub); };
   }
 
   private deliverLocal(e: BusEvent): void {
+    if (!this.enabled()) return; // mid-life disable: silence existing subscribers for new events
     for (const sub of this.subs) {
       if (sub.topic !== e.topic) continue;
       if (e.seq <= (this.store.getCursor(sub.subscriberId, e.topic)[e.origin] ?? 0)) continue; // already past
-      void this.dispatchTo(sub, e);
+      this.enqueue(sub, e);
     }
   }
 
+  /** Chain `e` onto the subscriber's own delivery queue so one subscriber's events are always
+   *  handled one at a time, in order — replay events (enqueued synchronously in subscribe(), before
+   *  it returns) run ahead of any live events that arrive afterward and get enqueued behind them. */
+  private enqueue(sub: Sub, e: BusEvent): void {
+    sub.chain = sub.chain.then(() => this.dispatchTo(sub, e)).catch(() => {});
+  }
+
   private async dispatchTo(sub: Sub, e: BusEvent): Promise<void> {
+    if (!this.enabled()) return; // mid-life disable: drop silently — not a failure, no cursor movement
     try {
       await sub.handler(e);
-      this.store.setCursor(sub.subscriberId, e.topic, { [e.origin]: e.seq }); // advance only after success (at-least-once)
-    } catch { /* leave the cursor; a later delivery / catch-up re-attempts */ }
+      // Advance only if this origin has no outstanding failure on this Sub: a later success must
+      // never max-merge the cursor past an earlier event that was never actually delivered.
+      if (!sub.failedOrigins.has(e.origin)) {
+        this.store.setCursor(sub.subscriberId, e.topic, { [e.origin]: e.seq }); // advance only after success (at-least-once)
+      }
+    } catch {
+      sub.failedOrigins.add(e.origin); // latch: block further cursor advance for this origin until a fresh subscribe() replay
+    }
   }
 
   since(topic: string, cursor: BusCursor): BusEvent[] {
