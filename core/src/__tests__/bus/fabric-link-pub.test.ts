@@ -1,7 +1,7 @@
 // core/src/__tests__/bus/fabric-link-pub.test.ts
 import { test, before } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { initEnvelopeCodec, encodeBody, type Envelope } from '../../fabric/envelope';
+import { initEnvelopeCodec, encodeBody, decodeBody, type Envelope } from '../../fabric/envelope';
 import { FabricLink, type FabricChannel } from '../../fabric/fabric-link';
 
 before(async () => { await initEnvelopeCodec(); });
@@ -29,5 +29,5 @@ test('an inbound pub frame is dispatched to onBus (not dropped)', async () => {
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(got.length, 1);
   assert.equal(got[0].kind, 'pub');
-  assert.deepEqual(encodeBody ? (require('../../fabric/envelope').decodeBody(got[0].payload)) : null, { topic: 'm', origin: 'A', seq: 1 });
+  assert.deepEqual(decodeBody(got[0].payload), { topic: 'm', origin: 'A', seq: 1 });
 });
