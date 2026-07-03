@@ -47,3 +47,40 @@ test('listPeers always uses the hub roster', async () => {
   const c = new FabricPeerClient('self', hubStub(), { settings: () => ({ dataSyncViaFabric: true }), eligible: () => true, request: async () => ({ status: 200, data: {} }) });
   assert.deepEqual((await c.listPeers()).map((p) => p.node), ['gw-b']);
 });
+
+// fabricRequestManaged RESOLVES an app-level error (status>=400 or a `code`) instead of
+// throwing — so, unlike a dropped link (which throws and is already caught above), a fabric
+// 4xx/5xx must be explicitly detected or it would silently yield empty/null data instead of
+// falling back to hub.
+
+test('manifest: a fabric app-error (status 503) falls back to the hub path and returns hub data', async () => {
+  const c = new FabricPeerClient('self', hubStub(), {
+    settings: () => ({ dataSyncViaFabric: true }),
+    eligible: () => true,
+    request: async () => ({ status: 503 }),
+  });
+  const m = await c.manifest('gw-b');
+  assert.equal(m.datasets[0].id, 'HUB'); // fell back — not an empty fabric result
+});
+
+test('exportFrom: a fabric app-error (code present) falls back to the hub path and returns hub data', async () => {
+  const c = new FabricPeerClient('self', hubStub(), {
+    settings: () => ({ dataSyncViaFabric: true }),
+    eligible: () => true,
+    request: async () => ({ status: 200, code: 'RESOURCE_NOT_FOUND', message: 'no such dataset' }),
+  });
+  const rows = await c.exportFrom('gw-b', 'd');
+  assert.equal(rows[0].id, 'hub'); // fell back — not the (nonexistent) fabric data
+});
+
+test('getFrom: a fabric app-error (status 500) falls back to the hub path and returns hub data', async () => {
+  const c = new FabricPeerClient('self', hubStub({
+    getFrom: async (): Promise<DataRecord | null> => ({ id: 'hub-rec', version: 1, fields: {}, createdAt: '', updatedAt: '' }),
+  }), {
+    settings: () => ({ dataSyncViaFabric: true }),
+    eligible: () => true,
+    request: async () => ({ status: 500, message: 'internal error' }),
+  });
+  const rec = await c.getFrom('gw-b', 'd', 'x');
+  assert.equal(rec?.id, 'hub-rec'); // fell back — not null
+});

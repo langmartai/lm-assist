@@ -9,7 +9,7 @@ import type { PeerClient, NodeInfo, ManifestEntry, DataRecord } from './types';
 
 interface FabricPeerDeps {
   eligible?: (node: string) => boolean;
-  request?: (node: string, init: { method: string; path: string; body?: unknown }) => Promise<{ status: number; data?: unknown }>;
+  request?: (node: string, init: { method: string; path: string; body?: unknown }) => Promise<{ status: number; data?: unknown; code?: string; message?: string }>;
   settings?: () => { dataSyncViaFabric: boolean };
 }
 
@@ -19,9 +19,23 @@ function unwrap(data: unknown): any {
   return data;
 }
 
+/**
+ * fabricRequestManaged (the production `request` dep, via fabricDataRequest) RESOLVES an
+ * app-level error (status>=400 or a `code`) instead of throwing — unlike a dropped link or a
+ * timeout, which reject and are already handled by each call site's try/catch. Left unchecked,
+ * `res.data` on an app-error response is empty/undefined, so callers would silently return that
+ * instead of falling back to hub. Throwing here routes app-errors through the SAME catch → hub
+ * fallback as a transport failure, one check shared by all three fabric-path methods below.
+ */
+function assertNoAppError(res: { status: number; code?: string; message?: string }): void {
+  if (res.status >= 400 || res.code) {
+    throw new Error(res.message || `fabric app-error (status ${res.status}${res.code ? `, code ${res.code}` : ''})`);
+  }
+}
+
 export class FabricPeerClient implements PeerClient {
   private eligible: (node: string) => boolean;
-  private request: (node: string, init: { method: string; path: string; body?: unknown }) => Promise<{ status: number; data?: unknown }>;
+  private request: (node: string, init: { method: string; path: string; body?: unknown }) => Promise<{ status: number; data?: unknown; code?: string; message?: string }>;
   private settings: () => { dataSyncViaFabric: boolean };
 
   constructor(private nodeId: string, private hub: HubPeerClient = new HubPeerClient(nodeId), deps?: FabricPeerDeps) {
@@ -54,6 +68,7 @@ export class FabricPeerClient implements PeerClient {
     if (this.useFabric(node)) {
       try {
         const res = await this.request(node, { method: 'GET', path: '/data/sync/manifest' });
+        assertNoAppError(res);
         const raw = unwrap(res.data);
         return { node: raw?.node ?? node, datasets: Array.isArray(raw?.datasets) ? raw.datasets : [] };
       } catch { /* fall through to hub */ }
@@ -65,6 +80,7 @@ export class FabricPeerClient implements PeerClient {
     if (this.useFabric(node)) {
       try {
         const res = await this.request(node, { method: 'POST', path: `/data/${dataset}/export`, body: since ? { since } : {} });
+        assertNoAppError(res);
         const raw = unwrap(res.data);
         return Array.isArray(raw) ? raw : (raw?.records ?? []);
       } catch { /* fall through to hub */ }
@@ -76,6 +92,7 @@ export class FabricPeerClient implements PeerClient {
     if (this.useFabric(node)) {
       try {
         const res = await this.request(node, { method: 'POST', path: `/data/${dataset}/fetch`, body: { id } });
+        assertNoAppError(res);
         const raw = unwrap(res.data);
         return raw ?? null;
       } catch { /* fall through to hub */ }

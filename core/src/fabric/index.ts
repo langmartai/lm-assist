@@ -388,6 +388,24 @@ export async function fabricBusCatchup(node: string, topic: string, cursor: Reco
   return fabricRequestManaged({ node }, { method: 'POST', path: `/bus/${encodeURIComponent(topic)}/since`, body: { cursors: cursor } });
 }
 
+/** True iff we have a fabric link to `node` AND it advertised the `data` HELLO feature (Task 10).
+ *  Mirrors fabricBusPeers()'s peerHasFeature('bus') gate — a mixed-version peer without the data
+ *  feature is simply ineligible and the caller (FabricPeerClient) falls back to the hub path. */
+export function fabricDataPeer(node: string): boolean {
+  const link = peerLinks.get(node);
+  return !!(fabricLinks.has(node) && link?.peerHasFeature('data'));
+}
+
+/** Reliable data-service sync RPC over the fabric (spec §5 S2.2: fabricRequestManaged, NOT bare
+ *  fabricRequest). The RPC lands on the peer's route table as a read-only peer principal. */
+export async function fabricDataRequest(
+  node: string,
+  init: { method: string; path: string; body?: unknown; query?: Record<string, string> },
+): Promise<FabricResponse> {
+  const { fabricRequestManaged } = require('./retry') as typeof import('./retry');
+  return fabricRequestManaged({ node }, init);
+}
+
 /** Test seam: inject a FabricLink directly (bypasses the connect handshake —
  *  used to unit-test fabricRequest/fabricProbe without a live 2-node fabric). */
 export function __setFabricLinkForTest(node: string, link: FabricLink): void { fabricLinks.set(node, link); }
