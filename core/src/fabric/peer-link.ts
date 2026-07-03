@@ -50,6 +50,9 @@ export class PeerLink {
   core: LinkCore;
   private ch: LinkChannel | null = null;
   private counters = { helloOk: 0, helloTimeouts: 0, inboundAdopted: 0 };
+  private peerFeatureList: string[] = [];
+  private connectedCb: ((ch: LinkChannel) => void) | null = null;
+  private connectedFired = false;
 
   constructor(readonly peer: string, private deps: PeerLinkDeps) {
     this.core = { state: 'discovered', since: deps.now(), attempts: 0, lastError: null };
@@ -62,6 +65,27 @@ export class PeerLink {
     return this.peerTcpEndpoint;
   }
 
+  /**
+   * Ingest a peer HELLO delivered POST-connect by the owning FabricLink. W2's
+   * FabricLink takes over the channel's onData once it attaches (the sole
+   * reader of a connected link — see fabric-link.ts's header comment), so
+   * PeerLink's own onData handlers (adopt()'s persistent listener / the
+   * awaitFabricReply() promise executor below) never see a hello that arrives
+   * after that point. Those pre-W2 handlers both updated `peerTcpEndpoint`
+   * inline from ANY parsed control message that carried a `tcp` field,
+   * regardless of hello vs hello-ack — this mirrors exactly that one update,
+   * nothing else (no re-ack, no state-reduce, no counters — those only apply
+   * to the initial handshake, which still runs through adopt()/open() as
+   * before). Without this, a peer whose FabricLink attaches before a
+   * tcp-bearing hello arrives would keep a stale/null peerTcpEndpoint for the
+   * life of the connection, permanently losing the direct-TCP-for-LAN fast
+   * path (readvertise() / setFabricSelfTcp→readvertiseAll, W1) until the next
+   * full reconnect.
+   */
+  ingestPeerHello(hello: FabricHello): void {
+    if (hello.tcp) this.peerTcpEndpoint = hello.tcp;
+  }
+
   /** Re-send our HELLO on the live link so a peer picks up a self field that
    *  changed after the link came up (e.g. the TCP endpoint, which is set once
    *  the listener binds — after initFabric already sent the first HELLO). */
@@ -71,9 +95,23 @@ export class PeerLink {
     }
   }
 
+  /** Fired once when the link reaches connected (hello-ok), with the live channel. */
+  onConnected(cb: (ch: LinkChannel) => void): void {
+    this.connectedCb = cb;
+    if (this.connectedFired && this.ch) cb(this.ch); // late subscriber on an already-connected link
+  }
+  peerFeatures(): string[] { return [...this.peerFeatureList]; }
+  peerHasFeature(f: string): boolean { return this.peerFeatureList.includes(f); }
+
+  private fireConnected(): void {
+    if (this.connectedFired || !this.ch) return;
+    this.connectedFired = true;
+    try { this.connectedCb?.(this.ch); } catch { /* best-effort */ }
+  }
+
   private hello(kind: FabricHello['kind']): Buffer {
     const tcp = this.deps.selfTcp?.() ?? undefined;
-    return encodeFabricControl({ type: FABRIC_TAG, kind, version: FABRIC_VERSION, features: ['status'], node: this.deps.selfNode, ...(tcp ? { tcp } : {}) });
+    return encodeFabricControl({ type: FABRIC_TAG, kind, version: FABRIC_VERSION, features: ['status', 'rpc', 'comp-gzip'], node: this.deps.selfNode, ...(tcp ? { tcp } : {}) });
   }
 
   private reduce(ev: Parameters<typeof reduceLink>[1]): void {
@@ -96,6 +134,7 @@ export class PeerLink {
     if (confirmed) {
       this.counters.helloOk++;
       this.reduce({ type: 'hello-ok' });
+      this.fireConnected();
     } else {
       this.counters.helloTimeouts++;
       this.reduce({ type: 'hello-timeout' });
@@ -127,6 +166,8 @@ export class PeerLink {
           ch.sendControl(this.hello('hello-ack'));
           this.reduce({ type: 'hello-ok' });
           this.counters.helloOk++;
+          this.peerFeatureList = msg.features ?? [];
+          this.fireConnected();
         }
       }
     });
@@ -155,6 +196,7 @@ export class PeerLink {
           const msg = parseFabricControl(f.msg);
           if (msg) {
             if (msg.tcp) this.peerTcpEndpoint = msg.tcp;
+            this.peerFeatureList = msg.features ?? [];
             clearTimeout(timer);
             resolve(true);
             return;

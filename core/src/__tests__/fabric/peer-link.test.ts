@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { PeerLink, type LinkChannel } from '../../fabric/peer-link';
-import { encodeFabricControl, FABRIC_TAG, FABRIC_VERSION } from '../../fabric/protocol';
+import { encodeFabricControl, FABRIC_TAG, FABRIC_VERSION, type FabricHello } from '../../fabric/protocol';
 
 function fakeCh(over: Partial<LinkChannel> = {}) {
   const sent: Buffer[] = [];
@@ -138,4 +138,47 @@ test('resetRetry clears attempts/since only when failed; connected link is untou
 
   connectedLink.resetRetry(); // no-op: link is not 'failed'
   assert.deepEqual(connectedLink.core, before);
+});
+
+// ---------------------------------------------------------------------------
+// Task 12 review fix (Important #1): once W2's FabricLink owns the channel's
+// onData, a post-connect re-advertise hello no longer reaches PeerLink's own
+// onData handlers — it must be forwarded in via ingestPeerHello() instead
+// (fabric/index.ts's attachFabricLink wires FabricLink's onHello to this).
+// See fabric-attach.test.ts for the end-to-end version through the real
+// onHello wiring; this is the narrow unit test on PeerLink alone.
+// ---------------------------------------------------------------------------
+test('ingestPeerHello updates the peer TCP endpoint (W1 post-connect re-advertise seam)', async () => {
+  const f = fakeCh();
+  const link = new PeerLink('gw4-peer', { openChannel: async () => f.ch, selfNode: 'gw4-self', now: () => 1, helloTimeoutMs: 1000 });
+  const opening = link.open();
+  await new Promise((r) => setImmediate(r));
+  f.reply(ack()); // initial ack carries no tcp field
+  await opening;
+  assert.equal(link.core.state, 'connected');
+  assert.equal(link.peerTcp(), null, 'no tcp advertised yet');
+
+  const hello: FabricHello = {
+    type: FABRIC_TAG, kind: 'hello', version: FABRIC_VERSION, features: [], node: 'gw4-peer',
+    tcp: { host: '10.0.1.50', port: 3100 },
+  };
+  link.ingestPeerHello(hello);
+
+  assert.deepEqual(link.peerTcp(), { host: '10.0.1.50', port: 3100 }, 'the getter W1/open-best.ts reads reflects the update');
+  assert.deepEqual(link.snapshot().peerTcp, { host: '10.0.1.50', port: 3100 }, 'status snapshot reflects it too');
+});
+
+test('ingestPeerHello with no tcp field is a no-op (does not clear a previously-known endpoint)', async () => {
+  const f = fakeCh();
+  const link = new PeerLink('gw4-peer', { openChannel: async () => f.ch, selfNode: 'gw4-self', now: () => 1, helloTimeoutMs: 1000 });
+  const opening = link.open();
+  await new Promise((r) => setImmediate(r));
+  f.reply(ack());
+  await opening;
+
+  link.ingestPeerHello({ type: FABRIC_TAG, kind: 'hello', version: FABRIC_VERSION, features: [], node: 'gw4-peer', tcp: { host: '10.0.1.50', port: 3100 } });
+  assert.deepEqual(link.peerTcp(), { host: '10.0.1.50', port: 3100 });
+
+  link.ingestPeerHello({ type: FABRIC_TAG, kind: 'hello-ack', version: FABRIC_VERSION, features: [], node: 'gw4-peer' }); // no tcp
+  assert.deepEqual(link.peerTcp(), { host: '10.0.1.50', port: 3100 }, 'still the last-known endpoint, not cleared');
 });

@@ -177,6 +177,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   browser_task: 'admin',
   node_lifecycle: 'admin',
   node_status: 'read',
+  fabric_probe: 'read',
   // multi-node
   list_nodes: 'read',
   // github endpoint (read = query, write = mutate)

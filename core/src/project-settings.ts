@@ -59,6 +59,13 @@ export interface ProjectSettings {
   ruleSyncEnabled: boolean;
   /** Peer fabric: managed node-to-node links over the hybrid transport. Default true. */
   fabricEnabled: boolean;
+  /** Fabric RPC class: dispatch peer `req` frames into the route table. Default false — opt-in
+   *  (no allow-list on the dispatch target; the RPC server is live as soon as a peer connects). */
+  fabricRpcEnabled: boolean;
+  /** Fabric per-frame gzip compression (path+payload aware). Default true. */
+  fabricCompressionEnabled: boolean;
+  /** Cap (MB/s) for the bulk class over the relay floor — gentle on the hub. Default 5. */
+  fabricRelayBulkCapMBps: number;
 }
 
 // ── Constants ──────────────────────────────────────────
@@ -89,6 +96,9 @@ export const DEFAULTS: ProjectSettings = {
   authMonitorIntervalMin: 15,
   ruleSyncEnabled: true,
   fabricEnabled: true,
+  fabricRpcEnabled: false,
+  fabricCompressionEnabled: true,
+  fabricRelayBulkCapMBps: 5,
 };
 
 // ── Mtime Cache ──────────────────────────────────────────
@@ -134,6 +144,9 @@ export function getProjectSettings(): ProjectSettings {
       authMonitorIntervalMin: typeof data.authMonitorIntervalMin === 'number' ? data.authMonitorIntervalMin : DEFAULTS.authMonitorIntervalMin,
       ruleSyncEnabled: typeof data.ruleSyncEnabled === 'boolean' ? data.ruleSyncEnabled : DEFAULTS.ruleSyncEnabled,
       fabricEnabled: typeof data.fabricEnabled === 'boolean' ? data.fabricEnabled : DEFAULTS.fabricEnabled,
+      fabricRpcEnabled: typeof data.fabricRpcEnabled === 'boolean' ? data.fabricRpcEnabled : DEFAULTS.fabricRpcEnabled,
+      fabricCompressionEnabled: typeof data.fabricCompressionEnabled === 'boolean' ? data.fabricCompressionEnabled : DEFAULTS.fabricCompressionEnabled,
+      fabricRelayBulkCapMBps: typeof data.fabricRelayBulkCapMBps === 'number' ? data.fabricRelayBulkCapMBps : DEFAULTS.fabricRelayBulkCapMBps,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -174,6 +187,9 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     authMonitorIntervalMin: typeof partial.authMonitorIntervalMin === 'number' ? partial.authMonitorIntervalMin : current.authMonitorIntervalMin,
     ruleSyncEnabled: typeof partial.ruleSyncEnabled === 'boolean' ? partial.ruleSyncEnabled : current.ruleSyncEnabled,
     fabricEnabled: typeof partial.fabricEnabled === 'boolean' ? partial.fabricEnabled : current.fabricEnabled,
+    fabricRpcEnabled: typeof partial.fabricRpcEnabled === 'boolean' ? partial.fabricRpcEnabled : current.fabricRpcEnabled,
+    fabricCompressionEnabled: typeof partial.fabricCompressionEnabled === 'boolean' ? partial.fabricCompressionEnabled : current.fabricCompressionEnabled,
+    fabricRelayBulkCapMBps: typeof partial.fabricRelayBulkCapMBps === 'number' ? partial.fabricRelayBulkCapMBps : current.fabricRelayBulkCapMBps,
   };
 
   // Ensure parent directory exists
