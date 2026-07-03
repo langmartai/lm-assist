@@ -194,9 +194,14 @@ async function withCdp<T>(fn: (cdp: Cdp) => Promise<T>): Promise<T> {
 
 const JS_STATUS = `
   const loggedIn = !!document.querySelector('#pane-side');
-  // Best-effort self: WhatsApp Web does not expose the own number in the DOM
-  // reliably; leave null unless a header title is present on the profile.
+  // Own number: WhatsApp Web keeps the logged-in wid in localStorage
+  // ("6590052422:1@c.us" under last-wid-md, older builds use last-wid).
   let self = null;
+  try {
+    const raw = localStorage.getItem('last-wid-md') || localStorage.getItem('last-wid') || '';
+    const m = raw.match(/(\\d{6,15})/);
+    if (m) self = m[1];
+  } catch (e) { /* storage blocked — leave null */ }
   return { loggedIn, self };
 `;
 
