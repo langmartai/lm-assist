@@ -20,7 +20,7 @@ import { redactRecord, redactValueDeep, scrubValueDeep } from './redaction';
 import { thisNodeId } from './paths';
 import { getProjectSettings } from '../project-settings';
 import type { ParsedRequest } from '../routes/index';
-import { HubPeerClient } from './peer-client';
+import { FabricPeerClient } from './fabric-peer-client';
 import { SyncEngine } from './sync-engine';
 
 export interface CallCtx { principal: Principal; keyHeader?: string; }
@@ -353,7 +353,7 @@ export function getDataService(): DataService {
     backends.register(new SqlBackend());
     const manager = new AccessManager({ datasets, keys: getKeyStore(), nodeId: thisNodeId() });
     const nodeId = thisNodeId();
-    const peers = new HubPeerClient(nodeId);
+    const peers = new FabricPeerClient(nodeId);
     engineInstance = new SyncEngine({ datasets, backends, peers, nodeId });
     instance = new DataService({
       datasets, backends, manager, peers,
