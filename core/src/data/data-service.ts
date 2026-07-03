@@ -38,6 +38,12 @@ export function recordTooLarge(record: DataRecord): string | undefined {
 
 export class DataService {
   private enabledOverride?: boolean; // tests only
+  // Per-(dataset,key) promise-chain mutex. Without it, two concurrent CAS put()s on the same
+  // key both read the same stored version, both pass the ifVersion compare, and both write —
+  // a silent lost update (CAS's entire purpose is multi-writer safety). Serializes ALL puts to
+  // a key (not just CAS ones) so a plain put can't slip between a CAS put's read and write.
+  // Uncontended keys stay fast: a Map miss + immediate resolve, no global lock.
+  private putLocks = new Map<string, Promise<void>>();
   constructor(private deps: { datasets: DatasetRegistry; backends: BackendRegistry; manager: AccessManager; onLocalWrite?: (dataset: string, id: string) => void; peers?: PeerClient }) {}
 
   isEnabled(): boolean {
@@ -145,24 +151,48 @@ export class DataService {
     if (tooBig) return { ok: false, code: 'RECORD_TOO_LARGE', reason: tooBig };
     const d = this.deps.datasets.get(datasetId)!;
     if ((d as any).origin) return { ok: false, code: 'READ_ONLY_REPLICA', reason: `dataset "${datasetId}" is a remote replica (read-only)` };
-    const existing = await a.value.backend!.get(datasetId, record.id);
-    if (opts?.ifVersion !== undefined) {
-      const cur = existing?.version ?? 0;
-      if (cur !== opts.ifVersion) {
-        return { ok: false, code: 'CONFLICT', reason: `version mismatch on "${datasetId}/${record.id}": stored ${cur} != ifVersion ${opts.ifVersion}` };
+    const backend = a.value.backend!;
+    // The read-compare-write below is the CAS critical section — it must run as one atomic
+    // unit per key. Route ALL puts to this key (CAS and non-CAS alike) through the mutex, so a
+    // plain put can never slip between a concurrent CAS put's read and write.
+    return this.withKeyLock(`${datasetId}:${record.id}`, async () => {
+      const existing = await backend.get(datasetId, record.id);
+      if (opts?.ifVersion !== undefined) {
+        const cur = existing?.version ?? 0;
+        if (cur !== opts.ifVersion) {
+          return { ok: false, code: 'CONFLICT', reason: `version mismatch on "${datasetId}/${record.id}": stored ${cur} != ifVersion ${opts.ifVersion}` };
+        }
       }
+      const now = new Date().toISOString();
+      const versioned: DataRecord = {
+        ...record,
+        version: (existing?.version ?? 0) + 1,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        origin: undefined, // local-owned record (origin is stamped only on replicas)
+      };
+      const r = await backend.put(datasetId, versioned);
+      this.deps.onLocalWrite?.(datasetId, record.id);
+      return { ok: true, value: r };
+    });
+  }
+
+  /** Promise-chain mutex: chains `fn` onto the previous critical section for `key` so
+   *  same-key critical sections never overlap, no matter how the previous one settled.
+   *  Cleans up its own map entry when drained — but only if no newer waiter has already
+   *  replaced it — so the map can't grow unbounded. */
+  private async withKeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.putLocks.get(key) ?? Promise.resolve();
+    const mine = prev.then(fn);
+    // Settles right after `fn`, but never rejects — so a failed put doesn't poison the chain
+    // for the next waiter on this key.
+    const tail = mine.then(() => undefined, () => undefined);
+    this.putLocks.set(key, tail);
+    try {
+      return await mine;
+    } finally {
+      if (this.putLocks.get(key) === tail) this.putLocks.delete(key);
     }
-    const now = new Date().toISOString();
-    const versioned: DataRecord = {
-      ...record,
-      version: (existing?.version ?? 0) + 1,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-      origin: undefined, // local-owned record (origin is stamped only on replicas)
-    };
-    const r = await a.value.backend!.put(datasetId, versioned);
-    this.deps.onLocalWrite?.(datasetId, record.id);
-    return { ok: true, value: r };
   }
 
   async del(ctx: CallCtx, datasetId: string, id: string): Promise<DataResult<boolean>> {
