@@ -167,3 +167,51 @@ test('ingestFromWire round-trip: encodeBody a valid event -> ingestFromWire -> s
   assert.equal(seen.length, 1);
   assert.deepEqual(seen[0], wireEvent);
 });
+
+// ── Regression: origin identity must resolve lazily at publish time, not freeze at construction ──
+//
+// getBus() builds the Bus singleton at boot — synchronously, inside the TierRestServer
+// constructor's initBusEvents() — which runs BEFORE initFabric(gatewayId) (async: fires only
+// after the hub-client finishes register -> register_ack -> auth_confirmed). If selfNode were
+// captured as a plain string at construction time, fabricSelfNode() would read '' at that instant
+// (its documented contract: "'' before initFabric"), fall back to os.hostname(), and EVERY event
+// published for the lifetime of the process would carry that hostname as origin — never the real
+// gatewayId. That's a spec violation (origin must be the fleet-unique gatewayId) and a silent
+// data-loss vector: hostnames are not fleet-unique (CCR containers, cloned VMs), so two such nodes
+// would collapse into one (topic,origin,seq) keyspace and idempotent ingest() would silently drop
+// one node's distinct events as false duplicates of the other's.
+
+test('origin resolves lazily at publish time: the SAME Bus instance picks up a later identity update without being reconstructed', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bus-svc-lazy-'));
+  const store = new BusStore(dir);
+  // Mutable closure var standing in for fabric/index.ts's internal `self.node`, which
+  // fabricSelfNode() re-reads on every call. Starts '' — the documented pre-initFabric value.
+  let gatewayId = '';
+  // Mirrors getBus()'s exact resolver: `() => fab.fabricSelfNode?.() || os.hostname()`.
+  const resolver = () => gatewayId || 'fallback-hostname';
+  const bus = new Bus({ store, selfNode: resolver });
+
+  const before = bus.publish('boot-topic', 'x', { n: 1 });
+  // Pre-initFabric: resolver falls back — this is the bug's symptom (a hostname stand-in),
+  // reproduced here to show the test starts from the same state the bug occurs in.
+  assert.equal(before.origin, 'fallback-hostname');
+
+  // Simulates initFabric(gatewayId) landing asynchronously, post-hub-auth — no Bus reconstruction.
+  gatewayId = 'gw-real';
+  const after = bus.publish('boot-topic', 'x', { n: 2 });
+  assert.equal(after.origin, 'gw-real'); // resolved fresh at THIS publish() call
+
+  // The crux of the regression: against frozen-at-construction code this would be equal (both
+  // 'fallback-hostname', or both something else) because selfNode would only ever be read once.
+  assert.notEqual(before.origin, after.origin);
+});
+
+test('a plain-string selfNode dep (existing test/legacy call shape) is normalized to a resolver and still works', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bus-svc-strnode-'));
+  const store = new BusStore(dir);
+  const bus = new Bus({ store, selfNode: 'gw-fixed' }); // string, not a function — must still work
+  const e1 = bus.publish('t', 'x', { n: 1 });
+  const e2 = bus.publish('t', 'x', { n: 2 });
+  assert.equal(e1.origin, 'gw-fixed');
+  assert.equal(e2.origin, 'gw-fixed'); // stays fixed — no resolver was ever going to change it
+});

@@ -22,7 +22,12 @@ function decodeWireBody(payload: Uint8Array): unknown {
 
 export interface BusDeps {
   store: BusStore;
-  selfNode: string;
+  /** This node's fleet-unique identity (gatewayId) stamped as each event's origin.
+   *  Accepts a plain string OR a resolver — pass a resolver (as getBus() does) when the real
+   *  identity isn't known yet at construction time (e.g. fabric/gatewayId comes up async, post
+   *  hub-auth, after the Bus singleton is already built). Resolved fresh on every publish() —
+   *  never cached — so once the resolver starts returning the real id, new events pick it up. */
+  selfNode: string | (() => string);
   fanout?: (e: BusEvent) => void;
   enabled?: () => boolean;
   now?: () => number;
@@ -47,7 +52,9 @@ interface Sub {
 
 export class Bus {
   private store: BusStore;
-  private selfNode: string;
+  /** Always a resolver — a plain-string dep is normalized to `() => string` in the constructor
+   *  so every use site can call `this.selfNode()` uniformly and pick up a later-resolved identity. */
+  private selfNode: () => string;
   private fanout: (e: BusEvent) => void;
   private enabled: () => boolean;
   private now: () => number;
@@ -56,7 +63,7 @@ export class Bus {
 
   constructor(deps: BusDeps) {
     this.store = deps.store;
-    this.selfNode = deps.selfNode;
+    this.selfNode = typeof deps.selfNode === 'function' ? deps.selfNode : () => deps.selfNode as string;
     this.fanout = deps.fanout ?? (() => {});
     this.enabled = deps.enabled ?? (() => true);
     this.now = deps.now ?? (() => Date.now());
@@ -68,9 +75,13 @@ export class Bus {
     if (opts?.ref === undefined && payloadSize(payload) > BUS_PAYLOAD_CAP) {
       throw new Error(`bus: payload exceeds ${BUS_PAYLOAD_CAP}-byte cap — offload it and publish a ref {kind,id} instead`);
     }
-    const seq = this.store.nextSeq(topic, this.selfNode);
+    // Resolved fresh on every publish() (not cached on the instance) — see BusDeps.selfNode.
+    // Both uses below read the SAME resolved value so a single event's seq lookup and its
+    // origin stamp can never disagree even if the underlying identity changes mid-call.
+    const origin = this.selfNode();
+    const seq = this.store.nextSeq(topic, origin);
     const e: BusEvent = {
-      topic, origin: this.selfNode, seq, type, at: this.now(),
+      topic, origin, seq, type, at: this.now(),
       ...(opts?.ref ? { ref: opts.ref } : { payload }),
       scope: opts?.scope ?? 'cluster',
     };
@@ -244,7 +255,17 @@ export function getBus(): Bus {
   const store = new BusStore();
   singleton = new Bus({
     store,
-    selfNode: fab.fabricSelfNode?.() || os.hostname(),
+    // Lazy resolver — NOT resolved here. getBus() is built at boot (TierRestServer ctor ->
+    // initBusEvents(), synchronous) which runs BEFORE initFabric(gatewayId) (async, fires only
+    // after the hub-client completes register -> register_ack -> auth_confirmed). Resolving
+    // fabricSelfNode() once at construction would freeze origin to '' -> os.hostname() forever
+    // (a spec violation: origin must be the fleet-unique gatewayId), and since hostnames are NOT
+    // fleet-unique (CCR containers, cloned VMs), two nodes sharing a hostname would collapse into
+    // one (topic,origin,seq) keyspace and idempotent ingest would silently drop distinct events
+    // as false duplicates. Resolving per-publish means once initFabric sets the real gatewayId,
+    // subsequent events pick it up automatically — os.hostname() is only a last-resort fallback
+    // for the brief pre-auth window when the gatewayId genuinely isn't up yet.
+    selfNode: () => fab.fabricSelfNode?.() || os.hostname(),
     enabled: () => { try { return getProjectSettings().busEnabled; } catch { return true; } },
     fanout: (e) => {
       // Cluster-scoped by construction: fabricBusPeers() are same-cluster,
