@@ -215,13 +215,31 @@ async function attachFabricLink(selfNode: string, peer: string, link: PeerLink, 
   };
   applyBulkCap();
 
+  // The facade is built ONCE and handed to the ONE FabricLink instance
+  // below, but send/sendControl/onData all resolve link.currentChannel()
+  // LIVE instead of closing over `ch` — the cross-node-transmission bug this
+  // fixes: a fabric link that comes up on the relay floor, then upgrades to
+  // a direct/host channel (peer-link.ts's attach(), called from both open()
+  // and adopt()) used to leave this facade pinned to the FIRST channel
+  // forever, sending/receiving on a channel torn down after the upgrade
+  // while PeerLink's own readvertise() kept working fine on the CURRENT one.
+  // `onData` additionally remembers the callback in `currentDataCb` so the
+  // link.onChannel() handler below can re-register it on every swap — the
+  // underlying channel's onData is single-slot (last registration wins), so
+  // a swap needs an explicit re-attach, unlike send/sendControl which just
+  // read link.currentChannel() fresh on every call.
+  let currentDataCb: ((d: Buffer) => void) | null = null;
+  const currentCh = (): FabricCapableChannel | null => link.currentChannel() as FabricCapableChannel | null;
   const facade: FabricChannel = {
     peer,
     policy: () => link.policy(),
     peerHasFeature: (f) => link.peerHasFeature(f),
-    send: (b) => ch.send(b),
-    sendControl: (b) => ch.sendControl(b),
-    onData: (cb) => ch.onData(cb),
+    send: (b) => { currentCh()?.send(b); },
+    sendControl: (b) => { currentCh()?.sendControl(b); },
+    onData: (cb) => {
+      currentDataCb = cb;
+      currentCh()?.onData(cb);
+    },
   };
 
   const server = createRpcServer({
@@ -282,8 +300,41 @@ async function attachFabricLink(selfNode: string, peer: string, link: PeerLink, 
   // reaches here already onClose-fanout-wrapped (see fanoutClose, applied at
   // both of this function's callers) — PeerLink's own onClose (registered
   // earlier, inside PeerLink.attach()) keeps firing unchanged alongside this.
-  ch.onClose((reason) => {
-    fl.failInflight(new Error(`fabric link to ${peer} closed: ${reason ?? 'unknown reason'}`));
+  //
+  // Guarded by `attachedCh === targetCh`, NOT `link.currentChannel() ===
+  // targetCh`: PeerLink's own onClose handler (registered first, inside
+  // attach()) already runs on the SAME fanout dispatch and nulls its `this.ch`
+  // BEFORE this handler sees the event — so a `link.currentChannel()` check
+  // here would read null even for the CURRENT channel's own ordinary close
+  // and never fire failInflight() at all (a live-tested regression: it hung
+  // fabric-attach.test.ts's own close-during-request-timeout coverage).
+  // `attachedCh` is OUR OWN record of whichever channel we most recently
+  // wired (updated by the onChannel handler below, never by PeerLink), so it
+  // still correctly tells apart a stale close from an already-superseded
+  // channel (attachedCh has since moved on to a newer one) from the current
+  // channel's own ordinary close (attachedCh still points at it).
+  let attachedCh: LinkChannel = ch;
+  const wireCloseFailover = (targetCh: LinkChannel): void => {
+    targetCh.onClose((reason) => {
+      if (attachedCh !== targetCh) return;
+      fl.failInflight(new Error(`fabric link to ${peer} closed: ${reason ?? 'unknown reason'}`));
+    });
+  };
+  wireCloseFailover(ch);
+
+  // Follow the PeerLink's channel across every SUBSEQUENT swap — the other
+  // half of the cross-node-transmission fix (the facade above already reads
+  // link.currentChannel() live for sends; this is what makes RECEIVES and
+  // per-channel close/framing state follow too). Fires on every hello-ok
+  // AFTER this attach (see peer-link.ts's onChannel()/fireChannel()) — the
+  // FIRST channel is already fully wired above via `ch`, so this only ever
+  // runs for a genuine relay→direct upgrade or reconnect, never redundantly
+  // for the initial attach.
+  link.onChannel((newCh) => {
+    attachedCh = newCh;
+    fl.channelSwapped(); // the OLD channel's partial framing/pending calls don't belong on the new one
+    if (currentDataCb) newCh.onData(currentDataCb);
+    wireCloseFailover(newCh);
   });
 }
 

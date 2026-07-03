@@ -46,3 +46,62 @@ test('answerer fires onConnected once on inbound hello', async () => {
   assert.equal(fires, 1);
   assert.equal(link.peerHasFeature('rpc'), true);
 });
+
+// ---------------------------------------------------------------------------
+// Cross-node transmission bug fix: FabricLink must follow the PeerLink's
+// CURRENT channel across a relay→direct upgrade (or any other reconnect that
+// hands PeerLink a new channel while the same PeerLink instance stays alive).
+// onConnected() only ever reports the FIRST channel (connectedFired gate) —
+// onChannel()/currentChannel() are the new, swap-aware surface attachFabricLink
+// (fabric/index.ts) subscribes to instead. See fabric-attach.test.ts for the
+// end-to-end proof through the real attachFabricLink wiring; this is the
+// narrow unit test on PeerLink alone.
+// ---------------------------------------------------------------------------
+test('onChannel fires on the first live channel and again on a swap; currentChannel() reflects the latest', async () => {
+  const f1 = fakeCh();
+  const link = new PeerLink('gw4-peer', { openChannel: async () => { throw new Error('unused — answerer path'); }, selfNode: 'gw4-self', now: () => 1 });
+  const seen: LinkChannel[] = [];
+  link.onChannel((ch) => { seen.push(ch); });
+  assert.equal(link.currentChannel(), null, 'no channel before connect');
+
+  link.adopt(f1.ch);
+  f1.reply(encodeFabricControl({ type: FABRIC_TAG, kind: 'hello', version: FABRIC_VERSION, features: [], node: 'gw4-peer' }));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(seen.length, 1, 'onChannel fired once on the first connect');
+  assert.equal(seen[0], f1.ch);
+  assert.equal(link.currentChannel(), f1.ch);
+
+  // Simulate a relay->direct upgrade: a second adopt() on the SAME PeerLink
+  // instance (production: PeerManager.acceptInbound() calling adopt() again
+  // on an already-connected link when a fresh inbound channel for the same
+  // peer is routed — e.g. a direct connection arriving after the relay one).
+  const f2 = fakeCh();
+  link.adopt(f2.ch);
+  f2.reply(encodeFabricControl({ type: FABRIC_TAG, kind: 'hello', version: FABRIC_VERSION, features: [], node: 'gw4-peer' }));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(seen.length, 2, 'onChannel fired again on the swap');
+  assert.equal(seen[1], f2.ch);
+  assert.notEqual(seen[1], seen[0], 'the swap channel is a different object from the first');
+  assert.equal(link.currentChannel(), f2.ch, 'currentChannel() reflects the latest channel, not the first');
+});
+
+test('onConnected still fires exactly once across a swap (no regression) while onChannel fires for both', async () => {
+  const f1 = fakeCh();
+  const link = new PeerLink('gw4-peer', { openChannel: async () => { throw new Error('unused — answerer path'); }, selfNode: 'gw4-self', now: () => 1 });
+  let connectedFires = 0;
+  let channelFires = 0;
+  link.onConnected(() => { connectedFires++; });
+  link.onChannel(() => { channelFires++; });
+
+  link.adopt(f1.ch);
+  f1.reply(encodeFabricControl({ type: FABRIC_TAG, kind: 'hello', version: FABRIC_VERSION, features: [], node: 'gw4-peer' }));
+  await new Promise((r) => setImmediate(r));
+
+  const f2 = fakeCh();
+  link.adopt(f2.ch);
+  f2.reply(encodeFabricControl({ type: FABRIC_TAG, kind: 'hello', version: FABRIC_VERSION, features: [], node: 'gw4-peer' }));
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(connectedFires, 1, 'onConnected must still fire exactly once (unchanged W1/W2 semantics)');
+  assert.equal(channelFires, 2, 'onChannel fires on every (re)connect, including the swap');
+});

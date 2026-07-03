@@ -8,7 +8,7 @@
 // regress W1's own close-driven link-state tracking.
 import { test, before } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { initEnvelopeCodec } from '../../fabric/envelope';
+import { initEnvelopeCodec, encodeEnvelope, encodeBody, FabricFrameReader, type Envelope } from '../../fabric/envelope';
 import { PeerLink, type LinkChannel } from '../../fabric/peer-link';
 import { encodeFabricControl, FABRIC_TAG, FABRIC_VERSION } from '../../fabric/protocol';
 import { getFabricLink, __attachFabricLinkForTest, stopFabric } from '../../fabric';
@@ -148,6 +148,100 @@ test('Task 12 review fix: a post-connect re-advertise hello reaches PeerLink thr
     { host: '10.0.1.77', port: 3100 },
     'W1: post-connect re-advertise TCP endpoint reached PeerLink via the real onHello wiring',
   );
+
+  stopFabric();
+});
+
+// ---------------------------------------------------------------------------
+// Cross-node transmission bug: attachFabricLink's facade used to close over
+// the FIRST channel PeerLink.onConnected() ever handed out. A fabric link
+// that comes up on the relay floor and later upgrades to a direct/host
+// channel (adopt()/reconnect reassigning PeerLink's current channel — see
+// peer-link.ts's onChannel()/attach()) left the FabricLink sending/receiving
+// on the STALE first channel forever, even though PeerLink itself had moved
+// on (proven live: a fabric ping never reached the peer while PeerLink's own
+// readvertise() kept working). This is the end-to-end proof, through the
+// REAL attachFabricLink wiring (not a hand-rolled mock), that a swap is now
+// followed correctly.
+// ---------------------------------------------------------------------------
+
+/** Like fakeCh() above, but records every send()/sendControl() call so a test
+ *  can tell WHICH physical channel actually carried post-swap traffic — the
+ *  pre-fix bug otherwise silently sends on the stale first channel (nothing
+ *  is listening there in production; the call would just hang). */
+function fakeChCapture(): { ch: LinkChannel & { send(b: Buffer): void }; sent: Buffer[]; reply: (b: Buffer) => void } {
+  let dataCb: ((d: Buffer) => void) | null = null;
+  const sent: Buffer[] = [];
+  const raw = {
+    mode: 'bidi' as const, via: 'host' as const, rtt: 3,
+    send: (b: Buffer) => { sent.push(b); },
+    sendControl: (b: Buffer) => { sent.push(b); },
+    onData: (cb: (d: Buffer) => void) => { dataCb = cb; },
+    onClose: (_cb: (r?: string) => void) => {},
+    close: () => {},
+  };
+  const ch = fanoutCloseForTest(raw as unknown as LinkChannel) as LinkChannel & { send(b: Buffer): void };
+  return { ch, sent, reply: (b) => { if (dataCb) dataCb(b); } };
+}
+
+test('attachFabricLink follows a channel swap: post-swap traffic moves to the NEW channel, nothing new lands on the stale one', async () => {
+  stopFabric();
+  const f1 = fakeChCapture(); // simulates the first (e.g. relay) channel
+  const link = new PeerLink('gw-swap-1', {
+    openChannel: async () => { throw new Error('unused — answerer path'); },
+    selfNode: 'gw-self',
+    now: () => 1,
+  });
+
+  link.adopt(f1.ch);
+  f1.reply(encodeFabricControl({ type: FABRIC_TAG, kind: 'hello', version: FABRIC_VERSION, features: ['rpc', 'comp-gzip'], node: 'gw-swap-1' }));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(link.core.state, 'connected');
+
+  await __attachFabricLinkForTest('gw-swap-1', link, f1.ch);
+  const fl = getFabricLink('gw-swap-1');
+  assert.ok(fl, 'FabricLink attached on the first channel');
+
+  // --- the swap: a second inbound channel for the SAME peer (e.g. a
+  // relay→direct upgrade) gets adopted on the SAME, already-connected
+  // PeerLink instance — exactly what PeerManager.acceptInbound() does in
+  // production when a fresh inbound channel routes to a peer that already
+  // has a link (peer-manager.ts's acceptInbound calls link.adopt(ch)
+  // unconditionally, creating a link only if one doesn't already exist).
+  const f2 = fakeChCapture(); // simulates the second (e.g. direct) channel
+  link.adopt(f2.ch);
+  f2.reply(encodeFabricControl({ type: FABRIC_TAG, kind: 'hello', version: FABRIC_VERSION, features: ['rpc', 'comp-gzip'], node: 'gw-swap-1' }));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(link.currentChannel(), f2.ch, 'sanity: PeerLink has swapped to the second channel');
+
+  const f1CountAtSwap = f1.sent.length;
+
+  // Issue a request AFTER the swap. Pre-fix, this would go out on f1 (the
+  // facade's closed-over channel from first connect) and hang until its own
+  // 2s timeout — nothing is listening on f1 anymore in the real scenario.
+  const pending = fl!.request({ method: 'GET', path: '/after-swap', timeoutMs: 2000 });
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(f1.sent.length, f1CountAtSwap, 'nothing new was sent on the stale first channel after the swap');
+  assert.ok(f2.sent.length > 0, 'the post-swap request was sent on the NEW channel');
+
+  // Decode what actually went out on f2 to get the real request id, then
+  // reply on f2 — proves INBOUND routing also follows the swap (the pre-fix
+  // facade's onData stayed bound to f1 forever, so a reply arriving on f2
+  // would never have reached this FabricLink either).
+  const reader = new FabricFrameReader();
+  let reqEnv: Envelope | null = null;
+  for (const buf of f2.sent) {
+    for (const inb of reader.push(buf)) {
+      if (inb.kind === 'envelope' && inb.env.kind === 'req') reqEnv = inb.env;
+    }
+  }
+  assert.ok(reqEnv, 'the outgoing request on f2 decodes as a real fabric req envelope');
+  const resEnv: Envelope = { kind: 'res', id: reqEnv!.id, headers: { status: 200 }, payload: encodeBody({ ok: true }) };
+  f2.reply(encodeEnvelope(resEnv));
+
+  const res = await pending;
+  assert.equal(res.headers.status, 200, 'the request resolves via a response delivered on the NEW channel');
 
   stopFabric();
 });
