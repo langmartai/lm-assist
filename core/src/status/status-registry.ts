@@ -80,4 +80,9 @@ export function registerCoreStatusProviders(): void {
       detail: f,
     };
   });
+
+  registerStatusProvider('bus', () => {
+    const { getBus } = require('../bus') as typeof import('../bus');
+    return getBus().statusReport();
+  });
 }
