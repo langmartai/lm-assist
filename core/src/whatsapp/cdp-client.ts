@@ -23,6 +23,7 @@
  *   getMedia(id)         -> not-yet-supported stub (media extraction is a follow-up)
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import WebSocket from 'ws';
@@ -327,6 +328,7 @@ function jsRead(n: number): string {
       const isImage = !!row.querySelector('img[src^="blob:"], img[src^="data:"]') || aria.some(a => /图片|photo/i.test(a));
       const isVideo = !!row.querySelector('video') || hasIcon(/media-play|video/) || aria.some(a => /视频|video/i.test(a));
       const isDoc = hasIcon(/document|audio-download/) || aria.some(a => /文件|document/i.test(a));
+      const imgEl = isImage ? row.querySelector('img[src^="blob:"]') : null;
       if (!ppt && !text && !isVoice && !isImage && !isVideo && !isDoc) continue;
       const dur = (row.innerText.match(/\\b\\d{1,2}:\\d{2}\\b/) || [])[0] || null;
       let type = 'text', body = text;
@@ -342,10 +344,87 @@ function jsRead(n: number): string {
       const m = ppt.match(/^\\[(.*?)\\]\\s*(.*?):\\s*$/);
       if (m) { ppTime = m[1]; sender = m[2]; }
       if (!sender) { const al = aria.find(a => /[:：]\\s*$/.test(a)); if (al) sender = al.replace(/[:：]\\s*$/, '').trim(); }
-      out.push({ ppt: ppTime, sender, direction: isOut ? 'out' : 'in', type, text: body, tick });
+      out.push({ ppt: ppTime, sender, direction: isOut ? 'out' : 'in', type, text: body, tick, _img: imgEl });
     }
-    return { header, messages: out.slice(-${n}) };
+    const sliced = out.slice(-${n});
+    // Capture rendered image bytes (blob: URLs are fetchable in-page) for the
+    // returned rows only — this is what lets the WEB display device media.
+    for (const m of sliced) {
+      let imageData = null;
+      if (m._img && m._img.src) {
+        try {
+          const b = await (await fetch(m._img.src)).blob();
+          if (b.size > 0 && b.size < 2500000) {
+            imageData = await new Promise((res) => {
+              const fr = new FileReader();
+              fr.onload = () => res(fr.result);
+              fr.onerror = () => res(null);
+              fr.readAsDataURL(b);
+            });
+          }
+        } catch (e) { /* media capture is best-effort */ }
+      }
+      m.imageData = typeof imageData === 'string' ? imageData : null;
+      delete m._img;
+    }
+    return { header, messages: sliced };
   `;
+}
+
+// ─── local media cache (temporary, capped) ───────────────────────────────────
+// Bytes captured from the desktop app's rendered messages, so the web can show
+// them. This is a CACHE of what the device displays — the device/WhatsApp
+// remains the source of truth; entries are pruned oldest-first past the cap.
+
+const MEDIA_DIR = () => path.join(WA_DATA_DIR, 'media');
+const MEDIA_CACHE_MAX_FILES = 300;
+
+function saveLocalMedia(dataUrl: string): { id: string; mime: string } | null {
+  try {
+    const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!m) return null;
+    const mime = m[1];
+    const buf = Buffer.from(m[2], 'base64');
+    if (!buf.length) return null;
+    const id = `local-${crypto.createHash('sha1').update(buf).digest('hex').slice(0, 20)}`;
+    fs.mkdirSync(MEDIA_DIR(), { recursive: true });
+    const f = path.join(MEDIA_DIR(), id);
+    if (!fs.existsSync(f)) {
+      fs.writeFileSync(f, buf);
+      fs.writeFileSync(`${f}.json`, JSON.stringify({ mime }));
+      pruneLocalMedia();
+    }
+    return { id, mime };
+  } catch {
+    return null;
+  }
+}
+
+function pruneLocalMedia(): void {
+  try {
+    const names = fs.readdirSync(MEDIA_DIR()).filter((n) => /^local-[a-f0-9]{20}$/.test(n));
+    if (names.length <= MEDIA_CACHE_MAX_FILES) return;
+    const byAge = names
+      .map((n) => ({ n, t: fs.statSync(path.join(MEDIA_DIR(), n)).mtimeMs }))
+      .sort((a, b) => a.t - b.t);
+    for (const { n } of byAge.slice(0, names.length - MEDIA_CACHE_MAX_FILES)) {
+      fs.rmSync(path.join(MEDIA_DIR(), n), { force: true });
+      fs.rmSync(path.join(MEDIA_DIR(), `${n}.json`), { force: true });
+    }
+  } catch {
+    /* cache pruning is best-effort */
+  }
+}
+
+export function readLocalMedia(id: string): { base64: string; mime: string } | null {
+  if (!/^local-[a-f0-9]{20}$/.test(id)) return null;
+  try {
+    const f = path.join(MEDIA_DIR(), id);
+    const meta = JSON.parse(fs.readFileSync(`${f}.json`, 'utf8')) as { mime?: string };
+    return { base64: fs.readFileSync(f).toString('base64'), mime: meta.mime || 'application/octet-stream' };
+  } catch {
+    return null;
+  }
 }
 
 const JS_COMPOSE_XY = `
@@ -565,7 +644,7 @@ export async function syncChat(target: string): Promise<{ chatId: string; contac
     await sleep(700);
     const r = await cdp.evaluate<{
       header: string | null;
-      messages: Array<{ ppt: string | null; sender: string | null; direction: 'in' | 'out'; type: string; text: string; tick: string | null }>;
+      messages: Array<{ ppt: string | null; sender: string | null; direction: 'in' | 'out'; type: string; text: string; tick: string | null; imageData: string | null }>;
     }>(jsRead(200));
     const header = r?.header || null;
     const contactName = header && !looksLikePhone(header) ? header : null;
@@ -593,6 +672,10 @@ export async function syncChat(target: string): Promise<{ chatId: string; contac
         status: m.direction === 'out' ? m.tick || 'sent' : undefined,
         contactName: contactName || undefined,
       };
+      if (m.imageData) {
+        const saved = saveLocalMedia(m.imageData);
+        if (saved) rec.mediaId = saved.id;
+      }
       if (m.direction === 'out') {
         store.addOutbound(rec);
         statuses.push({ id, status: rec.status || 'sent' });

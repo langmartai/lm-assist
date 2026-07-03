@@ -22,7 +22,7 @@ import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import * as os from 'os';
 import { whatsappProvider } from '../../whatsapp/config';
 import * as store from '../../whatsapp/store';
-import { cdpStatus, syncFromCdp, syncChat, sendText, getMedia, canonicalChatId, readChatOrder, WaError } from '../../whatsapp/cdp-client';
+import { cdpStatus, syncFromCdp, syncChat, sendText, getMedia, canonicalChatId, readChatOrder, readLocalMedia, WaError } from '../../whatsapp/cdp-client';
 import { whatsappLogin, whatsappLoginStatus } from '../../whatsapp/login';
 
 function clampInt(v: unknown, def: number, min: number, max: number): number {
@@ -243,13 +243,18 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // GET /whatsapp/media?id= — not yet supported on the local CDP provider.
+    // GET /whatsapp/media?id= — serves the LOCAL media cache (bytes captured
+    // from the desktop app's rendered messages); other ids are unsupported.
     {
       method: 'GET',
       pattern: /^\/whatsapp\/media$/,
       handler: async (req: ParsedRequest) => {
         const id = String(req.query?.id || '').trim();
         if (!id) return { success: false, error: '`id` query param (media id) is required' };
+        const local = readLocalMedia(id);
+        if (local) {
+          return { success: true, data: { id, mime: local.mime, base64: local.base64 } };
+        }
         try {
           await getMedia(id);
           return { success: true, data: {} };
