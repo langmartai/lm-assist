@@ -344,6 +344,11 @@ export function handleIncomingTransfer(
       offset: number,
       bytes: Buffer,
     ) => {
+      // Once the transfer has settled (FT_CANCEL/FT_END/drop), ignore any late
+      // data. Over the relay, control (FT_CANCEL) rides a priority lane and can
+      // overtake in-flight data — without this guard a straggling data frame's
+      // checkpoint would re-create the sidecar that handleCancel just deleted.
+      if (settled) return;
       const of = openFiles.get(entryIndex);
       if (!of) {
         await replyErr(transferId, 'data for unknown entry ' + entryIndex);
