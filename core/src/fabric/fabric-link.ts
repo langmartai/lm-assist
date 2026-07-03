@@ -48,9 +48,10 @@ export interface FabricLinkDeps {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const VALID_CLASSES: ReadonlySet<TrafficClass> = new Set(['control', 'rpc', 'bus', 'bulk']);
 
 export function classOf(env: Envelope): TrafficClass {
-  if (env.headers.cls) return env.headers.cls;
+  if (env.headers.cls && VALID_CLASSES.has(env.headers.cls)) return env.headers.cls;
   switch (env.kind) {
     case 'ping': case 'pong': return 'control';
     case 'pub': return 'bus';
@@ -140,21 +141,38 @@ export class FabricLink {
       },
       payload,
     };
-    const waiter = this.pending.register(id, init.timeoutMs ?? this.requestTimeoutMs);
-    await this.sendEnvelope(env);
+    const timeoutMs = init.timeoutMs ?? this.requestTimeoutMs;
+    const waiter = this.pending.register(id, timeoutMs);
+    waiter.catch(() => {}); // don't leave an unobserved rejection if the send fails before we return waiter
+    try {
+      await this.sendEnvelope(env);
+    } catch (e) {
+      this.pending.reject(id, e as Error);
+      throw e;
+    }
     return waiter;
   }
 
   async ping(payload: Uint8Array = new Uint8Array()): Promise<number> {
     const id = this.genId();
     const start = this.now();
+    const env: Envelope = { kind: 'ping', id, headers: { cls: 'control' }, payload };
     const waiter = this.pending.register(id, this.requestTimeoutMs);
-    await this.sendEnvelope({ kind: 'ping', id, headers: { cls: 'control' }, payload });
+    waiter.catch(() => {}); // don't leave an unobserved rejection if the send fails before we return waiter
+    try {
+      await this.sendEnvelope(env);
+    } catch (e) {
+      this.pending.reject(id, e as Error);
+      throw e;
+    }
     await waiter;
     const rtt = this.now() - start;
     this.metrics.recordRtt(rtt);
     return rtt;
   }
 
-  failInflight(err: Error): void { this.pending.rejectAll(err); }
+  failInflight(err: Error): void {
+    this.pending.rejectAll(err);
+    this.assembler = new ChunkAssembler(); // drop any partial multi-chunk reassembly on link teardown
+  }
 }

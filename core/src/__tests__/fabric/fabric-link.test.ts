@@ -2,7 +2,8 @@
 import { test, before } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
-  initEnvelopeCodec, encodeBody, decodeBody, FabricFrameReader, type Envelope,
+  initEnvelopeCodec, encodeBody, decodeBody, encodeEnvelope, FabricFrameReader,
+  type Envelope, type TrafficClass,
 } from '../../fabric/envelope';
 import { encodeFabricControl, FABRIC_TAG, FABRIC_VERSION, type FabricHello } from '../../fabric/protocol';
 import { FabricLink, type FabricChannel } from '../../fabric/fabric-link';
@@ -154,4 +155,82 @@ test('failInflight rejects all outstanding requests on this link', async () => {
   const p = client.request({ method: 'GET', path: '/x', timeoutMs: 5000 });
   client.failInflight(new Error('link closed'));
   await assert.rejects(p, /link closed/);
+});
+
+test('a send failure rejects request() without leaking the pending waiter (no unhandled rejection)', async () => {
+  // send/sendControl both throw synchronously — e.g. a channel that closed
+  // between register() storing the waiter and the write actually happening.
+  const ch: FabricChannel = {
+    peer: 'B', policy: () => 'direct', peerHasFeature: () => true,
+    send: () => { throw new Error('boom: channel send failed'); },
+    sendControl: () => { throw new Error('boom: channel send failed'); },
+    onData: () => {},
+  };
+  const client = new FabricLink(ch, { requestTimeoutMs: 20 });
+  const pendingSize = () => (client as unknown as { pending: { size: () => number } }).pending.size();
+
+  let unhandled: unknown = null;
+  const onUnhandledRejection = (err: unknown) => { unhandled = err; };
+  process.once('unhandledRejection', onUnhandledRejection);
+  try {
+    await assert.rejects(client.request({ method: 'GET', path: '/x' }), /boom: channel send failed/);
+
+    // The orphaned-waiter bug leaves an entry in PendingCalls forever (nothing
+    // ever resolves/rejects it) — assert it was cleaned up immediately rather
+    // than left to reject later, alone, on its own unref'd timeout.
+    assert.equal(pendingSize(), 0, 'the pending waiter must be rejected+removed when the send fails, not orphaned');
+
+    // Belt-and-suspenders: hold the loop open past requestTimeoutMs (the
+    // waiter's timer is unref'd — see the timeout test above) so an orphaned
+    // waiter would actually get a chance to fire and prove itself unhandled.
+    const keepAlive = setInterval(() => {}, 100);
+    await new Promise((r) => setTimeout(r, 100));
+    clearInterval(keepAlive);
+    assert.equal(unhandled, null, 'the registered pending waiter must not reject as an unobserved rejection');
+  } finally {
+    process.removeListener('unhandledRejection', onUnhandledRejection);
+  }
+});
+
+test('an envelope with an unrecognized wire cls does not crash onData and is still delivered', () => {
+  let deliver: ((d: Buffer) => void) | null = null;
+  const ch: FabricChannel = {
+    peer: 'B', policy: () => 'direct', peerHasFeature: () => true,
+    send: () => {}, sendControl: () => {},
+    onData: (cb) => { deliver = cb; },
+  };
+  const delivered: Envelope[] = [];
+  new FabricLink(ch, { onServer: (env) => { delivered.push(env); } });
+
+  // A wire cls outside control|rpc|bus|bulk (e.g. from a newer/differently
+  // versioned peer) must not abort classOf()'s caller — LinkMetrics.recordIn
+  // indexes a Record<TrafficClass,Ewma> by whatever classOf() returns.
+  const foreignEnv: Envelope = {
+    kind: 'req', id: 'foreign-1',
+    headers: { method: 'GET', path: '/x', reqId: 'foreign-1', cls: 'meta-future' as unknown as TrafficClass },
+    payload: encodeBody({ body: null, query: {} }),
+  };
+  assert.doesNotThrow(() => deliver!(encodeEnvelope(foreignEnv)), 'onData must not throw on an unrecognized wire cls');
+  assert.equal(delivered.length, 1, 'the frame must still be delivered to onServer despite the unrecognized cls');
+  assert.equal(delivered[0].id, 'foreign-1');
+});
+
+test('failInflight resets the chunk assembler so a stale partial reassembly does not survive', async () => {
+  const { a, b } = pair('direct');
+  const client = new FabricLink(a, {});
+  // seq:0, fin:false — leaves the assembler holding an open partial for
+  // 'stale-1' until a matching fin frame arrives (never does, in this test).
+  const partial: Envelope = {
+    kind: 'req', id: 'stale-1',
+    headers: { method: 'GET', path: '/x', seq: 0, fin: false },
+    payload: encodeBody({ body: null, query: {} }),
+  };
+  b.sendControl(encodeEnvelope(partial));
+  await new Promise((r) => setImmediate(r));
+  const assembler = () => (client as unknown as { assembler: { open: Map<string, unknown> } }).assembler;
+  assert.equal(assembler().open.size, 1, 'sanity: a partial reassembly is retained before failInflight');
+
+  client.failInflight(new Error('link closed'));
+
+  assert.equal(assembler().open.size, 0, 'failInflight must reset the assembler so no stale partial reassembly survives');
 });
