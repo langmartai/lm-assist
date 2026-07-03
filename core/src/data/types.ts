@@ -12,6 +12,12 @@ export interface Principal {
   node?: string;   // present for peer principals — the fabric gatewayId that issued the sync RPC
 }
 
+export interface PutOptions {
+  /** Optimistic-concurrency guard: the write applies only if the stored record's version equals
+   *  this value (absent record ⇒ version 0). On mismatch DataService.put returns code 'CONFLICT'. */
+  ifVersion?: number;
+}
+
 export interface NodeOrigin {
   machineId: string;
   hostname: string;

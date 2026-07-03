@@ -1,7 +1,7 @@
 // core/src/data/data-service.ts
 import type {
   Principal, DataAction, DataRecord, QuerySpec, SearchSpec, AccessRequest, BackendKind, NodeVisibility, SyncMode,
-  PeerClient, NodeInfo,
+  PeerClient, NodeInfo, PutOptions,
 } from './types';
 import type { DatasetRegistry } from './dataset-registry';
 import { getDatasetRegistry } from './dataset-registry';
@@ -138,7 +138,7 @@ export class DataService {
     return { ok: true, value: redactValueDeep(result) };
   }
 
-  async put(ctx: CallCtx, datasetId: string, record: DataRecord): Promise<DataResult<{ id: string }>> {
+  async put(ctx: CallCtx, datasetId: string, record: DataRecord, opts?: PutOptions): Promise<DataResult<{ id: string }>> {
     const a = await this.authorize(ctx, datasetId, 'write');
     if (!a.ok) return a;
     const tooBig = recordTooLarge(record);
@@ -146,6 +146,12 @@ export class DataService {
     const d = this.deps.datasets.get(datasetId)!;
     if ((d as any).origin) return { ok: false, code: 'READ_ONLY_REPLICA', reason: `dataset "${datasetId}" is a remote replica (read-only)` };
     const existing = await a.value.backend!.get(datasetId, record.id);
+    if (opts?.ifVersion !== undefined) {
+      const cur = existing?.version ?? 0;
+      if (cur !== opts.ifVersion) {
+        return { ok: false, code: 'CONFLICT', reason: `version mismatch on "${datasetId}/${record.id}": stored ${cur} != ifVersion ${opts.ifVersion}` };
+      }
+    }
     const now = new Date().toISOString();
     const versioned: DataRecord = {
       ...record,
