@@ -27,6 +27,10 @@ export interface PeerLinkDeps {
   /** This node's direct-TCP endpoint to advertise in the HELLO, or null if it
    *  runs no TCP listener. Read live at hello-build time. */
   selfTcp?: () => import('./protocol').FabricTcpEndpoint | null;
+  /** Capability list advertised in the HELLO, read live at hello-build time so a mid-session
+   *  busEnabled/dataSyncViaFabric flip is reflected on the next (re)connect. Defaults to the W1/W2/W3
+   *  static set when omitted (keeps existing peer-link unit tests unchanged). */
+  features?: () => string[];
 }
 
 export interface PeerLinkSnapshot {
@@ -160,7 +164,8 @@ export class PeerLink {
 
   private hello(kind: FabricHello['kind']): Buffer {
     const tcp = this.deps.selfTcp?.() ?? undefined;
-    return encodeFabricControl({ type: FABRIC_TAG, kind, version: FABRIC_VERSION, features: ['status', 'rpc', 'comp-gzip', 'bus'], node: this.deps.selfNode, ...(tcp ? { tcp } : {}) });
+    const features = this.deps.features?.() ?? ['status', 'rpc', 'comp-gzip', 'bus'];
+    return encodeFabricControl({ type: FABRIC_TAG, kind, version: FABRIC_VERSION, features, node: this.deps.selfNode, ...(tcp ? { tcp } : {}) });
   }
 
   private reduce(ev: Parameters<typeof reduceLink>[1]): void {

@@ -131,6 +131,14 @@ export function initFabric(selfNode: string): void {
         selfNode,
         now: () => Date.now(),
         selfTcp: () => selfTcpEndpoint,
+        features: () => {
+          const { getProjectSettings } = require('../project-settings') as typeof import('../project-settings');
+          const s = getProjectSettings();
+          const f = ['status', 'rpc', 'comp-gzip'];
+          if (s.busEnabled) f.push('bus');            // follow-up (c): advertise bus only when enabled
+          if (s.dataSyncViaFabric) f.push('data');    // spec §5 S2.2: peer must advertise data to be fabric-eligible
+          return f;
+        },
       });
       link.onConnected((ch) => { void attachFabricLink(selfNode, peer, link, ch as FabricCapableChannel); });
       return link;
