@@ -147,6 +147,7 @@ export class DataService {
    *  disabled/not-ready bus (publish throws when busEnabled=false) is a silent no-op; the 300s
    *  reconcile is the safety net. A local-only ('none') dataset never churns the bus. */
   private notifyChange(d: DatasetDescriptor, type: 'changed' | 'deleted', ids: string[]): void {
+    if ((d as any).sensitive) return;
     if (!d.syncMode || d.syncMode === 'none') return;
     try { this.deps.notify?.(d.id, type, ids); } catch { /* bus off / not ready — reconcile heals */ }
   }

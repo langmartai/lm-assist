@@ -23,6 +23,18 @@ function svc(notify: (d: string, t: string, ids: string[]) => void) {
   datasets.create({ id: 'localonly', backend: 'cache', visibility: 'local-only', config: { kind: 'cache' } }); // syncMode defaults 'none'
   return s;
 }
+
+function svcWithSensitive(notify: (d: string, t: string, ids: string[]) => void) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cn-'));
+  const datasets = new DatasetRegistry(path.join(dir, 'datasets.json'));
+  const backends = new BackendRegistry();
+  backends.register(new CacheBackend());
+  const manager = new AccessManager({ datasets, keys: getKeyStore(), nodeId: 'self' });
+  const s = new DataService({ datasets, backends, manager, notify: notify as any });
+  datasets.create({ id: 'sensitive-data', backend: 'cache', visibility: 'cross-node-readable', syncMode: 'full', sensitive: true, config: { kind: 'cache' } });
+  datasets.create({ id: 'normal', backend: 'cache', visibility: 'cross-node-readable', syncMode: 'full', config: { kind: 'cache' } });
+  return s;
+}
 const rec = (id: string): DataRecord => ({ id, version: 0, fields: {}, createdAt: '', updatedAt: '' });
 const ctx = { principal: { type: 'local' as const } };
 
@@ -45,4 +57,17 @@ test('a throwing notify (bus disabled) never breaks the write', async () => {
   const s = svc(() => { throw new Error('bus disabled'); });
   const r = await s.put(ctx, 'synced', rec('z'));
   assert.equal(r.ok, true); // put still succeeds
+});
+
+test('a sensitive:true dataset with syncMode:full does NOT publish to bus (defense-in-depth)', async () => {
+  const calls: Array<[string, string, string[]]> = [];
+  const s = svcWithSensitive((d, t, ids) => calls.push([d, t, ids]));
+  // Put/delete on sensitive dataset must NOT notify
+  await s.put(ctx, 'sensitive-data', rec('secret1'));
+  await s.del(ctx, 'sensitive-data', 'secret1');
+  // But normal dataset still publishes
+  await s.put(ctx, 'normal', rec('public1'));
+  await s.del(ctx, 'normal', 'public1');
+  // Verify only the normal dataset notified; sensitive never did
+  assert.deepEqual(calls, [['normal', 'changed', ['public1']], ['normal', 'deleted', ['public1']]]);
 });
