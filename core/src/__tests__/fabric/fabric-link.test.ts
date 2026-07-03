@@ -234,3 +234,75 @@ test('failInflight resets the chunk assembler so a stale partial reassembly does
 
   assert.equal(assembler().open.size, 0, 'failInflight must reset the assembler so no stale partial reassembly survives');
 });
+
+// ---------------------------------------------------------------------------
+// Cross-node transmission bug fix (fabric/index.ts's attachFabricLink now
+// follows the PeerLink's CURRENT channel across a relay→direct upgrade
+// instead of closing over the first channel forever). channelSwapped() is
+// the FabricLink-side half of that fix: it resets the byte-stream state tied
+// to the OLD channel (a FabricFrameReader mid-parse / a ChunkAssembler
+// holding a partial reassembly are both meaningless — and corrupting — on a
+// fresh stream from a different channel) without tearing down the FabricLink
+// object itself (metrics/scheduler/object identity survive; see
+// fabric-attach.test.ts for the end-to-end proof through the real
+// attachFabricLink wiring using a mock PeerLink-shaped swap).
+// ---------------------------------------------------------------------------
+test('channelSwapped() resets the reader/assembler so a stale partial from the old channel cannot corrupt a message on the new one, and rejects in-flight calls', async () => {
+  const wireOld = pair('relay');
+  const wireNew = pair('direct');
+
+  // The facade under test is SWAPPABLE — mirrors attachFabricLink's dynamic
+  // facade (fabric/index.ts), which resolves link.currentChannel() live on
+  // every send/sendControl call and re-registers onData on every swap,
+  // instead of the pre-fix code that closed over one channel's send/
+  // sendControl/onData forever.
+  let current = wireOld.a;
+  let dataCb: ((d: Buffer) => void) | null = null;
+  const swappableFacade: FabricChannel = {
+    peer: 'B', policy: () => 'direct', peerHasFeature: () => true,
+    send: (b) => current.send(b),
+    sendControl: (b) => current.sendControl(b),
+    onData: (cb) => { dataCb = cb; current.onData(cb); },
+  };
+  const client = new FabricLink(swappableFacade, {});
+  new FabricLink(wireNew.b, {
+    onServer: (env, reply) => reply({ kind: 'res', id: env.id, headers: { status: 200 }, payload: env.payload }),
+  });
+
+  // A message starts arriving on the OLD channel but never finishes (seq:0,
+  // fin:false) — leaves the client's assembler holding a dangling partial.
+  const partial: Envelope = {
+    kind: 'req', id: 'stale-from-old-channel',
+    headers: { method: 'GET', path: '/x', seq: 0, fin: false },
+    payload: encodeBody({ body: null, query: {} }),
+  };
+  wireOld.b.sendControl(encodeEnvelope(partial));
+  await new Promise((r) => setImmediate(r));
+  const assemblerOpenSize = () => (client as unknown as { assembler: { open: Map<string, unknown> } }).assembler.open.size;
+  assert.equal(assemblerOpenSize(), 1, 'sanity: the partial reassembly is retained before the swap');
+
+  // A request registered on the OLD channel is still in flight at swap time.
+  const staleCall = client.request({ method: 'GET', path: '/before-swap', timeoutMs: 5000 });
+  const pendingSize = () => (client as unknown as { pending: { size: () => number } }).pending.size();
+  assert.equal(pendingSize(), 1, 'sanity: the pre-swap call is pending before the swap');
+
+  // --- the swap: attachFabricLink's onChannel handler does exactly these
+  // calls, in this order (fabric/index.ts) ---
+  current = wireNew.a;
+  client.channelSwapped();
+  if (dataCb) current.onData(dataCb);
+
+  await assert.rejects(staleCall, /swapped/, 'a call in flight on the OLD channel is rejected, not left hanging forever');
+  assert.equal(pendingSize(), 0, 'channelSwapped() clears pending calls tied to the dead channel');
+  assert.equal(assemblerOpenSize(), 0, 'channelSwapped() drops the stale partial from the old channel');
+
+  // A request issued AFTER the swap must go out on the NEW wire (the pre-fix
+  // bug pinned sends to the first channel forever, so this would hang) and a
+  // response delivered on the NEW wire must resolve it.
+  const res = await client.request({ method: 'GET', path: '/after-swap', timeoutMs: 2000 });
+  assert.equal(res.headers.status, 200);
+
+  // And the dangling partial from the old channel did not leak forward and
+  // corrupt/block the new channel's clean round trip.
+  assert.equal(assemblerOpenSize(), 0, 'no leftover partial after a clean round trip on the new channel');
+});

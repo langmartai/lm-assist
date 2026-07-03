@@ -175,4 +175,29 @@ export class FabricLink {
     this.pending.rejectAll(err);
     this.assembler = new ChunkAssembler(); // drop any partial multi-chunk reassembly on link teardown
   }
+
+  /**
+   * The underlying channel changed (a relay→direct upgrade, or any other
+   * reconnect — see peer-link.ts's onChannel()) while this SAME FabricLink
+   * instance stays attached: fabric/index.ts's attachFabricLink calls this on
+   * every swap, right before re-registering this link's reader on the new
+   * channel via the (now dynamic) facade. Resets everything tied to the OLD
+   * byte stream:
+   *  - `reader` (FabricFrameReader): a length-prefix parse mid-flight on the
+   *    dead channel is meaningless — actively corrupting — applied to bytes
+   *    from a DIFFERENT stream, so it's replaced with a clean instance.
+   *    failInflight() does not touch this (a fully-stopped link has no new
+   *    stream coming, so there's nothing to protect against); a live swap
+   *    does, which is the one thing channelSwapped() adds on top of it.
+   *  - `assembler` (ChunkAssembler) + any pending request/ping: both belong
+   *    to the dead channel and will never see their `fin`/response there —
+   *    reused via failInflight() itself, so this is a swap without tearing
+   *    the FabricLink down (object identity + metrics + scheduler survive;
+   *    fabric/index.ts never recreates the FabricLink on a swap, only on a
+   *    fresh attach for a peer that had none).
+   */
+  channelSwapped(): void {
+    this.reader = new FabricFrameReader();
+    this.failInflight(new Error(`fabric channel for ${this.ch.peer} swapped`));
+  }
 }

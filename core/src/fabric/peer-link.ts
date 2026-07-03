@@ -53,6 +53,7 @@ export class PeerLink {
   private peerFeatureList: string[] = [];
   private connectedCb: ((ch: LinkChannel) => void) | null = null;
   private connectedFired = false;
+  private channelCb: ((ch: LinkChannel) => void) | null = null;
 
   constructor(readonly peer: string, private deps: PeerLinkDeps) {
     this.core = { state: 'discovered', since: deps.now(), attempts: 0, lastError: null };
@@ -103,7 +104,55 @@ export class PeerLink {
   peerFeatures(): string[] { return [...this.peerFeatureList]; }
   peerHasFeature(f: string): boolean { return this.peerFeatureList.includes(f); }
 
+  /** The channel PeerLink is CURRENTLY using, or null if not connected.
+   *  Unlike onConnected()'s snapshot (the first channel, forever), this
+   *  always reflects the latest — including after a relay→direct upgrade or
+   *  any other reconnect that hands this PeerLink a new channel while it
+   *  stays the same instance (see attach(), called from both open() and
+   *  adopt()). W2's FabricLink (fabric/index.ts's attachFabricLink) reads
+   *  this on every send instead of closing over one channel forever — the
+   *  cross-node-transmission bug this fixes. */
+  currentChannel(): LinkChannel | null {
+    return this.ch;
+  }
+
+  /**
+   * Fires with the live channel on EVERY hello-ok — the first connect AND
+   * every subsequent swap (adopt()/open() reassigning `this.ch`, e.g. a
+   * relay→direct upgrade or a reconnect after a drop). Unlike onConnected()
+   * this has no once-only gate and (deliberately) no late-subscriber replay:
+   * a caller that wants "the current channel right now" should call
+   * currentChannel() directly (attachFabricLink does exactly that via the
+   * `ch` it already receives from onConnected() for the FIRST channel) and
+   * use onChannel() purely to hear about FUTURE swaps — that keeps this a
+   * single, simple firing path with no risk of double-delivering the first
+   * channel to a subscriber that registers after connecting.
+   *
+   * Fired from fireConnected() — the SAME safe checkpoint onConnected()
+   * already uses (hello confirmed) — NOT from the raw `this.ch = ch`
+   * assignment inside attach(). attach() can run before the new channel's
+   * OWN hello has been processed (adopt()'s inline reader is still
+   * mid-handshake at that point, and it hasn't sent its hello-ack yet);
+   * firing this any earlier would let a subscriber steal the channel's
+   * onData out from under that reader (onData is single-slot — see
+   * inbound-router.ts's makeReplayed / transport's single-slot onClose,
+   * the identical hazard) before the handshake completes, breaking the
+   * hello exchange on the very channel being adopted. By the time
+   * fireConnected() runs, the hello-ack is already sent and the reduce/
+   * counters/features bookkeeping is already done — safe to hand the
+   * channel to a new onData owner (see fabric-link.ts's channelSwapped()).
+   */
+  onChannel(cb: (ch: LinkChannel) => void): void {
+    this.channelCb = cb;
+  }
+
+  private fireChannel(): void {
+    if (!this.ch) return;
+    try { this.channelCb?.(this.ch); } catch { /* best-effort */ }
+  }
+
   private fireConnected(): void {
+    this.fireChannel(); // every (re)connect — swap-aware subscribers (attachFabricLink) need this every time, not just the first
     if (this.connectedFired || !this.ch) return;
     this.connectedFired = true;
     try { this.connectedCb?.(this.ch); } catch { /* best-effort */ }
