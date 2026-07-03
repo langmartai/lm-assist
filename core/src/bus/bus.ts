@@ -1,0 +1,188 @@
+/**
+ * Bus service (spec §5 S1). Owns publish (local append → fan-out), idempotent
+ * ingest (+ local delivery), in-process subscribe with durable cursor advance,
+ * a stateless long-poll read, since (catch-up), and a local EventEmitter that
+ * feeds the SSE bridge + long-poll wakeups. Fabric fan-out + catch-up are
+ * injected (getBus wires them lazily to `../fabric` — see Tasks 7/9) so this
+ * core is unit-testable without a live 2-node fabric.
+ */
+import { EventEmitter } from 'events';
+import { BusStore, type TopicSummary } from './bus-store';
+import {
+  BUS_PAYLOAD_CAP, payloadSize, encodeCursor, decodeCursor, mergeCursor,
+  type BusEvent, type BusRef, type BusCursor,
+} from './types';
+
+// decodeBody is the msgpack body codec the fabric already loaded (W2). Lazy to
+// avoid pulling the fabric graph into a pure bus unit test.
+function decodeWireBody(payload: Uint8Array): unknown {
+  const { decodeBody } = require('../fabric/envelope') as typeof import('../fabric/envelope');
+  return decodeBody(payload);
+}
+
+export interface BusDeps {
+  store: BusStore;
+  selfNode: string;
+  fanout?: (e: BusEvent) => void;
+  enabled?: () => boolean;
+  now?: () => number;
+}
+
+export interface ReadResult { events: BusEvent[]; nextCursor: string; }
+
+interface Sub { subscriberId: string; topic: string; handler: (e: BusEvent) => void | Promise<void>; }
+
+export class Bus {
+  private store: BusStore;
+  private selfNode: string;
+  private fanout: (e: BusEvent) => void;
+  private enabled: () => boolean;
+  private now: () => number;
+  private subs = new Set<Sub>();
+  private emitter = new EventEmitter();
+
+  constructor(deps: BusDeps) {
+    this.store = deps.store;
+    this.selfNode = deps.selfNode;
+    this.fanout = deps.fanout ?? (() => {});
+    this.enabled = deps.enabled ?? (() => true);
+    this.now = deps.now ?? (() => Date.now());
+    this.emitter.setMaxListeners(0);
+  }
+
+  publish(topic: string, type: string, payload: unknown, opts?: { scope?: 'cluster' | 'fleet'; ref?: BusRef }): BusEvent {
+    if (!this.enabled()) throw new Error('bus: disabled (busEnabled=false)');
+    if (opts?.ref === undefined && payloadSize(payload) > BUS_PAYLOAD_CAP) {
+      throw new Error(`bus: payload exceeds ${BUS_PAYLOAD_CAP}-byte cap — offload it and publish a ref {kind,id} instead`);
+    }
+    const seq = this.store.nextSeq(topic, this.selfNode);
+    const e: BusEvent = {
+      topic, origin: this.selfNode, seq, type, at: this.now(),
+      ...(opts?.ref ? { ref: opts.ref } : { payload }),
+      scope: opts?.scope ?? 'cluster',
+    };
+    this.store.append(e);
+    this.deliverLocal(e);
+    this.emitter.emit('event', e);
+    try { this.fanout(e); } catch { /* fan-out is fire-and-forget; catch-up heals */ }
+    return e;
+  }
+
+  /** Idempotent replica merge. Delivers locally + emits ONLY on first sight. No re-fanout (origin fans out; star topology). */
+  ingest(e: BusEvent): boolean {
+    if (!this.enabled()) return false;
+    const isNew = this.store.ingest(e);
+    if (isNew) { this.deliverLocal(e); this.emitter.emit('event', e); }
+    return isNew;
+  }
+
+  ingestFromWire(payload: Uint8Array): boolean {
+    const e = decodeWireBody(payload) as BusEvent;
+    if (!e || typeof e.topic !== 'string' || typeof e.origin !== 'string' || typeof e.seq !== 'number') return false;
+    return this.ingest(e);
+  }
+
+  subscribe(subscriberId: string, topic: string, handler: (e: BusEvent) => void | Promise<void>): () => void {
+    const sub: Sub = { subscriberId, topic, handler };
+    this.subs.add(sub);
+    // Replay everything after the durable cursor (restart resumes exactly).
+    const missed = this.store.readSince(topic, this.store.getCursor(subscriberId, topic));
+    for (const e of missed) void this.dispatchTo(sub, e);
+    return () => { this.subs.delete(sub); };
+  }
+
+  private deliverLocal(e: BusEvent): void {
+    for (const sub of this.subs) {
+      if (sub.topic !== e.topic) continue;
+      if (e.seq <= (this.store.getCursor(sub.subscriberId, e.topic)[e.origin] ?? 0)) continue; // already past
+      void this.dispatchTo(sub, e);
+    }
+  }
+
+  private async dispatchTo(sub: Sub, e: BusEvent): Promise<void> {
+    try {
+      await sub.handler(e);
+      this.store.setCursor(sub.subscriberId, e.topic, { [e.origin]: e.seq }); // advance only after success (at-least-once)
+    } catch { /* leave the cursor; a later delivery / catch-up re-attempts */ }
+  }
+
+  since(topic: string, cursor: BusCursor): BusEvent[] {
+    return this.store.readSince(topic, cursor);
+  }
+
+  async read(topic: string, from?: string, waitMs = 0): Promise<ReadResult> {
+    const cursor = decodeCursor(from);
+    let events = this.store.readSince(topic, cursor);
+    if (events.length === 0 && waitMs > 0) {
+      await new Promise<void>((resolve) => {
+        const off = this.onLocalEvent((e) => { if (e.topic === topic) { cleanup(); resolve(); } });
+        const timer = setTimeout(() => { cleanup(); resolve(); }, Math.min(waitMs, 25_000));
+        timer.unref?.();
+        const cleanup = () => { clearTimeout(timer); off(); };
+      });
+      events = this.store.readSince(topic, cursor);
+    }
+    let next = cursor;
+    for (const e of events) next = mergeCursor(next, { [e.origin]: e.seq });
+    return { events, nextCursor: encodeCursor(next) };
+  }
+
+  topics(): Array<TopicSummary & { subscribers: number; lag: number }> {
+    return this.store.listTopics().map((t) => {
+      const subs = [...this.subs].filter((s) => s.topic === t.topic);
+      const headTotal = Object.values(t.head).reduce((a, b) => a + b, 0);
+      let lag = 0;
+      for (const s of subs) {
+        const cur = this.store.getCursor(s.subscriberId, t.topic);
+        lag = Math.max(lag, headTotal - Object.values(cur).reduce((a, b) => a + b, 0));
+      }
+      return { ...t, subscribers: subs.length, lag };
+    });
+  }
+
+  onLocalEvent(cb: (e: BusEvent) => void): () => void {
+    this.emitter.on('event', cb);
+    return () => this.emitter.off('event', cb);
+  }
+
+  statusReport(): { verdict: 'ok' | 'warn' | 'error'; summary: string; detail: unknown } {
+    if (!this.enabled()) return { verdict: 'ok', summary: 'bus disabled', detail: { enabled: false } };
+    const topics = this.topics();
+    const backlog = topics.reduce((a, t) => a + t.events, 0);
+    const maxLag = topics.reduce((a, t) => Math.max(a, t.lag), 0);
+    return {
+      verdict: maxLag > 1000 ? 'warn' : 'ok',
+      summary: `${topics.length} topics · ${backlog} events · maxLag ${maxLag}`,
+      detail: { topics },
+    };
+  }
+}
+
+// ── Singleton ───────────────────────────────────────────────────────────────
+let singleton: Bus | null = null;
+
+/** Production Bus: real store, self node + fanout + catch-up from the live fabric. */
+export function getBus(): Bus {
+  if (singleton) return singleton;
+  const fab = require('../fabric') as {
+    fabricSelfNode?: () => string;
+    fabricBusPeers?: () => string[];
+    fabricPublish?: (node: string, e: BusEvent) => void;
+  };
+  const { getProjectSettings } = require('../project-settings') as typeof import('../project-settings');
+  const os = require('os') as typeof import('os');
+  const store = new BusStore();
+  singleton = new Bus({
+    store,
+    selfNode: fab.fabricSelfNode?.() || os.hostname(),
+    enabled: () => { try { return getProjectSettings().busEnabled; } catch { return true; } },
+    fanout: (e) => {
+      // Cluster-scoped by construction: fabricBusPeers() are same-cluster,
+      // bus-capable, connected peers (fleet cross-cluster delivery deferred).
+      for (const peer of fab.fabricBusPeers?.() ?? []) fab.fabricPublish?.(peer, e);
+    },
+  });
+  return singleton;
+}
+
+export function __setBusForTest(b: Bus | null): void { singleton = b; }
