@@ -354,6 +354,22 @@ export async function fabricProbe(node: string): Promise<{ node: string; rttMs: 
   const rtt = await link.ping(payload);
   const elapsed = Math.max(1, Date.now() - start);
   const mbps = (payload.length * 2) / (elapsed / 1000) / 1_000_000; // round-trip bytes / s
-  const path = link.metrics.snapshot().perClass.control.outBps >= 0 ? (rtt >= 0 ? 'direct' : 'relay') : 'none';
-  return { node, rttMs: rtt, mbps, path };
+  return { node, rttMs: rtt, mbps, path: probePathOf(node) };
+}
+
+/**
+ * Task 13 fix (flagged by the Task 12 review): the original heuristic —
+ * `LinkMetrics.snapshot().perClass.control.outBps >= 0 ? (rtt >= 0 ? 'direct' : 'relay') : 'none'`
+ * — is always 'direct' for any connected link: byte rates and RTT are never
+ * negative, so both `>= 0` checks always pass. Report the ACTUAL current path
+ * instead, read off the SAME live `mode` /fabric/status already exposes per
+ * peer (PeerLinkSnapshot.mode, sourced from the transport Channel's live
+ * `mode` getter — see transport/index.ts's makeChannel — via mgr.snapshot(),
+ * the exact call getFabricStatus() above already makes): 'bidi'/'oneway' =
+ * at least one leg is confirmed direct; 'relay' (or no PeerManager entry,
+ * e.g. a link attached through a test seam that bypasses `mgr`) = relay.
+ */
+function probePathOf(node: string): 'direct' | 'relay' {
+  const mode = mgr?.snapshot().find((p) => p.peer === node)?.mode;
+  return mode === 'bidi' || mode === 'oneway' ? 'direct' : 'relay';
 }
