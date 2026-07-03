@@ -59,7 +59,8 @@ export interface ProjectSettings {
   ruleSyncEnabled: boolean;
   /** Peer fabric: managed node-to-node links over the hybrid transport. Default true. */
   fabricEnabled: boolean;
-  /** Fabric RPC class: dispatch peer `req` frames into the route table. Default true. */
+  /** Fabric RPC class: dispatch peer `req` frames into the route table. Default false — opt-in
+   *  (no allow-list on the dispatch target; the RPC server is live as soon as a peer connects). */
   fabricRpcEnabled: boolean;
   /** Fabric per-frame gzip compression (path+payload aware). Default true. */
   fabricCompressionEnabled: boolean;
@@ -95,7 +96,7 @@ export const DEFAULTS: ProjectSettings = {
   authMonitorIntervalMin: 15,
   ruleSyncEnabled: true,
   fabricEnabled: true,
-  fabricRpcEnabled: true,
+  fabricRpcEnabled: false,
   fabricCompressionEnabled: true,
   fabricRelayBulkCapMBps: 5,
 };

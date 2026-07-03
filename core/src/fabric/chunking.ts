@@ -33,20 +33,30 @@ interface Partial {
   parts: Map<number, Uint8Array>;
   total: number;
   finSeq: number | null;
+  touchedAt: number;
 }
 
 export class ChunkAssembler {
   private open = new Map<string, Partial>();
-  constructor(readonly maxBytes: number = 32 * 1024 * 1024) {}
+  constructor(
+    readonly maxBytes: number = 32 * 1024 * 1024,
+    /** Idle eviction: a partial (frame 0 seen, never `fin`'d — e.g. the peer
+     *  died mid-send) is dropped once it has sat untouched this long, so a
+     *  stalled reassembly can't leak in `open` forever. */
+    private readonly ttlMs: number = 120_000,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
 
   accept(env: Envelope): Envelope | null {
+    this.evictStale();
     if (env.headers.seq === undefined) return env; // whole frame
     const seq = env.headers.seq;
     let p = this.open.get(env.id);
     if (!p) {
-      p = { kind: env.kind, headers: {}, parts: new Map(), total: 0, finSeq: null };
+      p = { kind: env.kind, headers: {}, parts: new Map(), total: 0, finSeq: null, touchedAt: this.now() };
       this.open.set(env.id, p);
     }
+    p.touchedAt = this.now();
     if (seq === 0) {
       p.kind = env.kind;
       p.headers = { ...env.headers };
@@ -71,6 +81,16 @@ export class ChunkAssembler {
     }
     this.open.delete(env.id);
     return { kind: p.kind, id: env.id, headers: p.headers, payload: concat(ordered, p.total) };
+  }
+
+  /** Drop any partial untouched for >= ttlMs — called at the top of every
+   *  accept() so a peer that sends frame 0 and never fins doesn't hold its
+   *  slot in `open` indefinitely. */
+  private evictStale(): void {
+    const now = this.now();
+    for (const [id, p] of this.open) {
+      if (now - p.touchedAt >= this.ttlMs) this.open.delete(id);
+    }
   }
 }
 

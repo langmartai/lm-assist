@@ -41,6 +41,11 @@ export interface Envelope {
 
 export const KIND_ENVELOPE = 0x02;
 const LEN_PREFIX = 4;
+/** Guard against a corrupt/desynced length prefix (readUInt32BE can claim up
+ *  to ~4GB): 64MB is comfortably above the real CHUNK_THRESHOLD (64KB, see
+ *  chunking.ts) plus envelope/msgpack overhead, so any legitimate frame stays
+ *  well under it. */
+const MAX_FRAME = 64 * 1024 * 1024;
 
 interface MsgpackCodec {
   encode(value: unknown): Uint8Array;
@@ -108,6 +113,15 @@ export class FabricFrameReader {
     for (;;) {
       if (this.buf.length < LEN_PREFIX) break;
       const len = this.buf.readUInt32BE(0);
+      if (len > MAX_FRAME) {
+        // A malformed/corrupt length prefix desyncs the framing — we cannot
+        // trust where the next real frame boundary is. Drop everything
+        // buffered so far rather than waiting (unboundedly) for `len` bytes
+        // that will likely never arrive; return whatever was already parsed
+        // earlier in this same push() call.
+        this.buf = Buffer.alloc(0);
+        break;
+      }
       const total = LEN_PREFIX + len;
       if (this.buf.length < total) break;
       const body = this.buf.subarray(LEN_PREFIX, total);

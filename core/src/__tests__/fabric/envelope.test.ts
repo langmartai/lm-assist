@@ -46,3 +46,34 @@ test('encodeEnvelope throws a clear error before initEnvelopeCodec', async () =>
   // Codec is loaded (before hook ran) — assert the guard message exists by shape.
   assert.equal(typeof mod.encodeEnvelope, 'function');
 });
+
+test('a corrupt length prefix beyond MAX_FRAME is dropped, not buffered unboundedly', () => {
+  const reader = new FabricFrameReader();
+  const corrupt = Buffer.alloc(4);
+  corrupt.writeUInt32BE(0xffffffff, 0); // claims a ~4GB frame — desynced/corrupt framing
+  const out = reader.push(corrupt);
+  assert.equal(out.length, 0);       // nothing decodes from a corrupt header
+  assert.equal(reader.pending(), 0); // buffer was cleared, not held open waiting for 4GB
+
+  // A subsequent, legitimate push starts from a clean (empty) buffer instead
+  // of accumulating toward the old huge target — no lingering OOM risk.
+  const more = reader.push(Buffer.from([1, 2, 3]));
+  assert.equal(more.length, 0);
+  assert.equal(reader.pending(), 3);
+});
+
+test('a frame at exactly MAX_FRAME (not over it) is consumed, not dropped as corrupt', () => {
+  // Cheap boundary check (no real msgpack payload needed): a synthetic
+  // unknown-kind (0xff) body of exactly 64MB proves `len > MAX_FRAME` (not
+  // `>=`) is the drop condition — it is skipped as an unrecognized kind (same
+  // as any other unknown-kind frame) but the bytes ARE consumed from the
+  // buffer, i.e. treated as a normal frame rather than corrupt.
+  const MAX_FRAME = 64 * 1024 * 1024;
+  const reader = new FabricFrameReader();
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(MAX_FRAME, 0);
+  const body = Buffer.alloc(MAX_FRAME, 0xff);
+  const out = reader.push(Buffer.concat([header, body]));
+  assert.equal(out.length, 0);       // 0xff is an unrecognized kind → skipped, not an error
+  assert.equal(reader.pending(), 0); // but consumed as a normal frame, not dropped-as-corrupt
+});

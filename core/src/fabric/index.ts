@@ -236,23 +236,31 @@ async function attachFabricLink(selfNode: string, peer: string, link: PeerLink, 
       const fsp = require('fs/promises') as typeof import('fs/promises');
       const pathMod = require('path') as typeof import('path');
       let outboxPath: string | null = null;
-      const handle = await offloadResponse(bytes, peerNode, {
-        enqueueJob, waitForJob,
-        writeOutbox: async (transferId, buf) => {
-          const dir = pathMod.join(os.tmpdir(), 'lm-fabric-outbox');
-          await fsp.mkdir(dir, { recursive: true });
-          const p = pathMod.join(dir, `${transferId}.bin`);
-          await fsp.writeFile(p, Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength));
-          outboxPath = p;
-          return p;
-        },
-      });
-      // offloadResponse awaited waitForJob — the peer has confirmed delivery
-      // — before returning, so the local scratch copy is safe to remove now.
-      // (Task 11 flagged this outbox temp as an unaddressed leak-on-every-
-      // bulk-response; closing the loop here.)
-      if (outboxPath) { await fsp.unlink(outboxPath).catch(() => {}); }
-      return { handle };
+      try {
+        const handle = await offloadResponse(bytes, peerNode, {
+          enqueueJob, waitForJob,
+          writeOutbox: async (transferId, buf) => {
+            const dir = pathMod.join(os.tmpdir(), 'lm-fabric-outbox');
+            await fsp.mkdir(dir, { recursive: true });
+            const p = pathMod.join(dir, `${transferId}.bin`);
+            await fsp.writeFile(p, Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength));
+            outboxPath = p;
+            return p;
+          },
+        });
+        return { handle };
+      } finally {
+        // offloadResponse only returns once waitForJob confirms the peer has
+        // the bytes (state 'done') — or throws, which per bulk-offload.ts only
+        // happens once the job has reached a TERMINAL non-done state
+        // (failed/cancelled/expired) or timed out waiting. Either way the job
+        // is over and the local scratch copy is safe to remove; a finally
+        // (not just the success-path unlink) closes the leak on the throw
+        // path too (Task 16 finalize fix — the outbox temp used to survive
+        // an offload failure forever, since the unlink line after the throwing
+        // await was unreachable).
+        if (outboxPath) { await fsp.unlink(outboxPath).catch(() => {}); }
+      }
     },
   });
 
