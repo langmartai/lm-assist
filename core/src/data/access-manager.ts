@@ -81,6 +81,14 @@ export class AccessManager {
       // sensitivity
       if (d.sensitive) return [];
     }
+    if (p.type === 'peer') {
+      // A fabric peer (trusted-by-construction gatewayId) may ONLY read a shareable, non-sensitive
+      // dataset for sync — no ACL key, never write/delete/manage. This is what makes /data/sync/manifest
+      // advertise exactly the shareable set to a peer (syncManifest calls evaluateGrants(peer, d, ['read'])).
+      if (d.sensitive) return [];
+      if (d.visibility !== 'synced' && d.visibility !== 'cross-node-readable') return [];
+      allowed = new Set([...allowed].filter((a) => READ_ONLY_ACTIONS.includes(a)));
+    }
     // readOnly is a HARD cap for everyone, incl. local root
     if (d.readOnly) allowed = new Set([...allowed].filter((a) => READ_ONLY_ACTIONS.includes(a)));
     return [...allowed];
@@ -136,6 +144,21 @@ export class AccessManager {
     }
     if (d.sensitive && p.type === 'cloud') {
       return await deny('SENSITIVE', 403, `dataset "${d.id}" is not available to cloud callers`);
+    }
+
+    // Peer principal (fabric sync RPC): authoritative + read-only, evaluated BEFORE the key branch
+    // so a peer can never widen its scope by presenting a key. No key is required or consulted.
+    if (p.type === 'peer') {
+      if (d.sensitive) return await deny('SENSITIVE', 403, `dataset "${d.id}" is not shareable`);
+      if (!READ_ONLY_ACTIONS.includes(action)) {
+        return await deny('PEER_READ_ONLY', 403, `peers may only read via sync; "${action}" is denied`);
+      }
+      if (d.visibility !== 'synced' && d.visibility !== 'cross-node-readable') {
+        return await deny('PEER_NOT_SHAREABLE', 403, `dataset "${d.id}" is not shareable cross-node`);
+      }
+      await this.deps.keys.appendAudit({ at: new Date().toISOString(), event: 'use',
+        principalType: p.type, principalId: p.node, dataset: d.id, action });
+      return { ok: true, principal: p };
     }
 
     if (keyHeader) {
