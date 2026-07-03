@@ -16,7 +16,9 @@ export const sendFileToolDef = {
     'transport (direct UDP firehose when a direct path exists, else hub relay; automatic + ' +
     'integrity-verified). `node` selector = the SENDER; `peerGatewayId` = the receiver ' +
     '(from list_nodes). Trigger words: "send file to my other node", "copy this dir to host B". ' +
-    'Returns bytes, mode (bidi/oneway/relay), and via (host/static/srflx).',
+    'Sends run through a durable job manager (survives peer drops + Core restarts, auto-retries, ' +
+    'large single files resume from the last checkpoint). Returns bytes, mode (bidi/oneway/relay), ' +
+    'and via (host/static/srflx).',
   annotations: { readOnlyHint: false },
   inputSchema: {
     type: 'object' as const,
@@ -24,8 +26,11 @@ export const sendFileToolDef = {
       peerGatewayId: { type: 'string', description: 'Receiver node hostId/gatewayId (from list_nodes).' },
       localPath: { type: 'string', description: 'Absolute path of the file or directory to send (on the sender node).' },
       remotePath: { type: 'string', description: 'Destination path on the receiver: an ABSOLUTE path writes there directly (a target file path for a single file, or a target directory for a dir); a RELATIVE path lands under the receiver receive-root. Use fs_list / fs_stat to discover the target location first.' },
-      forceMode: { type: 'string', enum: ['direct', 'relay'], description: 'Optional: force transport path. Default auto.' },
-      wait: { type: 'boolean', description: 'Block until the transfer completes (sync). Default false — enqueue and return a jobId; poll transfer_queue.' },
+      forceMode: { type: 'string', enum: ['direct', 'relay'], description: 'Optional: force the transport path instead of automatic negotiation (direct = best-effort UDP hole-punch, relay = hub only). Threaded through the durable job manager to the underlying send.' },
+      wait: { type: 'boolean', description: 'Block until the job reaches a terminal state (sync), or return {jobId,state} if it times out first (see timeoutMs). Default false — enqueue and return a jobId immediately; poll transfer_status or transfer_queue.' },
+      timeoutMs: { type: 'number', description: 'With wait:true, how long to block before returning the in-flight {jobId,state} instead of the final result. Default 120000ms.' },
+      maxRetries: { type: 'number', description: 'Max job-level attempts before the job is marked failed (scheduler retries with backoff). Default 5.' },
+      ttlMs: { type: 'number', description: 'Job deadline in ms from enqueue; past this the job is force-expired. Default 24h.' },
     },
     required: ['peerGatewayId', 'localPath', 'remotePath'],
   },
@@ -70,11 +75,46 @@ export const portForwardStatsToolDef = {
 export const transferQueueToolDef = {
   name: 'transfer_queue',
   description:
-    'Send-queue status on a node (use the `node` selector): each queued / active / done / ' +
-    'failed send job with state, bytes + percent, MB/s, mode/via, and any error. Sends are ' +
-    'enqueued (non-blocking) and run from this queue. Read-only.',
+    'Job-manager queue status on a node (use the `node` selector): each queued / active / ' +
+    'retry-wait / done / failed / cancelled / expired transfer job with state, bytes + percent, ' +
+    'MB/s, mode/via, and any error. Sends are enqueued (non-blocking) and run from this durable ' +
+    'queue — it survives peer drops and Core restarts. Read-only. For a single job by id, use ' +
+    'transfer_status instead.',
   annotations: { readOnlyHint: true },
   inputSchema: { type: 'object' as const, properties: {} },
+};
+
+export const transferCancelToolDef = {
+  name: 'transfer_cancel',
+  description:
+    'Cancel a queued or in-flight transfer job on a node (use the `node` selector). A queued ' +
+    'job is removed immediately; an active job\'s transport is aborted and it settles to ' +
+    '"cancelled" shortly after. Returns whether the cancel took effect — false means the job ' +
+    'was already terminal (done/failed/cancelled/expired) or the jobId is unknown.',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      jobId: { type: 'string', description: 'Job id returned by transfer_send_file, or listed by transfer_queue.' },
+    },
+    required: ['jobId'],
+  },
+};
+
+export const transferStatusToolDef = {
+  name: 'transfer_status',
+  description:
+    'Status of a single transfer job by id on a node (use the `node` selector): state, ' +
+    'bytes/percent, MB/s, round-trip latency, mode/via, attempts, and any error. Read-only. ' +
+    'Use this to poll a specific jobId instead of scanning the whole transfer_queue.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      jobId: { type: 'string', description: 'Job id returned by transfer_send_file, or listed by transfer_queue.' },
+    },
+    required: ['jobId'],
+  },
 };
 
 export const TRANSFER_TOOL_DEFS = [
@@ -83,6 +123,8 @@ export const TRANSFER_TOOL_DEFS = [
   transferStatsToolDef,
   portForwardStatsToolDef,
   transferQueueToolDef,
+  transferCancelToolDef,
+  transferStatusToolDef,
 ] as const;
 
 async function handleSendFile(args: Record<string, unknown>): Promise<McpToolResult> {
@@ -95,20 +137,33 @@ async function handleSendFile(args: Record<string, unknown>): Promise<McpToolRes
   const body: Record<string, unknown> = { peerGatewayId, localPath, remotePath };
   if (args.forceMode === 'direct' || args.forceMode === 'relay') body.forceMode = args.forceMode;
   if (args.wait === true) body.wait = true;
+  if (typeof args.timeoutMs === 'number') body.timeoutMs = args.timeoutMs;
+  if (typeof args.maxRetries === 'number') body.maxRetries = args.maxRetries;
+  if (typeof args.ttlMs === 'number') body.ttlMs = args.ttlMs;
   try {
-    const d = await workerPost<{ jobId?: string; state?: string; bytes?: number; entries?: number; mode?: string; via?: string | null }>(
+    // Every response now carries a jobId — sends always run through the durable
+    // job manager (even wait:true, which enqueues then blocks on waitForJob).
+    const d = await workerPost<{ jobId: string; state: string; bytesDone?: number; size?: number; mode?: string; via?: string | null }>(
       '/transport/send-file',
       body,
     );
-    if (d.jobId) {
+    if (d.state === 'done') {
       return ok(
-        `Queued send to ${peerGatewayId} as "${remotePath}" — jobId ${d.jobId} (${d.state}).\n` +
-          `Poll transfer_queue (or transfer_stats) for progress.`,
+        `Sent ${d.bytesDone ?? d.size ?? '?'} bytes to ${peerGatewayId} as "${remotePath}".\n` +
+          `  mode: ${d.mode ?? '-'} via ${d.via ?? '-'} (jobId ${d.jobId})`,
       );
     }
+    if (d.state === 'queued') {
+      return ok(
+        `Queued send to ${peerGatewayId} as "${remotePath}" — jobId ${d.jobId} (${d.state}).\n` +
+          `Poll transfer_status (or transfer_queue) for progress.`,
+      );
+    }
+    // wait:true timed out while the job was already picked up (e.g. 'active') —
+    // "Queued" would misleadingly suggest it hasn't started yet.
     return ok(
-      `Sent ${d.bytes} bytes (${d.entries} entr${d.entries === 1 ? 'y' : 'ies'}) to ${peerGatewayId} as "${remotePath}".\n` +
-        `  mode: ${d.mode ?? '-'} via ${d.via ?? '-'}`,
+      `Send ${d.state} (jobId ${d.jobId}) to ${peerGatewayId} as "${remotePath}" — still running.\n` +
+        `Poll transfer_status (or transfer_queue) for progress.`,
     );
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
@@ -116,24 +171,62 @@ async function handleSendFile(args: Record<string, unknown>): Promise<McpToolRes
 }
 
 interface QJob {
-  jobId: string; state: string; peerGatewayId: string; remotePath: string; localPath: string;
-  bytes?: number; totalBytes?: number; pct?: number; instantMBps?: number; avgMBps?: number;
+  jobId: string; state: string; peer: string;
+  source: { kind: string; path?: string; dataKey?: string };
+  sink: { kind: string; path?: string; dataKey?: string };
+  size?: number; bytesDone?: number; pct?: number; instantMBps?: number; avgMBps?: number;
   rttMs?: number | null; mode?: string; via?: string | null; error?: string;
+  attempts?: number; maxAttempts?: number;
+}
+/** SourceRef/SinkRef are a `{kind:'file',path}` | `{kind:'blob',dataKey}` union
+ * (job-manager.ts) — the file adapter is the only one wired up today, but
+ * display should not assume it. */
+function refPath(ref: { kind: string; path?: string; dataKey?: string } | undefined): string {
+  if (!ref) return '?';
+  return ref.kind === 'file' ? (ref.path ?? '?') : (ref.dataKey ?? '?');
+}
+function fmtJob(j: QJob): string {
+  return `  [${j.state}] ${refPath(j.source)} -> ${j.peer}:${refPath(j.sink)}` +
+    (j.state === 'active' ? ` ${j.pct ?? 0}% inst=${j.instantMBps ?? 0} avg=${j.avgMBps ?? 0}MB/s rtt=${j.rttMs ?? '-'}ms ${j.mode ?? '-'}/${j.via ?? '-'}` : '') +
+    (j.state === 'done' ? ` ${j.bytesDone ?? j.size ?? 0}B ${j.mode ?? '-'}/${j.via ?? '-'}` : '') +
+    (j.state !== 'active' && j.state !== 'done' ? ` attempt ${j.attempts}/${j.maxAttempts}` : '') +
+    (j.error ? ` ERROR: ${j.error}` : '') +
+    ` (${j.jobId.slice(0, 8)})`;
 }
 async function handleTransferQueue(): Promise<McpToolResult> {
   try {
-    const d = await workerGet<{ maxConcurrent: number; active: number; pending: number; jobs: QJob[] }>('/transport/queue');
+    const d = await workerGet<{ maxConcurrent: number; globalMax: number; globalActive: number; pending: number; jobs: QJob[] }>('/transport/queue');
     const jobs = d.jobs || [];
-    const fmt = (j: QJob) =>
-      `  [${j.state}] ${j.localPath} -> ${j.peerGatewayId}:${j.remotePath}` +
-      (j.state === 'active' ? ` ${j.pct ?? 0}% inst=${j.instantMBps ?? 0} avg=${j.avgMBps ?? 0}MB/s rtt=${j.rttMs ?? '-'}ms ${j.mode ?? '-'}/${j.via ?? '-'}` : '') +
-      (j.state === 'done' ? ` ${j.bytes ?? 0}B ${j.mode ?? '-'}/${j.via ?? '-'}` : '') +
-      (j.error ? ` ERROR: ${j.error}` : '') +
-      ` (${j.jobId.slice(0, 8)})`;
     return ok(
-      `Send queue — ${d.active} active / ${d.pending} pending (max ${d.maxConcurrent}):\n` +
-        (jobs.length ? jobs.map(fmt).join('\n') : '  no jobs'),
+      `Job queue — ${d.globalActive} active / ${d.pending} pending (max ${d.maxConcurrent}/peer, ${d.globalMax} global):\n` +
+        (jobs.length ? jobs.map(fmtJob).join('\n') : '  no jobs'),
     );
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleTransferCancel(args: Record<string, unknown>): Promise<McpToolResult> {
+  const jobId = String(args.jobId || '').trim();
+  if (!jobId) return err('jobId is required.');
+  try {
+    const d = await workerPost<{ cancelled: boolean }>(`/transport/jobs/${encodeURIComponent(jobId)}/cancel`, {});
+    return ok(
+      d.cancelled
+        ? `Cancelled job ${jobId}.`
+        : `Job ${jobId} was not cancelled (already terminal, or unknown jobId).`,
+    );
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleTransferStatus(args: Record<string, unknown>): Promise<McpToolResult> {
+  const jobId = String(args.jobId || '').trim();
+  if (!jobId) return err('jobId is required.');
+  try {
+    const j = await workerGet<QJob>(`/transport/jobs/${encodeURIComponent(jobId)}`);
+    return ok(fmtJob(j).trim());
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -212,6 +305,8 @@ async function handlePortForwardStats(): Promise<McpToolResult> {
 export const TRANSFER_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
   transfer_send_file: handleSendFile,
   transfer_queue: () => handleTransferQueue(),
+  transfer_cancel: handleTransferCancel,
+  transfer_status: handleTransferStatus,
   transfer_list_remote: handleListRemote,
   transfer_stats: () => handleTransferStats(),
   port_forward_stats: () => handlePortForwardStats(),

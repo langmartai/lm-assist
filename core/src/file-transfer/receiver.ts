@@ -33,6 +33,8 @@ import type {
   FtEnd,
   FtOk,
   FtErr,
+  FtResumeState,
+  FtCancel,
   FtList,
   FtListResult,
   FtListErr,
@@ -69,6 +71,149 @@ function destFor(root: string, m: FtMeta, e: FileEntry): string {
   }
   return safeJoin(path.join(root, m.root), e.relPath);
 }
+
+// ---------------------------------------------------------------------------
+// Resume sidecar — a small JSON checkpoint file living next to a resumable
+// transfer's partial output (`<dest>.lmpart`). Everything in this section is
+// gated entirely behind `FtMeta.resumable`: a non-resumable transfer never
+// reads, writes, or is otherwise aware of this file (see handleMeta/handleData/
+// handleEnd below — each resume-specific block is conditioned on it).
+// ---------------------------------------------------------------------------
+
+interface Sidecar {
+  transferId: string;
+  size: number;
+  sha256?: string;
+  bytesDone: number;
+  updatedAt: number;
+}
+
+function sidecarPath(dest: string): string {
+  return dest + '.lmpart';
+}
+
+function writeSidecar(
+  dest: string,
+  data: { transferId: string; size: number; sha256?: string; bytesDone: number },
+): void {
+  try {
+    const sc: Sidecar = { ...data, updatedAt: Date.now() };
+    fs.writeFileSync(sidecarPath(dest), JSON.stringify(sc));
+  } catch {
+    /* best-effort checkpoint — a failed write just costs a coarser resume point later */
+  }
+}
+
+function readSidecar(dest: string): Sidecar | null {
+  try {
+    const sc = JSON.parse(fs.readFileSync(sidecarPath(dest), 'utf8')) as Partial<Sidecar>;
+    if (typeof sc.transferId !== 'string' || typeof sc.size !== 'number' || typeof sc.bytesDone !== 'number' || sc.bytesDone < 0) {
+      return null; // torn/corrupt sidecar (incl. negative bytesDone) — treat like "no sidecar"
+    }
+    return sc as Sidecar;
+  } catch {
+    return null;
+  }
+}
+
+function rmSidecar(dest: string): void {
+  try {
+    fs.unlinkSync(sidecarPath(dest));
+  } catch {
+    /* already gone */
+  }
+}
+
+/** Per-transfer checkpoint bookkeeping for the single resumable entry (if any). */
+interface ResumeCheckpoint {
+  entryIndex: number;
+  dest: string;
+  size: number;
+  lastCheckpoint: number;
+}
+
+/** Checkpoint cadence: persist the sidecar every N contiguous bytes written. */
+const DEFAULT_CHECKPOINT_BYTES = 4 * 1024 * 1024;
+let checkpointIntervalOverride: number | null = null;
+/**
+ * Test seam: override the checkpoint interval (bytes) so small fixtures can
+ * exercise real checkpointing quickly. Pass null to restore the 4 MB default.
+ * Production code never calls this — mirrors sender.ts's
+ * _setChannelOpenerForTest pattern.
+ */
+export function _setCheckpointIntervalForTest(bytes: number | null): void {
+  checkpointIntervalOverride = bytes;
+}
+function checkpointIntervalBytes(): number {
+  return checkpointIntervalOverride ?? DEFAULT_CHECKPOINT_BYTES;
+}
+
+// ---------------------------------------------------------------------------
+// Stale-partial sweep — covers a sender that vanished without ever sending
+// FT_CANCEL (crash, network death, force-quit). Runs on an unref'd timer so it
+// never keeps the process alive on its own, and sweepStalePartials is exported
+// so callers (and tests) can also invoke it directly instead of waiting out
+// the real interval/TTL.
+// ---------------------------------------------------------------------------
+
+const STALE_SWEEP_INTERVAL_MS = 30 * 60 * 1000;
+const DEFAULT_PARTIAL_TTL_MS = 24 * 3600 * 1000;
+
+async function findLmpartFiles(dir: string): Promise<string[]> {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fsp.readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const ent of entries) {
+    const abs = path.join(dir, ent.name);
+    if (ent.isDirectory()) {
+      out.push(...(await findLmpartFiles(abs)));
+    } else if (ent.isFile() && ent.name.endsWith('.lmpart')) {
+      out.push(abs);
+    }
+  }
+  return out;
+}
+
+/**
+ * Delete stale `.lmpart` sidecars (and their partial file) under `rootDir`
+ * whose `updatedAt` is older than `ttlMs`.
+ */
+export async function sweepStalePartials(
+  rootDir: string = receiveRoot(),
+  ttlMs: number = Number(process.env.LM_PARTIAL_TTL_MS) || DEFAULT_PARTIAL_TTL_MS,
+): Promise<void> {
+  const now = Date.now();
+  const sidecars = await findLmpartFiles(rootDir);
+  for (const sc of sidecars) {
+    try {
+      const data = JSON.parse(await fsp.readFile(sc, 'utf8')) as { updatedAt?: number };
+      if (typeof data.updatedAt !== 'number' || now - data.updatedAt <= ttlMs) {
+        continue;
+      }
+      const dest = sc.slice(0, -'.lmpart'.length);
+      await fsp.unlink(sc).catch(() => {});
+      await fsp.unlink(dest).catch(() => {});
+    } catch {
+      /* unreadable/torn sidecar — leave it for a future sweep rather than guess */
+    }
+  }
+}
+
+let staleSweepTimer: NodeJS.Timeout | null = null;
+function startStalePartialSweeper(): void {
+  if (staleSweepTimer) {
+    return;
+  }
+  staleSweepTimer = setInterval(() => {
+    void sweepStalePartials().catch(() => {});
+  }, STALE_SWEEP_INTERVAL_MS);
+  staleSweepTimer.unref?.();
+}
+startStalePartialSweeper();
 
 export interface ReceiveOpts {
   /** Safe root under which everything is written. Defaults to receiveRoot(). */
@@ -110,6 +255,9 @@ export function handleIncomingTransfer(
     const openFiles = new Map<number, OpenFile>(); // entryIndex -> handle
     const hashers = new Map<number, crypto.Hash>();
     const seenBytes = new Map<number, number>();
+    // Set in handleMeta only for a resumable, single non-dir-entry transfer;
+    // drives handleData's checkpoint cadence and handleEnd's sidecar cleanup.
+    let resumeCheckpoint: ResumeCheckpoint | null = null;
 
     // Firehose-mode state (set when FT_FH_META is seen instead of FT_META).
     let fh: FirehoseRecvState | null = null;
@@ -131,6 +279,11 @@ export function handleIncomingTransfer(
       transferId = m.transferId;
       beginTransfer({ id: m.transferId, peerGatewayId: channel.peerGatewayId, direction: 'recv', remotePath: m.root, totalBytes: m.totalBytes, kind: 'reliable',
         live: () => ({ mode: channel.mode, via: channel.via, rttMs: channel.rtt }) });
+      // Resume only ever applies to a single whole-file transfer (a directory
+      // transfer always starts every entry at 0) — mirrors sender.ts's identical
+      // scoping note on resumeFrom. Falsy m.resumable short-circuits this to
+      // false, so the block below never runs and behavior is unchanged.
+      const isResumableSingle = !!m.resumable && m.entries.length === 1 && !m.entries[0].isDir;
       try {
         // Pre-create directories and prepare file handles.
         for (let i = 0; i < m.entries.length; i++) {
@@ -139,12 +292,46 @@ export function handleIncomingTransfer(
           if (e.isDir) {
             await fsp.mkdir(abs, { recursive: true });
             await fsp.chmod(abs, e.mode).catch(() => {});
-          } else {
-            await fsp.mkdir(path.dirname(abs), { recursive: true });
-            const handle = await fsp.open(abs, 'w');
-            openFiles.set(i, { handle, absPath: abs, mode: e.mode });
-            hashers.set(i, crypto.createHash('sha256'));
-            seenBytes.set(i, 0);
+            continue;
+          }
+          await fsp.mkdir(path.dirname(abs), { recursive: true });
+
+          let resumeFrom = 0;
+          if (isResumableSingle) {
+            const sidecar = readSidecar(abs);
+            if (sidecar && sidecar.transferId === m.transferId && sidecar.size === e.size) {
+              let existingSize = 0;
+              try {
+                existingSize = (await fsp.stat(abs)).size;
+              } catch {
+                existingSize = 0;
+              }
+              resumeFrom = Math.min(sidecar.bytesDone, existingSize);
+            } else if (sidecar) {
+              // Sidecar belongs to a different transfer/size — stale, discard
+              // it. (The 'w' open below naturally truncates any stale partial
+              // bytes, so there is nothing else to clean up here.)
+              rmSidecar(abs);
+            }
+          }
+
+          // Resume opens 'r+' (keep existing bytes, positioned writes only);
+          // fresh or non-resumable opens 'w' exactly as before.
+          const handle = await fsp.open(abs, resumeFrom > 0 ? 'r+' : 'w');
+          openFiles.set(i, { handle, absPath: abs, mode: e.mode });
+          const hasher = crypto.createHash('sha256');
+          if (resumeFrom > 0) {
+            // crypto.Hash state can't be serialized — recompute it from the
+            // bytes already on disk so the running sha covers the whole file.
+            await rehashFromHandle(handle, resumeFrom, hasher);
+          }
+          hashers.set(i, hasher);
+          seenBytes.set(i, resumeFrom);
+
+          if (isResumableSingle) {
+            resumeCheckpoint = { entryIndex: i, dest: abs, size: e.size, lastCheckpoint: resumeFrom };
+            const rs: FtResumeState = { type: 'FT_RESUME_STATE', transferId: m.transferId, bytesDone: resumeFrom };
+            channel.sendControl(encodeControl(rs));
           }
         }
       } catch (e) {
@@ -157,6 +344,11 @@ export function handleIncomingTransfer(
       offset: number,
       bytes: Buffer,
     ) => {
+      // Once the transfer has settled (FT_CANCEL/FT_END/drop), ignore any late
+      // data. Over the relay, control (FT_CANCEL) rides a priority lane and can
+      // overtake in-flight data — without this guard a straggling data frame's
+      // checkpoint would re-create the sidecar that handleCancel just deleted.
+      if (settled) return;
       const of = openFiles.get(entryIndex);
       if (!of) {
         await replyErr(transferId, 'data for unknown entry ' + entryIndex);
@@ -165,7 +357,25 @@ export function handleIncomingTransfer(
       try {
         await of.handle.write(bytes, 0, bytes.length, offset);
         hashers.get(entryIndex)!.update(bytes);
-        seenBytes.set(entryIndex, (seenBytes.get(entryIndex) ?? 0) + bytes.length);
+        const seen = (seenBytes.get(entryIndex) ?? 0) + bytes.length;
+        seenBytes.set(entryIndex, seen);
+        // Resumable checkpoint: persist a coarse resume point every ~4MB (or
+        // the test-overridden interval) so a later resume doesn't have to
+        // restart from 0. Gated on resumeCheckpoint, which is only set for a
+        // resumable single-entry transfer (handleMeta) — a no-op otherwise.
+        if (
+          resumeCheckpoint &&
+          resumeCheckpoint.entryIndex === entryIndex &&
+          seen - resumeCheckpoint.lastCheckpoint >= checkpointIntervalBytes()
+        ) {
+          writeSidecar(resumeCheckpoint.dest, {
+            transferId,
+            size: resumeCheckpoint.size,
+            sha256: meta?.sha256,
+            bytesDone: seen,
+          });
+          resumeCheckpoint.lastCheckpoint = seen;
+        }
       } catch (e) {
         await replyErr(transferId, 'write failed: ' + (e as Error).message);
       }
@@ -192,12 +402,25 @@ export function handleIncomingTransfer(
             const expected = end.sha256PerEntry[i];
             const actual = hashers.get(i)!.digest('hex');
             if (expected && expected !== actual) {
+              // Corrupt data: a resumable transfer must never resume from this
+              // checkpoint. Drop both the sidecar and the partial file so the
+              // next attempt restarts from 0 instead of re-verifying (and
+              // re-failing on) the same corrupted on-disk prefix forever.
+              if (resumeCheckpoint && resumeCheckpoint.entryIndex === i) {
+                rmSidecar(of.absPath);
+                await fsp.unlink(of.absPath).catch(() => {});
+              }
               await replyErr(
                 end.transferId,
                 'sha256 mismatch for ' + e.relPath,
               );
               return;
             }
+          }
+          // Transfer verified complete — the resume sidecar (if any) has done
+          // its job.
+          if (resumeCheckpoint && resumeCheckpoint.entryIndex === i) {
+            rmSidecar(of.absPath);
           }
         }
         const ok: FtOk = { type: 'FT_OK', transferId: end.transferId };
@@ -208,6 +431,20 @@ export function handleIncomingTransfer(
       } catch (e) {
         await replyErr(end.transferId, 'finalize failed: ' + (e as Error).message);
       }
+    };
+
+    // Explicit cancellation (job manager gave up, or the user cancelled). Unlike
+    // a plain channel drop (handled below in onClose, which KEEPS the partial
+    // for a future resume), FT_CANCEL means clean up everything now.
+    const handleCancel = async (c: FtCancel) => {
+      for (const of of openFiles.values()) {
+        await of.handle.close().catch(() => {});
+        await fsp.unlink(of.absPath).catch(() => {});
+        rmSidecar(of.absPath);
+      }
+      openFiles.clear();
+      endTransfer(c.transferId || transferId, 'failed', 'cancelled' + (c.reason ? ': ' + c.reason : ''));
+      finish();
     };
 
     // ----------------------------- FIREHOSE -------------------------------
@@ -479,6 +716,9 @@ export function handleIncomingTransfer(
             case 'FT_END':
               await handleEnd(msg as FtEnd);
               break;
+            case 'FT_CANCEL':
+              await handleCancel(msg as FtCancel);
+              break;
             case 'FT_FH_META':
               await handleFhMeta(msg as FtFhMeta);
               break;
@@ -546,6 +786,30 @@ function sha256File(absPath: string): Promise<string> {
     rs.on('data', (d) => h.update(d));
     rs.on('end', () => resolve(h.digest('hex')));
   });
+}
+
+/**
+ * Feed the first `n` bytes of an already-open file handle into `hasher`, in
+ * bounded-size chunks. Used to resume a running sha256 across a process
+ * restart / new channel — crypto.Hash state cannot be serialized, so a
+ * resumed transfer recomputes the prefix hash from what's already on disk.
+ */
+async function rehashFromHandle(handle: fsp.FileHandle, n: number, hasher: crypto.Hash): Promise<void> {
+  if (n <= 0) {
+    return;
+  }
+  const CHUNK = 1024 * 1024;
+  const buf = Buffer.allocUnsafe(Math.min(CHUNK, n));
+  let pos = 0;
+  while (pos < n) {
+    const want = Math.min(buf.length, n - pos);
+    const { bytesRead } = await handle.read(buf, 0, want, pos);
+    if (bytesRead <= 0) {
+      break; // partial file shorter than expected — hash what we could
+    }
+    hasher.update(buf.subarray(0, bytesRead));
+    pos += bytesRead;
+  }
 }
 
 async function closeAll(openFiles: Map<number, OpenFile>): Promise<void> {

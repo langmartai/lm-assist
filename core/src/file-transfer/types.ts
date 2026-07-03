@@ -37,6 +37,10 @@ export interface FtMeta {
   root: string;
   entries: FileEntry[];
   totalBytes: number;
+  /** Whether this transfer supports resumption. */
+  resumable?: boolean;
+  /** Hex sha256 hash of the transfer for integrity checking. */
+  sha256?: string;
 }
 
 /**
@@ -71,6 +75,20 @@ export interface FtErr {
   type: 'FT_ERR';
   transferId: string;
   error: string;
+}
+
+/** Sender requests the receiver's resume state (bytes already written). */
+export interface FtResumeState {
+  type: 'FT_RESUME_STATE';
+  transferId: string;
+  bytesDone: number;
+}
+
+/** Sender requests the transfer to be cancelled. */
+export interface FtCancel {
+  type: 'FT_CANCEL';
+  transferId: string;
+  reason?: string;
 }
 
 /** Request a directory listing on the peer. */
@@ -196,6 +214,8 @@ export type FtControl =
   | FtEnd
   | FtOk
   | FtErr
+  | FtResumeState
+  | FtCancel
   | FtList
   | FtListResult
   | FtListErr
@@ -215,6 +235,8 @@ export interface SendResult {
   mode?: string;
   /** Winning outbound candidate kind: 'host' | 'static' | 'srflx' | null. */
   via?: string | null;
+  /** Byte offset this transfer resumed from (0 = fresh / not resumed). */
+  resumedFrom?: number;
 }
 
 export interface SendOpts {
@@ -229,4 +251,10 @@ export interface SendOpts {
   maxRetries?: number;
   /** Override the transfer id (the send queue sets it to the jobId for stats linkage). */
   transferId?: string;
+  /** Abort the transfer mid-flight (job cancel). */
+  signal?: AbortSignal;
+  /** Resume: begin streaming the single entry at this byte offset. */
+  resumeFrom?: number;
+  /** Ask the receiver for its resume state before streaming (large files). */
+  resumable?: boolean;
 }

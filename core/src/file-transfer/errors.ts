@@ -36,6 +36,7 @@ export function classifyError(e: unknown): TransferErrorCode {
 
 /** Retriable codes — transient conditions where a backoff+retry can succeed. */
 export function isRetriable(code: TransferErrorCode): boolean {
+  if (code === 'ABORTED') return false; // caller cancellation — never retry
   return code === 'TIMEOUT'
     || code === 'WS_DOWN'
     || code === 'PEER_UNREACHABLE'

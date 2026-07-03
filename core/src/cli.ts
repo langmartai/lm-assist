@@ -222,6 +222,20 @@ ${hubConfigured ? `║  Hub:      ${hubUrl.substring(0, 47).padEnd(47)}║` : `�
       startDataSync();
     } catch (e) { /* non-fatal — data sync is optional */ }
 
+    // Recover the file-transfer job manager's durable job log: replays
+    // ~/.cache/lm-assist/transfer-jobs-{dev,prod}.jsonl, re-queues any job that
+    // wasn't in a terminal state when the process last exited, drops
+    // terminal jobs past the retention window, and starts the TTL/retention
+    // sweeper (recover() is the ONLY thing that starts it — must run
+    // unconditionally, even with an empty/missing log, or TTL expiry and
+    // terminal-job cleanup never run for this process's lifetime).
+    try {
+      const { recover } = require('./file-transfer/job-manager');
+      recover();
+    } catch (err: any) {
+      console.error('Job manager recover() failed:', err.message);
+    }
+
     profiler.end('total');
     profiler.summary();
 

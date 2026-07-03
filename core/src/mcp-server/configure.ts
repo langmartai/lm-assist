@@ -220,6 +220,8 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   transfer_list_remote: 'read',
   transfer_stats: 'read',
   transfer_queue: 'read',
+  transfer_cancel: 'admin',
+  transfer_status: 'read',
   port_forward_stats: 'read',
   fs_drives: 'read',
   fs_list: 'read',

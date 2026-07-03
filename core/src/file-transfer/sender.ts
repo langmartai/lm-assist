@@ -12,7 +12,7 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { randomUUID } from 'crypto';
-import { openChannel, Channel } from '../transport';
+import { openChannel, Channel, OpenChannelOpts } from '../transport';
 import { openBestChannel } from '../transport/open-best';
 import { TcpChannel } from '../transport/tcp-channel';
 import { FrameReader, encodeControl, encodeData } from './frame';
@@ -26,6 +26,8 @@ import type {
   FtEnd,
   FtOk,
   FtErr,
+  FtResumeState,
+  FtCancel,
   DirEntry,
   FtList,
   FtListResult,
@@ -38,6 +40,19 @@ import type {
 } from './types';
 
 const DEFAULT_CHUNK = 32 * 1024;
+
+// sendPath opens its transport channel via openBestChannel(), which reaches
+// out to a real peer over the hub/transport stack — there is no way to unit
+// test abort/resume behavior against that without a live two-node network.
+// Route the open through a swappable indirection so tests can substitute a
+// stub Channel; production never calls the setter, so the default (the real
+// openBestChannel) is always what ships.
+type ChannelOpener = (peer: string, opts?: OpenChannelOpts) => Promise<Channel>;
+let channelOpener: ChannelOpener = openBestChannel;
+/** Test seam: override (pass null to restore) the channel opener sendPath uses. */
+export function _setChannelOpenerForTest(fn: ChannelOpener | null): void {
+  channelOpener = fn ?? openBestChannel;
+}
 
 interface WalkedEntry extends FileEntry {
   /** Absolute path on the local filesystem (undefined for synthetic dirs). */
@@ -150,11 +165,26 @@ export async function sendPath(
   let lastMode = '';
   let currentChannel: Channel | null = null;
   const attempt = async (forceMode?: 'direct' | 'relay'): Promise<SendResult> => {
-  const channel = await openBestChannel(peerGatewayId, forceMode ? { forceMode } : undefined);
+  const channel = await channelOpener(peerGatewayId, forceMode ? { forceMode } : undefined);
   currentChannel = channel;
   lastMode = channel.mode;
   const isTcp = channel instanceof TcpChannel; // kernel-TCP LAN path — reliable send IS the fast path
+  let onAbort: (() => void) | undefined;
   try {
+    if (opts?.signal) {
+      if (opts.signal.aborted) throw new TransferError('ABORTED', 'cancelled before start');
+      onAbort = () => {
+        // Tell the receiver this is an explicit CANCEL — delete the partial +
+        // sidecar — as opposed to a mere connection drop, which KEEPS the partial
+        // for resume. Best-effort (a relay may drop the queued frame on close;
+        // the receiver's stale-partial sweeper is the backstop); the direct/LAN
+        // path flushes it before teardown.
+        try { channel.sendControl(encodeControl({ type: 'FT_CANCEL', transferId, reason: 'cancelled' } as FtCancel)); } catch { /* ignore */ }
+        try { channel.close(); } catch { /* ignore */ }
+      };
+      opts.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
     // FIREHOSE FAST PATH: single large file (> LARGE) + a confirmed direct path.
     // Wait briefly for the direct leg to confirm; if it does, run the rate-paced
     // firehose. If direct never confirms within the window, fall through to the
@@ -176,7 +206,15 @@ export async function sendPath(
     }
 
     const reader = new FrameReader();
-    const done = waitForReply(channel, reader, transferId);
+    // Resume handshake: a resumable single-file transfer waits for the receiver's
+    // FT_RESUME_STATE (how much it durably holds) and streams from THAT offset —
+    // the receiver's checkpointed sidecar is authoritative. resumeStateP resolves
+    // when waitForReply sees the frame.
+    let resolveResume: ((n: number) => void) | null = null;
+    const resumeStateP = new Promise<number>((r) => { resolveResume = r; });
+    const done = waitForReply(channel, reader, transferId, (bytesDone) => {
+      resolveResume?.(bytesDone); resolveResume = null;
+    });
     // Attach a handler NOW so a channel-close that rejects `done` before we
     // reach `await done` below (e.g. the peer resets mid-stream) is not an
     // unhandled rejection (which crashes the process). The real error is still
@@ -187,14 +225,29 @@ export async function sendPath(
     // Announce ourselves as a file-transfer channel, then the manifest.
     channel.sendControl(encodeControl({ type: SUBSYSTEM_TAG } as never));
 
+    const singleFile = entries.length === 1 && !entries[0].isDir;
+    const wantResume = !!opts?.resumable && singleFile;
     const meta: FtMeta = {
       type: 'FT_META',
       transferId,
       root: remotePath,
       entries: entries.map(({ absPath: _abs, ...e }) => e),
       totalBytes,
+      ...(wantResume ? { resumable: true } : {}),
     };
     channel.sendControl(encodeControl(meta));
+
+    // For a resumable transfer, learn the receiver's durable offset before
+    // streaming. It always answers (0 for a fresh transfer); the timeout only
+    // guards a receiver that doesn't speak resume, falling back to the
+    // caller-supplied resumeFrom (or 0).
+    let resumeOffset = 0;
+    if (wantResume) {
+      resumeOffset = await Promise.race([
+        resumeStateP,
+        new Promise<number>((r) => { const t = setTimeout(() => r(opts?.resumeFrom ?? 0), 5000); t.unref?.(); }),
+      ]);
+    }
 
     // Stream file bytes.
     const sha256PerEntry: string[] = [];
@@ -205,10 +258,19 @@ export async function sendPath(
         sha256PerEntry.push('');
         continue;
       }
+      // resumeFrom only ever applies to single-entry (whole-file) transfers —
+      // a multi-entry (directory) transfer always starts each entry at 0. This
+      // is intentional (resume is scoped to "resend this one file"), not an
+      // oversight, so don't be tempted to thread it across entries. For a
+      // resumable transfer the offset is the receiver's authoritative
+      // FT_RESUME_STATE (resumeOffset); otherwise fall back to opts.resumeFrom.
+      const startOffset = wantResume ? resumeOffset
+        : (singleFile && opts?.resumeFrom ? opts.resumeFrom : 0);
+      if (startOffset) sent = startOffset;
       await streamFile(channel, transferId, i, e.absPath, chunkSize, (n) => {
         sent += n;
         onProg(sent, totalBytes);
-      });
+      }, startOffset, opts?.signal);
       sha256PerEntry.push(await sha256File(e.absPath));
     }
 
@@ -217,8 +279,9 @@ export async function sendPath(
 
     await done;
     lastMode = channel.mode;
-    return { bytes: totalBytes, entries: entries.length, mode: lastMode, via: channel.via };
+    return { bytes: totalBytes, entries: entries.length, mode: lastMode, via: channel.via, resumedFrom: wantResume ? resumeOffset : 0 };
   } finally {
+    if (opts?.signal && onAbort) opts.signal.removeEventListener('abort', onAbort);
     if (currentChannel === channel) currentChannel = null;
     channel.close();
   }
@@ -230,7 +293,10 @@ export async function sendPath(
     try {
       return await attempt(force);
     } catch (e) {
-      if (force === 'relay' || lastMode === 'relay') throw e;
+      // An abort must propagate immediately — never mask it behind a fresh
+      // relay attempt (that would silently retry past a cancellation and could
+      // take far longer than the caller's "reject fast" expectation).
+      if (opts?.signal?.aborted || force === 'relay' || lastMode === 'relay') throw e;
       return await attempt('relay');
     }
   };
@@ -250,7 +316,11 @@ export async function sendPath(
       return res;
     } catch (e) {
       lastErr = e;
-      const code = e instanceof TransferError ? e.code : classifyError(e);
+      let code = e instanceof TransferError ? e.code : classifyError(e);
+      // A channel close mid-`await done` (triggered by the abort listener)
+      // surfaces as a generic "channel closed" rejection classified TIMEOUT;
+      // when the caller's signal is what caused it, report it as ABORTED.
+      if (opts?.signal?.aborted) code = 'ABORTED';
       if (!isRetriable(code) || i === maxRetries) {
         const err = e instanceof TransferError ? e : new TransferError(code, errMsg(e), e);
         endTransfer(transferId, 'failed', err.message);
@@ -306,12 +376,20 @@ async function streamFile(
   absPath: string,
   chunkSize: number,
   onChunk: (n: number) => void,
+  startOffset = 0,
+  signal?: AbortSignal,
 ): Promise<void> {
   const fh = await fsp.open(absPath, 'r');
   try {
     const buf = Buffer.allocUnsafe(chunkSize);
-    let offset = 0;
+    let offset = startOffset;
     for (;;) {
+      // Checked once per chunk (not just before the loop) so abort latency is
+      // bounded by chunkSize, not by how much of the file remains — otherwise
+      // a closed channel's send() silently no-ops (reliable.ts / tcp-channel.ts)
+      // and this loop would happily read+drop every remaining chunk to EOF
+      // before the outer await ever sees the rejection.
+      if (signal?.aborted) throw new TransferError('ABORTED', 'aborted mid-stream');
       const { bytesRead } = await fh.read(buf, 0, chunkSize, offset);
       if (bytesRead <= 0) {
         break;
@@ -337,6 +415,7 @@ function waitForReply(
   channel: Channel,
   reader: FrameReader,
   transferId: string,
+  onResumeState?: (bytesDone: number) => void,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -363,7 +442,14 @@ function waitForReply(
         if (f.kind !== 'control') {
           continue;
         }
-        const msg = f.msg as FtOk | FtErr;
+        const msg = f.msg as FtOk | FtErr | FtResumeState;
+        if (msg.type === 'FT_RESUME_STATE' && msg.transferId === transferId) {
+          // Receiver reports how much it durably holds — it is authoritative for
+          // the resume offset (its checkpointed sidecar), so honor it over any
+          // caller-supplied resumeFrom. Not terminal; keep waiting for FT_OK/ERR.
+          onResumeState?.(msg.bytesDone);
+          continue;
+        }
         if (msg.type === 'FT_OK' && msg.transferId === transferId) {
           finish();
           return;

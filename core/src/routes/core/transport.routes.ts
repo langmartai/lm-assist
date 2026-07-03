@@ -4,12 +4,20 @@
  * trigger. openChannel auto-negotiates: tries direct (UDP hole-punch), falls
  * back to hub relay.
  *
- *   POST /transport/send-file   { peerGatewayId, localPath, remotePath }
- *   POST /transport/list-remote { peerGatewayId, remotePath }
+ *   POST /transport/send-file        { peerGatewayId, localPath, remotePath }
+ *   POST /transport/list-remote      { peerGatewayId, remotePath }
+ *   GET  /transport/jobs             ?peer=&state=  -- job manager snapshot (filterable)
+ *   GET  /transport/jobs/:id         -- one job's status
+ *   POST /transport/jobs/:id/cancel  -- cancel a queued or active job
+ *
+ * Sends are enqueued through the durable job manager (file-transfer/job-manager.ts)
+ * rather than run inline — see /transport/send-file below for the wait:true
+ * (synchronous) vs default (fire-and-forget jobId) contract.
  */
 
+import * as fs from 'fs';
 import type { RouteContext, RouteHandler, ParsedRequest } from '../index';
-import { sendPath, listRemote, TransferError, snapshotTransfers, enqueueSend, snapshotQueue, requestFs, listDirAbs, statAbs, listDrives, readFileAbs } from '../../file-transfer';
+import { listRemote, TransferError, snapshotTransfers, enqueueJob, cancelJob, getJob, snapshot, waitForJob, requestFs, listDirAbs, statAbs, listDrives, readFileAbs } from '../../file-transfer';
 
 export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -21,7 +29,39 @@ export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
     {
       method: 'GET',
       pattern: /^\/transport\/queue$/,
-      handler: async () => ({ success: true, data: snapshotQueue() }),
+      handler: async () => ({ success: true, data: snapshot() }),
+    },
+    {
+      method: 'GET',
+      pattern: /^\/transport\/jobs$/,
+      handler: async (req: ParsedRequest) => {
+        const snap = snapshot();
+        const peer = typeof req.query?.peer === 'string' ? req.query.peer : '';
+        const state = typeof req.query?.state === 'string' ? req.query.state : '';
+        const jobs = peer || state
+          ? snap.jobs.filter((j) => (!peer || j.peer === peer) && (!state || j.state === state))
+          : snap.jobs;
+        return { success: true, data: { ...snap, jobs } };
+      },
+    },
+    {
+      method: 'GET',
+      pattern: /^\/transport\/jobs\/(?<id>[^/]+)$/,
+      handler: async (req: ParsedRequest) => {
+        const job = getJob(req.params.id);
+        if (!job) return { success: false, error: `job not found: ${req.params.id}`, code: 'NOT_FOUND' };
+        return { success: true, data: job };
+      },
+    },
+    {
+      method: 'POST',
+      pattern: /^\/transport\/jobs\/(?<id>[^/]+)\/cancel$/,
+      handler: async (req: ParsedRequest) => {
+        const b = req.body || {};
+        const reason = typeof b.reason === 'string' && b.reason.trim() ? b.reason.trim() : undefined;
+        const cancelled = cancelJob(req.params.id, reason);
+        return { success: true, data: { cancelled } };
+      },
     },
     {
       method: 'POST',
@@ -35,18 +75,39 @@ export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
           return { success: false, error: 'peerGatewayId, localPath, remotePath required' };
         }
         try {
-          const o: { forceMode?: 'direct' | 'relay'; timeoutMs?: number; maxRetries?: number } = {};
+          const o: { forceMode?: 'direct' | 'relay'; timeoutMs?: number; maxRetries?: number; ttlMs?: number } = {};
+          // forceMode (direct|relay), when given, is threaded onto the JobRecord
+          // and applied by the default executor's sendPath() call (job-manager.ts).
+          // Omitted => undefined => today's auto-negotiation (try direct, fall
+          // back to relay) — unchanged for every caller that doesn't pass it.
           if (b.forceMode === 'relay' || b.forceMode === 'direct') o.forceMode = b.forceMode;
           if (typeof b.timeoutMs === 'number') o.timeoutMs = b.timeoutMs;
           if (typeof b.maxRetries === 'number') o.maxRetries = b.maxRetries;
+          if (typeof b.ttlMs === 'number') o.ttlMs = b.ttlMs;
+
+          const size = fs.statSync(localPath).size;
+          const jobId = enqueueJob({
+            peer: peerGatewayId,
+            source: { kind: 'file', path: localPath },
+            sink: { kind: 'file', path: remotePath },
+            size,
+            ttlMs: o.ttlMs,
+            maxAttempts: o.maxRetries,
+            forceMode: o.forceMode,
+          });
+
           // Default: ENQUEUE and return a jobId immediately (non-blocking). The
-          // send runs from the queue; poll /transport/queue or /transport/stats.
-          // Pass wait:true to block until the transfer completes (sync).
+          // send runs from the job manager; poll /transport/jobs/:id (or
+          // /transport/jobs, /transport/queue). Pass wait:true to block until
+          // the job reaches a terminal state (or o.timeoutMs/120s elapses).
           if (b.wait === true) {
-            const res = await sendPath(peerGatewayId, localPath, remotePath, o);
-            return { success: true, data: res };
+            const v = await waitForJob(jobId, o.timeoutMs ?? 120000);
+            return v.state === 'done'
+              ? { success: true, data: v }
+              : v.state === 'queued' || v.state === 'active' || v.state === 'retry-wait'
+                ? { success: true, data: { jobId, state: v.state } }
+                : { success: false, error: v.error || v.state };
           }
-          const jobId = enqueueSend({ peerGatewayId, localPath, remotePath, opts: o });
           return { success: true, data: { jobId, state: 'queued' } };
         } catch (e) {
           return {
