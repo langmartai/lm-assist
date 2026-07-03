@@ -120,3 +120,42 @@ test('a bulk=true response is fetched + verified + decoded transparently, and th
     stopFabric();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Task 12 review fix (Minor #1): the cleanup above only ran on the SUCCESS
+// path — if fetchBulk throws (checksum/size mismatch), the unlink never ran
+// and the corrupt/mismatched drop leaked forever. Same setup as the test
+// above, but the drop's actual bytes on disk are tampered so fetchBulk's
+// sha256 check fails; the delivered file must still be gone afterwards.
+// ---------------------------------------------------------------------------
+test('a bulk=true response that FAILS verification still gets its delivered drop file cleaned up (was leaked pre-fix)', async () => {
+  stopFabric();
+  const fsp = require('fs/promises') as typeof import('fs/promises');
+  const dataValue = { ok: true };
+  const bytes = encodeBody(dataValue);
+  const sink = 'fabric-bulk/test-fabric-request-bulk-verify-fail.bin';
+  const abs = safeJoin(receiveRoot(), sink);
+  await fsp.mkdir(path.dirname(abs), { recursive: true });
+  // Write TAMPERED bytes (different from what the handle's sha256/size claim)
+  // so fetchBulk's verification throws before fabricRequest ever decodes data.
+  await fsp.writeFile(abs, Buffer.from('these are not the bytes the handle promised'));
+  const handle = { transferId: 'test-fabric-request-bulk-verify-fail', size: bytes.length, sha256: sha256Hex(bytes), sink };
+
+  const server: ServerHandler = (env, reply) => {
+    reply({ kind: 'res', id: env.id, headers: { status: 200, bulk: true }, payload: encodeBody(handle) });
+  };
+  __setFabricLinkForTest('nodeV', pairedLink(server, { client: 'nodeV', server: 'nodeU' }));
+
+  try {
+    await assert.rejects(
+      fabricRequest({ node: 'nodeV' }, { method: 'GET', path: '/big' }),
+      /size|sha256|checksum/i,
+    );
+    // RED pre-fix: the file is still on disk here because the unlink sat
+    // after the (now-thrown) fetchBulk call, never reached.
+    await assert.rejects(fsp.stat(abs), /ENOENT/, 'the corrupt drop must be cleaned up even though fetchBulk threw');
+  } finally {
+    await fsp.unlink(abs).catch(() => {}); // best-effort safety net if the assertion above failed before cleanup ran
+    stopFabric();
+  }
+});

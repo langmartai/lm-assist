@@ -105,3 +105,49 @@ test('a FabricLink is attached on link connect, and onClose fails in-flight call
 
   stopFabric();
 });
+
+test('Task 12 review fix: a post-connect re-advertise hello reaches PeerLink through the REAL onHello wiring, not dropped', async () => {
+  // Regresses W1's direct-TCP-for-LAN fast path if onHello is a no-op: once
+  // FabricLink attaches it becomes the channel's sole onData reader (single
+  // slot — see fakeCh() below), so a hello arriving AFTER attach (e.g. the
+  // peer's setFabricSelfTcp 4s boot-race re-advertise, or any readvertiseAll())
+  // only ever reaches PeerLink if attachFabricLink's onHello forwards it via
+  // PeerLink.ingestPeerHello(). Before the fix this test is RED: peerTcp()
+  // stays null because the no-op onHello silently swallows the hello.
+  stopFabric();
+  const f = fakeCh();
+  const link = new PeerLink('gw-hello-1', {
+    openChannel: async () => { throw new Error('unused — answerer path'); },
+    selfNode: 'gw-self',
+    now: () => 1,
+  });
+
+  let connectedCh: LinkChannel | null = null;
+  link.onConnected((ch) => { connectedCh = ch; });
+
+  link.adopt(f.ch);
+  f.reply(encodeFabricControl({ type: FABRIC_TAG, kind: 'hello', version: FABRIC_VERSION, features: ['rpc', 'comp-gzip'], node: 'gw-hello-1' }));
+  await new Promise((r) => setImmediate(r));
+  assert.ok(connectedCh, 'PeerLink connected');
+  assert.equal(link.peerTcp(), null, 'no tcp advertised on the initial hello');
+
+  await __attachFabricLinkForTest('gw-hello-1', link, connectedCh as unknown as LinkChannel & { send(b: Buffer): void });
+  assert.ok(getFabricLink('gw-hello-1'), 'FabricLink attached — it now owns onData, not PeerLink');
+
+  // Peer's TCP listener binds late and re-advertises on the ALREADY-connected
+  // link. This frame now arrives on FabricLink's onData (single-slot channel
+  // — the same fakeCh() used by the test above), never PeerLink's own handler.
+  f.reply(encodeFabricControl({
+    type: FABRIC_TAG, kind: 'hello', version: FABRIC_VERSION, features: ['rpc', 'comp-gzip'], node: 'gw-hello-1',
+    tcp: { host: '10.0.1.77', port: 3100 },
+  }));
+  await new Promise((r) => setImmediate(r));
+
+  assert.deepEqual(
+    link.peerTcp(),
+    { host: '10.0.1.77', port: 3100 },
+    'W1: post-connect re-advertise TCP endpoint reached PeerLink via the real onHello wiring',
+  );
+
+  stopFabric();
+});

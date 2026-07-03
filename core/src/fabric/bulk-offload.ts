@@ -44,7 +44,17 @@ export async function offloadResponse(
     sink: { kind: 'file', path: sink },
     size: bytes.length,
   });
-  await deps.waitForJob(jobId, deps.timeoutMs ?? 120_000);
+  // waitForJob NEVER rejects — it resolves with a JobView whatever the
+  // terminal state (done|failed|cancelled|expired), or even a non-terminal
+  // one if its own timeout elapses first (job-manager.ts's waitForJob). A
+  // caller that ignores the resolved state (as this used to) reports success
+  // on a failed/timed-out delivery — the real error only surfaced opaquely
+  // later in the requester's fetch. Only 'done' means the peer actually has
+  // the bytes; anything else must fail loudly here.
+  const view = await deps.waitForJob(jobId, deps.timeoutMs ?? 120_000);
+  if (view.state !== 'done') {
+    throw new Error(`fabric bulk offload: job ${jobId} did not complete (state=${view.state ?? 'unknown'})`);
+  }
   return { transferId, size: bytes.length, sha256: sha256Hex(bytes), sink };
 }
 

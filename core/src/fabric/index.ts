@@ -259,7 +259,10 @@ async function attachFabricLink(selfNode: string, peer: string, link: PeerLink, 
   const fl = new FabricLink(facade, {
     metrics, scheduler,
     onServer: server,
-    onHello: (hello) => { /* W1 TCP re-advertise arrives here; peerTcp already tracked by PeerLink during handshake */ void hello; },
+    // W2 owns onData once attached (see fabric-link.ts), so a post-connect
+    // re-advertise (W1's readvertise()/readvertiseAll) only ever reaches
+    // PeerLink through this forward — must NOT be a no-op (Task 12 review).
+    onHello: (hello) => link.ingestPeerHello(hello),
     compressionEnabled: () => settings().fabricCompressionEnabled,
   });
   fabricLinks.set(peer, fl);
@@ -320,16 +323,21 @@ export async function fabricRequest(
   let data: unknown;
   if (res.headers.bulk) {
     const handle = decodeBody(res.payload) as BulkHandle;
-    const bytes = await fetchBulk(handle, { readSink: productionReadSink });
-    data = decodeBody(bytes);
-    // The bulk bytes are now verified + decoded in memory — the delivered
-    // drop file has done its job. Clean it up: nothing else currently sweeps
-    // completed fabric-bulk/<id>.bin drops (file-transfer's own TTL sweep
-    // only covers .lmpart sidecars), so left alone this leaks one file per
-    // bulk response forever (Task 11 flagged this as unaddressed).
     const { receiveRoot, safeJoin } = require('../file-transfer') as typeof import('../file-transfer');
     const fsp = require('fs/promises') as typeof import('fs/promises');
-    await fsp.unlink(safeJoin(receiveRoot(), handle.sink)).catch(() => {});
+    try {
+      const bytes = await fetchBulk(handle, { readSink: productionReadSink });
+      data = decodeBody(bytes);
+    } finally {
+      // The drop file has done its job whether fetchBulk succeeded OR threw
+      // (a checksum/size mismatch) — clean it up on BOTH paths. Nothing else
+      // currently sweeps completed fabric-bulk/<id>.bin drops (file-transfer's
+      // own TTL sweep only covers .lmpart sidecars), so left alone a failed
+      // verify leaks the now-useless (possibly corrupt) file forever, same as
+      // an un-cleaned success would (Task 11 flagged the success case; a
+      // try/finally here covers both).
+      await fsp.unlink(safeJoin(receiveRoot(), handle.sink)).catch(() => {});
+    }
   } else {
     data = res.payload.length ? decodeBody(res.payload) : null;
   }

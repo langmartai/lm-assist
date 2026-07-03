@@ -100,3 +100,57 @@ test('a large data payload becomes a bulk res (offload invoked)', async () => {
   assert.equal(out!.headers.bulk, true);
   assert.deepEqual((decodeBody(out!.payload) as { transferId: string }).transferId, 't1');
 });
+
+// ---------------------------------------------------------------------------
+// Task 12 review fix (Important #2, rpc-server half): unlike the dispatch()
+// try/catch above, the offload() call used to be unguarded — a throw (e.g.
+// offloadResponse now failing loudly on a non-'done' job, per bulk-offload
+// fix) would propagate out of the handler's async IIFE unhandled: no reply
+// ever sent, AND the idempotency entry begin() claimed above left in-flight
+// forever, hanging any concurrent same-reqId retry.
+// ---------------------------------------------------------------------------
+test('offload failure replies a 502 error res (not a false-success 200/bulk) and settles idempotency so an in-flight concurrent retry does not hang', async () => {
+  let offloadCalls = 0;
+  let rejectOffload!: (e: Error) => void;
+  const slow = new Promise<never>((_res, rej) => { rejectOffload = rej; });
+  const handler = createRpcServer({
+    dispatch: async () => ({ status: 200, data: { big: 'x'.repeat(50) } }),
+    idempotency: new IdempotencyCache(), rpcEnabled: () => true, peerNodeOf: () => 'gw4-peer',
+    offloadThreshold: 10,
+    offload: async () => { offloadCalls++; return slow; },
+  });
+  let out1: Envelope | null = null;
+  let out2: Envelope | null = null;
+  // Two envelopes, same reqId, fired back-to-back while the original is still
+  // awaiting a slow (never-resolving-until-we-reject-it) offload — mirrors
+  // the "concurrent duplicate reqId" dispatch test above, but for the offload
+  // stage instead of the dispatch stage.
+  handler(req('call-A', 'REQ-OFF-FAIL'), (e) => { out1 = e; });
+  handler(req('call-B', 'REQ-OFF-FAIL'), (e) => { out2 = e; });
+  await new Promise((r) => setImmediate(r));
+  // The retry must NOT have triggered a second offload call — proves it's
+  // genuinely parked on the in-flight idempotency entry, not double-dispatched
+  // (mirrors the `calls` counter check in the dispatch-stage test above; an
+  // equality check directly on out1/out2 here would trip a TS control-flow
+  // trap: assert.strict.equal narrows toward `null`, which then collides with
+  // the truthy `assert.ok` narrowing used below and types them as `never`).
+  assert.equal(offloadCalls, 1);
+
+  rejectOffload(new Error('fabric bulk offload: job j1 did not complete (state=failed)'));
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+
+  // Bare `!` (not assert.ok/if-guard) — matches the existing dispatch-stage
+  // test's own style above: `out1`/`out2` are only ever assigned inside a
+  // closure, and TS's control-flow analysis does not treat that as a
+  // reassignment in THIS function's flow, so an assert.ok/if narrowing
+  // attempt here sees the (stale, CFA-tracked) initializer type `null` and
+  // collapses to `never` — RED pre-fix would ALSO be a real failure (out1/out2
+  // stay null forever, `!` throws a plain TypeError), just with a less
+  // friendly message than an assert.ok guard would have given.
+  assert.equal(out1!.headers.status, 502);
+  assert.equal(out1!.headers.code, 'bulk_offload_failed');
+  assert.equal(out2!.headers.status, 502, 'second (concurrent retry) reply arrived with the same failure — idempotency was settled, not left hanging');
+  assert.equal(out2!.headers.code, 'bulk_offload_failed');
+  assert.equal(out1!.id, 'call-A');
+  assert.equal(out2!.id, 'call-B'); // replayed under ITS OWN correlation id, not call-A's
+});

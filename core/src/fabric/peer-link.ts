@@ -65,6 +65,27 @@ export class PeerLink {
     return this.peerTcpEndpoint;
   }
 
+  /**
+   * Ingest a peer HELLO delivered POST-connect by the owning FabricLink. W2's
+   * FabricLink takes over the channel's onData once it attaches (the sole
+   * reader of a connected link — see fabric-link.ts's header comment), so
+   * PeerLink's own onData handlers (adopt()'s persistent listener / the
+   * awaitFabricReply() promise executor below) never see a hello that arrives
+   * after that point. Those pre-W2 handlers both updated `peerTcpEndpoint`
+   * inline from ANY parsed control message that carried a `tcp` field,
+   * regardless of hello vs hello-ack — this mirrors exactly that one update,
+   * nothing else (no re-ack, no state-reduce, no counters — those only apply
+   * to the initial handshake, which still runs through adopt()/open() as
+   * before). Without this, a peer whose FabricLink attaches before a
+   * tcp-bearing hello arrives would keep a stale/null peerTcpEndpoint for the
+   * life of the connection, permanently losing the direct-TCP-for-LAN fast
+   * path (readvertise() / setFabricSelfTcp→readvertiseAll, W1) until the next
+   * full reconnect.
+   */
+  ingestPeerHello(hello: FabricHello): void {
+    if (hello.tcp) this.peerTcpEndpoint = hello.tcp;
+  }
+
   /** Re-send our HELLO on the live link so a peer picks up a self field that
    *  changed after the link came up (e.g. the TCP endpoint, which is set once
    *  the listener binds — after initFabric already sent the first HELLO). */

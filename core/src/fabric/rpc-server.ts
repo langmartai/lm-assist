@@ -78,8 +78,20 @@ export function createRpcServer(deps: RpcServerDeps): ServerHandler {
       const dataBytes = encodeBody(result.data);
       let res: Envelope;
       if (deps.offload && dataBytes.length > threshold) {
-        const { handle } = await deps.offload(dataBytes, peerNode);
-        res = { kind: 'res', id, headers: { status: result.status, bulk: true }, payload: encodeBody(handle) };
+        // Unlike dispatch() above, offload() used to be unguarded: a throw
+        // here (e.g. offloadResponse now failing loudly on a non-'done' job)
+        // would propagate out of this async IIFE unhandled — no reply ever
+        // sent, and the idempotency entry claimed by begin() above left
+        // in-flight forever, hanging any concurrent same-reqId retry.
+        try {
+          const { handle } = await deps.offload(dataBytes, peerNode);
+          res = { kind: 'res', id, headers: { status: result.status, bulk: true }, payload: encodeBody(handle) };
+        } catch (e) {
+          const failRes = errRes(502, 'bulk_offload_failed', (e as Error).message);
+          deps.idempotency.settle(reqId, failRes); // release any concurrent waiter
+          reply(failRes);
+          return;
+        }
       } else {
         res = { kind: 'res', id, headers: { status: result.status, 'content-type': 'application/json' }, payload: dataBytes };
       }
