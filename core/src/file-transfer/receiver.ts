@@ -240,6 +240,13 @@ export function handleIncomingTransfer(
 
   return new Promise<void>((resolve) => {
     let settled = false;
+    // Set the instant an FT_CANCEL arrives (out-of-band, BEFORE the serial
+    // processChain reaches it) so the queued data backlog immediately no-ops.
+    // On the relay the sender's in-flight window (up to ~MBs) is already buffered
+    // ahead of the cancel, so without this handleCancel would be stuck behind it
+    // and the channel would tear down first — leaving the partial (drop) until
+    // the 24h sweeper. Draining the backlog to no-ops lets handleCancel run now.
+    let cancelRequested = false;
     const finish = () => {
       if (settled) {
         return;
@@ -344,11 +351,13 @@ export function handleIncomingTransfer(
       offset: number,
       bytes: Buffer,
     ) => {
-      // Once the transfer has settled (FT_CANCEL/FT_END/drop), ignore any late
-      // data. Over the relay, control (FT_CANCEL) rides a priority lane and can
-      // overtake in-flight data — without this guard a straggling data frame's
-      // checkpoint would re-create the sidecar that handleCancel just deleted.
-      if (settled) return;
+      // Once the transfer has settled (FT_CANCEL/FT_END/drop) — or a cancel is
+      // in flight — ignore any further data. Over the relay, control (FT_CANCEL)
+      // rides a priority lane and can overtake in-flight data; the settled guard
+      // stops a straggling data frame's checkpoint from re-creating the sidecar
+      // handleCancel just deleted, and cancelRequested drains the pre-cancel
+      // backlog to no-ops so handleCancel isn't stuck behind it.
+      if (settled || cancelRequested) return;
       const of = openFiles.get(entryIndex);
       if (!of) {
         await replyErr(transferId, 'data for unknown entry ' + entryIndex);
@@ -692,6 +701,11 @@ export function handleIncomingTransfer(
       } catch {
         void replyErr(transferId, 'frame decode error');
         return;
+      }
+      // Detect a cancel out-of-band (before the serial chain reaches it) so the
+      // queued data backlog drains to no-ops and handleCancel runs promptly.
+      if (frames.some((f) => f.kind === 'control' && (f.msg as { type?: string }).type === 'FT_CANCEL')) {
+        cancelRequested = true;
       }
       // Append this chunk's frames to the serial chain so writes stay ordered
       // relative to the manifest and to each other.
