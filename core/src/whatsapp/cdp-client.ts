@@ -210,7 +210,10 @@ const JS_STATUS = `
 const JS_CHATS = `
   const rows = [...document.querySelectorAll('#pane-side [role="row"]')];
   const rows_out = rows.map((row, index) => {
-    const titles = [...row.querySelectorAll('span[title]')].map(s => s.getAttribute('title'));
+    // Some UI elements inside a row carry hint titles ("click here for contact
+    // info" / 点击此处查看联系人信息) — never treat those as the chat name.
+    const isHint = t => /点击此处|查看联系人|click here|contact info/i.test(t || '');
+    const titles = [...row.querySelectorAll('span[title]')].map(s => s.getAttribute('title')).filter(t => t && !isHint(t));
     const name = titles[0] || '';
     const preview = titles.length > 1 ? (titles[titles.length-1] || '') : '';
     // candidate short texts — the row's time label is one of these (formats vary
@@ -311,8 +314,15 @@ function jsRead(n: number): string {
       // Direction: this WebView2 build has no message-in/out classes. Outbound
       // bubbles ALWAYS carry a status tick (icon ligature wds-ic-*) and group
       // leaders carry data-icon="tail-out"; inbound rows have neither.
+      const rowText = row.textContent || '';
       const isOut = !!row.querySelector('[data-icon="tail-out"]')
-        || /wds-ic-(read|delivered|sent|check|time)/.test(row.textContent || '');
+        || /wds-ic-(read|delivered|sent|check|time)/.test(rowText);
+      // Per-message state from the app's own tick icon (read > delivered > sent).
+      let tick = null;
+      if (/wds-ic-read/.test(rowText)) tick = 'read';
+      else if (/wds-ic-delivered/.test(rowText)) tick = 'delivered';
+      else if (/wds-ic-(sent|check)/.test(rowText)) tick = 'sent';
+      else if (/wds-ic-time/.test(rowText)) tick = 'pending';
       const isVoice = hasIcon(/mic|ptt|audio-play/) || aria.some(a => /语音消息|voice message/i.test(a));
       const isImage = !!row.querySelector('img[src^="blob:"], img[src^="data:"]') || aria.some(a => /图片|photo/i.test(a));
       const isVideo = !!row.querySelector('video') || hasIcon(/media-play|video/) || aria.some(a => /视频|video/i.test(a));
@@ -332,7 +342,7 @@ function jsRead(n: number): string {
       const m = ppt.match(/^\\[(.*?)\\]\\s*(.*?):\\s*$/);
       if (m) { ppTime = m[1]; sender = m[2]; }
       if (!sender) { const al = aria.find(a => /[:：]\\s*$/.test(a)); if (al) sender = al.replace(/[:：]\\s*$/, '').trim(); }
-      out.push({ ppt: ppTime, sender, direction: isOut ? 'out' : 'in', type, text: body });
+      out.push({ ppt: ppTime, sender, direction: isOut ? 'out' : 'in', type, text: body, tick });
     }
     return { header, messages: out.slice(-${n}) };
   `;
@@ -544,7 +554,7 @@ export async function syncFromCdp(): Promise<{ chats: number; ingested: number }
  * rendered messages into the store, keyed by canonicalChatId(target) so a
  * subsequent store.getMessages(target) matches. Returns { chatId, ingested }.
  */
-export async function syncChat(target: string): Promise<{ chatId: string; contactName: string | null; ingested: number }> {
+export async function syncChat(target: string): Promise<{ chatId: string; contactName: string | null; ingested: number; statuses: Array<{ id: string; status: string }> }> {
   const chatId = canonicalChatId(target);
   if (!chatId) throw new WaError('BAD_REQUEST', 'chat identifier is required');
   return withCdp(async (cdp) => {
@@ -555,13 +565,17 @@ export async function syncChat(target: string): Promise<{ chatId: string; contac
     await sleep(700);
     const r = await cdp.evaluate<{
       header: string | null;
-      messages: Array<{ ppt: string | null; sender: string | null; direction: 'in' | 'out'; type: string; text: string }>;
+      messages: Array<{ ppt: string | null; sender: string | null; direction: 'in' | 'out'; type: string; text: string; tick: string | null }>;
     }>(jsRead(200));
     const header = r?.header || null;
     const contactName = header && !looksLikePhone(header) ? header : null;
     const msgs = (r?.messages || []).filter((m) => m && (m.text || m.type !== 'text'));
     let ingested = 0;
     const now = Math.floor(Date.now() / 1000);
+    // The store is append-only (id-deduped), so a message whose tick later
+    // advances (sent → delivered → read) keeps its first stored status; the
+    // fresh per-row states are returned for the caller to overlay.
+    const statuses: Array<{ id: string; status: string }> = [];
     msgs.forEach((m, i) => {
       // Older rows first; give unparseable ones a decreasing offset to keep order.
       const fallback = now - (msgs.length - i);
@@ -576,13 +590,18 @@ export async function syncChat(target: string): Promise<{ chatId: string; contac
         type: m.type,
         text: m.text,
         timestamp: ts,
+        status: m.direction === 'out' ? m.tick || 'sent' : undefined,
         contactName: contactName || undefined,
       };
-      if (m.direction === 'out') store.addOutbound(rec);
-      else store.addInbound(rec);
+      if (m.direction === 'out') {
+        store.addOutbound(rec);
+        statuses.push({ id, status: rec.status || 'sent' });
+      } else {
+        store.addInbound(rec);
+      }
       ingested++;
     });
-    return { chatId, contactName, ingested };
+    return { chatId, contactName, ingested, statuses };
   });
 }
 

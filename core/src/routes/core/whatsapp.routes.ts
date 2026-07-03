@@ -113,12 +113,21 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
         if (!rawChat) return { success: false, error: '`chat` query param (contact/group or phone) is required' };
         const chatId = canonicalChatId(rawChat);
         const limit = clampInt(req.query?.limit, 30, 1, 500);
+        let freshStatuses: Array<{ id: string; status: string }> = [];
         try {
-          await syncChat(rawChat);
+          const sync = await syncChat(rawChat);
+          freshStatuses = sync.statuses || [];
         } catch (e) {
           return fail(e);
         }
         let messages = store.getMessages(chatId, limit);
+        // Overlay the app's CURRENT tick per message (store keeps first-seen).
+        if (freshStatuses.length) {
+          const statusById = new Map(freshStatuses.map((s) => [s.id, s.status]));
+          messages = messages.map((m) =>
+            m.direction === 'out' && statusById.has(m.id) ? { ...m, status: statusById.get(m.id) } : m,
+          );
+        }
         // A message sent through this node exists twice: the synthetic record
         // written at send time and the DOM-ingested copy (different ids).
         // Collapse near-identical neighbours at read time, preferring the
