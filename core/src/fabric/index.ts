@@ -250,6 +250,7 @@ async function attachFabricLink(selfNode: string, peer: string, link: PeerLink, 
     idempotency: sharedIdempotency,
     rpcEnabled: () => settings().fabricRpcEnabled,
     busEnabled: () => settings().busEnabled,
+    dataSyncEnabled: () => settings().dataSyncViaFabric,
     peerNodeOf: () => peer,
     offloadThreshold: undefined, // default 8MB
     offload: async (bytes, peerNode) => {
