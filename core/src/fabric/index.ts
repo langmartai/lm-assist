@@ -373,6 +373,12 @@ export function fabricPublish(node: string, event: unknown): void {
   void link.sendEnvelope({ kind: 'pub', id, headers: { cls: 'bus' }, payload: encodeBody(event) }).catch(() => {});
 }
 
+/** Reliable cross-node bus catch-up (spec: fabricRequestManaged, NOT bare fabricRequest). */
+export async function fabricBusCatchup(node: string, topic: string, cursor: Record<string, number>): Promise<FabricResponse> {
+  const { fabricRequestManaged } = require('./retry') as typeof import('./retry');
+  return fabricRequestManaged({ node }, { method: 'POST', path: `/bus/${encodeURIComponent(topic)}/since`, body: { cursors: cursor } });
+}
+
 /** Test seam: inject a FabricLink directly (bypasses the connect handshake —
  *  used to unit-test fabricRequest/fabricProbe without a live 2-node fabric). */
 export function __setFabricLinkForTest(node: string, link: FabricLink): void { fabricLinks.set(node, link); }

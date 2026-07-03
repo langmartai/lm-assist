@@ -174,6 +174,47 @@ export class Bus {
     return () => this.emitter.off('event', cb);
   }
 
+  /** How a catch-up RPC is issued to a peer for a topic (prod → fabricBusCatchup).
+   *  Overridable in tests. Returns the events the peer had beyond our cursor. */
+  private catchupCall: (peer: string, topic: string, cursor: BusCursor) => Promise<BusEvent[]> = async (peer, topic, cursor) => {
+    const { fabricBusCatchup } = require('../fabric') as typeof import('../fabric');
+    const res = await fabricBusCatchup(peer, topic, cursor);
+    const data = res.data as { events?: BusEvent[] } | undefined;
+    return Array.isArray(data?.events) ? data!.events : [];
+  };
+
+  /** Pull everything this peer has that we are missing, across every known topic. */
+  async catchupPeer(peer: string): Promise<void> {
+    if (!this.enabled()) return;
+    for (const topic of this.store.allTopicNames()) {
+      try {
+        const events = await this.catchupCall(peer, topic, this.store.maxCursor(topic));
+        for (const e of events) this.ingest(e);
+      } catch { /* peer unreachable / not bus-capable — the interval retries */ }
+    }
+  }
+
+  /** Slow safety net (spec ~5 min): catch up from every connected bus peer. */
+  async reconcile(): Promise<void> {
+    if (!this.enabled()) return;
+    let peers: string[] = [];
+    try { peers = (require('../fabric') as typeof import('../fabric')).fabricBusPeers(); } catch { peers = []; }
+    for (const peer of peers) await this.catchupPeer(peer);
+  }
+
+  private reconcileTimer: ReturnType<typeof setInterval> | null = null;
+
+  start(): void {
+    if (this.reconcileTimer) return;
+    const ms = Math.max(30_000, Number(process.env.LM_BUS_RECONCILE_MS) || 5 * 60 * 1000);
+    this.reconcileTimer = setInterval(() => { void this.reconcile(); }, ms);
+    this.reconcileTimer.unref?.();
+  }
+
+  stop(): void {
+    if (this.reconcileTimer) { clearInterval(this.reconcileTimer); this.reconcileTimer = null; }
+  }
+
   statusReport(): { verdict: 'ok' | 'warn' | 'error'; summary: string; detail: unknown } {
     if (!this.enabled()) return { verdict: 'ok', summary: 'bus disabled', detail: { enabled: false } };
     const topics = this.topics();
@@ -211,6 +252,7 @@ export function getBus(): Bus {
       for (const peer of fab.fabricBusPeers?.() ?? []) fab.fabricPublish?.(peer, e);
     },
   });
+  singleton.start();
   return singleton;
 }
 

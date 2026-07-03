@@ -25,6 +25,10 @@ export interface RpcServerDeps {
   dispatch: Dispatch;
   idempotency: IdempotencyCache;
   rpcEnabled: () => boolean;
+  /** When true, `/bus/*` requests dispatch even if rpcEnabled() is false (spec §5 S1
+   *  catch-up is gated by busEnabled, not the general RPC class — the first scoped
+   *  allow-list entry; W4 generalizes it). */
+  busEnabled?: () => boolean;
   peerNodeOf: (env: Envelope) => string;
   offload?: (bytes: Uint8Array, peerNode: string) => Promise<{ handle: unknown }>;
   offloadThreshold?: number; // bytes; default 8MB
@@ -41,9 +45,12 @@ export function createRpcServer(deps: RpcServerDeps): ServerHandler {
         ({ kind: 'res', id, headers: { status, code, message }, payload: new Uint8Array() });
 
       if (env.kind !== 'req') return;
-      // Kill-switch is checked BEFORE begin() — a disabled rpc class never
-      // touches idempotency (nothing was claimed, so nothing needs settling).
-      if (!deps.rpcEnabled()) { reply(errRes(503, 'rpc_disabled', 'fabric rpc class disabled')); return; }
+      const reqPath = env.headers.path ?? '/';
+      // Kill-switch is checked BEFORE begin() — a disabled class never touches
+      // idempotency. Bus catch-up (/bus/*) rides busEnabled, not the general RPC
+      // class, so the bus works without opening arbitrary peer RPC.
+      const allowed = deps.rpcEnabled() || (reqPath.startsWith('/bus/') && (deps.busEnabled?.() ?? false));
+      if (!allowed) { reply(errRes(503, 'rpc_disabled', 'fabric rpc class disabled')); return; }
 
       const reqId = env.headers.reqId ?? id;
       const begun = deps.idempotency.begin(reqId);
