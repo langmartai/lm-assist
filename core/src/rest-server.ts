@@ -27,6 +27,15 @@ import {
   type ParsedRequest,
   type RouteContext,
 } from './routes';
+import type { BusEvent } from './bus/types';
+
+/** Map a bus event to a /stream-safe payload (broadcast as a generic TierEvent). */
+export function busEventToSse(e: BusEvent): { type: 'bus_event'; timestamp: Date; tier: 'system'; data: { topic: string; origin: string; seq: number; eventType: string; at: number; id: string } } {
+  return {
+    type: 'bus_event', timestamp: new Date(), tier: 'system',
+    data: { topic: e.topic, origin: e.origin, seq: e.seq, eventType: e.type, at: e.at, id: `${e.origin}:${e.seq}` },
+  };
+}
 
 // ============================================================================
 // Types
@@ -114,6 +123,10 @@ export class TierRestServer {
     profiler.start('memoryCache', 'MemoryCache', 'Server Constructor');
     this.initMemoryCacheEvents();
     profiler.end('memoryCache');
+
+    profiler.start('busEvents', 'BusEvents', 'Server Constructor');
+    this.initBusEvents();
+    profiler.end('busEvents');
 
     profiler.end('constructor');
   }
@@ -204,6 +217,16 @@ export class TierRestServer {
     } catch (err) {
       console.warn('[Server] MemoryCache init failed:', err);
     }
+  }
+
+  /** Bridge bus events to the SSE /stream (mirrors initMemoryCacheEvents). */
+  private initBusEvents(): void {
+    try {
+      const { getBus } = require('./bus') as typeof import('./bus');
+      getBus().onLocalEvent((e) => {
+        try { this.broadcastEvent(busEventToSse(e) as any); } catch { /* swallow */ }
+      });
+    } catch { /* bus disabled / not ready */ }
   }
 
   /**

@@ -37,6 +37,8 @@ export interface FabricLinkDeps {
   metrics?: LinkMetrics;
   scheduler?: ClassScheduler;
   onServer?: ServerHandler;
+  /** Inbound `pub` (bus class) frames — W3 wires this to Bus.ingestFromWire. */
+  onBus?: (env: import('./envelope').Envelope) => void;
   /** Forwarded re-advertised W1 hello frames (0x00) — FabricLink is the sole
    *  reader after connect, so it hands hellos back (e.g. a peer TCP endpoint
    *  that binds after the link came up). */
@@ -103,7 +105,8 @@ export class FabricLink {
     if (env.kind === 'res' || env.kind === 'pong') { this.pending.resolve(env.id, env); return; }
     if (env.kind === 'ping') { this.sendEnvelope({ kind: 'pong', id: env.id, headers: {}, payload: env.payload }).catch(() => {}); return; }
     if (env.kind === 'req') { this.deps.onServer?.(env, (res) => { this.sendEnvelope(res).catch(() => {}); }); return; }
-    // pub/xfer are W3/W4 — ignore in W2
+    if (env.kind === 'pub') { this.deps.onBus?.(env); return; }
+    // xfer is W4 — ignore
   }
 
   async sendEnvelope(env: Envelope): Promise<void> {

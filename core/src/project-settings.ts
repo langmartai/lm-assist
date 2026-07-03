@@ -66,6 +66,8 @@ export interface ProjectSettings {
   fabricCompressionEnabled: boolean;
   /** Cap (MB/s) for the bulk class over the relay floor — gentle on the hub. Default 5. */
   fabricRelayBulkCapMBps: number;
+  /** Message bus (spec §5 S1): durable cross-node topic log + fan-out over the fabric. Default true. */
+  busEnabled: boolean;
 }
 
 // ── Constants ──────────────────────────────────────────
@@ -99,6 +101,7 @@ export const DEFAULTS: ProjectSettings = {
   fabricRpcEnabled: false,
   fabricCompressionEnabled: true,
   fabricRelayBulkCapMBps: 5,
+  busEnabled: true,
 };
 
 // ── Mtime Cache ──────────────────────────────────────────
@@ -147,6 +150,7 @@ export function getProjectSettings(): ProjectSettings {
       fabricRpcEnabled: typeof data.fabricRpcEnabled === 'boolean' ? data.fabricRpcEnabled : DEFAULTS.fabricRpcEnabled,
       fabricCompressionEnabled: typeof data.fabricCompressionEnabled === 'boolean' ? data.fabricCompressionEnabled : DEFAULTS.fabricCompressionEnabled,
       fabricRelayBulkCapMBps: typeof data.fabricRelayBulkCapMBps === 'number' ? data.fabricRelayBulkCapMBps : DEFAULTS.fabricRelayBulkCapMBps,
+      busEnabled: typeof data.busEnabled === 'boolean' ? data.busEnabled : DEFAULTS.busEnabled,
     };
     settingsCache = settings;
     settingsMtime = stat.mtimeMs;
@@ -190,6 +194,7 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     fabricRpcEnabled: typeof partial.fabricRpcEnabled === 'boolean' ? partial.fabricRpcEnabled : current.fabricRpcEnabled,
     fabricCompressionEnabled: typeof partial.fabricCompressionEnabled === 'boolean' ? partial.fabricCompressionEnabled : current.fabricCompressionEnabled,
     fabricRelayBulkCapMBps: typeof partial.fabricRelayBulkCapMBps === 'number' ? partial.fabricRelayBulkCapMBps : current.fabricRelayBulkCapMBps,
+    busEnabled: typeof partial.busEnabled === 'boolean' ? partial.busEnabled : current.busEnabled,
   };
 
   // Ensure parent directory exists

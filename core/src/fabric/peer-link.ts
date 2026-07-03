@@ -160,7 +160,7 @@ export class PeerLink {
 
   private hello(kind: FabricHello['kind']): Buffer {
     const tcp = this.deps.selfTcp?.() ?? undefined;
-    return encodeFabricControl({ type: FABRIC_TAG, kind, version: FABRIC_VERSION, features: ['status', 'rpc', 'comp-gzip'], node: this.deps.selfNode, ...(tcp ? { tcp } : {}) });
+    return encodeFabricControl({ type: FABRIC_TAG, kind, version: FABRIC_VERSION, features: ['status', 'rpc', 'comp-gzip', 'bus'], node: this.deps.selfNode, ...(tcp ? { tcp } : {}) });
   }
 
   private reduce(ev: Parameters<typeof reduceLink>[1]): void {

@@ -26,7 +26,7 @@ test('initiator advertises rpc + comp-gzip and captures peer features on connect
   const opening = link.open();
   await new Promise((r) => setImmediate(r));
   const helloJson = JSON.parse(f.sent[0].subarray(5).toString('utf8'));
-  assert.deepEqual(helloJson.features.sort(), ['comp-gzip', 'rpc', 'status']);
+  assert.deepEqual(helloJson.features.sort(), ['bus', 'comp-gzip', 'rpc', 'status']);
   f.reply(ack(['rpc', 'comp-gzip', 'status']));
   await opening;
   assert.ok(connectedCh, 'onConnected fired with the channel');

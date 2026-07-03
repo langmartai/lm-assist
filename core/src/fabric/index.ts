@@ -6,7 +6,7 @@
 import { openChannel } from '../transport';
 import { PeerLink, type PeerLinkSnapshot, type LinkChannel } from './peer-link';
 import { PeerManager, type PeerLinkLike } from './peer-manager';
-import { initEnvelopeCodec, decodeBody } from './envelope';
+import { initEnvelopeCodec, decodeBody, encodeBody } from './envelope';
 import { FabricLink, type FabricChannel } from './fabric-link';
 import { LinkMetrics, ClassScheduler, type LinkMetricsSnapshot } from './metrics';
 import { IdempotencyCache } from './idempotency';
@@ -34,6 +34,8 @@ let self = { node: '', cluster: 'default' };
 
 /** Per-peer W2 transmission link, attached once its W1 PeerLink connects. */
 const fabricLinks = new Map<string, FabricLink>();
+/** node → its PeerLink, for feature checks (peerHasFeature('bus')) during fan-out. */
+const peerLinks = new Map<string, PeerLink>();
 /** Shared across every attached link (spec T7): one receiver dedup cache for
  *  this node, keyed by reqId — a retry from ANY peer dedupes against it. */
 const sharedIdempotency = new IdempotencyCache();
@@ -148,6 +150,7 @@ export function stopFabric(): void {
   mgr = null;
   for (const fl of fabricLinks.values()) fl.failInflight(new Error('fabric stopped'));
   fabricLinks.clear();
+  peerLinks.clear();
 }
 
 /** This node's direct-TCP endpoint, set by the TCP listener at boot; advertised
@@ -246,6 +249,7 @@ async function attachFabricLink(selfNode: string, peer: string, link: PeerLink, 
     dispatch: loopbackDispatch(loopbackApiPort()),
     idempotency: sharedIdempotency,
     rpcEnabled: () => settings().fabricRpcEnabled,
+    busEnabled: () => settings().busEnabled,
     peerNodeOf: () => peer,
     offloadThreshold: undefined, // default 8MB
     offload: async (bytes, peerNode) => {
@@ -285,6 +289,10 @@ async function attachFabricLink(selfNode: string, peer: string, link: PeerLink, 
   const fl = new FabricLink(facade, {
     metrics, scheduler,
     onServer: server,
+    onBus: (env) => {
+      // Deliver an inbound bus `pub` frame into the local bus (idempotent).
+      try { (require('../bus') as typeof import('../bus')).getBus().ingestFromWire(env.payload); } catch { /* bus off / not ready */ }
+    },
     // W2 owns onData once attached (see fabric-link.ts), so a post-connect
     // re-advertise (W1's readvertise()/readvertiseAll) only ever reaches
     // PeerLink through this forward — must NOT be a no-op (Task 12 review).
@@ -292,6 +300,7 @@ async function attachFabricLink(selfNode: string, peer: string, link: PeerLink, 
     compressionEnabled: () => settings().fabricCompressionEnabled,
   });
   fabricLinks.set(peer, fl);
+  peerLinks.set(peer, link);
 
   // Fail any in-flight fabricRequest calls fast when the underlying channel
   // drops, instead of leaving them to expire on their own ~30s default
@@ -336,10 +345,48 @@ async function attachFabricLink(selfNode: string, peer: string, link: PeerLink, 
     if (currentDataCb) newCh.onData(currentDataCb);
     wireCloseFailover(newCh);
   });
+
+  // First-time bus catch-up from this peer (heals a partition / a boot gap).
+  // Gated on the peer's own advertised 'bus' HELLO feature — mirrors the same
+  // `link.peerHasFeature('bus')` check fabricBusPeers()/reconcile() already
+  // use for fan-out — so a peer that never advertised bus support (mixed
+  // version, or bus off on its side) never gets issued a catch-up RPC it
+  // can't (or shouldn't) serve. `peerFeatureList` is populated from the HELLO
+  // before PeerLink.onConnected fires (see peer-link.ts adopt()/
+  // awaitFabricReply()), so it's already current by this point.
+  if (link.peerHasFeature('bus')) {
+    try { void (require('../bus') as typeof import('../bus')).getBus().catchupPeer(peer).catch(() => {}); } catch { /* bus off */ }
+  }
 }
 
 /** Test/probe accessor: the live FabricLink for a connected peer, or null. */
 export function getFabricLink(node: string): FabricLink | null { return fabricLinks.get(node) ?? null; }
+
+/** This node's gatewayId (fabric self), or '' before initFabric. */
+export function fabricSelfNode(): string { return self.node; }
+
+/** Connected peers whose HELLO advertised the `bus` feature (mixed-version safe). */
+export function fabricBusPeers(): string[] {
+  const out: string[] = [];
+  for (const [peer, link] of peerLinks) {
+    if (fabricLinks.has(peer) && link.peerHasFeature('bus')) out.push(peer);
+  }
+  return out;
+}
+
+/** Fire-and-forget a bus event as a `pub` frame to one peer (spec: fan-out fire-and-forget, catch-up heals). */
+export function fabricPublish(node: string, event: unknown): void {
+  const link = fabricLinks.get(node);
+  if (!link) return;
+  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  void link.sendEnvelope({ kind: 'pub', id, headers: { cls: 'bus' }, payload: encodeBody(event) }).catch(() => {});
+}
+
+/** Reliable cross-node bus catch-up (spec: fabricRequestManaged, NOT bare fabricRequest). */
+export async function fabricBusCatchup(node: string, topic: string, cursor: Record<string, number>): Promise<FabricResponse> {
+  const { fabricRequestManaged } = require('./retry') as typeof import('./retry');
+  return fabricRequestManaged({ node }, { method: 'POST', path: `/bus/${encodeURIComponent(topic)}/since`, body: { cursors: cursor } });
+}
 
 /** Test seam: inject a FabricLink directly (bypasses the connect handshake —
  *  used to unit-test fabricRequest/fabricProbe without a live 2-node fabric). */
