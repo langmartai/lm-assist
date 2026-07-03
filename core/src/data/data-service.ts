@@ -1,7 +1,7 @@
 // core/src/data/data-service.ts
 import type {
   Principal, DataAction, DataRecord, QuerySpec, SearchSpec, AccessRequest, BackendKind, NodeVisibility, SyncMode,
-  PeerClient, NodeInfo, PutOptions,
+  PeerClient, NodeInfo, PutOptions, DatasetDescriptor,
 } from './types';
 import type { DatasetRegistry } from './dataset-registry';
 import { getDatasetRegistry } from './dataset-registry';
@@ -20,7 +20,6 @@ import { redactRecord, redactValueDeep, scrubValueDeep } from './redaction';
 import { thisNodeId } from './paths';
 import { getProjectSettings } from '../project-settings';
 import type { ParsedRequest } from '../routes/index';
-import { getSyncQueue } from './sync-queue';
 import { HubPeerClient } from './peer-client';
 import { SyncEngine } from './sync-engine';
 
@@ -44,7 +43,7 @@ export class DataService {
   // a key (not just CAS ones) so a plain put can't slip between a CAS put's read and write.
   // Uncontended keys stay fast: a Map miss + immediate resolve, no global lock.
   private putLocks = new Map<string, Promise<void>>();
-  constructor(private deps: { datasets: DatasetRegistry; backends: BackendRegistry; manager: AccessManager; onLocalWrite?: (dataset: string, id: string) => void; peers?: PeerClient }) {}
+  constructor(private deps: { datasets: DatasetRegistry; backends: BackendRegistry; manager: AccessManager; notify?: (dataset: string, type: 'changed' | 'deleted', ids: string[]) => void; peers?: PeerClient }) {}
 
   isEnabled(): boolean {
     if (typeof this.enabledOverride === 'boolean') return this.enabledOverride;
@@ -144,6 +143,14 @@ export class DataService {
     return { ok: true, value: redactValueDeep(result) };
   }
 
+  /** Fire a cross-node change-notify onto the bus — ONLY for syncable datasets, and wrapped so a
+   *  disabled/not-ready bus (publish throws when busEnabled=false) is a silent no-op; the 300s
+   *  reconcile is the safety net. A local-only ('none') dataset never churns the bus. */
+  private notifyChange(d: DatasetDescriptor, type: 'changed' | 'deleted', ids: string[]): void {
+    if (!d.syncMode || d.syncMode === 'none') return;
+    try { this.deps.notify?.(d.id, type, ids); } catch { /* bus off / not ready — reconcile heals */ }
+  }
+
   async put(ctx: CallCtx, datasetId: string, record: DataRecord, opts?: PutOptions): Promise<DataResult<{ id: string }>> {
     const a = await this.authorize(ctx, datasetId, 'write');
     if (!a.ok) return a;
@@ -172,7 +179,7 @@ export class DataService {
         origin: undefined, // local-owned record (origin is stamped only on replicas)
       };
       const r = await backend.put(datasetId, versioned);
-      this.deps.onLocalWrite?.(datasetId, record.id);
+      this.notifyChange(d, 'changed', [record.id]);
       return { ok: true, value: r };
     });
   }
@@ -200,7 +207,9 @@ export class DataService {
     if (!a.ok) return a;
     const d = this.deps.datasets.get(datasetId)!;
     if ((d as any).origin) return { ok: false, code: 'READ_ONLY_REPLICA', reason: `dataset "${datasetId}" is a remote replica (read-only)` };
-    return { ok: true, value: await a.value.backend!.delete(datasetId, id) };
+    const deleted = await a.value.backend!.delete(datasetId, id);
+    if (deleted) this.notifyChange(d, 'deleted', [id]);
+    return { ok: true, value: deleted };
   }
 
   /** Allocate a dataset's backend storage (local-only). Replaces the route's put/del __init__ hack. */
@@ -343,11 +352,18 @@ export function getDataService(): DataService {
     backends.register(new FileBackend());
     backends.register(new SqlBackend());
     const manager = new AccessManager({ datasets, keys: getKeyStore(), nodeId: thisNodeId() });
-    const queue = getSyncQueue();
     const nodeId = thisNodeId();
     const peers = new HubPeerClient(nodeId);
     engineInstance = new SyncEngine({ datasets, backends, peers, nodeId });
-    instance = new DataService({ datasets, backends, manager, onLocalWrite: (dataset, id) => queue.markDirty(dataset, id), peers });
+    instance = new DataService({
+      datasets, backends, manager, peers,
+      // Production change-notify: publish to the W3 bus topic data:<dataset>. Guarded in notifyChange
+      // (publish throws when busEnabled=false) so a disabled bus is a silent no-op.
+      notify: (dataset, type, ids) => {
+        const { getBus } = require('../bus') as typeof import('../bus');
+        getBus().publish(`data:${dataset}`, type, { ids });
+      },
+    });
   }
   return instance;
 }
