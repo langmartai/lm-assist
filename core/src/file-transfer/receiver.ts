@@ -107,8 +107,8 @@ function writeSidecar(
 function readSidecar(dest: string): Sidecar | null {
   try {
     const sc = JSON.parse(fs.readFileSync(sidecarPath(dest), 'utf8')) as Partial<Sidecar>;
-    if (typeof sc.transferId !== 'string' || typeof sc.size !== 'number' || typeof sc.bytesDone !== 'number') {
-      return null; // torn/corrupt sidecar — treat like "no sidecar"
+    if (typeof sc.transferId !== 'string' || typeof sc.size !== 'number' || typeof sc.bytesDone !== 'number' || sc.bytesDone < 0) {
+      return null; // torn/corrupt sidecar (incl. negative bytesDone) — treat like "no sidecar"
     }
     return sc as Sidecar;
   } catch {

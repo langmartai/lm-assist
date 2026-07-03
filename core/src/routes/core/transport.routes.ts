@@ -104,7 +104,7 @@ export function createTransportRoutes(_ctx: RouteContext): RouteHandler[] {
             const v = await waitForJob(jobId, o.timeoutMs ?? 120000);
             return v.state === 'done'
               ? { success: true, data: v }
-              : v.state === 'queued' || v.state === 'active'
+              : v.state === 'queued' || v.state === 'active' || v.state === 'retry-wait'
                 ? { success: true, data: { jobId, state: v.state } }
                 : { success: false, error: v.error || v.state };
           }
