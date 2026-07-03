@@ -209,7 +209,7 @@ const JS_STATUS = `
  *  in DOM order (the app already sorts most-recent-first). */
 const JS_CHATS = `
   const rows = [...document.querySelectorAll('#pane-side [role="row"]')];
-  return rows.map((row, index) => {
+  const rows_out = rows.map((row, index) => {
     const titles = [...row.querySelectorAll('span[title]')].map(s => s.getAttribute('title'));
     const name = titles[0] || '';
     const preview = titles.length > 1 ? (titles[titles.length-1] || '') : '';
@@ -232,8 +232,33 @@ const JS_CHATS = `
       const dig = texts.find(t => /^\\d{1,3}$/.test(t) && t !== name);
       if (dig) unread = +dig;
     }
-    return { index, name, preview, texts, isOut, unread };
+    return { index, name, preview, texts, isOut, unread, row };
   }).filter(r => r.name);
+  // Avatars: each row renders the contact's profile picture. blob: images are
+  // fetched in-page to a small data URL; https CDN URLs pass through as-is.
+  for (const r of rows_out) {
+    let avatar = null;
+    const img = r.row.querySelector('img');
+    if (img && img.src) {
+      if (img.src.startsWith('blob:')) {
+        try {
+          const b = await (await fetch(img.src)).blob();
+          const dataUrl = await new Promise((res) => {
+            const fr = new FileReader();
+            fr.onload = () => res(fr.result);
+            fr.onerror = () => res(null);
+            fr.readAsDataURL(b);
+          });
+          if (typeof dataUrl === 'string' && dataUrl.length < 80000) avatar = dataUrl;
+        } catch (e) { /* avatar is optional */ }
+      } else if (/^https:/.test(img.src)) {
+        avatar = img.src;
+      }
+    }
+    r.avatar = avatar;
+    delete r.row;
+  }
+  return rows_out;
 `;
 
 function jsLocate(target: string): string {
@@ -440,6 +465,8 @@ export interface ChatOrderEntry {
   unread: number;
   lastDirection: 'in' | 'out';
   lastMessageAt: number;
+  /** Contact profile picture: a small data URL (blob avatars) or the CDN URL. */
+  avatar?: string;
 }
 
 const chatOrderFile = () => path.join(WA_DATA_DIR, 'chat-order.json');
@@ -472,7 +499,7 @@ export async function syncFromCdp(): Promise<{ chats: number; ingested: number }
   return withCdp(async (cdp) => {
     await assertLoggedIn(cdp);
     const rows = await cdp.evaluate<
-      Array<{ index: number; name: string; preview: string; texts: string[]; isOut: boolean; unread: number }>
+      Array<{ index: number; name: string; preview: string; texts: string[]; isOut: boolean; unread: number; avatar: string | null }>
     >(JS_CHATS);
     const list = Array.isArray(rows) ? rows : [];
     let ingested = 0;
@@ -483,7 +510,13 @@ export async function syncFromCdp(): Promise<{ chats: number; ingested: number }
       if (!chatId) return;
       const ts = parseChatListTime(r.texts, now - i * 60);
       const direction: 'in' | 'out' = r.isOut ? 'out' : 'in';
-      order.push({ chatId, unread: r.unread || 0, lastDirection: direction, lastMessageAt: ts });
+      order.push({
+        chatId,
+        unread: r.unread || 0,
+        lastDirection: direction,
+        lastMessageAt: ts,
+        ...(r.avatar ? { avatar: r.avatar } : {}),
+      });
       const text = r.preview || '';
       const id = `cdp-${chatId}-preview-${hash(`${direction}|${text}`)}`;
       const msg: WaMessage = {

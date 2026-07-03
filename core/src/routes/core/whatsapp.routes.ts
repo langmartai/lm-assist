@@ -92,6 +92,7 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
           c.unreadCount = m.unread;
           c.lastDirection = m.lastDirection;
           if (m.lastMessageAt > (c.lastMessageAt || 0)) c.lastMessageAt = m.lastMessageAt;
+          if (m.avatar) (c as { avatarUrl?: string }).avatarUrl = m.avatar;
         }
         chats.sort((a, b) => {
           const pa = pos.has(a.chatId) ? (pos.get(a.chatId) as number) : Number.MAX_SAFE_INTEGER;
