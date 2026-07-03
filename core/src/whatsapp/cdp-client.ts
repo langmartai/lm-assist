@@ -23,8 +23,10 @@
  *   getMedia(id)         -> not-yet-supported stub (media extraction is a follow-up)
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import WebSocket from 'ws';
-import { resolveCdpBase } from './config';
+import { resolveCdpBase, WA_DATA_DIR } from './config';
 import * as store from './store';
 import type { WaMessage } from './store';
 
@@ -198,18 +200,34 @@ const JS_STATUS = `
   return { loggedIn, self };
 `;
 
-/** Chat-list rows: name + preview + a coarse time label. */
+/** Chat-list rows: name + preview + time label + unread + outbound marker,
+ *  in DOM order (the app already sorts most-recent-first). */
 const JS_CHATS = `
   const rows = [...document.querySelectorAll('#pane-side [role="row"]')];
-  return rows.map(row => {
+  return rows.map((row, index) => {
     const titles = [...row.querySelectorAll('span[title]')].map(s => s.getAttribute('title'));
     const name = titles[0] || '';
     const preview = titles.length > 1 ? (titles[titles.length-1] || '') : '';
-    // time label like "10:30" / "Yesterday" / a date, shown top-right of the row
-    const timeEl = [...row.querySelectorAll('div,span')].find(e => /^(?:\\d{1,2}:\\d{2}|昨天|Yesterday|[0-9]{1,2}\\/[0-9]{1,2}\\/[0-9]{2,4})$/.test((e.textContent||'').trim()));
-    const timeLabel = timeEl ? timeEl.textContent.trim() : '';
-    const unread = row.querySelector('span[aria-label*="unread"], span[aria-label*="未读"]')?.getAttribute('aria-label') || '';
-    return { name, preview, timeLabel, unread };
+    // candidate short texts — the row's time label is one of these (formats vary
+    // by locale: "10:30", "下午1:30", "昨天", "星期三", "2026/7/1", "7/1/2026")
+    const texts = [...new Set([...row.querySelectorAll('div,span')]
+      .map(e => (e.textContent || '').trim())
+      .filter(t => t && t.length <= 12 && !/wds-ic-/.test(t)))];
+    // outbound preview: the row carries a status-tick icon ligature
+    const isOut = /wds-ic-(read|delivered|sent|check|time)/.test(row.textContent || '');
+    // unread badge: explicit aria-label first, else a small pure-digit span
+    let unread = 0;
+    const badgeAria = [...row.querySelectorAll('[aria-label]')]
+      .map(e => e.getAttribute('aria-label') || '')
+      .find(a => /unread|未读/.test(a));
+    if (badgeAria) {
+      const n = (badgeAria.match(/\\d+/) || [])[0];
+      unread = n ? +n : 1;
+    } else if (!isOut) {
+      const dig = texts.find(t => /^\\d{1,3}$/.test(t) && t !== name);
+      if (dig) unread = +dig;
+    }
+    return { index, name, preview, texts, isOut, unread };
   }).filter(r => r.name);
 `;
 
@@ -260,7 +278,11 @@ function jsRead(n: number): string {
       const aria = [...row.querySelectorAll('[aria-label]')].map(e => e.getAttribute('aria-label') || '');
       const icons = [...row.querySelectorAll('[data-icon]')].map(e => e.getAttribute('data-icon') || '');
       const hasIcon = (re) => icons.some(i => re.test(i));
-      const isOut = !!row.querySelector('.message-out');
+      // Direction: this WebView2 build has no message-in/out classes. Outbound
+      // bubbles ALWAYS carry a status tick (icon ligature wds-ic-*) and group
+      // leaders carry data-icon="tail-out"; inbound rows have neither.
+      const isOut = !!row.querySelector('[data-icon="tail-out"]')
+        || /wds-ic-(read|delivered|sent|check|time)/.test(row.textContent || '');
       const isVoice = hasIcon(/mic|ptt|audio-play/) || aria.some(a => /语音消息|voice message/i.test(a));
       const isImage = !!row.querySelector('img[src^="blob:"], img[src^="data:"]') || aria.some(a => /图片|photo/i.test(a));
       const isVideo = !!row.querySelector('video') || hasIcon(/media-play|video/) || aria.some(a => /视频|video/i.test(a));
@@ -333,22 +355,51 @@ function parsePptTime(ppt: string | null, fallback: number): number {
   return isFinite(ts) && ts > 0 ? ts : fallback;
 }
 
-/** Parse a coarse chat-list time label ("10:30", "Yesterday", "7/1/2026"). */
-function parseChatListTime(label: string, fallback: number): number {
-  const t = String(label || '').trim();
-  if (!t) return fallback;
+/** Parse ONE chat-list time label ("10:30", "下午1:30", "Yesterday", "昨天",
+ *  "星期三", "Wednesday", "2026/7/1", "7/1/2026"). Returns unix seconds or null. */
+function parseOneChatListLabel(t: string): number | null {
   const now = new Date();
-  const hm = t.match(/^(\d{1,2}):(\d{2})$/);
-  if (hm) {
-    const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), +hm[1], +hm[2], 0);
-    return Math.floor(dt.getTime() / 1000);
+  const day = (offset: number, hh = 12, mm = 0) =>
+    Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate() - offset, hh, mm, 0).getTime() / 1000);
+  let m = t.match(/^(\d{1,2}):(\d{2})$/);
+  if (m) return day(0, +m[1], +m[2]);
+  m = t.match(/^(上午|下午)\s*(\d{1,2}):(\d{2})$/);
+  if (m) {
+    let hh = +m[2] % 12;
+    if (m[1] === '下午') hh += 12;
+    return day(0, hh, +m[3]);
   }
-  if (/^(昨天|Yesterday)$/i.test(t)) {
-    const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0);
-    return Math.floor(dt.getTime() / 1000);
+  if (/^(昨天|Yesterday)$/i.test(t)) return day(1);
+  const ZH_DAYS = ['日', '一', '二', '三', '四', '五', '六'];
+  m = t.match(/^星期([日一二三四五六天])$/);
+  const EN_DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const enIdx = EN_DAYS.indexOf(t.toLowerCase());
+  const targetDow = m ? ZH_DAYS.indexOf(m[1] === '天' ? '日' : m[1]) : enIdx;
+  if (targetDow >= 0) {
+    let offset = (now.getDay() - targetDow + 7) % 7;
+    if (offset === 0) offset = 7; // a weekday label always means a PAST day
+    return day(offset);
   }
-  const parsed = new Date(t);
-  if (!isNaN(parsed.getTime())) return Math.floor(parsed.getTime() / 1000);
+  m = t.match(/^(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})$/); // yyyy/m/d (zh locale)
+  if (m) return Math.floor(new Date(+m[1], +m[2] - 1, +m[3], 12, 0, 0).getTime() / 1000);
+  m = t.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/); // d/m/yyyy or m/d/yyyy
+  if (m) {
+    const a = +m[1];
+    const b = +m[2];
+    const dd = a > 12 ? a : b > 12 ? b : a; // disambiguate when possible; else d/m
+    const mo = a > 12 ? b : b > 12 ? a : b;
+    const ts = new Date(+m[3], mo - 1, dd, 12, 0, 0).getTime();
+    if (!isNaN(ts)) return Math.floor(ts / 1000);
+  }
+  return null;
+}
+
+/** Pick the first parseable time label out of a row's candidate short texts. */
+function parseChatListTime(texts: string[], fallback: number): number {
+  for (const t of texts || []) {
+    const ts = parseOneChatListLabel(String(t).trim());
+    if (ts !== null) return ts;
+  }
   return fallback;
 }
 
@@ -374,37 +425,78 @@ export async function cdpStatus(): Promise<CdpStatus> {
   });
 }
 
+// ─── chat-order sidecar ──────────────────────────────────────────────────────
+// The app's own list order (most-recent-first) + per-chat unread counts, as
+// captured at the last syncFromCdp. The store cannot know either reliably
+// (preview timestamps are coarse), so the routes layer merges this in.
+
+export interface ChatOrderEntry {
+  chatId: string;
+  unread: number;
+  lastDirection: 'in' | 'out';
+  lastMessageAt: number;
+}
+
+const chatOrderFile = () => path.join(WA_DATA_DIR, 'chat-order.json');
+
+function writeChatOrder(rows: ChatOrderEntry[]): void {
+  try {
+    fs.mkdirSync(WA_DATA_DIR, { recursive: true });
+    fs.writeFileSync(chatOrderFile(), JSON.stringify({ capturedAt: Date.now(), rows }));
+  } catch {
+    /* ordering is an enhancement — never fail the sync over it */
+  }
+}
+
+export function readChatOrder(): ChatOrderEntry[] {
+  try {
+    const j = JSON.parse(fs.readFileSync(chatOrderFile(), 'utf8')) as { rows?: ChatOrderEntry[] };
+    return Array.isArray(j.rows) ? j.rows : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Ingest the currently-rendered chat list into the store. Each row becomes one
  * synthesized (idempotent-by-id) WaMessage carrying the last-message preview so
- * store.listChats() has a row per conversation. Returns the number of chats seen.
+ * store.listChats() has a row per conversation; the DOM order + unread badges
+ * are captured in the chat-order sidecar. Returns the number of chats seen.
  */
 export async function syncFromCdp(): Promise<{ chats: number; ingested: number }> {
   return withCdp(async (cdp) => {
     await assertLoggedIn(cdp);
-    const rows = await cdp.evaluate<Array<{ name: string; preview: string; timeLabel: string; unread: string }>>(JS_CHATS);
+    const rows = await cdp.evaluate<
+      Array<{ index: number; name: string; preview: string; texts: string[]; isOut: boolean; unread: number }>
+    >(JS_CHATS);
     const list = Array.isArray(rows) ? rows : [];
     let ingested = 0;
     const now = Math.floor(Date.now() / 1000);
+    const order: ChatOrderEntry[] = [];
     list.forEach((r, i) => {
       const chatId = canonicalChatId(r.name);
       if (!chatId) return;
-      const ts = parseChatListTime(r.timeLabel, now - i);
+      const ts = parseChatListTime(r.texts, now - i * 60);
+      const direction: 'in' | 'out' = r.isOut ? 'out' : 'in';
+      order.push({ chatId, unread: r.unread || 0, lastDirection: direction, lastMessageAt: ts });
       const text = r.preview || '';
-      const id = `cdp-${chatId}-preview-${hash(`${ts}|${text}`)}`;
+      const id = `cdp-${chatId}-preview-${hash(`${direction}|${text}`)}`;
       const msg: WaMessage = {
         id,
         chatId,
-        direction: 'in',
-        from: chatId,
+        direction,
+        from: direction === 'out' ? 'me' : chatId,
+        to: direction === 'out' ? chatId : undefined,
         type: 'text',
         text,
         timestamp: ts,
         contactName: looksLikePhone(r.name) ? undefined : r.name,
       };
-      store.addInbound(msg);
+      if (direction === 'out') store.addOutbound(msg);
+      else store.addInbound(msg);
       ingested++;
     });
+    writeChatOrder(order);
     return { chats: list.length, ingested };
   });
 }

@@ -22,7 +22,7 @@ import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import * as os from 'os';
 import { whatsappProvider } from '../../whatsapp/config';
 import * as store from '../../whatsapp/store';
-import { cdpStatus, syncFromCdp, syncChat, sendText, getMedia, canonicalChatId, WaError } from '../../whatsapp/cdp-client';
+import { cdpStatus, syncFromCdp, syncChat, sendText, getMedia, canonicalChatId, readChatOrder, WaError } from '../../whatsapp/cdp-client';
 import { whatsappLogin, whatsappLoginStatus } from '../../whatsapp/login';
 
 function clampInt(v: unknown, def: number, min: number, max: number): number {
@@ -68,7 +68,8 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
-    // GET /whatsapp/chats?limit= — sync the rendered list, then return chats.
+    // GET /whatsapp/chats?limit= — sync the rendered list, then return chats in
+    // the APP's own order (chat-order sidecar), with its unread badge counts.
     {
       method: 'GET',
       pattern: /^\/whatsapp\/chats$/,
@@ -79,7 +80,26 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
         } catch (e) {
           return fail(e);
         }
-        return { success: true, data: { chats: store.listChats(limit) } };
+        const chats = store.listChats(1000);
+        const order = readChatOrder();
+        const pos = new Map(order.map((o, i) => [o.chatId, i]));
+        const meta = new Map(order.map((o) => [o.chatId, o]));
+        for (const c of chats) {
+          const m = meta.get(c.chatId);
+          if (!m) continue;
+          // The app's badge is authoritative for unread; its row time beats a
+          // synthesized preview timestamp when it is newer.
+          c.unreadCount = m.unread;
+          c.lastDirection = m.lastDirection;
+          if (m.lastMessageAt > (c.lastMessageAt || 0)) c.lastMessageAt = m.lastMessageAt;
+        }
+        chats.sort((a, b) => {
+          const pa = pos.has(a.chatId) ? (pos.get(a.chatId) as number) : Number.MAX_SAFE_INTEGER;
+          const pb = pos.has(b.chatId) ? (pos.get(b.chatId) as number) : Number.MAX_SAFE_INTEGER;
+          if (pa !== pb) return pa - pb;
+          return (b.lastMessageAt || 0) - (a.lastMessageAt || 0);
+        });
+        return { success: true, data: { chats: chats.slice(0, limit) } };
       },
     },
 
@@ -97,7 +117,28 @@ export function createWhatsappRoutes(_ctx: RouteContext): RouteHandler[] {
         } catch (e) {
           return fail(e);
         }
-        const messages = store.getMessages(chatId, limit);
+        let messages = store.getMessages(chatId, limit);
+        // A message sent through this node exists twice: the synthetic record
+        // written at send time and the DOM-ingested copy (different ids).
+        // Collapse near-identical neighbours at read time, preferring the
+        // DOM-ingested copy (its timestamp comes from the app).
+        // DOM text carries invisible bidi-control marks — strip before comparing.
+        const cleanText = (t?: string) => String(t || '').replace(/[‎‏‪-‮⁦-⁩]/g, '').trim();
+        messages = messages.filter((m, i) => {
+          const dup = messages.find(
+            (o, j) =>
+              j !== i &&
+              o.direction === m.direction &&
+              cleanText(o.text) === cleanText(m.text) &&
+              Math.abs((o.timestamp || 0) - (m.timestamp || 0)) <= 180 &&
+              o.id !== m.id,
+          );
+          if (!dup) return true;
+          const mIsCdp = m.id.startsWith('cdp-');
+          const dupIsCdp = dup.id.startsWith('cdp-');
+          if (mIsCdp !== dupIsCdp) return mIsCdp; // keep the cdp copy
+          return m.id < dup.id; // both same kind: keep a stable single one
+        });
         if (req.query?.markRead === 'true') store.markChatRead(chatId);
         return { success: true, data: { chatId, messages } };
       },
