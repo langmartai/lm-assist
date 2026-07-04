@@ -20,7 +20,8 @@ import { getSessionCache } from '../session-cache';
 import { decodePath, legacyEncodeProjectPath, getProjectsDir } from '../utils/path-utils';
 import { tokenize } from '../search/text-scorer';
 import { classifyShareability, Shareability } from '../utils/memory-shareability';
-import { MemoryFrontmatter } from '../utils/frontmatter';
+import { MemoryFrontmatter, parseFrontmatter } from '../utils/frontmatter';
+import { sha256 as fileSha256 } from '../memory/file-write';
 import type { ApiResponse } from '../types/control-api';
 
 // ─── Public response shapes ─────────────────────────────────
@@ -101,6 +102,7 @@ export interface MemoryFileResponse {
   body: string;
   mtimeMs: number;
   sizeBytes: number;
+  hash?: string;
 }
 
 export interface MemoryBatchCheckRequest {
@@ -550,26 +552,46 @@ export function createMemoryApiImpl(deps: MemoryApiDeps = {}): MemoryApi {
       try {
         const cwd = resolveProjectIdToCwd(projectId);
         if (!cwd) return wrapError('PROJECT_NOT_FOUND', `Project not found: ${projectId}`, start);
-        const { dirs } = cache.getForProject(cwd, {
+        const { snapshot, dirs } = cache.getForProject(cwd, {
           sources: source === 'live' ? 'live' : 'repo',
           hostFilter: source.startsWith('repo:') ? [source.slice(5)] : undefined,
         });
         const target = dirs.find(d => d.source === source);
+        const file = target?.files.find(f => f.filename === filename);
+        if (file) {
+          const body = cache.getFileBody(file.filePath) || '';
+          const resp: MemoryFileResponse = {
+            projectId: legacyEncodeProjectPath(cwd),
+            source, filename,
+            filePath: file.filePath,
+            frontmatter: file.frontmatter,
+            body,
+            mtimeMs: file.mtimeMs,
+            sizeBytes: file.sizeBytes,
+            hash: fileSha256(body),
+          };
+          return wrapResponse(resp, start);
+        }
+        // Disk fallback (live only): the cache intentionally excludes MEMORY.md and
+        // managed files from `files`, but the web viewer/editor needs to read them.
+        if (source === 'live' && /^[A-Za-z0-9._-]+\.md$/.test(filename) && !filename.startsWith('.')
+            && filename === path.basename(filename) && fs.existsSync(path.join(snapshot.liveDir, filename))) {
+          const filePath = path.join(snapshot.liveDir, filename);
+          const body = fs.readFileSync(filePath, 'utf-8');
+          const st = fs.statSync(filePath);
+          const resp: MemoryFileResponse = {
+            projectId: legacyEncodeProjectPath(cwd),
+            source, filename, filePath,
+            frontmatter: parseFrontmatter(body).frontmatter,
+            body,
+            mtimeMs: st.mtimeMs,
+            sizeBytes: st.size,
+            hash: fileSha256(body),
+          };
+          return wrapResponse(resp, start);
+        }
         if (!target) return wrapError('SOURCE_NOT_FOUND', `Source not found: ${source}`, start);
-        const file = target.files.find(f => f.filename === filename);
-        if (!file) return wrapError('FILE_NOT_FOUND', `File not found: ${filename}`, start);
-        const body = cache.getFileBody(file.filePath) || '';
-        const resp: MemoryFileResponse = {
-          projectId: legacyEncodeProjectPath(cwd),
-          source,
-          filename,
-          filePath: file.filePath,
-          frontmatter: file.frontmatter,
-          body,
-          mtimeMs: file.mtimeMs,
-          sizeBytes: file.sizeBytes,
-        };
-        return wrapResponse(resp, start);
+        return wrapError('FILE_NOT_FOUND', `File not found: ${filename}`, start);
       } catch (e) {
         return wrapError('MEMORY_FILE_ERROR', String(e), start);
       }
