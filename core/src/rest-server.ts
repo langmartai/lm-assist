@@ -569,10 +569,25 @@ export class TierRestServer {
       let body = '';
       req.on('data', (chunk) => (body += chunk));
       req.on('end', () => {
+        // Preserve the raw payload as a non-enumerable `_raw` so routes that
+        // receive non-JSON bodies (e.g. the WeChat webhook's encrypted XML,
+        // which fails JSON.parse) can still read the original text. Existing
+        // JSON callers are unaffected — `_raw` is hidden from enumeration and
+        // JSON.stringify, and object field access is unchanged.
+        const withRaw = (obj: any) => {
+          if (obj && typeof obj === 'object') {
+            try {
+              Object.defineProperty(obj, '_raw', { value: body, enumerable: false });
+            } catch {
+              /* frozen/non-extensible — skip */
+            }
+          }
+          return obj;
+        };
         try {
-          resolve(body ? JSON.parse(body) : {});
+          resolve(withRaw(body ? JSON.parse(body) : {}));
         } catch {
-          resolve({});
+          resolve(withRaw({}));
         }
       });
     });

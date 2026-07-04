@@ -169,6 +169,13 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   // github endpoint (read = query, write = mutate)
   github_query: 'read',
   github_mutate: 'write',
+  // wechat connector (WeCom 微信客服; read tier + one write)
+  wechat_status: 'read',
+  wechat_list_chats: 'read',
+  wechat_read_messages: 'read',
+  wechat_search: 'read',
+  wechat_get_media: 'read',
+  wechat_send: 'write',
   // ccr — Claude Code remote support
   cc_sessions: 'read',
   ccr_preflight: 'read',
