@@ -23,6 +23,7 @@
  *   getMedia(id)         -> not-yet-supported stub (media extraction is a follow-up)
  */
 
+import { spawn } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -42,6 +43,29 @@ export class WaError extends Error {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// ─── auto-launch / foreground the WhatsApp Desktop app (Windows) ──────────────
+// The desktop app is a WebView2 Store app that Windows SUSPENDS when minimized/
+// backgrounded — its WhatsApp Web session stalls on the loading splash, so the
+// CDP provider sees loggedIn:false. Launching it by AppUserModelId both starts
+// it (if closed) and foregrounds it (if suspended), letting the session finish.
+const WA_APP_ID = process.env.WHATSAPP_DESKTOP_APPID || '5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App';
+const WA_AUTOLAUNCH = process.env.WHATSAPP_AUTOLAUNCH !== '0';
+let lastLaunchMs = 0;
+function launchDesktopApp(): void {
+  if (!WA_AUTOLAUNCH || process.platform !== 'win32') return;
+  const now = Date.now();
+  if (now - lastLaunchMs < 20000) return; // rate-limit: at most once / 20s
+  lastLaunchMs = now;
+  try {
+    // explorer.exe launches OR foregrounds a Store app by its AppUserModelId.
+    const child = spawn('explorer.exe', [`shell:AppsFolder\\${WA_APP_ID}`], { detached: true, stdio: 'ignore' });
+    child.unref();
+    log('auto-launched/foregrounded WhatsApp Desktop app');
+  } catch (e) {
+    log('WhatsApp Desktop launch failed:', e instanceof Error ? e.message : String(e));
+  }
+}
 
 /** Digits-only phone. */
 function normalizePhone(v: unknown): string {
@@ -74,7 +98,7 @@ function hash(s: string): string {
 // ─── CDP session plumbing ────────────────────────────────────────────────────
 
 /** Find the web.whatsapp.com page target; return a ws URL host-matched to base. */
-async function findPageWs(base: string): Promise<string> {
+async function findPageWsOnce(base: string): Promise<string> {
   let list: unknown;
   try {
     const res = await fetch(`${base}/json/list`, { signal: AbortSignal.timeout(8000) });
@@ -90,6 +114,24 @@ async function findPageWs(base: string): Promise<string> {
   }
   const baseHost = new URL(base).host;
   return String(page.webSocketDebuggerUrl).replace(/^ws:\/\/[^/]+/, `ws://${baseHost}`);
+}
+
+async function findPageWs(base: string): Promise<string> {
+  try {
+    return await findPageWsOnce(base);
+  } catch (e) {
+    // App closed (unreachable) or no WhatsApp page — try to launch it, then wait.
+    launchDesktopApp();
+    for (let i = 0; i < 12; i++) {
+      await sleep(2500);
+      try {
+        return await findPageWsOnce(base);
+      } catch {
+        /* keep waiting for the app to come up */
+      }
+    }
+    throw e;
+  }
 }
 
 interface Cdp {
@@ -530,16 +572,24 @@ export interface CdpStatus {
 }
 
 async function assertLoggedIn(cdp: Cdp): Promise<void> {
-  const s = await cdp.evaluate<{ loggedIn: boolean }>(JS_STATUS);
-  if (!s || !s.loggedIn) {
-    throw new WaError('NOT_LOGGED_IN', 'WhatsApp Web is not logged in / not ready');
+  let s = await cdp.evaluate<{ loggedIn: boolean }>(JS_STATUS);
+  if (s && s.loggedIn) return;
+  // Pane not ready — the app is likely suspended/backgrounded. Foreground it and
+  // wait for WhatsApp Web to finish loading.
+  launchDesktopApp();
+  for (let i = 0; i < 12; i++) {
+    await sleep(2500);
+    s = await cdp.evaluate<{ loggedIn: boolean }>(JS_STATUS);
+    if (s && s.loggedIn) return;
   }
+  throw new WaError('NOT_LOGGED_IN', 'WhatsApp Web is not logged in / not ready');
 }
 
 /** CDP reachability + logged-in state (+ best-effort self identity). */
 export async function cdpStatus(): Promise<CdpStatus> {
   return withCdp(async (cdp) => {
     const s = await cdp.evaluate<CdpStatus>(JS_STATUS);
+    if (!s?.loggedIn) launchDesktopApp(); // nudge a suspended app to foreground
     return { loggedIn: !!s?.loggedIn, self: s?.self ?? null };
   });
 }
