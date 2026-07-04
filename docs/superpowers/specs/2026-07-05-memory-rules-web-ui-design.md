@@ -84,11 +84,14 @@ free. No raw `fetch()` anywhere (web-core-fetch-rules).
 - Detail drawer on click: `GET /memory/record/:recordId` (rendered) + raw file via
   `GET /memory/by-project/:projectId/file/:filename?source=live|repo:<host>` with a
   source selector listing `GET /memory/by-project/:projectId/sources`.
-- Per-project panels: cross-host search
-  (`GET /memory/by-project/:id/cross-host?q=`) and import candidates
+- Per-project panel: import candidates
   (`GET /memory/by-project/:id/sync/import-candidates`). Candidate rows get
-  **Import to live** = client composes a normal PUT with the mirror content
-  (no new backend).
+  **Import to live** = client composes a normal PUT with the candidate's
+  `body` (the endpoint returns full content — no extra fetch, no new backend).
+- *(Plan amendment)* No dedicated cross-host search panel: the record map
+  already indexes host-mirror records, so the main search box covers
+  cross-host content with node tags; `/memory/by-project/:id/cross-host`
+  stays MCP/API-only.
 - **Edit** on live files opens FileEditor; mirrors read-only.
 
 ### Rules tab
