@@ -24,7 +24,9 @@ console.info = console.error.bind(console);
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
-import { configureMcpServer, type McpToolDispatcher, LM_ASSIST_INSTRUCTIONS } from './configure';
+import { configureMcpServer, type McpToolDispatcher, getLmAssistInstructions } from './configure';
+import { getHubConfig } from '../hub-client/hub-config';
+import { hubHostOf, envLabelOf } from './fleet-identity';
 import {
   ensureCoreApi,
   mcpSearch,
@@ -42,9 +44,19 @@ import { EXPANDED_HANDLERS } from './tools/expanded';
 // ─── Server Setup ──────────────────────────────────────────────────
 
 const server = new Server(
-  { name: 'lm-assist', version: '2.0.0' },
-  { capabilities: { tools: {} }, instructions: LM_ASSIST_INSTRUCTIONS }
+  { name: mcpServerName(), version: '2.0.0' },
+  { capabilities: { tools: {} }, instructions: getLmAssistInstructions() }
 );
+
+/** Distinct server name per environment so the two connectors read apart. */
+function mcpServerName(): string {
+  try {
+    const cfg = getHubConfig();
+    return envLabelOf(hubHostOf(cfg.hubUrl), cfg.hostname) === 'DEVELOPMENT' ? 'lm-assist-dev' : 'lm-assist';
+  } catch {
+    return 'lm-assist';
+  }
+}
 
 // Dispatcher for stdio mode — forwards each tool call to the running core
 // API over HTTP. The actual data stores (LMDB, LanceDB, embedder) live in

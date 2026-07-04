@@ -352,7 +352,7 @@ export function assertScopesCoverTools(): void {
  * sessions/nodes) and how to prioritize it alongside the user's local CLAUDE.md / memory / skills.
  * Keep it tight (sent every session); the full version is `guide(topic="orientation")`.
  */
-export const LM_ASSIST_INSTRUCTIONS = `lm-assist connects you to the user's Claude Code environment ACROSS all their hosts ("nodes"): PROJECTS and SESSIONS (history + live runs) on any host; saved MEMORY including other machines; a shared cross-node DATA service (cache/vector/sql); and remote AGENTS, TERMINAL driving, file transfer, claude.ai, and GitHub.
+const LM_ASSIST_INSTRUCTIONS_BODY = `lm-assist connects you to the user's Claude Code environment ACROSS all their hosts ("nodes"): PROJECTS and SESSIONS (history + live runs) on any host; saved MEMORY including other machines; a shared cross-node DATA service (cache/vector/sql); and remote AGENTS, TERMINAL driving, file transfer, claude.ai, and GitHub.
 
 It COMPLEMENTS your local context — it does NOT replace your CLAUDE.md / memory / skills, and it is neither above nor below them; they do different jobs and work best TOGETHER:
 - Your local CLAUDE.md / AGENTS.md / memory / skills = the conventions + HOW to work in the CURRENT repo/machine.
@@ -365,6 +365,40 @@ FIRST, call the bootstrap tool (no arguments), ONCE — it loads ALL lm-assist u
 
 import { enrichBootstrapWithIdentity } from './mcp-session-resolver';
 import { withOriginTag } from './result-origin';
+import { getHubConfig } from '../hub-client/hub-config';
+import { hubHostOf, envLabelOf } from './fleet-identity';
+
+/**
+ * MCP `instructions` for THIS connector — the always-sent body prefixed with a
+ * one-line ENVIRONMENT banner (PRODUCTION vs DEVELOPMENT) so an LLM that has
+ * BOTH lm-assist connectors attached can tell them apart and pick the right one
+ * up-front (not just from the per-result origin footer). Resolved at connect
+ * time from the hub this instance serves. NEVER throws.
+ */
+export function getLmAssistInstructions(): string {
+  let hub: string | null = null;
+  let hostname = '';
+  try {
+    const cfg = getHubConfig();
+    hub = hubHostOf(cfg.hubUrl);
+    hostname = cfg.hostname || '';
+  } catch {
+    /* config unavailable — fall back to the bare body */
+  }
+  const env = envLabelOf(hub, hostname);
+  const banner =
+    `⟦THIS CONNECTOR⟧ lm-assist · ${env}${hub ? ` (hub ${hub})` : ' (local)'}. ` +
+    `A PRODUCTION connector (hub *.langmart.ai) and a DEVELOPMENT connector (hub *.xeenhub.com) may BOTH be ` +
+    `attached to this conversation: SAME tool names, INDEPENDENT instances over SEPARATE fleets (no shared ` +
+    `state). Use PRODUCTION for the user's real hosts/data/actions; use DEVELOPMENT only to test lm-assist ` +
+    `itself. They are independent — if one connector is down or a tool ERRORS on it, the OTHER still works, so ` +
+    `fall back to it. Every result is footer-tagged with its hub (⟦lm-assist@<hub>…⟧) so you can confirm which ` +
+    `connector answered.`;
+  return `${banner}\n\n${LM_ASSIST_INSTRUCTIONS_BODY}`;
+}
+
+/** @deprecated Back-compat alias — prefer getLmAssistInstructions() (env-aware). */
+export const LM_ASSIST_INSTRUCTIONS = LM_ASSIST_INSTRUCTIONS_BODY;
 
 export function configureMcpServer(server: Server, dispatch: McpToolDispatcher): void {
   assertScopesCoverTools();

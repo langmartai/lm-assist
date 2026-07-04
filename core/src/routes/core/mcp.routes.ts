@@ -29,7 +29,9 @@ import { runWithMcpContext } from '../../mcp-server/principal-context';
 import { getDataService } from '../../data/data-service';
 import type { ParsedRequest } from '../index';
 
-import { configureMcpServer, type McpToolDispatcher, LM_ASSIST_INSTRUCTIONS } from '../../mcp-server/configure';
+import { configureMcpServer, type McpToolDispatcher, getLmAssistInstructions } from '../../mcp-server/configure';
+import { getHubConfig } from '../../hub-client/hub-config';
+import { hubHostOf, envLabelOf } from '../../mcp-server/fleet-identity';
 import { handleSearch } from '../../mcp-server/tools/search';
 import { handleDetail } from '../../mcp-server/tools/detail';
 import { handleFeedback } from '../../mcp-server/tools/feedback';
@@ -70,9 +72,16 @@ export const dispatch: McpToolDispatcher = async (name, args) => {
 // all expensive work (vector store, session cache, etc.) lives in
 // module-level singletons that the handlers reach through.
 function buildServer(): Server {
+  let name = 'lm-assist';
+  try {
+    const cfg = getHubConfig();
+    if (envLabelOf(hubHostOf(cfg.hubUrl), cfg.hostname) === 'DEVELOPMENT') name = 'lm-assist-dev';
+  } catch {
+    /* default name */
+  }
   const server = new Server(
-    { name: 'lm-assist', version: '2.0.0' },
-    { capabilities: { tools: {} }, instructions: LM_ASSIST_INSTRUCTIONS },
+    { name, version: '2.0.0' },
+    { capabilities: { tools: {} }, instructions: getLmAssistInstructions() },
   );
   configureMcpServer(server, dispatch);
   return server;
