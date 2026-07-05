@@ -46,6 +46,7 @@ import { createMemoryFilesRoutes } from './memory-files.routes';
 import { createRuleMapRoutes } from './rule-map.routes';
 import { createRuleSyncRoutes } from './rule-sync.routes';
 import { createRuleFilesRoutes } from './rule-files.routes';
+import { createPeerRelayRoutes } from './peer-relay.routes';
 import { createBrowserRoutes } from './browser.routes';
 import { createCcrRoutes } from './ccr.routes';
 import { createTerminalStdRoutes } from './terminal-std.routes';
@@ -109,6 +110,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createMemorySyncRoutes(ctx),
     ...createMemoryFilesRoutes(ctx),
     ...createRuleFilesRoutes(ctx),
+    ...createPeerRelayRoutes(ctx),
     ...createRuleMapRoutes(ctx),
     ...createRuleSyncRoutes(ctx),
     ...createBrowserRoutes(ctx),

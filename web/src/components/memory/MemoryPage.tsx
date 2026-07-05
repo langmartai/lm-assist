@@ -19,11 +19,17 @@ export function MemoryPage() {
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // Remote nodes are reached through THIS node's Core (`/peer-relay/<node>/…`,
+  // server-side hub machine-proxy) — a LAN browser cannot call the hub gateway
+  // directly (cross-origin + cloud-login gated → TypeError: Failed to fetch).
   const call: CallFn = useCallback(
-    (path, opts) => apiClient.fetchPath(path, {
-      method: opts?.method, body: opts?.body,
-      machineId: nodeId ?? proxy.machineId ?? undefined,
-    }),
+    (path, opts) => apiClient.fetchPath(
+      nodeId ? `/peer-relay/${encodeURIComponent(nodeId)}${path}` : path,
+      {
+        method: opts?.method, body: opts?.body,
+        machineId: proxy.machineId ?? undefined,
+      },
+    ),
     [apiClient, nodeId, proxy.machineId],
   );
 
