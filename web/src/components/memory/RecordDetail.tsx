@@ -10,6 +10,14 @@ const PROTECTED_MEMORY = new Set(['_cross-project.md', '_hosts.md']);
 
 interface SourceInfo { source: string; dirPath: string; fileCount: number; maxMtimeMs: number }
 
+/** Pull the human message out of the api-client's `API 400: {json}` throw shape. */
+function errText(e: unknown): string {
+  const s = String(e);
+  const m = s.match(/API \d+:\s*(\{[\s\S]*\})/);
+  if (m) { try { return JSON.parse(m[1])?.error?.message || s; } catch { /* fall through */ } }
+  return s.replace(/^Error:\s*/, '');
+}
+
 export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
   { record: MapRecord; call: CallFn; onEdit?: (t: EditTarget) => void; onClose: () => void; refreshTick?: number }) {
   const [full, setFull] = useState<MapRecord | null>(null);
@@ -18,9 +26,12 @@ export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
   const [file, setFile] = useState<{ body: string; hash?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // CLAUDE.md-section records use pseudo-projects like '(user-global)' — no
-  // by-project file access for those; record render only.
-  const hasFileAccess = !record.project.startsWith('(');
+  // A record is backed by a fetchable memory-dir file only when it's a real
+  // memory file or a MEMORY.md bullet. CLAUDE.md sections (kind='claude-section')
+  // and user-global pseudo-projects have no by-project file → render-only.
+  const isClaudeSection = record.kind === 'claude-section';
+  const isIndexEntry = record.kind === 'index-entry';
+  const fileBacked = !record.project.startsWith('(') && !isClaudeSection;
   const pid = encodeURIComponent(record.project);
   const fname = encodeURIComponent(record.file);
 
@@ -29,26 +40,29 @@ export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
     setError(null);
     call<MapRecord>(`/memory/record/${encodeURIComponent(record.recordId)}`)
       .then((r) => { if (alive) setFull(r); })
-      .catch((e) => { if (alive) setError(String(e)); });
-    if (!hasFileAccess) return () => { alive = false; };
+      .catch((e) => { if (alive) setError(errText(e)); });
+    if (!fileBacked) return () => { alive = false; };
     call<{ sources: SourceInfo[] }>(`/memory/by-project/${pid}/sources`)
       .then((r) => { if (alive) setSources(r.sources || []); })
       .catch(() => { if (alive) setSources([]); });
     return () => { alive = false; };
-  }, [call, record.recordId, pid, hasFileAccess, refreshTick]);
+  }, [call, record.recordId, pid, fileBacked, refreshTick]);
 
   useEffect(() => {
     let alive = true;
     setFile(null);
-    setError(null);
-    if (!hasFileAccess) return () => { alive = false; };
+    if (!fileBacked) return () => { alive = false; };
     call<{ body: string; hash?: string }>(`/memory/by-project/${pid}/file/${fname}?source=${encodeURIComponent(source)}`)
       .then((r) => { if (alive) setFile(r); })
-      .catch((e) => { if (alive) setError(String(e)); });
+      // A missing raw file is not fatal — the rendered record still shows.
+      .catch(() => { if (alive) setFile(null); });
     return () => { alive = false; };
-  }, [call, pid, fname, source, hasFileAccess, refreshTick]);
+  }, [call, pid, fname, source, fileBacked, refreshTick]);
 
-  const editable = hasFileAccess && source === 'live' && !PROTECTED_MEMORY.has(record.file);
+  // Deleting the file is only meaningful for a standalone memory file — a
+  // MEMORY.md bullet must not delete the whole index.
+  const editable = fileBacked && source === 'live' && !PROTECTED_MEMORY.has(record.file);
+  const deletable = editable && !isIndexEntry;
 
   return (
     <div className="w-[36rem] shrink-0 border border-gray-800 rounded p-3 space-y-3 bg-gray-950 max-h-[80vh] overflow-y-auto">
@@ -67,7 +81,11 @@ export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
         </div>
       )}
 
-      {hasFileAccess && (
+      {isClaudeSection && (
+        <div className="text-gray-500 text-[10px]">Source: {record.file} — project instructions, read-only here.</div>
+      )}
+
+      {fileBacked && (
         <div className="flex items-center gap-2">
           <span className="text-gray-400 text-xs">Raw file:</span>
           <select value={source} onChange={(e) => setSource(e.target.value)}
@@ -83,14 +101,14 @@ export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
               Edit
             </button>
           )}
-          {editable && file && (
+          {deletable && file && (
             <button
               onClick={async () => {
                 if (!window.confirm(`Delete ${record.file}? Its MEMORY.md index line is removed too.`)) return;
                 try {
                   await call(`/memory/by-project/${pid}/file/${fname}?removeIndexLine=true&expectedHash=${file.hash || ''}`, { method: 'DELETE' });
                   onClose();
-                } catch (e) { setError(String(e)); }
+                } catch (e) { setError(errText(e)); }
               }}
               className="px-2 py-0.5 rounded bg-rose-900 text-rose-100 hover:bg-rose-800 text-xs">
               Delete
@@ -99,7 +117,7 @@ export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
           {!editable && <span className="ml-auto text-gray-500 text-[10px]">read-only ({source === 'live' ? 'managed file' : 'mirror'})</span>}
         </div>
       )}
-      {file && (
+      {fileBacked && file && (
         <pre className="text-xs text-gray-300 bg-gray-900 rounded p-2 overflow-x-auto whitespace-pre-wrap">{file.body}</pre>
       )}
     </div>

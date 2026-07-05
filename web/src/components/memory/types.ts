@@ -10,6 +10,8 @@ export interface MemoryProjectSummary {
 /** GET /memory/map (level=brief) item; complete adds source/complete/contentHash */
 export interface MapRecord {
   recordId: string; node: string; project: string; file: string;
+  /** 'memory' = a memory-dir .md file; 'claude-section' = a CLAUDE.md heading (no memory-dir file); 'index-entry' = a MEMORY.md bullet */
+  kind?: string;
   title: string; brief: string; type: string; category: string; validity: string;
   referencedProjects: string[]; recordedAtMs: number;
   source?: string; complete?: string; contentHash?: string;
