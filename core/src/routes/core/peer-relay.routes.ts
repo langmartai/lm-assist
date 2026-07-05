@@ -23,12 +23,32 @@ import { proxyUrlPath } from '../../memory/mcp-transport';
 const NODE_RE = /^[A-Za-z0-9._-]+$/;
 const PATH_RE = /^\/(memory|rules)(\/|$)/;
 
-/** Pure: validate + normalize the forward target. Returns null when refused. */
+/**
+ * Pure: validate + canonicalize the forward target. Returns null when refused.
+ *
+ * The route matches against the raw (percent-encoded) pathname, so validating
+ * the raw string would let an ENCODED traversal through — `/memory/%2e%2e/hub`
+ * passes a naive `PATH_RE`/`includes('..')` check yet decodes to
+ * `/memory/../hub`. We must never rely on a downstream (hub proxy / peer)
+ * NOT decoding it. So: fully decode (iteratively, to defeat double-encoding),
+ * validate the DECODED form, and forward THAT canonical form. Legitimate
+ * memory/rules paths are unreserved-only (project slugs `[A-Za-z0-9._-]`,
+ * `*.md` filenames) so the decoded form has nothing left to re-interpret.
+ */
 export function peerForwardPath(rest: string): string | null {
   if (!rest.startsWith('/')) rest = '/' + rest;
-  if (rest.includes('..') || rest.includes('\\')) return null;
-  if (!PATH_RE.test(rest)) return null;
-  return rest;
+  let decoded = rest;
+  for (let i = 0; i < 3; i++) {
+    let next: string;
+    try { next = decodeURIComponent(decoded); } catch { return null; } // malformed %-escape
+    if (next === decoded) break;
+    decoded = next;
+  }
+  // Reject traversal, separators, and control/null bytes in the DECODED form.
+  if (decoded.includes('..') || decoded.includes('\\') || /[\u0000-\u001f\u007f ]/.test(decoded)) return null;
+  // Only /memory… and /rules… are relayable.
+  if (!PATH_RE.test(decoded)) return null;
+  return decoded;
 }
 
 function relaySource(req: ParsedRequest): string | undefined {
@@ -49,8 +69,9 @@ export function createPeerRelayRoutes(_ctx: RouteContext): RouteHandler[] {
     }
     const node = decodeURIComponent(req.params.node || '');
     if (!NODE_RE.test(node)) return wrapError('INVALID_INPUT', `INVALID_INPUT: bad node id`, start);
-    // rest is forwarded AS-RECEIVED (no decode) so any percent-encoding in
-    // filenames survives intact to the peer.
+    // peerForwardPath fully decodes + validates, returning the canonical
+    // (unreserved-only) path we forward — so an ENCODED traversal cannot slip
+    // past the allow-list on the strength of a downstream decode.
     const fwd = peerForwardPath(req.params.rest || '');
     if (!fwd) return wrapError('INVALID_INPUT', 'INVALID_INPUT: only /memory and /rules paths are relayable', start);
 

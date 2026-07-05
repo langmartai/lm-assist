@@ -16,6 +16,22 @@ test('peerForwardPath allows only /memory and /rules, blocks traversal', () => {
   assert.equal(peerForwardPath('data/put'), null);
 });
 
+test('peerForwardPath defeats percent-encoded and double-encoded traversal', () => {
+  // Encoded `..` that would pass a raw includes('..') / PATH_RE check but
+  // decodes to a traversal out of the /memory allow-list.
+  assert.equal(peerForwardPath('/memory/%2e%2e/hub/config'), null);
+  assert.equal(peerForwardPath('/memory/%2E%2E/hub/config'), null);
+  assert.equal(peerForwardPath('/memory/..%2fhub/config'), null);
+  // Encoded slash right after the prefix breaks the required `/memory/` shape once decoded.
+  assert.equal(peerForwardPath('/rules%2f..%2fhub/config'), null);
+  // Double-encoded traversal (iterative decode must catch it).
+  assert.equal(peerForwardPath('/memory/%252e%252e/hub'), null);
+  // A malformed %-escape is refused outright.
+  assert.equal(peerForwardPath('/memory/%zz'), null);
+  // Encoded but legitimate: %2d is '-', a valid slug char → decodes to canonical form.
+  assert.equal(peerForwardPath('/memory/by-project/a%2db/file/x.md'), '/memory/by-project/a-b/file/x.md');
+});
+
 test('relayed requests are refused (no chaining)', async () => {
   const route = createPeerRelayRoutes({} as any).find(r => r.method === 'GET')!;
   const req = {
