@@ -629,7 +629,10 @@ export interface SupervisorDeps {
   putEngagement?: (s: EngagementState) => Promise<void>;
   /** Write a mission's token-free interim progress line (no engage). */
   setInterim?: (id: string, x: { at: number; text: string }) => Promise<void>;
-  /** Long safety interval (min) — engage at least this often even with no change. Default 45. */
+  /** Long safety interval (min) — once elapsed, engage even without a MATERIAL change,
+   *  as long as something (material or interim) happened since the last engagement.
+   *  A fully quiescent fleet (zero activity the whole interval) never force-engages —
+   *  there would be nothing new to review. Default 45. */
   safetyIntervalMin?: number;
   /** Current stable key of THIS node's in-cluster roster (sorted in-cluster gatewayIds).
    *  When present, evaluateEngagement force-engages on a change vs the persisted lastRosterKey
@@ -676,6 +679,11 @@ async function evaluateEngagement(
   const now = deps.now;
   const curSeen: EngagementState['seen'] = {};
   let materialCount = 0;
+  // Wave 4.1 — tracks whether ANYTHING happened this tick (material or merely interim,
+  // i.e. a mission's cursor/liveness/gate moved at all). Combined with the persisted
+  // dirtySinceEngage flag below to gate the safety-interval fallback: it must not force
+  // an LLM pass on pure elapsed time when the fleet has been completely quiescent.
+  let anyUpdateThisTick = false;
   for (const m of active) {
     let sig: ExecNow;
     try {
@@ -689,11 +697,16 @@ async function evaluateEngagement(
     curSeen[m.id] = { alive: sig.alive, gated: sig.gated, cursor: sig.cursor };
     if (act.material) {
       materialCount++;
-    } else if (act.interim && deps.setInterim) {
-      try { await deps.setInterim(m.id, { at: now, text: act.interim.summary }); } catch { /* best-effort */ }
+      anyUpdateThisTick = true;
+    } else if (act.interim) {
+      anyUpdateThisTick = true;
+      if (deps.setInterim) {
+        try { await deps.setInterim(m.id, { at: now, text: act.interim.summary }); } catch { /* best-effort */ }
+      }
     }
   }
   const activeIds = active.map((m) => m.id);
+  const dirtySinceEngage = (eng.dirtySinceEngage ?? false) || anyUpdateThisTick;
   let engage = shouldEngage({
     now,
     lastEngagedAt: eng.lastEngagedAt,
@@ -701,6 +714,7 @@ async function evaluateEngagement(
     materialCount,
     activeIds,
     lastActiveIds: eng.lastActiveIds,
+    anyUpdateSinceEngage: dirtySinceEngage,
   });
 
   // ── Cluster-roster change — ADDITIONAL force-engage trigger ──
@@ -735,12 +749,15 @@ async function evaluateEngagement(
 
   // Persist `seen` every tick (cursor/liveness/gate tracking advances regardless);
   // stamp lastEngagedAt + lastActiveIds only when we actually engage; carry/advance
-  // lastRosterKey so a detected roster change fires exactly once.
+  // lastRosterKey so a detected roster change fires exactly once; dirtySinceEngage
+  // clears on any engage (its purpose served) and otherwise carries forward so an
+  // interim-only tick is still remembered by the next safety-interval check.
   await deps.putEngagement!({
     lastEngagedAt: engage ? now : eng.lastEngagedAt,
     lastActiveIds: engage ? activeIds : eng.lastActiveIds,
     seen: curSeen,
     lastRosterKey: nextRosterKey,
+    dirtySinceEngage: engage ? false : dirtySinceEngage,
   });
   return { engage, reason, migrationCandidates };
 }

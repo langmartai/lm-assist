@@ -39,6 +39,10 @@ export interface EngagementState {
    *  the supervisor force-engages the controller so it re-scopes its cluster. Absent
    *  until the first observation (which sets the baseline without a spurious drive). */
   lastRosterKey?: string;
+  /** Whether any mission has had a session update (material or interim) since the last
+   *  engagement. Gates the safety-interval fallback in shouldEngage so it never fires on
+   *  pure elapsed time alone. Cleared (false) whenever an engage actually happens. */
+  dirtySinceEngage?: boolean;
 }
 
 /** Controller session state — stored in the missions dataset under reserved key __controller__. */
@@ -269,6 +273,7 @@ export async function getEngagementState(port: MissionDataPort = defaultPort()):
     lastActiveIds: Array.isArray(f.lastActiveIds) ? (f.lastActiveIds as string[]) : [],
     seen: (f.seen as EngagementState['seen']) ?? {},
     lastRosterKey: typeof f.lastRosterKey === 'string' ? (f.lastRosterKey as string) : undefined,
+    dirtySinceEngage: typeof f.dirtySinceEngage === 'boolean' ? (f.dirtySinceEngage as boolean) : undefined,
   };
 }
 

@@ -69,3 +69,15 @@ test('shouldEngage: nothing changed, within interval → false', () => {
 test('shouldEngage: same set different order → not a change (false)', () => {
   assert.equal(shouldEngage({ now: 10 * 60_000, lastEngagedAt: 9 * 60_000, safetyIntervalMin: 45, materialCount: 0, activeIds: ['b', 'a'], lastActiveIds: ['a', 'b'] }), false);
 });
+
+test('shouldEngage: safety elapsed but NO update since last engage → false (no wasted-token check-in)', () => {
+  assert.equal(shouldEngage({ now: 100 * 60_000, lastEngagedAt: 0, safetyIntervalMin: 45, materialCount: 0, activeIds: ['a'], lastActiveIds: ['a'], anyUpdateSinceEngage: false }), false);
+});
+
+test('shouldEngage: safety elapsed AND something updated since last engage → true (safety net preserved)', () => {
+  assert.equal(shouldEngage({ now: 100 * 60_000, lastEngagedAt: 0, safetyIntervalMin: 45, materialCount: 0, activeIds: ['a'], lastActiveIds: ['a'], anyUpdateSinceEngage: true }), true);
+});
+
+test('shouldEngage: anyUpdateSinceEngage omitted → defaults true (back-compat with old callers)', () => {
+  assert.equal(shouldEngage({ now: 100 * 60_000, lastEngagedAt: 0, safetyIntervalMin: 45, materialCount: 0, activeIds: ['a'], lastActiveIds: ['a'] }), true);
+});

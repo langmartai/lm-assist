@@ -304,6 +304,53 @@ test('engage: interim-only progress → NOT drive but setInterim called with the
   assert.equal(interim?.text, 'running tests');
 });
 
+test('engage: interim-only progress persists dirtySinceEngage (remembered for a later safety check)', async () => {
+  let saved: any = null;
+  const deps = engageDeps({
+    listActiveForEngage: async () => [mkM('m1')],
+    getEngagement: async () => ({ lastEngagedAt: NOW - 60_000, lastActiveIds: ['m1'], seen: { m1: { alive: true, gated: false, cursor: 3 } } }),
+    readSignal: async () => ({ alive: true, gated: false, cursor: 5, newLines: ['building', 'running tests'] }),
+    putEngagement: async (s) => { saved = s; },
+  });
+  const r = await runSupervisorTick(deps);
+  assert.notEqual(r.action, 'drive');
+  assert.equal(saved.dirtySinceEngage, true);
+});
+
+test('engage: safety interval elapsed but NOTHING ever updated → NOT drive (token-saving)', async () => {
+  const deps = engageDeps({
+    listActiveForEngage: async () => [mkM('m1')],
+    getEngagement: async () => ({
+      lastEngagedAt: NOW - 50 * 60_000,
+      lastActiveIds: ['m1'],
+      seen: { m1: { alive: true, gated: false, cursor: 3 } },
+    }),
+    // Identical to `seen` — cursor hasn't moved, liveness/gate unchanged → zero activity this tick.
+    readSignal: async () => ({ alive: true, gated: false, cursor: 3, newLines: [] }),
+  });
+  const r = await runSupervisorTick(deps);
+  assert.notEqual(r.action, 'drive');
+  assert.equal(r.action, 'idle');
+});
+
+test('engage: safety interval elapsed AND an earlier interim update was pending → drive (safety net preserved) + clears dirtySinceEngage', async () => {
+  let saved: any = null;
+  const deps = engageDeps({
+    listActiveForEngage: async () => [mkM('m1')],
+    getEngagement: async () => ({
+      lastEngagedAt: NOW - 50 * 60_000,
+      lastActiveIds: ['m1'],
+      seen: { m1: { alive: true, gated: false, cursor: 5 } },
+      dirtySinceEngage: true, // set by a prior tick's interim (non-material) update
+    }),
+    readSignal: async () => ({ alive: true, gated: false, cursor: 5, newLines: [] }), // no NEW movement this tick
+    putEngagement: async (s) => { saved = s; },
+  });
+  const r = await runSupervisorTick(deps);
+  assert.equal(r.action, 'drive');
+  assert.equal(saved.dirtySinceEngage, false, 'dirty flag clears once we actually engage');
+});
+
 test('engage: a NEW mission (active-set changed) → drive', async () => {
   const deps = engageDeps({
     listActiveForEngage: async () => [mkM('m1'), mkM('m2')],
