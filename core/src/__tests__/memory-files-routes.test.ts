@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -6,10 +6,14 @@ import * as path from 'path';
 
 // Hermetic projects root — set BEFORE importing the routes.
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mfr-'));
+const DATA_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mfr-cfg-'));
 process.env.CLAUDE_CONFIG_DIR = TMP;
-process.env.LM_ASSIST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mfr-cfg-'));
+process.env.LM_ASSIST_DATA_DIR = DATA_TMP;
 
 import { createMemoryFilesRoutes } from '../routes/core/memory-files.routes';
+import { resetMemoryCache } from '../memory-cache';
+import { stopSessionCache } from '../session-cache';
+import { resetProjectsService } from '../projects-service';
 import { sha256 } from '../memory/file-write';
 import type { ParsedRequest } from '../routes/index';
 
@@ -117,4 +121,19 @@ test('GET file serves MEMORY.md via live disk fallback with hash', async () => {
   assert.equal(r.success, true);
   assert.match(r.data.body, /Index/);
   assert.equal(typeof r.data.hash, 'string');
+});
+
+// The route handlers' invalidate() lazily boots the shared MemoryCache
+// (LMDB + chokidar watcher), AND transitively boots ProjectsService
+// (resolveProjectIdToCwd -> getProjectsService()), whose constructor boots
+// SessionCache (LMDB + its own chokidar watcher on the REAL ~/.claude/projects
+// — SessionCache.startWatching() is not CLAUDE_CONFIG_DIR-scoped). None of
+// these close on their own, so the test process hangs after all tests pass.
+// Close all of them and clean up the two mkdtemp dirs so the process exits.
+after(() => {
+  resetMemoryCache();
+  stopSessionCache();
+  resetProjectsService();
+  fs.rmSync(TMP, { recursive: true, force: true });
+  fs.rmSync(DATA_TMP, { recursive: true, force: true });
 });
