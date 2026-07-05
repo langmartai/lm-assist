@@ -15,7 +15,14 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function StatusBlock({ call, path, refreshTick }: { call: CallFn; path: string; refreshTick?: number }) {
   const [data, setData] = useState<unknown>(null);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { call(path).then(setData).catch((e) => setError(String(e))); }, [call, path, refreshTick]);
+  useEffect(() => {
+    let alive = true;
+    setError(null);
+    call(path)
+      .then((r) => { if (alive) setData(r); })
+      .catch((e) => { if (alive) setError(String(e)); });
+    return () => { alive = false; };
+  }, [call, path, refreshTick]);
   if (error) return <div className="text-rose-400 text-xs">{error}</div>;
   if (!data) return <div className="text-gray-500 text-xs">Loading…</div>;
   return <pre className="text-xs text-gray-400 bg-gray-900 rounded p-2 overflow-x-auto">{JSON.stringify(data, null, 2)}</pre>;
@@ -23,50 +30,60 @@ function StatusBlock({ call, path, refreshTick }: { call: CallFn; path: string; 
 
 type Row = Record<string, unknown>;
 
+const rowKey = (row: Row, i: number) =>
+  String(row.id ?? row.recordId ?? `${row.title ?? ''}:${row._proposalStatus ?? row.status ?? ''}:${i}`);
+
 function QueueList({ call, path, listKey, onEdit, refreshTick }:
   { call: CallFn; path: string; listKey: string; onEdit?: (t: EditTarget) => void; refreshTick?: number }) {
-  const [rows, setRows] = useState<Row[]>([]);
-  const [open, setOpen] = useState<number | null>(null);
+  const [rows, setRows] = useState<Row[] | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    let alive = true;
+    setError(null);
     call<Record<string, unknown>>(path)
-      .then((r) => setRows((r[listKey] as Row[]) || (r.items as Row[]) || []))
-      .catch((e) => setError(String(e)));
+      .then((r) => { if (alive) setRows((r[listKey] as Row[]) || (r.items as Row[]) || []); })
+      .catch((e) => { if (alive) setError(String(e)); });
+    return () => { alive = false; };
   }, [call, path, listKey, refreshTick]);
   if (error) return <div className="text-rose-400 text-xs">{error}</div>;
+  if (rows === null) return <div className="text-gray-500 text-xs">Loading…</div>;
   if (rows.length === 0) return <div className="text-gray-500 text-xs">Empty.</div>;
   return (
     <div className="space-y-1">
-      {rows.map((row, i) => (
-        <div key={i} className="text-xs">
-          <button onClick={() => setOpen(open === i ? null : i)} className="text-left w-full flex items-center gap-2 hover:bg-gray-900 rounded px-1 py-0.5">
-            <span className="text-gray-300 truncate flex-1">
-              {String(row.title ?? row.name ?? row.id ?? row.recordId ?? `item ${i + 1}`)}
-            </span>
-            <span className="text-gray-500">{String(row._proposalStatus ?? row.status ?? '')}</span>
-            <span className="text-gray-600">{String(row.suggestedProject ?? row._originProjectSlug ?? row.project ?? '')}</span>
-          </button>
-          {open === i && (
-            <div className="pl-2 space-y-1">
-              {/* FileEditor create for memory requires a projectId — only offer when the proposal names one */}
-              {onEdit && Boolean(row.suggestedProject || row._originProjectSlug) && (
-                <button
-                  onClick={() => {
-                    const content = typeof row.content === 'string' ? row.content
-                      : typeof row.body === 'string' ? row.body
-                      : JSON.stringify(row, null, 2);
-                    const projectId = String(row.suggestedProject ?? row._originProjectSlug);
-                    onEdit({ kind: 'memory', projectId, filename: '', content });
-                  }}
-                  className="px-2 py-0.5 rounded bg-emerald-800 text-emerald-100 hover:bg-emerald-700 text-[10px]">
-                  Open as new memory file
-                </button>
-              )}
-              <pre className="text-[10px] text-gray-400 bg-gray-900 rounded p-2 overflow-x-auto">{JSON.stringify(row, null, 2)}</pre>
-            </div>
-          )}
-        </div>
-      ))}
+      {rows.map((row, i) => {
+        const key = rowKey(row, i);
+        return (
+          <div key={key} className="text-xs">
+            <button onClick={() => setOpen(open === key ? null : key)} className="text-left w-full flex items-center gap-2 hover:bg-gray-900 rounded px-1 py-0.5">
+              <span className="text-gray-300 truncate flex-1">
+                {String(row.title ?? row.name ?? row.id ?? row.recordId ?? `item ${i + 1}`)}
+              </span>
+              <span className="text-gray-500">{String(row._proposalStatus ?? row.status ?? '')}</span>
+              <span className="text-gray-600">{String(row.suggestedProject ?? row._originProjectSlug ?? row.project ?? '')}</span>
+            </button>
+            {open === key && (
+              <div className="pl-2 space-y-1">
+                {/* FileEditor create for memory requires a projectId — only offer when the proposal names one */}
+                {onEdit && Boolean(row.suggestedProject || row._originProjectSlug) && (
+                  <button
+                    onClick={() => {
+                      const content = typeof row.content === 'string' ? row.content
+                        : typeof row.body === 'string' ? row.body
+                        : JSON.stringify(row, null, 2);
+                      const projectId = String(row.suggestedProject || row._originProjectSlug);
+                      onEdit({ kind: 'memory', projectId, filename: '', content });
+                    }}
+                    className="px-2 py-0.5 rounded bg-emerald-800 text-emerald-100 hover:bg-emerald-700 text-[10px]">
+                    Open as new memory file
+                  </button>
+                )}
+                <pre className="text-[10px] text-gray-400 bg-gray-900 rounded p-2 overflow-x-auto">{JSON.stringify(row, null, 2)}</pre>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
