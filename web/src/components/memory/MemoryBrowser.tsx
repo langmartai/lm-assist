@@ -18,7 +18,7 @@ export function Badge({ text, palette }: { text: string; palette: Record<string,
   return <span className={`px-1.5 py-0.5 rounded text-[10px] ${palette[text] || 'bg-gray-700 text-gray-300'}`}>{text}</span>;
 }
 
-export function MemoryBrowser({ call, onEdit }: { call: CallFn; onEdit?: (t: EditTarget) => void }) {
+export function MemoryBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEdit?: (t: EditTarget) => void; refreshTick?: number }) {
   const [projects, setProjects] = useState<MemoryProjectSummary[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [q, setQ] = useState('');
@@ -44,13 +44,13 @@ export function MemoryBrowser({ call, onEdit }: { call: CallFn; onEdit?: (t: Edi
       .finally(() => setLoading(false));
   }, [call, projectId, q]);
 
-  useEffect(() => { const t = setTimeout(loadRecords, 300); return () => clearTimeout(t); }, [loadRecords]);
+  useEffect(() => { const t = setTimeout(loadRecords, 300); return () => clearTimeout(t); }, [loadRecords, refreshTick]);
 
   useEffect(() => {
     if (!projectId) { setCandidates([]); return; }
     call<{ candidates: ImportCandidate[] }>(`/memory/by-project/${encodeURIComponent(projectId)}/sync/import-candidates`)
       .then((r) => setCandidates(r.candidates || [])).catch(() => setCandidates([]));
-  }, [call, projectId]);
+  }, [call, projectId, refreshTick]);
 
   const importToLive = async (c: ImportCandidate) => {
     try {
@@ -125,7 +125,7 @@ export function MemoryBrowser({ call, onEdit }: { call: CallFn; onEdit?: (t: Edi
       </div>
 
       {selected && (
-        <RecordDetail key={selected.recordId} record={selected} call={call} onEdit={onEdit} onClose={() => { setSelected(null); loadRecords(); }} />
+        <RecordDetail key={selected.recordId} record={selected} call={call} onEdit={onEdit} onClose={() => { setSelected(null); loadRecords(); }} refreshTick={refreshTick} />
       )}
     </div>
   );

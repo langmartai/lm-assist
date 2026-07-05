@@ -18,20 +18,19 @@ function pathsFor(t: EditTarget, filename: string) {
     return {
       put: `/rules/file/${encodeURIComponent(filename)}`,
       post: `/rules/file`,
-      del: `/rules/file/${encodeURIComponent(filename)}`,
     };
   }
   const pid = encodeURIComponent(t.projectId!);
   return {
     put: `/memory/by-project/${pid}/file/${encodeURIComponent(filename)}`,
     post: `/memory/by-project/${pid}/file`,
-    del: `/memory/by-project/${pid}/file/${encodeURIComponent(filename)}`,
   };
 }
 
 export function FileEditor({ target, call, onDone }:
   { target: EditTarget; call: CallFn; onDone: (saved: boolean) => void }) {
   const [created, setCreated] = useState(false);
+  const [savedAny, setSavedAny] = useState(false);
   const isCreate = !target.filename && !created; // a warned create flips to edit mode
   const [filename, setFilename] = useState(target.filename);
   const initialContent = !target.filename && !target.content ? MEMORY_TEMPLATE : target.content;
@@ -53,12 +52,12 @@ export function FileEditor({ target, call, onDone }:
         const body: Record<string, unknown> = { filename, content };
         if (target.kind === 'memory' && indexLine.trim()) body.indexLine = indexLine.trim();
         const r = await call<{ hash?: string; warnings?: string[] }>(p.post, { method: 'POST', body });
-        setCreated(true); setHash(r.hash); w = r.warnings || [];
+        setSavedAny(true); setCreated(true); setHash(r.hash); w = r.warnings || [];
       } else {
         const body: Record<string, unknown> = { content };
         if (hash && !overwrite) body.expectedHash = hash;
         const r = await call<{ hash?: string; warnings?: string[] }>(p.put, { method: 'PUT', body });
-        setHash(r.hash); w = r.warnings || [];
+        setSavedAny(true); setHash(r.hash); w = r.warnings || [];
       }
       if (w.length === 0) { onDone(true); return; }
       // Saved, but with frontmatter warnings — stay open so they're visible.
@@ -87,7 +86,7 @@ export function FileEditor({ target, call, onDone }:
 
   const cancel = () => {
     if (content !== baseline && !window.confirm('Discard unsaved changes?')) return;
-    onDone(created); // a warned-but-saved create still refreshes the list on close
+    onDone(savedAny); // any successful save this session (create or edit, warned or clean) still refreshes the list on close
   };
 
   return (

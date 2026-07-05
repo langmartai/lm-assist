@@ -44,11 +44,11 @@ export function MemoryPage() {
           </button>
         ))}
       </div>
-      {/* key= remounts tabs on node switch (or after a save) so stale data can't linger */}
-      <div key={`${nodeId ?? 'local'}:${refreshKey}`}>
-        {tab === 'memory' && <MemoryBrowser call={call} onEdit={setEditTarget} />}
-        {tab === 'rules' && <RulesBrowser call={call} onEdit={setEditTarget} />}
-        {tab === 'sync' && <SyncTab call={call} onEdit={setEditTarget} />}
+      {/* key= remounts tabs only on node switch; refreshTick drives an in-place re-fetch after a save instead */}
+      <div key={nodeId ?? 'local'}>
+        {tab === 'memory' && <MemoryBrowser call={call} onEdit={setEditTarget} refreshTick={refreshKey} />}
+        {tab === 'rules' && <RulesBrowser call={call} onEdit={setEditTarget} refreshTick={refreshKey} />}
+        {tab === 'sync' && <SyncTab call={call} onEdit={setEditTarget} refreshTick={refreshKey} />}
       </div>
       {editTarget && (
         <FileEditor target={editTarget} call={call}

@@ -10,8 +10,8 @@ const PROTECTED_MEMORY = new Set(['_cross-project.md', '_hosts.md']);
 
 interface SourceInfo { source: string; dirPath: string; fileCount: number; maxMtimeMs: number }
 
-export function RecordDetail({ record, call, onEdit, onClose }:
-  { record: MapRecord; call: CallFn; onEdit?: (t: EditTarget) => void; onClose: () => void }) {
+export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
+  { record: MapRecord; call: CallFn; onEdit?: (t: EditTarget) => void; onClose: () => void; refreshTick?: number }) {
   const [full, setFull] = useState<MapRecord | null>(null);
   const [sources, setSources] = useState<SourceInfo[]>([]);
   const [source, setSource] = useState('live');
@@ -35,7 +35,7 @@ export function RecordDetail({ record, call, onEdit, onClose }:
       .then((r) => { if (alive) setSources(r.sources || []); })
       .catch(() => { if (alive) setSources([]); });
     return () => { alive = false; };
-  }, [call, record.recordId, pid, hasFileAccess]);
+  }, [call, record.recordId, pid, hasFileAccess, refreshTick]);
 
   useEffect(() => {
     let alive = true;
@@ -46,7 +46,7 @@ export function RecordDetail({ record, call, onEdit, onClose }:
       .then((r) => { if (alive) setFile(r); })
       .catch((e) => { if (alive) setError(String(e)); });
     return () => { alive = false; };
-  }, [call, pid, fname, source, hasFileAccess]);
+  }, [call, pid, fname, source, hasFileAccess, refreshTick]);
 
   const editable = hasFileAccess && source === 'live' && !PROTECTED_MEMORY.has(record.file);
 
