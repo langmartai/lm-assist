@@ -83,6 +83,19 @@ export function RecordDetail({ record, call, onEdit, onClose }:
               Edit
             </button>
           )}
+          {editable && file && (
+            <button
+              onClick={async () => {
+                if (!window.confirm(`Delete ${record.file}? Its MEMORY.md index line is removed too.`)) return;
+                try {
+                  await call(`/memory/by-project/${pid}/file/${fname}?removeIndexLine=true&expectedHash=${file.hash || ''}`, { method: 'DELETE' });
+                  onClose();
+                } catch (e) { setError(String(e)); }
+              }}
+              className="px-2 py-0.5 rounded bg-rose-900 text-rose-100 hover:bg-rose-800 text-xs">
+              Delete
+            </button>
+          )}
           {!editable && <span className="ml-auto text-gray-500 text-[10px]">read-only ({source === 'live' ? 'managed file' : 'mirror'})</span>}
         </div>
       )}

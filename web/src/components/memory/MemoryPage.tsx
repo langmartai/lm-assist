@@ -6,7 +6,8 @@ import { NodeSelector } from './NodeSelector';
 import { MemoryBrowser } from './MemoryBrowser';
 import { RulesBrowser } from './RulesBrowser';
 import { SyncTab } from './SyncTab';
-import type { CallFn } from './types';
+import { FileEditor } from './FileEditor';
+import type { CallFn, EditTarget } from './types';
 
 const TABS = ['memory', 'rules', 'sync'] as const;
 type Tab = typeof TABS[number];
@@ -15,6 +16,8 @@ export function MemoryPage() {
   const { apiClient, proxy } = useAppMode();
   const [tab, setTab] = useState<Tab>('memory');
   const [nodeId, setNodeId] = useState<string | null>(null);
+  const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const call: CallFn = useCallback(
     (path, opts) => apiClient.fetchPath(path, {
@@ -41,12 +44,16 @@ export function MemoryPage() {
           </button>
         ))}
       </div>
-      {/* key= remounts tabs on node switch so stale node data can't linger */}
-      <div key={nodeId ?? 'local'}>
-        {tab === 'memory' && <MemoryBrowser call={call} />}
-        {tab === 'rules' && <RulesBrowser call={call} />}
-        {tab === 'sync' && <SyncTab call={call} />}
+      {/* key= remounts tabs on node switch (or after a save) so stale data can't linger */}
+      <div key={`${nodeId ?? 'local'}:${refreshKey}`}>
+        {tab === 'memory' && <MemoryBrowser call={call} onEdit={setEditTarget} />}
+        {tab === 'rules' && <RulesBrowser call={call} onEdit={setEditTarget} />}
+        {tab === 'sync' && <SyncTab call={call} onEdit={setEditTarget} />}
       </div>
+      {editTarget && (
+        <FileEditor target={editTarget} call={call}
+          onDone={(saved) => { setEditTarget(null); if (saved) setRefreshKey((k) => k + 1); }} />
+      )}
     </div>
   );
 }
