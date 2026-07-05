@@ -1,6 +1,6 @@
 {
   "name": "lm-assist-core",
-  "version": "0.1.134",
+  "version": "0.1.135",
   "description": "Backend API for lm-assist \u2014 session management, milestones, knowledge, architecture, and hub connectivity",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
