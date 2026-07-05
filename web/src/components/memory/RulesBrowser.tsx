@@ -11,15 +11,25 @@ export function RulesBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEd
 
   const load = useCallback(() => {
     call<{ rules: RuleListEntry[] }>('/rules/list')
-      .then((r) => setRules(r.rules || [])).catch((e) => setError(String(e)));
+      .then((r) => {
+        const list = r.rules || [];
+        setRules(list);
+        setSelected((prev) => prev && (list.find((x) => x.filename === prev.filename && x.source === prev.source) ?? null));
+      })
+      .catch((e) => setError(String(e)));
   }, [call]);
   useEffect(() => { load(); }, [load, refreshTick]);
 
   useEffect(() => {
-    if (!selected) { setContent(null); return; }
+    let alive = true;
+    setContent(null);            // eager clear: never show old rule's body under new header
+    setError(null);
+    if (!selected) return () => { alive = false; };
     call<{ content: string; hash?: string }>(
       `/rules/file/${encodeURIComponent(selected.filename)}?source=${encodeURIComponent(selected.source)}`)
-      .then(setContent).catch((e) => setError(String(e)));
+      .then((r) => { if (alive) setContent(r); })
+      .catch((e) => { if (alive) setError(String(e)); });
+    return () => { alive = false; };
   }, [call, selected, refreshTick]);
 
   const remove = async (r: RuleListEntry) => {
@@ -29,6 +39,8 @@ export function RulesBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEd
       setSelected(null); load();
     } catch (e) { setError(String(e)); }
   };
+
+  const isSel = (r: RuleListEntry) => selected?.filename === r.filename && selected?.source === r.source;
 
   return (
     <div className="flex gap-4 text-sm">
@@ -46,7 +58,7 @@ export function RulesBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEd
         <div className="divide-y divide-gray-800 border border-gray-800 rounded">
           {rules.map((r) => (
             <button key={`${r.source}:${r.filename}`} onClick={() => setSelected(r)}
-              className={`w-full text-left px-3 py-2 hover:bg-gray-900 flex items-center gap-2 ${selected === r ? 'bg-gray-900' : ''}`}>
+              className={`w-full text-left px-3 py-2 hover:bg-gray-900 flex items-center gap-2 ${isSel(r) ? 'bg-gray-900' : ''}`}>
               <span className="text-gray-200 truncate flex-1">{r.title || r.filename}</span>
               {r.os.length > 0 && <span className="px-1.5 py-0.5 rounded text-[10px] bg-gray-700 text-gray-300">{r.os.join(',')}</span>}
               <span className={`px-1.5 py-0.5 rounded text-[10px] ${r.active ? 'bg-emerald-900 text-emerald-200' : 'bg-gray-700 text-gray-400'}`}>
