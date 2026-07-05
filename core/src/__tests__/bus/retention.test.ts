@@ -33,7 +33,7 @@ test('eventsToEvict drops aged-out AND oldest surplus over the cap', () => {
   assert.deepEqual(evict.map((e) => e.seq).sort(), [1, 2, 3]);
 });
 
-test('sweep removes evicted events from the store', () => {
+test('sweep removes evicted events from the store', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bus-ret-'));
   const store = new BusStore(dir);
   const now = Date.now();
@@ -41,9 +41,15 @@ test('sweep removes evicted events from the store', () => {
     const e: BusEvent = { topic: 'app:x', origin: 'a', seq: s, type: 't', at: now - (5 - s) * 1000, payload: {} };
     store.ingest(e);
   }
+  // sweep() intentionally reads/removes only durably committed events (see its class comment —
+  // it runs on its own ~5 min cadence in production, long after any recent append's async commit
+  // has landed, and was never implicated in the publish-path event-loop stall this perf fix
+  // targets). Wait for this batch's commits to land before sweeping, matching that real cadence
+  // instead of the artificial same-tick ingest-then-sweep a unit test would otherwise do.
+  await (store as unknown as { events: { flushed: Promise<unknown> } }).events.flushed;
   const removed = store.sweep({ maxEvents: 2, maxAgeMs: 3_500 });
   assert.ok(removed >= 3);
   assert.equal(store.get('app:x', 'a', 1), undefined); // oldest gone
   assert.ok(store.get('app:x', 'a', 5));               // newest kept
-  store.close();
+  await store.close();
 });
