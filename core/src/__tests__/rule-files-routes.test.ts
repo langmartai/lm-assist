@@ -86,3 +86,21 @@ test('POST create + DELETE with hash guard', async () => {
     req('DELETE', { filename: 'brand-new.md' }, undefined, { expectedHash: sha256('# New') }), {} as any);
   assert.equal(del.success, true);
 });
+
+test('GET /rules/list computes active for live os-scoped rules (normalized)', async () => {
+  seed();
+  // A live rule scoped to THIS platform (via the frontmatter alias) must be active;
+  // one scoped to a different platform must be inert.
+  const here = os.platform() === 'win32' ? 'windows' : os.platform() === 'darwin' ? 'mac' : 'linux';
+  const other = os.platform() === 'linux' ? 'windows' : 'linux';
+  fs.writeFileSync(path.join(RULES, 'here-only.md'), `---\nos: [${here}]\n---\n# Here rule`);
+  fs.writeFileSync(path.join(RULES, 'other-only.md'), `---\nos: [${other}]\n---\n# Other rule`);
+  const r: any = await route('GET', /list/).handler(req('GET'), {} as any);
+  const byName = new Map(r.data.rules.map((x: any) => [`${x.source}:${x.filename}`, x]));
+  const hereRule: any = byName.get('live:here-only.md');
+  const otherRule: any = byName.get('live:other-only.md');
+  assert.equal(hereRule.active, true, 'alias for current platform must normalize to active');
+  assert.deepEqual(hereRule.os, [os.platform()], 'os list must be normalized platform ids');
+  assert.equal(otherRule.active, false, 'other-platform rule must be inert');
+  assert.equal(hereRule.editable, true); // os-scoped but own rule stays editable
+});
