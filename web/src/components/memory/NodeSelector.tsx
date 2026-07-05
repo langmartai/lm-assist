@@ -7,7 +7,14 @@ import { useAppMode } from '@/contexts/AppModeContext';
  *  (or the proxied machine in cloud mode). Hidden when there is nothing to pick. */
 export function NodeSelector({ value, onChange }: { value: string | null; onChange: (id: string | null) => void }) {
   const { machines } = useMachines();
-  const { proxy } = useAppMode();
+  const { proxy, isHybrid } = useAppMode();
+  // Only the hybrid (non-proxied) client actually routes calls by machineId
+  // (see createHybridClient/fetchPath in api-client.ts) — the plain local
+  // ApiClient's fetchPath silently ignores machineId, and proxied UI is
+  // already pinned server-side to the proxied node. Offering other nodes in
+  // those cases would look like it works but silently keep every call
+  // (including PUT/DELETE writes) on the wrong node.
+  if (!isHybrid || proxy.isProxied) return null;
   // Relay machine identifier is `gatewayId || id` — the same expression
   // MachineDropdown.tsx uses (`remoteGatewayId = m.gatewayId || m.id`).
   const relayId = (m: { id: string; gatewayId?: string }) => m.gatewayId || m.id;
