@@ -102,5 +102,10 @@ test('GET /rules/list computes active for live os-scoped rules (normalized)', as
   assert.equal(hereRule.active, true, 'alias for current platform must normalize to active');
   assert.deepEqual(hereRule.os, [os.platform()], 'os list must be normalized platform ids');
   assert.equal(otherRule.active, false, 'other-platform rule must be inert');
+  // Cross-platform vacuity guard: the OTHER platform's alias always differs from
+  // its normalized id in at least one direction (windows→win32), so this line
+  // fails if normalizeOsList is dropped — regardless of the host platform.
+  const otherId = other === 'windows' ? 'win32' : 'linux';
+  assert.deepEqual(otherRule.os, [otherId], 'other-platform alias must be normalized too');
   assert.equal(hereRule.editable, true); // os-scoped but own rule stays editable
 });
