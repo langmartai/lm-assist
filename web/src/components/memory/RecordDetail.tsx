@@ -25,18 +25,27 @@ export function RecordDetail({ record, call, onEdit, onClose }:
   const fname = encodeURIComponent(record.file);
 
   useEffect(() => {
+    let alive = true;
+    setError(null);
     call<MapRecord>(`/memory/record/${encodeURIComponent(record.recordId)}`)
-      .then(setFull).catch((e) => setError(String(e)));
-    if (!hasFileAccess) return;
+      .then((r) => { if (alive) setFull(r); })
+      .catch((e) => { if (alive) setError(String(e)); });
+    if (!hasFileAccess) return () => { alive = false; };
     call<{ sources: SourceInfo[] }>(`/memory/by-project/${pid}/sources`)
-      .then((r) => setSources(r.sources || [])).catch(() => setSources([]));
+      .then((r) => { if (alive) setSources(r.sources || []); })
+      .catch(() => { if (alive) setSources([]); });
+    return () => { alive = false; };
   }, [call, record.recordId, pid, hasFileAccess]);
 
   useEffect(() => {
+    let alive = true;
     setFile(null);
-    if (!hasFileAccess) return;
+    setError(null);
+    if (!hasFileAccess) return () => { alive = false; };
     call<{ body: string; hash?: string }>(`/memory/by-project/${pid}/file/${fname}?source=${encodeURIComponent(source)}`)
-      .then(setFile).catch((e) => setError(String(e)));
+      .then((r) => { if (alive) setFile(r); })
+      .catch((e) => { if (alive) setError(String(e)); });
+    return () => { alive = false; };
   }, [call, pid, fname, source, hasFileAccess]);
 
   const editable = hasFileAccess && source === 'live' && !PROTECTED_MEMORY.has(record.file);

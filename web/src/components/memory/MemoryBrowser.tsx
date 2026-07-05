@@ -125,7 +125,7 @@ export function MemoryBrowser({ call, onEdit }: { call: CallFn; onEdit?: (t: Edi
       </div>
 
       {selected && (
-        <RecordDetail record={selected} call={call} onEdit={onEdit} onClose={() => { setSelected(null); loadRecords(); }} />
+        <RecordDetail key={selected.recordId} record={selected} call={call} onEdit={onEdit} onClose={() => { setSelected(null); loadRecords(); }} />
       )}
     </div>
   );
