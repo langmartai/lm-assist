@@ -71,6 +71,13 @@ test('PUT edits own rule; synced.* rejected', async () => {
   assert.equal(s.error.code, 'PROTECTED');
 });
 
+test('PUT rejects case-variant Synced.* names (Windows-safe)', async () => {
+  seed();
+  const r: any = await route('PUT', /file/).handler(
+    req('PUT', { filename: 'Synced.gw1.remote.md' }, { content: 'x' }), {} as any);
+  assert.equal(r.error.code, 'PROTECTED');
+});
+
 test('POST create + DELETE with hash guard', async () => {
   seed();
   const c: any = await route('POST', /file\$/).handler(

@@ -13,7 +13,7 @@ import { rulesRoot, mirrorRootDir } from '../../rules/rule-sync';
 import { parseOs, normalizeOsList } from '../../rules/rule-extract';
 import { sha256, writeMdFile, deleteMdFile, filenameProblem } from '../../memory/file-write';
 
-const RULES_PROTECTED = [/^synced\./];
+const RULES_PROTECTED = [/^synced\./i];
 const SYNCED_RE = /^synced\.([A-Za-z0-9_-]+)\./;
 
 function titleOf(content: string): string | null {
