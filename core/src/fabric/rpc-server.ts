@@ -38,6 +38,18 @@ export interface RpcServerDeps {
    *  dataSyncEnabled above. `/rules/ingest` (a WRITE) is NEVER covered by this gate — it stays
    *  reachable only through the general rpcEnabled() class, same as any other write route. */
   ruleSyncEnabled?: () => boolean;
+  /** When true, `/memory/export`, `/memory/ingest`, and `/memory/projects-by-remote` dispatch even
+   *  if rpcEnabled() is false — gated by memorySyncEnabled, not the general RPC class. Same scoped-
+   *  allow-list pattern as busEnabled/dataSyncEnabled/ruleSyncEnabled above. Unlike the rules/data
+   *  entries, this is the FIRST scoped allow-list entry that includes a WRITE (`/memory/ingest`) —
+   *  it is same-trust as the hub write it fast-paths: both land on the SAME route handler's
+   *  authorized() check (loopback + either a genuine local caller or an already-enrolled relay/peer
+   *  principal), so exposing it here does not create a new privilege, only a faster transport for
+   *  the SAME already-authorized call. `/memory/sync/enable` and `/memory/pull` are deliberately
+   *  local-only (loopback-only in the route handler itself) and are NEVER covered by this gate —
+   *  they stay reachable only through the general rpcEnabled() class, same as any other route this
+   *  gate doesn't name. */
+  memorySyncEnabled?: () => boolean;
   peerNodeOf: (env: Envelope) => string;
   offload?: (bytes: Uint8Array, peerNode: string) => Promise<{ handle: unknown }>;
   offloadThreshold?: number; // bytes; default 8MB
@@ -53,6 +65,12 @@ const DATA_SYNC_ROUTES = /^\/data\/(?:sync\/manifest|[^/]+\/(?:export|fetch))$/;
 // Rules sync — ONLY /rules/export (READ). NEVER /rules/ingest (a WRITE). Exact shape (anchored),
 // matched on the URL-normalized routedPath, same traversal-safety reason as DATA_SYNC_ROUTES.
 const RULES_EXPORT_ROUTE = /^\/rules\/export$/;
+
+// Memory sync — export + projects-by-remote (READS) AND ingest (a WRITE — the first write on the
+// fabric allow-list; same trust as the hub write: an enrolled gatewayId peer over loopback). Exact
+// anchored alternation on the normalized routedPath. The local-only /memory/sync/* and /memory/pull
+// are deliberately NOT here.
+const MEMORY_SYNC_ROUTES = /^\/memory\/(?:export|ingest|projects-by-remote)$/;
 
 export function createRpcServer(deps: RpcServerDeps): ServerHandler {
   const threshold = deps.offloadThreshold ?? DEFAULT_OFFLOAD;
@@ -100,11 +118,19 @@ export function createRpcServer(deps: RpcServerDeps): ServerHandler {
       // SAME normalized routedPath. /rules/ingest (a WRITE) deliberately has no
       // entry here at all, so it only ever dispatches through the general
       // rpcEnabled() class above, same as before this change.
+      // Memory sync (/memory/export, /memory/ingest, /memory/projects-by-remote)
+      // rides memorySyncEnabled, the identical scoped-allow-list pattern —
+      // MEMORY_SYNC_ROUTES's EXACT shape over the SAME normalized routedPath.
+      // /memory/sync/enable and /memory/pull deliberately have no entry here at
+      // all (they are loopback-only routes to begin with), so they only ever
+      // dispatch through the general rpcEnabled() class above, same as before
+      // this change.
       const allowed =
         deps.rpcEnabled()
         || (/^\/bus\/[^/]+\/since$/.test(routedPath) && (deps.busEnabled?.() ?? false))
         || (DATA_SYNC_ROUTES.test(routedPath) && (deps.dataSyncEnabled?.() ?? false))
-        || (RULES_EXPORT_ROUTE.test(routedPath) && (deps.ruleSyncEnabled?.() ?? false));
+        || (RULES_EXPORT_ROUTE.test(routedPath) && (deps.ruleSyncEnabled?.() ?? false))
+        || (MEMORY_SYNC_ROUTES.test(routedPath) && (deps.memorySyncEnabled?.() ?? false));
       if (!allowed) { reply(errRes(503, 'rpc_disabled', 'fabric rpc class disabled')); return; }
 
       const reqId = env.headers.reqId ?? id;

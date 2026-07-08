@@ -287,3 +287,208 @@ test('traversal guard: /rules/../hub/config (normalizes to /hub/config) is NOT a
   assert.equal(out!.headers.status, 503);
   assert.equal(out!.headers.code, 'rpc_disabled');
 });
+
+// ---------------------------------------------------------------------------
+// feat/memory-fabric: MEMORY sync allow-list entry. Mirrors the RULES_EXPORT_ROUTE
+// scoped-entry tests above, but memory exposes THREE routes (export + ingest +
+// projects-by-remote) under the SAME gate — /memory/ingest is the first WRITE ever
+// added to a fabric scoped allow-list (same trust as the hub write: an enrolled
+// gatewayId peer over loopback). /memory/sync/enable and /memory/pull are
+// deliberately local-only and must NEVER be reachable via memorySyncEnabled — only
+// via the general rpcEnabled() class (like /rules/ingest before this feature).
+// Security-sensitive: this extends the surface of the W3 CRITICAL traversal-bypass
+// (a bare-prefix allow-list let `/bus/../hub/config` normalize past a naive
+// startsWith).
+// ---------------------------------------------------------------------------
+
+const memoryReq = (path: string, id = 'm1'): Envelope => ({
+  kind: 'req', id,
+  headers: { method: 'POST', path, reqId: id, cls: 'rpc' },
+  payload: encodeBody({ body: {}, query: {} }),
+});
+
+test('memorySyncEnabled on: /memory/export dispatches even with rpcEnabled off', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async (r) => { calls++; return { status: 200, data: { path: r.path } }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,
+    memorySyncEnabled: () => true,
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(memoryReq('/memory/export'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 1);
+  assert.equal(out!.headers.status, 200);
+  assert.deepEqual(decodeBody(out!.payload), { path: '/memory/export' });
+});
+
+test('memorySyncEnabled on: /memory/ingest (the first WRITE on a fabric allow-list) dispatches even with rpcEnabled off', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async (r) => { calls++; return { status: 200, data: { path: r.path } }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,
+    memorySyncEnabled: () => true,
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(memoryReq('/memory/ingest'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 1);
+  assert.equal(out!.headers.status, 200);
+  assert.deepEqual(decodeBody(out!.payload), { path: '/memory/ingest' });
+});
+
+test('memorySyncEnabled on: /memory/projects-by-remote dispatches even with rpcEnabled off', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async (r) => { calls++; return { status: 200, data: { path: r.path } }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,
+    memorySyncEnabled: () => true,
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(memoryReq('/memory/projects-by-remote'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 1);
+  assert.equal(out!.headers.status, 200);
+  assert.deepEqual(decodeBody(out!.payload), { path: '/memory/projects-by-remote' });
+});
+
+test('memorySyncEnabled off: /memory/export is rejected (503 rpc_disabled), no dispatch', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async () => { calls++; return { status: 200, data: {} }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,
+    memorySyncEnabled: () => false,
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(memoryReq('/memory/export'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 0);
+  assert.equal(out!.headers.status, 503);
+  assert.equal(out!.headers.code, 'rpc_disabled');
+});
+
+test('memorySyncEnabled off: /memory/ingest is rejected (503 rpc_disabled), no dispatch', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async () => { calls++; return { status: 200, data: {} }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,
+    memorySyncEnabled: () => false,
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(memoryReq('/memory/ingest'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 0);
+  assert.equal(out!.headers.status, 503);
+  assert.equal(out!.headers.code, 'rpc_disabled');
+});
+
+test('/memory/sync/enable (local-only) is NEVER allowed via memorySyncEnabled, even when memorySyncEnabled is on — only the general rpc class opens it', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async () => { calls++; return { status: 200, data: {} }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,       // general RPC class OFF
+    memorySyncEnabled: () => true, // memory-sync allow-list ON — must not leak to sync/enable
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(memoryReq('/memory/sync/enable'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 0);
+  assert.equal(out!.headers.status, 503);
+  assert.equal(out!.headers.code, 'rpc_disabled');
+});
+
+test('/memory/pull (local-only) is NEVER allowed via memorySyncEnabled, even when memorySyncEnabled is on — only the general rpc class opens it', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async () => { calls++; return { status: 200, data: {} }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,       // general RPC class OFF
+    memorySyncEnabled: () => true, // memory-sync allow-list ON — must not leak to pull
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(memoryReq('/memory/pull'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 0);
+  assert.equal(out!.headers.status, 503);
+  assert.equal(out!.headers.code, 'rpc_disabled');
+});
+
+test('/memory/sync/enable DOES dispatch when the general rpcEnabled class is on (local-only route stays reachable only through the general class, unaffected by this change)', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async (r) => { calls++; return { status: 200, data: { path: r.path } }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => true,
+    memorySyncEnabled: () => true,
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(memoryReq('/memory/sync/enable'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 1);
+  assert.equal(out!.headers.status, 200);
+});
+
+test('exact-shape guard: /memory/ingestx is NOT allowed via memorySyncEnabled (no prefix match)', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async () => { calls++; return { status: 200, data: {} }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,
+    memorySyncEnabled: () => true,
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(memoryReq('/memory/ingestx'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 0);
+  assert.equal(out!.headers.status, 503);
+  assert.equal(out!.headers.code, 'rpc_disabled');
+});
+
+test('exact-shape guard: /memory/export/x (extra segment) is NOT allowed via memorySyncEnabled', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async () => { calls++; return { status: 200, data: {} }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,
+    memorySyncEnabled: () => true,
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(memoryReq('/memory/export/x'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 0);
+  assert.equal(out!.headers.status, 503);
+  assert.equal(out!.headers.code, 'rpc_disabled');
+});
+
+test('traversal guard: /memory/../hub/config (normalizes to /hub/config) is NOT allowed via memorySyncEnabled', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async (r) => { calls++; return { status: 200, data: { path: r.path } }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,
+    memorySyncEnabled: () => true,
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(memoryReq('/memory/../hub/config'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 0, 'must never reach dispatch with the normalized /hub/config path');
+  assert.equal(out!.headers.status, 503);
+  assert.equal(out!.headers.code, 'rpc_disabled');
+});

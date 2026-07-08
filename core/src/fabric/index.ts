@@ -138,6 +138,7 @@ export function initFabric(selfNode: string): void {
           if (s.busEnabled) f.push('bus');            // follow-up (c): advertise bus only when enabled
           if (s.dataSyncViaFabric) f.push('data');    // spec §5 S2.2: peer must advertise data to be fabric-eligible
           if (s.ruleSyncEnabled) f.push('rules');     // mirrors data: a peer advertises 'rules' only when its ruleSyncEnabled
+          if (s.memorySyncEnabled) f.push('memory');  // mirrors rules: a peer advertises 'memory' only when its memorySyncEnabled
           return f;
         },
       });
@@ -261,6 +262,7 @@ async function attachFabricLink(selfNode: string, peer: string, link: PeerLink, 
     busEnabled: () => settings().busEnabled,
     dataSyncEnabled: () => settings().dataSyncViaFabric,
     ruleSyncEnabled: () => settings().ruleSyncEnabled !== false,
+    memorySyncEnabled: () => settings().memorySyncEnabled !== false,
     peerNodeOf: () => peer,
     offloadThreshold: undefined, // default 8MB
     offload: async (bytes, peerNode) => {
@@ -414,6 +416,15 @@ export function fabricDataPeer(node: string): boolean {
 export function fabricRulesPeer(node: string): boolean {
   const link = peerLinks.get(node);
   return !!(fabricLinks.has(node) && link?.peerHasFeature('rules'));
+}
+
+/** True iff we have a fabric link to `node` AND it advertised the `memory` HELLO feature.
+ *  Mirrors fabricRulesPeer's gate exactly, for the memory fabric fast-path (mcp-transport.ts's
+ *  pullFromHome/slugsByRemote/pushToHome/pushMergeToPeer) — a peer without the memory feature is
+ *  ineligible and the caller falls back to the hub path. */
+export function fabricMemoryPeer(node: string): boolean {
+  const link = peerLinks.get(node);
+  return !!(fabricLinks.has(node) && link?.peerHasFeature('memory'));
 }
 
 /** Reliable data-service sync RPC over the fabric (spec §5 S2.2: fabricRequestManaged, NOT bare
