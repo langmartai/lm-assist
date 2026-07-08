@@ -27,7 +27,49 @@ export interface ScreenClassification {
   retryHint?: string;
 }
 
-/** Classify the visible terminal text. Pure + deterministic; order = priority. */
+/** Find the LAST (most recent) match of `re` in `t`, plus its start index. */
+function findLast(t: string, re: RegExp): { detail: string; index: number } | undefined {
+  const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+  let m: RegExpExecArray | null;
+  let last: RegExpExecArray | null = null;
+  while ((m = g.exec(t))) {
+    last = m;
+    if (m.index === g.lastIndex) g.lastIndex++; // don't loop forever on a zero-width match
+  }
+  if (!last) return undefined;
+  const detail = last[0].length > 200 ? last[0].slice(0, 200) : last[0];
+  return { detail: detail.trim(), index: last.index };
+}
+
+/** Error-banner patterns Claude Code prints inline in the transcript. Several
+ *  can be visible in one captured screen at once — an earlier one the session
+ *  already moved past, and a later, currently-relevant one. Ranked by RECENCY
+ *  (closest to the end of the text), not this list's order, so a stale banner
+ *  can't shadow the real current state. */
+const BANNER_PATTERNS: { state: ScreenState; re: RegExp }[] = [
+  { state: 'auth_error', re: /OAuth token has expired[^\n]*/i },
+  { state: 'auth_error', re: /Invalid API key[^\n]*/i },
+  { state: 'auth_error', re: /Invalid authentication credentials[^\n]*/i },
+  { state: 'auth_error', re: /Credit balance is too low[^\n]*/i },
+  { state: 'auth_error', re: /API Error:\s*401[^\n]*/i },
+  { state: 'auth_error', re: /Please run \/login[^\n]*/i },
+  { state: 'rate_limit_server', re: /Server is temporarily limiting requests \(not your usage limit\)[^\n]*/i },
+  { state: 'rate_limit_server', re: /temporarily limiting requests[^\n]*/i },
+  { state: 'rate_limit_user', re: /(Claude )?usage limit reached[^\n]*/i },
+  { state: 'rate_limit_user', re: /5-hour limit[^\n]*/i },
+  { state: 'rate_limit_user', re: /approaching your usage limit[^\n]*/i },
+  { state: 'rate_limit_user', re: /You've been rate limited[^\n]*/i },
+  { state: 'rate_limit_user', re: /limit reached[^\n]*reset[^\n]*/i },
+  { state: 'overloaded', re: /Overloaded[^\n]*/i },
+  { state: 'overloaded', re: /overloaded_error/i },
+  { state: 'overloaded', re: /API Error:\s*529[^\n]*/i },
+  { state: 'overloaded', re: /Waiting for capacity[^\n]*/i },
+  { state: 'server_error', re: /API Error:\s*5\d\d[^\n]*/i },
+  { state: 'server_error', re: /Internal server error[^\n]*/i },
+  { state: 'server_error', re: /API Error \(.*5\d\d.*\)[^\n]*/i },
+];
+
+/** Classify the visible terminal text. Pure + deterministic. */
 export function classifyScreen(text: string): ScreenClassification {
   const t = text || '';
   const find = (re: RegExp): string | undefined => {
@@ -42,38 +84,19 @@ export function classifyScreen(text: string): ScreenClassification {
     find(/Yes, I trust this folder/i);
   if (d) return { state: 'folder_trust', detail: d };
 
-  // 2. Auth problems
-  d =
-    find(/OAuth token has expired[^\n]*/i) ||
-    find(/Invalid API key[^\n]*/i) ||
-    find(/Invalid authentication credentials[^\n]*/i) ||
-    find(/Credit balance is too low[^\n]*/i) ||
-    find(/API Error:\s*401[^\n]*/i) ||
-    find(/Please run \/login[^\n]*/i);
-  if (d) return { state: 'auth_error', detail: d };
-
-  // 3. Server-side throttle — explicitly NOT the user's usage limit (check before user limit)
-  d = find(/Server is temporarily limiting requests \(not your usage limit\)[^\n]*/i) || find(/temporarily limiting requests[^\n]*/i);
-  if (d) return { state: 'rate_limit_server', detail: d };
-
-  // 4. User account usage limit
-  d =
-    find(/(Claude )?usage limit reached[^\n]*/i) ||
-    find(/5-hour limit[^\n]*/i) ||
-    find(/approaching your usage limit[^\n]*/i) ||
-    find(/You've been rate limited[^\n]*/i) ||
-    find(/limit reached[^\n]*reset[^\n]*/i);
-  if (d) {
-    return { state: 'rate_limit_user', detail: d, retryHint: find(/resets?\s*(at|in)[^\n]*/i) };
+  // 2-6. Error banners (auth / server throttle / user throttle / overloaded /
+  // other 5xx) — whichever matches CLOSEST TO THE END of the text wins.
+  let best: { state: ScreenState; detail: string; index: number } | undefined;
+  for (const { state, re } of BANNER_PATTERNS) {
+    const hit = findLast(t, re);
+    if (hit && (!best || hit.index > best.index)) best = { state, ...hit };
   }
-
-  // 5. Overloaded / capacity (529)
-  d = find(/Overloaded[^\n]*/i) || find(/overloaded_error/i) || find(/API Error:\s*529[^\n]*/i) || find(/Waiting for capacity[^\n]*/i);
-  if (d) return { state: 'overloaded', detail: d };
-
-  // 6. Other server / API errors (5xx)
-  d = find(/API Error:\s*5\d\d[^\n]*/i) || find(/Internal server error[^\n]*/i) || find(/API Error \(.*5\d\d.*\)[^\n]*/i);
-  if (d) return { state: 'server_error', detail: d };
+  if (best) {
+    if (best.state === 'rate_limit_user') {
+      return { state: 'rate_limit_user', detail: best.detail, retryHint: find(/resets?\s*(at|in)[^\n]*/i) };
+    }
+    return { state: best.state, detail: best.detail };
+  }
 
   // 7. A question / numbered choice waiting on the user (permission prompts, etc.)
   if (/Enter to confirm|Do you want to (proceed|continue|create|run|make|allow)/i.test(t) || /❯\s*\d+\.\s+\S/.test(t)) {
