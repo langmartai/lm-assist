@@ -8,20 +8,22 @@
  * so a `[topic]`-prefixed getRange walks a topic in (origin, seq) order. Ingest
  * is idempotent: a key that already exists is a no-op (no LWW, no conflicts).
  *
- * Write path is non-blocking (perf fix): append()/ingest()/bumpHead() write through
- * an in-memory overlay (`pendingEvents` + the `seqCache` head map) and commit to LMDB
- * with async put() — never putSync — so a bus publish never blocks the event loop on
- * a synchronous fsync (measured: putSync-per-event capped publish at ~70-86 ops/s and
- * stalled the whole Core API under concurrent publishers; the data-cache backend's
- * async put() stays non-blocking under the same load). Every read method below (get /
- * readSince / maxCursor / allTopicNames / listTopics) merges the overlay in, because a
- * `.getRange()` scan does NOT see an async put() still in flight even with `cache:true`
- * (verified in isolation: point gets get same-tick read-your-writes with `cache:true`,
- * range scans do not) — so `cache:true` (enabled below anyway, belt-and-suspenders) is
- * NOT sufficient on its own and the overlay is load-bearing. close() awaits every
- * in-flight commit before closing the environment — see its comment for the crash-loss
- * tradeoff that accepts. Subscriber cursors are unchanged (still putSync — see
- * setCursor's comment for why that's fine to leave as-is).
+ * Write path is non-blocking (perf fix): append()/ingest()/bumpHead() AND setCursor()
+ * all write through an in-memory overlay (`pendingEvents` + the `seqCache` head map +
+ * `pendingCursors`) and commit to LMDB with async put() — never putSync — so a bus
+ * publish or a cursor advance never blocks the event loop on a synchronous fsync
+ * (measured: putSync-per-event capped publish at ~70-86 ops/s and stalled the whole
+ * Core API under concurrent publishers; the data-cache backend's async put() stays
+ * non-blocking under the same load; cursor writes were the last remaining putSync and
+ * left a residual max-181ms tail under heavy subscriber delivery). Every read method
+ * below (get / readSince / maxCursor / allTopicNames / listTopics / getCursor) merges
+ * the overlay in, because a `.getRange()` scan does NOT see an async put() still in
+ * flight even with `cache:true` (verified in isolation: point gets get same-tick
+ * read-your-writes with `cache:true`, range scans do not) — so `cache:true` (enabled
+ * below anyway, belt-and-suspenders) is NOT sufficient on its own and the overlay is
+ * load-bearing. close() awaits every in-flight commit (events, heads, AND cursors)
+ * before closing the environment — see its comment for the crash-loss tradeoff that
+ * accepts.
  */
 import { open, RootDatabase, Database } from 'lmdb';
 import * as fs from 'fs';
@@ -52,8 +54,13 @@ export class BusStore {
   // Appended-but-not-yet-durably-committed events, keyed `${topic}\x00${origin}\x00${seq}`.
   // Merged into every read below so an async commit can never break read-your-writes.
   private pendingEvents = new Map<string, BusEvent>();
-  // Every in-flight async commit (event bodies AND head bumps), tracked explicitly so close()
-  // can deterministically wait for the overlay to fully drain before closing the environment.
+  // Same overlay idiom as pendingEvents, for subscriber cursors — keyed `${subscriberId}\x00${topic}`.
+  // Holds the latest merged cursor value for a key that has an in-flight (not yet durably
+  // committed) setCursor(); read through by getCursor() so read-your-writes holds here too.
+  private pendingCursors = new Map<string, BusCursor>();
+  // Every in-flight async commit (event bodies, head bumps, AND cursor advances), tracked
+  // explicitly so close() can deterministically wait for the overlay to fully drain before
+  // closing the environment.
   private pendingCommits = new Set<Promise<unknown>>();
   private _closed = false;
 
@@ -63,7 +70,7 @@ export class BusStore {
     this.env = open({ path: d, compression: true, maxDbs: 4, mapSize: 2 * 1024 * 1024 * 1024, cache: true });
     this.events = this.env.openDB('events', { encoding: 'msgpack', cache: true });
     this.heads = this.env.openDB('heads', { encoding: 'msgpack', cache: true });
-    this.cursors = this.env.openDB('cursors', { encoding: 'msgpack' });
+    this.cursors = this.env.openDB('cursors', { encoding: 'msgpack', cache: true });
   }
 
   private hk(topic: string, origin: string): string { return `${topic}\x00${origin}`; }
@@ -75,6 +82,9 @@ export class BusStore {
   }
 
   private pk(topic: string, origin: string, seq: number): string { return `${topic}\x00${origin}\x00${seq}`; }
+
+  /** Overlay key for the cursors map — mirrors pk()'s NUL-delimited idiom. */
+  private ck(subscriberId: string, topic: string): string { return `${subscriberId}\x00${topic}`; }
 
   private storedHead(topic: string, origin: string): number {
     const k = this.hk(topic, origin);
@@ -226,17 +236,39 @@ export class BusStore {
   }
 
   getCursor(subscriberId: string, topic: string): BusCursor {
-    return this.cursors.get([subscriberId, topic]) ?? {};
+    // Overlay first: a setCursor() commit may still be in flight, and its merged value is the
+    // freshest one — the durable store can lag behind it until the async put() lands.
+    return this.pendingCursors.get(this.ck(subscriberId, topic)) ?? this.cursors.get([subscriberId, topic]) ?? {};
   }
 
-  /** Subscriber cursor writes intentionally stay putSync (not folded into the overlay): they are
-   *  low-frequency (one write per delivered batch per subscriber, not per publish — see Bus.
-   *  dispatchTo) and subscriber-local, so they were never implicated in the publish-path stall
-   *  this class's async overlay fixes. Keeping them synchronous keeps getCursor/setCursor
-   *  trivially read-your-writes-correct with no extra bookkeeping. Revisit only if a subscriber
-   *  count ever makes this frequent enough to matter — not needed today. */
+  /** Subscriber cursor writes now go through the same in-memory write-through overlay as
+   *  events/heads (was putSync — a per-write synchronous fsync that, under heavy subscriber
+   *  delivery, could still briefly block the event loop; see the class comment). getCursor()
+   *  reads the overlay first, so this merge sees the latest in-flight value — two rapid
+   *  setCursor() calls to the same key run synchronously back-to-back (no await between them,
+   *  exactly how Bus.dispatchTo calls this), so the second one's merge correctly composes on
+   *  top of the first's still-pending value instead of the stale durable one.
+   *
+   *  Eviction correctness: the async put().then() below only deletes the overlay entry if it
+   *  still holds the EXACT value (`===`) that just committed. Without that check, a newer
+   *  setCursor() could have already overwritten the overlay with a fresher merged value by the
+   *  time an OLDER commit's callback runs (commits do not necessarily resolve in the order they
+   *  were issued) — deleting unconditionally would then wrongly drop that newer, not-yet-landed
+   *  value out of the overlay while its own commit is still in flight, breaking read-your-writes
+   *  for a real caller. Keying off referential identity of the merged object is sufficient
+   *  because every setCursor() computes and stores a fresh object — the overlay never holds two
+   *  logically-different values behind the same reference. */
   setCursor(subscriberId: string, topic: string, c: BusCursor): void {
-    this.cursors.putSync([subscriberId, topic], mergeCursor(this.getCursor(subscriberId, topic), c));
+    const key = this.ck(subscriberId, topic);
+    const merged = mergeCursor(this.getCursor(subscriberId, topic), c);
+    this.pendingCursors.set(key, merged);
+    this.trackCommit(
+      this.cursors.put([subscriberId, topic], merged)
+        .then(() => { if (this.pendingCursors.get(key) === merged) this.pendingCursors.delete(key); })
+        .catch(() => { /* keep serving this cursor from the overlay; see close()'s durability
+                           comment for the accepted crash-loss window — identical model to
+                           event/head commits. */ }),
+    );
   }
 
   /** Apply retention to every topic; returns the number of events removed. Reads/removes only
@@ -268,21 +300,23 @@ export class BusStore {
     return removed;
   }
 
-  /** Wait for every in-flight async commit (event bodies + head bumps) to settle, then for
-   *  LMDB's own disk-flush guarantee, before closing. This is what keeps a CLEAN shutdown
-   *  lossless even though append()/ingest()/bumpHead() no longer synchronously fsync per call
-   *  (see their comments): every write started before close() is awaited here, in two stages —
-   *  first the overlay drains (pendingCommits), then events/heads' `flushed` promise (LMDB's
-   *  own committed+fsynced guarantee) — before the environment actually closes. A HARD crash
-   *  before close() finishes can still lose that in-flight window; that is accepted and no
-   *  worse than any other missed bus event — the ~5 min reconcile + bus catch-up re-deliver it
+  /** Wait for every in-flight async commit (event bodies + head bumps + cursor advances) to
+   *  settle, then for LMDB's own disk-flush guarantee, before closing. This is what keeps a
+   *  CLEAN shutdown lossless even though append()/ingest()/bumpHead()/setCursor() no longer
+   *  synchronously fsync per call (see their comments): every write started before close() is
+   *  awaited here, in two stages — first the overlay drains (pendingCommits), then
+   *  events/heads/cursors' `flushed` promise (LMDB's own committed+fsynced guarantee) — before
+   *  the environment actually closes. A HARD crash before close() finishes can still lose that
+   *  in-flight window; that is accepted and no worse than any other missed bus event (or, for
+   *  cursors, no worse than redelivering an already-processed event — the bus's at-least-once
+   *  delivery model already tolerates that) — the ~5 min reconcile + bus catch-up re-deliver it
    *  from a peer's copy, the same at-least-once/idempotent-ingest model the bus already relies
    *  on for cross-node delivery. */
   async close(): Promise<void> {
     if (this._closed) return;
     this._closed = true;
     await Promise.allSettled([...this.pendingCommits]);
-    await Promise.all([this.events.flushed, this.heads.flushed]);
+    await Promise.all([this.events.flushed, this.heads.flushed, this.cursors.flushed]);
     this.env.close();
   }
 }

@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { BusStore } from '../../bus/bus-store';
-import type { BusEvent } from '../../bus/types';
+import type { BusEvent, BusCursor } from '../../bus/types';
 
 function tmpStore(): { store: BusStore; dir: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bus-store-'));
@@ -22,6 +22,13 @@ function pendingOf(store: BusStore): Map<string, BusEvent> {
 }
 function flushedOf(store: BusStore): Promise<unknown> {
   return (store as unknown as { events: { flushed: Promise<unknown> } }).events.flushed;
+}
+// Same whitebox pattern for the cursor overlay (perf(bus): move cursor writes to the overlay too).
+function pendingCursorsOf(store: BusStore): Map<string, BusCursor> {
+  return (store as unknown as { pendingCursors: Map<string, BusCursor> }).pendingCursors;
+}
+function cursorsFlushedOf(store: BusStore): Promise<unknown> {
+  return (store as unknown as { cursors: { flushed: Promise<unknown> } }).cursors.flushed;
 }
 
 test('append assigns monotonic per-origin seq and reads back', async () => {
@@ -179,4 +186,107 @@ test('non-blocking evidence: append() returns synchronously and the overlay hold
   const reopened = new BusStore(dir);
   assert.equal(reopened.get('nb:topic', 'gw-a', N)?.seq, N);
   await reopened.close();
+});
+
+// ── perf(bus): move cursor writes to the overlay too (fully non-blocking bus store) ─────────
+//
+// setCursor was the last putSync on the hot-ish delivery path (one write per delivered batch
+// per subscriber — see Bus.dispatchTo). Under heavy subscriber fan-out this still causes a
+// per-write fsync that can briefly block the event loop (the residual max-181ms tail measured
+// after the event/head overlay fix). setCursor/getCursor now mirror the exact same in-memory
+// write-through overlay pattern as events/heads: a pendingCursors Map read-through on getCursor,
+// an async cursors.put() tracked in the shared pendingCommits set, and close() awaiting
+// cursors.flushed too.
+
+test('cursor read-your-writes: setCursor then immediate getCursor (same tick, no await) sees the new value', () => {
+  const { store } = tmpStore();
+  store.setCursor('s', 't', { o: 5 });
+  assert.deepEqual(store.getCursor('s', 't'), { o: 5 }); // same tick — async commit cannot have landed yet
+  store.setCursor('s', 't', { o: 8 });
+  assert.deepEqual(store.getCursor('s', 't'), { o: 8 }); // second overlapping write composes correctly too
+});
+
+test('cursor merge semantics preserved: setCursor composes via mergeCursor (per-origin max), across overlay and committed', async () => {
+  const { store } = tmpStore();
+  store.setCursor('s', 't', { a: 3 });
+  store.setCursor('s', 't', { b: 2 });
+  assert.deepEqual(store.getCursor('s', 't'), { a: 3, b: 2 }); // union while still pending
+  store.setCursor('s', 't', { a: 1 }); // lower value for an already-seen origin
+  assert.deepEqual(store.getCursor('s', 't'), { a: 3, b: 2 }); // max wins — no regression
+  await cursorsFlushedOf(store);
+  assert.deepEqual(store.getCursor('s', 't'), { a: 3, b: 2 }); // still correct once durably committed
+  await store.close();
+});
+
+test('cursor durability: N cursors survive close()+reopen', async () => {
+  const { store, dir } = tmpStore();
+  const N = 20;
+  for (let i = 0; i < N; i++) store.setCursor(`sub-${i}`, 'topic', { gw: i });
+  await store.close(); // must not return before every pending cursor commit is durably flushed
+  const reopened = new BusStore(dir);
+  for (let i = 0; i < N; i++) assert.deepEqual(reopened.getCursor(`sub-${i}`, 'topic'), { gw: i });
+  await reopened.close();
+});
+
+test('cursor non-blocking evidence: setCursor() returns synchronously and the overlay holds the entry before the commit resolves', async () => {
+  const { store, dir } = tmpStore();
+  store.setCursor('sub-x', 'topic', { gw: 42 });
+  // Still the same synchronous tick: the async cursors.put().then() eviction callback is a
+  // microtask queued behind this still-executing block, so the overlay must still hold the entry.
+  assert.equal(pendingCursorsOf(store).size, 1);
+  assert.deepEqual(store.getCursor('sub-x', 'topic'), { gw: 42 });
+  await store.close(); // now wait for the real commit + drain of the overlay
+  assert.equal(pendingCursorsOf(store).size, 0);
+  const reopened = new BusStore(dir);
+  assert.deepEqual(reopened.getCursor('sub-x', 'topic'), { gw: 42 });
+  await reopened.close();
+});
+
+test('cursor eviction ref-check: an OLDER commit landing after a NEWER setCursor must not drop the newer overlay value', async () => {
+  const { store } = tmpStore();
+  // Force the exact out-of-order-commit scenario the ref-check exists for: fully stub
+  // cursors.put() with manually-controlled promises (no real LMDB I/O at all, so resolution
+  // order is 100% deterministic — awaiting the stub's own promise, not a guessed number of
+  // microtask/macrotask ticks, is what makes this reliable). Issue two overlapping setCursor()
+  // calls to the SAME key (older then newer — exactly how Bus.dispatchTo can call this
+  // back-to-back for the same subscriber+topic), then resolve the OLDER call's put() while the
+  // NEWER call's put() is still outstanding, and directly await the specific promise that
+  // resolution triggers. Without the `pendingCursors.get(key) === merged` check in setCursor(),
+  // the older commit's unconditional `.then(() => pendingCursors.delete(key))` would fire and
+  // wipe the newer, still-pending value out of the overlay purely because it happened to land
+  // first — commits do not necessarily resolve in issue order.
+  const cursorsDb = (store as unknown as { cursors: { put: (k: unknown, v: unknown) => Promise<unknown> } }).cursors;
+  const realPut = cursorsDb.put.bind(cursorsDb);
+  const gates: Array<{ resolve: () => void; settled: Promise<void> }> = [];
+  cursorsDb.put = () => {
+    let resolve!: () => void;
+    const settled = new Promise<void>((res) => { resolve = res; });
+    gates.push({ resolve, settled });
+    return settled; // setCursor's own .then(...) chain is attached directly to THIS promise
+  };
+
+  store.setCursor('sub-y', 'topic', { gw: 1 }); // older — put() held back as gates[0]
+  store.setCursor('sub-y', 'topic', { gw: 2 }); // newer — put() held back as gates[1]
+  assert.equal(gates.length, 2);
+  assert.deepEqual(store.getCursor('sub-y', 'topic'), { gw: 2 }); // overlay already reflects the newer merge
+
+  gates[0].resolve(); // resolve the OLDER commit first — its callback must NOT evict the newer value
+  await gates[0].settled; // deterministic: waits exactly for setCursor's .then() chained onto THIS promise
+
+  // The critical assertion: the newer value must survive the older commit's eviction callback,
+  // which has now definitely run (we awaited the exact promise it's chained off of). A version
+  // without the ref-check would have unconditionally deleted the overlay entry here, and
+  // getCursor() would fall through to the durable store — which still has nothing written to it
+  // in this fully-stubbed scenario (neither commit's real cursors.put ever ran), so the
+  // regression would surface as an empty cursor `{}` instead of the correct `{ gw: 2 }`.
+  assert.deepEqual(store.getCursor('sub-y', 'topic'), { gw: 2 });
+
+  // Release the still-pending newer commit too so it doesn't dangle (real cursors.put restored
+  // below never actually ran for either commit here — durability across a real commit + reopen
+  // is covered separately by "cursor durability: N cursors survive close()+reopen").
+  gates[1].resolve();
+  await gates[1].settled;
+
+  cursorsDb.put = realPut;
+  await store.close();
 });
