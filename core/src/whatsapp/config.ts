@@ -81,3 +81,29 @@ export function graphVersion(cfg: WhatsappConfig = readWhatsappConfig()): string
 export function isConfigured(cfg: WhatsappConfig = readWhatsappConfig()): boolean {
   return Boolean(cfg.phoneNumberId && cfg.accessToken);
 }
+
+// ─── Provider selection (Meta hub vs local CDP desktop) ──────────────────────
+
+/**
+ * Which backend this node's WhatsApp connector uses:
+ *   - 'meta' — the Meta WhatsApp Cloud API via the hub (the server deployment,
+ *              and the DEFAULT so existing server nodes keep current behavior).
+ *   - 'cdp'  — drive a logged-in WhatsApp Desktop / web.whatsapp.com session
+ *              over the Chrome DevTools Protocol (a local desktop node).
+ * Overridable via WHATSAPP_PROVIDER; anything other than 'cdp' resolves to
+ * 'meta' so the server default is preserved.
+ */
+export function whatsappProvider(): 'cdp' | 'meta' {
+  return process.env.WHATSAPP_PROVIDER === 'cdp' ? 'cdp' : 'meta';
+}
+
+/**
+ * The CDP base URL for the local provider. Honors an explicit WHATSAPP_CDP_URL,
+ * else builds `http://localhost:<WHATSAPP_CDP_PORT|9222>` (the debug port the
+ * WhatsApp Desktop WebView2 / debug Chrome exposes).
+ */
+export function resolveCdpBase(): string {
+  if (process.env.WHATSAPP_CDP_URL) return String(process.env.WHATSAPP_CDP_URL).replace(/\/+$/, '');
+  const port = process.env.WHATSAPP_CDP_PORT || 9222;
+  return `http://localhost:${port}`;
+}
