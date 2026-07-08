@@ -14,6 +14,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getHubConfig, isHubConfigured } from '../hub-client/hub-config';
+import { hubFetch, proxyFetch } from '../hub-client/hub-proxy';
 import { getKnowledgeStore } from './store';
 import { getKnowledgeSettings, saveKnowledgeSettings } from './settings';
 import type { Knowledge, KnowledgeType } from './types';
@@ -118,49 +119,8 @@ function normalizeGitUrl(url: string): string {
   return normalized.toLowerCase();
 }
 
-// ── Hub HTTP Helper ──────────────────────────────────────────
-
-function getHubHttpUrl(): string {
-  const config = getHubConfig();
-  return (config.hubUrl || '')
-    .replace(/^ws:/, 'http:')
-    .replace(/^wss:/, 'https:');
-}
-
-async function hubFetch(path: string): Promise<any> {
-  const config = getHubConfig();
-  const hubHttpUrl = getHubHttpUrl();
-
-  const res = await fetch(`${hubHttpUrl}${path}`, {
-    headers: { 'Authorization': `Bearer ${config.apiKey}` },
-  });
-
-  if (!res.ok) {
-    throw new Error(`Hub returned ${res.status} for ${path}`);
-  }
-
-  return res.json();
-}
-
-/**
- * Make a proxied request to a remote machine's local API via the hub.
- * Uses the hub's API relay proxy endpoint.
- */
-async function proxyFetch(machineId: string, path: string): Promise<any> {
-  const config = getHubConfig();
-  const hubHttpUrl = getHubHttpUrl();
-
-  // Use the hub's proxy endpoint to reach the remote machine
-  const res = await fetch(`${hubHttpUrl}/api/tier-agent/machines/${machineId}/proxy${path}`, {
-    headers: { 'Authorization': `Bearer ${config.apiKey}` },
-  });
-
-  if (!res.ok) {
-    throw new Error(`Proxy request to ${machineId}${path} returned ${res.status}`);
-  }
-
-  return res.json();
-}
+// Hub HTTP + machine-proxy helpers now live in ../hub-client/hub-proxy (imported above) —
+// previously duplicated here verbatim.
 
 // ── Sync Implementation ──────────────────────────────────────────
 
@@ -224,7 +184,7 @@ export async function sync(projectPath?: string): Promise<void> {
     }
 
     // 3. Discover remote machines
-    const machinesJson = await hubFetch('/api/tier-agent/machines');
+    const machinesJson = await hubFetch('/api/tier-agent/machines') as any;
     const machines: any[] = Array.isArray(machinesJson) ? machinesJson : machinesJson.machines || machinesJson.data || [];
 
     const hubConfig = getHubConfig();
@@ -233,7 +193,10 @@ export async function sync(projectPath?: string): Promise<void> {
 
     // 4. For each remote machine, find matching projects and sync knowledge
     for (const machine of machines) {
-      const remoteMachineId = machine.machineId || machine.gatewayId || machine.id;
+      // gatewayId-first: the hub routes the machine-proxy by gatewayId (a bare machineId 404s at
+      // the hub). The /machines list currently leaves machineId unset so this resolves to gatewayId
+      // anyway; the ordering is defensive against the hub ever populating a non-routable machineId.
+      const remoteMachineId = machine.gatewayId || machine.machineId || machine.id;
       if (!remoteMachineId || typeof remoteMachineId !== 'string') continue;
 
       // Skip self — compare against both machineId and gatewayId
@@ -246,7 +209,7 @@ export async function sync(projectPath?: string): Promise<void> {
         // Get remote machine's projects
         let remoteProjects: any[];
         try {
-          const projJson = await proxyFetch(remoteMachineId, '/projects');
+          const projJson = await proxyFetch(remoteMachineId, '/projects') as any;
           const projData = projJson.data?.projects || projJson.data || projJson;
           remoteProjects = Array.isArray(projData) ? projData : [];
         } catch (err: any) {
@@ -280,7 +243,7 @@ export async function sync(projectPath?: string): Promise<void> {
           const knJson = await proxyFetch(
             remoteMachineId,
             `/knowledge?origin=local&status=active`
-          );
+          ) as any;
           const knData = knJson.data || knJson;
           remoteKnowledge = Array.isArray(knData) ? knData : [];
         } catch (err: any) {
@@ -366,7 +329,7 @@ export async function sync(projectPath?: string): Promise<void> {
           // Fetch full knowledge entry with content
           let fullEntry: any;
           try {
-            const fullJson = await proxyFetch(remoteMachineId, `/knowledge/${knowledgeId}`);
+            const fullJson = await proxyFetch(remoteMachineId, `/knowledge/${knowledgeId}`) as any;
             fullEntry = fullJson.data || fullJson;
           } catch (err: any) {
             _syncStatus.errors.push(`${remoteMachineId}:${knowledgeId}: Failed to fetch full entry: ${err.message}`);

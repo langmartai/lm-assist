@@ -4,6 +4,7 @@
 // This is network code — unit-tested indirectly via the live e2e (Task 8).
 
 import { getHubConfig } from '../hub-client/hub-config';
+import { hubFetch, proxyFetch, proxyPost, proxyGet } from '../hub-client/hub-proxy';
 import { sameClusterIds } from '../cluster/cluster-map';
 import type { PeerClient, NodeInfo, ManifestEntry, DataRecord } from './types';
 import type { ClusterRecord } from '../cluster/cluster-map';
@@ -41,77 +42,11 @@ export function filterOnlineToCluster(
   return sameClusterIds(allOnline, records, selfId, selfCluster);
 }
 
-// ── Hub HTTP Helpers ─────────────────────────────────────────────────────────
-
-function getHubHttpUrl(): string {
-  const cfg = getHubConfig();
-  return (cfg.hubUrl || '')
-    .replace(/^ws:/, 'http:')
-    .replace(/^wss:/, 'https:');
-}
-
-async function hubFetch(urlPath: string): Promise<unknown> {
-  const cfg = getHubConfig();
-  const base = getHubHttpUrl();
-  const res = await fetch(`${base}${urlPath}`, {
-    headers: { Authorization: `Bearer ${cfg.apiKey}` },
-  });
-  if (!res.ok) {
-    throw new Error(`Hub returned ${res.status} for ${urlPath}`);
-  }
-  return res.json();
-}
-
-interface ProxyGetOptions {
-  extraHeaders?: Record<string, string>;
-}
-
-async function proxyFetch(node: string, urlPath: string, opts?: ProxyGetOptions): Promise<unknown> {
-  const cfg = getHubConfig();
-  const base = getHubHttpUrl();
-  const proxyUrl = `${base}/api/tier-agent/machines/${node}/proxy${urlPath}`;
-  const res = await fetch(proxyUrl, {
-    headers: {
-      Authorization: `Bearer ${cfg.apiKey}`,
-      ...(opts?.extraHeaders ?? {}),
-    },
-  });
-  if (!res.ok) {
-    throw new Error(`Proxy request to ${node}${urlPath} returned ${res.status}`);
-  }
-  return res.json();
-}
-
-async function proxyPost(node: string, urlPath: string, body: unknown): Promise<unknown> {
-  const cfg = getHubConfig();
-  const base = getHubHttpUrl();
-  const proxyUrl = `${base}/api/tier-agent/machines/${node}/proxy${urlPath}`;
-  const res = await fetch(proxyUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${cfg.apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    throw new Error(`Proxy POST to ${node}${urlPath} returned ${res.status}`);
-  }
-  return res.json();
-}
-
-/**
- * Server-side GET proxy via hub machine-relay.
- * Uses the hub Bearer token stored on this node — the browser cannot use this directly.
- * For cross-node operations, call this from a route handler so the local Core proxies for the browser.
- */
-export async function proxyGet(node: string, urlPath: string): Promise<unknown> {
-  return proxyFetch(node, urlPath);
-}
-
-// Re-export proxyPost for callers that need server-side POST proxying (e.g. mission routes).
-// The browser cannot use this — it has no hub Bearer token.
-export { proxyPost };
+// ── Hub HTTP helpers ─────────────────────────────────────────────────────────
+// Canonical impl now lives in ../hub-client/hub-proxy (imported above). Re-exported here so
+// existing importers (mission/cluster/fleet routes, resolution, node-builds, auth-status) keep
+// importing proxyPost/proxyGet FROM peer-client unchanged.
+export { proxyPost, proxyGet };
 
 // ── Error code helpers ───────────────────────────────────────────────────────
 
