@@ -53,22 +53,88 @@ export interface PulledRecord {
   recordedAtMs?: number;
 }
 
-/** Pull a project's syncable records from the home node (relayed, key in body). */
+/** True iff this node has a fabric link to `node`, that peer advertised the `memory` HELLO
+ *  feature, AND the local opt-in (dataSyncViaFabric) is on. Lazy require()s (mirrors
+ *  rulesFabricEligible's own `require('../fabric') as any` / `require('../project-settings')`
+ *  pattern below) to avoid a load-time circular dep between fabric/index.ts and this module.
+ *  Wrapped in try/catch — any settings/fabric read failure is simply "not eligible", same as
+ *  fabricSettingEnabled()'s own default-safe posture elsewhere in the fabric layer. */
+function memoryFabricEligible(node: string): boolean {
+  try {
+    const { getProjectSettings } = require('../project-settings') as typeof import('../project-settings');
+    const { fabricMemoryPeer } = require('../fabric') as any;
+    return getProjectSettings().dataSyncViaFabric && fabricMemoryPeer(node);
+  } catch {
+    return false;
+  }
+}
+
+/** Generic peer RPC over the fabric for the memory sync routes (export/ingest/projects-by-remote —
+ *  no key required, the peer authorizes a loopback+peer call without one; see memory-sync.routes.ts's
+ *  authorized()). Throws on any transport failure OR app-error (status>=400 or a `code`) — every
+ *  throw routes the caller (pullFromHome/slugsByRemote/pushToHome/pushMergeToPeer) to the hub
+ *  fallback, mirroring pullRulesViaFabric's assertNoAppError-then-throw shape (fabricDataRequest
+ *  RESOLVES app-errors instead of throwing, so they must be checked explicitly here). */
+async function memoryFabricRequest(node: string, init: { method: string; path: string; body?: unknown; query?: Record<string, string> }): Promise<any> {
+  const { fabricDataRequest } = require('../fabric') as any;
+  const r = await fabricDataRequest(node, init);
+  if (r.status >= 400 || r.code) {
+    throw new Error(r.message || `fabric app-error (status ${r.status}${r.code ? `, code ${r.code}` : ''})`);
+  }
+  return r.data;
+}
+
+/** Pull a project's syncable records from the home node. Fabric fast-path when eligible (direct
+ *  peer RPC, no hub hairpin, no key — see memoryFabricEligible/memoryFabricRequest above); falls
+ *  back to the EXISTING hub relay path unchanged on ANY error (ineligible, transport failure, or
+ *  fabric app-error) or a malformed fabric result. Returns [] on total failure (unchanged contract). */
 export async function pullFromHome(homeId: string, project: string, sinceMs: number, key: string): Promise<PulledRecord[]> {
+  if (memoryFabricEligible(homeId)) {
+    try {
+      const raw = await memoryFabricRequest(homeId, { method: 'POST', path: '/memory/export', body: exportBody(project, sinceMs, key) });
+      const data = raw && (raw.data || raw);
+      if (data && Array.isArray(data.records)) return data.records;
+    } catch {
+      // fall through to hub
+    }
+  }
   const j = await relayPost(homeId, '/memory/export', exportBody(project, sinceMs, key));
   const raw = j && (j.data || j);
   return raw && Array.isArray(raw.records) ? raw.records : [];
 }
 
-/** Push records to the home node's mirror for this host (relayed, key in body). */
+/** Push records to the home node's mirror for this host — the first WRITE on the memory fabric
+ *  fast-path. Fabric fast-path when eligible; falls back to the EXISTING hub relay path unchanged
+ *  on ANY error or a malformed fabric result. Returns 0 on total failure (unchanged contract). */
 export async function pushToHome(homeId: string, project: string, sourceHost: string, records: unknown[], key: string): Promise<number> {
+  if (memoryFabricEligible(homeId)) {
+    try {
+      const raw = await memoryFabricRequest(homeId, { method: 'POST', path: '/memory/ingest', body: ingestBody(project, sourceHost, records, key) });
+      const data = raw && (raw.data || raw);
+      if (data && typeof data.ingested === 'number') return data.ingested;
+    } catch {
+      // fall through to hub
+    }
+  }
   const j = await relayPost(homeId, '/memory/ingest', ingestBody(project, sourceHost, records, key));
   const raw = j && (j.data || j);
   return raw && typeof raw.ingested === 'number' ? raw.ingested : 0;
 }
 
-/** CONVERGENT push: merge this node's records into a peer's LIVE memory for `targetProject` (relayed). */
+/** CONVERGENT push: merge this node's records into a peer's LIVE memory for `targetProject` — the
+ *  second WRITE on the memory fabric fast-path (same /memory/ingest route, merge:true). Fabric
+ *  fast-path when eligible; falls back to the EXISTING hub relay path unchanged on ANY error or a
+ *  falsy fabric result. Returns null on total failure (unchanged contract). */
 export async function pushMergeToPeer(node: string, targetProject: string, sourceHost: string, records: unknown[], key: string): Promise<any> {
+  if (memoryFabricEligible(node)) {
+    try {
+      const raw = await memoryFabricRequest(node, { method: 'POST', path: '/memory/ingest', body: mergeIngestBody(targetProject, sourceHost, records, key) });
+      const data = raw && (raw.data || raw);
+      if (data && data.merged) return data.merged;
+    } catch {
+      // fall through to hub
+    }
+  }
   const j = await relayPost(node, '/memory/ingest', mergeIngestBody(targetProject, sourceHost, records, key));
   const raw = j && (j.data || j);
   return (raw && raw.merged) || null;
@@ -88,8 +154,19 @@ async function relayGet(node: string, urlPath: string): Promise<any> {
   }
 }
 
-/** Ask a peer which of its project slugs match a git-remote key (relayed GET /memory/projects-by-remote). */
+/** Ask a peer which of its project slugs match a git-remote key. Fabric fast-path when eligible;
+ *  falls back to the EXISTING hub relay (GET /memory/projects-by-remote) path unchanged on ANY
+ *  error or a malformed fabric result. Returns [] on total failure (unchanged contract). */
 export async function slugsByRemote(node: string, remoteKey: string): Promise<string[]> {
+  if (memoryFabricEligible(node)) {
+    try {
+      const raw = await memoryFabricRequest(node, { method: 'GET', path: '/memory/projects-by-remote', query: { key: remoteKey } });
+      const data = raw && (raw.data || raw);
+      if (data && Array.isArray(data.slugs)) return data.slugs;
+    } catch {
+      // fall through to hub
+    }
+  }
   const j = await relayGet(node, `/memory/projects-by-remote?key=${encodeURIComponent(remoteKey)}`);
   const raw = j && (j.data || j);
   return raw && Array.isArray(raw.slugs) ? raw.slugs : [];
