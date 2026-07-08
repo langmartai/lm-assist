@@ -102,8 +102,54 @@ export function rulesExportBody(key: string) {
   return { key };
 }
 
-/** Pull a peer node's own USER rules (relayed, key in body). Returns null on any failure. */
+/** True iff this node has a fabric link to `node`, that peer advertised the `rules` HELLO
+ *  feature, AND the local opt-in (dataSyncViaFabric) is on. Lazy require()s (mirrors
+ *  FabricPeerClient's own `require('../fabric') as any` / `require('../project-settings')`
+ *  pattern) to avoid a load-time circular dep between fabric/index.ts and this module.
+ *  Wrapped in try/catch — any settings/fabric read failure is simply "not eligible", same
+ *  as fabricSettingEnabled()'s own default-safe posture elsewhere in the fabric layer. */
+function rulesFabricEligible(node: string): boolean {
+  try {
+    const { getProjectSettings } = require('../project-settings') as typeof import('../project-settings');
+    const { fabricRulesPeer } = require('../fabric') as any;
+    return getProjectSettings().dataSyncViaFabric && fabricRulesPeer(node);
+  } catch {
+    return false;
+  }
+}
+
+/** Fetch a peer's own USER rules over the fabric (no key — the peer authorizes a
+ *  loopback+peer call without one; see rule-sync.routes.ts's authorized()). Throws on
+ *  any transport failure OR app-error (status>=400) OR a malformed body — every throw
+ *  routes the caller (pullRulesExport) to the hub fallback, mirroring FabricPeerClient's
+ *  own assertNoAppError-then-throw shape (fabricRequestManaged RESOLVES app-errors
+ *  instead of throwing, so they must be checked explicitly here). */
+async function pullRulesViaFabric(node: string): Promise<{ host: string; platform: string; rules: IngestRule[] } | null> {
+  const { fabricDataRequest } = require('../fabric') as any;
+  const r = await fabricDataRequest(node, { method: 'POST', path: '/rules/export', body: {} });
+  if (r.status >= 400 || r.code) {
+    throw new Error(r.message || `fabric app-error (status ${r.status}${r.code ? `, code ${r.code}` : ''})`);
+  }
+  const raw = r.data && (r.data.data || r.data);
+  if (!raw || !Array.isArray(raw.rules)) {
+    throw new Error('fabric /rules/export: malformed response (no rules[])');
+  }
+  return { host: String(raw.host || node), platform: String(raw.platform || ''), rules: raw.rules };
+}
+
+/** Pull a peer node's own USER rules. Fabric fast-path when eligible (direct peer RPC, no
+ *  hub hairpin, no key — see rulesFabricEligible/pullRulesViaFabric above); falls back to
+ *  the EXISTING hub relay path unchanged on ANY error (ineligible, transport failure, or
+ *  fabric app-error) or a falsy fabric result. Returns null on total failure. */
 export async function pullRulesExport(node: string, key: string): Promise<{ host: string; platform: string; rules: IngestRule[] } | null> {
+  if (rulesFabricEligible(node)) {
+    try {
+      const parsed = await pullRulesViaFabric(node);
+      if (parsed) return parsed;
+    } catch {
+      // fall through to hub
+    }
+  }
   const j = await relayPost(node, '/rules/export', rulesExportBody(key));
   const raw = j && (j.data || j);
   if (!raw || !Array.isArray(raw.rules)) return null;

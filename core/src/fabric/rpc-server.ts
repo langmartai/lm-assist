@@ -33,6 +33,11 @@ export interface RpcServerDeps {
    *  is false (spec §5 S2 — gated by dataSyncViaFabric, not the general RPC class). W4's analogue
    *  of the busEnabled allow-list; same URL-normalized routedPath guard. */
   dataSyncEnabled?: () => boolean;
+  /** When true, ONLY `/rules/export` (a READ) dispatches even if rpcEnabled() is false — gated by
+   *  ruleSyncEnabled, not the general RPC class. Same scoped-allow-list pattern as busEnabled/
+   *  dataSyncEnabled above. `/rules/ingest` (a WRITE) is NEVER covered by this gate — it stays
+   *  reachable only through the general rpcEnabled() class, same as any other write route. */
+  ruleSyncEnabled?: () => boolean;
   peerNodeOf: (env: Envelope) => string;
   offload?: (bytes: Uint8Array, peerNode: string) => Promise<{ handle: unknown }>;
   offloadThreshold?: number; // bytes; default 8MB
@@ -44,6 +49,10 @@ const DEFAULT_OFFLOAD = 8 * 1024 * 1024;
 // (the W3 CRITICAL lesson: a raw prefix let `/bus/../hub/config` normalize past a naive startsWith).
 // Matched against the URL-normalized `routedPath`, so a `..`/`%2e%2e` segment has already collapsed.
 const DATA_SYNC_ROUTES = /^\/data\/(?:sync\/manifest|[^/]+\/(?:export|fetch))$/;
+
+// Rules sync — ONLY /rules/export (READ). NEVER /rules/ingest (a WRITE). Exact shape (anchored),
+// matched on the URL-normalized routedPath, same traversal-safety reason as DATA_SYNC_ROUTES.
+const RULES_EXPORT_ROUTE = /^\/rules\/export$/;
 
 export function createRpcServer(deps: RpcServerDeps): ServerHandler {
   const threshold = deps.offloadThreshold ?? DEFAULT_OFFLOAD;
@@ -86,10 +95,16 @@ export function createRpcServer(deps: RpcServerDeps): ServerHandler {
       // branch above — scoped to DATA_SYNC_ROUTES's EXACT shape over the SAME
       // normalized routedPath, never a bare `/data/` prefix, for the identical
       // reason the bus entry isn't a bare `/bus/` prefix.
+      // Rules export (/rules/export only) rides ruleSyncEnabled, the identical
+      // scoped-allow-list pattern — RULES_EXPORT_ROUTE's EXACT shape over the
+      // SAME normalized routedPath. /rules/ingest (a WRITE) deliberately has no
+      // entry here at all, so it only ever dispatches through the general
+      // rpcEnabled() class above, same as before this change.
       const allowed =
         deps.rpcEnabled()
         || (/^\/bus\/[^/]+\/since$/.test(routedPath) && (deps.busEnabled?.() ?? false))
-        || (DATA_SYNC_ROUTES.test(routedPath) && (deps.dataSyncEnabled?.() ?? false));
+        || (DATA_SYNC_ROUTES.test(routedPath) && (deps.dataSyncEnabled?.() ?? false))
+        || (RULES_EXPORT_ROUTE.test(routedPath) && (deps.ruleSyncEnabled?.() ?? false));
       if (!allowed) { reply(errRes(503, 'rpc_disabled', 'fabric rpc class disabled')); return; }
 
       const reqId = env.headers.reqId ?? id;

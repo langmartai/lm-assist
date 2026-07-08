@@ -154,3 +154,136 @@ test('offload failure replies a 502 error res (not a false-success 200/bulk) and
   assert.equal(out1!.id, 'call-A');
   assert.equal(out2!.id, 'call-B'); // replayed under ITS OWN correlation id, not call-A's
 });
+
+// ---------------------------------------------------------------------------
+// feat/rules-fabric: RULES sync allow-list entry. Mirrors the DATA_SYNC_ROUTES
+// scoped-entry tests above — the same URL-normalized routedPath decides
+// eligibility, EXACT shape only, /rules/export (READ) never /rules/ingest
+// (WRITE). Security-sensitive: this extends the surface of the W3 CRITICAL
+// traversal-bypass (a bare-prefix allow-list let `/bus/../hub/config`
+// normalize past a naive startsWith).
+// ---------------------------------------------------------------------------
+
+const rulesReq = (path: string, id = 'r1'): Envelope => ({
+  kind: 'req', id,
+  headers: { method: 'POST', path, reqId: id, cls: 'rpc' },
+  payload: encodeBody({ body: {}, query: {} }),
+});
+
+test('ruleSyncEnabled on: /rules/export dispatches even with rpcEnabled off', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async (r) => { calls++; return { status: 200, data: { path: r.path } }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,
+    ruleSyncEnabled: () => true,
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(rulesReq('/rules/export'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 1);
+  assert.equal(out!.headers.status, 200);
+  assert.deepEqual(decodeBody(out!.payload), { path: '/rules/export' });
+});
+
+test('ruleSyncEnabled off: /rules/export is rejected (503 rpc_disabled), no dispatch', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async () => { calls++; return { status: 200, data: {} }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,
+    ruleSyncEnabled: () => false,
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(rulesReq('/rules/export'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 0);
+  assert.equal(out!.headers.status, 503);
+  assert.equal(out!.headers.code, 'rpc_disabled');
+});
+
+test('/rules/ingest (a WRITE) is NEVER allowed via ruleSyncEnabled, even when ruleSyncEnabled is on — only the general rpc class opens it', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async () => { calls++; return { status: 200, data: {} }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,     // general RPC class OFF
+    ruleSyncEnabled: () => true, // rules-read allow-list ON — must not leak to ingest
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(rulesReq('/rules/ingest'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 0);
+  assert.equal(out!.headers.status, 503);
+  assert.equal(out!.headers.code, 'rpc_disabled');
+});
+
+test('/rules/ingest DOES dispatch when the general rpcEnabled class is on (write stays reachable only through the general class, unaffected by this change)', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async (r) => { calls++; return { status: 200, data: { path: r.path } }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => true,
+    ruleSyncEnabled: () => true,
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(rulesReq('/rules/ingest'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 1);
+  assert.equal(out!.headers.status, 200);
+});
+
+test('exact-shape guard: /rules/exportx is NOT allowed via ruleSyncEnabled (no prefix match)', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async () => { calls++; return { status: 200, data: {} }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,
+    ruleSyncEnabled: () => true,
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(rulesReq('/rules/exportx'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 0);
+  assert.equal(out!.headers.status, 503);
+  assert.equal(out!.headers.code, 'rpc_disabled');
+});
+
+test('exact-shape guard: /rules/export/x (extra segment) is NOT allowed via ruleSyncEnabled', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async () => { calls++; return { status: 200, data: {} }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,
+    ruleSyncEnabled: () => true,
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(rulesReq('/rules/export/x'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 0);
+  assert.equal(out!.headers.status, 503);
+  assert.equal(out!.headers.code, 'rpc_disabled');
+});
+
+test('traversal guard: /rules/../hub/config (normalizes to /hub/config) is NOT allowed via ruleSyncEnabled', async () => {
+  let calls = 0;
+  const handler = createRpcServer({
+    dispatch: async (r) => { calls++; return { status: 200, data: { path: r.path } }; },
+    idempotency: new IdempotencyCache(),
+    rpcEnabled: () => false,
+    ruleSyncEnabled: () => true,
+    peerNodeOf: () => 'gw-peer',
+  });
+  let out: Envelope | null = null;
+  handler(rulesReq('/rules/../hub/config'), (e) => { out = e; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 0, 'must never reach dispatch with the normalized /hub/config path');
+  assert.equal(out!.headers.status, 503);
+  assert.equal(out!.headers.code, 'rpc_disabled');
+});

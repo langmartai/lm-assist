@@ -137,6 +137,7 @@ export function initFabric(selfNode: string): void {
           const f = ['status', 'rpc', 'comp-gzip'];
           if (s.busEnabled) f.push('bus');            // follow-up (c): advertise bus only when enabled
           if (s.dataSyncViaFabric) f.push('data');    // spec §5 S2.2: peer must advertise data to be fabric-eligible
+          if (s.ruleSyncEnabled) f.push('rules');     // mirrors data: a peer advertises 'rules' only when its ruleSyncEnabled
           return f;
         },
       });
@@ -259,6 +260,7 @@ async function attachFabricLink(selfNode: string, peer: string, link: PeerLink, 
     rpcEnabled: () => settings().fabricRpcEnabled,
     busEnabled: () => settings().busEnabled,
     dataSyncEnabled: () => settings().dataSyncViaFabric,
+    ruleSyncEnabled: () => settings().ruleSyncEnabled !== false,
     peerNodeOf: () => peer,
     offloadThreshold: undefined, // default 8MB
     offload: async (bytes, peerNode) => {
@@ -403,6 +405,15 @@ export async function fabricBusCatchup(node: string, topic: string, cursor: Reco
 export function fabricDataPeer(node: string): boolean {
   const link = peerLinks.get(node);
   return !!(fabricLinks.has(node) && link?.peerHasFeature('data'));
+}
+
+/** True iff we have a fabric link to `node` AND it advertised the `rules` HELLO feature.
+ *  Mirrors fabricDataPeer's gate exactly, for the rules fabric fast-path (mcp-transport.ts's
+ *  pullRulesExport) — a peer without the rules feature is ineligible and the caller falls back
+ *  to the hub path. */
+export function fabricRulesPeer(node: string): boolean {
+  const link = peerLinks.get(node);
+  return !!(fabricLinks.has(node) && link?.peerHasFeature('rules'));
 }
 
 /** Reliable data-service sync RPC over the fabric (spec §5 S2.2: fabricRequestManaged, NOT bare
