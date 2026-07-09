@@ -33,7 +33,7 @@ function find(method: string, urlPath: string) {
 function call(
   method: string,
   urlPath: string,
-  opts: { body?: any; headers?: Record<string, string> } = {},
+  opts: { body?: any; headers?: Record<string, string>; clientIp?: string } = {},
 ) {
   const { handler, params } = find(method, urlPath);
   const req: ParsedRequest = {
@@ -43,12 +43,14 @@ function call(
     query: {},
     body: opts.body,
     headers: opts.headers ?? {},
-    clientIp: '127.0.0.1',
+    clientIp: opts.clientIp ?? '127.0.0.1',
   };
   return handler(req, {} as any);
 }
 
-// Cloud request simulated by the hub proxy (has x-relay-source but NOT x-lm-access-key header)
+// Hub-relayed request simulated by the hub proxy (has x-relay-source but NOT x-lm-access-key
+// header). On the 4 sync-READ routes this now resolves to `owner` (T3); on every other route
+// it still resolves to `cloud` (see owner-principal-scoping.test.ts for that boundary proof).
 const CLOUD_HEADERS = { 'x-relay-source': 'hub', 'x-lm-user-id': 'u1' };
 
 // ── Setup — dataset + record ───────────────────────────────────────────────────
@@ -94,28 +96,55 @@ test('setup: create cross-node-readable dataset and local record', async () => {
   assert.ok(typeof MINTED_KEY === 'string' && MINTED_KEY.length > 0, 'minted key must be non-empty');
 });
 
-// ── Test 1: POST /export without key → KEY_REQUIRED ──────────────────────────
-
-test('POST /data/:ds/export with no key as cloud → KEY_REQUIRED', async () => {
+// ── Test 1: POST /export, hub-relayed + no key → now SUCCEEDS as `owner` (T3) ───
+//
+// T3 (fix/hub-sync-owner-principal) intentionally changes this: POST /data/:ds/export is
+// one of the 4 sync-READ routes that now resolve a hub-relayed caller (CLOUD_HEADERS carries
+// x-relay-source:hub) via resolveSyncPrincipal → `owner`, not the general resolvePrincipal →
+// `cloud`. An `owner` may read a shareable, non-sensitive dataset with NO key (see
+// owner-principal-*.test.ts for the full authz proof). This dataset is exactly that shape
+// (cross-node-readable, non-sensitive), so the keyless hub-relayed call now succeeds — this
+// is the gap T3 closes, not a regression. The "cloud still needs a key" invariant is proven
+// below by a genuinely non-owned request (no x-relay-source at all).
+test('POST /data/:ds/export: hub-relayed + no key now succeeds as owner (T3 — closes the sync gap)', async () => {
   enable();
 
   const res = await call('POST', `/data/${DS_ID}/export`, {
     body: {},                  // no key field
-    headers: CLOUD_HEADERS,   // cloud principal (hub-relayed)
+    headers: CLOUD_HEADERS,   // hub-relayed → resolves to `owner` on this sync route
   });
 
-  assert.equal(res.success, false, 'expected failure for keyless cloud export');
+  assert.equal(res.success, true, `expected success (owner trust), got: ${JSON.stringify(res)}`);
+  assert.equal(res.data.records.length, 1, 'should export exactly 1 record');
+});
+
+test('POST /data/:ds/export: a NON-owned cloud caller (no x-relay-source, non-loopback) still needs a key → KEY_REQUIRED', async () => {
+  enable();
+
+  const res = await call('POST', `/data/${DS_ID}/export`, {
+    body: {},                    // no key field
+    headers: {},                 // NOT hub-relayed — resolves to plain `cloud`, not `owner`
+    clientIp: '10.0.1.42',       // non-loopback — a bare '127.0.0.1' default would hit the LOCAL
+                                  // fast-path instead of cloud, which is not what this test checks
+  });
+
+  assert.equal(res.success, false, 'expected failure for a non-owned, keyless caller');
   assert.equal(res.error?.code, 'KEY_REQUIRED', `expected KEY_REQUIRED, got ${res.error?.code}`);
 });
 
 // ── Test 2: POST /export with minted key → success + records returned ─────────
+// NOTE: uses a genuinely NON-owned request (no x-relay-source, non-loopback clientIp) so this
+// test actually exercises the minted-key path, independent of the T3 owner-trust path above
+// (a hub-relayed CLOUD_HEADERS request would now succeed via `owner` even without a key, which
+// would make this test pass for the wrong reason).
 
-test('POST /data/:ds/export with minted key as cloud → records returned (redacted)', async () => {
+test('POST /data/:ds/export with minted key (non-owned caller) → records returned (redacted)', async () => {
   enable();
 
   const res = await call('POST', `/data/${DS_ID}/export`, {
     body: { key: MINTED_KEY },   // key in body — the hub-proxy-safe path
-    headers: CLOUD_HEADERS,
+    headers: {},                 // NOT hub-relayed — proves the KEY, not owner-trust, grants access
+    clientIp: '10.0.1.42',
   });
 
   assert.equal(res.success, true, `expected success, got: ${JSON.stringify(res)}`);
@@ -129,28 +158,45 @@ test('POST /data/:ds/export with minted key as cloud → records returned (redac
   assert.equal(rec.fields.token, '«redacted»', `token field must be redacted, got ${rec.fields.token}`);
 });
 
-// ── Test 3: POST /fetch without key → KEY_REQUIRED ───────────────────────────
+// ── Test 3: POST /fetch, hub-relayed + no key → now SUCCEEDS as `owner` (T3) ────
+// Same T3 rationale as the export test above — POST /data/:ds/fetch is one of the 4
+// sync-READ routes that now trust a hub-relayed caller as `owner`.
 
-test('POST /data/:ds/fetch with no key as cloud → KEY_REQUIRED', async () => {
+test('POST /data/:ds/fetch: hub-relayed + no key now succeeds as owner (T3 — closes the sync gap)', async () => {
   enable();
 
   const res = await call('POST', `/data/${DS_ID}/fetch`, {
     body: { id: RECORD_ID },   // no key field
-    headers: CLOUD_HEADERS,
+    headers: CLOUD_HEADERS,   // hub-relayed → resolves to `owner` on this sync route
   });
 
-  assert.equal(res.success, false, 'expected failure for keyless cloud fetch');
+  assert.equal(res.success, true, `expected success (owner trust), got: ${JSON.stringify(res)}`);
+  assert.equal(res.data.id, RECORD_ID, 'record id must match');
+});
+
+test('POST /data/:ds/fetch: a NON-owned cloud caller (no x-relay-source, non-loopback) still needs a key → KEY_REQUIRED', async () => {
+  enable();
+
+  const res = await call('POST', `/data/${DS_ID}/fetch`, {
+    body: { id: RECORD_ID },     // no key field
+    headers: {},                  // NOT hub-relayed — resolves to plain `cloud`, not `owner`
+    clientIp: '10.0.1.42',        // non-loopback, see the export test above for rationale
+  });
+
+  assert.equal(res.success, false, 'expected failure for a non-owned, keyless caller');
   assert.equal(res.error?.code, 'KEY_REQUIRED', `expected KEY_REQUIRED, got ${res.error?.code}`);
 });
 
 // ── Test 4: POST /fetch with minted key → record returned (redacted) ──────────
+// Same non-owned-caller rationale as Test 2 above.
 
-test('POST /data/:ds/fetch with minted key as cloud → record returned (redacted)', async () => {
+test('POST /data/:ds/fetch with minted key (non-owned caller) → record returned (redacted)', async () => {
   enable();
 
   const res = await call('POST', `/data/${DS_ID}/fetch`, {
     body: { id: RECORD_ID, key: MINTED_KEY },   // key in body
-    headers: CLOUD_HEADERS,
+    headers: {},                                 // NOT hub-relayed — proves the KEY grants access
+    clientIp: '10.0.1.42',
   });
 
   assert.equal(res.success, true, `expected success, got: ${JSON.stringify(res)}`);
@@ -163,15 +209,34 @@ test('POST /data/:ds/fetch with minted key as cloud → record returned (redacte
 });
 
 // ── Test 5: GET /export (header-key) still works (existing callers unaffected) ──
+// Same non-owned-caller rationale — GET /data/:ds/export IS one of the 4 sync routes too, so a
+// hub-relayed GET would also now succeed via `owner`; using a non-owned caller here specifically
+// proves the header-key mechanism (not owner-trust) is what grants access.
 
-test('GET /data/:ds/export with key in header still works', async () => {
+test('GET /data/:ds/export with key in header still works (non-owned caller)', async () => {
   enable();
 
   const res = await call('GET', `/data/${DS_ID}/export`, {
-    headers: { ...CLOUD_HEADERS, 'x-lm-access-key': MINTED_KEY },
+    headers: { 'x-lm-access-key': MINTED_KEY }, // NOT hub-relayed
+    clientIp: '10.0.1.42',
   });
 
   assert.equal(res.success, true, `GET export with header key should still work: ${JSON.stringify(res)}`);
   assert.ok(Array.isArray(res.data?.records), 'data.records must be an array');
+  assert.equal(res.data.records.length, 1, 'should export exactly 1 record');
+});
+
+// ── Test 6: GET /export, hub-relayed + no key → now succeeds as owner (T3) ──────
+// Completes the picture for GET (the other 3 routes are covered above) — proves GET
+// /data/:ds/export is correctly wired to resolveSyncPrincipal too.
+
+test('GET /data/:ds/export: hub-relayed + no key now succeeds as owner (T3 — closes the sync gap)', async () => {
+  enable();
+
+  const res = await call('GET', `/data/${DS_ID}/export`, {
+    headers: CLOUD_HEADERS,
+  });
+
+  assert.equal(res.success, true, `expected success (owner trust), got: ${JSON.stringify(res)}`);
   assert.equal(res.data.records.length, 1, 'should export exactly 1 record');
 });

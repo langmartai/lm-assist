@@ -4,7 +4,7 @@
 export type BackendKind = 'vector' | 'sql' | 'cache' | 'knowledge' | 'vectors' | 'file';
 export type DataAction = 'read' | 'query' | 'search' | 'write' | 'delete' | 'manage';
 export type NodeVisibility = 'local-only' | 'synced' | 'cross-node-readable';
-export type PrincipalType = 'local' | 'cloud' | 'peer';
+export type PrincipalType = 'local' | 'cloud' | 'peer' | 'owner';
 
 export interface Principal {
   type: PrincipalType;
