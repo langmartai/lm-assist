@@ -12,6 +12,18 @@ function ctxOf(req: ParsedRequest): CallCtx {
   return { principal, keyHeader };
 }
 
+// Sync-scoped variant of ctxOf — used ONLY by the 4 node-to-node sync-READ routes
+// (GET /data/sync/manifest, GET|POST /data/:ds/export, POST /data/:ds/fetch). Resolves via
+// resolveSyncPrincipal (trusts a hub-relayed caller as this node's own `owner`) instead of
+// resolvePrincipal. Every other route keeps using ctxOf/resolvePrincipal unchanged.
+function syncCtxOf(req: ParsedRequest): CallCtx {
+  const svc = getDataService();
+  const principal = svc.resolveSyncPrincipal(req);
+  const raw = req.headers?.['x-lm-access-key'];
+  const keyHeader = Array.isArray(raw) ? raw[0] : raw;
+  return { principal, keyHeader };
+}
+
 function recordFromBody(body: any): DataRecord {
   const now = new Date().toISOString();
   return {
@@ -224,7 +236,7 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => {
         const start = Date.now();
         if (!svc().isEnabled()) return disabled(start);
-        return wrapResponse({ node: svc().nodeId(), datasets: svc().syncManifest(svc().resolvePrincipal(req)) }, start);
+        return wrapResponse({ node: svc().nodeId(), datasets: svc().syncManifest(svc().resolveSyncPrincipal(req)) }, start);
       },
     },
 
@@ -235,13 +247,15 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => {
         const start = Date.now();
         if (!svc().isEnabled()) return disabled(start);
-        const r = await svc().exportDataset(ctxOf(req), req.params.dataset, req.query?.since);
+        const r = await svc().exportDataset(syncCtxOf(req), req.params.dataset, req.query?.since);
         if (!r.ok) return wrapError(r.code, r.reason, start);
         return wrapResponse({ records: r.value }, start);
       },
     },
 
-    // POST /data/:dataset/export — sync pull; key in body (hub proxy doesn't forward the key header)
+    // POST /data/:dataset/export — sync pull; key in body (hub proxy doesn't forward the key header).
+    // keyHeader (b.key) is kept as a harmless fallback — an owner principal ignores keys entirely,
+    // and a genuine cloud caller (x-relay-source not literally 'hub') still needs the key path.
     {
       method: 'POST',
       pattern: /^\/data\/(?<dataset>[^/]+)\/export$/,
@@ -249,7 +263,7 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
         const start = Date.now();
         if (!svc().isEnabled()) return disabled(start);
         const b = req.body || {};
-        const ctx = { principal: svc().resolvePrincipal(req), keyHeader: typeof b.key === 'string' ? b.key : undefined };
+        const ctx = { principal: svc().resolveSyncPrincipal(req), keyHeader: typeof b.key === 'string' ? b.key : undefined };
         const r = await svc().exportDataset(ctx, req.params.dataset, typeof b.since === 'string' ? b.since : undefined);
         if (!r.ok) return wrapError(r.code, r.reason, start);
         return wrapResponse({ records: r.value }, start);
@@ -257,6 +271,7 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // POST /data/:dataset/fetch — peer-facing single-record read for partial sync; key in body
+    // (same keyHeader-fallback rationale as the POST export route above).
     {
       method: 'POST',
       pattern: /^\/data\/(?<dataset>[^/]+)\/fetch$/,
@@ -264,7 +279,7 @@ export function createDataRoutes(_ctx: RouteContext): RouteHandler[] {
         const start = Date.now();
         if (!svc().isEnabled()) return disabled(start);
         const b = req.body || {};
-        const ctx = { principal: svc().resolvePrincipal(req), keyHeader: typeof b.key === 'string' ? b.key : undefined };
+        const ctx = { principal: svc().resolveSyncPrincipal(req), keyHeader: typeof b.key === 'string' ? b.key : undefined };
         const r = await svc().getRecordRaw(ctx, req.params.dataset, String(b.id || ''));
         if (!r.ok) return wrapError(r.code, r.reason, start);
         return wrapResponse(r.value, start);

@@ -67,6 +67,28 @@ export class AccessManager {
     return { type: 'cloud' };
   }
 
+  /**
+   * Sync-scoped principal resolver — used ONLY by the 4 node-to-node sync-READ routes
+   * (GET /data/sync/manifest, GET|POST /data/:ds/export, POST /data/:ds/fetch).
+   *
+   * Node-to-node sync relay: the hub's relayApiRequest verifies caller-owns-target before
+   * relaying, so a hub-relayed sync-read IS this node's own owner. Trust it as 'owner' (read
+   * shareable, no ACL) — for the sync-READ routes ONLY. resolvePrincipal stays 'cloud' for
+   * general routes + the connector /mcp path; this method must NEVER be substituted for it there.
+   *
+   * SECURITY: the header alone is NOT sufficient — Core binds 0.0.0.0, and a genuine hub relay
+   * dispatches via api-relay-handler's makeLocalRequest, which always calls in over LOOPBACK
+   * (hostname:'127.0.0.1'). Require isLoopbackAddress(req.clientIp) too (mirroring the existing
+   * `peer` branch in resolvePrincipal below), or a direct non-loopback caller could simply SET
+   * x-relay-source:hub on their own request and claim owner trust without ever going through
+   * the relay. A non-loopback caller with this header falls through to resolvePrincipal, which
+   * resolves it to plain `cloud` (deny-by-default).
+   */
+  resolveSyncPrincipal(req: ParsedRequest): Principal {
+    if (header(req, 'x-relay-source') === 'hub' && isLoopbackAddress(req.clientIp)) return { type: 'owner' };
+    return this.resolvePrincipal(req);
+  }
+
   evaluateGrants(p: Principal, d: DatasetDescriptor, requested: DataAction[]): DataAction[] {
     let allowed = new Set<DataAction>(requested);
     if (p.type === 'cloud') {
@@ -85,6 +107,13 @@ export class AccessManager {
       // A fabric peer (trusted-by-construction gatewayId) may ONLY read a shareable, non-sensitive
       // dataset for sync — no ACL key, never write/delete/manage. This is what makes /data/sync/manifest
       // advertise exactly the shareable set to a peer (syncManifest calls evaluateGrants(peer, d, ['read'])).
+      if (d.sensitive) return [];
+      if (d.visibility !== 'synced' && d.visibility !== 'cross-node-readable') return [];
+      allowed = new Set([...allowed].filter((a) => READ_ONLY_ACTIONS.includes(a)));
+    }
+    if (p.type === 'owner') {
+      // A hub-relayed sync-read, trusted as this node's own owner (see resolveSyncPrincipal) — the
+      // SAME shareable-read-only caps as `peer`, never write/delete/manage, no ACL key consulted.
       if (d.sensitive) return [];
       if (d.visibility !== 'synced' && d.visibility !== 'cross-node-readable') return [];
       allowed = new Set([...allowed].filter((a) => READ_ONLY_ACTIONS.includes(a)));
@@ -158,6 +187,22 @@ export class AccessManager {
       }
       await this.deps.keys.appendAudit({ at: new Date().toISOString(), event: 'use',
         principalType: p.type, principalId: p.node, dataset: d.id, action });
+      return { ok: true, principal: p };
+    }
+
+    // Owner principal (hub-relayed sync-read, trusted as this node's own owner — see
+    // resolveSyncPrincipal): IDENTICAL treatment to peer — authoritative + read-only, evaluated
+    // BEFORE the key branch so it can never widen its scope by presenting a key. No key needed.
+    if (p.type === 'owner') {
+      if (d.sensitive) return await deny('SENSITIVE', 403, `dataset "${d.id}" is not shareable`);
+      if (!READ_ONLY_ACTIONS.includes(action)) {
+        return await deny('PEER_READ_ONLY', 403, `owners may only read via sync; "${action}" is denied`);
+      }
+      if (d.visibility !== 'synced' && d.visibility !== 'cross-node-readable') {
+        return await deny('PEER_NOT_SHAREABLE', 403, `dataset "${d.id}" is not shareable cross-node`);
+      }
+      await this.deps.keys.appendAudit({ at: new Date().toISOString(), event: 'use',
+        principalType: p.type, dataset: d.id, action });
       return { ok: true, principal: p };
     }
 

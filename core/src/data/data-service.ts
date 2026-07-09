@@ -52,6 +52,9 @@ export class DataService {
 
   resolvePrincipal(req: ParsedRequest): Principal { return this.deps.manager.resolvePrincipal(req); }
 
+  /** Sync-scoped resolver for the 4 node-to-node sync-READ routes only — see AccessManager.resolveSyncPrincipal. */
+  resolveSyncPrincipal(req: ParsedRequest): Principal { return this.deps.manager.resolveSyncPrincipal(req); }
+
   catalog(p: Principal): Array<{ id: string; backend: BackendKind; visibility: NodeVisibility; readOnly: boolean; actions: DataAction[] }> {
     const all: DataAction[] = ['read', 'query', 'search', 'write', 'delete', 'manage'];
     const out = [];
