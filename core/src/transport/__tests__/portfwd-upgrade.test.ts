@@ -29,7 +29,7 @@ function makeTargetCore(): http.Server {
 }
 
 test('portfwd: known peer → 101 + bidirectional pipe to local service', async () => {
-  setPortfwdUpgradeDeps({ isKnownPeer: (n) => n === 'peerA' });
+  setPortfwdUpgradeDeps({ isKnownPeer: (n) => n === 'peerA', peerHost: () => '127.0.0.1' });
   // Echo service (uppercases) proves both directions of the pipe.
   const svc = net.createServer({ allowHalfOpen: true }, (s) => {
     s.on('data', (d) => { try { s.write(Buffer.from(d.toString().toUpperCase())); } catch { /* ignore */ } });
@@ -54,7 +54,7 @@ test('portfwd: known peer → 101 + bidirectional pipe to local service', async 
 });
 
 test('portfwd: unknown peer → rejected (null), service never dialed', async () => {
-  setPortfwdUpgradeDeps({ isKnownPeer: (n) => n === 'peerA' });
+  setPortfwdUpgradeDeps({ isKnownPeer: (n) => n === 'peerA', peerHost: () => '127.0.0.1' });
   let dialed = false;
   const svc = net.createServer(() => { dialed = true; });
   const svcPort = await listen(svc);
@@ -69,7 +69,7 @@ test('portfwd: unknown peer → rejected (null), service never dialed', async ()
 });
 
 test('portfwd: target service down → 502 (null)', async () => {
-  setPortfwdUpgradeDeps({ isKnownPeer: () => true });
+  setPortfwdUpgradeDeps({ isKnownPeer: () => true, peerHost: () => '127.0.0.1' });
   const core = makeTargetCore();
   const corePort = await listen(core);
   // Reserve then free a port so nothing is listening on it.
@@ -83,7 +83,7 @@ test('portfwd: target service down → 502 (null)', async () => {
 });
 
 test('portfwd: server-greets-first banner is delivered (leftover or first data)', async () => {
-  setPortfwdUpgradeDeps({ isKnownPeer: () => true });
+  setPortfwdUpgradeDeps({ isKnownPeer: () => true, peerHost: () => '127.0.0.1' });
   const banner = 'SSH-2.0-lmtest\r\n';
   const svc = net.createServer({ allowHalfOpen: true }, (s) => { try { s.write(banner); } catch { /* ignore */ } });
   const svcPort = await listen(svc);
@@ -103,8 +103,35 @@ test('portfwd: server-greets-first banner is delivered (leftover or first data)'
   await new Promise((r) => core.close(r));
 });
 
+test('portfwd: source IP not matching the peer HELLO address → rejected (null)', async () => {
+  // Roster says known, but the fabric-published host for this node is a different
+  // IP than the connection's source (127.0.0.1) → identity binding rejects it.
+  setPortfwdUpgradeDeps({ isKnownPeer: () => true, peerHost: () => '10.9.9.9' });
+  let dialed = false;
+  const svc = net.createServer(() => { dialed = true; });
+  const svcPort = await listen(svc);
+  const core = makeTargetCore();
+  const corePort = await listen(core);
+
+  const res = await openPortfwdChannel({ host: '127.0.0.1', port: corePort }, 'peerA', svcPort);
+  assert.strictEqual(res, null, 'source-IP mismatch must be rejected');
+  assert.strictEqual(dialed, false, 'target service must not be dialed on an address mismatch');
+  await new Promise((r) => svc.close(r));
+  await new Promise((r) => core.close(r));
+});
+
+test('portfwd: unknown peer HELLO address (null) → rejected (null)', async () => {
+  // No fabric endpoint known for the caller ⇒ cannot verify ⇒ reject (relay only).
+  setPortfwdUpgradeDeps({ isKnownPeer: () => true, peerHost: () => null });
+  const core = makeTargetCore();
+  const corePort = await listen(core);
+  const res = await openPortfwdChannel({ host: '127.0.0.1', port: corePort }, 'peerA', 5555);
+  assert.strictEqual(res, null, 'unknown peer address must be rejected');
+  await new Promise((r) => core.close(r));
+});
+
 test('portfwd: invalid target port header → rejected (null)', async () => {
-  setPortfwdUpgradeDeps({ isKnownPeer: () => true });
+  setPortfwdUpgradeDeps({ isKnownPeer: () => true, peerHost: () => '127.0.0.1' });
   const core = makeTargetCore();
   const corePort = await listen(core);
   // 0 is out of the 1–65535 range the handler accepts.

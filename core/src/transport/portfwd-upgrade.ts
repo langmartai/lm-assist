@@ -17,11 +17,23 @@
  * cross-subnet peer) or the connect fails, the caller falls straight back to the
  * hub-WS relay, so nothing regresses.
  *
- * TRUST: identical to the lm-tcp/1 transfer receiver — roster-only. The target
- * accepts the upgrade iff `x-lm-node` is a currently-online node in this owner's
- * fleet (isKnownPeer). That is the SAME boundary the hub-relayed port-forward
- * already has (the hub only ever bridges same-owner nodes), so this adds no new
- * exposure. Any change to this posture should be applied to BOTH upgrade paths.
+ * TRUST: the target accepts the upgrade iff BOTH (a) `x-lm-node` is a currently-
+ * online node in this owner's fleet (isKnownPeer — the same roster the lm-tcp/1
+ * transfer receiver and the hub-relayed forward use; the hub only ever bridges
+ * same-owner nodes), AND (b) the connection's source IP matches the address that
+ * `node` advertised over the fabric HELLO (peerHost). (b) binds the self-claimed
+ * gatewayId to its fabric-known network location: a LAN attacker who merely knows
+ * a valid gatewayId can't impersonate a peer without also originating from that
+ * peer's exact address (spoofing an established-TCP source is impractical), and an
+ * unknown/mismatched endpoint is rejected (→ the listener falls back to relay).
+ * This is strictly stronger than the roster-only lm-tcp/1 receiver, which should
+ * get the same source-address binding as a follow-up.
+ *
+ * The arbitrary `x-lm-target-port` (any localhost port) is intentional — that IS
+ * port-forwarding (parity with the hub-relayed path and SSH -L). It is safe
+ * because the caller is authenticated to be a same-owner fabric peer, who can
+ * already reach their own fleet's services; the port is not an SSRF vector once
+ * the caller identity above is enforced.
  */
 import type { IncomingMessage } from 'http';
 import * as net from 'net';
@@ -42,9 +54,20 @@ const UPGRADE_HEAD_MAX = 4096;
 export interface PortfwdUpgradeDeps {
   /** True if `node` is a currently-online peer we accept a forward from. */
   isKnownPeer: (node: string) => Promise<boolean> | boolean;
+  /** The host `node` advertised over the fabric HELLO (getPeerTcpEndpoint().host),
+   *  or null if unknown. The upgrade's source IP must match this — see TRUST. */
+  peerHost: (node: string) => string | null;
 }
 
 let deps: PortfwdUpgradeDeps | null = null;
+
+/** Normalize an IP for comparison: strip an IPv4-mapped-IPv6 prefix, lowercase. */
+function normalizeIp(ip: string | null | undefined): string | null {
+  if (!ip) return null;
+  let s = String(ip).trim().toLowerCase();
+  if (s.startsWith('::ffff:')) s = s.slice(7);
+  return s || null;
+}
 
 /** Register the receiver wiring. HubClient calls this once fabric is up; null ⇒
  *  we reject lm-portfwd upgrades (and the peer falls back to hub relay). */
@@ -75,6 +98,16 @@ export function handlePortfwdUpgrade(req: IncomingMessage, rawSocket: Duplex, he
 
   Promise.resolve(d.isKnownPeer(node)).then((ok) => {
     if (!ok) {
+      try { socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); } catch { /* ignore */ }
+      try { socket.destroy(); } catch { /* ignore */ }
+      return;
+    }
+    // Bind the self-claimed gatewayId to its fabric-published address: the source
+    // IP must match the host `node` advertised over the HELLO. Unknown or
+    // mismatched ⇒ reject (the listener falls back to relay). See TRUST above.
+    const expectedIp = normalizeIp(d.peerHost(node));
+    const sourceIp = normalizeIp(socket.remoteAddress);
+    if (!expectedIp || !sourceIp || expectedIp !== sourceIp) {
       try { socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); } catch { /* ignore */ }
       try { socket.destroy(); } catch { /* ignore */ }
       return;

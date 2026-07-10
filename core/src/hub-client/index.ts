@@ -512,8 +512,11 @@ export class HubClient extends EventEmitter {
             // Same roster-only auth answers direct port-forward upgrades on the
             // Core port, so same-LAN forwards bypass the hub (see portfwd-upgrade.ts).
             const { setPortfwdUpgradeDeps } = require('../transport/portfwd-upgrade') as typeof import('../transport/portfwd-upgrade');
+            const { getPeerTcpEndpoint } = require('../fabric') as typeof import('../fabric');
             setPortfwdUpgradeDeps({
               isKnownPeer: async (node) => { try { return (await listAllOnlineNodeIds()).includes(node); } catch { return false; } },
+              // Source-IP binding: the address `node` advertised over the fabric HELLO.
+              peerHost: (node) => { try { return getPeerTcpEndpoint(node)?.host ?? null; } catch { return null; } },
             });
             setFabricSelfTcp({ host: nodeIp, port });
             console.log(`[HubClient] direct-TCP-for-LAN over Core port ${nodeIp}:${port}`);
