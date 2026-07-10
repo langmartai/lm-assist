@@ -360,14 +360,19 @@ export class PortForwardHandler {
     if (!ep) return false;
 
     const t0 = Date.now();
-    let res: { socket: net.Socket; leftover: Buffer } | null = null;
+    let res: import('../transport/portfwd-upgrade').PortfwdOpenResult;
     try {
       const { openPortfwdChannel } = require('../transport/portfwd-upgrade') as typeof import('../transport/portfwd-upgrade');
       res = await openPortfwdChannel(ep, self, listener.targetPort);
-    } catch { res = null; }
-    if (!res) {
-      // Connect/upgrade failed or timed out → remember it, fall back to relay.
-      this.directFailUntil.set(listener.targetGatewayId, Date.now() + DIRECT_FAIL_COOLDOWN_MS);
+    } catch { res = { error: 'unreachable' }; }
+    if ('error' in res) {
+      // 'unreachable' (connect fail / timeout / old-code peer that closes without a
+      // response) ⇒ the direct PATH is down → skip direct to this peer for a cooldown.
+      // 'answered' (403 auth / 502 target-service-down) ⇒ the peer's Core replied, the
+      // path is fine — do NOT poison the whole-peer cache; just relay this stream.
+      if (res.error === 'unreachable') {
+        this.directFailUntil.set(listener.targetGatewayId, Date.now() + DIRECT_FAIL_COOLDOWN_MS);
+      }
       return false;
     }
 

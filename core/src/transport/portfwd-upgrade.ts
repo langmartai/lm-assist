@@ -95,6 +95,11 @@ export function handlePortfwdUpgrade(req: IncomingMessage, rawSocket: Duplex, he
   }
   const d = deps;
   socket.setNoDelay(true);
+  // Preserve half-close: a FIN from one side must NOT auto-end the other, or a
+  // request→response protocol where the client half-closes after its request
+  // (nc -N, some HTTP clients) gets its response truncated. We propagate FIN
+  // explicitly in pipePair; allowHalfOpen stops Node's auto-end from racing it.
+  socket.allowHalfOpen = true;
 
   Promise.resolve(d.isKnownPeer(node)).then((ok) => {
     if (!ok) {
@@ -164,39 +169,58 @@ function pipePair(a: Socket, b: Socket): void {
   a.on('close', shut); b.on('close', shut);
 }
 
+/** Result of a direct-channel attempt (see openPortfwdChannel). */
+export type PortfwdOpenResult =
+  | { socket: Socket; leftover: Buffer }         // 101 — ready (leftover = bytes the service sent with it)
+  | { error: 'unreachable' | 'answered' };
+//    unreachable = connect fail / timeout / peer closed without a valid response (old-code
+//      node, wrong host) → the direct PATH is unusable, so the caller caches it.
+//    answered = peer's Core replied non-101 (403 auth, 502 target-service-down) → the path
+//      WORKS, the failure is auth/service-specific → do NOT poison the whole-peer cache.
+
 /**
  * LISTENER side: open a direct lm-portfwd channel to `ep` for a forwarded stream
  * to `targetPort`. Resolves the ready raw socket (plus any bytes the target
  * service sent before we wired piping — e.g. an SSH/SMTP greeting) once the
- * target answers 101, or null on any failure/timeout/rejection (→ relay fallback).
+ * target answers 101, else a discriminated error (see PortfwdOpenResult).
  */
 export function openPortfwdChannel(
   ep: { host: string; port: number },
   selfNode: string,
   targetPort: number,
-): Promise<{ socket: Socket; leftover: Buffer } | null> {
+): Promise<PortfwdOpenResult> {
   return new Promise((resolve) => {
     let settled = false;
-    const socket = net.connect({ host: ep.host, port: ep.port });
-    const timer = setTimeout(() => { fail(); }, CONNECT_TIMEOUT_MS);
+    // allowHalfOpen: mirror the endpoints' half-close (see handlePortfwdUpgrade).
+    const socket = net.connect({ host: ep.host, port: ep.port, allowHalfOpen: true });
+    const timer = setTimeout(() => finishErr('unreachable'), CONNECT_TIMEOUT_MS);
     let buf: Buffer = Buffer.alloc(0);
 
-    const cleanup = () => { clearTimeout(timer); socket.off('data', onData); socket.off('error', onErr); };
-    const done = (v: { socket: Socket; leftover: Buffer } | null) => {
-      if (!settled) { settled = true; cleanup(); resolve(v); }
+    const cleanup = () => {
+      clearTimeout(timer);
+      socket.off('data', onData); socket.off('error', onErr); socket.off('close', onClose);
     };
-    const fail = () => { try { socket.destroy(); } catch { /* ignore */ } done(null); };
+    const finishOk = (leftover: Buffer) => {
+      if (settled) return; settled = true; cleanup(); resolve({ socket, leftover });
+    };
+    const finishErr = (error: 'unreachable' | 'answered') => {
+      if (settled) return; settled = true; cleanup();
+      try { socket.destroy(); } catch { /* ignore */ } // never used on failure
+      resolve({ error });
+    };
 
     const onData = (chunk: Buffer) => {
       buf = Buffer.concat([buf, chunk]);
       const end = buf.indexOf('\r\n\r\n');
-      if (end < 0) { if (buf.length > UPGRADE_HEAD_MAX) fail(); return; } // headers incomplete
+      if (end < 0) { if (buf.length > UPGRADE_HEAD_MAX) finishErr('answered'); return; } // headers incomplete
       const statusLine = buf.subarray(0, buf.indexOf('\r\n')).toString('latin1');
-      if (!/\s101\s/.test(statusLine)) { fail(); return; } // not "HTTP/1.1 101 ..."
-      const leftover = buf.subarray(end + 4); // target-service bytes that arrived with the 101
-      done({ socket, leftover: Buffer.from(leftover) });
+      if (!/\s101\s/.test(statusLine)) { finishErr('answered'); return; } // peer answered non-101 (403/502)
+      finishOk(Buffer.from(buf.subarray(end + 4))); // target-service bytes that arrived with the 101
     };
-    const onErr = () => { fail(); };
+    const onErr = () => finishErr('unreachable');
+    // Closed before any 101/status line ⇒ peer didn't speak lm-portfwd (old code) or
+    // vanished ⇒ path unreachable. (After finishOk, cleanup() detaches this.)
+    const onClose = () => finishErr('unreachable');
 
     socket.once('connect', () => {
       try {
@@ -206,9 +230,10 @@ export function openPortfwdChannel(
           `Upgrade: ${PORTFWD_UPGRADE_PROTOCOL}\r\nConnection: Upgrade\r\n` +
           `x-lm-node: ${selfNode}\r\nx-lm-target-port: ${targetPort}\r\n\r\n`,
         );
-      } catch { fail(); }
+      } catch { finishErr('unreachable'); }
     });
     socket.on('data', onData);
     socket.once('error', onErr);
+    socket.once('close', onClose);
   });
 }
