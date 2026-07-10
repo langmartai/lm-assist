@@ -509,6 +509,12 @@ export class HubClient extends EventEmitter {
                   console.error('[HubClient] inbound TCP transfer failed:', e));
               },
             });
+            // Same roster-only auth answers direct port-forward upgrades on the
+            // Core port, so same-LAN forwards bypass the hub (see portfwd-upgrade.ts).
+            const { setPortfwdUpgradeDeps } = require('../transport/portfwd-upgrade') as typeof import('../transport/portfwd-upgrade');
+            setPortfwdUpgradeDeps({
+              isKnownPeer: async (node) => { try { return (await listAllOnlineNodeIds()).includes(node); } catch { return false; } },
+            });
             setFabricSelfTcp({ host: nodeIp, port });
             console.log(`[HubClient] direct-TCP-for-LAN over Core port ${nodeIp}:${port}`);
             // Re-advertise once more after links have had time to connect — covers

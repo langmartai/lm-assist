@@ -72,6 +72,11 @@ const LISTENER_READY_TIMEOUT_MS = 15_000;
 const CLOSE_LINGER_MS = 10_000;
 /** How often an idle forward probes its target's reachability (for status). */
 const HEALTH_PROBE_INTERVAL_MS = 30_000;
+/** After a direct-path attempt to a peer fails (old-code target, unreachable
+ *  advertised endpoint, firewall), skip direct for this long and go straight to
+ *  relay — bounds the connect-then-fall-back penalty to once per window per peer
+ *  instead of every new stream, while still re-probing periodically. */
+const DIRECT_FAIL_COOLDOWN_MS = 30_000;
 
 /** Minimal view of the gateway WebSocket this handler needs. */
 export interface PortForwardSender {
@@ -124,6 +129,10 @@ interface ForwardStream {
   /** Pending connect-timeout (target) / ready-timeout (listener); cleared when active. */
   openTimer?: NodeJS.Timeout;
   openSentAt?: number; // listener: when forward_open was sent (for ping/pong RTT)
+  /** Listener side: the direct fabric TCP socket to the target's Core, when this
+   *  stream went direct instead of relaying over the hub WS. Set ⇒ no hub in the
+   *  data path (bytes pipe client ↔ direct ↔ target service). */
+  direct?: net.Socket;
 }
 
 export class PortForwardHandler {
@@ -134,6 +143,10 @@ export class PortForwardHandler {
 
   /** This node's own gatewayId, set once authenticated (used to reject self-forward). */
   private selfGatewayId: string | null = null;
+
+  /** peerGatewayId → epoch ms until which to skip the direct path (set after a
+   *  direct attempt to that peer failed; see DIRECT_FAIL_COOLDOWN_MS). */
+  private directFailUntil: Map<string, number> = new Map();
 
   /** Cap on concurrently open local listeners on this node. */
   private static readonly MAX_FORWARDS = 64;
@@ -289,25 +302,128 @@ export class PortForwardHandler {
     listener.streamsTotal += 1;
     this.streamByHash.set(streamHash.toString('hex'), streamId);
 
-    // Hold incoming bytes until the target confirms it connected.
+    // Hold incoming bytes until the stream is wired (direct or relay).
     socket.pause();
-    this.wireSocket(stream);
 
-    // If the hub/target never replies forward_ready, don't leak a paused socket.
-    stream.openTimer = setTimeout(() => {
-      if (stream.status === 'opening') {
-        this.teardownStream(streamId, 'forward open timeout', { notifyPeer: true, graceful: false });
+    // Prefer a direct fabric TCP tunnel to the target (same-LAN, bypasses the
+    // hub); fall back to the hub-WS relay when there's no direct endpoint or the
+    // connect fails/times out — so nothing regresses off-LAN.
+    void this.tryDirectStream(listener, stream).then((wired) => {
+      if (wired) return;
+      if (stream.status === 'closed') return; // client bailed during the attempt
+      // --- hub-WS relay path (unchanged) ---
+      this.wireSocket(stream);
+      // If the hub/target never replies forward_ready, don't leak a paused socket.
+      stream.openTimer = setTimeout(() => {
+        if (stream.status === 'opening') {
+          this.teardownStream(streamId, 'forward open timeout', { notifyPeer: true, graceful: false });
+        }
+      }, LISTENER_READY_TIMEOUT_MS);
+      stream.openSentAt = Date.now();
+      if (this.ws && this.ws.isConnected()) {
+        this.ws.send({
+          type: 'forward_open',
+          forwardId,
+          streamId,
+          targetGatewayId: listener.targetGatewayId,
+          targetPort: listener.targetPort,
+        });
+      } else {
+        this.teardownStream(streamId, 'hub disconnected before forward_open', { notifyPeer: false, graceful: false });
       }
-    }, LISTENER_READY_TIMEOUT_MS);
-
-    stream.openSentAt = Date.now();
-    this.ws.send({
-      type: 'forward_open',
-      forwardId,
-      streamId,
-      targetGatewayId: listener.targetGatewayId,
-      targetPort: listener.targetPort,
     });
+  }
+
+  /** Direct-path enabled unless explicitly killed (shares the fabric-TCP switch). */
+  private directEnabled(): boolean {
+    return process.env.LM_FABRIC_TCP !== '0' && process.env.LM_PORTFWD_DIRECT !== '0';
+  }
+
+  /**
+   * Try to serve this stream over a direct fabric TCP tunnel to the target's
+   * Core port (learned from the fabric HELLO), bypassing the hub. Returns true
+   * if the stream is now wired direct (or the client already vanished), false to
+   * fall back to the hub-WS relay.
+   */
+  private async tryDirectStream(listener: ForwardListener, stream: ForwardStream): Promise<boolean> {
+    if (!this.directEnabled()) return false;
+    const self = this.selfGatewayId;
+    if (!self) return false;
+    // Recent direct failure to this peer? Skip straight to relay (no penalty).
+    const cooldownUntil = this.directFailUntil.get(listener.targetGatewayId);
+    if (cooldownUntil && Date.now() < cooldownUntil) return false;
+    let ep: { host: string; port: number } | null = null;
+    try {
+      const { getPeerTcpEndpoint } = require('../fabric') as typeof import('../fabric');
+      ep = getPeerTcpEndpoint(listener.targetGatewayId);
+    } catch { ep = null; }
+    if (!ep) return false;
+
+    const t0 = Date.now();
+    let res: { socket: net.Socket; leftover: Buffer } | null = null;
+    try {
+      const { openPortfwdChannel } = require('../transport/portfwd-upgrade') as typeof import('../transport/portfwd-upgrade');
+      res = await openPortfwdChannel(ep, self, listener.targetPort);
+    } catch { res = null; }
+    if (!res) {
+      // Connect/upgrade failed or timed out → remember it, fall back to relay.
+      this.directFailUntil.set(listener.targetGatewayId, Date.now() + DIRECT_FAIL_COOLDOWN_MS);
+      return false;
+    }
+
+    const direct = res.socket;
+    if (stream.status === 'closed' || stream.socket.destroyed) {
+      // The end-user connection went away while we were dialing.
+      try { direct.destroy(); } catch { /* ignore */ }
+      this.teardownStream(stream.streamId, 'client gone during direct connect', { notifyPeer: false, graceful: false });
+      return true; // consumed — do NOT fall back
+    }
+
+    this.directFailUntil.delete(listener.targetGatewayId); // direct works again — clear any cooldown
+    stream.status = 'active';
+    stream.direct = direct;
+    direct.setNoDelay(true);
+    this.setForwardHealth(listener.forwardId, 'up');
+    const rtt = Date.now() - t0;
+    if (rtt >= 0 && rtt < 60000) {
+      listener.rttMinMs = listener.rttMinMs === 0 ? rtt : Math.min(listener.rttMinMs, rtt);
+    }
+    // Deliver any bytes the target service sent with the 101 (e.g. an SSH banner).
+    if (res.leftover && res.leftover.length) {
+      stream.bytesDown += res.leftover.length;
+      try { stream.socket.write(res.leftover); } catch { /* ignore */ }
+    }
+    this.wireDirectPair(stream, direct);
+    stream.socket.resume();
+    console.log(`[PortForward] ${stream.streamId} direct → ${ep.host}:${ep.port} (target port ${listener.targetPort}, ${rtt}ms)`);
+    return true;
+  }
+
+  /**
+   * Wire a listener stream's client socket ↔ its direct target socket: raw bytes
+   * both ways with per-stream stats, backpressure, and half-close propagation.
+   * No hub involvement — teardown just closes both sockets.
+   */
+  private wireDirectPair(stream: ForwardStream, direct: net.Socket): void {
+    const client = stream.socket;
+    client.on('data', (c: Buffer) => {
+      if (stream.status === 'closed') return;
+      stream.bytesUp += c.length;
+      if (!direct.write(c)) client.pause();
+    });
+    direct.on('drain', () => { if (stream.status !== 'closed') client.resume(); });
+    direct.on('data', (c: Buffer) => {
+      if (stream.status === 'closed') return;
+      stream.bytesDown += c.length;
+      if (!client.write(c)) direct.pause();
+    });
+    client.on('drain', () => { if (stream.status !== 'closed') direct.resume(); });
+    client.on('end', () => { try { direct.end(); } catch { /* ignore */ } });
+    direct.on('end', () => { try { client.end(); } catch { /* ignore */ } });
+    client.on('close', () => this.teardownStream(stream.streamId, 'client closed', { notifyPeer: false, graceful: false }));
+    direct.on('close', () => this.teardownStream(stream.streamId, 'direct closed', { notifyPeer: false, graceful: false }));
+    client.on('error', () => { /* close follows */ });
+    direct.on('error', () => { /* close follows */ });
   }
 
   public listForwards(): Array<{
@@ -605,6 +721,9 @@ export class PortForwardHandler {
     this.streamByHash.delete(stream.streamHash.toString('hex'));
     this.streams.delete(streamId);
 
+    // Direct stream: close its target socket too. There's no hub peer to notify.
+    if (stream.direct) { try { stream.direct.destroy(); } catch { /* ignore */ } }
+
     if (opts.graceful) {
       try { stream.socket.end(); } catch { /* ignore */ }
       const linger = setTimeout(() => { try { stream.socket.destroy(); } catch { /* ignore */ } }, CLOSE_LINGER_MS);
@@ -613,7 +732,7 @@ export class PortForwardHandler {
       try { stream.socket.destroy(); } catch { /* ignore */ }
     }
 
-    if (opts.notifyPeer) {
+    if (opts.notifyPeer && !stream.direct) {
       this.sendControl({ type: 'forward_close', streamId, reason });
     }
   }

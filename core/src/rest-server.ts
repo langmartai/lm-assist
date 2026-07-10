@@ -17,6 +17,7 @@ import { TierManager } from './tier-manager';
 import type { TierEvent } from './types/control-api';
 import { handleTtydProxyRequest, handleTtydProxyUpgrade, isTtydProxyPath } from './ttyd-proxy';
 import { isTcpUpgrade, handleTcpUpgrade } from './transport/tcp-upgrade';
+import { isPortfwdUpgrade, handlePortfwdUpgrade } from './transport/portfwd-upgrade';
 import { getStartupProfiler } from './startup-profiler';
 
 // Modular Routes
@@ -416,6 +417,8 @@ export class TierRestServer {
           handleTtydProxyUpgrade(req, socket, head);
         } else if (isTcpUpgrade(req)) {
           handleTcpUpgrade(req, socket, head);
+        } else if (isPortfwdUpgrade(req)) {
+          handlePortfwdUpgrade(req, socket, head);
         } else {
           socket.destroy();
         }
