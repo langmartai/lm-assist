@@ -265,6 +265,7 @@ SINGLE + CROSS NODE
 1. \`list_nodes\` → every host behind this connector (hostId, hostname, platform, online, default).
 2. Pass \`node=<hostId|hostname>\` to ANY tool to target a host; omit for the default.
 3. Reach a remote service: \`open_port_forward(node=B, ...)\`, \`list_port_forwards\`, \`port_forward_stats\`, \`close_port_forward\`.
+   Transport is automatic + transparent: same-cluster (same-LAN) forwards run DIRECT at native TCP speed (hub out of the data path, ~4× the relay, no per-connection hub round-trip); cross-cluster / off-LAN transparently falls back to the hub relay. \`port_forward_stats\` shows per-forward MB/s + rttMs. Good for bulk (DB dumps, artifacts) between same-cluster nodes, not just interactive.
 See guide "cross-node" for the full single-vs-cross model, per-node keys, sync, and local-only rules.
 GOTCHA: "my server"/"the other machine"/"node X" → list_nodes first, then pass its hostId.`,
 

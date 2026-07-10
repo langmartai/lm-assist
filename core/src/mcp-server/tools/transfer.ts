@@ -67,7 +67,8 @@ export const portForwardStatsToolDef = {
   description:
     'Per-forward traffic stats on a node (use the `node` selector): bytesUp/Down + total, ' +
     'stream count, elapsed, instant + average MB/s, forward-path ping/pong latency (rttMs), ' +
-    'and target health. Read-only.',
+    'and target health. The numbers reveal the transport: a same-cluster DIRECT forward shows ' +
+    'native-LAN MB/s, while a hub-relay forward is capped at the hub frame rate. Read-only.',
   annotations: { readOnlyHint: true },
   inputSchema: { type: 'object' as const, properties: {} },
 };

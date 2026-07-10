@@ -16,11 +16,14 @@ export const openPortForwardToolDef = {
   name: 'open_port_forward',
   description:
     'Open a local TCP port on one lm-assist node that tunnels to another node\'s local ' +
-    'port, over the existing hub connection (like `ssh -L`, but node-to-node). Use the ' +
-    '`node` selector to choose which node LISTENS (creates the local port); ' +
-    '`targetGatewayId` names the node that owns the service. Trigger words: "port forward", ' +
-    '"tunnel a port", "expose node B\'s port on node A", "reach the database on my other ' +
-    'machine". Both nodes must belong to you. Returns the forwardId + bound localPort.',
+    'port (like `ssh -L`, but node-to-node). Transport is automatic: same-cluster ' +
+    '(same-LAN) peers connect DIRECTLY at native TCP speed with the hub OUT of the data ' +
+    'path (~4× the relay + no hub round-trip), and cross-cluster / off-LAN peers ' +
+    'transparently fall back to the hub relay — same API either way. Use the `node` ' +
+    'selector to choose which node LISTENS (creates the local port); `targetGatewayId` ' +
+    'names the node that owns the service. Trigger words: "port forward", "tunnel a port", ' +
+    '"expose node B\'s port on node A", "reach the database on my other machine". Both ' +
+    'nodes must belong to you. Returns the forwardId + bound localPort.',
   annotations: { readOnlyHint: false },
   inputSchema: {
     type: 'object' as const,
