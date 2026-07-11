@@ -125,12 +125,12 @@ export interface CoworkListItem { sid: string; title?: string; status?: string; 
 
 function isCowork(s: any): boolean {
   const tags: string[] = s?.tags || s?.config_tags || [];
-  return Array.isArray(tags) && tags.some((t) => COWORK_TAGS.includes(t)) ;
+  return Array.isArray(tags) && tags.some((t) => COWORK_TAGS.includes(t));
 }
 
 export async function listCoworkTasks(opts: { filter?: 'all' | 'cowork' | 'archived'; limit?: number } = {}): Promise<{ tasks: CoworkListItem[]; nextCursor?: string }> {
   const cc = await ccOpts();
-  const res = await anthropicOAuthGet('/v1/code/sessions', { ...cc, query: `limit=${opts.limit || 50}` });
+  const res = await anthropicOAuthGet('/v1/code/sessions', { ...cc, query: `limit=${encodeURIComponent(opts.limit || 50)}` });
   if (res.status < 200 || res.status >= 300) throw new CoworkTaskError('COWORK_LIST_FAILED', `list failed (${res.status})`, 502);
   const arr: any[] = res.body?.sessions ?? res.body?.data ?? (Array.isArray(res.body) ? res.body : []);
   const tasks: CoworkListItem[] = arr.filter(isCowork).map((s) => ({
@@ -162,6 +162,7 @@ export async function getCoworkTask(cse: string): Promise<CoworkDetail & { sid: 
 }
 
 export async function driveCoworkTask(opts: { cse: string; text: string }): Promise<{ delivered: boolean; eventId?: string }> {
+  if (!opts.cse.startsWith('cse_')) throw new CoworkTaskError('COWORK_BAD_REQUEST', 'cse id required', 400);
   const text = (opts.text || '').trim();
   if (!text) throw new CoworkTaskError('COWORK_BAD_REQUEST', 'text is required', 400);
   const sid = 'session_' + opts.cse.slice(4);

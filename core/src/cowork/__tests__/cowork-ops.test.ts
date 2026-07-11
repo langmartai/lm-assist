@@ -1,7 +1,7 @@
 import { test, mock, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import * as oauth from '../../utils/claude-oauth';
-import { listCoworkTasks, getCoworkTask, driveCoworkTask, renameCoworkTask, deleteCoworkTask } from '../cowork-tasks';
+import { listCoworkTasks, getCoworkTask, driveCoworkTask, renameCoworkTask, deleteCoworkTask, archiveCoworkTask, pinCoworkTask } from '../cowork-tasks';
 
 afterEach(() => mock.restoreAll());
 function stubOrg() { mock.method(oauth, 'getOrganizationUuid', async () => 'org-x'); }
@@ -56,4 +56,28 @@ test('renameCoworkTask PUTs the title; delete DELETEs', async () => {
   assert.match(put.path, /\/v1\/code\/sessions\/cse_a$/);
   assert.equal(put.body.title, 'New');
   assert.match(del, /\/v1\/code\/sessions\/cse_a$/);
+});
+
+test('archiveCoworkTask POSTs to /archive or /unarchive', async () => {
+  stubOrg();
+  let posted: any;
+  mock.method(oauth, 'anthropicOAuthPost', async (path: string, body: any) => { posted = { path, body }; return ok({}); });
+  await archiveCoworkTask('cse_a', true);
+  assert.match(posted.path, /\/v1\/code\/sessions\/cse_a\/archive$/);
+  await archiveCoworkTask('cse_a', false);
+  assert.match(posted.path, /\/v1\/code\/sessions\/cse_a\/unarchive$/);
+});
+
+test('pinCoworkTask PUTs { pinned }', async () => {
+  stubOrg();
+  let put: any;
+  mock.method(oauth, 'anthropicOAuthPut', async (path: string, body: any) => { put = { path, body }; return ok({}); });
+  await pinCoworkTask('cse_a', true);
+  assert.match(put.path, /\/v1\/code\/sessions\/cse_a$/);
+  assert.deepEqual(put.body, { pinned: true });
+});
+
+test('driveCoworkTask rejects a malformed cse id', async () => {
+  stubOrg();
+  await assert.rejects(driveCoworkTask({ cse: 'bad', text: 'x' }));
 });
