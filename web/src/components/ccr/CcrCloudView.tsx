@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { Loader2, X, Send, RefreshCw, Wrench, User, Cloud, ExternalLink, HelpCircle, Eye, EyeOff } from 'lucide-react';
+import { Loader2, X, Send, RefreshCw, ExternalLink, Eye, EyeOff, Cloud } from 'lucide-react';
 import { filterInjectedExchanges } from '@/lib/injected-message';
+import { TranscriptMessage } from '@/components/shared/TranscriptMessage';
+import { ApprovalWidget } from '@/components/shared/ApprovalWidget';
 
 type ApiFetch = <T>(path: string, opts?: { method?: string; body?: unknown }) => Promise<T>;
 interface CloudMsg { role: string; type: string; text: string; tools?: string[] }
@@ -25,7 +25,6 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose, fill }: {
   const [live, setLive] = useState(true);
   const [pendingQ, setPendingQ] = useState<PendingQuestion | null>(null);
   const [answering, setAnswering] = useState(false);
-  const [customAnswer, setCustomAnswer] = useState('');
   const [gone, setGone] = useState(false); // session deleted/ended — stop polling, show a clean state
   const [hideInjected, setHideInjected] = useState(true); // "Only user ↔ assistant" — default ON
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -57,7 +56,7 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose, fill }: {
       // requestId/toolUseId thread through for a --remote-control bridge session (controller/executor);
       // for a cloud session they're ignored (the backend auto-resolves the tool_use_id from teleport).
       await apiFetch(`/ccr/cloud/${encodeURIComponent(sid)}/answer`, { method: 'POST', body: { answer: a, toolUseId: pendingQ?.toolUseId, requestId: pendingQ?.requestId } });
-      setPendingQ(null); setCustomAnswer(''); setSent(`answered: ${a.slice(0, 50)}`); setTimeout(() => setSent(null), 4000); setTimeout(load, 1500);
+      setPendingQ(null); setSent(`answered: ${a.slice(0, 50)}`); setTimeout(() => setSent(null), 4000); setTimeout(load, 1500);
     } catch (e) { setErr(`answer failed: ${e instanceof Error ? e.message : String(e)}`); }
     finally { setAnswering(false); }
   }, [apiFetch, sid, load, pendingQ]);
@@ -121,7 +120,7 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose, fill }: {
           <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>No turns yet — the cloud container is booting; replies appear here.</div>
         ) : (
           <>
-            {visibleMessages.map((m, i) => <CloudMessage key={i} m={m} />)}
+            {visibleMessages.map((m, i) => <TranscriptMessage key={i} m={m} />)}
             {injectedHiddenCount > 0 && (
               <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center', padding: '4px 0', fontStyle: 'italic' }}>
                 · {injectedHiddenCount} injected message{injectedHiddenCount === 1 ? '' : 's'} hidden ·
@@ -138,30 +137,7 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose, fill }: {
 
         {/* Pending AskUserQuestion — answer by clicking an option OR typing a custom reply (both → /answer) */}
         {pendingQ && pendingQ.questions[0] && (
-          <div style={{ border: '1px solid var(--color-accent)', borderRadius: 'var(--radius-md)', padding: 8, marginBottom: 4, background: 'var(--color-bg-elevated)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 6 }}>
-              <HelpCircle size={13} style={{ color: 'var(--color-accent)' }} /> {pendingQ.questions[0].header || 'Question'} — the cloud claude is waiting on you
-            </div>
-            {pendingQ.questions[0].question && <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', marginBottom: 8 }}>{pendingQ.questions[0].question}</div>}
-            {(pendingQ.questions[0].options || []).length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 8 }}>
-                {(pendingQ.questions[0].options || []).map((o) => (
-                  <button key={o.label} className="btn btn-ghost btn-sm" disabled={answering} onClick={() => answer(o.label)}
-                    style={{ justifyContent: 'flex-start', textAlign: 'left', height: 'auto', padding: '6px 10px', whiteSpace: 'normal' }} title={o.description}>
-                    <span style={{ fontWeight: 600 }}>{o.label}</span>{o.description ? <span style={{ color: 'var(--color-text-tertiary)', fontSize: 11 }}> — {o.description}</span> : null}
-                  </button>
-                ))}
-              </div>
-            )}
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <input className="input" value={customAnswer} placeholder="…or type your own answer" disabled={answering}
-                style={{ flex: 1, fontSize: 12 }} onChange={(e) => setCustomAnswer(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); answer(customAnswer); } }} />
-              <button className="btn btn-primary btn-sm" disabled={answering || !customAnswer.trim()} onClick={() => answer(customAnswer)} title="Send custom answer">
-                {answering ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : 'Send'}
-              </button>
-            </div>
-          </div>
+          <ApprovalWidget pending={pendingQ} answering={answering} onAnswer={answer} />
         )}
 
         <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
@@ -174,36 +150,6 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose, fill }: {
           </button>
         </div>
       </div>
-      )}
-    </div>
-  );
-}
-
-function CloudMessage({ m }: { m: CloudMsg }) {
-  const isUser = m.type === 'user';
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: isUser ? 'flex-end' : 'stretch' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10.5, color: 'var(--color-text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
-        {isUser ? <User size={11} /> : <Cloud size={11} />}{isUser ? 'you' : 'cloud claude'}
-      </div>
-      {m.text && (
-        <div className="prose" style={{
-          fontSize: 12.5, lineHeight: 1.55, maxWidth: isUser ? '85%' : '100%',
-          background: isUser ? 'var(--color-bg-elevated)' : 'transparent',
-          border: isUser ? '1px solid var(--color-border-default)' : 'none',
-          borderRadius: isUser ? 'var(--radius-md)' : 0, padding: isUser ? '6px 10px' : 0,
-        }}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
-        </div>
-      )}
-      {m.tools && m.tools.length > 0 && (
-        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          {m.tools.map((t, i) => (
-            <span key={i} className="badge badge-outline" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10.5 }}>
-              <Wrench size={10} /> {t}
-            </span>
-          ))}
-        </div>
       )}
     </div>
   );
