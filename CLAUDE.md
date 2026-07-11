@@ -135,6 +135,12 @@ A **cluster** partitions a hub's fleet into independent mini-fleets so you can d
 
 MCP/routes: `cluster_list` (read) / `cluster_assign(node,cluster)` (write, auto-creates, proxies to the node's loopback-guarded `POST /cluster/self`) / `cluster_unassign(node)` (→`default`) / `cluster_describe(cluster?,description,status?)` (write — a cluster's advisory self-description in the fleet-wide `cluster-meta` dataset). `bootstrap`/`session_status` report this node's cluster + the other-cluster roster; `guide("clusters")` carries the full split + the **norm: respect each cluster's declared scope — don't touch another cluster's nodes/missions/data unless asked; `frozen`/`release`/`busy` = off-limits by default.** Note `node_upgrade` is single-node (no cluster arg).
 
+### Machine Access Profiles
+
+A **node-local** registry of how to reach OTHER machines FROM this node (SSH endpoint + user + key *path* + per-machine gotcha notes) so agents stop re-discovering access from prose memory. Storage is a plain file `~/.lm-assist/machine-access[-dev].json` (cluster.json precedent) — **not** a synced dataset; profiles never leave the node except when reported on demand. Access methods are a discriminated union on `type`: v1 implements `ssh` (reported with a derived ready-to-run `command`); unknown types (future `windows-account` remote exec, `elevated-worker`) round-trip verbatim and report `supported:false`. No secrets: `identityFile` is a path, validation rejects pasted key material, and there are no password fields.
+
+Surfaces: `GET /machine-access` (report: node identity + machines + usage guidance) and **loopback-only** `PUT/DELETE /machine-access/machines/:id` (managing endpoints is a node-owner action — not reachable via LAN/hub relay). MCP: `machine_access` (read; optional `id`/`tag` filters) on both stdio + `/mcp` — reminds callers the commands must run **on this node**. Module: `core/src/machine-access/store.ts`; routes: `machine-access.routes.ts`; tool: `mcp-server/tools/machine-access.ts`.
+
 ### Web UI (`web/`)
 
 Next.js 16 with Turbopack, React 19, Zustand for state, Tailwind CSS v4 for styling. Renders sessions, terminals, tasks, knowledge, and settings pages. Communicates with the core API (dev :3200 / prod :3100).
