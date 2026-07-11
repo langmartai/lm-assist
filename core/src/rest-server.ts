@@ -537,6 +537,16 @@ export class TierRestServer {
       return;
     }
 
+    // Cowork live SSE — proxy Anthropic's /v1/code/sessions/{cse}/events/stream (OAuth) to the browser.
+    // Special-cased (not a normal route) because SSE needs the raw socket, not the buffered ApiResponse.
+    {
+      const m = req.method === 'GET' && req.url?.match(/^\/cowork\/tasks\/(cse_[^/?]+)\/stream/);
+      if (m) {
+        void this.handleCoworkStream(req, res, m[1]);
+        return;
+      }
+    }
+
     // MCP Protocol endpoint (POST/GET/DELETE /mcp).
     // StreamableHTTPServerTransport needs raw req/res to drive both
     // single-response and SSE flows. Match exact `/mcp` (with optional
@@ -702,6 +712,47 @@ export class TierRestServer {
     req.on('close', () => {
       this.sseClients.delete(res);
     });
+  }
+
+  /**
+   * Cowork live-stream proxy — GET /cowork/tasks/:cse/stream.
+   *
+   * Opens Anthropic's `/v1/code/sessions/{cse}/events/stream` (OAuth,
+   * ccr-byoc beta) and pipes the raw SSE bytes straight to the browser.
+   * Special-cased outside the modular route table because a route handler
+   * returns a buffered `ApiResponse` — incompatible with a live stream.
+   */
+  private async handleCoworkStream(req: http.IncomingMessage, res: http.ServerResponse, cse: string): Promise<void> {
+    try {
+      const { ensureFreshAccessToken, getOrganizationUuid } = await import('./utils/claude-oauth');
+      const { creds } = await ensureFreshAccessToken();
+      const token = creds.accessToken;
+      const org = await getOrganizationUuid();
+      const lastId = req.headers['last-event-id'];
+      const url = `https://api.anthropic.com/v1/code/sessions/${cse}/events/stream`;
+      const upstream = await fetch(url, { headers: {
+        'authorization': `Bearer ${token}`,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'ccr-byoc-2025-07-29',
+        'anthropic-client-feature': 'ccr',
+        'x-organization-uuid': org,
+        'accept': 'text/event-stream',
+        ...(lastId ? { 'last-event-id': String(lastId) } : {}),
+      } });
+      if (!upstream.ok || !upstream.body) { res.writeHead(upstream.status || 502).end(); return; }
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
+      const reader = upstream.body.getReader();
+      req.on('close', () => reader.cancel().catch(() => {}));
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(Buffer.from(value));
+      }
+      res.end();
+    } catch (e) {
+      if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'text/plain' });
+      res.end();
+    }
   }
 
   private broadcastEvent(event: TierEvent): void {
