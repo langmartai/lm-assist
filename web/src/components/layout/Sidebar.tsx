@@ -23,6 +23,7 @@ import {
   Target,
   Network,
   Boxes,
+  Sparkles,
 } from 'lucide-react';
 import { useExperiment } from '@/hooks/useExperiment';
 import { usePlatform } from '@/hooks/usePlatform';
@@ -42,6 +43,7 @@ const baseNavItems = [
   { href: '/mission-graph', icon: Network, label: 'Mission Graph' },
   { href: '/scheduler', icon: Clock, label: 'Scheduler' },
   { href: '/ccr', icon: MonitorPlay, label: 'CCR Remote' },
+  { href: '/cowork', icon: Sparkles, label: 'Cowork' },
   { href: '/skills', icon: Zap, label: 'Skills' },
   { href: '/assist-resources', icon: Compass, label: 'Assist Resources' },
   { href: '/machines', icon: Monitor, label: 'Machines' },
