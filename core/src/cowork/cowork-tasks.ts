@@ -15,7 +15,8 @@
  */
 
 import { randomUUID } from 'crypto';
-import { anthropicOAuthPost, getOrganizationUuid } from '../utils/claude-oauth';
+import { anthropicOAuthPost, anthropicOAuthGet, anthropicOAuthPut, anthropicOAuthDelete, getOrganizationUuid } from '../utils/claude-oauth';
+import { parseCoworkEvents, type CoworkDetail } from './cowork-read';
 
 const CLOUD_ENV_ID = 'env_011111111111111111111117'; // anthropic_cloud singleton
 
@@ -47,7 +48,7 @@ export class CoworkTaskError extends Error {
 }
 
 // Match ccr-cloud.ts's private ccrOpts(): CCR beta + version + org header.
-async function ccrOpts() {
+export async function ccOpts() {
   const org = await getOrganizationUuid();
   return {
     betaHeader: 'ccr-byoc-2025-07-29',
@@ -67,7 +68,7 @@ export async function createCoworkTask(opts: CreateCoworkTaskOpts): Promise<Cowo
   const model = opts.model || 'claude-sonnet-5';
   const effort = opts.effort || 'medium';
   const title = opts.title || (prompt.length > 60 ? prompt.slice(0, 57) + '…' : prompt);
-  const cc = await ccrOpts();
+  const cc = await ccOpts();
 
   // 1) create the cowork session
   const created = await anthropicOAuthPost('/v1/code/sessions', {
@@ -111,4 +112,88 @@ export async function createCoworkTask(opts: CreateCoworkTaskOpts): Promise<Cowo
     title,
     ...(warning ? { warning } : {}),
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Cowork task-ops — list/get/drive/rename/archive/pin/delete against the
+// same /v1/code/sessions/{cse} surface used by createCoworkTask above.
+// ─────────────────────────────────────────────────────────────────────────
+
+const COWORK_TAGS = ['cowork', 'product:cowork-remote', 'config:cowork-remote'];
+
+export interface CoworkListItem { sid: string; title?: string; status?: string; model?: string; lastEventAt?: string; statusCategory?: string | null; archived?: boolean }
+
+function isCowork(s: any): boolean {
+  const tags: string[] = s?.tags || s?.config_tags || [];
+  return Array.isArray(tags) && tags.some((t) => COWORK_TAGS.includes(t)) ;
+}
+
+export async function listCoworkTasks(opts: { filter?: 'all' | 'cowork' | 'archived'; limit?: number } = {}): Promise<{ tasks: CoworkListItem[]; nextCursor?: string }> {
+  const cc = await ccOpts();
+  const res = await anthropicOAuthGet('/v1/code/sessions', { ...cc, query: `limit=${opts.limit || 50}` });
+  if (res.status < 200 || res.status >= 300) throw new CoworkTaskError('COWORK_LIST_FAILED', `list failed (${res.status})`, 502);
+  const arr: any[] = res.body?.sessions ?? res.body?.data ?? (Array.isArray(res.body) ? res.body : []);
+  const tasks: CoworkListItem[] = arr.filter(isCowork).map((s) => ({
+    sid: (s.id || s.session_id) as string,
+    title: s.title,
+    status: s.status || s.session_status,
+    model: s.config?.model,
+    lastEventAt: s.last_event_at || s.updated_at,
+    statusCategory: s.post_turn_summary?.status_category ?? null,
+    archived: !!s.archived,
+  })).filter((t) => t.sid);
+  const filtered = opts.filter === 'archived' ? tasks.filter((t) => t.archived)
+    : opts.filter === 'all' ? tasks
+    : tasks.filter((t) => !t.archived);
+  return { tasks: filtered, nextCursor: res.body?.next_cursor };
+}
+
+export async function getCoworkTask(cse: string): Promise<CoworkDetail & { sid: string; title?: string; status?: string; model?: string }> {
+  if (!cse.startsWith('cse_')) throw new CoworkTaskError('COWORK_BAD_REQUEST', 'cse id required', 400);
+  const cc = await ccOpts();
+  const [ev, se] = await Promise.all([
+    anthropicOAuthGet(`/v1/code/sessions/${cse}/events`, { ...cc, query: 'limit=500' }).catch(() => null),
+    anthropicOAuthGet(`/v1/code/sessions/${cse}`, cc).catch(() => null),
+  ]);
+  if (ev && ev.status === 404) throw new CoworkTaskError('COWORK_NOT_FOUND', 'task not found', 404);
+  const sessionBody = se?.body?.response_shape || se?.body;
+  const detail = parseCoworkEvents(ev?.body, sessionBody);
+  return { ...detail, sid: cse, title: sessionBody?.title, status: sessionBody?.status || sessionBody?.session_status, model: sessionBody?.config?.model };
+}
+
+export async function driveCoworkTask(opts: { cse: string; text: string }): Promise<{ delivered: boolean; eventId?: string }> {
+  const text = (opts.text || '').trim();
+  if (!text) throw new CoworkTaskError('COWORK_BAD_REQUEST', 'text is required', 400);
+  const sid = 'session_' + opts.cse.slice(4);
+  const sent = await anthropicOAuthPost(`/v1/code/sessions/${opts.cse}/events`, { events: [{ payload: {
+    type: 'user', uuid: randomUUID(), session_id: sid, parent_tool_use_id: null,
+    message: { role: 'user', content: text },
+  } }] }, await ccOpts());
+  if (sent.status < 200 || sent.status >= 300) throw new CoworkTaskError('COWORK_DRIVE_FAILED', `drive failed (${sent.status})`, 502);
+  const r = Array.isArray(sent.body?.results) ? sent.body.results[0] : undefined;
+  return { delivered: true, eventId: r?.event_id };
+}
+
+export async function renameCoworkTask(cse: string, title: string): Promise<{ ok: true; title: string }> {
+  const res = await anthropicOAuthPut(`/v1/code/sessions/${cse}`, { title }, await ccOpts());
+  if (res.status < 200 || res.status >= 300) throw new CoworkTaskError('COWORK_RENAME_FAILED', `rename failed (${res.status})`, 502);
+  return { ok: true, title };
+}
+
+export async function archiveCoworkTask(cse: string, archived: boolean): Promise<{ ok: true; archived: boolean }> {
+  const res = await anthropicOAuthPost(`/v1/code/sessions/${cse}/${archived ? 'archive' : 'unarchive'}`, {}, await ccOpts());
+  if (res.status < 200 || res.status >= 300) throw new CoworkTaskError('COWORK_ARCHIVE_FAILED', `archive failed (${res.status})`, 502);
+  return { ok: true, archived };
+}
+
+export async function pinCoworkTask(cse: string, pinned: boolean): Promise<{ ok: true; pinned: boolean }> {
+  const res = await anthropicOAuthPut(`/v1/code/sessions/${cse}`, { pinned }, await ccOpts());
+  if (res.status < 200 || res.status >= 300) throw new CoworkTaskError('COWORK_PIN_FAILED', `pin failed (${res.status})`, 502);
+  return { ok: true, pinned };
+}
+
+export async function deleteCoworkTask(cse: string): Promise<{ ok: true }> {
+  const res = await anthropicOAuthDelete(`/v1/code/sessions/${cse}`, await ccOpts());
+  if (res.status !== 404 && (res.status < 200 || res.status >= 300)) throw new CoworkTaskError('COWORK_DELETE_FAILED', `delete failed (${res.status})`, 502);
+  return { ok: true };
 }

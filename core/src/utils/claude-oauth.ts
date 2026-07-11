@@ -420,6 +420,15 @@ export async function anthropicOAuthPost(pathname: string, body?: any, opts: Ant
   return anthropicOAuthRequest('POST', pathname, { ...opts, body });
 }
 
+/**
+ * Authenticated PUT with an optional JSON body. Thin wrapper over
+ * {@link anthropicOAuthRequest}. Pass `body: undefined` for body-less PUTs —
+ * no body bytes are sent in that case.
+ */
+export async function anthropicOAuthPut(pathname: string, body?: any, opts: AnthropicOAuthRequestOpts = {}) {
+  return anthropicOAuthRequest('PUT', pathname, { ...opts, body });
+}
+
 /** Authenticated DELETE. Thin wrapper over {@link anthropicOAuthRequest}. */
 export async function anthropicOAuthDelete(pathname: string, opts: AnthropicOAuthRequestOpts = {}) {
   return anthropicOAuthRequest('DELETE', pathname, opts);
