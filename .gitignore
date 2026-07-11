@@ -39,3 +39,4 @@ core/dist-test/
 
 # npm pack artifacts (prod build tgz; regenerate with `npm pack`)
 *.tgz
+.superpowers/
