@@ -33,8 +33,14 @@ export function createCoworkRoutes(_ctx: RouteContext): RouteHandler[] {
           });
           return wrapResponse(result, start);
         } catch (e) {
-          if (e instanceof CoworkTaskError) return wrapError(e.code, e.message, start);
-          return wrapError('COWORK_ERROR', (e as Error).message, start);
+          // wrapError() doesn't carry an HTTP status (ApiResponse has none);
+          // attach `httpStatus` at the envelope's top level — the field
+          // rest-server.ts's dispatch loop honors ahead of the flat
+          // success?200:400 default (see rest-server.ts ~line 566-572).
+          if (e instanceof CoworkTaskError) {
+            return { ...wrapError(e.code, e.message, start), httpStatus: e.httpStatus };
+          }
+          return { ...wrapError('COWORK_ERROR', (e as Error).message, start), httpStatus: 500 };
         }
       },
     },

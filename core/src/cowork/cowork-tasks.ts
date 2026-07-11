@@ -80,7 +80,7 @@ export async function createCoworkTask(opts: CreateCoworkTaskOpts): Promise<Cowo
     throw new CoworkTaskError('COWORK_CREATE_FAILED',
       `create failed (${created.status}): ${JSON.stringify(created.body).slice(0, 300)}`, 502);
   }
-  const session = created.body?.session || created.body?.response_shape || created.body;
+  const session = created.body?.session || created.body;
   const cse: string = session?.id;
   if (!cse) throw new CoworkTaskError('COWORK_CREATE_FAILED', 'no session id in create response', 502);
   const sid = 'session_' + cse.slice(4);

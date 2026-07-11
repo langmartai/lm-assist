@@ -564,6 +564,13 @@ export class TierRestServer {
 
       try {
         const result = await route.handler(parsed, this.api);
+        // A route/error envelope may carry an explicit `httpStatus` (set by
+        // handlers that need a status other than the flat 200/400 default —
+        // e.g. 502 upstream failures, 401 auth, 404 not-found). Honor it when
+        // present; otherwise fall back to the historical success?200:400.
+        const status: number = typeof result.httpStatus === 'number'
+          ? result.httpStatus
+          : (result.success ? 200 : 400);
 
         if (result.redirect && typeof result.redirect === 'string') {
           res.writeHead(302, { Location: result.redirect });
@@ -573,7 +580,7 @@ export class TierRestServer {
             'Content-Type': 'application/octet-stream',
             ...result.headers,
           };
-          res.writeHead(result.success ? 200 : 400, headers);
+          res.writeHead(status, headers);
           res.end(result.data);
         } else if (result._isFile && result._filePath) {
           const filePath = result._filePath as string;
@@ -597,10 +604,10 @@ export class TierRestServer {
             'Content-Type': 'text/plain',
             ...result.headers,
           };
-          res.writeHead(result.success ? 200 : 400, headers);
+          res.writeHead(status, headers);
           res.end(result.data);
         } else {
-          this.sendJson(res, result.success ? 200 : 400, result);
+          this.sendJson(res, status, result);
         }
       } catch (err) {
         this.sendJson(res, 500, {
