@@ -64,6 +64,7 @@ import { sessionFootprintsToolDef, handleSessionFootprints } from './session-foo
 import { nodeLifecycleToolDef, handleNodeLifecycle } from './lifecycle';
 import { WHATSAPP_TOOL_DEFS, WHATSAPP_HANDLERS } from './whatsapp';
 import { ELEVATED_TOOL_DEFS, ELEVATED_HANDLERS } from './elevated';
+import { coworkCreateTaskDef, handleCoworkCreateTask } from './cowork';
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -1026,6 +1027,8 @@ export const EXPANDED_TOOL_DEFS = [
   sessionFootprintsToolDef,
   // node lifecycle (admin — graceful exit/restart, no force-kill)
   nodeLifecycleToolDef,
+  // cowork task creation (create + send a Claude Cowork session — cloud or local)
+  coworkCreateTaskDef,
 ] as const;
 
 // ─── Handlers ────────────────────────────────────────────────────
@@ -1880,4 +1883,6 @@ export const EXPANDED_HANDLERS: Record<
   session_footprints: handleSessionFootprints,
   // node lifecycle (admin — graceful exit/restart, no force-kill)
   node_lifecycle: handleNodeLifecycle,
+  // cowork task creation (create + send a Claude Cowork session — cloud or local)
+  cowork_create_task: handleCoworkCreateTask,
 };

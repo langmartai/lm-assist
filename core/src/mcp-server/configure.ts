@@ -311,6 +311,8 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   whatsapp_read_messages: 'read',
   whatsapp_search: 'read',
   whatsapp_status: 'read',
+  // cowork task creation (write — starts a real background session)
+  cowork_create_task: 'write',
 };
 
 /** The scope required to call `name`. Unknown tools default to `admin` (deny-by-default). */
