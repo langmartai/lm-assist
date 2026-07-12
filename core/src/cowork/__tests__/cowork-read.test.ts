@@ -93,3 +93,23 @@ test('captures thinking blocks into the assistant turn', () => {
   assert.equal(d.messages[1].text, 'Because of Rayleigh scattering.');
   assert.match(d.messages[1].thinking as string, /Rayleigh scattering/);
 });
+
+test('pairs tool_use with its tool_result into an expandable toolCall (name, input, output)', () => {
+  const d = parseCoworkEvents({ data: [
+    { event_type: 'user', sequence_num: '1', payload: { type: 'user', message: { role: 'user', content: 'list files' } } },
+    { event_type: 'assistant', sequence_num: '2', payload: { type: 'assistant', message: { role: 'assistant', content: [
+      { type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: 'ls' } },
+    ] } } },
+    { event_type: 'user', sequence_num: '3', payload: { type: 'tool_result', message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 'tu1', is_error: false, content: 'file1\nfile2' },
+    ] } } },
+    { event_type: 'assistant', sequence_num: '4', payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } } },
+  ] });
+  const a = d.messages.find((m) => m.role === 'assistant');
+  assert.ok(a?.toolCalls && a.toolCalls.length === 1, 'one tool call captured');
+  assert.equal(a!.toolCalls![0].name, 'Bash');
+  assert.deepEqual(a!.toolCalls![0].input, { command: 'ls' });
+  assert.equal(a!.toolCalls![0].result, 'file1\nfile2');
+  assert.equal(a!.toolCalls![0].isError, false);
+  assert.equal(a!.text, 'done');
+});

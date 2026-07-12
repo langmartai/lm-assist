@@ -15,7 +15,8 @@
  *    user prompts are GROUPED into a single assistant turn, with the tools collected —
  *    so tools render inline in the turn instead of as separate empty messages.
  */
-export interface CoworkMsg { role: 'user' | 'assistant'; type: string; text: string; tools?: string[]; thinking?: string }
+export interface CoworkToolCall { name: string; input?: unknown; result?: string; isError?: boolean }
+export interface CoworkMsg { role: 'user' | 'assistant'; type: string; text: string; tools?: string[]; thinking?: string; toolCalls?: CoworkToolCall[] }
 export interface CoworkGoalStep { label: string; status: 'done' | 'active' | 'pending' }
 export interface CoworkContext { tools: string[]; files: string[] }
 export interface CoworkPending { toolUseId: string; requestId?: string; questions: Array<{ header?: string; question?: string; multiSelect?: boolean; options?: Array<{ label: string; description?: string }> }> }
@@ -49,6 +50,15 @@ function isToolResultEvent(payload: any, content: unknown): boolean {
   return Array.isArray(content) && content.length > 0 && content.every((b: any) => b?.type === 'tool_result');
 }
 
+/** Flatten a tool_result's `content` (string, or blocks) into displayable text. */
+function stringifyToolResult(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((b: any) => (typeof b === 'string' ? b : b?.type === 'text' && typeof b.text === 'string' ? b.text : JSON.stringify(b))).join('\n');
+  }
+  try { return JSON.stringify(content); } catch { return String(content); }
+}
+
 export function parseCoworkEvents(eventsBody: unknown, sessionBody?: unknown): CoworkDetail {
   const empty: CoworkDetail = { messages: [], activeGoal: [], outputs: [], context: { tools: [], files: [] }, pendingQuestion: null, statusCategory: null };
   const dataRaw = (eventsBody as any)?.data;
@@ -73,14 +83,16 @@ export function parseCoworkEvents(eventsBody: unknown, sessionBody?: unknown): C
   let pendingQuestion: CoworkPending | null = null;
 
   // The assistant "turn" currently being accumulated (flushed when a real user prompt arrives).
-  let curAssistant: { texts: string[]; tools: string[]; thinking: string[] } | null = null;
+  // toolCalls maps a tool_use id → its call so the following tool_result event can attach its output.
+  let curAssistant: { texts: string[]; tools: string[]; thinking: string[]; toolCalls: Map<string, CoworkToolCall>; anonCalls: CoworkToolCall[] } | null = null;
   const flushAssistant = () => {
     if (!curAssistant) return;
     const text = curAssistant.texts.join('\n').trim();
     const tools = [...new Set(curAssistant.tools)];
     const thinking = curAssistant.thinking.join('\n\n').trim();
-    if (text || tools.length || thinking) {
-      messages.push({ role: 'assistant', type: 'assistant', text, ...(tools.length ? { tools } : {}), ...(thinking ? { thinking } : {}) });
+    const toolCalls = [...curAssistant.toolCalls.values(), ...curAssistant.anonCalls];
+    if (text || tools.length || thinking || toolCalls.length) {
+      messages.push({ role: 'assistant', type: 'assistant', text, ...(tools.length ? { tools } : {}), ...(thinking ? { thinking } : {}), ...(toolCalls.length ? { toolCalls } : {}) });
     }
     curAssistant = null;
   };
@@ -107,9 +119,12 @@ export function parseCoworkEvents(eventsBody: unknown, sessionBody?: unknown): C
     let text = textFromContent(content);
     const evTools: string[] = [];
     const evThinking: string[] = [];
+    const evToolUses: Array<{ id: string; name: string; input: unknown }> = [];
+    const evToolResults: Array<{ id: string; result: string; isError: boolean }> = [];
     if (Array.isArray(content)) {
       for (const b of content) {
         if (b?.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim()) evThinking.push(b.thinking);
+        if (b?.type === 'tool_result') evToolResults.push({ id: String(b?.tool_use_id || ''), result: stringifyToolResult(b?.content), isError: !!b?.is_error });
         if (b?.type === 'tool_use') {
           const name = String(b?.name || 'tool');
           if (name === 'SendUserMessage') {
@@ -123,6 +138,7 @@ export function parseCoworkEvents(eventsBody: unknown, sessionBody?: unknown): C
           }
           toolNames.add(name);
           evTools.push(name);
+          evToolUses.push({ id: String(b?.id || ''), name, input: b?.input });
           const path = b?.input?.file_path || b?.input?.path;
           if (typeof path === 'string') { files.add(path); if (path.includes(OUTPUTS_DIR)) outputs.add(path.split('/').pop() as string); }
           const cmd = String(b?.input?.command || '');
@@ -133,8 +149,12 @@ export function parseCoworkEvents(eventsBody: unknown, sessionBody?: unknown): C
     }
 
     if (role === 'user') {
-      // A tool_result (or otherwise text-less) user event is the assistant's tool outcome,
-      // not a user turn — its tools/outputs are already collected above; don't render it.
+      // A tool_result event carries the outcome of the assistant's tool call — attach it to the
+      // matching tool_use in the current turn (by id), then drop it from the transcript.
+      if (curAssistant) for (const tr of evToolResults) {
+        const call = curAssistant.toolCalls.get(tr.id);
+        if (call) { call.result = tr.result; call.isError = tr.isError; }
+      }
       if (isToolResultEvent(p, content) || !text.trim()) continue;
       flushAssistant();
       messages.push({ role: 'user', type: 'user', text });
@@ -142,10 +162,14 @@ export function parseCoworkEvents(eventsBody: unknown, sessionBody?: unknown): C
     }
 
     // assistant event → accumulate into the current turn
-    if (!curAssistant) curAssistant = { texts: [], tools: [], thinking: [] };
+    if (!curAssistant) curAssistant = { texts: [], tools: [], thinking: [], toolCalls: new Map(), anonCalls: [] };
     if (text.trim()) curAssistant.texts.push(text);
     for (const t of evTools) curAssistant.tools.push(t);
     for (const th of evThinking) curAssistant.thinking.push(th);
+    for (const tu of evToolUses) {
+      const call: CoworkToolCall = { name: tu.name, input: tu.input };
+      if (tu.id) curAssistant.toolCalls.set(tu.id, call); else curAssistant.anonCalls.push(call);
+    }
   }
   flushAssistant();
 
