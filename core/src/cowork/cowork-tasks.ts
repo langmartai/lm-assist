@@ -16,6 +16,7 @@
 
 import { randomUUID } from 'crypto';
 import { anthropicOAuthPost, anthropicOAuthGet, anthropicOAuthPut, anthropicOAuthDelete, getOrganizationUuid } from '../utils/claude-oauth';
+import { claudeaiPost, readClaudeAISession, deriveIdentity } from '../utils/claudeai-session';
 import { parseCoworkEvents, type CoworkDetail } from './cowork-read';
 
 const CLOUD_ENV_ID = 'env_011111111111111111111117'; // anthropic_cloud singleton
@@ -39,6 +40,8 @@ export interface CoworkTaskResult {
   model: string;
   title: string;
   warning?: string;            // set if the prompt failed to send
+  connectorsAttached?: boolean; // true when the account's MCP connectors were auto-attached (cookie create)
+  createdVia?: 'cookie' | 'oauth'; // 'cookie' = warming-create with connectors; 'oauth' = raw create (no connectors)
 }
 
 export class CoworkTaskError extends Error {
@@ -56,6 +59,32 @@ export async function ccOpts() {
   };
 }
 
+/**
+ * Create a cloud cowork session via the claude.ai COOKIE warming-create
+ * (`POST /api/organizations/{org}/cowork/sessions`). Unlike the raw OAuth
+ * `/v1/code/sessions` create, this auto-attaches the account's MCP connectors
+ * server-side — exactly what the claude.ai web app does (see
+ * `docs/cowork-web-endpoints.md` §0e). Returns null when the cookie session is
+ * absent / expired / Cloudflare-blocked so the caller can fall back to OAuth.
+ */
+async function cookieWarmingCreate(title: string, model: string, effort: string): Promise<{ cse: string; session: any } | null> {
+  const cfg = readClaudeAISession();
+  if (!cfg) return null;
+  let org = '';
+  try { org = deriveIdentity(cfg).orgUuid || ''; } catch { return null; }
+  if (!org) return null;
+  try {
+    const r = await claudeaiPost(`/api/organizations/${org}/cowork/sessions`,
+      { title: title || '__warming__', model, effort_level: effort },
+      { referer: 'https://claude.ai/' });
+    if (r.status < 200 || r.status >= 300) return null;
+    const session = (r.body as any)?.session || r.body;
+    const cse = session?.id;
+    if (typeof cse === 'string' && cse.startsWith('cse_')) return { cse, session };
+    return null;
+  } catch { return null; }
+}
+
 export async function createCoworkTask(opts: CreateCoworkTaskOpts): Promise<CoworkTaskResult> {
   const prompt = (opts.prompt || '').trim();
   if (!prompt) throw new CoworkTaskError('COWORK_BAD_REQUEST', 'prompt is required', 400);
@@ -70,23 +99,36 @@ export async function createCoworkTask(opts: CreateCoworkTaskOpts): Promise<Cowo
   const title = opts.title || (prompt.length > 60 ? prompt.slice(0, 57) + '…' : prompt);
   const cc = await ccOpts();
 
-  // 1) create the cowork session
-  const created = await anthropicOAuthPost('/v1/code/sessions', {
-    environment_id: environmentId,
-    config: { model, effort_level: effort },
-    tags: ['cowork'],
-    title,
-  }, cc);
-  if (created.status < 200 || created.status >= 300) {
-    throw new CoworkTaskError('COWORK_CREATE_FAILED',
-      `create failed (${created.status}): ${JSON.stringify(created.body).slice(0, 300)}`, 502);
+  // 1) create the cowork session.
+  //   Cloud: PREFER the claude.ai cookie warming-create so the account's connectors
+  //   auto-attach (like the web app); fall back to the raw OAuth create (no connectors)
+  //   when the cookie session isn't available. Local (bridge) always uses OAuth.
+  let session: any;
+  let cse: string | undefined;
+  let createdVia: 'cookie' | 'oauth' = 'oauth';
+  if (target === 'cloud') {
+    const warm = await cookieWarmingCreate(title, model, effort);
+    if (warm) { cse = warm.cse; session = warm.session; createdVia = 'cookie'; }
   }
-  const session = created.body?.session || created.body;
-  const cse: string = session?.id;
+  if (!cse) {
+    const created = await anthropicOAuthPost('/v1/code/sessions', {
+      environment_id: environmentId,
+      config: { model, effort_level: effort },
+      tags: ['cowork'],
+      title,
+    }, cc);
+    if (created.status < 200 || created.status >= 300) {
+      throw new CoworkTaskError('COWORK_CREATE_FAILED',
+        `create failed (${created.status}): ${JSON.stringify(created.body).slice(0, 300)}`, 502);
+    }
+    session = created.body?.session || created.body;
+    cse = session?.id;
+  }
   if (!cse || !cse.startsWith('cse_')) {
     throw new CoworkTaskError('COWORK_CREATE_FAILED',
       `unexpected session id in create response: ${JSON.stringify(cse)}`, 502);
   }
+  const connectorsAttached = Array.isArray(session?.config?.mcp_connector_ids) && session.config.mcp_connector_ids.length > 0;
   const sid = 'session_' + cse.slice(4);
 
   // 2) send the initial prompt
@@ -106,10 +148,12 @@ export async function createCoworkTask(opts: CreateCoworkTaskOpts): Promise<Cowo
     url: `https://claude.ai/cowork/${cse}`,
     target,
     environmentKind: session?.environment_kind,
-    environmentId,
+    environmentId: session?.environment_id || environmentId,
     status: session?.status,
     model,
     title,
+    connectorsAttached,
+    createdVia,
     ...(warning ? { warning } : {}),
   };
 }

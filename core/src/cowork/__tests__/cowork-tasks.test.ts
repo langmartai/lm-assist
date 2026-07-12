@@ -1,6 +1,7 @@
-import { test, mock, afterEach } from 'node:test';
+import { test, mock, afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import * as claudeOauth from '../../utils/claude-oauth';
+import * as claudeaiSession from '../../utils/claudeai-session';
 import { createCoworkTask, CoworkTaskError } from '../cowork-tasks';
 
 // Repo convention for stubbing a boundary dependency in a node:test suite is
@@ -40,6 +41,11 @@ function stubPost(handler: (call: OAuthPostCall, index: number) => { status: num
 }
 
 afterEach(() => { mock.restoreAll(); });
+
+// Default: no claude.ai cookie session present, so a cloud create takes the OAuth
+// fallback path (hermetic — never hits the real claude.ai warming-create). The
+// connector-attach test overrides this to exercise the cookie path.
+beforeEach(() => { mock.method(claudeaiSession, 'readClaudeAISession', () => null); });
 
 // ── input validation ────────────────────────────────────────────────────────
 
@@ -90,6 +96,30 @@ test('createCoworkTask: cloud target uses the anthropic_cloud singleton environm
   assert.equal(result.target, 'cloud');
   assert.equal(result.environmentId, 'env_011111111111111111111117');
   assert.equal(calls[0].body.environment_id, 'env_011111111111111111111117');
+});
+
+test('createCoworkTask: cloud prefers the cookie warming-create and reports connectors attached', async () => {
+  stubOrg();
+  // a claude.ai cookie session IS present → the warming-create path is taken
+  mock.method(claudeaiSession, 'readClaudeAISession', () => ({ cookie: 'sessionKey=sk-ant-sid-x' } as any));
+  mock.method(claudeaiSession, 'deriveIdentity', () => ({ orgUuid: 'org-cookie' } as any));
+  let warmingPath = '';
+  mock.method(claudeaiSession, 'claudeaiPost', async (pathname: string) => {
+    warmingPath = pathname;
+    return { status: 200, statusText: 'OK', headers: {}, body: { session: {
+      id: 'cse_cookieABC', environment_kind: 'anthropic_cloud', status: 'active',
+      config: { model: 'claude-sonnet-5', mcp_connector_ids: ['c1', 'c2'] },
+    } } };
+  });
+  // the prompt send still goes over the OAuth events channel
+  const calls = stubPost(() => ({ status: 200, body: { results: [{ event_id: 'e1' }] } }));
+  const result = await createCoworkTask({ prompt: 'use my connectors' });
+  assert.equal(result.sessionId, 'cse_cookieABC');
+  assert.equal(result.createdVia, 'cookie');
+  assert.equal(result.connectorsAttached, true);
+  assert.match(warmingPath, /\/api\/organizations\/org-cookie\/cowork\/sessions$/);
+  // the single OAuth POST is the events send to the cookie-created session (not a create)
+  assert.match(calls[0].pathname, /\/v1\/code\/sessions\/cse_cookieABC\/events$/);
 });
 
 test('createCoworkTask: local target uses the passed environmentId', async () => {
