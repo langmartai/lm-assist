@@ -6,7 +6,7 @@ import { parseSseChunk, shouldUseSse } from '@/lib/cowork-stream';
 
 export interface CoworkDetailView {
   sid: string; title?: string; status?: string; model?: string;
-  messages: Array<{ role: string; type: string; text: string; tools?: string[]; thinking?: string }>;
+  messages: Array<{ role: string; type: string; text: string; tools?: string[]; thinking?: string; toolCalls?: Array<{ name: string; input?: unknown; result?: string; isError?: boolean }> }>;
   activeGoal: Array<{ label: string; status: 'done' | 'active' | 'pending' }>;
   outputs: string[];
   context: { tools: string[]; files: string[] };
