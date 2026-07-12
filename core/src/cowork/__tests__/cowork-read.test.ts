@@ -79,3 +79,17 @@ test('renders chronological order, drops tool_result user turns, groups tools in
   // context still records the tools
   assert.ok(d.context.tools.includes('ToolSearch') && d.context.tools.includes('ListConnectors'));
 });
+
+test('captures thinking blocks into the assistant turn', () => {
+  const d = parseCoworkEvents({ data: [
+    { event_type: 'user', sequence_num: '1', payload: { type: 'user', message: { role: 'user', content: 'why is the sky blue?' } } },
+    { event_type: 'assistant', sequence_num: '2', payload: { type: 'assistant', message: { role: 'assistant', content: [
+      { type: 'thinking', thinking: 'Rayleigh scattering makes shorter wavelengths scatter more.' },
+      { type: 'text', text: 'Because of Rayleigh scattering.' },
+    ] } } },
+  ] });
+  assert.equal(d.messages.length, 2);
+  assert.equal(d.messages[1].role, 'assistant');
+  assert.equal(d.messages[1].text, 'Because of Rayleigh scattering.');
+  assert.match(d.messages[1].thinking as string, /Rayleigh scattering/);
+});

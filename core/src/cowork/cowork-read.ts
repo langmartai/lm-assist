@@ -15,7 +15,7 @@
  *    user prompts are GROUPED into a single assistant turn, with the tools collected —
  *    so tools render inline in the turn instead of as separate empty messages.
  */
-export interface CoworkMsg { role: 'user' | 'assistant'; type: string; text: string; tools?: string[] }
+export interface CoworkMsg { role: 'user' | 'assistant'; type: string; text: string; tools?: string[]; thinking?: string }
 export interface CoworkGoalStep { label: string; status: 'done' | 'active' | 'pending' }
 export interface CoworkContext { tools: string[]; files: string[] }
 export interface CoworkPending { toolUseId: string; requestId?: string; questions: Array<{ header?: string; question?: string; multiSelect?: boolean; options?: Array<{ label: string; description?: string }> }> }
@@ -73,12 +73,15 @@ export function parseCoworkEvents(eventsBody: unknown, sessionBody?: unknown): C
   let pendingQuestion: CoworkPending | null = null;
 
   // The assistant "turn" currently being accumulated (flushed when a real user prompt arrives).
-  let curAssistant: { texts: string[]; tools: string[] } | null = null;
+  let curAssistant: { texts: string[]; tools: string[]; thinking: string[] } | null = null;
   const flushAssistant = () => {
     if (!curAssistant) return;
     const text = curAssistant.texts.join('\n').trim();
     const tools = [...new Set(curAssistant.tools)];
-    if (text || tools.length) messages.push({ role: 'assistant', type: 'assistant', text, ...(tools.length ? { tools } : {}) });
+    const thinking = curAssistant.thinking.join('\n\n').trim();
+    if (text || tools.length || thinking) {
+      messages.push({ role: 'assistant', type: 'assistant', text, ...(tools.length ? { tools } : {}), ...(thinking ? { thinking } : {}) });
+    }
     curAssistant = null;
   };
 
@@ -103,8 +106,10 @@ export function parseCoworkEvents(eventsBody: unknown, sessionBody?: unknown): C
     const content = msg?.content;
     let text = textFromContent(content);
     const evTools: string[] = [];
+    const evThinking: string[] = [];
     if (Array.isArray(content)) {
       for (const b of content) {
+        if (b?.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim()) evThinking.push(b.thinking);
         if (b?.type === 'tool_use') {
           const name = String(b?.name || 'tool');
           if (name === 'SendUserMessage') {
@@ -137,9 +142,10 @@ export function parseCoworkEvents(eventsBody: unknown, sessionBody?: unknown): C
     }
 
     // assistant event → accumulate into the current turn
-    if (!curAssistant) curAssistant = { texts: [], tools: [] };
+    if (!curAssistant) curAssistant = { texts: [], tools: [], thinking: [] };
     if (text.trim()) curAssistant.texts.push(text);
     for (const t of evTools) curAssistant.tools.push(t);
+    for (const th of evThinking) curAssistant.thinking.push(th);
   }
   flushAssistant();
 

@@ -6,12 +6,13 @@ import { parseSseChunk, shouldUseSse } from '@/lib/cowork-stream';
 
 export interface CoworkDetailView {
   sid: string; title?: string; status?: string; model?: string;
-  messages: Array<{ role: string; type: string; text: string; tools?: string[] }>;
+  messages: Array<{ role: string; type: string; text: string; tools?: string[]; thinking?: string }>;
   activeGoal: Array<{ label: string; status: 'done' | 'active' | 'pending' }>;
   outputs: string[];
   context: { tools: string[]; files: string[] };
   pendingQuestion: { toolUseId: string; requestId?: string; questions: any[] } | null;
   statusCategory: string | null;
+  running?: boolean;
 }
 
 type ApiFetch = <T>(path: string, o?: { method?: string; body?: unknown }) => Promise<T>;

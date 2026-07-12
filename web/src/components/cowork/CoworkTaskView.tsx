@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import {
-  Cloud, RefreshCw, Send, Plus, X, ChevronDown, ChevronRight, MoreHorizontal,
+  Cloud, RefreshCw, Send, Plus, X, ChevronDown, ChevronRight, MoreHorizontal, Loader2,
 } from 'lucide-react';
 import { useLiveTranscript } from '@/hooks/useLiveTranscript';
 import { TranscriptMessage } from '@/components/shared/TranscriptMessage';
@@ -340,6 +340,12 @@ export function CoworkTaskView({ sid, apiFetch, streamUrl, isRemoteNode, onClose
 
           {detail?.pendingQuestion && (
             <ApprovalWidget pending={detail.pendingQuestion} answering={answering} onAnswer={handleAnswer} />
+          )}
+
+          {detail?.running && !detail.pendingQuestion && !gone && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-text-tertiary)', fontSize: 12, fontStyle: 'italic' }}>
+              <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Working…
+            </div>
           )}
         </div>
 

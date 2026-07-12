@@ -192,7 +192,7 @@ export async function listCoworkTasks(opts: { filter?: 'all' | 'cowork' | 'archi
   return { tasks: filtered, nextCursor: res.body?.next_cursor };
 }
 
-export async function getCoworkTask(cse: string): Promise<CoworkDetail & { sid: string; title?: string; status?: string; model?: string }> {
+export async function getCoworkTask(cse: string): Promise<CoworkDetail & { sid: string; title?: string; status?: string; model?: string; running?: boolean }> {
   if (!cse.startsWith('cse_')) throw new CoworkTaskError('COWORK_BAD_REQUEST', 'cse id required', 400);
   const cc = await ccOpts();
   const [ev, se] = await Promise.all([
@@ -202,7 +202,9 @@ export async function getCoworkTask(cse: string): Promise<CoworkDetail & { sid: 
   if (ev && ev.status === 404) throw new CoworkTaskError('COWORK_NOT_FOUND', 'task not found', 404);
   const sessionBody = se?.body?.response_shape || se?.body;
   const detail = parseCoworkEvents(ev?.body, sessionBody);
-  return { ...detail, sid: cse, title: sessionBody?.title, status: sessionBody?.status || sessionBody?.session_status, model: sessionBody?.config?.model };
+  // The cloud worker reports `worker_status:'running'` while actively working — drives the UI "Working…" indicator.
+  const running = /running/i.test(String(sessionBody?.worker_status || sessionBody?.external_metadata?.worker_status || ''));
+  return { ...detail, sid: cse, title: sessionBody?.title, status: sessionBody?.status || sessionBody?.session_status, model: sessionBody?.config?.model, running };
 }
 
 export async function driveCoworkTask(opts: { cse: string; text: string }): Promise<{ delivered: boolean; eventId?: string }> {
