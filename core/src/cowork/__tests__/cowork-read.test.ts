@@ -47,3 +47,35 @@ test('tolerates empty / malformed input', () => {
   assert.deepEqual(parseCoworkEvents(null).messages, []);
   assert.deepEqual(parseCoworkEvents({ data: 'nope' }).outputs, []);
 });
+
+// Real-world shape: the /events endpoint returns events NEWEST-first, tool calls arrive as
+// separate assistant events, and each tool_use is followed by a `user` tool_result event.
+const REVERSED = {
+  data: [
+    { event_type: 'assistant', sequence_num: '8', payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Here are your connectors: [table]' }] } } },
+    { event_type: 'user', sequence_num: '7', payload: { type: 'tool_result', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: 'connectors...' }] } } },
+    { event_type: 'assistant', sequence_num: '6', payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'ListConnectors', input: {} }] } } },
+    { event_type: 'user', sequence_num: '5', payload: { type: 'tool_result', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'tools...' }] } } },
+    { event_type: 'assistant', sequence_num: '4', payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'ToolSearch', input: {} }] } } },
+    { event_type: 'user', sequence_num: '3', payload: { type: 'user', message: { role: 'user', content: 'List connectors' } } },
+    { event_type: 'assistant', sequence_num: '2', payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'I can help you test.' }] } } },
+    { event_type: 'user', sequence_num: '1', payload: { type: 'user', message: { role: 'user', content: 'Test a cowork session' } } },
+  ],
+};
+
+test('renders chronological order, drops tool_result user turns, groups tools into the assistant turn', () => {
+  const d = parseCoworkEvents(REVERSED);
+  // chronological, exactly 4 turns (2 user + 2 assistant) — no empty user bubbles, no lone-tool messages
+  assert.equal(d.messages.length, 4);
+  assert.deepEqual(d.messages.map((m) => m.role), ['user', 'assistant', 'user', 'assistant']);
+  assert.equal(d.messages[0].text, 'Test a cowork session');
+  assert.equal(d.messages[1].text, 'I can help you test.');
+  assert.equal(d.messages[2].text, 'List connectors');
+  assert.match(d.messages[3].text, /Here are your connectors/);
+  // the two tool calls are grouped into the final assistant turn
+  assert.deepEqual(d.messages[3].tools, ['ToolSearch', 'ListConnectors']);
+  // no user message is empty
+  assert.ok(!d.messages.some((m) => m.role === 'user' && !m.text.trim()));
+  // context still records the tools
+  assert.ok(d.context.tools.includes('ToolSearch') && d.context.tools.includes('ListConnectors'));
+});
