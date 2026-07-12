@@ -12,6 +12,7 @@ export type ScreenState =
   | 'rate_limit_server' // "Server is temporarily limiting requests (not your usage limit)"
   | 'overloaded' // 529 / Overloaded / "Waiting for capacity"
   | 'server_error' // API Error 5xx / internal server error
+  | 'connection_error' // network/transport failure — never reached the API (internet dropped / DNS / connection refused/reset/timeout)
   | 'auth_error' // invalid key / expired OAuth / credit too low / needs /login
   | 'busy' // actively working (spinner / "esc to interrupt")
   | 'idle' // at the prompt, ready for input
@@ -67,6 +68,11 @@ const BANNER_PATTERNS: { state: ScreenState; re: RegExp }[] = [
   { state: 'server_error', re: /API Error:\s*5\d\d[^\n]*/i },
   { state: 'server_error', re: /Internal server error[^\n]*/i },
   { state: 'server_error', re: /API Error \(.*5\d\d.*\)[^\n]*/i },
+  // Transport-level failure: the request never reached the API (internet dropped,
+  // DNS, connection refused/reset/timeout). Claude Code wraps every cause as
+  // "Unable to connect to API (<cause>)" or "Connection error." — safe to retry.
+  { state: 'connection_error', re: /Unable to connect to API[^\n]*/i },
+  { state: 'connection_error', re: /API Error:\s*Connection error\.?[^\n]*/i },
 ];
 
 /** Classify the visible terminal text. Pure + deterministic. */

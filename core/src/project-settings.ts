@@ -31,8 +31,14 @@ export interface ProjectSettings {
   autoResumeStalledEnabled: boolean;
   /** Base interval (minutes) between `continue` nudges. Default 5. */
   autoResumeIntervalMin: number;
-  /** Max nudge attempts before giving up + flagging. Default 6. */
+  /** Max nudge attempts before giving up + flagging (only applies when autoResumeNeverGiveUp is false). Default 6. */
   autoResumeMaxAttempts: number;
+  /** Cap (minutes) on the widening backoff between nudges — waits grow but stay bounded so a long
+   *  outage still recovers promptly once it clears. Default 30. */
+  autoResumeMaxIntervalMin: number;
+  /** Never permanently give up: keep retrying at the capped interval through long outages
+   *  (e.g. the internet is down for hours). Default true. */
+  autoResumeNeverGiveUp: boolean;
   /** Whether the elected monitor scans remote cloud CCRs. Default true. */
   autoResumeRemoteScan: boolean;
   /** Enable the super Mission Controller scheduled job. Default true. */
@@ -88,6 +94,8 @@ export const DEFAULTS: ProjectSettings = {
   autoResumeStalledEnabled: true,
   autoResumeIntervalMin: 5,
   autoResumeMaxAttempts: 6,
+  autoResumeMaxIntervalMin: 30,
+  autoResumeNeverGiveUp: true,
   autoResumeRemoteScan: true,
   missionControllerEnabled: true,
   missionControllerIntervalMin: 5,
@@ -138,6 +146,8 @@ export function getProjectSettings(): ProjectSettings {
       autoResumeStalledEnabled: typeof data.autoResumeStalledEnabled === 'boolean' ? data.autoResumeStalledEnabled : DEFAULTS.autoResumeStalledEnabled,
       autoResumeIntervalMin: typeof data.autoResumeIntervalMin === 'number' ? data.autoResumeIntervalMin : DEFAULTS.autoResumeIntervalMin,
       autoResumeMaxAttempts: typeof data.autoResumeMaxAttempts === 'number' ? data.autoResumeMaxAttempts : DEFAULTS.autoResumeMaxAttempts,
+      autoResumeMaxIntervalMin: typeof data.autoResumeMaxIntervalMin === 'number' ? data.autoResumeMaxIntervalMin : DEFAULTS.autoResumeMaxIntervalMin,
+      autoResumeNeverGiveUp: typeof data.autoResumeNeverGiveUp === 'boolean' ? data.autoResumeNeverGiveUp : DEFAULTS.autoResumeNeverGiveUp,
       autoResumeRemoteScan: typeof data.autoResumeRemoteScan === 'boolean' ? data.autoResumeRemoteScan : DEFAULTS.autoResumeRemoteScan,
       missionControllerEnabled: typeof data.missionControllerEnabled === 'boolean' ? data.missionControllerEnabled : DEFAULTS.missionControllerEnabled,
       missionControllerIntervalMin: typeof data.missionControllerIntervalMin === 'number' ? data.missionControllerIntervalMin : DEFAULTS.missionControllerIntervalMin,
@@ -183,6 +193,8 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     autoResumeStalledEnabled: typeof partial.autoResumeStalledEnabled === 'boolean' ? partial.autoResumeStalledEnabled : current.autoResumeStalledEnabled,
     autoResumeIntervalMin: typeof partial.autoResumeIntervalMin === 'number' ? partial.autoResumeIntervalMin : current.autoResumeIntervalMin,
     autoResumeMaxAttempts: typeof partial.autoResumeMaxAttempts === 'number' ? partial.autoResumeMaxAttempts : current.autoResumeMaxAttempts,
+    autoResumeMaxIntervalMin: typeof partial.autoResumeMaxIntervalMin === 'number' ? partial.autoResumeMaxIntervalMin : current.autoResumeMaxIntervalMin,
+    autoResumeNeverGiveUp: typeof partial.autoResumeNeverGiveUp === 'boolean' ? partial.autoResumeNeverGiveUp : current.autoResumeNeverGiveUp,
     autoResumeRemoteScan: typeof partial.autoResumeRemoteScan === 'boolean' ? partial.autoResumeRemoteScan : current.autoResumeRemoteScan,
     missionControllerEnabled: typeof partial.missionControllerEnabled === 'boolean' ? partial.missionControllerEnabled : current.missionControllerEnabled,
     missionControllerIntervalMin: typeof partial.missionControllerIntervalMin === 'number' ? partial.missionControllerIntervalMin : current.missionControllerIntervalMin,

@@ -122,8 +122,8 @@ The backend is a raw Node.js HTTP server (no Express/Hono runtime — Hono is a 
 - Claude Code tasks: `~/.claude/tasks/`
 - Team configs: `~/.claude/teams/`
 
-### Auto-resume stalled sessions (server errors)
-A `scheduled-jobs` handler `stall-monitor` (5 min, on by default) resumes sessions stalled on SERVER errors (529/5xx/server-rate-limit — NEVER user usage-limits or auth) by sending `continue`, capped-backoff then flagged. Local sessions are handled per-node; remote cloud CCRs only by the single auto-elected monitor (lowest online gateway-id from the hub `/machines` list). Toggles in project-settings: `autoResumeStalledEnabled` (default true), `autoResumeIntervalMin`, `autoResumeMaxAttempts`, `autoResumeRemoteScan`. Status: `GET /monitor/stalls` / MCP `stall_status`. Run on demand: `POST /scheduler/jobs/stall-monitor/run`.
+### Auto-resume stalled sessions (server / network errors)
+A `scheduled-jobs` handler `stall-monitor` (5 min, on by default) resumes sessions stalled on SERVER or NETWORK errors (529/5xx/server-rate-limit, plus transient connectivity loss — `Unable to connect to API`/`Connection error` when the internet drops — NEVER user usage-limits or auth) by sending `continue`. Backoff **widens** as retries keep failing (5,5,10,10,15,15… min) but is **capped** at `autoResumeMaxIntervalMin` (default 30) so it never hammers, and by default it **never permanently gives up** (`autoResumeNeverGiveUp`, default true) — it keeps retrying at the capped interval so a long outage recovers the moment connectivity returns. Local sessions are handled per-node; remote cloud CCRs only by the single auto-elected monitor (lowest online gateway-id from the hub `/machines` list). Toggles in project-settings: `autoResumeStalledEnabled` (default true), `autoResumeIntervalMin`, `autoResumeMaxAttempts` (only bounds retries when `autoResumeNeverGiveUp` is off), `autoResumeMaxIntervalMin`, `autoResumeNeverGiveUp`, `autoResumeRemoteScan`. Status: `GET /monitor/stalls` / MCP `stall_status`. Run on demand: `POST /scheduler/jobs/stall-monitor/run`.
 
 ### Node Clusters
 

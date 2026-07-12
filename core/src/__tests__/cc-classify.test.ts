@@ -76,3 +76,27 @@ test('idle prompt with no banners is still idle', () => {
   const text = ['some prior output', '❯ ', 'bypass permissions on (shift+tab to cycle)'].join('\n');
   assert.strictEqual(classifyScreen(text).state, 'idle');
 });
+
+// Network/transport failure — Claude Code never reached the API (internet dropped,
+// DNS, connection refused/reset/timeout). Distinct from a server 5xx (the request
+// landed and the server erred): here the request never landed. Safe to auto-continue
+// once connectivity returns — it is neither the user's usage limit nor an auth error.
+test('connection/network errors classify as connection_error', () => {
+  assert.strictEqual(classifyScreen('API Error: Unable to connect to API (ConnectionRefused)').state, 'connection_error');
+  assert.strictEqual(classifyScreen('  ⎿  API Error: Unable to connect to API (ConnectionTimeout)').state, 'connection_error');
+  assert.strictEqual(classifyScreen('API Error: Connection error.').state, 'connection_error');
+});
+
+// Safety boundary via recency: a stale connection_error must NOT shadow a later,
+// current usage-limit banner (which must never be auto-resumed).
+test('a later usage-limit banner beats an earlier stale connection_error banner', () => {
+  const text = [
+    '● API Error: Unable to connect to API (ConnectionRefused)',
+    '❯ continue',
+    '● Read(some/file.ts)',
+    '  ⎿  Read 45 lines',
+    '● Claude usage limit reached · resets 9pm (Asia/Singapore)',
+    '❯ ',
+  ].join('\n');
+  assert.strictEqual(classifyScreen(text).state, 'rate_limit_user');
+});

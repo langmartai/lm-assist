@@ -10,14 +10,18 @@ export interface StallRecord {
 
 export interface StallConfig {
   intervalMin: number; // base interval (default 5)
-  maxAttempts: number; // cap before giving up (default 6)
+  maxAttempts: number; // cap before giving up (only used when neverGiveUp is false)
+  maxIntervalMin?: number; // cap the widening backoff at this many minutes (default: uncapped)
+  neverGiveUp?: boolean; // keep retrying forever at the capped interval (default: true)
 }
 
 export type StallAction = 'nudge' | 'wait' | 'giveup' | 'reset';
 
-/** Widening schedule: 5,5,10,10,15,15,… minutes. */
-export function backoffMinutes(step: number, intervalMin: number): number {
-  return (Math.floor(step / 2) + 1) * intervalMin;
+/** Widening schedule: 5,5,10,10,15,15,… minutes, optionally capped at maxIntervalMin
+ *  so waits grow (don't hammer) but stay responsive when the outage clears. */
+export function backoffMinutes(step: number, intervalMin: number, maxIntervalMin?: number): number {
+  const mins = (Math.floor(step / 2) + 1) * intervalMin;
+  return maxIntervalMin && maxIntervalMin > 0 ? Math.min(mins, maxIntervalMin) : mins;
 }
 
 export function planStallAction(
@@ -39,11 +43,15 @@ export function planStallAction(
 
   if (rec.gaveUp) return { action: 'wait', next: rec };
 
-  if (rec.attempts >= cfg.maxAttempts) {
+  // Default policy: never permanently give up — keep retrying at the capped, widened
+  // interval so a long outage (internet down for hours) still recovers the moment it
+  // clears. Only bounded by maxAttempts when neverGiveUp is explicitly turned off.
+  const neverGiveUp = cfg.neverGiveUp ?? true;
+  if (!neverGiveUp && rec.attempts >= cfg.maxAttempts) {
     return { action: 'giveup', next: { ...rec, gaveUp: true } };
   }
 
-  const dueAt = rec.lastNudgeAt + backoffMinutes(rec.backoffStep, cfg.intervalMin) * 60_000;
+  const dueAt = rec.lastNudgeAt + backoffMinutes(rec.backoffStep, cfg.intervalMin, cfg.maxIntervalMin) * 60_000;
   if (now < dueAt) return { action: 'wait', next: rec };
 
   return {

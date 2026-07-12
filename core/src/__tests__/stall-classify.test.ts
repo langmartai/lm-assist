@@ -9,6 +9,14 @@ test('server errors are retryable', () => {
   }
 });
 
+test('connection/network errors are retryable (transient — internet dropped)', () => {
+  for (const s of ['API Error: Unable to connect to API (ConnectionRefused)', 'API Error: Connection error.']) {
+    const r = isServerStall(s);
+    assert.strictEqual(r.retryable, true, `expected retryable for: ${s} (got ${r.category})`);
+    assert.strictEqual(r.category, 'connection_error');
+  }
+});
+
 test('user usage-limit and auth are NEVER retryable', () => {
   for (const s of ['Claude usage limit reached', '5-hour limit reached', "You've been rate limited", 'OAuth token has expired', 'Invalid API key', 'Credit balance is too low']) {
     const r = isServerStall(s);

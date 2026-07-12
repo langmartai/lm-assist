@@ -9,6 +9,15 @@ test('backoffMinutes widens 5,5,10,10,15,15', () => {
   assert.deepStrictEqual([0, 1, 2, 3, 4, 5].map((s) => backoffMinutes(s, 5)), [5, 5, 10, 10, 15, 15]);
 });
 
+test('backoffMinutes caps at maxIntervalMin (waits grow, but stay bounded)', () => {
+  // Without a cap the legacy schedule keeps growing unbounded.
+  assert.strictEqual(backoffMinutes(20, 5), 55);
+  // With a cap it grows then plateaus — never hammers, never waits absurdly long.
+  assert.strictEqual(backoffMinutes(0, 5, 30), 5);
+  assert.strictEqual(backoffMinutes(10, 5, 30), 30);
+  assert.strictEqual(backoffMinutes(20, 5, 30), 30);
+});
+
 test('first detection nudges (attempt 1)', () => {
   const r = planStallAction(undefined, { now: 1000, stillStalled: true, seenProgress: false, cfg });
   assert.strictEqual(r.action, 'nudge');
@@ -30,9 +39,21 @@ test('due → nudge again, attempts++ and backoff widens', () => {
   assert.strictEqual(r.next!.backoffStep, 1);
 });
 
-test('cap reached → giveup', () => {
-  const rec: StallRecord = { attempts: 6, lastNudgeAt: 1000, category: 'overloaded', backoffStep: 5, gaveUp: false };
+// Default policy: NEVER permanently give up. When the internet is down for a long
+// time, keep retrying (at the capped, widened interval) so the session resumes the
+// moment connectivity returns — instead of dying after maxAttempts.
+test('neverGiveUp (default): past maxAttempts still nudges when due — never stops', () => {
+  const rec: StallRecord = { attempts: 6, lastNudgeAt: 1000, category: 'connection_error', backoffStep: 5, gaveUp: false };
   const r = planStallAction(rec, { now: 1000 + 999 * MIN, stillStalled: true, seenProgress: false, cfg });
+  assert.strictEqual(r.action, 'nudge');
+  assert.strictEqual(r.next!.gaveUp, false);
+  assert.strictEqual(r.next!.attempts, 7);
+});
+
+// Opt-out path (neverGiveUp:false) preserves the old bounded behavior.
+test('cap reached → giveup (only when neverGiveUp is off)', () => {
+  const rec: StallRecord = { attempts: 6, lastNudgeAt: 1000, category: 'overloaded', backoffStep: 5, gaveUp: false };
+  const r = planStallAction(rec, { now: 1000 + 999 * MIN, stillStalled: true, seenProgress: false, cfg: { ...cfg, neverGiveUp: false } });
   assert.strictEqual(r.action, 'giveup');
   assert.strictEqual(r.next!.gaveUp, true);
 });

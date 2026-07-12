@@ -64,12 +64,25 @@ test('a throwing detector does not abort the tick (isolated; save + other branch
   assert.deepStrictEqual(r.localNudged, []); // local threw → treated as empty set
 });
 
-test('cap reached → giveUp, not nudged', async () => {
+test('cap reached → giveUp, not nudged (only when neverGiveUp is off)', async () => {
   const store: Record<string, StallRecord> = { 'local:L1': { attempts: 6, lastNudgeAt: 1, category: 'overloaded', backoffStep: 5, gaveUp: false } };
   let resumed = false;
-  const d = baseDeps({ store, resumeLocal: async () => { resumed = true; return true; } });
+  const d = baseDeps({ store, cfg: { intervalMin: 5, maxAttempts: 6, neverGiveUp: false }, resumeLocal: async () => { resumed = true; return true; } });
   const r = await runStallMonitorTick(d);
   assert.strictEqual(resumed, false);
   assert.deepStrictEqual(r.gaveUp, ['local:L1']);
   assert.strictEqual(d.load()['local:L1'].gaveUp, true);
+});
+
+test('neverGiveUp default: past the cap it keeps nudging — never stops', async () => {
+  const store: Record<string, StallRecord> = { 'local:L1': { attempts: 6, lastNudgeAt: 1, category: 'connection_error', backoffStep: 5, gaveUp: false } };
+  let resumed = false;
+  // baseDeps cfg has no neverGiveUp → defaults to true (the product default).
+  const d = baseDeps({ store, resumeLocal: async () => { resumed = true; return true; } });
+  const r = await runStallMonitorTick(d);
+  assert.strictEqual(resumed, true);
+  assert.deepStrictEqual(r.gaveUp, []);
+  assert.deepStrictEqual(r.localNudged, ['L1']);
+  assert.strictEqual(d.load()['local:L1'].gaveUp, false);
+  assert.strictEqual(d.load()['local:L1'].attempts, 7);
 });

@@ -82,7 +82,12 @@ export function registerStallMonitor(jobs: { registerHandler: (t: string, fn: an
     if (!s.autoResumeStalledEnabled) return { result: 'auto-resume disabled', status: 'skipped' };
     const r = await runStallMonitorTick({
       now: Date.now(),
-      cfg: { intervalMin: s.autoResumeIntervalMin, maxAttempts: s.autoResumeMaxAttempts },
+      cfg: {
+        intervalMin: s.autoResumeIntervalMin,
+        maxAttempts: s.autoResumeMaxAttempts,
+        maxIntervalMin: s.autoResumeMaxIntervalMin,
+        neverGiveUp: s.autoResumeNeverGiveUp,
+      },
       amMonitor: () => amIMonitor().then((m) => ({ isMonitor: m.isMonitor, monitorNodeId: m.monitorNodeId })),
       findLocal: () => findLocalStalls(),
       resumeLocal: (id) => resumeLocal(id),
