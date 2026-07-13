@@ -3,7 +3,7 @@ import type { Mission, MissionChange, FieldDiff, MissionActor } from './mission-
 
 /** Semantic fields whose change is versioned. Controller telemetry is intentionally excluded. */
 export const TRACKED_FIELDS = [
-  'title', 'objective', 'plan', 'nextSteps', 'projects', 'tags', 'parentId', 'dependsOn', 'status', 'env',
+  'title', 'objective', 'plan', 'nextSteps', 'projects', 'tags', 'parentId', 'dependsOn', 'status', 'env', 'manageMode',
 ] as const;
 
 const MAX_STR = 500;

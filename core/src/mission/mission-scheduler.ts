@@ -72,6 +72,7 @@ export function computeSchedule(missions: Mission[]): Schedule {
   const ready: string[] = [];
   const blocked: BlockedEntry[] = [];
   for (const m of missions) {
+    if (m.origin === 'onboarded') continue;     // already bound to its session — never spawn-ready
     if (containerSet.has(m.id)) continue;       // epic container — rolled up, not executed
     if (!SCHEDULABLE.has(m.status)) continue;   // active/paused/done/failed
     if (m.parentId && !byId.has(m.parentId)) { blocked.push({ id: m.id, reason: 'parent', waitOn: [m.parentId] }); continue; }
