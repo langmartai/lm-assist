@@ -28,6 +28,7 @@ import { getWorkflow, listWorkflows, putWorkflow, rollbackWorkflow, getWorkflowR
   type WorkflowPort, type WorkflowSnapshotPort } from '../../mission/workflow-store';
 import { isControllerActor, type WorkflowEditPolicy } from '../../mission/workflow-model';
 import { DEFAULT_WORKFLOWS } from '../../mission/workflow-defaults';
+import { buildOnboardMission, detectTransport, pickClusterLeader } from '../../mission/mission-onboard';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string }; }
 const ok = <T>(data: T): Envelope => ({ success: true, data });
@@ -311,6 +312,92 @@ export async function handleWorkflowRollback(id: string, b: Record<string, unkno
   const r = await rollbackWorkflow(id, toRev, who, port, snap);
   if ('error' in r) return fail(r.error.code, r.error.message);
   return ok({ doc: r.doc });
+}
+
+// ---------------------------------------------------------------------------
+// handleOnboard — POST /mission/onboard (the onboarding rail)
+// ---------------------------------------------------------------------------
+
+export interface OnboardDeps {
+  port?: MissionDataPort;
+  actor?: MissionActor;
+  leader?: LeaderAnchorDeps;                       // own-cluster anchoring
+  clusterRecords?: () => Promise<Array<{ gatewayId: string; cluster?: string | null }>>;
+  myCluster?: () => string;
+  onlineNodes?: () => Promise<string[]>;
+  proxyPost?: (node: string, path: string, body: unknown) => Promise<unknown>;
+  /** Local native session existence check; consulted only when the session node === thisNode(). */
+  nativeExists?: (sid: string) => boolean;
+  selfNode?: () => string;
+}
+
+export async function handleOnboard(b: Record<string, unknown>, d: OnboardDeps = {}): Promise<Envelope> {
+  const self = d.selfNode ? d.selfNode() : thisNode();
+  const who = d.actor ?? await actorFor(b);
+
+  // 1) resolve session id: explicit, else the caller's own (precise local-session actor).
+  const sid = str(b.sessionId) ?? (who.kind === 'local-session' && who.id ? who.id : undefined);
+  if (!sid) return fail('INVALID_INPUT', 'sessionId required — the caller session could not be resolved; pass sessionId explicitly');
+
+  // 2) mode + note
+  const modeRaw = str(b.mode) ?? 'standby';
+  if (modeRaw !== 'handoff' && modeRaw !== 'standby') return fail('INVALID_INPUT', 'mode must be handoff|standby');
+  const note = str(b.note);
+
+  // 3) transport + session node. Stamp the ORIGIN node before any proxy hop so the
+  //    target-cluster leader binds the right node (the session lives where the call started).
+  const transport = detectTransport(sid);
+  const sessionNode = transport === 'cloud' ? 'cloud' : (str(b.node) ?? self);
+  if (transport === 'native' && !str(b.node)) b.node = sessionNode;
+
+  // 4) local existence check — only meaningful for a native session on THIS node.
+  if (transport === 'native' && sessionNode === self) {
+    const exists = d.nativeExists ?? ((s: string) => {
+      const { sessionVerdict } = require('../../terminal/cc-sessions') as typeof import('../../terminal/cc-sessions');
+      const v = sessionVerdict(s);
+      return v.connectStrategy !== 'none' || v.inTmux; // any transcript or live process counts
+    });
+    try { if (!exists(sid)) return fail('SESSION_NOT_FOUND', `no local session ${sid}`); }
+    catch { /* verdict failure — proceed; reads will surface it */ }
+  }
+
+  // 5) cluster targeting
+  const records = await (d.clusterRecords ?? getClusterRecords)();
+  const myClusterName = (d.myCluster ?? getMyCluster)();
+  const target = str(b.cluster) ?? myClusterName;
+  if (target === myClusterName) {
+    const anchored = await anchorToLeader(d.leader, 'POST', '/mission/onboard', b, true);
+    if (anchored) return anchored;
+  } else {
+    const online = await (d.onlineNodes ?? (() => {
+      const { listAllOnlineNodeIds } = require('../../data/peer-client') as typeof import('../../data/peer-client');
+      return listAllOnlineNodeIds();
+    }))();
+    const leaderNode = pickClusterLeader(target, records as any, online);
+    if (!leaderNode) return fail('LEADER_UNREACHABLE', `no online node in cluster "${target}"`);
+    if (leaderNode !== self) {
+      const pp = d.proxyPost ?? ((n: string, p: string, body: unknown) => {
+        const { proxyPost } = require('../../data/peer-client') as typeof import('../../data/peer-client');
+        return proxyPost(n, p, body);
+      });
+      try { return proxyEnvelope(await pp(leaderNode, '/mission/onboard', b)); }
+      catch (e) { return fail('LEADER_UNREACHABLE', `cluster "${target}" leader unreachable: ${(e as Error).message}`); }
+    }
+  }
+
+  // 6) local execution (we are the target-cluster leader, or anchoring found us local)
+  const all = await listMissions(d.port);
+  const existing = all.find((m) => m.origin === 'onboarded' && m.binding?.sessionId === sid && m.status !== 'done' && m.status !== 'failed');
+  if (existing) return ok({ mission: existing, existing: true, cluster: target, leaderNode: self });
+
+  const sessionCluster = (records as Array<{ gatewayId: string; cluster?: string | null }>).find((r) => r.gatewayId === sessionNode)?.cluster ?? 'default';
+  const crossCluster = transport === 'native' && sessionCluster !== target;
+  const m = buildOnboardMission(
+    { sid, node: sessionNode, transport, mode: modeRaw, note, crossCluster, ownerNode: self, createdBy: who },
+    Date.now(), genId,
+  );
+  await putMission(m, d.port, { actor: who });
+  return ok({ mission: m, existing: false, cluster: target, leaderNode: self });
 }
 
 // ---------------------------------------------------------------------------
@@ -1366,6 +1453,8 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     { method: 'POST', pattern: /^\/mission\/workflows\/(?<id>[^/]+)\/rollback$/, handler: async (req) => handleWorkflowRollback(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, undefined, realLeaderAnchor()) },
     { method: 'GET', pattern: /^\/mission\/workflows\/(?<id>[^/]+)$/, handler: async (req) => handleWorkflowGet(req.params.id, undefined, realLeaderAnchor()) },
     { method: 'POST', pattern: /^\/mission\/workflows\/(?<id>[^/]+)$/, handler: async (req) => handleWorkflowSet(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, undefined, realLeaderAnchor()) },
+    // /mission/onboard literal — MUST be before every /mission/:id pattern
+    { method: 'POST', pattern: /^\/mission\/onboard$/, handler: async (req) => handleOnboard((req.body || {}) as Record<string, unknown>, { leader: realLeaderAnchor() }) },
     // rail routes: /place and /executor-status BEFORE /:id so literals win
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/place$/, handler: async (req) => handlePlace(req.params.id, undefined, realLeaderAnchor()) },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/executor-status$/, handler: async (req) => handleExecutorStatus(req.params.id, undefined, undefined, realLeaderAnchor()) },
