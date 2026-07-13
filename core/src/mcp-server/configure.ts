@@ -291,6 +291,11 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   mission_view_list: 'read',
   mission_view_get: 'read',
   mission_view_delete: 'write',
+  mission_workflow_list: 'read',
+  mission_workflow_get: 'read',
+  mission_workflow_set: 'write',
+  mission_workflow_history: 'read',
+  mission_workflow_rollback: 'write',
   // auth: guided re-login for cookie + OAuth
   claudeai_login: 'admin',
   // fleet build/upgrade tracking (read, pull)
