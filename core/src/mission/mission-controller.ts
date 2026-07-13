@@ -23,6 +23,7 @@ import { gitCommand } from '../checkpoint/git-utils';
 import * as path from 'path';
 import { sessionVerdict } from '../terminal/cc-sessions';
 import { AgentSessionStore } from '../agent-session-store';
+import { detectHumanActivity } from './mission-onboard';
 
 /**
  * Resolve a host string (which may be a hostname/label OR a gatewayId) to the
@@ -892,6 +893,87 @@ export async function readExecutorSignal(m: Mission): Promise<ExecNow> {
   };
 }
 
+/**
+ * Onboarded-mission read deps (local + cross-node) — deps-injected for testability.
+ * Cross-node reads go through the session ops proxy on the session's own node
+ * (`POST /mission/session/:sid/read` / `/status`), NOT the cloud path.
+ */
+export interface OnboardedReadDeps {
+  selfNode: () => string;
+  /** Local role-aware native read (AgentSessionStore). */
+  readLocalConversation: (sid: string) => Promise<{ messages: Array<{ role: string; text: string }> }>;
+  /** Local native liveness. */
+  verdict: (sid: string) => { driveable: boolean };
+  /** Cross-node read via the session ops proxy (POST /mission/session/:sid/read on the session's node). */
+  proxyRead: (node: string, sid: string) => Promise<{ messages: Array<{ role: string; text: string }> }>;
+  /** Cross-node liveness (POST /mission/session/:sid/status on the session's node). */
+  proxyStatus: (node: string, sid: string) => Promise<{ alive: boolean }>;
+}
+
+/**
+ * Wave "onboarded" — read an onboarded mission's live session (local or cross-node) and
+ * additionally detect HUMAN activity (a plain new user prompt, not our drive marker / harness
+ * noise) so the engagement classifier can be nudged to engage even without a status marker.
+ * Cloud onboarded bindings delegate to `readCloudExecutor` (humanActive stays false — v1
+ * limit: cloud messages here are plain strings, not role-tagged, so we can't yet tell human
+ * from driven text on that path).
+ */
+export async function readOnboardedSignal(m: Mission, deps: OnboardedReadDeps): Promise<ExecNow & { humanActive: boolean }> {
+  const sid = m.binding?.sessionId;
+  if (!sid) return { alive: false, gated: false, cursor: 0, newLines: [], humanActive: false };
+  if (m.binding?.node === 'cloud' || detectTransportSafe(sid) === 'cloud') {
+    const st = await readCloudExecutor(m);
+    return { alive: st.alive, gated: !!st.gate, cursor: st.newOutput?.cursor ?? (m.control.lastOutputCursor ?? 0), newLines: st.newOutput?.messages ?? [], humanActive: false };
+  }
+  const node = m.binding?.node;
+  const local = !node || node === deps.selfNode();
+  try {
+    let alive: boolean; let messages: Array<{ role: string; text: string }>;
+    if (local) {
+      alive = deps.verdict(sid).driveable;
+      messages = (await deps.readLocalConversation(sid)).messages;
+    } else {
+      alive = (await deps.proxyStatus(node!, sid)).alive;
+      messages = (await deps.proxyRead(node!, sid)).messages;
+    }
+    const last = m.control.lastOutputCursor ?? 0;
+    const fresh = messages.slice(last);
+    return { alive, gated: false, cursor: messages.length, newLines: fresh.map((x) => x.text), humanActive: detectHumanActivity(fresh) };
+  } catch {
+    // transient (remote hop, fs): grace — alive, nothing new (mirrors handleSessionStatus's cloud grace)
+    return { alive: true, gated: false, cursor: m.control.lastOutputCursor ?? 0, newLines: [], humanActive: false };
+  }
+}
+function detectTransportSafe(sid: string): 'cloud' | 'native' {
+  const { detectTransport } = require('./mission-onboard') as typeof import('./mission-onboard');
+  return detectTransport(sid);
+}
+
+/** Real deps for `readOnboardedSignal` — local native read/verdict + cross-node via the peer proxy. */
+function defaultOnboardedReadDeps(): OnboardedReadDeps {
+  return {
+    selfNode: () => thisNode(),
+    verdict: (sid) => { const v = sessionVerdict(sid); return { driveable: v.inTmux }; },
+    readLocalConversation: async (sid) => {
+      const store = new AgentSessionStore({ projectPath: process.cwd(), persist: false });
+      const res = await store.getConversation({ sessionId: sid });
+      return { messages: (res?.messages ?? []).map((msg: any) => ({ role: msg.role, text: msg.content })) };
+    },
+    proxyRead: async (node, sid) => {
+      const { proxyPost } = require('../data/peer-client') as typeof import('../data/peer-client');
+      const r = (await proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/read`, {})) as any;
+      const data = r?.data ?? r;
+      return { messages: (data?.messages ?? []).map((x: any) => ({ role: x.role, text: x.text })) };
+    },
+    proxyStatus: async (node, sid) => {
+      const { proxyPost } = require('../data/peer-client') as typeof import('../data/peer-client');
+      const r = (await proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/status`, {})) as any;
+      const data = r?.data ?? r;
+      return { alive: data?.alive !== false };
+    },
+  };
+}
+
 function controllerCwd(): string {
   const s = getProjectSettings();
   return (s as any).missionControllerRepo || process.cwd();
@@ -979,7 +1061,18 @@ export function registerMissionController(
         const { listActiveMissions } = require('./mission-store') as typeof import('./mission-store');
         return listActiveMissions();
       },
-      readSignal: (m) => readExecutorSignal(m),
+      readSignal: async (m) => {
+        if (m.origin === 'onboarded') {
+          const s = await readOnboardedSignal(m, defaultOnboardedReadDeps());
+          if (s.humanActive) {
+            // A human message is MATERIAL for the engagement classifier: inject a synthetic
+            // status-marker line so classifyExecutorActivity fires without changing its API.
+            return { ...s, newLines: ['⟦WORKER-STATUS⟧ human-activity', ...s.newLines] };
+          }
+          return s;
+        }
+        return readExecutorSignal(m);
+      },
       getEngagement: async () => {
         const { getEngagementState } = require('./mission-store') as typeof import('./mission-store');
         return getEngagementState();
