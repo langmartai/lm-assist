@@ -1,10 +1,13 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { MessageSquare, Send, X } from 'lucide-react';
+import { MessageSquare, Plus, Send, X } from 'lucide-react';
 import { TranscriptMessage } from '@/components/shared/TranscriptMessage';
 import { ModelEffortSelector } from '@/components/cowork/ModelEffortSelector';
-import { useChatConversation } from '@/hooks/useChatConversation';
+import { AttachmentTray } from '@/components/cowork/AttachmentTray';
+import { useAttachments } from '@/components/cowork/useAttachments';
+import { fileToChatAttachment } from '@/lib/chat-attachments';
+import { useChatConversation, type ChatAttachment } from '@/hooks/useChatConversation';
 
 type ApiFetch = <T>(path: string, o?: { method?: string; body?: unknown }) => Promise<T>;
 
@@ -30,12 +33,28 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted }: {
   const atBottomRef = useRef(true);
   useEffect(() => { const el = scrollRef.current; if (el && atBottomRef.current) el.scrollTop = el.scrollHeight; });
 
-  const canSend = prompt.trim().length > 0 && !sending;
+  // Text-file attachments — useAttachments/AttachmentTray are the same shared tray used by
+  // Cowork, but chat has no attachment-store upload endpoint: onUpload reads the file locally
+  // (fileToChatAttachment) and stashes the real ChatAttachment in chatRefs, keyed by a synthetic
+  // `file_uuid` (name:size) so the tray still gets back a well-formed CoworkAttachmentRef chip.
+  const chatRefs = useRef(new Map<string, ChatAttachment>());
+  const att = useAttachments(async (file) => {
+    const a = await fileToChatAttachment(file);
+    const key = `${file.name}:${file.size}`;
+    chatRefs.current.set(key, a);
+    return { file_uuid: key, file_name: a.file_name };
+  });
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const canSend = (prompt.trim().length > 0 || att.hasReady) && !sending && !att.uploading;
   const handleSend = async () => {
     const t = prompt.trim();
-    if (!t) return;
+    const ready = att.refs().map((r) => chatRefs.current.get(r.file_uuid)).filter(Boolean) as ChatAttachment[];
+    if (!t && !ready.length) return;
     setPrompt('');
-    await send(t);
+    att.reset();
+    chatRefs.current.clear();
+    await send(t, ready.length ? ready : undefined);
   };
 
   const startRename = () => {
@@ -113,7 +132,10 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted }: {
 
       {!gone && (
         <div style={{ borderTop: '1px solid var(--color-border-default)', padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <AttachmentTray items={att.items} onRemove={att.remove} />
+          <input ref={fileInputRef} type="file" multiple hidden onChange={(e) => { att.addFiles(e.target.files); e.target.value = ''; }} />
           <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
+            <button type="button" className="btn btn-ghost btn-sm btn-icon" disabled={sending} title="Add text files" onClick={() => fileInputRef.current?.click()}><Plus size={14} /></button>
             <textarea className="input" value={prompt} rows={2} placeholder="Reply to Claude…" disabled={sending}
               style={{ flex: 1, resize: 'none', fontSize: 12.5 }}
               onChange={(e) => setPrompt(e.target.value)}
