@@ -172,6 +172,7 @@ import {
 import { installBanner } from '../../utils/claudeai-banner';
 import { LM_ASSIST_TOOL_DEFS } from '../../mcp-server/configure';
 import { buildConnectorToolsArray, pickLmAssistConnector } from '../../mcp-server/connector-tools-array';
+import { parseChatMessages } from '../../claude-ai/chat-read';
 
 const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
@@ -345,6 +346,34 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
           const wrapped = upstreamWrap(r);
           if (wrapped.success) (wrapped as { data: unknown }).data = { ...r.body, uuid: r.uuid };
           return wrapped;
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // GET /claude-ai/conversations/:uuid/messages
+    //   Parsed-read: same upstream call as the raw read below, but returns
+    //   display-ready ChatMsg[] (via parseChatMessages) instead of the raw
+    //   chat_conversations tree. Registered BEFORE the generic /:uuid read
+    //   so the literal "messages" suffix isn't swallowed as a uuid.
+    {
+      method: 'GET',
+      pattern: /^\/claude-ai\/conversations\/(?<uuid>[^/?]+)\/messages$/,
+      handler: async (req) => {
+        const uuid = req.params.uuid;
+        if (!UUID_RE.test(uuid)) {
+          return {
+            success: false,
+            error: { code: 'INVALID_UUID', message: `Conversation UUID must be a UUIDv4: got ${uuid}` },
+          };
+        }
+        try {
+          const r = await readConversation(uuid, { tree: true, renderingMode: 'messages', renderAllTools: true });
+          const wrapped = upstreamWrap(r);
+          if (!wrapped.success) return wrapped;
+          const body: any = r.body || {};
+          return { success: true, data: { uuid: body.uuid || uuid, name: body.name, messages: parseChatMessages(body) } };
         } catch (err) {
           return catchOAuth(err);
         }
