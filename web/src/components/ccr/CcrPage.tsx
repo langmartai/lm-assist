@@ -200,20 +200,24 @@ export function CcrPage() {
           {selected.kind === 'local' && sessionErr[selected.id] && (
             <div style={{ margin: '8px 14px 0', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', fontSize: 11.5, color: 'var(--color-status-red)' }}>{sessionErr[selected.id]}</div>
           )}
-          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '0 14px 14px' }}>
+          <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '0 14px 14px' }}>
             {detailBody(selected)}
           </div>
         </div>
       ) : (
-        // ── Home: composer + session list ──
-        <div style={{ flex: 1, overflow: 'auto', padding: '24px 20px' }}>
-          <div style={{ maxWidth: 900, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 24 }}>
+        // ── Home: session list (scrolls) above, composer pinned at the bottom (claude.ai/code) ──
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ flex: 1, overflow: 'auto', padding: '20px 20px 8px' }}>
+            <div style={{ maxWidth: 900, margin: '0 auto' }}>
+              {loading && rows.length === 0 ? (
+                <div className="empty-state"><Loader2 size={22} style={{ animation: 'spin 1s linear infinite' }} /><span style={{ fontSize: 12 }}>Loading sessions…</span></div>
+              ) : (
+                <CcrSessionList rows={rows} selectedId={selectedId} onSelect={(r) => setSelectedId(r.id)} rowActions={rowActions} nowMs={nowMs} />
+              )}
+            </div>
+          </div>
+          <div style={{ padding: '10px 20px 18px' }}>
             <CcrComposer apiFetch={apiFetch} onStarted={(sid) => { fetchAll(); setSelectedId(sid); }} />
-            {loading && rows.length === 0 ? (
-              <div className="empty-state"><Loader2 size={22} style={{ animation: 'spin 1s linear infinite' }} /><span style={{ fontSize: 12 }}>Loading sessions…</span></div>
-            ) : (
-              <CcrSessionList rows={rows} selectedId={selectedId} onSelect={(r) => setSelectedId(r.id)} rowActions={rowActions} nowMs={nowMs} />
-            )}
           </div>
         </div>
       )}
