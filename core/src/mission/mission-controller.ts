@@ -6,6 +6,7 @@ import {
 import { pickNewSession, cseToSessionSid, isNativeBinding } from './mission-native';
 import type { ExecNow } from './mission-engagement';
 import { listMissions, putMission, thisNode, getControllerSession, putControllerSession, ControllerSession, EngagementState } from './mission-store';
+import { DEFAULT_WORKFLOWS } from './workflow-defaults';
 import { clusterOf, type ClusterRecord } from '../cluster/cluster-map';
 import { getClusterRecords } from '../cluster/cluster-store';
 import { getMyCluster } from '../cluster/cluster-config';
@@ -426,9 +427,11 @@ export async function startNativeExecutor(m: Mission, decision: any, deps: Nativ
 // Supervisor (Wave 2): election + controller-session lifecycle + cadence
 // ---------------------------------------------------------------------------
 
-/** The standing directive sent to the controller agent each pass. */
-export const CONTROLLER_PASS_DIRECTIVE =
-  'Run a controller pass now. FIRST call mission_changes — re-evaluate any mission an external actor (a human or another node) edited since your last pass BEFORE anything else, and adapt rather than override. THEN call mission_schedule for the deterministic plan: act on each id in `ready` (place/spawn an executor via ccr_cloud_start, NEVER agent_execute, then bind with mission_update({binding})); for each `epicRollups` entry whose status/progress differs from the stored parent, apply it with mission_update; leave `blocked` and `containers` alone (they are gated/rolled-up by code). For two ready missions that touch the same area with no explicit dependsOn, decide parallel-vs-sequence (use mission_neighbors/mission_graph to see structure) and if you serialize them, tag them mission_tag({add:{"ctl:serialize-group":["<group>"]}}) so the scheduler enforces it next pass. Record your view with ctl: tags (e.g. ctl:readiness). Answer any worker pendingQuestion IMMEDIATELY via mission_session_answer; resume a non-live bound worker with mission_session_resume(sid) before respawning. BEFORE you place/spawn an executor for a `ready` mission, call session_footprints (your cluster) and AVOID a node/repo/branch/worktree an UNMANAGED recent session occupies — especially one whose openChanges overlap the mission repo/branch or whose branch is pushed:false — and any port an exclusive service holds; mission-managed sessions (managed set) are your own, never a conflict. If the only placement collides, DEFER: leave the mission ready, tag ctl:deferred-contention with the conflicting session, and revisit next pass. If the survey is partial/warming, treat unknown nodes as clear and re-check next pass. Then await the next pass.';
+/** The standing directive sent to the controller agent each pass. Sourced from the workflow
+ *  registry's default ('controller.pass') so there is exactly one copy of the text — this is
+ *  the TS-const fallback used when the live registry render is unavailable (see passDirective
+ *  on SupervisorDeps). The Task-2 default body = this old text + an onboarded-missions addendum. */
+export const CONTROLLER_PASS_DIRECTIVE = DEFAULT_WORKFLOWS['controller.pass'].body;
 
 /** Drive sent INSTEAD of CONTROLLER_PASS_DIRECTIVE when the supervisor detected that this
  *  node's cluster roster (in-cluster node membership) changed since the last pass. Tells the
@@ -529,6 +532,13 @@ export const CONTROLLER_SYSTEM_PROMPT = [
   'missions, or nothing actionable), reply with EXACTLY one line beginning `⟦HEARTBEAT⟧` and',
   'nothing else (e.g. `⟦HEARTBEAT⟧ idle — 0 active missions`). When you take a real action or',
   'answer the user, narrate normally and DO NOT use that marker.',
+  '',
+  'PROCESS DOCS: your operating processes live in the workflow registry (fleet-synced,',
+  'human-editable). The pass directive names which doc to fetch for a mission —',
+  'mission_workflow_get(id) returns the rendered text to FOLLOW. You may improve an',
+  '"open" doc via mission_workflow_set when experience warrants it, but ANNOUNCE every',
+  'self-edit in chat with a one-line rationale; humans can inspect and roll back any',
+  'edit (mission_workflow_history / mission_workflow_rollback).',
   '',
   'The user may message you directly in this session — treat their messages as authoritative',
   'instructions (create/pause/adjust missions, answer questions) and reply substantively.',
@@ -648,6 +658,9 @@ export interface SupervisorDeps {
   myCluster?: () => string;
   /** This node's own gatewayId / self identity (wired to thisNode). Used with listClusterRecords + myCluster. */
   selfId?: () => string | null;
+  /** Render the standard pass directive from the workflow registry ('controller.pass').
+   *  Optional; absent or throwing → CONTROLLER_PASS_DIRECTIVE (TS fallback). */
+  passDirective?: () => Promise<string>;
 }
 
 /**
@@ -823,6 +836,9 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   // triggered this engagement (enriched with the EXACT workers to migrate, when known),
   // else the standard pass directive.
   let directive = CONTROLLER_PASS_DIRECTIVE;
+  if (deps.passDirective) {
+    try { directive = await deps.passDirective(); } catch { /* registry unavailable → TS fallback */ }
+  }
   if (driveReason === 'roster-change') {
     directive = CONTROLLER_ROSTER_CHANGED_DIRECTIVE;
     if (driveCands && driveCands.length) {
@@ -1047,7 +1063,16 @@ export function registerMissionController(
           tmux,
           startedAt: Date.now(),
         };
+        try {
+          const { seedDefaultWorkflows } = require('./workflow-store') as typeof import('./workflow-store');
+          const n = await seedDefaultWorkflows();
+          if (n > 0) console.log(`[mission-controller] seeded ${n} default workflow docs`);
+        } catch { /* best-effort — defaults render as fallback anyway */ }
         return cs;
+      },
+      passDirective: async () => {
+        const { renderWorkflow } = require('./workflow-store') as typeof import('./workflow-store');
+        return renderWorkflow('controller.pass');
       },
       drive: async (cs, directive) => {
         const text = directive ?? CONTROLLER_PASS_DIRECTIVE;
