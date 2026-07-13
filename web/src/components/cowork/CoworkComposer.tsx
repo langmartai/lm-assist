@@ -15,14 +15,22 @@ const APPROVAL_OPTIONS: Array<{ id: ApprovalMode; label: string; desc: string }>
   { id: 'skip', label: 'Skip all approvals', desc: 'Claude never pauses, even for unsafe actions' },
 ];
 
-/** claude.ai-look-alike Cowork home composer. Owns local draft state (prompt/model/effort/
+/** claude.ai-look-alike home composer. Owns local draft state (prompt/model/effort/
  *  approvalMode) plus the attachment tray (via useAttachments). Files upload through
  *  `onUpload` (→ core /cowork/attachments) and their refs are passed to `onCreate`.
- *  Approval mode is NOT sent (Spec 1). */
-export function CoworkComposer({ onCreate, onUpload, busy }: {
+ *  Approval mode is NOT sent (Spec 1).
+ *
+ *  The `Chat | Cowork` segmented toggle is functional: the active segment is `mode`,
+ *  and clicking a segment calls `onModeChange`. `onCreate` is called the SAME way in
+ *  both modes — the PAGE decides chat-vs-cowork from `mode` (chat ignores `effort`/
+ *  `attachments`; home-composer attachments are Cowork-only in v1, so the `+` tray is
+ *  hidden in Chat mode — chat attachments live in ChatView). */
+export function CoworkComposer({ onCreate, onUpload, busy, mode, onModeChange }: {
   onCreate: (opts: { prompt: string; model: string; effort: string; attachments?: CoworkAttachmentRef[] }) => Promise<void> | void;
   onUpload: (file: File) => Promise<CoworkAttachmentRef>;
   busy: boolean;
+  mode: 'chat' | 'cowork';
+  onModeChange: (m: 'chat' | 'cowork') => void;
 }) {
   const [prompt, setPrompt] = useState('');
   const [model, setModel] = useState('claude-sonnet-5');
@@ -78,7 +86,7 @@ export function CoworkComposer({ onCreate, onUpload, busy }: {
       </h1>
 
       <div className="card" style={{ width: '100%', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <AttachmentTray items={att.items} onRemove={att.remove} />
+        {mode === 'cowork' && <AttachmentTray items={att.items} onRemove={att.remove} />}
 
         <textarea
           ref={textareaRef}
@@ -104,41 +112,41 @@ export function CoworkComposer({ onCreate, onUpload, busy }: {
         />
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm btn-icon"
-            disabled={busy}
-            title="Add files or photos"
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <Plus size={14} />
-          </button>
+          {/* Attachments are Cowork-only from the home composer in v1 — hide the tray + `+` in Chat mode. */}
+          {mode === 'cowork' && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm btn-icon"
+              disabled={busy}
+              title="Add files or photos"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Plus size={14} />
+            </button>
+          )}
 
-          {/* Chat | Cowork segmented toggle — Chat disabled/greyed, Cowork is the active segment */}
+          {/* Chat | Cowork segmented toggle — the active segment is `mode`; clicking switches the whole page. */}
           <div style={{ display: 'inline-flex', alignItems: 'center', border: '1px solid var(--color-border-default)', borderRadius: 'var(--radius-md)', padding: 2, gap: 2 }}>
-            <button
-              type="button"
-              disabled
-              title="Chat — coming soon"
-              style={{
-                padding: '3px 10px', borderRadius: 'var(--radius-sm)', border: 'none', background: 'none',
-                fontSize: 11.5, fontWeight: 500, fontFamily: 'var(--font-sans)',
-                color: 'var(--color-text-tertiary)', opacity: 0.5, cursor: 'not-allowed',
-              }}
-            >
-              Chat
-            </button>
-            <button
-              type="button"
-              aria-pressed
-              style={{
-                padding: '3px 10px', borderRadius: 'var(--radius-sm)', border: 'none',
-                background: 'var(--color-accent-glow)', color: 'var(--color-accent)',
-                fontSize: 11.5, fontWeight: 600, fontFamily: 'var(--font-sans)', cursor: 'default',
-              }}
-            >
-              Cowork
-            </button>
+            {(['chat', 'cowork'] as const).map((m) => {
+              const active = mode === m;
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => onModeChange(m)}
+                  style={{
+                    padding: '3px 10px', borderRadius: 'var(--radius-sm)', border: 'none',
+                    background: active ? 'var(--color-accent-glow)' : 'none',
+                    color: active ? 'var(--color-accent)' : 'var(--color-text-tertiary)',
+                    fontSize: 11.5, fontWeight: active ? 600 : 500, fontFamily: 'var(--font-sans)',
+                    cursor: active ? 'default' : 'pointer',
+                  }}
+                >
+                  {m === 'chat' ? 'Chat' : 'Cowork'}
+                </button>
+              );
+            })}
           </div>
 
           <div style={{ flex: 1 }} />

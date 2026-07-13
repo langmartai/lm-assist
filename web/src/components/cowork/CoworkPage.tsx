@@ -5,8 +5,10 @@ import { Sparkles } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { detectAppMode, resolveConsoleUrl } from '@/lib/api-client';
 import { CoworkComposer, type CoworkAttachmentRef } from '@/components/cowork/CoworkComposer';
-import { CoworkList, type CoworkListItem } from '@/components/cowork/CoworkList';
+import { CoworkList } from '@/components/cowork/CoworkList';
 import { CoworkTaskView } from '@/components/cowork/CoworkTaskView';
+import { ChatView } from '@/components/cowork/ChatView';
+import { normalizeRows, type HomeRow } from '@/lib/chat-rows';
 
 /** Read a File as raw base64 (no data: prefix) for the /cowork/attachments upload. */
 function fileToBase64(file: File): Promise<string> {
@@ -22,8 +24,11 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-/** Cowork shell — assembles the composer (home), the chats-and-tasks list, and the
- *  task-detail view behind one `openSid` state. `apiFetch` is built exactly like
+/** Mode-aware unified home — one page drives both claude.ai chat conversations AND
+ *  cowork tasks. The composer's `Chat | Cowork` toggle sets `mode`, which routes the
+ *  composer's send (chat → createChat, cowork → createTask), the list filter, and the
+ *  detail view (`openItem.kind` → ChatView vs CoworkTaskView). The list merges BOTH
+ *  sources (recency-sorted via `normalizeRows`). `apiFetch` is built exactly like
  *  CcrPage.tsx (apiClient.fetchPath + proxy.machineId) so it transparently reaches
  *  a proxied/remote node the same way every other dashboard page does. */
 export function CoworkPage() {
@@ -40,23 +45,31 @@ export function CoworkPage() {
     try { return resolveConsoleUrl(`${detectAppMode().baseUrl}/cowork/tasks/${sid}/stream`); } catch { return null; }
   }, [isRemoteNode]);
 
-  const [tasks, setTasks] = useState<CoworkListItem[]>([]);
-  const [filter, setFilter] = useState('cowork');
-  const [openSid, setOpenSid] = useState<string | null>(null);
+  const [mode, setMode] = useState<'chat' | 'cowork'>('cowork');
+  const [rows, setRows] = useState<HomeRow[]>([]);
+  const [filter, setFilter] = useState<'all' | 'chat' | 'cowork'>('all');
+  const [openItem, setOpenItem] = useState<{ id: string; kind: 'chat' | 'cowork' } | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
 
+  // Merge BOTH sources (claude.ai chats + cowork tasks) into one recency-sorted list.
+  // Each fetch is guarded so a missing claude.ai cookie (empty chat list) or a cowork
+  // hiccup degrades to just the other source instead of blanking the whole list.
   const reloadList = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await apiFetch<{ tasks: CoworkListItem[] }>(`/cowork/tasks?filter=${encodeURIComponent(filter)}`);
-      setTasks(r.tasks || []);
+      const [chatsR, tasksR] = await Promise.all([
+        apiFetch<{ data?: any[] }>(`/claude-ai/conversations?limit=40`).catch(() => ({ data: [] as any[] })),
+        apiFetch<{ tasks: any[] }>(`/cowork/tasks?filter=all&limit=40`).catch(() => ({ tasks: [] as any[] })),
+      ]);
+      const merged = normalizeRows((chatsR as any).data || (chatsR as any) || [], (tasksR as any).tasks || []);
+      setRows(merged);
     } catch {
-      setTasks([]);
+      setRows([]);
     } finally {
       setLoading(false);
     }
-  }, [apiFetch, filter]);
+  }, [apiFetch]);
   useEffect(() => { reloadList(); }, [reloadList]);
 
   const createTask = useCallback(async (o: { prompt: string; model: string; effort: string; attachments?: CoworkAttachmentRef[] }) => {
@@ -64,7 +77,25 @@ export function CoworkPage() {
     try {
       const r = await apiFetch<{ sessionId: string }>('/cowork/tasks', { method: 'POST', body: { ...o, target: 'cloud' } });
       if (r?.sessionId) {
-        setOpenSid(r.sessionId);
+        setOpenItem({ id: r.sessionId, kind: 'cowork' });
+        reloadList();
+      }
+    } finally {
+      setCreating(false);
+    }
+  }, [apiFetch, reloadList]);
+
+  // Chat-create path (used when mode==='chat'): create an empty conversation, open its
+  // ChatView, then send the first prompt (blocking — the completion drains SSE server-side).
+  // The route returns { ...upstream, uuid } as the unwrapped `data`, so `uuid` is top-level.
+  const createChat = useCallback(async (o: { prompt: string; model: string }) => {
+    setCreating(true);
+    try {
+      const c = await apiFetch<{ uuid?: string; data?: { uuid?: string } }>(`/claude-ai/conversations`, { method: 'POST', body: { model: o.model } });
+      const uuid = (c as any).uuid || (c as any).data?.uuid;
+      if (uuid) {
+        setOpenItem({ id: uuid, kind: 'chat' });
+        await apiFetch(`/claude-ai/conversations/${uuid}/completion`, { method: 'POST', body: { prompt: o.prompt, model: o.model } });
         reloadList();
       }
     } finally {
@@ -91,26 +122,42 @@ export function CoworkPage() {
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
-        {openSid ? (
-          <CoworkTaskView
-            key={openSid}
-            sid={openSid}
-            apiFetch={apiFetch}
-            onUpload={uploadAttachment}
-            streamUrl={buildStreamUrl(openSid)}
-            isRemoteNode={isRemoteNode}
-            onClose={() => setOpenSid(null)}
-            onDeleted={() => { setOpenSid(null); reloadList(); }}
-          />
+        {openItem ? (
+          openItem.kind === 'chat' ? (
+            <ChatView
+              key={openItem.id}
+              uuid={openItem.id}
+              apiFetch={apiFetch}
+              onClose={() => setOpenItem(null)}
+              onDeleted={() => { setOpenItem(null); reloadList(); }}
+            />
+          ) : (
+            <CoworkTaskView
+              key={openItem.id}
+              sid={openItem.id}
+              apiFetch={apiFetch}
+              onUpload={uploadAttachment}
+              streamUrl={buildStreamUrl(openItem.id)}
+              isRemoteNode={isRemoteNode}
+              onClose={() => setOpenItem(null)}
+              onDeleted={() => { setOpenItem(null); reloadList(); }}
+            />
+          )
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 32, maxWidth: 720, margin: '0 auto' }}>
-            <CoworkComposer onCreate={createTask} onUpload={uploadAttachment} busy={creating} />
+            <CoworkComposer
+              onCreate={(o) => (mode === 'chat' ? createChat(o) : createTask(o))}
+              onUpload={uploadAttachment}
+              busy={creating}
+              mode={mode}
+              onModeChange={setMode}
+            />
             <CoworkList
-              tasks={tasks}
+              rows={rows}
               filter={filter}
               onFilter={setFilter}
-              onOpen={setOpenSid}
-              onNew={() => setOpenSid(null)}
+              onOpen={setOpenItem}
+              onNew={() => setOpenItem(null)}
               loading={loading}
             />
           </div>
