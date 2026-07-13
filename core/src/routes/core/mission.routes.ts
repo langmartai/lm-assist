@@ -28,7 +28,7 @@ import { getWorkflow, listWorkflows, putWorkflow, rollbackWorkflow, getWorkflowR
   type WorkflowPort, type WorkflowSnapshotPort } from '../../mission/workflow-store';
 import { isControllerActor, type WorkflowEditPolicy } from '../../mission/workflow-model';
 import { DEFAULT_WORKFLOWS } from '../../mission/workflow-defaults';
-import { buildOnboardMission, detectTransport, pickClusterLeader } from '../../mission/mission-onboard';
+import { buildOnboardMission, detectTransport, pickClusterLeader, markDriveText } from '../../mission/mission-onboard';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string }; }
 const ok = <T>(data: T): Envelope => ({ success: true, data });
@@ -179,6 +179,13 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
   }
   const sv = str(b.status) as MissionStatus | undefined;
   if (sv) { if (!VALID_STATUS.has(sv)) return fail('INVALID_INPUT', `invalid status "${sv}"`); m.status = sv; }
+  if (b.manageMode !== undefined) {
+    const mm = str(b.manageMode);
+    if (m.origin !== 'onboarded') return fail('INVALID_INPUT', 'manageMode applies only to onboarded missions');
+    if (mm !== 'handoff' && mm !== 'standby') return fail('INVALID_INPUT', 'manageMode must be handoff|standby');
+    if (isControllerActor(who)) return fail('FORBIDDEN', 'manageMode is human-only — ask the user to switch it');
+    m.manageMode = mm;
+  }
   if (b.env && typeof b.env === 'object') {
     const e = b.env as Record<string, unknown>;
     if (str(e.isolation)) m.env.isolation = str(e.isolation) as Isolation;
@@ -763,6 +770,8 @@ export interface SessionOpsDeps {
   bridgeCseFor?: (sid: string) => Promise<string | null>;
   /** Read a bridge session's worker/events channel for a pending AskUserQuestion. */
   workerEventsRead?: (cse: string) => Promise<{ pendingQuestion: import('../../terminal/ccr-cloud').PendingControlRequest | null }>;
+  /** Look up the onboarded mission (if any) bound to this session, for the drive mode rails. Optional: absent = no-op. */
+  findMission?: (sid: string) => Promise<Mission | null>;
 }
 
 /**
@@ -882,6 +891,10 @@ function defaultSessionOpsDeps(): SessionOpsDeps {
       const r = await cloudClientEventsRead(cse);
       return { pendingQuestion: r.pendingQuestion };
     },
+    findMission: async (sid) => {
+      const { findMissionBySessionOrCcr } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+      return findMissionBySessionOrCcr(sid);
+    },
   };
 }
 
@@ -997,14 +1010,24 @@ export async function handleSessionDrive(sid: string, text: string, deps?: Sessi
   }
   const d = deps ?? defaultSessionOpsDeps();
   const r = d.resolve(sid);
+  let driveText = text;
+  if (d.findMission) {
+    try {
+      const m = await d.findMission(sid);
+      if (m?.origin === 'onboarded') {
+        if (m.manageMode === 'standby') return fail('STANDBY_MODE', 'mission is standby — the human runs this session; switch manageMode to handoff to drive');
+        driveText = markDriveText(text);
+      }
+    } catch { /* best-effort — never block a normal drive on a store hiccup */ }
+  }
   try {
     if (r.transport === 'cloud') {
-      const result = await d.cloudDrive({ sid, text });
+      const result = await d.cloudDrive({ sid, text: driveText });
       return ok({ delivered: result.delivered });
     } else {
       // Best-effort: refresh the idle timer for resumed native sessions.
       try { touchActivity(sid, Date.now()); } catch { /* best-effort */ }
-      await d.nativeDrive(sid, text);
+      await d.nativeDrive(sid, driveText);
       return ok({ delivered: true });
     }
   } catch (e) {
@@ -1416,6 +1439,13 @@ export async function handleSessionResume(
   // Stamp autoCloseAt + reaper tracking only for a freshly-resumed native session.
   if (result.transport === 'native' && result.resumed && result.reason === 'ok') {
     const now = Date.now();
+    let onboarded = false;
+    try {
+      const { getMission: gm } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+      const m = body.missionId ? await gm(body.missionId) : null;
+      onboarded = m?.origin === 'onboarded';
+    } catch { /* best-effort */ }
+    if (onboarded) return ok(result);                       // user session: never enrolled for auto-close
     const autoCloseAt = now + d.idleMin * 60_000;
     try { trackResumedNative(result.sid, body.missionId, now); } catch { /* best-effort */ }
     return ok({ ...result, autoCloseAt });
