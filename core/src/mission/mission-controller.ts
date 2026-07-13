@@ -662,6 +662,11 @@ export interface SupervisorDeps {
   /** Render the standard pass directive from the workflow registry ('controller.pass').
    *  Optional; absent or throwing → CONTROLLER_PASS_DIRECTIVE (TS fallback). */
   passDirective?: () => Promise<string>;
+  /** I2 — persist an onboarded mission's advanced `control.lastOutputCursor` (best-effort;
+   *  production wires it to `putMission`). Optional: absent → the cursor advance in
+   *  evaluateEngagement is computed in-memory but never durably persisted (unchanged legacy
+   *  behavior for callers that don't wire this dep — e.g. tests that don't care about it). */
+  persistMissionControl?: (m: Mission) => Promise<void>;
 }
 
 /**
@@ -706,6 +711,21 @@ async function evaluateEngagement(
       // A read failure for one mission must not sink the tick — carry forward prior state.
       curSeen[m.id] = eng.seen[m.id] ?? { alive: true, gated: false, cursor: 0 };
       continue;
+    }
+    // I2 — persist the advanced cursor onto the mission for an onboarded (origin:'onboarded')
+    // mission. Without this, `m.control.lastOutputCursor` was NEVER written back for an onboarded
+    // session (only `processMission`'s cloud/native executor path writes it, via the 'adjust'
+    // decision branch — a path onboarded missions never take, since they're already-bound and
+    // never scheduled/adjusted like a normal executor). The result: every tick re-read the SAME
+    // stale cursor, so `readOnboardedSignal`'s first-read baseline (I2 above) would fire on EVERY
+    // read forever, and the delta/humanActive detection could never advance past the initial
+    // baseline. `putMission` does not version control-field changes (TRACKED_FIELDS excludes
+    // `control`), so this write is cheap and does not spam the mission's edit history.
+    if (m.origin === 'onboarded' && sig.cursor !== (m.control.lastOutputCursor ?? 0)) {
+      m.control.lastOutputCursor = sig.cursor;
+      if (deps.persistMissionControl) {
+        try { await deps.persistMissionControl(m); } catch { /* best-effort — never sink the tick on a persist failure */ }
+      }
     }
     const act = classifyExecutorActivity(eng.seen[m.id], sig);
     curSeen[m.id] = { alive: sig.alive, gated: sig.gated, cursor: sig.cursor };
@@ -936,7 +956,25 @@ export async function readOnboardedSignal(m: Mission, deps: OnboardedReadDeps): 
       alive = (await deps.proxyStatus(node!, sid)).alive;
       messages = (await deps.proxyRead(node!, sid)).messages;
     }
-    const last = m.control.lastOutputCursor ?? 0;
+    // I2 — first-read baseline: lastOutputCursor is undefined/absent when this onboarded
+    // mission has never been read before (the session may already have a long pre-onboard
+    // history). Baseline it silently: cursor = messages.length, no newLines, no humanActive —
+    // else the ENTIRE pre-onboard transcript would be treated as "new" on the very first tick
+    // and could spuriously flag humanActive (or spam interim) for messages the controller never
+    // actually missed.
+    if (m.control.lastOutputCursor === undefined) {
+      return { alive, gated: false, cursor: messages.length, newLines: [], humanActive: false };
+    }
+    const last = m.control.lastOutputCursor;
+    // I2 — backward-cursor safety: if the persisted cursor is now BEYOND the transcript length
+    // (e.g. the transcript was rotated/shrunk, or cross-node message shape changed), slicing
+    // from `last` would silently produce [] anyway, but resolving `cursor` from the SHRUNK
+    // messages.length while `last` is even bigger risks the next-tick delta going negative /
+    // re-surfacing stale lines once the transcript grows again. Treat it as a baseline reset:
+    // same shape as first-read (no newLines, cursor pinned to the current length).
+    if (last > messages.length) {
+      return { alive, gated: false, cursor: messages.length, newLines: [], humanActive: false };
+    }
     const fresh = messages.slice(last);
     return { alive, gated: false, cursor: messages.length, newLines: fresh.map((x) => x.text), humanActive: detectHumanActivity(fresh) };
   } catch {
@@ -953,7 +991,12 @@ function detectTransportSafe(sid: string): 'cloud' | 'native' {
 function defaultOnboardedReadDeps(): OnboardedReadDeps {
   return {
     selfNode: () => thisNode(),
-    verdict: (sid) => { const v = sessionVerdict(sid); return { driveable: v.inTmux }; },
+    // I3: `driveable` must reflect PROCESS liveness (`v.live`), not tmux membership
+    // (`v.inTmux`). A user's plain-terminal session (never launched in tmux, e.g. a
+    // bare `claude` in an SSH shell) is `live:true, inTmux:false` — using `inTmux`
+    // here falsely reported it as not-driveable/dead, which would have surfaced a
+    // spurious "session ended" signal for a perfectly healthy onboarded session.
+    verdict: (sid) => { const v = sessionVerdict(sid); return { driveable: v.live }; },
     readLocalConversation: async (sid) => {
       const store = new AgentSessionStore({ projectPath: process.cwd(), persist: false });
       const res = await store.getConversation({ sessionId: sid });
@@ -1072,6 +1115,13 @@ export function registerMissionController(
           return s;
         }
         return readExecutorSignal(m);
+      },
+      // I2 — persist an onboarded mission's advanced control.lastOutputCursor. putMission does
+      // not version control-field changes (TRACKED_FIELDS excludes `control`), so this is a
+      // cheap, history-clean write.
+      persistMissionControl: async (m) => {
+        const { putMission: pm } = require('./mission-store') as typeof import('./mission-store');
+        await pm(m);
       },
       getEngagement: async () => {
         const { getEngagementState } = require('./mission-store') as typeof import('./mission-store');
