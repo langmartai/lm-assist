@@ -18,6 +18,7 @@ import { randomUUID } from 'crypto';
 import { anthropicOAuthPost, anthropicOAuthGet, anthropicOAuthPut, anthropicOAuthDelete, getOrganizationUuid } from '../utils/claude-oauth';
 import { claudeaiPost, readClaudeAISession, deriveIdentity } from '../utils/claudeai-session';
 import { parseCoworkEvents, type CoworkDetail } from './cowork-read';
+import { buildAttachmentEnvelope, type CoworkAttachmentRef } from './cowork-attachments';
 
 const CLOUD_ENV_ID = 'env_011111111111111111111117'; // anthropic_cloud singleton
 
@@ -28,6 +29,7 @@ export interface CreateCoworkTaskOpts {
   model?: string;              // default claude-sonnet-5
   effort?: string;             // default medium -> config.effort_level
   title?: string;
+  attachments?: CoworkAttachmentRef[]; // native file attachments (from uploadCoworkAttachment)
 }
 
 export interface CoworkTaskResult {
@@ -87,7 +89,8 @@ async function cookieWarmingCreate(title: string, model: string, effort: string)
 
 export async function createCoworkTask(opts: CreateCoworkTaskOpts): Promise<CoworkTaskResult> {
   const prompt = (opts.prompt || '').trim();
-  if (!prompt) throw new CoworkTaskError('COWORK_BAD_REQUEST', 'prompt is required', 400);
+  const hasAttachments = !!(opts.attachments && opts.attachments.length);
+  if (!prompt && !hasAttachments) throw new CoworkTaskError('COWORK_BAD_REQUEST', 'prompt or attachments required', 400);
 
   const target = opts.target === 'local' ? 'local' : 'cloud';
   if (target === 'local' && !opts.environmentId) {
@@ -96,7 +99,8 @@ export async function createCoworkTask(opts: CreateCoworkTaskOpts): Promise<Cowo
   const environmentId = target === 'local' ? String(opts.environmentId) : CLOUD_ENV_ID;
   const model = opts.model || 'claude-sonnet-5';
   const effort = opts.effort || 'medium';
-  const title = opts.title || (prompt.length > 60 ? prompt.slice(0, 57) + '…' : prompt);
+  const title = opts.title
+    || (prompt ? (prompt.length > 60 ? prompt.slice(0, 57) + '…' : prompt) : (opts.attachments?.[0]?.file_name || 'Untitled task'));
   const cc = await ccOpts();
 
   // 1) create the cowork session.
@@ -131,12 +135,14 @@ export async function createCoworkTask(opts: CreateCoworkTaskOpts): Promise<Cowo
   const connectorsAttached = Array.isArray(session?.config?.mcp_connector_ids) && session.config.mcp_connector_ids.length > 0;
   const sid = 'session_' + cse.slice(4);
 
-  // 2) send the initial prompt
+  // 2) send the initial prompt (with native file attachments, if any)
   let warning: string | undefined;
+  const { content: sendContent, fileAttachments } = buildAttachmentEnvelope(prompt, opts.attachments);
   const sent = await anthropicOAuthPost(`/v1/code/sessions/${cse}/events`, {
     events: [{ payload: {
       type: 'user', uuid: randomUUID(), session_id: sid, parent_tool_use_id: null,
-      message: { role: 'user', content: prompt },
+      ...(fileAttachments.length ? { file_attachments: fileAttachments } : {}),
+      message: { role: 'user', content: sendContent },
     } }],
   }, cc);
   if (sent.status < 200 || sent.status >= 300) {
@@ -207,14 +213,17 @@ export async function getCoworkTask(cse: string): Promise<CoworkDetail & { sid: 
   return { ...detail, sid: cse, title: sessionBody?.title, status: sessionBody?.status || sessionBody?.session_status, model: sessionBody?.config?.model, running };
 }
 
-export async function driveCoworkTask(opts: { cse: string; text: string }): Promise<{ delivered: boolean; eventId?: string }> {
+export async function driveCoworkTask(opts: { cse: string; text: string; attachments?: CoworkAttachmentRef[] }): Promise<{ delivered: boolean; eventId?: string }> {
   if (!opts.cse.startsWith('cse_')) throw new CoworkTaskError('COWORK_BAD_REQUEST', 'cse id required', 400);
   const text = (opts.text || '').trim();
-  if (!text) throw new CoworkTaskError('COWORK_BAD_REQUEST', 'text is required', 400);
+  const hasAttachments = !!(opts.attachments && opts.attachments.length);
+  if (!text && !hasAttachments) throw new CoworkTaskError('COWORK_BAD_REQUEST', 'text or attachments required', 400);
   const sid = 'session_' + opts.cse.slice(4);
+  const { content: sendContent, fileAttachments } = buildAttachmentEnvelope(text, opts.attachments);
   const sent = await anthropicOAuthPost(`/v1/code/sessions/${opts.cse}/events`, { events: [{ payload: {
     type: 'user', uuid: randomUUID(), session_id: sid, parent_tool_use_id: null,
-    message: { role: 'user', content: text },
+    ...(fileAttachments.length ? { file_attachments: fileAttachments } : {}),
+    message: { role: 'user', content: sendContent },
   } }] }, await ccOpts());
   if (sent.status < 200 || sent.status >= 300) throw new CoworkTaskError('COWORK_DRIVE_FAILED', `drive failed (${sent.status})`, 502);
   const r = Array.isArray(sent.body?.results) ? sent.body.results[0] : undefined;

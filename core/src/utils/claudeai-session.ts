@@ -471,6 +471,46 @@ export async function claudeaiDelete<T = any>(pathname: string, opts: ClaudeAIWr
 }
 
 /**
+ * POST a `multipart/form-data` body to claude.ai using the configured session.
+ * Uses the SAME browser fingerprint as claudeaiPost (buildBrowserHeaders) but
+ * DELETES the `content-type` header so `fetch` sets the multipart boundary
+ * itself. The complete fingerprint is load-bearing here: a bare cookie POST with
+ * no User-Agent / sec-ch-ua / anthropic-client-* headers trips a Cloudflare
+ * managed challenge (403 "Just a moment…") on endpoints like /cowork/attachments,
+ * whereas the full header set passes (verified 2026-07-13). Throws if no session.
+ */
+export async function claudeaiUploadMultipart<T = any>(
+  pathname: string,
+  form: FormData,
+  opts: ClaudeAIWriteOpts = {},
+): Promise<ClaudeAIResponse<T>> {
+  const cfg = readClaudeAISession();
+  if (!cfg) {
+    throw new Error(
+      `No claude.ai session at ${SESSION_PATH}. Create the file with at minimum {"cookie": "<paste browser Cookie header>"}.`,
+    );
+  }
+  const url = `https://claude.ai${pathname}`;
+  const timeoutMs = opts.timeoutMs ?? 30_000;
+  const headers = buildBrowserHeaders(cfg, { referer: opts.referer, secFetchDest: opts.secFetchDest });
+  delete headers['content-type']; // let fetch derive the multipart boundary
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { method: 'POST', headers, body: form, signal: ctrl.signal });
+    const respHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => (respHeaders[k] = v));
+    const text = await res.text();
+    let parsed: any;
+    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+    return { status: res.status, statusText: res.statusText, headers: respHeaders, body: parsed };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * GET /api/organizations/{org_uuid}/chat_conversations_v2 — list conversations.
  *
  * Defaults match the web app's first call (limit=30, starred=false,

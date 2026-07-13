@@ -9,6 +9,8 @@ import { TranscriptMessage } from '@/components/shared/TranscriptMessage';
 import { ApprovalWidget } from '@/components/shared/ApprovalWidget';
 import { ModelEffortSelector } from '@/components/cowork/ModelEffortSelector';
 import { CoworkRightRail } from '@/components/cowork/CoworkRightRail';
+import { AttachmentTray } from '@/components/cowork/AttachmentTray';
+import { useAttachments, type CoworkAttachmentRef } from '@/components/cowork/useAttachments';
 
 type ApiFetch = <T>(path: string, o?: { method?: string; body?: unknown }) => Promise<T>;
 
@@ -35,9 +37,10 @@ const TITLE_MENU_ITEMS: TitleMenuItem[] = [
  *  in the header. Composes useLiveTranscript (Task 9) + TranscriptMessage/ApprovalWidget
  *  (Task 6) + ModelEffortSelector (Task 8) + CoworkRightRail (this task). Every handler
  *  is thin: one apiFetch call then refresh(). */
-export function CoworkTaskView({ sid, apiFetch, streamUrl, isRemoteNode, onClose, onDeleted }: {
+export function CoworkTaskView({ sid, apiFetch, onUpload, streamUrl, isRemoteNode, onClose, onDeleted }: {
   sid: string;
   apiFetch: ApiFetch;
+  onUpload: (file: File) => Promise<CoworkAttachmentRef>;
   streamUrl: string | null;
   isRemoteNode: boolean;
   onClose: () => void;
@@ -53,6 +56,8 @@ export function CoworkTaskView({ sid, apiFetch, streamUrl, isRemoteNode, onClose
   // Bottom in-task composer draft state.
   const [prompt, setPrompt] = useState('');
   const [sending, setSending] = useState(false);
+  const att = useAttachments(onUpload);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [answering, setAnswering] = useState(false);
   const [model, setModel] = useState(detail?.model || 'claude-sonnet-5');
   const [effort, setEffort] = useState('medium');
@@ -119,11 +124,13 @@ export function CoworkTaskView({ sid, apiFetch, streamUrl, isRemoteNode, onClose
 
   const handleDrive = async () => {
     const t = prompt.trim();
-    if (!t) return;
+    const refs = att.refs();
+    if (!t && !refs.length) return;
     setSending(true);
     try {
-      await apiFetch(`/cowork/tasks/${sid}/events`, { method: 'POST', body: { text: t } });
+      await apiFetch(`/cowork/tasks/${sid}/events`, { method: 'POST', body: { text: t, attachments: refs.length ? refs : undefined } });
       setPrompt('');
+      att.reset();
       refresh();
     } catch (e) {
       setManageErr(e instanceof Error ? e.message : String(e));
@@ -209,7 +216,7 @@ export function CoworkTaskView({ sid, apiFetch, streamUrl, isRemoteNode, onClose
     setTimeout(() => setDownloadNotice(null), 4000);
   };
 
-  const canSend = prompt.trim().length > 0 && !sending;
+  const canSend = (prompt.trim().length > 0 || att.hasReady) && !sending && !att.uploading;
   const approvalLabel = APPROVAL_OPTIONS.find((o) => o.id === approvalMode)?.label ?? 'Manually approve';
 
   return (
@@ -366,8 +373,11 @@ export function CoworkTaskView({ sid, apiFetch, streamUrl, isRemoteNode, onClose
         <div style={{ borderTop: '1px solid var(--color-border-default)', padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
           {downloadNotice && <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>{downloadNotice}</div>}
 
+          <AttachmentTray items={att.items} onRemove={att.remove} />
+          <input ref={fileInputRef} type="file" multiple hidden onChange={(e) => { att.addFiles(e.target.files); e.target.value = ''; }} />
+
           <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
-            <button type="button" className="btn btn-ghost btn-sm btn-icon" disabled title="Attachments — coming soon" style={{ opacity: 0.4, cursor: 'not-allowed' }}>
+            <button type="button" className="btn btn-ghost btn-sm btn-icon" disabled={sending} title="Add files or photos" onClick={() => fileInputRef.current?.click()}>
               <Plus size={14} />
             </button>
             <textarea

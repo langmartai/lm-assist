@@ -204,6 +204,32 @@ test('createCoworkTask: happy path returns sessionId + cowork url, and sends ses
   assert.equal(sentEvent.type, 'user');
   assert.equal(sentEvent.message.content, 'do the thing');
   assert.equal(sentEvent.parent_tool_use_id, null);
+  assert.equal(sentEvent.file_attachments, undefined); // no attachments -> field omitted
+});
+
+// ── attachments ──────────────────────────────────────────────────────────────
+
+test('createCoworkTask: attachments add file_attachments payload + <uploaded_files> content prefix', async () => {
+  stubOrg();
+  const calls = stubPost((call, i) => (i === 0
+    ? { status: 201, body: { session: { id: 'cse_ATT0000000001', environment_kind: 'anthropic_cloud' } } }
+    : { status: 200, body: { accepted: true } }));
+  await createCoworkTask({ prompt: 'read this', attachments: [{ file_uuid: 'u9', file_name: 'notes.txt', is_image: false }] });
+  const payload = calls[1].body.events[0].payload;
+  assert.deepEqual(payload.file_attachments, [{ file_name: 'notes.txt', file_uuid: 'u9', is_image: false }]);
+  assert.match(payload.message.content, /^<uploaded_files>\n<file><file_path>notes\.txt<\/file_path><file_uuid>u9<\/file_uuid><\/file>\n<\/uploaded_files>\n\nread this$/);
+});
+
+test('createCoworkTask: attachments-only (empty prompt) is allowed and titled from the file', async () => {
+  stubOrg();
+  const calls = stubPost((call, i) => (i === 0
+    ? { status: 201, body: { session: { id: 'cse_ATTONLY00001' } } }
+    : { status: 200, body: { accepted: true } }));
+  const result = await createCoworkTask({ prompt: '', attachments: [{ file_uuid: 'u1', file_name: 'photo.png', is_image: true }] });
+  assert.equal(result.title, 'photo.png');
+  assert.equal(calls[0].body.title, 'photo.png');
+  const payload = calls[1].body.events[0].payload;
+  assert.deepEqual(payload.file_attachments, [{ file_name: 'photo.png', file_uuid: 'u1', is_image: true }]);
 });
 
 // ── create failures ──────────────────────────────────────────────────────────

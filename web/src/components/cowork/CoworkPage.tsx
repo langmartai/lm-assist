@@ -4,9 +4,23 @@ import { useCallback, useEffect, useState } from 'react';
 import { Sparkles } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { detectAppMode, resolveConsoleUrl } from '@/lib/api-client';
-import { CoworkComposer } from '@/components/cowork/CoworkComposer';
+import { CoworkComposer, type CoworkAttachmentRef } from '@/components/cowork/CoworkComposer';
 import { CoworkList, type CoworkListItem } from '@/components/cowork/CoworkList';
 import { CoworkTaskView } from '@/components/cowork/CoworkTaskView';
+
+/** Read a File as raw base64 (no data: prefix) for the /cowork/attachments upload. */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error('file read failed'));
+    reader.readAsDataURL(file);
+  });
+}
 
 /** Cowork shell — assembles the composer (home), the chats-and-tasks list, and the
  *  task-detail view behind one `openSid` state. `apiFetch` is built exactly like
@@ -45,7 +59,7 @@ export function CoworkPage() {
   }, [apiFetch, filter]);
   useEffect(() => { reloadList(); }, [reloadList]);
 
-  const createTask = useCallback(async (o: { prompt: string; model: string; effort: string }) => {
+  const createTask = useCallback(async (o: { prompt: string; model: string; effort: string; attachments?: CoworkAttachmentRef[] }) => {
     setCreating(true);
     try {
       const r = await apiFetch<{ sessionId: string }>('/cowork/tasks', { method: 'POST', body: { ...o, target: 'cloud' } });
@@ -57,6 +71,16 @@ export function CoworkPage() {
       setCreating(false);
     }
   }, [apiFetch, reloadList]);
+
+  // Upload one file to claude.ai's cowork attachment store (via core /cowork/attachments)
+  // and return its ref for the composer to include on send.
+  const uploadAttachment = useCallback(async (file: File): Promise<CoworkAttachmentRef> => {
+    const contentBase64 = await fileToBase64(file);
+    return apiFetch<CoworkAttachmentRef>('/cowork/attachments', {
+      method: 'POST',
+      body: { fileName: file.name, mimeType: file.type || undefined, contentBase64 },
+    });
+  }, [apiFetch]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', background: 'var(--color-bg-root)' }}>
@@ -72,6 +96,7 @@ export function CoworkPage() {
             key={openSid}
             sid={openSid}
             apiFetch={apiFetch}
+            onUpload={uploadAttachment}
             streamUrl={buildStreamUrl(openSid)}
             isRemoteNode={isRemoteNode}
             onClose={() => setOpenSid(null)}
@@ -79,7 +104,7 @@ export function CoworkPage() {
           />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 32, maxWidth: 720, margin: '0 auto' }}>
-            <CoworkComposer onCreate={createTask} busy={creating} />
+            <CoworkComposer onCreate={createTask} onUpload={uploadAttachment} busy={creating} />
             <CoworkList
               tasks={tasks}
               filter={filter}

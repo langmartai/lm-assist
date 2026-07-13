@@ -3,6 +3,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Mic, Plus, Send } from 'lucide-react';
 import { ModelEffortSelector } from './ModelEffortSelector';
+import { AttachmentTray } from './AttachmentTray';
+import { useAttachments, type CoworkAttachmentRef } from './useAttachments';
+
+export type { CoworkAttachmentRef } from './useAttachments';
 
 type ApprovalMode = 'manual' | 'skip';
 
@@ -11,11 +15,13 @@ const APPROVAL_OPTIONS: Array<{ id: ApprovalMode; label: string; desc: string }>
   { id: 'skip', label: 'Skip all approvals', desc: 'Claude never pauses, even for unsafe actions' },
 ];
 
-/** claude.ai-look-alike Cowork home composer. Pure controlled component — owns only
- *  local draft state (prompt/model/effort/approvalMode); wiring to the create API
- *  happens in the caller (CoworkPage, Task 11). Approval mode is NOT sent (Spec 1). */
-export function CoworkComposer({ onCreate, busy }: {
-  onCreate: (opts: { prompt: string; model: string; effort: string }) => Promise<void> | void;
+/** claude.ai-look-alike Cowork home composer. Owns local draft state (prompt/model/effort/
+ *  approvalMode) plus the attachment tray (via useAttachments). Files upload through
+ *  `onUpload` (→ core /cowork/attachments) and their refs are passed to `onCreate`.
+ *  Approval mode is NOT sent (Spec 1). */
+export function CoworkComposer({ onCreate, onUpload, busy }: {
+  onCreate: (opts: { prompt: string; model: string; effort: string; attachments?: CoworkAttachmentRef[] }) => Promise<void> | void;
+  onUpload: (file: File) => Promise<CoworkAttachmentRef>;
   busy: boolean;
 }) {
   const [prompt, setPrompt] = useState('');
@@ -23,9 +29,11 @@ export function CoworkComposer({ onCreate, busy }: {
   const [effort, setEffort] = useState('medium');
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('manual');
   const [manualMenuOpen, setManualMenuOpen] = useState(false);
+  const att = useAttachments(onUpload);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const manualMenuRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-height textarea — grow with content, no resize handle (matches captured composer).
   useEffect(() => {
@@ -51,12 +59,14 @@ export function CoworkComposer({ onCreate, busy }: {
     return () => document.removeEventListener('keydown', handleKey);
   }, [manualMenuOpen]);
 
-  const canSend = prompt.trim().length > 0 && !busy;
+  const canSend = (prompt.trim().length > 0 || att.hasReady) && !busy && !att.uploading;
 
   const send = () => {
     if (!canSend) return;
-    const text = prompt.trim();
-    void Promise.resolve(onCreate({ prompt: text, model, effort }));
+    const refs = att.refs();
+    void Promise.resolve(onCreate({ prompt: prompt.trim(), model, effort, attachments: refs.length ? refs : undefined }));
+    setPrompt('');
+    att.reset();
   };
 
   const approvalLabel = APPROVAL_OPTIONS.find((o) => o.id === approvalMode)?.label ?? 'Manually approve';
@@ -68,6 +78,8 @@ export function CoworkComposer({ onCreate, busy }: {
       </h1>
 
       <div className="card" style={{ width: '100%', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <AttachmentTray items={att.items} onRemove={att.remove} />
+
         <textarea
           ref={textareaRef}
           className="input"
@@ -83,13 +95,21 @@ export function CoworkComposer({ onCreate, busy }: {
           onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }}
         />
 
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          hidden
+          onChange={(e) => { att.addFiles(e.target.files); e.target.value = ''; }}
+        />
+
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <button
             type="button"
             className="btn btn-ghost btn-sm btn-icon"
-            disabled
-            title="Attachments — coming soon"
-            style={{ opacity: 0.4, cursor: 'not-allowed' }}
+            disabled={busy}
+            title="Add files or photos"
+            onClick={() => fileInputRef.current?.click()}
           >
             <Plus size={14} />
           </button>
@@ -132,7 +152,7 @@ export function CoworkComposer({ onCreate, busy }: {
             className="btn btn-primary btn-sm btn-icon"
             disabled={!canSend}
             onClick={send}
-            title="Send (⌘/Ctrl+Enter)"
+            title={att.uploading ? 'Waiting for uploads…' : 'Send (⌘/Ctrl+Enter)'}
             style={!canSend ? { opacity: 0.4, cursor: 'not-allowed' } : undefined}
           >
             <Send size={14} />

@@ -8,6 +8,7 @@
  * for the design.
  *
  * Endpoints:
+ *   POST   /cowork/attachments               Upload a file to claude.ai's cowork attachment store
  *   POST   /cowork/tasks                     Create a cowork session and send the initial prompt
  *   GET    /cowork/tasks                     List cowork tasks
  *   GET    /cowork/tasks/:cse                Get one task's detail (parsed events + status)
@@ -33,7 +34,12 @@ import {
   pinCoworkTask,
   deleteCoworkTask,
 } from '../../cowork/cowork-tasks';
+import { uploadCoworkAttachment } from '../../cowork/cowork-attachments';
 import { cloudAnswer } from '../../terminal/ccr-cloud';
+
+// Cap a single attachment at 25 MiB decoded — matches claude.ai's practical
+// upload ceiling and keeps the base64 request body bounded.
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
 // wrapError() doesn't carry an HTTP status (ApiResponse has none); attach
 // `httpStatus` at the envelope's top level — the field rest-server.ts's
@@ -62,8 +68,39 @@ export function createCoworkRoutes(_ctx: RouteContext): RouteHandler[] {
             model: b.model,
             effort: b.effort,
             title: b.title,
+            attachments: Array.isArray(b.attachments) ? b.attachments : undefined,
           });
           return wrapResponse(result, start);
+        } catch (e) {
+          return fail(e, start);
+        }
+      },
+    },
+
+    // POST /cowork/attachments — upload a file to claude.ai's cowork attachment
+    // store (the NATIVE attach flow). Body: { fileName, mimeType?, contentBase64 }.
+    // Returns a CoworkAttachmentRef the caller passes back in `attachments` on
+    // create (POST /cowork/tasks) or drive (POST /cowork/tasks/:cse/events).
+    {
+      method: 'POST',
+      pattern: /^\/cowork\/attachments$/,
+      handler: async (req) => {
+        const start = Date.now();
+        try {
+          const b = req.body || {};
+          const fileName = String(b.fileName || b.file_name || '').trim();
+          const contentBase64 = b.contentBase64 ?? b.content_base64;
+          if (!fileName) return { ...wrapError('COWORK_BAD_REQUEST', 'fileName is required', start), httpStatus: 400 };
+          if (typeof contentBase64 !== 'string' || !contentBase64) {
+            return { ...wrapError('COWORK_BAD_REQUEST', 'contentBase64 is required', start), httpStatus: 400 };
+          }
+          const bytes = Buffer.from(contentBase64, 'base64');
+          if (bytes.length === 0) return { ...wrapError('COWORK_BAD_REQUEST', 'attachment decoded to 0 bytes', start), httpStatus: 400 };
+          if (bytes.length > MAX_ATTACHMENT_BYTES) {
+            return { ...wrapError('COWORK_ATTACH_TOO_LARGE', `attachment exceeds ${Math.floor(MAX_ATTACHMENT_BYTES / (1024 * 1024))} MiB`, start), httpStatus: 413 };
+          }
+          const ref = await uploadCoworkAttachment(bytes, fileName, typeof b.mimeType === 'string' ? b.mimeType : undefined);
+          return wrapResponse(ref, start);
         } catch (e) {
           return fail(e, start);
         }
@@ -109,7 +146,11 @@ export function createCoworkRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => {
         const start = Date.now();
         try {
-          const result = await driveCoworkTask({ cse: req.params.cse, text: String(req.body?.text || '') });
+          const result = await driveCoworkTask({
+            cse: req.params.cse,
+            text: String(req.body?.text || ''),
+            attachments: Array.isArray(req.body?.attachments) ? req.body.attachments : undefined,
+          });
           return wrapResponse(result, start);
         } catch (e) {
           return fail(e, start);
