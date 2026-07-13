@@ -1323,6 +1323,55 @@ export async function handleSessionStatus(
 export interface SessionResumeDeps extends ResumeWorkerDeps {
   /** Idle minutes before auto-close (from project settings). */
   idleMin: number;
+  /**
+   * Resolve whether the resumed session belongs to an onboarded (origin:'onboarded') mission —
+   * used to decide whether to enroll it for reaper auto-close. When `missionId` is known, look
+   * it up directly; when absent (the common case — a controller/human resume rarely passes it),
+   * fall back to resolving the mission BY SID (`findMissionBySessionOrCcr`) so an onboarded
+   * session is never silently enrolled just because the caller omitted missionId.
+   * Default: best-effort via mission-store; a lookup failure resolves to false (never enrolled
+   * is the safer failure mode is NOT true here — see resolveOnboardedForTracking for the actual
+   * fail-safe semantics used by the default).
+   */
+  lookupOnboarded?: (missionId: string | undefined, sid: string) => Promise<boolean>;
+}
+
+/**
+ * Pure-ish (single injectable I/O seam) resolver: is the session being resumed bound to an
+ * onboarded mission? Tries `missionId` first (exact, cheap); when absent, falls back to
+ * resolving the mission by sid via `lookup`. Any lookup failure resolves to `false` (best-effort —
+ * a resume must never hang or fail outright because the onboarded check errored).
+ *
+ * This is the fix for C1: previously the caller only checked `body.missionId ? getMission(...) :
+ * null`, so a resume call that omitted missionId (the common shape for a controller/human resume)
+ * NEVER found the onboarded mission even though one existed — the session would be silently
+ * enrolled in the idle-auto-close reaper (`trackResumedNative`) and killed after the idle window,
+ * even though it is the user's OWN session.
+ */
+export async function resolveOnboardedForTracking(
+  missionId: string | undefined,
+  sid: string,
+  lookup: {
+    getMission: (id: string) => Promise<{ origin?: string } | null>;
+    findMissionBySessionOrCcr: (sid: string) => Promise<{ origin?: string } | null>;
+  },
+): Promise<boolean> {
+  try {
+    const m = missionId ? await lookup.getMission(missionId) : await lookup.findMissionBySessionOrCcr(sid);
+    return m?.origin === 'onboarded';
+  } catch {
+    return false; // best-effort — a lookup failure must never block/alter the resume itself
+  }
+}
+
+function defaultLookupOnboarded(): (missionId: string | undefined, sid: string) => Promise<boolean> {
+  return (missionId, sid) => {
+    const store = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+    return resolveOnboardedForTracking(missionId, sid, {
+      getMission: store.getMission,
+      findMissionBySessionOrCcr: store.findMissionBySessionOrCcr,
+    });
+  };
 }
 
 function defaultSessionResumeDeps(): SessionResumeDeps {
@@ -1410,6 +1459,7 @@ function defaultSessionResumeDeps(): SessionResumeDeps {
       const { getProjectSettings } = require('../../project-settings') as typeof import('../../project-settings');
       return getProjectSettings().missionSessionIdleCloseMin ?? 30;
     })(),
+    lookupOnboarded: defaultLookupOnboarded(),
   };
 }
 
@@ -1439,12 +1489,13 @@ export async function handleSessionResume(
   // Stamp autoCloseAt + reaper tracking only for a freshly-resumed native session.
   if (result.transport === 'native' && result.resumed && result.reason === 'ok') {
     const now = Date.now();
-    let onboarded = false;
-    try {
-      const { getMission: gm } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
-      const m = body.missionId ? await gm(body.missionId) : null;
-      onboarded = m?.origin === 'onboarded';
-    } catch { /* best-effort */ }
+    // C1: resolve onboarded status by missionId WHEN GIVEN, else fall back to resolving the
+    // mission by sid (findMissionBySessionOrCcr) — a resume call omitting missionId must still
+    // find an onboarded mission bound to this sid, else the user's own session gets silently
+    // enrolled in the idle-auto-close reaper.
+    const onboarded = d.lookupOnboarded
+      ? await d.lookupOnboarded(body.missionId, result.sid)
+      : false;
     if (onboarded) return ok(result);                       // user session: never enrolled for auto-close
     const autoCloseAt = now + d.idleMin * 60_000;
     try { trackResumedNative(result.sid, body.missionId, now); } catch { /* best-effort */ }
