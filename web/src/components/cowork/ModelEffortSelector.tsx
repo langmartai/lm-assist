@@ -18,8 +18,8 @@ function cap(s: string): string {
 
 /** claude.ai-style inline "Sonnet 5 · Medium ▾" text button — opens a small popover
  *  with a model list, then an effort list. Pure controlled component. */
-export function ModelEffortSelector({ model, effort, onChange }: {
-  model: string; effort: string; onChange: (model: string, effort: string) => void;
+export function ModelEffortSelector({ model, effort, onChange, hideEffort = false }: {
+  model: string; effort: string; onChange: (model: string, effort: string) => void; hideEffort?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -54,8 +54,12 @@ export function ModelEffortSelector({ model, effort, onChange }: {
         style={{ color: 'var(--color-text-secondary)', fontSize: 11.5 }}
       >
         <span>{modelLabel}</span>
-        <span style={{ color: 'var(--color-text-tertiary)' }}>·</span>
-        <span>{cap(effort)}</span>
+        {!hideEffort && (
+          <>
+            <span style={{ color: 'var(--color-text-tertiary)' }}>·</span>
+            <span>{cap(effort)}</span>
+          </>
+        )}
         <ChevronDown size={12} style={{ transition: 'transform 200ms ease', transform: open ? 'rotate(180deg)' : undefined }} />
       </button>
 
@@ -96,29 +100,33 @@ export function ModelEffortSelector({ model, effort, onChange }: {
             </button>
           ))}
 
-          <div style={{ height: 1, background: 'var(--color-border-default)', margin: '4px 0' }} />
+          {!hideEffort && (
+            <>
+              <div style={{ height: 1, background: 'var(--color-border-default)', margin: '4px 0' }} />
 
-          <div style={{ padding: '4px 8px 2px', fontSize: 10, fontWeight: 600, color: 'var(--color-text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-            Effort
-          </div>
-          {EFFORTS.map((e) => (
-            <button
-              key={e}
-              type="button"
-              onClick={() => { onChange(model, e); setOpen(false); }}
-              style={{
-                display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left',
-                padding: '6px 8px', borderRadius: 'var(--radius-sm)', border: 'none',
-                background: e === effort ? 'var(--color-accent-glow)' : 'none',
-                color: e === effort ? 'var(--color-accent)' : 'var(--color-text-secondary)',
-                fontSize: 12, fontFamily: 'var(--font-sans)', cursor: 'pointer',
-              }}
-              onMouseEnter={(ev) => { if (e !== effort) ev.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)'; }}
-              onMouseLeave={(ev) => { if (e !== effort) ev.currentTarget.style.background = 'none'; }}
-            >
-              {cap(e)}
-            </button>
-          ))}
+              <div style={{ padding: '4px 8px 2px', fontSize: 10, fontWeight: 600, color: 'var(--color-text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                Effort
+              </div>
+              {EFFORTS.map((e) => (
+                <button
+                  key={e}
+                  type="button"
+                  onClick={() => { onChange(model, e); setOpen(false); }}
+                  style={{
+                    display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left',
+                    padding: '6px 8px', borderRadius: 'var(--radius-sm)', border: 'none',
+                    background: e === effort ? 'var(--color-accent-glow)' : 'none',
+                    color: e === effort ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+                    fontSize: 12, fontFamily: 'var(--font-sans)', cursor: 'pointer',
+                  }}
+                  onMouseEnter={(ev) => { if (e !== effort) ev.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)'; }}
+                  onMouseLeave={(ev) => { if (e !== effort) ev.currentTarget.style.background = 'none'; }}
+                >
+                  {cap(e)}
+                </button>
+              ))}
+            </>
+          )}
         </div>
       )}
     </div>
