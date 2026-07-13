@@ -113,6 +113,10 @@ interface Mission {
   createdBy?: MissionActor;
   lastUpdatedBy?: MissionActor;
   interim?: { at: number; text: string };
+  /** Set when this mission was created by onboarding an existing session into mission control. */
+  origin?: string;
+  /** How mission control manages an onboarded session's controller session: 'handoff' | 'standby'. */
+  manageMode?: string;
 }
 
 interface ControllerSession {
@@ -1218,6 +1222,20 @@ export function MissionsPage() {
               <ListChecks size={11} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />
             </span>
             <span className={`badge ${STATUS_BADGE[m.status]}`}>{m.status}</span>
+            {m.origin === 'onboarded' && (
+              <span className="badge badge-outline" style={{ fontSize: 10 }} title="Existing session onboarded into mission control">
+                onboarded
+              </span>
+            )}
+            {m.origin === 'onboarded' && m.manageMode && (
+              <span
+                className={`badge ${m.manageMode === 'handoff' ? 'badge-green' : 'badge-default'}`}
+                style={{ fontSize: 10 }}
+                title={m.manageMode === 'handoff' ? 'mission control drives this session' : 'observe only — human drives'}
+              >
+                {m.manageMode}
+              </span>
+            )}
             {m.binding ? (
               <span
                 className="badge badge-outline"

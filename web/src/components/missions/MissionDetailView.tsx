@@ -54,6 +54,10 @@ interface MissionDetail {
   tags?: Record<string, string[]>;
   parentId?: string | null;
   dependsOn?: string[];
+  /** Set when this mission was created by onboarding an existing session into mission control. */
+  origin?: string;
+  /** How mission control manages an onboarded session's controller session: 'handoff' | 'standby'. */
+  manageMode?: string;
 }
 
 /** Mission session row from GET /mission/:id/sessions. */
@@ -303,6 +307,19 @@ export function MissionDetailView({
           {mission.title}
         </span>
         <span className={`badge ${STATUS_BADGE[mission.status]}`}>{mission.status}</span>
+        {mission.origin === 'onboarded' && (
+          <span className="badge badge-outline" title="Existing session onboarded into mission control">
+            onboarded
+          </span>
+        )}
+        {mission.origin === 'onboarded' && mission.manageMode && (
+          <span
+            className={`badge ${mission.manageMode === 'handoff' ? 'badge-green' : 'badge-default'}`}
+            title={mission.manageMode === 'handoff' ? 'mission control drives this session' : 'observe only — human drives'}
+          >
+            {mission.manageMode}
+          </span>
+        )}
         <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--color-text-tertiary)' }}>
           {mission.id}
         </span>
