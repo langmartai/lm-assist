@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { MISSION_TOOL_DEFS, withActorHint } from '../mcp-server/tools/mission';
 
-test('exposes all mission tools (4 core + 2 rail + 6 session + 2 history/tag)', () => {
+test('exposes all mission tools (4 core + 2 rail + 6 session + 2 history/tag + 1 onboard)', () => {
   const names = MISSION_TOOL_DEFS.map((t) => t.name).sort();
   assert.deepStrictEqual(names, [
     'mission_control_status',
@@ -10,6 +10,7 @@ test('exposes all mission tools (4 core + 2 rail + 6 session + 2 history/tag)', 
     'mission_executor_status',
     'mission_history',
     'mission_list',
+    'mission_onboard',
     'mission_place',
     'mission_session_answer',
     'mission_session_control',

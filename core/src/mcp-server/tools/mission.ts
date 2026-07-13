@@ -164,6 +164,15 @@ export const MISSION_TOOL_DEFS = [
       'Each entry: {rev, at, actor, changes:{field:{from,to}}}. {id, limit?(default 50), beforeRev?(page older)}. Newest-first.',
     inputSchema: obj({ id: S, limit: { type: 'number' as const }, beforeRev: { type: 'number' as const } }, ['id']),
   },
+  {
+    name: 'mission_onboard',
+    description:
+      'Onboard an EXISTING Claude Code session into mission control. Omit sessionId to onboard the CALLING session (self-handoff). ' +
+      'mode: standby (default — observe only, human stays in charge) | handoff (mission control drives it end-to-end per the workflow playbooks). ' +
+      'cluster targets which cluster\'s controller manages it (default: this node\'s). note = free-text intent for the analysis. ' +
+      'Returns the created (or existing) mission.',
+    inputSchema: obj({ sessionId: S, cluster: S, mode: { ...S, enum: ['handoff', 'standby'] }, note: S, node: S }),
+  },
 ] as const;
 
 export const MISSION_HANDLERS: Record<
@@ -304,6 +313,12 @@ export const MISSION_HANDLERS: Record<
       if (limit != null && !Number.isNaN(limit)) qs.set('limit', String(limit));
       if (beforeRev != null && !Number.isNaN(beforeRev)) qs.set('beforeRev', String(beforeRev));
       return pretty(await workerGet(`/mission/${encodeURIComponent(id)}/history${qs.toString() ? `?${qs}` : ''}`));
+    } catch (e) { return err((e as Error).message); }
+  },
+
+  mission_onboard: async (a) => {
+    try {
+      return pretty(await workerPost('/mission/onboard', withActorHint(a, currentMcpContext()?.toolUseId)));
     } catch (e) { return err((e as Error).message); }
   },
 };
