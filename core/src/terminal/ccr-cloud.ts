@@ -30,6 +30,7 @@ import { TerminalError } from './errors';
 import {
   anthropicOAuthGet,
   anthropicOAuthPost,
+  anthropicOAuthPut,
   anthropicOAuthDelete,
   getValidAccessToken,
   getOrganizationUuid,
@@ -182,12 +183,15 @@ export function buildSetupPreamble(): string {
  * Build the POST /v1/sessions body — a create carries the initial user turn (wrapped event).
  * Seed EITHER via `sources` (GitHub repos — the standard) OR `seedFileId` (local git bundle).
  */
-export function buildCreateBody(opts: { prompt?: string; model: string; environmentId: string; title?: string; seedFileId?: string; sources?: unknown[] }) {
+export function buildCreateBody(opts: { prompt?: string; model: string; environmentId: string; title?: string; seedFileId?: string; sources?: unknown[]; effort?: string }) {
   const session_context: Record<string, unknown> = {
     sources: opts.sources || [],
     outcomes: [],
     model: opts.model,
   };
+  // Effort (thinking level) — claude.ai's Faster↔Smarter slider maps to config.effort_level.
+  // Only include when provided so an unset create keeps the account default.
+  if (opts.effort && opts.effort.trim()) session_context.effort_level = opts.effort.trim();
   if (opts.seedFileId) session_context.seed_bundle_file_id = opts.seedFileId;
   // The prompt is OPTIONAL — with no prompt the session boots (clones the repo) and waits to be
   // driven (events:[]). With a prompt it carries an initial user turn.
@@ -501,7 +505,7 @@ export interface CloudStartResult { sid: string; webUrl: string; status: string;
  * Standard seed = a GitHub repo (`repo` = owner/name or URL; the cloud clones it, branch
  * defaults to the repo's default). Fallback = a local git bundle (`cwd`) or empty scratch.
  */
-export async function cloudStart(opts: { prompt?: string; repo?: string; branch?: string; cwd?: string; model?: string; title?: string; setup?: boolean; role?: CloudRole; primaryRepo?: string; homeProject?: string }): Promise<CloudStartResult> {
+export async function cloudStart(opts: { prompt?: string; repo?: string; branch?: string; cwd?: string; model?: string; effort?: string; permissionMode?: string; title?: string; setup?: boolean; role?: CloudRole; primaryRepo?: string; homeProject?: string }): Promise<CloudStartResult> {
   const prompt = (opts.prompt || '').toString().trim();
   const hasRepo = !!(opts.repo && opts.repo.trim());
   const hasCwd = !!(opts.cwd && opts.cwd.trim());
@@ -548,7 +552,7 @@ export async function cloudStart(opts: { prompt?: string; repo?: string; branch?
     cwd = seed.cwd;
   }
 
-  const res = await anthropicOAuthPost('/v1/sessions', buildCreateBody({ prompt: effectivePrompt, model, environmentId, title: opts.title, seedFileId, sources }), await ccrOpts());
+  const res = await anthropicOAuthPost('/v1/sessions', buildCreateBody({ prompt: effectivePrompt, model, environmentId, title: opts.title, seedFileId, sources, effort: opts.effort }), await ccrOpts());
   assertOk(res, 'cloud session create');
   const sid = (res.body as { id?: string })?.id;
   if (!sid) throw new TerminalError('UPSTREAM_ERROR', 'create returned no session id', { body: res.body });
@@ -560,6 +564,11 @@ export async function cloudStart(opts: { prompt?: string; repo?: string; branch?
     webUrl: cloudSessionWebUrl(sid), createdAt: new Date().toISOString(),
   };
   const data = loadRegistry(); data[sid] = rec; saveRegistry(data);
+  // Apply the composer's permission mode best-effort (non-fatal): the freshly-created session
+  // accepts a set_permission_mode control on its client channel. A hiccup here must not fail the start.
+  if (opts.permissionMode) {
+    try { await cloudControl({ sid, permissionMode: opts.permissionMode }); } catch { /* best-effort */ }
+  }
   return { sid, webUrl: rec.webUrl, status, model, repo: repoSlug, branch, cwd, environmentId, setup: setupApplied };
 }
 
@@ -734,6 +743,170 @@ export async function cloudListAccount(limit = 50): Promise<Array<{ sid: string;
     status: (s.status || s.session_status || '') as string,
     title: s.title,
   })).filter((s) => s.sid);
+}
+
+// ===========================================================================
+// Enriched account list + session management (claude.ai/code parity)
+// ---------------------------------------------------------------------------
+// The claude.ai/code home renders each session with a STATUS PILL + a status
+// detail sentence + repo/branch, driven by the `/v1/code/sessions` list fields
+// (status_bucket / worker_status / post_turn_summary). cloudListAccount only
+// surfaced {sid,status,title}; this surfaces the full shape for the UI, plus
+// rename / archive / model+permission control. Pure mappers are unit-tested in
+// __tests__/ccr-cloud-manage.test.ts; the network wrappers are thin.
+// ===========================================================================
+
+/** Rich per-session shape the CCR page renders (mirrors claude.ai/code's row). */
+export interface CloudSessionInfo {
+  sid: string;
+  title: string;
+  model: string;
+  repo: string | null;
+  branch: string | null;
+  cwd: string | null;
+  webUrl: string;
+  createdAt: string;
+  lastEventAt: string | null;
+  /** cloud = anthropic_cloud container; remote = a `bridge` (local `claude rc` / connected) session. */
+  kind: 'cloud' | 'remote';
+  environmentKind: string;
+  connectionStatus: string | null;
+  statusBucket: string | null;
+  workerStatus: string | null;
+  statusCategory: string | null;
+  statusDetail: string | null;
+  needsAction: string | null;
+  unread: boolean;
+  tags: string[];
+}
+
+/** Extract {repo, branch} from a session `config` (outcomes git_info first, then sources url). Pure. */
+export function repoFromConfig(config: any): { repo: string | null; branch: string | null } {
+  const outcomes = Array.isArray(config?.outcomes) ? config.outcomes : [];
+  for (const o of outcomes) {
+    const gi = o?.git_info;
+    if (gi?.repo) return { repo: String(gi.repo), branch: Array.isArray(gi.branches) && gi.branches[0] ? String(gi.branches[0]) : null };
+  }
+  const sources = Array.isArray(config?.sources) ? config.sources : [];
+  for (const s of sources) {
+    if (typeof s?.url === 'string') {
+      const parsed = parseGitHubRepo(s.url);
+      if (parsed) return { repo: parsed.slug, branch: s.revision ? String(s.revision) : null };
+    }
+  }
+  return { repo: null, branch: null };
+}
+
+/** Map one raw `/v1/code/sessions` list item → the enriched CloudSessionInfo the UI renders. Pure. */
+export function mapAccountSession(raw: any): CloudSessionInfo {
+  const sid = String(raw?.id || raw?.session_id || raw?.uuid || '');
+  const config = raw?.config || {};
+  const ext = raw?.external_metadata || {};
+  const pts = ext?.post_turn_summary || raw?.post_turn_summary || {};
+  const rb = repoFromConfig(config);
+  let branch = rb.branch;
+  // Prefer the live current branch (external_metadata.current_branches[repo]) when present.
+  const cur = ext?.current_branches;
+  if (rb.repo && cur && typeof cur === 'object' && cur[rb.repo]) branch = String(cur[rb.repo]);
+  const environmentKind = String(raw?.environment_kind || '');
+  return {
+    sid,
+    title: (raw?.title && String(raw.title)) || '(untitled)',
+    model: String(config?.model || ''),
+    repo: rb.repo,
+    branch,
+    cwd: null,
+    webUrl: sid ? cloudSessionWebUrl(sid) : '',
+    createdAt: String(raw?.created_at || ''),
+    lastEventAt: raw?.last_event_at ? String(raw.last_event_at) : null,
+    kind: environmentKind === 'anthropic_cloud' ? 'cloud' : 'remote',
+    environmentKind,
+    connectionStatus: raw?.connection_status ? String(raw.connection_status) : null,
+    statusBucket: raw?.status_bucket ? String(raw.status_bucket) : null,
+    workerStatus: raw?.worker_status ? String(raw.worker_status) : null,
+    statusCategory: pts?.status_category ? String(pts.status_category) : null,
+    statusDetail: pts?.status_detail ? String(pts.status_detail) : null,
+    needsAction: pts?.needs_action ? String(pts.needs_action) : null,
+    unread: !!raw?.unread,
+    tags: Array.isArray(raw?.tags) ? raw.tags.map(String) : [],
+  };
+}
+
+/** claude.ai UI permission-mode label → the wire `set_permission_mode` value. Pure. */
+export function normalizePermissionMode(ui: string | undefined): string {
+  const k = (ui || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  const map: Record<string, string> = {
+    manual: 'default', default: 'default', ask: 'default',
+    acceptedits: 'acceptEdits', accept: 'acceptEdits',
+    plan: 'plan', auto: 'auto',
+  };
+  return map[k] || 'default';
+}
+
+/** Build a `set_model` control_request event (POST to /v1/code/sessions/{cse}/events). Pure. */
+export function buildSetModelEvent(model: string, ids?: { requestId?: string; uuid?: string }) {
+  return { payload: { type: 'control_request' as const, request_id: ids?.requestId || `set-model-${Date.now()}`, request: { subtype: 'set_model' as const, model }, uuid: ids?.uuid || randomUUID() } };
+}
+
+/** Build a `set_permission_mode` control_request event (mode already wire-normalized). Pure. */
+export function buildSetPermissionModeEvent(mode: string, ids?: { requestId?: string; uuid?: string }) {
+  return { payload: { type: 'control_request' as const, request_id: ids?.requestId || `set-perm-mode-${Date.now()}`, request: { subtype: 'set_permission_mode' as const, mode }, uuid: ids?.uuid || randomUUID() } };
+}
+
+/**
+ * List the ACCOUNT's code sessions (cloud + bridge), enriched for the CCR page. Merges the
+ * local registry (repo/webUrl/createdAt for sessions WE created) over the account payload.
+ * Newest activity first.
+ */
+export async function cloudListEnriched(limit = 50): Promise<CloudSessionInfo[]> {
+  const res = await anthropicOAuthGet('/v1/code/sessions', { ...(await ccrOpts()), query: `limit=${limit}` });
+  assertOk(res, 'cloud list enriched');
+  const arr: any[] = res.body?.data ?? res.body?.sessions ?? (Array.isArray(res.body) ? res.body : []);
+  const reg = loadRegistry();
+  const items = arr.map(mapAccountSession).filter((s) => s.sid).map((s) => {
+    const r = reg[s.sid];
+    return r ? { ...s, repo: s.repo || r.repo, cwd: s.cwd || r.cwd, createdAt: s.createdAt || r.createdAt } : s;
+  });
+  const ts = (s: CloudSessionInfo) => Date.parse(s.lastEventAt || s.createdAt || '') || 0;
+  return items.sort((a, b) => ts(b) - ts(a));
+}
+
+/** Rename a cloud/bridge session (PUT /v1/code/sessions/{cse} {title}). */
+export async function cloudRename(sid: string, title: string): Promise<{ renamed: boolean; sid: string; title: string }> {
+  if (!isCloudOrBridge(sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_… or cse_…');
+  const t = (title || '').trim();
+  if (!t) throw new TerminalError('INVALID_INPUT', 'title is required');
+  const cse = toBridgeCse(sid);
+  const res = await anthropicOAuthPut(`/v1/code/sessions/${cse}`, { title: t }, await ccrOpts());
+  assertOk(res, 'cloud rename');
+  const reg = loadRegistry(); if (reg[sid]) { reg[sid].title = t; saveRegistry(reg); }
+  return { renamed: true, sid, title: t };
+}
+
+/** Archive / unarchive a cloud/bridge session (POST /v1/code/sessions/{cse}/{archive|unarchive}). */
+export async function cloudArchive(sid: string, archived = true): Promise<{ archived: boolean; sid: string }> {
+  if (!isCloudOrBridge(sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_… or cse_…');
+  const cse = toBridgeCse(sid);
+  const res = await anthropicOAuthPost(`/v1/code/sessions/${cse}/${archived ? 'archive' : 'unarchive'}`, {}, await ccrOpts());
+  assertOk(res, 'cloud archive');
+  return { archived, sid };
+}
+
+/**
+ * Apply live session controls (model and/or permission mode) via control_request events on the
+ * CLIENT channel — the same path the claude.ai composer uses. Effort is a create-time option only.
+ */
+export async function cloudControl(opts: { sid: string; model?: string; permissionMode?: string }): Promise<{ applied: boolean; sid: string; model: string | null; permissionMode: string | null }> {
+  if (!isCloudOrBridge(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_… or cse_…');
+  const cse = toBridgeCse(opts.sid);
+  const events: unknown[] = [];
+  if (opts.model && opts.model.trim()) events.push(buildSetModelEvent(opts.model.trim()));
+  const mode = opts.permissionMode ? normalizePermissionMode(opts.permissionMode) : null;
+  if (mode) events.push(buildSetPermissionModeEvent(mode));
+  if (!events.length) throw new TerminalError('INVALID_INPUT', 'provide model and/or permissionMode');
+  const res = await anthropicOAuthPost(`/v1/code/sessions/${cse}/events`, { events }, await ccrOpts());
+  assertOk(res, 'cloud control');
+  return { applied: true, sid: opts.sid, model: opts.model?.trim() || null, permissionMode: mode };
 }
 
 // ===========================================================================

@@ -5,10 +5,16 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Wrench, User, Cloud, Sparkles, ChevronRight, ChevronDown, FileText, Terminal, Search, Globe, Plug } from 'lucide-react';
 import { formatToolCall } from '@/lib/smart-display';
+import { groupLabel } from '@/lib/tool-summary';
 
 interface ToolCall { name: string; input?: unknown; result?: string; isError?: boolean }
 
-export function TranscriptMessage({ m }: { m: { role: string; type: string; text: string; tools?: string[]; thinking?: string; toolCalls?: ToolCall[] } }) {
+/**
+ * A transcript message. `compact` renders tool calls as claude.ai/code does — one grouped
+ * summary line ("Ran 2 commands, read a file") that expands to the individual tool cards —
+ * instead of one card per call. Opt-in so the cowork page (also a consumer) is unchanged.
+ */
+export function TranscriptMessage({ m, compact = false }: { m: { role: string; type: string; text: string; tools?: string[]; thinking?: string; toolCalls?: ToolCall[] }; compact?: boolean }) {
   const isUser = m.type === 'user';
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: isUser ? 'flex-end' : 'stretch' }}>
@@ -26,12 +32,16 @@ export function TranscriptMessage({ m }: { m: { role: string; type: string; text
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
         </div>
       )}
-      {/* Tool calls: expandable cards with input + output (like claude.ai). Falls back to plain
-          name badges for callers that only supply `tools` (e.g. the CCR viewer). */}
+      {/* Tool calls: compact grouped summary line (claude.ai/code) when `compact`, else expandable
+          cards. Falls back to plain name badges for callers that only supply `tools`. */}
       {m.toolCalls && m.toolCalls.length > 0 ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-          {m.toolCalls.map((t, i) => <ToolCard key={i} t={t} />)}
-        </div>
+        compact ? (
+          <ToolGroup toolCalls={m.toolCalls} />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            {m.toolCalls.map((t, i) => <ToolCard key={i} t={t} />)}
+          </div>
+        )
       ) : m.tools && m.tools.length > 0 ? (
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           {m.tools.map((t, i) => (
@@ -100,6 +110,34 @@ function ToolCard({ t }: { t: ToolCall }) {
               <pre style={{ ...preStyle, maxHeight: 260 }}>{truncate(prettyResult(result), 3000)}</pre>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * claude.ai/code-style compact tool group: one summary line ("Ran 2 commands, read a file" or
+ * "Edited App.tsx +4 -1") with a category icon + chevron; expands to the full per-tool cards.
+ */
+function ToolGroup({ toolCalls }: { toolCalls: ToolCall[] }) {
+  const [open, setOpen] = useState(false);
+  const label = groupLabel(toolCalls);
+  const anyError = toolCalls.some((t) => t.isError);
+  // Icon from the dominant tool (first non-trivial), else Wrench.
+  const Icon = toolIcon(toolCalls[0]?.name || '');
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+      <button onClick={() => setOpen((o) => !o)}
+        style={{ alignSelf: 'flex-start', maxWidth: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', padding: '3px 4px', display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--color-text-tertiary)' }}>
+        <Icon size={13} style={{ color: anyError ? 'var(--color-status-red)' : 'var(--color-text-tertiary)', flexShrink: 0 }} />
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{label}</span>
+        {anyError && <span className="badge badge-red" style={{ flexShrink: 0 }}>error</span>}
+        {open ? <ChevronDown size={12} style={{ flexShrink: 0 }} /> : <ChevronRight size={12} style={{ flexShrink: 0 }} />}
+      </button>
+      {open && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5, paddingLeft: 4 }}>
+          {toolCalls.map((t, i) => <ToolCard key={i} t={t} />)}
         </div>
       )}
     </div>
