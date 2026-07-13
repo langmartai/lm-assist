@@ -24,6 +24,10 @@ import { recentExternalChanges } from '../../mission/mission-changes';
 import { placementAllowed } from '../../mission/mission-controller';
 import { getClusterRecords } from '../../cluster/cluster-store';
 import { getMyCluster } from '../../cluster/cluster-config';
+import { getWorkflow, listWorkflows, putWorkflow, rollbackWorkflow, getWorkflowRaw, listWorkflowSnapshots,
+  type WorkflowPort, type WorkflowSnapshotPort } from '../../mission/workflow-store';
+import { isControllerActor, type WorkflowEditPolicy } from '../../mission/workflow-model';
+import { DEFAULT_WORKFLOWS } from '../../mission/workflow-defaults';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string }; }
 const ok = <T>(data: T): Envelope => ({ success: true, data });
@@ -244,6 +248,69 @@ export async function handleHistory(
   const anchored = await anchorToLeader(leader, 'GET', path);
   if (anchored) return anchored;
   return ok({ history: await listHistory(id, opts) });
+}
+
+// ---------------------------------------------------------------------------
+// Workflow-registry handlers (playbook docs the controller reads/edits)
+// ---------------------------------------------------------------------------
+
+export async function handleWorkflowList(port?: WorkflowPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'GET', '/mission/workflows');
+  if (anchored) return anchored;
+  const workflows = await listWorkflows(port);
+  const stored = new Set(workflows.map((w) => w.id));
+  const defaults = Object.keys(DEFAULT_WORKFLOWS).filter((id) => !stored.has(id));
+  return ok({ workflows, defaults });
+}
+
+export async function handleWorkflowGet(id: string, port?: WorkflowPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'GET', `/mission/workflows/${encodeURIComponent(id)}`);
+  if (anchored) return anchored;
+  try { return ok(await getWorkflowRaw(id, port)); }
+  catch (e) { return fail((e as any).code ?? 'NOT_FOUND', (e as Error).message); }
+}
+
+export async function handleWorkflowSet(id: string, b: Record<string, unknown>, port?: WorkflowPort, snap?: WorkflowSnapshotPort, actor?: MissionActor, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'POST', `/mission/workflows/${encodeURIComponent(id)}`, b, true);
+  if (anchored) return anchored;
+  const who = actor ?? await actorFor(b);
+  const existing = await getWorkflow(id, port).catch(() => null);
+  const effectivePolicy: WorkflowEditPolicy = existing?.editPolicy ?? DEFAULT_WORKFLOWS[id]?.editPolicy ?? 'open';
+  if (effectivePolicy === 'human-only' && isControllerActor(who)) return fail('FORBIDDEN', 'this workflow doc is human-only');
+  const nextPolicy = (str(b.editPolicy) === 'human-only' ? 'human-only' : str(b.editPolicy) === 'open' ? 'open' : effectivePolicy) as WorkflowEditPolicy;
+  if (nextPolicy !== effectivePolicy && isControllerActor(who)) return fail('FORBIDDEN', 'editPolicy changes are human-only');
+  const title = str(b.title) ?? existing?.title ?? DEFAULT_WORKFLOWS[id]?.title ?? id;
+  const body = str(b.body) ?? existing?.body ?? DEFAULT_WORKFLOWS[id]?.body;
+  if (body === undefined) return fail('INVALID_INPUT', 'body is required for a new doc');
+  try {
+    const r = await putWorkflow({ id, title, body, editPolicy: nextPolicy }, who, port, snap);
+    return ok({ doc: r.doc, changed: r.changed });
+  } catch (e) { return fail((e as any).code ?? 'INVALID_INPUT', (e as Error).message); }
+}
+
+export async function handleWorkflowHistory(id: string, opts: { limit?: number; beforeRev?: number }, snap?: WorkflowSnapshotPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const qs = new URLSearchParams();
+  if (opts.limit != null) qs.set('limit', String(opts.limit));
+  if (opts.beforeRev != null) qs.set('beforeRev', String(opts.beforeRev));
+  const anchored = await anchorToLeader(leader, 'GET', `/mission/workflows/${encodeURIComponent(id)}/history${qs.toString() ? `?${qs}` : ''}`);
+  if (anchored) return anchored;
+  const rows = await listWorkflowSnapshots(id, opts, snap);
+  return ok({ snapshots: rows.map(({ body, ...rest }) => ({ ...rest, bodyBytes: Buffer.byteLength(body, 'utf8') })) });
+}
+
+export async function handleWorkflowRollback(id: string, b: Record<string, unknown>, port?: WorkflowPort, snap?: WorkflowSnapshotPort, actor?: MissionActor, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'POST', `/mission/workflows/${encodeURIComponent(id)}/rollback`, b, true);
+  if (anchored) return anchored;
+  const who = actor ?? await actorFor(b);
+  const existing = await getWorkflow(id, port).catch(() => null);
+  const effectivePolicy: WorkflowEditPolicy = existing?.editPolicy ?? DEFAULT_WORKFLOWS[id]?.editPolicy ?? 'open';
+  if (effectivePolicy === 'human-only' && isControllerActor(who)) return fail('FORBIDDEN', 'this workflow doc is human-only');
+  const toRevRaw = b.toRev;
+  const toRev = typeof toRevRaw === 'number' ? toRevRaw : parseInt(String(toRevRaw ?? ''), 10);
+  if (Number.isNaN(toRev)) return fail('INVALID_INPUT', 'toRev (number) is required');
+  const r = await rollbackWorkflow(id, toRev, who, port, snap);
+  if ('error' in r) return fail(r.error.code, r.error.message);
+  return ok({ doc: r.doc });
 }
 
 // ---------------------------------------------------------------------------
@@ -1286,6 +1353,19 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     // view literals — MUST be before /mission/:id patterns (else POST /mission/views matches POST /mission/:id)
     { method: 'POST', pattern: /^\/mission\/views$/, handler: async (req) => handleViewSet((req.body || {}) as Record<string, unknown>, undefined, undefined, realLeaderAnchor()) },
     { method: 'GET', pattern: /^\/mission\/views$/, handler: async () => handleViewList(undefined, realLeaderAnchor()) },
+    // workflow registry literals — MUST be before every /mission/:id pattern
+    { method: 'GET', pattern: /^\/mission\/workflows$/, handler: async () => handleWorkflowList(undefined, realLeaderAnchor()) },
+    { method: 'GET', pattern: /^\/mission\/workflows\/(?<id>[^/]+)\/history$/, handler: async (req) => {
+        const rawLimit = req.query?.limit != null ? parseInt(String(req.query.limit), 10) : undefined;
+        const rawBefore = req.query?.beforeRev != null ? parseInt(String(req.query.beforeRev), 10) : undefined;
+        return handleWorkflowHistory(req.params.id, {
+          limit: rawLimit != null && !Number.isNaN(rawLimit) ? rawLimit : undefined,
+          beforeRev: rawBefore != null && !Number.isNaN(rawBefore) ? rawBefore : undefined,
+        }, undefined, realLeaderAnchor());
+      } },
+    { method: 'POST', pattern: /^\/mission\/workflows\/(?<id>[^/]+)\/rollback$/, handler: async (req) => handleWorkflowRollback(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, undefined, realLeaderAnchor()) },
+    { method: 'GET', pattern: /^\/mission\/workflows\/(?<id>[^/]+)$/, handler: async (req) => handleWorkflowGet(req.params.id, undefined, realLeaderAnchor()) },
+    { method: 'POST', pattern: /^\/mission\/workflows\/(?<id>[^/]+)$/, handler: async (req) => handleWorkflowSet(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, undefined, realLeaderAnchor()) },
     // rail routes: /place and /executor-status BEFORE /:id so literals win
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/place$/, handler: async (req) => handlePlace(req.params.id, undefined, realLeaderAnchor()) },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/executor-status$/, handler: async (req) => handleExecutorStatus(req.params.id, undefined, undefined, realLeaderAnchor()) },
