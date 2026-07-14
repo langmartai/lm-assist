@@ -610,10 +610,25 @@ export async function cloudRead(opts: { sid: string; lastN?: number }): Promise<
     anthropicOAuthGet(`/v1/code/sessions/${opts.sid}`, ccr).catch(() => null),
   ]);
   // Teleport-tolerant: a `--remote-control` bridge cse has no transcript here (404/empty) — don't
-  // throw; just yield no messages and rely on the client `/events` pending-question fallback below.
+  // throw; just yield no messages and rely on the client `/events` fallbacks below.
   const teleportOk = !!res && res.status >= 200 && res.status < 300;
   const events = teleportOk ? (((res!.body as { data?: any[] })?.data) || []) : [];
-  let messages = teleportOk ? parseTeleportTranscript(res!.body) : [];
+  let messages: CloudTranscriptMsg[] = teleportOk ? parseTeleportTranscript(res!.body) : [];
+  // Transcript fallback: bridge / remote-control sessions have NO teleport transcript — the
+  // claude.ai/code web app renders them from the CLIENT /events channel (each payload is a
+  // transcript line). Do the same: fetch the client log and parse it with the shared cowork
+  // parser (same substrate — sorts by sequence_num, drops tool_result user-turns, groups tool
+  // calls + thinking into assistant turns). One read is reused for the pending-question check.
+  let clientRead: Awaited<ReturnType<typeof cloudClientEventsRead>> | null = null;
+  if (messages.length === 0) {
+    try {
+      clientRead = await cloudClientEventsRead(opts.sid, { maxPages: 3 });
+      if (clientRead.events.length) {
+        const { parseCoworkEvents } = require('../cowork/cowork-read') as typeof import('../cowork/cowork-read');
+        messages = parseCoworkEvents({ data: clientRead.events }).messages;
+      }
+    } catch { /* best-effort — an empty transcript beats an error */ }
+  }
   if (opts.lastN && opts.lastN > 0) messages = messages.slice(-opts.lastN);
   // Gate on worker_status: a client-sent tool_result doesn't reliably appear in teleport-events,
   // so only surface a pending question when the worker is actually blocked (requires_action).
@@ -623,7 +638,10 @@ export async function cloudRead(opts: { sid: string; lastN?: number }): Promise<
   // check the client event log (resolution-tracked, so no false positives). Lets the CCR page's
   // CcrCloudView surface a bridge controller/executor's question, not just cloud sessions.
   if (!pendingQuestion) {
-    try { const cr = await cloudClientEventsRead(opts.sid); if (cr.pendingQuestion) pendingQuestion = cr.pendingQuestion; } catch { /* best-effort */ }
+    try {
+      const cr = clientRead ?? await cloudClientEventsRead(opts.sid);
+      if (cr.pendingQuestion) pendingQuestion = cr.pendingQuestion;
+    } catch { /* best-effort */ }
   }
   return { sid: opts.sid, messages, pendingQuestion };
 }
