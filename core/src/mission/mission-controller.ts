@@ -546,6 +546,19 @@ export const CONTROLLER_SYSTEM_PROMPT = [
   'The mission store is cross-node shared; you run on the elected leader node.',
 ].join('\n');
 
+/** Drive sent ONCE per Core-process boot when the supervisor ADOPTS a still-alive controller
+ *  (lm-assist restarted around it). Tells the controller to reattach and resume in-flight work
+ *  rather than waiting for the next material engagement. */
+export const CONTROLLER_ADOPT_RESUME_DIRECTIVE =
+  '⟦CORE RESTARTED — REATTACH⟧ The lm-assist Core under you restarted; you were NOT relaunched (your session and context are intact). Re-establish situational awareness and RESUME in-flight work now: run a normal pass (mission_changes → mission_schedule), then for every active mission re-check its executor/session state (mission_executor_status / mission_session_read) and continue where it left off — resume-first for anything that went stale during the restart. If a tool call failed mid-restart, simply retry it.';
+
+/** Pure: the lmcc-* tmux sessions that are NOT the recorded controller — duplicates to sweep.
+ *  (Observed live: a Core restart + tick race can launch a second controller while the original
+ *  survives; the recorded one is authoritative, everything else lmcc-* is a stray.) */
+export function pickStrayControllers(tmuxNames: string[], recordedTmux: string | null | undefined): string[] {
+  return tmuxNames.filter((n) => n.startsWith('lmcc-') && !!n && n !== recordedTmux);
+}
+
 /**
  * Pure builder for the controller launch extras (system-prompt file + optional
  * hub-MCP keystone config file). `writeFile(name, body)` persists a file and
@@ -681,6 +694,16 @@ export interface SupervisorDeps {
   /** Render the standard pass directive from the workflow registry ('controller.pass').
    *  Optional; absent or throwing → CONTROLLER_PASS_DIRECTIVE (TS fallback). */
   passDirective?: () => Promise<string>;
+  /** Restart-adopt (optional): once per Core-process boot, when the recorded controller is
+   *  found ALIVE, fire one CONTROLLER_ADOPT_RESUME_DIRECTIVE drive so in-flight work resumes
+   *  promptly instead of waiting for the next material engagement. `done()` reads / `mark()`
+   *  sets a process-lifetime flag (module-level in production; injected fakes in tests). */
+  bootAdopt?: { done: () => boolean; mark: () => void };
+  /** Stray-controller sweep (optional): list all tmux session names; the tick kills every
+   *  lmcc-* session that is not the recorded controller (self-healing duplicate cleanup). */
+  listTmuxSessions?: () => Promise<string[]>;
+  /** Kill one stray tmux session by name (best-effort; used only by the sweep). */
+  killStrayTmux?: (name: string) => Promise<void>;
   /** I2 — persist an onboarded mission's advanced `control.lastOutputCursor` (best-effort;
    *  production wires it to `putMission`). Optional: absent → the cursor advance in
    *  evaluateEngagement is computed in-memory but never durably persisted (unchanged legacy
@@ -820,6 +843,30 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   const cs = await deps.getControllerSession();
   const live = cs ? deps.isLive(cs) : false;
 
+  // Stray-controller sweep (self-healing): a Core restart + tick race has been observed to
+  // leave a duplicate lmcc-* tmux beside the recorded controller. The record is authoritative —
+  // kill every other lmcc-* session. Leader-only, best-effort, never sinks the tick.
+  if (isMonitor && cs?.tmux && deps.listTmuxSessions && deps.killStrayTmux) {
+    try {
+      const strays = pickStrayControllers(await deps.listTmuxSessions(), cs.tmux);
+      for (const s of strays) {
+        try { await deps.killStrayTmux(s); } catch { /* per-stray best-effort */ }
+      }
+    } catch { /* sweep is best-effort */ }
+  }
+
+  // Restart-adopt: this Core process found a still-ALIVE recorded controller (lm-assist was
+  // restarted around it — never kill or orphan it). Once per process boot, drive it with the
+  // reattach directive so in-flight work resumes promptly instead of waiting for the next
+  // material engagement or safety interval.
+  if (isMonitor && live && cs && deps.bootAdopt && !deps.bootAdopt.done()) {
+    deps.bootAdopt.mark();
+    await deps.drive(cs, CONTROLLER_ADOPT_RESUME_DIRECTIVE);
+    const adopted: ControllerSession = { ...cs, lastDriveAt: deps.now };
+    await deps.putControllerSession(adopted);
+    return { action: 'adopt-drive', controllerSession: adopted };
+  }
+
   // Drive gate. Wave 4 (when the engagement deps are present): change-based — the
   // non-LLM detector reads each active executor cheaply, surfaces interim progress
   // WITHOUT engaging, and drives only on a material change / new mission / safety
@@ -857,6 +904,14 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   }
 
   if (action === 'launch') {
+    // TOCTOU guard (restart-adopt): the liveness read above may be stale — a controller that was
+    // mid-registration, or one this fresh Core process hasn't observed yet (lm-assist restart),
+    // can read false-dead and trigger a duplicate launch. Re-verify RIGHT before acting: if the
+    // recorded controller is actually alive now, ADOPT it instead of relaunching (never kill or
+    // orphan a live controller on a Core restart).
+    if (cs && deps.isLive(cs)) {
+      return { action: 'adopt', controllerSession: cs };
+    }
     // Defensive dedupe: if a prior controller record exists but we're (re)launching (it was deemed
     // !live, or its bridge failed), tear down its tmux FIRST so a relaunch never stacks a second
     // controller on top of a still-running one (belt-and-suspenders with the isLive fix).
@@ -864,6 +919,8 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
     // Launch with lastDriveAt unset so the next tick triggers a drive immediately.
     const newCs = await deps.launch();
     await deps.putControllerSession(newCs);
+    // A controller launched BY this process needs no restart-adopt drive later.
+    deps.bootAdopt?.mark();
     return { action: 'launch', controllerSession: newCs };
   }
 
@@ -1088,6 +1145,14 @@ export function registerMissionController(
     if (!s.missionControllerEnabled || !s.dataServiceEnabled) {
       return { result: 'mission controller disabled (or data service off)', status: 'skipped' };
     }
+    // Reentrancy lock: a launch takes ~40s (cse poll) while the lifecycle tick fires every ~1min —
+    // an overlapping tick raced the in-flight launch and produced a DUPLICATE controller (observed
+    // live, twice). One tick at a time; overlaps skip cleanly.
+    if (missionTickInFlight) {
+      return { result: 'previous supervisor tick still in flight — skipped', status: 'skipped' };
+    }
+    missionTickInFlight = true;
+    try {
 
     const realDeps: SupervisorDeps = {
       amMonitor: () =>
@@ -1270,6 +1335,21 @@ export function registerMissionController(
           // Best-effort teardown — don't crash the tick
         }
       },
+      // Restart-adopt (once per Core-process boot) + stray-controller sweep wiring.
+      bootAdopt: { done: () => missionBootAdoptDone, mark: () => { missionBootAdoptDone = true; } },
+      listTmuxSessions: async () => {
+        const { execFile } = require('child_process') as typeof import('child_process');
+        return new Promise<string[]>((resolve) => {
+          execFile('tmux', ['list-sessions', '-F', '#{session_name}'], { timeout: 5000 }, (err, stdout) => {
+            resolve(err ? [] : String(stdout).split('\n').map((x) => x.trim()).filter(Boolean));
+          });
+        });
+      },
+      killStrayTmux: async (name) => {
+        const backend = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
+        await backend.tmuxTerminalBackend.close(name);
+        console.log(`[mission-supervisor] swept stray controller tmux ${name}`);
+      },
     };
 
     const r = await runSupervisorTick(realDeps);
@@ -1305,5 +1385,12 @@ export function registerMissionController(
     }
 
     return { result: `supervisor action=${r.action}`, controllerSession: r.controllerSession, status: 'ok' };
+    } finally {
+      missionTickInFlight = false;
+    }
   });
 }
+
+// ── Restart-adopt / tick-lock process state (module-level; reset naturally on process boot) ──
+let missionTickInFlight = false;
+let missionBootAdoptDone = false;
