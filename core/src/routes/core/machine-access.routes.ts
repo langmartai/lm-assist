@@ -10,18 +10,22 @@
  * routes; the MCP tool `machine_access` wraps the GET.
  */
 import * as os from 'os';
+import * as fs from 'fs';
+import * as path from 'path';
 import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import { wrapResponse, wrapError } from '../../api/helpers';
 import { isLoopbackAddress } from '../../auth/enroll-exempt';
 import { getHubConfig } from '../../hub-client/hub-config';
 import {
   listMachines,
+  getMachine,
   upsertMachine,
   removeMachine,
   toReportedMachine,
   MACHINE_ACCESS_USAGE,
   type MachineProfile,
 } from '../../machine-access/store';
+import { parseSshConfig, buildImportCandidates } from '../../machine-access/ssh-config';
 
 export function createMachineAccessRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -73,6 +77,47 @@ export function createMachineAccessRoutes(_ctx: RouteContext): RouteHandler[] {
         }
         const id = decodeURIComponent(req.params.id || '');
         return wrapResponse({ removed: removeMachine(id), id }, start);
+      },
+    },
+
+    // POST /machine-access/import — loopback-only ssh-config import.
+    // Default DRY-RUN (writes nothing). {apply:true} writes enabled:false drafts,
+    // never clobbering an existing id. {path} overrides ~/.ssh/config (test hook).
+    {
+      method: 'POST',
+      pattern: /^\/machine-access\/import$/,
+      handler: async (req: ParsedRequest) => {
+        const start = Date.now();
+        if (!isLoopbackAddress(req.clientIp)) {
+          return wrapError('FORBIDDEN', 'local-only endpoint', start);
+        }
+        const body = (req.body || {}) as { apply?: boolean; path?: string };
+        const cfgPath = body.path || path.join(os.homedir(), '.ssh', 'config');
+        let text: string;
+        try {
+          text = fs.readFileSync(cfgPath, 'utf-8');
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+            return wrapError('NOT_FOUND', `no ssh config at ${cfgPath}`, start);
+          }
+          return wrapError('IO_ERROR', e instanceof Error ? e.message : String(e), start);
+        }
+        const defaultUser = (() => { try { return os.userInfo().username; } catch { return 'root'; } })();
+        const { candidates, skippedInvalid } = buildImportCandidates(parseSshConfig(text), { defaultUser });
+        const note = 'Drafts are enabled:false and tagged "imported". Review each, add operational notes ' +
+          '(gotchas import cannot know), run POST /machine-access/machines/<id>/check, then enable.';
+
+        if (!body.apply) {
+          return wrapResponse({ dryRun: true, source: cfgPath, candidates, skippedInvalid, wouldWrite: candidates.length, note }, start);
+        }
+        const imported: string[] = [];
+        const skippedExisting: string[] = [];
+        for (const c of candidates) {
+          if (getMachine(c.id)) { skippedExisting.push(c.id); continue; }
+          upsertMachine(c);
+          imported.push(c.id);
+        }
+        return wrapResponse({ dryRun: false, source: cfgPath, imported, skippedExisting, skippedInvalid, note }, start);
       },
     },
   ];

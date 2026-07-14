@@ -92,3 +92,55 @@ describe('machine-access routes', () => {
     assert.equal((res2.data as { removed: boolean }).removed, false);
   });
 });
+
+describe('machine-access import route', () => {
+  let dir: string;
+  let cfgPath: string;
+  before(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ma-import-'));
+    process.env.LM_MACHINE_ACCESS_FILE = path.join(dir, 'machine-access.json');
+    cfgPath = path.join(dir, 'ssh_config');
+    fs.writeFileSync(cfgPath, 'Host sg\n  HostName 213.35.107.246\n  User opc\nHost weird*\n  User x\n', 'utf-8');
+  });
+  after(() => { delete process.env.LM_MACHINE_ACCESS_FILE; });
+
+  it('rejects non-loopback callers', async () => {
+    const h = findRoute('POST', '/machine-access/import');
+    const res = await h.handler(req('POST', '/machine-access/import', { clientIp: '10.0.0.9', body: { path: cfgPath } }), {} as never);
+    assert.equal(res.success, false);
+    assert.equal(res.error?.code, 'FORBIDDEN');
+  });
+
+  it('dry-run (default) returns candidates and writes NOTHING', async () => {
+    const h = findRoute('POST', '/machine-access/import');
+    const res = await h.handler(req('POST', '/machine-access/import', { body: { path: cfgPath } }), {} as never);
+    assert.equal(res.success, true);
+    const data = res.data as { dryRun: boolean; candidates: Array<{ id: string; enabled: boolean }> };
+    assert.equal(data.dryRun, true);
+    assert.equal(data.candidates.length, 1);
+    assert.equal(data.candidates[0].id, 'sg');
+    assert.equal(data.candidates[0].enabled, false);
+    assert.equal(fs.existsSync(process.env.LM_MACHINE_ACCESS_FILE as string), false); // nothing written
+  });
+
+  it('apply writes drafts but never clobbers an existing id', async () => {
+    // pre-seed an existing curated "sg" so import must skip it
+    const put = findRoute('PUT', '/machine-access/machines/sg');
+    await put.handler(req('PUT', '/machine-access/machines/sg', {
+      body: { name: 'curated SG', access: [{ type: 'ssh', host: '213.35.107.246', user: 'opc' }] },
+    }), {} as never);
+
+    const h = findRoute('POST', '/machine-access/import');
+    const res = await h.handler(req('POST', '/machine-access/import', { body: { path: cfgPath, apply: true } }), {} as never);
+    assert.equal(res.success, true);
+    const data = res.data as { dryRun: boolean; imported: string[]; skippedExisting: string[] };
+    assert.equal(data.dryRun, false);
+    assert.deepEqual(data.imported, []);
+    assert.deepEqual(data.skippedExisting, ['sg']);
+    // curated profile untouched
+    const get = findRoute('GET', '/machine-access');
+    const rep = await get.handler(req('GET', '/machine-access'), {} as never);
+    const m = (rep.data as { machines: Array<{ id: string; name: string }> }).machines.find((x) => x.id === 'sg')!;
+    assert.equal(m.name, 'curated SG');
+  });
+});
