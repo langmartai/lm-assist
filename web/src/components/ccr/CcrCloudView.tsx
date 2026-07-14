@@ -7,7 +7,8 @@ import { TranscriptMessage } from '@/components/shared/TranscriptMessage';
 import { ApprovalWidget } from '@/components/shared/ApprovalWidget';
 
 type ApiFetch = <T>(path: string, opts?: { method?: string; body?: unknown }) => Promise<T>;
-interface CloudMsg { role: string; type: string; text: string; tools?: string[] }
+interface CloudToolCall { name: string; input?: unknown; result?: string; isError?: boolean }
+interface CloudMsg { role: string; type: string; text: string; tools?: string[]; thinking?: string; toolCalls?: CloudToolCall[] }
 interface QOption { label: string; description?: string }
 interface PendingQuestion { toolUseId: string; requestId?: string; questions: Array<{ header?: string; question?: string; multiSelect?: boolean; options?: QOption[] }> }
 
@@ -83,9 +84,9 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose, fill, hideHeader 
     finally { setSending(false); }
   }, [apiFetch, sid, prompt, load]);
 
-  // "Only user ↔ assistant": always drop truly-empty turns (no text AND no tools);
+  // "Only user ↔ assistant": always drop truly-empty turns (no text AND no tool activity);
   // when the toggle is ON, also drop lm-assist-injected scaffolding.
-  const nonEmpty = messages.filter((m) => (m.text && m.text.trim().length > 0) || (m.tools && m.tools.length > 0));
+  const nonEmpty = messages.filter((m) => (m.text && m.text.trim().length > 0) || (m.tools && m.tools.length > 0) || (m.toolCalls && m.toolCalls.length > 0));
   // Span-aware: also hides the assistant responses to a hidden injected directive.
   const visibleMessages = hideInjected ? filterInjectedExchanges(nonEmpty, (m) => m.text || '') : nonEmpty;
   const injectedHiddenCount = nonEmpty.length - visibleMessages.length;
