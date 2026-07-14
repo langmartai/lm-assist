@@ -1,81 +1,19 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import {
-  MonitorPlay, RefreshCw, Loader2, Eye, Radio, Cast, Square, ExternalLink, X, AlertTriangle, Copy, Check, Maximize2, Cloud,
-} from 'lucide-react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { RefreshCw, Loader2, Eye, Radio, Cast, Square, ExternalLink, ChevronDown, Check, Settings2 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { CcrSessionView } from './CcrSessionView';
 import { CcrCloudView } from './CcrCloudView';
+import { CcrComposer } from './CcrComposer';
+import { CcrSessionList } from './CcrSessionList';
+import { CcrDetailHeader } from './CcrDetailHeader';
+import { ModelEffortSelector } from '@/components/cowork/ModelEffortSelector';
+import type { ApiFetch, CloudSessionInfo, Remote, RcData, CcSession, CcrRow } from './ccrTypes';
 
 type Mode = 'load' | 'mirror' | 'connect';
 
-interface Verdict {
-  live: boolean;
-  allowedModes: Mode[];
-  connectStrategy: 'attach-existing' | 'create-tmux' | 'refuse' | 'none';
-  safeToCreateTmux: boolean;
-  reason?: string;
-}
-interface CcSession {
-  sessionId: string;
-  jsonl?: string;
-  owner?: { cwd?: string; status?: string; kind?: string } | null;
-  inTmux?: boolean;
-  tmuxSession?: string;
-  driveable?: boolean;
-  verdict?: Verdict;
-}
-interface Remote {
-  id: string;
-  mode: 'load' | 'mirror' | 'connected';
-  sessionId: string | null;
-  webUrl: string | null;
-  live?: boolean;
-  strategy?: string;
-}
-interface CloudSession {
-  sid: string;
-  title: string;
-  model: string;
-  repo: string | null;
-  cwd: string | null;
-  webUrl: string;
-  createdAt: string;
-}
-interface GitHubRepo {
-  repo: string;          // owner/name
-  isPrivate: boolean;
-  pushedAt: string;
-}
-interface RcController {
-  sid: string;
-  cse: string | null;
-  tmux?: string;
-  node?: string;
-  title?: string;
-  startedAt?: number;
-}
-interface RcExecutor {
-  sid: string;
-  cse?: string | null;
-  title?: string;
-  missionId?: string;
-  status?: string;
-}
-interface RcAccountSession {
-  sid: string;
-  status?: string;
-  title?: string;
-}
-interface RcData {
-  controller: RcController | null;
-  executors: RcExecutor[];
-  accountRc: RcAccountSession[];
-}
-
-const short = (id: string | null | undefined) => (id ? id.slice(0, 8) : '—');
-const base = (p?: string) => (p ? p.split('/').filter(Boolean).pop() || p : '');
+const base = (p?: string | null) => (p ? p.split('/').filter(Boolean).pop() || p : '');
 
 const MODE_META: Record<Mode, { label: string; icon: typeof Eye; hint: string }> = {
   load: { label: 'Load', icon: Eye, hint: 'Read-only replay into claude.ai/code (safe, any session)' },
@@ -83,489 +21,253 @@ const MODE_META: Record<Mode, { label: string; icon: typeof Eye; hint: string }>
   connect: { label: 'Connect', icon: Cast, hint: 'Two-way control — drive it from claude.ai/code' },
 };
 
-/** Pull the structured {code,message} out of an apiFetch error (it throws "API <status>: <body>"). */
 function parseCcrError(e: unknown): { code?: string; message: string } {
   const raw = e instanceof Error ? e.message : String(e);
   const m = raw.match(/\{[\s\S]*\}/);
   if (m) { try { const j = JSON.parse(m[0]); if (j?.error?.code || j?.error?.message) return { code: j.error.code, message: j.error.message || raw }; } catch { /* not json */ } }
   return { message: raw };
 }
-
-/** Turn a CCR failure into a clear, actionable line for the operator. */
 function friendlyCcrError(mode: Mode, e: unknown): string {
   const { code, message } = parseCcrError(e);
   switch (code) {
-    case 'CONFLICT':
-      return `Can't ${mode}: a live process already owns this session — connecting would corrupt its append-only transcript. Use Load (read-only) or Mirror (live view) instead.`;
-    case 'SESSION_NOT_FOUND':
-      return `Can't ${mode}: this session isn't on this host. CCR runs on the session's OWN machine — open this page on (or node-target) that host to bridge it; a remote session can't be connected from here.`;
-    case 'TIMEOUT':
-      return `${mode} timed out — the bridge couldn't reach claude.ai/code. Check the claude.ai session (cookie) is valid and retry.`;
-    case 'TMUX_NOT_INSTALLED':
-      return `Can't ${mode}: tmux isn't installed on this host (needed to back the session).`;
-    case 'PLATFORM_UNSUPPORTED':
-      return `${mode} isn't supported on this platform.`;
-    case 'INVALID_INPUT':
-      return `Can't ${mode}: ${message}`;
-    default:
-      return `${mode} failed: ${message}`;
+    case 'CONFLICT': return `Can't ${mode}: a live process already owns this session — connecting would corrupt its transcript. Use Load or Mirror instead.`;
+    case 'SESSION_NOT_FOUND': return `Can't ${mode}: this session isn't on this host. Open this page on (or node-target) that host to bridge it.`;
+    case 'TIMEOUT': return `${mode} timed out — the bridge couldn't reach claude.ai/code. Check the session cookie and retry.`;
+    case 'TMUX_NOT_INSTALLED': return `Can't ${mode}: tmux isn't installed on this host.`;
+    case 'PLATFORM_UNSUPPORTED': return `${mode} isn't supported on this platform.`;
+    default: return `${mode} failed: ${message}`;
   }
+}
+
+/** Normalize the four data sources into one claude.ai/code-style session list. */
+function buildRows(cloud: CloudSessionInfo[], remotes: Remote[], rc: RcData, locals: CcSession[]): CcrRow[] {
+  const rows: CcrRow[] = [];
+  const titleByCse = new Map<string, string>();
+  if (rc.controller?.cse) titleByCse.set(rc.controller.cse, rc.controller.title || 'Mission Controller');
+  for (const ex of rc.executors) if (ex.cse) titleByCse.set(ex.cse, ex.title || ex.sid);
+
+  const seenCse = new Set<string>();
+  for (const c of cloud) {
+    seenCse.add(c.sid);
+    rows.push({
+      key: `cloud:${c.sid}`, kind: c.kind, id: c.sid,
+      title: titleByCse.get(c.sid) || c.title,
+      repo: c.repo, branch: c.branch, model: c.model,
+      status: { statusBucket: c.statusBucket, workerStatus: c.workerStatus, statusCategory: c.statusCategory, connectionStatus: c.connectionStatus },
+      statusDetail: c.statusDetail || c.needsAction || null,
+      time: c.lastEventAt || c.createdAt, webUrl: c.webUrl, unread: c.unread, cloud: c,
+    });
+  }
+  // RC controller/executors not already in the cloud list (by cse) → remote rows.
+  const rcExtra = [
+    ...(rc.controller?.cse ? [{ sid: rc.controller.cse, title: rc.controller.title || 'Mission Controller' }] : []),
+    ...rc.executors.filter((e) => e.cse).map((e) => ({ sid: e.cse as string, title: e.title || e.sid })),
+  ];
+  for (const x of rcExtra) {
+    if (seenCse.has(x.sid)) continue;
+    seenCse.add(x.sid);
+    rows.push({ key: `rc:${x.sid}`, kind: 'remote', id: x.sid, title: x.title, status: { connectionStatus: 'connected' }, statusDetail: 'remote-control', time: null, webUrl: `https://claude.ai/code/${x.sid}` });
+  }
+
+  const bridgeBySession = new Map<string, Remote>();
+  for (const r of remotes) if (r.sessionId) bridgeBySession.set(r.sessionId, r);
+
+  const liveFirst = [...locals].sort((a, b) => Number(!!b.verdict?.live) - Number(!!a.verdict?.live));
+  for (const s of liveFirst) {
+    const bridge = bridgeBySession.get(s.sessionId);
+    rows.push({
+      key: `local:${s.sessionId}`, kind: 'local', id: s.sessionId,
+      title: base(s.owner?.cwd) || base(s.jsonl) || 'session',
+      repo: null, branch: null,
+      status: { live: !!s.verdict?.live, connectionStatus: bridge ? 'connected' : null },
+      statusDetail: bridge ? `bridged · ${bridge.mode}` : (s.owner?.status || null),
+      time: null, webUrl: bridge?.webUrl || null,
+      driveable: !!s.driveable || !!s.verdict?.live,
+      local: s, remoteBridge: bridge,
+    });
+  }
+  return rows;
 }
 
 export function CcrPage() {
   const { apiClient, proxy } = useAppMode();
-  const apiFetch = useCallback(
-    async <T,>(path: string, opts?: { method?: string; body?: unknown }): Promise<T> =>
-      apiClient.fetchPath<T>(path, { method: opts?.method, body: opts?.body, machineId: proxy.machineId || undefined }),
+  const apiFetch = useCallback<ApiFetch>(
+    (path, opts) => apiClient.fetchPath(path, { method: opts?.method, body: opts?.body, machineId: proxy.machineId || undefined }),
     [apiClient, proxy.machineId],
   );
 
+  const [cloud, setCloud] = useState<CloudSessionInfo[]>([]);
   const [remotes, setRemotes] = useState<Remote[]>([]);
-  const [sessions, setSessions] = useState<CcSession[]>([]);
+  const [rcData, setRcData] = useState<RcData>({ controller: null, executors: [], accountRc: [] });
+  const [locals, setLocals] = useState<CcSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState<number>(0);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [confirmConnect, setConfirmConnect] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
-  const [copied, setCopied] = useState<string | null>(null);
-  const [viewing, setViewing] = useState<string | null>(null); // sessionId whose embedded view is open
-  const [sessionErr, setSessionErr] = useState<Record<string, string>>({}); // per-session CCR failure
-  const [cloudSessions, setCloudSessions] = useState<CloudSession[]>([]);
-  const [cloudPrompt, setCloudPrompt] = useState('');
-  const [cloudRepo, setCloudRepo] = useState('');
-  const [cloudBranch, setCloudBranch] = useState('');
-  const [cloudSetup, setCloudSetup] = useState(false);
-  const [cloudViewing, setCloudViewing] = useState<string | null>(null);
-  const [rcData, setRcData] = useState<RcData>({ controller: null, executors: [], accountRc: [] });
-  const [starting, setStarting] = useState(false);
-  const [cloudErr, setCloudErr] = useState<string | null>(null);
-  const [repos, setRepos] = useState<GitHubRepo[]>([]);
-  const [branchOptions, setBranchOptions] = useState<string[]>([]);
-  const [branchesLoading, setBranchesLoading] = useState(false);
-  const setBusyFor = (k: string, on: boolean) => setBusy((p) => { const n = new Set(p); on ? n.add(k) : n.delete(k); return n; });
-  const copyUrl = useCallback(async (url: string) => {
-    try { await navigator.clipboard.writeText(url); setCopied(url); setTimeout(() => setCopied((c) => (c === url ? null : c)), 1500); } catch { /* clipboard blocked */ }
-  }, []);
+  const [sessionErr, setSessionErr] = useState<Record<string, string>>({});
+  const setBusyFor = (k: string, on: boolean) => setBusy((p) => { const n = new Set(p); if (on) n.add(k); else n.delete(k); return n; });
 
   const fetchAll = useCallback(async () => {
-    setLoading(true); setError(null);
+    setError(null);
     try {
-      const [r, s, c, p, rc] = await Promise.all([
-        apiFetch<{ remotes: Remote[] }>('/ccr/remote').catch(() => ({ remotes: [] })),
+      const [c, r, rc, s] = await Promise.all([
+        apiFetch<{ sessions: CloudSessionInfo[] }>('/ccr/cloud').catch(() => ({ sessions: [] as CloudSessionInfo[] })),
+        apiFetch<{ remotes: Remote[] }>('/ccr/remote').catch(() => ({ remotes: [] as Remote[] })),
+        apiFetch<RcData>('/ccr/remote-control').catch(() => ({ controller: null, executors: [], accountRc: [] } as RcData)),
         apiFetch<CcSession[] | { sessions: CcSession[] }>('/terminal/cc-sessions').catch(() => [] as CcSession[]),
-        apiFetch<{ sessions: CloudSession[] }>('/ccr/cloud').catch(() => ({ sessions: [] })),
-        apiFetch<{ repos: GitHubRepo[] }>('/ccr/cloud/repos').catch(() => ({ repos: [] })),
-        apiFetch<RcData>('/ccr/remote-control').catch(() => ({ controller: null, executors: [], accountRc: [] })),
       ]);
+      setCloud(c.sessions || []);
       setRemotes(r.remotes || []);
-      setSessions(Array.isArray(s) ? s : (s.sessions || []));
-      setCloudSessions(c.sessions || []);
-      setRepos(p.repos || []); // already sorted most-recent-first by the backend
       setRcData({ controller: rc.controller ?? null, executors: rc.executors ?? [], accountRc: rc.accountRc ?? [] });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally { setLoading(false); }
+      setLocals(Array.isArray(s) ? s : (s.sessions || []));
+      setNowMs(Date.now());
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setLoading(false); }
   }, [apiFetch]);
 
-  useEffect(() => { fetchAll(); }, [fetchAll]);
+  // Stable 5s poll (decoupled from apiFetch identity churn in hybrid/proxy mode).
+  const fetchRef = useRef(fetchAll);
+  useEffect(() => { fetchRef.current = fetchAll; }, [fetchAll]);
+  useEffect(() => { fetchRef.current(); const t = setInterval(() => fetchRef.current(), 5000); return () => clearInterval(t); }, []);
 
-  // Load the selected repo's branches for the branch picker (debounced).
-  useEffect(() => {
-    const repo = cloudRepo.trim();
-    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) { setBranchOptions([]); setBranchesLoading(false); return; }
-    let cancelled = false;
-    setBranchesLoading(true);
-    const t = setTimeout(async () => {
-      try {
-        const r = await apiFetch<{ branches: string[] }>(`/ccr/cloud/branches?repo=${encodeURIComponent(repo)}`);
-        if (!cancelled) setBranchOptions(r.branches || []);
-      } catch { if (!cancelled) setBranchOptions([]); }
-      finally { if (!cancelled) setBranchesLoading(false); }
-    }, 450);
-    return () => { cancelled = true; clearTimeout(t); };
-  }, [cloudRepo, apiFetch]);
+  const rows = useMemo(() => buildRows(cloud, remotes, rcData, locals), [cloud, remotes, rcData, locals]);
+  const selected = useMemo(() => rows.find((r) => r.id === selectedId) || null, [rows, selectedId]);
 
   const startMode = useCallback(async (sid: string, mode: Mode) => {
     setBusyFor(sid, true); setConfirmConnect(null);
-    setSessionErr((p) => { const n = { ...p }; delete n[sid]; return n; }); // clear prior error for this session
-    try {
-      await apiFetch<Remote>(`/ccr/${mode}`, { method: 'POST', body: { sessionId: sid } });
-      await fetchAll();
-    } catch (e) {
-      setSessionErr((p) => ({ ...p, [sid]: friendlyCcrError(mode, e) }));
-    } finally { setBusyFor(sid, false); }
+    setSessionErr((p) => { const n = { ...p }; delete n[sid]; return n; });
+    try { await apiFetch(`/ccr/${mode}`, { method: 'POST', body: { sessionId: sid } }); await fetchAll(); }
+    catch (e) { setSessionErr((p) => ({ ...p, [sid]: friendlyCcrError(mode, e) })); }
+    finally { setBusyFor(sid, false); }
   }, [apiFetch, fetchAll]);
 
-  const stop = useCallback(async (id: string) => {
-    setBusyFor(id, true); setError(null);
+  const stopBridge = useCallback(async (id: string) => {
+    setBusyFor(id, true);
     try { await apiFetch(`/ccr/remote/${encodeURIComponent(id)}/stop`, { method: 'POST', body: {} }); await fetchAll(); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusyFor(id, false); }
   }, [apiFetch, fetchAll]);
 
-  const startCloud = useCallback(async () => {
-    const repo = cloudRepo.trim();
-    const p = cloudPrompt.trim();
-    if (!p && !repo && !cloudSetup) return; // need a repo, a prompt, or setup
-    setStarting(true); setCloudErr(null);
-    try {
-      const body: Record<string, unknown> = {};
-      if (p) body.prompt = p;
-      if (repo) body.repo = repo;
-      if (cloudBranch.trim()) body.branch = cloudBranch.trim();
-      if (cloudSetup) body.setup = true;
-      const r = await apiFetch<{ sid: string }>('/ccr/cloud/start', { method: 'POST', body });
-      setCloudPrompt(''); setCloudRepo(''); setCloudBranch(''); setBranchOptions([]); setCloudSetup(false);
-      await fetchAll();
-      if (r?.sid) setCloudViewing(r.sid); // open the new session's view to watch it boot
-    } catch (e) { setCloudErr(parseCcrError(e).message); }
-    finally { setStarting(false); }
-  }, [apiFetch, cloudPrompt, cloudRepo, cloudBranch, cloudSetup, fetchAll]);
+  // Inline Load/Mirror/Connect + bridge-stop for a local session row.
+  const rowActions = useCallback((row: CcrRow) => {
+    if (row.kind !== 'local' || !row.local) return null;
+    const v = row.local.verdict;
+    const isBusy = busy.has(row.id);
+    const allowed = (m: Mode) => v?.allowedModes?.includes(m);
+    const bridge = row.remoteBridge;
+    return (
+      <>
+        {bridge?.webUrl && <a className="btn btn-ghost btn-sm" href={bridge.webUrl} target="_blank" rel="noreferrer" title="Open the bridge on claude.ai/code"><ExternalLink size={13} /></a>}
+        {bridge && <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => stopBridge(bridge.id)} title="Stop bridge">{isBusy ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Square size={12} />}</button>}
+        {!bridge && (['load', 'mirror'] as Mode[]).map((m) => {
+          const M = MODE_META[m]; const Icon = M.icon; const can = allowed(m);
+          return <button key={m} className="btn btn-ghost btn-sm" disabled={isBusy || !can} title={can ? M.hint : `${m} unavailable`} onClick={() => startMode(row.id, m)}><Icon size={13} /></button>;
+        })}
+        {!bridge && allowed('connect') && (confirmConnect === row.id
+          ? <><button className="btn btn-destructive btn-sm" disabled={isBusy} onClick={() => startMode(row.id, 'connect')}>Confirm</button><button className="btn btn-ghost btn-sm" onClick={() => setConfirmConnect(null)}>✕</button></>
+          : <button className="btn btn-ghost btn-sm" disabled={isBusy} title={MODE_META.connect.hint} onClick={() => setConfirmConnect(row.id)}><Cast size={13} /></button>)}
+      </>
+    );
+  }, [busy, confirmConnect, startMode, stopBridge]);
 
-  const stopCloud = useCallback(async (sid: string) => {
-    setBusyFor(sid, true); setCloudErr(null);
-    try {
-      await apiFetch(`/ccr/cloud/${encodeURIComponent(sid)}/stop`, { method: 'POST', body: {} });
-      if (cloudViewing === sid) setCloudViewing(null);
-      await fetchAll();
-    } catch (e) { setCloudErr(e instanceof Error ? e.message : String(e)); }
-    finally { setBusyFor(sid, false); }
-  }, [apiFetch, fetchAll, cloudViewing]);
-
-  const sorted = [...sessions].sort((a, b) => Number(!!b.verdict?.live) - Number(!!a.verdict?.live));
-  const shown = showAll ? sorted : sorted.filter((s) => s.verdict?.live || s.driveable).slice(0, 12);
+  const detailBody = (row: CcrRow) => (
+    row.kind === 'local'
+      ? <CcrSessionView sessionId={row.id} driveable={!!row.driveable} tmuxSession={row.local?.tmuxSession} apiFetch={apiFetch} onClose={() => setSelectedId(null)} fill hideHeader />
+      : <CcrCloudView sid={row.id} webUrl={row.webUrl || undefined} apiFetch={apiFetch} onClose={() => setSelectedId(null)} fill hideHeader />
+  );
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', background: 'var(--color-bg-root)' }}>
-      <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border-default)', display: 'flex', alignItems: 'center', gap: 12 }}>
-        <MonitorPlay size={20} style={{ color: 'var(--color-accent)' }} />
-        <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>CCR — Remote Control</div>
-        <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>view or drive a Claude Code session from claude.ai/code</span>
+      <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--color-border-default)', display: 'flex', alignItems: 'center', gap: 10 }}>
+        <Cast size={18} style={{ color: 'var(--color-accent)' }} />
+        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-text-primary)' }}>Code</div>
+        <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>cloud sessions · remote control · local</span>
         <div style={{ flex: 1 }} />
-        <button className="btn btn-ghost btn-sm" onClick={fetchAll} disabled={loading} title="Refresh">
-          <RefreshCw size={14} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} />
-        </button>
+        <button className="btn btn-ghost btn-sm" onClick={fetchAll} disabled={loading} title="Refresh"><RefreshCw size={14} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} /></button>
       </div>
 
       {error && (
-        <div style={{ margin: '12px 20px 0', padding: '8px 12px', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', color: 'var(--color-status-red)', fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ flex: 1 }}>{error}</span>
-          <button className="btn btn-ghost btn-sm" onClick={() => setError(null)}><X size={12} /></button>
-        </div>
+        <div style={{ margin: '12px 20px 0', padding: '8px 12px', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', color: 'var(--color-status-red)', fontSize: 12 }}>{error}</div>
       )}
 
-      <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
-        {/* Embedded session view (claude.ai can't be iframed, so we render it natively) */}
-        {viewing && (
-          <div style={{ marginBottom: 18 }}>
-            <CcrSessionView
-              sessionId={viewing}
-              driveable={!!sessions.find((s) => s.sessionId === viewing)?.driveable || !!sessions.find((s) => s.sessionId === viewing)?.verdict?.live}
-              tmuxSession={sessions.find((s) => s.sessionId === viewing)?.tmuxSession}
-              apiFetch={apiFetch}
-              onClose={() => setViewing(null)}
-            />
+      {selected ? (
+        // ── Detail view (claude.ai/code session) ──
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <CcrDetailHeader row={selected} apiFetch={apiFetch} onClose={() => setSelectedId(null)} onChanged={fetchAll} onDeleted={() => { setSelectedId(null); fetchAll(); }} />
+          {selected.kind !== 'local' && <CloudControlBar row={selected} apiFetch={apiFetch} />}
+          {selected.kind === 'local' && sessionErr[selected.id] && (
+            <div style={{ margin: '8px 14px 0', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', fontSize: 11.5, color: 'var(--color-status-red)' }}>{sessionErr[selected.id]}</div>
+          )}
+          <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '0 14px 14px' }}>
+            {detailBody(selected)}
           </div>
-        )}
-
-        {/* Active remotes */}
-        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 8 }}>
-          Active remotes {remotes.length ? `(${remotes.length})` : ''}
         </div>
-        {remotes.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', marginBottom: 18 }}>No active CCR bridges. Start one from a session below.</div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
-            {remotes.map((r) => {
-              const isBusy = busy.has(r.id);
-              return (
-                <div key={r.id} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, flexWrap: 'wrap' }}>
-                  <span className={`badge ${r.mode === 'connected' ? 'badge-red' : r.mode === 'mirror' ? 'badge-blue' : 'badge-green'}`}>{r.mode}</span>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--color-text-tertiary)' }}>{short(r.sessionId)}</span>
-                  {r.live === false && <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>(bridge idle)</span>}
-                  {r.webUrl && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--color-text-tertiary)', maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.webUrl}>{r.webUrl.replace('https://', '')}</span>}
-                  {!r.webUrl && <span style={{ fontSize: 11, color: 'var(--color-status-orange)', display: 'flex', alignItems: 'center', gap: 4 }} title="The bridge started but never returned a claude.ai/code URL — it likely couldn't reach claude.ai (check the session cookie). Stop and retry."><AlertTriangle size={12} /> couldn’t reach claude.ai/code — Stop &amp; retry</span>}
-                  <div style={{ flex: 1 }} />
-                  {r.webUrl && (
-                    <button className="btn btn-ghost btn-sm" onClick={() => copyUrl(r.webUrl!)} title="Copy URL (paste into a browser if the link opens the Claude app)">
-                      {copied === r.webUrl ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy URL</>}
-                    </button>
-                  )}
-                  {r.sessionId && <button className={`btn btn-sm ${viewing === r.sessionId ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setViewing(viewing === r.sessionId ? null : r.sessionId)} title="View the session here (embedded)"><Maximize2 size={13} /> View</button>}
-                  {r.webUrl && <a className="btn btn-ghost btn-sm" href={r.webUrl} target="_blank" rel="noreferrer" title="Open (may launch the Claude app via the claude.ai/code deep-link handler)"><ExternalLink size={13} /> Open</a>}
-                  <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => stop(r.id)} title="Stop bridge">
-                    {isBusy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <><Square size={12} /> Stop</>}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Remote-control sessions — Mission Controller + executors + other account RC sessions */}
-        {(() => {
-          const { controller: rcCtrl, executors: rcExec, accountRc } = rcData;
-          // Deduplicate accountRc: skip sids already shown as controller or executor
-          const knownSids = new Set<string>();
-          if (rcCtrl) { knownSids.add(rcCtrl.sid); if (rcCtrl.cse) knownSids.add(rcCtrl.cse); }
-          for (const ex of rcExec) { knownSids.add(ex.sid); if (ex.cse) knownSids.add(ex.cse); }
-          const dedupedRc = accountRc.filter((r) => !knownSids.has(r.sid) && r.status === 'active');
-          const hasAny = !!rcCtrl || rcExec.length > 0 || dedupedRc.length > 0;
-          return (
-            <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <Radio size={15} style={{ color: 'var(--color-accent)' }} />
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>Remote-control sessions</div>
-                <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>Mission Controller, executors, and account remote-control sessions</span>
-              </div>
-              {!hasAny ? (
-                <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', marginBottom: 18 }}>No remote-control sessions.</div>
+      ) : (
+        // ── Home: session list (scrolls) above, composer pinned at the bottom (claude.ai/code) ──
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ flex: 1, overflow: 'auto', padding: '20px 20px 8px' }}>
+            <div style={{ maxWidth: 900, margin: '0 auto' }}>
+              {loading && rows.length === 0 ? (
+                <div className="empty-state"><Loader2 size={22} style={{ animation: 'spin 1s linear infinite' }} /><span style={{ fontSize: 12 }}>Loading sessions…</span></div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
-                  {/* Controller row */}
-                  {rcCtrl && (
-                    <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, flexWrap: 'wrap' }}>
-                      <Radio size={14} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
-                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
-                        {rcCtrl.title || 'Mission Controller'}
-                      </span>
-                      {rcCtrl.node && (
-                        <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>· {rcCtrl.node}</span>
-                      )}
-                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                        {short(rcCtrl.cse ?? rcCtrl.sid)}
-                      </span>
-                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--color-status-green)', flexShrink: 0 }} />
-                      <div style={{ flex: 1 }} />
-                      {rcCtrl.cse ? (
-                        <button
-                          className={`btn btn-sm ${cloudViewing === rcCtrl.cse ? 'btn-primary' : 'btn-ghost'}`}
-                          onClick={() => setCloudViewing(cloudViewing === rcCtrl.cse ? null : rcCtrl.cse!)}
-                          title="Watch + drive here"
-                        >
-                          <Maximize2 size={13} /> Open
-                        </button>
-                      ) : (
-                        <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>driven from the Missions page</span>
-                      )}
-                    </div>
-                  )}
-                  {/* Executor rows */}
-                  {rcExec.map((ex) => {
-                    const openSid = ex.cse || (/^(session_|cse_)/.test(ex.sid) ? ex.sid : null);
-                    return (
-                      <div key={ex.sid} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, flexWrap: 'wrap' }}>
-                        <span className="badge badge-blue">executor</span>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>{ex.title || ex.sid}</span>
-                        {ex.missionId && (
-                          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--color-text-tertiary)' }} title={`Mission: ${ex.missionId}`}>
-                            {short(ex.missionId)}
-                          </span>
-                        )}
-                        {ex.status && <span className="badge badge-default">{ex.status}</span>}
-                        <div style={{ flex: 1 }} />
-                        {openSid && (
-                          <button
-                            className={`btn btn-sm ${cloudViewing === openSid ? 'btn-primary' : 'btn-ghost'}`}
-                            onClick={() => setCloudViewing(cloudViewing === openSid ? null : openSid)}
-                            title="Watch + drive here"
-                          >
-                            <Maximize2 size={13} /> Open
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
-                  {/* Other account RC rows (deduped) */}
-                  {dedupedRc.map((r) => (
-                    <div key={r.sid} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, flexWrap: 'wrap' }}>
-                      <span className="badge badge-outline">RC</span>
-                      <span style={{ fontSize: 13, color: 'var(--color-text-primary)' }}>{r.title || r.sid}</span>
-                      {r.status && <span className="badge badge-default">{r.status}</span>}
-                    </div>
-                  ))}
-                </div>
+                <CcrSessionList rows={rows} selectedId={selectedId} onSelect={(r) => setSelectedId(r.id)} rowActions={rowActions} nowMs={nowMs} />
               )}
-            </>
-          );
-        })()}
+            </div>
+          </div>
+          <div style={{ padding: '10px 20px 18px' }}>
+            <CcrComposer apiFetch={apiFetch} onStarted={(sid) => { fetchAll(); setSelectedId(sid); }} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
-        {/* Inline cloud view from RC section (reuses the same cloudViewing state) */}
-        {cloudViewing && !cloudSessions.find((c) => c.sid === cloudViewing) && (
-          <div style={{ marginBottom: 12 }}>
-            <CcrCloudView sid={cloudViewing} webUrl={`https://claude.ai/code/${cloudViewing}`} apiFetch={apiFetch} onClose={() => setCloudViewing(null)} />
+/** A slim in-detail control bar for cloud/remote sessions — live model + permission (POST /control). */
+function CloudControlBar({ row, apiFetch }: { row: CcrRow; apiFetch: ApiFetch }) {
+  const [model, setModel] = useState(row.model || 'claude-opus-4-8');
+  const [effort, setEffort] = useState('high');
+  const [permission, setPermission] = useState('Accept edits');
+  const [permOpen, setPermOpen] = useState(false);
+  const [saving, setSaving] = useState<string | null>(null);
+  const permRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { setModel(row.model || 'claude-opus-4-8'); }, [row.id, row.model]);
+  useEffect(() => {
+    if (!permOpen) return;
+    const onDown = (e: MouseEvent) => { if (permRef.current && !permRef.current.contains(e.target as Node)) setPermOpen(false); };
+    document.addEventListener('mousedown', onDown); return () => document.removeEventListener('mousedown', onDown);
+  }, [permOpen]);
+
+  const apply = useCallback(async (body: { model?: string; permissionMode?: string }, label: string) => {
+    setSaving(label);
+    try { await apiFetch(`/ccr/cloud/${encodeURIComponent(row.id)}/control`, { method: 'POST', body }); }
+    catch { /* surfaced by the row poll; keep the bar quiet */ }
+    finally { setSaving(null); }
+  }, [apiFetch, row.id]);
+
+  const PERMS = ['Manual', 'Accept edits', 'Plan', 'Auto'];
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderBottom: '1px solid var(--color-border-subtle)', fontSize: 11.5 }}>
+      <span style={{ color: 'var(--color-text-tertiary)' }}>Session:</span>
+      <div ref={permRef} style={{ position: 'relative' }}>
+        <button className="btn btn-ghost btn-sm" onClick={() => setPermOpen((v) => !v)} style={{ fontSize: 11.5, gap: 5 }}>
+          <Settings2 size={12} /> {permission} <ChevronDown size={11} />
+        </button>
+        {permOpen && (
+          <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, minWidth: 150, background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border-default)', borderRadius: 'var(--radius-md)', boxShadow: '0 8px 24px rgba(0,0,0,0.4)', zIndex: 60, padding: 4 }}>
+            {PERMS.map((p) => (
+              <button key={p} onClick={() => { setPermission(p); setPermOpen(false); apply({ permissionMode: p }, 'perm'); }}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', padding: '6px 8px', borderRadius: 'var(--radius-sm)', border: 'none', background: 'none', cursor: 'pointer', fontSize: 12, color: p === permission ? 'var(--color-accent)' : 'var(--color-text-secondary)' }}>
+                {p} {p === permission && <Check size={13} style={{ marginLeft: 'auto' }} />}
+              </button>
+            ))}
           </div>
         )}
-
-        {/* Cloud CCR — claude runs in an Anthropic-cloud container (no local machine) */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <Cloud size={15} style={{ color: 'var(--color-accent)' }} />
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>Cloud sessions</div>
-          <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>claude runs in an Anthropic-cloud container — no local machine needed</span>
-        </div>
-        <div className="card" style={{ padding: 12, marginBottom: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <textarea className="input" rows={2} value={cloudPrompt} placeholder="Optional prompt for the cloud claude — leave empty to just clone the repo and drive it after it boots…"
-            style={{ resize: 'none', fontSize: 12.5 }} onChange={(e) => setCloudPrompt(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); startCloud(); } }} />
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <input className="input" list="ccr-repo-list" value={cloudRepo} onChange={(e) => setCloudRepo(e.target.value)}
-              placeholder="GitHub repo to clone — pick or type owner/name (empty = scratch workspace)"
-              spellCheck={false} autoComplete="off"
-              style={{ flex: 2, minWidth: 260, fontSize: 12 }}
-              title="The cloud container clones this GitHub repo (public or the org's private repos). Leave empty for an empty scratch workspace." />
-            <input className="input" list="ccr-branch-list" value={cloudBranch} onChange={(e) => setCloudBranch(e.target.value)}
-              placeholder={branchesLoading ? 'loading branches…' : branchOptions.length ? 'branch (pick / default)' : 'branch (optional)'}
-              spellCheck={false} autoComplete="off"
-              style={{ flex: 1, minWidth: 150, fontSize: 12 }}
-              title="Branch to clone — pick from the repo's branches or type one (default: the repo's default branch)" />
-          </div>
-          <datalist id="ccr-repo-list">
-            {repos.map((r) => (<option key={r.repo} value={r.repo}>{r.isPrivate ? 'private' : 'public'}</option>))}
-          </datalist>
-          <datalist id="ccr-branch-list">
-            {branchOptions.map((b) => (<option key={b} value={b} />))}
-          </datalist>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            {!cloudPrompt.trim() && !cloudRepo.trim() && !cloudSetup
-              ? <span style={{ fontSize: 11, color: 'var(--color-status-orange)' }}>pick a repo (or type a prompt) to start</span>
-              : cloudRepo.trim()
-                ? <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>clones <code>{cloudRepo.trim()}</code>{cloudBranch.trim() ? <> @ <code>{cloudBranch.trim()}</code></> : ' (default branch)'}{!cloudPrompt.trim() && !cloudSetup ? ' · no prompt — drive it after it boots' : ''}</span>
-                : cloudSetup
-                  ? <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>empty workspace · installs lm-assist (local)</span>
-                  : <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>empty scratch workspace (no repo)</span>}
-            <div style={{ flex: 1 }} />
-            <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--color-text-secondary)', cursor: 'pointer' }}
-              title="Seed the first turn to install lm-assist locally in the container (your custom GitHub build, not the stale npm one). No hub key is sent; connecting to your hub is a separate in-session step you confirm.">
-              <input type="checkbox" checked={cloudSetup} onChange={(e) => setCloudSetup(e.target.checked)} /> install&nbsp;lm-assist
-            </label>
-            <button className="btn btn-primary btn-sm" disabled={starting || (!cloudPrompt.trim() && !cloudRepo.trim() && !cloudSetup)} onClick={startCloud} title="Boot a cloud-run claude (spends cloud quota)">
-              {starting ? <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Starting…</> : <><Cloud size={13} /> Start cloud</>}
-            </button>
-          </div>
-          {cloudErr && <div style={{ fontSize: 11, color: 'var(--color-status-red)', display: 'flex', alignItems: 'center', gap: 6 }}><AlertTriangle size={12} /> {cloudErr}</div>}
-        </div>
-
-        {cloudViewing && cloudSessions.find((c) => c.sid === cloudViewing) && (
-          <div style={{ marginBottom: 12 }}>
-            <CcrCloudView sid={cloudViewing} webUrl={cloudSessions.find((c) => c.sid === cloudViewing)?.webUrl} apiFetch={apiFetch} onClose={() => setCloudViewing(null)} />
-          </div>
-        )}
-
-        {cloudSessions.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', marginBottom: 18 }}>No cloud sessions. Start one above.</div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
-            {cloudSessions.map((c) => {
-              const isBusy = busy.has(c.sid);
-              return (
-                <div key={c.sid} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, flexWrap: 'wrap' }}>
-                  <span className="badge badge-blue" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><Cloud size={11} /> cloud</span>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>{c.title}</span>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--color-text-tertiary)' }} title={c.sid}>{c.sid.replace('session_', '').slice(0, 8)}</span>
-                  {c.repo ? <span className="badge badge-outline" title={`GitHub: ${c.repo}`}>{c.repo}</span> : c.cwd ? <span className="badge badge-outline" title={c.cwd}>{base(c.cwd)}</span> : <span className="badge badge-outline" title="empty scratch workspace">scratch</span>}
-                  <div style={{ flex: 1 }} />
-                  <button className="btn btn-ghost btn-sm" onClick={() => copyUrl(c.webUrl)} title="Copy claude.ai/code URL">
-                    {copied === c.webUrl ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy URL</>}
-                  </button>
-                  <button className={`btn btn-sm ${cloudViewing === c.sid ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setCloudViewing(cloudViewing === c.sid ? null : c.sid)} title="Watch + drive here">
-                    <Maximize2 size={13} /> View
-                  </button>
-                  <a className="btn btn-ghost btn-sm" href={c.webUrl} target="_blank" rel="noreferrer" title="Open on claude.ai/code"><ExternalLink size={13} /> Open</a>
-                  <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => stopCloud(c.sid)} title="Stop + delete the cloud session">
-                    {isBusy ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <><Square size={12} /> Stop</>}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Sessions */}
-        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>Claude Code sessions</div>
-          <div style={{ flex: 1 }} />
-          <button className="btn btn-ghost btn-sm" onClick={() => setShowAll((v) => !v)}>{showAll ? 'live only' : `show all (${sessions.length})`}</button>
-        </div>
-
-        {loading ? (
-          <div className="empty-state"><Loader2 size={24} style={{ animation: 'spin 1s linear infinite' }} /><span style={{ fontSize: 12 }}>Loading…</span></div>
-        ) : shown.length === 0 ? (
-          <div className="empty-state"><MonitorPlay size={32} className="empty-state-icon" /><div>No sessions</div></div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {shown.map((s) => {
-              const v = s.verdict;
-              const isBusy = busy.has(s.sessionId);
-              const allowed = (m: Mode) => v?.allowedModes?.includes(m);
-              const refuse = v?.connectStrategy === 'refuse';
-              return (
-                <div key={s.sessionId} className="card" style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>{base(s.owner?.cwd) || base(s.jsonl) || 'session'}</span>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--color-text-tertiary)' }}>{short(s.sessionId)}</span>
-                    {v?.live ? <span className="badge badge-green">{s.owner?.status || 'live'}</span> : <span className="badge badge-default">finished</span>}
-                    {s.inTmux && <span className="badge badge-outline">tmux</span>}
-                    {v?.connectStrategy && v.connectStrategy !== 'none' && (
-                      <span className="badge badge-outline" title={v.reason}>{v.connectStrategy}</span>
-                    )}
-                    {isBusy && <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', color: 'var(--color-text-tertiary)' }} />}
-                  </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <button className={`btn btn-sm ${viewing === s.sessionId ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setViewing(viewing === s.sessionId ? null : s.sessionId)} title="View this session here (embedded) — read + drive">
-                      <Maximize2 size={13} /> View here
-                    </button>
-                    {(['load', 'mirror'] as Mode[]).map((m) => {
-                      const M = MODE_META[m]; const Icon = M.icon; const can = allowed(m);
-                      return (
-                        <button key={m} className="btn btn-ghost btn-sm" disabled={isBusy || !can} title={can ? M.hint : `not available (${m})`} onClick={() => startMode(s.sessionId, m)}>
-                          <Icon size={13} /> {M.label}
-                        </button>
-                      );
-                    })}
-                    {/* Connect — two-way, confirm-gated; respects the refuse verdict */}
-                    {allowed('connect') && (
-                      confirmConnect === s.sessionId ? (
-                        <>
-                          <button className="btn btn-destructive btn-sm" disabled={isBusy} onClick={() => startMode(s.sessionId, 'connect')}>
-                            Confirm connect ({v?.connectStrategy})
-                          </button>
-                          <button className="btn btn-ghost btn-sm" onClick={() => setConfirmConnect(null)}>Cancel</button>
-                        </>
-                      ) : (
-                        <button className="btn btn-ghost btn-sm" disabled={isBusy} title={MODE_META.connect.hint} onClick={() => setConfirmConnect(s.sessionId)}>
-                          <Cast size={13} /> Connect
-                        </button>
-                      )
-                    )}
-                    {refuse && <span style={{ fontSize: 11, color: 'var(--color-status-orange)', display: 'flex', alignItems: 'center', gap: 4 }}><AlertTriangle size={12} /> connect refused — a live process owns it; load/mirror instead</span>}
-                  </div>
-                  {/* Per-session CCR failure — clear + actionable */}
-                  {sessionErr[s.sessionId] && (
-                    <div style={{ marginTop: 4, padding: '6px 8px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', fontSize: 11.5, color: 'var(--color-status-red)', display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-                      <AlertTriangle size={13} style={{ flexShrink: 0, marginTop: 1 }} />
-                      <span style={{ flex: 1 }}>{sessionErr[s.sessionId]}</span>
-                      <button className="btn btn-ghost btn-sm" style={{ padding: 0, color: 'var(--color-text-tertiary)' }} onClick={() => setSessionErr((p) => { const n = { ...p }; delete n[s.sessionId]; return n; })}><X size={12} /></button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        <div style={{ marginTop: 16, fontSize: 11, color: 'var(--color-text-tertiary)', lineHeight: 1.6 }}>
-          <strong>Load</strong> = read-only replay (safe, any session). <strong>Mirror</strong> = one-way live view of a running
-          session. <strong>Connect</strong> = two-way control — it attaches an existing tmux, or spawns a fresh
-          <code> claude --resume</code> tmux only when no live process owns the session; it refuses otherwise to avoid
-          corrupting the append-only transcript. Each opens a <code>claude.ai/code</code> URL above.
-          <br />
-          <strong>Note:</strong> the session renders in the <strong>claude.ai web UI</strong>. If <em>Open</em> launches the
-          Claude desktop/mobile <strong>app</strong> instead of a browser tab, that's your OS routing the
-          <code> claude.ai/code</code> deep-link to the app — use <strong>Copy URL</strong> and paste it into a browser to
-          force the web view (or just use the app; it's the same cloud session).
-        </div>
       </div>
+      <ModelEffortSelector model={model} effort={effort} onChange={(m, e) => { setModel(m); setEffort(e); if (m !== model) apply({ model: m }, 'model'); }} />
+      {saving && <Loader2 size={12} style={{ animation: 'spin 1s linear infinite', color: 'var(--color-text-tertiary)' }} />}
     </div>
   );
 }

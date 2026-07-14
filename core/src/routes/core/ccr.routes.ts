@@ -183,7 +183,7 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'POST',
       pattern: /^\/ccr\/cloud\/start$/,
       handler: async (req) => envelope(async () => {
-        const body = (req.body || {}) as { prompt?: unknown; repo?: unknown; branch?: unknown; cwd?: unknown; model?: unknown; title?: unknown; setup?: unknown; role?: unknown; primaryRepo?: unknown };
+        const body = (req.body || {}) as { prompt?: unknown; repo?: unknown; branch?: unknown; cwd?: unknown; model?: unknown; effort?: unknown; permissionMode?: unknown; title?: unknown; setup?: unknown; role?: unknown; primaryRepo?: unknown };
         const role = body.role === 'worker' || body.role === 'orchestrator' ? body.role : undefined;
         return await ccrCloud.cloudStart({
           prompt: typeof body.prompt === 'string' ? body.prompt : undefined,
@@ -191,6 +191,8 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
           branch: typeof body.branch === 'string' ? body.branch : undefined,
           cwd: typeof body.cwd === 'string' ? body.cwd : undefined,
           model: typeof body.model === 'string' ? body.model : undefined,
+          effort: typeof body.effort === 'string' ? body.effort : undefined,
+          permissionMode: typeof body.permissionMode === 'string' ? body.permissionMode : undefined,
           title: typeof body.title === 'string' ? body.title : undefined,
           setup: body.setup === true,
           role,
@@ -217,11 +219,62 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       }),
     },
 
-    // GET /ccr/cloud — list cloud sessions we created
+    // GET /ccr/cloud — the account's code sessions (cloud + bridge), enriched with claude.ai/code's
+    // status fields (status_bucket / worker_status / post_turn_summary). Falls back to the local
+    // registry (sessions we created) when the account fetch fails (offline / no OAuth) so the page
+    // still renders. `?enriched=0` forces the legacy registry-only shape.
     {
       method: 'GET',
       pattern: /^\/ccr\/cloud$/,
-      handler: async () => envelope(() => ({ sessions: ccrCloud.cloudList() })),
+      handler: async (req) => envelope(async () => {
+        if (req.query?.enriched === '0') return { sessions: ccrCloud.cloudList(), enriched: false };
+        try {
+          return { sessions: await ccrCloud.cloudListEnriched(), enriched: true };
+        } catch (e) {
+          // Degrade to the registry (still shows sessions we created) rather than erroring the page.
+          return { sessions: ccrCloud.cloudList(), enriched: false, listError: e instanceof Error ? e.message : String(e) };
+        }
+      }),
+    },
+
+    // POST /ccr/cloud/:sid/rename — rename a cloud/bridge session (PUT title)
+    {
+      method: 'POST',
+      pattern: /^\/ccr\/cloud\/(?<sid>(?:session_|cse_)[^/]+)\/rename$/,
+      handler: async (req) => envelope(async () => {
+        const sid = parseCloudSid(req.params.sid);
+        const body = (req.body || {}) as { title?: unknown };
+        const title = typeof body.title === 'string' ? body.title : '';
+        if (!title.trim()) throw new TerminalError('INVALID_INPUT', 'title is required');
+        return await ccrCloud.cloudRename(sid, title);
+      }),
+    },
+
+    // POST /ccr/cloud/:sid/archive — archive ({archived:false} to unarchive)
+    {
+      method: 'POST',
+      pattern: /^\/ccr\/cloud\/(?<sid>(?:session_|cse_)[^/]+)\/archive$/,
+      handler: async (req) => envelope(async () => {
+        const sid = parseCloudSid(req.params.sid);
+        const body = (req.body || {}) as { archived?: unknown };
+        const archived = body.archived === false ? false : true;
+        return await ccrCloud.cloudArchive(sid, archived);
+      }),
+    },
+
+    // POST /ccr/cloud/:sid/control — apply live model / permission-mode controls
+    {
+      method: 'POST',
+      pattern: /^\/ccr\/cloud\/(?<sid>(?:session_|cse_)[^/]+)\/control$/,
+      handler: async (req) => envelope(async () => {
+        const sid = parseCloudSid(req.params.sid);
+        const body = (req.body || {}) as { model?: unknown; permissionMode?: unknown };
+        return await ccrCloud.cloudControl({
+          sid,
+          model: typeof body.model === 'string' ? body.model : undefined,
+          permissionMode: typeof body.permissionMode === 'string' ? body.permissionMode : undefined,
+        });
+      }),
     },
 
     // POST /ccr/cloud/:sid/drive — send a follow-up turn

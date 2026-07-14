@@ -16,8 +16,8 @@ type ApiFetch = <T>(path: string, opts?: { method?: string; body?: unknown }) =>
 /** Native embedded view of a Claude Code (CCR-bridged) session — rich render like claude.ai/code
  *  (markdown text, thinking blocks, tool cards) + a drive box. claude.ai blocks iframing, so we render
  *  the same transcript events ourselves. */
-export function CcrSessionView({ sessionId, driveable, tmuxSession, apiFetch, onClose }: {
-  sessionId: string; driveable: boolean; tmuxSession?: string; apiFetch: ApiFetch; onClose: () => void;
+export function CcrSessionView({ sessionId, driveable, tmuxSession, apiFetch, onClose, fill, hideHeader }: {
+  sessionId: string; driveable: boolean; tmuxSession?: string; apiFetch: ApiFetch; onClose: () => void; fill?: boolean; hideHeader?: boolean;
 }) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [thinking, setThinking] = useState<Think[]>([]);
@@ -98,7 +98,8 @@ export function CcrSessionView({ sessionId, driveable, tmuxSession, apiFetch, on
   }, [apiFetch, sessionId, prompt, load, tmuxSession]);
 
   return (
-    <div className="card" style={{ marginTop: 8, padding: 0, display: 'flex', flexDirection: 'column', maxHeight: 520, overflow: 'hidden', border: '1px solid var(--color-accent)' }}>
+    <div className="card" style={{ marginTop: fill ? 0 : 8, padding: 0, display: 'flex', flexDirection: 'column', ...(fill ? { flex: 1, minHeight: 0, height: '100%', maxHeight: 'none' as const } : { maxHeight: 520 }), overflow: 'hidden', border: fill ? 'none' : '1px solid var(--color-accent)' }}>
+      {!hideHeader && (
       <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--color-border-default)', display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)' }}>embedded session</span>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--color-text-tertiary)' }}>{sessionId.slice(0, 8)}</span>
@@ -110,6 +111,7 @@ export function CcrSessionView({ sessionId, driveable, tmuxSession, apiFetch, on
         </button>
         <button className="btn btn-ghost btn-sm" onClick={onClose}><X size={13} /></button>
       </div>
+      )}
 
       <div ref={scrollRef} onScroll={(e) => { const el = e.currentTarget; atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }}
         style={{ flex: 1, overflow: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 12, minHeight: 200 }}>
