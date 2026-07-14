@@ -52,6 +52,27 @@ export function TranscriptMessage({ m, compact = false }: { m: { role: string; t
           ))}
         </div>
       ) : null}
+      {/* Action row under a completed assistant turn (claude.ai parity): copy the raw
+          message text. User turns don't get one. */}
+      {!isUser && m.text ? <MessageActions text={m.text} /> : null}
+    </div>
+  );
+}
+
+/** claude.ai-style action row beneath an assistant message. Copy for now (the thumbs/
+ *  regenerate affordances need claude.ai feedback/retry endpoints we don't wire yet). */
+function MessageActions({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginTop: 1 }}>
+      <button
+        type="button"
+        title="Copy message"
+        onClick={() => { try { navigator.clipboard?.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ } }}
+        style={{ border: 'none', background: 'none', cursor: 'pointer', color: copied ? 'var(--color-accent)' : 'var(--color-text-tertiary)', fontSize: 10.5, display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 5px', borderRadius: 4 }}
+      >
+        {copied ? <><Check size={11} /> Copied</> : <><Copy size={11} /> Copy</>}
+      </button>
     </div>
   );
 }
