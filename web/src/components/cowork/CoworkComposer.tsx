@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, Mic, Plus, Send } from 'lucide-react';
+import { ChevronDown, Mic, Plus, Send, MessageSquare, Code } from 'lucide-react';
 import { ModelEffortSelector } from './ModelEffortSelector';
 import { AttachmentTray } from './AttachmentTray';
 import { useAttachments, type CoworkAttachmentRef } from './useAttachments';
@@ -129,6 +129,7 @@ export function CoworkComposer({ onCreate, onUpload, busy, mode, onModeChange }:
           <div style={{ display: 'inline-flex', alignItems: 'center', border: '1px solid var(--color-border-default)', borderRadius: 'var(--radius-md)', padding: 2, gap: 2 }}>
             {(['chat', 'cowork'] as const).map((m) => {
               const active = mode === m;
+              const Icon = m === 'chat' ? MessageSquare : Code;
               return (
                 <button
                   key={m}
@@ -141,9 +142,10 @@ export function CoworkComposer({ onCreate, onUpload, busy, mode, onModeChange }:
                     color: active ? 'var(--color-accent)' : 'var(--color-text-tertiary)',
                     fontSize: 11.5, fontWeight: active ? 600 : 500, fontFamily: 'var(--font-sans)',
                     cursor: active ? 'default' : 'pointer',
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
                   }}
                 >
-                  {m === 'chat' ? 'Chat' : 'Cowork'}
+                  <Icon size={12} /> {m === 'chat' ? 'Chat' : 'Cowork'}
                 </button>
               );
             })}

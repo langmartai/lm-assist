@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { MessageSquare, Plus, Search, Loader2, Sparkles } from 'lucide-react';
+import { MessageSquare, Plus, Search, Loader2, Code } from 'lucide-react';
 import type { HomeRow } from '@/lib/chat-rows';
 
 export interface CoworkListItem {
@@ -20,12 +20,24 @@ const KIND_FILTER_OPTIONS: Array<{ id: 'all' | 'chat' | 'cowork'; label: string 
   { id: 'cowork', label: 'Cowork' },
 ];
 
-/** Short date like claude.ai's list ("Jul 4") — guarded for a missing/invalid updatedAt. */
-function formatShortDate(updatedAt?: string): string {
+/** Relative time like claude.ai's list — "Just now", "5 minutes ago", "2 hours ago",
+ *  "yesterday", "3 days ago", then a short date ("Jul 4", or "Jul 4, 2025" cross-year).
+ *  Guarded for a missing/invalid updatedAt. */
+function formatRelativeTime(updatedAt?: string): string {
   if (!updatedAt) return '';
   const d = new Date(updatedAt);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const t = d.getTime();
+  if (Number.isNaN(t)) return '';
+  const min = Math.floor((Date.now() - t) / 60000);
+  if (min < 1) return 'Just now';
+  if (min < 60) return `${min} minute${min === 1 ? '' : 's'} ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} hour${hr === 1 ? '' : 's'} ago`;
+  const day = Math.floor(hr / 24);
+  if (day === 1) return 'yesterday';
+  if (day < 7) return `${day} days ago`;
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString('en-US', sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 /** Status badge for a row — `review_ready` (green) / `needs_action` (amber); anything else renders nothing. */
@@ -35,10 +47,12 @@ function StatusBadge({ subtitle }: { subtitle?: string }) {
   return null;
 }
 
-/** Row-kind icon — 💬 chat vs ✨ cowork. */
+/** Row-kind icon — chat = muted message bubble, cowork = accent `</>` code glyph.
+ *  Mirrors claude.ai's chat-bubble vs Code differentiation (accent makes the two
+ *  unmistakable at a glance in the merged list). */
 function KindIcon({ kind }: { kind: HomeRow['kind'] }) {
-  if (kind === 'chat') return <MessageSquare size={14} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />;
-  return <Sparkles size={14} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />;
+  if (kind === 'chat') return <MessageSquare size={15} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />;
+  return <Code size={15} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />;
 }
 
 /** claude.ai-look-alike "Chats and tasks" list. Pure presentational — the page (Task 7) supplies
@@ -135,8 +149,8 @@ export function CoworkList({ rows, filter, onFilter, onOpen, onNew, loading }: {
                 {r.title || 'Untitled'}
               </span>
               <StatusBadge subtitle={r.subtitle} />
-              <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', flexShrink: 0, minWidth: 40, textAlign: 'right' }}>
-                {formatShortDate(r.updatedAt)}
+              <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', flexShrink: 0, minWidth: 72, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                {formatRelativeTime(r.updatedAt)}
               </span>
             </button>
           ))
