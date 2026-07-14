@@ -229,6 +229,52 @@ MemoryBrowser.tsx (+ format.tsx timeAgo):
   unit-verifiable by code inspection + e2e spot-check of no-badge case (staging cross-node pass
   is post-deploy, per precedent).
 
+### Task 7 — MCP: memory write capability + bootstrap/guide memory story (core only)
+
+Today the MCP memory surface is READ-ONLY (memory_projects / memory_map / memory_record /
+memory_cross_host / memory_import_candidates / memory_sync_status / search_memory) while the web
+UI has full hash-guarded CRUD via `/memory/by-project/:id/file...`. Agents on any connector can
+list/read memory but cannot update it. Close the gap by REUSING the existing routes (all
+server-side validation — filenameProblem, protected files, hash guard — applies automatically).
+
+Files: `core/src/mcp-server/tools/expanded.ts` (defs + handlers + EXPANDED_TOOL_DEFS
+registration), `core/src/mcp-server/configure.ts` (access-class map), `core/src/mcp-server/tools/guide.ts`
+(bootstrap + guide content). Follow the existing def/handler/registration pattern exactly
+(read-only tools carry `annotations.readOnlyHint`; write tools are classed `'write'` in
+configure.ts like `data_put`/`mission_update`).
+
+- New tool `memory_file` (read class): args `project_id` (slug from memory_projects), `filename`,
+  optional `source` (default `live`). Handler GETs
+  `/memory/by-project/:project_id/file/:filename?source=` on the local Core (same loopback HTTP
+  helper the sibling handlers use) and returns `{ filename, source, body, hash }`. Description:
+  "Read one memory file raw (body + hash). The hash is the expected_hash for memory_write update
+  — read before you write."
+- New tool `memory_write` (write class): args `action` ('create'|'update'|'delete'), `project_id`,
+  `filename`, `content` (create/update), `expected_hash` (update/delete — optional but STRONGLY
+  recommended; omitting overwrites blind), `index_line` (create, optional — MEMORY.md index
+  bullet), `remove_index_line` (delete, optional, default true). Handler maps to
+  POST / PUT / DELETE on `/memory/by-project/:id/file[...]` with the same query/body contracts
+  the web uses; returns the route's `{ hash, warnings, indexUpdated }` (or delete ack) verbatim
+  plus a one-line hint when `warnings` non-empty. On `HASH_MISMATCH` the error text must tell the
+  caller to re-read with `memory_file` and retry. Description documents the discipline:
+  list (memory_map) → read (memory_file) → write with expected_hash; per-node: a `node:`-targeted
+  call runs on that node and edits THAT node's memory (existing hub routing).
+- MCP arg coercion gotcha (from [[generic-data-service]]): connector clients send numbers/bools
+  as STRINGS — coerce `remove_index_line` with the file's existing coercion helper/pattern.
+- Bootstrap + guide (guide.ts): update the memory portion of the `bootstrap` payload and the
+  relevant guide topic (locate the existing memory/guide text) so a session discovers the FULL
+  story in one read: list → read → WRITE (hash-guarded) → cross-host search → import candidates →
+  sync status → the web Memory page (sidebar). Keep it to a handful of lines, matching the
+  existing bootstrap voice.
+- Deliberate non-goals, stated in the tool descriptions/report: no rule_write (rules stay
+  read-only over MCP for now); no changes to search_memory/memory_map shapes.
+- Tests (nested `__tests__`): whatever pattern existing tool tests use (e.g. machine-access);
+  at minimum unit-test the arg→route mapping (action/query construction incl. string-coerced
+  booleans and encodeURIComponent of project/filename) by factoring the request-builder into a
+  small exported function. Full live verification happens in the integration e2e step via
+  `POST :3200/mcp` tools/call round-trip (create → read → update w/ hash → delete on a temp
+  project).
+
 ## Execution notes
 
 - Order: 1 → 2 → 3 → 4 → 5 → 6 (3 uses 2's helpers; 6 uses 4's route). Sequential dispatch, one
