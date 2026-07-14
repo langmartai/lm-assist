@@ -9,10 +9,13 @@
  * same memory payload onto a session response. See sessions.routes.ts.
  */
 
+import * as os from 'os';
 import type { RouteHandler, RouteContext } from '../index';
 import { createMemoryApiImpl, MemoryApi, MemoryDetail } from '../../api/memory-api';
 import type { MemorySource } from '../../memory-cache';
 import type { Shareability } from '../../utils/memory-shareability';
+import { wrapResponse } from '../../api/helpers';
+import { selfHostId } from '../../rules/rule-sync';
 
 let memoryApi: MemoryApi | null = null;
 function getApi(): MemoryApi {
@@ -55,6 +58,20 @@ export function createMemoryRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/memory\/projects$/,
       handler: async () => {
         return await getApi().listProjects();
+      },
+    },
+
+    // GET /memory/self-node — this node's identity, for the web UI's origin
+    // hint on memory-map records. Reuses `selfHostId()` (LM_HOST_ID > hub
+    // gatewayId > os.hostname()) — the SAME priority chain memory-map.js's
+    // `liveNode` derivation resolves to at both its outer boundaries
+    // (LM_HOST_ID first, os.hostname() last); see rule-sync.ts.
+    {
+      method: 'GET',
+      pattern: /^\/memory\/self-node$/,
+      handler: async () => {
+        const start = Date.now();
+        return wrapResponse({ node: selfHostId(), platform: os.platform() }, start);
       },
     },
 

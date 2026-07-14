@@ -26,19 +26,81 @@ export function filenameProblem(filename: string, protectedPatterns: RegExp[] = 
   return null;
 }
 
+/** Control chars (incl. NUL, excluding none) — reject anywhere in a relpath. */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS_RE = /[\x00-\x1f\x7f]/;
+
+/**
+ * Nested-capable version of `filenameProblem`: accepts `a.md` or `sub/dir/a.md`.
+ * Splits on '/' (never '\\' — backslash is rejected outright so a Windows-style
+ * separator can never smuggle a segment past this POSIX-only split). Every
+ * directory segment must be a safe bare name (`[A-Za-z0-9._-]+`, no leading '.'
+ * — so no dot-segments and no hidden dirs); the final segment (the basename) is
+ * validated by the existing `filenameProblem`, so protected patterns are always
+ * tested against the basename only, exactly as they are for flat filenames.
+ */
+export function relPathProblem(relpath: string, protectedPatterns: RegExp[] = []): FileWriteErrorCode | null {
+  if (!relpath || typeof relpath !== 'string') return 'BAD_FILENAME';
+  if (relpath.includes('\\')) return 'BAD_FILENAME';
+  if (relpath.includes('\0') || CONTROL_CHARS_RE.test(relpath)) return 'BAD_FILENAME';
+  if (path.isAbsolute(relpath)) return 'BAD_FILENAME';
+  const segments = relpath.split('/');
+  if (segments.length === 0) return 'BAD_FILENAME';
+  const basename = segments[segments.length - 1];
+  const dirSegments = segments.slice(0, -1);
+  for (const seg of dirSegments) {
+    if (!seg) return 'BAD_FILENAME';               // empty segment ('//' or leading/trailing '/')
+    if (seg === '.' || seg === '..') return 'BAD_FILENAME';
+    if (seg.startsWith('.')) return 'BAD_FILENAME'; // no hidden dirs
+    if (!/^[A-Za-z0-9._-]+$/.test(seg)) return 'BAD_FILENAME';
+  }
+  return filenameProblem(basename, protectedPatterns);
+}
+
 function confinedPath(dir: string, filename: string): string | null {
   const dest = path.join(dir, filename);
   if (path.dirname(path.resolve(dest)) !== path.resolve(dir)) return null; // defense-in-depth
   return dest;
 }
 
+/**
+ * Nested-capable confinement: resolves `dir/relpath` and verifies the RESOLVED
+ * destination is still inside the RESOLVED root (any number of directory
+ * levels deep, not just a direct child as `confinedPath` requires). Used for
+ * relpath-based writes/deletes where `relPathProblem` already validated every
+ * segment, but this remains defense-in-depth against symlink/resolution
+ * surprises the string-level check can't see. Exported so read-only callers
+ * (e.g. the rule-files GET route) can reuse the exact same confinement
+ * semantics instead of re-deriving them.
+ */
+export function confinedRelPath(rootDir: string, relpath: string): string | null {
+  const root = path.resolve(rootDir);
+  const dest = path.resolve(root, relpath);
+  const rel = path.relative(root, dest);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  return dest;
+}
+
+/**
+ * Write a `*.md` file under `dir`. `filename` may be a bare basename (`a.md`,
+ * unchanged/byte-identical legacy path) or a POSIX relpath (`sub/dir/a.md`,
+ * nested-capable path — validated via `relPathProblem`, confined via the
+ * resolved-path check, parent dirs created recursively). Which validator/
+ * confinement helper runs is decided purely by whether `filename` contains a
+ * '/': flat filenames NEVER touch the relpath code path, so existing
+ * behavior (error codes, confinement semantics) is unchanged for callers
+ * that only ever pass bare basenames.
+ */
 export function writeMdFile(
   dir: string, filename: string, content: string,
   opts: { expectedHash?: string; mustNotExist?: boolean; protectedPatterns?: RegExp[] } = {},
 ): FileOpResult {
-  const bad = filenameProblem(filename, opts.protectedPatterns || []);
+  const nested = typeof filename === 'string' && filename.includes('/');
+  const bad = nested
+    ? relPathProblem(filename, opts.protectedPatterns || [])
+    : filenameProblem(filename, opts.protectedPatterns || []);
   if (bad) return { ok: false, code: bad };
-  const dest = confinedPath(dir, filename);
+  const dest = nested ? confinedRelPath(dir, filename) : confinedPath(dir, filename);
   if (!dest) return { ok: false, code: 'BAD_FILENAME' };
   const exists = fs.existsSync(dest);
   if (opts.mustNotExist && exists) return { ok: false, code: 'EXISTS' };
@@ -47,18 +109,22 @@ export function writeMdFile(
     const current = sha256(fs.readFileSync(dest, 'utf-8'));
     if (current !== opts.expectedHash) return { ok: false, code: 'HASH_MISMATCH' };
   }
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(nested ? path.dirname(dest) : dir, { recursive: true });
   fs.writeFileSync(dest, content);
   return { ok: true, hash: sha256(content) };
 }
 
+/** Delete a `*.md` file under `dir`. Same flat-vs-nested `filename` handling as `writeMdFile`. */
 export function deleteMdFile(
   dir: string, filename: string,
   opts: { expectedHash?: string; protectedPatterns?: RegExp[] } = {},
 ): FileOpResult {
-  const bad = filenameProblem(filename, opts.protectedPatterns || []);
+  const nested = typeof filename === 'string' && filename.includes('/');
+  const bad = nested
+    ? relPathProblem(filename, opts.protectedPatterns || [])
+    : filenameProblem(filename, opts.protectedPatterns || []);
   if (bad) return { ok: false, code: bad };
-  const dest = confinedPath(dir, filename);
+  const dest = nested ? confinedRelPath(dir, filename) : confinedPath(dir, filename);
   if (!dest) return { ok: false, code: 'BAD_FILENAME' };
   if (!fs.existsSync(dest)) return { ok: false, code: 'NOT_FOUND' };
   if (opts.expectedHash) {
