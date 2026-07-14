@@ -1,12 +1,13 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { RefreshCw, Loader2, Eye, Radio, Cast, Square, ExternalLink, ChevronDown, Check, Settings2 } from 'lucide-react';
+import { Loader2, Eye, Radio, Cast, Square, ExternalLink, ChevronDown, Check, Settings2 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { CcrSessionView } from './CcrSessionView';
 import { CcrCloudView } from './CcrCloudView';
 import { CcrComposer } from './CcrComposer';
 import { CcrSessionList } from './CcrSessionList';
+import { CcrSidebar } from './CcrSidebar';
 import { CcrDetailHeader } from './CcrDetailHeader';
 import { ModelEffortSelector } from '@/components/cowork/ModelEffortSelector';
 import type { ApiFetch, CloudSessionInfo, Remote, RcData, CcSession, CcrRow } from './ccrTypes';
@@ -93,7 +94,7 @@ function buildRows(cloud: CloudSessionInfo[], remotes: Remote[], rc: RcData, loc
 }
 
 export function CcrPage() {
-  const { apiClient, proxy } = useAppMode();
+  const { apiClient, proxy, hubUser } = useAppMode();
   const apiFetch = useCallback<ApiFetch>(
     (path, opts) => apiClient.fetchPath(path, { method: opts?.method, body: opts?.body, machineId: proxy.machineId || undefined }),
     [apiClient, proxy.machineId],
@@ -181,49 +182,61 @@ export function CcrPage() {
       : <CcrCloudView sid={row.id} webUrl={row.webUrl || undefined} apiFetch={apiFetch} onClose={() => setSelectedId(null)} fill hideHeader />
   );
 
+  const greetName = hubUser?.displayName || hubUser?.email?.split('@')[0] || '';
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', background: 'var(--color-bg-root)' }}>
-      <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--color-border-default)', display: 'flex', alignItems: 'center', gap: 10 }}>
-        <Cast size={18} style={{ color: 'var(--color-accent)' }} />
-        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-text-primary)' }}>Code</div>
-        <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>cloud sessions · remote control · local</span>
-        <div style={{ flex: 1 }} />
-        <button className="btn btn-ghost btn-sm" onClick={fetchAll} disabled={loading} title="Refresh"><RefreshCw size={14} style={loading ? { animation: 'spin 1s linear infinite' } : undefined} /></button>
-      </div>
+    // ── Full-bleed claude.ai/code layout: own sidebar + main, no app shell ──
+    <div style={{ display: 'flex', height: '100%', overflow: 'hidden', background: 'var(--color-bg-root)' }}>
+      <CcrSidebar
+        rows={rows}
+        selectedId={selectedId}
+        onSelect={(r) => setSelectedId(r.id)}
+        onNewSession={() => setSelectedId(null)}
+        onRefresh={fetchAll}
+        loading={loading}
+      />
 
-      {error && (
-        <div style={{ margin: '12px 20px 0', padding: '8px 12px', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', color: 'var(--color-status-red)', fontSize: 12 }}>{error}</div>
-      )}
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {error && (
+          <div style={{ margin: '12px 20px 0', padding: '8px 12px', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', color: 'var(--color-status-red)', fontSize: 12 }}>{error}</div>
+        )}
 
-      {selected ? (
-        // ── Detail view (claude.ai/code session) ──
-        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-          <CcrDetailHeader row={selected} apiFetch={apiFetch} onClose={() => setSelectedId(null)} onChanged={fetchAll} onDeleted={() => { setSelectedId(null); fetchAll(); }} />
-          {selected.kind !== 'local' && <CloudControlBar row={selected} apiFetch={apiFetch} />}
-          {selected.kind === 'local' && sessionErr[selected.id] && (
-            <div style={{ margin: '8px 14px 0', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', fontSize: 11.5, color: 'var(--color-status-red)' }}>{sessionErr[selected.id]}</div>
-          )}
-          <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '0 14px 14px' }}>
-            {detailBody(selected)}
-          </div>
-        </div>
-      ) : (
-        // ── Home: session list (scrolls) above, composer pinned at the bottom (claude.ai/code) ──
-        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ flex: 1, overflow: 'auto', padding: '20px 20px 8px' }}>
-            <div style={{ maxWidth: 900, margin: '0 auto' }}>
-              {loading && rows.length === 0 ? (
-                <div className="empty-state"><Loader2 size={22} style={{ animation: 'spin 1s linear infinite' }} /><span style={{ fontSize: 12 }}>Loading sessions…</span></div>
-              ) : (
-                <CcrSessionList rows={rows} selectedId={selectedId} onSelect={(r) => setSelectedId(r.id)} rowActions={rowActions} nowMs={nowMs} />
-              )}
+        {selected ? (
+          // ── Detail view (claude.ai/code session) ──
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <CcrDetailHeader row={selected} apiFetch={apiFetch} onClose={() => setSelectedId(null)} onChanged={fetchAll} onDeleted={() => { setSelectedId(null); fetchAll(); }} />
+            {selected.kind !== 'local' && <CloudControlBar row={selected} apiFetch={apiFetch} />}
+            {selected.kind === 'local' && sessionErr[selected.id] && (
+              <div style={{ margin: '8px 14px 0', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', fontSize: 11.5, color: 'var(--color-status-red)' }}>{sessionErr[selected.id]}</div>
+            )}
+            <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '0 14px 14px' }}>
+              {detailBody(selected)}
             </div>
           </div>
-          <div style={{ padding: '10px 20px 18px' }}>
-            <CcrComposer apiFetch={apiFetch} onStarted={(sid) => { fetchAll(); setSelectedId(sid); }} />
+        ) : (
+          // ── Home: greeting + session list (scrolls) above, composer pinned at the bottom ──
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ flex: 1, overflow: 'auto', padding: '28px 20px 8px' }}>
+              <div style={{ maxWidth: 900, margin: '0 auto' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 22 }}>
+                  <span style={{ color: 'var(--color-accent)', fontSize: 20, lineHeight: 1 }}>✳</span>
+                  <span style={{ fontSize: 21, fontWeight: 600, color: 'var(--color-text-primary)', letterSpacing: -0.2 }}>
+                    Welcome back{greetName ? `, ${greetName}` : ''}
+                  </span>
+                </div>
+                {loading && rows.length === 0 ? (
+                  <div className="empty-state"><Loader2 size={22} style={{ animation: 'spin 1s linear infinite' }} /><span style={{ fontSize: 12 }}>Loading sessions…</span></div>
+                ) : (
+                  <CcrSessionList rows={rows} selectedId={selectedId} onSelect={(r) => setSelectedId(r.id)} rowActions={rowActions} nowMs={nowMs} />
+                )}
+              </div>
+            </div>
+            <div style={{ padding: '10px 20px 18px' }}>
+              <CcrComposer apiFetch={apiFetch} onStarted={(sid) => { fetchAll(); setSelectedId(sid); }} />
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

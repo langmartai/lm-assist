@@ -2494,3 +2494,10 @@ code, pre, .font-mono {
 .hljs-meta, .hljs-deletion { color: #7d8590; }
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: 600; }
+
+/* Full-bleed Code page (/ccr): the machine picker sits at the sidebar BOTTOM, so its
+   panel must open UPWARD (the shared .machine-dropdown-panel opens downward). */
+.ccr-sidebar-machine .machine-dropdown-panel {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
