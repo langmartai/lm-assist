@@ -16,7 +16,7 @@ export interface ChatDetailView {
  *  completion endpoint (no SSE — the reply returns whole), then reloads. */
 export function useChatConversation(opts: { uuid: string; apiFetch: ApiFetch; model: string; seed?: ChatDetailView }): {
   detail: ChatDetailView | null; err: string | null; gone: boolean; sending: boolean;
-  send: (prompt: string, attachments?: ChatAttachment[]) => Promise<void>; refresh: () => void;
+  send: (prompt: string, attachments?: ChatAttachment[]) => Promise<string | undefined>; refresh: () => void;
 } {
   const { uuid, apiFetch, model, seed } = opts;
   // `seed` is the just-created turn built from the completion response — shown immediately so
@@ -56,16 +56,19 @@ export function useChatConversation(opts: { uuid: string; apiFetch: ApiFetch; mo
   useEffect(() => { loadRef.current = load; }, [load]);
   useEffect(() => { loadRef.current(); }, [uuid]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const send = useCallback(async (prompt: string, attachments?: ChatAttachment[]) => {
+  const send = useCallback(async (prompt: string, attachments?: ChatAttachment[]): Promise<string | undefined> => {
     setSending(true);
     try {
-      await apiFetch(`/claude-ai/conversations/${uuid}/completion`, {
+      // Return the completion's reply text so voice mode can speak it (the tree reload backfills the transcript).
+      const r = await apiFetch<{ text?: string }>(`/claude-ai/conversations/${uuid}/completion`, {
         method: 'POST',
         body: { prompt, model, ...(attachments && attachments.length ? { attachments } : {}) },
       });
       await loadRef.current();
+      return r?.text;
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+      return undefined;
     } finally {
       setSending(false);
     }

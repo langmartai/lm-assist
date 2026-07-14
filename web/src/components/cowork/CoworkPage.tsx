@@ -45,6 +45,16 @@ export function CoworkPage() {
     if (isRemoteNode) return null;
     try { return resolveConsoleUrl(`${detectAppMode().baseUrl}/cowork/tasks/${sid}/stream`); } catch { return null; }
   }, [isRemoteNode]);
+  // Voice STT needs a DIRECT ws to Core (like SSE) → local mode only. The api-token rides the
+  // query string (browsers can't set WS headers). Null when proxied/remote → voice UI disabled.
+  const buildVoiceWsUrl = useCallback((): string | null => {
+    if (isRemoteNode) return null;
+    try {
+      const httpUrl = resolveConsoleUrl(`${detectAppMode().baseUrl}/voice/stt/ws`);
+      const token = (window as unknown as { __LM_API_TOKEN__?: string }).__LM_API_TOKEN__ || '';
+      return httpUrl.replace(/^http/, 'ws') + (token ? `?token=${encodeURIComponent(token)}` : '');
+    } catch { return null; }
+  }, [isRemoteNode]);
 
   const [mode, setMode] = useState<'chat' | 'cowork'>('cowork');
   const [rows, setRows] = useState<HomeRow[]>([]);
@@ -150,6 +160,7 @@ export function CoworkPage() {
               uuid={openItem.id}
               apiFetch={apiFetch}
               seed={openItem.seed}
+              voiceWsUrl={buildVoiceWsUrl()}
               onClose={() => setOpenItem(null)}
               onDeleted={() => { removedRef.current.add(openItem.id); setRows((prev) => prev.filter((r) => r.id !== openItem.id)); setOpenItem(null); }}
             />

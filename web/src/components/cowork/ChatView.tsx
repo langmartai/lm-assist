@@ -1,26 +1,40 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { MessageSquare, Plus, Send, X } from 'lucide-react';
+import { MessageSquare, Mic, Plus, Send, X } from 'lucide-react';
 import { TranscriptMessage } from '@/components/shared/TranscriptMessage';
 import { ModelEffortSelector } from '@/components/cowork/ModelEffortSelector';
 import { AttachmentTray } from '@/components/cowork/AttachmentTray';
 import { useAttachments } from '@/components/cowork/useAttachments';
 import { fileToChatAttachment } from '@/lib/chat-attachments';
 import { useChatConversation, type ChatAttachment, type ChatDetailView } from '@/hooks/useChatConversation';
+import { useVoiceConversation, type VoiceState } from '@/hooks/useVoiceConversation';
+
+/** Short label for the voice status line. */
+function voiceStatusLabel(s: VoiceState): string {
+  switch (s) {
+    case 'listening': return 'Listening…';
+    case 'transcribing': return 'Transcribing…';
+    case 'thinking': return 'Thinking…';
+    case 'speaking': return 'Speaking…';
+    default: return '';
+  }
+}
 
 type ApiFetch = <T>(path: string, o?: { method?: string; body?: unknown }) => Promise<T>;
 
 /** claude.ai-look-alike Chat conversation view: transcript (center) + a bottom
  *  composer (model + send). Rename/delete via the header. No right rail / approvals
  *  / effort (chat has none). Mirrors CoworkTaskView's shell. */
-export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed }: {
-  uuid: string; apiFetch: ApiFetch; onClose: () => void; onDeleted: () => void; seed?: ChatDetailView;
+export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl }: {
+  uuid: string; apiFetch: ApiFetch; onClose: () => void; onDeleted: () => void; seed?: ChatDetailView; voiceWsUrl?: string | null;
 }) {
   const [model, setModel] = useState('claude-sonnet-5');
   const { detail, err, gone, sending, send, refresh } = useChatConversation({ uuid, apiFetch, model, seed });
   const [prompt, setPrompt] = useState('');
   const [manageErr, setManageErr] = useState<string | null>(null);
+  // Push-to-talk voice: the transcript is sent via `send` (which returns the reply to speak).
+  const voice = useVoiceConversation({ wsUrl: voiceWsUrl || '', sendMessage: (text) => send(text) });
 
   // Inline rename — clicking the title swaps it for a text input (idiom copied from
   // CoworkTaskView's header rename, minus the surrounding title▾ menu — chat only
@@ -136,6 +150,20 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed }: {
       {!gone && (
         <div style={{ borderTop: '1px solid var(--color-border-default)', padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
           <AttachmentTray items={att.items} onRemove={att.remove} />
+          {/* Voice status line — visible only mid-turn. */}
+          {voice.state !== 'idle' && (
+            <div style={{ fontSize: 11.5, padding: '2px 6px', display: 'flex', alignItems: 'center', gap: 6, minWidth: 0,
+              color: voice.state === 'error' ? 'var(--color-status-red)' : voice.state === 'listening' || voice.state === 'speaking' ? 'var(--color-accent)' : 'var(--color-text-tertiary)' }}>
+              {voice.state === 'error' ? (voice.error || 'Voice error') : (
+                <>
+                  <span style={{ flexShrink: 0 }}>{voiceStatusLabel(voice.state)}</span>
+                  {voice.state === 'listening' && voice.interim && (
+                    <span style={{ fontStyle: 'italic', opacity: 0.85, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>“{voice.interim}”</span>
+                  )}
+                </>
+              )}
+            </div>
+          )}
           <input ref={fileInputRef} type="file" multiple hidden onChange={(e) => { att.addFiles(e.target.files); e.target.value = ''; }} />
           <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
             <button type="button" className="btn btn-ghost btn-sm btn-icon" disabled={sending} title="Add text files" onClick={() => fileInputRef.current?.click()}><Plus size={14} /></button>
@@ -143,6 +171,16 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed }: {
               style={{ flex: 1, resize: 'none', fontSize: 12.5 }}
               onChange={(e) => setPrompt(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void handleSend(); } }} />
+            {voiceWsUrl && voice.supported && (
+              <button type="button" className="btn btn-ghost btn-sm btn-icon"
+                title={voice.state === 'listening' ? 'Release to send' : 'Hold to talk'}
+                onPointerDown={(e) => { e.preventDefault(); void voice.start(); }}
+                onPointerUp={(e) => { e.preventDefault(); void voice.stop(); }}
+                onPointerLeave={() => { if (voice.state === 'listening') void voice.stop(); }}
+                style={{ color: voice.state === 'listening' ? 'var(--color-accent)' : undefined, touchAction: 'none' }}>
+                <Mic size={14} />
+              </button>
+            )}
             <button className="btn btn-primary btn-sm btn-icon" disabled={!canSend} onClick={() => void handleSend()} title="Send (⌘/Ctrl+Enter)"><Send size={13} /></button>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
