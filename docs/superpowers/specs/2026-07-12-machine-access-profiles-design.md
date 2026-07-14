@@ -146,3 +146,89 @@ Manual verification: `./core.sh build`, start dev API, `curl` PUT + GET on `:320
 - **PUT upsert instead of POST+PUT** — one write path, id authoritative in the URL; fewer routes to guard.
 - **MCP tool is read-only** — the user asked for MCP to *report* the meta. Remote writes of SSH endpoints have bad security smell; loopback REST covers management.
 - **No cross-node `node:` arg in v1** — the connector already routes per node and footers the origin; each node answers for itself. Aggregation is future work.
+
+---
+
+# v1.1 Addendum — hardening, gathering, discoverability (2026-07-14)
+
+v1 shipped and was seeded on 117. This addendum makes the process **more stable, secure, and reliable**, makes the usage **meaningful and discoverable** (wired into `bootstrap`), and adds a *gathering* path (import + reachability check) so profiles are not purely hand-authored. Same node-local, no-secrets, loopback-write principles as v1 — nothing here relaxes them.
+
+## Motivation (review findings on v1)
+
+1. **Copy-paste / argv injection.** `host` and `user` are only checked non-empty. A hand-edited `host: "-oProxyCommand=curl…|sh"` or `user: "x; rm -rf ~"` would be baked into the derived `command` string an LLM is told to run, and into any probe's argv. An SSH option-injection via a leading `-` is a real class of bug. → **strict field grammar**.
+2. **Report crashes on hand-edited files.** `GET /machine-access` maps over `p.access`; a hand-edited profile missing `access` (documented as a supported edit path) throws and takes down the whole report. → **resilient report** (never throw on one bad profile).
+3. **File hygiene.** The store writes with default umask perms and keeps no prior copy. Access metadata deserves `0600`, and an overwrite should leave a one-deep `.bak`. → **0600 + backup**.
+4. **Gathering is 100% manual.** No `~/.ssh/config` import, no way to verify a profile actually connects, no on-node recipe. → **import + check + guide**.
+
+## Changes
+
+### A. Validation grammar (store)
+
+Tighten `validateProfile` (still returns first-error-or-null; still the only write gate):
+
+- `host`: `^[A-Za-z0-9._:-]+$` (DNS names, IPv4, bracketless IPv6 hextets, no whitespace/metachars) **and must not start with `-`** (SSH option-injection guard).
+- `user`: `^[A-Za-z0-9._-]+$` (portable username set), must not start with `-`.
+- `identityFile`: unchanged path checks + must not start with `-`.
+- `tags`: each tag `^[A-Za-z0-9._/-]+$` (they feed the `tag` filter; keep them clean).
+- These apply to `ssh` entries. Unknown access types remain unconstrained beyond a non-empty `type` (forward compat) — but they never produce a `command`, so they are not an injection surface.
+
+### B. Resilient report (store)
+
+`toReportedMachine` never throws:
+- If `access` is not an array → treat as `[]` and attach `reportError: 'access missing or malformed'` on the machine.
+- Each entry that is an object with `type:'ssh'` **and passes ssh validation** → `supported:true` + derived `command`. An ssh entry that fails validation → `supported:false, command:undefined, invalid:'<reason>'` (never a bad command string). Non-ssh object → `supported:false`. Non-object entry → skipped with a machine-level `reportError`.
+
+This makes `GET`/`machine_access` robust to a fat-fingered hand edit — the bad machine is flagged, the rest report fine.
+
+### C. File hygiene (store)
+
+`saveMachineAccess`: before `rename`, if the destination exists copy it to `<file>.bak` (one-deep, best-effort). Write the tmp file and the final file with mode `0600`. `mkdir` the `.lm-assist` dir if missing (already done). `chmod` after rename to be certain even if the file pre-existed with looser perms.
+
+### D. Reachability check (new, loopback-only)
+
+`POST /machine-access/machines/:id/check` — actively probe the machine's **first ssh access** and record the result. Node-owner action → loopback-only.
+
+- Pure `buildSshProbeArgs(a: SshAccess, opts?): string[]` → argv for `ssh` (NOT a string):
+  `-o BatchMode=yes` (never prompt/hang), `-o ConnectTimeout=<n>` (default 8), `-o StrictHostKeyChecking=accept-new` is **NOT** used — we use `-o StrictHostKeyChecking=yes` so an unknown host key is surfaced, never silently trusted (no `known_hosts` mutation), `-o IdentitiesOnly=yes` + `-i <identityFile>` when a key is set, `-p <port>` when non-default, then `<user>@<host>`, then `--`, then the remote command `true`. Leading-`-` fields are already rejected at write time; `--` before the remote command is defence in depth.
+- Run via the existing `runCmd('ssh', args, {timeoutMs})` (execFile, no shell, never rejects, timeout+maxBuffer bounded). A hard `timeoutMs = (ConnectTimeout+5)*1000` backstops a wedged ssh.
+- Pure `classifyProbe(code, stderr)` → `{ status: 'ok' | 'auth-failed' | 'host-key-unverified' | 'unreachable' | 'error', detail }`:
+  - `code 0` → `ok`.
+  - stderr matches `Permission denied|publickey|password` → `auth-failed` (reached the host, creds rejected — still proves reachability).
+  - stderr matches `Host key verification failed|REMOTE HOST IDENTIFICATION` → `host-key-unverified`.
+  - stderr matches `Could not resolve|Connection timed out|refused|No route|Network is unreachable` → `unreachable`.
+  - else → `error` (with trimmed stderr tail as `detail`).
+- Persist a compact `lastCheck: { status, detail?, at: ISO }` on the machine **without** bumping `updatedAt` (a probe is not an edit) via a new `setLastCheck(id, result, file?)`. `toReportedMachine` passes `lastCheck` through.
+- Response: `{ id, check: {status, detail, at} }`. No secrets, no full stderr dump (tail only, capped).
+
+Security notes: BatchMode guarantees no interactive hang; `StrictHostKeyChecking=yes` means the probe never writes trust; the remote command is the literal `true`; argv-array + `--` + leading-dash rejection close the injection paths. The probe uses only the key already on disk — nothing new is stored.
+
+### E. ssh-config import (new, loopback-only)
+
+`POST /machine-access/import` — parse `~/.ssh/config` into **draft** candidates for owner review. Loopback-only (writes profiles).
+
+- Pure `parseSshConfig(text): SshConfigHost[]` — minimal parser: `Host <patterns>` blocks, case-insensitive keys, collects `HostName/User/Port/IdentityFile`; ignores `Include` (documented limitation) and any block whose pattern contains `*`/`?` (wildcards are not real machines).
+- Pure `buildImportCandidates(hosts, {defaultUser}): MachineProfile[]` — one profile per concrete Host: `id` = slugified alias, `name` = alias, `os` unknown, `tags:['imported']`, `enabled:false` (drafts are inert until the owner enables), `access:[{type:'ssh', host: HostName||alias, user: User||defaultUser, port?, identityFile?}]`, `notes` noting the import source. Candidates that fail `validateProfile` are dropped with a reason.
+- Route body: `{ apply?: boolean, path?: string }`. Default **dry-run** (`apply` falsely) → returns `{ candidates, skipped, wouldWrite }` and writes nothing. `apply:true` → upserts only candidates whose `id` does **not** already exist (never clobber a curated profile), returns `{ imported, skippedExisting, skippedInvalid }`. `path` overrides the default `~/.ssh/config` (test hook).
+- The response tells the LLM to review, add per-machine notes (the operational gotchas import can't know), run `check`, and enable.
+
+### F. Discoverability — `bootstrap` + `guide` + meaningful usage
+
+- New `guide` topic **`machine-access`** in `guide.ts` (`GUIDES` + `BLURB` + `TOPIC_TOOLS['machine-access']=['machine_access']` + added to the bootstrap `order` array) — a short playbook: what it is (node-local reachability meta), when to use it (before SSHing anywhere / "how do I reach X"), the gather recipe (import dry-run → add notes from memory → check → enable), and the on-node execution semantic.
+- Because it's in the `order` array, `bootstrap` (called first in every connector session) now surfaces machine-access automatically — **this is the "add to bootstrap" requirement**.
+- `MACHINE_ACCESS_USAGE` reworded to lead with the *meaningful* case: "Before opening an SSH/remote session to another machine, call this to get the exact, verified command and the per-machine do/don't notes — instead of guessing or re-reading memory." Keep the node-local + on-node execution + no-secrets clauses.
+- `machine_access` tool description gains a one-liner about `lastCheck` and `imported`/disabled drafts.
+
+## Testing (added)
+
+- store: host/user/tag grammar accept/reject incl. leading-`-`; report resilience (missing access, invalid ssh entry → flagged not thrown); save writes `0600` + creates `.bak` on overwrite; `setLastCheck` updates lastCheck without touching updatedAt.
+- probe: `buildSshProbeArgs` (BatchMode/ConnectTimeout/IdentitiesOnly/port/`--`/order) + `classifyProbe` for each status from representative stderr; route guard loopback-only.
+- import: `parseSshConfig` (multi-host, wildcard-excluded, case-insensitive, IdentityFile) + `buildImportCandidates` (enabled:false, imported tag, invalid dropped); route dry-run writes nothing, apply no-clobbers existing.
+- guide: `machine-access` topic resolves and is present in the bootstrap `order`.
+
+## Deploy + e2e (this pass, user-instructed)
+
+Merge → push origin main → dist-sync deploy to 117 prod (:3100) → restart → `refresh_connector_tools` → call `machine_access` over the langmart connector (proves the HTTP `/mcp` surface end-to-end) and confirm `bootstrap` names it. Live `check` against 123 + 107; live `import` dry-run against 117's own `~/.ssh/config`.
+
+## Still out of scope (unchanged)
+
+`windows-account`/`elevated-worker` *implementation*; Web UI; cross-node aggregation; `Include`-directive expansion in the ssh-config parser; a CLI subcommand.
