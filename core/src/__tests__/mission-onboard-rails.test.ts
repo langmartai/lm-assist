@@ -361,3 +361,12 @@ test('I4(b): findMission lookup throwing degrades to allowing stop (best-effort,
   assert.equal(r.success, true, JSON.stringify(r));
   assert.equal(wasStopped(), true);
 });
+
+test('human rebind of an onboarded mission preserves kind onboarded', async () => {
+  const m = onboarded('standby');
+  const port = { isEnabled: () => true, get: async () => m, list: async () => [m], put: async (x: Mission) => { Object.assign(m, x); }, del: async () => {} } as any;
+  const r = await handlePatch(m.id, { binding: { sessionId: 'new-sid-1', kind: 'onboarded' } }, port, user);
+  assert.equal(r.success, true);
+  assert.equal((r.data as any).binding.kind, 'onboarded');
+  assert.equal((r.data as any).binding.sessionId, 'new-sid-1');
+});

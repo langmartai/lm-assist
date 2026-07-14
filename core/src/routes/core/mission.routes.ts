@@ -222,7 +222,7 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
       const binding: MissionBinding = {
         sessionId: sid,
         node: str(bn.node) ?? thisNode(),
-        kind: (k === 'orchestrator' || k === 'worker') ? k : 'worker',
+        kind: (k === 'orchestrator' || k === 'worker' || k === 'onboarded') ? k : 'worker',
         boundAt: Date.now(),
       };
       if (bn.ccr && typeof bn.ccr === 'object') {
