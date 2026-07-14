@@ -1,14 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { isVoiceSttUpgrade, bridgeVoiceSocket, type SttLike } from '../voice-relay';
+import { isVoiceSttUpgrade, handleVoiceSttUpgrade, bridgeVoiceSocket, type SttLike } from '../voice-relay';
 import type { IncomingMessage } from 'node:http';
+import type { Duplex } from 'node:stream';
 
 test('isVoiceSttUpgrade matches only the voice path', () => {
   assert.equal(isVoiceSttUpgrade({ url: '/voice/stt/ws?token=x' } as IncomingMessage), true);
   assert.equal(isVoiceSttUpgrade({ url: '/voice/stt/ws' } as IncomingMessage), true);
   assert.equal(isVoiceSttUpgrade({ url: '/ttyd/1234' } as IncomingMessage), false);
   assert.equal(isVoiceSttUpgrade({ url: undefined } as IncomingMessage), false);
+});
+
+test('handleVoiceSttUpgrade rejects a bad token with 401 (does not reach the WS)', () => {
+  const writes: string[] = [];
+  let destroyed = false;
+  const socket = { write: (s: string) => { writes.push(s); return true; }, destroy: () => { destroyed = true; } } as unknown as Duplex;
+  handleVoiceSttUpgrade({ url: '/voice/stt/ws?token=definitely-not-valid' } as IncomingMessage, socket, Buffer.alloc(0));
+  assert.match(writes.join(''), /401 Unauthorized/);
+  assert.equal(destroyed, true);
 });
 
 /** Fake browser WS: captures sent frames, is an EventEmitter for message/close/error. */

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { speak, cancelSpeech, speechSupported } from '@/lib/speech';
 
 export type VoiceState = 'idle' | 'listening' | 'transcribing' | 'thinking' | 'speaking' | 'error';
@@ -48,11 +48,22 @@ export function useVoiceConversation(opts: { wsUrl: string; sendMessage: (text: 
   }, []);
 
   const fail = useCallback((msg: string) => {
+    startingRef.current = false; pendingAbortRef.current = false; // else a handshake failure wedges start()/stop()
     setError(msg);
     setState('error');
     teardownAudio();
     closeWs();
   }, [teardownAudio, closeWs]);
+
+  // Release the mic / AudioContext / sockets / speech if the component unmounts mid-turn
+  // (chat closed or switched). Uses refs (always current) so no stale-closure risk.
+  useEffect(() => () => {
+    try { if (nodeRef.current) nodeRef.current.port.onmessage = null; nodeRef.current?.disconnect(); } catch { /* noop */ }
+    try { streamRef.current?.getTracks().forEach((t) => t.stop()); } catch { /* noop */ }
+    try { void ctxRef.current?.close(); } catch { /* noop */ }
+    try { wsRef.current?.close(); } catch { /* noop */ }
+    cancelSpeech();
+  }, []);
 
   const start = useCallback(async () => {
     if (!supported) { setError('Voice input is not supported in this browser.'); setState('error'); return; }
@@ -95,7 +106,11 @@ export function useVoiceConversation(opts: { wsUrl: string; sendMessage: (text: 
           fail(m.message || 'voice error');
         }
       };
-      ws.onerror = () => { if (stateRef.current !== 'error') fail('voice connection error'); };
+      // Only treat an error as fatal while we're actively starting/listening — a late error on a
+      // socket we already closed (after stop) must not clobber a good 'thinking'/'speaking'/'idle' turn.
+      ws.onerror = () => { if (startingRef.current || stateRef.current === 'listening') fail('voice connection error'); };
+      // If the relay drops mid-finalize, resolve the finalize wait early instead of blocking 2.5s.
+      ws.onclose = () => { finalizeWaitRef.current?.(); };
       ws.onopen = () => {
         startingRef.current = false;
         // Released before we finished opening → abort cleanly (no capture, no send).

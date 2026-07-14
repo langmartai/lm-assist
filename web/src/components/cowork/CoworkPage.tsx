@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Sparkles } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { detectAppMode, resolveConsoleUrl } from '@/lib/api-client';
@@ -47,7 +47,7 @@ export function CoworkPage() {
   }, [isRemoteNode]);
   // Voice STT needs a DIRECT ws to Core (like SSE) → local mode only. The api-token rides the
   // query string (browsers can't set WS headers). Null when proxied/remote → voice UI disabled.
-  const buildVoiceWsUrl = useCallback((): string | null => {
+  const voiceWsUrl = useMemo((): string | null => {
     if (isRemoteNode) return null;
     try {
       const httpUrl = resolveConsoleUrl(`${detectAppMode().baseUrl}/voice/stt/ws`);
@@ -160,7 +160,7 @@ export function CoworkPage() {
               uuid={openItem.id}
               apiFetch={apiFetch}
               seed={openItem.seed}
-              voiceWsUrl={buildVoiceWsUrl()}
+              voiceWsUrl={voiceWsUrl}
               onClose={() => setOpenItem(null)}
               onDeleted={() => { removedRef.current.add(openItem.id); setRows((prev) => prev.filter((r) => r.id !== openItem.id)); setOpenItem(null); }}
             />

@@ -421,7 +421,7 @@ export class TierRestServer {
         } else if (isPortfwdUpgrade(req)) {
           handlePortfwdUpgrade(req, socket, head);
         } else if (isVoiceSttUpgrade(req)) {
-          handleVoiceSttUpgrade(req, socket, head);
+          handleVoiceSttUpgrade(req, socket, head, this.options.apiKey);
         } else {
           socket.destroy();
         }

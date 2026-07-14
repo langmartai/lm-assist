@@ -1,7 +1,7 @@
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { isValidToken } from '../auth/api-token';
+import { isValidToken, apiAuthEnabled } from '../auth/api-token';
 import { getValidAccessToken, detectClaudeCodeVersion } from '../utils/claude-oauth';
 import { STTClient } from './stt-client';
 
@@ -34,13 +34,18 @@ export function isVoiceSttUpgrade(req: IncomingMessage): boolean {
   return req.url.split('?')[0] === '/voice/stt/ws';
 }
 
-export function handleVoiceSttUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+export function handleVoiceSttUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, serverApiKey?: string): void {
   let token: string | null = null;
   try { token = new URL(req.url || '', 'http://localhost').searchParams.get('token'); } catch { /* noop */ }
-  if (!isValidToken(token)) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
-    socket.destroy();
-    return;
+  // Mirror the HTTP auth path (rest-server): honor the LM_ASSIST_API_AUTH=0 kill-switch and accept
+  // either the rotating ring token or the `serve --api-key` credential.
+  if (apiAuthEnabled()) {
+    const ok = isValidToken(token) || (!!serverApiKey && token === serverApiKey);
+    if (!ok) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
   }
   wss.handleUpgrade(req, socket, head, (ws: WebSocket) => { void bridgeVoiceSocket(ws as unknown as BrowserSocket); });
 }
