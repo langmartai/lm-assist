@@ -9,9 +9,15 @@ const EXPECTED_IDS = [
   'drive.design', 'drive.direct-impl', 'drive.bugfix', 'drive.feature',
   'drive.multi-phase', 'drive.deploy',
   'recover.stuck', 'wrapup.completed', 'observe.standby',
+  'case.recall-before-improvise', 'case.evidence-before-done', 'case.parity-itemized-checklist',
+  'case.postmortem-before-retry', 'case.dead-session-resume', 'case.wedged-interactive-prompt',
+  'case.dry-run-destructive', 'case.deploy-path-check', 'case.blast-radius-user-gate',
+  'case.ask-vs-act-calibration', 'case.human-correction-supremacy', 'case.duplicate-executor-guard',
+  'case.cross-host-collision-check', 'case.synthetic-drill', 'case.background-cost-audit',
+  'case.capture', 'case.index',
 ];
 
-test('exactly the 11 seeded docs, all valid, all open', () => {
+test('exactly the 28 seeded docs, all valid, all open', () => {
   assert.deepEqual(Object.keys(DEFAULT_WORKFLOWS).sort(), [...EXPECTED_IDS].sort());
   for (const [id, d] of Object.entries(DEFAULT_WORKFLOWS)) {
     assert.equal(validateWorkflowId(id).ok, true, id);
@@ -61,4 +67,35 @@ test('onboard.analyze names the classification enums', () => {
   for (const v of ['stuck', 'in-progress', 'completed', 'design', 'direct-impl', 'bugfix', 'feature', 'mission_session_read', 'mission_update']) {
     assert.ok(b.includes(v), `onboard.analyze mentions ${v}`);
   }
+});
+
+test('case library invariants', () => {
+  const caseIds = Object.keys(DEFAULT_WORKFLOWS).filter(
+    (id) => id.startsWith('case.') && id !== 'case.index' && id !== 'case.capture',
+  );
+  assert.ok(caseIds.length > 0, 'at least one case.* doc exists');
+
+  const indexBody = DEFAULT_WORKFLOWS['case.index'].body;
+
+  for (const id of caseIds) {
+    const body = DEFAULT_WORKFLOWS[id].body;
+    for (const needle of ['SITUATION:', 'RECOGNIZE:', 'HANDLE:', 'SOURCE:']) {
+      assert.ok(body.includes(needle), `${id} body includes ${needle}`);
+    }
+    assert.ok(indexBody.includes(id), `case.index has a row for ${id}`);
+  }
+
+  assert.ok(
+    DEFAULT_WORKFLOWS['recover.stuck'].body.startsWith('0. CONSULT THE CASE LIBRARY'),
+    'recover.stuck starts with the case-library consult step',
+  );
+
+  const passBody = DEFAULT_WORKFLOWS['controller.pass'].body;
+  assert.ok(passBody.includes('case.index'), 'controller.pass mentions case.index');
+  assert.ok(passBody.includes('case.capture'), 'controller.pass mentions case.capture');
+
+  assert.ok(
+    DEFAULT_WORKFLOWS['case.capture'].body.includes('never store secrets'),
+    'case.capture mentions never store secrets',
+  );
 });

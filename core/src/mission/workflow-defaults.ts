@@ -23,7 +23,9 @@ ONBOARDED MISSIONS (origin:'onboarded' — an EXISTING user session adopted into
 
 MULTI-PHASE ONBOARDED MISSIONS: if onboard:work-type=multi-phase, route to drive.multi-phase (NOT a single drive.<type>). It is a COMPOSITE mission driven phase-by-phase via the durable ctl:phase tag (design/bugfix/impl/deploy), each phase using its own doc's rigor; it is only 'completed' when its FINAL phase — often a verified deploy — is done. Never mark a multi-phase mission done because its feature "works" but is not yet deployed.
 
-PLAYBOOK EVOLUTION: your process docs live in the workflow registry (mission_workflow_list/get/set/history/rollback). You may improve an 'open' doc when experience shows a better process — but announce every self-edit in chat with one line of rationale, keep edits small, and never touch what the invariant preamble forbids. A human can roll back any edit.`;
+PLAYBOOK EVOLUTION: your process docs live in the workflow registry (mission_workflow_list/get/set/history/rollback). You may improve an 'open' doc when experience shows a better process — but announce every self-edit in chat with one line of rationale, keep edits small, and never touch what the invariant preamble forbids. A human can roll back any edit.
+
+CASE LIBRARY (recall-before-improvise): on ANY unexpected failure, error loop, or ≥2 failed attempts at the same step — yours or a driven session's — consult mission_workflow_get("case.index") BEFORE trying another variation, and follow a matching case's HANDLE. After resolving a difficult situation (especially one a human guided), store the learning per case.capture.`;
 
 export const DEFAULT_WORKFLOWS: Record<string, { title: string; body: string; editPolicy: WorkflowEditPolicy }> = {
   'controller.pass': {
@@ -116,7 +118,9 @@ Then routing goes to drive.multi-phase, which drives each phase with its own rig
   'recover.stuck': {
     title: 'Recover a stuck session',
     editPolicy: 'open',
-    body: `An onboarded session is STUCK (onboard:state=stuck, or you detected no progress / repeated failures).
+    body: `0. CONSULT THE CASE LIBRARY FIRST: mission_workflow_get("case.index"); if any row's cues match this situation, fetch that case.<slug> and follow its HANDLE before anything below — recall beats improvisation (one failed approach = switch to recall, not a third variation). After resolution, store the learning per case.capture (update or add the case).
+
+An onboarded session is STUCK (onboard:state=stuck, or you detected no progress / repeated failures).
 
 1. CLASSIFY the blocker from the last transcript pages:
    - error-loop: same error across attempts → drive one targeted instruction naming the loop and a different diagnostic step ("stop retrying X; read the actual error source at <ref>; state the root cause before any further change").
@@ -186,5 +190,256 @@ PRE-CONDITION — never deploy unverified work: confirm the prior phases are don
 - The supervisor tracks progress for you (interim). On a material engagement, refresh the mission record via mission_update (objective drift, progress, state tag) so the mission stays a truthful live summary.
 - NOTIFY the human in chat (concise, one message) when you observe: the session finished its goal · it looks stuck (repeated errors / long stall) · it hit a gate-like question aimed at a human · onboard:state changed.
 - If the human asks you to take over, remind them: mission_update({manageMode:"handoff"}) — you cannot switch it yourself.`,
+  },
+
+  'case.recall-before-improvise': {
+    title: 'Case: stopper hit — recall before improvising',
+    editPolicy: 'open',
+    body: `SITUATION: An approach failed (especially twice), an unfamiliar error appeared, or you are about to conclude "needs a restart/reboot/manual fix".
+RECOGNIZE: ≥2 failed attempts at the same step; an error you cannot explain; the words "just restart/kill/reboot it" forming in your plan.
+HANDLE:
+1. STOP improvising — one failed approach is the signal to switch to recall, not to try a third variation.
+2. Scan case.index for a matching case; search memory (search_memory) and past sessions for this exact symptom — most dead-ends in this fleet are already documented.
+3. Only if nothing is found: root-cause the actual code/system before changing anything. No fix without a confirmed root cause; never force-reset first.
+WHY: Flailing through variations is slower and riskier than recall; a "kernel-wedged, needs reboot" once turned out to be the wrong kill tool over SSH.
+SOURCE: user's codified panic-mode rule; session 99d239ac (2026-06).`,
+  },
+
+  'case.evidence-before-done': {
+    title: 'Case: completion claims need live evidence',
+    editPolicy: 'open',
+    body: `SITUATION: Work looks finished (build green, merged, logs clean) and you are about to report or mark it done.
+RECOGNIZE: "done/complete/fixed" forming with only unit tests, logs, or code inspection as evidence; celebratory summary right after a merge.
+HANDLE:
+1. Exercise the REAL path live (the actual tool call, endpoint, UI round-trip) — log/code inspection alone is inadmissible for a live-system claim.
+2. Verify through an INDEPENDENT channel from the one that made the change (e.g. list/read it back via a different tool).
+3. "Merged to main" ≠ shipped: a mission whose goal includes deploy/fleet is done only after the deploy step ran AND a post-deploy health/version check passed.
+4. Loopback/unit green does NOT prove cross-node behavior — live-test cross-node before trusting channel/routing changes.
+WHY: The user rejected done-claims repeatedly until real-path, independently-verified, post-deploy evidence existed.
+SOURCE: sessions 99d239ac, be9aa2ff ("Deploy and test e2e"), 2026-06/07.`,
+  },
+
+  'case.parity-itemized-checklist': {
+    title: 'Case: reference-product parity needs a per-feature checklist',
+    editPolicy: 'open',
+    body: `SITUATION: Building or driving work meant to mirror an existing product/page ("make it like X").
+RECOGNIZE: A parity/lookalike goal; a comparison about to be summarized as "looks similar"; the reference not actually opened.
+HANDLE:
+1. Inspect the LIVE reference first (real browser/proxy) — never approximate it from memory.
+2. Decompose the comparison into an itemized per-feature checklist as tracked tasks; verify each item against the live reference individually.
+3. A working happy-path is NOT parity — layout, ordering, states, and missing-feature gaps only surface in side-by-side driving.
+WHY: A "compared and looks right" claim was rejected twice; only the itemized checklist caught the real gaps.
+SOURCE: sessions 98da62b4, 98db67bc (2026-07).`,
+  },
+
+  'case.postmortem-before-retry': {
+    title: 'Case: failed deploy/build — postmortem before any retry',
+    editPolicy: 'open',
+    body: `SITUATION: A build or deploy failed or half-applied, and the instinct is to just run it again.
+RECOGNIZE: Non-zero/partial deploy result; the next planned action is an identical retry.
+HANDLE:
+1. Produce the causal explanation FIRST (which step failed, why, what state it left behind).
+2. Make non-recurrence a hard constraint on the retry (change the step, add the assert — not just re-run).
+3. Deploy scripts must stage-and-verify the new artifact BEFORE tearing down the live service; never continue past a failed copy/extract.
+WHY: "Why did the deploy fail — can you not do the wrong again?" — a healthy service was once torn down on the basis of a failed prep step.
+SOURCE: sessions 99d239ac (2026-06); deploy-gotchas 2026-06-29.`,
+  },
+
+  'case.dead-session-resume': {
+    title: 'Case: bound session is dead/unreachable — resume-first',
+    editPolicy: 'open',
+    body: `SITUATION: A mission's bound session has no live process (or is unreachable) and work must continue.
+RECOGNIZE: liveness=false / verdict gone-or-refuse on the bound sid; temptation to spawn a fresh executor.
+HANDLE:
+1. NEVER resume over a live process, and never spawn a replacement while the original may be alive — re-check liveness first.
+2. Prefer mission_session_resume: live+reachable is reconnected in place (context preserved); dead-with-transcript is resumed (same sid).
+3. needs-force means a HUMAN decides — surface it; do not force yourself.
+4. Only a confirmed-terminal (gone) session justifies a fresh spawn, as an explicit separate action; persist the new binding immediately (an unpersisted binding caused duplicate executors).
+WHY: Resume preserves context; premature respawn caused 12 duplicate cloud sessions in one live incident.
+SOURCE: sessions 99d239ac (0.1.85 C1, e2e runaway), 2026-06.`,
+  },
+
+  'case.wedged-interactive-prompt': {
+    title: 'Case: driven session wedged on an interactive prompt',
+    editPolicy: 'open',
+    body: `SITUATION: A driven native session stops progressing; its queued instruction never becomes a committed turn.
+RECOGNIZE: mission_session_read shows no new turns after a delivered drive; the REPL is waiting on trust/permission/onboarding UI the answer channel cannot clear (it only answers AskUserQuestion).
+HANDLE:
+1. Capture the screen (terminal_capture on its tmux) to SEE the actual prompt — do not keep re-driving.
+2. Trust/onboarding prompts on a scratch/known-safe repo: answer via terminal keys (trust = "1"; a defensive "2" EXITS). Permission prompts for real actions: surface to the human — never blind-approve.
+3. If the session will be driven long-term on scratch work, prefer relaunching it with skip-permissions (resume preserves the sid) so prompts stop recurring.
+4. Tag the mission stuck + notify rather than looping drives into a wedged REPL.
+WHY: A pre-existing no-skip-permissions session stalled a handoff mission; screen-capture identified it in one step.
+SOURCE: session ec94254a live validation (2026-07-15).`,
+  },
+
+  'case.dry-run-destructive': {
+    title: 'Case: bulk/destructive automation needs dry-run rails',
+    editPolicy: 'open',
+    body: `SITUATION: About to run or build anything that deletes/overwrites many records or files.
+RECOGNIZE: A cleanup/bulk-delete step with pattern matching; no preview of what would be affected.
+HANDLE:
+1. Dry-run FIRST as a first-class mode (list exactly what would be deleted); only then execute.
+2. Match by EXACT ids, never loose patterns that can over-match.
+3. Ambiguous or empty state defaults to "delete nothing".
+4. Back up the target before overwriting anything you did not create.
+WHY: "Should have a button to set dry run, not hand-change script" — safety rails belong in the process, not in vigilance.
+SOURCE: session 99d239ac (2026-06).`,
+  },
+
+  'case.deploy-path-check': {
+    title: 'Case: pick the org-correct deploy path (no silent downgrades)',
+    editPolicy: 'open',
+    body: `SITUATION: Work is merged and must reach machines; the "textbook" path (npm publish/upgrade/install-latest) is tempting.
+RECOGNIZE: Any publish/upgrade/install step in the plan; the org has a known-good custom path (dist-sync) and a registry that lags local builds.
+HANDLE:
+1. Check FIRST whether the standard channel would DOWNGRADE or re-break the fleet (npm latest older than local; known pinned-dep traps) — if so it is forbidden.
+2. Use the documented org path: sync the built artifacts (core/dist + scripts) per node + restart; back up the target first.
+3. After restart, verify the RUNNING process started AFTER the install finished and carries the change (a mid-install respawn loads stale code).
+WHY: "We don't want npm publish revert to old npm version" — repeated as an absolute constraint.
+SOURCE: sessions be9aa2ff, 99d239ac deploy gotchas (2026-06/07).`,
+  },
+
+  'case.blast-radius-user-gate': {
+    title: 'Case: fleet-wide/prod/credential actions are human-gated',
+    editPolicy: 'open',
+    body: `SITUATION: An action would change something fleet-wide, touch production, connect credentials, or is hard to reverse.
+RECOGNIZE: Scope larger than the current mission (all nodes, prod cluster, external accounts, irreversible deletes/deploys).
+HANDLE:
+1. Default OFF: ship such capabilities as explicit opt-in switches; never auto-enable as a side effect.
+2. State exactly what would run and where, then WAIT for explicit human confirmation (a gate, not a notification).
+3. Approval for one scope does not extend to the next — prod is gated even when staging was approved.
+WHY: The user consistently gates merges, fleet rollouts, and credential connections; autonomy ends at blast radius.
+SOURCE: sessions 99d239ac, be9aa2ff (standing practice).`,
+  },
+
+  'case.ask-vs-act-calibration': {
+    title: 'Case: when to ask the human vs just execute',
+    editPolicy: 'open',
+    body: `SITUATION: Deciding whether to pause for the human or proceed.
+RECOGNIZE: Either a real fork (multiple reasonable options, material consequences) OR an obvious next step you are about to "confirm" redundantly.
+HANDLE:
+1. Genuine fork + human available → surface it as an explicit structured choice (question/gate), options first, recommendation marked. Never silently pick.
+2. Diagnosis stated + next action unambiguous → EXECUTE; asking "shall I proceed?" after stating the plan is rebuked ("Yes why ask me").
+3. An explicit autonomy grant ("just do it, no need my approval, e2e") covers the whole implement→deploy→verify cycle — report at completion or blocking failure only.
+4. Terse replies ("Go", "Yes", "1", "Good") during a staged plan = proceed to the next planned part verbatim — not new scope.
+WHY: Both failure modes are real: silent assumptions on forks, and redundant check-ins on obvious paths.
+SOURCE: sessions 99d239ac, 98da62b4, be9aa2ff (2026-06/07).`,
+  },
+
+  'case.human-correction-supremacy': {
+    title: 'Case: human corrections override and tighten',
+    editPolicy: 'open',
+    body: `SITUATION: The human interrupts, contradicts a stated mechanism, or asks the same "why" again.
+RECOGNIZE: [interrupt] + reissued instruction; "no/not that/wrong"; a repeated why after you already answered; a plain question poking an assumption.
+HANDLE:
+1. Consecutive interrupt+reissue = each version TIGHTENS the constraint; execute only the final, most-constrained restatement.
+2. When contradicted on how something works: stop, re-derive from the live source (code/system), never re-assert the prior claim.
+3. A repeated "why" is a demand for the exact root cause (file/line), not a re-summary.
+4. A naive-sounding question about an identity/auth/trust boundary is a security probe: re-verify against source; "never trust client-supplied identity" is a hard invariant.
+WHY: A basic "where does this id come from?" question uncovered a real prod impersonation vector.
+SOURCE: sessions be9aa2ff (2026-07), 99d239ac.`,
+  },
+
+  'case.duplicate-executor-guard': {
+    title: 'Case: never double-spawn executors',
+    editPolicy: 'open',
+    body: `SITUATION: An executor looks dead/stalled and a replacement is about to be started.
+RECOGNIZE: Liveness read says not-alive shortly after a (re)start; binding not yet persisted; the same mission about to get a second session.
+HANDLE:
+1. Apply a startup grace window — a freshly-started executor looks dead before it registers.
+2. Re-check liveness through the correct id-space (cloud ids differ across list vs status APIs) before declaring gone.
+3. Persist the new binding IMMEDIATELY on any (re)launch — an unpersisted binding makes the next pass rebind/spawn again.
+4. One executor per mission, ever; replacements only after confirmed-terminal.
+WHY: A liveness/id-space mismatch once spawned 12 duplicate cloud sessions in 6 ticks.
+SOURCE: session 99d239ac e2e (2026-06).`,
+  },
+
+  'case.cross-host-collision-check': {
+    title: 'Case: audit all hosts before merge/push/placement',
+    editPolicy: 'open',
+    body: `SITUATION: About to merge/push shared work, or place an executor into a repo/branch/host.
+RECOGNIZE: Multiple hosts/sessions touched the work; concurrent sessions may have pushed mid-flight; a placement targets a repo another session occupies.
+HANDLE:
+1. Enumerate git status on EVERY involved host; distinguish "modified by this work" from pre-existing dirt before proceeding.
+2. Re-fetch origin before pushing — a concurrent session may have moved it; never assume your last known state.
+3. Before placing executors, consult session_footprints and avoid nodes/repos/branches/worktrees an unmanaged session occupies; defer on collision.
+WHY: "Double check this host and 107 has no new modified files" — clobbering concurrent work is unrecoverable.
+SOURCE: sessions be9aa2ff, 99d239ac (2026-06/07).`,
+  },
+
+  'case.synthetic-drill': {
+    title: 'Case: stress-drill a new process before trusting it',
+    editPolicy: 'open',
+    body: `SITUATION: A new orchestration/onboarding/process capability was just built or redesigned.
+RECOGNIZE: The only validation so far is design review or unit tests; no real run at the target complexity.
+HANDLE:
+1. Construct a deliberately stressful synthetic scenario matching the target complexity class (multi-phase, multi-agent, with a planted defect and a deploy step).
+2. Run the REAL process against it live; observe where it flattens, loses state, or stops early — friction found is a required fix, not an edge case.
+3. Fix, then re-run the same scenario to show the before/after delta.
+4. Report "what's wrong" explicitly — the drill's purpose is finding seams, not confirming success.
+WHY: The onboarding process passed all unit gates yet flattened composite work and dropped deploys — only the drill exposed it.
+SOURCE: session ec94254a (2026-07-15).`,
+  },
+
+  'case.background-cost-audit': {
+    title: 'Case: standing automations get cost audits',
+    editPolicy: 'open',
+    body: `SITUATION: A recurring/background job (monitor, harvester, reviewer, poller) has been running for a while.
+RECOGNIZE: You cannot say what a standing job consumed recently or whether it is still needed; a job silently uses paid tokens/quota.
+HANDLE:
+1. Periodically surface every standing job: is it still needed, how long has it run, what has it consumed (tokens/cost/CPU)?
+2. Offload detection to cheap scripts; engage the LLM only on material change (the token-frugal pattern).
+3. Anything unaccounted-for gets paused until justified.
+WHY: "How many tokens has it used already" — silent unbounded consumption is a standing user concern.
+SOURCE: sessions 99d239ac (Wave-4 design rationale), 2026-06.`,
+  },
+
+  'case.capture': {
+    title: 'How to capture a learned case',
+    editPolicy: 'open',
+    body: `You resolved (or watched a human resolve) a DIFFICULT SITUATION. Store the learning so any future controller pass can reuse it — this is how the process evolves from experience.
+
+WHEN TO CAPTURE (any of):
+- a human intervened with guidance/correction while you were handling a mission or session;
+- a recovery worked after ≥2 failed attempts (the working path is the knowledge);
+- you scanned case.index, found NO match, and had to improvise a resolution.
+
+HOW:
+1. Slug it: case.<short-kebab-slug>. Check case.index FIRST — if a case already covers it, UPDATE that doc (refine RECOGNIZE/HANDLE) instead of adding a near-duplicate. The doc name must describe the situation it actually covers.
+2. mission_workflow_set the doc in EXACTLY this shape (≤20 lines):
+   SITUATION: <one line>
+   RECOGNIZE: <observable cues>
+   HANDLE: <numbered steps that worked — the HUMAN's guidance takes precedence when they conflict with your own derivation>
+   WHY: <one line>
+   SOURCE: <mission/session id or "human guidance", date>
+3. Add/refresh its one-line row in case.index: \`case.<slug> — <RECOGNIZE one-liner>\`.
+4. Announce in chat: "captured case.<slug>: <situation>".
+
+RULES: never store secrets/tokens/credentials; HANDLE ≤6 steps (a recall card, not a manual); do not delete cases — refine them (history keeps every revision).`,
+  },
+
+  'case.index': {
+    title: 'Case library index — scan on any difficulty',
+    editPolicy: 'open',
+    body: `Known difficult-situation cases, learned from real sessions. SCAN THIS FIRST when anything is failing, stuck, or repeating — recall beats improvisation. On a cue match, mission_workflow_get the case and follow its HANDLE. No match after a genuine scan → proceed (e.g. recover.stuck), then STORE what worked per case.capture.
+
+FORMAT: case.<slug> — <recognition one-liner>
+
+case.recall-before-improvise — ≥2 failed attempts / unexplained error / about to force-restart something
+case.evidence-before-done — about to claim done/fixed with only unit tests, logs, or a merge as evidence
+case.parity-itemized-checklist — mirroring a reference product; comparison about to be 'looks similar'
+case.postmortem-before-retry — a build/deploy failed and the next step would be an identical retry
+case.dead-session-resume — bound session not alive/unreachable; tempted to spawn a replacement
+case.wedged-interactive-prompt — delivered drive never becomes a committed turn; REPL waiting on a prompt
+case.dry-run-destructive — about to bulk-delete/cleanup/overwrite by pattern
+case.deploy-path-check — about to publish/upgrade/install to ship work to machines
+case.blast-radius-user-gate — action affects fleet/prod/credentials or is hard to reverse
+case.ask-vs-act-calibration — deciding whether to ask the human or just execute
+case.human-correction-supremacy — interrupted/contradicted/repeated-why by the human
+case.duplicate-executor-guard — executor looks dead right after starting; replacement tempting
+case.cross-host-collision-check — merging/pushing/placing where multiple hosts/sessions are involved
+case.synthetic-drill — a new process/orchestration capability has only design/unit validation
+case.background-cost-audit — a standing background job's cost/necessity is unknown`,
   },
 };
