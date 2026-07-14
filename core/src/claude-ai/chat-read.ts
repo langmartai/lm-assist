@@ -29,7 +29,8 @@ export function parseChatMessages(conversationBody: unknown): ChatMsg[] {
   const toolIndex = new Map<string, ChatToolCall>();
 
   for (const m of msgsRaw) {
-    const sender = m?.sender === 'assistant' ? 'assistant' : m?.sender === 'user' ? 'user' : null;
+    // claude.ai uses sender="human" for user turns (not "user"); accept both.
+    const sender = m?.sender === 'assistant' ? 'assistant' : (m?.sender === 'human' || m?.sender === 'user') ? 'user' : null;
     if (!sender) continue;
     const content = m?.content;
 

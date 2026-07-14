@@ -13,6 +13,16 @@ test('extracts user + assistant text turns in order', () => {
   assert.equal(d[1].text, 'hi there');
 });
 
+test('maps claude.ai sender="human" to a user turn (real API shape)', () => {
+  const d = parseChatMessages({ chat_messages: [
+    { sender: 'human', content: [{ type: 'text', text: 'Read whatsapp msg from 2422' }] },
+    { sender: 'assistant', content: [{ type: 'text', text: 'sure' }] },
+  ] });
+  assert.equal(d.length, 2);
+  assert.deepEqual(d.map((m) => m.role), ['user', 'assistant']);
+  assert.equal(d[0].text, 'Read whatsapp msg from 2422');
+});
+
 test('captures a thinking block into the assistant turn', () => {
   const d = parseChatMessages({ chat_messages: [
     { sender: 'assistant', content: [
