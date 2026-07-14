@@ -12,6 +12,7 @@ import {
   removeMachine,
   buildSshCommand,
   toReportedMachine,
+  setLastCheck,
   type MachineProfile,
   type SshAccess,
 } from '../machine-access/store';
@@ -76,6 +77,26 @@ describe('validateProfile', () => {
   it('accepts unknown access types (forward compat) but requires a type string', () => {
     assert.equal(validateProfile(profile({ access: [{ type: 'windows-account', host: 'h' }] })), null);
     assert.match(validateProfile(profile({ access: [{ host: 'h' } as never] })) ?? '', /type/);
+  });
+
+  it('rejects host/user with whitespace, shell metachars, or a leading dash (injection guard)', () => {
+    assert.match(validateProfile(profile({ access: [ssh({ host: '-oProxyCommand=x' })] })) ?? '', /host/);
+    assert.match(validateProfile(profile({ access: [ssh({ host: 'a b' })] })) ?? '', /host/);
+    assert.match(validateProfile(profile({ access: [ssh({ host: 'a;rm -rf' })] })) ?? '', /host/);
+    assert.match(validateProfile(profile({ access: [ssh({ user: '-x' })] })) ?? '', /user/);
+    assert.match(validateProfile(profile({ access: [ssh({ user: 'a b' })] })) ?? '', /user/);
+    assert.match(validateProfile(profile({ access: [ssh({ identityFile: '-i/bad' })] })) ?? '', /identityFile/);
+  });
+
+  it('accepts real hostnames, IPv4, IPv6, and dotted users', () => {
+    assert.equal(validateProfile(profile({ access: [ssh({ host: 'sg.example.com' })] })), null);
+    assert.equal(validateProfile(profile({ access: [ssh({ host: '213.35.107.246' })] })), null);
+    assert.equal(validateProfile(profile({ access: [ssh({ host: 'fe80::1' })] })), null);
+    assert.equal(validateProfile(profile({ access: [ssh({ user: 'opc.admin_1' })] })), null);
+  });
+
+  it('rejects tags with metachars', () => {
+    assert.match(validateProfile(profile({ tags: ['ok', 'bad tag'] })) ?? '', /tag/);
   });
 });
 
@@ -151,5 +172,56 @@ describe('toReportedMachine', () => {
   });
   it('enabled:false is preserved', () => {
     assert.equal(toReportedMachine(profile({ enabled: false })).enabled, false);
+  });
+
+  it('never throws on a malformed profile — flags it instead', () => {
+    // access missing entirely (hand-edited file)
+    const noAccess = toReportedMachine({ id: 'x', name: 'X' } as unknown as MachineProfile);
+    assert.deepEqual(noAccess.access, []);
+    assert.match(noAccess.reportError ?? '', /access/);
+    // an ssh entry that fails validation → supported:false + invalid reason, NEVER a command
+    const bad = toReportedMachine(profile({ access: [ssh({ host: '-oProxyCommand=x' })] }));
+    assert.equal((bad.access[0] as { supported?: boolean }).supported, false);
+    assert.equal((bad.access[0] as { command?: string }).command, undefined);
+    assert.match((bad.access[0] as { invalid?: string }).invalid ?? '', /host/);
+  });
+
+  it('passes lastCheck through to the report', () => {
+    const r = toReportedMachine(profile({ lastCheck: { status: 'ok', at: '2026-07-14T00:00:00Z' } } as Partial<MachineProfile>));
+    assert.equal((r as { lastCheck?: { status: string } }).lastCheck?.status, 'ok');
+  });
+});
+
+describe('file hygiene', () => {
+  let file: string;
+  beforeEach(() => { file = tmpFile(); });
+
+  it('writes the store file with 0600 perms', () => {
+    upsertMachine(profile(), file);
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  });
+  it('keeps a one-deep .bak on overwrite', () => {
+    upsertMachine(profile({ name: 'first' }), file);
+    assert.equal(fs.existsSync(`${file}.bak`), false); // no prior version on first write
+    upsertMachine(profile({ name: 'second' }), file);
+    assert.ok(fs.existsSync(`${file}.bak`));
+    assert.equal(JSON.parse(fs.readFileSync(`${file}.bak`, 'utf-8')).machines[0].name, 'first');
+  });
+});
+
+describe('setLastCheck', () => {
+  let file: string;
+  beforeEach(() => { file = tmpFile(); });
+
+  it('records a probe result without bumping updatedAt', () => {
+    const created = upsertMachine(profile(), file);
+    const ok = setLastCheck('yitest', { status: 'ok', at: '2026-07-14T12:00:00Z' }, file);
+    assert.equal(ok, true);
+    const after = getMachine('yitest', file)!;
+    assert.equal(after.updatedAt, created.updatedAt); // a probe is NOT an edit
+    assert.equal((after as { lastCheck?: { status: string } }).lastCheck?.status, 'ok');
+  });
+  it('returns false for an unknown id', () => {
+    assert.equal(setLastCheck('nope', { status: 'ok', at: 'x' }, file), false);
   });
 });
