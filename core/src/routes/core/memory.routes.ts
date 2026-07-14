@@ -9,15 +9,100 @@
  * same memory payload onto a session response. See sessions.routes.ts.
  */
 
+import * as fs from 'fs';
+import * as os from 'os';
 import type { RouteHandler, RouteContext } from '../index';
 import { createMemoryApiImpl, MemoryApi, MemoryDetail } from '../../api/memory-api';
 import type { MemorySource } from '../../memory-cache';
 import type { Shareability } from '../../utils/memory-shareability';
+import { wrapResponse } from '../../api/helpers';
 
 let memoryApi: MemoryApi | null = null;
 function getApi(): MemoryApi {
   if (!memoryApi) memoryApi = createMemoryApiImpl();
   return memoryApi;
+}
+
+// ─── Self-node identity (mirrors core/scripts/memory-map.js's `liveNode`) ──
+//
+// memory-map.js derives the node label attached to every LIVE-source memory
+// record as:
+//   process.env.LM_HOST_ID
+//     || projects.map(p => resolveMyHostId(p.projectPath)).find(Boolean)
+//     || os.hostname()
+// where resolveMyHostId(projectPath) reads <projectPath>/memory/_hosts.md
+// and returns the id from the first line that both (a) mentions one of this
+// machine's local interface IPs and (b) yields an id token via a backtick
+// `id` or a `| id |` table-row match.
+//
+// GET /memory/self-node exists so the web UI can tell which memory-map rows
+// are "this machine". It must return the SAME value memory-map.js computed
+// for those rows, or the UI's "this is you" highlighting silently points at
+// the wrong node. selfHostId() (LM_HOST_ID > hub gatewayId > os.hostname())
+// looked like a natural reuse candidate — it shares both outer boundaries of
+// the chain above — but its middle term is the hub's gatewayId, not the
+// _hosts.md-derived id, and the two are only coincidentally equal when a
+// human happens to name the _hosts.md row the same as the gatewayId.
+// Live-confirmed divergence on this node: LM_HOST_ID is unset, this node has
+// no _hosts.md row matching its own IP in some project (falls through to
+// os.hostname() = "ubuntu-Virtual-Machine")... but in
+// /home/ubuntu/lm-unified-trade/memory/_hosts.md the row `linux-117` matches
+// this machine's 10.0.1.117 interface IP, so memory-map.js resolves
+// liveNode = "linux-117" while selfHostId() resolves to the hub gatewayId
+// (or hostname if the hub isn't connected) — divergent. So this handler
+// re-implements memory-map.js's exact chain instead of delegating to
+// selfHostId(), using the SAME in-process project list the sibling
+// GET /memory/projects handler below uses (no loopback HTTP call needed —
+// memory-map.js only goes over HTTP because it's an external script, not
+// in-process code).
+
+/**
+ * Pure scanner: given the raw text of a `<projectPath>/memory/_hosts.md`
+ * file and this machine's local interface IPs, return the id from the
+ * first line that both mentions one of the given IPs and yields an id
+ * token — via a backtick `` `id` `` or a `| id |` table-row match — else
+ * null. Exact behavioral port of memory-map.js's `resolveMyHostId` inner
+ * loop (and the equivalent private method in memory/autosync.ts), factored
+ * out here as a pure function so it's unit-testable without _hosts.md
+ * fixtures on disk.
+ */
+export function resolveHostIdFromHostsFile(hostsFileText: string, localIps: string[]): string | null {
+  for (const line of hostsFileText.split('\n')) {
+    const id = (line.match(/`([a-z0-9-]+)`/) || [])[1] || (line.match(/^\|\s*([a-z0-9-]+)\s*\|/) || [])[1];
+    if (id && localIps.some(ip => line.includes(ip))) return id;
+  }
+  return null;
+}
+
+/** Read `<projectPath>/memory/_hosts.md` and scan it for this machine's id. Missing/unreadable file → null (matches memory-map.js's try/catch-and-skip). */
+function resolveMyHostId(projectPath: string, localIps: string[]): string | null {
+  const hostsFile = `${projectPath}/memory/_hosts.md`;
+  let text: string;
+  try {
+    text = fs.readFileSync(hostsFile, 'utf8');
+  } catch {
+    return null;
+  }
+  return resolveHostIdFromHostsFile(text, localIps);
+}
+
+/** This node's identity as memory-map.js's `liveNode` computes it — see block comment above. */
+async function resolveSelfNodeId(): Promise<string> {
+  if (process.env.LM_HOST_ID) return process.env.LM_HOST_ID;
+
+  const projectsResp = await getApi().listProjects();
+  const projects = projectsResp.success && projectsResp.data ? projectsResp.data : [];
+  const localIps = Object.values(os.networkInterfaces())
+    .flat()
+    .filter(Boolean)
+    .map(n => (n as os.NetworkInterfaceInfo).address);
+  for (const p of projects) {
+    if (!p.projectPath) continue;
+    const id = resolveMyHostId(p.projectPath, localIps);
+    if (id) return id;
+  }
+
+  return os.hostname();
 }
 
 function parseDetail(v: string | undefined): MemoryDetail {
@@ -55,6 +140,23 @@ export function createMemoryRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/memory\/projects$/,
       handler: async () => {
         return await getApi().listProjects();
+      },
+    },
+
+    // GET /memory/self-node — this node's identity, for the web UI's origin
+    // hint on memory-map records. Returns the EXACT id memory-map.js's
+    // `liveNode` computes for this machine's live-source records (see the
+    // resolveSelfNodeId block comment above) — not selfHostId()'s hub
+    // gatewayId, which is a different value on this node (live-confirmed:
+    // "linux-117" via _hosts.md vs. the gatewayId/hostname selfHostId()
+    // would have returned).
+    {
+      method: 'GET',
+      pattern: /^\/memory\/self-node$/,
+      handler: async () => {
+        const start = Date.now();
+        const node = await resolveSelfNodeId();
+        return wrapResponse({ node, platform: os.platform() }, start);
       },
     },
 

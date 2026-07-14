@@ -36,7 +36,11 @@ function resolveLiveMemoryDir(slug: string | undefined): string | null {
   return path.join(projectDir, 'memory');
 }
 
-function frontmatterWarnings(content: string): string[] {
+/** MEMORY.md is the index file (bullet-list, no frontmatter by convention) — never warn on it. */
+const MEMORY_INDEX_RE = /^memory\.md$/i;
+
+function frontmatterWarnings(content: string, filename: string): string[] {
+  if (MEMORY_INDEX_RE.test(filename)) return [];
   const warnings: string[] = [];
   const pf = parseFrontmatter(content);
   if (!pf.hasFrontmatter) warnings.push('no frontmatter block (--- … ---) — record extraction will use defaults');
@@ -76,7 +80,7 @@ export function createMemoryFilesRoutes(_ctx: RouteContext): RouteHandler[] {
         });
         if (!r.ok) return wrapError(r.code!, `${r.code}: write refused for ${filename}`, start);
         await invalidate(projectId);
-        return wrapResponse({ projectId, filename, hash: r.hash, warnings: frontmatterWarnings(content) }, start);
+        return wrapResponse({ projectId, filename, hash: r.hash, warnings: frontmatterWarnings(content, filename) }, start);
       },
     },
     // POST /memory/by-project/:projectId/file  (create)
@@ -100,7 +104,7 @@ export function createMemoryFilesRoutes(_ctx: RouteContext): RouteHandler[] {
           indexUpdated = true;
         }
         await invalidate(projectId);
-        return wrapResponse({ projectId, filename, hash: r.hash, warnings: frontmatterWarnings(content), indexUpdated }, start);
+        return wrapResponse({ projectId, filename, hash: r.hash, warnings: frontmatterWarnings(content, filename), indexUpdated }, start);
       },
     },
     // DELETE /memory/by-project/:projectId/file/:filename

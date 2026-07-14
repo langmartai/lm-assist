@@ -11,7 +11,7 @@ import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import { wrapResponse, wrapError } from '../../api/helpers';
 import { rulesRoot, mirrorRootDir } from '../../rules/rule-sync';
 import { parseOs, normalizeOsList } from '../../rules/rule-extract';
-import { sha256, writeMdFile, deleteMdFile, filenameProblem } from '../../memory/file-write';
+import { sha256, writeMdFile, deleteMdFile, relPathProblem, confinedRelPath } from '../../memory/file-write';
 
 const RULES_PROTECTED = [/^synced\./i];
 const SYNCED_RE = /^synced\.([A-Za-z0-9_-]+)\./;
@@ -21,28 +21,45 @@ function titleOf(content: string): string | null {
   return m ? m[1].trim() : null;
 }
 
-function listDir(dir: string, source: string): Array<Record<string, unknown>> {
-  let names: string[] = [];
-  try { names = fs.readdirSync(dir).filter(n => n.endsWith('.md') && !n.startsWith('.')); } catch { return []; }
+/**
+ * Recursively list every `*.md` file under `root`, skipping dot-dirs and
+ * dot-files at any depth (so `.git/skip.md` never surfaces). `filename` on
+ * each entry is the POSIX relpath from `root` — a bare basename for a
+ * top-level file (unchanged from the old flat behavior) or `sub/dir/x.md`
+ * for a nested one. `os`/`active`/`syncedFrom`/`editable`/`title` are all
+ * still derived from the entry's BASENAME (via `SYNCED_RE`/`parseOs`), so a
+ * nested `sub/synced.host.x.md` is still recognized as a synced copy.
+ */
+function listDir(root: string, source: string): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
-  for (const filename of names) {
-    try {
-      const p = path.join(dir, filename);
-      const st = fs.statSync(p);
-      const content = fs.readFileSync(p, 'utf-8');
-      const osList = normalizeOsList(parseOs(content));
-      const isMirror = source.startsWith('mirror:');
-      const syncedFrom = SYNCED_RE.exec(filename)?.[1] ?? null;
-      out.push({
-        filename, source, size: st.size, mtimeMs: st.mtimeMs,
-        os: osList,
-        active: !isMirror && (osList.length === 0 || osList.includes(os.platform())),
-        syncedFrom: isMirror ? source.slice('mirror:'.length) : syncedFrom,
-        editable: !isMirror && !syncedFrom,
-        title: titleOf(content),
-      });
-    } catch { /* skip unreadable entry */ }
-  }
+  const walk = (dir: string) => {
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue; // skip dot-dirs and dot-files at any depth
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      if (!e.isFile() || !e.name.endsWith('.md')) continue;
+      try {
+        const st = fs.statSync(p);
+        const content = fs.readFileSync(p, 'utf-8');
+        const osList = normalizeOsList(parseOs(content));
+        const isMirror = source.startsWith('mirror:');
+        const basename = e.name;
+        const syncedFrom = SYNCED_RE.exec(basename)?.[1] ?? null;
+        const filename = path.relative(root, p).split(path.sep).join('/');
+        out.push({
+          filename, source, size: st.size, mtimeMs: st.mtimeMs,
+          os: osList,
+          active: !isMirror && (osList.length === 0 || osList.includes(os.platform())),
+          syncedFrom: isMirror ? source.slice('mirror:'.length) : syncedFrom,
+          editable: !isMirror && !syncedFrom,
+          title: titleOf(content),
+        });
+      } catch { /* skip unreadable entry */ }
+    }
+  };
+  walk(root);
   return out;
 }
 
@@ -80,19 +97,21 @@ export function createRuleFilesRoutes(_ctx: RouteContext): RouteHandler[] {
         return wrapResponse({ rules }, start);
       },
     },
-    // GET /rules/file/:filename?source=live|mirror:<host>
+    // GET /rules/file/:filename?source=live|mirror:<host>  (filename may be a nested relpath)
     {
       method: 'GET',
       pattern: /^\/rules\/file\/(?<filename>.+)$/,
       handler: async (req) => {
         const start = Date.now();
         const filename = decodeURIComponent(req.params.filename);
-        if (filenameProblem(filename)) return wrapError('BAD_FILENAME', `BAD_FILENAME: ${filename}`, start);
+        if (relPathProblem(filename)) return wrapError('BAD_FILENAME', `BAD_FILENAME: ${filename}`, start);
         const source = (req.query.source as string) || 'live';
         const dir = sourceDir(source);
         if (!dir) return wrapError('INVALID_INPUT', `INVALID_INPUT: bad source ${source}`, start);
+        const dest = confinedRelPath(dir, filename);
+        if (!dest) return wrapError('BAD_FILENAME', `BAD_FILENAME: ${filename}`, start); // defense-in-depth
         try {
-          const content = fs.readFileSync(path.join(dir, filename), 'utf-8');
+          const content = fs.readFileSync(dest, 'utf-8');
           return wrapResponse({ filename, source, content, hash: sha256(content) }, start);
         } catch {
           return wrapError('NOT_FOUND', `NOT_FOUND: ${source}/${filename}`, start);
@@ -111,6 +130,7 @@ export function createRuleFilesRoutes(_ctx: RouteContext): RouteHandler[] {
         const r = writeMdFile(rulesRoot(), filename, content, {
           expectedHash: typeof expectedHash === 'string' ? expectedHash : undefined,
           protectedPatterns: RULES_PROTECTED,
+          allowNested: true,
         });
         if (!r.ok) return wrapError(r.code!, `${r.code}: write refused for ${filename}`, start);
         return wrapResponse({ filename, hash: r.hash }, start);
@@ -126,7 +146,7 @@ export function createRuleFilesRoutes(_ctx: RouteContext): RouteHandler[] {
         if (typeof filename !== 'string' || typeof content !== 'string') {
           return wrapError('INVALID_INPUT', 'INVALID_INPUT: body.filename and body.content required', start);
         }
-        const r = writeMdFile(rulesRoot(), filename, content, { mustNotExist: true, protectedPatterns: RULES_PROTECTED });
+        const r = writeMdFile(rulesRoot(), filename, content, { mustNotExist: true, protectedPatterns: RULES_PROTECTED, allowNested: true });
         if (!r.ok) return wrapError(r.code!, `${r.code}: create refused for ${filename}`, start);
         return wrapResponse({ filename, hash: r.hash }, start);
       },
@@ -140,7 +160,7 @@ export function createRuleFilesRoutes(_ctx: RouteContext): RouteHandler[] {
         const filename = decodeURIComponent(req.params.filename);
         const b = bodyOf(req) as { expectedHash?: string };
         const expectedHash = (req.query.expectedHash as string) || (typeof b.expectedHash === 'string' ? b.expectedHash : undefined);
-        const r = deleteMdFile(rulesRoot(), filename, { expectedHash, protectedPatterns: RULES_PROTECTED });
+        const r = deleteMdFile(rulesRoot(), filename, { expectedHash, protectedPatterns: RULES_PROTECTED, allowNested: true });
         if (!r.ok) return wrapError(r.code!, `${r.code}: delete refused for ${filename}`, start);
         return wrapResponse({ filename, deleted: true }, start);
       },

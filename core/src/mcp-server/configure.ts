@@ -140,6 +140,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   memory_sync_status: 'read',
   memory_cross_host: 'read',
   memory_import_candidates: 'read',
+  memory_file: 'read',
   terminal_list: 'read',
   terminal_capture: 'read',
   windows_terminal_list: 'read',
@@ -217,6 +218,8 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   rule_cross_host: 'read',
   rule_import_candidates: 'read',
   rule_projects: 'read',
+  // memory/rules file editor (write — mutates the on-disk *.md files)
+  memory_write: 'write',
   // port forward (node-to-node TCP tunnel): open/close mutate, list reads
   open_port_forward: 'admin',
   list_port_forwards: 'read',

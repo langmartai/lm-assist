@@ -915,6 +915,56 @@ export const memorySyncStatusToolDef = {
   inputSchema: { type: 'object' as const, properties: {} },
 };
 
+export const memoryFileToolDef = {
+  name: 'memory_file',
+  description:
+    'Read one memory file raw (body + hash). The hash is the expected_hash for memory_write ' +
+    'update — read before you write. Needs `project_id` from memory_projects and a `filename` ' +
+    '(from memory_map, or MEMORY.md itself). `source` defaults to "live" (this host\'s working ' +
+    'copy); pass a repo mirror source (e.g. "repo:<host-id>", from memory_cross_host) to read ' +
+    "another host's copy read-only. Read-only.",
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      project_id: { type: 'string', description: 'Project slug from memory_projects.' },
+      filename: { type: 'string', description: 'Memory file name, e.g. "MEMORY.md" or "some-topic.md".' },
+      source: { type: 'string', description: 'Defaults to "live". Or a mirror source like "repo:<host-id>" (read-only).' },
+    },
+    required: ['project_id', 'filename'],
+  },
+};
+
+export const memoryWriteToolDef = {
+  name: 'memory_write',
+  description:
+    'Create, update, or delete a memory file — the write half of the discipline: list ' +
+    '(memory_map) -> read (memory_file) -> write with `expected_hash`. `action` is "create" ' +
+    '(needs `content`, optional `index_line` to append a MEMORY.md index bullet), "update" ' +
+    '(needs `content`, and `expected_hash` from a prior memory_file read — STRONGLY recommended, ' +
+    'omitting it overwrites blind), or "delete" (optional `expected_hash`; `remove_index_line` ' +
+    'defaults true and strips any matching MEMORY.md index bullet). Always targets the LIVE copy ' +
+    "on the node the call runs on — pass `node` (per existing hub routing) to edit THAT node's " +
+    'memory, not this one\'s. Server-side validation applies automatically (bad filenames, ' +
+    'protected files like _cross-project.md/_hosts.md are refused, hash-guarded writes). On a ' +
+    'HASH_MISMATCH error, the file changed on disk since your last read — call memory_file again ' +
+    'to get the current hash and retry. Non-goal: rules stay read-only over MCP (no rule_write). WRITE.',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      action: { type: 'string', enum: ['create', 'update', 'delete'], description: 'Which operation to perform.' },
+      project_id: { type: 'string', description: 'Project slug from memory_projects.' },
+      filename: { type: 'string', description: 'Memory file name, e.g. "some-topic.md".' },
+      content: { type: 'string', description: 'Full file content. Required for create/update.' },
+      expected_hash: { type: 'string', description: 'Hash from a prior memory_file read. Recommended for update/delete — omitting overwrites/deletes blind.' },
+      index_line: { type: 'string', description: 'create only: a MEMORY.md index bullet to append (optional).' },
+      remove_index_line: { type: 'boolean', description: 'delete only: strip matching MEMORY.md index bullet(s). Defaults true.' },
+    },
+    required: ['action', 'project_id', 'filename'],
+  },
+};
+
 export const EXPANDED_TOOL_DEFS = [
   // read
   listExecutionsToolDef,
@@ -924,6 +974,7 @@ export const EXPANDED_TOOL_DEFS = [
   memorySyncStatusToolDef,
   memoryCrossHostToolDef,
   memoryImportCandidatesToolDef,
+  memoryFileToolDef,
   terminalListToolDef,
   terminalCaptureToolDef,
   windowsTerminalListToolDef,
@@ -947,6 +998,7 @@ export const EXPANDED_TOOL_DEFS = [
   ruleImportCandidatesToolDef,
   ruleProjectsToolDef,
   // write
+  memoryWriteToolDef,
   claudeaiCreateConversationToolDef,
   claudeaiCompletionToolDef,
   claudeaiAddMarketplaceToolDef,
@@ -1157,6 +1209,108 @@ async function handleMemoryImportCandidates(args: Record<string, unknown>): Prom
     return ok(pretty(await workerGet(`/memory/by-project/${enc(pid)}/sync/import-candidates${qs}`)));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleMemoryFile(args: Record<string, unknown>): Promise<McpToolResult> {
+  const pid = String(args.project_id || '').trim();
+  const filename = String(args.filename || '').trim();
+  if (!pid || !filename) return err('project_id and filename are required.');
+  const source = String(args.source || 'live').trim() || 'live';
+  try {
+    return ok(pretty(await workerGet(`/memory/by-project/${enc(pid)}/file/${enc(filename)}?source=${enc(source)}`)));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+const MEMORY_WRITE_ACTIONS = ['create', 'update', 'delete'] as const;
+type MemoryWriteAction = (typeof MEMORY_WRITE_ACTIONS)[number];
+
+/**
+ * Connector clients (claude.ai, other MCP hosts) deliver MCP tool args as
+ * STRINGS even for boolean-typed schema fields — normalize before use.
+ * Recognizes bool | "true"/"false" | "1"/"0" (case/whitespace-insensitive).
+ * Anything else (including undefined) falls through to `def`.
+ */
+function coerceBool(v: unknown, def: boolean): boolean {
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if (s === 'true' || s === '1') return true;
+    if (s === 'false' || s === '0') return false;
+  }
+  return def;
+}
+
+/**
+ * Pure request-mapping for memory_write: {action, args} -> the {method, path,
+ * body} to send to the existing /memory/by-project/:id/file... routes (or a
+ * validation `error` string). No I/O — factored out so the action/query/body
+ * construction (incl. string-coerced booleans and URI encoding) is unit
+ * testable without stubbing fetch. Mirrors the web editor's own contract
+ * exactly: PUT (update) / POST (create) / DELETE (delete).
+ */
+export function buildMemoryWriteRequest(
+  args: Record<string, unknown>,
+): { method: 'GET' | 'POST' | 'PUT' | 'DELETE'; path: string; body?: Record<string, unknown> } | { error: string } {
+  const action = String(args.action || '').trim() as MemoryWriteAction | '';
+  if (!(MEMORY_WRITE_ACTIONS as readonly string[]).includes(action)) {
+    return { error: `memory_write action must be one of: ${MEMORY_WRITE_ACTIONS.join(', ')}` };
+  }
+  const projectId = String(args.project_id || '').trim();
+  const filename = String(args.filename || '').trim();
+  if (!projectId || !filename) return { error: 'project_id and filename are required.' };
+  const base = `/memory/by-project/${enc(projectId)}/file`;
+  const expectedHash = typeof args.expected_hash === 'string' && args.expected_hash.trim() ? args.expected_hash.trim() : undefined;
+
+  if (action === 'create') {
+    const content = args.content;
+    if (typeof content !== 'string') return { error: 'content is required for action="create".' };
+    const body: Record<string, unknown> = { filename, content };
+    const indexLine = args.index_line;
+    if (typeof indexLine === 'string' && indexLine.trim()) body.indexLine = indexLine;
+    return { method: 'POST', path: base, body };
+  }
+
+  if (action === 'update') {
+    const content = args.content;
+    if (typeof content !== 'string') return { error: 'content is required for action="update".' };
+    const body: Record<string, unknown> = { content };
+    if (expectedHash) body.expectedHash = expectedHash;
+    return { method: 'PUT', path: `${base}/${enc(filename)}`, body };
+  }
+
+  // action === 'delete'
+  const removeIndexLine = coerceBool(args.remove_index_line, true);
+  const qs = new URLSearchParams();
+  qs.set('removeIndexLine', removeIndexLine ? 'true' : 'false');
+  if (expectedHash) qs.set('expectedHash', expectedHash);
+  return { method: 'DELETE', path: `${base}/${enc(filename)}?${qs.toString()}` };
+}
+
+/** HASH_MISMATCH is server-validated on update/delete — turn it into an actionable retry hint. */
+function memoryWriteErrorText(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (msg.startsWith('HASH_MISMATCH')) {
+    return `${msg} — file changed on disk since your last read. Call memory_file to get the current hash and retry.`;
+  }
+  return msg;
+}
+
+async function handleMemoryWrite(args: Record<string, unknown>): Promise<McpToolResult> {
+  const req = buildMemoryWriteRequest(args);
+  if ('error' in req) return err(req.error);
+  try {
+    let data: unknown;
+    if (req.method === 'POST') data = await workerPost(req.path, req.body!);
+    else if (req.method === 'PUT') data = await workerPut(req.path, req.body!);
+    else data = await workerDelete(req.path);
+    const warnings = (data as { warnings?: unknown } | null)?.warnings;
+    const hint = Array.isArray(warnings) && warnings.length > 0 ? `\n\nNote: ${warnings.join('; ')}` : '';
+    return ok(pretty(data) + hint);
+  } catch (e) {
+    return err(memoryWriteErrorText(e));
   }
 }
 
@@ -1782,6 +1936,7 @@ export const EXPANDED_HANDLERS: Record<
   memory_sync_status: () => handleMemorySyncStatus(),
   memory_cross_host: handleMemoryCrossHost,
   memory_import_candidates: handleMemoryImportCandidates,
+  memory_file: handleMemoryFile,
   terminal_list: () => handleTerminalList(),
   terminal_capture: handleTerminalCapture,
   windows_terminal_list: () => handleWindowsTerminalList(),
@@ -1797,6 +1952,7 @@ export const EXPANDED_HANDLERS: Record<
   claudeai_list_marketplace_plugins: handleClaudeaiListMarketplacePlugins,
   claudeai_list_plugins: handleClaudeaiListPlugins,
   // write
+  memory_write: handleMemoryWrite,
   claudeai_create_conversation: handleClaudeaiCreateConversation,
   claudeai_completion: handleClaudeaiCompletion,
   claudeai_add_marketplace: handleClaudeaiAddMarketplace,
