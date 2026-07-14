@@ -126,13 +126,13 @@ export const MISSION_TOOL_DEFS = [
   },
   {
     name: 'mission_session_read',
-    description: 'Read the transcript of a mission session (cloud CCR or native). Returns {messages:[...], pendingQuestion}. `pendingQuestion` (when non-null) is an AskUserQuestion the session is BLOCKED on — {toolUseId, requestId?, questions:[{header,question,options}]}; answer it with mission_session_answer (NOT mission_session_drive). Works for a `--remote-control` (bridge) controller/executor too. Use lastN to limit messages.',
-    inputSchema: obj({ sid: S, lastN: { type: 'number' as const } }, ['sid']),
+    description: 'Read the transcript of a mission session (cloud CCR or native). Returns {messages:[...], pendingQuestion}. `pendingQuestion` (when non-null) is an AskUserQuestion the session is BLOCKED on — {toolUseId, requestId?, questions:[{header,question,options}]}; answer it with mission_session_answer (NOT mission_session_drive). Works for a `--remote-control` (bridge) controller/executor too. Use lastN to limit messages. `node` is usually unnecessary — an onboarded session bound to a different in-cluster node is auto-resolved and proxied there; pass it only to force a specific node.',
+    inputSchema: obj({ sid: S, lastN: { type: 'number' as const }, node: S }, ['sid']),
   },
   {
     name: 'mission_session_drive',
-    description: 'Send a message to a mission session (cloud or native). The session receives the text as an injected prompt. Write tool — creates a turn. NOTE: if the session is blocked on a `pendingQuestion`, use mission_session_answer, not this.',
-    inputSchema: obj({ sid: S, text: S }, ['sid', 'text']),
+    description: 'Send a message to a mission session (cloud or native). The session receives the text as an injected prompt. Write tool — creates a turn. NOTE: if the session is blocked on a `pendingQuestion`, use mission_session_answer, not this. `node` is usually unnecessary — an onboarded session bound to a different in-cluster node is auto-resolved and proxied there; pass it only to force a specific node.',
+    inputSchema: obj({ sid: S, text: S, node: S }, ['sid', 'text']),
   },
   {
     name: 'mission_session_answer',
@@ -242,7 +242,10 @@ export const MISSION_HANDLERS: Record<
       // Coerce lastN: MCP args arrive as strings over the connector
       const rawLastN = a.lastN;
       const lastN = typeof rawLastN === 'number' ? rawLastN : (typeof rawLastN === 'string' ? parseInt(rawLastN, 10) : undefined);
-      return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/read`, { lastN }));
+      // I1: forward `node` when given (string passthrough) — usually unnecessary since the
+      // route auto-resolves an onboarded mission's node, but lets a caller force a specific one.
+      const node = a.node ? String(a.node) : undefined;
+      return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/read`, { lastN, node }));
     } catch (e) { return err((e as Error).message); }
   },
 
@@ -252,8 +255,9 @@ export const MISSION_HANDLERS: Record<
       if (!sid) return err('sid is required');
       const text = String(a.text || '');
       if (!text) return err('text is required');
+      const node = a.node ? String(a.node) : undefined;
       // withActorHint so drive is attributed to the caller's MCP session
-      return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/drive`, withActorHint({ text }, currentMcpContext()?.toolUseId)));
+      return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/drive`, withActorHint({ text, node }, currentMcpContext()?.toolUseId)));
     } catch (e) { return err((e as Error).message); }
   },
 

@@ -61,6 +61,7 @@ export function detectHumanActivity(msgs: Array<{ role: string; text: string }>)
     if (t.startsWith('<system')) continue;          // <system-reminder> harness injections
     if (t.startsWith('[{')) continue;               // serialized tool_result arrays
     if (t.startsWith('Run a controller pass')) continue; // supervisor directives (controller session)
+    if (t.startsWith('⟦INVARIANTS')) continue;      // registry-rendered directive text (renderWorkflowText prepends the invariant preamble) — not a human prompt
     return true;
   }
   return false;

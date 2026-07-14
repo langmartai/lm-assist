@@ -66,7 +66,9 @@ TS const `WORKFLOW_INVARIANT_PREAMBLE`, always prepended by `renderWorkflow`, ne
 - Every write is attributed via the existing `MissionActor` machinery incl. the §4a `upgradeControllerActor` path — controller writes stamped `kind:controller, channel:controller`.
 - Route enforces `editPolicy`: `human-only` docs reject controller-attributed writers (structured `EDIT_POLICY` error). v1 default: all seeded docs `open`.
 - Rollback tool writes the target rev's body as a new attributed rev.
-- Controller conduct (in `controller.pass`): announce any self-edit with one line of rationale in chat. Controller status output includes a "recent playbook changes" line (last N from history).
+- Controller conduct (in `controller.pass`): announce any self-edit with one line of rationale in chat. Recent playbook changes are inspectable via `mission_workflow_history` (a dedicated controller-status line is deferred).
+
+**Rail strength caveat:** the route-level guards described throughout this document (editPolicy enforcement, the onboarded-mission binding/stop/manageMode human-only rails in §4.3/§4.5) are enforced for **attributed MCP/REST paths** — i.e. any caller going through the normal `mission_*` tool surface or the REST API, where `MissionActor` resolution (`resolveMcpActor`/`upgradeControllerActor`) can distinguish a controller-attributed write from a human one. A **locally-privileged agent** with `Bash` access on the leader node, or one with direct data-service write access to the `missions`/`mission-workflows` datasets, can bypass attribution entirely (e.g. write the dataset's underlying file/record directly, or shell out to a script that calls the store functions with a fabricated `MissionActor`). These route-level rails are a **conduct guardrail against a normally-behaving controller agent operating through its intended tool surface**, not a security boundary against a locally-privileged process. The invariant preamble (§3.3) plus the durable, attributed audit history (`mission-history` / `mission-workflow-history`) are the governing controls at that layer — they make an out-of-band bypass detectable and attributable after the fact, even though they cannot prevent it in real time.
 
 ### 3.5 Surfaces
 
@@ -125,7 +127,7 @@ The supervisor's existing new-mission engagement wakes the controller. Per `cont
 
 ### 4.6 Cross-node reads
 
-An onboarded native session may live on any in-cluster node (not the leader). `handleSessionRead` / liveness / drive must route by `binding.node` via the existing peer-proxy machinery (`proxyGet`/`proxyPost` — same pattern as the Wave-3 controller-status proxy). Today's native read path assumes the local `AgentSessionStore` — this is a **known integration gap Phase 2 must close**. Transient cross-node read failures follow the existing grace rule (transient ⇒ alive, only confirmed-terminal ⇒ gone).
+An onboarded native session may live on any in-cluster node (not the leader). `handleSessionRead` / `handleSessionDrive` **auto-resolve `binding.node`** when the caller omits an explicit `node`: they look up the mission via `findMissionBySessionOrCcr(sid)`, and when it is `origin:'onboarded'` with a `binding.node` that is set, not `'cloud'`, and not this node, they proxy the call to that node via the existing peer-proxy machinery (`proxyPost` — same pattern as the Wave-3 controller-status proxy), so a controller tool call with no explicit `node` still reaches the session wherever it actually lives. An explicitly-passed `node` always wins over the auto-resolve. This scoping is deliberate: executor (mission-managed) sessions remain leader-local by design and are unaffected. Transient cross-node read failures follow the existing grace rule (transient ⇒ alive, only confirmed-terminal ⇒ gone).
 
 ## 5. Default process library (all `editPolicy:'open'`, seeded from TS defaults)
 

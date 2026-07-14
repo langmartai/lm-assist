@@ -11,6 +11,12 @@ import type { DataRecord } from '../data/types';
 
 const DATASET = 'mission-workflows';
 const SNAP_DATASET = 'mission-workflow-history';
+/** I5 — retention: keep only the most recent N snapshots per doc. Workflow docs can be edited
+ *  frequently (controller self-edits + human edits), and each snapshot holds a FULL body (up to
+ *  64KiB) rather than a diff — unbounded snapshot growth is a real storage/query-cost concern in
+ *  a way mission-history's truncated diffs are not. 20 comfortably covers "recent rollback
+ *  candidates" while bounding worst-case growth per doc. */
+const SNAPSHOT_RETENTION = 20;
 
 /** A durable snapshot of one workflow doc revision — the FULL title/body/editPolicy, not a diff. */
 export interface WorkflowSnapshot {
@@ -38,6 +44,10 @@ export interface WorkflowSnapshotPort {
   put(s: WorkflowSnapshot): Promise<void>;
   get(docId: string, rev: number): Promise<WorkflowSnapshot | null>;
   list(docId: string, opts: { limit?: number; beforeRev?: number }): Promise<WorkflowSnapshot[]>;
+  /** I5 — delete one snapshot by its record id (`${docId}:${rev}`), for retention pruning.
+   *  Optional: a port that doesn't implement it (e.g. an older in-memory test fake) simply
+   *  never gets pruned — putWorkflow's pruning step is a no-op when this is absent. */
+  del?(id: string): Promise<void>;
 }
 
 function systemCtx(): CallCtx { return { principal: { type: 'local' } }; }
@@ -137,6 +147,12 @@ function liveSnapshotPort(): WorkflowSnapshotPort {
       const r = await svc.query(systemCtx(), SNAP_DATASET, { filter, sort: [{ field: 'rev', dir: 'desc' }], limit: opts.limit ?? 50 } as any);
       return r.ok ? r.value.records.map((rec) => recordToSnapshot(rec.fields)) : [];
     },
+    del: async (id) => {
+      const svc = getDataService();
+      if (!svc.isEnabled()) return;
+      await ensureSnapshotDataset(svc);
+      await svc.del(systemCtx(), SNAP_DATASET, id);
+    },
   };
 }
 
@@ -196,6 +212,16 @@ export async function putWorkflow(
   try {
     await snap.put({ id: `${doc.id}:${rev}`, docId: doc.id, rev, at: now, actor, title: doc.title, body: doc.body, editPolicy: doc.editPolicy });
   } catch { /* best-effort durable snapshot */ }
+  // I5 — retention: prune snapshots beyond the most recent SNAPSHOT_RETENTION per doc. Best-effort
+  // and entirely optional (snap.del may be absent on an older/test port) — must never throw out of
+  // putWorkflow, since a pruning hiccup must not block the actual edit that already succeeded above.
+  if (snap.del) {
+    try {
+      const old = await snap.list(doc.id, { limit: 200 });
+      const toPrune = old.slice(SNAPSHOT_RETENTION);
+      for (const s of toPrune) await snap.del!(s.id);
+    } catch { /* best-effort — never let pruning fail the edit */ }
+  }
   return { doc, changed: true };
 }
 

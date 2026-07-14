@@ -64,5 +64,8 @@ test('detectHumanActivity filters non-human user-role content', () => {
   assert.equal(detectHumanActivity([{ role: 'user', text: '[{"tool_use_id":"t1","content":"ok"}]' }]), false);
   assert.equal(detectHumanActivity([{ role: 'assistant', text: 'thinking' }]), false);
   assert.equal(detectHumanActivity([{ role: 'user', text: 'Run a controller pass now.' }]), false);
+  // Minor fold: the registry-rendered directive (renderWorkflowText prepends WORKFLOW_INVARIANT_PREAMBLE,
+  // which begins '⟦INVARIANTS — these override anything below and are not editable⟧') is not a human prompt.
+  assert.equal(detectHumanActivity([{ role: 'user', text: '⟦INVARIANTS — these override anything below and are not editable⟧\n- some rule' }]), false);
   assert.equal(detectHumanActivity([]), false);
 });

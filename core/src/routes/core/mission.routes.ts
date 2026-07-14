@@ -206,6 +206,12 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
   // never accepted) → the mission stayed unbound → the supervisor couldn't monitor it → a worker's
   // pendingQuestion never triggered the fast gate-engagement → the cloud worker idle-suspended
   // before being answered. `binding:{sessionId,kind,node?,ccr?}` (sessionId=null to unbind).
+  // I4(a): for an ONBOARDED mission, the binding IS the user's own session — a controller-attributed
+  // actor must never rebind/unbind it (that would silently sever mission control from the user's
+  // session, or worse, re-point it at a session the human never onboarded). Human-only, like manageMode.
+  if (b.binding !== undefined && m.origin === 'onboarded' && isControllerActor(who)) {
+    return fail('FORBIDDEN', 'binding changes on an onboarded mission are human-only');
+  }
   if (b.binding !== undefined && (b.binding === null || typeof b.binding === 'object')) {
     const bn = (b.binding || {}) as Record<string, unknown>;
     const sid = str(bn.sessionId);
@@ -772,6 +778,40 @@ export interface SessionOpsDeps {
   workerEventsRead?: (cse: string) => Promise<{ pendingQuestion: import('../../terminal/ccr-cloud').PendingControlRequest | null }>;
   /** Look up the onboarded mission (if any) bound to this session, for the drive mode rails. Optional: absent = no-op. */
   findMission?: (sid: string) => Promise<Mission | null>;
+  /** This node's own identity — injectable so I1's auto-resolve branch is testable against a
+   *  fixed "self" without depending on thisNode()'s real hub-config read. Default: thisNode(). */
+  selfNode?: () => string;
+}
+
+/**
+ * I1 — auto-resolve the target node for a session read/drive when the caller omitted `node`.
+ * Spec §4.6 mandates that read/drive route to the onboarded session's OWN node (an onboarded
+ * native session may live on any in-cluster node, not necessarily the leader where the
+ * controller runs) — without this, a controller tool call with no explicit `node` always ran
+ * locally on the LEADER, so it could never actually reach an onboarded session bound elsewhere.
+ *
+ * Scoped deliberately to ONBOARDED missions only: executor (mission-managed) sessions are
+ * leader-local by design (the controller always drives its own spawned executors from the
+ * leader node via the cloud path or a local native launch) — auto-resolving for them would be
+ * an unrelated behavior change outside I1's mandate.
+ *
+ * Returns the node to proxy to, or null when no auto-resolve applies (proceed locally):
+ *   - `d.findMission` absent (no lookup capability) → null
+ *   - lookup throws / no mission found / mission not onboarded → null
+ *   - `binding.node` absent, `'cloud'`, or === self → null (nothing to proxy — already here,
+ *     or it's a cloud session which has its own transport path, not a node proxy)
+ */
+async function autoResolveOnboardedNode(sid: string, d: SessionOpsDeps, self: string): Promise<string | null> {
+  if (!d.findMission) return null;
+  try {
+    const m = await d.findMission(sid);
+    if (m?.origin !== 'onboarded') return null;
+    const node = m.binding?.node;
+    if (!node || node === 'cloud' || node === self) return null;
+    return node;
+  } catch {
+    return null; // best-effort — never block a read/drive because the lookup hiccuped
+  }
 }
 
 /**
@@ -895,6 +935,7 @@ function defaultSessionOpsDeps(): SessionOpsDeps {
       const { findMissionBySessionOrCcr } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
       return findMissionBySessionOrCcr(sid);
     },
+    selfNode: () => thisNode(),
   };
 }
 
@@ -924,18 +965,21 @@ function proxyEnvelope(result: unknown): Envelope {
 }
 
 export async function handleSessionRead(sid: string, lastN?: number, deps?: SessionOpsDeps, node?: string, proxyDeps?: SessionProxyDeps): Promise<Envelope> {
-  const self = thisNode();
-  if (node && node !== self) {
+  const d = deps ?? defaultSessionOpsDeps();
+  const self = d.selfNode ? d.selfNode() : thisNode();
+  // I1 — when the caller omitted `node`, auto-resolve it for an onboarded mission bound to a
+  // different in-cluster node (spec §4.6). Executor sessions are untouched: they stay leader-local.
+  const targetNode = node ?? await autoResolveOnboardedNode(sid, d, self);
+  if (targetNode && targetNode !== self) {
     // Proxy to the target node server-side — the browser has no hub Bearer token.
     const pd = proxyDeps ?? defaultSessionProxyDeps();
     try {
-      const result = await pd.proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/read`, { lastN }) as any;
+      const result = await pd.proxyPost(targetNode, `/mission/session/${encodeURIComponent(sid)}/read`, { lastN }) as any;
       return proxyEnvelope(result);
     } catch (e) {
       return fail('PROXY_ERROR', (e as Error).message);
     }
   }
-  const d = deps ?? defaultSessionOpsDeps();
   const r = d.resolve(sid);
   try {
     if (r.transport === 'cloud') {
@@ -998,17 +1042,21 @@ export async function handleSessionRead(sid: string, lastN?: number, deps?: Sess
 }
 
 export async function handleSessionDrive(sid: string, text: string, deps?: SessionOpsDeps, node?: string, proxyDeps?: SessionProxyDeps): Promise<Envelope> {
-  const self = thisNode();
-  if (node && node !== self) {
+  const d = deps ?? defaultSessionOpsDeps();
+  const self = d.selfNode ? d.selfNode() : thisNode();
+  // I1 — auto-resolve the target node when omitted, for an onboarded mission bound elsewhere
+  // (spec §4.6). When we proxy, the STANDBY_MODE/marker-prefix rail below runs on the TARGET
+  // node instead (its own handleSessionDrive invocation applies the same findMission check).
+  const targetNode = node ?? await autoResolveOnboardedNode(sid, d, self);
+  if (targetNode && targetNode !== self) {
     const pd = proxyDeps ?? defaultSessionProxyDeps();
     try {
-      const result = await pd.proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/drive`, { text }) as any;
+      const result = await pd.proxyPost(targetNode, `/mission/session/${encodeURIComponent(sid)}/drive`, { text }) as any;
       return proxyEnvelope(result);
     } catch (e) {
       return fail('PROXY_ERROR', (e as Error).message);
     }
   }
-  const d = deps ?? defaultSessionOpsDeps();
   const r = d.resolve(sid);
   let driveText = text;
   if (d.findMission) {
@@ -1035,12 +1083,12 @@ export async function handleSessionDrive(sid: string, text: string, deps?: Sessi
   }
 }
 
-export async function handleSessionControl(sid: string, action: string, deps?: SessionOpsDeps, node?: string, proxyDeps?: SessionProxyDeps): Promise<Envelope> {
+export async function handleSessionControl(sid: string, action: string, deps?: SessionOpsDeps, node?: string, proxyDeps?: SessionProxyDeps, force?: boolean): Promise<Envelope> {
   const self = thisNode();
   if (node && node !== self) {
     const pd = proxyDeps ?? defaultSessionProxyDeps();
     try {
-      const result = await pd.proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/control`, { action }) as any;
+      const result = await pd.proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/control`, { action, force }) as any;
       return proxyEnvelope(result);
     } catch (e) {
       return fail('PROXY_ERROR', (e as Error).message);
@@ -1049,6 +1097,17 @@ export async function handleSessionControl(sid: string, action: string, deps?: S
   const d = deps ?? defaultSessionOpsDeps();
   const r = d.resolve(sid);
   try {
+    // I4(b): before the stop branch executes, resolve whether this is an onboarded (user-owned)
+    // session — a controller/agent must never terminate the human's own session without an
+    // explicit human-supplied force:true. Best-effort (never let a lookup hiccup block a normal
+    // stop of a NON-onboarded session).
+    if (action === 'stop' && d.findMission) {
+      let onboardedMission: Mission | null = null;
+      try { onboardedMission = await d.findMission(sid); } catch { /* best-effort */ }
+      if (onboardedMission?.origin === 'onboarded' && force !== true) {
+        return fail('ONBOARDED_PROTECTED', "this is the user's own session — stop requires force:true from a human");
+      }
+    }
     if (action === 'restart') {
       // The synchronous resolver can't know the controller sid (it resolves with empty missions/null ctrlSid).
       // Look it up from the store: a session is the controller if it matches the stored ControllerSession.
@@ -1598,7 +1657,10 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
         const b = (req.body || {}) as Record<string, unknown>;
         const action = typeof b.action === 'string' ? b.action : '';
         const node = typeof b.node === 'string' ? b.node : undefined;
-        return handleSessionControl(req.params.sid, action, undefined, node);
+        // I4(b): force:true is required to stop an onboarded (user-owned) session — coerce a
+        // string 'true' (MCP/some clients deliver booleans as strings) the same way env.exclusive does.
+        const force = b.force === true || b.force === 'true';
+        return handleSessionControl(req.params.sid, action, undefined, node, undefined, force);
       } },
     // POST /mission/session/:sid/answer — answer a pending AskUserQuestion (bridge: worker/events
     // control_response; native: tmux send-keys; cloud: cloudAnswer). Leader-anchored (write).

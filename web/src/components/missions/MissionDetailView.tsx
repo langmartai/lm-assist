@@ -63,7 +63,7 @@ interface MissionDetail {
 /** Mission session row from GET /mission/:id/sessions. */
 interface MissionSessionRow {
   sid: string;
-  kind: 'orchestrator' | 'worker';
+  kind: 'orchestrator' | 'worker' | 'onboarded';
   role: 'primary' | 'sub';
   lastContact?: number;
 }
