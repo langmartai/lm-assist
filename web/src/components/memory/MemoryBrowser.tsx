@@ -31,7 +31,7 @@ function FilterChip({ text, active, color, onClick }: { text: string; active: bo
   );
 }
 
-export function MemoryBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEdit?: (t: EditTarget) => void; refreshTick?: number }) {
+export function MemoryBrowser({ call, onEdit, refreshTick, selfNode }: { call: CallFn; onEdit?: (t: EditTarget) => void; refreshTick?: number; selfNode?: string | null }) {
   const [projects, setProjects] = useState<MemoryProjectSummary[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [q, setQ] = useState('');
@@ -223,7 +223,7 @@ export function MemoryBrowser({ call, onEdit, refreshTick }: { call: CallFn; onE
       </div>
 
       {selected && (
-        <RecordDetail key={selected.recordId} record={selected} call={call} onEdit={onEdit} onClose={() => { setSelected(null); loadRecords(); }} refreshTick={refreshTick} />
+        <RecordDetail key={selected.recordId} record={selected} call={call} onEdit={onEdit} onClose={() => { setSelected(null); loadRecords(); }} refreshTick={refreshTick} selfNode={selfNode} />
       )}
     </div>
   );

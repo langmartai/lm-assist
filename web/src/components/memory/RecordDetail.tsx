@@ -21,8 +21,8 @@ function MarkdownLink({ href, children }: { href?: string; children?: React.Reac
   return <span className="text-gray-400">{children}</span>;
 }
 
-export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
-  { record: MapRecord; call: CallFn; onEdit?: (t: EditTarget) => void; onClose: () => void; refreshTick?: number }) {
+export function RecordDetail({ record, call, onEdit, onClose, refreshTick, selfNode }:
+  { record: MapRecord; call: CallFn; onEdit?: (t: EditTarget) => void; onClose: () => void; refreshTick?: number; selfNode?: string | null }) {
   const [full, setFull] = useState<MapRecord | null>(null);
   const [sources, setSources] = useState<SourceInfo[]>([]);
   const [source, setSource] = useState('live');
@@ -93,7 +93,16 @@ export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
         <div className="flex items-start justify-between gap-2">
           <div>
             <div className="text-gray-100 font-medium">{record.title || record.file}</div>
-            <div className="text-gray-500 text-xs">{record.project} · {record.file} · {record.node}</div>
+            <div className="text-gray-500 text-xs flex items-center gap-1.5">
+              <span>{record.project} · {record.file} · {record.node}</span>
+              {record.node && selfNode && record.node !== selfNode && (
+                <span
+                  title={`Recorded on ${record.node}; the raw file shown is the copy visible to this node.`}
+                  className="text-amber-300/90 text-[10px] border border-amber-900/50 bg-amber-950/30 rounded px-1.5 py-0.5">
+                  origin: {record.node}
+                </span>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {copyText && (
