@@ -6,16 +6,16 @@ import type { SshAccess } from '../machine-access/store';
 const ssh = (over: Partial<SshAccess> = {}): SshAccess => ({ type: 'ssh', host: 'h.example', user: 'u', ...over });
 
 describe('buildSshProbeArgs', () => {
-  it('always non-interactive, never mutates known_hosts, ends with -- true', () => {
+  it('always non-interactive, never mutates known_hosts, ends with a portable exit', () => {
     const a = buildSshProbeArgs(ssh(), { connectTimeout: 8 });
     assert.ok(a.includes('-oBatchMode=yes'));
     assert.ok(a.includes('-oConnectTimeout=8'));
     assert.ok(a.includes('-oStrictHostKeyChecking=yes')); // unknown key surfaced, never trusted
-    // remote command is the literal `true`, guarded by `--`
-    assert.equal(a[a.length - 1], 'true');
-    assert.equal(a[a.length - 2], '--');
-    // target immediately before the `--`
-    assert.equal(a[a.length - 3], 'u@h.example');
+    // remote command is the portable `exit` builtin (sh/cmd/PowerShell) — NOT POSIX-only `true`
+    assert.equal(a[a.length - 1], 'exit');
+    assert.equal(a[a.length - 2], 'u@h.example'); // target immediately before the command
+    assert.equal(a.includes('true'), false);
+    assert.equal(a.includes('--'), false);
   });
 
   it('adds -i + IdentitiesOnly only when a key is set', () => {

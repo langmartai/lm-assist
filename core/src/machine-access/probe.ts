@@ -7,8 +7,13 @@
  *  - StrictHostKeyChecking=yes → an unknown/changed host key is SURFACED, never
  *    silently accepted; the probe never writes to known_hosts.
  *  - IdentitiesOnly=yes + -i → use ONLY the declared key (no agent key spray).
- *  - argv array + trailing `--` + literal `true` remote command → no shell, no
- *    option/command injection (leading-dash fields are already rejected at write).
+ *  - argv array (no shell) + a fixed literal remote command → no injection
+ *    (leading-dash host/user are already rejected at write time).
+ *
+ * Remote command is the shell builtin `exit`: portable across POSIX sh, Windows
+ * cmd.exe, and PowerShell (all exit 0), so a Windows SSH target is probed
+ * correctly. (`true` is POSIX-only — cmd.exe rejects it, which mislabels a
+ * reachable Windows host as an error; found in live cross-machine testing.)
  */
 import type { SshAccess, LastCheck } from './store';
 
@@ -29,7 +34,9 @@ export function buildSshProbeArgs(a: SshAccess, opts: ProbeOpts): string[] {
   if (a.port && a.port !== 22) {
     args.push('-p', String(a.port));
   }
-  args.push(`${a.user}@${a.host}`, '--', 'true');
+  // `exit` is a builtin in sh, cmd.exe, and PowerShell (all → 0). host/user are
+  // validated (no leading dash), so no `--` option-guard is needed.
+  args.push(`${a.user}@${a.host}`, 'exit');
   return args;
 }
 
