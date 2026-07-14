@@ -308,6 +308,8 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   cluster_assign: 'write',
   cluster_unassign: 'write',
   cluster_describe: 'write',
+  // machine access profiles — node-local reachability meta (read)
+  machine_access: 'read',
   // fleet session footprints (read — non-blocking survey)
   session_footprints: 'read',
   // whatsapp cloud-api connector (send mutates/spends; the rest are reads)

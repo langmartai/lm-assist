@@ -58,6 +58,7 @@ import { CLAUDEAI_LOGIN_TOOL_DEFS, CLAUDEAI_LOGIN_HANDLERS } from './claudeai-lo
 import { NODE_BUILDS_TOOL_DEFS, NODE_BUILDS_HANDLERS } from './node-builds';
 import { NODE_UPGRADE_TOOL_DEFS, NODE_UPGRADE_HANDLERS } from './node-upgrade';
 import { CLUSTER_TOOL_DEFS, CLUSTER_HANDLERS } from './cluster';
+import { MACHINE_ACCESS_TOOL_DEFS, MACHINE_ACCESS_HANDLERS } from './machine-access';
 import { NODE_STATUS_TOOL_DEFS, NODE_STATUS_HANDLERS } from './node-status';
 import { FABRIC_PROBE_TOOL_DEFS, FABRIC_PROBE_HANDLERS } from './fabric-probe';
 import { BUS_TOOL_DEFS, BUS_HANDLERS } from './bus';
@@ -1020,6 +1021,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...NODE_UPGRADE_TOOL_DEFS,
   // cluster management (list:read, assign/unassign/describe:write)
   ...CLUSTER_TOOL_DEFS,
+  // machine access profiles — how to reach other machines FROM this node (read)
+  ...MACHINE_ACCESS_TOOL_DEFS,
   // general per-node status — every subsystem in one call (read)
   ...NODE_STATUS_TOOL_DEFS,
   // on-demand measured fabric throughput + RTT to a peer (read, T5)
@@ -1878,6 +1881,8 @@ export const EXPANDED_HANDLERS: Record<
   ...NODE_UPGRADE_HANDLERS,
   // cluster management
   ...CLUSTER_HANDLERS,
+  // machine access profiles
+  ...MACHINE_ACCESS_HANDLERS,
   // general per-node status — every subsystem in one call (read)
   ...NODE_STATUS_HANDLERS,
   // on-demand measured fabric throughput + RTT to a peer (read, T5)
