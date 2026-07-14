@@ -1,10 +1,10 @@
 'use client';
 
-import { useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-import { Wrench, User, Cloud, Sparkles, ChevronRight, ChevronDown, FileText, Terminal, Search, Globe, Plug, Copy, Check } from 'lucide-react';
+import { Wrench, User, Cloud, Sparkles, ChevronRight, ChevronDown, FileText, Terminal, Search, Globe, Plug, Copy, Check, Volume2, CircleStop } from 'lucide-react';
 import { formatToolCall } from '@/lib/smart-display';
 import { groupLabel } from '@/lib/tool-summary';
 
@@ -59,19 +59,60 @@ export function TranscriptMessage({ m, compact = false }: { m: { role: string; t
   );
 }
 
-/** claude.ai-style action row beneath an assistant message. Copy for now (the thumbs/
- *  regenerate affordances need claude.ai feedback/retry endpoints we don't wire yet). */
+/** Strip markdown/code so text-to-speech reads cleanly (no backticks, symbols, or link URLs). */
+function speechText(md: string): string {
+  return md
+    .replace(/```[\s\S]*?```/g, '. code block. ')   // fenced code → short placeholder
+    .replace(/`([^`]+)`/g, '$1')                      // inline code
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')        // links/images → their text
+    .replace(/[#>*_~|]/g, ' ')                        // markdown punctuation
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const actionBtnStyle = (active: boolean): CSSProperties => ({
+  border: 'none', background: 'none', cursor: 'pointer', color: active ? 'var(--color-accent)' : 'var(--color-text-tertiary)',
+  fontSize: 10.5, display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 5px', borderRadius: 4,
+});
+
+/** claude.ai-style action row beneath an assistant message: Copy + Read-aloud (browser
+ *  text-to-speech). Thumbs/regenerate/edit need claude.ai feedback/retry endpoints we
+ *  haven't wired yet. */
 function MessageActions({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const speakingRef = useRef(false);
+  const setSpk = (v: boolean) => { speakingRef.current = v; setSpeaking(v); };
+
+  // If this message unmounts mid-speech (e.g. navigating away), stop the utterance.
+  useEffect(() => () => { if (speakingRef.current) { try { window.speechSynthesis?.cancel(); } catch { /* noop */ } } }, []);
+
+  const readAloud = () => {
+    const synth = typeof window !== 'undefined' ? window.speechSynthesis : undefined;
+    if (!synth) return;
+    if (speakingRef.current) { try { synth.cancel(); } catch { /* noop */ } setSpk(false); return; }
+    try {
+      synth.cancel(); // stop any other message already being read
+      const u = new SpeechSynthesisUtterance(speechText(text));
+      u.onend = () => setSpk(false);
+      u.onerror = () => setSpk(false);
+      synth.speak(u);
+      setSpk(true);
+    } catch { setSpk(false); }
+  };
+
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginTop: 1 }}>
       <button
         type="button"
         title="Copy message"
         onClick={() => { try { navigator.clipboard?.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ } }}
-        style={{ border: 'none', background: 'none', cursor: 'pointer', color: copied ? 'var(--color-accent)' : 'var(--color-text-tertiary)', fontSize: 10.5, display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 5px', borderRadius: 4 }}
+        style={actionBtnStyle(copied)}
       >
         {copied ? <><Check size={11} /> Copied</> : <><Copy size={11} /> Copy</>}
+      </button>
+      <button type="button" title={speaking ? 'Stop reading' : 'Read aloud'} onClick={readAloud} style={actionBtnStyle(speaking)}>
+        {speaking ? <><CircleStop size={11} /> Stop</> : <><Volume2 size={11} /> Read aloud</>}
       </button>
     </div>
   );
