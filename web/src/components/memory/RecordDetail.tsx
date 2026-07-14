@@ -3,19 +3,22 @@
 import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { X } from 'lucide-react';
+import { X, Copy, Check } from 'lucide-react';
 import type { CallFn, MapRecord, EditTarget } from './types';
+import { errText, ConfirmButton } from './format';
 
 const PROTECTED_MEMORY = new Set(['_cross-project.md', '_hosts.md']);
 
 interface SourceInfo { source: string; dirPath: string; fileCount: number; maxMtimeMs: number }
 
-/** Pull the human message out of the api-client's `API 400: {json}` throw shape. */
-function errText(e: unknown): string {
-  const s = String(e);
-  const m = s.match(/API \d+:\s*(\{[\s\S]*\})/);
-  if (m) { try { return JSON.parse(m[1])?.error?.message || s; } catch { /* fall through */ } }
-  return s.replace(/^Error:\s*/, '');
+/** ReactMarkdown link override: external http(s) links open in a new tab;
+ *  anything else (relative/in-app routes that don't resolve from a memory
+ *  doc) renders as inert styled text instead of a dead-route navigation. */
+function MarkdownLink({ href, children }: { href?: string; children?: React.ReactNode }) {
+  if (href && /^https?:\/\//i.test(href)) {
+    return <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
+  }
+  return <span className="text-gray-400">{children}</span>;
 }
 
 export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
@@ -25,6 +28,7 @@ export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
   const [source, setSource] = useState('live');
   const [file, setFile] = useState<{ body: string; hash?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   // A record is backed by a fetchable memory-dir file only when it's a real
   // memory file or a MEMORY.md bullet. CLAUDE.md sections (kind='claude-section')
@@ -59,6 +63,25 @@ export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
     return () => { alive = false; };
   }, [call, pid, fname, source, fileBacked, refreshTick]);
 
+  // Escape closes the pane, but the file-editor overlay (a modal above this
+  // pane) wins if it's open — its own Escape handler owns the key then.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (document.querySelector('[data-file-editor]')) return;
+      onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const copyText = file?.body ?? full?.complete ?? '';
+  const copy = async () => {
+    await navigator.clipboard.writeText(copyText);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
   // Deleting the file is only meaningful for a standalone memory file — a
   // MEMORY.md bullet must not delete the whole index.
   const editable = fileBacked && source === 'live' && !PROTECTED_MEMORY.has(record.file);
@@ -72,7 +95,15 @@ export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
             <div className="text-gray-100 font-medium">{record.title || record.file}</div>
             <div className="text-gray-500 text-xs">{record.project} · {record.file} · {record.node}</div>
           </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-200"><X size={16} /></button>
+          <div className="flex items-center gap-2 shrink-0">
+            {copyText && (
+              <button onClick={() => void copy()} title="Copy" className="text-gray-500 hover:text-gray-200 flex items-center gap-1">
+                {copied ? <Check size={16} className="text-emerald-400" /> : <Copy size={16} />}
+                {copied && <span className="text-emerald-400 text-[10px]">Copied</span>}
+              </button>
+            )}
+            <button onClick={onClose} className="text-gray-500 hover:text-gray-200"><X size={16} /></button>
+          </div>
         </div>
         {error && <div className="text-rose-400 text-xs">{error}</div>}
       </div>
@@ -80,7 +111,7 @@ export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
       <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
         {full?.complete && (
           <div className="prose prose-invert prose-sm max-w-none border-b border-gray-800 pb-3">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{full.complete}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>{full.complete}</ReactMarkdown>
           </div>
         )}
 
@@ -105,17 +136,14 @@ export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
               </button>
             )}
             {deletable && file && (
-              <button
-                onClick={async () => {
-                  if (!window.confirm(`Delete ${record.file}? Its MEMORY.md index line is removed too.`)) return;
+              <ConfirmButton label="Delete" confirmLabel="Confirm delete"
+                onConfirm={async () => {
                   try {
                     await call(`/memory/by-project/${pid}/file/${fname}?removeIndexLine=true&expectedHash=${file.hash || ''}`, { method: 'DELETE' });
                     onClose();
                   } catch (e) { setError(errText(e)); }
                 }}
-                className="px-2 py-0.5 rounded bg-rose-900 text-rose-100 hover:bg-rose-800 text-xs">
-                Delete
-              </button>
+              />
             )}
             {!editable && <span className="ml-auto text-gray-500 text-[10px]">read-only ({source === 'live' ? 'managed file' : 'mirror'})</span>}
           </div>

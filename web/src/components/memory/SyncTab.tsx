@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { CallFn, EditTarget } from './types';
+import { errText } from './format';
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -20,7 +21,7 @@ function StatusBlock({ call, path, refreshTick }: { call: CallFn; path: string; 
     setError(null);
     call(path)
       .then((r) => { if (alive) setData(r); })
-      .catch((e) => { if (alive) setError(String(e)); });
+      .catch((e) => { if (alive) setError(errText(e)); });
     return () => { alive = false; };
   }, [call, path, refreshTick]);
   if (error) return <div className="text-rose-400 text-xs">{error}</div>;
@@ -43,7 +44,7 @@ function QueueList({ call, path, listKey, onEdit, refreshTick }:
     setError(null);
     call<Record<string, unknown>>(path)
       .then((r) => { if (alive) setRows((r[listKey] as Row[]) || (r.items as Row[]) || []); })
-      .catch((e) => { if (alive) setError(String(e)); });
+      .catch((e) => { if (alive) setError(errText(e)); });
     return () => { alive = false; };
   }, [call, path, listKey, refreshTick]);
   if (error) return <div className="text-rose-400 text-xs">{error}</div>;

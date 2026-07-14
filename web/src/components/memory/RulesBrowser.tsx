@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { CallFn, RuleListEntry, EditTarget } from './types';
+import { errText, ConfirmButton } from './format';
 
 export function RulesBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEdit?: (t: EditTarget) => void; refreshTick?: number }) {
   const [rules, setRules] = useState<RuleListEntry[]>([]);
@@ -16,7 +17,7 @@ export function RulesBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEd
         setRules(list);
         setSelected((prev) => prev && (list.find((x) => x.filename === prev.filename && x.source === prev.source) ?? null));
       })
-      .catch((e) => setError(String(e)));
+      .catch((e) => setError(errText(e)));
   }, [call]);
   useEffect(() => { load(); }, [load, refreshTick]);
 
@@ -28,16 +29,27 @@ export function RulesBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEd
     call<{ content: string; hash?: string }>(
       `/rules/file/${encodeURIComponent(selected.filename)}?source=${encodeURIComponent(selected.source)}`)
       .then((r) => { if (alive) setContent(r); })
-      .catch((e) => { if (alive) setError(String(e)); });
+      .catch((e) => { if (alive) setError(errText(e)); });
     return () => { alive = false; };
   }, [call, selected, refreshTick]);
 
+  // Escape closes the detail pane, but the file-editor overlay (a modal
+  // above this pane) wins if it's open — its own Escape handler owns the key.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || !selected) return;
+      if (document.querySelector('[data-file-editor]')) return;
+      setSelected(null);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [selected]);
+
   const remove = async (r: RuleListEntry) => {
-    if (!window.confirm(`Delete rule ${r.filename}?`)) return;
     try {
       await call(`/rules/file/${encodeURIComponent(r.filename)}?expectedHash=${content?.hash || ''}`, { method: 'DELETE' });
       setSelected(null); load();
-    } catch (e) { setError(String(e)); }
+    } catch (e) { setError(errText(e)); }
   };
 
   const isSel = (r: RuleListEntry) => selected?.filename === r.filename && selected?.source === r.source;
@@ -83,8 +95,7 @@ export function RulesBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEd
                 className="px-2 py-0.5 rounded bg-emerald-800 text-emerald-100 hover:bg-emerald-700 text-xs">Edit</button>
             )}
             {selected.editable && (
-              <button onClick={() => void remove(selected)}
-                className="px-2 py-0.5 rounded bg-rose-900 text-rose-100 hover:bg-rose-800 text-xs">Delete</button>
+              <ConfirmButton label="Delete" confirmLabel="Confirm delete" onConfirm={() => remove(selected)} />
             )}
             {!selected.editable && <span className="text-gray-500 text-[10px]">read-only — edit at origin ({selected.syncedFrom || 'mirror'})</span>}
           </div>

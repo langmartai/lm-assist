@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { CallFn, MemoryProjectSummary, MapRecord, ImportCandidate, EditTarget } from './types';
 import { RecordDetail } from './RecordDetail';
+import { errText } from './format';
 
 const TYPE_COLORS: Record<string, string> = {
   user: 'bg-sky-900 text-sky-200', feedback: 'bg-amber-900 text-amber-200',
@@ -27,10 +28,11 @@ export function MemoryBrowser({ call, onEdit, refreshTick }: { call: CallFn; onE
   const [selected, setSelected] = useState<MapRecord | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [importing, setImporting] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     call<MemoryProjectSummary[]>('/memory/projects')
-      .then(setProjects).catch((e) => setError(String(e)));
+      .then(setProjects).catch((e) => setError(errText(e)));
   }, [call]);
 
   const loadRecords = useCallback(() => {
@@ -40,7 +42,7 @@ export function MemoryBrowser({ call, onEdit, refreshTick }: { call: CallFn; onE
     if (q.trim()) params.set('q', q.trim());
     call<MapRecord[]>(`/memory/map?${params}`)
       .then((r) => setRecords(Array.isArray(r) ? r : []))
-      .catch((e) => setError(String(e)))
+      .catch((e) => setError(errText(e)))
       .finally(() => setLoading(false));
   }, [call, projectId, q]);
 
@@ -53,12 +55,16 @@ export function MemoryBrowser({ call, onEdit, refreshTick }: { call: CallFn; onE
   }, [call, projectId, refreshTick]);
 
   const importToLive = async (c: ImportCandidate) => {
+    const key = `${c.source}:${c.filename}`;
+    if (importing.has(key)) return; // already in flight — no double-fire
+    setImporting((s) => new Set(s).add(key));
     try {
       await call(`/memory/by-project/${encodeURIComponent(projectId!)}/file/${encodeURIComponent(c.filename)}`,
         { method: 'PUT', body: { content: c.body } });
       loadRecords();
       setCandidates((cs) => cs.filter((x) => x !== c));
-    } catch (e) { setError(String(e)); }
+    } catch (e) { setError(errText(e)); }
+    finally { setImporting((s) => { const n = new Set(s); n.delete(key); return n; }); }
   };
 
   const totalFileCount = projects.reduce((sum, p) => sum + p.fileCount, 0);
@@ -118,14 +124,19 @@ export function MemoryBrowser({ call, onEdit, refreshTick }: { call: CallFn; onE
           {projectId && candidates.length > 0 && (
             <div className="border border-gray-800 rounded p-3 space-y-2">
               <div className="text-gray-300 font-medium">Import candidates (newer on other hosts)</div>
-              {candidates.map((c, i) => (
-                <div key={`${c.source}:${c.filename}:${i}`} className="flex items-center gap-2">
-                  <span className="text-gray-200 truncate flex-1">{c.filename}</span>
-                  <span className="text-gray-500 text-xs">{c.source}{c.reason ? ` · ${c.reason}` : ''}</span>
-                  <button onClick={() => void importToLive(c)}
-                    className="px-2 py-0.5 rounded bg-sky-900 text-sky-100 hover:bg-sky-800 text-xs">Import to live</button>
-                </div>
-              ))}
+              {candidates.map((c, i) => {
+                const inFlight = importing.has(`${c.source}:${c.filename}`);
+                return (
+                  <div key={`${c.source}:${c.filename}:${i}`} className="flex items-center gap-2">
+                    <span className="text-gray-200 truncate flex-1">{c.filename}</span>
+                    <span className="text-gray-500 text-xs">{c.source}{c.reason ? ` · ${c.reason}` : ''}</span>
+                    <button onClick={() => void importToLive(c)} disabled={inFlight}
+                      className="px-2 py-0.5 rounded bg-sky-900 text-sky-100 hover:bg-sky-800 text-xs disabled:opacity-50">
+                      {inFlight ? 'Importing…' : 'Import to live'}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

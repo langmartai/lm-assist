@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { MarkdownSplitEditor } from '@/components/missions/MarkdownSplitEditor';
 import type { CallFn, EditTarget } from './types';
+import { errText } from './format';
 
 const MEMORY_TEMPLATE = `---
 name: short-kebab-slug
@@ -42,6 +43,7 @@ export function FileEditor({ target, call, onDone }:
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
 
   const save = async (overwrite = false) => {
     setBusy(true); setError(null); setConflict(false);
@@ -63,9 +65,8 @@ export function FileEditor({ target, call, onDone }:
       // Saved, but with frontmatter warnings — stay open so they're visible.
       setWarnings(w); setBaseline(content);
     } catch (e) {
-      const msg = String(e);
-      if (msg.includes('HASH_MISMATCH')) setConflict(true);
-      else setError(msg);
+      if (String(e).includes('HASH_MISMATCH')) setConflict(true);
+      else setError(errText(e));
     } finally { setBusy(false); }
   };
 
@@ -81,16 +82,36 @@ export function FileEditor({ target, call, onDone }:
           `/memory/by-project/${encodeURIComponent(target.projectId!)}/file/${encodeURIComponent(filename)}`);
         setContent(r.body); setBaseline(r.body); setHash(r.hash);
       }
-    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+    } catch (e) { setError(errText(e)); } finally { setBusy(false); }
   };
 
+  const dirty = content !== baseline;
+
   const cancel = () => {
-    if (content !== baseline && !window.confirm('Discard unsaved changes?')) return;
+    if (dirty) { setConfirmDiscard(true); return; }
     onDone(savedAny); // any successful save this session (create or edit, warned or clean) still refreshes the list on close
   };
 
+  // Warn on tab close mid-edit; only while there are unsaved changes.
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [dirty]);
+
+  // Escape triggers the same cancel flow as the Cancel button (discard-bar
+  // gate included) — this is the editor overlay, so it always owns Escape
+  // (no [data-file-editor] deference needed here — the overlay IS that gate
+  // for RecordDetail/RulesBrowser).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') cancel(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [dirty, savedAny, onDone]);
+
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
+    <div data-file-editor className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
       <div className="bg-gray-950 border border-gray-700 rounded-lg w-full max-w-4xl h-[80vh] flex flex-col p-4 gap-3">
         <div className="flex items-center gap-2">
           <span className="text-gray-100 font-medium">{isCreate ? 'New' : 'Edit'} {target.kind === 'rule' ? 'rule' : 'memory'}</span>
@@ -114,6 +135,13 @@ export function FileEditor({ target, call, onDone }:
             File changed on disk since you loaded it.
             <button onClick={() => void reload()} className="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700">Reload (discard my edit)</button>
             <button onClick={() => void save(true)} className="px-2 py-0.5 rounded bg-rose-900 hover:bg-rose-800">Overwrite anyway</button>
+          </div>
+        )}
+        {confirmDiscard && (
+          <div className="text-amber-300 text-xs flex items-center gap-2">
+            Unsaved changes.
+            <button onClick={() => onDone(savedAny)} className="px-2 py-0.5 rounded bg-rose-900 hover:bg-rose-800">Discard</button>
+            <button onClick={() => setConfirmDiscard(false)} className="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700">Keep editing</button>
           </div>
         )}
         <div className="flex justify-end gap-2">
