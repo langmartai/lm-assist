@@ -24,6 +24,11 @@ import { recentExternalChanges } from '../../mission/mission-changes';
 import { placementAllowed } from '../../mission/mission-controller';
 import { getClusterRecords } from '../../cluster/cluster-store';
 import { getMyCluster } from '../../cluster/cluster-config';
+import { getWorkflow, listWorkflows, putWorkflow, rollbackWorkflow, getWorkflowRaw, listWorkflowSnapshots, getWorkflowSnapshot,
+  type WorkflowPort, type WorkflowSnapshotPort } from '../../mission/workflow-store';
+import { isControllerActor, type WorkflowEditPolicy } from '../../mission/workflow-model';
+import { DEFAULT_WORKFLOWS } from '../../mission/workflow-defaults';
+import { buildOnboardMission, detectTransport, pickClusterLeader, markDriveText } from '../../mission/mission-onboard';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string }; }
 const ok = <T>(data: T): Envelope => ({ success: true, data });
@@ -174,6 +179,13 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
   }
   const sv = str(b.status) as MissionStatus | undefined;
   if (sv) { if (!VALID_STATUS.has(sv)) return fail('INVALID_INPUT', `invalid status "${sv}"`); m.status = sv; }
+  if (b.manageMode !== undefined) {
+    const mm = str(b.manageMode);
+    if (m.origin !== 'onboarded') return fail('INVALID_INPUT', 'manageMode applies only to onboarded missions');
+    if (mm !== 'handoff' && mm !== 'standby') return fail('INVALID_INPUT', 'manageMode must be handoff|standby');
+    if (isControllerActor(who)) return fail('FORBIDDEN', 'manageMode is human-only — ask the user to switch it');
+    m.manageMode = mm;
+  }
   if (b.env && typeof b.env === 'object') {
     const e = b.env as Record<string, unknown>;
     if (str(e.isolation)) m.env.isolation = str(e.isolation) as Isolation;
@@ -194,6 +206,12 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
   // never accepted) → the mission stayed unbound → the supervisor couldn't monitor it → a worker's
   // pendingQuestion never triggered the fast gate-engagement → the cloud worker idle-suspended
   // before being answered. `binding:{sessionId,kind,node?,ccr?}` (sessionId=null to unbind).
+  // I4(a): for an ONBOARDED mission, the binding IS the user's own session — a controller-attributed
+  // actor must never rebind/unbind it (that would silently sever mission control from the user's
+  // session, or worse, re-point it at a session the human never onboarded). Human-only, like manageMode.
+  if (b.binding !== undefined && m.origin === 'onboarded' && isControllerActor(who)) {
+    return fail('FORBIDDEN', 'binding changes on an onboarded mission are human-only');
+  }
   if (b.binding !== undefined && (b.binding === null || typeof b.binding === 'object')) {
     const bn = (b.binding || {}) as Record<string, unknown>;
     const sid = str(bn.sessionId);
@@ -244,6 +262,164 @@ export async function handleHistory(
   const anchored = await anchorToLeader(leader, 'GET', path);
   if (anchored) return anchored;
   return ok({ history: await listHistory(id, opts) });
+}
+
+// ---------------------------------------------------------------------------
+// Workflow-registry handlers (playbook docs the controller reads/edits)
+// ---------------------------------------------------------------------------
+
+export async function handleWorkflowList(port?: WorkflowPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'GET', '/mission/workflows');
+  if (anchored) return anchored;
+  const workflows = await listWorkflows(port);
+  const stored = new Set(workflows.map((w) => w.id));
+  const defaults = Object.keys(DEFAULT_WORKFLOWS).filter((id) => !stored.has(id));
+  return ok({ workflows, defaults });
+}
+
+export async function handleWorkflowGet(id: string, port?: WorkflowPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'GET', `/mission/workflows/${encodeURIComponent(id)}`);
+  if (anchored) return anchored;
+  try { return ok(await getWorkflowRaw(id, port)); }
+  catch (e) { return fail((e as any).code ?? 'NOT_FOUND', (e as Error).message); }
+}
+
+export async function handleWorkflowSet(id: string, b: Record<string, unknown>, port?: WorkflowPort, snap?: WorkflowSnapshotPort, actor?: MissionActor, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'POST', `/mission/workflows/${encodeURIComponent(id)}`, b, true);
+  if (anchored) return anchored;
+  const who = actor ?? await actorFor(b);
+  const existing = await getWorkflow(id, port).catch(() => null);
+  const effectivePolicy: WorkflowEditPolicy = existing?.editPolicy ?? DEFAULT_WORKFLOWS[id]?.editPolicy ?? 'open';
+  if (effectivePolicy === 'human-only' && isControllerActor(who)) return fail('FORBIDDEN', 'this workflow doc is human-only');
+  const nextPolicy = (str(b.editPolicy) === 'human-only' ? 'human-only' : str(b.editPolicy) === 'open' ? 'open' : effectivePolicy) as WorkflowEditPolicy;
+  if (nextPolicy !== effectivePolicy && isControllerActor(who)) return fail('FORBIDDEN', 'editPolicy changes are human-only');
+  const title = str(b.title) ?? existing?.title ?? DEFAULT_WORKFLOWS[id]?.title ?? id;
+  const body = str(b.body) ?? existing?.body ?? DEFAULT_WORKFLOWS[id]?.body;
+  if (body === undefined) return fail('INVALID_INPUT', 'body is required for a new doc');
+  try {
+    const r = await putWorkflow({ id, title, body, editPolicy: nextPolicy }, who, port, snap);
+    return ok({ doc: r.doc, changed: r.changed });
+  } catch (e) { return fail((e as any).code ?? 'INVALID_INPUT', (e as Error).message); }
+}
+
+export async function handleWorkflowHistory(id: string, opts: { limit?: number; beforeRev?: number }, snap?: WorkflowSnapshotPort, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const qs = new URLSearchParams();
+  if (opts.limit != null) qs.set('limit', String(opts.limit));
+  if (opts.beforeRev != null) qs.set('beforeRev', String(opts.beforeRev));
+  const anchored = await anchorToLeader(leader, 'GET', `/mission/workflows/${encodeURIComponent(id)}/history${qs.toString() ? `?${qs}` : ''}`);
+  if (anchored) return anchored;
+  const rows = await listWorkflowSnapshots(id, opts, snap);
+  return ok({ snapshots: rows.map(({ body, ...rest }) => ({ ...rest, bodyBytes: Buffer.byteLength(body, 'utf8') })) });
+}
+
+export async function handleWorkflowRollback(id: string, b: Record<string, unknown>, port?: WorkflowPort, snap?: WorkflowSnapshotPort, actor?: MissionActor, leader?: LeaderAnchorDeps): Promise<Envelope> {
+  const anchored = await anchorToLeader(leader, 'POST', `/mission/workflows/${encodeURIComponent(id)}/rollback`, b, true);
+  if (anchored) return anchored;
+  const who = actor ?? await actorFor(b);
+  const existing = await getWorkflow(id, port).catch(() => null);
+  const effectivePolicy: WorkflowEditPolicy = existing?.editPolicy ?? DEFAULT_WORKFLOWS[id]?.editPolicy ?? 'open';
+  if (effectivePolicy === 'human-only' && isControllerActor(who)) return fail('FORBIDDEN', 'this workflow doc is human-only');
+  const toRevRaw = b.toRev;
+  const toRev = typeof toRevRaw === 'number' ? toRevRaw : parseInt(String(toRevRaw ?? ''), 10);
+  if (Number.isNaN(toRev)) return fail('INVALID_INPUT', 'toRev (number) is required');
+  // Rolling back can itself change editPolicy (the target rev may have been saved under a
+  // different policy) — mirror handleWorkflowSet's rule: a controller may never change
+  // editPolicy, whether via an explicit `editPolicy` field (set) or implicitly by restoring
+  // an older/newer revision (rollback). A missing snapshot is not this check's concern —
+  // let rollbackWorkflow's own NOT_FOUND path handle that below.
+  const target = await getWorkflowSnapshot(id, toRev, snap).catch(() => null);
+  if (target && target.editPolicy !== effectivePolicy && isControllerActor(who)) {
+    return fail('FORBIDDEN', 'editPolicy changes are human-only');
+  }
+  const r = await rollbackWorkflow(id, toRev, who, port, snap);
+  if ('error' in r) return fail(r.error.code, r.error.message);
+  return ok({ doc: r.doc });
+}
+
+// ---------------------------------------------------------------------------
+// handleOnboard — POST /mission/onboard (the onboarding rail)
+// ---------------------------------------------------------------------------
+
+export interface OnboardDeps {
+  port?: MissionDataPort;
+  actor?: MissionActor;
+  leader?: LeaderAnchorDeps;                       // own-cluster anchoring
+  clusterRecords?: () => Promise<Array<{ gatewayId: string; cluster?: string | null }>>;
+  myCluster?: () => string;
+  onlineNodes?: () => Promise<string[]>;
+  proxyPost?: (node: string, path: string, body: unknown) => Promise<unknown>;
+  /** Local native session existence check; consulted only when the session node === thisNode(). */
+  nativeExists?: (sid: string) => boolean;
+  selfNode?: () => string;
+}
+
+export async function handleOnboard(b: Record<string, unknown>, d: OnboardDeps = {}): Promise<Envelope> {
+  const self = d.selfNode ? d.selfNode() : thisNode();
+  const who = d.actor ?? await actorFor(b);
+
+  // 1) resolve session id: explicit, else the caller's own (precise local-session actor).
+  const sid = str(b.sessionId) ?? (who.kind === 'local-session' && who.id ? who.id : undefined);
+  if (!sid) return fail('INVALID_INPUT', 'sessionId required — the caller session could not be resolved; pass sessionId explicitly');
+
+  // 2) mode + note
+  const modeRaw = str(b.mode) ?? 'standby';
+  if (modeRaw !== 'handoff' && modeRaw !== 'standby') return fail('INVALID_INPUT', 'mode must be handoff|standby');
+  const note = str(b.note);
+
+  // 3) transport + session node. Stamp the ORIGIN node before any proxy hop so the
+  //    target-cluster leader binds the right node (the session lives where the call started).
+  const transport = detectTransport(sid);
+  const sessionNode = transport === 'cloud' ? 'cloud' : (str(b.node) ?? self);
+  if (transport === 'native' && !str(b.node)) b.node = sessionNode;
+
+  // 4) local existence check — only meaningful for a native session on THIS node.
+  if (transport === 'native' && sessionNode === self) {
+    const exists = d.nativeExists ?? ((s: string) => {
+      const { sessionVerdict } = require('../../terminal/cc-sessions') as typeof import('../../terminal/cc-sessions');
+      const v = sessionVerdict(s);
+      return v.connectStrategy !== 'none' || v.inTmux; // any transcript or live process counts
+    });
+    try { if (!exists(sid)) return fail('SESSION_NOT_FOUND', `no local session ${sid}`); }
+    catch { /* verdict failure — proceed; reads will surface it */ }
+  }
+
+  // 5) cluster targeting
+  const records = await (d.clusterRecords ?? getClusterRecords)();
+  const myClusterName = (d.myCluster ?? getMyCluster)();
+  const target = str(b.cluster) ?? myClusterName;
+  if (target === myClusterName) {
+    const anchored = await anchorToLeader(d.leader, 'POST', '/mission/onboard', b, true);
+    if (anchored) return anchored;
+  } else {
+    const online = await (d.onlineNodes ?? (() => {
+      const { listAllOnlineNodeIds } = require('../../data/peer-client') as typeof import('../../data/peer-client');
+      return listAllOnlineNodeIds();
+    }))();
+    const leaderNode = pickClusterLeader(target, records as any, online);
+    if (!leaderNode) return fail('LEADER_UNREACHABLE', `no online node in cluster "${target}"`);
+    if (leaderNode !== self) {
+      const pp = d.proxyPost ?? ((n: string, p: string, body: unknown) => {
+        const { proxyPost } = require('../../data/peer-client') as typeof import('../../data/peer-client');
+        return proxyPost(n, p, body);
+      });
+      try { return proxyEnvelope(await pp(leaderNode, '/mission/onboard', b)); }
+      catch (e) { return fail('LEADER_UNREACHABLE', `cluster "${target}" leader unreachable: ${(e as Error).message}`); }
+    }
+  }
+
+  // 6) local execution (we are the target-cluster leader, or anchoring found us local)
+  const all = await listMissions(d.port);
+  const existing = all.find((m) => m.origin === 'onboarded' && m.binding?.sessionId === sid && m.status !== 'done' && m.status !== 'failed');
+  if (existing) return ok({ mission: existing, existing: true, cluster: target, leaderNode: self });
+
+  const sessionCluster = (records as Array<{ gatewayId: string; cluster?: string | null }>).find((r) => r.gatewayId === sessionNode)?.cluster ?? 'default';
+  const crossCluster = transport === 'native' && sessionCluster !== target;
+  const m = buildOnboardMission(
+    { sid, node: sessionNode, transport, mode: modeRaw, note, crossCluster, ownerNode: self, createdBy: who },
+    Date.now(), genId,
+  );
+  await putMission(m, d.port, { actor: who });
+  return ok({ mission: m, existing: false, cluster: target, leaderNode: self });
 }
 
 // ---------------------------------------------------------------------------
@@ -609,6 +785,42 @@ export interface SessionOpsDeps {
   bridgeCseFor?: (sid: string) => Promise<string | null>;
   /** Read a bridge session's worker/events channel for a pending AskUserQuestion. */
   workerEventsRead?: (cse: string) => Promise<{ pendingQuestion: import('../../terminal/ccr-cloud').PendingControlRequest | null }>;
+  /** Look up the onboarded mission (if any) bound to this session, for the drive mode rails. Optional: absent = no-op. */
+  findMission?: (sid: string) => Promise<Mission | null>;
+  /** This node's own identity — injectable so I1's auto-resolve branch is testable against a
+   *  fixed "self" without depending on thisNode()'s real hub-config read. Default: thisNode(). */
+  selfNode?: () => string;
+}
+
+/**
+ * I1 — auto-resolve the target node for a session read/drive when the caller omitted `node`.
+ * Spec §4.6 mandates that read/drive route to the onboarded session's OWN node (an onboarded
+ * native session may live on any in-cluster node, not necessarily the leader where the
+ * controller runs) — without this, a controller tool call with no explicit `node` always ran
+ * locally on the LEADER, so it could never actually reach an onboarded session bound elsewhere.
+ *
+ * Scoped deliberately to ONBOARDED missions only: executor (mission-managed) sessions are
+ * leader-local by design (the controller always drives its own spawned executors from the
+ * leader node via the cloud path or a local native launch) — auto-resolving for them would be
+ * an unrelated behavior change outside I1's mandate.
+ *
+ * Returns the node to proxy to, or null when no auto-resolve applies (proceed locally):
+ *   - `d.findMission` absent (no lookup capability) → null
+ *   - lookup throws / no mission found / mission not onboarded → null
+ *   - `binding.node` absent, `'cloud'`, or === self → null (nothing to proxy — already here,
+ *     or it's a cloud session which has its own transport path, not a node proxy)
+ */
+async function autoResolveOnboardedNode(sid: string, d: SessionOpsDeps, self: string): Promise<string | null> {
+  if (!d.findMission) return null;
+  try {
+    const m = await d.findMission(sid);
+    if (m?.origin !== 'onboarded') return null;
+    const node = m.binding?.node;
+    if (!node || node === 'cloud' || node === self) return null;
+    return node;
+  } catch {
+    return null; // best-effort — never block a read/drive because the lookup hiccuped
+  }
 }
 
 /**
@@ -728,6 +940,11 @@ function defaultSessionOpsDeps(): SessionOpsDeps {
       const r = await cloudClientEventsRead(cse);
       return { pendingQuestion: r.pendingQuestion };
     },
+    findMission: async (sid) => {
+      const { findMissionBySessionOrCcr } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+      return findMissionBySessionOrCcr(sid);
+    },
+    selfNode: () => thisNode(),
   };
 }
 
@@ -757,18 +974,21 @@ function proxyEnvelope(result: unknown): Envelope {
 }
 
 export async function handleSessionRead(sid: string, lastN?: number, deps?: SessionOpsDeps, node?: string, proxyDeps?: SessionProxyDeps): Promise<Envelope> {
-  const self = thisNode();
-  if (node && node !== self) {
+  const d = deps ?? defaultSessionOpsDeps();
+  const self = d.selfNode ? d.selfNode() : thisNode();
+  // I1 — when the caller omitted `node`, auto-resolve it for an onboarded mission bound to a
+  // different in-cluster node (spec §4.6). Executor sessions are untouched: they stay leader-local.
+  const targetNode = node ?? await autoResolveOnboardedNode(sid, d, self);
+  if (targetNode && targetNode !== self) {
     // Proxy to the target node server-side — the browser has no hub Bearer token.
     const pd = proxyDeps ?? defaultSessionProxyDeps();
     try {
-      const result = await pd.proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/read`, { lastN }) as any;
+      const result = await pd.proxyPost(targetNode, `/mission/session/${encodeURIComponent(sid)}/read`, { lastN }) as any;
       return proxyEnvelope(result);
     } catch (e) {
       return fail('PROXY_ERROR', (e as Error).message);
     }
   }
-  const d = deps ?? defaultSessionOpsDeps();
   const r = d.resolve(sid);
   try {
     if (r.transport === 'cloud') {
@@ -831,26 +1051,40 @@ export async function handleSessionRead(sid: string, lastN?: number, deps?: Sess
 }
 
 export async function handleSessionDrive(sid: string, text: string, deps?: SessionOpsDeps, node?: string, proxyDeps?: SessionProxyDeps): Promise<Envelope> {
-  const self = thisNode();
-  if (node && node !== self) {
+  const d = deps ?? defaultSessionOpsDeps();
+  const self = d.selfNode ? d.selfNode() : thisNode();
+  // I1 — auto-resolve the target node when omitted, for an onboarded mission bound elsewhere
+  // (spec §4.6). When we proxy, the STANDBY_MODE/marker-prefix rail below runs on the TARGET
+  // node instead (its own handleSessionDrive invocation applies the same findMission check).
+  const targetNode = node ?? await autoResolveOnboardedNode(sid, d, self);
+  if (targetNode && targetNode !== self) {
     const pd = proxyDeps ?? defaultSessionProxyDeps();
     try {
-      const result = await pd.proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/drive`, { text }) as any;
+      const result = await pd.proxyPost(targetNode, `/mission/session/${encodeURIComponent(sid)}/drive`, { text }) as any;
       return proxyEnvelope(result);
     } catch (e) {
       return fail('PROXY_ERROR', (e as Error).message);
     }
   }
-  const d = deps ?? defaultSessionOpsDeps();
   const r = d.resolve(sid);
+  let driveText = text;
+  if (d.findMission) {
+    try {
+      const m = await d.findMission(sid);
+      if (m?.origin === 'onboarded') {
+        if (m.manageMode === 'standby') return fail('STANDBY_MODE', 'mission is standby — the human runs this session; switch manageMode to handoff to drive');
+        driveText = markDriveText(text);
+      }
+    } catch { /* best-effort — never block a normal drive on a store hiccup */ }
+  }
   try {
     if (r.transport === 'cloud') {
-      const result = await d.cloudDrive({ sid, text });
+      const result = await d.cloudDrive({ sid, text: driveText });
       return ok({ delivered: result.delivered });
     } else {
       // Best-effort: refresh the idle timer for resumed native sessions.
       try { touchActivity(sid, Date.now()); } catch { /* best-effort */ }
-      await d.nativeDrive(sid, text);
+      await d.nativeDrive(sid, driveText);
       return ok({ delivered: true });
     }
   } catch (e) {
@@ -858,12 +1092,12 @@ export async function handleSessionDrive(sid: string, text: string, deps?: Sessi
   }
 }
 
-export async function handleSessionControl(sid: string, action: string, deps?: SessionOpsDeps, node?: string, proxyDeps?: SessionProxyDeps): Promise<Envelope> {
+export async function handleSessionControl(sid: string, action: string, deps?: SessionOpsDeps, node?: string, proxyDeps?: SessionProxyDeps, force?: boolean): Promise<Envelope> {
   const self = thisNode();
   if (node && node !== self) {
     const pd = proxyDeps ?? defaultSessionProxyDeps();
     try {
-      const result = await pd.proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/control`, { action }) as any;
+      const result = await pd.proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/control`, { action, force }) as any;
       return proxyEnvelope(result);
     } catch (e) {
       return fail('PROXY_ERROR', (e as Error).message);
@@ -872,6 +1106,17 @@ export async function handleSessionControl(sid: string, action: string, deps?: S
   const d = deps ?? defaultSessionOpsDeps();
   const r = d.resolve(sid);
   try {
+    // I4(b): before the stop branch executes, resolve whether this is an onboarded (user-owned)
+    // session — a controller/agent must never terminate the human's own session without an
+    // explicit human-supplied force:true. Best-effort (never let a lookup hiccup block a normal
+    // stop of a NON-onboarded session).
+    if (action === 'stop' && d.findMission) {
+      let onboardedMission: Mission | null = null;
+      try { onboardedMission = await d.findMission(sid); } catch { /* best-effort */ }
+      if (onboardedMission?.origin === 'onboarded' && force !== true) {
+        return fail('ONBOARDED_PROTECTED', "this is the user's own session — stop requires force:true from a human");
+      }
+    }
     if (action === 'restart') {
       // The synchronous resolver can't know the controller sid (it resolves with empty missions/null ctrlSid).
       // Look it up from the store: a session is the controller if it matches the stored ControllerSession.
@@ -1146,6 +1391,55 @@ export async function handleSessionStatus(
 export interface SessionResumeDeps extends ResumeWorkerDeps {
   /** Idle minutes before auto-close (from project settings). */
   idleMin: number;
+  /**
+   * Resolve whether the resumed session belongs to an onboarded (origin:'onboarded') mission —
+   * used to decide whether to enroll it for reaper auto-close. When `missionId` is known, look
+   * it up directly; when absent (the common case — a controller/human resume rarely passes it),
+   * fall back to resolving the mission BY SID (`findMissionBySessionOrCcr`) so an onboarded
+   * session is never silently enrolled just because the caller omitted missionId.
+   * Default: best-effort via mission-store; a lookup failure resolves to false (never enrolled
+   * is the safer failure mode is NOT true here — see resolveOnboardedForTracking for the actual
+   * fail-safe semantics used by the default).
+   */
+  lookupOnboarded?: (missionId: string | undefined, sid: string) => Promise<boolean>;
+}
+
+/**
+ * Pure-ish (single injectable I/O seam) resolver: is the session being resumed bound to an
+ * onboarded mission? Tries `missionId` first (exact, cheap); when absent, falls back to
+ * resolving the mission by sid via `lookup`. Any lookup failure resolves to `false` (best-effort —
+ * a resume must never hang or fail outright because the onboarded check errored).
+ *
+ * This is the fix for C1: previously the caller only checked `body.missionId ? getMission(...) :
+ * null`, so a resume call that omitted missionId (the common shape for a controller/human resume)
+ * NEVER found the onboarded mission even though one existed — the session would be silently
+ * enrolled in the idle-auto-close reaper (`trackResumedNative`) and killed after the idle window,
+ * even though it is the user's OWN session.
+ */
+export async function resolveOnboardedForTracking(
+  missionId: string | undefined,
+  sid: string,
+  lookup: {
+    getMission: (id: string) => Promise<{ origin?: string } | null>;
+    findMissionBySessionOrCcr: (sid: string) => Promise<{ origin?: string } | null>;
+  },
+): Promise<boolean> {
+  try {
+    const m = missionId ? await lookup.getMission(missionId) : await lookup.findMissionBySessionOrCcr(sid);
+    return m?.origin === 'onboarded';
+  } catch {
+    return false; // best-effort — a lookup failure must never block/alter the resume itself
+  }
+}
+
+function defaultLookupOnboarded(): (missionId: string | undefined, sid: string) => Promise<boolean> {
+  return (missionId, sid) => {
+    const store = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+    return resolveOnboardedForTracking(missionId, sid, {
+      getMission: store.getMission,
+      findMissionBySessionOrCcr: store.findMissionBySessionOrCcr,
+    });
+  };
 }
 
 function defaultSessionResumeDeps(): SessionResumeDeps {
@@ -1233,6 +1527,7 @@ function defaultSessionResumeDeps(): SessionResumeDeps {
       const { getProjectSettings } = require('../../project-settings') as typeof import('../../project-settings');
       return getProjectSettings().missionSessionIdleCloseMin ?? 30;
     })(),
+    lookupOnboarded: defaultLookupOnboarded(),
   };
 }
 
@@ -1262,6 +1557,14 @@ export async function handleSessionResume(
   // Stamp autoCloseAt + reaper tracking only for a freshly-resumed native session.
   if (result.transport === 'native' && result.resumed && result.reason === 'ok') {
     const now = Date.now();
+    // C1: resolve onboarded status by missionId WHEN GIVEN, else fall back to resolving the
+    // mission by sid (findMissionBySessionOrCcr) — a resume call omitting missionId must still
+    // find an onboarded mission bound to this sid, else the user's own session gets silently
+    // enrolled in the idle-auto-close reaper.
+    const onboarded = d.lookupOnboarded
+      ? await d.lookupOnboarded(body.missionId, result.sid)
+      : false;
+    if (onboarded) return ok(result);                       // user session: never enrolled for auto-close
     const autoCloseAt = now + d.idleMin * 60_000;
     try { trackResumedNative(result.sid, body.missionId, now); } catch { /* best-effort */ }
     return ok({ ...result, autoCloseAt });
@@ -1286,6 +1589,21 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     // view literals — MUST be before /mission/:id patterns (else POST /mission/views matches POST /mission/:id)
     { method: 'POST', pattern: /^\/mission\/views$/, handler: async (req) => handleViewSet((req.body || {}) as Record<string, unknown>, undefined, undefined, realLeaderAnchor()) },
     { method: 'GET', pattern: /^\/mission\/views$/, handler: async () => handleViewList(undefined, realLeaderAnchor()) },
+    // workflow registry literals — MUST be before every /mission/:id pattern
+    { method: 'GET', pattern: /^\/mission\/workflows$/, handler: async () => handleWorkflowList(undefined, realLeaderAnchor()) },
+    { method: 'GET', pattern: /^\/mission\/workflows\/(?<id>[^/]+)\/history$/, handler: async (req) => {
+        const rawLimit = req.query?.limit != null ? parseInt(String(req.query.limit), 10) : undefined;
+        const rawBefore = req.query?.beforeRev != null ? parseInt(String(req.query.beforeRev), 10) : undefined;
+        return handleWorkflowHistory(req.params.id, {
+          limit: rawLimit != null && !Number.isNaN(rawLimit) ? rawLimit : undefined,
+          beforeRev: rawBefore != null && !Number.isNaN(rawBefore) ? rawBefore : undefined,
+        }, undefined, realLeaderAnchor());
+      } },
+    { method: 'POST', pattern: /^\/mission\/workflows\/(?<id>[^/]+)\/rollback$/, handler: async (req) => handleWorkflowRollback(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, undefined, realLeaderAnchor()) },
+    { method: 'GET', pattern: /^\/mission\/workflows\/(?<id>[^/]+)$/, handler: async (req) => handleWorkflowGet(req.params.id, undefined, realLeaderAnchor()) },
+    { method: 'POST', pattern: /^\/mission\/workflows\/(?<id>[^/]+)$/, handler: async (req) => handleWorkflowSet(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, undefined, realLeaderAnchor()) },
+    // /mission/onboard literal — MUST be before every /mission/:id pattern
+    { method: 'POST', pattern: /^\/mission\/onboard$/, handler: async (req) => handleOnboard((req.body || {}) as Record<string, unknown>, { leader: realLeaderAnchor() }) },
     // rail routes: /place and /executor-status BEFORE /:id so literals win
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/place$/, handler: async (req) => handlePlace(req.params.id, undefined, realLeaderAnchor()) },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/executor-status$/, handler: async (req) => handleExecutorStatus(req.params.id, undefined, undefined, realLeaderAnchor()) },
@@ -1348,7 +1666,10 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
         const b = (req.body || {}) as Record<string, unknown>;
         const action = typeof b.action === 'string' ? b.action : '';
         const node = typeof b.node === 'string' ? b.node : undefined;
-        return handleSessionControl(req.params.sid, action, undefined, node);
+        // I4(b): force:true is required to stop an onboarded (user-owned) session — coerce a
+        // string 'true' (MCP/some clients deliver booleans as strings) the same way env.exclusive does.
+        const force = b.force === true || b.force === 'true';
+        return handleSessionControl(req.params.sid, action, undefined, node, undefined, force);
       } },
     // POST /mission/session/:sid/answer — answer a pending AskUserQuestion (bridge: worker/events
     // control_response; native: tmux send-keys; cloud: cloudAnswer). Leader-anchored (write).

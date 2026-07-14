@@ -113,6 +113,10 @@ interface Mission {
   createdBy?: MissionActor;
   lastUpdatedBy?: MissionActor;
   interim?: { at: number; text: string };
+  /** Set when this mission was created by onboarding an existing session into mission control. */
+  origin?: string;
+  /** How mission control manages an onboarded session's controller session: 'handoff' | 'standby'. */
+  manageMode?: string;
 }
 
 interface ControllerSession {
@@ -664,12 +668,12 @@ export function MissionsPage() {
   );
 
   const controlSession = useCallback(
-    async (sid: string, action: 'interrupt' | 'stop' | 'restart') => {
+    async (sid: string, action: 'interrupt' | 'stop' | 'restart', force?: boolean) => {
       setOperateControlBusy((p) => ({ ...p, [`${sid}:${action}`]: true }));
       try {
         await apiFetch(`/mission/session/${encodeURIComponent(sid)}/control`, {
           method: 'POST',
-          body: { action },
+          body: force ? { action, force: true } : { action },
         });
         if (action === 'restart') {
           // Controller is restarting — close panel and dismiss so it doesn't auto-reopen
@@ -677,8 +681,19 @@ export function MissionsPage() {
           setControllerSessionOpen(false);
           setControllerSessionDismissed(true);
         }
-      } catch {
-        // silently ignore
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // I4(b): stopping the user's OWN onboarded session is rejected server-side with
+        // ONBOARDED_PROTECTED unless force:true comes from a human. Surface that as an
+        // explicit confirm-and-retry instead of silently dropping the Stop click on the
+        // floor — the prior behavior looked like Stop did nothing at all.
+        if (action === 'stop' && !force && /ONBOARDED_PROTECTED/.test(msg)) {
+          if (window.confirm("This is the user's own onboarded session. Force stop?")) {
+            await controlSession(sid, action, true);
+          }
+        } else {
+          setError(msg);
+        }
       } finally {
         setOperateControlBusy((p) => ({ ...p, [`${sid}:${action}`]: false }));
       }
@@ -1218,6 +1233,20 @@ export function MissionsPage() {
               <ListChecks size={11} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />
             </span>
             <span className={`badge ${STATUS_BADGE[m.status]}`}>{m.status}</span>
+            {m.origin === 'onboarded' && (
+              <span className="badge badge-outline" style={{ fontSize: 10 }} title="Existing session onboarded into mission control">
+                onboarded
+              </span>
+            )}
+            {m.origin === 'onboarded' && m.manageMode && (
+              <span
+                className={`badge ${m.manageMode === 'handoff' ? 'badge-green' : 'badge-default'}`}
+                style={{ fontSize: 10 }}
+                title={m.manageMode === 'handoff' ? 'mission control drives this session' : 'observe only — human drives'}
+              >
+                {m.manageMode}
+              </span>
+            )}
             {m.binding ? (
               <span
                 className="badge badge-outline"

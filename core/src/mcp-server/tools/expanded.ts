@@ -53,6 +53,7 @@ import { WORKER_ROLE_TOOL_DEFS, WORKER_ROLE_HANDLERS } from './worker-role';
 import { MISSION_TOOL_DEFS, MISSION_HANDLERS } from './mission';
 import { MISSION_QUERY_TOOL_DEFS, MISSION_QUERY_HANDLERS } from './mission-query';
 import { MISSION_SCHEDULE_TOOL_DEFS, MISSION_SCHEDULE_HANDLERS } from './mission-schedule';
+import { MISSION_WORKFLOW_TOOL_DEFS, MISSION_WORKFLOW_HANDLERS } from './mission-workflow';
 import { CLAUDEAI_LOGIN_TOOL_DEFS, CLAUDEAI_LOGIN_HANDLERS } from './claudeai-login';
 import { NODE_BUILDS_TOOL_DEFS, NODE_BUILDS_HANDLERS } from './node-builds';
 import { NODE_UPGRADE_TOOL_DEFS, NODE_UPGRADE_HANDLERS } from './node-upgrade';
@@ -1009,6 +1010,8 @@ export const EXPANDED_TOOL_DEFS = [
   ...MISSION_QUERY_TOOL_DEFS,
   // mission scheduling intelligence — mission_schedule / mission_changes
   ...MISSION_SCHEDULE_TOOL_DEFS,
+  // mission workflow registry — mission_workflow_list/get/set/history/rollback
+  ...MISSION_WORKFLOW_TOOL_DEFS,
   // auth: guided re-login for cookie + OAuth
   ...CLAUDEAI_LOGIN_TOOL_DEFS,
   // fleet build/upgrade tracking — per-node build version (read, pull)
@@ -1865,6 +1868,8 @@ export const EXPANDED_HANDLERS: Record<
   ...MISSION_QUERY_HANDLERS,
   // mission scheduling intelligence
   ...MISSION_SCHEDULE_HANDLERS,
+  // mission workflow registry
+  ...MISSION_WORKFLOW_HANDLERS,
   // auth: guided re-login for cookie + OAuth
   ...CLAUDEAI_LOGIN_HANDLERS,
   // fleet build/upgrade tracking

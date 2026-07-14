@@ -239,6 +239,10 @@ export async function deleteMission(id: string, port: MissionDataPort = defaultP
 export async function findMissionBySession(sessionId: string, port: MissionDataPort = defaultPort()): Promise<Mission | null> {
   return (await port.list()).find((m) => m.binding?.sessionId === sessionId) ?? null;
 }
+/** Find a mission whose binding matches sid either as a plain sessionId OR a bridge ccr.sid (onboarded rails). */
+export async function findMissionBySessionOrCcr(sid: string, port: MissionDataPort = defaultPort()): Promise<Mission | null> {
+  return (await port.list()).find((m) => !RESERVED_IDS.has(m.id) && (m.binding?.sessionId === sid || m.binding?.ccr?.sid === sid)) ?? null;
+}
 export async function bindExecutor(id: string, binding: MissionBinding, port: MissionDataPort = defaultPort()): Promise<Mission | null> {
   const m = await port.get(id);
   if (!m) return null;

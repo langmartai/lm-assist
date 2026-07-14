@@ -3,7 +3,8 @@
 import { backoffMinutes } from '../monitor/stall-state';
 
 export type MissionStatus = 'draft' | 'active' | 'waiting' | 'paused' | 'blocked' | 'done' | 'failed';
-export type ExecutorKind = 'orchestrator' | 'worker';
+export type ExecutorKind = 'orchestrator' | 'worker' | 'onboarded';
+export type ManageMode = 'handoff' | 'standby';
 export type Isolation = 'cloud' | 'worktree' | 'shared';
 
 export interface MissionEnv {
@@ -93,6 +94,10 @@ export interface Mission {
   progress: MissionProgress | null;
   /** Token-free interim executor progress (Wave 4) — surfaced by the supervisor, not the controller. */
   interim?: { at: number; text: string };
+  /** 'onboarded' = an EXISTING user session adopted into mission control (spec 2026-07-14). */
+  origin?: 'onboarded';
+  /** Onboarded-only: handoff = controller drives; standby = observe-only. Human-switched. */
+  manageMode?: ManageMode;
   control: MissionControl;
   results: MissionResult[];
   adjustments: MissionAdjustment[];

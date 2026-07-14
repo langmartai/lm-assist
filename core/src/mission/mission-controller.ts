@@ -6,6 +6,7 @@ import {
 import { pickNewSession, cseToSessionSid, isNativeBinding } from './mission-native';
 import type { ExecNow } from './mission-engagement';
 import { listMissions, putMission, thisNode, getControllerSession, putControllerSession, ControllerSession, EngagementState } from './mission-store';
+import { DEFAULT_WORKFLOWS } from './workflow-defaults';
 import { clusterOf, type ClusterRecord } from '../cluster/cluster-map';
 import { getClusterRecords } from '../cluster/cluster-store';
 import { getMyCluster } from '../cluster/cluster-config';
@@ -22,6 +23,7 @@ import { gitCommand } from '../checkpoint/git-utils';
 import * as path from 'path';
 import { sessionVerdict } from '../terminal/cc-sessions';
 import { AgentSessionStore } from '../agent-session-store';
+import { detectHumanActivity } from './mission-onboard';
 
 /**
  * Resolve a host string (which may be a hostname/label OR a gatewayId) to the
@@ -426,9 +428,11 @@ export async function startNativeExecutor(m: Mission, decision: any, deps: Nativ
 // Supervisor (Wave 2): election + controller-session lifecycle + cadence
 // ---------------------------------------------------------------------------
 
-/** The standing directive sent to the controller agent each pass. */
-export const CONTROLLER_PASS_DIRECTIVE =
-  'Run a controller pass now. FIRST call mission_changes — re-evaluate any mission an external actor (a human or another node) edited since your last pass BEFORE anything else, and adapt rather than override. THEN call mission_schedule for the deterministic plan: act on each id in `ready` (place/spawn an executor via ccr_cloud_start, NEVER agent_execute, then bind with mission_update({binding})); for each `epicRollups` entry whose status/progress differs from the stored parent, apply it with mission_update; leave `blocked` and `containers` alone (they are gated/rolled-up by code). For two ready missions that touch the same area with no explicit dependsOn, decide parallel-vs-sequence (use mission_neighbors/mission_graph to see structure) and if you serialize them, tag them mission_tag({add:{"ctl:serialize-group":["<group>"]}}) so the scheduler enforces it next pass. Record your view with ctl: tags (e.g. ctl:readiness). Answer any worker pendingQuestion IMMEDIATELY via mission_session_answer; resume a non-live bound worker with mission_session_resume(sid) before respawning. BEFORE you place/spawn an executor for a `ready` mission, call session_footprints (your cluster) and AVOID a node/repo/branch/worktree an UNMANAGED recent session occupies — especially one whose openChanges overlap the mission repo/branch or whose branch is pushed:false — and any port an exclusive service holds; mission-managed sessions (managed set) are your own, never a conflict. If the only placement collides, DEFER: leave the mission ready, tag ctl:deferred-contention with the conflicting session, and revisit next pass. If the survey is partial/warming, treat unknown nodes as clear and re-check next pass. Then await the next pass.';
+/** The standing directive sent to the controller agent each pass. Sourced from the workflow
+ *  registry's default ('controller.pass') so there is exactly one copy of the text — this is
+ *  the TS-const fallback used when the live registry render is unavailable (see passDirective
+ *  on SupervisorDeps). The Task-2 default body = this old text + an onboarded-missions addendum. */
+export const CONTROLLER_PASS_DIRECTIVE = DEFAULT_WORKFLOWS['controller.pass'].body;
 
 /** Drive sent INSTEAD of CONTROLLER_PASS_DIRECTIVE when the supervisor detected that this
  *  node's cluster roster (in-cluster node membership) changed since the last pass. Tells the
@@ -529,6 +533,13 @@ export const CONTROLLER_SYSTEM_PROMPT = [
   'missions, or nothing actionable), reply with EXACTLY one line beginning `⟦HEARTBEAT⟧` and',
   'nothing else (e.g. `⟦HEARTBEAT⟧ idle — 0 active missions`). When you take a real action or',
   'answer the user, narrate normally and DO NOT use that marker.',
+  '',
+  'PROCESS DOCS: your operating processes live in the workflow registry (fleet-synced,',
+  'human-editable). The pass directive names which doc to fetch for a mission —',
+  'mission_workflow_get(id) returns the rendered text to FOLLOW. You may improve an',
+  '"open" doc via mission_workflow_set when experience warrants it, but ANNOUNCE every',
+  'self-edit in chat with a one-line rationale; humans can inspect and roll back any',
+  'edit (mission_workflow_history / mission_workflow_rollback).',
   '',
   'The user may message you directly in this session — treat their messages as authoritative',
   'instructions (create/pause/adjust missions, answer questions) and reply substantively.',
@@ -648,6 +659,14 @@ export interface SupervisorDeps {
   myCluster?: () => string;
   /** This node's own gatewayId / self identity (wired to thisNode). Used with listClusterRecords + myCluster. */
   selfId?: () => string | null;
+  /** Render the standard pass directive from the workflow registry ('controller.pass').
+   *  Optional; absent or throwing → CONTROLLER_PASS_DIRECTIVE (TS fallback). */
+  passDirective?: () => Promise<string>;
+  /** I2 — persist an onboarded mission's advanced `control.lastOutputCursor` (best-effort;
+   *  production wires it to `putMission`). Optional: absent → the cursor advance in
+   *  evaluateEngagement is computed in-memory but never durably persisted (unchanged legacy
+   *  behavior for callers that don't wire this dep — e.g. tests that don't care about it). */
+  persistMissionControl?: (m: Mission) => Promise<void>;
 }
 
 /**
@@ -692,6 +711,21 @@ async function evaluateEngagement(
       // A read failure for one mission must not sink the tick — carry forward prior state.
       curSeen[m.id] = eng.seen[m.id] ?? { alive: true, gated: false, cursor: 0 };
       continue;
+    }
+    // I2 — persist the advanced cursor onto the mission for an onboarded (origin:'onboarded')
+    // mission. Without this, `m.control.lastOutputCursor` was NEVER written back for an onboarded
+    // session (only `processMission`'s cloud/native executor path writes it, via the 'adjust'
+    // decision branch — a path onboarded missions never take, since they're already-bound and
+    // never scheduled/adjusted like a normal executor). The result: every tick re-read the SAME
+    // stale cursor, so `readOnboardedSignal`'s first-read baseline (I2 above) would fire on EVERY
+    // read forever, and the delta/humanActive detection could never advance past the initial
+    // baseline. `putMission` does not version control-field changes (TRACKED_FIELDS excludes
+    // `control`), so this write is cheap and does not spam the mission's edit history.
+    if (m.origin === 'onboarded' && sig.cursor !== (m.control.lastOutputCursor ?? 0)) {
+      m.control.lastOutputCursor = sig.cursor;
+      if (deps.persistMissionControl) {
+        try { await deps.persistMissionControl(m); } catch { /* best-effort — never sink the tick on a persist failure */ }
+      }
     }
     const act = classifyExecutorActivity(eng.seen[m.id], sig);
     curSeen[m.id] = { alive: sig.alive, gated: sig.gated, cursor: sig.cursor };
@@ -823,6 +857,9 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   // triggered this engagement (enriched with the EXACT workers to migrate, when known),
   // else the standard pass directive.
   let directive = CONTROLLER_PASS_DIRECTIVE;
+  if (deps.passDirective) {
+    try { directive = await deps.passDirective(); } catch { /* registry unavailable → TS fallback */ }
+  }
   if (driveReason === 'roster-change') {
     directive = CONTROLLER_ROSTER_CHANGED_DIRECTIVE;
     if (driveCands && driveCands.length) {
@@ -873,6 +910,110 @@ export async function readExecutorSignal(m: Mission): Promise<ExecNow> {
     gated: !!st.gate,
     cursor: st.newOutput?.cursor ?? (m.control.lastOutputCursor ?? 0),
     newLines: st.newOutput?.messages ?? [],
+  };
+}
+
+/**
+ * Onboarded-mission read deps (local + cross-node) — deps-injected for testability.
+ * Cross-node reads go through the session ops proxy on the session's own node
+ * (`POST /mission/session/:sid/read` / `/status`), NOT the cloud path.
+ */
+export interface OnboardedReadDeps {
+  selfNode: () => string;
+  /** Local role-aware native read (AgentSessionStore). */
+  readLocalConversation: (sid: string) => Promise<{ messages: Array<{ role: string; text: string }> }>;
+  /** Local native liveness. */
+  verdict: (sid: string) => { driveable: boolean };
+  /** Cross-node read via the session ops proxy (POST /mission/session/:sid/read on the session's node). */
+  proxyRead: (node: string, sid: string) => Promise<{ messages: Array<{ role: string; text: string }> }>;
+  /** Cross-node liveness (POST /mission/session/:sid/status on the session's node). */
+  proxyStatus: (node: string, sid: string) => Promise<{ alive: boolean }>;
+}
+
+/**
+ * Wave "onboarded" — read an onboarded mission's live session (local or cross-node) and
+ * additionally detect HUMAN activity (a plain new user prompt, not our drive marker / harness
+ * noise) so the engagement classifier can be nudged to engage even without a status marker.
+ * Cloud onboarded bindings delegate to `readCloudExecutor` (humanActive stays false — v1
+ * limit: cloud messages here are plain strings, not role-tagged, so we can't yet tell human
+ * from driven text on that path).
+ */
+export async function readOnboardedSignal(m: Mission, deps: OnboardedReadDeps): Promise<ExecNow & { humanActive: boolean }> {
+  const sid = m.binding?.sessionId;
+  if (!sid) return { alive: false, gated: false, cursor: 0, newLines: [], humanActive: false };
+  if (m.binding?.node === 'cloud' || detectTransportSafe(sid) === 'cloud') {
+    const st = await readCloudExecutor(m);
+    return { alive: st.alive, gated: !!st.gate, cursor: st.newOutput?.cursor ?? (m.control.lastOutputCursor ?? 0), newLines: st.newOutput?.messages ?? [], humanActive: false };
+  }
+  const node = m.binding?.node;
+  const local = !node || node === deps.selfNode();
+  try {
+    let alive: boolean; let messages: Array<{ role: string; text: string }>;
+    if (local) {
+      alive = deps.verdict(sid).driveable;
+      messages = (await deps.readLocalConversation(sid)).messages;
+    } else {
+      alive = (await deps.proxyStatus(node!, sid)).alive;
+      messages = (await deps.proxyRead(node!, sid)).messages;
+    }
+    // I2 — first-read baseline: lastOutputCursor is undefined/absent when this onboarded
+    // mission has never been read before (the session may already have a long pre-onboard
+    // history). Baseline it silently: cursor = messages.length, no newLines, no humanActive —
+    // else the ENTIRE pre-onboard transcript would be treated as "new" on the very first tick
+    // and could spuriously flag humanActive (or spam interim) for messages the controller never
+    // actually missed.
+    if (m.control.lastOutputCursor === undefined) {
+      return { alive, gated: false, cursor: messages.length, newLines: [], humanActive: false };
+    }
+    const last = m.control.lastOutputCursor;
+    // I2 — backward-cursor safety: if the persisted cursor is now BEYOND the transcript length
+    // (e.g. the transcript was rotated/shrunk, or cross-node message shape changed), slicing
+    // from `last` would silently produce [] anyway, but resolving `cursor` from the SHRUNK
+    // messages.length while `last` is even bigger risks the next-tick delta going negative /
+    // re-surfacing stale lines once the transcript grows again. Treat it as a baseline reset:
+    // same shape as first-read (no newLines, cursor pinned to the current length).
+    if (last > messages.length) {
+      return { alive, gated: false, cursor: messages.length, newLines: [], humanActive: false };
+    }
+    const fresh = messages.slice(last);
+    return { alive, gated: false, cursor: messages.length, newLines: fresh.map((x) => x.text), humanActive: detectHumanActivity(fresh) };
+  } catch {
+    // transient (remote hop, fs): grace — alive, nothing new (mirrors handleSessionStatus's cloud grace)
+    return { alive: true, gated: false, cursor: m.control.lastOutputCursor ?? 0, newLines: [], humanActive: false };
+  }
+}
+function detectTransportSafe(sid: string): 'cloud' | 'native' {
+  const { detectTransport } = require('./mission-onboard') as typeof import('./mission-onboard');
+  return detectTransport(sid);
+}
+
+/** Real deps for `readOnboardedSignal` — local native read/verdict + cross-node via the peer proxy. */
+function defaultOnboardedReadDeps(): OnboardedReadDeps {
+  return {
+    selfNode: () => thisNode(),
+    // I3: `driveable` must reflect PROCESS liveness (`v.live`), not tmux membership
+    // (`v.inTmux`). A user's plain-terminal session (never launched in tmux, e.g. a
+    // bare `claude` in an SSH shell) is `live:true, inTmux:false` — using `inTmux`
+    // here falsely reported it as not-driveable/dead, which would have surfaced a
+    // spurious "session ended" signal for a perfectly healthy onboarded session.
+    verdict: (sid) => { const v = sessionVerdict(sid); return { driveable: v.live }; },
+    readLocalConversation: async (sid) => {
+      const store = new AgentSessionStore({ projectPath: process.cwd(), persist: false });
+      const res = await store.getConversation({ sessionId: sid });
+      return { messages: (res?.messages ?? []).map((msg: any) => ({ role: msg.role, text: msg.content })) };
+    },
+    proxyRead: async (node, sid) => {
+      const { proxyPost } = require('../data/peer-client') as typeof import('../data/peer-client');
+      const r = (await proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/read`, {})) as any;
+      const data = r?.data ?? r;
+      return { messages: (data?.messages ?? []).map((x: any) => ({ role: x.role, text: x.text })) };
+    },
+    proxyStatus: async (node, sid) => {
+      const { proxyPost } = require('../data/peer-client') as typeof import('../data/peer-client');
+      const r = (await proxyPost(node, `/mission/session/${encodeURIComponent(sid)}/status`, {})) as any;
+      const data = r?.data ?? r;
+      return { alive: data?.alive !== false };
+    },
   };
 }
 
@@ -963,7 +1104,25 @@ export function registerMissionController(
         const { listActiveMissions } = require('./mission-store') as typeof import('./mission-store');
         return listActiveMissions();
       },
-      readSignal: (m) => readExecutorSignal(m),
+      readSignal: async (m) => {
+        if (m.origin === 'onboarded') {
+          const s = await readOnboardedSignal(m, defaultOnboardedReadDeps());
+          if (s.humanActive) {
+            // A human message is MATERIAL for the engagement classifier: inject a synthetic
+            // status-marker line so classifyExecutorActivity fires without changing its API.
+            return { ...s, newLines: ['⟦WORKER-STATUS⟧ human-activity', ...s.newLines] };
+          }
+          return s;
+        }
+        return readExecutorSignal(m);
+      },
+      // I2 — persist an onboarded mission's advanced control.lastOutputCursor. putMission does
+      // not version control-field changes (TRACKED_FIELDS excludes `control`), so this is a
+      // cheap, history-clean write.
+      persistMissionControl: async (m) => {
+        const { putMission: pm } = require('./mission-store') as typeof import('./mission-store');
+        await pm(m);
+      },
       getEngagement: async () => {
         const { getEngagementState } = require('./mission-store') as typeof import('./mission-store');
         return getEngagementState();
@@ -1047,7 +1206,16 @@ export function registerMissionController(
           tmux,
           startedAt: Date.now(),
         };
+        try {
+          const { seedDefaultWorkflows } = require('./workflow-store') as typeof import('./workflow-store');
+          const n = await seedDefaultWorkflows();
+          if (n > 0) console.log(`[mission-controller] seeded ${n} default workflow docs`);
+        } catch { /* best-effort — defaults render as fallback anyway */ }
         return cs;
+      },
+      passDirective: async () => {
+        const { renderWorkflow } = require('./workflow-store') as typeof import('./workflow-store');
+        return renderWorkflow('controller.pass');
       },
       drive: async (cs, directive) => {
         const text = directive ?? CONTROLLER_PASS_DIRECTIVE;

@@ -126,13 +126,13 @@ export const MISSION_TOOL_DEFS = [
   },
   {
     name: 'mission_session_read',
-    description: 'Read the transcript of a mission session (cloud CCR or native). Returns {messages:[...], pendingQuestion}. `pendingQuestion` (when non-null) is an AskUserQuestion the session is BLOCKED on — {toolUseId, requestId?, questions:[{header,question,options}]}; answer it with mission_session_answer (NOT mission_session_drive). Works for a `--remote-control` (bridge) controller/executor too. Use lastN to limit messages.',
-    inputSchema: obj({ sid: S, lastN: { type: 'number' as const } }, ['sid']),
+    description: 'Read the transcript of a mission session (cloud CCR or native). Returns {messages:[...], pendingQuestion}. `pendingQuestion` (when non-null) is an AskUserQuestion the session is BLOCKED on — {toolUseId, requestId?, questions:[{header,question,options}]}; answer it with mission_session_answer (NOT mission_session_drive). Works for a `--remote-control` (bridge) controller/executor too. Use lastN to limit messages. `node` is usually unnecessary — an onboarded session bound to a different in-cluster node is auto-resolved and proxied there; pass it only to force a specific node.',
+    inputSchema: obj({ sid: S, lastN: { type: 'number' as const }, node: S }, ['sid']),
   },
   {
     name: 'mission_session_drive',
-    description: 'Send a message to a mission session (cloud or native). The session receives the text as an injected prompt. Write tool — creates a turn. NOTE: if the session is blocked on a `pendingQuestion`, use mission_session_answer, not this.',
-    inputSchema: obj({ sid: S, text: S }, ['sid', 'text']),
+    description: 'Send a message to a mission session (cloud or native). The session receives the text as an injected prompt. Write tool — creates a turn. NOTE: if the session is blocked on a `pendingQuestion`, use mission_session_answer, not this. `node` is usually unnecessary — an onboarded session bound to a different in-cluster node is auto-resolved and proxied there; pass it only to force a specific node.',
+    inputSchema: obj({ sid: S, text: S, node: S }, ['sid', 'text']),
   },
   {
     name: 'mission_session_answer',
@@ -163,6 +163,15 @@ export const MISSION_TOOL_DEFS = [
       'Page a mission\'s full version history (UNBOUNDED — beyond the recent entries embedded in the mission record). ' +
       'Each entry: {rev, at, actor, changes:{field:{from,to}}}. {id, limit?(default 50), beforeRev?(page older)}. Newest-first.',
     inputSchema: obj({ id: S, limit: { type: 'number' as const }, beforeRev: { type: 'number' as const } }, ['id']),
+  },
+  {
+    name: 'mission_onboard',
+    description:
+      'Onboard an EXISTING Claude Code session into mission control. Omit sessionId to onboard the CALLING session (self-handoff). ' +
+      'mode: standby (default — observe only, human stays in charge) | handoff (mission control drives it end-to-end per the workflow playbooks). ' +
+      'cluster targets which cluster\'s controller manages it (default: this node\'s). note = free-text intent for the analysis. ' +
+      'Returns the created (or existing) mission.',
+    inputSchema: obj({ sessionId: S, cluster: S, mode: { ...S, enum: ['handoff', 'standby'] }, note: S, node: S }),
   },
 ] as const;
 
@@ -233,7 +242,10 @@ export const MISSION_HANDLERS: Record<
       // Coerce lastN: MCP args arrive as strings over the connector
       const rawLastN = a.lastN;
       const lastN = typeof rawLastN === 'number' ? rawLastN : (typeof rawLastN === 'string' ? parseInt(rawLastN, 10) : undefined);
-      return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/read`, { lastN }));
+      // I1: forward `node` when given (string passthrough) — usually unnecessary since the
+      // route auto-resolves an onboarded mission's node, but lets a caller force a specific one.
+      const node = a.node ? String(a.node) : undefined;
+      return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/read`, { lastN, node }));
     } catch (e) { return err((e as Error).message); }
   },
 
@@ -243,8 +255,9 @@ export const MISSION_HANDLERS: Record<
       if (!sid) return err('sid is required');
       const text = String(a.text || '');
       if (!text) return err('text is required');
+      const node = a.node ? String(a.node) : undefined;
       // withActorHint so drive is attributed to the caller's MCP session
-      return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/drive`, withActorHint({ text }, currentMcpContext()?.toolUseId)));
+      return pretty(await workerPost(`/mission/session/${encodeURIComponent(sid)}/drive`, withActorHint({ text, node }, currentMcpContext()?.toolUseId)));
     } catch (e) { return err((e as Error).message); }
   },
 
@@ -304,6 +317,12 @@ export const MISSION_HANDLERS: Record<
       if (limit != null && !Number.isNaN(limit)) qs.set('limit', String(limit));
       if (beforeRev != null && !Number.isNaN(beforeRev)) qs.set('beforeRev', String(beforeRev));
       return pretty(await workerGet(`/mission/${encodeURIComponent(id)}/history${qs.toString() ? `?${qs}` : ''}`));
+    } catch (e) { return err((e as Error).message); }
+  },
+
+  mission_onboard: async (a) => {
+    try {
+      return pretty(await workerPost('/mission/onboard', withActorHint(a, currentMcpContext()?.toolUseId)));
     } catch (e) { return err((e as Error).message); }
   },
 };
