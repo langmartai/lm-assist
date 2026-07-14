@@ -24,7 +24,7 @@ import { recentExternalChanges } from '../../mission/mission-changes';
 import { placementAllowed } from '../../mission/mission-controller';
 import { getClusterRecords } from '../../cluster/cluster-store';
 import { getMyCluster } from '../../cluster/cluster-config';
-import { getWorkflow, listWorkflows, putWorkflow, rollbackWorkflow, getWorkflowRaw, listWorkflowSnapshots,
+import { getWorkflow, listWorkflows, putWorkflow, rollbackWorkflow, getWorkflowRaw, listWorkflowSnapshots, getWorkflowSnapshot,
   type WorkflowPort, type WorkflowSnapshotPort } from '../../mission/workflow-store';
 import { isControllerActor, type WorkflowEditPolicy } from '../../mission/workflow-model';
 import { DEFAULT_WORKFLOWS } from '../../mission/workflow-defaults';
@@ -322,6 +322,15 @@ export async function handleWorkflowRollback(id: string, b: Record<string, unkno
   const toRevRaw = b.toRev;
   const toRev = typeof toRevRaw === 'number' ? toRevRaw : parseInt(String(toRevRaw ?? ''), 10);
   if (Number.isNaN(toRev)) return fail('INVALID_INPUT', 'toRev (number) is required');
+  // Rolling back can itself change editPolicy (the target rev may have been saved under a
+  // different policy) — mirror handleWorkflowSet's rule: a controller may never change
+  // editPolicy, whether via an explicit `editPolicy` field (set) or implicitly by restoring
+  // an older/newer revision (rollback). A missing snapshot is not this check's concern —
+  // let rollbackWorkflow's own NOT_FOUND path handle that below.
+  const target = await getWorkflowSnapshot(id, toRev, snap).catch(() => null);
+  if (target && target.editPolicy !== effectivePolicy && isControllerActor(who)) {
+    return fail('FORBIDDEN', 'editPolicy changes are human-only');
+  }
   const r = await rollbackWorkflow(id, toRev, who, port, snap);
   if ('error' in r) return fail(r.error.code, r.error.message);
   return ok({ doc: r.doc });

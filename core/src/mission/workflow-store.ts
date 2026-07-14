@@ -179,6 +179,16 @@ export async function listWorkflowSnapshots(
   return snap.list(docId, opts);
 }
 
+/** Fetch one durable snapshot by docId+rev — thin wrapper so callers (e.g. the rollback route's
+ *  pre-flight editPolicy check) don't need to reach for the private defaultSnapshotPort(). */
+export async function getWorkflowSnapshot(
+  docId: string,
+  rev: number,
+  snap: WorkflowSnapshotPort = defaultSnapshotPort(),
+): Promise<WorkflowSnapshot | null> {
+  return snap.get(docId, rev);
+}
+
 export async function putWorkflow(
   input: { id: string; title: string; body: string; editPolicy: WorkflowEditPolicy },
   actor: MissionActor,
