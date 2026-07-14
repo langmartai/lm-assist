@@ -28,9 +28,9 @@ claude.ai backend
    │ HTTPS (Anthropic egress 160.79.106.37/39)
    ▼
 mcp.xeenhub.com
-   │ Cloudflare-proxied → NPM at 10.0.1.114 → :8081 hub on 10.0.1.117
+   │ Cloudflare-proxied → NPM at 10.0.1.114 → :8081 hub on 192.0.2.17
    ▼
-gateway-type1 hub (10.0.1.117:8081)
+gateway-type1 hub (192.0.2.17:8081)
    ├─ /.well-known/oauth-protected-resource/mcp     ─┐
    ├─ /.well-known/oauth-authorization-server       │ public
    ├─ /oauth/authorize  (langmart consent UI)        │ OAuth
@@ -146,9 +146,9 @@ A thin npm package containing:
 
 DNS + cert (one-time on dev):
 - Cloudflare A record `mcp.xeenhub.com → 118.189.213.114` (proxied). Use the existing `cf-dns.sh` helper.
-- NPM proxy host: `mcp.xeenhub.com → 10.0.1.117:8081` with Let's Encrypt cert via NPM API.
+- NPM proxy host: `mcp.xeenhub.com → 192.0.2.17:8081` with Let's Encrypt cert via NPM API.
 
-Production (deferred): same routine for `mcp.langmart.ai → 213.35.107.246` after dev confirms.
+Production (deferred): same routine for `mcp.langmart.ai → 203.0.113.10` after dev confirms.
 
 ## Sequencing — incremental, each step independently verifiable
 

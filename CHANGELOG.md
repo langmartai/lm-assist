@@ -337,7 +337,7 @@ gate keyed on a non-empty console title and mis-reported this as "no title" — 
 - **Operational fix**: the Windows Core must run in the interactive Session 1 to drive the user's
   terminals — established a durable interactive auto-start (`LmAssistCoreInteractive`, `LogonType
   Interactive`). After moving the Core to Session 1: **11/12 live sessions `driveable:true` (was 0/12)**,
-  titles readable, delivery path restored. Verified on 10.0.1.107.
+  titles readable, delivery path restored. Verified on 192.0.2.7.
 
 ### Generic data service — multi-backend data/RAG with access control, sync, REST + MCP (2026-06-18)
 
@@ -373,8 +373,8 @@ the feature ships in `main` for review and is rolled out to the fleet by syncing
 ### MCP cross-host tools — fix categorical failures on non-`/home/ubuntu` and Windows workers (2026-06-16)
 
 The langmart MCP's cross-host / multi-node tools failed wholesale when targeting a worker whose home
-isn't `/home/ubuntu` (yitest `/home/yi`, Windows `C:\Users\yi`), or when running a command on a Windows
-node. Surfaced by a cross-host test session (`ee045a79` on 10.0.1.123) where every failure clustered in
+isn't `/home/ubuntu` (node-b `/home/yi`, Windows `C:\Users\yi`), or when running a command on a Windows
+node. Surfaced by a cross-host test session (`ee045a79` on 192.0.2.23) where every failure clustered in
 the multi-node path.
 
 - **cwd allowlist no longer hardcodes `/home/ubuntu`** (`utils/cwd-allowlist.ts`): `isCwdAllowed` now
@@ -1198,7 +1198,7 @@ Headers intentionally omitted: `x-datadog-{origin,trace-id,parent-id,sampling-pr
 - Node's TLS fingerprint (JA3/JA4) differs from Chrome's. Cloudflare can detect this. Low-frequency reads on a fresh `cf_clearance` succeed; tight polling will trip detection regardless of header correctness.
 - macOS Keychain note doesn't apply here — this is a config-file integration on all platforms.
 
-#### Live test (2026-05-14, against yi@10.0.1.123's captured cookie)
+#### Live test (2026-05-14, against yi@192.0.2.23's captured cookie)
 
 | Call | Status | Result |
 |---|---|---|

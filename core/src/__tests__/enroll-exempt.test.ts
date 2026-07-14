@@ -11,7 +11,7 @@ test('does NOT exempt minting (/hub/enroll/create) — token required', () => {
   assert.equal(isEnrollExempt('POST', '/hub/enroll/create', '127.0.0.1'), false);
 });
 test('does NOT exempt a LAN interface ip', () => {
-  assert.equal(isEnrollExempt('POST', '/hub/login', '10.0.1.117'), false);
+  assert.equal(isEnrollExempt('POST', '/hub/login', '192.0.2.17'), false);
 });
 test('does NOT exempt other paths or methods', () => {
   assert.equal(isEnrollExempt('POST', '/hub/status', '127.0.0.1'), false);

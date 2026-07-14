@@ -3,7 +3,7 @@
 Routes that proxy `api.anthropic.com` endpoints using Claude Code's OAuth token (the one Claude Code itself stores in `~/.claude/.credentials.json`). Outbound headers match the real `claude-code/<version>` fingerprint observed in `lm-proxy` captures, with the appropriate `anthropic-beta` value per endpoint.
 
 Source of fingerprint truth for each route is either:
-- **Live capture** — from `lm-proxy` audit log (`yi@10.0.1.123`, 2026-05-10..14)
+- **Live capture** — from `lm-proxy` audit log (`yi@192.0.2.23`, 2026-05-10..14)
 - **Source** — the leaked Claude Code source (`claude-code-2.1.88/source/src/...`)
 
 The endpoint inventory upstream of this wrapper lives in [`lm-claude-endpoint`](https://github.com/langmartai/lm-claude-endpoint).

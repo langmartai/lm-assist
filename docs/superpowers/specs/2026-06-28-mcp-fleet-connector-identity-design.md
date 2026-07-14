@@ -4,7 +4,7 @@
 
 ## Problem
 
-A claude.ai account can have several lm-assist MCP connectors, each pointing at a different hub → a different fleet (e.g. `lm-assist langmart` → the prod fleet on `assist-api.langmart.ai`; `lm-assist` → a dev node on `xeenhub.com`). When an LLM drives a node-targeted tool (e.g. `cluster_assign node="DESKTOP-GDKLATG"`), claude.ai resolves the ambiguous tool name to **one** connector. Nothing tells the LLM which connector reaches which nodes, so the call can land on the wrong fleet → `BAD_NODE`, and a hostname can collide across fleets. Observed live: a driven `cluster_assign` routed to the dev connector (which only sees its own node) and failed, looking like "split-brain".
+A claude.ai account can have several lm-assist MCP connectors, each pointing at a different hub → a different fleet (e.g. `lm-assist langmart` → the prod fleet on `assist-api.langmart.ai`; `lm-assist` → a dev node on `xeenhub.com`). When an LLM drives a node-targeted tool (e.g. `cluster_assign node="windows-node"`), claude.ai resolves the ambiguous tool name to **one** connector. Nothing tells the LLM which connector reaches which nodes, so the call can land on the wrong fleet → `BAD_NODE`, and a hostname can collide across fleets. Observed live: a driven `cluster_assign` routed to the dev connector (which only sees its own node) and failed, looking like "split-brain".
 
 Additionally, the current bootstrap/index text **hardcodes** "the langmart MCP connector" — wrong for any other hub and the exact thing to avoid.
 

@@ -9,7 +9,7 @@ Host github.com
   User git
 
 Host sg jp
-  HostName 213.35.107.246
+  HostName 203.0.113.10
   User opc
   Port 22
   IdentityFile ~/.ssh/ssh-keys/id_rsa
@@ -27,12 +27,12 @@ describe('parseSshConfig', () => {
     const aliases = hosts.map((h) => h.alias);
     assert.deepEqual(aliases.sort(), ['github.com', 'jp', 'sg', 'weirdName_1']);
     const sg = hosts.find((h) => h.alias === 'sg')!;
-    assert.equal(sg.hostName, '213.35.107.246');
+    assert.equal(sg.hostName, '203.0.113.10');
     assert.equal(sg.user, 'opc');
     assert.equal(sg.port, 22);
     assert.equal(sg.identityFile, '~/.ssh/ssh-keys/id_rsa');
     // jp shares the sg block's settings
-    assert.equal(hosts.find((h) => h.alias === 'jp')!.hostName, '213.35.107.246');
+    assert.equal(hosts.find((h) => h.alias === 'jp')!.hostName, '203.0.113.10');
     // wildcard block excluded
     assert.equal(hosts.some((h) => h.alias.includes('build')), false);
   });
@@ -57,7 +57,7 @@ describe('buildImportCandidates', () => {
     assert.equal(sg.enabled, false);
     assert.deepEqual(sg.tags, ['imported']);
     assert.equal(sg.access[0].type, 'ssh');
-    assert.equal((sg.access[0] as { host: string }).host, '213.35.107.246');
+    assert.equal((sg.access[0] as { host: string }).host, '203.0.113.10');
     assert.equal((sg.access[0] as { user: string }).user, 'opc');
     // github.com has no HostName → falls back to alias as host; no User in... actually it has User git
     const gh = candidates.find((c) => c.id === 'github.com');

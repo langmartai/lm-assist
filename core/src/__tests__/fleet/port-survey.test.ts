@@ -56,7 +56,7 @@ test('parseNetstat — listening TCP rows → {port,pid}; IPv6 + non-LISTENING/U
     '  Proto  Local Address          Foreign Address        State           PID',
     '  TCP    0.0.0.0:3100           0.0.0.0:0              LISTENING       178680',
     '  TCP    [::]:3848              [::]:0                 LISTENING       4021',
-    '  TCP    10.0.1.107:58007       172.67.158.86:443      ESTABLISHED     161104',
+    '  TCP    192.0.2.7:58007       172.67.158.86:443      ESTABLISHED     161104',
     '  UDP    0.0.0.0:5353           *:*                                    1234',
   ].join('\n');
   assert.deepEqual(parseNetstat(stdout), [

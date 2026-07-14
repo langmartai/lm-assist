@@ -953,7 +953,7 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
 
 // ─────────────────────────────────────────────────────────────────────────
 // Additional read helpers — fingerprints verified against lm-proxy captures
-// 2026-05-10..14 on yi@10.0.1.123. All claude.ai web reads share the
+// 2026-05-10..14 on yi@192.0.2.23. All claude.ai web reads share the
 // baseHeaders set claudeaiGet() emits; only the path, query, and Referer
 // vary per endpoint.
 // ─────────────────────────────────────────────────────────────────────────

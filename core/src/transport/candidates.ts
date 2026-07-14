@@ -14,7 +14,7 @@
  *
  * Candidate kinds + priority (HIGH → LOW):
  *   host   — a non-internal IPv4 of this machine at the socket's bound port.
- *            Lets same-LAN peers (e.g. 10.0.1.117 ↔ 10.0.1.123) connect
+ *            Lets same-LAN peers (e.g. 192.0.2.17 ↔ 192.0.2.23) connect
  *            directly over the LAN with no NAT/hole-punch at all.
  *   static — a configured public endpoint (LM_ASSIST_PUBLIC_IP +
  *            LM_ASSIST_TRANSPORT_PORT). A cloud host with an open port.

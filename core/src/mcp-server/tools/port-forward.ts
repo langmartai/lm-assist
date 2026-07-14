@@ -104,7 +104,7 @@ interface NodeInfo {
   ip: string;
 }
 
-/** "host (gw4-… · linux 6.x x64 · 10.0.1.117)" — the node a forward lives on. */
+/** "host (gw4-… · linux 6.x x64 · 192.0.2.17)" — the node a forward lives on. */
 function fmtNode(n?: NodeInfo): string {
   if (!n) return '';
   return `${n.hostname} (${n.gatewayId || 'unregistered'} · ${n.os.platform} ${n.os.release} ${n.os.arch} · ${n.ip})`;

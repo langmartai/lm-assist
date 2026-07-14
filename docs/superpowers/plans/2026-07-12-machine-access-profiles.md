@@ -66,14 +66,14 @@ import {
 
 const ssh = (over: Partial<SshAccess> = {}): SshAccess => ({
   type: 'ssh',
-  host: '10.0.1.123',
+  host: '192.0.2.23',
   user: 'yi',
   ...over,
 });
 
 const profile = (over: Partial<MachineProfile> = {}): MachineProfile => ({
-  id: 'yitest',
-  name: 'yitest VM',
+  id: 'node-b',
+  name: 'node-b VM',
   access: [ssh()],
   ...over,
 });
@@ -143,15 +143,15 @@ describe('store CRUD round-trip', () => {
     assert.ok(created.createdAt);
     assert.ok(created.updatedAt);
     assert.equal(listMachines(file).length, 1);
-    assert.equal(getMachine('yitest', file)?.name, 'yitest VM');
+    assert.equal(getMachine('node-b', file)?.name, 'node-b VM');
 
-    const updated = upsertMachine(profile({ name: 'yitest (123)' }), file);
+    const updated = upsertMachine(profile({ name: 'node-b (123)' }), file);
     assert.equal(updated.createdAt, created.createdAt);
     assert.equal(listMachines(file).length, 1);
-    assert.equal(getMachine('yitest', file)?.name, 'yitest (123)');
+    assert.equal(getMachine('node-b', file)?.name, 'node-b (123)');
 
-    assert.equal(removeMachine('yitest', file), true);
-    assert.equal(removeMachine('yitest', file), false);
+    assert.equal(removeMachine('node-b', file), true);
+    assert.equal(removeMachine('node-b', file), false);
     assert.equal(listMachines(file).length, 0);
   });
   it('upsert of invalid profile throws and writes nothing', () => {
@@ -173,16 +173,16 @@ describe('store CRUD round-trip', () => {
 
 describe('buildSshCommand', () => {
   it('minimal', () => {
-    assert.equal(buildSshCommand(ssh()), 'ssh yi@10.0.1.123');
+    assert.equal(buildSshCommand(ssh()), 'ssh yi@192.0.2.23');
   });
   it('with identityFile and non-default port', () => {
     assert.equal(
       buildSshCommand(ssh({ identityFile: '~/.ssh/k', port: 2222 })),
-      'ssh -i ~/.ssh/k -p 2222 yi@10.0.1.123',
+      'ssh -i ~/.ssh/k -p 2222 yi@192.0.2.23',
     );
   });
   it('default port 22 omitted', () => {
-    assert.equal(buildSshCommand(ssh({ port: 22 })), 'ssh yi@10.0.1.123');
+    assert.equal(buildSshCommand(ssh({ port: 22 })), 'ssh yi@192.0.2.23');
   });
 });
 
@@ -192,7 +192,7 @@ describe('toReportedMachine', () => {
       access: [ssh({ identityFile: '~/.ssh/k' }), { type: 'windows-account', host: 'h' }],
     }));
     assert.equal(r.enabled, true);
-    assert.equal((r.access[0] as any).command, 'ssh -i ~/.ssh/k yi@10.0.1.123');
+    assert.equal((r.access[0] as any).command, 'ssh -i ~/.ssh/k yi@192.0.2.23');
     assert.equal((r.access[0] as any).supported, true);
     assert.equal((r.access[1] as any).supported, false);
     assert.equal((r.access[1] as any).command, undefined);
@@ -486,9 +486,9 @@ function req(method: string, reqPath: string, over: Partial<ParsedRequest> = {})
 }
 
 const PROFILE = {
-  id: 'yitest',
-  name: 'yitest VM',
-  access: [{ type: 'ssh', host: '10.0.1.123', user: 'yi', identityFile: '~/.ssh/ssh-keys/id_rsa' }],
+  id: 'node-b',
+  name: 'node-b VM',
+  access: [{ type: 'ssh', host: '192.0.2.23', user: 'yi', identityFile: '~/.ssh/ssh-keys/id_rsa' }],
 };
 
 describe('machine-access routes', () => {
@@ -500,31 +500,31 @@ describe('machine-access routes', () => {
   after(() => { delete process.env.LM_MACHINE_ACCESS_FILE; });
 
   it('PUT rejects non-loopback callers', async () => {
-    const h = findRoute('PUT', '/machine-access/machines/yitest');
-    const res = await h.handler(req('PUT', '/machine-access/machines/yitest', { clientIp: '10.0.0.5', body: PROFILE }), {} as never);
+    const h = findRoute('PUT', '/machine-access/machines/node-b');
+    const res = await h.handler(req('PUT', '/machine-access/machines/node-b', { clientIp: '10.0.0.5', body: PROFILE }), {} as never);
     assert.equal(res.success, false);
     assert.equal(res.error?.code, 'FORBIDDEN');
   });
 
   it('DELETE rejects non-loopback callers', async () => {
-    const h = findRoute('DELETE', '/machine-access/machines/yitest');
-    const res = await h.handler(req('DELETE', '/machine-access/machines/yitest', { clientIp: '203.0.113.9' }), {} as never);
+    const h = findRoute('DELETE', '/machine-access/machines/node-b');
+    const res = await h.handler(req('DELETE', '/machine-access/machines/node-b', { clientIp: '203.0.113.9' }), {} as never);
     assert.equal(res.success, false);
     assert.equal(res.error?.code, 'FORBIDDEN');
   });
 
   it('loopback PUT upserts (path id wins) and GET reports with derived command', async () => {
-    const put = findRoute('PUT', '/machine-access/machines/yitest');
-    const created = await put.handler(req('PUT', '/machine-access/machines/yitest', { body: { ...PROFILE, id: 'ignored' } }), {} as never);
+    const put = findRoute('PUT', '/machine-access/machines/node-b');
+    const created = await put.handler(req('PUT', '/machine-access/machines/node-b', { body: { ...PROFILE, id: 'ignored' } }), {} as never);
     assert.equal(created.success, true);
-    assert.equal((created.data as any).machine.id, 'yitest');
+    assert.equal((created.data as any).machine.id, 'node-b');
 
     const get = findRoute('GET', '/machine-access');
     const rep = await get.handler(req('GET', '/machine-access'), {} as never);
     assert.equal(rep.success, true);
     const data = rep.data as any;
     assert.equal(data.count, 1);
-    assert.equal(data.machines[0].access[0].command, 'ssh -i ~/.ssh/ssh-keys/id_rsa yi@10.0.1.123');
+    assert.equal(data.machines[0].access[0].command, 'ssh -i ~/.ssh/ssh-keys/id_rsa yi@192.0.2.23');
     assert.ok(typeof data.node.hostname === 'string' && data.node.hostname.length > 0);
     assert.match(data.usage, /NODE-LOCAL/);
   });
@@ -537,10 +537,10 @@ describe('machine-access routes', () => {
   });
 
   it('DELETE removes and reports removed:false for unknown id', async () => {
-    const del = findRoute('DELETE', '/machine-access/machines/yitest');
-    const res1 = await del.handler(req('DELETE', '/machine-access/machines/yitest'), {} as never);
+    const del = findRoute('DELETE', '/machine-access/machines/node-b');
+    const res1 = await del.handler(req('DELETE', '/machine-access/machines/node-b'), {} as never);
     assert.equal((res1.data as any).removed, true);
-    const res2 = await del.handler(req('DELETE', '/machine-access/machines/yitest'), {} as never);
+    const res2 = await del.handler(req('DELETE', '/machine-access/machines/node-b'), {} as never);
     assert.equal((res2.data as any).removed, false);
   });
 });
@@ -693,7 +693,7 @@ import { filterMachines, machineAccessToolDef } from '../mcp-server/tools/machin
 
 const MACHINES = [
   { id: 'sg-hub', tags: ['oracle', 'hub'] },
-  { id: 'yitest', tags: ['lan'] },
+  { id: 'node-b', tags: ['lan'] },
   { id: 'win107', tags: ['lan', 'windows'] },
 ];
 
@@ -702,10 +702,10 @@ describe('filterMachines', () => {
     assert.equal(filterMachines(MACHINES, {}).length, 3);
   });
   it('by id', () => {
-    assert.deepEqual(filterMachines(MACHINES, { id: 'yitest' }).map((m) => m.id), ['yitest']);
+    assert.deepEqual(filterMachines(MACHINES, { id: 'node-b' }).map((m) => m.id), ['node-b']);
   });
   it('by tag', () => {
-    assert.deepEqual(filterMachines(MACHINES, { tag: 'lan' }).map((m) => m.id), ['yitest', 'win107']);
+    assert.deepEqual(filterMachines(MACHINES, { tag: 'lan' }).map((m) => m.id), ['node-b', 'win107']);
   });
   it('id + tag compose', () => {
     assert.equal(filterMachines(MACHINES, { id: 'win107', tag: 'hub' }).length, 0);
@@ -871,12 +871,12 @@ Expected: build clean; suite result matches the pre-change baseline (same pass/f
 
 ```bash
 ./core.sh start   # or restart; dev ports 3200/3948
-curl -s -X PUT localhost:3200/machine-access/machines/yitest \
+curl -s -X PUT localhost:3200/machine-access/machines/node-b \
   -H 'content-type: application/json' \
-  -d '{"name":"yitest VM (123)","os":"linux","tags":["lan","lm-assist-node"],"notes":"passwordless sudo; Core is systemd (sudo systemctl restart lm-assist)","access":[{"type":"ssh","host":"10.0.1.123","user":"yi","identityFile":"~/.ssh/ssh-keys/id_rsa"}]}'
+  -d '{"name":"node-b VM (123)","os":"linux","tags":["lan","lm-assist-node"],"notes":"passwordless sudo; Core is systemd (sudo systemctl restart lm-assist)","access":[{"type":"ssh","host":"192.0.2.23","user":"yi","identityFile":"~/.ssh/ssh-keys/id_rsa"}]}'
 curl -s localhost:3200/machine-access
 ```
-Expected: PUT → `success:true` with stamped machine; GET → report with `command: "ssh -i ~/.ssh/ssh-keys/id_rsa yi@10.0.1.123"`. Also verify the tool is registered:
+Expected: PUT → `success:true` with stamped machine; GET → report with `command: "ssh -i ~/.ssh/ssh-keys/id_rsa yi@192.0.2.23"`. Also verify the tool is registered:
 
 ```bash
 node -e "const {EXPANDED_TOOL_DEFS}=require('./core/dist/mcp-server/tools/expanded'); console.log(EXPANDED_TOOL_DEFS.some(t=>t.name==='machine_access'))"
@@ -885,7 +885,7 @@ Expected: `true`.
 
 - [ ] **Step 3: Seed this node's real machines (dev file) + CLAUDE.md note + commit docs**
 
-Seed SG hub, JP, yitest, win107 via the same PUT shape (notes from memory: SG "hub-only host — NEVER install lm-assist"; JP "LIVE tick capture — do not disturb"; 107 "PowerShell via -EncodedCommand; Session-1 restart via schtasks; elevated worker 127.0.0.1:3110").
+Seed SG hub, JP, node-b, win107 via the same PUT shape (notes from memory: SG "hub-only host — NEVER install lm-assist"; JP "LIVE tick capture — do not disturb"; 107 "PowerShell via -EncodedCommand; Session-1 restart via schtasks; elevated worker 127.0.0.1:3110").
 
 ```bash
 git add CLAUDE.md

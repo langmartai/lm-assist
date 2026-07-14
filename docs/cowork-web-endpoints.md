@@ -1,6 +1,6 @@
 # Claude Cowork — Web API Endpoint Map (for lm-assist integration)
 
-> Profiled live on **123 (yi@10.0.1.123)** via lm-proxy + the paired research browser, **2026-07-11**, against the
+> Profiled live on **123 (yi@192.0.2.23)** via lm-proxy + the paired research browser, **2026-07-11**, against the
 > **July 7 2026 "Cowork on web & mobile"** release. Supersedes the desktop-only profiling in the
 > `cowork-dispatch-protocol` memory (2026-06-03). Org used: `7cad1e03-e98e-42ca-8571-311a4ce74b8b`.
 >
@@ -147,7 +147,7 @@ Both are modeled as cowork **environments**. A session's `environment_kind` deci
 | Reachability | none needed (cloud) | outbound-only poll/heartbeat; NAT-friendly; single-writer via `worker_epoch` fencing |
 
 **Observed on 123:** my web task ran in `anthropic_cloud`; the desktop app on 123 is registered as the bridge env
-`yitest-Virtual-Machine:cowork:b016` (`online:true`) and heartbeats the worker channel. Same account, two targets.
+`node-b-Virtual-Machine:cowork:b016` (`online:true`) and heartbeats the worker channel. Same account, two targets.
 
 > **Transport takeaway for lm-assist:** the *web* surface is `claude.ai/**` with the browser session cookie (+ the
 > `anthropic-client-*` fingerprint headers claude.ai injects). The *cloud runtime* underneath is the CCR/BYOC
@@ -360,7 +360,7 @@ lm-assist already proxies claude.ai (`/claude-ai/*` cookie-file + `/claude-ai/vi
 ---
 
 ## Appendix — capture method (reproducible on 123)
-- lm-proxy intercepts `claude.ai` + `*.anthropic.com` (own DNS on :15353 → 10.0.1.123, iptables 443→8443, CA-trusted);
+- lm-proxy intercepts `claude.ai` + `*.anthropic.com` (own DNS on :15353 → 192.0.2.23, iptables 443→8443, CA-trusted);
   audit log `/home/yi/lm-proxy/logs/http-audit.jsonl` (schema `{client{pid,comm,cmdline},hostname,request{method,url,headers,body},response{status,body,sse_events},time}`).
 - Live UI + endpoint sequence: paired research browser at `claude.ai` (authed) + `read_network_requests` + authed in-page `fetch()` reads.
 - Full endpoint enumeration: recursively fetched the app module graph (961 chunks) via lm-proxy and grepped endpoint literals.

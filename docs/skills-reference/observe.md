@@ -118,7 +118,7 @@ Then save a comprehensive summary via `PUT /projects/summary` with ALL these fie
   "structure": "Key directories: core/ (backend API), web/ (Next.js UI), hooks/ (Claude Code hooks), commands/ (slash commands)",
   "keyEndpoints": "Most important API endpoints. e.g.: GET /health, GET /sessions, GET /monitor/executions, POST /agent/execute",
   "commonWorkflows": "What users do most: 1) Edit TypeScript → ./core.sh build → ./core.sh restart. 2) npm publish for releases. 3) lm-assist upgrade for prod updates",
-  "deployment": "How to deploy: npm publish → lm-assist upgrade on prod. SG instance: ssh opc@213.35.107.246, do NOT auto-deploy. Prod port :3100, dev port :3200",
+  "deployment": "How to deploy: npm publish → lm-assist upgrade on prod. SG instance: ssh opc@203.0.113.10, do NOT auto-deploy. Prod port :3100, dev port :3200",
   "importantNotes": "Critical constraints: Always use ./core.sh, never direct npm/node. Dev/prod run on separate ports. Knowledge system has kill switch.",
   "fullReference": "Complete markdown reference extracted from CLAUDE.md — include service management, port mapping, key API endpoints, deployment steps, and any operational constraints users need daily"
 }

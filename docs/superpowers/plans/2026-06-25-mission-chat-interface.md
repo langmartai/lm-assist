@@ -38,7 +38,7 @@ test('/mission paths are relay-allowed', () => {
 
 **Interfaces:** Adds `leader: { node: string|null; host: string|null; isSelf: boolean }` to the controller payload. `node = election.monitorNodeId`, `host` resolved from the hub machines list (a `leaderHost(node)` dep, default = fetch `/api/tier-agent/machines` and find by gatewayId → hostname; injectable, returns null on failure), `isSelf = monitorNodeId === selfId`.
 
-- [ ] **Step 1: test** — `handleGetController` with injected `getElection` (monitorNodeId='gw-x', selfId='gw-y') + `getLeaderHost` stub ('yitest') → payload `leader = {node:'gw-x', host:'yitest', isSelf:false}`.
+- [ ] **Step 1: test** — `handleGetController` with injected `getElection` (monitorNodeId='gw-x', selfId='gw-y') + `getLeaderHost` stub ('node-b') → payload `leader = {node:'gw-x', host:'node-b', isSelf:false}`.
 - [ ] **Step 2-4:** run fail → implement (add `leaderHost` dep + `leader` to the `ok({...})`; default `getLeaderHost` reads the machines list, non-fatal) → pass.
 - [ ] **Step 5: commit** `feat(mission): leader {node,host,isSelf} on GET /mission/controller`.
 

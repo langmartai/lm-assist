@@ -73,14 +73,14 @@ test('GET /mission/controller includes leader with host resolved from stub (isSe
     port as any,
     async () => fakeElection,
     () => fakeJob as any,
-    async (_node) => 'yitest',
+    async (_node) => 'node-b',
   );
   assert.ok(r.success, 'should succeed');
   const d = r.data as any;
   assert.ok('leader' in d, 'data should include leader key');
   const leader = d.leader as LeaderInfo;
   assert.equal(leader.node, 'gw-x');
-  assert.equal(leader.host, 'yitest');
+  assert.equal(leader.host, 'node-b');
   // isSelf depends on thisNode(); in test env gatewayId is probably 'unknown' ≠ 'gw-x'
   assert.equal(typeof leader.isSelf, 'boolean', 'isSelf should be a boolean');
 });

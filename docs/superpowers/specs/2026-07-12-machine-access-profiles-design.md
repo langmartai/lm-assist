@@ -8,14 +8,14 @@
 
 Knowledge of how to reach other machines *from* a given lm-assist node — SSH endpoint, user, key path, and the per-machine operational quirks — lives scattered across memory files, global CLAUDE.md, and past sessions. Every LLM session must rediscover "how do I get from this node to 107" by grepping prose. There is no structured, queryable, node-local record, and no MCP surface that reports it.
 
-Concrete example — node 117 today holds (in prose only):
+Concrete example — a node today holds this kind of access map (in prose only). Values below are illustrative placeholders; real hostnames/IPs live only in each node's private memory, never in this repo:
 
 | Machine | Access | Quirks |
 |---|---|---|
-| SG hub | `ssh -i ~/.ssh/ssh-keys/id_rsa opc@213.35.107.246` | hub-only host, never install lm-assist |
-| JP | `ssh -i ~/.ssh/ssh-keys/id_rsa opc@158.101.158.137` | LIVE tick capture — do not disturb |
-| 123 / yitest | `ssh -i ~/.ssh/ssh-keys/id_rsa yi@10.0.1.123` | passwordless sudo; Core is systemd |
-| 107 / Windows | `ssh -i ~/.ssh/langmart_admin_key admin@10.0.1.107` | PowerShell via `-EncodedCommand`; Session-1 restarts via schtasks; elevated worker on `127.0.0.1:3110` |
+| hub host | `ssh -i ~/.ssh/<key> <user>@<hub-host>` | hub-only host, never install lm-assist |
+| data host | `ssh -i ~/.ssh/<key> <user>@<data-host>` | production data capture — do not disturb |
+| linux node | `ssh -i ~/.ssh/<key> <user>@<linux-node>` | passwordless sudo; Core is systemd |
+| windows node | `ssh -i ~/.ssh/<key> <user>@<windows-node>` | PowerShell via `-EncodedCommand`; Session-1 restarts via schtasks; elevated worker on `127.0.0.1:3110` |
 
 Access is not always plain SSH. Windows→Windows remote code execution under account trust (WinRM `Invoke-Command`, `schtasks /S`, PsExec) is a real future need, and 107's elevated worker is an existing non-SSH access channel. v1 supports **SSH only**, but the schema must extend to these without a break.
 
@@ -63,10 +63,10 @@ Access is not always plain SSH. Windows→Windows remote code execution under ac
       "access": [                        // ordered by preference; >=1 entry
         {
           "type": "ssh",
-          "host": "213.35.107.246",     // required
-          "user": "opc",                // required
+          "host": "<hub-host>",         // required
+          "user": "<user>",             // required
           "port": 22,                    // optional; default 22
-          "identityFile": "~/.ssh/ssh-keys/id_rsa",  // optional PATH — never key material
+          "identityFile": "~/.ssh/<key>",  // optional PATH — never key material
           "notes": "per-method notes"
         }
       ],

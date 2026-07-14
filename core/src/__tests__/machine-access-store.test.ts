@@ -19,14 +19,14 @@ import {
 
 const ssh = (over: Partial<SshAccess> = {}): SshAccess => ({
   type: 'ssh',
-  host: '10.0.1.123',
+  host: '192.0.2.23',
   user: 'yi',
   ...over,
 });
 
 const profile = (over: Partial<MachineProfile> = {}): MachineProfile => ({
-  id: 'yitest',
-  name: 'yitest VM',
+  id: 'node-b',
+  name: 'node-b VM',
   access: [ssh()],
   ...over,
 });
@@ -90,7 +90,7 @@ describe('validateProfile', () => {
 
   it('accepts real hostnames, IPv4, IPv6, and dotted users', () => {
     assert.equal(validateProfile(profile({ access: [ssh({ host: 'sg.example.com' })] })), null);
-    assert.equal(validateProfile(profile({ access: [ssh({ host: '213.35.107.246' })] })), null);
+    assert.equal(validateProfile(profile({ access: [ssh({ host: '203.0.113.10' })] })), null);
     assert.equal(validateProfile(profile({ access: [ssh({ host: 'fe80::1' })] })), null);
     assert.equal(validateProfile(profile({ access: [ssh({ user: 'opc.admin_1' })] })), null);
   });
@@ -116,15 +116,15 @@ describe('store CRUD round-trip', () => {
     assert.ok(created.createdAt);
     assert.ok(created.updatedAt);
     assert.equal(listMachines(file).length, 1);
-    assert.equal(getMachine('yitest', file)?.name, 'yitest VM');
+    assert.equal(getMachine('node-b', file)?.name, 'node-b VM');
 
-    const updated = upsertMachine(profile({ name: 'yitest (123)' }), file);
+    const updated = upsertMachine(profile({ name: 'node-b (123)' }), file);
     assert.equal(updated.createdAt, created.createdAt);
     assert.equal(listMachines(file).length, 1);
-    assert.equal(getMachine('yitest', file)?.name, 'yitest (123)');
+    assert.equal(getMachine('node-b', file)?.name, 'node-b (123)');
 
-    assert.equal(removeMachine('yitest', file), true);
-    assert.equal(removeMachine('yitest', file), false);
+    assert.equal(removeMachine('node-b', file), true);
+    assert.equal(removeMachine('node-b', file), false);
     assert.equal(listMachines(file).length, 0);
   });
   it('upsert of invalid profile throws and writes nothing', () => {
@@ -146,16 +146,16 @@ describe('store CRUD round-trip', () => {
 
 describe('buildSshCommand', () => {
   it('minimal', () => {
-    assert.equal(buildSshCommand(ssh()), 'ssh yi@10.0.1.123');
+    assert.equal(buildSshCommand(ssh()), 'ssh yi@192.0.2.23');
   });
   it('with identityFile and non-default port', () => {
     assert.equal(
       buildSshCommand(ssh({ identityFile: '~/.ssh/k', port: 2222 })),
-      'ssh -i ~/.ssh/k -p 2222 yi@10.0.1.123',
+      'ssh -i ~/.ssh/k -p 2222 yi@192.0.2.23',
     );
   });
   it('default port 22 omitted', () => {
-    assert.equal(buildSshCommand(ssh({ port: 22 })), 'ssh yi@10.0.1.123');
+    assert.equal(buildSshCommand(ssh({ port: 22 })), 'ssh yi@192.0.2.23');
   });
 });
 
@@ -165,7 +165,7 @@ describe('toReportedMachine', () => {
       access: [ssh({ identityFile: '~/.ssh/k' }), { type: 'windows-account', host: 'h' }],
     }));
     assert.equal(r.enabled, true);
-    assert.equal((r.access[0] as { command?: string }).command, 'ssh -i ~/.ssh/k yi@10.0.1.123');
+    assert.equal((r.access[0] as { command?: string }).command, 'ssh -i ~/.ssh/k yi@192.0.2.23');
     assert.equal((r.access[0] as { supported?: boolean }).supported, true);
     assert.equal((r.access[1] as { supported?: boolean }).supported, false);
     assert.equal((r.access[1] as { command?: string }).command, undefined);
@@ -215,9 +215,9 @@ describe('setLastCheck', () => {
 
   it('records a probe result without bumping updatedAt', () => {
     const created = upsertMachine(profile(), file);
-    const ok = setLastCheck('yitest', { status: 'ok', at: '2026-07-14T12:00:00Z' }, file);
+    const ok = setLastCheck('node-b', { status: 'ok', at: '2026-07-14T12:00:00Z' }, file);
     assert.equal(ok, true);
-    const after = getMachine('yitest', file)!;
+    const after = getMachine('node-b', file)!;
     assert.equal(after.updatedAt, created.updatedAt); // a probe is NOT an edit
     assert.equal((after as { lastCheck?: { status: string } }).lastCheck?.status, 'ok');
   });

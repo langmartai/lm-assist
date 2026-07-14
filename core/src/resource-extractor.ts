@@ -22,7 +22,7 @@ export type DbSystem = 'postgresql' | 'mysql' | 'sqlite' | 'mongodb' | 'redis';
 export interface ExtractedResource {
   key: string;
   category: ResourceCategory;
-  name: string;               // display name: "postgres:langmart", "opc@213.35.107.246"
+  name: string;               // display name: "postgres:langmart", "opc@203.0.113.10"
   target: string;             // connection target
   scope: ResourceScope;
   command: string;            // the CLI tool used (psql, docker exec, curl, etc.)

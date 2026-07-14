@@ -4,7 +4,7 @@ import { filterMachines, machineAccessToolDef } from '../mcp-server/tools/machin
 
 const MACHINES = [
   { id: 'sg-hub', tags: ['oracle', 'hub'] },
-  { id: 'yitest', tags: ['lan'] },
+  { id: 'node-b', tags: ['lan'] },
   { id: 'win107', tags: ['lan', 'windows'] },
 ];
 
@@ -13,10 +13,10 @@ describe('filterMachines', () => {
     assert.equal(filterMachines(MACHINES, {}).length, 3);
   });
   it('by id', () => {
-    assert.deepEqual(filterMachines(MACHINES, { id: 'yitest' }).map((m) => m.id), ['yitest']);
+    assert.deepEqual(filterMachines(MACHINES, { id: 'node-b' }).map((m) => m.id), ['node-b']);
   });
   it('by tag', () => {
-    assert.deepEqual(filterMachines(MACHINES, { tag: 'lan' }).map((m) => m.id), ['yitest', 'win107']);
+    assert.deepEqual(filterMachines(MACHINES, { tag: 'lan' }).map((m) => m.id), ['node-b', 'win107']);
   });
   it('id + tag compose', () => {
     assert.equal(filterMachines(MACHINES, { id: 'win107', tag: 'hub' }).length, 0);

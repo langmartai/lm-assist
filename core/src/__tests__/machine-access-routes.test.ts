@@ -29,9 +29,9 @@ function req(method: string, reqPath: string, over: Partial<ParsedRequest> = {})
 }
 
 const PROFILE = {
-  id: 'yitest',
-  name: 'yitest VM',
-  access: [{ type: 'ssh', host: '10.0.1.123', user: 'yi', identityFile: '~/.ssh/ssh-keys/id_rsa' }],
+  id: 'node-b',
+  name: 'node-b VM',
+  access: [{ type: 'ssh', host: '192.0.2.23', user: 'yi', identityFile: '~/.ssh/ssh-keys/id_rsa' }],
 };
 
 describe('machine-access routes', () => {
@@ -43,24 +43,24 @@ describe('machine-access routes', () => {
   after(() => { delete process.env.LM_MACHINE_ACCESS_FILE; });
 
   it('PUT rejects non-loopback callers', async () => {
-    const h = findRoute('PUT', '/machine-access/machines/yitest');
-    const res = await h.handler(req('PUT', '/machine-access/machines/yitest', { clientIp: '10.0.0.5', body: PROFILE }), {} as never);
+    const h = findRoute('PUT', '/machine-access/machines/node-b');
+    const res = await h.handler(req('PUT', '/machine-access/machines/node-b', { clientIp: '10.0.0.5', body: PROFILE }), {} as never);
     assert.equal(res.success, false);
     assert.equal(res.error?.code, 'FORBIDDEN');
   });
 
   it('DELETE rejects non-loopback callers', async () => {
-    const h = findRoute('DELETE', '/machine-access/machines/yitest');
-    const res = await h.handler(req('DELETE', '/machine-access/machines/yitest', { clientIp: '203.0.113.9' }), {} as never);
+    const h = findRoute('DELETE', '/machine-access/machines/node-b');
+    const res = await h.handler(req('DELETE', '/machine-access/machines/node-b', { clientIp: '203.0.113.9' }), {} as never);
     assert.equal(res.success, false);
     assert.equal(res.error?.code, 'FORBIDDEN');
   });
 
   it('loopback PUT upserts (path id wins) and GET reports with derived command', async () => {
-    const put = findRoute('PUT', '/machine-access/machines/yitest');
-    const created = await put.handler(req('PUT', '/machine-access/machines/yitest', { body: { ...PROFILE, id: 'ignored' } }), {} as never);
+    const put = findRoute('PUT', '/machine-access/machines/node-b');
+    const created = await put.handler(req('PUT', '/machine-access/machines/node-b', { body: { ...PROFILE, id: 'ignored' } }), {} as never);
     assert.equal(created.success, true);
-    assert.equal((created.data as { machine: { id: string } }).machine.id, 'yitest');
+    assert.equal((created.data as { machine: { id: string } }).machine.id, 'node-b');
 
     const get = findRoute('GET', '/machine-access');
     const rep = await get.handler(req('GET', '/machine-access'), {} as never);
@@ -72,7 +72,7 @@ describe('machine-access routes', () => {
       usage: string;
     };
     assert.equal(data.count, 1);
-    assert.equal(data.machines[0].access[0].command, 'ssh -i ~/.ssh/ssh-keys/id_rsa yi@10.0.1.123');
+    assert.equal(data.machines[0].access[0].command, 'ssh -i ~/.ssh/ssh-keys/id_rsa yi@192.0.2.23');
     assert.ok(typeof data.node.hostname === 'string' && data.node.hostname.length > 0);
     assert.match(data.usage, /NODE-LOCAL/);
   });
@@ -85,10 +85,10 @@ describe('machine-access routes', () => {
   });
 
   it('DELETE removes and reports removed:false for unknown id', async () => {
-    const del = findRoute('DELETE', '/machine-access/machines/yitest');
-    const res1 = await del.handler(req('DELETE', '/machine-access/machines/yitest'), {} as never);
+    const del = findRoute('DELETE', '/machine-access/machines/node-b');
+    const res1 = await del.handler(req('DELETE', '/machine-access/machines/node-b'), {} as never);
     assert.equal((res1.data as { removed: boolean }).removed, true);
-    const res2 = await del.handler(req('DELETE', '/machine-access/machines/yitest'), {} as never);
+    const res2 = await del.handler(req('DELETE', '/machine-access/machines/node-b'), {} as never);
     assert.equal((res2.data as { removed: boolean }).removed, false);
   });
 });
@@ -144,7 +144,7 @@ describe('machine-access import route', () => {
     // Redirect the ssh dir to the temp dir so the fixture path is inside the allowed base.
     process.env.LM_SSH_CONFIG_DIR = dir;
     cfgPath = path.join(dir, 'ssh_config');
-    fs.writeFileSync(cfgPath, 'Host sg\n  HostName 213.35.107.246\n  User opc\nHost weird*\n  User x\n', 'utf-8');
+    fs.writeFileSync(cfgPath, 'Host sg\n  HostName 203.0.113.10\n  User opc\nHost weird*\n  User x\n', 'utf-8');
   });
   after(() => { delete process.env.LM_MACHINE_ACCESS_FILE; delete process.env.LM_SSH_CONFIG_DIR; });
 
@@ -178,7 +178,7 @@ describe('machine-access import route', () => {
     // pre-seed an existing curated "sg" so import must skip it
     const put = findRoute('PUT', '/machine-access/machines/sg');
     await put.handler(req('PUT', '/machine-access/machines/sg', {
-      body: { name: 'curated SG', access: [{ type: 'ssh', host: '213.35.107.246', user: 'opc' }] },
+      body: { name: 'curated SG', access: [{ type: 'ssh', host: '203.0.113.10', user: 'opc' }] },
     }), {} as never);
 
     const h = findRoute('POST', '/machine-access/import');

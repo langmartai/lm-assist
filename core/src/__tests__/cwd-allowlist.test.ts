@@ -4,7 +4,7 @@ import { isCwdAllowed } from '../utils/cwd-allowlist';
 
 // Bug #1: the allowlist was hardcoded to `/home/ubuntu`, so agent_execute /
 // terminal_open_tab were categorically rejected on any worker whose home is
-// not /home/ubuntu (yitest = /home/yi, Windows = C:\Users\yi). The gate must be
+// not /home/ubuntu (node-b = /home/yi, Windows = C:\Users\yi). The gate must be
 // based on the executing worker's OWN home dir.
 
 test('isCwdAllowed: allows the given home dir and its subdirs', () => {

@@ -959,9 +959,9 @@ Confirm whether `claude-code-windows-setup` is a **dedicated fresh box** (real p
 
 ```bash
 # Is there a distinct windows-setup host? Ask/confirm; otherwise use 107 isolated.
-ssh -i ~/.ssh/langmart_admin_key -o StrictHostKeyChecking=no admin@10.0.1.107 'powershell -NoProfile -Command "hostname; node -v"' 2>&1
+ssh -i ~/.ssh/langmart_admin_key -o StrictHostKeyChecking=no admin@192.0.2.7 'powershell -NoProfile -Command "hostname; node -v"' 2>&1
 ```
-Expected: prints `DESKTOP-GDKLATG` + a node version. **If using 107, you MUST isolate** (next step) — a real `npm install -g` there overwrites the live prod fleet CLI.
+Expected: prints `windows-node` + a node version. **If using 107, you MUST isolate** (next step) — a real `npm install -g` there overwrites the live prod fleet CLI.
 
 - [ ] **Step 2b: Commit `install.ps1` (so the artifact under test is the committed one)**
 
@@ -976,7 +976,7 @@ git commit -m "feat(install.ps1): Windows one-command installer (preflight + pro
 cd /home/ubuntu/lm-assist
 tar czf /tmp/lmtest-src.tgz --exclude=node_modules --exclude=.git --exclude='web/.next' \
   --exclude='core/dist' --exclude='core/dist-test' -C /home/ubuntu/lm-assist .
-scp -i ~/.ssh/langmart_admin_key -o StrictHostKeyChecking=no /tmp/lmtest-src.tgz admin@10.0.1.107:'C:/Users/admin/lmtest-src.tgz'
+scp -i ~/.ssh/langmart_admin_key -o StrictHostKeyChecking=no /tmp/lmtest-src.tgz admin@192.0.2.7:'C:/Users/admin/lmtest-src.tgz'
 ```
 Expected: scp exit 0. (On a dedicated fresh box, use its own key/path. `git archive` is unsuitable here because it omits the just-written, possibly-uncommitted files; the working-tree tarball captures exactly what's under test.)
 
@@ -999,8 +999,8 @@ Write-Output ("preflight exit=" + $LASTEXITCODE)
 $errs = $null; [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $d 'install.ps1'), [ref]$null, [ref]$errs) | Out-Null
 Write-Output ("install.ps1 parse errors: " + (@($errs).Count))
 PS1
-scp -i ~/.ssh/langmart_admin_key -o StrictHostKeyChecking=no /tmp/lmtest-win-preflight.ps1 admin@10.0.1.107:'C:/Users/admin/lmtest-win-preflight.ps1'
-ssh -i ~/.ssh/langmart_admin_key -o StrictHostKeyChecking=no admin@10.0.1.107 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\admin\lmtest-win-preflight.ps1' 2>&1
+scp -i ~/.ssh/langmart_admin_key -o StrictHostKeyChecking=no /tmp/lmtest-win-preflight.ps1 admin@192.0.2.7:'C:/Users/admin/lmtest-win-preflight.ps1'
+ssh -i ~/.ssh/langmart_admin_key -o StrictHostKeyChecking=no admin@192.0.2.7 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\admin\lmtest-win-preflight.ps1' 2>&1
 ```
 Expected: the preflight JSON shows `"ok": true` with a `chokidar` check at `3.6.x`; `preflight exit=0`; `install.ps1 parse errors: 0`.
 
@@ -1026,12 +1026,12 @@ npm install -g ".\$($tgz.Name)" --ignore-scripts | Select-Object -Last 3   # --i
 & (Join-Path $prefix 'lm-assist.cmd') doctor --json | Select-String '"ok"'
 Write-Output ("doctor exit=" + $LASTEXITCODE)
 PS1
-scp -i ~/.ssh/langmart_admin_key -o StrictHostKeyChecking=no /tmp/lmtest-win-install.ps1 admin@10.0.1.107:'C:/Users/admin/lmtest-win-install.ps1'
-ssh -i ~/.ssh/langmart_admin_key -o StrictHostKeyChecking=no admin@10.0.1.107 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\admin\lmtest-win-install.ps1' 2>&1
+scp -i ~/.ssh/langmart_admin_key -o StrictHostKeyChecking=no /tmp/lmtest-win-install.ps1 admin@192.0.2.7:'C:/Users/admin/lmtest-win-install.ps1'
+ssh -i ~/.ssh/langmart_admin_key -o StrictHostKeyChecking=no admin@192.0.2.7 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\admin\lmtest-win-install.ps1' 2>&1
 # Cleanup staging on 107:
-ssh -i ~/.ssh/langmart_admin_key -o StrictHostKeyChecking=no admin@10.0.1.107 'powershell -NoProfile -Command "Remove-Item -Recurse -Force $env:TEMP\lmtest,$env:TEMP\lmtest-prefix,$env:USERPROFILE\lmtest-src.tgz,$env:USERPROFILE\lmtest-win-preflight.ps1,$env:USERPROFILE\lmtest-win-install.ps1 -ErrorAction SilentlyContinue; Write-Output cleaned"' 2>&1
+ssh -i ~/.ssh/langmart_admin_key -o StrictHostKeyChecking=no admin@192.0.2.7 'powershell -NoProfile -Command "Remove-Item -Recurse -Force $env:TEMP\lmtest,$env:TEMP\lmtest-prefix,$env:USERPROFILE\lmtest-src.tgz,$env:USERPROFILE\lmtest-win-preflight.ps1,$env:USERPROFILE\lmtest-win-install.ps1 -ErrorAction SilentlyContinue; Write-Output cleaned"' 2>&1
 ```
-Expected: `tgz=lm-assist-<ver>.tgz`; the isolated `doctor` prints `"ok": true`; `doctor exit=0`; `cleaned`. **107 prod stays healthy** — verify after: `curl -s http://10.0.1.107:3100/health | grep -o '"status":"[^"]*"'` → `healthy`, uptime unchanged.
+Expected: `tgz=lm-assist-<ver>.tgz`; the isolated `doctor` prints `"ok": true`; `doctor exit=0`; `cleaned`. **107 prod stays healthy** — verify after: `curl -s http://192.0.2.7:3100/health | grep -o '"status":"[^"]*"'` → `healthy`, uptime unchanged.
 
 (Dedicated-box path: copy `install.ps1` over, run `powershell -ExecutionPolicy Bypass -File install.ps1`, then `lm-assist status` → API :3100 / Web :3848 up; `lm-assist doctor` → ok.)
 

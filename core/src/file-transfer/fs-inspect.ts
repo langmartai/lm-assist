@@ -235,7 +235,7 @@ export function markDirty(absPath: string): void {
   // List cache keys may carry a pattern suffix ('list:<dir>\x00<filter>').
   // Drop every list entry for this dir and its parent, whatever filter made it.
   // The '\x00' sentinel after <dir> avoids prefix collisions (e.g. /home/yi vs
-  // /home/yitest).
+  // /home/node-b).
   for (const k of [...cache.keys()]) {
     if (k === 'list:' + p || k.startsWith('list:' + p + '\x00')) cache.delete(k);
     else if (k === 'list:' + parent || k.startsWith('list:' + parent + '\x00')) cache.delete(k);
