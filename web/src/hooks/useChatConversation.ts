@@ -27,18 +27,24 @@ export function useChatConversation(opts: { uuid: string; apiFetch: ApiFetch; mo
   const seqRef = useRef(0);
   const load = useCallback(async () => {
     const seq = ++seqRef.current;
-    try {
-      const r = await apiFetch<ChatDetailView>(`/claude-ai/conversations/${uuid}/messages`);
-      if (seq !== seqRef.current) return;
-      // A successful read means the conversation exists — clear a prior `gone` so a
-      // just-created chat whose FIRST read 404'd (claude.ai read-replica lag right after
-      // create) recovers once the auto-send's completion+reload lands. `gone` must not latch.
-      setDetail(r); setErr(null); setGone(false);
-    } catch (e) {
-      if (seq !== seqRef.current) return;
-      const msg = e instanceof Error ? e.message : String(e);
-      if (/not.?found|HTTP 404|CONVERSATION_NOT_FOUND/i.test(msg)) setGone(true);
-      else setErr(msg);
+    // Retry a transient 404: a just-created conversation's read can 404 for a second or
+    // two (claude.ai read-replica lag right after create) — retrying avoids a spurious
+    // "conversation was deleted". Only a persistent 404 means truly gone.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const r = await apiFetch<ChatDetailView>(`/claude-ai/conversations/${uuid}/messages`);
+        if (seq !== seqRef.current) return;
+        // Success ⇒ exists; clear any prior `gone` (it must not latch).
+        setDetail(r); setErr(null); setGone(false);
+        return;
+      } catch (e) {
+        if (seq !== seqRef.current) return;
+        const msg = e instanceof Error ? e.message : String(e);
+        const notFound = /not.?found|HTTP 404|CONVERSATION_NOT_FOUND/i.test(msg);
+        if (notFound && attempt < 4) { await new Promise((r) => setTimeout(r, 700)); if (seq !== seqRef.current) return; continue; }
+        if (notFound) setGone(true); else setErr(msg);
+        return;
+      }
     }
   }, [apiFetch, uuid]);
 

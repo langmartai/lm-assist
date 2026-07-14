@@ -48,7 +48,7 @@ export function CoworkPage() {
   const [mode, setMode] = useState<'chat' | 'cowork'>('cowork');
   const [rows, setRows] = useState<HomeRow[]>([]);
   const [filter, setFilter] = useState<'all' | 'chat' | 'cowork'>('all');
-  const [openItem, setOpenItem] = useState<{ id: string; kind: 'chat' | 'cowork'; initialPrompt?: string; initialModel?: string } | null>(null);
+  const [openItem, setOpenItem] = useState<{ id: string; kind: 'chat' | 'cowork' } | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [createErr, setCreateErr] = useState<string | null>(null);
@@ -99,11 +99,11 @@ export function CoworkPage() {
       const c = await apiFetch<{ uuid?: string; data?: { uuid?: string } }>(`/claude-ai/conversations`, { method: 'POST', body: { model: o.model } });
       const uuid = (c as any).uuid || (c as any).data?.uuid;
       if (!uuid) throw new Error('conversation create returned no id');
-      // Open ChatView and let IT send the first turn (initialPrompt), so ChatView's
-      // own send→reload runs and the turn+reply render there. (Sending the completion
-      // at the page level left ChatView showing an empty transcript — it had already
-      // loaded /messages on mount while the conversation was still empty.)
-      setOpenItem({ id: uuid, kind: 'chat', initialPrompt: o.prompt, initialModel: o.model });
+      // Send the first turn BEFORE opening the view. An EMPTY conversation's /messages read
+      // 404s (no message tree until the first completion), so opening ChatView first showed
+      // "conversation was deleted". The completion populates it → ChatView then reads cleanly.
+      await apiFetch(`/claude-ai/conversations/${uuid}/completion`, { method: 'POST', body: { prompt: o.prompt, model: o.model } });
+      setOpenItem({ id: uuid, kind: 'chat' });
       // Optimistically show the new chat in the list immediately — the claude.ai list
       // index lags a fresh create, so a plain reloadList wouldn't include it yet (B1).
       const title = o.prompt.trim().slice(0, 60) || 'New chat';
@@ -140,8 +140,6 @@ export function CoworkPage() {
               key={openItem.id}
               uuid={openItem.id}
               apiFetch={apiFetch}
-              initialPrompt={openItem.initialPrompt}
-              initialModel={openItem.initialModel}
               onClose={() => setOpenItem(null)}
               onDeleted={() => { removedRef.current.add(openItem.id); setRows((prev) => prev.filter((r) => r.id !== openItem.id)); setOpenItem(null); }}
             />
