@@ -11,11 +11,11 @@ const DATA_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mfw-data-'));
 process.env.CLAUDE_CONFIG_DIR = CONFIG_TMP;
 process.env.LM_ASSIST_DATA_DIR = DATA_TMP;
 
-import { createMemoryFilesRoutes } from '../memory-files.routes';
-import { resetMemoryCache } from '../../../memory-cache';
-import { stopSessionCache } from '../../../session-cache';
-import { resetProjectsService } from '../../../projects-service';
-import type { ParsedRequest } from '../../index';
+import { createMemoryFilesRoutes } from '../../routes/core/memory-files.routes';
+import { resetMemoryCache } from '../../memory-cache';
+import { stopSessionCache } from '../../session-cache';
+import { resetProjectsService } from '../../projects-service';
+import type { ParsedRequest } from '../../routes/index';
 
 const SLUG = '-tmp-warn-proj';
 const MEM_DIR = path.join(CONFIG_TMP, 'projects', SLUG, 'memory');

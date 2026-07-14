@@ -1,10 +1,10 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { createMemoryRoutes, resolveHostIdFromHostsFile } from '../memory.routes';
-import { resetMemoryCache } from '../../../memory-cache';
-import { stopSessionCache } from '../../../session-cache';
-import { resetProjectsService } from '../../../projects-service';
-import type { ParsedRequest } from '../../index';
+import { createMemoryRoutes, resolveHostIdFromHostsFile } from '../../routes/core/memory.routes';
+import { resetMemoryCache } from '../../memory-cache';
+import { stopSessionCache } from '../../session-cache';
+import { resetProjectsService } from '../../projects-service';
+import type { ParsedRequest } from '../../routes/index';
 
 function req(): ParsedRequest {
   return { method: 'GET', path: '/memory/self-node', params: {}, query: {}, headers: {}, clientIp: '127.0.0.1' } as ParsedRequest;

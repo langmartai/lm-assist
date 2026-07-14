@@ -12,9 +12,9 @@ const DATA_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'rfr-data-'));
 process.env.CLAUDE_CONFIG_DIR = CONFIG_TMP;
 process.env.LM_ASSIST_DATA_DIR = DATA_TMP;
 
-import { createRuleFilesRoutes } from '../rule-files.routes';
-import { sha256 } from '../../../memory/file-write';
-import type { ParsedRequest } from '../../index';
+import { createRuleFilesRoutes } from '../../routes/core/rule-files.routes';
+import { sha256 } from '../../memory/file-write';
+import type { ParsedRequest } from '../../routes/index';
 
 const RULES_DIR = path.join(CONFIG_TMP, 'rules');
 

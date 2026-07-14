@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { relPathProblem, filenameProblem } from '../file-write';
+import { relPathProblem, filenameProblem } from '../../memory/file-write';
 
 /**
  * relPathProblem — nested-capable filename validation for the Rules browser.
