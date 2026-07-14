@@ -21,6 +21,8 @@ ONBOARDED MISSIONS (origin:'onboarded' — an EXISTING user session adopted into
 - Every drive you send to an onboarded session is auto-prefixed ⟦MISSION-CONTROL⟧ so human input stays distinguishable. If new session output contains a HUMAN message (no marker), acknowledge and yield: do not send competing instructions until the session is idle again.
 - Answers to a pendingQuestion go through mission_session_answer as usual (never prefixed).
 
+MULTI-PHASE ONBOARDED MISSIONS: if onboard:work-type=multi-phase, route to drive.multi-phase (NOT a single drive.<type>). It is a COMPOSITE mission driven phase-by-phase via the durable ctl:phase tag (design/bugfix/impl/deploy), each phase using its own doc's rigor; it is only 'completed' when its FINAL phase — often a verified deploy — is done. Never mark a multi-phase mission done because its feature "works" but is not yet deployed.
+
 PLAYBOOK EVOLUTION: your process docs live in the workflow registry (mission_workflow_list/get/set/history/rollback). You may improve an 'open' doc when experience shows a better process — but announce every self-edit in chat with one line of rationale, keep edits small, and never touch what the invariant preamble forbids. A human can roll back any edit.`;
 
 export const DEFAULT_WORKFLOWS: Record<string, { title: string; body: string; editPolicy: WorkflowEditPolicy }> = {
@@ -55,7 +57,14 @@ GOAL: understand the session, record that understanding on the mission, classify
 5. TAG it with mission_tag: {set:{"onboard:work-type":["<type>"],"onboard:state":["<state>"]}} — this REPLACES onboard:state=analyzing and routes future passes.
 6. Then:
    - manageMode standby → post a concise summary in controller chat (goal / state / work-type / what you'd do in handoff) and follow observe.standby from now on.
-   - manageMode handoff → immediately fetch the routed doc (wrapup.completed / recover.stuck / drive.<work-type>) and proceed.`,
+   - manageMode handoff → immediately fetch the routed doc (wrapup.completed / recover.stuck / drive.<work-type>) and proceed.
+
+COMPOSITE / MULTI-PHASE WORK (do this in step 2 BEFORE picking a single work-type):
+If the goal spans MORE THAN ONE work-type or is an ordered multi-step plan — e.g. it needs a design decision AND a distinct bug fix AND/OR a deploy, not just one of them — do NOT flatten it to a single type. Instead:
+  - set onboard:work-type = multi-phase (mission_tag set {"onboard:work-type":["multi-phase"]}),
+  - write the ORDERED phase plan into the mission plan as: "Phase 1 (design): …; Phase 2 (bugfix): …; Phase 3 (impl): …; Phase 4 (deploy): …" (only the phases that apply, in order),
+  - set ctl:phase to the first not-yet-done phase: mission_tag set {"ctl:phase":["<first kind>"]}.
+Then routing goes to drive.multi-phase, which drives each phase with its own rigor and only marks the mission done after the FINAL phase (often deploy) is verified. Reserve a single work-type (design/direct-impl/bugfix/feature) for genuinely single-purpose sessions.`,
   },
 
   'drive.design': {
@@ -126,7 +135,46 @@ GOAL: understand the session, record that understanding on the mission, classify
 1. VERIFY the claim against evidence in the transcript (tests passed, artifact delivered, goal met). If evidence is thin and the mission is handoff-mode, drive ONE verification instruction (e.g. "run the test suite and show the summary"). In standby, note the gap instead of driving.
 2. RECORD the outcome: mission_update results (what was delivered, refs/paths), progress 100, a 2-4 sentence closing summary in the plan or chat.
 3. FOLLOW-UPS the session surfaced (todos, deferred items) → list them in nextSteps as PROPOSALS for the human; you may suggest new missions in chat but do not create them unprompted.
-4. Mark the mission done. The session itself is LEFT UNTOUCHED (never close/kill an onboarded session).`,
+4. Mark the mission done. The session itself is LEFT UNTOUCHED (never close/kill an onboarded session).
+
+MULTI-PHASE COMPLETION: if onboard:work-type=multi-phase, confirm EVERY phase in the plan is done before marking the mission done — including a deploy phase (the release VERIFIED present, per drive.deploy), not just the feature working. Read ctl:phase and the plan; if any phase (especially deploy) is unfinished, return to drive.multi-phase instead of completing.`,
+  },
+
+  'drive.multi-phase': {
+    title: 'Drive a composite multi-phase mission',
+    editPolicy: 'open',
+    body: `Driving a COMPOSITE onboarded mission — one whose goal spans several phases (e.g. design → bugfix → implement → deploy). One flat drive doc cannot carry this; you orchestrate the phases here.
+
+STATE: the ordered phase plan lives in the mission plan. The CURRENT phase is the ctl:phase tag — a DURABLE, synced, versioned marker that survives your own failover, so ALWAYS read it first and never re-derive the phase from prose. Phase kinds: design | bugfix | impl | deploy (a mission may use any ordered subset).
+
+EACH PASS:
+1. Read ctl:phase. If absent, set it to the first not-yet-done phase from the plan: mission_tag set {"ctl:phase":["<kind>"]}.
+2. Drive ONLY the current phase, with that phase's OWN rigor — FETCH and follow the matching doc:
+     design → mission_workflow_get("drive.design")
+     bugfix → mission_workflow_get("drive.bugfix")   (reproduce → root-cause → a regression test that FAILS before the fix and PASSES after — do NOT let the session skip this just because it sits inside a bigger task)
+     impl   → mission_workflow_get("drive.direct-impl")   (or drive.feature if the impl itself needs design)
+     deploy → mission_workflow_get("drive.deploy")
+   Send ONE focused instruction per drive (the ⟦MISSION-CONTROL⟧ marker is added for you).
+3. PARALLEL SUB-WORK (impl phase): if the phase decomposes into INDEPENDENT parts (e.g. three separate sub-checks), instruct the onboarded SESSION to fan them out to its OWN parallel sub-agents and then integrate — the session is the orchestrator of its own sub-agents; you do NOT spawn separate mission executors for an onboarded mission (the scheduler never places them). Monitor with mission_session_read; mission_sessions surfaces any sub-workers the session spawned.
+4. A phase is COMPLETE only when its doc's done-criteria are met AND evidenced in the transcript. Record the phase evidence (refs) in results, then ADVANCE: mission_tag set the next phase kind — or, if this was the LAST phase, hand to wrapup.completed.
+5. COMPLETION DISCIPLINE: a composite mission is NEVER 'completed' until its FINAL phase is done. If the plan ends in deploy, it is not done until the deploy is VERIFIED (see drive.deploy). Do not mark it done after the feature merely "works".
+6. If a phase gets stuck, use recover.stuck for THAT phase, then resume it — do not skip ahead.`,
+  },
+
+  'drive.deploy': {
+    title: 'Drive the deploy/release phase',
+    editPolicy: 'open',
+    body: `Driving the DEPLOY / RELEASE phase of an onboarded mission (the change must be SHIPPED, not just built).
+
+PRE-CONDITION — never deploy unverified work: confirm the prior phases are done WITH EVIDENCE (tests/regression green, the feature demonstrably works) before shipping. Missing evidence → go back; do not deploy "to see if it works".
+
+1. IDENTIFY the deploy mechanism from the repo/session: a deploy script (e.g. ./deploy.sh), a documented release procedure, or machine-access steps. If none is discoverable, that is a HUMAN question — pause and ask; do not invent a deploy.
+2. SAFETY GATE by target:
+   - scratch / staging / a reversible local release → you may drive the session to run it.
+   - PRODUCTION or any irreversible / outward-facing deploy → this is a MATERIAL action: set the mission paused, state in chat EXACTLY what will run and where, and WAIT for a human to approve (or run it themselves). NEVER auto-deploy to prod (invariant: never auto-approve a material action).
+3. RUN the deploy (drive the session to execute the mechanism) and CAPTURE its output.
+4. VERIFY the release actually LANDED — the release marker / artifact / health of the deployed target (e.g. the RELEASED file exists; the new version answers). "The script exited 0" is necessary but NOT sufficient; confirm the observable result.
+5. RECORD the deployed ref/target in mission results. Deploy is DONE only when the release is verified present. Only then may the mission move to wrapup.completed.`,
   },
 
   'observe.standby': {
