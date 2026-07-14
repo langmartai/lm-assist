@@ -59,10 +59,10 @@ export function RulesBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEd
           <div className="divide-y divide-gray-800 border border-gray-800 rounded">
             {rules.map((r) => (
               <button key={`${r.source}:${r.filename}`} onClick={() => setSelected(r)}
-                className={`w-full text-left px-3 py-2 hover:bg-gray-900 flex items-center gap-2 ${isSel(r) ? 'bg-gray-900' : ''}`}>
+                className={`w-full text-left px-3 py-2 hover:bg-gray-900 flex items-center gap-2 focus-visible:ring-1 focus-visible:ring-gray-500 outline-none ${isSel(r) ? 'bg-gray-900' : ''}`}>
                 <span className="text-gray-200 truncate flex-1">{r.title || r.filename}</span>
-                {r.os.length > 0 && <span className="px-1.5 py-0.5 rounded text-[10px] bg-gray-700 text-gray-300">{r.os.join(',')}</span>}
-                <span className={`px-1.5 py-0.5 rounded text-[10px] ${r.active ? 'bg-emerald-900 text-emerald-200' : 'bg-gray-700 text-gray-400'}`}>
+                {r.os.length > 0 && <span title={"applies on: " + r.os.join(',')} className="px-1.5 py-0.5 rounded text-[10px] bg-gray-700 text-gray-300">{r.os.join(',')}</span>}
+                <span title={r.active ? 'active on this node' : 'inert here (os-scoped or mirror)'} className={`px-1.5 py-0.5 rounded text-[10px] ${r.active ? 'bg-emerald-900 text-emerald-200' : 'bg-gray-700 text-gray-400'}`}>
                   {r.active ? 'active' : 'inert'}
                 </span>
                 {r.syncedFrom && <span className="text-gray-500 text-xs">from {r.syncedFrom}</span>}
@@ -75,7 +75,7 @@ export function RulesBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEd
       </div>
 
       {selected && content && (
-        <div className="w-[36rem] shrink-0 border border-gray-800 rounded bg-gray-950 h-full flex flex-col">
+        <div className="basis-[36rem] min-w-[20rem] max-w-[36rem] shrink border border-gray-800 rounded bg-gray-950 h-full flex flex-col">
           <div className="flex items-center gap-2 p-3 pb-0">
             <span className="text-gray-100 font-medium truncate flex-1">{selected.filename}</span>
             {onEdit && selected.editable && (

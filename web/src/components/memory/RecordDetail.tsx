@@ -65,7 +65,7 @@ export function RecordDetail({ record, call, onEdit, onClose, refreshTick }:
   const deletable = editable && !isIndexEntry;
 
   return (
-    <div className="w-[36rem] shrink-0 border border-gray-800 rounded bg-gray-950 h-full flex flex-col">
+    <div className="basis-[36rem] min-w-[20rem] max-w-[36rem] shrink border border-gray-800 rounded bg-gray-950 h-full flex flex-col">
       <div className="p-3 pb-0">
         <div className="flex items-start justify-between gap-2">
           <div>

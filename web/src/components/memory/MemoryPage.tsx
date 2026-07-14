@@ -35,7 +35,7 @@ export function MemoryPage() {
 
   return (
     <div className="h-full flex flex-col overflow-hidden p-6 gap-4">
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold text-gray-100">Memory</h1>
           <p className="text-sm text-gray-400">Project memory and user rules across your nodes.</p>

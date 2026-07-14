@@ -14,8 +14,8 @@ const VALIDITY_COLORS: Record<string, string> = {
   outdated: 'bg-rose-900 text-rose-200', superseded: 'bg-gray-700 text-gray-400',
 };
 
-export function Badge({ text, palette }: { text: string; palette: Record<string, string> }) {
-  return <span className={`px-1.5 py-0.5 rounded text-[10px] ${palette[text] || 'bg-gray-700 text-gray-300'}`}>{text}</span>;
+export function Badge({ text, palette, hint }: { text: string; palette: Record<string, string>; hint?: string }) {
+  return <span title={hint} className={`px-1.5 py-0.5 rounded text-[10px] ${palette[text] || 'bg-gray-700 text-gray-300'}`}>{text}</span>;
 }
 
 export function MemoryBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEdit?: (t: EditTarget) => void; refreshTick?: number }) {
@@ -103,10 +103,10 @@ export function MemoryBrowser({ call, onEdit, refreshTick }: { call: CallFn; onE
           <div className="divide-y divide-gray-800 border border-gray-800 rounded">
             {records.map((r) => (
               <button key={r.recordId} onClick={() => setSelected(r)}
-                className="w-full text-left px-3 py-2 hover:bg-gray-900 flex items-center gap-2">
+                className="w-full text-left px-3 py-2 hover:bg-gray-900 flex items-center gap-2 focus-visible:ring-1 focus-visible:ring-gray-500 outline-none">
                 <span className="text-gray-200 truncate flex-1" title={r.title || r.file}>{r.title || r.file}</span>
-                <span className="shrink-0"><Badge text={r.type} palette={TYPE_COLORS} /></span>
-                <span className="shrink-0"><Badge text={r.validity} palette={VALIDITY_COLORS} /></span>
+                <span className="shrink-0"><Badge text={r.type} palette={TYPE_COLORS} hint="record type" /></span>
+                <span className="shrink-0"><Badge text={r.validity} palette={VALIDITY_COLORS} hint="validity" /></span>
                 <span className="shrink-0 text-gray-500 text-xs">{r.node}</span>
                 {!projectId && <span className="shrink-0 text-gray-600 text-xs truncate max-w-40" title={r.project}>{r.project}</span>}
               </button>
