@@ -30,7 +30,10 @@ export function useChatConversation(opts: { uuid: string; apiFetch: ApiFetch; mo
     try {
       const r = await apiFetch<ChatDetailView>(`/claude-ai/conversations/${uuid}/messages`);
       if (seq !== seqRef.current) return;
-      setDetail(r); setErr(null);
+      // A successful read means the conversation exists — clear a prior `gone` so a
+      // just-created chat whose FIRST read 404'd (claude.ai read-replica lag right after
+      // create) recovers once the auto-send's completion+reload lands. `gone` must not latch.
+      setDetail(r); setErr(null); setGone(false);
     } catch (e) {
       if (seq !== seqRef.current) return;
       const msg = e instanceof Error ? e.message : String(e);
