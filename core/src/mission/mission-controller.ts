@@ -551,19 +551,38 @@ export const CONTROLLER_SYSTEM_PROMPT = [
  * hub-MCP keystone config file). `writeFile(name, body)` persists a file and
  * returns its path — injected so this stays unit-testable (no fs).
  *
- * Always writes the system-prompt file. Writes the MCP config file only when an
- * apiKey is present AND a hub MCP URL can be derived from hubUrl; otherwise the
- * controller still gets its tools via connector inheritance (non-fatal).
+ * Always writes the system-prompt file. MCP config preference order:
+ *   1. localMcp (this node's own /mcp + worker token) — the controller is launched BY a
+ *      running Core, so unlike login-time sessions there is no startup-ordering problem,
+ *      and local tools are CLUSTER-CORRECT by construction: every mission_* call leader-
+ *      anchors within THIS node's cluster. The hub keystone routes by account, which
+ *      post-clusters can land the handler on another cluster's node (observed live:
+ *      the stage leader's mission_list executing on the prod node → empty store).
+ *   2. hub keystone (derived from hubUrl + apiKey) — fallback when no local token.
+ *   3. neither — connector inheritance (non-fatal).
+ * The server NAME is identical in both shapes so the controller's tool surface
+ * (mcp__lm-assist-hub__*) and every playbook referencing it are unaffected.
  */
 export function buildControllerLaunchExtras(args: {
   hubUrl: string | null;
   apiKey: string | null;
   writeFile: (name: string, body: string) => string;
+  /** This node's own MCP endpoint + worker token (preferred over the hub keystone). */
+  localMcp?: { url: string; token: string } | null;
 }): { appendSystemPromptFile: string; mcpConfigPath?: string } {
   // Lead with the fleet/connector identity so the controller knows its fleet + cluster boundary
   // (it places executors only within its cluster; this names the boundary). Dynamic at launch.
   const appendSystemPromptFile = args.writeFile('mission-controller-sp.txt', fleetIdentity() + '\n\n' + CONTROLLER_SYSTEM_PROMPT);
   const out: { appendSystemPromptFile: string; mcpConfigPath?: string } = { appendSystemPromptFile };
+  if (args.localMcp?.url && args.localMcp.token) {
+    const cfg = {
+      mcpServers: {
+        'lm-assist-hub': { type: 'http', url: args.localMcp.url, headers: { 'x-api-key': args.localMcp.token } },
+      },
+    };
+    out.mcpConfigPath = args.writeFile('mission-controller-mcp.json', JSON.stringify(cfg, null, 2));
+    return out;
+  }
   const mcpUrl = deriveHubMcpUrl(args.hubUrl);
   if (args.apiKey && mcpUrl) {
     const cfg = upsertHubMcpServer({}, { url: mcpUrl, key: args.apiKey });
@@ -1170,7 +1189,17 @@ export function registerMissionController(
             try { fsmod.writeFileSync(fd, body); } finally { fsmod.closeSync(fd); }
             return p;
           };
-          extras = buildControllerLaunchExtras({ hubUrl: hub.hubUrl || null, apiKey: hub.apiKey || null, writeFile });
+          // Local-first MCP: the controller's tools must execute on THIS node so mission
+          // ops leader-anchor within THIS cluster (the hub keystone routes by account and
+          // can land on another cluster's node). Port per the core detection pattern.
+          let localMcp: { url: string; token: string } | null = null;
+          try {
+            const { localApiToken } = require('../auth/api-token') as typeof import('../auth/api-token');
+            const token = localApiToken();
+            const port = process.env.API_PORT || (__dirname.includes('node_modules') ? '3100' : '3200');
+            if (token) localMcp = { url: `http://127.0.0.1:${port}/mcp`, token };
+          } catch { /* no local token — hub keystone fallback below */ }
+          extras = buildControllerLaunchExtras({ hubUrl: hub.hubUrl || null, apiKey: hub.apiKey || null, writeFile, localMcp });
         } catch (e) {
           console.debug(`[mission-supervisor] controller bootstrap extras failed: ${(e as Error).message}`);
         }
