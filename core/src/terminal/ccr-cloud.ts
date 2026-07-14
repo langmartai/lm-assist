@@ -37,6 +37,7 @@ import {
 } from '../utils/claude-oauth';
 import { getHubClient } from '../hub-client';
 import { legacyEncodeProjectPath } from '../utils/path-utils';
+import { buildAttachmentEnvelope, type CoworkAttachmentRef } from '../cowork/cowork-attachments';
 
 const CACHE_DIR = path.join(os.homedir(), '.cache', 'lm-assist');
 const REGISTRY_FILE = path.join(CACHE_DIR, 'ccr-cloud.json');
@@ -183,7 +184,7 @@ export function buildSetupPreamble(): string {
  * Build the POST /v1/sessions body — a create carries the initial user turn (wrapped event).
  * Seed EITHER via `sources` (GitHub repos — the standard) OR `seedFileId` (local git bundle).
  */
-export function buildCreateBody(opts: { prompt?: string; model: string; environmentId: string; title?: string; seedFileId?: string; sources?: unknown[]; effort?: string }) {
+export function buildCreateBody(opts: { prompt?: string; model: string; environmentId: string; title?: string; seedFileId?: string; sources?: unknown[]; effort?: string; attachments?: CoworkAttachmentRef[] }) {
   const session_context: Record<string, unknown> = {
     sources: opts.sources || [],
     outcomes: [],
@@ -193,10 +194,15 @@ export function buildCreateBody(opts: { prompt?: string; model: string; environm
   // Only include when provided so an unset create keeps the account default.
   if (opts.effort && opts.effort.trim()) session_context.effort_level = opts.effort.trim();
   if (opts.seedFileId) session_context.seed_bundle_file_id = opts.seedFileId;
-  // The prompt is OPTIONAL — with no prompt the session boots (clones the repo) and waits to be
-  // driven (events:[]). With a prompt it carries an initial user turn.
-  const events = opts.prompt && opts.prompt.trim()
-    ? [{ type: 'event', data: { uuid: randomUUID(), session_id: '', type: 'user', parent_tool_use_id: null, message: { role: 'user', content: opts.prompt } } }]
+  // Native file attachments (claude.ai's composer '+') — wrap the initial user turn with the
+  // `<uploaded_files>` prefix + `file_attachments[]` (same envelope as cowork). With attachments
+  // but no prompt, still seed an event so the files reach the container.
+  const env = buildAttachmentEnvelope(opts.prompt || '', opts.attachments);
+  const hasTurn = (opts.prompt && opts.prompt.trim()) || env.fileAttachments.length > 0;
+  // The prompt is OPTIONAL — with no prompt (and no files) the session boots (clones the repo)
+  // and waits to be driven (events:[]). With a prompt/attachment it carries an initial user turn.
+  const events = hasTurn
+    ? [{ type: 'event', data: { uuid: randomUUID(), session_id: '', type: 'user', parent_tool_use_id: null, ...(env.fileAttachments.length ? { file_attachments: env.fileAttachments } : {}), message: { role: 'user', content: env.content } } }]
     : [];
   return {
     title: opts.title || 'lm-assist cloud ccr',
@@ -505,12 +511,13 @@ export interface CloudStartResult { sid: string; webUrl: string; status: string;
  * Standard seed = a GitHub repo (`repo` = owner/name or URL; the cloud clones it, branch
  * defaults to the repo's default). Fallback = a local git bundle (`cwd`) or empty scratch.
  */
-export async function cloudStart(opts: { prompt?: string; repo?: string; branch?: string; cwd?: string; model?: string; effort?: string; permissionMode?: string; title?: string; setup?: boolean; role?: CloudRole; primaryRepo?: string; homeProject?: string }): Promise<CloudStartResult> {
+export async function cloudStart(opts: { prompt?: string; repo?: string; branch?: string; cwd?: string; model?: string; effort?: string; permissionMode?: string; title?: string; setup?: boolean; role?: CloudRole; primaryRepo?: string; homeProject?: string; attachments?: CoworkAttachmentRef[] }): Promise<CloudStartResult> {
   const prompt = (opts.prompt || '').toString().trim();
   const hasRepo = !!(opts.repo && opts.repo.trim());
   const hasCwd = !!(opts.cwd && opts.cwd.trim());
   // Prompt is optional: a session can boot from just a repo (clones + waits) or just lm-assist setup.
-  if (!prompt && !hasRepo && !hasCwd && !opts.setup) throw new TerminalError('INVALID_INPUT', 'provide a repo or a prompt to start a cloud session');
+  const hasAttachments = !!(opts.attachments && opts.attachments.length);
+  if (!prompt && !hasRepo && !hasCwd && !opts.setup && !hasAttachments) throw new TerminalError('INVALID_INPUT', 'provide a repo, a prompt, or an attachment to start a cloud session');
   const model = opts.model || DEFAULT_MODEL;
   const environmentId = await getEnvironmentId();
 
@@ -552,7 +559,7 @@ export async function cloudStart(opts: { prompt?: string; repo?: string; branch?
     cwd = seed.cwd;
   }
 
-  const res = await anthropicOAuthPost('/v1/sessions', buildCreateBody({ prompt: effectivePrompt, model, environmentId, title: opts.title, seedFileId, sources, effort: opts.effort }), await ccrOpts());
+  const res = await anthropicOAuthPost('/v1/sessions', buildCreateBody({ prompt: effectivePrompt, model, environmentId, title: opts.title, seedFileId, sources, effort: opts.effort, attachments: opts.attachments }), await ccrOpts());
   assertOk(res, 'cloud session create');
   const sid = (res.body as { id?: string })?.id;
   if (!sid) throw new TerminalError('UPSTREAM_ERROR', 'create returned no session id', { body: res.body });

@@ -8,6 +8,7 @@ import { CcrCloudView } from './CcrCloudView';
 import { CcrComposer } from './CcrComposer';
 import { CcrSessionList } from './CcrSessionList';
 import { CcrSidebar } from './CcrSidebar';
+import { CcrSearchModal } from './CcrSearchModal';
 import { CcrDetailHeader } from './CcrDetailHeader';
 import { ModelEffortSelector } from '@/components/cowork/ModelEffortSelector';
 import type { ApiFetch, CloudSessionInfo, Remote, RcData, CcSession, CcrRow } from './ccrTypes';
@@ -107,10 +108,32 @@ export function CcrPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(0);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Per-session URL: /ccr/<sid> deep-links a session (back-button + refresh + share).
+  // We drive the URL with history.pushState (no Next remount) and read the initial sid from
+  // the path; a popstate listener keeps back/forward in sync.
+  const initialSid = typeof window !== 'undefined' ? (window.location.pathname.match(/^\/ccr\/([^/?#]+)/)?.[1] ?? null) : null;
+  const [selectedId, setSelectedIdState] = useState<string | null>(initialSid ? decodeURIComponent(initialSid) : null);
+  const selectSession = useCallback((id: string | null) => {
+    setSelectedIdState(id);
+    if (typeof window !== 'undefined') {
+      const url = id ? `/ccr/${encodeURIComponent(id)}` : '/ccr';
+      if (window.location.pathname !== url) window.history.pushState({ ccrSid: id }, '', url);
+    }
+  }, []);
+  useEffect(() => {
+    const onPop = () => setSelectedIdState(window.location.pathname.match(/^\/ccr\/([^/?#]+)/)?.[1] ? decodeURIComponent(RegExp.$1) : null);
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [confirmConnect, setConfirmConnect] = useState<string | null>(null);
   const [sessionErr, setSessionErr] = useState<Record<string, string>>({});
+  const [searchOpen, setSearchOpen] = useState(false);
+  // Cmd/Ctrl+K opens Search (replaces the dashboard overlay we lose going full-bleed).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); setSearchOpen((v) => !v); } };
+    document.addEventListener('keydown', onKey); return () => document.removeEventListener('keydown', onKey);
+  }, []);
   const setBusyFor = (k: string, on: boolean) => setBusy((p) => { const n = new Set(p); if (on) n.add(k); else n.delete(k); return n; });
 
   const fetchAll = useCallback(async () => {
@@ -178,8 +201,8 @@ export function CcrPage() {
 
   const detailBody = (row: CcrRow) => (
     row.kind === 'local'
-      ? <CcrSessionView sessionId={row.id} driveable={!!row.driveable} tmuxSession={row.local?.tmuxSession} apiFetch={apiFetch} onClose={() => setSelectedId(null)} fill hideHeader />
-      : <CcrCloudView sid={row.id} webUrl={row.webUrl || undefined} apiFetch={apiFetch} onClose={() => setSelectedId(null)} fill hideHeader />
+      ? <CcrSessionView sessionId={row.id} driveable={!!row.driveable} tmuxSession={row.local?.tmuxSession} apiFetch={apiFetch} onClose={() => selectSession(null)} fill hideHeader />
+      : <CcrCloudView sid={row.id} webUrl={row.webUrl || undefined} apiFetch={apiFetch} onClose={() => selectSession(null)} fill hideHeader />
   );
 
   const greetName = hubUser?.displayName || hubUser?.email?.split('@')[0] || '';
@@ -190,11 +213,17 @@ export function CcrPage() {
       <CcrSidebar
         rows={rows}
         selectedId={selectedId}
-        onSelect={(r) => setSelectedId(r.id)}
-        onNewSession={() => setSelectedId(null)}
+        onSelect={(r) => selectSession(r.id)}
+        onNewSession={() => selectSession(null)}
         onRefresh={fetchAll}
+        onOpenSearch={() => setSearchOpen(true)}
         loading={loading}
+        apiFetch={apiFetch}
+        onChanged={fetchAll}
       />
+      {searchOpen && (
+        <CcrSearchModal rows={rows} nowMs={nowMs || Date.now()} onClose={() => setSearchOpen(false)} onSelect={(r) => selectSession(r.id)} />
+      )}
 
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {error && (
@@ -204,7 +233,7 @@ export function CcrPage() {
         {selected ? (
           // ── Detail view (claude.ai/code session) ──
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <CcrDetailHeader row={selected} apiFetch={apiFetch} onClose={() => setSelectedId(null)} onChanged={fetchAll} onDeleted={() => { setSelectedId(null); fetchAll(); }} />
+            <CcrDetailHeader row={selected} apiFetch={apiFetch} onClose={() => selectSession(null)} onChanged={fetchAll} onDeleted={() => { selectSession(null); fetchAll(); }} />
             {selected.kind !== 'local' && <CloudControlBar row={selected} apiFetch={apiFetch} />}
             {selected.kind === 'local' && sessionErr[selected.id] && (
               <div style={{ margin: '8px 14px 0', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', fontSize: 11.5, color: 'var(--color-status-red)' }}>{sessionErr[selected.id]}</div>
@@ -227,12 +256,12 @@ export function CcrPage() {
                 {loading && rows.length === 0 ? (
                   <div className="empty-state"><Loader2 size={22} style={{ animation: 'spin 1s linear infinite' }} /><span style={{ fontSize: 12 }}>Loading sessions…</span></div>
                 ) : (
-                  <CcrSessionList rows={rows} selectedId={selectedId} onSelect={(r) => setSelectedId(r.id)} rowActions={rowActions} nowMs={nowMs} />
+                  <CcrSessionList rows={rows} selectedId={selectedId} onSelect={(r) => selectSession(r.id)} rowActions={rowActions} nowMs={nowMs} />
                 )}
               </div>
             </div>
             <div style={{ padding: '10px 20px 18px' }}>
-              <CcrComposer apiFetch={apiFetch} onStarted={(sid) => { fetchAll(); setSelectedId(sid); }} />
+              <CcrComposer apiFetch={apiFetch} onStarted={(sid) => { fetchAll(); selectSession(sid); }} />
             </div>
           </div>
         )}

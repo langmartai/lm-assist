@@ -1,9 +1,22 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Cloud, Cast, Monitor, GitBranch, Code2, ChevronDown, Loader2, ArrowUp, Check, AlertTriangle, Settings2 } from 'lucide-react';
+import { Cloud, Cast, Monitor, GitBranch, Code2, ChevronDown, Loader2, ArrowUp, Check, AlertTriangle, Settings2, Plus } from 'lucide-react';
 import { ModelEffortSelector } from '@/components/cowork/ModelEffortSelector';
+import { AttachmentTray } from '@/components/cowork/AttachmentTray';
+import { useAttachments, type CoworkAttachmentRef } from '@/components/cowork/useAttachments';
+import { CcrUsageMeter } from './CcrUsageMeter';
 import type { ApiFetch, EnvChoice } from './ccrTypes';
+
+/** Read a File as raw base64 (no data: prefix) for the /cowork/attachments upload. */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => { const s = String(r.result || ''); resolve(s.includes(',') ? s.slice(s.indexOf(',') + 1) : s); };
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
 
 /** A small popover anchored above a pill button. Closes on outside-click / Escape. */
 function Popover({ open, onClose, children, align = 'left' }: { open: boolean; onClose: () => void; children: React.ReactNode; align?: 'left' | 'right' }) {
@@ -60,6 +73,15 @@ export function CcrComposer({ apiFetch, onStarted }: { apiFetch: ApiFetch; onSta
   const [openMenu, setOpenMenu] = useState<null | 'env' | 'repo' | 'branch' | 'perm'>(null);
   const close = useCallback(() => setOpenMenu(null), []);
 
+  // Native file attachments for a NEW cloud session (claude.ai's composer '+'). Uploads go
+  // through the shared cowork attachment store; refs ride /ccr/cloud/start. Cloud-env only.
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadAttachment = useCallback(async (file: File): Promise<CoworkAttachmentRef> => {
+    const contentBase64 = await fileToBase64(file);
+    return apiFetch<CoworkAttachmentRef>('/cowork/attachments', { method: 'POST', body: { fileName: file.name, mimeType: file.type || undefined, contentBase64 } });
+  }, [apiFetch]);
+  const att = useAttachments(uploadAttachment);
+
   // Load repos once.
   useEffect(() => {
     apiFetch<{ repos: Array<{ repo: string; isPrivate: boolean }> }>('/ccr/cloud/repos')
@@ -86,15 +108,18 @@ export function CcrComposer({ apiFetch, onStarted }: { apiFetch: ApiFetch; onSta
     if (env !== 'cloud') return; // only cloud creates; local/RC use the list's Connect actions
     const p = prompt.trim();
     const r = repo.trim();
-    if (!p && !r) { setErr('Enter a task, or pick a repo to clone.'); return; }
+    const refs = att.refs();
+    if (!p && !r && !refs.length) { setErr('Enter a task, pick a repo, or attach a file.'); return; }
+    if (att.uploading) { setErr('Wait for the attachment to finish uploading.'); return; }
     setStarting(true); setErr(null);
     try {
       const body: Record<string, unknown> = { model, effort, permissionMode: permission };
       if (p) body.prompt = p;
       if (r) body.repo = r;
       if (branch.trim()) body.branch = branch.trim();
+      if (refs.length) body.attachments = refs;
       const res = await apiFetch<{ sid: string }>('/ccr/cloud/start', { method: 'POST', body });
-      setPrompt(''); setErr(null);
+      setPrompt(''); setErr(null); att.reset();
       if (res?.sid) onStarted(res.sid);
     } catch (e) {
       const raw = e instanceof Error ? e.message : String(e);
@@ -103,7 +128,7 @@ export function CcrComposer({ apiFetch, onStarted }: { apiFetch: ApiFetch; onSta
       if (m) { try { const j = JSON.parse(m[0]); msg = j?.error?.message || raw; } catch { /* keep raw */ } }
       setErr(msg);
     } finally { setStarting(false); }
-  }, [env, prompt, repo, branch, model, effort, permission, apiFetch, onStarted]);
+  }, [env, prompt, repo, branch, model, effort, permission, apiFetch, onStarted, att]);
 
   const envMeta: Record<EnvChoice, { icon: React.ComponentType<{ size?: number }>; label: string }> = {
     cloud: { icon: Cloud, label: 'Default' },
@@ -173,15 +198,26 @@ export function CcrComposer({ apiFetch, onStarted }: { apiFetch: ApiFetch; onSta
         </div>
       </div>
 
+      {/* attachment tray (cloud only) */}
+      {env === 'cloud' && att.items.length > 0 && (
+        <div style={{ padding: '2px 10px 0' }}><AttachmentTray items={att.items} onRemove={att.remove} /></div>
+      )}
+
       {/* input */}
       <textarea className="input" rows={2} value={prompt} onChange={(e) => setPrompt(e.target.value)}
         placeholder={env === 'cloud' ? 'Describe a task or ask a question…' : 'Select Cloud to start here, or Connect a session below'}
         disabled={env !== 'cloud'}
         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); start(); } }}
         style={{ border: 'none', background: 'transparent', resize: 'none', fontSize: 13.5, padding: '8px 12px', width: '100%', outline: 'none' }} />
+      <input ref={fileInputRef} type="file" multiple hidden onChange={(e) => { att.addFiles(e.target.files); e.target.value = ''; }} />
 
       {/* control row */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 8px 8px', flexWrap: 'wrap' }}>
+        {/* attach (+) — cloud only */}
+        <button type="button" className="btn btn-ghost btn-sm" disabled={env !== 'cloud'} title="Add files or photos"
+          onClick={() => fileInputRef.current?.click()} style={{ padding: '3px 6px', color: 'var(--color-text-secondary)' }}>
+          <Plus size={15} />
+        </button>
         <div style={{ position: 'relative' }}>
           <Pill icon={Settings2} label={permission} active={openMenu === 'perm'} onClick={() => setOpenMenu(openMenu === 'perm' ? null : 'perm')} />
           <Popover open={openMenu === 'perm'} onClose={close}>
@@ -195,8 +231,9 @@ export function CcrComposer({ apiFetch, onStarted }: { apiFetch: ApiFetch; onSta
           </Popover>
         </div>
         <div style={{ flex: 1 }} />
+        <CcrUsageMeter apiFetch={apiFetch} />
         <ModelEffortSelector model={model} effort={effort} onChange={(m, e) => { setModel(m); setEffort(e); }} />
-        <button className="btn btn-primary btn-sm" onClick={start} disabled={starting || env !== 'cloud' || (!prompt.trim() && !repo.trim())} title="Start (Enter)"
+        <button className="btn btn-primary btn-sm" onClick={start} disabled={starting || env !== 'cloud' || (!prompt.trim() && !repo.trim() && !att.hasReady)} title="Start (Enter)"
           style={{ borderRadius: 'var(--radius-md)', width: 32, height: 32, padding: 0, justifyContent: 'center' }}>
           {starting ? <Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} /> : <ArrowUp size={15} />}
         </button>

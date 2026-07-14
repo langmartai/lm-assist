@@ -183,8 +183,12 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'POST',
       pattern: /^\/ccr\/cloud\/start$/,
       handler: async (req) => envelope(async () => {
-        const body = (req.body || {}) as { prompt?: unknown; repo?: unknown; branch?: unknown; cwd?: unknown; model?: unknown; effort?: unknown; permissionMode?: unknown; title?: unknown; setup?: unknown; role?: unknown; primaryRepo?: unknown };
+        const body = (req.body || {}) as { prompt?: unknown; repo?: unknown; branch?: unknown; cwd?: unknown; model?: unknown; effort?: unknown; permissionMode?: unknown; title?: unknown; setup?: unknown; role?: unknown; primaryRepo?: unknown; attachments?: unknown };
         const role = body.role === 'worker' || body.role === 'orchestrator' ? body.role : undefined;
+        // attachments = refs from POST /cowork/attachments ({file_uuid, file_name, is_image?})
+        const attachments = Array.isArray(body.attachments)
+          ? (body.attachments as any[]).filter((a) => a && typeof a.file_uuid === 'string' && typeof a.file_name === 'string')
+          : undefined;
         return await ccrCloud.cloudStart({
           prompt: typeof body.prompt === 'string' ? body.prompt : undefined,
           repo: typeof body.repo === 'string' ? body.repo : undefined,
@@ -197,6 +201,7 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
           setup: body.setup === true,
           role,
           primaryRepo: typeof body.primaryRepo === 'string' ? body.primaryRepo : undefined,
+          attachments,
         });
       }),
     },
