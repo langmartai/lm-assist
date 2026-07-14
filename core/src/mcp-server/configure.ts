@@ -212,13 +212,14 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   // memory map + rules map (read — shell out to CLIs)
   memory_map: 'read',
   memory_record: 'read',
-  memory_write: 'write',
   rule_map: 'read',
   rule_record: 'read',
   rule_sync_status: 'read',
   rule_cross_host: 'read',
   rule_import_candidates: 'read',
   rule_projects: 'read',
+  // memory/rules file editor (write — mutates the on-disk *.md files)
+  memory_write: 'write',
   // port forward (node-to-node TCP tunnel): open/close mutate, list reads
   open_port_forward: 'admin',
   list_port_forwards: 'read',

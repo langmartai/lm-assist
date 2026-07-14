@@ -88,6 +88,7 @@ export function FileEditor({ target, call, onDone }:
   const dirty = content !== baseline;
 
   const cancel = () => {
+    if (busy) return; // mid-save — Escape must not close the editor (Cancel button is already disabled on busy)
     if (dirty) { setConfirmDiscard(true); return; }
     onDone(savedAny); // any successful save this session (create or edit, warned or clean) still refreshes the list on close
   };

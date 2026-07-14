@@ -83,19 +83,28 @@ export function confinedRelPath(rootDir: string, relpath: string): string | null
 
 /**
  * Write a `*.md` file under `dir`. `filename` may be a bare basename (`a.md`,
- * unchanged/byte-identical legacy path) or a POSIX relpath (`sub/dir/a.md`,
- * nested-capable path — validated via `relPathProblem`, confined via the
- * resolved-path check, parent dirs created recursively). Which validator/
- * confinement helper runs is decided purely by whether `filename` contains a
- * '/': flat filenames NEVER touch the relpath code path, so existing
- * behavior (error codes, confinement semantics) is unchanged for callers
- * that only ever pass bare basenames.
+ * unchanged/byte-identical legacy path) or, when the caller opts in via
+ * `opts.allowNested`, a POSIX relpath (`sub/dir/a.md`, nested-capable path —
+ * validated via `relPathProblem`, confined via the resolved-path check,
+ * parent dirs created recursively). `allowNested` defaults to `false`: a
+ * filename containing '/' (or '\\') is then refused with `BAD_FILENAME`
+ * through the SAME flat validator used for every other bad filename, rather
+ * than being silently treated as a nested path. This keeps write surfaces
+ * that are flat-only by contract (e.g. the memory editor, whose read/list
+ * pipeline never looks below the project's `memory/` dir) from creating
+ * invisible orphans; rule-files.routes.ts (nested writes ARE intended there)
+ * passes `allowNested: true` explicitly. Flat filenames NEVER touch the
+ * relpath code path either way, so existing behavior (error codes,
+ * confinement semantics) is unchanged for callers that only ever pass bare
+ * basenames.
  */
 export function writeMdFile(
   dir: string, filename: string, content: string,
-  opts: { expectedHash?: string; mustNotExist?: boolean; protectedPatterns?: RegExp[] } = {},
+  opts: { expectedHash?: string; mustNotExist?: boolean; protectedPatterns?: RegExp[]; allowNested?: boolean } = {},
 ): FileOpResult {
-  const nested = typeof filename === 'string' && filename.includes('/');
+  const hasSep = typeof filename === 'string' && (filename.includes('/') || filename.includes('\\'));
+  if (hasSep && !opts.allowNested) return { ok: false, code: 'BAD_FILENAME' };
+  const nested = hasSep && opts.allowNested === true;
   const bad = nested
     ? relPathProblem(filename, opts.protectedPatterns || [])
     : filenameProblem(filename, opts.protectedPatterns || []);
@@ -114,12 +123,17 @@ export function writeMdFile(
   return { ok: true, hash: sha256(content) };
 }
 
-/** Delete a `*.md` file under `dir`. Same flat-vs-nested `filename` handling as `writeMdFile`. */
+/**
+ * Delete a `*.md` file under `dir`. Same flat-vs-nested `filename` handling
+ * as `writeMdFile`, gated by the same `opts.allowNested` (default `false`).
+ */
 export function deleteMdFile(
   dir: string, filename: string,
-  opts: { expectedHash?: string; protectedPatterns?: RegExp[] } = {},
+  opts: { expectedHash?: string; protectedPatterns?: RegExp[]; allowNested?: boolean } = {},
 ): FileOpResult {
-  const nested = typeof filename === 'string' && filename.includes('/');
+  const hasSep = typeof filename === 'string' && (filename.includes('/') || filename.includes('\\'));
+  if (hasSep && !opts.allowNested) return { ok: false, code: 'BAD_FILENAME' };
+  const nested = hasSep && opts.allowNested === true;
   const bad = nested
     ? relPathProblem(filename, opts.protectedPatterns || [])
     : filenameProblem(filename, opts.protectedPatterns || []);

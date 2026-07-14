@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Search, X, RefreshCw } from 'lucide-react';
 import type { CallFn, MemoryProjectSummary, MapRecord, ImportCandidate, EditTarget } from './types';
 import { RecordDetail } from './RecordDetail';
@@ -44,6 +44,7 @@ export function MemoryBrowser({ call, onEdit, refreshTick, selfNode }: { call: C
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
   const [validityFilter, setValidityFilter] = useState<Set<string>>(new Set());
   const [sort, setSort] = useState<'recent' | 'title'>('recent');
+  const reqSeqRef = useRef(0);
 
   useEffect(() => {
     call<MemoryProjectSummary[]>('/memory/projects')
@@ -52,13 +53,14 @@ export function MemoryBrowser({ call, onEdit, refreshTick, selfNode }: { call: C
 
   const loadRecords = useCallback(() => {
     setLoading(true); setError(null);
+    const seq = ++reqSeqRef.current;
     const params = new URLSearchParams({ level: 'brief', limit: '200' });
     if (projectId) params.set('projects', projectId);
     if (q.trim()) params.set('q', q.trim());
     call<MapRecord[]>(`/memory/map?${params}`)
-      .then((r) => setRecords(Array.isArray(r) ? r : []))
-      .catch((e) => setError(errText(e)))
-      .finally(() => setLoading(false));
+      .then((r) => { if (seq === reqSeqRef.current) setRecords(Array.isArray(r) ? r : []); })
+      .catch((e) => { if (seq === reqSeqRef.current) setError(errText(e)); })
+      .finally(() => { if (seq === reqSeqRef.current) setLoading(false); });
   }, [call, projectId, q]);
 
   useEffect(() => { const t = setTimeout(loadRecords, 300); return () => clearTimeout(t); }, [loadRecords, refreshTick]);
@@ -169,7 +171,7 @@ export function MemoryBrowser({ call, onEdit, refreshTick, selfNode }: { call: C
         <div className="flex items-center justify-between text-[10px] text-gray-500">
           <span>
             {filteredRecords.length}/{records.length}
-            {records.length === 200 && <span className="ml-2">first 200 matches — refine search</span>}
+            {records.length === 200 && <span className="ml-2"> · first 200 matches — refine search</span>}
           </span>
           <select value={sort} onChange={(e) => setSort(e.target.value as 'recent' | 'title')}
             className="bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-gray-300 text-[10px]">

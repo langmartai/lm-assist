@@ -31,6 +31,7 @@ function req(method: string, params: Record<string, string>, body?: unknown, que
 const routes = () => createMemoryFilesRoutes({} as any);
 const putRoute = () => routes().find(r => r.method === 'PUT' && /file/.test(r.pattern.source))!;
 const postRoute = () => routes().find(r => r.method === 'POST' && /file\$/.test(r.pattern.source))!;
+const deleteRoute = () => routes().find(r => r.method === 'DELETE' && /file/.test(r.pattern.source))!;
 
 test('PUT MEMORY.md with plain bullet content (no frontmatter) → warnings: []', async () => {
   seed();
@@ -79,6 +80,47 @@ test('POST create: non-MEMORY.md file without frontmatter still warns (regressio
     req('POST', { projectId: SLUG }, { filename: 'newthing.md', content: 'plain body' }), {} as any);
   assert.equal(r.success, true);
   assert.ok(r.data.warnings.length >= 1);
+});
+
+// ─── memory writes must stay FLAT — nested filenames are refused, not
+// silently treated as relpaths. The memory read/list pipeline (MemoryApi /
+// memory-map) is flat-only, so a nested write would create a file the UI can
+// never see again ("invisible orphan"). rule-files.routes.ts opts into
+// nested writes via `allowNested: true`; memory-files.routes.ts must NEVER
+// pass that flag. These are route-level regression tests, not just
+// file-write.ts unit tests, so a future accidental `allowNested: true` on
+// the memory routes is caught here too. ────────────────────────────────
+
+test('PUT with a URL-encoded nested filename (sub%2Fx.md) → BAD_FILENAME', async () => {
+  seed();
+  const r: any = await putRoute().handler(
+    req('PUT', { projectId: SLUG, filename: 'sub/x.md' }, { content: 'body' }), {} as any);
+  assert.equal(r.success, false, JSON.stringify(r));
+  assert.equal(r.error.code, 'BAD_FILENAME');
+  assert.equal(fs.existsSync(path.join(MEM_DIR, 'sub', 'x.md')), false, 'must not create the nested file');
+  assert.equal(fs.existsSync(path.join(MEM_DIR, 'sub')), false, 'must not even create the parent dir');
+});
+
+test('POST create with filename "sub/x.md" → BAD_FILENAME', async () => {
+  seed();
+  const r: any = await postRoute().handler(
+    req('POST', { projectId: SLUG }, { filename: 'sub/x.md', content: 'body' }), {} as any);
+  assert.equal(r.success, false, JSON.stringify(r));
+  assert.equal(r.error.code, 'BAD_FILENAME');
+  assert.equal(fs.existsSync(path.join(MEM_DIR, 'sub', 'x.md')), false);
+});
+
+test('DELETE "sub/x.md" → BAD_FILENAME', async () => {
+  seed();
+  // Seed a file at the WOULD-BE nested path directly on disk (bypassing the
+  // route) so a false "NOT_FOUND" can't masquerade as the refusal we expect.
+  fs.mkdirSync(path.join(MEM_DIR, 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(MEM_DIR, 'sub', 'x.md'), 'body');
+  const r: any = await deleteRoute().handler(
+    req('DELETE', { projectId: SLUG, filename: 'sub/x.md' }), {} as any);
+  assert.equal(r.success, false, JSON.stringify(r));
+  assert.equal(r.error.code, 'BAD_FILENAME');
+  assert.equal(fs.existsSync(path.join(MEM_DIR, 'sub', 'x.md')), true, 'refused delete must leave the file in place');
 });
 
 after(() => {

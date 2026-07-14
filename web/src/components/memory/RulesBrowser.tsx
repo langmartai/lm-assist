@@ -94,7 +94,9 @@ export function RulesBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEd
             </button>
           )}
         </div>
-        <div className="text-[10px] text-gray-500">{rules.length} rules · {activeCount} active</div>
+        <div className="text-[10px] text-gray-500">
+          {filter.trim() ? `${filteredRules.length}/${rules.length} rules · ${activeCount} active` : `${rules.length} rules · ${activeCount} active`}
+        </div>
         {error && <div className="text-rose-400 text-xs">{error}</div>}
         <div className="flex-1 min-h-0 overflow-y-auto">
           <div className="divide-y divide-gray-800 border border-gray-800 rounded">

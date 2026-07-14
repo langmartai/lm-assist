@@ -86,7 +86,7 @@ test('resolveHostIdFromHostsFile: first matching line wins when multiple lines m
 // The route handler now calls getApi().listProjects() (to reproduce
 // memory-map.js's liveNode chain), which opens the real MemoryCache
 // (LMDB env + chokidar file watcher) via createMemoryApiImpl() — same
-// long-lived-handle shape as core/src/routes/core/__tests__/memory-files-warnings.test.ts.
+// long-lived-handle shape as core/src/__tests__/memory/memory-files-warnings.test.ts.
 // Release it here or the process hangs on exit instead of returning
 // control to node --test.
 after(() => {

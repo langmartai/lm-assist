@@ -130,6 +130,7 @@ export function createRuleFilesRoutes(_ctx: RouteContext): RouteHandler[] {
         const r = writeMdFile(rulesRoot(), filename, content, {
           expectedHash: typeof expectedHash === 'string' ? expectedHash : undefined,
           protectedPatterns: RULES_PROTECTED,
+          allowNested: true,
         });
         if (!r.ok) return wrapError(r.code!, `${r.code}: write refused for ${filename}`, start);
         return wrapResponse({ filename, hash: r.hash }, start);
@@ -145,7 +146,7 @@ export function createRuleFilesRoutes(_ctx: RouteContext): RouteHandler[] {
         if (typeof filename !== 'string' || typeof content !== 'string') {
           return wrapError('INVALID_INPUT', 'INVALID_INPUT: body.filename and body.content required', start);
         }
-        const r = writeMdFile(rulesRoot(), filename, content, { mustNotExist: true, protectedPatterns: RULES_PROTECTED });
+        const r = writeMdFile(rulesRoot(), filename, content, { mustNotExist: true, protectedPatterns: RULES_PROTECTED, allowNested: true });
         if (!r.ok) return wrapError(r.code!, `${r.code}: create refused for ${filename}`, start);
         return wrapResponse({ filename, hash: r.hash }, start);
       },
@@ -159,7 +160,7 @@ export function createRuleFilesRoutes(_ctx: RouteContext): RouteHandler[] {
         const filename = decodeURIComponent(req.params.filename);
         const b = bodyOf(req) as { expectedHash?: string };
         const expectedHash = (req.query.expectedHash as string) || (typeof b.expectedHash === 'string' ? b.expectedHash : undefined);
-        const r = deleteMdFile(rulesRoot(), filename, { expectedHash, protectedPatterns: RULES_PROTECTED });
+        const r = deleteMdFile(rulesRoot(), filename, { expectedHash, protectedPatterns: RULES_PROTECTED, allowNested: true });
         if (!r.ok) return wrapError(r.code!, `${r.code}: delete refused for ${filename}`, start);
         return wrapResponse({ filename, deleted: true }, start);
       },
