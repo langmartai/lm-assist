@@ -49,8 +49,11 @@ function buildRows(cloud: CloudSessionInfo[], remotes: Remote[], rc: RcData, loc
   const seenCse = new Set<string>();
   for (const c of cloud) {
     seenCse.add(c.sid);
+    // Registry-fallback items (core offline / OAuth down) carry no kind — normalize so the
+    // list, filter counts, and icons never see undefined.
+    const kind: CcrRow['kind'] = c.kind === 'remote' ? 'remote' : 'cloud';
     rows.push({
-      key: `cloud:${c.sid}`, kind: c.kind, id: c.sid,
+      key: `cloud:${c.sid}`, kind, id: c.sid,
       title: titleByCse.get(c.sid) || c.title,
       repo: c.repo, branch: c.branch, model: c.model,
       status: { statusBucket: c.statusBucket, workerStatus: c.workerStatus, statusCategory: c.statusCategory, connectionStatus: c.connectionStatus },

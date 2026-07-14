@@ -57,7 +57,9 @@ export function CcrSessionList({ rows, selectedId, onSelect, rowActions, nowMs }
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {shown.map((row) => {
-            const KindIcon = KIND_META[row.kind].icon;
+            // Guard: rows from the registry fallback (core offline / OAuth down) carry no kind.
+            const kindMeta = KIND_META[row.kind] || KIND_META.cloud;
+            const KindIcon = kindMeta.icon;
             const selected = selectedId === row.id;
             return (
               <div key={row.key} onClick={() => onSelect(row)}
@@ -68,7 +70,7 @@ export function CcrSessionList({ rows, selectedId, onSelect, rowActions, nowMs }
                   background: selected ? 'var(--color-bg-elevated)' : undefined,
                 }}>
                 <CcrStatusPill status={row.status} />
-                <span title={KIND_META[row.kind].label} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0, display: 'inline-flex' }}><KindIcon size={13} /></span>
+                <span title={kindMeta.label} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0, display: 'inline-flex' }}><KindIcon size={13} /></span>
                 <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 1 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                     <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.title}</span>
