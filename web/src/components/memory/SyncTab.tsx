@@ -90,7 +90,7 @@ function QueueList({ call, path, listKey, onEdit, refreshTick }:
 
 export function SyncTab({ call, onEdit, refreshTick }: { call: CallFn; onEdit?: (t: EditTarget) => void; refreshTick?: number }) {
   return (
-    <div className="space-y-4">
+    <div className="h-full min-h-0 overflow-y-auto space-y-4 pr-1">
     <div className="text-xs text-gray-500">
       Sync/signpost toggles live in <a href="settings" className="underline hover:text-gray-300">Settings → Memory</a>; this tab is status only.
     </div>

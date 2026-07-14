@@ -43,8 +43,8 @@ export function RulesBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEd
   const isSel = (r: RuleListEntry) => selected?.filename === r.filename && selected?.source === r.source;
 
   return (
-    <div className="flex gap-4 text-sm">
-      <div className="flex-1 min-w-0 space-y-2">
+    <div className="h-full min-h-0 flex gap-4 text-sm">
+      <div className="flex-1 min-w-0 flex flex-col min-h-0 gap-2">
         <div className="flex justify-between items-center">
           <div className="text-gray-400 text-xs">
             User rules (<code>~/.claude/rules</code>) — own rules are editable; <code>synced.*</code> and mirrors converge from their origin node.
@@ -55,26 +55,28 @@ export function RulesBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEd
           )}
         </div>
         {error && <div className="text-rose-400 text-xs">{error}</div>}
-        <div className="divide-y divide-gray-800 border border-gray-800 rounded">
-          {rules.map((r) => (
-            <button key={`${r.source}:${r.filename}`} onClick={() => setSelected(r)}
-              className={`w-full text-left px-3 py-2 hover:bg-gray-900 flex items-center gap-2 ${isSel(r) ? 'bg-gray-900' : ''}`}>
-              <span className="text-gray-200 truncate flex-1">{r.title || r.filename}</span>
-              {r.os.length > 0 && <span className="px-1.5 py-0.5 rounded text-[10px] bg-gray-700 text-gray-300">{r.os.join(',')}</span>}
-              <span className={`px-1.5 py-0.5 rounded text-[10px] ${r.active ? 'bg-emerald-900 text-emerald-200' : 'bg-gray-700 text-gray-400'}`}>
-                {r.active ? 'active' : 'inert'}
-              </span>
-              {r.syncedFrom && <span className="text-gray-500 text-xs">from {r.syncedFrom}</span>}
-              {r.source.startsWith('mirror:') && <span className="text-gray-600 text-[10px]">mirror</span>}
-            </button>
-          ))}
-          {rules.length === 0 && <div className="px-3 py-4 text-gray-500">No rules found.</div>}
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <div className="divide-y divide-gray-800 border border-gray-800 rounded">
+            {rules.map((r) => (
+              <button key={`${r.source}:${r.filename}`} onClick={() => setSelected(r)}
+                className={`w-full text-left px-3 py-2 hover:bg-gray-900 flex items-center gap-2 ${isSel(r) ? 'bg-gray-900' : ''}`}>
+                <span className="text-gray-200 truncate flex-1">{r.title || r.filename}</span>
+                {r.os.length > 0 && <span className="px-1.5 py-0.5 rounded text-[10px] bg-gray-700 text-gray-300">{r.os.join(',')}</span>}
+                <span className={`px-1.5 py-0.5 rounded text-[10px] ${r.active ? 'bg-emerald-900 text-emerald-200' : 'bg-gray-700 text-gray-400'}`}>
+                  {r.active ? 'active' : 'inert'}
+                </span>
+                {r.syncedFrom && <span className="text-gray-500 text-xs">from {r.syncedFrom}</span>}
+                {r.source.startsWith('mirror:') && <span className="text-gray-600 text-[10px]">mirror</span>}
+              </button>
+            ))}
+            {rules.length === 0 && <div className="px-3 py-4 text-gray-500">No rules found.</div>}
+          </div>
         </div>
       </div>
 
       {selected && content && (
-        <div className="w-[32rem] shrink-0 border border-gray-800 rounded p-3 space-y-2 bg-gray-950 max-h-[75vh] overflow-y-auto">
-          <div className="flex items-center gap-2">
+        <div className="w-[36rem] shrink-0 border border-gray-800 rounded bg-gray-950 h-full flex flex-col">
+          <div className="flex items-center gap-2 p-3 pb-0">
             <span className="text-gray-100 font-medium truncate flex-1">{selected.filename}</span>
             {onEdit && selected.editable && (
               <button onClick={() => onEdit({ kind: 'rule', filename: selected.filename, content: content.content, hash: content.hash })}
@@ -86,7 +88,9 @@ export function RulesBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEd
             )}
             {!selected.editable && <span className="text-gray-500 text-[10px]">read-only — edit at origin ({selected.syncedFrom || 'mirror'})</span>}
           </div>
-          <pre className="text-xs text-gray-300 bg-gray-900 rounded p-2 overflow-x-auto whitespace-pre-wrap">{content.content}</pre>
+          <div className="flex-1 min-h-0 overflow-y-auto p-3">
+            <pre className="text-xs text-gray-300 bg-gray-900 rounded p-2 overflow-x-auto whitespace-pre-wrap">{content.content}</pre>
+          </div>
         </div>
       )}
     </div>

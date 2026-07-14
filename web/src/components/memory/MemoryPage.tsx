@@ -34,7 +34,7 @@ export function MemoryPage() {
   );
 
   return (
-    <div className="p-6 space-y-4">
+    <div className="h-full flex flex-col overflow-hidden p-6 gap-4">
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold text-gray-100">Memory</h1>
@@ -51,7 +51,7 @@ export function MemoryPage() {
         ))}
       </div>
       {/* key= remounts tabs only on node switch; refreshTick drives an in-place re-fetch after a save instead */}
-      <div key={nodeId ?? 'local'}>
+      <div key={nodeId ?? 'local'} className="flex-1 min-h-0">
         {tab === 'memory' && <MemoryBrowser call={call} onEdit={setEditTarget} refreshTick={refreshKey} />}
         {tab === 'rules' && <RulesBrowser call={call} onEdit={setEditTarget} refreshTick={refreshKey} />}
         {tab === 'sync' && <SyncTab call={call} onEdit={setEditTarget} refreshTick={refreshKey} />}
