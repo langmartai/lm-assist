@@ -7,18 +7,18 @@ import { ModelEffortSelector } from '@/components/cowork/ModelEffortSelector';
 import { AttachmentTray } from '@/components/cowork/AttachmentTray';
 import { useAttachments } from '@/components/cowork/useAttachments';
 import { fileToChatAttachment } from '@/lib/chat-attachments';
-import { useChatConversation, type ChatAttachment } from '@/hooks/useChatConversation';
+import { useChatConversation, type ChatAttachment, type ChatDetailView } from '@/hooks/useChatConversation';
 
 type ApiFetch = <T>(path: string, o?: { method?: string; body?: unknown }) => Promise<T>;
 
 /** claude.ai-look-alike Chat conversation view: transcript (center) + a bottom
  *  composer (model + send). Rename/delete via the header. No right rail / approvals
  *  / effort (chat has none). Mirrors CoworkTaskView's shell. */
-export function ChatView({ uuid, apiFetch, onClose, onDeleted }: {
-  uuid: string; apiFetch: ApiFetch; onClose: () => void; onDeleted: () => void;
+export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed }: {
+  uuid: string; apiFetch: ApiFetch; onClose: () => void; onDeleted: () => void; seed?: ChatDetailView;
 }) {
   const [model, setModel] = useState('claude-sonnet-5');
-  const { detail, err, gone, sending, send, refresh } = useChatConversation({ uuid, apiFetch, model });
+  const { detail, err, gone, sending, send, refresh } = useChatConversation({ uuid, apiFetch, model, seed });
   const [prompt, setPrompt] = useState('');
   const [manageErr, setManageErr] = useState<string | null>(null);
 

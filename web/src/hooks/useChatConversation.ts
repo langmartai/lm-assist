@@ -14,12 +14,14 @@ export interface ChatDetailView {
 
 /** Chat conversation detail: loads core-parsed messages, sends via the blocking
  *  completion endpoint (no SSE — the reply returns whole), then reloads. */
-export function useChatConversation(opts: { uuid: string; apiFetch: ApiFetch; model: string }): {
+export function useChatConversation(opts: { uuid: string; apiFetch: ApiFetch; model: string; seed?: ChatDetailView }): {
   detail: ChatDetailView | null; err: string | null; gone: boolean; sending: boolean;
   send: (prompt: string, attachments?: ChatAttachment[]) => Promise<void>; refresh: () => void;
 } {
-  const { uuid, apiFetch, model } = opts;
-  const [detail, setDetail] = useState<ChatDetailView | null>(null);
+  const { uuid, apiFetch, model, seed } = opts;
+  // `seed` is the just-created turn built from the completion response — shown immediately so
+  // a new chat doesn't depend on the tree read, which 404s for a while after an API create.
+  const [detail, setDetail] = useState<ChatDetailView | null>(seed ?? null);
   const [err, setErr] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
   const [sending, setSending] = useState(false);
@@ -42,7 +44,9 @@ export function useChatConversation(opts: { uuid: string; apiFetch: ApiFetch; mo
         const msg = e instanceof Error ? e.message : String(e);
         const notFound = /not.?found|HTTP 404|CONVERSATION_NOT_FOUND/i.test(msg);
         if (notFound && attempt < 4) { await new Promise((r) => setTimeout(r, 700)); if (seq !== seqRef.current) return; continue; }
-        if (notFound) setGone(true); else setErr(msg);
+        // A persistent 404 with a seed present = a just-created conversation not yet readable —
+        // keep showing the seed rather than flashing "deleted".
+        if (notFound) { if (!seed) setGone(true); } else setErr(msg);
         return;
       }
     }

@@ -8,6 +8,7 @@ import { CoworkComposer, type CoworkAttachmentRef } from '@/components/cowork/Co
 import { CoworkList } from '@/components/cowork/CoworkList';
 import { CoworkTaskView } from '@/components/cowork/CoworkTaskView';
 import { ChatView } from '@/components/cowork/ChatView';
+import type { ChatDetailView } from '@/hooks/useChatConversation';
 import { normalizeRows, type HomeRow } from '@/lib/chat-rows';
 
 /** Read a File as raw base64 (no data: prefix) for the /cowork/attachments upload. */
@@ -48,7 +49,7 @@ export function CoworkPage() {
   const [mode, setMode] = useState<'chat' | 'cowork'>('cowork');
   const [rows, setRows] = useState<HomeRow[]>([]);
   const [filter, setFilter] = useState<'all' | 'chat' | 'cowork'>('all');
-  const [openItem, setOpenItem] = useState<{ id: string; kind: 'chat' | 'cowork' } | null>(null);
+  const [openItem, setOpenItem] = useState<{ id: string; kind: 'chat' | 'cowork'; seed?: ChatDetailView } | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [createErr, setCreateErr] = useState<string | null>(null);
@@ -99,11 +100,19 @@ export function CoworkPage() {
       const c = await apiFetch<{ uuid?: string; data?: { uuid?: string } }>(`/claude-ai/conversations`, { method: 'POST', body: { model: o.model } });
       const uuid = (c as any).uuid || (c as any).data?.uuid;
       if (!uuid) throw new Error('conversation create returned no id');
-      // Send the first turn BEFORE opening the view. An EMPTY conversation's /messages read
-      // 404s (no message tree until the first completion), so opening ChatView first showed
-      // "conversation was deleted". The completion populates it → ChatView then reads cleanly.
-      await apiFetch(`/claude-ai/conversations/${uuid}/completion`, { method: 'POST', body: { prompt: o.prompt, model: o.model } });
-      setOpenItem({ id: uuid, kind: 'chat' });
+      // Send the first turn, then open the view SEEDED from the completion's reply. An
+      // API-created conversation's tree read (/messages) 404s for a long while after create
+      // even once completed, so we can't rely on it for the just-sent turn — instead we show
+      // the prompt + the completion's returned text immediately (the tree read backfills later).
+      const comp = await apiFetch<{ text?: string }>(`/claude-ai/conversations/${uuid}/completion`, { method: 'POST', body: { prompt: o.prompt, model: o.model } });
+      const seed: ChatDetailView = {
+        uuid,
+        messages: [
+          { role: 'user', type: 'user', text: o.prompt },
+          ...(comp?.text ? [{ role: 'assistant', type: 'assistant', text: comp.text }] : []),
+        ],
+      };
+      setOpenItem({ id: uuid, kind: 'chat', seed });
       // Optimistically show the new chat in the list immediately — the claude.ai list
       // index lags a fresh create, so a plain reloadList wouldn't include it yet (B1).
       const title = o.prompt.trim().slice(0, 60) || 'New chat';
@@ -140,6 +149,7 @@ export function CoworkPage() {
               key={openItem.id}
               uuid={openItem.id}
               apiFetch={apiFetch}
+              seed={openItem.seed}
               onClose={() => setOpenItem(null)}
               onDeleted={() => { removedRef.current.add(openItem.id); setRows((prev) => prev.filter((r) => r.id !== openItem.id)); setOpenItem(null); }}
             />
