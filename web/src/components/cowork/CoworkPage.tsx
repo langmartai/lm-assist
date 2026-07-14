@@ -48,7 +48,7 @@ export function CoworkPage() {
   const [mode, setMode] = useState<'chat' | 'cowork'>('cowork');
   const [rows, setRows] = useState<HomeRow[]>([]);
   const [filter, setFilter] = useState<'all' | 'chat' | 'cowork'>('all');
-  const [openItem, setOpenItem] = useState<{ id: string; kind: 'chat' | 'cowork' } | null>(null);
+  const [openItem, setOpenItem] = useState<{ id: string; kind: 'chat' | 'cowork'; initialPrompt?: string; initialModel?: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
 
@@ -94,8 +94,11 @@ export function CoworkPage() {
       const c = await apiFetch<{ uuid?: string; data?: { uuid?: string } }>(`/claude-ai/conversations`, { method: 'POST', body: { model: o.model } });
       const uuid = (c as any).uuid || (c as any).data?.uuid;
       if (uuid) {
-        setOpenItem({ id: uuid, kind: 'chat' });
-        await apiFetch(`/claude-ai/conversations/${uuid}/completion`, { method: 'POST', body: { prompt: o.prompt, model: o.model } });
+        // Open ChatView and let IT send the first turn (initialPrompt), so ChatView's
+        // own send→reload runs and the turn+reply render there. (Sending the completion
+        // at the page level left ChatView showing an empty transcript — it had already
+        // loaded /messages on mount while the conversation was still empty.)
+        setOpenItem({ id: uuid, kind: 'chat', initialPrompt: o.prompt, initialModel: o.model });
         reloadList();
       }
     } finally {
@@ -128,6 +131,8 @@ export function CoworkPage() {
               key={openItem.id}
               uuid={openItem.id}
               apiFetch={apiFetch}
+              initialPrompt={openItem.initialPrompt}
+              initialModel={openItem.initialModel}
               onClose={() => setOpenItem(null)}
               onDeleted={() => { setOpenItem(null); reloadList(); }}
             />

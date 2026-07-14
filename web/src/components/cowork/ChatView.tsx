@@ -14,11 +14,21 @@ type ApiFetch = <T>(path: string, o?: { method?: string; body?: unknown }) => Pr
 /** claude.ai-look-alike Chat conversation view: transcript (center) + a bottom
  *  composer (model + send). Rename/delete via the header. No right rail / approvals
  *  / effort (chat has none). Mirrors CoworkTaskView's shell. */
-export function ChatView({ uuid, apiFetch, onClose, onDeleted }: {
-  uuid: string; apiFetch: ApiFetch; onClose: () => void; onDeleted: () => void;
+export function ChatView({ uuid, apiFetch, onClose, onDeleted, initialPrompt, initialModel }: {
+  uuid: string; apiFetch: ApiFetch; onClose: () => void; onDeleted: () => void; initialPrompt?: string; initialModel?: string;
 }) {
-  const [model, setModel] = useState('claude-sonnet-5');
+  const [model, setModel] = useState(initialModel || 'claude-sonnet-5');
   const { detail, err, gone, sending, send, refresh } = useChatConversation({ uuid, apiFetch, model });
+
+  // New chat created from the home composer: send the first turn HERE (not at the page
+  // level) so this view's send→reload runs and the turn+reply render. Fire exactly once.
+  const initialSentRef = useRef(false);
+  useEffect(() => {
+    if (initialPrompt && !initialSentRef.current) {
+      initialSentRef.current = true;
+      void send(initialPrompt);
+    }
+  }, [initialPrompt, send]);
   const [prompt, setPrompt] = useState('');
   const [manageErr, setManageErr] = useState<string | null>(null);
 
