@@ -21,11 +21,36 @@ import {
   getMachine,
   upsertMachine,
   removeMachine,
+  setLastCheck,
   toReportedMachine,
+  isSshAccess,
   MACHINE_ACCESS_USAGE,
   type MachineProfile,
 } from '../../machine-access/store';
+import { execFile } from 'child_process';
 import { parseSshConfig, buildImportCandidates } from '../../machine-access/ssh-config';
+import { buildSshProbeArgs, classifyProbe } from '../../machine-access/probe';
+import type { LastCheck } from '../../machine-access/store';
+
+const PROBE_CONNECT_TIMEOUT_S = 8;
+
+/** Spawn `ssh` for a probe (no shell, argv array). Never rejects — resolves the
+ *  classified result. A hard timeout backstops a wedged ssh beyond ConnectTimeout. */
+function runSshProbe(args: string[]): Promise<LastCheck> {
+  return new Promise((resolve) => {
+    execFile('ssh', args, {
+      timeout: (PROBE_CONNECT_TIMEOUT_S + 5) * 1000,
+      killSignal: 'SIGKILL',
+      maxBuffer: 256 * 1024,
+      windowsHide: true,
+    }, (err, _stdout, stderr) => {
+      const code = err && typeof (err as NodeJS.ErrnoException).code === 'number'
+        ? (err as unknown as { code: number }).code
+        : err ? 255 : 0;
+      resolve(classifyProbe(code, stderr?.toString() ?? ''));
+    });
+  });
+}
 
 export function createMachineAccessRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -77,6 +102,28 @@ export function createMachineAccessRoutes(_ctx: RouteContext): RouteHandler[] {
         }
         const id = decodeURIComponent(req.params.id || '');
         return wrapResponse({ removed: removeMachine(id), id }, start);
+      },
+    },
+
+    // POST /machine-access/machines/:id/check — loopback-only reachability probe.
+    // Probes the machine's first ssh access (BatchMode, no known_hosts mutation)
+    // and records lastCheck WITHOUT bumping updatedAt.
+    {
+      method: 'POST',
+      pattern: /^\/machine-access\/machines\/(?<id>[^/]+)\/check$/,
+      handler: async (req: ParsedRequest) => {
+        const start = Date.now();
+        if (!isLoopbackAddress(req.clientIp)) {
+          return wrapError('FORBIDDEN', 'local-only endpoint', start);
+        }
+        const id = decodeURIComponent(req.params.id || '');
+        const machine = getMachine(id);
+        if (!machine) return wrapError('NOT_FOUND', `no machine with id "${id}"`, start);
+        const ssh = (machine.access || []).find(isSshAccess);
+        if (!ssh) return wrapError('NO_SSH_ACCESS', `machine "${id}" has no ssh access method to probe`, start);
+        const result = await runSshProbe(buildSshProbeArgs(ssh, { connectTimeout: PROBE_CONNECT_TIMEOUT_S }));
+        setLastCheck(id, result);
+        return wrapResponse({ id, check: result }, start);
       },
     },
 

@@ -93,6 +93,48 @@ describe('machine-access routes', () => {
   });
 });
 
+describe('machine-access check route', () => {
+  let dir: string;
+  before(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ma-check-'));
+    process.env.LM_MACHINE_ACCESS_FILE = path.join(dir, 'machine-access.json');
+  });
+  after(() => { delete process.env.LM_MACHINE_ACCESS_FILE; });
+
+  it('rejects non-loopback callers', async () => {
+    const h = findRoute('POST', '/machine-access/machines/x/check');
+    const res = await h.handler(req('POST', '/machine-access/machines/x/check', { clientIp: '10.0.0.9' }), {} as never);
+    assert.equal(res.success, false);
+    assert.equal(res.error?.code, 'FORBIDDEN');
+  });
+
+  it('unknown id → NOT_FOUND (no spawn)', async () => {
+    const h = findRoute('POST', '/machine-access/machines/nope/check');
+    const res = await h.handler(req('POST', '/machine-access/machines/nope/check'), {} as never);
+    assert.equal(res.success, false);
+    assert.equal(res.error?.code, 'NOT_FOUND');
+  });
+
+  it('a real probe to a closed local port classifies unreachable + records lastCheck without bumping updatedAt', async () => {
+    const put = findRoute('PUT', '/machine-access/machines/localdead');
+    const created = await put.handler(req('PUT', '/machine-access/machines/localdead', {
+      body: { name: 'dead', access: [{ type: 'ssh', host: '127.0.0.1', user: 'nobody', port: 1 }] },
+    }), {} as never);
+    const updatedAt = (created.data as { machine: { updatedAt: string } }).machine.updatedAt;
+
+    const check = findRoute('POST', '/machine-access/machines/localdead/check');
+    const res = await check.handler(req('POST', '/machine-access/machines/localdead/check'), {} as never);
+    assert.equal(res.success, true);
+    assert.equal((res.data as { check: { status: string } }).check.status, 'unreachable');
+
+    const get = findRoute('GET', '/machine-access');
+    const rep = await get.handler(req('GET', '/machine-access'), {} as never);
+    const m = (rep.data as { machines: Array<{ id: string; updatedAt: string; lastCheck?: { status: string } }> }).machines.find((x) => x.id === 'localdead')!;
+    assert.equal(m.lastCheck?.status, 'unreachable'); // recorded
+    assert.equal(m.updatedAt, updatedAt);             // probe is not an edit
+  });
+});
+
 describe('machine-access import route', () => {
   let dir: string;
   let cfgPath: string;
