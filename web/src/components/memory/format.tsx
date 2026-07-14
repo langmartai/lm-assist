@@ -43,8 +43,12 @@ export function ConfirmButton({ label, confirmLabel, onConfirm, className }: {
   const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
 
-  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+  useEffect(() => () => {
+    mountedRef.current = false;
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
 
   const disarm = () => {
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
@@ -63,7 +67,8 @@ export function ConfirmButton({ label, confirmLabel, onConfirm, className }: {
     try {
       await onConfirm();
     } finally {
-      setBusy(false);
+      // onConfirm's success path may unmount this button (e.g. delete → onClose)
+      if (mountedRef.current) setBusy(false);
     }
   };
 
