@@ -141,14 +141,23 @@ describe('machine-access import route', () => {
   before(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ma-import-'));
     process.env.LM_MACHINE_ACCESS_FILE = path.join(dir, 'machine-access.json');
+    // Redirect the ssh dir to the temp dir so the fixture path is inside the allowed base.
+    process.env.LM_SSH_CONFIG_DIR = dir;
     cfgPath = path.join(dir, 'ssh_config');
     fs.writeFileSync(cfgPath, 'Host sg\n  HostName 213.35.107.246\n  User opc\nHost weird*\n  User x\n', 'utf-8');
   });
-  after(() => { delete process.env.LM_MACHINE_ACCESS_FILE; });
+  after(() => { delete process.env.LM_MACHINE_ACCESS_FILE; delete process.env.LM_SSH_CONFIG_DIR; });
 
   it('rejects non-loopback callers', async () => {
     const h = findRoute('POST', '/machine-access/import');
     const res = await h.handler(req('POST', '/machine-access/import', { clientIp: '10.0.0.9', body: { path: cfgPath } }), {} as never);
+    assert.equal(res.success, false);
+    assert.equal(res.error?.code, 'FORBIDDEN');
+  });
+
+  it('rejects a path outside the ssh dir (no arbitrary file read)', async () => {
+    const h = findRoute('POST', '/machine-access/import');
+    const res = await h.handler(req('POST', '/machine-access/import', { body: { path: '/etc/passwd' } }), {} as never);
     assert.equal(res.success, false);
     assert.equal(res.error?.code, 'FORBIDDEN');
   });

@@ -139,7 +139,20 @@ export function createMachineAccessRoutes(_ctx: RouteContext): RouteHandler[] {
           return wrapError('FORBIDDEN', 'local-only endpoint', start);
         }
         const body = (req.body || {}) as { apply?: boolean; path?: string };
-        const cfgPath = body.path || path.join(os.homedir(), '.ssh', 'config');
+        // Import reads ONLY from within the ssh dir (~/.ssh by default; LM_SSH_CONFIG_DIR
+        // redirects it for tests). body.path is an advanced/test hook that MUST resolve
+        // inside that dir — never an arbitrary filesystem path — so this loopback endpoint
+        // cannot be turned into an arbitrary file read (defense-in-depth behind the
+        // loopback gate: a local low-priv process must not be able to exfiltrate files).
+        const sshDir = path.resolve(process.env.LM_SSH_CONFIG_DIR || path.join(os.homedir(), '.ssh'));
+        let cfgPath = path.join(sshDir, 'config');
+        if (body.path) {
+          const resolved = path.resolve(body.path);
+          if (resolved !== sshDir && !resolved.startsWith(sshDir + path.sep)) {
+            return wrapError('FORBIDDEN', `path must be within ${sshDir}`, start);
+          }
+          cfgPath = resolved;
+        }
         let text: string;
         try {
           text = fs.readFileSync(cfgPath, 'utf-8');
