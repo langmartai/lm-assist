@@ -95,3 +95,22 @@ test('buildCreateBody: effort → session_context.effort_level (only when provid
   const without = buildCreateBody({ model: 'claude-sonnet-5', environmentId: 'env_1' });
   assert.equal('effort_level' in (without.session_context as any), false);
 });
+
+test('buildCreateBody: attachments wrap the initial turn (<uploaded_files> + file_attachments)', () => {
+  const body = buildCreateBody({ model: 'claude-sonnet-5', environmentId: 'env_1', prompt: 'read it', attachments: [{ file_uuid: 'u1', file_name: 'notes.txt' }] });
+  assert.equal(body.events.length, 1);
+  const data: any = body.events[0].data;
+  assert.match(data.message.content, /<uploaded_files>[\s\S]*notes\.txt[\s\S]*u1[\s\S]*<\/uploaded_files>[\s\S]*read it/);
+  assert.deepEqual(data.file_attachments, [{ file_name: 'notes.txt', file_uuid: 'u1', is_image: false }]);
+});
+
+test('buildCreateBody: attachment with no prompt still seeds an event (file-only send)', () => {
+  const body = buildCreateBody({ model: 'claude-sonnet-5', environmentId: 'env_1', attachments: [{ file_uuid: 'u2', file_name: 'a.png', is_image: true }] });
+  assert.equal(body.events.length, 1);
+  assert.equal((body.events[0].data as any).file_attachments[0].is_image, true);
+});
+
+test('buildCreateBody: no prompt + no attachments → events:[] (boot-and-wait)', () => {
+  const body = buildCreateBody({ model: 'claude-sonnet-5', environmentId: 'env_1' });
+  assert.equal(body.events.length, 0);
+});
