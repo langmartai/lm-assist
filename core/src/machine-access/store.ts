@@ -62,12 +62,15 @@ export interface MachineAccessFile {
 }
 
 export const MACHINE_ACCESS_USAGE =
-  'These profiles are NODE-LOCAL: each machine is reachable only FROM this lm-assist node ' +
-  '(keys/routes exist only here). Run the reported command ON this node — a local shell, ' +
-  'agent_execute, or terminal tools targeted at this node — not from elsewhere. ' +
-  'identityFile values are key PATHS on this node; key material is never stored or reported. ' +
-  'Manage profiles on the node itself: PUT/DELETE /machine-access/machines/<id> (loopback-only) ' +
-  'or edit ~/.lm-assist/machine-access.json.';
+  'USE THIS before opening an SSH / remote session to another machine: it gives you the exact, ' +
+  'ready-to-run `command` and the per-machine do/don\'t notes — instead of guessing or re-reading memory. ' +
+  'These profiles are NODE-LOCAL: each machine is reachable only FROM this lm-assist node (keys/routes ' +
+  'exist only here), so run the reported command ON this node — a local shell, agent_execute, or terminal ' +
+  'tools targeted at this node — not from elsewhere. `lastCheck` (when present) is the last reachability ' +
+  'probe result; `imported`/disabled entries are unverified drafts to review. identityFile values are key ' +
+  'PATHS on this node; key material is never stored or reported. Manage on the node itself (loopback-only): ' +
+  'PUT/DELETE /machine-access/machines/<id>, POST .../<id>/check (probe), POST /machine-access/import ' +
+  '(ssh-config → drafts), or edit ~/.lm-assist/machine-access.json.';
 
 export function machineAccessPath(): string {
   if (process.env.LM_MACHINE_ACCESS_FILE) return process.env.LM_MACHINE_ACCESS_FILE;

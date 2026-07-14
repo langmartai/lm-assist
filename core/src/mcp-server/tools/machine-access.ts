@@ -12,14 +12,15 @@ import { ok, err, workerGet, type McpToolResult } from './_passthrough';
 export const machineAccessToolDef = {
   name: 'machine_access',
   description:
-    'List machines reachable FROM this lm-assist node and exactly how to access them: SSH ' +
-    'profiles (user/host/port/identity-key PATH) each with a ready-to-run `command`, plus ' +
-    'per-machine notes/gotchas (OS quirks, what not to touch). Profiles are NODE-LOCAL — the ' +
-    'reported commands must run ON this node (its shell/agent/terminal), not from elsewhere; ' +
-    'key material is never stored or returned. Non-ssh access types may appear with ' +
-    'supported:false (future: windows-account remote exec). Optional filters: `id`, `tag`. ' +
-    'Read-only; manage profiles on the node via loopback REST PUT/DELETE ' +
-    '/machine-access/machines/<id> or by editing ~/.lm-assist/machine-access.json.',
+    'Call this BEFORE SSHing / opening a remote session to another machine: list machines reachable ' +
+    'FROM this lm-assist node and exactly how to access them — SSH profiles (user/host/port/identity-key ' +
+    'PATH) each with a ready-to-run `command`, a `lastCheck` reachability status when probed, plus ' +
+    'per-machine notes/gotchas (OS quirks, what not to touch). Profiles are NODE-LOCAL — the reported ' +
+    'commands must run ON this node (its shell/agent/terminal), not from elsewhere; key material is never ' +
+    'stored or returned. `imported`/disabled entries are unverified drafts. Non-ssh access types may appear ' +
+    'with supported:false (future: windows-account remote exec). Optional filters: `id`, `tag`. Read-only; ' +
+    'manage on the node via loopback REST (PUT/DELETE /machine-access/machines/<id>, POST .../<id>/check, ' +
+    'POST /machine-access/import) or by editing ~/.lm-assist/machine-access.json. See guide("machine-access").',
   annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,

@@ -28,6 +28,7 @@ const TOPIC_TOOLS: Record<string, string[]> = {
   missions: ['mission_create', 'mission_list', 'mission_update', 'mission_control_status'],
   'mission-controller': ['mission_place', 'mission_executor_status', 'mission_sessions', 'mission_session_read', 'mission_session_drive', 'mission_session_control'],
   clusters: ['cluster_list', 'cluster_assign', 'cluster_unassign', 'cluster_describe'],
+  'machine-access': ['machine_access'],
 };
 
 // Ordered so the multi-node model + combination workflows surface first in the index.
@@ -387,6 +388,23 @@ TOOLS AVAILABLE (mission scope):
 SCHEDULING INTELLIGENCE (sub-project 3): each pass, FIRST call mission_changes (react to external edits before acting), THEN mission_schedule for the deterministic plan {ready, blocked[{id,reason}], serializeGroups, epicRollups, containers}. Act on ready; never spawn for a container (schedule its children, apply epicRollups status via mission_update); take all dependency/resource/serialize/epic gating from mission_schedule. You OWN the ctl: tag dimensions (ctl:readiness, ctl:serialize-group, ctl:phase) — write them via mission_tag to record/serialize; NEVER write author dims (project/feature/component). To serialize two same-area missions with no dependsOn, tag them the same ctl:serialize-group.
 
 SELF-HEAL: if lm-assist Core is not running on this host, start it (\`lm-assist start\`) before calling any tools. See guide("install") if lm-assist is not installed.`,
+
+  'machine-access': `# Guide: machine-access — how to reach OTHER machines FROM a node
+WHAT IT IS: a NODE-LOCAL registry (\`~/.lm-assist/machine-access.json\`, NOT synced) of how THIS node reaches other machines — SSH endpoint (user/host/port), the identity-key PATH on this node, and per-machine operational notes/gotchas. It turns "how do I get to box X from here?" from a memory-grep into one structured call.
+
+WHEN TO USE: BEFORE you SSH or open a remote session to another machine — call \`machine_access\` to get the exact, ready-to-run \`command\` and the do/don't notes, instead of guessing or re-reading memory. Also whenever the user says "connect to / deploy to / run this on <machine>".
+
+THE TOOL: \`machine_access(id?, tag?)\` (read-only). Returns each machine with its access methods; ssh methods include a derived \`command\` (e.g. \`ssh -i ~/.ssh/key user@host\`) and a \`lastCheck\` (reachability status if ever probed). Non-ssh methods (future windows remote-exec, elevated workers) appear \`supported:false\`. Filter by \`id\` or \`tag\`.
+
+CRITICAL — ON-NODE SEMANTIC: profiles are reachable ONLY FROM this node (its keys/LAN routes). Run the reported command ON this node — a local shell here, \`agent_execute\` on this node, or terminal tools targeted here — NOT from your own machine. Key material is never stored or returned (paths only).
+
+MANAGE (on the node itself — loopback-only, not over this connector):
+- \`PUT /machine-access/machines/<id>\` — add/update a profile (body = the profile; strict field grammar rejects injection/keys).
+- \`DELETE /machine-access/machines/<id>\` — remove one.
+- \`POST /machine-access/machines/<id>/check\` — reachability probe (BatchMode ssh, never mutates known_hosts); records \`lastCheck\`.
+- \`POST /machine-access/import\` — parse this node's \`~/.ssh/config\` into DRAFT profiles. DRY-RUN by default (writes nothing); \`{apply:true}\` writes them \`enabled:false\` tagged \`imported\`, never clobbering a curated id.
+
+GATHER RECIPE (populate a node): (1) \`POST /machine-access/import\` dry-run to see candidates; (2) \`{apply:true}\` to write drafts; (3) add each machine's operational notes (the gotchas import can't know — pull from memory/CLAUDE.md); (4) \`.../check\` to verify reachability; (5) enable (\`enabled:true\`) the ones that work. Curated, hand-written profiles are equally valid — import is just a head start.`,
 };
 
 /** Synonyms + every tool name → its topic, so guide("data_get") or guide("storage") both resolve. */
@@ -439,6 +457,7 @@ const BLURB: Record<string, string> = {
   missions: 'durable cross-project goals — the fleet-elected Mission Controller launches/binds an executor (cloud, or native via claude --remote-control), adapts + pushes to done, places to avoid conflict; watch+drive executors & sub-workers directly; never auto-approves gates/pivots',
   'mission-controller': 'the controller agent loop contract — the exact per-pass workflow, hard rules (never auto-approve gates/pivots), and tool usage for the autonomous controller session',
   clusters: 'isolated fleet partitions — concept, shared-vs-within table, cluster_list/assign/unassign/describe, build one cluster at a time, respect-other-clusters scope norm',
+  'machine-access': 'how to reach OTHER machines FROM a node — node-local SSH profiles (user/host/key-path/notes) via machine_access, with ssh-config import + reachability check; run the reported command ON that node',
 };
 
 /** Separator line used between sections in the bootstrap output (reused by the auth block). */
@@ -465,7 +484,7 @@ const INDEX = buildIndex();
 
 /** The whole skill in ONE response — every playbook concatenated (stays in sync with GUIDES). */
 function buildBootstrap(): string {
-  const order = ['orientation', 'cross-node', 'connectors', 'access-paths', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'claude-ai', 'account', 'login', 'github', 'files', 'clusters'];
+  const order = ['orientation', 'cross-node', 'connectors', 'access-paths', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'machine-access', 'claude-ai', 'account', 'login', 'github', 'files', 'clusters'];
   const header = [
     '# lm-assist — capability bootstrap (you have now loaded ALL use cases for this session)',
     '',
