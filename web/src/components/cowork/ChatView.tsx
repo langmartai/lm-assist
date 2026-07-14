@@ -48,9 +48,12 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, initialPrompt, in
   // (fileToChatAttachment) and stashes the real ChatAttachment in chatRefs, keyed by a synthetic
   // `file_uuid` (name:size) so the tray still gets back a well-formed CoworkAttachmentRef chip.
   const chatRefs = useRef(new Map<string, ChatAttachment>());
+  const attKeyRef = useRef(0);
   const att = useAttachments(async (file) => {
     const a = await fileToChatAttachment(file);
-    const key = `${file.name}:${file.size}`;
+    // Unique per attach — a plain name:size key collided for two files sharing both,
+    // making the tray send the second file's content twice (B2).
+    const key = `${file.name}:${file.size}:${++attKeyRef.current}`;
     chatRefs.current.set(key, a);
     return { file_uuid: key, file_name: a.file_name };
   });

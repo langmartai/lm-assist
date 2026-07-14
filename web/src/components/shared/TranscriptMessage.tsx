@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, type CSSProperties } from 'react';
+import { useState, type CSSProperties, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Wrench, User, Cloud, Sparkles, ChevronRight, ChevronDown, FileText, Terminal, Search, Globe, Plug } from 'lucide-react';
+import rehypeHighlight from 'rehype-highlight';
+import { Wrench, User, Cloud, Sparkles, ChevronRight, ChevronDown, FileText, Terminal, Search, Globe, Plug, Copy, Check } from 'lucide-react';
 import { formatToolCall } from '@/lib/smart-display';
 import { groupLabel } from '@/lib/tool-summary';
 
@@ -29,7 +30,7 @@ export function TranscriptMessage({ m, compact = false }: { m: { role: string; t
           border: isUser ? '1px solid var(--color-border-default)' : 'none',
           borderRadius: isUser ? 'var(--radius-md)' : 0, padding: isUser ? '6px 10px' : 0,
         }}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={MD_COMPONENTS}>{m.text}</ReactMarkdown>
         </div>
       )}
       {/* Tool calls: compact grouped summary line (claude.ai/code) when `compact`, else expandable
@@ -54,6 +55,52 @@ export function TranscriptMessage({ m, compact = false }: { m: { role: string; t
     </div>
   );
 }
+
+/** Recursively pull plain text out of a rendered markdown node (for the code copy button). */
+function nodeText(node: unknown): string {
+  if (node == null || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join('');
+  const props = (node as { props?: { children?: unknown } })?.props;
+  return props ? nodeText(props.children) : '';
+}
+
+/** A fenced code block rendered claude.ai-style: a header with the language + a copy
+ *  button, then the syntax-highlighted code (rehype-highlight adds the hljs classes). */
+function CodeBlock({ children }: { children?: unknown }) {
+  const [copied, setCopied] = useState(false);
+  const codeEl = Array.isArray(children) ? children.find((c) => (c as { props?: unknown })?.props) : children;
+  const cls: string = ((codeEl as { props?: { className?: string } })?.props?.className) || '';
+  const lang = (cls.match(/language-([\w+#-]+)/) || [])[1] || '';
+  const raw = nodeText((codeEl as { props?: { children?: unknown } })?.props?.children);
+  return (
+    <div style={{ border: '1px solid var(--color-border-subtle)', borderRadius: 'var(--radius-md)', overflow: 'hidden', margin: '6px 0', background: 'var(--color-bg-elevated)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '3px 8px 3px 10px', fontSize: 10.5, color: 'var(--color-text-tertiary)', borderBottom: '1px solid var(--color-border-subtle)', fontFamily: 'var(--font-mono)' }}>
+        <span>{lang || 'code'}</span>
+        <button
+          type="button"
+          onClick={() => { try { navigator.clipboard?.writeText(raw); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ } }}
+          style={{ border: 'none', background: 'none', cursor: 'pointer', color: copied ? 'var(--color-accent)' : 'var(--color-text-tertiary)', fontSize: 10.5, display: 'inline-flex', alignItems: 'center', gap: 3, padding: 0 }}
+        >
+          {copied ? <><Check size={11} /> Copied</> : <><Copy size={11} /> Copy</>}
+        </button>
+      </div>
+      <pre style={{ margin: 0, padding: '8px 10px', overflow: 'auto', fontSize: 11.5, fontFamily: 'var(--font-mono)', lineHeight: 1.5 }}>{children as ReactNode}</pre>
+    </div>
+  );
+}
+
+// Markdown renderers shared by every transcript: prettified code blocks + inline-code chips.
+const MD_COMPONENTS = {
+  pre: CodeBlock,
+  code(props: { className?: string; children?: ReactNode }) {
+    const { className, children } = props;
+    // Block code (a child of our CodeBlock's <pre>) keeps its hljs/language class so
+    // rehype-highlight's spans render; bare inline code gets a compact chip style.
+    if (/language-|hljs/.test(className || '')) return <code className={className}>{children}</code>;
+    return <code style={{ background: 'var(--color-bg-elevated)', padding: '1px 5px', borderRadius: 4, fontSize: '0.92em', fontFamily: 'var(--font-mono)' }}>{children}</code>;
+  },
+} as const;
 
 function toolIcon(name: string) {
   const n = (name || '').toLowerCase();

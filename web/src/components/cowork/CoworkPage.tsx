@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Sparkles } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { detectAppMode, resolveConsoleUrl } from '@/lib/api-client';
@@ -51,6 +51,10 @@ export function CoworkPage() {
   const [openItem, setOpenItem] = useState<{ id: string; kind: 'chat' | 'cowork'; initialPrompt?: string; initialModel?: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [createErr, setCreateErr] = useState<string | null>(null);
+  // Ids deleted this session — kept out of the merged list even while the claude.ai
+  // list cache still returns them (the list index lags create/delete). See B1.
+  const removedRef = useRef<Set<string>>(new Set());
 
   // Merge BOTH sources (claude.ai chats + cowork tasks) into one recency-sorted list.
   // Each fetch is guarded so a missing claude.ai cookie (empty chat list) or a cowork
@@ -63,7 +67,7 @@ export function CoworkPage() {
         apiFetch<{ tasks: any[] }>(`/cowork/tasks?filter=all&limit=40`).catch(() => ({ tasks: [] as any[] })),
       ]);
       const merged = normalizeRows((chatsR as any).data || (chatsR as any) || [], (tasksR as any).tasks || []);
-      setRows(merged);
+      setRows(merged.filter((r) => !removedRef.current.has(r.id)));
     } catch {
       setRows([]);
     } finally {
@@ -90,17 +94,22 @@ export function CoworkPage() {
   // The route returns { ...upstream, uuid } as the unwrapped `data`, so `uuid` is top-level.
   const createChat = useCallback(async (o: { prompt: string; model: string }) => {
     setCreating(true);
+    setCreateErr(null);
     try {
       const c = await apiFetch<{ uuid?: string; data?: { uuid?: string } }>(`/claude-ai/conversations`, { method: 'POST', body: { model: o.model } });
       const uuid = (c as any).uuid || (c as any).data?.uuid;
-      if (uuid) {
-        // Open ChatView and let IT send the first turn (initialPrompt), so ChatView's
-        // own send→reload runs and the turn+reply render there. (Sending the completion
-        // at the page level left ChatView showing an empty transcript — it had already
-        // loaded /messages on mount while the conversation was still empty.)
-        setOpenItem({ id: uuid, kind: 'chat', initialPrompt: o.prompt, initialModel: o.model });
-        reloadList();
-      }
+      if (!uuid) throw new Error('conversation create returned no id');
+      // Open ChatView and let IT send the first turn (initialPrompt), so ChatView's
+      // own send→reload runs and the turn+reply render there. (Sending the completion
+      // at the page level left ChatView showing an empty transcript — it had already
+      // loaded /messages on mount while the conversation was still empty.)
+      setOpenItem({ id: uuid, kind: 'chat', initialPrompt: o.prompt, initialModel: o.model });
+      // Optimistically show the new chat in the list immediately — the claude.ai list
+      // index lags a fresh create, so a plain reloadList wouldn't include it yet (B1).
+      const title = o.prompt.trim().slice(0, 60) || 'New chat';
+      setRows((prev) => [{ id: uuid, kind: 'chat', title, updatedAt: new Date().toISOString() }, ...prev.filter((r) => r.id !== uuid)]);
+    } catch (e) {
+      setCreateErr(e instanceof Error ? e.message : String(e));
     } finally {
       setCreating(false);
     }
@@ -134,7 +143,7 @@ export function CoworkPage() {
               initialPrompt={openItem.initialPrompt}
               initialModel={openItem.initialModel}
               onClose={() => setOpenItem(null)}
-              onDeleted={() => { setOpenItem(null); reloadList(); }}
+              onDeleted={() => { removedRef.current.add(openItem.id); setRows((prev) => prev.filter((r) => r.id !== openItem.id)); setOpenItem(null); }}
             />
           ) : (
             <CoworkTaskView
@@ -145,11 +154,16 @@ export function CoworkPage() {
               streamUrl={buildStreamUrl(openItem.id)}
               isRemoteNode={isRemoteNode}
               onClose={() => setOpenItem(null)}
-              onDeleted={() => { setOpenItem(null); reloadList(); }}
+              onDeleted={() => { removedRef.current.add(openItem.id); setRows((prev) => prev.filter((r) => r.id !== openItem.id)); setOpenItem(null); }}
             />
           )
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 32, maxWidth: 720, margin: '0 auto' }}>
+            {createErr && (
+              <div style={{ fontSize: 12, color: 'var(--color-status-red)', textAlign: 'center', marginBottom: -20 }}>
+                Couldn’t start chat: {createErr}{/^API 4\d\d|cookie|unauth|not.?configured/i.test(createErr) ? ' — check your claude.ai connection.' : ''}
+              </div>
+            )}
             <CoworkComposer
               onCreate={(o) => (mode === 'chat' ? createChat(o) : createTask(o))}
               onUpload={uploadAttachment}

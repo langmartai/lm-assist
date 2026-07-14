@@ -2481,3 +2481,16 @@ code, pre, .font-mono {
   from { transform: translateY(100%); }
   to { transform: translateY(0); }
 }
+
+/* highlight.js theme (github-dark-ish) for rehype-highlight code blocks in TranscriptMessage. */
+.hljs { color: var(--color-text-secondary); background: transparent; }
+.hljs-comment, .hljs-quote { color: #7d8590; font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-type, .hljs-doctag { color: #ff7b72; }
+.hljs-string, .hljs-attr, .hljs-template-tag, .hljs-addition, .hljs-regexp { color: #a5d6ff; }
+.hljs-title, .hljs-title.function_, .hljs-section, .hljs-selector-id { color: #d2a8ff; }
+.hljs-number, .hljs-symbol, .hljs-bullet, .hljs-selector-class { color: #79c0ff; }
+.hljs-built_in, .hljs-name, .hljs-tag { color: #ffa657; }
+.hljs-variable, .hljs-template-variable, .hljs-attribute, .hljs-property { color: #79c0ff; }
+.hljs-meta, .hljs-deletion { color: #7d8590; }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
