@@ -113,3 +113,47 @@ test('pairs tool_use with its tool_result into an expandable toolCall (name, inp
   assert.equal(a!.toolCalls![0].isError, false);
   assert.equal(a!.text, 'done');
 });
+
+// AskUserQuestion → pendingQuestion (the interactive "cloud claude is waiting on you" widget).
+const askUse = (id: string, header: string) => ({
+  event_type: 'assistant', sequence_num: id, payload: { type: 'assistant', message: { role: 'assistant', content: [
+    { type: 'tool_use', id, name: 'AskUserQuestion', input: { questions: [{ header, question: `Q ${header}?`, options: [{ label: 'A' }, { label: 'B' }] }] } },
+  ] } },
+});
+const answerFor = (seq: string, id: string) => ({
+  event_type: 'user', sequence_num: seq, payload: { type: 'tool_result', message: { role: 'user', content: [
+    { type: 'tool_result', tool_use_id: id, is_error: false, content: 'A' },
+  ] } },
+});
+
+test('surfaces an UNANSWERED AskUserQuestion as pendingQuestion', () => {
+  const d = parseCoworkEvents({ data: [
+    { event_type: 'user', sequence_num: '1', payload: { type: 'user', message: { role: 'user', content: 'do a thing' } } },
+    askUse('q1', 'Framework'),
+  ] });
+  assert.ok(d.pendingQuestion, 'pending question present while unanswered');
+  assert.equal(d.pendingQuestion!.toolUseId, 'q1');
+  assert.equal(d.pendingQuestion!.questions[0].header, 'Framework');
+  assert.equal(d.pendingQuestion!.questions[0].options!.length, 2);
+});
+
+test('clears pendingQuestion once the AskUserQuestion is answered (matching tool_result)', () => {
+  const d = parseCoworkEvents({ data: [
+    { event_type: 'user', sequence_num: '1', payload: { type: 'user', message: { role: 'user', content: 'do a thing' } } },
+    askUse('q1', 'Framework'),
+    answerFor('3', 'q1'),
+    { event_type: 'assistant', sequence_num: '4', payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'thanks, continuing' }] } } },
+  ] });
+  assert.equal(d.pendingQuestion, null, 'answered question is no longer pending');
+});
+
+test('with multiple questions, surfaces the LATEST unanswered one (not the oldest)', () => {
+  const d = parseCoworkEvents({ data: [
+    askUse('q1', 'First'),
+    answerFor('2', 'q1'),           // q1 answered
+    askUse('q2', 'Second'),          // q2 still pending
+  ] });
+  assert.ok(d.pendingQuestion, 'a pending question remains');
+  assert.equal(d.pendingQuestion!.toolUseId, 'q2');
+  assert.equal(d.pendingQuestion!.questions[0].header, 'Second');
+});

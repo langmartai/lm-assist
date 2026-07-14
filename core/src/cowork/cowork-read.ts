@@ -80,7 +80,14 @@ export function parseCoworkEvents(eventsBody: unknown, sessionBody?: unknown): C
   const toolNames = new Set<string>();
   const files = new Set<string>();
   let activeGoal: CoworkGoalStep[] = [];
-  let pendingQuestion: CoworkPending | null = null;
+  // Pending AskUserQuestion detection: an AskUserQuestion is "pending" only while UNANSWERED.
+  // Its answer arrives as a tool_result whose tool_use_id === the question's id, so we collect
+  // every AskUserQuestion (in order) plus the set of answered tool_use_ids, and resolve to the
+  // LATEST still-unanswered one after the pass. Setting it eagerly on the first AskUserQuestion
+  // (without the answered check) left the "waiting on you" widget stuck after answering and
+  // surfaced the oldest question when several existed. Mirrors ccr-cloud's answered-set logic.
+  const askCandidates: CoworkPending[] = [];
+  const answeredToolUseIds = new Set<string>();
 
   // The assistant "turn" currently being accumulated (flushed when a real user prompt arrives).
   // toolCalls maps a tool_use id → its call so the following tool_result event can attach its output.
@@ -124,7 +131,11 @@ export function parseCoworkEvents(eventsBody: unknown, sessionBody?: unknown): C
     if (Array.isArray(content)) {
       for (const b of content) {
         if (b?.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim()) evThinking.push(b.thinking);
-        if (b?.type === 'tool_result') evToolResults.push({ id: String(b?.tool_use_id || ''), result: stringifyToolResult(b?.content), isError: !!b?.is_error });
+        if (b?.type === 'tool_result') {
+          const trId = String(b?.tool_use_id || '');
+          evToolResults.push({ id: trId, result: stringifyToolResult(b?.content), isError: !!b?.is_error });
+          if (trId) answeredToolUseIds.add(trId); // marks the matching AskUserQuestion (if any) answered
+        }
         if (b?.type === 'tool_use') {
           const name = String(b?.name || 'tool');
           if (name === 'SendUserMessage') {
@@ -132,9 +143,9 @@ export function parseCoworkEvents(eventsBody: unknown, sessionBody?: unknown): C
             if (typeof reply === 'string' && reply.trim()) text = (text ? text + '\n' : '') + reply;
             continue; // the reply IS the assistant text, not a tool card
           }
-          if (name === 'AskUserQuestion' && !pendingQuestion) {
+          if (name === 'AskUserQuestion') {
             const qs = b?.input?.questions;
-            if (Array.isArray(qs)) pendingQuestion = { toolUseId: String(b?.id || ''), questions: qs };
+            if (Array.isArray(qs) && b?.id) askCandidates.push({ toolUseId: String(b.id), questions: qs });
           }
           toolNames.add(name);
           evTools.push(name);
@@ -172,6 +183,10 @@ export function parseCoworkEvents(eventsBody: unknown, sessionBody?: unknown): C
     }
   }
   flushAssistant();
+
+  // The pending question is the newest AskUserQuestion with no matching tool_result answer.
+  const pendingQuestion: CoworkPending | null =
+    [...askCandidates].reverse().find((c) => !answeredToolUseIds.has(c.toolUseId)) || null;
 
   return { messages, activeGoal, outputs: [...outputs], context: { tools: [...toolNames], files: [...files] }, pendingQuestion, statusCategory };
 }
