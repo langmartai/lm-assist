@@ -14,7 +14,7 @@ import { describeCookieTtl } from '../../utils/claudeai-session';
 /** topic → the tools it covers (drives the index + tool-name → topic resolution). */
 const TOPIC_TOOLS: Record<string, string[]> = {
   sessions: ['list_recent_sessions', 'list_session_messages', 'session_dag', 'list_executions', 'get_execution', 'list_projects'],
-  knowledge: ['search', 'detail', 'search_memory', 'memory_projects', 'memory_map', 'memory_cross_host', 'memory_record', 'memory_import_candidates', 'rule_map', 'feedback'],
+  knowledge: ['search', 'detail', 'search_memory', 'memory_projects', 'memory_map', 'memory_cross_host', 'memory_record', 'memory_file', 'memory_write', 'memory_import_candidates', 'memory_sync_status', 'rule_map', 'feedback'],
   data: ['data_catalog', 'data_request_access', 'data_get', 'data_query', 'data_search', 'data_put', 'data_delete', 'data_create_dataset', 'data_drop_dataset', 'data_keys', 'data_revoke_key', 'data_sync', 'data_sync_status', 'data_admin'],
   agents: ['agent_execute', 'agent_resume', 'agent_abort', 'get_execution', 'list_executions', 'browser_task'],
   terminals: ['terminal_open_tab', 'terminal_list', 'terminal_capture', 'terminal_prompt', 'terminal_slash', 'terminal_interrupt', 'send_session_message', 'get_message_status', 'cc_sessions', 'windows_terminal_create', 'windows_terminal_list', 'windows_terminal_send', 'windows_terminal_capture', 'windows_terminal_state', 'windows_terminal_launch', 'windows_terminal_close', 'windows_terminal_auto_handle'],
@@ -37,7 +37,7 @@ const GUIDES: Record<string, string> = {
 WHAT IT IS: your bridge to context and actions BEYOND this conversation and machine. Through this ONE connector you reach, across ALL the user's connected hosts ("nodes"):
 - PROJECTS — every Claude Code project on each host (list_projects, list_recent_sessions).
 - SESSIONS — conversation history + live/finished runs on any host (list_session_messages, session_dag, list_executions, get_execution).
-- MEMORY — saved memory, incl. OTHER machines (search_memory across projects; memory_cross_host / memory_import_candidates for peer hosts; memory_record to save).
+- MEMORY — saved memory, incl. OTHER machines: search_memory across projects; memory_map/memory_record to browse+read; memory_write to create/update/delete (hash-guarded); memory_cross_host / memory_import_candidates for peer hosts.
 - NODES — the machines themselves: run agents, drive terminals, move files, query a shared data service on any of them (list_nodes -> node=<host>).
 Plus a structured cross-node DATA service (cache/vector/sql), remote AGENTS, TERMINAL driving, file transfer, claude.ai, GitHub.
 
@@ -207,18 +207,20 @@ SINGLE-NODE
 CROSS-NODE: pass \`node=B\` to every step (sessions are per-host) to inspect another machine's runs. Combine with data_put(node=B) to save findings (workflow #1).
 GOTCHA: index types — lineIndex (0-based raw JSONL), turnIndex (1-based), userPromptIndex (0-based user msgs only).`,
 
-  knowledge: `# Guide: knowledge & memory search
-GOAL: find prior context — generated knowledge, file/session history, cross-project memory.
+  knowledge: `# Guide: knowledge & memory search — incl. WRITE
+GOAL: find prior context — generated knowledge, file/session history, cross-project memory — and, when needed, edit memory directly.
 
 SINGLE-NODE
 1. \`search(q="...")\` → unified search over the knowledge base + file/session history; ranked items with IDs (K001, sessionId:index).
 2. \`detail(id="K001")\` → progressive disclosure of any item by ID.
 3. \`search_memory(query="...")\` → your saved memory across ALL projects (each hit tagged with its project) — "have I learned X before".
-4. \`memory_projects\`/\`memory_map\` → what memory exists + where. \`memory_record\` to save. \`rule_map\` for rules.
-5. \`feedback(id, kind="outdated"|"wrong"|"useful", note?)\` → flag a context source's quality.
+4. \`memory_projects\`/\`memory_map\` → what memory exists + where (LIST). \`memory_record\`/\`memory_file\` → the full text of one record or the raw file (body + hash) (READ). \`rule_map\` for rules.
+5. \`memory_write(action, project_id, filename, content, expected_hash?)\` → create/update/delete a memory file (WRITE, hash-guarded). Discipline: list -> read (\`memory_file\` gives you the hash) -> write with \`expected_hash\` so a stale edit is refused (HASH_MISMATCH) instead of silently clobbering someone else's change — re-read and retry on that error. \`create\` takes an optional \`index_line\` to append a MEMORY.md bullet; \`delete\` strips it automatically (\`remove_index_line\`, default true). Same server-side rules as the web editor: protected files (\`_cross-project.md\`, \`_hosts.md\`) refuse writes, bad filenames refuse. Rules are NOT writable this way (no \`rule_write\`) — \`rule_map\`/\`rule_record\` stay read-only over MCP, deliberately.
+6. \`feedback(id, kind="outdated"|"wrong"|"useful", note?)\` → flag a context source's quality.
 
 CROSS-PROJECT: lm-assist auto-places a managed \`_cross-project.md\` signpost in EVERY project's memory dir (linked from its \`MEMORY.md\`), so a session recalling THIS project's memory is reminded that OTHER projects' curated memory is reachable. When a question spans projects, references shared infra/conventions, or this project's memory is thin: \`memory_projects\` (list projects + slugs) then \`search_memory(query)\` across all, or \`memory_map\`/\`memory_record\` for a specific project. Prefer the current project's memory first; reach cross-project when it adds value.
-CROSS-NODE: \`memory_cross_host\` → which hosts hold which memory; \`memory_import_candidates\` → memory on a peer newer than/absent locally (to import). Knowledge search is per-node — pass \`node=B\` to search another host's knowledge base.
+CROSS-NODE: \`memory_cross_host\` → which hosts hold which memory (search across every host's mirror, ranked); \`memory_import_candidates\` → memory on a peer newer than/absent locally (to import, not automatic). \`memory_sync_status\` → whether/how THIS node auto-syncs memory (mode, home node, daemon counts). \`memory_write\` always edits the LIVE copy on the node the call runs on — pass \`node=<host>\` to edit that host's memory, not a mirror. Knowledge search is per-node — pass \`node=B\` to search another host's knowledge base.
+WEB UI: the same memory (browse/search + hash-guarded edit) is also in the lm-assist web app, sidebar -> Memory page (with a Rules and Sync tab alongside it) — useful for a human doing the same edits by hand, or to sanity-check a write you just made over MCP.
 GOTCHA: the vector DB is intentionally minimal — text/BM25 is the designed path; phrase queries as keywords.`,
 
   agents: `# Guide: run a Claude Code agent remotely
@@ -447,7 +449,7 @@ const BLURB: Record<string, string> = {
   roles: 'worker role + orchestration — set_role, the ⟦WORKER-STATUS⟧ print contract, the 3 report channels, and the agree-gate',
   data: 'store/query structured data (cache/vector/sql); type-aware retrieval, regex/grep, cross-node',
   sessions: 'investigate what happened in a Claude Code run (history, DAG, executions)',
-  knowledge: 'search the knowledge base + cross-project/cross-host memory; give feedback',
+  knowledge: 'search the knowledge base + cross-project/cross-host memory; read + WRITE memory files (hash-guarded); give feedback',
   agents: 'run / resume / monitor a Claude Code agent remotely (incl. browser control)',
   terminals: 'drive a terminal or inject a prompt into a running session (Linux/mac/Windows)',
   ccr: 'CCR — view/drive a Claude Code session from claude.ai/code (load=replay, mirror=live view, connect=two-way; safety-gated)',

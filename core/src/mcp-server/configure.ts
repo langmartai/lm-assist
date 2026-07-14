@@ -140,6 +140,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   memory_sync_status: 'read',
   memory_cross_host: 'read',
   memory_import_candidates: 'read',
+  memory_file: 'read',
   terminal_list: 'read',
   terminal_capture: 'read',
   windows_terminal_list: 'read',
@@ -211,6 +212,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   // memory map + rules map (read — shell out to CLIs)
   memory_map: 'read',
   memory_record: 'read',
+  memory_write: 'write',
   rule_map: 'read',
   rule_record: 'read',
   rule_sync_status: 'read',
