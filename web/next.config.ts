@@ -1,10 +1,30 @@
 import type { NextConfig } from 'next';
 import path from 'path';
+import fs from 'fs';
+
+/**
+ * The workspace root = the nearest ancestor holding a REAL (hoisted) node_modules.
+ * In the main checkout that's `web/..` (unchanged behavior). In a git worktree under
+ * `.claude/worktrees/<name>/` there is no local install — deps resolve from the main
+ * checkout above it — and Turbopack refuses to compile anything outside its root, so
+ * the root must be that ancestor, not the worktree.
+ */
+function workspaceRoot(start: string): string {
+  let dir = start;
+  for (let i = 0; i < 6; i++) {
+    dir = path.dirname(dir);
+    const nm = path.join(dir, 'node_modules');
+    try { if (fs.lstatSync(nm).isDirectory()) return dir; } catch { /* keep walking */ }
+  }
+  return path.join(start, '../');
+}
+const ROOT = workspaceRoot(__dirname);
 
 const nextConfig: NextConfig = {
   typescript: { ignoreBuildErrors: true },
   output: 'standalone',
-  outputFileTracingRoot: path.join(__dirname, '../'),
+  outputFileTracingRoot: ROOT,
+  turbopack: { root: ROOT },
   async redirects() {
     return [
       { source: '/', destination: '/sessions', permanent: false },
