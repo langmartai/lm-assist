@@ -28,6 +28,7 @@ import { getWorkflow, listWorkflows, putWorkflow, rollbackWorkflow, getWorkflowR
   type WorkflowPort, type WorkflowSnapshotPort } from '../../mission/workflow-store';
 import { isControllerActor, type WorkflowEditPolicy } from '../../mission/workflow-model';
 import { WORKFLOW_DATASET } from '../../mission/workflow-store';
+import { anchorToOrigin, realOriginAnchor as sharedRealOriginAnchor, type OriginAnchorDeps } from './origin-anchor';
 import { DEFAULT_WORKFLOWS } from '../../mission/workflow-defaults';
 import { buildOnboardMission, detectTransport, pickClusterLeader, markDriveText } from '../../mission/mission-onboard';
 
@@ -103,49 +104,20 @@ async function anchorToLeader(leader: LeaderAnchorDeps | undefined, method: 'GET
 // The mission-workflows dataset is owned by whichever node first created it (its
 // descriptor `origin`); every other node holds a read-only replica whose writes the
 // data service refuses with READ_ONLY_REPLICA (the 2026-07-15 silent-drop incident).
-// Registry WRITES therefore anchor to the DATASET ORIGIN, not the mission leader:
-// proxy the same request to origin.machineId, handle locally when the descriptor is
-// unstamped/self — which also terminates the proxied hop on the origin node (no loop).
+// Registry WRITES therefore anchor to the DATASET ORIGIN, not the mission leader.
 // Registry READS stay as they were (leader/local): replicas sync back from the origin.
-export interface OriginAnchorDeps {
-  getOrigin: () => Promise<string | null>;
-  thisNode: () => string;
-  proxyPost: (node: string, path: string, body: unknown) => Promise<unknown>;
-}
+//
+// The implementation moved to the SHARED origin-anchor.ts (assist-content design §2b)
+// — one copy for the workflow/tool/content registries. Moving onto it upgraded this
+// path to the improved semantics the tool registry shipped: an origin-side refusal
+// (e.g. HUMAN_ONLY_DOC) now relays VERBATIM instead of collapsing into
+// ORIGIN_UNREACHABLE, because the shared proxyPost parses non-2xx bodies
+// (peer-client's proxyPost threw them away).
+export type { OriginAnchorDeps } from './origin-anchor';
 export function realOriginAnchor(): OriginAnchorDeps {
-  return {
-    getOrigin: async () => {
-      const { getDatasetRegistry } = require('../../data/dataset-registry') as typeof import('../../data/dataset-registry');
-      return getDatasetRegistry().get(WORKFLOW_DATASET)?.origin?.machineId ?? null;
-    },
-    thisNode: () => thisNode(),
-    proxyPost: (n, p, b) => { const { proxyPost } = require('../../data/peer-client') as typeof import('../../data/peer-client'); return proxyPost(n, p, b); },
-  };
+  return sharedRealOriginAnchor(WORKFLOW_DATASET);
 }
-/**
- * If origin deps are provided AND the workflow dataset's origin is another node,
- * proxy the write there and return its envelope. Returns null when the dataset is
- * owned here / unstamped (or no deps) → the caller writes locally. Fail-CLOSED on
- * proxy errors: a silent local fallback would recreate the silent-drop defect this
- * anchoring exists to fix.
- */
-async function anchorToOrigin(origin: OriginAnchorDeps | undefined, path: string, body: unknown): Promise<Envelope | null> {
-  if (!origin) return null;
-  let target: string | null;
-  try { target = await origin.getOrigin(); } catch { return null; }
-  if (!target || target === origin.thisNode()) return null;
-  try {
-    // `_originHop` marks the proxied request so the receiver NEVER re-anchors it
-    // (`_actor`-style transport hint, stripped at handler entry). Without it, a
-    // mixed-version fleet loops: an old-build origin node still leader-anchors the
-    // write back to a new-build leader, which would origin-anchor it away again.
-    const result = await origin.proxyPost(target, path, { ...(body as Record<string, unknown> ?? {}), _originHop: true });
-    if (result && typeof result === 'object' && 'success' in (result as object)) return result as Envelope;
-    return ok((result as { data?: unknown })?.data ?? result);
-  } catch (e) {
-    return fail('ORIGIN_UNREACHABLE', `workflow dataset origin "${target}" unreachable; retry shortly (${(e as Error).message})`);
-  }
-}
+const WORKFLOW_ANCHOR_LABEL = 'workflow';
 
 // --- testable handlers (port-injected) ---
 
@@ -402,7 +374,7 @@ export async function handleWorkflowGet(id: string, port?: WorkflowPort, leader?
 export async function handleWorkflowSet(id: string, b: Record<string, unknown>, port?: WorkflowPort, snap?: WorkflowSnapshotPort, actor?: MissionActor, origin?: OriginAnchorDeps): Promise<Envelope> {
   const hopped = b._originHop === true;
   delete b._originHop;
-  const anchored = hopped ? null : await anchorToOrigin(origin, `/mission/workflows/${encodeURIComponent(id)}`, b);
+  const anchored = hopped ? null : await anchorToOrigin(origin, `/mission/workflows/${encodeURIComponent(id)}`, b, WORKFLOW_ANCHOR_LABEL);
   if (anchored) return anchored;
   const who = actor ?? await actorFor(b);
   const existing = await getWorkflow(id, port).catch(() => null);
@@ -432,7 +404,7 @@ export async function handleWorkflowHistory(id: string, opts: { limit?: number; 
 export async function handleWorkflowRollback(id: string, b: Record<string, unknown>, port?: WorkflowPort, snap?: WorkflowSnapshotPort, actor?: MissionActor, origin?: OriginAnchorDeps): Promise<Envelope> {
   const hopped = b._originHop === true;
   delete b._originHop;
-  const anchored = hopped ? null : await anchorToOrigin(origin, `/mission/workflows/${encodeURIComponent(id)}/rollback`, b);
+  const anchored = hopped ? null : await anchorToOrigin(origin, `/mission/workflows/${encodeURIComponent(id)}/rollback`, b, WORKFLOW_ANCHOR_LABEL);
   if (anchored) return anchored;
   const who = actor ?? await actorFor(b);
   const existing = await getWorkflow(id, port).catch(() => null);

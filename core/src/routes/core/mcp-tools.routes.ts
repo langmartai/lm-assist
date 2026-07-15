@@ -21,78 +21,23 @@ import { invalidateOverlayCache } from '../../mcp-server/registry/overlay-live';
 import type { ToolRegistryDoc } from '../../mcp-server/registry/model';
 import { coarseActor, type MissionActor } from '../../mission/mission-model';
 import { thisNode } from '../../mission/mission-store';
+import { anchorToOrigin, realOriginAnchor, type OriginAnchorDeps } from './origin-anchor';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string } }
 const ok = <T>(data: T): Envelope => ({ success: true, data });
 const fail = (code: string, message: string): Envelope => ({ success: false, error: { code, message } });
 
 // --- origin-anchoring (the registry lives on its dataset's ORIGIN node) ---
+// Shared implementation in origin-anchor.ts (this file's improved variant, extracted
+// so the assist-content registry doesn't fork a third copy).
 
-export interface ToolOriginAnchorDeps {
-  getOrigin: () => Promise<string | null>;
-  thisNode: () => string;
-  proxyPost: (node: string, path: string, body: unknown) => Promise<unknown>;
-}
+export type ToolOriginAnchorDeps = OriginAnchorDeps;
 
 export function realToolOriginAnchor(): ToolOriginAnchorDeps {
-  return {
-    getOrigin: async () => {
-      const { getDatasetRegistry } = require('../../data/dataset-registry') as typeof import('../../data/dataset-registry');
-      return getDatasetRegistry().get(TOOL_REGISTRY_DATASET)?.origin?.machineId ?? null;
-    },
-    thisNode: () => thisNode(),
-    // NOT peer-client's proxyPost: that throws away the response body on non-2xx,
-    // and the rest-server maps an origin-side refusal envelope (PROTECTED_TOOL,
-    // OVERRIDE_TOO_LARGE, rollback NOT_FOUND…) to HTTP 400 — the caller must see
-    // the REAL refusal, not a fake ORIGIN_UNREACHABLE.
-    proxyPost: async (n, p, b) => {
-      const { getHubConfig } = require('../../hub-client/hub-config') as typeof import('../../hub-client/hub-config');
-      const { getHubHttpUrl } = require('../../hub-client/hub-proxy') as typeof import('../../hub-client/hub-proxy');
-      const res = await fetch(`${getHubHttpUrl()}/api/tier-agent/machines/${n}/proxy${p}`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${getHubConfig().apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(b),
-      });
-      const text = await res.text();
-      let json: unknown = null;
-      try { json = JSON.parse(text); } catch { /* non-JSON relay error */ }
-      if (json && typeof json === 'object' && 'success' in (json as object)) return json;
-      if (!res.ok) throw new Error(`Proxy POST to ${n}${p} returned ${res.status}`);
-      return json ?? text;
-    },
-  };
+  return realOriginAnchor(TOOL_REGISTRY_DATASET);
 }
 
-/** A response we can safely surface as the origin's own answer: success, or a
- *  refusal that carries a proper {code,message}. Hub/relay failure bodies (string
- *  `error`, no code) must NOT masquerade as origin envelopes. */
-function isRegistryEnvelope(v: unknown): v is Envelope {
-  if (!v || typeof v !== 'object' || typeof (v as { success?: unknown }).success !== 'boolean') return false;
-  const e = v as { success: boolean; error?: unknown };
-  if (e.success) return true;
-  return !!e.error && typeof e.error === 'object' && typeof (e.error as { code?: unknown }).code === 'string';
-}
-
-/** Proxy a write to the dataset origin when it is another node; null ⇒ handle locally
- *  (owned here / unstamped / no deps). Fail-CLOSED on proxy errors. */
-async function anchorToOrigin(origin: ToolOriginAnchorDeps | undefined, path: string, body: unknown): Promise<Envelope | null> {
-  if (!origin) return null;
-  let target: string | null;
-  try { target = await origin.getOrigin(); } catch { return null; }
-  if (!target || target === origin.thisNode()) return null;
-  try {
-    // `_originHop` marks the proxied request so the receiver NEVER re-anchors it
-    // (mixed-version fleet loop guard, stripped at handler entry).
-    const result = await origin.proxyPost(target, path, { ...(body as Record<string, unknown> ?? {}), _originHop: true });
-    if (isRegistryEnvelope(result)) return result;
-    if (result && typeof result === 'object' && !('success' in (result as object))) {
-      return ok((result as { data?: unknown })?.data ?? result);
-    }
-    return fail('ORIGIN_UNREACHABLE', `tool-registry dataset origin "${target}" returned an unrecognized relay response; retry shortly`);
-  } catch (e) {
-    return fail('ORIGIN_UNREACHABLE', `tool-registry dataset origin "${target}" unreachable; retry shortly (${(e as Error).message})`);
-  }
-}
+const TOOL_ANCHOR_LABEL = 'tool-registry';
 
 // --- testable handlers (port-injected) ---
 
@@ -171,7 +116,7 @@ export async function handleToolSet(
 ): Promise<Envelope> {
   const hopped = b._originHop === true;
   delete b._originHop;
-  const anchored = hopped ? null : await anchorToOrigin(origin, `/mcp-tools/${encodeURIComponent(name)}`, b);
+  const anchored = hopped ? null : await anchorToOrigin(origin, `/mcp-tools/${encodeURIComponent(name)}`, b, TOOL_ANCHOR_LABEL);
   if (anchored) return anchored;
   const who = actor ?? apiActor(b);
   const input: { name: string; descriptionOverride?: string | null; enabled?: boolean } = { name };
@@ -211,7 +156,7 @@ export async function handleToolRollback(
 ): Promise<Envelope> {
   const hopped = b._originHop === true;
   delete b._originHop;
-  const anchored = hopped ? null : await anchorToOrigin(origin, `/mcp-tools/${encodeURIComponent(name)}/rollback`, b);
+  const anchored = hopped ? null : await anchorToOrigin(origin, `/mcp-tools/${encodeURIComponent(name)}/rollback`, b, TOOL_ANCHOR_LABEL);
   if (anchored) return anchored;
   const who = actor ?? apiActor(b);
   const toRevRaw = b.toRev;
