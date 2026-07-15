@@ -5,18 +5,23 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Loader2, X, Send, RefreshCw, Sparkles, Wrench, ChevronRight, ChevronDown, User } from 'lucide-react';
 import { formatToolCallString } from '@/lib/smart-display';
+import { parseEnvelopeError } from '@/lib/ccr-interact';
+import { ApprovalWidget } from '@/components/shared/ApprovalWidget';
 
 interface ToolCall { name?: string; input?: Record<string, unknown>; isError?: boolean; result?: string; resultSummary?: string }
 interface Msg { role: string; content?: string; turnIndex?: number; lineIndex?: number; toolCalls?: ToolCall[]; timestamp?: string }
 interface Think { lineIndex?: number; turnIndex?: number; thinking?: string }
 type Item = { k: 'msg'; line: number; m: Msg } | { k: 'think'; line: number; t: string };
+interface QOption { label: string; description?: string }
+interface PendingQuestion { toolUseId: string; requestId?: string; questions: Array<{ header?: string; question?: string; multiSelect?: boolean; options?: QOption[] }> }
 
 type ApiFetch = <T>(path: string, opts?: { method?: string; body?: unknown }) => Promise<T>;
 
 /** Native embedded view of a Claude Code (CCR-bridged) session — rich render like claude.ai/code
  *  (markdown text, thinking blocks, tool cards) + a drive box. claude.ai blocks iframing, so we render
  *  the same transcript events ourselves. */
-export function CcrSessionView({ sessionId, driveable, tmuxSession, apiFetch, onClose, fill, hideHeader }: {
+export function CcrSessionView({ sessionId, driveable, apiFetch, onClose, fill, hideHeader }: {
+  /** tmuxSession is still accepted from callers but no longer used — the mission drive resolves tmux server-side. */
   sessionId: string; driveable: boolean; tmuxSession?: string; apiFetch: ApiFetch; onClose: () => void; fill?: boolean; hideHeader?: boolean;
 }) {
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -29,23 +34,49 @@ export function CcrSessionView({ sessionId, driveable, tmuxSession, apiFetch, on
   const [sent, setSent] = useState<string | null>(null);
   const [via, setVia] = useState<string>('');
   const [live, setLive] = useState(true);
+  const [pendingQ, setPendingQ] = useState<PendingQuestion | null>(null);
+  const [answering, setAnswering] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
+  // This Core's node id — the leader-anchored /answer needs `node` to route back to
+  // the session's own host when the leader is a different node. null when hub unconfigured.
+  const selfNodeRef = useRef<string | null>(null);
+  useEffect(() => {
+    apiFetch<{ gatewayId?: string | null; data?: { gatewayId?: string | null } }>('/hub/status')
+      .then((r) => { selfNodeRef.current = r?.gatewayId ?? r?.data?.gatewayId ?? null; })
+      .catch(() => { /* hub unconfigured — leader anchoring is inert, node not needed */ });
+  }, [apiFetch]);
 
   const seqRef = useRef(0);
   const load = useCallback(async () => {
     const seq = ++seqRef.current; // guard: a slower/older response must not overwrite a newer one
-    try {
-      const r = await apiFetch<{ messages?: Msg[]; thinkingBlocks?: Think[]; model?: string; numTurns?: number; sessionInfo?: { status?: string } }>(
+    // Transcript (rich: thinking + tool cards) and the mission-session read run in parallel —
+    // the latter is the only surface with native pendingQuestion extraction (jsonl AskUserQuestion
+    // + the bridge worker/events fallback for --remote-control sessions). Either may fail alone.
+    const [conv, missionRead] = await Promise.allSettled([
+      apiFetch<{ messages?: Msg[]; thinkingBlocks?: Think[]; model?: string; numTurns?: number; sessionInfo?: { status?: string } }>(
         `/sessions/${encodeURIComponent(sessionId)}/conversation?lastN=40&toolDetail=full`,
-      );
-      if (seq !== seqRef.current) return; // a newer load started — drop this stale result
+      ),
+      apiFetch<{ pendingQuestion?: PendingQuestion | null; data?: { pendingQuestion?: PendingQuestion | null } }>(
+        `/mission/session/${encodeURIComponent(sessionId)}/read`,
+        { method: 'POST', body: { lastN: 5 } },
+      ),
+    ]);
+    if (seq !== seqRef.current) return; // a newer load started — drop this stale result
+    if (conv.status === 'fulfilled') {
+      const r = conv.value;
       setMessages(r.messages || []);
       setThinking(r.thinkingBlocks || []);
       setInfo({ model: r.model, numTurns: r.numTurns, status: r.sessionInfo?.status });
       setErr(null);
-    } catch (e) { if (seq === seqRef.current) setErr(e instanceof Error ? e.message : String(e)); }
-    finally { if (seq === seqRef.current) setLoading(false); }
+    } else {
+      setErr(conv.reason instanceof Error ? conv.reason.message : String(conv.reason));
+    }
+    if (missionRead.status === 'fulfilled') {
+      const mr = missionRead.value;
+      setPendingQ(mr?.pendingQuestion ?? mr?.data?.pendingQuestion ?? null);
+    }
+    setLoading(false);
   }, [apiFetch, sessionId]);
 
   // Poll on a STABLE 5s interval that always calls the latest `load` via a ref. Keying the interval
@@ -74,28 +105,46 @@ export function CcrSessionView({ sessionId, driveable, tmuxSession, apiFetch, on
     const text = prompt.trim();
     if (!text) return;
     setSending(true); setErr(null);
-    let label = '';
     try {
-      // Primary: claude.ai cloud endpoint via /ccr/drive — reaches a two-way bridged
-      // session from anywhere (the server itself falls back to tmux for a same-host bridge).
+      let label = '';
       try {
-        const r = await apiFetch<{ path?: string; delivered?: boolean }>('/ccr/drive', { method: 'POST', body: { sessionId, text } });
-        if (!r?.delivered) throw new Error('not delivered'); // force the same-host fallback
-        label = r.path === 'cloud' ? 'sent via claude.ai (cloud)' : 'typed into the session (user turn)';
-      } catch {
-        // No live bridge for this session — same-host direct drive (second option).
-        if (tmuxSession) {
-          await apiFetch(`/terminal/tmux/${encodeURIComponent(tmuxSession)}/send-keys`, { method: 'POST', body: { keys: text, literal: true, enter: true } });
-          label = 'typed into the session (user turn)';
-        } else {
-          await apiFetch('/session-messages', { method: 'POST', body: { toSession: sessionId, category: 'guided', body: text } });
-          label = 'injected';
-        }
+        // Primary: the mission-session drive — transport-resolving (tmux user turn for a
+        // native, cloudDrive for session_/cse_) AND the onboarded rails apply (STANDBY_MODE
+        // rejection, ⟦lm-assist⟧ marker auto-prefix).
+        await apiFetch(`/mission/session/${encodeURIComponent(sessionId)}/drive`, { method: 'POST', body: { text } });
+        label = 'typed into the session (user turn)';
+      } catch (e) {
+        const { code, message } = parseEnvelopeError(e);
+        // Rails are never bypassed: a standby rejection surfaces verbatim, no fallback.
+        if (code === 'STANDBY_MODE') throw new Error(message);
+        // Only a transport that literally can't deliver (session not in tmux) degrades to the
+        // soft context-inject, which lands on the session's NEXT user turn.
+        if (!/not in a tmux pane/i.test(message)) throw new Error(message);
+        await apiFetch('/session-messages', { method: 'POST', body: { toSession: sessionId, category: 'guided', body: text } });
+        label = 'injected (soft) — delivered on the next user turn';
       }
       setVia(label); setPrompt(''); setSent(text.slice(0, 60)); setTimeout(() => setSent(null), 4000); setTimeout(load, 1000);
     } catch (e) { setErr(`drive failed: ${e instanceof Error ? e.message : String(e)}`); }
     finally { setSending(false); }
-  }, [apiFetch, sessionId, prompt, load, tmuxSession]);
+  }, [apiFetch, sessionId, prompt, load]);
+
+  // Answer a pending AskUserQuestion — option click sends the label, free text sends the text.
+  // Uses the mission-session answer paths (bridge worker/events control_response, else tmux
+  // digit/text keys) — NEVER a plain drive, which would queue behind the question.
+  const answer = useCallback(async (text: string) => {
+    const a = text.trim(); if (!a) return;
+    setAnswering(true); setErr(null);
+    try {
+      await apiFetch(`/mission/session/${encodeURIComponent(sessionId)}/answer`, {
+        method: 'POST',
+        body: { answer: a, toolUseId: pendingQ?.toolUseId, requestId: pendingQ?.requestId, node: selfNodeRef.current ?? undefined },
+      });
+      setPendingQ(null); setSent(`answered: ${a.slice(0, 50)}`); setTimeout(() => setSent(null), 4000); setTimeout(load, 1200);
+    } catch (e) {
+      const { message } = parseEnvelopeError(e);
+      setErr(`answer failed: ${message}`);
+    } finally { setAnswering(false); }
+  }, [apiFetch, sessionId, pendingQ, load]);
 
   return (
     <div className="card" style={{ marginTop: fill ? 0 : 8, padding: 0, display: 'flex', flexDirection: 'column', ...(fill ? { flex: 1, minHeight: 0, height: '100%', maxHeight: 'none' as const } : { maxHeight: 520 }), overflow: 'hidden', border: fill ? 'none' : '1px solid var(--color-accent)' }}>
@@ -129,7 +178,13 @@ export function CcrSessionView({ sessionId, driveable, tmuxSession, apiFetch, on
       <div style={{ borderTop: '1px solid var(--color-border-default)', padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
         {err && stream.length > 0 && <div style={{ fontSize: 11, color: 'var(--color-status-red)' }}>{err}</div>}
         {sent && <div style={{ fontSize: 11, color: 'var(--color-status-green)' }}>{via || 'sent'}: “{sent}”.</div>}
-        {!driveable && <div style={{ fontSize: 11, color: 'var(--color-status-orange)' }}>Not live/driveable — start it (or Connect) to drive. (View is read-only.)</div>}
+
+        {/* Pending AskUserQuestion — answer by clicking an option OR typing a custom reply (both → /answer) */}
+        {pendingQ && pendingQ.questions[0] && (
+          <ApprovalWidget pending={pendingQ} answering={answering} onAnswer={answer} who="the session" />
+        )}
+
+        {!driveable && <div style={{ fontSize: 11, color: 'var(--color-status-orange)' }}>Not live/driveable — start it (or Resume above) to drive. (View is read-only.)</div>}
         <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
           <textarea className="input" value={prompt} rows={2} placeholder={driveable ? 'Drive: type a prompt to send to the running session…' : 'Read-only'}
             disabled={!driveable || sending} style={{ flex: 1, resize: 'none', fontSize: 12.5 }}

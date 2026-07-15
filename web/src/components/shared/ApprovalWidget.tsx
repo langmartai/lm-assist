@@ -6,8 +6,10 @@ import { Loader2, HelpCircle } from 'lucide-react';
 interface QOption { label: string; description?: string }
 interface PendingQuestion { toolUseId: string; requestId?: string; questions: Array<{ header?: string; question?: string; multiSelect?: boolean; options?: QOption[] }> }
 
-export function ApprovalWidget({ pending, answering, onAnswer }: {
+export function ApprovalWidget({ pending, answering, onAnswer, who }: {
   pending: PendingQuestion; answering: boolean; onAnswer: (text: string) => void;
+  /** Who is waiting — defaults to the original cloud phrasing. */
+  who?: string;
 }) {
   const [customAnswer, setCustomAnswer] = useState('');
 
@@ -16,7 +18,7 @@ export function ApprovalWidget({ pending, answering, onAnswer }: {
   return (
     <div style={{ border: '1px solid var(--color-accent)', borderRadius: 'var(--radius-md)', padding: 8, marginBottom: 4, background: 'var(--color-bg-elevated)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 6 }}>
-        <HelpCircle size={13} style={{ color: 'var(--color-accent)' }} /> {pending.questions[0].header || 'Question'} — the cloud claude is waiting on you
+        <HelpCircle size={13} style={{ color: 'var(--color-accent)' }} /> {pending.questions[0].header || 'Question'} — {who || 'the cloud claude'} is waiting on you
       </div>
       {pending.questions[0].question && <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', marginBottom: 8 }}>{pending.questions[0].question}</div>}
       {(pending.questions[0].options || []).length > 0 && (

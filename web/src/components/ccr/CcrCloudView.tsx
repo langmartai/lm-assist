@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Loader2, X, Send, RefreshCw, ExternalLink, Eye, EyeOff, Cloud } from 'lucide-react';
 import { filterInjectedExchanges } from '@/lib/injected-message';
+import { parseEnvelopeError } from '@/lib/ccr-interact';
 import { TranscriptMessage } from '@/components/shared/TranscriptMessage';
 import { ApprovalWidget } from '@/components/shared/ApprovalWidget';
 
@@ -49,16 +50,18 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose, fill, hideHeader 
     finally { if (seq === seqRef.current) setLoading(false); }
   }, [apiFetch, sid]);
 
-  // Answer a pending AskUserQuestion — by clicking an option (label) or typing free text. Both hit /answer.
+  // Answer a pending AskUserQuestion — by clicking an option (label) or typing free text.
+  // Goes through the mission-session answer (same cloudAnswer under the hood: client
+  // control_response preferred, teleport tool_result fallback) — never a plain drive.
   const answer = useCallback(async (text: string) => {
     const a = text.trim(); if (!a) return;
     setAnswering(true); setErr(null);
     try {
       // requestId/toolUseId thread through for a --remote-control bridge session (controller/executor);
       // for a cloud session they're ignored (the backend auto-resolves the tool_use_id from teleport).
-      await apiFetch(`/ccr/cloud/${encodeURIComponent(sid)}/answer`, { method: 'POST', body: { answer: a, toolUseId: pendingQ?.toolUseId, requestId: pendingQ?.requestId } });
+      await apiFetch(`/mission/session/${encodeURIComponent(sid)}/answer`, { method: 'POST', body: { answer: a, toolUseId: pendingQ?.toolUseId, requestId: pendingQ?.requestId } });
       setPendingQ(null); setSent(`answered: ${a.slice(0, 50)}`); setTimeout(() => setSent(null), 4000); setTimeout(load, 1500);
-    } catch (e) { setErr(`answer failed: ${e instanceof Error ? e.message : String(e)}`); }
+    } catch (e) { setErr(`answer failed: ${parseEnvelopeError(e).message}`); }
     finally { setAnswering(false); }
   }, [apiFetch, sid, load, pendingQ]);
 
@@ -78,9 +81,12 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose, fill, hideHeader 
     const text = prompt.trim(); if (!text) return;
     setSending(true); setErr(null);
     try {
-      await apiFetch(`/ccr/cloud/${encodeURIComponent(sid)}/drive`, { method: 'POST', body: { text } });
+      // Mission-session drive: same cloudDrive (incl. the cse bridge fallback) PLUS the
+      // onboarded rails — a standby-onboarded cloud session is rejected with STANDBY_MODE
+      // and a handoff one gets the ⟦lm-assist⟧ marker prefix.
+      await apiFetch(`/mission/session/${encodeURIComponent(sid)}/drive`, { method: 'POST', body: { text } });
       setPrompt(''); setSent(text.slice(0, 60)); setTimeout(() => setSent(null), 4000); setTimeout(load, 1500);
-    } catch (e) { setErr(`drive failed: ${e instanceof Error ? e.message : String(e)}`); }
+    } catch (e) { setErr(`drive failed: ${parseEnvelopeError(e).message}`); }
     finally { setSending(false); }
   }, [apiFetch, sid, prompt, load]);
 

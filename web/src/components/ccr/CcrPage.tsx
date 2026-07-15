@@ -10,6 +10,7 @@ import { CcrSessionList } from './CcrSessionList';
 import { CcrSidebar } from './CcrSidebar';
 import { CcrSearchModal } from './CcrSearchModal';
 import { CcrDetailHeader } from './CcrDetailHeader';
+import { CcrSessionControls } from './CcrSessionControls';
 import { ModelEffortSelector } from '@/components/cowork/ModelEffortSelector';
 import type { ApiFetch, CloudSessionInfo, Remote, RcData, CcSession, CcrRow } from './ccrTypes';
 
@@ -234,6 +235,7 @@ export function CcrPage() {
           // ── Detail view (claude.ai/code session) ──
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
             <CcrDetailHeader row={selected} apiFetch={apiFetch} onClose={() => selectSession(null)} onChanged={fetchAll} onDeleted={() => { selectSession(null); fetchAll(); }} />
+            <CcrSessionControls row={selected} apiFetch={apiFetch} onChanged={fetchAll} />
             {selected.kind !== 'local' && <CloudControlBar row={selected} apiFetch={apiFetch} />}
             {selected.kind === 'local' && sessionErr[selected.id] && (
               <div style={{ margin: '8px 14px 0', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', fontSize: 11.5, color: 'var(--color-status-red)' }}>{sessionErr[selected.id]}</div>
