@@ -1,6 +1,7 @@
 // web/src/components/missions/dashboard/MissionCard.tsx
 'use client';
 import type { MissionNode } from '@/lib/mission-graph-types';
+import { formatProgressPercent } from '@/lib/mission-graph-adapter';
 
 export interface MissionCardProps {
   node: MissionNode;
@@ -38,7 +39,7 @@ export function MissionCard({ node, x, y, width, height, selected, dimmed, live,
       </div>
       <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[10px] text-neutral-400">
         {fields.map((f) => (
-          <span key={f}>{f === 'status' ? node.status : f === 'progress' ? `${node.progressPercent ?? 0}%` : String((node as unknown as Record<string, unknown>)[f] ?? '')}</span>
+          <span key={f}>{f === 'status' ? node.status : f === 'progress' ? formatProgressPercent(node.progressPercent) : String((node as unknown as Record<string, unknown>)[f] ?? '')}</span>
         ))}
         {majorTag && <span className="rounded bg-neutral-800 px-1 text-[9px] text-neutral-300">{majorTag}</span>}
       </div>

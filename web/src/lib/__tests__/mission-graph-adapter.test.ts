@@ -1,5 +1,5 @@
 import { test, expect, describe, it } from 'vitest';
-import { toDagGraph, matchesHighlight, colorForGroup, applyQuickFilters, matchesSearch, buildFilter, expandToComponents } from '@/lib/mission-graph-adapter';
+import { toDagGraph, matchesHighlight, colorForGroup, applyQuickFilters, matchesSearch, buildFilter, expandToComponents, formatProgressPercent } from '@/lib/mission-graph-adapter';
 import type { MissionNode, MissionEdge } from '@/lib/mission-graph-types';
 
 const mn = (id: string, over: Partial<MissionNode> = {}): MissionNode => ({ id, title: id, status: 'active', tags: {}, parentId: null, ...over });
@@ -91,5 +91,18 @@ describe('expandToComponents', () => {
   it('a match with no edges returns just itself', () => {
     const out = expandToComponents([...nodes, N('x')], edges, new Set(['x']));
     expect([...out]).toEqual(['x']);
+  });
+});
+
+describe('formatProgressPercent', () => {
+  it('renders absent progress as an em-dash, not 0%', () => {
+    expect(formatProgressPercent(undefined)).toBe('—');
+    expect(formatProgressPercent(null)).toBe('—');
+  });
+
+  it('renders real percentages including a genuine 0%', () => {
+    expect(formatProgressPercent(0)).toBe('0%');
+    expect(formatProgressPercent(55)).toBe('55%');
+    expect(formatProgressPercent(100)).toBe('100%');
   });
 });

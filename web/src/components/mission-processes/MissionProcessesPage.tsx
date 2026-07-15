@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Workflow, RefreshCw } from 'lucide-react';
+import { Workflow, RefreshCw, Map as MapIcon } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { errText, timeAgo } from '@/components/memory/format';
 import {
@@ -68,9 +68,24 @@ export function MissionProcessesPage() {
     void fetchAll();
   }, [fetchAll]);
 
-  const groups = useMemo(() => groupWorkflows(workflows, defaults), [workflows, defaults]);
+  // process.overview is the page's entry point: pinned above the groups, default-selected.
+  const OVERVIEW_ID = 'process.overview';
+  const overviewDoc = workflows.find((w) => w.id === OVERVIEW_ID);
+  const hasOverview = !!overviewDoc || defaults.includes(OVERVIEW_ID);
+  const groups = useMemo(
+    () => groupWorkflows(workflows.filter((w) => w.id !== OVERVIEW_ID), defaults.filter((d) => d !== OVERVIEW_ID)),
+    [workflows, defaults],
+  );
+  const knownIds = useMemo(
+    () => new Set<string>([...workflows.map((w) => w.id), ...defaults]),
+    [workflows, defaults],
+  );
   const storedCount = workflows.length;
   const defaultCount = defaults.length;
+
+  useEffect(() => {
+    if (!selectedId && hasOverview) setSelectedId(OVERVIEW_ID);
+  }, [selectedId, hasOverview]);
 
   return (
     <div className="h-full flex flex-col overflow-hidden" style={{ background: 'var(--color-bg-root)' }}>
@@ -129,7 +144,42 @@ export function MissionProcessesPage() {
           {loading && workflows.length === 0 ? (
             <div style={{ padding: '8px 16px', fontSize: 12, color: 'var(--color-text-tertiary)' }}>Loading…</div>
           ) : (
-            groups.map((g) => (
+            <>
+            {hasOverview && (
+              <button
+                onClick={() => setSelectedId(OVERVIEW_ID)}
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  textAlign: 'left',
+                  padding: '8px 16px 10px',
+                  marginBottom: 10,
+                  background: selectedId === OVERVIEW_ID ? 'var(--color-bg-elevated)' : 'transparent',
+                  borderLeft: selectedId === OVERVIEW_ID ? '2px solid var(--color-accent)' : '2px solid transparent',
+                  borderBottom: '1px solid var(--color-border-default)',
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <MapIcon size={13} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--color-text-primary)' }}>
+                    {OVERVIEW_ID}
+                  </span>
+                  {overviewDoc ? (
+                    <span className="badge badge-outline" style={{ fontSize: 9 }}>rev {overviewDoc.rev}</span>
+                  ) : (
+                    <span className="badge badge-default" style={{ fontSize: 9 }}>default</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                  {overviewDoc?.title ?? 'Process library overview'}
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
+                  The map of the control flow — start here.
+                </div>
+              </button>
+            )}
+            {groups.map((g) => (
               <div key={g.ns} style={{ marginBottom: 14 }}>
                 <div
                   style={{
@@ -221,13 +271,20 @@ export function MissionProcessesPage() {
                   );
                 })}
               </div>
-            ))
+            ))}
+            </>
           )}
         </div>
 
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {selectedId ? (
-            <ProcessDetail id={selectedId} apiFetch={apiFetch} onDocChanged={() => void fetchAll()} />
+            <ProcessDetail
+              id={selectedId}
+              apiFetch={apiFetch}
+              onDocChanged={() => void fetchAll()}
+              knownIds={knownIds}
+              onSelectDoc={setSelectedId}
+            />
           ) : (
             <div
               style={{
