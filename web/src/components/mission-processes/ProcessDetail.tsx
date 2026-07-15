@@ -1,13 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { isValidElement, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Lock, RotateCcw, Save } from 'lucide-react';
 import { MarkdownSplitEditor } from '@/components/missions/MarkdownSplitEditor';
 import { ConfirmButton, errText, timeAgo } from '@/components/memory/format';
+import { MermaidBlock } from './MermaidBlock';
 import {
   checkRevConflict,
+  linkifyDocIds,
   splitRenderedPreamble,
   type WorkflowActorSummary,
   type WorkflowDocSummary,
@@ -40,10 +42,16 @@ export function ProcessDetail({
   id,
   apiFetch,
   onDocChanged,
+  knownIds,
+  onSelectDoc,
 }: {
   id: string;
   apiFetch: ApiFetch;
   onDocChanged: () => void;
+  /** All doc ids in the loaded registry (stored + defaults) — the linkifier's existence gate. */
+  knownIds: ReadonlySet<string>;
+  /** Client-side navigation: select another doc in this page (no reload). */
+  onSelectDoc: (id: string) => void;
 }) {
   const [data, setData] = useState<WorkflowGetResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -67,6 +75,50 @@ export function ProcessDetail({
 
   // Drop responses of a superseded request (fast doc switching).
   const seqRef = useRef(0);
+
+  // Markdown overrides for the Rendered view: #doc: links become client-side
+  // navigation chips, and ```mermaid fences render as diagrams (pre unwrapped).
+  const mdComponents = useMemo<Components>(() => ({
+    a: ({ href, children }) => {
+      if (typeof href === 'string' && href.startsWith('#doc:')) {
+        const target = href.slice('#doc:'.length);
+        return (
+          <button
+            type="button"
+            className="badge badge-blue"
+            style={{ cursor: 'pointer', fontFamily: 'var(--font-mono)', verticalAlign: 'baseline' }}
+            title={`Open ${target}`}
+            onClick={() => onSelectDoc(target)}
+          >
+            {children}
+          </button>
+        );
+      }
+      return (
+        <a href={href} target="_blank" rel="noreferrer">
+          {children}
+        </a>
+      );
+    },
+    code: ({ className, children }) => {
+      if (typeof className === 'string' && className.includes('language-mermaid')) {
+        return <MermaidBlock chart={String(children ?? '').replace(/\n$/, '')} />;
+      }
+      return <code className={className}>{children}</code>;
+    },
+    pre: ({ children }) => {
+      // A mermaid fence renders itself (MermaidBlock) — drop the surrounding <pre>.
+      const child = Array.isArray(children) ? (children as ReactNode[])[0] : children;
+      if (
+        isValidElement(child) &&
+        typeof (child.props as { className?: unknown }).className === 'string' &&
+        ((child.props as { className: string }).className.includes('language-mermaid'))
+      ) {
+        return <>{children}</>;
+      }
+      return <pre>{children}</pre>;
+    },
+  }), [onSelectDoc]);
 
   const load = useCallback(async () => {
     const seq = ++seqRef.current;
@@ -182,6 +234,8 @@ export function ProcessDetail({
 
   const rawBody = doc?.body ?? data.defaultBody ?? '';
   const { preamble, body: renderedBody } = splitRenderedPreamble(data.rendered ?? '');
+  // Known-id link chips only touch prose (fenced blocks stay byte-identical for mermaid).
+  const linkedBody = linkifyDocIds(renderedBody, knownIds);
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -268,7 +322,9 @@ export function ProcessDetail({
             </div>
           )}
           <div className="prose" style={{ fontSize: 13, lineHeight: 1.6 }}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{renderedBody}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+              {linkedBody}
+            </ReactMarkdown>
           </div>
         </div>
       )}

@@ -39,7 +39,7 @@ export interface ProcessGroup {
 }
 
 /** Known namespaces in display order; anything else lands in 'other' (always last). */
-export const NAMESPACE_ORDER = ['controller', 'onboard', 'drive', 'wrapup', 'recover', 'observe', 'case'] as const;
+export const NAMESPACE_ORDER = ['process', 'controller', 'onboard', 'drive', 'wrapup', 'recover', 'observe', 'case'] as const;
 
 /**
  * Group stored docs + un-seeded default ids by namespace prefix (text before the first dot).
@@ -94,6 +94,79 @@ export function splitRenderedPreamble(rendered: string): { preamble: string; bod
   if (i < 0) return { preamble: '', body: rendered };
   const end = i + PREAMBLE_END.length;
   return { preamble: rendered.slice(0, end), body: rendered.slice(end).replace(/^\n+/, '') };
+}
+
+/** Doc-id pattern for link navigation (mission contract). Greedy over dots/hyphens —
+ *  callers trim trailing `.`/`-` against the registry before deciding a match. */
+export const DOC_ID_RE = /(?:controller|onboard|drive|case|wrapup|recover|observe|process)\.[a-z0-9][a-z0-9.-]*/g;
+
+const FENCE_RE = /^\s*(?:```|~~~)/;
+
+/**
+ * Rewrite known doc ids in markdown into `[id](#doc:id)` links for click-to-open
+ * navigation. Skips fenced code blocks entirely (mermaid node labels contain doc
+ * ids) and inline code spans unless the span is exactly one known id.
+ */
+export function linkifyDocIds(markdown: string, knownIds: ReadonlySet<string>): string {
+  const out: string[] = [];
+  let prose: string[] = [];
+  let inFence = false;
+  const flush = () => {
+    if (prose.length) out.push(linkifyProse(prose.join('\n'), knownIds));
+    prose = [];
+  };
+  for (const line of markdown.split('\n')) {
+    if (FENCE_RE.test(line)) {
+      if (!inFence) flush();
+      inFence = !inFence;
+      out.push(line);
+    } else if (inFence) {
+      out.push(line);
+    } else {
+      prose.push(line);
+    }
+  }
+  flush();
+  return out.join('\n');
+}
+
+/** Linkify one non-fenced chunk: handle inline code spans, then bare ids. */
+function linkifyProse(text: string, knownIds: ReadonlySet<string>): string {
+  return text
+    .split(/(`[^`]*`)/)
+    .map((part) => {
+      if (part.length >= 2 && part.startsWith('`') && part.endsWith('`')) {
+        const inner = part.slice(1, -1);
+        return knownIds.has(inner) ? `[${part}](#doc:${inner})` : part;
+      }
+      return linkifyBareIds(part, knownIds);
+    })
+    .join('');
+}
+
+function linkifyBareIds(text: string, knownIds: ReadonlySet<string>): string {
+  DOC_ID_RE.lastIndex = 0;
+  let out = '';
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = DOC_ID_RE.exec(text))) {
+    const start = m.index;
+    // left boundary: never link a substring of a longer token (e.g. supercase.index)
+    const prev = start > 0 ? text[start - 1] : '';
+    const bounded = !prev || !/[a-z0-9._-]/i.test(prev);
+    // the greedy pattern swallows sentence dots — trim `.`/`-` until the registry knows the id
+    let cand = m[0];
+    let tail = '';
+    while (cand && !knownIds.has(cand) && /[.-]$/.test(cand)) {
+      tail = cand.slice(-1) + tail;
+      cand = cand.slice(0, -1);
+    }
+    if (bounded && knownIds.has(cand)) {
+      out += text.slice(last, start) + `[${cand}](#doc:${cand})` + tail;
+      last = start + m[0].length;
+    }
+  }
+  return out + text.slice(last);
 }
 
 /**

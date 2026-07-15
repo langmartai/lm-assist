@@ -4,6 +4,7 @@ import {
   parseCaseIndex,
   splitRenderedPreamble,
   checkRevConflict,
+  linkifyDocIds,
   type WorkflowDocSummary,
 } from '../mission-process';
 
@@ -47,6 +48,91 @@ describe('groupWorkflows', () => {
   it('groups ids without a dot under "other"', () => {
     const groups = groupWorkflows([doc('nodot')], []);
     expect(groups.map((g) => g.ns)).toEqual(['other']);
+  });
+
+  it('groups process.* docs under a first-class "process" namespace, ordered first', () => {
+    const groups = groupWorkflows([doc('controller.pass'), doc('process.overview')], []);
+    expect(groups.map((g) => g.ns)).toEqual(['process', 'controller']);
+  });
+});
+
+describe('linkifyDocIds', () => {
+  const known = new Set([
+    'controller.pass',
+    'onboard.analyze',
+    'case.index',
+    'process.overview',
+    'drive.multi-phase',
+  ]);
+
+  it('wraps a known bare id in a #doc: markdown link, preserving punctuation after it', () => {
+    expect(linkifyDocIds('governed by controller.pass; read on', known)).toBe(
+      'governed by [controller.pass](#doc:controller.pass); read on',
+    );
+  });
+
+  it('links multiple ids on one library line (· and — separators)', () => {
+    const line = 'Pass + intake: controller.pass — the router · onboard.analyze — intake analysis';
+    expect(linkifyDocIds(line, known)).toBe(
+      'Pass + intake: [controller.pass](#doc:controller.pass) — the router · [onboard.analyze](#doc:onboard.analyze) — intake analysis',
+    );
+  });
+
+  it('leaves unknown ids as plain text (existence gate)', () => {
+    expect(linkifyDocIds('see drive.nonexistent for details', known)).toBe('see drive.nonexistent for details');
+  });
+
+  it('trims a trailing sentence dot before the registry lookup', () => {
+    expect(linkifyDocIds('scan case.index.', known)).toBe('scan [case.index](#doc:case.index).');
+  });
+
+  it('links ids containing hyphens', () => {
+    expect(linkifyDocIds('use drive.multi-phase here', known)).toBe(
+      'use [drive.multi-phase](#doc:drive.multi-phase) here',
+    );
+  });
+
+  it('never rewrites inside fenced code blocks (mermaid node labels stay intact)', () => {
+    const body = [
+      'intro controller.pass here',
+      '```mermaid',
+      'flowchart TD',
+      '  PASS["controller.pass"] --> CI["case.index"]',
+      '```',
+      'outro case.index here',
+    ].join('\n');
+    const r = linkifyDocIds(body, known);
+    expect(r).toContain('intro [controller.pass](#doc:controller.pass) here');
+    expect(r).toContain('  PASS["controller.pass"] --> CI["case.index"]');
+    expect(r).toContain('outro [case.index](#doc:case.index) here');
+  });
+
+  it('leaves everything after an unclosed fence untouched', () => {
+    const body = 'before case.index\n```mermaid\nA["case.index"]';
+    expect(linkifyDocIds(body, known)).toBe('before [case.index](#doc:case.index)\n```mermaid\nA["case.index"]');
+  });
+
+  it('does not match the case.* wildcard (dot must be followed by alphanumeric)', () => {
+    expect(linkifyDocIds('one recall card per case.* doc', known)).toBe('one recall card per case.* doc');
+  });
+
+  it('wraps an inline code span that is exactly a known id, keeping the code styling', () => {
+    expect(linkifyDocIds('open `controller.pass` now', known)).toBe(
+      'open [`controller.pass`](#doc:controller.pass) now',
+    );
+  });
+
+  it('leaves inline code spans with extra content untouched', () => {
+    expect(linkifyDocIds('run `read controller.pass fully` now', known)).toBe('run `read controller.pass fully` now');
+  });
+
+  it('does not link a substring of a longer token (left boundary)', () => {
+    expect(linkifyDocIds('supercase.index is not a doc', known)).toBe('supercase.index is not a doc');
+  });
+
+  it('returns text without ids or fences unchanged', () => {
+    const s = 'plain prose, nothing to do here.';
+    expect(linkifyDocIds(s, known)).toBe(s);
   });
 });
 
