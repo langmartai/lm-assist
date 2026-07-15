@@ -331,9 +331,15 @@ export async function handleWorkflowRollback(id: string, b: Record<string, unkno
   if (target && target.editPolicy !== effectivePolicy && isControllerActor(who)) {
     return fail('FORBIDDEN', 'editPolicy changes are human-only');
   }
-  const r = await rollbackWorkflow(id, toRev, who, port, snap);
-  if ('error' in r) return fail(r.error.code, r.error.message);
-  return ok({ doc: r.doc });
+  // rollbackWorkflow re-runs putWorkflow, which now THROWS coded errors on refused/disabled
+  // writes (e.g. READ_ONLY_REPLICA) — surface them as clean envelopes, same as handleWorkflowSet.
+  try {
+    const r = await rollbackWorkflow(id, toRev, who, port, snap);
+    if ('error' in r) return fail(r.error.code, r.error.message);
+    return ok({ doc: r.doc });
+  } catch (e) {
+    return fail((e as { code?: string }).code ?? 'INVALID_INPUT', (e as Error).message);
+  }
 }
 
 // ---------------------------------------------------------------------------
