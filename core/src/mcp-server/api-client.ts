@@ -26,6 +26,11 @@ function getDefaultApiPort(): string {
 const API_PORT = process.env.API_PORT || getDefaultApiPort();
 const BASE_URL = `http://127.0.0.1:${API_PORT}`;
 
+/** The core API base this stdio client targets (dev/prod resolved via config). */
+export function coreBaseUrl(): string {
+  return BASE_URL;
+}
+
 // ─── Types ──────────────────────────────────────────────────
 
 interface McpToolResult {

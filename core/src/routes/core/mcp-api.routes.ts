@@ -28,7 +28,7 @@ import {
   toolCatalog,
   setToolGate,
 } from '../../mcp-server/access-control';
-import { listPending, takePending } from '../../mcp-server/mcp-pending';
+import { listPending, getPending, takePending } from '../../mcp-server/mcp-pending';
 import { listConnectors, deleteConnector, setConnectorEnabled } from '../../mcp-server/connectors';
 
 function nowIso(): string {
@@ -44,6 +44,20 @@ import { dispatch } from './mcp.routes';
 import { runWithMcpContext } from '../../mcp-server/principal-context';
 import { withOriginTag } from '../../mcp-server/result-origin';
 import { getDataService } from '../../data/data-service';
+import { isToolDisabled } from '../../mcp-server/registry/overlay';
+import { sharedLiveOverlay } from '../../mcp-server/registry/overlay-live';
+
+/** Registry disable guard for the stdio shim surface (spec §4.4): even a stale stdio
+ *  plugin binary (whose cached tools/list may still show the tool) cannot CALL a
+ *  disabled tool through these routes. Fail-open like every overlay read. */
+async function disabledGuard(tool: string, start: number): Promise<ReturnType<typeof wrapError> | null> {
+  try {
+    if (isToolDisabled(await sharedLiveOverlay().get(), tool)) {
+      return wrapError('MCP_TOOL_DISABLED', `"${tool}" is disabled in the lm-assist MCP tool registry — re-enable it on the /mcp-tools page`, start);
+    }
+  } catch { /* fail-open */ }
+  return null;
+}
 
 export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
@@ -54,6 +68,8 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => {
         const start = Date.now();
         try {
+          const gd = await disabledGuard('search', start);
+          if (gd) return gd;
           const args = req.body || {};
           const result = await handleSearch(args);
           return wrapResponse(result, start);
@@ -71,6 +87,8 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => {
         const start = Date.now();
         try {
+          const gd = await disabledGuard('detail', start);
+          if (gd) return gd;
           const args = req.body || {};
           const result = await handleDetail(args);
           return wrapResponse(result, start);
@@ -88,6 +106,8 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => {
         const start = Date.now();
         try {
+          const gd = await disabledGuard('feedback', start);
+          if (gd) return gd;
           const args = req.body || {};
           const result = await handleFeedback(args);
           return wrapResponse(result, start);
@@ -105,6 +125,8 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => {
         const start = Date.now();
         try {
+          const gd = await disabledGuard('list_recent_sessions', start);
+          if (gd) return gd;
           return wrapResponse(await handleListRecentSessions(req.body || {}), start);
         } catch (err) {
           return wrapError('MCP_LIST_SESSIONS_ERROR', err instanceof Error ? err.message : String(err), start);
@@ -119,6 +141,8 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => {
         const start = Date.now();
         try {
+          const gd = await disabledGuard('list_projects', start);
+          if (gd) return gd;
           return wrapResponse(await handleListProjects(req.body || {}), start);
         } catch (err) {
           return wrapError('MCP_LIST_PROJECTS_ERROR', err instanceof Error ? err.message : String(err), start);
@@ -133,6 +157,8 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => {
         const start = Date.now();
         try {
+          const gd = await disabledGuard('search_memory', start);
+          if (gd) return gd;
           return wrapResponse(await handleSearchMemory(req.body || {}), start);
         } catch (err) {
           return wrapError('MCP_SEARCH_MEMORY_ERROR', err instanceof Error ? err.message : String(err), start);
@@ -147,6 +173,8 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => {
         const start = Date.now();
         try {
+          const gd = await disabledGuard('list_claudeai_conversations', start);
+          if (gd) return gd;
           return wrapResponse(await handleListClaudeaiConversations(req.body || {}), start);
         } catch (err) {
           return wrapError('MCP_LIST_CLAUDEAI_CONV_ERROR', err instanceof Error ? err.message : String(err), start);
@@ -161,6 +189,8 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req) => {
         const start = Date.now();
         try {
+          const gd = await disabledGuard('read_conversation', start);
+          if (gd) return gd;
           return wrapResponse(await handleReadConversation(req.body || {}), start);
         } catch (err) {
           return wrapError('MCP_READ_CONV_ERROR', err instanceof Error ? err.message : String(err), start);
@@ -286,6 +316,12 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/mcp\/pending\/(?<id>[^/]+)\/confirm$/,
       handler: async (req) => {
         const start = Date.now();
+        const peek = getPending(req.params.id);
+        if (!peek) return wrapError('MCP_PENDING_NOT_FOUND', 'pending not found or expired', start);
+        // A registry-disabled tool must not run even via confirm. Peek-then-guard so
+        // the pending is NOT consumed: re-enable then confirm, or deny to drop it.
+        const gd = await disabledGuard(peek.tool, start);
+        if (gd) return gd;
         const p = takePending(req.params.id);
         if (!p) return wrapError('MCP_PENDING_NOT_FOUND', 'pending not found or expired', start);
         try {
@@ -327,6 +363,8 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
           if (!handler) {
             return wrapError('MCP_UNKNOWN_TOOL', `Unknown expanded tool: ${tool}`, start);
           }
+          const gd = await disabledGuard(tool, start);
+          if (gd) return gd;
           const principal = getDataService().resolvePrincipal(req);
           // Tag the result with its origin INSIDE the context so resultOriginTag()
           // reads this call's principal (relayed vs local).

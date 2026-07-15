@@ -39,6 +39,7 @@ import {
 } from './tools/definitions';
 import { EXPANDED_TOOL_DEFS } from './tools/expanded';
 import { logToolCall } from './mcp-logger';
+import { applyOverlayToToolDefs, isToolDisabled, disabledResult, type OverlayProvider, type ToolOverlay } from './registry/overlay';
 
 export interface McpToolResult {
   content: Array<{ type: string; text: string }>;
@@ -414,11 +415,24 @@ export function getLmAssistInstructions(): string {
 /** @deprecated Back-compat alias — prefer getLmAssistInstructions() (env-aware). */
 export const LM_ASSIST_INSTRUCTIONS = LM_ASSIST_INSTRUCTIONS_BODY;
 
-export function configureMcpServer(server: Server, dispatch: McpToolDispatcher): void {
+/**
+ * @param overlay Optional tool-registry overlay provider (spec §4.4). When present,
+ *   tools/list drops disabled tools + swaps overridden descriptions, and tools/call
+ *   rejects disabled tools BEFORE dispatch — consulted per request, so registry edits
+ *   apply live with no restart. Absent ⇒ identical behavior to before the registry
+ *   existed. Provider errors fail open (defaults served) — the registry is a
+ *   management layer, not a security boundary.
+ */
+export function configureMcpServer(server: Server, dispatch: McpToolDispatcher, overlay?: OverlayProvider): void {
   assertScopesCoverTools();
 
+  const currentOverlay = async (): Promise<ToolOverlay | null> => {
+    if (!overlay) return null;
+    try { return await overlay.get(); } catch { return null; }
+  };
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...LM_ASSIST_TOOL_DEFS],
+    tools: applyOverlayToToolDefs(LM_ASSIST_TOOL_DEFS, await currentOverlay()),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -428,7 +442,7 @@ export function configureMcpServer(server: Server, dispatch: McpToolDispatcher):
 
     let result: McpToolResult;
     try {
-      result = await dispatch(name, args);
+      result = isToolDisabled(await currentOverlay(), name) ? disabledResult(name) : await dispatch(name, args);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       result = { content: [{ type: 'text', text: `Error: ${msg}` }], isError: true };

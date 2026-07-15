@@ -29,6 +29,7 @@ import { createVectorRoutes } from './vector.routes';
 import { createAgentRoutes } from './agent.routes';
 import { createGithubRoutes } from './github.routes';
 import { createMcpApiRoutes } from './mcp-api.routes';
+import { createMcpToolsRoutes } from './mcp-tools.routes';
 import { createDevModeRoutes } from './dev-mode.routes';
 import { createProjectSettingsRoutes } from './project-settings.routes';
 import { createSkillRoutes } from './skills.routes';
@@ -97,6 +98,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createContextRoutes(ctx),
     ...createVectorRoutes(ctx),
     ...createMcpApiRoutes(ctx),
+    ...createMcpToolsRoutes(ctx),
     ...createDevModeRoutes(ctx),
     ...createProjectSettingsRoutes(ctx),
     ...createSkillRoutes(ctx),

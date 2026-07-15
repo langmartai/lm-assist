@@ -43,6 +43,8 @@ import { handleReadConversation } from '../../mcp-server/tools/read-conversation
 import { EXPANDED_HANDLERS } from '../../mcp-server/tools/expanded';
 import { evaluateAccess } from '../../mcp-server/access-control';
 import { createPending } from '../../mcp-server/mcp-pending';
+import { sharedLiveOverlay } from '../../mcp-server/registry/overlay-live';
+import { isToolDisabled, disabledResult } from '../../mcp-server/registry/overlay';
 
 // Dispatcher for StreamableHTTP mode — runs each tool in-process against
 // the data stores that already live in this core API process. No HTTP
@@ -83,7 +85,9 @@ function buildServer(): Server {
     { name, version: '2.0.0' },
     { capabilities: { tools: {} }, instructions: getLmAssistInstructions() },
   );
-  configureMcpServer(server, dispatch);
+  // Tool-registry overlay (spec §4.4): fresh Server per request + per-request provider
+  // reads ⇒ registry edits reach tools/list + tools/call live, no Core restart.
+  configureMcpServer(server, dispatch, sharedLiveOverlay());
   return server;
 }
 
@@ -157,6 +161,14 @@ export async function handleMcpRequest(
     const toolName = String(b.params?.name || '');
     const reqId = b.id ?? null;
     if (evaluateAccess(toolName).decision === 'pending') {
+      // Registry-disable OUTRANKS the gate: a disabled+gated tool must answer
+      // TOOL_DISABLED, not park as a pending that could later execute on confirm.
+      let disabled = false;
+      try { disabled = isToolDisabled(await sharedLiveOverlay().get(), toolName); } catch { /* fail-open */ }
+      if (disabled) {
+        sendMcpMessage(res, { jsonrpc: '2.0', id: reqId, result: disabledResult(toolName) });
+        return;
+      }
       const p = createPending(
         toolName,
         (b.params?.arguments as Record<string, unknown>) || {},
@@ -171,8 +183,8 @@ export async function handleMcpRequest(
               type: 'text',
               text:
                 `⏸ pending_confirmation\n\nThe tool "${toolName}" is gated for admin approval and was NOT ` +
-                `executed — it needs out-of-band confirmation.\n\npendingId: ${p.id}\n\nConfirm or deny it in ` +
-                `the lm-assist MCP settings tab, or POST /mcp/pending/${p.id}/confirm . Expires in 10 minutes.`,
+                `executed — it needs out-of-band confirmation.\n\npendingId: ${p.id}\n\nConfirm or deny it on ` +
+                `the lm-assist MCP Tools page (/mcp-tools), or POST /mcp/pending/${p.id}/confirm . Expires in 10 minutes.`,
             },
           ],
         },

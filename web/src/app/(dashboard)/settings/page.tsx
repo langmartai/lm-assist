@@ -1,11 +1,11 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import Link from 'next/link';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { detectAppMode, workerFetch } from '@/lib/api-client';
 import { useExperiment } from '@/hooks/useExperiment';
 import { usePlatform } from '@/hooks/usePlatform';
-import McpAccessTab from './McpAccessTab';
 import MemoryTab from './MemoryTab';
 import {
   Settings,
@@ -1714,7 +1714,38 @@ export default function SettingsPage() {
 
       {/* ──────────── Tab Content ──────────── */}
       <div style={{ maxWidth: 640 }}>
-        {activeTab === 'mcp' && <McpAccessTab baseUrl={workerBaseUrl} />}
+        {/* MCP tool management moved to the first-class /mcp-tools page (registry +
+            descriptions + on/off + admin gates + pending confirmations) — this tab
+            stays as a pointer so nobody hunts for the old UI. */}
+        {activeTab === 'mcp' && (
+          <div
+            style={{
+              padding: '14px 16px',
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid var(--color-border-default)',
+              background: 'var(--color-bg-elevated)',
+              fontSize: 13,
+              color: 'var(--color-text-secondary)',
+            }}
+          >
+            <div style={{ fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 6 }}>
+              MCP tool management has moved
+            </div>
+            <div style={{ marginBottom: 10 }}>
+              Every MCP tool — descriptions (editable), enable/disable, implementation view, admin-approval
+              gates and pending confirmations — now lives on the dedicated MCP Tools page.
+            </div>
+            {proxy.isProxied ? (
+              <a className="btn btn-sm btn-primary" href={`${proxy.basePath}/mcp-tools`}>
+                Open MCP Tools <ExternalLink size={12} style={{ marginLeft: 4, verticalAlign: -2 }} />
+              </a>
+            ) : (
+              <Link className="btn btn-sm btn-primary" href="/mcp-tools">
+                Open MCP Tools <ExternalLink size={12} style={{ marginLeft: 4, verticalAlign: -2 }} />
+              </Link>
+            )}
+          </div>
+        )}
         {activeTab === 'memory' && <MemoryTab baseUrl={workerBaseUrl} />}
 
         {/* ═══════════════ CONNECTION TAB ═══════════════ */}
