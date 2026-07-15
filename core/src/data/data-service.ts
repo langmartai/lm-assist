@@ -343,6 +343,15 @@ export class DataService {
 let instance: DataService | null = null;
 let engineInstance: SyncEngine | null = null;
 
+/** The singleton WITHOUT constructing it. Hot-path consumers (the MCP tool/content
+ *  overlay providers) use this to serve code defaults until something has legitimately
+ *  built the service (boot sync on enabled nodes, data routes, mission store) —
+ *  constructing the full stack (dataset watchers, fabric peer, sync engine) from a
+ *  tools/list or guide call would leak lifecycle handles into short-lived processes. */
+export function peekDataService(): DataService | null {
+  return instance;
+}
+
 export function getDataService(): DataService {
   if (!instance) {
     const datasets = getDatasetRegistry();

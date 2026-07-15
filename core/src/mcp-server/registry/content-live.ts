@@ -5,7 +5,18 @@
  *  boundary), invalidation hook for the /assist-content write routes so a local edit is
  *  visible on the very next bootstrap/guide call. */
 import type { ContentState } from './content-model';
+import type { ContentDoc } from './content-model';
 import { listContentDocs } from './content-store';
+import { peekDataService } from '../../data/data-service';
+
+/** Default doc source: read the registry ONLY when the data service is already up
+ *  (peek — never construct); see overlay-live.ts for the full rationale. guide/
+ *  bootstrap fire this on every call, including in bare unit-test processes. */
+function listDocsIfServiceUp(): Promise<ContentDoc[]> {
+  const svc = peekDataService();
+  if (!svc || !svc.isEnabled()) return Promise.resolve([]);
+  return listContentDocs();
+}
 
 export interface ContentOverlayProvider {
   /** id → delta state for every stored doc; null on store failure (fail-open). */
@@ -18,7 +29,7 @@ export function createLiveContentOverlayProvider(opts?: {
   list?: typeof listContentDocs;
 }): ContentOverlayProvider {
   const ttl = opts?.ttlMs ?? 1500;
-  const list = opts?.list ?? (() => listContentDocs());
+  const list = opts?.list ?? listDocsIfServiceUp;
   let cached: { at: number; map: ReadonlyMap<string, ContentState> | null } | null = null;
   return {
     async get() {

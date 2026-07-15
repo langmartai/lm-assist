@@ -67,39 +67,25 @@ export function createOverlayDocStore<S extends Record<string, unknown>>(spec: O
   /** The live adapter over getDataService(). dataServiceEnabled off => isEnabled()
    *  false => no-op reads / coded-throw writes. Creation happens on the WRITE path
    *  only: the first write establishes the origin, exactly like the workflow registry.
-   *
-   *  The settings gate runs BEFORE getDataService(): constructing the service (dataset
-   *  watchers, fabric peer, sync engine) just to learn it's disabled would drag the
-   *  full data stack into every bootstrap/guide call and tools/list — and its open
-   *  handles keep bare unit-test processes alive forever (the cluster-guide hang the
-   *  regression gate caught). Settings are an mtime-cached file read: cheap, no handles. */
-  const settingsEnabled = (): boolean => {
-    try {
-      const { getProjectSettings } = require('../../project-settings') as typeof import('../../project-settings');
-      return getProjectSettings().dataServiceEnabled === true;
-    } catch {
-      return false;
-    }
-  };
+   *  (Hot-path construction avoidance lives in the PROVIDERS — overlay-live /
+   *  content-live gate on peekDataService() — not here: the store is the explicit
+   *  management surface, and its tests mock getDataService directly.) */
   function makeLivePort(): OverlayDocPort<S> {
     return {
-      isEnabled: () => settingsEnabled() && getDataService().isEnabled(),
+      isEnabled: () => getDataService().isEnabled(),
       get: async (name) => {
-        if (!settingsEnabled()) return null;
         const svc = getDataService();
         if (!svc.isEnabled()) return null;
         const r = await svc.get(systemCtx(), spec.dataset, name);
         return r.ok && r.value ? recordToDoc(r.value.fields) : null;
       },
       list: async () => {
-        if (!settingsEnabled()) return [];
         const svc = getDataService();
         if (!svc.isEnabled()) return [];
         const r = await svc.query(systemCtx(), spec.dataset, { limit: 10000 } as any);
         return r.ok ? r.value.records.map((rec) => recordToDoc(rec.fields)) : [];
       },
       put: async (d) => {
-        if (!settingsEnabled()) throwDisabled(`${spec.label} doc write "${d.name}"`);
         const svc = getDataService();
         if (!svc.isEnabled()) throwDisabled(`${spec.label} doc write "${d.name}"`);
         await ensureDataset(svc);
