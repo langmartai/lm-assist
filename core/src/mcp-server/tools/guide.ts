@@ -56,7 +56,15 @@ THE ONLY ORDERING THAT MATTERS (a safety boundary, not a ranking of lm-assist vs
 
 PRACTICAL: default to the single (default) node; pass node=<host> (after list_nodes) when the user means another machine. Call guide(topic=...) for the recipe for any task. On a host WITHOUT lm-assist installed but where you need its LOCAL services (e.g. a fresh cloud / CCR container that only has this connector), see guide("install").
 
-MANY PATHS TO ONE RESOURCE: a target is often reachable SEVERAL ways at once (local bash on-host, ssh host→host, THIS connector node-targeted, terminal-driving, or another connector's fleet). Pick the most direct one that actually reaches it; if a path errors/goes unavailable, note it and fall over to the next — but REVISIT it later (it may recover; down once ≠ down forever) and fall forward to the best path when it's back. Full discipline: guide("access-paths").`,
+MANY PATHS TO ONE RESOURCE: a target is often reachable SEVERAL ways at once (local bash on-host, ssh host→host, THIS connector node-targeted, terminal-driving, or another connector's fleet). Pick the most direct one that actually reaches it; if a path errors/goes unavailable, note it and fall over to the next — but REVISIT it later (it may recover; down once ≠ down forever) and fall forward to the best path when it's back. Full discipline: guide("access-paths").
+
+FLOW
+\`\`\`mermaid
+flowchart LR
+  L["your local CLAUDE.md / memory / skills"] -->|"HOW to work here"| Y[you]
+  A["lm-assist tools"] -->|"REACH: other nodes, sessions, data, actions"| Y
+  Y --> C["combine: local guides the how, lm-assist acts beyond this machine"]
+\`\`\``,
 
   'cross-node': `# Guide: single-node vs cross-node (READ THIS for multi-machine)
 MODEL: each host behind this connector is a "node". \`list_nodes\` → hostId, hostname, platform, online, and which is DEFAULT. EVERY tool takes an optional \`node\` (hostId or hostname).
@@ -140,7 +148,16 @@ End-to-end recipes. Each step names a tool; add \`node=<host>\` to target anothe
     after deploying worker code: refresh_connector_tools → new tools surface in a FRESH session (not the current one — tool lists load at session start). set_connector_tool_access(enable[]/block[]) to show/hide. list_claudeai_connectors for the uuid + tool count.
 
 12) GREP CODE/LOGS STORED IN DATA
-    data_get(dataset, id, field="src", grep="TODO|FIXME", context=1, key) → then field="src", lines="<range around a hit>" to read context. Use wildcard=true to treat the pattern as a *,? glob.`,
+    data_get(dataset, id, field="src", grep="TODO|FIXME", context=1, key) → then field="src", lines="<range around a hit>" to read context. Use wildcard=true to treat the pattern as a *,? glob.
+
+FLOW
+\`\`\`mermaid
+flowchart LR
+  Q["task"] --> ONE{"one node?"}
+  ONE -->|yes| T["pick topic tools (guide(topic))"]
+  ONE -->|no| LN["list_nodes"] --> NODE["same tools + node=..."]
+  T & NODE --> CHAIN["chain tools; big results are paged - drill with params"]
+\`\`\``,
 
   roles: `# Guide: worker role + orchestration (set_role / report_status / decide_gate)
 A session can take ONE active role: WORKER. Assigned by itself OR by a launcher; it owns its OWN task list (groups/sub-tasks) — not necessarily orchestrator-created.
@@ -148,7 +165,17 @@ BECOME A WORKER: set_role({sessionId, task:{title, group?, parentId?}}). Appends
 REPORT (3 ways): (1) ALWAYS print a ⟦WORKER-STATUS⟧ … ⟦/WORKER-STATUS⟧ block into your output each turn — the canonical channel, always on. (2) Way 2 (push, SEPARATE call): when an orchestrator is active, call send_session_message to message it directly. (3) Way 3 (durable, SEPARATE call): call report_status({sessionId, taskId, status, progress?, detail?}) to write your record so an orchestrator can query it. Way 2 (send_session_message) and Way 3 (report_status) are DIFFERENT calls.
 AGREE-GATE: before a sensitive step, report_status({status:'need_approval', reason}) → opens a gate; print it and STOP until agreed. An orchestrator agrees via decide_gate({sessionId, taskId, decision:'agree'|'reject'}); with no orchestrator, a human types the decision into your session.
 ORCHESTRATOR (optional; none/active/inactive): reading a worker (worker_status / list_workers) STAMPS the reader as its orchestrator and refreshes lastContact (>5 min stale ⇒ inactive). Drive a worker via send_session_message or CCR; agree a gate via decide_gate.
-CROSS-NODE: all five tools take node=<host>.`,
+CROSS-NODE: all five tools take node=<host>.
+
+FLOW
+\`\`\`mermaid
+flowchart TD
+  SR["set_role(worker)"] --> RS["report_status as you work"]
+  RS -->|need_approval| G["gate PAUSES the work"]
+  G --> D["human decide_gate(approve/reject)"]
+  D --> RS
+  RS --> DONE["final report_status: done"]
+\`\`\``,
 
   install: `# Guide: install & build lm-assist FROM THE REPO on this host (dev + prod)
 WHEN: this connector already works with NO local install — its tools run on the user's ALREADY-INSTALLED hosts (see "cross-node"). Install locally ONLY to make THIS machine its OWN lm-assist node (run its own Core/Web, serve the MCP locally, or register it to a hub). A fresh cloud / CCR container has the connector but NO local lm-assist — install from the repo before expecting local :3100/:3200 services.
@@ -176,7 +203,16 @@ GOTCHAS:
 - chokidar re-break: installing from THIS REPO's tgz is safe (carries ^3.6.0). But "npm install -g lm-assist@latest" from the public registry can ship chokidar ^5 -> ERR_REQUIRE_ESM on boot. Install from the local tgz until a fixed version is published.
 - "lm-assist upgrade" (no flag) reinstalls from npm and OVERWRITES a local-tgz build — use "lm-assist upgrade --from ./<tgz>" to keep your source build.
 - Agent-SDK (@anthropic-ai/claude-agent-sdk) is ESM-only; tsc (module:commonjs) must NOT downlevel its dynamic import (sdk-runner.ts indirects it via new Function('m','return import(m)')). Already fixed in source — a concern only if you edit those imports.
-- HUB IS A SEPARATE, USER-CONFIRMED STEP: install does NOT connect to any hub and writes NO hub key. Run "lm-assist setup --key <KEY>" ONLY with the user's explicit go-ahead (never embed a key). Until then Hub Client = Not configured and the local services still work.`,
+- HUB IS A SEPARATE, USER-CONFIRMED STEP: install does NOT connect to any hub and writes NO hub key. Run "lm-assist setup --key <KEY>" ONLY with the user's explicit go-ahead (never embed a key). Until then Hub Client = Not configured and the local services still work.
+
+FLOW
+\`\`\`mermaid
+flowchart TD
+  R["clone repo"] --> I["npm install --ignore-scripts (root!)"]
+  I --> B["./core.sh build && ./core.sh start"] --> DEV["dev :3200/:3948"]
+  I --> PACK["npm pack -> npm i -g ./lm-assist-*.tgz"] --> PROD["prod :3100/:3848 (lm-assist start)"]
+  DEV & PROD --> V["curl /health -> runningFrom"]
+\`\`\``,
 
   data: `# Guide: data service (structured store + query)
 GOAL: store/retrieve structured records — \`cache\` (key-value), \`vector\` (semantic), \`sql\` (relational) — on one or more hosts, with scoped access.
@@ -193,7 +229,17 @@ SINGLE-NODE
 6. WRITE: \`data_put(dataset, {id,fields,text?,metadata?}, key)\` (needs write; ~1MiB/record). \`data_delete(dataset, id, key)\`.
 
 CROSS-NODE: pass \`node=B\` to catalog/get/query/search/put/delete. **Request the key ON node B** (\`data_request_access(node=B)\`) — keys are per-node (else KEY_WRONG_NODE). \`synced\` datasets replicate A↔B; \`cross-node-readable\` allows the read. MANAGEMENT (create/drop/keys/sync/admin, raw SQL) is LOCAL-ONLY — run it from a Claude Code session on that host, not over the connector.
-GOTCHAS: request a key before reading; binary → read a byte range; big records are summarized → use field/grep/lines.`,
+GOTCHAS: request a key before reading; binary → read a byte range; big records are summarized → use field/grep/lines.
+
+FLOW
+\`\`\`mermaid
+flowchart LR
+  CAT["data_catalog"] --> K{"have a key on THAT node?"}
+  K -->|no| REQ["data_request_access (same node you will read!)"]
+  K -->|yes| USE["data_get / data_query / data_search / data_put"]
+  REQ --> USE
+  USE -.-> MGMT["create/drop/sync/keys/SQL = LOCAL-ONLY (not over the connector)"]
+\`\`\``,
 
   sessions: `# Guide: investigate a Claude Code session
 GOAL: understand what happened in a past/running Claude Code run.
@@ -262,7 +308,17 @@ OPERATE FLOW
 6. MANAGE bridges: ccr_remote_list → running remotes (id, mode, webUrl, live); ccr_remote_stop(id) → tear one down (stops the bridge; only kills a tmux WE created, never the user's existing one).
 
 CROSS-NODE: pass node=<host> (after list_nodes) to operate on a session living on another machine.
-GOLDEN RULE: load is always safe; connect = preflight first and respect the verdict — the gate protects a live session's transcript from corruption.`,
+GOLDEN RULE: load is always safe; connect = preflight first and respect the verdict — the gate protects a live session's transcript from corruption.
+
+FLOW
+\`\`\`mermaid
+flowchart TD
+  V{"view or drive?"} -->|view| L["ccr_load (always safe)"]
+  V -->|drive| P["ccr_preflight"]
+  P -->|"verdict ok"| K["ccr_connect / ccr_drive"]
+  P -->|"live session"| STOP["respect the verdict - protects the transcript"]
+  K --> CLOUD["cloud sessions: ccr_cloud_* (start/read/drive/answer/stop)"]
+\`\`\``,
 
   nodes: `# Guide: machines (nodes) + port-forward
 SINGLE + CROSS NODE
@@ -313,7 +369,18 @@ Tools: \`mission_create\` (title+objective; optional projects/dependsOn/env{isol
 
 ONBOARDING AN EXISTING SESSION: from any session, call mission_onboard({}) to hand the CURRENT session to mission control (or mission_onboard({sessionId}) for another one). mode:"standby" (default) = mission control analyzes + watches, the human keeps driving; mode:"handoff" = mission control takes over and drives it to completion per the workflow playbooks (onboard.analyze → drive.<work-type>/recover.stuck/wrapup.completed). Switch anytime with mission_update({id, manageMode:"handoff"|"standby"}) — human-only. The playbooks themselves are editable: mission_workflow_list/get/set/history/rollback.
 
-Requires the data service enabled (cross-node mission store). Settings: missionControllerEnabled, missionControllerIntervalMin, missionControllerMaxNudges, missionControllerModel.`,
+Requires the data service enabled (cross-node mission store). Settings: missionControllerEnabled, missionControllerIntervalMin, missionControllerMaxNudges, missionControllerModel.
+
+FLOW
+\`\`\`mermaid
+flowchart TD
+  C["mission_create (or mission_onboard an existing session)"] --> S["controller schedules: ready?"]
+  S -->|native| SP["mission_spawn (named worker, worktree)"]
+  S -->|cloud| CC["ccr_cloud_start + bind"]
+  SP & CC --> LOOP["adapt loop: read feedback -> drive / answer questions"]
+  LOOP -->|"gate / material pivot"| H["PAUSES for the human"]
+  LOOP --> W["wrapup: resultsAppend -> progress=100 -> done"]
+\`\`\``,
 
   login: `# Guide: log in / re-login for a node (cookie + OAuth)
 Two credentials per host (see auth_status): the claude.ai WEB cookie and the Claude Code OAuth token.
@@ -354,7 +421,16 @@ BUILD / RELEASE ONE CLUSTER AT A TIME:
   This lets you validate a release in a staging cluster before touching prod.
 
 SCOPE NORM (respect other clusters):
-  Each cluster may declare its own scope via \`cluster_describe\`. RESPECT it — do NOT operate on another cluster's nodes, missions, or datasets unless the user explicitly asks. Treat a cluster annotated as frozen, release, or busy as off-limits by default. When a task involves nodes in cluster A, confirm before touching cluster B.`,
+  Each cluster may declare its own scope via \`cluster_describe\`. RESPECT it — do NOT operate on another cluster's nodes, missions, or datasets unless the user explicitly asks. Treat a cluster annotated as frozen, release, or busy as off-limits by default. When a task involves nodes in cluster A, confirm before touching cluster B.
+
+FLOW
+\`\`\`mermaid
+flowchart LR
+  N["node"] --> C["exactly ONE cluster (default if unassigned)"]
+  C --> IN["WITHIN cluster: leader, mission control, dataset sync, build fan-out"]
+  C --> OUT["FLEET-WIDE: cluster map, identity, list_nodes, sessions, memory"]
+  IN -.-> NORM["norm: don't touch another cluster's nodes/missions uninvited"]
+\`\`\``,
 
   'mission-controller': `# Guide: mission-controller — the autonomous controller agent loop contract
 YOU ARE the fleet-elected Mission Controller agent, running in a native session under supervisor oversight. The supervisor sends you a pass directive every \`missionControllerIntervalMin\` minutes. On each pass, follow this loop:
@@ -507,6 +583,16 @@ export const INDEX_PREAMBLE_DEFAULT = [
   '- **Big results are paged/summarized** by default — drill in with the documented params (field/grep/lines, from/to indices) instead of asking for everything.',
   '- **Async:** `agent_execute` returns before the run finishes — poll `get_execution`.',
   '',
+  'FLOW',
+  '```mermaid',
+  'flowchart LR',
+  '  B["bootstrap (once)"] --> O["orientation"]',
+  '  O --> X["cross-node"] --> W["workflows"]',
+  '  W --> DO["act: sessions · data · terminals · ccr · agents"]',
+  '  M["missions"] --> P["processes: controller playbooks drive them"]',
+  '  N["nodes · clusters · machine-access"] -.-> X',
+  '```',
+  '',
 ].join('\n');
 
 function buildIndex(lookup?: ContentLookup | null): string {
@@ -528,6 +614,14 @@ export const BOOTSTRAP_HEADER_DEFAULT = [
   '# lm-assist — capability bootstrap (you have now loaded ALL use cases for this session)',
   '',
   'You called `bootstrap`, so the COMPLETE set of lm-assist use-case playbooks is below — you do not need to look anything else up to start. lm-assist COMPLEMENTS your local CLAUDE.md / memory / skills (it does NOT replace them; they work together — see ORIENTATION). Every tool takes an optional `node` (omit = the default host; pass it, after `list_nodes`, to target another machine). To re-read ONE topic later, call `guide(topic=...)`.',
+  '',
+  'FLOW',
+  '```mermaid',
+  'flowchart LR',
+  '  L["ALL playbooks loaded below"] --> P["jump to the topic section you need"]',
+  '  P --> A["act with its tools (optional node=... after list_nodes)"]',
+  '  A -->|"re-read ONE topic later"| G["guide(topic=...)"]',
+  '```',
 ].join('\n');
 
 /** The whole skill in ONE response — every playbook concatenated (stays in sync with GUIDES). */
