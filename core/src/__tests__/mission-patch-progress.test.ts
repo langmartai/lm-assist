@@ -87,12 +87,18 @@ test('controller actors are FORBIDDEN from patching progress (human-supplied fie
   assert.equal(port.db.get('a')!.progress, null);
 });
 
-test('a patch without progress still ignores unrelated telemetry-ish fields (whitelist regression)', async () => {
+test('telemetry-ish fields are rejected loudly — UNSUPPORTED_FIELD, nothing applied (whitelist regression)', async () => {
+  // 2026-07-15 (mission_3922a14d): silent-ignore is dead — the same body that used to
+  // "succeed" while dropping control/interim now fails fast, and the valid title
+  // alongside them is NOT applied (fail-before-mutate).
   const port = memPort([mk('a')]);
   const r = await handlePatch('a', { title: 't2', control: { nudgeCount: 99 }, interim: { at: 1, text: 'x' } }, port as any, human);
-  assert.equal(r.success, true);
+  assert.equal(r.success, false);
+  assert.equal((r as any).error.code, 'UNSUPPORTED_FIELD');
+  assert.match((r as any).error.message, /control/);
+  assert.match((r as any).error.message, /interim/);
   const m = port.db.get('a')!;
-  assert.equal(m.title, 't2');
+  assert.equal(m.title, 'a', 'mixed valid+unknown applies nothing');
   assert.equal(m.control.nudgeCount, 0, 'control telemetry not patchable');
   assert.equal(m.interim, undefined, 'interim telemetry not patchable');
 });

@@ -2,7 +2,7 @@
 import type { RouteHandler, RouteContext } from '../index';
 import { randomBytes } from 'crypto';
 import { touchActivity, trackResumedNative } from '../../mission/mission-session-reaper';
-import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActor, place, ExecutorState, MissionBinding } from '../../mission/mission-model';
+import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActor, place, ExecutorState, MissionBinding, validateResultsPatch } from '../../mission/mission-model';
 import { resolveMcpActor, upgradeControllerActor } from '../../mission/mission-actor';
 import { normalizeTags, mergeTags, validateParent, validateDependsOn } from '../../mission/mission-graph';
 import {
@@ -43,6 +43,17 @@ const arr = (v: unknown): string[] | undefined => {
   return undefined;
 };
 const VALID_STATUS = new Set<MissionStatus>(['draft', 'active', 'waiting', 'paused', 'blocked', 'done', 'failed']);
+/**
+ * Every field POST/PATCH /mission/:id accepts. Anything else → UNSUPPORTED_FIELD (2026-07-15,
+ * mission_3922a14d) — handlePatch historically dropped unmatched fields silently with
+ * success:true (progress and results were both lost that way). Meta keys `id` (MCP passthrough,
+ * must match the URL) and `_actor` (transport hint) are tolerated, never dropped.
+ */
+const SUPPORTED_PATCH_FIELDS = [
+  'title', 'objective', 'plan', 'nextSteps', 'dependsOn', 'projects', 'tags', 'parentId',
+  'status', 'manageMode', 'progress', 'env', 'binding', 'results', 'resultsAppend', 'resultsReplace',
+] as const;
+const SUPPORTED_PATCH_SET = new Set<string>(SUPPORTED_PATCH_FIELDS);
 
 // --- leader-anchoring (missions live on the elected leader) ---
 // Missions must live on the leader's store: the leader's supervisor drives them
@@ -208,6 +219,16 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
   const who = actor ?? await actorFor(b);
   const m = await getMission(id, port);
   if (!m) return fail('NOT_FOUND', `no mission ${id}`);
+  // No silent drops: reject unknown fields BEFORE any mutation (a body mixing valid +
+  // unknown applies nothing). `_actor` was consumed by actorFor above when present.
+  const unknownFields = Object.keys(b).filter((k) => !SUPPORTED_PATCH_SET.has(k) && k !== 'id' && k !== '_actor');
+  if (unknownFields.length) {
+    return fail('UNSUPPORTED_FIELD',
+      `unsupported field(s): ${unknownFields.map((k) => `"${k}"`).join(', ')} — supported: ${SUPPORTED_PATCH_FIELDS.join(', ')}`);
+  }
+  if (b.id !== undefined && String(b.id) !== id) {
+    return fail('INVALID_INPUT', `body.id "${String(b.id)}" does not match the URL mission id "${id}"`);
+  }
   if (str(b.objective)) m.objective = str(b.objective)!;
   if (str(b.title)) m.title = str(b.title)!;
   if (str(b.plan) !== undefined) m.plan = str(b.plan);
@@ -298,6 +319,34 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
       }
       m.binding = binding;
     }
+  }
+  // Results (2026-07-15, mission_3922a14d): the mission's outcome/audit record is writable.
+  // resultsAppend (entry | entries) is open to ANY actor — the controller's wrap flow records
+  // completion evidence here. `results` is a FULL replace: explicit flag + human-only, so an
+  // LLM can never wipe the record; history keeps the replaced content (per-field truncated).
+  if (b.results !== undefined && b.resultsAppend !== undefined) {
+    return fail('INVALID_INPUT', 'results and resultsAppend are mutually exclusive — append with resultsAppend, or replace with results + resultsReplace:true');
+  }
+  const replaceFlag = b.resultsReplace === true || b.resultsReplace === 'true';
+  if (b.resultsReplace !== undefined && !replaceFlag) {
+    return fail('INVALID_INPUT', `resultsReplace must be true (got ${JSON.stringify(b.resultsReplace)}) — set resultsReplace:true with the full results array, or omit it and use resultsAppend`);
+  }
+  if (replaceFlag && b.results === undefined) {
+    return fail('INVALID_INPUT', 'resultsReplace:true requires results (the full replacement array)');
+  }
+  if (b.results !== undefined && !replaceFlag) {
+    return fail('INVALID_INPUT', 'results is a full REPLACE and requires resultsReplace:true — to add completion records use resultsAppend (entry or array)');
+  }
+  if (b.resultsAppend !== undefined) {
+    const v = validateResultsPatch(b.resultsAppend, 'append', who, m.results?.length ?? 0, Date.now());
+    if (!v.ok) return fail('INVALID_INPUT', v.message);
+    m.results = [...(m.results ?? []), ...v.entries];
+  }
+  if (b.results !== undefined) {
+    if (isControllerActor(who)) return fail('FORBIDDEN', 'results replace is human-only — controllers append completion records with resultsAppend');
+    const v = validateResultsPatch(b.results, 'replace', who, 0, Date.now());
+    if (!v.ok) return fail('INVALID_INPUT', v.message);
+    m.results = v.entries;
   }
   await putMission(m, port, { actor: who });
   return ok(m);
