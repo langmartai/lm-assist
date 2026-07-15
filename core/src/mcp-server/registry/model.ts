@@ -1,30 +1,26 @@
 /** Pure MCP tool-registry model (spec §4.1): overlay-only docs keyed by tool name.
  *  Defaults ALWAYS come from code — a doc stores only the delta {descriptionOverride, enabled}.
- *  Names/schemas/scopes/handlers are code-owned and never appear here. No IO. */
-import type { MissionActor } from '../../mission/mission-model';
+ *  Names/schemas/scopes/handlers are code-owned and never appear here. No IO.
+ *
+ *  The doc/change/port shapes are the GENERIC overlay-doc types (doc-model.ts) shared
+ *  with the assist-content registry — persisted records are byte-identical to before
+ *  the extraction. */
+import type { OverlayChange, OverlayDoc, Validation as GenericValidation } from './doc-model';
+
+/** The tool registry's delta state — everything else on a doc is bookkeeping.
+ *  (A type alias, not an interface: aliases satisfy the generic store's
+ *  Record<string, unknown> constraint; interfaces lack the implicit index signature.) */
+export type ToolRegistryState = {
+  descriptionOverride: string | null;  // null ⇒ the code default stands
+  enabled: boolean;                    // false ⇒ omitted from tools/list + calls rejected
+};
 
 /** One registry revision. `state` carries the FULL post-change delta so rollback can
  *  reproduce any listed rev without a separate snapshot dataset (docs are tiny —
  *  the deliberate deviation from workflow-store's 64KiB-body snapshots). */
-export interface ToolRegistryChange {
-  rev: number;
-  at: number;
-  actor: MissionActor;
-  state: { descriptionOverride: string | null; enabled: boolean };
-  changes: Record<string, { from: unknown; to: unknown }>;
-}
+export type ToolRegistryChange = OverlayChange<ToolRegistryState>;
 
-export interface ToolRegistryDoc {
-  name: string;                        // MCP tool name (underscores allowed, unlike workflow ids)
-  descriptionOverride: string | null;  // null ⇒ the code default stands
-  enabled: boolean;                    // false ⇒ omitted from tools/list + calls rejected
-  rev: number;                         // monotonic
-  history: ToolRegistryChange[];       // inline, newest last, capped
-  createdBy: MissionActor;
-  lastUpdatedBy: MissionActor;
-  createdAt: number;
-  updatedAt: number;
-}
+export type ToolRegistryDoc = OverlayDoc<ToolRegistryState>;
 
 export const MAX_DESCRIPTION_OVERRIDE_BYTES = 2048;
 export const TOOL_REGISTRY_HISTORY_CAP = 20;
@@ -42,7 +38,7 @@ const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
  *  mistaken POST against the read endpoint. */
 const RESERVED_NAMES: ReadonlySet<string> = new Set(['overlay']);
 
-export type Validation = { ok: true } | { ok: false; code: string; message: string };
+export type Validation = GenericValidation;
 
 export function validateToolName(name: string): Validation {
   if (typeof name !== 'string' || !NAME_RE.test(name)) {
