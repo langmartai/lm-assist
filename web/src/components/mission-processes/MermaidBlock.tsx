@@ -12,11 +12,18 @@ let renderSeq = 0;
  * the raw fence text is shown with the error instead (the page must never crash
  * on a bad diagram in a playbook doc).
  *
- * XSS posture: doc bodies are semi-trusted (human + controller authored, but any
- * registry writer could smuggle markup into labels). Mermaid runs at its default
- * securityLevel 'strict', htmlLabels are disabled so labels stay plain SVG text,
- * and the produced SVG is passed through DOMPurify before injection.
+ * XSS posture: doc bodies are semi-trusted (human + controller authored, attributed
+ * and rollback-able, but any registry writer could try to smuggle markup into
+ * labels). Mermaid runs at its default securityLevel 'strict', which HTML-encodes
+ * label text and forbids click/javascript directives — that is the sanitizer here.
+ * DOMPurify was tried and is structurally incompatible: mermaid-11 flowcharts
+ * render every node label as foreignObject HTML (the htmlLabels option is not
+ * honored), and DOMPurify empties foreignObject children by design (mXSS defense),
+ * which blanks every label. As defense-in-depth, INJECT_GUARD refuses to inject
+ * any SVG that still carries scripty constructs (falls back to the raw block) —
+ * verified headless with a hostile-label probe against the live pipeline.
  */
+const INJECT_GUARD = /<script|(?:^|[\s"'<])on[a-z]+\s*=|javascript:/i;
 export function MermaidBlock({ chart }: { chart: string }) {
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -27,19 +34,14 @@ export function MermaidBlock({ chart }: { chart: string }) {
     setError(null);
     (async () => {
       try {
-        const [{ default: mermaid }, { default: DOMPurify }] = await Promise.all([import('mermaid'), import('dompurify')]);
+        const { default: mermaid } = await import('mermaid');
         if (!mermaidReady) {
-          mermaid.initialize({
-            startOnLoad: false,
-            theme: 'dark',
-            suppressErrorRendering: true,
-            flowchart: { htmlLabels: false },
-          });
+          mermaid.initialize({ startOnLoad: false, theme: 'dark', suppressErrorRendering: true });
           mermaidReady = true;
         }
         const { svg: rendered } = await mermaid.render(`lm-mermaid-${++renderSeq}`, chart);
-        const clean = DOMPurify.sanitize(rendered, { USE_PROFILES: { svg: true, svgFilters: true } });
-        if (alive) setSvg(clean);
+        if (INJECT_GUARD.test(rendered)) throw new Error('diagram output failed the script-content guard');
+        if (alive) setSvg(rendered);
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : String(e));
       }
