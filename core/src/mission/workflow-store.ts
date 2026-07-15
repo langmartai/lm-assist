@@ -9,7 +9,9 @@ import { getProjectSettings } from '../project-settings';
 import type { CallCtx } from '../data/data-service';
 import type { DataRecord } from '../data/types';
 
-const DATASET = 'mission-workflows';
+/** Dataset id shared with the write-side origin-anchor in mission.routes.ts. */
+export const WORKFLOW_DATASET = 'mission-workflows';
+const DATASET = WORKFLOW_DATASET;
 const SNAP_DATASET = 'mission-workflow-history';
 /** I5 — retention: keep only the most recent N snapshots per doc. Workflow docs can be edited
  *  frequently (controller self-edits + human edits), and each snapshot holds a FULL body (up to
