@@ -32,7 +32,7 @@ export interface MissionControl {
   waitReason?: 'dependency' | 'resource';
   gaveUp?: boolean;
 }
-export interface MissionResult { at: number; ref: string; summary?: string; }
+export interface MissionResult { at: number; ref: string; summary?: string; by?: MissionActor; }
 export interface MissionAdjustment { at: number; trigger: string; change: string; by: 'controller' | 'user'; actor: MissionActor; }
 
 export interface FieldDiff { from: unknown; to: unknown; }
@@ -68,6 +68,7 @@ export function withActorBackfill(m: Mission): Mission {
   if (m.parentId === undefined) m.parentId = null;
   if (typeof m.rev !== 'number') m.rev = 1;
   if (!Array.isArray(m.history)) m.history = [];
+  if (!Array.isArray(m.results)) m.results = [];
   if (Array.isArray(m.adjustments)) {
     for (const a of m.adjustments) {
       if (!a.actor) {
@@ -77,6 +78,90 @@ export function withActorBackfill(m: Mission): Mission {
     }
   }
   return m;
+}
+
+export const RESULT_REF_MAX = 500;
+export const RESULT_SUMMARY_MAX = 2000;
+export const RESULTS_MAX_PER_CALL = 20;
+export const RESULTS_MAX_TOTAL = 100;
+
+export type ResultsValidation =
+  | { ok: true; entries: MissionResult[] }
+  | { ok: false; message: string };
+
+/**
+ * Validate + normalize a patch-supplied results write.
+ * Append (`resultsAppend`, entry or array): entries are {ref, summary} — summary required
+ * (a completion record must say what was delivered); `at`/`by` are stamped server-side.
+ * Replace (`results` + resultsReplace:true, array only): entries round-trip {at, by} and
+ * summary is optional so telemetry-era records survive read-modify-write curation.
+ * Unknown entry keys are rejected — the same no-silent-drop contract as the patch body.
+ */
+export function validateResultsPatch(
+  raw: unknown,
+  mode: 'append' | 'replace',
+  actor: MissionActor,
+  existingCount: number,
+  now: number,
+): ResultsValidation {
+  const field = mode === 'append' ? 'resultsAppend' : 'results';
+  let v = raw;
+  if (typeof v === 'string') {
+    try { v = JSON.parse(v); } catch { return { ok: false, message: `${field} is a string that is not valid JSON` }; }
+  }
+  const list = Array.isArray(v) ? v : mode === 'append' ? [v] : null;
+  if (list === null) return { ok: false, message: 'results must be the full replacement array of entries' };
+  if (mode === 'append' && list.length === 0) return { ok: false, message: 'resultsAppend is empty — nothing to append' };
+  if (mode === 'append' && list.length > RESULTS_MAX_PER_CALL) {
+    return { ok: false, message: `resultsAppend accepts at most ${RESULTS_MAX_PER_CALL} entries per call (got ${list.length})` };
+  }
+  const total = mode === 'append' ? existingCount + list.length : list.length;
+  if (total > RESULTS_MAX_TOTAL) return { ok: false, message: `results would hold ${total} entries — the cap is ${RESULTS_MAX_TOTAL}` };
+  const allowed = mode === 'append' ? ['ref', 'summary'] : ['ref', 'summary', 'at', 'by'];
+  const out: MissionResult[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const e = list[i] as unknown;
+    if (!e || typeof e !== 'object' || Array.isArray(e)) {
+      return { ok: false, message: `${field} entry ${i} is not an object — each entry is {${allowed.join(', ')}}` };
+    }
+    const rec = e as Record<string, unknown>;
+    const unknown = Object.keys(rec).filter((k) => !allowed.includes(k));
+    if (unknown.length) {
+      return { ok: false, message: `${field} entry ${i} has unsupported key(s): ${unknown.map((k) => `"${k}"`).join(', ')} — allowed: ${allowed.join(', ')}` };
+    }
+    const ref = rec.ref;
+    if (typeof ref !== 'string' || !ref.trim()) return { ok: false, message: `${field} entry ${i}: ref (non-empty string) is required` };
+    if (ref.length > RESULT_REF_MAX) return { ok: false, message: `${field} entry ${i}: ref exceeds ${RESULT_REF_MAX} chars (${ref.length})` };
+    const summary = rec.summary;
+    if (mode === 'append' && (typeof summary !== 'string' || !summary.trim())) {
+      return { ok: false, message: `${field} entry ${i}: summary (non-empty string) is required — say what was delivered` };
+    }
+    if (summary !== undefined && (typeof summary !== 'string' || !summary.trim())) {
+      return { ok: false, message: `${field} entry ${i}: summary must be a non-empty string when present` };
+    }
+    if (typeof summary === 'string' && summary.length > RESULT_SUMMARY_MAX) {
+      return { ok: false, message: `${field} entry ${i}: summary exceeds ${RESULT_SUMMARY_MAX} chars (${summary.length})` };
+    }
+    const entry: MissionResult = { at: now, ref };
+    if (typeof summary === 'string') entry.summary = summary;
+    if (mode === 'append') {
+      entry.by = actor;
+    } else {
+      if (rec.at !== undefined) {
+        const at = Number(rec.at);
+        if (!Number.isFinite(at) || at <= 0) return { ok: false, message: `${field} entry ${i}: at must be a positive epoch-ms number` };
+        entry.at = at;
+      }
+      if (rec.by !== undefined) {
+        if (!rec.by || typeof rec.by !== 'object' || Array.isArray(rec.by)) {
+          return { ok: false, message: `${field} entry ${i}: by must be an actor object` };
+        }
+        entry.by = rec.by as MissionActor;
+      }
+    }
+    out.push(entry);
+  }
+  return { ok: true, entries: out };
 }
 
 export interface Mission {

@@ -73,11 +73,13 @@ export const MISSION_TOOL_DEFS = [
   {
     name: 'mission_update',
     description:
-      'Update a mission (objective/title/plan/nextSteps/status/env/dependsOn/binding). ' +
-      'Use to refine, pause, unblock, or BIND a spawned executor. After you ccr_cloud_start (or natively launch) a worker, ' +
+      'Update a mission (objective/title/plan/nextSteps/status/env/dependsOn/binding/resultsAppend). ' +
+      'Use to refine, pause, unblock, BIND a spawned executor, or RECORD completion evidence. After you ccr_cloud_start (or natively launch) a worker, ' +
       'call mission_update({id, binding:{sessionId:"<the worker sid>", kind:"worker"|"orchestrator"}}) so the supervisor ' +
       'can MONITOR it — binding is REQUIRED for the supervisor to detect the worker\'s pendingQuestion and engage you to ' +
-      'answer it FAST (a cloud worker left unanswered idle-suspends and cannot resume). Pass binding:null to unbind.',
+      'answer it FAST (a cloud worker left unanswered idle-suspends and cannot resume). Pass binding:null to unbind. ' +
+      'When wrapping up, resultsAppend records what was delivered ({ref, summary} — works for controllers). ' +
+      'Unknown fields are rejected (UNSUPPORTED_FIELD), never silently dropped.',
     inputSchema: obj(
       {
         id: S,
@@ -98,6 +100,17 @@ export const MISSION_TOOL_DEFS = [
           description: 'Bind a spawned executor: {sessionId, kind:"worker"|"orchestrator", node?}. Required so the supervisor monitors it + answers its question fast.',
           properties: { sessionId: { type: 'string' as const }, kind: { type: 'string' as const, enum: ['worker', 'orchestrator'] }, node: { type: 'string' as const } },
         },
+        resultsAppend: {
+          type: 'array' as const,
+          description: 'APPEND completion record(s) to the mission results — the wrap-flow write, allowed for any actor including controllers. Each entry: ref = commit/PR/path/url evidencing the outcome (≤500 chars), summary = what was delivered (required, ≤2000 chars). Server stamps at + actor attribution. Caps: 20/call, 100 total. A single {ref,summary} object is also accepted.',
+          items: { type: 'object' as const, properties: { ref: S, summary: S }, required: ['ref', 'summary'] },
+        },
+        results: {
+          type: 'array' as const,
+          description: 'FULL REPLACE of the results audit record — requires resultsReplace:true and is HUMAN-only (controllers: use resultsAppend). Entries {ref, summary?, at?, by?} round-trip for curation; [] clears.',
+          items: { type: 'object' as const, properties: { ref: S, summary: S, at: { type: 'number' as const }, by: { type: 'object' as const } } },
+        },
+        resultsReplace: { type: 'boolean' as const, description: 'Must be true when sending results (full replace). Human-only.' },
       },
       ['id'],
     ),
