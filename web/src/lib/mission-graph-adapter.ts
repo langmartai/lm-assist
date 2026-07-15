@@ -4,6 +4,12 @@ import type { MissionNode, MissionEdge, MissionFilter, MissionViewDisplay } from
 const PALETTE = ['#60a5fa', '#f87171', '#34d399', '#fbbf24', '#a78bfa', '#fb923c', '#22d3ee', '#f472b6', '#a3e635', '#e879f9', '#2dd4bf', '#facc15'];
 
 /** Deterministic color for a group value (groupBy a tag dimension). */
+/** Card-facing progress label: a mission with NO progress data shows an em-dash,
+ *  never a fake "0%" (only a real percent — including a genuine 0 — renders as N%). */
+export function formatProgressPercent(percent: number | null | undefined): string {
+  return percent == null ? '—' : `${percent}%`;
+}
+
 export function colorForGroup(value: string): string {
   let h = 0;
   for (let i = 0; i < value.length; i++) h = (h * 31 + value.charCodeAt(i)) >>> 0;
