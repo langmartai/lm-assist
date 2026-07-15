@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import Link from 'next/link';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { detectAppMode, workerFetch } from '@/lib/api-client';
 import { useExperiment } from '@/hooks/useExperiment';
@@ -1734,12 +1735,15 @@ export default function SettingsPage() {
               Every MCP tool — descriptions (editable), enable/disable, implementation view, admin-approval
               gates and pending confirmations — now lives on the dedicated MCP Tools page.
             </div>
-            <a
-              className="btn btn-sm btn-primary"
-              href={proxy.isProxied ? `${proxy.basePath}/mcp-tools` : '/mcp-tools'}
-            >
-              Open MCP Tools <ExternalLink size={12} style={{ marginLeft: 4, verticalAlign: -2 }} />
-            </a>
+            {proxy.isProxied ? (
+              <a className="btn btn-sm btn-primary" href={`${proxy.basePath}/mcp-tools`}>
+                Open MCP Tools <ExternalLink size={12} style={{ marginLeft: 4, verticalAlign: -2 }} />
+              </a>
+            ) : (
+              <Link className="btn btn-sm btn-primary" href="/mcp-tools">
+                Open MCP Tools <ExternalLink size={12} style={{ marginLeft: 4, verticalAlign: -2 }} />
+              </Link>
+            )}
           </div>
         )}
         {activeTab === 'memory' && <MemoryTab baseUrl={workerBaseUrl} />}

@@ -1,11 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Wrench, RefreshCw, ShieldAlert } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { errText, timeAgo } from '@/components/memory/format';
 import {
   groupTools,
+  summarizeCounts,
   toolBadges,
   truncateDescription,
   type McpToolRow,
@@ -74,39 +75,51 @@ export function McpToolsPage() {
   const [orphanDocs, setOrphanDocs] = useState<ToolRegistryDocView[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [gates, setGates] = useState<Map<string, boolean>>(new Map());
+  const [gatesUnavailable, setGatesUnavailable] = useState(false);
   const [pending, setPending] = useState<PendingAction[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const seqRef = useRef(0);
 
   const fetchAll = useCallback(async () => {
+    const seq = ++seqRef.current;
     setLoading(true);
     setError(null);
+    // apiFetch (fetchJson) already unwraps the {success,data,meta} envelope; tolerate
+    // a still-wrapped body from other transports with a `.data ?? body` fallback.
+    const unwrap = <T,>(body: T | { data?: T }): T => ((body as { data?: T })?.data ?? body) as T;
     try {
-      const list = await apiFetch<{ success?: boolean; data?: ToolListResponse } & ToolListResponse>('/mcp-tools');
-      const data = (list as { data?: ToolListResponse }).data ?? list;
+      const [listR, accessR, pendingR] = await Promise.allSettled([
+        apiFetch<ToolListResponse | { data?: ToolListResponse }>('/mcp-tools'),
+        // Admin gates + pending confirmations are separate (older) endpoints —
+        // best-effort, the registry page must not fail on them.
+        apiFetch<AccessConfigResponse | { data?: AccessConfigResponse }>('/mcp/access'),
+        apiFetch<{ pending?: PendingAction[] } | { data?: { pending?: PendingAction[] } }>('/mcp/pending'),
+      ]);
+      if (seq !== seqRef.current) return; // a newer refresh already landed — drop this one
+      if (listR.status === 'rejected') throw listR.reason;
+      const data = unwrap(listR.value) as ToolListResponse;
       setTools(data.tools ?? []);
       setOrphanDocs(data.orphanDocs ?? []);
       setCategories(data.categories ?? []);
-      // Admin gates + pending confirmations are separate (older) endpoints — best-effort,
-      // the registry page must not fail on them.
-      try {
-        const access = await apiFetch<{ success?: boolean; data?: AccessConfigResponse }>('/mcp/access');
-        const rows = access.data?.tools ?? [];
-        setGates(new Map(rows.map((r) => [r.tool, r.adminGate])));
-      } catch {
-        setGates(new Map());
+      if (accessR.status === 'fulfilled') {
+        const cfg = unwrap(accessR.value) as AccessConfigResponse;
+        setGates(new Map((cfg.tools ?? []).map((r) => [r.tool, r.adminGate])));
+        setGatesUnavailable(false);
+      } else {
+        // Keep the last-known gates and SAY the state is unknown — silently rendering
+        // every tool as "not gated" would misreport the security posture.
+        setGatesUnavailable(true);
       }
-      try {
-        const p = await apiFetch<{ success?: boolean; data?: { pending?: PendingAction[] } }>('/mcp/pending');
-        setPending(p.data?.pending ?? []);
-      } catch {
-        setPending([]);
-      }
+      if (pendingR.status === 'fulfilled') {
+        const pp = unwrap(pendingR.value) as { pending?: PendingAction[] };
+        setPending(pp.pending ?? []);
+      } // rejected ⇒ keep the previous list; the next poll self-corrects
     } catch (e) {
-      setError(errText(e));
+      if (seq === seqRef.current) setError(errText(e));
     } finally {
-      setLoading(false);
+      if (seq === seqRef.current) setLoading(false);
     }
   }, [apiFetch]);
 
@@ -117,22 +130,19 @@ export function McpToolsPage() {
   }, [fetchAll]);
 
   const groups = useMemo(() => groupTools(tools, categories), [tools, categories]);
-  const counts = useMemo(
-    () => ({
-      tools: tools.length,
-      overridden: tools.filter((t) => t.hasOverride).length,
-      disabled: tools.filter((t) => !t.enabled).length,
-    }),
-    [tools],
-  );
+  const counts = useMemo(() => summarizeCounts(tools), [tools]);
 
   const resolvePending = async (id: string, action: 'confirm' | 'deny') => {
+    let failMsg: string | null = null;
     try {
       await apiFetch(`/mcp/pending/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
-    } catch {
-      /* the refresh below surfaces current state either way */
+    } catch (e) {
+      // e.g. the pending expired between render and click — the user must see that
+      // the tool call did NOT run, not just watch the row vanish.
+      failMsg = `${action} failed: ${errText(e)}`;
     }
-    void fetchAll();
+    await fetchAll();
+    if (failMsg) setError(failMsg);
   };
 
   const selectedGate = selected ? gates.get(selected) ?? false : false;
@@ -150,6 +160,14 @@ export function McpToolsPage() {
           Every tool this Core exposes over MCP — descriptions and on/off are editable; names, schemas and handlers stay code-owned.
         </span>
         <div className="flex items-center gap-2" style={{ marginLeft: 'auto' }}>
+          {gatesUnavailable && (
+            <span
+              style={{ fontSize: 11, color: 'rgba(251,191,36,0.95)' }}
+              title="/mcp/access is unreachable — gate toggles are paused until it recovers"
+            >
+              admin-gate state unavailable
+            </span>
+          )}
           <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
             {counts.tools} tools · {counts.overridden} overridden · {counts.disabled} disabled
           </span>
@@ -350,6 +368,7 @@ export function McpToolsPage() {
               name={selected}
               apiFetch={apiFetch}
               adminGate={selectedGate}
+              gateStateKnown={!gatesUnavailable}
               onChanged={() => void fetchAll()}
             />
           ) : (

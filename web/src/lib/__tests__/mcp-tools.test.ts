@@ -8,7 +8,7 @@ import {
   groupTools,
   toolBadges,
   summarizeCounts,
-  checkRevConflict,
+  revConflictMessage,
   truncateDescription,
   type McpToolRow,
 } from '../mcp-tools';
@@ -72,14 +72,14 @@ describe('summarizeCounts', () => {
   });
 });
 
-describe('checkRevConflict', () => {
+describe('revConflictMessage', () => {
   it('no conflict when the fresh doc matches the loaded rev (or nothing stored yet)', () => {
-    expect(checkRevConflict(0, null)).toBeNull();
-    expect(checkRevConflict(3, { rev: 3 })).toBeNull();
+    expect(revConflictMessage(0, null)).toBeNull();
+    expect(revConflictMessage(3, { rev: 3 })).toBeNull();
   });
   it('conflict when someone else bumped the rev since load', () => {
-    expect(checkRevConflict(3, { rev: 5 })).toMatch(/rev 5/);
-    expect(checkRevConflict(0, { rev: 1 })).toMatch(/rev 1/);
+    expect(revConflictMessage(3, { rev: 5 })).toMatch(/rev 5/);
+    expect(revConflictMessage(0, { rev: 1 })).toMatch(/rev 1/);
   });
 });
 
@@ -92,5 +92,14 @@ describe('truncateDescription', () => {
   });
   it('collapses newlines so rows stay one line', () => {
     expect(truncateDescription('a\nb\nc', 50)).toBe('a b c');
+  });
+});
+
+describe('truncateDescription astral safety', () => {
+  it('never splits a surrogate pair at the cut point', () => {
+    const out = truncateDescription('🚀'.repeat(80), 99); // odd UTF-16 cut lands mid-pair if sliced naively
+    const lone = Array.from(out).filter((ch) => ch.length === 1 && /[\uD800-\uDFFF]/.test(ch));
+    expect(lone).toEqual([]);
+    expect(out.endsWith('…')).toBe(true);
   });
 });

@@ -103,15 +103,19 @@ export function summarizeCounts(rows: McpToolRow[]): { tools: number; overridden
 }
 
 /** Optimistic-concurrency check before save (mission-process idiom): compare the rev
- *  we loaded against a freshly-fetched doc; a message means someone saved meanwhile. */
-export function checkRevConflict(loadedRev: number, freshDoc: { rev: number } | null): string | null {
+ *  we loaded against a freshly-fetched doc; a message means someone saved meanwhile.
+ *  (Named differently from mission-process.ts's checkRevConflict — same idea,
+ *  different return contract; a same-name auto-import would silently misbehave.) */
+export function revConflictMessage(loadedRev: number, freshDoc: { rev: number } | null): string | null {
   const freshRev = freshDoc?.rev ?? 0;
   if (freshRev === loadedRev) return null;
   return `This tool's registry doc changed while you were editing (now rev ${freshRev}, you loaded rev ${loadedRev}). Refresh to pick up the latest, then re-apply your edit.`;
 }
 
-/** One-line row description: collapse whitespace/newlines, hard-cap with an ellipsis. */
+/** One-line row description: collapse whitespace/newlines, hard-cap with an ellipsis.
+ *  Cuts on code points so an astral char (emoji) never splits into a lone surrogate. */
 export function truncateDescription(s: string, max: number): string {
   const oneLine = s.replace(/\s+/g, ' ').trim();
-  return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max)}…`;
+  if (oneLine.length <= max) return oneLine;
+  return `${[...oneLine].slice(0, max).join('')}…`;
 }

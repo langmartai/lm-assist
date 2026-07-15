@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Lock, ShieldCheck } from 'lucide-react';
 import { ConfirmButton, errText, timeAgo } from '@/components/memory/format';
-import { checkRevConflict, type ToolDetailResponse, type ToolHistoryEntry } from '@/lib/mcp-tools';
+import { revConflictMessage, type ToolDetailResponse, type ToolHistoryEntry, type ToolRegistryDocView } from '@/lib/mcp-tools';
 import { ScopeBadge } from './McpToolsPage';
 
 type Tab = 'description' | 'implementation' | 'settings' | 'history';
@@ -13,6 +13,9 @@ interface ToolDetailProps {
   apiFetch: <T>(path: string, opts?: { method?: string; body?: unknown }) => Promise<T>;
   /** Current admin-approval gate state for this tool (from /mcp/access). */
   adminGate: boolean;
+  /** False while /mcp/access is unreachable — the gate toggle pauses rather than
+   *  acting on (and displaying) a guessed state. */
+  gateStateKnown: boolean;
   /** Any successful write happened — parent refreshes list + gates + pending. */
   onChanged: () => void;
 }
@@ -36,7 +39,7 @@ const MONO_PRE: React.CSSProperties = {
 /** Right-pane detail for one MCP tool: Description (editable override, default
  *  always shown + restorable) / Implementation (read-only code view) / Settings
  *  (enable + admin gate) / History (rev list + rollback). Mirrors ProcessDetail. */
-export function ToolDetail({ name, apiFetch, adminGate, onChanged }: ToolDetailProps) {
+export function ToolDetail({ name, apiFetch, adminGate, gateStateKnown, onChanged }: ToolDetailProps) {
   const [data, setData] = useState<ToolDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -79,7 +82,20 @@ export function ToolDetail({ name, apiFetch, adminGate, onChanged }: ToolDetailP
   const doc = data?.doc ?? null;
   const dirty = draft !== base;
 
-  /** All registry writes flow through here: rev-conflict pre-check, POST, reload. */
+  /** Writes are origin-anchored; the response carries the ORIGIN's fresh doc. Apply
+   *  it directly — a re-GET on a non-origin node reads the local replica, which lags
+   *  the write until the pull reconcile and would make the save look dropped. */
+  const applyDoc = useCallback((newDoc: ToolRegistryDocView | null | undefined) => {
+    if (!newDoc) return false;
+    setData((prev) => (prev ? { ...prev, doc: newDoc } : prev));
+    const over = newDoc.descriptionOverride ?? '';
+    setDraft(over);
+    setBase(over);
+    setLoadedRev(newDoc.rev ?? 0);
+    return true;
+  }, []);
+
+  /** All registry writes flow through here: rev-conflict pre-check, POST, apply. */
   const post = async (body: Record<string, unknown>, opts?: { skipConflictCheck?: boolean }) => {
     if (saving) return;
     setSaving(true);
@@ -88,14 +104,14 @@ export function ToolDetail({ name, apiFetch, adminGate, onChanged }: ToolDetailP
     try {
       if (!opts?.skipConflictCheck) {
         const fresh = await apiFetch<ToolDetailResponse>(`/mcp-tools/${encodeURIComponent(name)}`);
-        const chk = checkRevConflict(loadedRev, fresh.doc ?? null);
+        const chk = revConflictMessage(loadedRev, fresh.doc ?? null);
         if (chk) {
           setConflict(chk);
           return;
         }
       }
-      await apiFetch(`/mcp-tools/${encodeURIComponent(name)}`, { method: 'POST', body });
-      await load();
+      const r = await apiFetch<{ doc?: ToolRegistryDocView }>(`/mcp-tools/${encodeURIComponent(name)}`, { method: 'POST', body });
+      if (!applyDoc(r?.doc)) await load();
       onChanged();
     } catch (e) {
       setActionError(errText(e));
@@ -105,13 +121,17 @@ export function ToolDetail({ name, apiFetch, adminGate, onChanged }: ToolDetailP
   };
 
   const rollback = async (toRev: number) => {
+    if (saving) return;
+    setSaving(true);
     setActionError(null);
     try {
-      await apiFetch(`/mcp-tools/${encodeURIComponent(name)}/rollback`, { method: 'POST', body: { toRev } });
-      await load();
+      const r = await apiFetch<{ doc?: ToolRegistryDocView }>(`/mcp-tools/${encodeURIComponent(name)}/rollback`, { method: 'POST', body: { toRev } });
+      if (!applyDoc(r?.doc)) await load();
       onChanged();
     } catch (e) {
       setActionError(errText(e));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -348,7 +368,7 @@ export function ToolDetail({ name, apiFetch, adminGate, onChanged }: ToolDetailP
             {isProtected ? (
               <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 <ShieldCheck size={13} style={{ color: 'var(--color-accent)' }} />
-                Protected tool — cannot be disabled ({'bootstrap, guide, session_status'} keep agents able to orient and self-help).
+                Protected tool — cannot be disabled (part of the orientation surface that keeps agents able to orient and self-help).
               </div>
             ) : enabled ? (
               <ConfirmButton
@@ -371,9 +391,15 @@ export function ToolDetail({ name, apiFetch, adminGate, onChanged }: ToolDetailP
                 When gated, remote MCP calls to this tool park as pending confirmations (banner on this page) instead of
                 executing — same guard the Settings MCP tab used to manage, unchanged server-side.
               </div>
-              <button className={`btn btn-sm ${adminGate ? 'btn-primary' : 'btn-ghost'}`} disabled={saving} onClick={() => void toggleGate()}>
-                {adminGate ? 'Gated — click to remove gate' : 'Not gated — click to require approval'}
-              </button>
+              {gateStateKnown ? (
+                <button className={`btn btn-sm ${adminGate ? 'btn-primary' : 'btn-ghost'}`} disabled={saving} onClick={() => void toggleGate()}>
+                  {adminGate ? 'Gated — click to remove gate' : 'Not gated — click to require approval'}
+                </button>
+              ) : (
+                <div style={{ fontSize: 12, color: 'rgba(251,191,36,0.95)' }}>
+                  Gate state unavailable (/mcp/access unreachable) — the toggle is paused so it cannot act on a guessed state.
+                </div>
+              )}
             </div>
           )}
 
