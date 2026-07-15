@@ -1093,9 +1093,44 @@ function defaultOnboardedReadDeps(): OnboardedReadDeps {
   };
 }
 
+/** Seeded once into the controller workspace — standing, human-editable context the
+ *  controller session picks up natively (CLAUDE.md) on every launch from that folder. */
+export const CONTROLLER_WORKSPACE_CLAUDE_MD = `# Mission Control workspace
+
+This folder is the dedicated home project of this node's lm-assist **Mission Controller**
+session — nothing else runs here. It exists so controller sessions never launch inside the
+npm install directory: repo work belongs to executors in their own project worktrees.
+
+- Operating rules arrive via the launch system prompt and the \`mission-workflows\` process
+  registry (start at \`process.overview\` / \`controller.pass\`).
+- Spawn NATIVE executors with \`mission_spawn\` — the sanctioned path that names the worker
+  session after its mission and records the binding. Never hand-roll \`tmux new-session\`
+  (hand-spawned workers lose their name). Cloud executors: \`ccr_cloud_start\` with
+  \`title: "Mission: <title> · <shortid>"\`.
+- Cross-pass scratch files may live here; keep them small and dated.
+`;
+
+/** Dedicated home-project folder for controller sessions (~/.lm-assist/mission-control).
+ *  Keeps the controller OUT of process.cwd() — on a prod npm install that was the package
+ *  dir itself, so controller transcripts landed in the .../node_modules/... project bucket.
+ *  Exported + base-dir-injectable for tests. */
+export function ensureControllerWorkspace(baseDir?: string): string {
+  const fsmod = require('fs') as typeof import('fs');
+  const { getDataDir } = require('../utils/path-utils') as typeof import('../utils/path-utils');
+  const dir = path.join(baseDir || getDataDir(), 'mission-control');
+  fsmod.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const claudeMd = path.join(dir, 'CLAUDE.md');
+  if (!fsmod.existsSync(claudeMd)) fsmod.writeFileSync(claudeMd, CONTROLLER_WORKSPACE_CLAUDE_MD, { mode: 0o644 });
+  return dir;
+}
+
 function controllerCwd(): string {
   const s = getProjectSettings();
-  return (s as any).missionControllerRepo || process.cwd();
+  const override = (s as any).missionControllerRepo;
+  if (override) return override;
+  // Default: the dedicated workspace. process.cwd() only as a last-resort fallback
+  // (workspace creation failing must never stop a controller launch).
+  try { return ensureControllerWorkspace(); } catch { return process.cwd(); }
 }
 
 /**

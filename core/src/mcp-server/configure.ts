@@ -275,6 +275,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   mission_control_status: 'read',
   // mission rail tools (deterministic guardrails)
   mission_place: 'read',
+  mission_spawn: 'write',
   mission_executor_status: 'read',
   // mission operability tools
   mission_sessions: 'read',

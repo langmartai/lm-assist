@@ -114,6 +114,11 @@ export const MISSION_TOOL_DEFS = [
     inputSchema: obj({ id: S }, ['id']),
   },
   {
+    name: 'mission_spawn',
+    description: 'Spawn the NATIVE executor for a mission — THE sanctioned path (never hand-roll tmux new-session): ensures the worktree, launches claude --remote-control NAMED after the mission (missionSessionTitle), and persists the binding. Rejects ALREADY_BOUND unless force:true (old session is left for you to retire) and CLOUD_PLACEMENT (use ccr_cloud_start for cloud). Optional kind: worker|orchestrator, branch override.',
+    inputSchema: obj({ id: S, kind: S, branch: S, force: { type: 'boolean' as const } }, ['id']),
+  },
+  {
     name: 'mission_executor_status',
     description: 'Get the current executor liveness for a mission: {alive, idle, serverStalled, gate?, status}. Deterministic — reads cloudStatus / local verdict.',
     inputSchema: obj({ id: S }, ['id']),
@@ -215,6 +220,18 @@ export const MISSION_HANDLERS: Record<
       const id = String(a.id || '');
       if (!id) return err('id is required');
       return pretty(await workerGet(`/mission/${encodeURIComponent(id)}/place`));
+    } catch (e) { return err((e as Error).message); }
+  },
+
+  mission_spawn: async (a) => {
+    try {
+      const id = String(a.id || '');
+      if (!id) return err('id is required');
+      const body: Record<string, unknown> = {};
+      if (typeof a.kind === 'string' && a.kind) body.kind = a.kind;
+      if (typeof a.branch === 'string' && a.branch) body.branch = a.branch;
+      if (a.force === true || a.force === 'true') body.force = true;
+      return pretty(await workerPost(`/mission/${encodeURIComponent(id)}/spawn`, withActorHint(body, currentMcpContext()?.toolUseId)));
     } catch (e) { return err((e as Error).message); }
   },
 

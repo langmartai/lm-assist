@@ -1542,6 +1542,99 @@ function defaultLookupOnboarded(): (missionId: string | undefined, sid: string) 
   };
 }
 
+// ---------------------------------------------------------------------------
+// handleMissionSpawn — POST /mission/:id/spawn (sanctioned NATIVE executor spawn)
+// ---------------------------------------------------------------------------
+// The only sanctioned spawn used to be cloud (ccr_cloud_start); for native placements
+// controllers improvised raw `tmux new-session` + `claude`, which loses the session
+// name (-n missionSessionTitle) and the binding bookkeeping. This is the native twin:
+// worktree ensure → NAMED --remote-control launch → binding persisted.
+
+export interface MissionSpawnDeps {
+  getMission?: (id: string) => Promise<Record<string, unknown> | null>;
+  listMissions?: () => Promise<unknown[]>;
+  place?: (m: unknown, all: unknown[]) => { go: boolean; env?: string; repo?: string; reason?: string };
+  startNative?: (m: unknown, decision: unknown, nativeDeps: unknown) => Promise<Record<string, unknown>>;
+  buildNativeDeps?: (m: unknown) => Promise<unknown>;
+  persist?: (m: unknown) => Promise<void>;
+}
+
+async function defaultSpawnNativeDeps(m: Record<string, unknown>): Promise<unknown> {
+  const { cloudListAccount, cloudDrive } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
+  const { tmuxCcController } = require('../../terminal/tmux-backend') as typeof import('../../terminal/tmux-backend');
+  const { gitCommand } = require('../../checkpoint/git-utils') as typeof import('../../checkpoint/git-utils');
+  const { missionSessionTitle } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
+  const pathmod = require('path') as typeof import('path');
+  const baselineArr = await cloudListAccount().then((ss: Array<{ sid: string }>) => ss.map((s) => s.sid)).catch(() => [] as string[]);
+  return {
+    ensureWorktree: async (repo: string, dir: string, branch: string): Promise<string> => {
+      const absRepo = pathmod.isAbsolute(repo) ? repo : pathmod.resolve(process.cwd(), repo);
+      const absDir = pathmod.isAbsolute(dir) ? dir : pathmod.resolve(absRepo, dir);
+      try { gitCommand(['worktree', 'add', absDir, '-b', branch], absRepo); }
+      catch (err) { if (!/already exists|already checked out|is already/i.test((err as Error).message || '')) throw err; }
+      // Same seam as resume: the branch may live in a differently-named worktree the
+      // controller created by hand — spawn there rather than failing on a missing dir.
+      const fsmod = require('fs') as typeof import('fs');
+      if (!fsmod.existsSync(absDir)) {
+        const found = findWorktreeForBranch(absRepo, branch, (args, cwd) => gitCommand(args, cwd));
+        if (found) return found;
+        throw new Error(`worktree for branch ${branch} not found and ${absDir} does not exist`);
+      }
+      return absDir;
+    },
+    launch: async (cwd: string): Promise<{ sessionId: string | null; tmuxSession: string }> => {
+      const res = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true, name: missionSessionTitle(m as never) });
+      return { sessionId: (res.sessionId as string | null) ?? null, tmuxSession: res.tmuxSession as string };
+    },
+    listAccount: cloudListAccount,
+    baseline: baselineArr,
+    drive: async (s: string, text: string) => { await cloudDrive({ sid: s, text }).catch(() => {}); },
+  };
+}
+
+export async function handleMissionSpawn(id: string, b: Record<string, unknown>, d: MissionSpawnDeps = {}): Promise<Envelope> {
+  const stores = () => require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+  const getM = d.getMission ?? (async (mid: string) => stores().getMission(mid) as Promise<Record<string, unknown> | null>);
+  const listM = d.listMissions ?? (async () => stores().listMissions());
+  const placeFn = d.place ?? ((m: unknown, all: unknown[]) => (require('../../mission/mission-model') as typeof import('../../mission/mission-model')).place(m as never, all as never) as never);
+  const persist = d.persist ?? (async (m: unknown) => { await stores().putMission(m as never); });
+
+  const m = await getM(id);
+  if (!m) return fail('MISSION_NOT_FOUND', `mission ${id} not found`);
+  const force = b.force === true || b.force === 'true';
+  const binding = m.binding as { sessionId?: string; kind?: string } | undefined;
+  if (binding?.sessionId && !force) {
+    return fail('ALREADY_BOUND', `mission ${id} is already bound to ${binding.sessionId} — pass force:true to spawn a replacement (the old session is left running for you to retire)`);
+  }
+  const kindRaw = typeof b.kind === 'string' ? b.kind : '';
+  if (kindRaw && kindRaw !== 'worker' && kindRaw !== 'orchestrator') {
+    return fail('BAD_KIND', 'kind must be "worker" or "orchestrator"');
+  }
+
+  const all = await listM();
+  const pd = placeFn(m, all);
+  if (!pd?.go) return fail('PLACEMENT_NOT_GO', `mission ${id} is not placeable: ${pd?.reason ?? 'unknown'}`);
+  if (pd.env === 'cloud') {
+    return fail('CLOUD_PLACEMENT', `mission ${id} places on cloud — start it with ccr_cloud_start (title "Mission: <title> · <shortid>") instead of mission_spawn`);
+  }
+
+  const startNative = d.startNative ?? ((require('../../mission/mission-controller') as typeof import('../../mission/mission-controller')).startNativeExecutor as unknown as NonNullable<MissionSpawnDeps['startNative']>);
+  const buildDeps = d.buildNativeDeps ?? (defaultSpawnNativeDeps as NonNullable<MissionSpawnDeps['buildNativeDeps']>);
+  const pathmod = require('path') as typeof import('path');
+  const repoRaw = (pd as { repo?: string }).repo || process.cwd();
+  const repoAbs = pathmod.isAbsolute(repoRaw) ? repoRaw : pathmod.resolve(process.cwd(), repoRaw);
+  // startNativeExecutor derives kind from m.binding?.kind — preset the requested one.
+  if (kindRaw) (m as Record<string, unknown>).binding = { ...(binding ?? {}), kind: kindRaw };
+  const decision: Record<string, unknown> = { ...(pd as Record<string, unknown>), repo: repoAbs };
+  if (typeof b.branch === 'string' && b.branch) decision.branch = b.branch;
+  const nativeDeps = await buildDeps(m);
+  const newBinding = await startNative(m, decision, nativeDeps);
+  (m as Record<string, unknown>).binding = newBinding;
+  try { await persist(m); } catch { /* best-effort — the session is up either way */ }
+  const { missionSessionTitle } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
+  return ok({ binding: newBinding, name: missionSessionTitle(m as never) });
+}
+
 function defaultSessionResumeDeps(): SessionResumeDeps {
   // The existing native resume body (claude --resume <sid> --remote-control in the
   // mission worktree, preserves sid) — unchanged, just lifted to a named const so
@@ -1716,6 +1809,7 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     { method: 'POST', pattern: /^\/mission\/onboard$/, handler: async (req) => handleOnboard((req.body || {}) as Record<string, unknown>, { leader: realLeaderAnchor() }) },
     // rail routes: /place and /executor-status BEFORE /:id so literals win
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/place$/, handler: async (req) => handlePlace(req.params.id, undefined, realLeaderAnchor()) },
+    { method: 'POST', pattern: /^\/mission\/(?<id>[^/]+)\/spawn$/, handler: async (req) => handleMissionSpawn(req.params.id, (req.body || {}) as Record<string, unknown>) },
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/executor-status$/, handler: async (req) => handleExecutorStatus(req.params.id, undefined, undefined, realLeaderAnchor()) },
     // /mission/:id/sessions BEFORE /mission/:id so the literal suffix wins
     { method: 'GET', pattern: /^\/mission\/(?<id>[^/]+)\/sessions$/, handler: async (req) => handleSessions(req.params.id, undefined, undefined, realLeaderAnchor()) },
