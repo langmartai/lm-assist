@@ -235,6 +235,23 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
     if (isControllerActor(who)) return fail('FORBIDDEN', 'manageMode is human-only — ask the user to switch it');
     m.manageMode = mm;
   }
+  if (b.progress !== undefined) {
+    // Human-supplied progress (2026-07-15, human-authorized): previously this field was
+    // silently ignored. Controller telemetry keeps its own write path — patches are
+    // human-only, mirroring manageMode. No clearing via patch (null rejected).
+    if (isControllerActor(who)) return fail('FORBIDDEN', 'progress via patch is human-supplied — controller telemetry has its own path');
+    if (!b.progress || typeof b.progress !== 'object' || Array.isArray(b.progress)) {
+      return fail('INVALID_INPUT', 'progress must be an object {percent: 0-100, summary?}');
+    }
+    const p = b.progress as Record<string, unknown>;
+    const pct = Number(p.percent);
+    if (p.percent === undefined || p.percent === null || p.percent === '' || Number.isNaN(pct)) {
+      return fail('INVALID_INPUT', 'progress.percent must be a number 0-100');
+    }
+    const percent = Math.min(100, Math.max(0, pct));
+    const summary = str(p.summary) ?? m.progress?.summary ?? '';
+    m.progress = { percent, summary, updatedAt: Date.now() };
+  }
   if (b.env && typeof b.env === 'object') {
     const e = b.env as Record<string, unknown>;
     if (str(e.isolation)) m.env.isolation = str(e.isolation) as Isolation;
