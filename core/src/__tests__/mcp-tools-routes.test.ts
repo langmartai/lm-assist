@@ -196,3 +196,34 @@ test('rollback: restores an earlier rev; NOT_FOUND for a missing rev; protected 
   assert.equal(badRev.success, false);
   assert.equal((badRev as any).error.code, 'INVALID_INPUT');
 });
+
+// --- strict `enabled` coercion (connector args arrive stringly-typed) ---------------
+// `1`, `'True'`, `'yes'` must be REJECTED, not silently written as a disable.
+
+test('enabled accepts booleans and "true"/"false" strings; rejects every other value', async () => {
+  const port = memPort();
+  for (const bad of [1, 0, 'True', 'yes', 'on', {}, []]) {
+    const r = await handleToolSet('detail', { enabled: bad }, port, actor);
+    assert.equal(r.success, false, `enabled=${JSON.stringify(bad)} must be rejected`);
+    assert.equal(r.error?.code, 'INVALID_INPUT');
+  }
+  assert.equal(port.docs.size, 0, 'no doc written by rejected inputs');
+  const on = await handleToolSet('detail', { enabled: 'true' }, port, actor);
+  assert.equal(on.success, true);
+  assert.equal((on.data as { doc: ToolRegistryDoc }).doc.enabled, true);
+  const off = await handleToolSet('detail', { enabled: 'false' }, port, actor);
+  assert.equal(off.success, true);
+  assert.equal((off.data as { doc: ToolRegistryDoc }).doc.enabled, false);
+});
+
+// --- reserved route-namespace names -------------------------------------------------
+// POST /mcp-tools/overlay would otherwise mint a doc shadowed by the literal
+// GET /mcp-tools/overlay route (unreachable detail view).
+
+test('a doc named "overlay" is refused (reserved under /mcp-tools/)', async () => {
+  const port = memPort();
+  const r = await handleToolSet('overlay', { descriptionOverride: 'x' }, port, actor);
+  assert.equal(r.success, false);
+  assert.equal(r.error?.code, 'RESERVED_NAME');
+  assert.equal(port.docs.size, 0);
+});

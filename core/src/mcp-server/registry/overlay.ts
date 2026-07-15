@@ -2,7 +2,7 @@
  *  the code-owned tool defs at tools/list + tools/call time. Dependency-light on
  *  purpose — configure.ts (shipped in the stdio plugin binary) imports this module,
  *  so it must not pull the store/data-service or any tools/* handler. */
-import type { ToolRegistryDoc } from './model';
+import { PROTECTED_TOOLS, type ToolRegistryDoc } from './model';
 
 export interface ToolOverlay {
   byName: Record<string, { enabled: boolean; descriptionOverride: string | null }>;
@@ -17,7 +17,15 @@ export interface OverlayProvider {
 
 export function overlayFromDocs(docs: ToolRegistryDoc[]): ToolOverlay {
   const byName: ToolOverlay['byName'] = {};
-  for (const d of docs) byName[d.name] = { enabled: d.enabled, descriptionOverride: d.descriptionOverride };
+  for (const d of docs) {
+    byName[d.name] = {
+      // The store refuses protected disables, but the fleet dataset can be written
+      // around it (data_put) — re-assert here so no doc can ever disable the
+      // orientation trio. Description overrides remain allowed.
+      enabled: PROTECTED_TOOLS.has(d.name) ? true : d.enabled,
+      descriptionOverride: d.descriptionOverride,
+    };
+  }
   return { byName };
 }
 

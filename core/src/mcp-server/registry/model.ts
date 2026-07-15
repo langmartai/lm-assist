@@ -37,11 +37,19 @@ export const PROTECTED_TOOLS: ReadonlySet<string> = new Set(['bootstrap', 'guide
 
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
+/** Literal segments under /mcp-tools/ — a doc with one of these names would be
+ *  unreachable (its GET is shadowed by the literal route) and mintable by a
+ *  mistaken POST against the read endpoint. */
+const RESERVED_NAMES: ReadonlySet<string> = new Set(['overlay']);
+
 export type Validation = { ok: true } | { ok: false; code: string; message: string };
 
 export function validateToolName(name: string): Validation {
   if (typeof name !== 'string' || !NAME_RE.test(name)) {
     return { ok: false, code: 'INVALID_INPUT', message: `invalid tool name "${name}" (want ${String(NAME_RE)})` };
+  }
+  if (RESERVED_NAMES.has(name)) {
+    return { ok: false, code: 'RESERVED_NAME', message: `"${name}" is reserved under /mcp-tools/ and cannot be a registry doc` };
   }
   return { ok: true };
 }

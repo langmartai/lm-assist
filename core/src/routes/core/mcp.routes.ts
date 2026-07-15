@@ -44,6 +44,7 @@ import { EXPANDED_HANDLERS } from '../../mcp-server/tools/expanded';
 import { evaluateAccess } from '../../mcp-server/access-control';
 import { createPending } from '../../mcp-server/mcp-pending';
 import { sharedLiveOverlay } from '../../mcp-server/registry/overlay-live';
+import { isToolDisabled, disabledResult } from '../../mcp-server/registry/overlay';
 
 // Dispatcher for StreamableHTTP mode — runs each tool in-process against
 // the data stores that already live in this core API process. No HTTP
@@ -160,6 +161,14 @@ export async function handleMcpRequest(
     const toolName = String(b.params?.name || '');
     const reqId = b.id ?? null;
     if (evaluateAccess(toolName).decision === 'pending') {
+      // Registry-disable OUTRANKS the gate: a disabled+gated tool must answer
+      // TOOL_DISABLED, not park as a pending that could later execute on confirm.
+      let disabled = false;
+      try { disabled = isToolDisabled(await sharedLiveOverlay().get(), toolName); } catch { /* fail-open */ }
+      if (disabled) {
+        sendMcpMessage(res, { jsonrpc: '2.0', id: reqId, result: disabledResult(toolName) });
+        return;
+      }
       const p = createPending(
         toolName,
         (b.params?.arguments as Record<string, unknown>) || {},

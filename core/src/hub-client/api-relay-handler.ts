@@ -118,6 +118,7 @@ export class ApiRelayHandler {
     '/claude-code',
     '/mcp',          // MCP StreamableHTTP endpoint + /mcp/* (relayed from the hub for connector routing)
     '/mcp-call',     // generic expanded-tool shim
+    '/mcp-tools',    // tool-registry management (origin-anchored writes proxy here; web UI remote reads)
     '/session-messages', // cross-node session-to-session messaging (node-routed)
     '/mission',       // mission CRUD + controller-session operability (node-routed: chat with the leader's controller from any node)
     '/data',          // generic data service (access-key gated; see routes/core/data.routes.ts)

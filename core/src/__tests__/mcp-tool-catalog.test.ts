@@ -80,3 +80,8 @@ test('CATEGORY_ORDER covers every category the catalog produces', () => {
   const cats = new Set([...getToolCatalog().values()].map((e) => e.category));
   for (const c of cats) assert.ok(CATEGORY_ORDER.includes(c), `CATEGORY_ORDER missing "${c}"`);
 });
+
+test('every catalog entry resolves a registered in-process handler (implementation view never blank)', () => {
+  const missing = [...getToolCatalog().keys()].filter((n) => !handlerSourceFor(n));
+  assert.deepEqual(missing, [], `no handler source for: ${missing.join(', ')}`);
+});

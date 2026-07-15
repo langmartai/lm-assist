@@ -178,3 +178,42 @@ test('getToolDoc / listToolDocs read through the port', async () => {
   assert.equal((await getToolDoc('detail', port))?.descriptionOverride, 'x');
   assert.equal((await listToolDocs(port)).length, 1);
 });
+
+// --- concurrent-writer serialization (origin-anchored ⇒ one process sees all writes) ---
+
+test('two concurrent putToolDoc on the same name serialize: sequential revs, no lost update', async () => {
+  // A port whose get() yields the event loop, forcing the interleaving window a
+  // naive read-modify-write loses an update in.
+  const docs = new Map<string, ToolRegistryDoc>();
+  const port: ToolRegistryPort = {
+    isEnabled: () => true,
+    get: async (name) => { await new Promise((r) => setImmediate(r)); return docs.get(name) ?? null; },
+    list: async () => [...docs.values()],
+    put: async (d) => { await new Promise((r) => setImmediate(r)); docs.set(d.name, d); },
+  };
+  const [a, b] = await Promise.all([
+    putToolDoc({ name: 'detail', enabled: false }, actor, port),
+    putToolDoc({ name: 'detail', descriptionOverride: 'concurrent override' }, actor, port),
+  ]);
+  const revs = [a.doc.rev, b.doc.rev].sort();
+  assert.deepEqual(revs, [1, 2], `expected sequential revs, got ${revs}`);
+  const final = docs.get('detail')!;
+  assert.equal(final.rev, 2);
+  assert.equal(final.history.length, 2, 'both writes recorded in history');
+  // The second write merged on top of the first — neither edit was lost.
+  assert.equal(final.enabled, false, 'first write (disable) survived');
+  assert.equal(final.descriptionOverride, 'concurrent override', 'second write (override) survived');
+});
+
+// --- malformed docs (hand-authored via data_put / foreign builds) ------------------
+
+test('rollbackToolDoc returns NOT_FOUND (not TypeError) for a doc missing its history array', async () => {
+  const port = memPort();
+  port.docs.set('detail', {
+    name: 'detail', descriptionOverride: null, enabled: true, rev: 3,
+    createdBy: actor, lastUpdatedBy: actor, createdAt: 1, updatedAt: 1,
+  } as unknown as ToolRegistryDoc); // hand-authored record without `history`
+  const r = await rollbackToolDoc('detail', 1, actor, port);
+  assert.ok('error' in r, 'refusal envelope, no throw');
+  assert.equal((r as { error: { code: string } }).error.code, 'NOT_FOUND');
+});

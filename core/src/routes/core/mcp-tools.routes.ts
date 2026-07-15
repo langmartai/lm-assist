@@ -10,6 +10,7 @@
  *  origin is unreachable — a silent local fallback would be the silent-drop defect
  *  the workflow arc fixed. */
 import type { RouteHandler, RouteContext } from '../index';
+import { wrapResponse, wrapError } from '../../api/helpers';
 import {
   getToolDoc, listToolDocs, putToolDoc, rollbackToolDoc,
   TOOL_REGISTRY_DATASET, type ToolRegistryPort,
@@ -40,8 +41,36 @@ export function realToolOriginAnchor(): ToolOriginAnchorDeps {
       return getDatasetRegistry().get(TOOL_REGISTRY_DATASET)?.origin?.machineId ?? null;
     },
     thisNode: () => thisNode(),
-    proxyPost: (n, p, b) => { const { proxyPost } = require('../../data/peer-client') as typeof import('../../data/peer-client'); return proxyPost(n, p, b); },
+    // NOT peer-client's proxyPost: that throws away the response body on non-2xx,
+    // and the rest-server maps an origin-side refusal envelope (PROTECTED_TOOL,
+    // OVERRIDE_TOO_LARGE, rollback NOT_FOUND…) to HTTP 400 — the caller must see
+    // the REAL refusal, not a fake ORIGIN_UNREACHABLE.
+    proxyPost: async (n, p, b) => {
+      const { getHubConfig } = require('../../hub-client/hub-config') as typeof import('../../hub-client/hub-config');
+      const { getHubHttpUrl } = require('../../hub-client/hub-proxy') as typeof import('../../hub-client/hub-proxy');
+      const res = await fetch(`${getHubHttpUrl()}/api/tier-agent/machines/${n}/proxy${p}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${getHubConfig().apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(b),
+      });
+      const text = await res.text();
+      let json: unknown = null;
+      try { json = JSON.parse(text); } catch { /* non-JSON relay error */ }
+      if (json && typeof json === 'object' && 'success' in (json as object)) return json;
+      if (!res.ok) throw new Error(`Proxy POST to ${n}${p} returned ${res.status}`);
+      return json ?? text;
+    },
   };
+}
+
+/** A response we can safely surface as the origin's own answer: success, or a
+ *  refusal that carries a proper {code,message}. Hub/relay failure bodies (string
+ *  `error`, no code) must NOT masquerade as origin envelopes. */
+function isRegistryEnvelope(v: unknown): v is Envelope {
+  if (!v || typeof v !== 'object' || typeof (v as { success?: unknown }).success !== 'boolean') return false;
+  const e = v as { success: boolean; error?: unknown };
+  if (e.success) return true;
+  return !!e.error && typeof e.error === 'object' && typeof (e.error as { code?: unknown }).code === 'string';
 }
 
 /** Proxy a write to the dataset origin when it is another node; null ⇒ handle locally
@@ -55,8 +84,11 @@ async function anchorToOrigin(origin: ToolOriginAnchorDeps | undefined, path: st
     // `_originHop` marks the proxied request so the receiver NEVER re-anchors it
     // (mixed-version fleet loop guard, stripped at handler entry).
     const result = await origin.proxyPost(target, path, { ...(body as Record<string, unknown> ?? {}), _originHop: true });
-    if (result && typeof result === 'object' && 'success' in (result as object)) return result as Envelope;
-    return ok((result as { data?: unknown })?.data ?? result);
+    if (isRegistryEnvelope(result)) return result;
+    if (result && typeof result === 'object' && !('success' in (result as object))) {
+      return ok((result as { data?: unknown })?.data ?? result);
+    }
+    return fail('ORIGIN_UNREACHABLE', `tool-registry dataset origin "${target}" returned an unrecognized relay response; retry shortly`);
   } catch (e) {
     return fail('ORIGIN_UNREACHABLE', `tool-registry dataset origin "${target}" unreachable; retry shortly (${(e as Error).message})`);
   }
@@ -149,7 +181,13 @@ export async function handleToolSet(
     }
     input.descriptionOverride = b.descriptionOverride as string | null;
   }
-  if (b.enabled !== undefined) input.enabled = b.enabled === true || b.enabled === 'true';
+  if (b.enabled !== undefined) {
+    // Strict: silently coercing 1/'True'/'yes' to FALSE would write a disable when an
+    // enable was asked for. Strings allowed because connector args arrive stringly-typed.
+    if (typeof b.enabled === 'boolean') input.enabled = b.enabled;
+    else if (b.enabled === 'true' || b.enabled === 'false') input.enabled = b.enabled === 'true';
+    else return fail('INVALID_INPUT', `enabled must be a boolean (or "true"/"false"), got ${JSON.stringify(b.enabled)}`);
+  }
   try {
     const r = await putToolDoc(input, who, port as ToolRegistryPort);
     invalidateOverlayCache(); // a local write must reach tools/list on the very next request
@@ -191,14 +229,24 @@ export async function handleToolRollback(
 
 // --- route registration ---
 
+/** Route-layer envelope→ApiResponse: handlers stay pure {success,data|error} (tested
+ *  as such); the wire carries the repo-wide wrapResponse/wrapError shape with meta. */
+function toApi(e: Envelope, start: number) {
+  return e.success
+    ? wrapResponse(e.data, start)
+    : wrapError(e.error?.code ?? 'ERROR', e.error?.message ?? 'error', start);
+}
+
 export function createMcpToolsRoutes(_ctx: RouteContext): RouteHandler[] {
+  const wrapped = (run: (req: Parameters<RouteHandler['handler']>[0]) => Promise<Envelope>): RouteHandler['handler'] =>
+    async (req) => { const start = Date.now(); return toApi(await run(req), start); };
   return [
     // literals MUST precede the /:name patterns
-    { method: 'GET', pattern: /^\/mcp-tools$/, handler: async () => handleToolList() },
-    { method: 'GET', pattern: /^\/mcp-tools\/overlay$/, handler: async () => handleToolOverlay() },
-    { method: 'GET', pattern: /^\/mcp-tools\/(?<name>[^/]+)\/history$/, handler: async (req) => handleToolHistory(req.params.name, req.query ?? {}) },
-    { method: 'POST', pattern: /^\/mcp-tools\/(?<name>[^/]+)\/rollback$/, handler: async (req) => handleToolRollback(req.params.name, (req.body || {}) as Record<string, unknown>, undefined, undefined, realToolOriginAnchor()) },
-    { method: 'GET', pattern: /^\/mcp-tools\/(?<name>[^/]+)$/, handler: async (req) => handleToolGet(req.params.name) },
-    { method: 'POST', pattern: /^\/mcp-tools\/(?<name>[^/]+)$/, handler: async (req) => handleToolSet(req.params.name, (req.body || {}) as Record<string, unknown>, undefined, undefined, realToolOriginAnchor()) },
+    { method: 'GET', pattern: /^\/mcp-tools$/, handler: wrapped(() => handleToolList()) },
+    { method: 'GET', pattern: /^\/mcp-tools\/overlay$/, handler: wrapped(() => handleToolOverlay()) },
+    { method: 'GET', pattern: /^\/mcp-tools\/(?<name>[^/]+)\/history$/, handler: wrapped((req) => handleToolHistory(req.params.name, req.query ?? {})) },
+    { method: 'POST', pattern: /^\/mcp-tools\/(?<name>[^/]+)\/rollback$/, handler: wrapped((req) => handleToolRollback(req.params.name, (req.body || {}) as Record<string, unknown>, undefined, undefined, realToolOriginAnchor())) },
+    { method: 'GET', pattern: /^\/mcp-tools\/(?<name>[^/]+)$/, handler: wrapped((req) => handleToolGet(req.params.name)) },
+    { method: 'POST', pattern: /^\/mcp-tools\/(?<name>[^/]+)$/, handler: wrapped((req) => handleToolSet(req.params.name, (req.body || {}) as Record<string, unknown>, undefined, undefined, realToolOriginAnchor())) },
   ];
 }

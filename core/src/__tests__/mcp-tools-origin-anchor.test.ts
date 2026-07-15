@@ -130,3 +130,26 @@ test('a hopped rollback request is NEVER re-proxied (mixed-version loop guard)',
   assert.equal(r.success, true);
   assert.equal((r.data as any).doc.descriptionOverride, 'v1');
 });
+
+// --- origin refusals must surface as THEMSELVES, not ORIGIN_UNREACHABLE -------------
+
+test('an origin-side refusal envelope (e.g. PROTECTED_TOOL) passes through verbatim', async () => {
+  const port = memPort();
+  const refusal = { success: false, error: { code: 'PROTECTED_TOOL', message: 'bootstrap is protected' } };
+  const { deps } = originDeps({ origin: 'gw-123', onProxy: () => refusal });
+  const r = await handleToolSet('bootstrap', { enabled: false }, port, actor, deps);
+  assert.equal(r.success, false);
+  assert.equal(r.error?.code, 'PROTECTED_TOOL', 'the real refusal code, not ORIGIN_UNREACHABLE');
+  assert.equal(port.puts(), 0);
+});
+
+test('a malformed relay failure body (hub-style string error) is NOT passed through as an envelope', async () => {
+  const port = memPort();
+  // e.g. the hub itself failing: { success:false, error:"machine offline" } — no error.code.
+  const { deps } = originDeps({ origin: 'gw-123', onProxy: () => ({ success: false, error: 'machine offline' }) });
+  const r = await handleToolSet('detail', { enabled: false }, port, actor, deps);
+  assert.equal(r.success, false);
+  assert.equal(r.error?.code, 'ORIGIN_UNREACHABLE', 'malformed envelope treated as unreachable (fail closed)');
+  assert.ok(r.error?.message.includes('gw-123'));
+  assert.equal(port.puts(), 0, 'no silent local fallback');
+});

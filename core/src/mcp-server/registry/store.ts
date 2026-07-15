@@ -48,36 +48,44 @@ function docToRecord(d: ToolRegistryDoc): DataRecord {
   return { id: d.name, version: 0, fields: { ...d } as Record<string, unknown>, createdAt: now, updatedAt: now };
 }
 function recordToDoc(fields: Record<string, unknown>): ToolRegistryDoc {
-  return fields as unknown as ToolRegistryDoc;
+  const f = fields as unknown as ToolRegistryDoc;
+  // Records can be hand-authored around the store (data_put, foreign builds) —
+  // normalize the one field whose absence breaks readers (rollback's history scan).
+  return Array.isArray(f.history) ? f : { ...f, history: [] };
 }
 
 let ensured = false;
 async function ensureDataset(svc: ReturnType<typeof getDataService>): Promise<void> {
   if (ensured) return;
-  try {
-    await svc.createDataset(systemCtx(), {
-      id: DATASET, backend: 'cache', title: 'MCP Tool Registry',
-      visibility: 'cross-node-readable', syncMode: 'full', scope: 'fleet', config: { kind: 'cache' },
-    } as any);
-  } catch { /* already exists — fine */ }
-  ensured = true;
+  const r = await svc.createDataset(systemCtx(), {
+    id: DATASET, backend: 'cache', title: 'MCP Tool Registry',
+    visibility: 'cross-node-readable', syncMode: 'full', scope: 'fleet', config: { kind: 'cache' },
+  } as any).catch(() => ({ ok: false as const, reason: 'createDataset threw' }));
+  // Created (or already there) ⇒ done. Any other refusal is treated as transient:
+  // the flag stays down so the NEXT write retries instead of failing forever.
+  ensured = (r as { ok?: boolean }).ok === true || /exist/i.test(String((r as { reason?: string }).reason ?? ''));
 }
 
-/** The live adapter over getDataService(). dataServiceEnabled off => isEnabled() false => no-op/empty. */
+/** The live adapter over getDataService(). dataServiceEnabled off => isEnabled() false => no-op/empty.
+ *
+ *  READS NEVER CREATE THE DATASET. The overlay provider lists docs within seconds of
+ *  boot on every node — a read-side create would claim LOCAL ownership of the fleet
+ *  dataset before the replica descriptor syncs in, and upsertReplica refuses to
+ *  convert a locally-owned dataset to a replica (permanent split from the fleet
+ *  registry). Creation happens on the WRITE path only: the first write establishes
+ *  the origin, exactly like the workflow registry. */
 function livePort(): ToolRegistryPort {
   return {
     isEnabled: () => getDataService().isEnabled(),
     get: async (name) => {
       const svc = getDataService();
       if (!svc.isEnabled()) return null;
-      await ensureDataset(svc);
       const r = await svc.get(systemCtx(), DATASET, name);
       return r.ok && r.value ? recordToDoc(r.value.fields) : null;
     },
     list: async () => {
       const svc = getDataService();
       if (!svc.isEnabled()) return [];
-      await ensureDataset(svc);
       const r = await svc.query(systemCtx(), DATASET, { limit: 10000 } as any);
       return r.ok ? r.value.records.map((rec) => recordToDoc(rec.fields)) : [];
     },
@@ -111,6 +119,19 @@ function lenOf(v: string | null | undefined): string {
   return `len:${v == null ? 0 : v.length}`;
 }
 
+/** Serialize read-modify-write per tool name. Writes are origin-anchored, so this
+ *  one process sees ALL of them — an in-process chain is sufficient to stop two
+ *  concurrent writers from both minting rev N+1 and silently dropping one edit. */
+const writeLocks = new Map<string, Promise<unknown>>();
+function withNameLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  const prev = writeLocks.get(name) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  const tail = run.catch(() => undefined);
+  writeLocks.set(name, tail);
+  void tail.finally(() => { if (writeLocks.get(name) === tail) writeLocks.delete(name); });
+  return run;
+}
+
 export async function putToolDoc(
   input: { name: string; descriptionOverride?: string | null; enabled?: boolean },
   actor: MissionActor,
@@ -123,36 +144,38 @@ export async function putToolDoc(
     if (!vo.ok) throwCoded(vo.code, vo.message);
   }
   if (!port.isEnabled()) throwDisabled(`tool-registry doc write "${input.name}"`);
-  const prev = await port.get(input.name);
-  // Merge semantics: an omitted field keeps its current value (new docs default to
-  // "pure default": no override, enabled).
-  const next = {
-    descriptionOverride: input.descriptionOverride !== undefined ? input.descriptionOverride : (prev?.descriptionOverride ?? null),
-    enabled: input.enabled !== undefined ? input.enabled : (prev?.enabled ?? true),
-  };
-  if (next.enabled === false && PROTECTED_TOOLS.has(input.name)) {
-    throwCoded('PROTECTED_TOOL', `"${input.name}" is protected and cannot be disabled (orientation surface — see the design brief)`);
-  }
-  if (prev && !toolRegistryChanged(prev, next)) return { doc: prev, changed: false };
-  const now = Date.now();
-  const rev = (prev?.rev ?? 0) + 1;
-  const change: ToolRegistryChange = {
-    rev, at: now, actor,
-    state: { ...next },
-    changes: {
-      ...(prev?.descriptionOverride !== next.descriptionOverride
-        ? { descriptionOverride: { from: lenOf(prev?.descriptionOverride), to: lenOf(next.descriptionOverride) } } : {}),
-      ...((prev?.enabled ?? true) !== next.enabled ? { enabled: { from: prev?.enabled ?? true, to: next.enabled } } : {}),
-    },
-  };
-  const doc: ToolRegistryDoc = {
-    name: input.name, descriptionOverride: next.descriptionOverride, enabled: next.enabled,
-    rev, history: [...(prev?.history ?? []), change].slice(-TOOL_REGISTRY_HISTORY_CAP),
-    createdBy: prev?.createdBy ?? actor, lastUpdatedBy: actor,
-    createdAt: prev?.createdAt ?? now, updatedAt: now,
-  };
-  await port.put(doc);
-  return { doc, changed: true };
+  return withNameLock(input.name, async () => {
+    const prev = await port.get(input.name);
+    // Merge semantics: an omitted field keeps its current value (new docs default to
+    // "pure default": no override, enabled).
+    const next = {
+      descriptionOverride: input.descriptionOverride !== undefined ? input.descriptionOverride : (prev?.descriptionOverride ?? null),
+      enabled: input.enabled !== undefined ? input.enabled : (prev?.enabled ?? true),
+    };
+    if (next.enabled === false && PROTECTED_TOOLS.has(input.name)) {
+      throwCoded('PROTECTED_TOOL', `"${input.name}" is protected and cannot be disabled (orientation surface — see the design brief)`);
+    }
+    if (prev && !toolRegistryChanged(prev, next)) return { doc: prev, changed: false };
+    const now = Date.now();
+    const rev = (prev?.rev ?? 0) + 1;
+    const change: ToolRegistryChange = {
+      rev, at: now, actor,
+      state: { ...next },
+      changes: {
+        ...(prev?.descriptionOverride !== next.descriptionOverride
+          ? { descriptionOverride: { from: lenOf(prev?.descriptionOverride), to: lenOf(next.descriptionOverride) } } : {}),
+        ...((prev?.enabled ?? true) !== next.enabled ? { enabled: { from: prev?.enabled ?? true, to: next.enabled } } : {}),
+      },
+    };
+    const doc: ToolRegistryDoc = {
+      name: input.name, descriptionOverride: next.descriptionOverride, enabled: next.enabled,
+      rev, history: [...(prev?.history ?? []), change].slice(-TOOL_REGISTRY_HISTORY_CAP),
+      createdBy: prev?.createdBy ?? actor, lastUpdatedBy: actor,
+      createdAt: prev?.createdAt ?? now, updatedAt: now,
+    };
+    await port.put(doc);
+    return { doc, changed: true };
+  });
 }
 
 /** Restore the full state of history entry `toRev` as a NEW revision. */
@@ -161,7 +184,7 @@ export async function rollbackToolDoc(
   port: ToolRegistryPort = defaultPort(),
 ): Promise<{ doc: ToolRegistryDoc } | { error: { code: string; message: string } }> {
   const doc = await port.get(name);
-  const target = doc?.history.find((h) => h.rev === toRev);
+  const target = (doc?.history ?? []).find((h) => h.rev === toRev);
   if (!target) return { error: { code: 'NOT_FOUND', message: `no history entry ${name}:${toRev} (inline history keeps the last ${TOOL_REGISTRY_HISTORY_CAP} revs)` } };
   const { doc: next } = await putToolDoc(
     { name, descriptionOverride: target.state.descriptionOverride, enabled: target.state.enabled },

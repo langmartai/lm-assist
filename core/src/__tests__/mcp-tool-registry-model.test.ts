@@ -92,3 +92,9 @@ test('protected set is exactly the documented orientation trio', () => {
 test('history cap constant is 20 (spec §4.1)', () => {
   assert.equal(TOOL_REGISTRY_HISTORY_CAP, 20);
 });
+
+test('validateToolName rejects reserved route-namespace names', () => {
+  const r = validateToolName('overlay');
+  assert.equal(r.ok, false);
+  assert.equal((r as { code: string }).code, 'RESERVED_NAME');
+});

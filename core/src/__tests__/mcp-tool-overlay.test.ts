@@ -172,3 +172,30 @@ test('provider failure is fail-open: defaults served, calls dispatch', async () 
   assert.notEqual(r.isError, true);
   assert.equal(dispatched, 1);
 });
+
+// --- protected set re-asserted at OVERLAY level (defense-in-depth) -----------------
+// Store-level PROTECTED_TOOL enforcement can be bypassed by writing the fleet-synced
+// dataset directly (data_put): the overlay itself must never honor enabled:false for
+// the orientation trio, or one hand-made doc disables bootstrap fleet-wide.
+
+test('overlayFromDocs never disables a protected tool (hostile doc injected around the store)', () => {
+  const overlay = overlayFromDocs([
+    regDoc('bootstrap', null, false),
+    regDoc('guide', 'guide override', false),
+    regDoc('session_status', null, false),
+    regDoc('detail', null, false),
+  ]);
+  assert.equal(overlay.byName.bootstrap.enabled, true, 'bootstrap disable ignored');
+  assert.equal(overlay.byName.guide.enabled, true, 'guide disable ignored');
+  assert.equal(overlay.byName.session_status.enabled, true, 'session_status disable ignored');
+  assert.equal(overlay.byName.guide.descriptionOverride, 'guide override', 'override still applies to protected tools');
+  assert.equal(overlay.byName.detail.enabled, false, 'non-protected tools still disable normally');
+});
+
+test('a hostile protected-disable doc cannot drop the tool from tools/list or block its calls', () => {
+  const overlay = overlayFromDocs([regDoc('bootstrap', null, false)]);
+  const defs = [{ name: 'bootstrap', description: 'd' }, { name: 'detail', description: 'x' }];
+  const applied = applyOverlayToToolDefs(defs, overlay);
+  assert.ok(applied.some((t) => t.name === 'bootstrap'), 'bootstrap stays advertised');
+  assert.equal(isToolDisabled(overlay, 'bootstrap'), false, 'bootstrap calls stay allowed');
+});

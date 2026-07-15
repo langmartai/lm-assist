@@ -28,7 +28,7 @@ import {
   toolCatalog,
   setToolGate,
 } from '../../mcp-server/access-control';
-import { listPending, takePending } from '../../mcp-server/mcp-pending';
+import { listPending, getPending, takePending } from '../../mcp-server/mcp-pending';
 import { listConnectors, deleteConnector, setConnectorEnabled } from '../../mcp-server/connectors';
 
 function nowIso(): string {
@@ -316,6 +316,12 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/mcp\/pending\/(?<id>[^/]+)\/confirm$/,
       handler: async (req) => {
         const start = Date.now();
+        const peek = getPending(req.params.id);
+        if (!peek) return wrapError('MCP_PENDING_NOT_FOUND', 'pending not found or expired', start);
+        // A registry-disabled tool must not run even via confirm. Peek-then-guard so
+        // the pending is NOT consumed: re-enable then confirm, or deny to drop it.
+        const gd = await disabledGuard(peek.tool, start);
+        if (gd) return gd;
         const p = takePending(req.params.id);
         if (!p) return wrapError('MCP_PENDING_NOT_FOUND', 'pending not found or expired', start);
         try {
