@@ -1,6 +1,33 @@
 # Diagnosis: mission-workflows registry writes silently fail on this host (117)
 
-**Mission:** mission_fab3d21c · **Date:** 2026-07-15 · **Status:** diagnosis for human review — NO ownership/metadata mutation performed. The error-surfacing core fix (scope a, approved) is on `feat/mission-process-editor`; the ownership repair (scope b) is NOT executed and awaits a human decision.
+**Mission:** mission_fab3d21c · **Date:** 2026-07-15 · **Status: RESOLVED on `feat/mission-process-editor` — awaiting human deploy.**
+Scope (a) error-surfacing AND scope (b) **remediation option 2 (origin-anchored writes)** are
+implemented and e2e-proven from this host; NO dataset ownership/metadata was mutated.
+
+## Resolution (option 2, human-approved)
+
+`handleWorkflowSet`/`handleWorkflowRollback` now anchor WRITES to the **dataset origin**: a
+`realOriginAnchor()` reads the local descriptor registry (`getDatasetRegistry().get('mission-workflows')
+.origin?.machineId`, null when unstamped/owned-here) and, when the origin is another node, proxies
+the same request there via the existing hub machine-relay (`proxyPost`), fail-closed
+(`ORIGIN_UNREACHABLE`) — never a silent local fallback. Reads stay leader/local as before.
+A `_originHop` transport flag (stripped `_actor`-style at handler entry) guarantees a proxied hop
+is **never re-anchored** — in a mixed-version fleet this degrades to honest errors instead of a
+proxy loop between an old-build leader-anchor and a new-build origin-anchor.
+
+**Write-leg e2e from THIS host (in-process patched handlers, prod paths, real hub relay,
+scratch doc `case.e2e-ui-probe` only): ALL STEPS PASS** — origin resolved to
+`gw4-31432aec…/yitest-Virtual-Machine (123)`; create → rev1 **persisted on the origin**
+(byte-verified body — the silent drop is gone); edit → rev2; history rows [2,1]; rollback
+`{toRev:1}` → rev3 with the rev1 body byte-identical. Note: 123's old build handled the landed
+write locally because leadership is **cluster-scoped** (123 is the staging cluster's own monitor)
+— convenient topology today; the hop guard covers topologies where it wouldn't be.
+
+**Deploy notes for the human:** deploy fleet-wide (or origin-first). Until a non-origin node runs
+this build, its own registry writes keep the old silent-drop behavior. Post-deploy, a save on a
+replica node returns the origin's authoritative doc, while that node's LOCAL reads converge via
+reconcile pull — a brief stale-rev window in list/detail reads is expected and harmless (the web
+editor's rev-guard compares a consistent local pair, so no false conflicts).
 
 ## Symptom
 
