@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
 import type { CallFn, EditTarget } from './types';
 import { errText, timeAgo } from './format';
 
@@ -251,22 +252,34 @@ function StatusSection({ title, call, path, refreshTick }: { title: string; call
 }
 
 export function SyncTab({ call, onEdit, refreshTick }: { call: CallFn; onEdit?: (t: EditTarget) => void; refreshTick?: number }) {
+  // Local refresh compounds with the parent-driven refreshTick (post-save bumps).
+  const [localTick, setLocalTick] = useState(0);
+  const tick = (refreshTick ?? 0) + localTick;
   return (
-    <div className="h-full min-h-0 overflow-y-auto space-y-4 pr-1">
-    <div className="text-xs text-gray-500">
-      Sync/signpost toggles live in <a href="settings" className="underline hover:text-gray-300">Settings → Memory</a>; this tab is status only.
+    <div className="h-full min-h-0 flex flex-col gap-2">
+    {/* Toolbar row — same rhythm as the other tabs: description flex-1 + refresh */}
+    <div className="flex items-center gap-2">
+      <div className="flex-1 text-xs text-gray-500">
+        Sync/signpost toggles live in <a href="settings" className="underline hover:text-gray-300">Settings → Memory</a>; this tab is status only.
+      </div>
+      <button type="button" onClick={() => setLocalTick((t) => t + 1)} aria-label="Refresh"
+        className="px-2 py-1 rounded border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600">
+        <RefreshCw size={14} />
+      </button>
     </div>
+    <div className="flex-1 min-h-0 overflow-y-auto pr-1">
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 text-sm">
-      <StatusSection title="Memory sync" call={call} path="/memory/sync/status" refreshTick={refreshTick} />
-      <StatusSection title="Rules sync" call={call} path="/rules/sync/status" refreshTick={refreshTick} />
-      <StatusSection title="Memory autosync daemon" call={call} path="/memory/autosync/status" refreshTick={refreshTick} />
-      <StatusSection title="Rules autosync daemon" call={call} path="/rules/autosync/status" refreshTick={refreshTick} />
-      <StatusSection title="Harvest daemon" call={call} path="/memory/harvest/status" refreshTick={refreshTick} />
+      <StatusSection title="Memory sync" call={call} path="/memory/sync/status" refreshTick={tick} />
+      <StatusSection title="Rules sync" call={call} path="/rules/sync/status" refreshTick={tick} />
+      <StatusSection title="Memory autosync daemon" call={call} path="/memory/autosync/status" refreshTick={tick} />
+      <StatusSection title="Rules autosync daemon" call={call} path="/rules/autosync/status" refreshTick={tick} />
+      <StatusSection title="Harvest daemon" call={call} path="/memory/harvest/status" refreshTick={tick} />
       <Section title="Proposals (propose-only — applying is a human/agent step)">
-        <QueueList call={call} path="/memory/proposals?limit=50" listKey="proposals" onEdit={onEdit} refreshTick={refreshTick} />
+        <QueueList call={call} path="/memory/proposals?limit=50" listKey="proposals" onEdit={onEdit} refreshTick={tick} />
       </Section>
-      <Section title="Reconcile plan"><QueueList call={call} path="/memory/reconcile/plan?limit=50" listKey="items" refreshTick={refreshTick} /></Section>
-      <Section title="Validate plan"><QueueList call={call} path="/memory/validate/plan?limit=50" listKey="items" refreshTick={refreshTick} /></Section>
+      <Section title="Reconcile plan"><QueueList call={call} path="/memory/reconcile/plan?limit=50" listKey="items" refreshTick={tick} /></Section>
+      <Section title="Validate plan"><QueueList call={call} path="/memory/validate/plan?limit=50" listKey="items" refreshTick={tick} /></Section>
+    </div>
     </div>
     </div>
   );

@@ -66,36 +66,33 @@ export function RulesBrowser({ call, onEdit, refreshTick }: { call: CallFn; onEd
   return (
     <div className="h-full min-h-0 flex gap-4 text-sm">
       <div className="flex-1 min-w-0 flex flex-col min-h-0 gap-2">
-        <div className="flex justify-between items-center">
-          <div className="text-gray-400 text-xs">
-            User rules (<code>~/.claude/rules</code>) — own rules are editable; <code>synced.*</code> and mirrors converge from their origin node.
-          </div>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={() => load()} aria-label="Refresh"
-              className="px-2 py-1 rounded border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600">
-              <RefreshCw size={14} />
-            </button>
-            {onEdit && (
-              <button onClick={() => onEdit({ kind: 'rule', filename: '', content: '# New rule\n\n' })}
-                className="px-2 py-1 rounded bg-emerald-800 text-emerald-100 hover:bg-emerald-700 text-xs">+ New rule</button>
+        {/* Toolbar row — same rhythm as MemoryBrowser's search row: input flex-1 + refresh + New */}
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+            <input value={filter} onChange={(e) => setFilter(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Escape' && filter) { e.stopPropagation(); setFilter(''); } }}
+              placeholder="Filter rules…"
+              className="w-full bg-gray-900 border border-gray-700 rounded pl-7 pr-7 py-1 text-gray-200" />
+            {filter && (
+              <button type="button" onClick={() => setFilter('')} aria-label="Clear filter"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300">
+                <X size={14} />
+              </button>
             )}
           </div>
-        </div>
-        <div className="relative">
-          <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
-          <input value={filter} onChange={(e) => setFilter(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Escape' && filter) { e.stopPropagation(); setFilter(''); } }}
-            placeholder="Filter rules…"
-            className="w-full bg-gray-900 border border-gray-700 rounded pl-7 pr-7 py-1 text-gray-200" />
-          {filter && (
-            <button type="button" onClick={() => setFilter('')} aria-label="Clear filter"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300">
-              <X size={14} />
-            </button>
+          <button type="button" onClick={() => load()} aria-label="Refresh"
+            className="px-2 py-1 rounded border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600">
+            <RefreshCw size={14} />
+          </button>
+          {onEdit && (
+            <button onClick={() => onEdit({ kind: 'rule', filename: '', content: '# New rule\n\n' })}
+              className="px-2 py-1 rounded bg-emerald-800 text-emerald-100 hover:bg-emerald-700 text-xs whitespace-nowrap">+ New rule</button>
           )}
         </div>
         <div className="text-[10px] text-gray-500">
           {filter.trim() ? `${filteredRules.length}/${rules.length} rules · ${activeCount} active` : `${rules.length} rules · ${activeCount} active`}
+          {' · '}own rules (<code>~/.claude/rules</code>) are editable; <code>synced.*</code> and mirrors converge from their origin node
         </div>
         {error && <div className="text-rose-400 text-xs">{error}</div>}
         <div className="flex-1 min-h-0 overflow-y-auto">
