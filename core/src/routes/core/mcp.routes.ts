@@ -43,6 +43,7 @@ import { handleReadConversation } from '../../mcp-server/tools/read-conversation
 import { EXPANDED_HANDLERS } from '../../mcp-server/tools/expanded';
 import { evaluateAccess } from '../../mcp-server/access-control';
 import { createPending } from '../../mcp-server/mcp-pending';
+import { sharedLiveOverlay } from '../../mcp-server/registry/overlay-live';
 
 // Dispatcher for StreamableHTTP mode — runs each tool in-process against
 // the data stores that already live in this core API process. No HTTP
@@ -83,7 +84,9 @@ function buildServer(): Server {
     { name, version: '2.0.0' },
     { capabilities: { tools: {} }, instructions: getLmAssistInstructions() },
   );
-  configureMcpServer(server, dispatch);
+  // Tool-registry overlay (spec §4.4): fresh Server per request + per-request provider
+  // reads ⇒ registry edits reach tools/list + tools/call live, no Core restart.
+  configureMcpServer(server, dispatch, sharedLiveOverlay());
   return server;
 }
 

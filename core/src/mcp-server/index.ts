@@ -40,6 +40,7 @@ import {
   mcpGenericCall,
 } from './api-client';
 import { EXPANDED_HANDLERS } from './tools/expanded';
+import { createHttpOverlayProvider } from './registry/overlay-http';
 
 // ─── Server Setup ──────────────────────────────────────────────────
 
@@ -77,7 +78,10 @@ const dispatch: McpToolDispatcher = async (name, args) => {
   }
 };
 
-configureMcpServer(server, dispatch);
+// Tool-registry overlay (spec §4.4): fetched from the core API per list/call with a
+// short TTL — registry edits apply live; core unreachable ⇒ fail-open defaults (the
+// core-side shim guards still reject disabled calls).
+configureMcpServer(server, dispatch, createHttpOverlayProvider());
 
 // ─── Main ──────────────────────────────────────────────────
 
