@@ -1387,6 +1387,30 @@ export async function handleSessionStatus(
   }
 }
 
+/**
+ * Locate the existing worktree that has `branch` checked out, via `git worktree list --porcelain`
+ * (stanzas: `worktree <path>` … `branch refs/heads/<name>`). Returns the path or null.
+ * Pure over the injected git runner — unit-testable without a repo.
+ */
+export function findWorktreeForBranch(
+  repo: string,
+  branch: string,
+  git: (args: string[], cwd: string) => string,
+): string | null {
+  let out = '';
+  try { out = git(['worktree', 'list', '--porcelain'], repo) || ''; } catch { return null; }
+  let current: string | null = null;
+  for (const line of String(out).split('\n')) {
+    const l = line.trim();
+    if (l.startsWith('worktree ')) current = l.slice('worktree '.length).trim();
+    else if (l.startsWith('branch ') && current) {
+      const b = l.slice('branch '.length).trim().replace(/^refs\/heads\//, '');
+      if (b === branch) return current;
+    }
+  }
+  return null;
+}
+
 /** Deps for handleSessionResume — injected for testability. Mirrors ResumeWorkerDeps + idleMin. */
 export interface SessionResumeDeps extends ResumeWorkerDeps {
   /** Idle minutes before auto-close (from project settings). */
@@ -1468,6 +1492,16 @@ function defaultSessionResumeDeps(): SessionResumeDeps {
         const absDir = pathmod.isAbsolute(dir) ? dir : pathmod.resolve(absRepo, dir);
         try { gitCommand(['worktree', 'add', absDir, '-b', branch], absRepo); }
         catch (err) { if (!/already exists|already checked out|is already/i.test((err as Error).message || '')) throw err; }
+        // The mission's branch may live in a DIFFERENTLY-NAMED worktree (e.g. one the controller
+        // created by hand): 'already checked out' is swallowed above but absDir was never created,
+        // and launching there fails 'cwd does not exist'. Resolve the branch's REAL worktree from
+        // git and resume in place — the session's context lives there.
+        const fsmod = require('fs') as typeof import('fs');
+        if (!fsmod.existsSync(absDir)) {
+          const found = findWorktreeForBranch(absRepo, branch, (args, cwd) => gitCommand(args, cwd));
+          if (found) return found;
+          throw new Error(`worktree for branch ${branch} not found and ${absDir} does not exist`);
+        }
         return absDir;
       },
       // CHANGE (a): pass resume: sid → `claude --resume <sid>` continues the SAME session.

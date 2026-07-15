@@ -370,3 +370,17 @@ test('human rebind of an onboarded mission preserves kind onboarded', async () =
   assert.equal((r.data as any).binding.kind, 'onboarded');
   assert.equal((r.data as any).binding.sessionId, 'new-sid-1');
 });
+
+test('findWorktreeForBranch parses porcelain and matches the branch worktree', async () => {
+  const { findWorktreeForBranch } = require('../routes/core/mission.routes');
+  const porcelain = [
+    'worktree /home/u/repo', 'HEAD abc', 'branch refs/heads/main', '',
+    'worktree /home/u/repo/.claude/worktrees/mission-process-editor', 'HEAD def', 'branch refs/heads/feat/mission-process-editor', '',
+    'worktree /home/u/repo/.claude/worktrees/other', 'HEAD 123', 'detached', '',
+  ].join('\n');
+  const git = (_a: string[], _c: string) => porcelain;
+  assert.equal(findWorktreeForBranch('/home/u/repo', 'feat/mission-process-editor', git), '/home/u/repo/.claude/worktrees/mission-process-editor');
+  assert.equal(findWorktreeForBranch('/home/u/repo', 'main', git), '/home/u/repo');
+  assert.equal(findWorktreeForBranch('/home/u/repo', 'nope', git), null);
+  assert.equal(findWorktreeForBranch('/home/u/repo', 'x', () => { throw new Error('git gone'); }), null);
+});
