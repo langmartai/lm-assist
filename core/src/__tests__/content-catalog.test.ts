@@ -16,17 +16,29 @@ import {
   GUIDE_BLURBS,
 } from '../mcp-server/tools/guide';
 
-test('catalog ids are EXACTLY the code-derived set (bootstrap.header + guide.index + one per topic)', () => {
+test('catalog ids are EXACTLY the code-derived set (overview + bootstrap.header + guide.index + one per topic)', () => {
   const catalog = getContentCatalog();
   const expected = new Set<string>([
+    'content.overview',
     'bootstrap.header',
     'guide.index',
     ...Object.keys(GUIDES_TEST_EXPORT).map((k) => `guide.${k}`),
   ]);
   assert.deepEqual(new Set(catalog.keys()), expected);
-  // 23 topics today + the two composition preambles — a topic added to GUIDES
-  // auto-extends this set; a removed topic shrinks it. No hand-maintained list.
-  assert.equal(catalog.size, Object.keys(GUIDES_TEST_EXPORT).length + 2);
+  // topics + the two composition preambles + the generated overview map — a topic
+  // added to GUIDES auto-extends this set; a removed topic shrinks it.
+  assert.equal(catalog.size, Object.keys(GUIDES_TEST_EXPORT).length + 3);
+});
+
+test('content.overview SHOWS ALL: its generated body names every other unit id as a #doc: link', () => {
+  const catalog = getContentCatalog();
+  const body = catalog.get('content.overview')!.defaultBody;
+  for (const id of catalog.keys()) {
+    if (id === 'content.overview') continue;
+    assert.ok(body.includes(`(#doc:${id})`), `overview must link ${id}`);
+  }
+  assert.ok(body.includes('```mermaid'), 'overview carries the map diagram');
+  assert.deepEqual(catalog.get('content.overview')!.renderedIn, [], 'overview is a page map — never shipped in tool output');
 });
 
 test('every catalog id passes the model id grammar', () => {
@@ -82,11 +94,12 @@ test('every topic BLURB is editable on its owning unit (index one-liners are con
 });
 
 test('units carry non-empty titles + defaults; group order is bootstrap-first', () => {
-  assert.deepEqual([...CONTENT_GROUP_ORDER], ['bootstrap', 'guide']);
+  assert.deepEqual([...CONTENT_GROUP_ORDER], ['overview', 'bootstrap', 'guide']);
   for (const unit of getContentCatalog().values()) {
     assert.ok(unit.title.length > 0, `${unit.id} has a title`);
     assert.ok(unit.defaultBody.length > 0, `${unit.id} has a code default`);
-    assert.ok(unit.group === 'bootstrap' || unit.group === 'guide');
-    assert.equal(unit.id, `${unit.group === 'bootstrap' ? 'bootstrap' : 'guide'}.${unit.key}`);
+    assert.ok(unit.group === 'overview' || unit.group === 'bootstrap' || unit.group === 'guide');
+    const prefix = unit.group === 'bootstrap' ? 'bootstrap' : unit.group === 'overview' ? 'content' : 'guide';
+    assert.equal(unit.id, `${prefix}.${unit.key}`);
   }
 });

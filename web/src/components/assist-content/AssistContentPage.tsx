@@ -255,7 +255,7 @@ export function AssistContentPage() {
 
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {selectedId ? (
-            <ContentDetail id={selectedId} apiFetch={apiFetch} onDocChanged={() => void fetchAll()} />
+            <ContentDetail id={selectedId} apiFetch={apiFetch} onDocChanged={() => void fetchAll()} onSelectUnit={setSelectedId} />
           ) : (
             <div
               style={{

@@ -26,11 +26,11 @@ export const MAX_BLURB_OVERRIDE_BYTES = 300;
  *  itself keeps the id space clear of the /assist-content literal routes (`overlay`
  *  has no group prefix, so it can never be a doc id). Unknown-but-valid ids are
  *  allowed as scratch docs (never rendered). */
-const ID_RE = /^(bootstrap|guide)\.[a-z0-9][a-z0-9.-]{0,80}$/;
+const ID_RE = /^(bootstrap|guide|content)\.[a-z0-9][a-z0-9.-]{0,80}$/;
 
 export function validateContentId(id: string): Validation {
   if (typeof id !== 'string' || !ID_RE.test(id) || id.includes('..') || /[.-]$/.test(id)) {
-    return { ok: false, code: 'INVALID_INPUT', message: `invalid content doc id "${id}" (want bootstrap.<section> or guide.<topic>, lowercase [a-z0-9.-])` };
+    return { ok: false, code: 'INVALID_INPUT', message: `invalid content doc id "${id}" (want bootstrap.<section>, guide.<topic> or content.<unit>, lowercase [a-z0-9.-])` };
   }
   return { ok: true };
 }

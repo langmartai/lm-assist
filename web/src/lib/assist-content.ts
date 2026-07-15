@@ -3,7 +3,7 @@
  *  logic, vitest-covered in __tests__/assist-content.test.ts. The rev-conflict check is
  *  the imported, already-tested `checkRevConflict` from lib/mission-process. */
 
-export type ContentGroup = 'bootstrap' | 'guide';
+export type ContentGroup = 'overview' | 'bootstrap' | 'guide';
 
 export interface ContentActorSummary {
   kind?: string;

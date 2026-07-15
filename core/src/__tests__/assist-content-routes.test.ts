@@ -46,7 +46,7 @@ test('list joins the code catalog with registry deltas + counts + orphans', asyn
   assert.equal(d.orphanDocs.length, 1, 'scratch doc listed as orphan');
   assert.equal(d.orphanDocs[0].name, 'guide.zz-e2e-probe');
   assert.deepEqual(d.counts, { units: getContentCatalog().size, overridden: 1, orphans: 1 });
-  assert.deepEqual([...d.groups], ['bootstrap', 'guide']);
+  assert.deepEqual([...d.groups], ['overview', 'bootstrap', 'guide']);
 });
 
 test('overlay returns the {byId} delta map', async () => {

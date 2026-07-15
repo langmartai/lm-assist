@@ -31,10 +31,14 @@ export function ContentDetail({
   id,
   apiFetch,
   onDocChanged,
+  onSelectUnit,
 }: {
   id: string;
   apiFetch: ApiFetch;
   onDocChanged: () => void;
+  /** Navigate to another unit — powers the overview's [`unit.id`](#doc:unit.id) chips
+   *  (same mechanism as ProcessDetail's doc links). */
+  onSelectUnit?: (id: string) => void;
 }) {
   const [data, setData] = useState<ContentDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -187,6 +191,27 @@ export function ContentDetail({
   const overridden = doc?.contentOverride != null;
 
   const mdComponents = {
+    a: ({ href, children }: { href?: string; children?: ReactNode }) => {
+      if (typeof href === 'string' && href.startsWith('#doc:') && onSelectUnit) {
+        const target = href.slice('#doc:'.length);
+        return (
+          <button
+            type="button"
+            className="badge badge-blue"
+            style={{ cursor: 'pointer', fontFamily: 'var(--font-mono)', verticalAlign: 'baseline' }}
+            title={`Open ${target}`}
+            onClick={() => onSelectUnit(target)}
+          >
+            {children}
+          </button>
+        );
+      }
+      return (
+        <a href={href} target="_blank" rel="noreferrer">
+          {children}
+        </a>
+      );
+    },
     code: ({ className, children }: { className?: string; children?: ReactNode }) => {
       if (typeof className === 'string' && className.includes('language-mermaid')) {
         return <MermaidBlock chart={String(children ?? '').replace(/\n$/, '')} />;
