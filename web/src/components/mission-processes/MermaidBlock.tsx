@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { sanitizeSvgTree } from '@/lib/svg-sanitize';
 
 // Module singletons: initialize mermaid once per page, unique render ids per block.
 let mermaidReady = false;
@@ -19,9 +20,12 @@ let renderSeq = 0;
  * DOMPurify was tried and is structurally incompatible: mermaid-11 flowcharts
  * render every node label as foreignObject HTML (the htmlLabels option is not
  * honored), and DOMPurify empties foreignObject children by design (mXSS defense),
- * which blanks every label. As defense-in-depth, INJECT_GUARD refuses to inject
- * any SVG that still carries scripty constructs (falls back to the raw block) —
- * verified headless with a hostile-label probe against the live pipeline.
+ * which blanks every label. Defense-in-depth on top of strict mode: the output is
+ * scrubbed structure-aware by sanitizeSvgTree (parse the tree, drop script-capable
+ * elements, strip on* attributes, allowlist URL attribute schemes — parse-time
+ * entity decoding defeats regex-bypass payloads), then INJECT_GUARD is a final
+ * assert on the serialized result; any failure falls back to the raw block.
+ * Verified headless with hostile-label probes against the live pipeline.
  */
 const INJECT_GUARD = /<script|(?:^|[\s"'<])on[a-z]+\s*=|javascript:/i;
 export function MermaidBlock({ chart }: { chart: string }) {
@@ -40,8 +44,10 @@ export function MermaidBlock({ chart }: { chart: string }) {
           mermaidReady = true;
         }
         const { svg: rendered } = await mermaid.render(`lm-mermaid-${++renderSeq}`, chart);
-        if (INJECT_GUARD.test(rendered)) throw new Error('diagram output failed the script-content guard');
-        if (alive) setSvg(rendered);
+        const scrubbed = sanitizeSvgTree(rendered);
+        if (!scrubbed) throw new Error('diagram output did not parse as SVG');
+        if (INJECT_GUARD.test(scrubbed)) throw new Error('diagram output failed the script-content guard');
+        if (alive) setSvg(scrubbed);
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : String(e));
       }
