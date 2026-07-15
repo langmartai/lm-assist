@@ -10,6 +10,7 @@ import { ok } from './_passthrough';
 import { fleetIdentity } from '../fleet-identity';
 import type { AuthSnapshot } from '../../monitor/auth-monitor';
 import { describeCookieTtl } from '../../utils/claudeai-session';
+import type { ContentState } from '../registry/content-model';
 
 /** topic → the tools it covers (drives the index + tool-name → topic resolution). */
 const TOPIC_TOOLS: Record<string, string[]> = {
@@ -468,37 +469,75 @@ const BLURB: Record<string, string> = {
 /** Separator line used between sections in the bootstrap output (reused by the auth block). */
 const sep = '\n\n' + '─'.repeat(64) + '\n\n';
 
-function buildIndex(): string {
-  const lines = [
-    '# lm-assist — tool playbooks (call `guide(topic=...)` for any of these)',
-    '',
-    'You are connected to lm-assist over the lm-assist MCP connector. These tools operate on Claude Code sessions, a structured data service, remote agents, terminals, and claude.ai — across one or more machines ("nodes"). Call `bootstrap` (no args) ONCE to load EVERY use case into this session; or `guide(topic=...)` for a single copy-pasteable recipe (a tool name works too, e.g. guide(topic="data_get")). New here? read `orientation` (what this is + how it works WITH — complements — your local CLAUDE.md/memory/skills), then `cross-node` and `workflows`.',
-    '',
-    '## Golden rules (ALL tools)',
-    '- **Node targeting:** every tool takes an optional `node` (hostId or hostname). Omit it for the DEFAULT host (single-node, the common case). Pass it to act on another machine; call `list_nodes` when the user means "my server"/"the other machine". Management ops (data create/drop/sync/keys, raw SQL) are LOCAL-ONLY — not over this connector. See guide("cross-node").',
-    '- **Cloud data reads need a key:** `data_request_access` first — on the SAME node you will read (keys are per-node). See guide("data").',
-    '- **Big results are paged/summarized** by default — drill in with the documented params (field/grep/lines, from/to indices) instead of asking for everything.',
-    '- **Async:** `agent_execute` returns before the run finishes — poll `get_execution`.',
-    '',
-    '## Topics',
-  ];
-  for (const topic of Object.keys(GUIDES)) lines.push(`- \`${topic}\` — ${BLURB[topic] ?? ''}`);
+// ── Content registry seam (assist-content design §4) ────────────────────────
+// Every unit of PROSE below is overridable through the fleet `assist-content-registry`
+// dataset (ids `bootstrap.<section>` / `guide.<topic>`, edited on /assist-content).
+// Composition — section order, the generated topic list, aliases — stays code-owned.
+// A lookup resolves override ?? default PER CALL, so registry edits render live with
+// no Core restart; a null lookup (store down / stdio binary) serves pure defaults.
+
+/** id → stored delta, or undefined when the doc doesn't exist. */
+export type ContentLookup = (id: string) => ContentState | undefined;
+
+/** Overrides come from the shared content-overlay provider, reached via a LAZY require
+ *  (the authBlock() pattern): guide.ts ships inside the stdio plugin binary, whose
+ *  import graph must not pull the store/data-service — and on stdio these handlers
+ *  never run anyway (calls forward to Core over /mcp-call). Fail-open on any error. */
+async function contentLookup(): Promise<ContentLookup | null> {
+  try {
+    const { sharedContentOverlay } = require('../registry/content-live') as typeof import('../registry/content-live');
+    const map = await sharedContentOverlay().get();
+    return map ? (id) => map.get(id) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The guide-tool no-arg preamble (title + intro + golden rules) — content doc `guide.index`.
+ *  The `## Topics` list below it is GENERATED and stays code-owned (only the per-topic
+ *  one-liners are overridable, via each topic doc's blurbOverride). */
+export const INDEX_PREAMBLE_DEFAULT = [
+  '# lm-assist — tool playbooks (call `guide(topic=...)` for any of these)',
+  '',
+  'You are connected to lm-assist over the lm-assist MCP connector. These tools operate on Claude Code sessions, a structured data service, remote agents, terminals, and claude.ai — across one or more machines ("nodes"). Call `bootstrap` (no args) ONCE to load EVERY use case into this session; or `guide(topic=...)` for a single copy-pasteable recipe (a tool name works too, e.g. guide(topic="data_get")). New here? read `orientation` (what this is + how it works WITH — complements — your local CLAUDE.md/memory/skills), then `cross-node` and `workflows`.',
+  '',
+  '## Golden rules (ALL tools)',
+  '- **Node targeting:** every tool takes an optional `node` (hostId or hostname). Omit it for the DEFAULT host (single-node, the common case). Pass it to act on another machine; call `list_nodes` when the user means "my server"/"the other machine". Management ops (data create/drop/sync/keys, raw SQL) are LOCAL-ONLY — not over this connector. See guide("cross-node").',
+  '- **Cloud data reads need a key:** `data_request_access` first — on the SAME node you will read (keys are per-node). See guide("data").',
+  '- **Big results are paged/summarized** by default — drill in with the documented params (field/grep/lines, from/to indices) instead of asking for everything.',
+  '- **Async:** `agent_execute` returns before the run finishes — poll `get_execution`.',
+  '',
+].join('\n');
+
+function buildIndex(lookup?: ContentLookup | null): string {
+  const preamble = lookup?.('guide.index')?.contentOverride ?? INDEX_PREAMBLE_DEFAULT;
+  const lines = [preamble, '## Topics'];
+  for (const topic of Object.keys(GUIDES)) {
+    const blurb = lookup?.(`guide.${topic}`)?.blurbOverride ?? BLURB[topic] ?? '';
+    lines.push(`- \`${topic}\` — ${blurb}`);
+  }
   return lines.join('\n');
 }
-const INDEX = buildIndex();
+
+/** Bootstrap section order — `mission-controller` is DELIBERATELY absent (the controller
+ *  contract loads via guide only, not into every bootstrapped session). */
+export const BOOTSTRAP_SECTION_ORDER: readonly string[] = ['orientation', 'cross-node', 'connectors', 'access-paths', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'machine-access', 'claude-ai', 'account', 'login', 'github', 'files', 'clusters'];
+
+/** The bootstrap preamble — content doc `bootstrap.header`. */
+export const BOOTSTRAP_HEADER_DEFAULT = [
+  '# lm-assist — capability bootstrap (you have now loaded ALL use cases for this session)',
+  '',
+  'You called `bootstrap`, so the COMPLETE set of lm-assist use-case playbooks is below — you do not need to look anything else up to start. lm-assist COMPLEMENTS your local CLAUDE.md / memory / skills (it does NOT replace them; they work together — see ORIENTATION). Every tool takes an optional `node` (omit = the default host; pass it, after `list_nodes`, to target another machine). To re-read ONE topic later, call `guide(topic=...)`.',
+].join('\n');
 
 /** The whole skill in ONE response — every playbook concatenated (stays in sync with GUIDES). */
-function buildBootstrap(): string {
-  const order = ['orientation', 'cross-node', 'connectors', 'access-paths', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'machine-access', 'claude-ai', 'account', 'login', 'github', 'files', 'clusters'];
-  const header = [
-    '# lm-assist — capability bootstrap (you have now loaded ALL use cases for this session)',
-    '',
-    'You called `bootstrap`, so the COMPLETE set of lm-assist use-case playbooks is below — you do not need to look anything else up to start. lm-assist COMPLEMENTS your local CLAUDE.md / memory / skills (it does NOT replace them; they work together — see ORIENTATION). Every tool takes an optional `node` (omit = the default host; pass it, after `list_nodes`, to target another machine). To re-read ONE topic later, call `guide(topic=...)`.',
-  ].join('\n');
-  const sections = order.filter((k) => GUIDES[k]).map((k) => GUIDES[k]);
+function buildBootstrap(lookup?: ContentLookup | null): string {
+  const header = lookup?.('bootstrap.header')?.contentOverride ?? BOOTSTRAP_HEADER_DEFAULT;
+  const sections = BOOTSTRAP_SECTION_ORDER
+    .filter((k) => GUIDES[k])
+    .map((k) => lookup?.(`guide.${k}`)?.contentOverride ?? GUIDES[k]);
   return header + sep + sections.join(sep);
 }
-const BOOTSTRAP = buildBootstrap();
 
 // ── Pure helpers (exported for unit tests) ──────────────────────────────────
 
@@ -570,20 +609,23 @@ async function clusterBlock(): Promise<string> {
 }
 
 async function handleBootstrap(_args: Record<string, unknown>): Promise<McpToolResult> {
-  const [auth, cluster] = await Promise.all([authBlock(), clusterBlock()]);
-  return ok(fleetIdentity() + '\n\n' + BOOTSTRAP + auth + cluster);
+  const [lookup, auth, cluster] = await Promise.all([contentLookup(), authBlock(), clusterBlock()]);
+  return ok(fleetIdentity() + '\n\n' + buildBootstrap(lookup) + auth + cluster);
 }
 
 async function handleGuide(args: Record<string, unknown>): Promise<McpToolResult> {
   const raw = String((args.topic ?? args.use_case ?? args.tool ?? '') as string).trim().toLowerCase();
-  if (!raw || raw === 'index' || raw === 'help' || raw === 'list' || raw === 'topics') return ok(INDEX);
+  const lookup = await contentLookup();
+  if (!raw || raw === 'index' || raw === 'help' || raw === 'list' || raw === 'topics') return ok(buildIndex(lookup));
   const key = (GUIDES[raw] ? raw : undefined) ?? ALIASES[raw];
+  // Registry override ?? code default, resolved per call (live, no restart).
+  const topicBody = (k: string): string => lookup?.(`guide.${k}`)?.contentOverride ?? GUIDES[k];
   // `connectors` is dynamic: prepend the live fleet identity so the body names THIS hub/node/cluster.
-  const body = (k: string): string => (k === 'connectors' ? fleetIdentity() + '\n\n' + GUIDES[k] : GUIDES[k]);
+  const body = (k: string): string => (k === 'connectors' ? fleetIdentity() + '\n\n' + topicBody(k) : topicBody(k));
   if (key && GUIDES[key]) return ok(body(key));
   const sub = Object.keys(GUIDES).find((k) => k.includes(raw) || raw.includes(k));
   if (sub) return ok(body(sub));
-  return ok(`No guide titled "${args.topic ?? args.use_case ?? args.tool}". Pick a topic below.\n\n${INDEX}`);
+  return ok(`No guide titled "${args.topic ?? args.use_case ?? args.tool}". Pick a topic below.\n\n${buildIndex(lookup)}`);
 }
 
 export const GUIDE_TOOL_DEFS = [
@@ -616,3 +658,6 @@ export const GUIDE_HANDLERS: Record<string, (args: Record<string, unknown>) => P
 
 /** Exported for unit tests — access the raw GUIDES map without going through the HTTP handler. */
 export const GUIDES_TEST_EXPORT: Record<string, string> = GUIDES;
+
+/** The index one-liners (content-catalog enumeration + blurbOverride defaults). */
+export const GUIDE_BLURBS: Readonly<Record<string, string>> = BLURB;
