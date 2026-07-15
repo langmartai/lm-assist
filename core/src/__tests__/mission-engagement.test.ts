@@ -70,8 +70,12 @@ test('shouldEngage: same set different order → not a change (false)', () => {
   assert.equal(shouldEngage({ now: 10 * 60_000, lastEngagedAt: 9 * 60_000, safetyIntervalMin: 45, materialCount: 0, activeIds: ['b', 'a'], lastActiveIds: ['a', 'b'] }), false);
 });
 
-test('shouldEngage: safety elapsed but NO update since last engage → false (no wasted-token check-in)', () => {
-  assert.equal(shouldEngage({ now: 100 * 60_000, lastEngagedAt: 0, safetyIntervalMin: 45, materialCount: 0, activeIds: ['a'], lastActiveIds: ['a'], anyUpdateSinceEngage: false }), false);
+test('shouldEngage: safety elapsed + ACTIVE missions + no update → TRUE (idle/dead executors emit no events — the 2026-07-15 stall)', () => {
+  assert.equal(shouldEngage({ now: 100 * 60_000, lastEngagedAt: 0, safetyIntervalMin: 45, materialCount: 0, activeIds: ['a'], lastActiveIds: ['a'], anyUpdateSinceEngage: false }), true);
+});
+
+test('shouldEngage: safety elapsed + ZERO active missions + no update → false (true no-op heartbeat suppressed)', () => {
+  assert.equal(shouldEngage({ now: 100 * 60_000, lastEngagedAt: 0, safetyIntervalMin: 45, materialCount: 0, activeIds: [], lastActiveIds: [], anyUpdateSinceEngage: false }), false);
 });
 
 test('shouldEngage: safety elapsed AND something updated since last engage → true (safety net preserved)', () => {

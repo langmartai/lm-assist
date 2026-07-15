@@ -317,7 +317,7 @@ test('engage: interim-only progress persists dirtySinceEngage (remembered for a 
   assert.equal(saved.dirtySinceEngage, true);
 });
 
-test('engage: safety interval elapsed but NOTHING ever updated → NOT drive (token-saving)', async () => {
+test('engage: safety interval elapsed with an ACTIVE-but-silent mission → DRIVE (idle/dead executors emit no events — 2026-07-15 stall)', async () => {
   const deps = engageDeps({
     listActiveForEngage: async () => [mkM('m1')],
     getEngagement: async () => ({
@@ -326,11 +326,12 @@ test('engage: safety interval elapsed but NOTHING ever updated → NOT drive (to
       seen: { m1: { alive: true, gated: false, cursor: 3 } },
     }),
     // Identical to `seen` — cursor hasn't moved, liveness/gate unchanged → zero activity this tick.
+    // With an ACTIVE mission that silence is exactly the stalled-executor signature, so the
+    // safety check-in must fire (the old token-saving skip deadlocked the whole pipeline).
     readSignal: async () => ({ alive: true, gated: false, cursor: 3, newLines: [] }),
   });
   const r = await runSupervisorTick(deps);
-  assert.notEqual(r.action, 'drive');
-  assert.equal(r.action, 'idle');
+  assert.equal(r.action, 'drive');
 });
 
 test('engage: safety interval elapsed AND an earlier interim update was pending → drive (safety net preserved) + clears dirtySinceEngage', async () => {
