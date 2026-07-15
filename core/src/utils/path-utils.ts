@@ -140,6 +140,7 @@ function decodePathWithFilesystemCheck(encodedPath: string): string {
     // Try combining remaining parts with dashes to see if that exists
     if (partIndex < parts.length) {
       // Try progressively combining parts with dashes
+      let found = false;
       for (let endIndex = parts.length; endIndex > partIndex; endIndex--) {
         const combinedPart = parts.slice(partIndex, endIndex).join('-');
         const combinedPath = currentPath + '/' + combinedPart;
@@ -150,6 +151,7 @@ function decodePathWithFilesystemCheck(encodedPath: string): string {
             // Found a valid path with dashes preserved
             currentPath = combinedPath;
             partIndex = endIndex;
+            found = true;
             break;
           }
         } catch {
@@ -157,8 +159,14 @@ function decodePathWithFilesystemCheck(encodedPath: string): string {
         }
       }
 
-      // If no combination worked, just add this part and continue
-      if (partIndex < parts.length && !currentPath.endsWith('/' + parts[partIndex])) {
+      // If no combination worked, add this part and ALWAYS advance (same shape as the
+      // Windows variant). Two historical bugs lived here: (a) the old
+      // `!currentPath.endsWith('/' + part)` guard froze partIndex forever on a REPEATED
+      // segment (executor worktree bucket ...-worktrees-mission-mission-<id>) → 100% CPU
+      // infinite loop that wedged Core at boot and at runtime (2026-07-15 outage);
+      // (b) running this append even after a SUCCESSFUL combine double-consumed the next
+      // part, misresolving mid-path dashed dirs.
+      if (!found) {
         currentPath = currentPath + '/' + parts[partIndex];
         partIndex++;
       }

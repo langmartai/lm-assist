@@ -345,7 +345,7 @@ async function startCloudExecutor(m: Mission, decision: PlacementDecision): Prom
       return absDir;
     },
     launch: async (cwd: string): Promise<{ sessionId: string | null; tmuxSession: string }> => {
-      const res = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true, name: missionSessionTitle(m) });
+      const res = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true, name: missionSessionTitle(m), tmuxPrefix: 'lmx' });
       return {
         sessionId: (res.sessionId as string | null) ?? null,
         tmuxSession: res.tmuxSession as string,

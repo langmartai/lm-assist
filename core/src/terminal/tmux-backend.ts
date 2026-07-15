@@ -98,7 +98,7 @@ export const tmuxCcController: CcController = {
   },
 
   async launch(opts: CcLaunchOpts): Promise<Record<string, unknown>> {
-    const name = genName('lmcc');
+    const name = genName(opts.tmuxPrefix || 'lmcc');
     const res = await cc.launch(name, {
       cwd: opts.cwd || process.env.HOME || '.',
       model: null,
