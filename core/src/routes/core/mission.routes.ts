@@ -27,6 +27,7 @@ import { getMyCluster } from '../../cluster/cluster-config';
 import { getWorkflow, listWorkflows, putWorkflow, rollbackWorkflow, getWorkflowRaw, listWorkflowSnapshots, getWorkflowSnapshot,
   type WorkflowPort, type WorkflowSnapshotPort } from '../../mission/workflow-store';
 import { isControllerActor, type WorkflowEditPolicy } from '../../mission/workflow-model';
+import { WORKFLOW_DATASET } from '../../mission/workflow-store';
 import { DEFAULT_WORKFLOWS } from '../../mission/workflow-defaults';
 import { buildOnboardMission, detectTransport, pickClusterLeader, markDriveText } from '../../mission/mission-onboard';
 
@@ -84,6 +85,54 @@ async function anchorToLeader(leader: LeaderAnchorDeps | undefined, method: 'GET
     // Return a clear error so the caller retries (e.g. after a ~1-min failover).
     if (failClosed) return fail('LEADER_UNREACHABLE', `mission leader unreachable; retry shortly (${(e as Error).message})`);
     return null; // reads fall back to the local (synced) store
+  }
+}
+
+// --- origin-anchoring (the workflow registry lives on its dataset's ORIGIN node) ---
+// The mission-workflows dataset is owned by whichever node first created it (its
+// descriptor `origin`); every other node holds a read-only replica whose writes the
+// data service refuses with READ_ONLY_REPLICA (the 2026-07-15 silent-drop incident).
+// Registry WRITES therefore anchor to the DATASET ORIGIN, not the mission leader:
+// proxy the same request to origin.machineId, handle locally when the descriptor is
+// unstamped/self — which also terminates the proxied hop on the origin node (no loop).
+// Registry READS stay as they were (leader/local): replicas sync back from the origin.
+export interface OriginAnchorDeps {
+  getOrigin: () => Promise<string | null>;
+  thisNode: () => string;
+  proxyPost: (node: string, path: string, body: unknown) => Promise<unknown>;
+}
+export function realOriginAnchor(): OriginAnchorDeps {
+  return {
+    getOrigin: async () => {
+      const { getDatasetRegistry } = require('../../data/dataset-registry') as typeof import('../../data/dataset-registry');
+      return getDatasetRegistry().get(WORKFLOW_DATASET)?.origin?.machineId ?? null;
+    },
+    thisNode: () => thisNode(),
+    proxyPost: (n, p, b) => { const { proxyPost } = require('../../data/peer-client') as typeof import('../../data/peer-client'); return proxyPost(n, p, b); },
+  };
+}
+/**
+ * If origin deps are provided AND the workflow dataset's origin is another node,
+ * proxy the write there and return its envelope. Returns null when the dataset is
+ * owned here / unstamped (or no deps) → the caller writes locally. Fail-CLOSED on
+ * proxy errors: a silent local fallback would recreate the silent-drop defect this
+ * anchoring exists to fix.
+ */
+async function anchorToOrigin(origin: OriginAnchorDeps | undefined, path: string, body: unknown): Promise<Envelope | null> {
+  if (!origin) return null;
+  let target: string | null;
+  try { target = await origin.getOrigin(); } catch { return null; }
+  if (!target || target === origin.thisNode()) return null;
+  try {
+    // `_originHop` marks the proxied request so the receiver NEVER re-anchors it
+    // (`_actor`-style transport hint, stripped at handler entry). Without it, a
+    // mixed-version fleet loops: an old-build origin node still leader-anchors the
+    // write back to a new-build leader, which would origin-anchor it away again.
+    const result = await origin.proxyPost(target, path, { ...(body as Record<string, unknown> ?? {}), _originHop: true });
+    if (result && typeof result === 'object' && 'success' in (result as object)) return result as Envelope;
+    return ok((result as { data?: unknown })?.data ?? result);
+  } catch (e) {
+    return fail('ORIGIN_UNREACHABLE', `workflow dataset origin "${target}" unreachable; retry shortly (${(e as Error).message})`);
   }
 }
 
@@ -284,8 +333,10 @@ export async function handleWorkflowGet(id: string, port?: WorkflowPort, leader?
   catch (e) { return fail((e as any).code ?? 'NOT_FOUND', (e as Error).message); }
 }
 
-export async function handleWorkflowSet(id: string, b: Record<string, unknown>, port?: WorkflowPort, snap?: WorkflowSnapshotPort, actor?: MissionActor, leader?: LeaderAnchorDeps): Promise<Envelope> {
-  const anchored = await anchorToLeader(leader, 'POST', `/mission/workflows/${encodeURIComponent(id)}`, b, true);
+export async function handleWorkflowSet(id: string, b: Record<string, unknown>, port?: WorkflowPort, snap?: WorkflowSnapshotPort, actor?: MissionActor, origin?: OriginAnchorDeps): Promise<Envelope> {
+  const hopped = b._originHop === true;
+  delete b._originHop;
+  const anchored = hopped ? null : await anchorToOrigin(origin, `/mission/workflows/${encodeURIComponent(id)}`, b);
   if (anchored) return anchored;
   const who = actor ?? await actorFor(b);
   const existing = await getWorkflow(id, port).catch(() => null);
@@ -312,8 +363,10 @@ export async function handleWorkflowHistory(id: string, opts: { limit?: number; 
   return ok({ snapshots: rows.map(({ body, ...rest }) => ({ ...rest, bodyBytes: Buffer.byteLength(body, 'utf8') })) });
 }
 
-export async function handleWorkflowRollback(id: string, b: Record<string, unknown>, port?: WorkflowPort, snap?: WorkflowSnapshotPort, actor?: MissionActor, leader?: LeaderAnchorDeps): Promise<Envelope> {
-  const anchored = await anchorToLeader(leader, 'POST', `/mission/workflows/${encodeURIComponent(id)}/rollback`, b, true);
+export async function handleWorkflowRollback(id: string, b: Record<string, unknown>, port?: WorkflowPort, snap?: WorkflowSnapshotPort, actor?: MissionActor, origin?: OriginAnchorDeps): Promise<Envelope> {
+  const hopped = b._originHop === true;
+  delete b._originHop;
+  const anchored = hopped ? null : await anchorToOrigin(origin, `/mission/workflows/${encodeURIComponent(id)}/rollback`, b);
   if (anchored) return anchored;
   const who = actor ?? await actorFor(b);
   const existing = await getWorkflow(id, port).catch(() => null);
@@ -331,9 +384,15 @@ export async function handleWorkflowRollback(id: string, b: Record<string, unkno
   if (target && target.editPolicy !== effectivePolicy && isControllerActor(who)) {
     return fail('FORBIDDEN', 'editPolicy changes are human-only');
   }
-  const r = await rollbackWorkflow(id, toRev, who, port, snap);
-  if ('error' in r) return fail(r.error.code, r.error.message);
-  return ok({ doc: r.doc });
+  // rollbackWorkflow re-runs putWorkflow, which now THROWS coded errors on refused/disabled
+  // writes (e.g. READ_ONLY_REPLICA) — surface them as clean envelopes, same as handleWorkflowSet.
+  try {
+    const r = await rollbackWorkflow(id, toRev, who, port, snap);
+    if ('error' in r) return fail(r.error.code, r.error.message);
+    return ok({ doc: r.doc });
+  } catch (e) {
+    return fail((e as { code?: string }).code ?? 'INVALID_INPUT', (e as Error).message);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1633,9 +1692,9 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
           beforeRev: rawBefore != null && !Number.isNaN(rawBefore) ? rawBefore : undefined,
         }, undefined, realLeaderAnchor());
       } },
-    { method: 'POST', pattern: /^\/mission\/workflows\/(?<id>[^/]+)\/rollback$/, handler: async (req) => handleWorkflowRollback(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, undefined, realLeaderAnchor()) },
+    { method: 'POST', pattern: /^\/mission\/workflows\/(?<id>[^/]+)\/rollback$/, handler: async (req) => handleWorkflowRollback(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, undefined, realOriginAnchor()) },
     { method: 'GET', pattern: /^\/mission\/workflows\/(?<id>[^/]+)$/, handler: async (req) => handleWorkflowGet(req.params.id, undefined, realLeaderAnchor()) },
-    { method: 'POST', pattern: /^\/mission\/workflows\/(?<id>[^/]+)$/, handler: async (req) => handleWorkflowSet(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, undefined, realLeaderAnchor()) },
+    { method: 'POST', pattern: /^\/mission\/workflows\/(?<id>[^/]+)$/, handler: async (req) => handleWorkflowSet(req.params.id, (req.body || {}) as Record<string, unknown>, undefined, undefined, undefined, realOriginAnchor()) },
     // /mission/onboard literal — MUST be before every /mission/:id pattern
     { method: 'POST', pattern: /^\/mission\/onboard$/, handler: async (req) => handleOnboard((req.body || {}) as Record<string, unknown>, { leader: realLeaderAnchor() }) },
     // rail routes: /place and /executor-status BEFORE /:id so literals win

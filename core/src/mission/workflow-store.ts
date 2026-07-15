@@ -9,7 +9,9 @@ import { getProjectSettings } from '../project-settings';
 import type { CallCtx } from '../data/data-service';
 import type { DataRecord } from '../data/types';
 
-const DATASET = 'mission-workflows';
+/** Dataset id shared with the write-side origin-anchor in mission.routes.ts. */
+export const WORKFLOW_DATASET = 'mission-workflows';
+const DATASET = WORKFLOW_DATASET;
 const SNAP_DATASET = 'mission-workflow-history';
 /** I5 — retention: keep only the most recent N snapshots per doc. Workflow docs can be edited
  *  frequently (controller self-edits + human edits), and each snapshot holds a FULL body (up to
@@ -51,6 +53,21 @@ export interface WorkflowSnapshotPort {
 }
 
 function systemCtx(): CallCtx { return { principal: { type: 'local' } }; }
+
+/** Coded throw for a write the data service refused or couldn't take — callers
+ *  (handleWorkflowSet/-Rollback) turn `.code` into the error envelope. Registry writes
+ *  must NEVER silently no-op: a dropped result here is exactly the live-observed
+ *  fake-success defect (leader on a READ_ONLY_REPLICA dataset, edits vanishing). */
+function throwWriteRefused(what: string, r: { code?: string; reason?: string }): never {
+  const e = new Error(`${what}: ${r.reason ?? r.code ?? 'data-service write failed'}`) as Error & { code: string };
+  e.code = r.code ?? 'DATA_WRITE_FAILED';
+  throw e;
+}
+function throwDisabled(what: string): never {
+  const e = new Error(`${what}: data service is disabled (dataServiceEnabled) — registry writes cannot persist`) as Error & { code: string };
+  e.code = 'DATA_SERVICE_DISABLED';
+  throw e;
+}
 
 function docToRecord(d: WorkflowDoc): DataRecord {
   const now = new Date().toISOString();
@@ -100,9 +117,10 @@ function livePort(): WorkflowPort {
     },
     put: async (d) => {
       const svc = getDataService();
-      if (!svc.isEnabled()) return;
+      if (!svc.isEnabled()) throwDisabled(`workflow doc write "${d.id}"`);
       await ensureDataset(svc);
-      await svc.put(systemCtx(), DATASET, docToRecord(d));
+      const r = await svc.put(systemCtx(), DATASET, docToRecord(d));
+      if (!r.ok) throwWriteRefused(`workflow doc write "${d.id}" refused`, r);
     },
   };
 }
@@ -127,9 +145,10 @@ function liveSnapshotPort(): WorkflowSnapshotPort {
     isEnabled: () => getDataService().isEnabled(),
     put: async (s) => {
       const svc = getDataService();
-      if (!svc.isEnabled()) return;
+      if (!svc.isEnabled()) throwDisabled(`workflow snapshot write "${s.id}"`);
       await ensureSnapshotDataset(svc);
-      await svc.put(systemCtx(), SNAP_DATASET, snapshotToRecord(s));
+      const r = await svc.put(systemCtx(), SNAP_DATASET, snapshotToRecord(s));
+      if (!r.ok) throwWriteRefused(`workflow snapshot write "${s.id}" refused`, r);
     },
     get: async (docId, rev) => {
       const svc = getDataService();
@@ -219,9 +238,16 @@ export async function putWorkflow(
     createdAt: prev?.createdAt ?? now, updatedAt: now,
   };
   await port.put(doc);
+  // The snapshot is the rollback source of truth — a refused snapshot write must surface,
+  // not silently degrade rollback. The doc write above already landed, so wrap with that
+  // context instead of pretending the whole edit failed cleanly.
   try {
     await snap.put({ id: `${doc.id}:${rev}`, docId: doc.id, rev, at: now, actor, title: doc.title, body: doc.body, editPolicy: doc.editPolicy });
-  } catch { /* best-effort durable snapshot */ }
+  } catch (err) {
+    const e = new Error(`snapshot write failed after doc rev ${rev} was persisted: ${(err as Error).message}`) as Error & { code: string };
+    e.code = (err as Error & { code?: string }).code ?? 'SNAPSHOT_WRITE_FAILED';
+    throw e;
+  }
   // I5 — retention: prune snapshots beyond the most recent SNAPSHOT_RETENTION per doc. Best-effort
   // and entirely optional (snap.del may be absent on an older/test port) — must never throw out of
   // putWorkflow, since a pruning hiccup must not block the actual edit that already succeeded above.

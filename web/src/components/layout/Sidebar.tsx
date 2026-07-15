@@ -24,6 +24,7 @@ import {
   Network,
   Boxes,
   Sparkles,
+  Workflow,
 } from 'lucide-react';
 import { useExperiment } from '@/hooks/useExperiment';
 import { usePlatform } from '@/hooks/usePlatform';
@@ -41,6 +42,7 @@ const baseNavItems = [
   { href: '/data', icon: Database, label: 'Data' },
   { href: '/missions', icon: Target, label: 'Missions' },
   { href: '/mission-graph', icon: Network, label: 'Mission Graph' },
+  { href: '/mission-processes', icon: Workflow, label: 'Processes' },
   { href: '/scheduler', icon: Clock, label: 'Scheduler' },
   { href: '/ccr', icon: Code2, label: 'Code' },
   { href: '/cowork', icon: Sparkles, label: 'Cowork' },
