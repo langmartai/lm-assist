@@ -174,8 +174,8 @@ export async function handleMcpRequest(
               type: 'text',
               text:
                 `⏸ pending_confirmation\n\nThe tool "${toolName}" is gated for admin approval and was NOT ` +
-                `executed — it needs out-of-band confirmation.\n\npendingId: ${p.id}\n\nConfirm or deny it in ` +
-                `the lm-assist MCP settings tab, or POST /mcp/pending/${p.id}/confirm . Expires in 10 minutes.`,
+                `executed — it needs out-of-band confirmation.\n\npendingId: ${p.id}\n\nConfirm or deny it on ` +
+                `the lm-assist MCP Tools page (/mcp-tools), or POST /mcp/pending/${p.id}/confirm . Expires in 10 minutes.`,
             },
           ],
         },
