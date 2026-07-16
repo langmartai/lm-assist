@@ -190,11 +190,11 @@ export function CcrSessionView({ sessionId, driveable, apiFetch, onClose, fill, 
             liveness flag only tunes the hint so expectations stay honest. */}
         {!driveable && <div style={{ fontSize: 11, color: 'var(--color-status-orange)' }}>Session looks idle — sends deliver as a soft inject on its next turn; Resume above brings it live for immediate replies.</div>}
         <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
-          <textarea className="input" value={prompt} rows={2} placeholder="Drive: type a prompt to send to the session…"
+          <textarea className="input" value={prompt} rows={2} placeholder="Drive: type a prompt… (Enter to send, Shift+Enter for newline)"
             disabled={sending} style={{ flex: 1, resize: 'none', fontSize: 12.5 }}
             onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }} />
-          <button className="btn btn-primary btn-sm" disabled={sending || !prompt.trim()} onClick={send} title="Send (⌘/Ctrl+Enter)">
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} />
+          <button className="btn btn-primary btn-sm" disabled={sending || !prompt.trim()} onClick={send} title="Send (Enter)">
             {sending ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <><Send size={13} /> Drive</>}
           </button>
         </div>

@@ -150,11 +150,11 @@ export function CcrCloudView({ sid, webUrl, apiFetch, onClose, fill, hideHeader 
         )}
 
         <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
-          <textarea className="input" value={prompt} rows={2} placeholder="Drive the cloud session: type a prompt…"
+          <textarea className="input" value={prompt} rows={2} placeholder="Drive the cloud session… (Enter to send, Shift+Enter for newline)"
             disabled={sending} style={{ flex: 1, resize: 'none', fontSize: 12.5 }}
             onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }} />
-          <button className="btn btn-primary btn-sm" disabled={sending || !prompt.trim()} onClick={send} title="Send (⌘/Ctrl+Enter)">
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} />
+          <button className="btn btn-primary btn-sm" disabled={sending || !prompt.trim()} onClick={send} title="Send (Enter)">
             {sending ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Send size={13} />}
           </button>
         </div>
