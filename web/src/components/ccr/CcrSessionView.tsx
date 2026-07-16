@@ -184,13 +184,17 @@ export function CcrSessionView({ sessionId, driveable, apiFetch, onClose, fill, 
           <ApprovalWidget pending={pendingQ} answering={answering} onAnswer={answer} who="the session" />
         )}
 
-        {!driveable && <div style={{ fontSize: 11, color: 'var(--color-status-orange)' }}>Not live/driveable — start it (or Resume above) to drive. (View is read-only.)</div>}
+        {/* Input is NEVER hard-gated — same contract as the missions page's MissionSessionChat:
+            the /mission/session drive resolves transport server-side (live tmux → user turn;
+            not-in-tmux → soft context-inject for the next turn; STANDBY_MODE surfaces). The
+            liveness flag only tunes the hint so expectations stay honest. */}
+        {!driveable && <div style={{ fontSize: 11, color: 'var(--color-status-orange)' }}>Session looks idle — sends deliver as a soft inject on its next turn; Resume above brings it live for immediate replies.</div>}
         <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
-          <textarea className="input" value={prompt} rows={2} placeholder={driveable ? 'Drive: type a prompt to send to the running session…' : 'Read-only'}
-            disabled={!driveable || sending} style={{ flex: 1, resize: 'none', fontSize: 12.5 }}
+          <textarea className="input" value={prompt} rows={2} placeholder="Drive: type a prompt to send to the session…"
+            disabled={sending} style={{ flex: 1, resize: 'none', fontSize: 12.5 }}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }} />
-          <button className="btn btn-primary btn-sm" disabled={!driveable || sending || !prompt.trim()} onClick={send} title="Send (⌘/Ctrl+Enter)">
+          <button className="btn btn-primary btn-sm" disabled={sending || !prompt.trim()} onClick={send} title="Send (⌘/Ctrl+Enter)">
             {sending ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <><Send size={13} /> Drive</>}
           </button>
         </div>
