@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import { ThemeProvider } from '@/contexts/ThemeContext';
 import { AppModeProvider } from '@/contexts/AppModeContext';
 import { SessionExpiredOverlay } from '@/components/SessionExpiredOverlay';
+import { ChunkErrorReloader } from '@/components/ChunkErrorReloader';
 import './globals.css';
 
 export const viewport: Viewport = {
@@ -61,6 +62,7 @@ export default function RootLayout({
       <body suppressHydrationWarning>
         <ThemeProvider>
           <AppModeProvider>
+            <ChunkErrorReloader />
             <SessionExpiredOverlay />
             {children}
           </AppModeProvider>
