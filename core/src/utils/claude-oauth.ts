@@ -380,30 +380,70 @@ export async function anthropicOAuthRequest(
   const creds = await getValidAccessToken();
   let result = await call(creds.accessToken);
   if (result.status === 401 || result.status === 403) {
-    // Force-refresh once: bypass the expiry buffer by reading the original
-    // refresh token and calling postTokenRefresh directly, then retry.
-    const raw = readClaudeOAuth();
-    if (raw) {
-      try {
-        const data = await postTokenRefresh(raw.refreshToken);
-        const refreshed: ClaudeOAuthCreds = {
-          accessToken: data.access_token,
-          refreshToken: data.refresh_token ?? raw.refreshToken,
-          expiresAt: Date.now() + data.expires_in * 1000,
-          scopes: data.scope ? data.scope.split(/\s+/).filter(Boolean) : raw.scopes,
-          subscriptionType: data.subscription_type ?? raw.subscriptionType,
-          rateLimitTier: data.rate_limit_tier ?? raw.rateLimitTier,
-        };
-        try {
-          writeCredsAtomic(refreshed);
-        } catch {}
-        result = await call(refreshed.accessToken);
-      } catch {
-        // Keep the original 401/403
-      }
-    }
+    // Recover once — POLITELY. Many processes (this Core, every Claude Code
+    // CLI/executor on the host) share the credentials file, and an upstream
+    // refresh ROTATES the token family, invalidating everyone else's access
+    // token. If each process answers its 401 with another refresh, the family
+    // rotates every few seconds and every consumer intermittently sees
+    // "Not logged in · Please run /login". So: re-read the file first (someone
+    // else may have refreshed already — use theirs), refresh only when OUR
+    // token is still the one on disk, share one refresh across concurrent
+    // 401s, and never force-rotate more than once per cooldown window.
+    const alt = await recoverAfterAuthFailure(creds.accessToken);
+    if (alt) result = await call(alt.accessToken);
   }
   return result;
+}
+
+// ── Cross-process-polite 401 recovery (single-flight + cooldown) ─────────────
+let _forceRefreshInFlight: Promise<ClaudeOAuthCreds | null> | null = null;
+let _lastForceRefreshAt = 0;
+const FORCE_REFRESH_COOLDOWN_MS = 30_000;
+
+/** Pure decision for the 401 path — exported for tests. */
+export function authRecoveryAction(
+  fileToken: string | null,
+  failedToken: string,
+  now: number,
+  lastForceRefreshAt: number,
+  cooldownMs: number = FORCE_REFRESH_COOLDOWN_MS,
+): 'use-file-token' | 'refresh' | 'give-up' {
+  if (!fileToken) return 'give-up';
+  if (fileToken !== failedToken) return 'use-file-token'; // another process already refreshed
+  if (now - lastForceRefreshAt < cooldownMs) return 'give-up'; // don't churn the token family
+  return 'refresh';
+}
+
+async function recoverAfterAuthFailure(failedAccessToken: string): Promise<ClaudeOAuthCreds | null> {
+  const raw = readClaudeOAuth();
+  const action = authRecoveryAction(raw?.accessToken ?? null, failedAccessToken, Date.now(), _lastForceRefreshAt);
+  if (action === 'give-up') return null;
+  if (action === 'use-file-token') return raw;
+  if (!_forceRefreshInFlight) {
+    _lastForceRefreshAt = Date.now(); // attempts count too — never hammer postTokenRefresh
+    _forceRefreshInFlight = (async () => {
+      try {
+        const data = await postTokenRefresh(raw!.refreshToken);
+        const refreshed: ClaudeOAuthCreds = {
+          accessToken: data.access_token,
+          refreshToken: data.refresh_token ?? raw!.refreshToken,
+          expiresAt: Date.now() + data.expires_in * 1000,
+          scopes: data.scope ? data.scope.split(/\s+/).filter(Boolean) : raw!.scopes,
+          subscriptionType: data.subscription_type ?? raw!.subscriptionType,
+          rateLimitTier: data.rate_limit_tier ?? raw!.rateLimitTier,
+        };
+        try { writeCredsAtomic(refreshed); } catch { /* in-memory creds still usable */ }
+        return refreshed;
+      } catch {
+        return null; // keep the original 401/403
+      }
+    })();
+  }
+  try {
+    return await _forceRefreshInFlight;
+  } finally {
+    _forceRefreshInFlight = null;
+  }
 }
 
 /** Authenticated GET. Thin wrapper over {@link anthropicOAuthRequest}. */
