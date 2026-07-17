@@ -2501,3 +2501,29 @@ code, pre, .font-mono {
   top: auto;
   bottom: calc(100% + 4px);
 }
+
+/* Contain the picker WITHIN the sidebar: the shared trigger is nowrap + inline-flex and
+   the panel has min-width:220px, so a long machine name or a narrowed sidebar made the
+   selector/menu spill to the RIGHT, outside the left panel. Make the trigger fill the
+   footer and truncate its label, and clamp the panel to the sidebar width. */
+.ccr-sidebar-machine .machine-dropdown { width: 100%; min-width: 0; }
+.ccr-sidebar-machine .machine-dropdown-trigger {
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+/* the label span (bare <span>{name}</span>) truncates; emoji/badge/chevron stay fixed */
+.ccr-sidebar-machine .machine-dropdown-trigger > span:not(.badge):not(.machine-dropdown-emoji) {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ccr-sidebar-machine .machine-dropdown-panel {
+  min-width: 0;
+  width: 100%;
+  left: 0;
+  right: 0;
+}
