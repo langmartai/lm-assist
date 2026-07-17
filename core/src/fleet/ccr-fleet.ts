@@ -105,7 +105,33 @@ export async function collectLocalCcrSnapshot(): Promise<CcrNodeSnapshot> {
     });
   } catch { /* terminal backend unavailable on this platform */ }
 
+  // Best-effort session NAMES: the cc list only knows ids/cwds, but the
+  // projects service already holds each session's rename/auto-summary/slug
+  // (its getAllSessions is file-change-cache'd — cheap on this 5s path).
+  try {
+    const { getProjectsService } = require('../projects-service') as typeof import('../projects-service');
+    locals = applyLocalSessionTitles(locals, getProjectsService().getAllSessions({}) as unknown[]);
+  } catch { /* naming is decorative — never fail the snapshot */ }
+
   return { node, remotes, rc: { controller, executors, accountRc: [] }, locals, collectedAt: Date.now() };
+}
+
+/**
+ * Pure: join display names onto cc-session items from the project sessions
+ * list. Preference: user rename (customTitle) → auto summary → slug.
+ */
+export function applyLocalSessionTitles(locals: unknown[], projectSessions: unknown[]): unknown[] {
+  const meta = new Map<string, { customTitle?: string; sessionSummary?: string; slug?: string; projectName?: string }>();
+  for (const p of projectSessions as Array<{ sessionId?: string } & Record<string, unknown>>) {
+    if (p?.sessionId) meta.set(p.sessionId, p as never);
+  }
+  return locals.map((l) => {
+    const item = l as { sessionId?: string } & Record<string, unknown>;
+    const m = item?.sessionId ? meta.get(item.sessionId) : undefined;
+    if (!m) return l;
+    const title = m.customTitle || m.sessionSummary || m.slug;
+    return { ...item, ...(title ? { title } : {}), ...(m.projectName ? { projectName: m.projectName } : {}) };
+  });
 }
 
 export interface CcrFleetDeps {

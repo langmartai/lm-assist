@@ -53,6 +53,26 @@ describe('buildFleetRows', () => {
     expect(byKey.get('local:gw-123:u-3')?.node).toBe('gw-123');
   });
 
+  it('uses the joined session NAME as the title and moves the folder to the repo chip', () => {
+    const p = {
+      ...payload,
+      nodes: [{
+        node: 'gw-117', remotes: [], rc: { controller: null, executors: [], accountRc: [] },
+        locals: [
+          { sessionId: 'u-9', owner: { cwd: '/home/u/lm-assist' }, title: 'Fix the CCR filter flip-flop' },
+          { sessionId: 'u-10', owner: { cwd: '/home/u/lm-assist' } }, // no name → folder stays the title
+        ],
+      }],
+    };
+    const r = buildFleetRows(p);
+    const named = r.find((x) => x.id === 'u-9')!;
+    expect(named.title).toBe('Fix the CCR filter flip-flop');
+    expect(named.repo).toBe('lm-assist');
+    const unnamed = r.find((x) => x.id === 'u-10')!;
+    expect(unnamed.title).toBe('lm-assist');
+    expect(unnamed.repo).toBeNull();
+  });
+
   it('normalizes an unknown cloud kind to cloud (registry fallback rows)', () => {
     const p = { ...payload, cloud: [cloud('cse_x', { kind: undefined as unknown as 'cloud' })], nodes: [] };
     expect(buildFleetRows(p)[0].kind).toBe('cloud');

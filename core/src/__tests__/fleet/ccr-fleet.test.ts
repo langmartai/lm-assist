@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { mergeCcrFleet, getCcrFleet, peerCloudSessions, _resetCcrFleetCache, type CcrNodeSnapshot, type CcrFleetDeps } from '../../fleet/ccr-fleet';
+import { mergeCcrFleet, getCcrFleet, peerCloudSessions, applyLocalSessionTitles, _resetCcrFleetCache, type CcrNodeSnapshot, type CcrFleetDeps } from '../../fleet/ccr-fleet';
 
 const snap = (node: string, locals: unknown[] = []): CcrNodeSnapshot => ({
   node, remotes: [], rc: { controller: null, executors: [], accountRc: [] }, locals, collectedAt: 1,
@@ -107,6 +107,22 @@ test('getCcrFleet: self cloud failure falls back to a PEER /ccr/cloud (account-w
   assert.ok(v.cloudFetchedAt! > 0);
   assert.ok(calls.includes('gw-peer/ccr/cloud'));
   _resetCcrFleetCache();
+});
+
+test('applyLocalSessionTitles joins rename → auto summary → slug, never fails on gaps', () => {
+  const locals = [{ sessionId: 'a' }, { sessionId: 'b' }, { sessionId: 'c' }, { sessionId: 'd' }, { noId: true }];
+  const projects = [
+    { sessionId: 'a', customTitle: 'My renamed one', sessionSummary: 'ignored', slug: 'x' },
+    { sessionId: 'b', sessionSummary: 'Fix the CCR filter flip-flop', projectName: 'lm-assist' },
+    { sessionId: 'c', slug: 'refactored-twirling-karp' },
+  ];
+  const out = applyLocalSessionTitles(locals, projects) as Array<Record<string, unknown>>;
+  assert.equal(out[0].title, 'My renamed one');
+  assert.equal(out[1].title, 'Fix the CCR filter flip-flop');
+  assert.equal(out[1].projectName, 'lm-assist');
+  assert.equal(out[2].title, 'refactored-twirling-karp');
+  assert.equal(out[3].title, undefined); // no metadata → untouched
+  assert.deepEqual(out[4], { noId: true });
 });
 
 test('peerCloudSessions unwraps the /ccr/cloud envelope and rejects shapeless payloads', () => {

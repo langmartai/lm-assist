@@ -44,7 +44,7 @@ export interface Verdict {
   reason?: string;
 }
 
-/** A local Claude Code session on this node (GET /terminal/cc-sessions). */
+/** A local Claude Code session on this node (GET /terminal/cc-sessions / fleet snapshot). */
 export interface CcSession {
   sessionId: string;
   jsonl?: string;
@@ -53,6 +53,9 @@ export interface CcSession {
   tmuxSession?: string;
   driveable?: boolean;
   verdict?: Verdict;
+  /** display name joined by the fleet snapshot (rename → auto summary → slug). */
+  title?: string;
+  projectName?: string;
 }
 
 export interface RcController { sid: string; cse: string | null; tmux?: string; node?: string; title?: string; startedAt?: number }

@@ -60,10 +60,13 @@ export function buildFleetRows(fleet: CcrFleetPayload): CcrRow[] {
 
     for (const s of n.locals || []) {
       const bridge = bridgeBySession.get(s.sessionId);
+      // Real session NAME when the snapshot joined one (rename/auto-summary/slug);
+      // the folder then moves to the right-side chip instead of being the title.
+      const folder = base(s.owner?.cwd) || s.projectName || base(s.jsonl) || 'session';
       rows.push({
         key: `local:${n.node}:${s.sessionId}`, kind: 'local', id: s.sessionId, node: n.node,
-        title: base(s.owner?.cwd) || base(s.jsonl) || 'session',
-        repo: null, branch: null,
+        title: s.title || folder,
+        repo: s.title ? folder : null, branch: null,
         status: { live: !!s.verdict?.live, connectionStatus: bridge ? 'connected' : null },
         statusDetail: bridge ? `bridged · ${bridge.mode}` : (s.owner?.status || null),
         time: null, webUrl: bridge?.webUrl || null,
