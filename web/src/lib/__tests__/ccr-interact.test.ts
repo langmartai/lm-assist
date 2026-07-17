@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  describeSessionMode,
   parseEnvelopeError,
   deriveStateFromStatus,
   deriveStateFromResume,
@@ -139,5 +140,34 @@ describe('findMissionForSid', () => {
 
   it('handles an enveloped/loose mission list defensively', () => {
     expect(findMissionForSid([], 'uuid-1')).toBeNull();
+  });
+});
+
+describe('describeSessionMode — every pill gets a what-you-can-do explanation', () => {
+  const base = { kind: 'local' as const, state: 'live' as const, transport: 'native' as const };
+  it('live local names the node and promises instant real user turns', () => {
+    const t = describeSessionMode({ ...base, nodeName: 'yitest-Virtual-Machine' });
+    expect(t).toMatch(/Running live in a terminal on yitest-Virtual-Machine/);
+    expect(t).toMatch(/real user turn/);
+  });
+  it('idle explains queue-until-next-turn + Resume', () => {
+    expect(describeSessionMode({ ...base, state: 'idle' })).toMatch(/queued and delivered on its next turn/);
+  });
+  it('cloud live and remote rc explain their drive paths', () => {
+    expect(describeSessionMode({ kind: 'cloud', state: 'live', transport: 'cloud' })).toMatch(/Anthropic's cloud/);
+    expect(describeSessionMode({ kind: 'remote', state: 'live', transport: 'cloud' })).toMatch(/remote control/);
+  });
+  it('bridge modes append their read-only/two-way meaning', () => {
+    expect(describeSessionMode({ ...base, bridgeMode: 'mirror' })).toMatch(/mirrored \(read-only\)/);
+    expect(describeSessionMode({ ...base, bridgeMode: 'connected' })).toMatch(/two-way connected/);
+    expect(describeSessionMode({ ...base, bridgeMode: 'load' })).toMatch(/read-only replay/);
+  });
+  it('conflict/gone/needs-force explain the blocker and the way out', () => {
+    expect(describeSessionMode({ ...base, state: 'conflict' })).toMatch(/protect its transcript/);
+    expect(describeSessionMode({ ...base, state: 'gone' })).toMatch(/transcript stays readable/);
+    expect(describeSessionMode({ ...base, state: 'needs-force' })).toMatch(/Force resume/);
+  });
+  it('standby appends the hands-off-but-you-may-drive note', () => {
+    expect(describeSessionMode({ ...base, standby: true })).toMatch(/standby: mission control stays hands-off/);
   });
 });

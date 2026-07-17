@@ -196,7 +196,7 @@ export function CcrPage() {
           // ── Detail view (claude.ai/code session) ──
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
             <CcrDetailHeader row={selected} apiFetch={apiFetch} onClose={() => selectSession(null)} onChanged={refresh} onDeleted={() => { selectSession(null); refresh(); }} />
-            <CcrSessionControls row={selected} apiFetch={apiFetch} onChanged={refresh} />
+            <CcrSessionControls row={selected} apiFetch={apiFetch} onChanged={refresh} nodeName={selected.node ? (nodeNames[selected.node] || selected.node) : null} />
             {selected.kind !== 'local' && <CloudControlBar row={selected} apiFetch={apiFetch} />}
             {selected.kind === 'local' && sessionErr[selected.id] && (
               <div style={{ margin: '8px 14px 0', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', fontSize: 11.5, color: 'var(--color-status-red)' }}>{sessionErr[selected.id]}</div>

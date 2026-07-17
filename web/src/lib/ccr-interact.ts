@@ -106,3 +106,54 @@ export function findMissionForSid(missions: MissionLite[], sid: string): Mission
   }
   return null;
 }
+
+// ── Human-readable session-mode explanation ─────────────────────────────────
+
+export interface SessionModeInput {
+  kind: 'cloud' | 'remote' | 'local';
+  state: CcrSessionState;
+  transport: SessionTransport | null;
+  /** an active CCR bridge on a local session, if any. */
+  bridgeMode?: 'load' | 'mirror' | 'connected' | null;
+  /** mission-onboarded with manageMode=standby (mission control hands-off). */
+  standby?: boolean;
+  /** friendly hostname of the session's node (multi-node fleets). */
+  nodeName?: string | null;
+}
+
+/**
+ * One plain-language line explaining what THIS session's current mode means
+ * and what the user can do with it — shown under the state pill so "live/
+ * idle/conflict" is never just a word.
+ */
+export function describeSessionMode(i: SessionModeInput): string {
+  const where = i.nodeName ? `on ${i.nodeName}` : 'on this machine';
+  const bridge =
+    i.bridgeMode === 'load' ? ' A read-only replay of it exists on claude.ai/code.'
+    : i.bridgeMode === 'mirror' ? ' Its live output is mirrored (read-only) to claude.ai/code.'
+    : i.bridgeMode === 'connected' ? ' It is two-way connected to claude.ai/code — the Claude apps can drive it too.'
+    : '';
+  const standby = i.standby ? ' Mission-onboarded in standby: mission control stays hands-off; your own input is always allowed.' : '';
+
+  switch (i.state) {
+    case 'checking':
+      return 'Checking how this session can be reached…';
+    case 'conflict':
+      return 'Another live process owns this session — input from here is blocked to protect its transcript. Use Load or Mirror for a safe view.';
+    case 'gone':
+      return `The session process has ended — the transcript stays readable here.${bridge}`;
+    case 'resuming':
+      return 'Relaunching the session — it will accept input as soon as it is live.';
+    case 'needs-force':
+      return 'The session is live but unresponsive — Force resume kills and relaunches it in place.';
+    case 'idle':
+      if (i.kind === 'cloud') return `The cloud worker is idle. Typing wakes it and delivers your message; Resume re-drives it with bootstrap.${standby}`;
+      return `Not running right now. Messages you type are queued and delivered on its next turn — or press Resume to relaunch it now.${bridge}${standby}`;
+    case 'live':
+    default:
+      if (i.kind === 'cloud') return `Running in Anthropic's cloud. Typing drives it live; Interrupt/Stop control the cloud worker; the Claude app opens the same session.${standby}`;
+      if (i.kind === 'remote') return `A local CLI bridged two-way with claude.ai/code (remote control). Typing here or in the Claude app drives the same live session.${standby}`;
+      if (i.transport === 'cloud') return `Live via its cloud bridge — typing drives it in real time.${bridge}${standby}`;
+      return `Running live in a terminal ${where}. Typing delivers a real user turn to the CLI immediately; Interrupt and Stop are available.${bridge}${standby}`;
+  }
+}

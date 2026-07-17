@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Loader2, OctagonX, Square, Play, RefreshCw, ShieldAlert } from 'lucide-react';
 import type { ApiFetch, CcrRow } from './ccrTypes';
 import {
-  parseEnvelopeError, deriveStateFromStatus, deriveStateFromResume, findMissionForSid,
+  parseEnvelopeError, deriveStateFromStatus, deriveStateFromResume, findMissionForSid, describeSessionMode,
   type CcrSessionState, type MissionLite, type SessionTransport,
 } from '@/lib/ccr-interact';
 
@@ -16,8 +16,8 @@ import {
  *   idle → Resume (the resume-first ladder; needs-force offers a force retry)
  *   gone/conflict → terminal notice
  */
-export function CcrSessionControls({ row, apiFetch, onChanged }: {
-  row: CcrRow; apiFetch: ApiFetch; onChanged: () => void;
+export function CcrSessionControls({ row, apiFetch, onChanged, nodeName }: {
+  row: CcrRow; apiFetch: ApiFetch; onChanged: () => void; nodeName?: string | null;
 }) {
   const [state, setState] = useState<CcrSessionState>('checking');
   const [transport, setTransport] = useState<SessionTransport | null>(null);
@@ -196,6 +196,21 @@ export function CcrSessionControls({ row, apiFetch, onChanged }: {
       )}
 
       {notice && <span style={{ color: 'var(--color-text-tertiary)', maxWidth: 380, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={notice}>{notice}</span>}
+
+      {/* What this mode MEANS — a full-width plain-language line so the pill is never just a word. */}
+      {(() => {
+        const text = describeSessionMode({
+          kind: row.kind, state, transport,
+          bridgeMode: row.remoteBridge?.mode ?? null,
+          standby: onboarded && mission?.manageMode === 'standby',
+          nodeName: nodeName ?? null,
+        });
+        return (
+          <div title={text} style={{ flexBasis: '100%', fontSize: 11, color: 'var(--color-text-tertiary)', lineHeight: 1.35, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {text}
+          </div>
+        );
+      })()}
     </div>
   );
 }
