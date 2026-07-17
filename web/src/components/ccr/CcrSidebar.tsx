@@ -14,7 +14,14 @@ import type { ApiFetch, CcrRow } from './ccrTypes';
 const INITIAL_RECENTS = 20;
 const WIDTH_KEY = 'ccr-sidebar-width';
 const COLLAPSE_KEY = 'ccr-sidebar-collapsed';
+const ENV_KEY = 'ccr-side-env';       // persisted so a 5s-poll re-render never resets it
+const STATUS_KEY = 'ccr-side-status';
+const SORT_KEY = 'ccr-side-sort';
 const MIN_W = 200, MAX_W = 420, DEFAULT_W = 240;
+const readLS = (k: string, fallback: string): string => {
+  if (typeof window === 'undefined') return fallback;
+  try { return window.localStorage.getItem(k) ?? fallback; } catch { return fallback; }
+};
 
 type StatusFilter = 'all' | 'Working' | 'Needs input' | 'Review ready' | 'Completed' | 'Idle';
 type EnvFilter = 'all' | 'cloud' | 'remote' | 'local';
@@ -43,9 +50,15 @@ export function CcrSidebar({ rows, selectedId, onSelect, onNewSession, onRefresh
   const [collapsed, setCollapsed] = useState(false);
   const [width, setWidth] = useState(DEFAULT_W);
   const [filterOpen, setFilterOpen] = useState(false);
-  const [status, setStatus] = useState<StatusFilter>('all');
-  const [env, setEnv] = useState<EnvFilter>('all');
-  const [sortBy, setSortBy] = useState<SortBy>('recency');
+  // env/status/sort are PERSISTED (localStorage init + save on change) so the 5s poll's
+  // re-render can never reset them — the "left list keeps refreshing/resetting" report.
+  const [status, setStatusState] = useState<StatusFilter>(() => readLS(STATUS_KEY, 'all') as StatusFilter);
+  const [env, setEnvState] = useState<EnvFilter>(() => readLS(ENV_KEY, 'all') as EnvFilter);
+  const [sortBy, setSortByState] = useState<SortBy>(() => readLS(SORT_KEY, 'recency') as SortBy);
+  const persist = (k: string, v: string) => { try { window.localStorage.setItem(k, v); } catch { /* private mode */ } };
+  const setStatus = useCallback((v: StatusFilter) => { setStatusState(v); persist(STATUS_KEY, v); }, []);
+  const setEnv = useCallback((v: EnvFilter) => { setEnvState(v); persist(ENV_KEY, v); }, []);
+  const setSortBy = useCallback((v: SortBy) => { setSortByState(v); persist(SORT_KEY, v); }, []);
   const filterRef = useRef<HTMLDivElement>(null);
 
   // Restore persisted collapse + width.
@@ -75,13 +88,15 @@ export function CcrSidebar({ rows, selectedId, onSelect, onNewSession, onRefresh
     document.addEventListener('mousedown', onDown); return () => document.removeEventListener('mousedown', onDown);
   }, [filterOpen]);
 
-  // Apply Recents filter + sort.
+  // Recents: env is a PRIORITY, not a hide — the left list ALWAYS shows all sessions, and a
+  // chosen category (local/cloud/remote) is floated to the TOP. Only `status` hides (an
+  // explicit opt-in filter). Array.sort is stable, so the base order is preserved within
+  // each partition.
   const filtered = useMemo(() => {
-    let r = rows;
-    if (env !== 'all') r = r.filter((x) => x.kind === env);
-    if (status !== 'all') r = r.filter((x) => ccrStatusPill(x.status).label === status);
-    if (sortBy === 'name') r = [...r].sort((a, b) => a.title.localeCompare(b.title));
-    return r;
+    const base = status !== 'all' ? rows.filter((x) => ccrStatusPill(x.status).label === status) : rows;
+    const sorted = sortBy === 'name' ? [...base].sort((a, b) => a.title.localeCompare(b.title)) : base;
+    if (env === 'all') return sorted;
+    return [...sorted].sort((a, b) => (a.kind === env ? 0 : 1) - (b.kind === env ? 0 : 1));
   }, [rows, env, status, sortBy]);
   const recents = showAll ? filtered : filtered.slice(0, INITIAL_RECENTS);
   const hiddenCount = filtered.length - INITIAL_RECENTS;
@@ -130,7 +145,7 @@ export function CcrSidebar({ rows, selectedId, onSelect, onNewSession, onRefresh
           {filterOpen && (
             <div style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, minWidth: 180, background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border-default)', borderRadius: 'var(--radius-md)', boxShadow: '0 8px 24px rgba(0,0,0,0.4)', zIndex: 60, padding: 6 }}>
               <FilterRow label="Status" value={status} opts={['all', 'Working', 'Needs input', 'Review ready', 'Completed', 'Idle']} onPick={(v) => setStatus(v as StatusFilter)} labelFor={(v) => v === 'all' ? 'All' : v} />
-              <FilterRow label="Environment" value={env} opts={['all', 'cloud', 'remote', 'local']} onPick={(v) => setEnv(v as EnvFilter)} labelFor={(v) => v === 'all' ? 'All' : v[0].toUpperCase() + v.slice(1)} />
+              <FilterRow label="Prioritize" value={env} opts={['all', 'cloud', 'remote', 'local']} onPick={(v) => setEnv(v as EnvFilter)} labelFor={(v) => v === 'all' ? 'None' : v[0].toUpperCase() + v.slice(1)} />
               <FilterRow label="Sort by" value={sortBy} opts={['recency', 'name']} onPick={(v) => setSortBy(v as SortBy)} labelFor={(v) => v === 'recency' ? 'Recency' : 'Name'} />
             </div>
           )}
