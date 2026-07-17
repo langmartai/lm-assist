@@ -90,13 +90,17 @@ export function CcrSidebar({ rows, selectedId, onSelect, onNewSession, onRefresh
 
   // Recents: env is a PRIORITY, not a hide — the left list ALWAYS shows all sessions, and a
   // chosen category (local/cloud/remote) is floated to the TOP. Only `status` hides (an
-  // explicit opt-in filter). Array.sort is stable, so the base order is preserved within
-  // each partition.
+  // explicit opt-in filter). Every sort has the STABLE row key as tiebreaker so the order
+  // changes ONLY when the data changes — without it, ties (all time:null rows) fell back to
+  // the jittering API array order and the list reshuffled every 5s poll ("refreshing").
   const filtered = useMemo(() => {
+    const msT = (t?: string | null) => (t ? Date.parse(t) || 0 : 0);
     const base = status !== 'all' ? rows.filter((x) => ccrStatusPill(x.status).label === status) : rows;
-    const sorted = sortBy === 'name' ? [...base].sort((a, b) => a.title.localeCompare(b.title)) : base;
+    const sorted = [...base].sort((a, b) => sortBy === 'name'
+      ? (a.title.localeCompare(b.title) || a.key.localeCompare(b.key))
+      : (msT(b.time) - msT(a.time) || a.key.localeCompare(b.key)));
     if (env === 'all') return sorted;
-    return [...sorted].sort((a, b) => (a.kind === env ? 0 : 1) - (b.kind === env ? 0 : 1));
+    return sorted.sort((a, b) => (a.kind === env ? 0 : 1) - (b.kind === env ? 0 : 1));
   }, [rows, env, status, sortBy]);
   const recents = showAll ? filtered : filtered.slice(0, INITIAL_RECENTS);
   const hiddenCount = filtered.length - INITIAL_RECENTS;

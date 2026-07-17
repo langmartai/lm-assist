@@ -17,7 +17,11 @@ type Kind = 'cloud' | 'remote' | 'local';
 const KIND_ORDER: Kind[] = ['cloud', 'remote', 'local'];
 const KIND_LABEL: Record<Kind, string> = { cloud: 'Cloud', remote: 'Remote', local: 'Local' };
 const ms = (t?: string | null) => (t ? Date.parse(t) || 0 : 0);
-const byTimeDesc = (a: CcrRow, b: CcrRow) => ms(b.time) - ms(a.time);
+// Deterministic: recency desc, then the STABLE row key as tiebreaker. Most local/rc rows
+// have time:null (all tie at 0); without the key tiebreaker they fell back to the API array
+// order, which jitters every poll → React re-moves ~all rows → the list "refreshes"/reshuffles
+// every 5s. Keying the tiebreaker makes the order change ONLY when the data actually changes.
+const byTimeDesc = (a: CcrRow, b: CcrRow) => ms(b.time) - ms(a.time) || a.key.localeCompare(b.key);
 
 /**
  * claude.ai/code-style Sessions list. `filter` is CONTROLLED by the parent (lifted +
