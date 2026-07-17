@@ -60,12 +60,35 @@ export interface RcExecutor { sid: string; cse?: string | null; title?: string; 
 export interface RcAccountSession { sid: string; status?: string; title?: string }
 export interface RcData { controller: RcController | null; executors: RcExecutor[]; accountRc: RcAccountSession[] }
 
+/** One node's slice of GET /fleet/ccr (mirrors core CcrNodeSnapshot). */
+export interface CcrNodeSnapshot {
+  node: string;
+  remotes: Remote[];
+  rc: RcData;
+  locals: CcSession[];
+  collectedAt?: number;
+}
+
+/** GET /fleet/ccr — the ONE payload the CCR page polls (mirrors core CcrFleetView). */
+export interface CcrFleetPayload {
+  generatedAt: number;
+  self: string;
+  cloud: CloudSessionInfo[];
+  nodes: CcrNodeSnapshot[];
+  unreachable: string[];
+  partial: boolean;
+  /** set when the cloud list fetch failed and a last-good copy is being served. */
+  cloudError?: string | null;
+}
+
 /** The normalized row the unified session list renders. */
 export interface CcrRow {
   key: string;
   kind: 'cloud' | 'remote' | 'local';
   /** cloud/bridge cse or session_ id, or a local session UUID. */
   id: string;
+  /** gateway-id of the node this session lives on; null = account-wide (cloud). */
+  node?: string | null;
   title: string;
   repo?: string | null;
   branch?: string | null;

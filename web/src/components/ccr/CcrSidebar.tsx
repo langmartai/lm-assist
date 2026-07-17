@@ -1,39 +1,34 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
 import { prevAppRoute } from '@/components/RouteTracker';
 import {
   Home, Code2, Plus, RefreshCw, Search, PanelLeftClose, PanelLeft, SlidersHorizontal,
-  MoreVertical, ExternalLink, Pencil, Copy, Check, Archive, Trash2, Loader2,
+  MoreVertical, ExternalLink, Pencil, Copy, Check, Archive, Trash2, Loader2, Globe, ChevronDown, Monitor,
 } from 'lucide-react';
-import { MachineDropdown } from '@/components/layout/MachineDropdown';
 import { ccrStatusPill, toneColor } from '@/lib/ccr-status';
+import { orderRows, type CcrView, type CcrCategory } from '@/lib/ccr-view';
+import type { CcrNodeInfo } from './useCcrData';
 import type { ApiFetch, CcrRow } from './ccrTypes';
 
 const INITIAL_RECENTS = 20;
 const WIDTH_KEY = 'ccr-sidebar-width';
 const COLLAPSE_KEY = 'ccr-sidebar-collapsed';
-const ENV_KEY = 'ccr-side-env';       // persisted so a 5s-poll re-render never resets it
-const STATUS_KEY = 'ccr-side-status';
-const SORT_KEY = 'ccr-side-sort';
 const MIN_W = 200, MAX_W = 420, DEFAULT_W = 240;
-const readLS = (k: string, fallback: string): string => {
-  if (typeof window === 'undefined') return fallback;
-  try { return window.localStorage.getItem(k) ?? fallback; } catch { return fallback; }
-};
-
-type StatusFilter = 'all' | 'Working' | 'Needs input' | 'Review ready' | 'Completed' | 'Idle';
-type EnvFilter = 'all' | 'cloud' | 'remote' | 'local';
-type SortBy = 'recency' | 'name';
 
 /**
  * claude.ai/code-style left sidebar for the full-bleed Code page: wordmark (back to the app),
- * Home|Code pills, Search, collapse + resize, New session, filterable/sortable Recents with a
- * per-row kebab (rename/archive/delete/copy/open), and the machine picker at the bottom.
+ * Home|Code pills, Search, collapse + resize, New session, Recents, and the per-node FILTER
+ * at the bottom. Recents rendering derives entirely from the SHARED CcrView (one filter
+ * logic for the whole page) — this component owns no filter state of its own.
  */
-export function CcrSidebar({ rows, selectedId, onSelect, onNewSession, onRefresh, onOpenSearch, loading, apiFetch, onChanged }: {
+export function CcrSidebar({ rows, view, onViewChange, nodes, nodeNames, selfNode, selectedId, onSelect, onNewSession, onRefresh, onOpenSearch, loading, apiFetch, onChanged }: {
   rows: CcrRow[];
+  view: CcrView;
+  onViewChange: (v: CcrView) => void;
+  nodes: CcrNodeInfo[];
+  nodeNames: Record<string, string>;
+  selfNode: string | null;
   selectedId: string | null;
   onSelect: (row: CcrRow) => void;
   onNewSession: () => void;
@@ -43,22 +38,14 @@ export function CcrSidebar({ rows, selectedId, onSelect, onNewSession, onRefresh
   apiFetch: ApiFetch;
   onChanged: () => void;
 }) {
-  const router = useRouter();
-  // Home returns to the last non-CCR page the user was on (RouteTracker), not always /sessions.
-  const goHome = useCallback(() => router.push(prevAppRoute()), [router]);
+  // Home must ALWAYS escape the Code page. A client-side router.push can be
+  // silently lost on a stale tab (post-deploy RSC/chunk fetch fails and the
+  // recovery reload lands back on /ccr) — a hard navigation cannot.
+  const goHome = useCallback(() => { window.location.assign(prevAppRoute()); }, []);
   const [showAll, setShowAll] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [width, setWidth] = useState(DEFAULT_W);
   const [filterOpen, setFilterOpen] = useState(false);
-  // env/status/sort are PERSISTED (localStorage init + save on change) so the 5s poll's
-  // re-render can never reset them — the "left list keeps refreshing/resetting" report.
-  const [status, setStatusState] = useState<StatusFilter>(() => readLS(STATUS_KEY, 'all') as StatusFilter);
-  const [env, setEnvState] = useState<EnvFilter>(() => readLS(ENV_KEY, 'all') as EnvFilter);
-  const [sortBy, setSortByState] = useState<SortBy>(() => readLS(SORT_KEY, 'recency') as SortBy);
-  const persist = (k: string, v: string) => { try { window.localStorage.setItem(k, v); } catch { /* private mode */ } };
-  const setStatus = useCallback((v: StatusFilter) => { setStatusState(v); persist(STATUS_KEY, v); }, []);
-  const setEnv = useCallback((v: EnvFilter) => { setEnvState(v); persist(ENV_KEY, v); }, []);
-  const setSortBy = useCallback((v: SortBy) => { setSortByState(v); persist(SORT_KEY, v); }, []);
   const filterRef = useRef<HTMLDivElement>(null);
 
   // Restore persisted collapse + width.
@@ -75,9 +62,9 @@ export function CcrSidebar({ rows, selectedId, onSelect, onNewSession, onRefresh
   const onResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault(); dragging.current = true;
     const move = (ev: MouseEvent) => { if (!dragging.current) return; const w = Math.min(MAX_W, Math.max(MIN_W, ev.clientX)); setWidth(w); };
-    const up = () => { dragging.current = false; document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); document.body.style.cursor = ''; try { localStorage.setItem(WIDTH_KEY, String(Math.round((filterRef.current ? width : width)))); } catch { /* ignore */ } };
+    const up = () => { dragging.current = false; document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); document.body.style.cursor = ''; };
     document.addEventListener('mousemove', move); document.addEventListener('mouseup', up); document.body.style.cursor = 'col-resize';
-  }, [width]);
+  }, []);
   // Persist the final width whenever it settles.
   useEffect(() => { const t = setTimeout(() => { try { localStorage.setItem(WIDTH_KEY, String(width)); } catch { /* ignore */ } }, 300); return () => clearTimeout(t); }, [width]);
 
@@ -88,23 +75,13 @@ export function CcrSidebar({ rows, selectedId, onSelect, onNewSession, onRefresh
     document.addEventListener('mousedown', onDown); return () => document.removeEventListener('mousedown', onDown);
   }, [filterOpen]);
 
-  // Recents: env is a PRIORITY, not a hide — the left list ALWAYS shows all sessions, and a
-  // chosen category (local/cloud/remote) is floated to the TOP. Only `status` hides (an
-  // explicit opt-in filter). Every sort has the STABLE row key as tiebreaker so the order
-  // changes ONLY when the data changes — without it, ties (all time:null rows) fell back to
-  // the jittering API array order and the list reshuffled every 5s poll ("refreshing").
-  const filtered = useMemo(() => {
-    const msT = (t?: string | null) => (t ? Date.parse(t) || 0 : 0);
-    const base = status !== 'all' ? rows.filter((x) => ccrStatusPill(x.status).label === status) : rows;
-    const sorted = [...base].sort((a, b) => sortBy === 'name'
-      ? (a.title.localeCompare(b.title) || a.key.localeCompare(b.key))
-      : (msT(b.time) - msT(a.time) || a.key.localeCompare(b.key)));
-    if (env === 'all') return sorted;
-    return sorted.sort((a, b) => (a.kind === env ? 0 : 1) - (b.kind === env ? 0 : 1));
-  }, [rows, env, status, sortBy]);
+  // Recents: ONE shared ordering engine (lib/ccr-view). Category + node are priorities/
+  // filters over the same rows the main pane renders; nothing here re-implements them.
+  const filtered = useMemo(() => orderRows(rows, view), [rows, view]);
   const recents = showAll ? filtered : filtered.slice(0, INITIAL_RECENTS);
   const hiddenCount = filtered.length - INITIAL_RECENTS;
-  const activeFilters = (status !== 'all' ? 1 : 0) + (env !== 'all' ? 1 : 0) + (sortBy !== 'recency' ? 1 : 0);
+  const activeFilters = (view.status !== 'all' ? 1 : 0) + (view.category !== 'all' ? 1 : 0) + (view.sort !== 'recency' ? 1 : 0);
+  const multiNode = nodes.length > 1;
 
   // Collapsed: a slim rail with expand + New session + Search.
   if (collapsed) {
@@ -148,9 +125,9 @@ export function CcrSidebar({ rows, selectedId, onSelect, onNewSession, onRefresh
           </button>
           {filterOpen && (
             <div style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, minWidth: 180, background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border-default)', borderRadius: 'var(--radius-md)', boxShadow: '0 8px 24px rgba(0,0,0,0.4)', zIndex: 60, padding: 6 }}>
-              <FilterRow label="Status" value={status} opts={['all', 'Working', 'Needs input', 'Review ready', 'Completed', 'Idle']} onPick={(v) => setStatus(v as StatusFilter)} labelFor={(v) => v === 'all' ? 'All' : v} />
-              <FilterRow label="Prioritize" value={env} opts={['all', 'cloud', 'remote', 'local']} onPick={(v) => setEnv(v as EnvFilter)} labelFor={(v) => v === 'all' ? 'None' : v[0].toUpperCase() + v.slice(1)} />
-              <FilterRow label="Sort by" value={sortBy} opts={['recency', 'name']} onPick={(v) => setSortBy(v as SortBy)} labelFor={(v) => v === 'recency' ? 'Recency' : 'Name'} />
+              <FilterRow label="Status" value={view.status} opts={['all', 'Working', 'Needs input', 'Review ready', 'Completed', 'Idle']} onPick={(v) => onViewChange({ ...view, status: v })} labelFor={(v) => v === 'all' ? 'All' : v} />
+              <FilterRow label="Prioritize" value={view.category} opts={['all', 'cloud', 'remote', 'local']} onPick={(v) => onViewChange({ ...view, category: v as CcrCategory })} labelFor={(v) => v === 'all' ? 'None' : v[0].toUpperCase() + v.slice(1)} />
+              <FilterRow label="Sort by" value={view.sort} opts={['recency', 'name']} onPick={(v) => onViewChange({ ...view, sort: v as CcrView['sort'] })} labelFor={(v) => v === 'recency' ? 'Recency' : 'Name'} />
             </div>
           )}
         </div>
@@ -159,7 +136,8 @@ export function CcrSidebar({ rows, selectedId, onSelect, onNewSession, onRefresh
 
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '0 6px 6px' }}>
         {recents.map((row) => (
-          <SidebarRow key={row.key} row={row} active={selectedId === row.id} onSelect={onSelect} apiFetch={apiFetch} onChanged={onChanged} />
+          <SidebarRow key={row.key} row={row} active={selectedId === row.id} onSelect={onSelect} apiFetch={apiFetch} onChanged={onChanged}
+            nodeTag={multiNode && row.node && row.node !== selfNode ? (nodeNames[row.node] || row.node) : null} />
         ))}
         {!showAll && hiddenCount > 0 && (
           <button onClick={() => setShowAll(true)} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 10px', border: 'none', background: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--color-text-tertiary)' }}>Show {hiddenCount} more</button>
@@ -167,12 +145,72 @@ export function CcrSidebar({ rows, selectedId, onSelect, onNewSession, onRefresh
         {filtered.length === 0 && !loading && <div style={{ padding: '6px 10px', fontSize: 11.5, color: 'var(--color-text-tertiary)' }}>No sessions in this view.</div>}
       </div>
 
+      {/* Per-node FILTER (never navigates; 'all' = every machine's sessions). */}
       <div className="ccr-sidebar-machine" style={{ borderTop: '1px solid var(--color-border-default)', padding: '8px 10px' }}>
-        <MachineDropdown />
+        <CcrNodePicker view={view} onViewChange={onViewChange} nodes={nodes} nodeNames={nodeNames} selfNode={selfNode} />
       </div>
 
       {/* Resize handle on the right edge */}
       <div onMouseDown={onResizeStart} title="Drag to resize" style={{ position: 'absolute', top: 0, right: -3, width: 6, height: '100%', cursor: 'col-resize', zIndex: 5 }} />
+    </div>
+  );
+}
+
+/**
+ * The node FILTER at the sidebar bottom. Unlike the app-wide machine picker it
+ * never switches the page's target node or opens another node's URL — it only
+ * scopes which machines' sessions are shown (account-wide cloud rows always
+ * pass). Defaults to All machines. Reuses the machine-dropdown CSS so the
+ * panel opens upward inside the sidebar.
+ */
+function CcrNodePicker({ view, onViewChange, nodes, nodeNames, selfNode }: {
+  view: CcrView;
+  onViewChange: (v: CcrView) => void;
+  nodes: CcrNodeInfo[];
+  nodeNames: Record<string, string>;
+  selfNode: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDown); document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [open]);
+
+  const nameOf = (id: string) => nodeNames[id] || id;
+  const current = view.node !== 'all' ? nameOf(view.node) : 'All machines';
+  // A persisted node that vanished from the fleet payload should not silently
+  // filter forever — surface it as-is; picking anything else clears it.
+  const pick = (node: string) => { onViewChange({ ...view, node }); setOpen(false); };
+
+  return (
+    <div className="machine-dropdown" ref={ref}>
+      <button className={`machine-dropdown-trigger${open ? ' open' : ''}`} onClick={() => setOpen((v) => !v)} aria-expanded={open} title="Filter sessions by machine (display filter only)">
+        {view.node === 'all' ? <Globe size={13} /> : <Monitor size={13} />}
+        <span>{current}</span>
+        <ChevronDown size={12} className={`machine-dropdown-chevron${open ? ' open' : ''}`} />
+      </button>
+      {open && (
+        <div className="machine-dropdown-panel">
+          <button className={`machine-dropdown-item${view.node === 'all' ? ' active' : ''}`} onClick={() => pick('all')}>
+            <Globe size={13} />
+            <span className="machine-dropdown-item-label">All machines</span>
+            <span className="machine-dropdown-item-meta">{nodes.filter((n) => n.reachable).length} online</span>
+          </button>
+          <div className="machine-dropdown-divider" />
+          {nodes.map((n) => (
+            <button key={n.id} className={`machine-dropdown-item${view.node === n.id ? ' active' : ''}`} onClick={() => pick(n.id)} disabled={!n.reachable}
+              title={n.reachable ? `Show ${nameOf(n.id)}'s sessions first (cloud sessions stay visible)` : 'Node unreachable — no sessions loaded'}>
+              <Monitor size={13} />
+              <span className="machine-dropdown-item-label">{nameOf(n.id)}{n.id === selfNode ? ' (this)' : ''}</span>
+              <span className="machine-dropdown-item-meta">{n.reachable ? n.count : 'offline'}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -194,7 +232,7 @@ function FilterRow({ label, value, opts, onPick, labelFor }: { label: string; va
 }
 
 /** One Recents row: status dot + title, hover kebab (Open/Rename/Copy/Archive/Delete), inline rename. */
-function SidebarRow({ row, active, onSelect, apiFetch, onChanged }: { row: CcrRow; active: boolean; onSelect: (row: CcrRow) => void; apiFetch: ApiFetch; onChanged: () => void }) {
+function SidebarRow({ row, active, onSelect, apiFetch, onChanged, nodeTag }: { row: CcrRow; active: boolean; onSelect: (row: CcrRow) => void; apiFetch: ApiFetch; onChanged: () => void; nodeTag?: string | null }) {
   const [hover, setHover] = useState(false);
   const [menu, setMenu] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -236,6 +274,7 @@ function SidebarRow({ row, active, onSelect, apiFetch, onChanged }: { row: CcrRo
           onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; }} onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'none'; }}>
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: toneColor(tone), flexShrink: 0, opacity: tone === 'gray' ? 0.5 : 1 }} />
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{row.title}</span>
+          {nodeTag && !hover && <span style={{ fontSize: 9.5, color: 'var(--color-text-tertiary)', flexShrink: 0, maxWidth: 64, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nodeTag}</span>}
           {busy && <Loader2 size={11} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />}
           {row.unread && !hover && <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--color-accent)', flexShrink: 0 }} />}
         </button>

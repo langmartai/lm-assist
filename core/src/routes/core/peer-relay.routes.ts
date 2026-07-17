@@ -11,9 +11,11 @@
  * relay handler injects the peer's worker token (same trust model as every
  * relayed mutation — approved in the memory+rules web UI spec).
  *
- * Confinement: only `/memory…` and `/rules…` paths are forwardable (exactly
- * the web feature's surface), no traversal, and a request that ITSELF arrived
- * via the hub relay is refused (no relay chaining).
+ * Confinement: only the web features' surfaces are forwardable — memory/rules
+ * (`/memory…`, `/rules…`) and the CCR page's per-session operations on a peer
+ * (`/ccr…`, `/terminal/cc-sessions…`, `/sessions…` reads, `/mission/session…`
+ * drive/answer, `/session-messages…`) — no traversal, and a request that
+ * ITSELF arrived via the hub relay is refused (no relay chaining).
  */
 import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import { wrapResponse, wrapError } from '../../api/helpers';
@@ -21,7 +23,10 @@ import { getHubConfig } from '../../hub-client/hub-config';
 import { proxyUrlPath } from '../../memory/mcp-transport';
 
 const NODE_RE = /^[A-Za-z0-9._-]+$/;
-const PATH_RE = /^\/(memory|rules)(\/|$)/;
+// The relayable surface. memory/rules = the memory+rules web UI; the rest is the
+// CCR page operating on a PEER's sessions from a LAN browser (list ops go through
+// the /fleet/ccr aggregate — these are the per-session read/drive/bridge paths).
+const PATH_RE = /^\/(memory|rules|ccr|terminal\/cc-sessions|sessions|mission\/session|session-messages)(\/|$)/;
 
 /**
  * Pure: validate + canonicalize the forward target. Returns null when refused.
@@ -73,7 +78,7 @@ export function createPeerRelayRoutes(_ctx: RouteContext): RouteHandler[] {
     // (unreserved-only) path we forward — so an ENCODED traversal cannot slip
     // past the allow-list on the strength of a downstream decode.
     const fwd = peerForwardPath(req.params.rest || '');
-    if (!fwd) return wrapError('INVALID_INPUT', 'INVALID_INPUT: only /memory and /rules paths are relayable', start);
+    if (!fwd) return wrapError('INVALID_INPUT', 'INVALID_INPUT: path is outside the relayable surface (memory/rules/ccr/cc-sessions/sessions/mission-session/session-messages)', start);
 
     const cfg = getHubConfig();
     const base = hubHttpBase();

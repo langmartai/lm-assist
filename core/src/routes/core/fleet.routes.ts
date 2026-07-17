@@ -2,6 +2,7 @@ import type { RouteHandler, RouteContext, ParsedRequest } from '../index';
 import { wrapResponse } from '../../api/helpers';
 import { getLocalSnapshot } from '../../fleet/session-footprint-collector';
 import { getComposed, type ComposeDeps } from '../../fleet/footprint-compose';
+import { collectLocalCcrSnapshot, getCcrFleet, defaultCcrFleetDeps } from '../../fleet/ccr-fleet';
 import { proxyGet, listAllOnlineNodeIds } from '../../data/peer-client';
 import { getClusterRecords } from '../../cluster/cluster-store';
 import { getMyCluster } from '../../cluster/cluster-config';
@@ -39,6 +40,23 @@ export function createFleetRoutes(_ctx: RouteContext): RouteHandler[] {
         const start = Date.now();
         const scope = (req.query?.scope === 'fleet' ? 'fleet' : 'cluster') as 'cluster' | 'fleet';
         return wrapResponse(await getComposed(scope, composeDeps()), start);
+      },
+    },
+    // ── CCR page aggregate: bridges + rc + local cc-sessions, per node ──
+    {
+      method: 'GET',
+      pattern: /^\/fleet\/ccr\/local$/,
+      handler: async () => {
+        const start = Date.now();
+        return wrapResponse(await collectLocalCcrSnapshot(), start);
+      },
+    },
+    {
+      method: 'GET',
+      pattern: /^\/fleet\/ccr$/,
+      handler: async () => {
+        const start = Date.now();
+        return wrapResponse(await getCcrFleet(defaultCcrFleetDeps()), start);
       },
     },
   ];

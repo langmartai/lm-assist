@@ -128,7 +128,9 @@ export class ApiRelayHandler {
     '/rules',         // cross-node rule sync + rule-map (export/ingest; access-key in body when relayed)
     '/node',          // per-node build/upgrade info (node_builds fans GET /node/build to every node)
     '/cluster',       // cross-node cluster assignment (cluster_assign proxies POST /cluster/self to the target node)
-    '/fleet',         // cross-node session/resource survey (session_footprints composes peers' /fleet/session-footprints/local)
+    '/fleet',         // cross-node session/resource survey (session_footprints + /fleet/ccr compose peers' /fleet/*/local)
+    '/ccr',           // CCR bridges + cloud session ops (web CCR page operating on a peer's sessions via peer-relay/machine-proxy)
+    '/terminal/cc-sessions', // local Claude Code session list/prompt/interrupt (CCR cross-node rows; NOT the wider /terminal tmux surface)
     '/lifecycle',     // graceful exit/restart of a node's Core/Web (node_lifecycle → POST /lifecycle/{exit,restart})
     '/whatsapp',      // whatsapp cloud-api connector (send/chats/messages/search/status; webhook is reached directly by Meta, not via the hub)
   ];

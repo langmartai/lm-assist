@@ -3,20 +3,21 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Loader2, Eye, Radio, Cast, Square, ExternalLink, ChevronDown, Check, Settings2 } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
+import { useMachineContext } from '@/contexts/MachineContext';
 import { CcrSessionView } from './CcrSessionView';
 import { CcrCloudView } from './CcrCloudView';
 import { CcrComposer } from './CcrComposer';
-import { CcrSessionList, type CcrFilter } from './CcrSessionList';
+import { CcrSessionList } from './CcrSessionList';
 import { CcrSidebar } from './CcrSidebar';
 import { CcrSearchModal } from './CcrSearchModal';
 import { CcrDetailHeader } from './CcrDetailHeader';
 import { CcrSessionControls } from './CcrSessionControls';
 import { ModelEffortSelector } from '@/components/cowork/ModelEffortSelector';
-import type { ApiFetch, CloudSessionInfo, Remote, RcData, CcSession, CcrRow } from './ccrTypes';
+import { useCcrData } from './useCcrData';
+import { loadCcrView, saveCcrView, type CcrView } from '@/lib/ccr-view';
+import type { ApiFetch, CcrRow } from './ccrTypes';
 
 type Mode = 'load' | 'mirror' | 'connect';
-
-const base = (p?: string | null) => (p ? p.split('/').filter(Boolean).pop() || p : '');
 
 const MODE_META: Record<Mode, { label: string; icon: typeof Eye; hint: string }> = {
   load: { label: 'Load', icon: Eye, hint: 'Read-only replay into claude.ai/code (safe, any session)' },
@@ -42,73 +43,48 @@ function friendlyCcrError(mode: Mode, e: unknown): string {
   }
 }
 
-/** Normalize the four data sources into one claude.ai/code-style session list. */
-function buildRows(cloud: CloudSessionInfo[], remotes: Remote[], rc: RcData, locals: CcSession[]): CcrRow[] {
-  const rows: CcrRow[] = [];
-  const titleByCse = new Map<string, string>();
-  if (rc.controller?.cse) titleByCse.set(rc.controller.cse, rc.controller.title || 'Mission Controller');
-  for (const ex of rc.executors) if (ex.cse) titleByCse.set(ex.cse, ex.title || ex.sid);
-
-  const seenCse = new Set<string>();
-  for (const c of cloud) {
-    seenCse.add(c.sid);
-    // Registry-fallback items (core offline / OAuth down) carry no kind — normalize so the
-    // list, filter counts, and icons never see undefined.
-    const kind: CcrRow['kind'] = c.kind === 'remote' ? 'remote' : 'cloud';
-    rows.push({
-      key: `cloud:${c.sid}`, kind, id: c.sid,
-      title: titleByCse.get(c.sid) || c.title,
-      repo: c.repo, branch: c.branch, model: c.model,
-      status: { statusBucket: c.statusBucket, workerStatus: c.workerStatus, statusCategory: c.statusCategory, connectionStatus: c.connectionStatus },
-      statusDetail: c.statusDetail || c.needsAction || null,
-      time: c.lastEventAt || c.createdAt, webUrl: c.webUrl, unread: c.unread, cloud: c,
-    });
-  }
-  // RC controller/executors not already in the cloud list (by cse) → remote rows.
-  const rcExtra = [
-    ...(rc.controller?.cse ? [{ sid: rc.controller.cse, title: rc.controller.title || 'Mission Controller' }] : []),
-    ...rc.executors.filter((e) => e.cse).map((e) => ({ sid: e.cse as string, title: e.title || e.sid })),
-  ];
-  for (const x of rcExtra) {
-    if (seenCse.has(x.sid)) continue;
-    seenCse.add(x.sid);
-    rows.push({ key: `rc:${x.sid}`, kind: 'remote', id: x.sid, title: x.title, status: { connectionStatus: 'connected' }, statusDetail: 'remote-control', time: null, webUrl: `https://claude.ai/code/${x.sid}` });
-  }
-
-  const bridgeBySession = new Map<string, Remote>();
-  for (const r of remotes) if (r.sessionId) bridgeBySession.set(r.sessionId, r);
-
-  const liveFirst = [...locals].sort((a, b) => Number(!!b.verdict?.live) - Number(!!a.verdict?.live));
-  for (const s of liveFirst) {
-    const bridge = bridgeBySession.get(s.sessionId);
-    rows.push({
-      key: `local:${s.sessionId}`, kind: 'local', id: s.sessionId,
-      title: base(s.owner?.cwd) || base(s.jsonl) || 'session',
-      repo: null, branch: null,
-      status: { live: !!s.verdict?.live, connectionStatus: bridge ? 'connected' : null },
-      statusDetail: bridge ? `bridged · ${bridge.mode}` : (s.owner?.status || null),
-      time: null, webUrl: bridge?.webUrl || null,
-      driveable: !!s.driveable || !!s.verdict?.live,
-      local: s, remoteBridge: bridge,
-    });
-  }
-  return rows;
-}
-
 export function CcrPage() {
-  const { apiClient, proxy, hubUser } = useAppMode();
+  const { apiClient, proxy, hubUser, mode: appMode } = useAppMode();
+  const { machines } = useMachineContext();
   const apiFetch = useCallback<ApiFetch>(
     (path, opts) => apiClient.fetchPath(path, { method: opts?.method, body: opts?.body, machineId: proxy.machineId || undefined }),
     [apiClient, proxy.machineId],
   );
 
-  const [cloud, setCloud] = useState<CloudSessionInfo[]>([]);
-  const [remotes, setRemotes] = useState<Remote[]>([]);
-  const [rcData, setRcData] = useState<RcData>({ controller: null, executors: [], accountRc: [] });
-  const [locals, setLocals] = useState<CcSession[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [nowMs, setNowMs] = useState<number>(0);
+  // ── THE data pipeline: one hook, one 5s poll, one row list for both panes ──
+  const { rows, selfNode, nodes, loading, error, warning, nowMs, refresh } = useCcrData(apiFetch);
+
+  /**
+   * Row-scoped fetch: resources that physically live on a row's node (its
+   * transcript, its bridge lifecycle) must be asked THERE. On a proxied/hub
+   * page that's a native machine-targeted fetch; on a LAN page the browser
+   * can't reach the hub cross-origin, so it goes through this node's Core
+   * peer relay. Everything account-wide (/ccr/cloud/*) or node-routed
+   * server-side (/mission/session/*) keeps the plain self fetch.
+   */
+  const fetchFor = useCallback((node?: string | null): ApiFetch => {
+    if (!node || !selfNode || node === selfNode) return apiFetch;
+    if (appMode === 'hub' || proxy.isProxied) {
+      return (path, opts) => apiClient.fetchPath(path, { method: opts?.method, body: opts?.body, machineId: node });
+    }
+    return (path, opts) => apiFetch(`/peer-relay/${encodeURIComponent(node)}${path}`, opts);
+  }, [apiFetch, apiClient, appMode, proxy.isProxied, selfNode]);
+
+  /** gateway-id → friendly hostname (from the machines list; falls back to the id). */
+  const nodeNames = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const mach of machines) {
+      const id = mach.gatewayId || mach.id;
+      if (id && mach.hostname) { m[id] = mach.hostname; m[mach.id] = mach.hostname; }
+    }
+    return m;
+  }, [machines]);
+
+  // ── ONE view state (category priority + node filter + status + sort) shared
+  //    by the sidebar and the main list; persisted so polls/remounts never reset it. ──
+  const [view, setViewState] = useState<CcrView>(loadCcrView);
+  const setView = useCallback((v: CcrView) => { setViewState(v); saveCcrView(v); }, []);
+
   // Per-session URL: /ccr/<sid> deep-links a session (back-button + refresh + share).
   // We drive the URL with history.pushState (no Next remount) and read the initial sid from
   // the path; a popstate listener keeps back/forward in sync.
@@ -130,18 +106,6 @@ export function CcrPage() {
   const [confirmConnect, setConfirmConnect] = useState<string | null>(null);
   const [sessionErr, setSessionErr] = useState<Record<string, string>>({});
   const [searchOpen, setSearchOpen] = useState(false);
-  // Session-list filter is LIFTED here (was internal to CcrSessionList) + persisted so the
-  // 5s poll's re-render/remount can't reset it — the flip-flop bug. localStorage init also
-  // survives a full CcrPage remount.
-  const [listFilter, setListFilterState] = useState<CcrFilter>(() => {
-    if (typeof window === 'undefined') return 'all';
-    const v = window.localStorage.getItem('ccr-list-filter');
-    return v === 'cloud' || v === 'remote' || v === 'local' ? v : 'all';
-  });
-  const setListFilter = useCallback((f: CcrFilter) => {
-    setListFilterState(f);
-    try { window.localStorage.setItem('ccr-list-filter', f); } catch { /* private mode */ }
-  }, []);
   // Cmd/Ctrl+K opens Search (replaces the dashboard overlay we lose going full-bleed).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); setSearchOpen((v) => !v); } };
@@ -149,46 +113,23 @@ export function CcrPage() {
   }, []);
   const setBusyFor = (k: string, on: boolean) => setBusy((p) => { const n = new Set(p); if (on) n.add(k); else n.delete(k); return n; });
 
-  const fetchAll = useCallback(async () => {
-    setError(null);
-    try {
-      const [c, r, rc, s] = await Promise.all([
-        apiFetch<{ sessions: CloudSessionInfo[] }>('/ccr/cloud').catch(() => ({ sessions: [] as CloudSessionInfo[] })),
-        apiFetch<{ remotes: Remote[] }>('/ccr/remote').catch(() => ({ remotes: [] as Remote[] })),
-        apiFetch<RcData>('/ccr/remote-control').catch(() => ({ controller: null, executors: [], accountRc: [] } as RcData)),
-        apiFetch<CcSession[] | { sessions: CcSession[] }>('/terminal/cc-sessions').catch(() => [] as CcSession[]),
-      ]);
-      setCloud(c.sessions || []);
-      setRemotes(r.remotes || []);
-      setRcData({ controller: rc.controller ?? null, executors: rc.executors ?? [], accountRc: rc.accountRc ?? [] });
-      setLocals(Array.isArray(s) ? s : (s.sessions || []));
-      setNowMs(Date.now());
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    finally { setLoading(false); }
-  }, [apiFetch]);
-
-  // Stable 5s poll (decoupled from apiFetch identity churn in hybrid/proxy mode).
-  const fetchRef = useRef(fetchAll);
-  useEffect(() => { fetchRef.current = fetchAll; }, [fetchAll]);
-  useEffect(() => { fetchRef.current(); const t = setInterval(() => fetchRef.current(), 5000); return () => clearInterval(t); }, []);
-
-  const rows = useMemo(() => buildRows(cloud, remotes, rcData, locals), [cloud, remotes, rcData, locals]);
   const selected = useMemo(() => rows.find((r) => r.id === selectedId) || null, [rows, selectedId]);
 
-  const startMode = useCallback(async (sid: string, mode: Mode) => {
+  const startMode = useCallback(async (row: CcrRow, mode: Mode) => {
+    const sid = row.id;
     setBusyFor(sid, true); setConfirmConnect(null);
     setSessionErr((p) => { const n = { ...p }; delete n[sid]; return n; });
-    try { await apiFetch(`/ccr/${mode}`, { method: 'POST', body: { sessionId: sid } }); await fetchAll(); }
+    try { await fetchFor(row.node)(`/ccr/${mode}`, { method: 'POST', body: { sessionId: sid } }); await refresh(); }
     catch (e) { setSessionErr((p) => ({ ...p, [sid]: friendlyCcrError(mode, e) })); }
     finally { setBusyFor(sid, false); }
-  }, [apiFetch, fetchAll]);
+  }, [fetchFor, refresh]);
 
-  const stopBridge = useCallback(async (id: string) => {
-    setBusyFor(id, true);
-    try { await apiFetch(`/ccr/remote/${encodeURIComponent(id)}/stop`, { method: 'POST', body: {} }); await fetchAll(); }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    finally { setBusyFor(id, false); }
-  }, [apiFetch, fetchAll]);
+  const stopBridge = useCallback(async (row: CcrRow, bridgeId: string) => {
+    setBusyFor(row.id, true);
+    try { await fetchFor(row.node)(`/ccr/remote/${encodeURIComponent(bridgeId)}/stop`, { method: 'POST', body: {} }); await refresh(); }
+    catch { /* surfaced by the next poll */ }
+    finally { setBusyFor(row.id, false); }
+  }, [fetchFor, refresh]);
 
   // Inline Load/Mirror/Connect + bridge-stop for a local session row.
   const rowActions = useCallback((row: CcrRow) => {
@@ -200,13 +141,13 @@ export function CcrPage() {
     return (
       <>
         {bridge?.webUrl && <a className="btn btn-ghost btn-sm" href={bridge.webUrl} target="_blank" rel="noreferrer" title="Open the bridge on claude.ai/code"><ExternalLink size={13} /></a>}
-        {bridge && <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => stopBridge(bridge.id)} title="Stop bridge">{isBusy ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Square size={12} />}</button>}
+        {bridge && <button className="btn btn-ghost btn-sm" disabled={isBusy} onClick={() => stopBridge(row, bridge.id)} title="Stop bridge">{isBusy ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Square size={12} />}</button>}
         {!bridge && (['load', 'mirror'] as Mode[]).map((m) => {
           const M = MODE_META[m]; const Icon = M.icon; const can = allowed(m);
-          return <button key={m} className="btn btn-ghost btn-sm" disabled={isBusy || !can} title={can ? M.hint : `${m} unavailable`} onClick={() => startMode(row.id, m)}><Icon size={13} /></button>;
+          return <button key={m} className="btn btn-ghost btn-sm" disabled={isBusy || !can} title={can ? M.hint : `${m} unavailable`} onClick={() => startMode(row, m)}><Icon size={13} /></button>;
         })}
         {!bridge && allowed('connect') && (confirmConnect === row.id
-          ? <><button className="btn btn-destructive btn-sm" disabled={isBusy} onClick={() => startMode(row.id, 'connect')}>Confirm</button><button className="btn btn-ghost btn-sm" onClick={() => setConfirmConnect(null)}>✕</button></>
+          ? <><button className="btn btn-destructive btn-sm" disabled={isBusy} onClick={() => startMode(row, 'connect')}>Confirm</button><button className="btn btn-ghost btn-sm" onClick={() => setConfirmConnect(null)}>✕</button></>
           : <button className="btn btn-ghost btn-sm" disabled={isBusy} title={MODE_META.connect.hint} onClick={() => setConfirmConnect(row.id)}><Cast size={13} /></button>)}
       </>
     );
@@ -214,7 +155,7 @@ export function CcrPage() {
 
   const detailBody = (row: CcrRow) => (
     row.kind === 'local'
-      ? <CcrSessionView sessionId={row.id} driveable={!!row.driveable} tmuxSession={row.local?.tmuxSession} apiFetch={apiFetch} onClose={() => selectSession(null)} fill hideHeader />
+      ? <CcrSessionView sessionId={row.id} driveable={!!row.driveable} tmuxSession={row.local?.tmuxSession} apiFetch={fetchFor(row.node)} onClose={() => selectSession(null)} fill hideHeader />
       : <CcrCloudView sid={row.id} webUrl={row.webUrl || undefined} apiFetch={apiFetch} onClose={() => selectSession(null)} fill hideHeader />
   );
 
@@ -225,14 +166,19 @@ export function CcrPage() {
     <div style={{ display: 'flex', height: '100%', overflow: 'hidden', background: 'var(--color-bg-root)' }}>
       <CcrSidebar
         rows={rows}
+        view={view}
+        onViewChange={setView}
+        nodes={nodes}
+        nodeNames={nodeNames}
+        selfNode={selfNode}
         selectedId={selectedId}
         onSelect={(r) => selectSession(r.id)}
         onNewSession={() => selectSession(null)}
-        onRefresh={fetchAll}
+        onRefresh={refresh}
         onOpenSearch={() => setSearchOpen(true)}
         loading={loading}
         apiFetch={apiFetch}
-        onChanged={fetchAll}
+        onChanged={refresh}
       />
       {searchOpen && (
         <CcrSearchModal rows={rows} nowMs={nowMs || Date.now()} onClose={() => setSearchOpen(false)} onSelect={(r) => selectSession(r.id)} />
@@ -242,12 +188,15 @@ export function CcrPage() {
         {error && (
           <div style={{ margin: '12px 20px 0', padding: '8px 12px', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', color: 'var(--color-status-red)', fontSize: 12 }}>{error}</div>
         )}
+        {!error && warning && (
+          <div title={warning} style={{ margin: '12px 20px 0', padding: '6px 12px', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-orange, #b8860b)', color: 'var(--color-status-orange, #b8860b)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{warning}</div>
+        )}
 
         {selected ? (
           // ── Detail view (claude.ai/code session) ──
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <CcrDetailHeader row={selected} apiFetch={apiFetch} onClose={() => selectSession(null)} onChanged={fetchAll} onDeleted={() => { selectSession(null); fetchAll(); }} />
-            <CcrSessionControls row={selected} apiFetch={apiFetch} onChanged={fetchAll} />
+            <CcrDetailHeader row={selected} apiFetch={apiFetch} onClose={() => selectSession(null)} onChanged={refresh} onDeleted={() => { selectSession(null); refresh(); }} />
+            <CcrSessionControls row={selected} apiFetch={apiFetch} onChanged={refresh} />
             {selected.kind !== 'local' && <CloudControlBar row={selected} apiFetch={apiFetch} />}
             {selected.kind === 'local' && sessionErr[selected.id] && (
               <div style={{ margin: '8px 14px 0', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-status-red)', fontSize: 11.5, color: 'var(--color-status-red)' }}>{sessionErr[selected.id]}</div>
@@ -270,12 +219,12 @@ export function CcrPage() {
                 {loading && rows.length === 0 ? (
                   <div className="empty-state"><Loader2 size={22} style={{ animation: 'spin 1s linear infinite' }} /><span style={{ fontSize: 12 }}>Loading sessions…</span></div>
                 ) : (
-                  <CcrSessionList rows={rows} selectedId={selectedId} onSelect={(r) => selectSession(r.id)} rowActions={rowActions} nowMs={nowMs} filter={listFilter} onFilterChange={setListFilter} />
+                  <CcrSessionList rows={rows} view={view} onViewChange={setView} nodeNames={nodeNames} selfNode={selfNode} selectedId={selectedId} onSelect={(r) => selectSession(r.id)} rowActions={rowActions} nowMs={nowMs} />
                 )}
               </div>
             </div>
             <div style={{ padding: '10px 20px 18px' }}>
-              <CcrComposer apiFetch={apiFetch} onStarted={(sid) => { fetchAll(); selectSession(sid); }} />
+              <CcrComposer apiFetch={apiFetch} onStarted={(sid) => { refresh(); selectSession(sid); }} />
             </div>
           </div>
         )}

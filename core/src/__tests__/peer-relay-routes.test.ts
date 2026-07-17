@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { peerForwardPath, createPeerRelayRoutes } from '../routes/core/peer-relay.routes';
 import type { ParsedRequest } from '../routes/index';
 
-test('peerForwardPath allows only /memory and /rules, blocks traversal', () => {
+test('peerForwardPath allows only the relayable web surfaces, blocks traversal', () => {
   assert.equal(peerForwardPath('memory/projects'), '/memory/projects');
   assert.equal(peerForwardPath('/memory/by-project/x/file/a.md'), '/memory/by-project/x/file/a.md');
   assert.equal(peerForwardPath('rules/list'), '/rules/list');
@@ -14,6 +14,28 @@ test('peerForwardPath allows only /memory and /rules, blocks traversal', () => {
   assert.equal(peerForwardPath('memory/../hub/config'), null);
   assert.equal(peerForwardPath('rules\\..\\x'), null);
   assert.equal(peerForwardPath('data/put'), null);
+});
+
+test('peerForwardPath: CCR page surface is relayable, wider surfaces stay blocked', () => {
+  // Allowed: the CCR page operating on a peer's sessions.
+  assert.equal(peerForwardPath('ccr/remote'), '/ccr/remote');
+  assert.equal(peerForwardPath('ccr/load'), '/ccr/load');
+  assert.equal(peerForwardPath('terminal/cc-sessions'), '/terminal/cc-sessions');
+  assert.equal(peerForwardPath('terminal/cc-sessions/abc/interrupt'), '/terminal/cc-sessions/abc/interrupt');
+  assert.equal(
+    peerForwardPath('sessions/00000000-0000-0000-0000-000000000000/conversation'),
+    '/sessions/00000000-0000-0000-0000-000000000000/conversation',
+  );
+  assert.equal(peerForwardPath('mission/session/abc/drive'), '/mission/session/abc/drive');
+  assert.equal(peerForwardPath('session-messages'), '/session-messages');
+  // Blocked: everything beyond that surface.
+  assert.equal(peerForwardPath('terminal/tmux/x/send-keys'), null); // only the cc-sessions subtree
+  assert.equal(peerForwardPath('terminal/local'), null);
+  assert.equal(peerForwardPath('mission/list'), null);              // mission CRUD is hub-relay only
+  assert.equal(peerForwardPath('mission/abc/spawn'), null);
+  assert.equal(peerForwardPath('session-search/ai'), null);
+  assert.equal(peerForwardPath('ccr/../hub/config'), null);         // traversal still dies after the new prefixes
+  assert.equal(peerForwardPath('terminal/cc-sessions/../../hub'), null);
 });
 
 test('peerForwardPath defeats percent-encoded and double-encoded traversal', () => {
@@ -51,6 +73,6 @@ test('bad node id and non-allow-listed path are refused before any network use',
   }) as unknown as ParsedRequest;
   const r1: any = await route.handler(bad({ node: 'gw/evil', rest: 'memory/x' }), {} as any);
   assert.equal(r1.error.code, 'INVALID_INPUT');
-  const r2: any = await route.handler(bad({ node: 'gw4-ok', rest: 'sessions' }), {} as any);
+  const r2: any = await route.handler(bad({ node: 'gw4-ok', rest: 'data/put' }), {} as any);
   assert.equal(r2.error.code, 'INVALID_INPUT');
 });
