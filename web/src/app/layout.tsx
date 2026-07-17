@@ -3,6 +3,7 @@ import { ThemeProvider } from '@/contexts/ThemeContext';
 import { AppModeProvider } from '@/contexts/AppModeContext';
 import { SessionExpiredOverlay } from '@/components/SessionExpiredOverlay';
 import { ChunkErrorReloader } from '@/components/ChunkErrorReloader';
+import { RouteTracker } from '@/components/RouteTracker';
 import './globals.css';
 
 export const viewport: Viewport = {
@@ -63,6 +64,7 @@ export default function RootLayout({
         <ThemeProvider>
           <AppModeProvider>
             <ChunkErrorReloader />
+            <RouteTracker />
             <SessionExpiredOverlay />
             {children}
           </AppModeProvider>

@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { prevAppRoute } from '@/components/RouteTracker';
 import {
   Home, Code2, Plus, RefreshCw, Search, PanelLeftClose, PanelLeft, SlidersHorizontal,
   MoreVertical, ExternalLink, Pencil, Copy, Check, Archive, Trash2, Loader2,
@@ -35,6 +36,9 @@ export function CcrSidebar({ rows, selectedId, onSelect, onNewSession, onRefresh
   apiFetch: ApiFetch;
   onChanged: () => void;
 }) {
+  const router = useRouter();
+  // Home returns to the last non-CCR page the user was on (RouteTracker), not always /sessions.
+  const goHome = useCallback(() => router.push(prevAppRoute()), [router]);
   const [showAll, setShowAll] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [width, setWidth] = useState(DEFAULT_W);
@@ -99,14 +103,14 @@ export function CcrSidebar({ rows, selectedId, onSelect, onNewSession, onRefresh
     <div style={{ width, flexShrink: 0, height: '100%', position: 'relative', display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--color-border-default)', background: 'var(--color-bg-elevated)' }}>
       {/* Header: wordmark + collapse + search */}
       <div style={{ padding: '12px 12px 8px', display: 'flex', alignItems: 'center', gap: 6 }}>
-        <Link href="/sessions" title="Back to lm-assist" style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-text-primary)', textDecoration: 'none', letterSpacing: -0.3, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>lm-assist</Link>
+        <button onClick={goHome} title="Back to lm-assist" style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-text-primary)', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left', letterSpacing: -0.3, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>lm-assist</button>
         <button onClick={onOpenSearch} title="Search (⌘K)" style={iconBtn}><Search size={15} /></button>
         <button onClick={toggleCollapse} title="Collapse sidebar" style={iconBtn}><PanelLeftClose size={16} /></button>
       </div>
 
       {/* Home | Code segmented pill */}
       <div style={{ margin: '2px 10px 10px', display: 'flex', background: 'var(--color-bg-root)', borderRadius: 'var(--radius-lg)', padding: 3, gap: 2 }}>
-        <Link href="/sessions" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '5px 0', borderRadius: 'var(--radius-md)', fontSize: 12.5, color: 'var(--color-text-tertiary)', textDecoration: 'none' }}><Home size={13} /> Home</Link>
+        <button onClick={goHome} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '5px 0', borderRadius: 'var(--radius-md)', fontSize: 12.5, color: 'var(--color-text-tertiary)', background: 'none', border: 'none', cursor: 'pointer' }}><Home size={13} /> Home</button>
         <span style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '5px 0', borderRadius: 'var(--radius-md)', fontSize: 12.5, fontWeight: 600, color: 'var(--color-text-primary)', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border-default)' }}><Code2 size={13} /> Code</span>
       </div>
 

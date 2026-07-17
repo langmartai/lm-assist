@@ -6,7 +6,7 @@ import { useAppMode } from '@/contexts/AppModeContext';
 import { CcrSessionView } from './CcrSessionView';
 import { CcrCloudView } from './CcrCloudView';
 import { CcrComposer } from './CcrComposer';
-import { CcrSessionList } from './CcrSessionList';
+import { CcrSessionList, type CcrFilter } from './CcrSessionList';
 import { CcrSidebar } from './CcrSidebar';
 import { CcrSearchModal } from './CcrSearchModal';
 import { CcrDetailHeader } from './CcrDetailHeader';
@@ -130,6 +130,18 @@ export function CcrPage() {
   const [confirmConnect, setConfirmConnect] = useState<string | null>(null);
   const [sessionErr, setSessionErr] = useState<Record<string, string>>({});
   const [searchOpen, setSearchOpen] = useState(false);
+  // Session-list filter is LIFTED here (was internal to CcrSessionList) + persisted so the
+  // 5s poll's re-render/remount can't reset it — the flip-flop bug. localStorage init also
+  // survives a full CcrPage remount.
+  const [listFilter, setListFilterState] = useState<CcrFilter>(() => {
+    if (typeof window === 'undefined') return 'all';
+    const v = window.localStorage.getItem('ccr-list-filter');
+    return v === 'cloud' || v === 'remote' || v === 'local' ? v : 'all';
+  });
+  const setListFilter = useCallback((f: CcrFilter) => {
+    setListFilterState(f);
+    try { window.localStorage.setItem('ccr-list-filter', f); } catch { /* private mode */ }
+  }, []);
   // Cmd/Ctrl+K opens Search (replaces the dashboard overlay we lose going full-bleed).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); setSearchOpen((v) => !v); } };
@@ -258,7 +270,7 @@ export function CcrPage() {
                 {loading && rows.length === 0 ? (
                   <div className="empty-state"><Loader2 size={22} style={{ animation: 'spin 1s linear infinite' }} /><span style={{ fontSize: 12 }}>Loading sessions…</span></div>
                 ) : (
-                  <CcrSessionList rows={rows} selectedId={selectedId} onSelect={(r) => selectSession(r.id)} rowActions={rowActions} nowMs={nowMs} />
+                  <CcrSessionList rows={rows} selectedId={selectedId} onSelect={(r) => selectSession(r.id)} rowActions={rowActions} nowMs={nowMs} filter={listFilter} onFilterChange={setListFilter} />
                 )}
               </div>
             </div>

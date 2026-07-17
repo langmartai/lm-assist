@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import { ChevronRight, Cloud, Cast, Monitor } from 'lucide-react';
 import { relativeTime } from '@/lib/ccr-status';
 import { CcrStatusPill } from './CcrStatusPill';
@@ -12,24 +12,45 @@ const KIND_META: Record<CcrRow['kind'], { icon: typeof Cloud; label: string }> =
   local: { icon: Monitor, label: 'Local' },
 };
 
-type Filter = 'all' | 'cloud' | 'remote' | 'local';
+export type CcrFilter = 'all' | 'cloud' | 'remote' | 'local';
+type Kind = 'cloud' | 'remote' | 'local';
+const KIND_ORDER: Kind[] = ['cloud', 'remote', 'local'];
+const KIND_LABEL: Record<Kind, string> = { cloud: 'Cloud', remote: 'Remote', local: 'Local' };
+const ms = (t?: string | null) => (t ? Date.parse(t) || 0 : 0);
+const byTimeDesc = (a: CcrRow, b: CcrRow) => ms(b.time) - ms(a.time);
 
-/** claude.ai/code-style Sessions list: a segmented filter + recency-sorted status-pill rows. */
-export function CcrSessionList({ rows, selectedId, onSelect, rowActions, nowMs }: {
+/**
+ * claude.ai/code-style Sessions list. `filter` is CONTROLLED by the parent (lifted +
+ * persisted so a 5s poll re-render/remount can't reset it). The filter is a PRIORITY,
+ * not a hard hide: the chosen category renders as the FIRST group and the others follow
+ * (so picking "local" surfaces local first while cloud/remote stay reachable below).
+ * "all" shows every group in the default order.
+ */
+export function CcrSessionList({ rows, selectedId, onSelect, rowActions, nowMs, filter, onFilterChange }: {
   rows: CcrRow[];
   selectedId: string | null;
   onSelect: (row: CcrRow) => void;
   rowActions?: (row: CcrRow) => ReactNode;
   nowMs?: number;
+  filter: CcrFilter;
+  onFilterChange: (f: CcrFilter) => void;
 }) {
-  const [filter, setFilter] = useState<Filter>('all');
   const counts = {
     all: rows.length,
     cloud: rows.filter((r) => r.kind === 'cloud').length,
     remote: rows.filter((r) => r.kind === 'remote').length,
     local: rows.filter((r) => r.kind === 'local').length,
   };
-  const shown = filter === 'all' ? rows : rows.filter((r) => r.kind === filter);
+  // Group order: the chosen filter's category first, then the remaining categories in
+  // default order. "all" = plain default order. Empty groups are dropped.
+  const orderedKinds: Kind[] = (filter !== 'all'
+    ? [filter as Kind, ...KIND_ORDER.filter((k) => k !== filter)]
+    : KIND_ORDER
+  ).filter((k) => counts[k] > 0);
+  const groups = orderedKinds.map((k) => ({
+    kind: k,
+    rows: rows.filter((r) => r.kind === k).sort(byTimeDesc),
+  }));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -37,9 +58,10 @@ export function CcrSessionList({ rows, selectedId, onSelect, rowActions, nowMs }
         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>Sessions</div>
         <div style={{ flex: 1 }} />
         <div style={{ display: 'flex', gap: 2, background: 'var(--color-bg-elevated)', borderRadius: 'var(--radius-md)', padding: 2 }}>
-          {(['all', 'cloud', 'remote', 'local'] as Filter[]).map((f) => (
-            <button key={f} onClick={() => setFilter(f)}
+          {(['all', 'cloud', 'remote', 'local'] as CcrFilter[]).map((f) => (
+            <button key={f} onClick={() => onFilterChange(f)}
               className="btn btn-sm"
+              title={f === 'all' ? 'Show all groups' : `Show ${f} first`}
               style={{
                 padding: '2px 10px', fontSize: 11, border: 'none', borderRadius: 'var(--radius-sm)',
                 background: filter === f ? 'var(--color-bg-root)' : 'transparent',
@@ -52,11 +74,18 @@ export function CcrSessionList({ rows, selectedId, onSelect, rowActions, nowMs }
         </div>
       </div>
 
-      {shown.length === 0 ? (
+      {rows.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', padding: '8px 0' }}>No sessions in this view.</div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {shown.map((row) => {
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {groups.map((g) => (
+            <div key={g.kind} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 2px 2px', fontSize: 11, fontWeight: 600, letterSpacing: 0.3, textTransform: 'uppercase', color: 'var(--color-text-tertiary)' }}>
+                {(() => { const I = KIND_META[g.kind].icon; return <I size={12} />; })()}
+                {KIND_LABEL[g.kind]}
+                <span style={{ fontWeight: 400 }}>{g.rows.length}</span>
+              </div>
+              {g.rows.map((row) => {
             // Guard: rows from the registry fallback (core offline / OAuth down) carry no kind.
             const kindMeta = KIND_META[row.kind] || KIND_META.cloud;
             const KindIcon = kindMeta.icon;
@@ -84,7 +113,9 @@ export function CcrSessionList({ rows, selectedId, onSelect, rowActions, nowMs }
                 <ChevronRight size={15} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />
               </div>
             );
-          })}
+              })}
+            </div>
+          ))}
         </div>
       )}
     </div>
