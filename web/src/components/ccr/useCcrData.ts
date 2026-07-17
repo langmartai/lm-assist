@@ -73,7 +73,21 @@ export function useCcrData(apiFetch: ApiFetch): CcrData {
     return [...reachable, ...down];
   }, [fleet, rows]);
 
-  const warning = fleet?.cloudError ? `cloud session list degraded (serving last good): ${fleet.cloudError}` : null;
+  // Age-gated: single failed polls are invisible (the last-good list keeps
+  // serving, and a peer usually backfills). Warn only when the cloud list has
+  // been GENUINELY stale for a while — that's worth the user's attention.
+  const warning = cloudStaleWarning(fleet, nowMs || Date.now());
 
   return { rows, selfNode: fleet?.self ?? null, nodes, loading, error, warning, nowMs, refresh: fetchAll };
+}
+
+export const CLOUD_STALE_WARN_MS = 90_000;
+
+/** Pure: the degraded-banner text, or null while blips are being absorbed. */
+export function cloudStaleWarning(fleet: CcrFleetPayload | null, nowMs: number): string | null {
+  if (!fleet?.cloudError) return null;
+  const at = fleet.cloudFetchedAt ?? 0;
+  if (at && nowMs - at < CLOUD_STALE_WARN_MS) return null;
+  const age = at ? `${Math.max(1, Math.round((nowMs - at) / 60000))}m old` : 'unavailable';
+  return `cloud session list stale (${age}): ${fleet.cloudError}`;
 }

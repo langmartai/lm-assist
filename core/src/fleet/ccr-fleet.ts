@@ -38,6 +38,8 @@ export interface CcrFleetView {
   partial: boolean;
   /** why the cloud list is empty/stale, when it failed (surfaced to the UI). */
   cloudError?: string | null;
+  /** epoch ms of the last SUCCESSFUL cloud fetch (self or peer) — lets the UI age-gate its warning. */
+  cloudFetchedAt?: number | null;
 }
 
 const PEER_TIMEOUT_MS = 2500;
@@ -133,11 +135,21 @@ export function mergeCcrFleet(
 }
 
 let _cache: { at: number; value: CcrFleetView } | null = null;
-// Last cloud list that came back successfully. The account API is polled every
-// 5s and intermittently 401s under OAuth token rotation (multiple processes
-// share the credentials file); serving the last-good list on error keeps the
-// page's content from flapping to empty — the error is still surfaced.
+// Last cloud list that came back successfully (+ when). The account API is
+// polled every 5s and intermittently fails under OAuth token rotation /
+// upstream blips; serving the last-good list on error keeps the page's
+// content from flapping to empty. The cloud list is ACCOUNT-wide, so when
+// this node's fetch fails a PEER with healthy credentials can supply the
+// same list (`/ccr/cloud` is relay-allowed) — self → peer → last-good.
 let _lastGoodCloud: unknown[] | null = null;
+let _lastGoodCloudAt: number | null = null;
+
+/** Unwrap a peer's GET /ccr/cloud envelope ({success,data:{sessions}}) → sessions[] or null. */
+export function peerCloudSessions(res: unknown): unknown[] | null {
+  const body = (res as { data?: unknown })?.data ?? res;
+  const sessions = (body as { sessions?: unknown })?.sessions;
+  return Array.isArray(sessions) ? sessions : null;
+}
 
 export async function getCcrFleet(deps: CcrFleetDeps): Promise<CcrFleetView> {
   const t = deps.now();
@@ -145,13 +157,11 @@ export async function getCcrFleet(deps: CcrFleetDeps): Promise<CcrFleetView> {
 
   const selfId = deps.selfId();
   let cloudError: string | null = null;
-  const [self, cloudFresh, online] = await Promise.all([
+  const [self, selfCloud, online] = await Promise.all([
     deps.getLocal(),
     deps.getCloud().catch((e) => { cloudError = String((e as Error)?.message || e); return null; }),
     deps.listOnline().catch(() => [] as string[]),
   ]);
-  if (cloudFresh) _lastGoodCloud = cloudFresh;
-  const cloud = cloudFresh ?? _lastGoodCloud ?? [];
   const peerIds = online.filter((n) => n !== selfId);
   const peers = await Promise.all(peerIds.map(async (n) => {
     try {
@@ -163,14 +173,29 @@ export async function getCcrFleet(deps: CcrFleetDeps): Promise<CcrFleetView> {
     }
   }));
 
+  // Cloud-list fallback chain: self → first reachable peer's /ccr/cloud → last-good.
+  let cloudFresh = selfCloud;
+  if (!cloudFresh) {
+    for (const p of peers) {
+      if (!p.snap) continue; // peer already proved unreachable
+      try {
+        const sessions = peerCloudSessions(await withTimeout(deps.proxyGet(p.node, '/ccr/cloud'), PEER_TIMEOUT_MS));
+        if (sessions) { cloudFresh = sessions; cloudError = null; break; }
+      } catch { /* try the next peer */ }
+    }
+  }
+  if (cloudFresh) { _lastGoodCloud = cloudFresh; _lastGoodCloudAt = deps.now(); }
+  const cloud = cloudFresh ?? _lastGoodCloud ?? [];
+
   const value = mergeCcrFleet(self, cloud, peers, selfId, deps.now());
   if (cloudError) value.cloudError = cloudError;
+  value.cloudFetchedAt = _lastGoodCloudAt;
   _cache = { at: t, value };
   return value;
 }
 
 /** Test hook — the composed cache is module-global. */
-export function _resetCcrFleetCache(): void { _cache = null; _lastGoodCloud = null; }
+export function _resetCcrFleetCache(): void { _cache = null; _lastGoodCloud = null; _lastGoodCloudAt = null; }
 
 export function defaultCcrFleetDeps(): CcrFleetDeps {
   return {

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Cloud, Cast, Monitor, MoreVertical, ExternalLink, Copy, Check, Pencil, Archive, Trash2, X, Loader2 } from 'lucide-react';
+import { Cloud, Cast, Monitor, MonitorSmartphone, MoreVertical, Copy, Check, Pencil, Archive, Trash2, X, Loader2 } from 'lucide-react';
 import type { ApiFetch, CcrRow } from './ccrTypes';
 
 /** claude.ai/code-style session-detail header: icon + title (inline rename) + repo chip + kebab. */
@@ -32,6 +32,9 @@ export function CcrDetailHeader({ row, apiFetch, onClose, onChanged, onDeleted }
   // Cloud + bridged remote sessions expose management endpoints; a purely-local (unbridged) session doesn't.
   const canManage = row.kind === 'cloud' || (row.kind === 'remote' && /^(session_|cse_)/.test(row.id));
   const Icon = row.kind === 'cloud' ? Cloud : row.kind === 'remote' ? Cast : Monitor;
+  // Native deep-link (same pattern as mission control): claude.ai/code URLs are
+  // handled by the Claude desktop app and mobile/iPad apps via universal links.
+  const appUrl = row.webUrl || (/^(session_|cse_)/.test(row.id) ? `https://claude.ai/code/${row.id}` : null);
 
   const call = useCallback(async (path: string, body?: unknown) => {
     setBusy(true); setErr(null);
@@ -69,8 +72,12 @@ export function CcrDetailHeader({ row, apiFetch, onClose, onChanged, onDeleted }
       <div style={{ flex: 1 }} />
       {err && <span style={{ fontSize: 11, color: 'var(--color-status-red)', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={err}>{err}</span>}
 
-      {row.webUrl && (
-        <a className="btn btn-ghost btn-sm" href={row.webUrl} target="_blank" rel="noreferrer" title="Open on claude.ai/code"><ExternalLink size={14} /></a>
+      {appUrl && (
+        <a className="btn btn-ghost btn-sm" href={appUrl} target="_blank" rel="noreferrer"
+          title="Open this session in the Claude app (desktop / mobile / iPad) — claude.ai/code link"
+          style={{ fontSize: 11, gap: 5, alignItems: 'center' }}>
+          <MonitorSmartphone size={13} /> Claude app
+        </a>
       )}
       {canManage && (
         <div ref={menuRef} style={{ position: 'relative' }}>

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { mergeCcrFleet, getCcrFleet, _resetCcrFleetCache, type CcrNodeSnapshot, type CcrFleetDeps } from '../../fleet/ccr-fleet';
+import { mergeCcrFleet, getCcrFleet, peerCloudSessions, _resetCcrFleetCache, type CcrNodeSnapshot, type CcrFleetDeps } from '../../fleet/ccr-fleet';
 
 const snap = (node: string, locals: unknown[] = []): CcrNodeSnapshot => ({
   node, remotes: [], rc: { controller: null, executors: [], accountRc: [] }, locals, collectedAt: 1,
@@ -88,6 +88,32 @@ test('getCcrFleet: cloud failure after a success serves the LAST-GOOD list + clo
   assert.deepEqual(second.cloud, [{ sid: 'cse_good' }]); // stale-while-error, not empty
   assert.match(String(second.cloudError), /401 storm/);
   _resetCcrFleetCache();
+});
+
+test('getCcrFleet: self cloud failure falls back to a PEER /ccr/cloud (account-wide list) with no cloudError', async () => {
+  _resetCcrFleetCache();
+  const calls: string[] = [];
+  const v = await getCcrFleet(deps({
+    getCloud: async () => { throw new Error('401 on self'); },
+    proxyGet: async (node, path) => {
+      calls.push(`${node}${path}`);
+      if (path === '/fleet/ccr/local') return { data: snap('gw-peer') };
+      if (path === '/ccr/cloud') return { data: { sessions: [{ sid: 'cse_from_peer' }], enriched: true } };
+      throw new Error(`unexpected ${path}`);
+    },
+  }));
+  assert.deepEqual(v.cloud, [{ sid: 'cse_from_peer' }]);
+  assert.equal(v.cloudError, undefined); // peer supplied a FRESH list — not degraded
+  assert.ok(v.cloudFetchedAt! > 0);
+  assert.ok(calls.includes('gw-peer/ccr/cloud'));
+  _resetCcrFleetCache();
+});
+
+test('peerCloudSessions unwraps the /ccr/cloud envelope and rejects shapeless payloads', () => {
+  assert.deepEqual(peerCloudSessions({ data: { sessions: [1, 2] } }), [1, 2]);
+  assert.deepEqual(peerCloudSessions({ sessions: [] }), []);
+  assert.equal(peerCloudSessions({ data: { nope: true } }), null);
+  assert.equal(peerCloudSessions(null), null);
 });
 
 test('getCcrFleet: composed result is cached within the TTL (one getLocal per window)', async () => {

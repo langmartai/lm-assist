@@ -81,6 +81,19 @@ describe('status hides, counts follow the filters', () => {
   });
 });
 
+describe('cloud stale warning is age-gated (blips invisible)', async () => {
+  const { cloudStaleWarning, CLOUD_STALE_WARN_MS } = await import('@/components/ccr/useCcrData');
+  const base = { generatedAt: 0, self: 's', cloud: [], nodes: [], unreachable: [], partial: false };
+  it('no error → no warning; recent success absorbs the blip', () => {
+    expect(cloudStaleWarning({ ...base, cloudError: null }, 1000)).toBeNull();
+    expect(cloudStaleWarning({ ...base, cloudError: 'HTTP 401', cloudFetchedAt: 1000 }, 1000 + CLOUD_STALE_WARN_MS - 1)).toBeNull();
+  });
+  it('genuinely stale → warn with age; never-succeeded → unavailable', () => {
+    expect(cloudStaleWarning({ ...base, cloudError: 'HTTP 401', cloudFetchedAt: 0o0 }, 5000)).toMatch(/unavailable/);
+    expect(cloudStaleWarning({ ...base, cloudError: 'HTTP 401', cloudFetchedAt: 60_000 }, 60_000 + CLOUD_STALE_WARN_MS + 30_000)).toMatch(/stale \(2m old\)/);
+  });
+});
+
 describe('name sort', () => {
   it('orders by title with the stable key tiebreak', () => {
     const titles = orderRows(rows, v({ sort: 'name' })).map((r) => r.title);

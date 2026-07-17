@@ -79,6 +79,8 @@ export interface CcrFleetPayload {
   partial: boolean;
   /** set when the cloud list fetch failed and a last-good copy is being served. */
   cloudError?: string | null;
+  /** epoch ms of the last successful cloud fetch (self or peer). */
+  cloudFetchedAt?: number | null;
 }
 
 /** The normalized row the unified session list renders. */
