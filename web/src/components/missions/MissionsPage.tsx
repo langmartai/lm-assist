@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Target,
   RefreshCw,
+  Activity,
   Loader2,
   Plus,
   X,
@@ -326,6 +327,7 @@ export function MissionsPage() {
   // ── Controller session (Wave 2) ──
   // auto-opened on load when controllerSession is present; stays closed once user dismisses
   const [controllerSessionOpen, setControllerSessionOpen] = useState(false);
+  const [traceOpen, setTraceOpen] = useState(false);
   // Once the user manually closes the panel, don't auto-reopen it on subsequent polls.
   const [controllerSessionDismissed, setControllerSessionDismissed] = useState(false);
 
@@ -2021,6 +2023,14 @@ export function MissionsPage() {
                       {tickBusy ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={11} />}
                       {' '}Tick
                     </button>
+                    <button
+                      className={`btn btn-sm ${traceOpen ? 'btn-primary' : 'btn-ghost'}`}
+                      onClick={() => setTraceOpen((v) => !v)}
+                      title="What the control loop has been doing and why: health summary, decisions with reasons, and which session is the controller (with full recovery history)"
+                      style={{ fontSize: 11 }}
+                    >
+                      <Activity size={11} /> Trace
+                    </button>
                   </>
                 )}
                 {/* Direct deep-link: open the controller's CCR session in the native Claude app
@@ -2061,8 +2071,8 @@ export function MissionsPage() {
                 </div>
               )}
 
-              {/* Tractability cockpit: election + lineage + control journal */}
-              <ControllerTracePanel apiFetch={apiFetch} />
+              {/* Tractability cockpit: health + decisions + identity history (toggle lives in the header row) */}
+              <ControllerTracePanel apiFetch={apiFetch} open={traceOpen} />
 
               {/* Cloud view (optional) */}
               {controllerSessionOpen && cs && controllerSid && /^(session_|cse_)/.test(controllerSid) && (
