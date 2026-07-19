@@ -25,6 +25,7 @@ import {
 import { useAppMode } from '@/contexts/AppModeContext';
 import { useClusters, clusterBadge } from '@/hooks/useClusters';
 import { CcrCloudView } from '@/components/ccr/CcrCloudView';
+import { ControllerTracePanel } from './ControllerTracePanel';
 import { MissionSessionChat } from './MissionSessionChat';
 import { MissionDetailView } from './MissionDetailView';
 import { FullScreenOverlay, ExpandIconButton } from './FullScreenOverlay';
@@ -2059,6 +2060,9 @@ export function MissionsPage() {
                   Tick: {tickResult}
                 </div>
               )}
+
+              {/* Tractability cockpit: election + lineage + control journal */}
+              <ControllerTracePanel apiFetch={apiFetch} />
 
               {/* Cloud view (optional) */}
               {controllerSessionOpen && cs && controllerSid && /^(session_|cse_)/.test(controllerSid) && (

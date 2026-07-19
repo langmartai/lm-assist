@@ -50,3 +50,32 @@ export function readControlJournal(dir: string, limit = 200): ControlJournalEntr
     return [];
   }
 }
+
+// ── Journal CONSUMERS — the control loop reads its own traces ────────────────
+// (runSupervisorTick pulls these each tick via the recentJournal dep.)
+
+/**
+ * Pure: consecutive FAILED drives to `sid` counting back from the most recent
+ * drive event (any successful drive resets the streak). A live-looking
+ * controller that stops accepting drives is wedged — the loop treats a streak
+ * ≥ threshold as not-live and relaunches (lossless: resume-first lineage).
+ */
+export function driveFailureStreak(entries: ControlJournalEntry[], sid: string): number {
+  let streak = 0;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e.kind !== 'drive' || e.sid !== sid) continue;
+    if (e.ok === true) break;
+    streak += 1;
+  }
+  return streak;
+}
+
+/**
+ * Pure: lifecycle launches/resumes recorded within the window. A high count
+ * means the loop is churning (launch → die → launch …) — back off instead of
+ * feeding the loop (the "9 controllers in 18 minutes" class of runaway).
+ */
+export function recentLaunchCount(entries: ControlJournalEntry[], now: number, windowMs = 10 * 60_000): number {
+  return entries.filter((e) => e.kind === 'lifecycle' && (e.event === 'launched' || e.event === 'resumed') && now - e.at <= windowMs).length;
+}

@@ -670,6 +670,9 @@ export interface SupervisorDeps {
   isLive: (cs: ControllerSession) => boolean;
   /** Optional control-journal sink — real deps append to control-journal.jsonl; tests omit. */
   journal?: (entry: { at: number; kind: 'boot' | 'tick' | 'drive' | 'lifecycle' | 'election'; [k: string]: unknown }) => void;
+  /** Optional control-journal READER — the loop consumes its own traces
+   *  (drive-failure recovery, launch-churn back-off). Real deps read the file. */
+  recentJournal?: () => Array<{ at: number; kind: string; [k: string]: unknown }>;
   launch: () => Promise<ControllerSession>;
   /** Drive the live controller. `directive` defaults to CONTROLLER_PASS_DIRECTIVE; the
    *  supervisor passes CONTROLLER_ROSTER_CHANGED_DIRECTIVE when a cluster-roster change
@@ -866,7 +869,24 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   const verdict = await deps.amMonitor();
   const { isMonitor } = verdict;
   const cs = await deps.getControllerSession();
-  const live = cs ? deps.isLive(cs) : false;
+  let live = cs ? deps.isLive(cs) : false;
+
+  // ── THE LOOP CONSUMES ITS OWN TRACES ──
+  // Drive-failure recovery: a controller that LOOKS live (tmux exists) but has
+  // rejected the last 3+ drives is wedged — treat it as not-live so this tick
+  // relaunches it (lossless: the launcher resumes the same session from the
+  // lineage). Any successful drive resets the streak.
+  let recoveryReason: string | null = null;
+  if (cs && live && deps.recentJournal) {
+    try {
+      const { driveFailureStreak } = require('./control-journal') as typeof import('./control-journal');
+      const streak = driveFailureStreak(deps.recentJournal() as never, cs.sessionId);
+      if (streak >= 3) {
+        live = false;
+        recoveryReason = `drive-failure streak ${streak} → relaunch (resume-first keeps the session)`;
+      }
+    } catch { /* advisory */ }
+  }
 
   // Stray-controller sweep (self-healing): a Core restart + tick race has been observed to
   // leave a duplicate lmcc-* tmux beside the recorded controller. The record is authoritative —
@@ -926,7 +946,22 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   } else {
     _notMonitorStreak = isMonitor ? 0 : _notMonitorStreak + 1;
   }
-  const { action } = decideSupervisor({ isMonitor, live, driveDue, notMonitorStreak: _notMonitorStreak, indeterminate: verdict.indeterminate });
+  let { action } = decideSupervisor({ isMonitor, live, driveDue, notMonitorStreak: _notMonitorStreak, indeterminate: verdict.indeterminate });
+
+  // Launch-churn back-off: 3+ launches/resumes inside 10 min means the loop is
+  // feeding a crash cycle (launch → die → launch …). Idle this tick instead —
+  // the journal shows the churn, and a human (or the next quiet window) breaks it.
+  if (action === 'launch' && deps.recentJournal) {
+    try {
+      const { recentLaunchCount } = require('./control-journal') as typeof import('./control-journal');
+      const launches = recentLaunchCount(deps.recentJournal() as never, deps.now);
+      if (launches >= 3) {
+        action = 'idle';
+        recoveryReason = `churn-backoff: ${launches} launches in 10min — holding this tick`;
+        deps.journal?.({ at: Date.now(), kind: 'tick', action: 'churn-backoff', launchesInWindow: launches, isMonitor, live, record: cs?.sessionId ?? null });
+      }
+    } catch { /* advisory */ }
+  }
 
   // ── Control journal: every non-idle decision, every monitor-state change,
   //    and a once-per-boot marker — each with the FULL inputs so a wrong
@@ -945,6 +980,7 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
           monitorNodeId: (verdict as { monitorNodeId?: string | null }).monitorNodeId ?? null,
           notMonitorStreak: _notMonitorStreak, live, driveDue,
           record: cs?.sessionId ?? null, tmux: cs?.tmux ?? null,
+          ...(recoveryReason ? { reason: recoveryReason } : {}),
         });
       }
       _lastJournaledMonitor = isMonitor;
@@ -964,8 +1000,10 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
     // mid-registration, or one this fresh Core process hasn't observed yet (lm-assist restart),
     // can read false-dead and trigger a duplicate launch. Re-verify RIGHT before acting: if the
     // recorded controller is actually alive now, ADOPT it instead of relaunching (never kill or
-    // orphan a live controller on a Core restart).
-    if (cs && deps.isLive(cs)) {
+    // orphan a live controller on a Core restart). EXCEPTION: a drive-failure recovery
+    // (recoveryReason set) targets a controller whose tmux IS alive but wedged — adopting it
+    // back would perpetuate the wedge; fall through to teardown + resume-first relaunch.
+    if (cs && !recoveryReason && deps.isLive(cs)) {
       return { action: 'adopt', controllerSession: cs };
     }
     // Defensive dedupe: if a prior controller record exists but we're (re)launching (it was deemed
@@ -1389,6 +1427,8 @@ export function registerMissionController(
             recordControllerEvent(cwd, { at: Date.now(), event: 'resume-failed', sessionId: resumeSid, reason: 'no live session after resume launch' });
           } else if (sessionId) {
             recordControllerEvent(cwd, { at: Date.now(), event: resumeSid ? 'resumed' : 'launched', sessionId, tmux, node: thisNode() });
+            const { recordControl } = require('./control-journal') as typeof import('./control-journal');
+            recordControl(cwd, { at: Date.now(), kind: 'lifecycle', event: resumeSid ? 'resumed' : 'launched', sessionId, tmux });
           }
         } catch { /* advisory */ }
         // Poll cloudListAccount up to 20 times (~40s) for the new --remote-control cse to register.
@@ -1429,6 +1469,12 @@ export function registerMissionController(
           recordControl(controllerCwd(), entry);
         } catch { /* advisory */ }
       },
+      recentJournal: () => {
+        try {
+          const { readControlJournal } = require('./control-journal') as typeof import('./control-journal');
+          return readControlJournal(controllerCwd(), 80);
+        } catch { return []; }
+      },
       drive: async (cs, directive) => {
         const text = directive ?? CONTROLLER_PASS_DIRECTIVE;
         const sid = cs.cse || cs.sessionId;
@@ -1463,6 +1509,8 @@ export function registerMissionController(
         try {
           const { recordControllerEvent } = require('./controller-history') as typeof import('./controller-history');
           recordControllerEvent(controllerCwd(), { at: Date.now(), event: 'teardown', sessionId: cs.sessionId, tmux: cs.tmux, cse: cs.cse ?? null, node: cs.node, reason: 'not monitor (confident, debounced)' });
+          const { recordControl } = require('./control-journal') as typeof import('./control-journal');
+          recordControl(controllerCwd(), { at: Date.now(), kind: 'lifecycle', event: 'teardown', sessionId: cs.sessionId, tmux: cs.tmux });
         } catch { /* advisory */ }
       },
       // Restart-adopt (once per Core-process boot) + stray-controller sweep wiring.

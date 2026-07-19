@@ -54,3 +54,70 @@ test('supervisor journals boot once + non-idle decisions with FULL inputs; idle 
   assert.deepEqual(entries, []);
   _resetNotMonitorStreak(); _resetJournalState();
 });
+
+test('driveFailureStreak: counts trailing failures for the sid, resets on success, ignores other sids', async () => {
+  const { driveFailureStreak } = await import('../mission/control-journal');
+  const j = [
+    { at: 1, kind: 'drive', sid: 'a', ok: false },
+    { at: 2, kind: 'drive', sid: 'a', ok: true },
+    { at: 3, kind: 'drive', sid: 'b', ok: false }, // other sid — ignored
+    { at: 4, kind: 'drive', sid: 'a', ok: false },
+    { at: 5, kind: 'tick', action: 'idle' },
+    { at: 6, kind: 'drive', sid: 'a', ok: false },
+  ] as never;
+  assert.equal(driveFailureStreak(j, 'a'), 2);
+  assert.equal(driveFailureStreak(j, 'b'), 1);
+  assert.equal(driveFailureStreak([] as never, 'a'), 0);
+});
+
+test('recentLaunchCount: only lifecycle launches/resumes inside the window', async () => {
+  const { recentLaunchCount } = await import('../mission/control-journal');
+  const now = 1_000_000;
+  const j = [
+    { at: now - 11 * 60_000, kind: 'lifecycle', event: 'launched' }, // outside window
+    { at: now - 5 * 60_000, kind: 'lifecycle', event: 'resumed' },
+    { at: now - 2 * 60_000, kind: 'lifecycle', event: 'teardown' },  // not a launch
+    { at: now - 1 * 60_000, kind: 'lifecycle', event: 'launched' },
+  ] as never;
+  assert.equal(recentLaunchCount(j, now), 2);
+});
+
+test('the LOOP consumes traces: 3 failed drives → relaunch; launch churn → back-off idle', async () => {
+  _resetNotMonitorStreak(); _resetJournalState();
+  const cs: ControllerSession = { node: 'gw1', sessionId: 'sid-w', cse: null, tmux: 'lmcc-w', startedAt: 1 };
+  const failures = [
+    { at: 1, kind: 'drive', sid: 'sid-w', ok: false },
+    { at: 2, kind: 'drive', sid: 'sid-w', ok: false },
+    { at: 3, kind: 'drive', sid: 'sid-w', ok: false },
+  ];
+  let launched = false;
+  const base: SupervisorDeps = {
+    amMonitor: async () => ({ isMonitor: true, monitorNodeId: 'gw1' }),
+    getControllerSession: async () => cs,
+    putControllerSession: async () => {},
+    isLive: () => true, // tmux LOOKS alive…
+    recentJournal: () => failures as never,
+    launch: async () => { launched = true; return cs; },
+    drive: async () => {},
+    teardown: async () => {},
+    driveIntervalMin: 5,
+    now: 20 * 60_000,
+  };
+  const r = await runSupervisorTick(base);
+  assert.equal(r.action, 'launch', 'wedged controller (3 failed drives) must relaunch');
+  assert.ok(launched);
+
+  // churn: the same relaunch decision is HELD when the journal shows 3 recent launches
+  _resetNotMonitorStreak(); _resetJournalState();
+  launched = false;
+  const churnJournal = [
+    ...failures,
+    { at: 19 * 60_000, kind: 'lifecycle', event: 'launched' },
+    { at: 19.5 * 60_000, kind: 'lifecycle', event: 'resumed' },
+    { at: 19.8 * 60_000, kind: 'lifecycle', event: 'launched' },
+  ];
+  const r2 = await runSupervisorTick({ ...base, recentJournal: () => churnJournal as never });
+  assert.equal(r2.action, 'idle', 'churning loop must back off, not feed the cycle');
+  assert.equal(launched, false);
+  _resetNotMonitorStreak(); _resetJournalState();
+});
