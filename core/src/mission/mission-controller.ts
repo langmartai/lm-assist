@@ -1150,7 +1150,7 @@ export function ensureControllerWorkspace(baseDir?: string): string {
   return dir;
 }
 
-function controllerCwd(): string {
+export function controllerCwd(): string {
   const s = getProjectSettings();
   const override = (s as any).missionControllerRepo;
   if (override) return override;
@@ -1334,14 +1334,33 @@ export function registerMissionController(
         // Capture cloud baseline BEFORE launching so we can detect the new cse afterward.
         const baselineArr = await cloudListAccount().then((ss) => ss.map((s2) => s2.sid)).catch(() => [] as string[]);
         const controllerName = `Mission Controller · ${getHubConfig().hostname} · ${getMyCluster()}`;
+        // Resume-first: the controller is a DURABLE IDENTITY. Consult the tracked
+        // lineage (controller-history.jsonl in the workspace) and resume the most
+        // recent usable controller session — full transcript + context preserved
+        // across reboot/restart/teardown. Fresh session only without usable history.
+        let resumeSid: string | null = null;
+        try {
+          const { latestResumableController } = require('./controller-history') as typeof import('./controller-history');
+          const { sessionVerdict } = require('../terminal/cc-sessions') as typeof import('../terminal/cc-sessions');
+          resumeSid = latestResumableController(cwd, (sid) => sessionVerdict(sid));
+        } catch { /* lineage unavailable — fresh launch */ }
         const launched = await tmuxCcController.launch({
           cwd, remoteControl: true, skipPermissions: true, autoTrust: true,
           appendSystemPromptFile: extras.appendSystemPromptFile,
           mcpConfigPath: extras.mcpConfigPath,
           name: controllerName,
+          ...(resumeSid ? { resume: resumeSid } : {}),
         });
-        const sessionId = (launched.sessionId as string | null) ?? '';
+        const sessionId = ((launched.sessionId as string | null) ?? '') || (resumeSid ?? '');
         const tmux = (launched.tmuxSession as string) ?? '';
+        try {
+          const { recordControllerEvent } = require('./controller-history') as typeof import('./controller-history');
+          if (resumeSid && !sessionId) {
+            recordControllerEvent(cwd, { at: Date.now(), event: 'resume-failed', sessionId: resumeSid, reason: 'no live session after resume launch' });
+          } else if (sessionId) {
+            recordControllerEvent(cwd, { at: Date.now(), event: resumeSid ? 'resumed' : 'launched', sessionId, tmux, node: thisNode() });
+          }
+        } catch { /* advisory */ }
         // Poll cloudListAccount up to 20 times (~40s) for the new --remote-control cse to register.
         const POLL_ATTEMPTS = 20;
         const POLL_INTERVAL_MS = 2000;
@@ -1397,6 +1416,10 @@ export function registerMissionController(
         } catch {
           // Best-effort teardown — don't crash the tick
         }
+        try {
+          const { recordControllerEvent } = require('./controller-history') as typeof import('./controller-history');
+          recordControllerEvent(controllerCwd(), { at: Date.now(), event: 'teardown', sessionId: cs.sessionId, tmux: cs.tmux, cse: cs.cse ?? null, node: cs.node, reason: 'not monitor (confident, debounced)' });
+        } catch { /* advisory */ }
       },
       // Restart-adopt (once per Core-process boot) + stray-controller sweep wiring.
       bootAdopt: { done: () => missionBootAdoptDone, mark: () => { missionBootAdoptDone = true; } },

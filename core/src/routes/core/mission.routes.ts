@@ -1842,6 +1842,11 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
         const previous = await getControllerSession();
         const adopted = { node: thisNode(), sessionId: sid, cse: null, tmux: v.tmuxSession, startedAt: Date.now() };
         await putControllerSession(adopted);
+        try {
+          const { recordControllerEvent } = require('../../mission/controller-history') as typeof import('../../mission/controller-history');
+          const { controllerCwd } = require('../../mission/mission-controller') as typeof import('../../mission/mission-controller');
+          recordControllerEvent(controllerCwd(), { at: Date.now(), event: 'adopted', sessionId: sid, tmux: v.tmuxSession, node: adopted.node, reason: 'manual adopt route' });
+        } catch { /* advisory */ }
         return ok({ adopted, previous });
       },
     },
