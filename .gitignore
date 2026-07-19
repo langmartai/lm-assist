@@ -44,3 +44,6 @@ core/dist-test/
 # Also ignore symlinks named node_modules (trailing-slash rule only matches dirs)
 node_modules
 **/node_modules
+
+# test residue: dev-mode-upgrade-source.test.ts stubs this path (root-relative from dist-test)
+/scripts/upgrade.js
