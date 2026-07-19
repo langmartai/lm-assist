@@ -13,6 +13,7 @@ export type TerminalErrorCode =
   | 'SESSION_DIED'
   | 'PRECONDITION_FAILED'
   | 'POSTCONDITION_FAILED'
+  | 'SUBMIT_UNVERIFIED'
   | 'TIMEOUT'
   | 'TMUX_ERROR'
   | 'SPAWN_FAILED'
@@ -50,6 +51,7 @@ export function httpStatusFor(code: TerminalErrorCode): number {
     case 'UPSTREAM_ERROR': return 502;
     case 'INTERNAL_ERROR': return 500;
     case 'POSTCONDITION_FAILED':
+    case 'SUBMIT_UNVERIFIED':
     case 'SESSION_DIED':
     case 'TMUX_ERROR':
     case 'SPAWN_FAILED':

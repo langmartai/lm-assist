@@ -161,23 +161,87 @@ export async function pivot(session: string, opts: CCPivotInput): Promise<{
       return { pivoted: false, finalPhase: ready.finalPhase, elapsedMs: Date.now() - start };
     }
 
-    // Send the prompt as literal text + Enter (literal preserves any chars
-    // tmux would otherwise interpret as key names).
-    tmux.sendKeysUnlocked(session, { keys: opts.prompt, literal: true, enter: true, paneQualifier: null });
+    // Send the prompt as literal text + VERIFIED submit (literal preserves any
+    // chars tmux would otherwise interpret as key names).
+    await typeAndSubmitVerified(session, opts.prompt);
     return { pivoted: true, finalPhase: 'busy', elapsedMs: Date.now() - start };
   });
+}
+
+// ── Verified submit ──────────────────────────────────────────────────────────
+// Typing a large (multiline) text and firing Enter IMMEDIATELY afterwards is a
+// race: the ink TUI is still ingesting the burst and the Enter gets consumed
+// as pasted input instead of a submit — the message then sits SILENTLY in the
+// composer. Observed live on the mission controller: pass directives and user
+// chat messages stacked unsubmitted ("inputs lost"), and a later Enter flushed
+// them all as ONE combined turn ("inputs duplicated"). So: type, let the TUI
+// settle, submit, and VERIFY — retrying Enter is harmless (a no-op on an empty
+// composer). An unverifiable submit throws, so callers record a FAILED
+// delivery instead of a silent lie.
+
+/** Pure: how long to let the TUI ingest a typed burst before submitting. */
+export function computeSettleMs(textLength: number): number {
+  return Math.max(150, Math.min(1500, 150 + Math.floor(textLength / 8)));
+}
+
+/**
+ * Pure: the composer block of a captured pane — the contiguous lines between
+ * the last blank line and the cwd/footer block at the bottom. Pending input
+ * lives here; submitted history scrolls above the blank separator.
+ */
+export function extractComposerBlock(pane: string): string {
+  const rows = pane.replace(/\n+$/, '').split('\n');
+  // Walk up past the footer/status region (footer carries the ctx:/sid footer,
+  // then the cwd line) to the input area, then collect until a blank line.
+  let i = rows.length - 1;
+  while (i >= 0 && rows[i].trim() !== '' && !/^\s*>/.test(rows[i])) i--; // skip footer lines upward
+  const block: string[] = [];
+  for (; i >= 0; i--) {
+    if (rows[i].trim() === '') break;
+    block.unshift(rows[i]);
+  }
+  return block.join('\n');
+}
+
+/** Pure: does the composer still hold the tail of the text we typed? */
+export function composerHoldsText(pane: string, text: string): boolean {
+  const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+  const tail = norm(text).slice(-40);
+  if (!tail) return false;
+  return norm(extractComposerBlock(pane)).includes(tail);
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Type text into the pane, settle, submit, and verify the submit took. */
+async function typeAndSubmitVerified(session: string, text: string): Promise<void> {
+  tmux.sendKeysUnlocked(session, { keys: text, literal: true, enter: false, paneQualifier: null });
+  await sleep(computeSettleMs(text.length));
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    tmux.sendKeysUnlocked(session, { keys: 'Enter', literal: false, enter: false, paneQualifier: null });
+    await sleep(350 * attempt);
+    // Submitted if the model left idle (working on it) …
+    try { if (inspector.getCCState(session).phase !== 'idle') return; } catch { /* fall through to pane check */ }
+    // … or if the composer no longer holds our text (instant completions).
+    try {
+      const pane = tmux.capture(session, { start: null, lines: 30, paneQualifier: null });
+      if (!composerHoldsText(pane, text)) return;
+    } catch { /* capture hiccup — retry */ }
+  }
+  throw new TerminalError('SUBMIT_UNVERIFIED', `typed prompt did not submit after 3 Enter attempts (text still in the composer of ${session})`);
 }
 
 /**
  * Send a prompt to the currently-loaded CC session. Asserts CC is at idle
  * phase first so we don't blast text into bash if CC has died, or into a
- * trust prompt, or into plan-mode confirmation.
+ * trust prompt, or into plan-mode confirmation. Submission is VERIFIED
+ * (settle → Enter → confirm, with harmless retries).
  */
 export async function prompt(session: string, opts: CCPromptInput): Promise<void> {
   assertPosix();
   return await withSessionLock(session, async () => {
     inspector.assertPhase(session, ['idle']);
-    tmux.sendKeysUnlocked(session, { keys: opts.text, literal: true, enter: true, paneQualifier: null });
+    await typeAndSubmitVerified(session, opts.text);
   });
 }
 
