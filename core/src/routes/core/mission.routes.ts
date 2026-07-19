@@ -1818,6 +1818,33 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     { method: 'GET', pattern: /^\/mission\/sessions$/, handler: async () => handleAllSessions() },
     // controller BEFORE :id/:id/sessions so literals win
     { method: 'GET', pattern: /^\/mission\/controller$/, handler: async () => handleGetController() },
+    // POST /mission/controller/adopt {sessionId} — loopback/fleet-internal only.
+    // Repoints the controller RECORD at an existing LIVE local session — the
+    // recovery path when a healthy controller was accidentally recycled: bring
+    // the old session back live first (POST /ccr/connect resumes it in tmux),
+    // then adopt it here. The supervisor takes over from the next tick (isLive
+    // via its tmux; discoverNewCse fills the new bridge cse; drives flow to it).
+    {
+      method: 'POST',
+      pattern: /^\/mission\/controller\/adopt$/,
+      handler: async (req) => {
+        const { isLoopbackAddress } = require('../../auth/enroll-exempt') as typeof import('../../auth/enroll-exempt');
+        if (!isLoopbackAddress(req.clientIp)) return fail('FORBIDDEN', 'local-only endpoint');
+        const b = (req.body ?? {}) as { sessionId?: unknown };
+        const sid = typeof b.sessionId === 'string' ? b.sessionId : '';
+        if (!/^[0-9a-f-]{36}$/.test(sid)) return fail('INVALID_INPUT', 'sessionId must be a local session UUID');
+        const { sessionVerdict } = require('../../terminal/cc-sessions') as typeof import('../../terminal/cc-sessions');
+        const v = sessionVerdict(sid);
+        if (!v.live || !v.tmuxSession) {
+          return fail('PRECONDITION_FAILED', `session must be LIVE in tmux to adopt as controller (live=${v.live}, tmux=${v.tmuxSession ?? 'none'}) — resume it first via POST /ccr/connect`);
+        }
+        const { getControllerSession, putControllerSession, thisNode } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+        const previous = await getControllerSession();
+        const adopted = { node: thisNode(), sessionId: sid, cse: null, tmux: v.tmuxSession, startedAt: Date.now() };
+        await putControllerSession(adopted);
+        return ok({ adopted, previous });
+      },
+    },
     // graph-query literals — MUST be before POST /mission/:id (which would match id='query'/'graph')
     { method: 'POST', pattern: /^\/mission\/query$/, handler: async (req) => handleQuery((req.body || {}) as Record<string, unknown>, undefined, realLeaderAnchor()) },
     { method: 'POST', pattern: /^\/mission\/graph$/, handler: async (req) => handleGraph((req.body || {}) as Record<string, unknown>, undefined, realLeaderAnchor()) },
