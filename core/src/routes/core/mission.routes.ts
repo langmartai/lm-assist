@@ -865,7 +865,7 @@ export interface SessionOpsDeps {
   cloudRead: (opts: { sid: string; lastN?: number }) => Promise<{ sid: string; messages: Array<Record<string, unknown>>; pendingQuestion: unknown | null }>;
   cloudDrive: (opts: { sid: string; text: string }) => Promise<{ delivered: boolean; sid: string }>;
   cloudStop: (sid: string) => Promise<{ stopped: boolean; sid: string }>;
-  nativeRead: (sid: string) => Promise<{ messages: Array<{ role: string; content: string; [k: string]: unknown }> }>;
+  nativeRead: (sid: string, lastN?: number) => Promise<{ messages: Array<{ role: string; content: string; [k: string]: unknown }> }>;
   /** Return raw JSONL line objects for a native session (each parsed line, for pendingQuestion extraction). */
   nativeRawMessages: (sid: string) => Promise<Array<{ message?: { content?: unknown[] } }>>;
   nativeDrive: (sid: string, text: string) => Promise<void>;
@@ -983,10 +983,11 @@ function defaultSessionOpsDeps(): SessionOpsDeps {
       const { cloudStop } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
       return cloudStop(sid);
     },
-    nativeRead: async (sid) => {
+    nativeRead: async (sid, lastN) => {
       const { AgentSessionStore } = require('../../agent-session-store') as typeof import('../../agent-session-store');
       const store = new AgentSessionStore({ projectPath: process.cwd(), persist: false });
-      const res = await store.getConversation({ sessionId: sid });
+      // lastN caps the tail; omitted = full conversation (legacy behavior).
+      const res = await store.getConversation({ sessionId: sid, ...(lastN ? { lastN } : {}) });
       const msgs = (res?.messages ?? []) as unknown as Array<{ role: string; content: string; [k: string]: unknown }>;
       return { messages: msgs };
     },
@@ -1070,7 +1071,12 @@ function proxyEnvelope(result: unknown): Envelope {
   return ok(r?.data !== undefined ? r.data : r);
 }
 
-export async function handleSessionRead(sid: string, lastN?: number, deps?: SessionOpsDeps, node?: string, proxyDeps?: SessionProxyDeps): Promise<Envelope> {
+export async function handleSessionRead(sid: string, lastNRaw?: number, deps?: SessionOpsDeps, node?: string, proxyDeps?: SessionProxyDeps): Promise<Envelope> {
+  // Clamp a provided depth; omitted keeps each transport's legacy default
+  // (cloud ≈ recent window, native = full conversation).
+  const lastN = lastNRaw !== undefined && Number.isFinite(lastNRaw)
+    ? Math.max(1, Math.min(2000, Math.floor(lastNRaw)))
+    : undefined;
   const d = deps ?? defaultSessionOpsDeps();
   const self = d.selfNode ? d.selfNode() : thisNode();
   // I1 — when the caller omitted `node`, auto-resolve it for an onboarded mission bound to a
@@ -1106,7 +1112,7 @@ export async function handleSessionRead(sid: string, lastN?: number, deps?: Sess
     } else {
       // Best-effort: refresh the idle timer for resumed native sessions.
       try { touchActivity(sid, Date.now()); } catch { /* best-effort */ }
-      const result = await d.nativeRead(sid);
+      const result = await d.nativeRead(sid, lastN);
       // Native ConversationMessage has { role, content, toolCalls? } — normalize content -> text
       // and map toolCalls[].name to tools: string[] for a uniform shape.
       const normalized = result.messages.map((m) => {

@@ -629,7 +629,11 @@ export async function cloudRead(opts: { sid: string; lastN?: number }): Promise<
   let clientRead: Awaited<ReturnType<typeof cloudClientEventsRead>> | null = null;
   if (messages.length === 0) {
     try {
-      clientRead = await cloudClientEventsRead(opts.sid, { maxPages: 3 });
+      // Page depth scales with the requested history: events ≫ messages (tool
+      // calls/results are separate events), so ~30 msgs per page is a rough
+      // floor. Capped — a 4s poll must never spend many seconds paging.
+      const maxPages = Math.min(12, Math.max(3, Math.ceil((opts.lastN ?? 30) / 30)));
+      clientRead = await cloudClientEventsRead(opts.sid, { maxPages });
       if (clientRead.events.length) {
         const { parseCoworkEvents } = require('../cowork/cowork-read') as typeof import('../cowork/cowork-read');
         messages = parseCoworkEvents({ data: clientRead.events }).messages;

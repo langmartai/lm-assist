@@ -137,6 +137,11 @@ interface MissionSessionChatProps {
   missionTag?: string;
 }
 
+// History paging: initial ≈ what the CCR view shows; each "Load earlier" adds a chunk.
+const DEPTH_INITIAL = 120;
+const DEPTH_STEP = 400;
+const DEPTH_MAX = 2000;
+
 type ChatGroup =
   | { kind: 'msg'; msg: SessionMessage; text: string }
   | { kind: 'tools'; tools: string[] };
@@ -174,12 +179,21 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false, mi
   const [answering, setAnswering] = useState(false);
   const [customAnswer, setCustomAnswer] = useState('');
   const [hideInjected, setHideInjected] = useState(true); // "Only user ↔ assistant" — default ON
+  // History depth: starts CCR-comparable and grows via "Load earlier" — the whole
+  // conversation is reachable, while the 4 s poll stays as cheap as the user needs.
+  const [depth, setDepth] = useState(DEPTH_INITIAL);
+  const [reachedStart, setReachedStart] = useState(false);
   const pollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const inFlightRef = useRef(false);
+  // Set by "Load earlier": restore the reader's place after older history prepends.
+  const anchorRef = useRef<{ h: number; t: number } | null>(null);
 
   // ── Read ──
 
   const readMessages = useCallback(async () => {
+    if (inFlightRef.current) return; // a slow deep read must not stack polls
+    inFlightRef.current = true;
     try {
       const res = await apiFetch<{
         data?: { messages: SessionMessage[]; pendingQuestion?: PendingQuestion | null };
@@ -187,10 +201,12 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false, mi
         pendingQuestion?: PendingQuestion | null;
       }>(
         `/mission/session/${encodeURIComponent(sid)}/read`,
-        { method: 'POST', body: { lastN: 30, node: node ?? undefined } },
+        { method: 'POST', body: { lastN: depth, node: node ?? undefined } },
       );
       const msgs = (res as any).data?.messages ?? (res as any).messages ?? [];
       const pq: PendingQuestion | null = (res as any).data?.pendingQuestion ?? (res as any).pendingQuestion ?? null;
+      // Fewer than asked ⇒ the beginning of the available history is on screen.
+      setReachedStart(msgs.length < depth);
       // Stick to the bottom ONLY if the user is already there. A 4 s poll must not
       // yank a user who has scrolled up to read history back down. Capture the
       // at-bottom state from the CURRENT DOM, before setMessages re-renders. On the
@@ -199,7 +215,14 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false, mi
       const wasAtBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 80;
       setMessages(msgs);
       setPendingQ(pq);
-      if (wasAtBottom) {
+      if (anchorRef.current) {
+        // Older history just prepended — keep the reader anchored where they were.
+        const a = anchorRef.current; anchorRef.current = null;
+        setTimeout(() => {
+          const s = scrollRef.current;
+          if (s) s.scrollTop = s.scrollHeight - a.h + a.t;
+        }, 50);
+      } else if (wasAtBottom) {
         setTimeout(() => {
           if (scrollRef.current) {
             scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -208,8 +231,17 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false, mi
       }
     } catch {
       // silently ignore — keep last messages
+    } finally {
+      inFlightRef.current = false;
     }
-  }, [apiFetch, sid, node]);
+  }, [apiFetch, sid, node, depth]);
+
+  const loadEarlier = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) anchorRef.current = { h: el.scrollHeight, t: el.scrollTop };
+    setDepth((d) => Math.min(d + DEPTH_STEP, DEPTH_MAX));
+    // depth changes readMessages' identity → the poller effect re-runs → immediate read.
+  }, []);
 
   // Start poller when sid/node change
   useEffect(() => {
@@ -340,6 +372,21 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false, mi
           minHeight: 0,
         }}
       >
+        {/* Load-earlier: absent once the full available history is on screen. */}
+        {!reachedStart && messages.length > 0 && depth < DEPTH_MAX && (
+          <button
+            type="button"
+            onClick={loadEarlier}
+            style={{ alignSelf: 'center', border: '1px solid var(--color-border-subtle)', background: 'none', cursor: 'pointer', borderRadius: 'var(--radius-md)', padding: '3px 12px', fontSize: 11, color: 'var(--color-text-tertiary)' }}
+            title={`Showing the last ${messages.length} messages — load ${DEPTH_STEP} earlier`}
+          >
+            ↑ Load earlier messages
+          </button>
+        )}
+        {reachedStart && messages.length > 0 && (
+          <div style={{ alignSelf: 'center', fontSize: 10.5, color: 'var(--color-text-tertiary)', opacity: 0.7 }}>· start of available history ·</div>
+        )}
+
         {visibleMessages.length === 0 && (
           <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', textAlign: 'center', padding: '16px 0' }}>
             {injectedHiddenCount > 0
