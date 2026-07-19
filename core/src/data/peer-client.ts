@@ -225,7 +225,23 @@ export async function listOnlineNodeIdsStrict(): Promise<string[]> {
   const { getClusterRecordsStrict } = await import('../cluster/cluster-store');
   const { getMyCluster } = await import('../cluster/cluster-config');
   const records = await getClusterRecordsStrict(); // throws on read failure — intended
-  return filterOnlineToCluster(allOnline, records, selfId, getMyCluster());
+  const myCluster = getMyCluster();
+  assertClusterMapTrustworthy(records.length, myCluster);
+  return filterOnlineToCluster(allOnline, records, selfId, myCluster);
+}
+
+/**
+ * Pure invariant: a node whose OWN cluster.json says it belongs to a named
+ * cluster must appear in the fleet map — so an EMPTY map alongside a
+ * non-default self-membership is an unwarmed/unsynced read, not "no clusters
+ * exist". Reading it as the latter pooled every node into `default` at boot
+ * and produced a CONFIDENT wrong election (observed 2026-07-19: it survived
+ * the debounce because both ticks were confidently wrong).
+ */
+export function assertClusterMapTrustworthy(recordCount: number, myCluster: string): void {
+  if (recordCount === 0 && myCluster !== 'default') {
+    throw new Error(`cluster map empty but this node claims cluster '${myCluster}' — map not warmed/synced yet`);
+  }
 }
 
 // ── Factory ──────────────────────────────────────────────────────────────────

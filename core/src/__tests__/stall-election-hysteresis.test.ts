@@ -49,3 +49,10 @@ test('the hysteresis window expires — old answers are not served forever', asy
   assert.equal(v.indeterminate, true);
   assert.equal(v.stale, undefined);
 });
+
+test('assertClusterMapTrustworthy: empty map + named self-cluster is untrustworthy, not "no clusters"', async () => {
+  const { assertClusterMapTrustworthy } = await import('../data/peer-client');
+  assert.throws(() => assertClusterMapTrustworthy(0, 'prod'));
+  assert.doesNotThrow(() => assertClusterMapTrustworthy(0, 'default')); // genuinely unclustered fleet
+  assert.doesNotThrow(() => assertClusterMapTrustworthy(3, 'prod'));
+});
