@@ -639,6 +639,11 @@ export function decideSupervisor(input: { isMonitor: boolean; live: boolean; dri
 // Consecutive not-monitor ticks (module state — the supervisor is a singleton per Core).
 let _notMonitorStreak = 0;
 export function _resetNotMonitorStreak(): void { _notMonitorStreak = 0; }
+// Journal de-noising: remember the last monitor state + whether boot was recorded,
+// so idle ticks only journal when something CHANGED.
+let _lastJournaledMonitor: boolean | null = null;
+let _bootJournaled = false;
+export function _resetJournalState(): void { _lastJournaledMonitor = null; _bootJournaled = false; }
 
 /**
  * Pure drive-cadence gate. When there are active missions the controller drives
@@ -663,6 +668,8 @@ export interface SupervisorDeps {
   getControllerSession: () => Promise<ControllerSession | null>;
   putControllerSession: (cs: ControllerSession | null) => Promise<void>;
   isLive: (cs: ControllerSession) => boolean;
+  /** Optional control-journal sink — real deps append to control-journal.jsonl; tests omit. */
+  journal?: (entry: { at: number; kind: 'boot' | 'tick' | 'drive' | 'lifecycle' | 'election'; [k: string]: unknown }) => void;
   launch: () => Promise<ControllerSession>;
   /** Drive the live controller. `directive` defaults to CONTROLLER_PASS_DIRECTIVE; the
    *  supervisor passes CONTROLLER_ROSTER_CHANGED_DIRECTIVE when a cluster-roster change
@@ -920,6 +927,29 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
     _notMonitorStreak = isMonitor ? 0 : _notMonitorStreak + 1;
   }
   const { action } = decideSupervisor({ isMonitor, live, driveDue, notMonitorStreak: _notMonitorStreak, indeterminate: verdict.indeterminate });
+
+  // ── Control journal: every non-idle decision, every monitor-state change,
+  //    and a once-per-boot marker — each with the FULL inputs so a wrong
+  //    action is diagnosable (and recoverable) from the trace alone. ──
+  if (deps.journal) {
+    try {
+      if (!_bootJournaled) {
+        _bootJournaled = true;
+        deps.journal({ at: Date.now(), kind: 'boot', record: cs?.sessionId ?? null, tmux: cs?.tmux ?? null, live, isMonitor, indeterminate: verdict.indeterminate, stale: verdict.stale });
+      }
+      const monitorChanged = _lastJournaledMonitor !== null && _lastJournaledMonitor !== isMonitor;
+      if (action !== 'idle' || monitorChanged) {
+        deps.journal({
+          at: Date.now(), kind: monitorChanged && action === 'idle' ? 'election' : 'tick',
+          action, isMonitor, indeterminate: verdict.indeterminate, stale: verdict.stale,
+          monitorNodeId: (verdict as { monitorNodeId?: string | null }).monitorNodeId ?? null,
+          notMonitorStreak: _notMonitorStreak, live, driveDue,
+          record: cs?.sessionId ?? null, tmux: cs?.tmux ?? null,
+        });
+      }
+      _lastJournaledMonitor = isMonitor;
+    } catch { /* advisory */ }
+  }
 
   if (action === 'teardown') {
     if (cs) {
@@ -1393,16 +1423,30 @@ export function registerMissionController(
         const { renderWorkflow } = require('./workflow-store') as typeof import('./workflow-store');
         return renderWorkflow('controller.pass');
       },
+      journal: (entry) => {
+        try {
+          const { recordControl } = require('./control-journal') as typeof import('./control-journal');
+          recordControl(controllerCwd(), entry);
+        } catch { /* advisory */ }
+      },
       drive: async (cs, directive) => {
         const text = directive ?? CONTROLLER_PASS_DIRECTIVE;
         const sid = cs.cse || cs.sessionId;
+        const journalDrive = (transport: string, ok: boolean, error?: string) => {
+          try {
+            const { recordControl } = require('./control-journal') as typeof import('./control-journal');
+            recordControl(controllerCwd(), { at: Date.now(), kind: 'drive', sid, transport, ok, ...(error ? { error: error.slice(0, 200) } : {}) });
+          } catch { /* advisory */ }
+        };
         if (cs.cse) {
-          await cloudDrive({ sid, text }).catch((e: Error) => {
+          await cloudDrive({ sid, text }).then(() => journalDrive('cloud', true)).catch((e: Error) => {
             console.debug(`[mission-supervisor] drive to ${sid} failed: ${e.message}`);
+            journalDrive('cloud', false, e.message);
           });
         } else {
-          await getCcController().prompt(cs.sessionId, text).catch((e: Error) => {
+          await getCcController().prompt(cs.sessionId, text).then(() => journalDrive('tmux', true)).catch((e: Error) => {
             console.debug(`[mission-supervisor] native drive to ${cs.sessionId} failed: ${e.message}`);
+            journalDrive('tmux', false, e.message);
           });
         }
       },

@@ -1818,6 +1818,35 @@ export function createMissionRoutes(_ctx: RouteContext): RouteHandler[] {
     { method: 'GET', pattern: /^\/mission\/sessions$/, handler: async () => handleAllSessions() },
     // controller BEFORE :id/:id/sessions so literals win
     { method: 'GET', pattern: /^\/mission\/controller$/, handler: async () => handleGetController() },
+    // GET /mission/controller/trace — the tractability cockpit: current verdict +
+    // record + controller lineage + control journal in ONE read, so any wrong
+    // behavior is diagnosable (and the recovery target identifiable) without
+    // grepping process logs.
+    {
+      method: 'GET',
+      pattern: /^\/mission\/controller\/trace$/,
+      handler: async () => {
+        const { amIMonitor } = require('../../monitor/stall-election') as typeof import('../../monitor/stall-election');
+        const { getControllerSession } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+        const { controllerCwd } = require('../../mission/mission-controller') as typeof import('../../mission/mission-controller');
+        const { readControllerHistory } = require('../../mission/controller-history') as typeof import('../../mission/controller-history');
+        const { readControlJournal } = require('../../mission/control-journal') as typeof import('../../mission/control-journal');
+        const dir = controllerCwd();
+        const [election, record] = await Promise.all([
+          amIMonitor().catch(() => null),
+          getControllerSession().catch(() => null),
+        ]);
+        let live = false;
+        try {
+          if (record?.tmux) { const t = require('../../terminal/tmux') as typeof import('../../terminal/tmux'); live = t.exists(record.tmux); }
+        } catch { /* best-effort */ }
+        return ok({
+          election, record, live,
+          lineage: readControllerHistory(dir, 50),
+          journal: readControlJournal(dir, 100),
+        });
+      },
+    },
     // POST /mission/controller/adopt {sessionId} — loopback/fleet-internal only.
     // Repoints the controller RECORD at an existing LIVE local session — the
     // recovery path when a healthy controller was accidentally recycled: bring
