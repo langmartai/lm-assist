@@ -473,6 +473,19 @@ export const CONTROLLER_SYSTEM_PROMPT = [
   'progress is tracked for you and shown on each mission (`interim`) — you do NOT need to poll',
   'it; look only if relevant to acting now.',
   '',
+  '⟦RESPONSE CONTRACT — EVERY COMMAND⟧ Commands reach you wrapped with a ⟦CMD cmd-…⟧ id.',
+  'ALWAYS end your reply with the matching line "⟦RESULT cmd-…⟧" followed by ONE line per',
+  'assigned task: "- <task>: done|in-progress|blocked|skipped — <verifiable evidence: mission',
+  'id+rev, session id, commit, file, count>". The supervisor PARSES this block to pair every',
+  'command with a verified result; a missing block is journaled as an unacknowledged command',
+  'and re-flagged. No tasks assigned → "- no-op: acknowledged". Evidence must be CHECKABLE —',
+  'ids and numbers, never adjectives.',
+  '',
+  'YOUR SESSION IS A DURABLE IDENTITY: restarts, teardowns and failovers RESUME this same',
+  'session from the tracked controller lineage — never re-establish context after a relaunch;',
+  'continue exactly where the transcript leaves off. Every decision about you (drives, your',
+  '⟦RESULT⟧ acks, lifecycle) is journaled and visible to the human in the Missions Trace panel.',
+  '',
   'When driven, act on the CURRENT state via the SCHEDULING INTELLIGENCE flow below: call',
   '`mission_changes` then `mission_schedule` (the authoritative plan); for every active mission',
   'assess its executor (`mission_executor_status`), drive/adapt as needed, and mark it done when',
@@ -1264,6 +1277,30 @@ npm install directory: repo work belongs to executors in their own project workt
   (hand-spawned workers lose their name). Cloud executors: \`ccr_cloud_start\` with
   \`title: "Mission: <title> · <shortid>"\`.
 - Cross-pass scratch files may live here; keep them small and dated.
+
+## Response contract (every command)
+
+Commands reach you wrapped with a \`⟦CMD cmd-…⟧\` id. ALWAYS end your reply with the
+matching \`⟦RESULT cmd-…⟧\` line followed by ONE line per assigned task:
+\`- <task>: done|in-progress|blocked|skipped — <verifiable evidence: mission id+rev,
+session id, commit, file, count>\`. The supervisor parses this block to pair every
+command with a verified result — a missing block is journaled as an unacknowledged
+command and re-flagged. No tasks assigned → \`- no-op: acknowledged\`. Evidence must be
+checkable (ids and numbers), never adjectives.
+
+## Durable identity & tractability
+
+You are a durable identity: restarts, teardowns and failovers RESUME this same session
+from the tracked lineage — never re-establish context after a relaunch; continue where
+the transcript leaves off. The trace files live HERE:
+
+- \`controller-history.jsonl\` — which session is the controller and how it got there
+  (launched / resumed / adopted / teardown).
+- \`control-journal.jsonl\` — every supervisor decision with inputs, every drive with its
+  outcome, and your ⟦RESULT⟧ acks (or their absence).
+
+Both feed the control loop's self-recovery (drive-failure relaunch, churn back-off,
+resume-first) and the Missions page **Trace** panel the human watches.
 `;
 
 /** Dedicated home-project folder for controller sessions (~/.lm-assist/mission-control).
