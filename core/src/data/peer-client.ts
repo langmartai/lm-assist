@@ -196,7 +196,9 @@ export async function listAllOnlineNodeIds(): Promise<string[]> {
   return fetchAllOnlineIds();
 }
 
-/** Online gateway-ids IN THIS NODE'S CLUSTER (including self). */
+/** Online gateway-ids IN THIS NODE'S CLUSTER (including self). Lenient: a
+ * cluster-map read failure degrades to the unfiltered pool (fine for reads
+ * like peer discovery — NOT for the election, which uses the strict variant). */
 export async function listOnlineNodeIds(): Promise<string[]> {
   const allOnline = await fetchAllOnlineIds();
   const selfId = getHubConfig().gatewayId || getHubConfig().machineId || null;
@@ -206,6 +208,23 @@ export async function listOnlineNodeIds(): Promise<string[]> {
   const { getMyCluster } = await import('../cluster/cluster-config');
 
   const records = await getClusterRecords().catch(() => []);
+  return filterOnlineToCluster(allOnline, records, selfId, getMyCluster());
+}
+
+/**
+ * STRICT cluster-scoped online list for DESTRUCTIVE consumers (the monitor
+ * election). A cluster-map READ FAILURE throws instead of silently pooling
+ * every node into `default` — that silent repool handed the election to
+ * another cluster's lower gateway-id during core boot and got a healthy
+ * controller torn down. A legitimately empty map (no clusters configured)
+ * still returns the full pool.
+ */
+export async function listOnlineNodeIdsStrict(): Promise<string[]> {
+  const allOnline = await fetchAllOnlineIds(); // throws on hub failure — intended
+  const selfId = getHubConfig().gatewayId || getHubConfig().machineId || null;
+  const { getClusterRecordsStrict } = await import('../cluster/cluster-store');
+  const { getMyCluster } = await import('../cluster/cluster-config');
+  const records = await getClusterRecordsStrict(); // throws on read failure — intended
   return filterOnlineToCluster(allOnline, records, selfId, getMyCluster());
 }
 

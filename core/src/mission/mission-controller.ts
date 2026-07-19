@@ -108,7 +108,7 @@ export function computeMigrationCandidates(
 export interface MissionTickDeps {
   now: number;
   cfg: { intervalMin: number; maxNudges: number; model: string };
-  amMonitor: () => Promise<{ isMonitor: boolean; monitorNodeId: string | null }>;
+  amMonitor: () => Promise<{ isMonitor: boolean; monitorNodeId: string | null; indeterminate?: boolean; stale?: boolean }>;
   listAll: () => Promise<Mission[]>;
   readExecutor: (m: Mission) => Promise<ExecutorState>;
   adjust: (m: Mission, out: ExecutorOutput) => Promise<AdjustResult>;
@@ -626,7 +626,10 @@ export function buildControllerLaunchExtras(args: {
  * restart). Real leadership loss persists across ticks, so a 2-tick streak
  * still tears down — just ~1 min later, which is fine for loser cleanup.
  */
-export function decideSupervisor(input: { isMonitor: boolean; live: boolean; driveDue: boolean; notMonitorStreak?: number }): { action: 'teardown' | 'launch' | 'drive' | 'idle' } {
+export function decideSupervisor(input: { isMonitor: boolean; live: boolean; driveDue: boolean; notMonitorStreak?: number; indeterminate?: boolean }): { action: 'teardown' | 'launch' | 'drive' | 'idle' } {
+  // Election inputs unavailable and no recent confident answer → do NOTHING
+  // destructive (no teardown, no launch). The next confident tick decides.
+  if (input.indeterminate) return { action: 'idle' };
   if (!input.isMonitor) return (input.notMonitorStreak ?? 0) >= 2 ? { action: 'teardown' } : { action: 'idle' };
   if (!input.live) return { action: 'launch' };
   if (input.driveDue) return { action: 'drive' };
@@ -656,7 +659,7 @@ export function isDriveDue(input: {
 
 /** Deps interface for runSupervisorTick — all IO points are injectable for tests. */
 export interface SupervisorDeps {
-  amMonitor: () => Promise<{ isMonitor: boolean; monitorNodeId: string | null }>;
+  amMonitor: () => Promise<{ isMonitor: boolean; monitorNodeId: string | null; indeterminate?: boolean; stale?: boolean }>;
   getControllerSession: () => Promise<ControllerSession | null>;
   putControllerSession: (cs: ControllerSession | null) => Promise<void>;
   isLive: (cs: ControllerSession) => boolean;
@@ -853,7 +856,8 @@ async function evaluateEngagement(
 }
 
 export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action: string; controllerSession: ControllerSession | null }> {
-  const { isMonitor } = await deps.amMonitor();
+  const verdict = await deps.amMonitor();
+  const { isMonitor } = verdict;
   const cs = await deps.getControllerSession();
   const live = cs ? deps.isLive(cs) : false;
 
@@ -907,8 +911,15 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
     }
   }
 
-  _notMonitorStreak = isMonitor ? 0 : _notMonitorStreak + 1;
-  const { action } = decideSupervisor({ isMonitor, live, driveDue, notMonitorStreak: _notMonitorStreak });
+  // Streak accounting: only a FRESH confident "not monitor" advances the
+  // teardown streak. Indeterminate/stale answers carry no new information —
+  // they freeze the streak (and indeterminate also forces idle below).
+  if (verdict.indeterminate || verdict.stale) {
+    /* freeze */
+  } else {
+    _notMonitorStreak = isMonitor ? 0 : _notMonitorStreak + 1;
+  }
+  const { action } = decideSupervisor({ isMonitor, live, driveDue, notMonitorStreak: _notMonitorStreak, indeterminate: verdict.indeterminate });
 
   if (action === 'teardown') {
     if (cs) {
@@ -1209,6 +1220,8 @@ export function registerMissionController(
         amIMonitor().then((mon) => ({
           isMonitor: mon.isMonitor,
           monitorNodeId: mon.monitorNodeId,
+          indeterminate: mon.indeterminate,
+          stale: mon.stale,
         })),
       getControllerSession: () => getControllerSession(),
       putControllerSession: (cs) => putControllerSession(cs),

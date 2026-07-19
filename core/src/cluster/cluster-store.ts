@@ -135,6 +135,20 @@ export async function getClusterRecords(): Promise<ClusterRecord[]> {
   } catch { return []; }
 }
 
+/**
+ * Strict variant for consumers where "couldn't read the map" must NOT look
+ * like "there are no clusters" (the monitor election). Disabled data service
+ * is a legitimate steady state → empty; a failed ensure/query THROWS.
+ */
+export async function getClusterRecordsStrict(): Promise<ClusterRecord[]> {
+  const svc = getDataService();
+  if (!svc.isEnabled()) return [];
+  await ensureClusterDatasets();
+  const r = await svc.query(systemCtx(), NODE_CLUSTERS, { limit: 1000 } as any);
+  if (!r.ok) throw new Error(`cluster map query failed: ${(r as { error?: { message?: string } }).error?.message ?? 'unknown'}`);
+  return recordsToClusterRecords(r.value.records);
+}
+
 /** All cluster meta entries (descriptive annotations, optional status). */
 export async function getClusterMeta(): Promise<Array<{
   name: string;

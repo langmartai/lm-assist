@@ -481,3 +481,31 @@ test('decideSupervisor: a single not-monitor tick is a blip → idle, streak ≥
   // monitor path unchanged
   assert.deepEqual(decideSupervisor({ isMonitor: true, live: false, driveDue: false }), { action: 'launch' });
 });
+
+test('decideSupervisor: indeterminate election → idle, never teardown/launch', () => {
+  assert.equal(decideSupervisor({ isMonitor: false, live: true, driveDue: true, notMonitorStreak: 9, indeterminate: true }).action, 'idle');
+  assert.equal(decideSupervisor({ isMonitor: false, live: false, driveDue: false, indeterminate: true }).action, 'idle');
+});
+
+test('runSupervisorTick: indeterminate/stale verdicts FREEZE the teardown streak', async () => {
+  _resetNotMonitorStreak();
+  let tornDown = false;
+  let mode: 'confident-false' | 'indeterminate' = 'confident-false';
+  const deps = makeStubDeps({
+    amMonitor: async () => (mode === 'indeterminate'
+      ? { isMonitor: false, monitorNodeId: null, indeterminate: true }
+      : { isMonitor: false, monitorNodeId: 'gw2' }),
+    getControllerSession: async () => cs,
+    teardown: async () => { tornDown = true; },
+  });
+  await runSupervisorTick(deps);            // confident false #1 → streak 1, no teardown
+  assert.equal(tornDown, false);
+  mode = 'indeterminate';
+  await runSupervisorTick(deps);            // indeterminate → frozen streak, idle
+  await runSupervisorTick(deps);            // indeterminate → still frozen
+  assert.equal(tornDown, false, 'indeterminate ticks must never advance to teardown');
+  mode = 'confident-false';
+  await runSupervisorTick(deps);            // confident false #2 → streak 2 → teardown
+  assert.ok(tornDown);
+  _resetNotMonitorStreak();
+});

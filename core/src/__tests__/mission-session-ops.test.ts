@@ -259,8 +259,9 @@ test('handleSessionControl restart: stored controller but different sid -> INVAL
 // FIX 2: test teardown calls the tmux dep (via supervisor test — stub assertion)
 // (The real teardown uses tmuxTerminalBackend.close which is tested via integration;
 //  here we verify the supervisor's teardown dep is invoked with the cs.tmux name.)
-test('supervisor teardown dep is called with cs.tmux', async () => {
-  const { runSupervisorTick } = require('../mission/mission-controller') as typeof import('../mission/mission-controller');
+test('supervisor teardown dep is called with cs.tmux (after the debounce streak)', async () => {
+  const { runSupervisorTick, _resetNotMonitorStreak } = require('../mission/mission-controller') as typeof import('../mission/mission-controller');
+  _resetNotMonitorStreak();
   const cs: ControllerSession = { node: 'gw1', sessionId: 'session_ctrl', cse: null, tmux: 'lmcc-test123', startedAt: 1000 };
   let tornDownWith: string | null = null;
   const deps: SupervisorDeps = {
@@ -274,8 +275,10 @@ test('supervisor teardown dep is called with cs.tmux', async () => {
     driveIntervalMin: 5,
     now: Date.now(),
   };
-  await runSupervisorTick(deps);
+  await runSupervisorTick(deps); // confident-false #1 → debounced, no teardown yet
+  await runSupervisorTick(deps); // confident-false #2 → teardown proceeds
   assert.equal(tornDownWith, 'lmcc-test123', 'teardown should be called with the controller cs.tmux name');
+  _resetNotMonitorStreak();
 });
 
 // ── Cross-node proxy: session ops (Step 3) ───────────────────────────────────
