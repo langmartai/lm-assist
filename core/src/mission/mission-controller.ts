@@ -724,6 +724,9 @@ export interface SupervisorDeps {
   /** Optional: recent assistant reply text of the controller session — scanned
    *  for ⟦RESULT cmd-…⟧ blocks to verify command acknowledgment. */
   readControllerTail?: (sessionId: string) => Promise<string>;
+  /** Optional: the session's transcript-declared bridge sid (bridge_status line)
+   *  — backfills record.cse for resumed/adopted controllers. */
+  readBridgeSid?: (sessionId: string) => Promise<string | null>;
   launch: () => Promise<ControllerSession>;
   /** Drive the live controller. `directive` defaults to CONTROLLER_PASS_DIRECTIVE; the
    *  supervisor passes CONTROLLER_ROSTER_CHANGED_DIRECTIVE when a cluster-roster change
@@ -1038,6 +1041,21 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
     } catch { /* advisory */ }
   }
 
+  // ── Bridge-sid backfill: a live controller whose record lacks its cloud
+  //    handle (resumed/adopted — the launch-time poll missed the bridge)
+  //    gets it from its OWN transcript's bridge_status line. Unlocks the
+  //    Claude-app deep link and cloud-transport drives. ──
+  if (cs && live && !cs.cse && deps.readBridgeSid) {
+    try {
+      const bridgeSid = await deps.readBridgeSid(cs.sessionId);
+      if (bridgeSid) {
+        const updated = { ...cs, cse: bridgeSid };
+        await deps.putControllerSession(updated);
+        deps.journal?.({ at: Date.now(), kind: 'lifecycle', event: 'cse-discovered', sessionId: cs.sessionId, cse: bridgeSid });
+      }
+    } catch { /* advisory — retry next tick */ }
+  }
+
   // ── Command-ack scan: pair every tracked command with its verifiable
   //    ⟦RESULT⟧ block from the controller's replies (or journal the gap). ──
   if (deps.journal && deps.recentJournal && deps.readControllerTail && cs) {
@@ -1335,6 +1353,23 @@ export function controllerCwd(): string {
  * @param snapshots - successive polls of cloudListAccount (each is an array of {sid,...})
  * @param pickFn    - selection function (default: pickNewSession)
  */
+/**
+ * Pure: the session's OWN declared bridge sid. The claude CLI writes a
+ * `bridge_status` system line into its transcript ("/remote-control is
+ * active · … at https://claude.ai/code/<sid>") — authoritative per-session,
+ * needs no launch-time baseline, so it works for resumed/adopted controllers
+ * whose bridge registered after the launch poll gave up.
+ */
+export function extractBridgeSid(jsonlTailLines: string[]): string | null {
+  for (let i = jsonlTailLines.length - 1; i >= 0; i--) {
+    const l = jsonlTailLines[i];
+    if (!l.includes('bridge_status') && !l.includes('/remote-control is active')) continue;
+    const m = l.match(/https:\/\/claude\.ai\/code\/((?:session_|cse_)[A-Za-z0-9]+)/);
+    if (m) return m[1];
+  }
+  return null;
+}
+
 export function discoverNewCse(
   baseline: string[],
   snapshots: Array<Array<{ sid: string; status?: string }>>,
@@ -1607,6 +1642,15 @@ export function registerMissionController(
           .filter((m) => m.role === 'assistant')
           .map((m) => m.content ?? '')
           .join('\n');
+      },
+      readBridgeSid: async (sessionId) => {
+        const { sessionVerdict } = require('../terminal/cc-sessions') as typeof import('../terminal/cc-sessions');
+        const jsonl = sessionVerdict(sessionId).jsonl;
+        if (!jsonl) return null;
+        const fsmod = require('fs') as typeof import('fs');
+        const text = fsmod.readFileSync(jsonl, 'utf-8');
+        const lines = text.split('\n');
+        return extractBridgeSid(lines.slice(-400));
       },
       teardown: async (cs) => {
         try {

@@ -328,6 +328,14 @@ export function MissionsPage() {
   // auto-opened on load when controllerSession is present; stays closed once user dismisses
   const [controllerSessionOpen, setControllerSessionOpen] = useState(false);
   const [traceOpen, setTraceOpen] = useState(false);
+  const [ctlActionsOpen, setCtlActionsOpen] = useState(false);
+  const ctlActionsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!ctlActionsOpen) return;
+    const onDown = (e: MouseEvent) => { if (ctlActionsRef.current && !ctlActionsRef.current.contains(e.target as Node)) setCtlActionsOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [ctlActionsOpen]);
   // Once the user manually closes the panel, don't auto-reopen it on subsequent polls.
   const [controllerSessionDismissed, setControllerSessionDismissed] = useState(false);
 
@@ -1574,6 +1582,28 @@ export function MissionsPage() {
         ? controllerSid
         : (cs.cse ? cs.cse.replace(/^cse_/, 'session_') : null))
     : null;
+  // Bridge-registry fallback: a resumed/adopted controller can run with cse still
+  // undiscovered (record.cse null) while its live bridge ALREADY has a claude.ai
+  // URL — resolve it from GET /ccr/remote so "Open in Claude app" never vanishes.
+  const [bridgeWebUrl, setBridgeWebUrl] = useState<string | null>(null);
+  useEffect(() => {
+    setBridgeWebUrl(null);
+    if (!controllerSid || controllerCloudSid) return;
+    let cancelled = false;
+    const lookup = async () => {
+      try {
+        const res = await apiFetch<{ remotes?: Array<{ sessionId?: string | null; webUrl?: string | null }> } & { data?: { remotes?: Array<{ sessionId?: string | null; webUrl?: string | null }> } }>('/ccr/remote');
+        const remotes = (res as { remotes?: Array<{ sessionId?: string | null; webUrl?: string | null }> }).remotes
+          ?? (res as { data?: { remotes?: Array<{ sessionId?: string | null; webUrl?: string | null }> } }).data?.remotes ?? [];
+        const hit = remotes.find((r) => r.sessionId === controllerSid && r.webUrl);
+        if (!cancelled && hit?.webUrl) setBridgeWebUrl(hit.webUrl);
+      } catch { /* best-effort */ }
+    };
+    lookup();
+    const t = setInterval(lookup, 60_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [controllerSid, controllerCloudSid, apiFetch]);
+  const controllerAppUrl = controllerCloudSid ? `https://claude.ai/code/${controllerCloudSid}` : bridgeWebUrl;
 
   // Failover state: controllerSession is stale when it belongs to a different node than the
   // current elected leader. This happens during the ~1-min window after election flips but
@@ -2033,19 +2063,53 @@ export function MissionsPage() {
                     </button>
                   </>
                 )}
-                {/* Direct deep-link: open the controller's CCR session in the native Claude app
-                    — shows for a cloud controller AND a native controller with a CCR bridge. */}
-                {controllerCloudSid && (
+                {/* Direct deep-link: open the controller's CCR session in the native Claude
+                    app (desktop/mobile/iPad). Resolves from the record's cse OR the live
+                    bridge registry, so it survives a resumed controller whose cse is still
+                    being discovered. */}
+                {controllerAppUrl && (
                   <a
                     className="btn btn-ghost btn-sm"
-                    href={`https://claude.ai/code/${controllerCloudSid}`}
+                    href={controllerAppUrl}
                     target="_blank"
                     rel="noreferrer"
-                    title="Open this controller's CCR session in the Claude app"
+                    title="Open this controller session in the Claude app (desktop / mobile / iPad)"
                     style={{ fontSize: 11 }}
                   >
-                    <ExternalLink size={11} /> Open in Claude app
+                    <ExternalLink size={11} /> Claude app
                   </a>
+                )}
+                {/* Session actions (Interrupt / Stop / Restart) — compact dropdown beside Trace. */}
+                {cs && controllerSid && (
+                  <div ref={ctlActionsRef} style={{ position: 'relative' }}>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => setCtlActionsOpen((v) => !v)}
+                      title="Controller session actions"
+                      style={{ fontSize: 11 }}
+                    >
+                      Actions <ChevronDown size={11} />
+                    </button>
+                    {ctlActionsOpen && (
+                      <div style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, minWidth: 170, background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border-default)', borderRadius: 'var(--radius-md)', boxShadow: '0 8px 24px rgba(0,0,0,0.4)', zIndex: 70, padding: 4 }}>
+                        {([
+                          { key: 'interrupt', label: 'Interrupt', icon: AlertCircle, hint: 'Interrupt the current action (session stays live)' },
+                          { key: 'stop', label: 'Stop', icon: Square, hint: 'Stop the controller session' },
+                          { key: 'restart', label: 'Restart', icon: RotateCcw, hint: 'Restart — the supervisor relaunches (resumes the same session)' },
+                        ] as const).map(({ key, label, icon: Icon, hint }) => (
+                          <button
+                            key={key}
+                            onClick={() => { setCtlActionsOpen(false); controllerChatControl(controllerSid, leader, key); }}
+                            disabled={!!chatControlBusy[key]}
+                            title={hint}
+                            style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', padding: '6px 8px', borderRadius: 'var(--radius-sm)', border: 'none', background: 'none', cursor: 'pointer', fontSize: 12, color: key === 'stop' ? 'var(--color-status-red)' : 'var(--color-text-secondary)' }}
+                          >
+                            {chatControlBusy[key] ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Icon size={12} />} {label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
                 {/* Cloud view button for cloud sessions */}
                 {cs && controllerSid && /^(session_|cse_)/.test(controllerSid) && (
@@ -2177,42 +2241,6 @@ export function MissionsPage() {
                     heightFill
                   />
                   {/* Control buttons row (interrupt/stop/restart stay in MissionsPage — controller-specific) */}
-                  <div
-                    style={{
-                      padding: '6px 16px 10px',
-                      borderTop: '1px solid var(--color-border-subtle)',
-                      display: 'flex',
-                      gap: 6,
-                      flexWrap: 'wrap',
-                      flexShrink: 0,
-                      background: 'var(--color-bg-root)',
-                    }}
-                  >
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => controllerChatControl(controllerSid, leader, 'interrupt')}
-                      disabled={!!chatControlBusy['interrupt']}
-                      title="Interrupt controller"
-                    >
-                      {chatControlBusy['interrupt'] ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <AlertCircle size={11} />} Interrupt
-                    </button>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => controllerChatControl(controllerSid, leader, 'stop')}
-                      disabled={!!chatControlBusy['stop']}
-                      title="Stop controller"
-                    >
-                      {chatControlBusy['stop'] ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Square size={11} />} Stop
-                    </button>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => controllerChatControl(controllerSid, leader, 'restart')}
-                      disabled={!!chatControlBusy['restart']}
-                      title="Restart controller (supervisor will relaunch)"
-                    >
-                      {chatControlBusy['restart'] ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <RotateCcw size={11} />} Restart
-                    </button>
-                  </div>
                 </div>
               )}
             </>

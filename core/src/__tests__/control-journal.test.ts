@@ -183,3 +183,39 @@ test('tick ack scan journals ack (found) and ack-missing (aged, once)', async ()
   assert.equal(missing[0].cmdId, 'cmd-old');
   _resetNotMonitorStreak(); _resetJournalState();
 });
+
+test('extractBridgeSid: reads the transcript-declared bridge URL, newest wins, tolerates noise', async () => {
+  const { extractBridgeSid } = await import('../mission/mission-controller');
+  const lines = [
+    '{"type":"user","message":{"content":"hi"}}',
+    '{"type":"system","subtype":"bridge_status","content":"/remote-control is active · Continue here, on your phone, or at https://claude.ai/code/session_OLD111"}',
+    'garbage line',
+    '{"type":"system","subtype":"bridge_status","content":"/remote-control is active · Continue at https://claude.ai/code/session_01TPEqNEW222"}',
+  ];
+  assert.equal(extractBridgeSid(lines), 'session_01TPEqNEW222'); // newest declaration wins
+  assert.equal(extractBridgeSid(['no bridge lines here']), null);
+});
+
+test('tick backfills record.cse from the transcript bridge sid and journals it', async () => {
+  _resetNotMonitorStreak(); _resetJournalState();
+  const cs: ControllerSession = { node: 'gw1', sessionId: 'sid-b', cse: null, tmux: 'lmcc-b', startedAt: 1, lastDriveAt: Date.now() };
+  let persisted: ControllerSession | null = null;
+  const entries: Array<Record<string, unknown>> = [];
+  const deps: SupervisorDeps = {
+    amMonitor: async () => ({ isMonitor: true, monitorNodeId: 'gw1' }),
+    getControllerSession: async () => cs,
+    putControllerSession: async (x) => { persisted = x; },
+    isLive: () => true,
+    journal: (e) => entries.push(e),
+    readBridgeSid: async () => 'session_01Bridge123',
+    launch: async () => cs,
+    drive: async () => {},
+    teardown: async () => {},
+    driveIntervalMin: 5,
+    now: Date.now(),
+  };
+  await runSupervisorTick(deps);
+  assert.equal((persisted as ControllerSession | null)?.cse, 'session_01Bridge123');
+  assert.ok(entries.some((e) => e.kind === 'lifecycle' && e.event === 'cse-discovered'));
+  _resetNotMonitorStreak(); _resetJournalState();
+});
