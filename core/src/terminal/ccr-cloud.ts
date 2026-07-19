@@ -609,7 +609,7 @@ function isRequiresAction(sessionBody: any): boolean {
 }
 
 /** Read a cloud session's transcript (teleport-events) + any pending question awaiting an answer. */
-export async function cloudRead(opts: { sid: string; lastN?: number }): Promise<{ sid: string; messages: CloudTranscriptMsg[]; pendingQuestion: PendingQuestion | null }> {
+export async function cloudRead(opts: { sid: string; lastN?: number }): Promise<{ sid: string; messages: CloudTranscriptMsg[]; pendingQuestion: PendingQuestion | null; historyComplete?: boolean }> {
   if (!isCloudOrBridge(opts.sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_… or cse_…');
   const ccr = await ccrOpts();
   const [res, st] = await Promise.all([
@@ -626,21 +626,29 @@ export async function cloudRead(opts: { sid: string; lastN?: number }): Promise<
   // transcript line). Do the same: fetch the client log and parse it with the shared cowork
   // parser (same substrate — sorts by sequence_num, drops tool_result user-turns, groups tool
   // calls + thinking into assistant turns). One read is reused for the pending-question check.
-  let clientRead: Awaited<ReturnType<typeof cloudClientEventsRead>> | null = null;
+  let clientRead: { events: ClientEvent[]; pendingQuestion: PendingControlRequest | null; complete?: boolean } | null = null;
+  let clientLogComplete: boolean | undefined;
   if (messages.length === 0) {
     try {
-      // Page depth scales with the requested history: events ≫ messages (tool
-      // calls/results are separate events), so ~30 msgs per page is a rough
-      // floor. Capped — a 4s poll must never spend many seconds paging.
-      const maxPages = Math.min(12, Math.max(3, Math.ceil((opts.lastN ?? 30) / 30)));
-      clientRead = await cloudClientEventsRead(opts.sid, { maxPages });
+      // Incremental cached read: the client event log is append-only, so polls
+      // only fetch the newest page and history backfills on demand — the WHOLE
+      // conversation becomes reachable without paging deep on every poll.
+      const wantEvents = Math.min(EV_CACHE_MAX_EVENTS, Math.max(90, (opts.lastN ?? 30) * 3));
+      clientRead = await cloudClientEventsReadCached(opts.sid, wantEvents);
+      clientLogComplete = clientRead.complete;
       if (clientRead.events.length) {
         const { parseCoworkEvents } = require('../cowork/cowork-read') as typeof import('../cowork/cowork-read');
         messages = parseCoworkEvents({ data: clientRead.events }).messages;
       }
     } catch { /* best-effort — an empty transcript beats an error */ }
+  } else {
+    clientLogComplete = true; // teleport transcript is the full history
   }
+  const preSliceCount = messages.length;
   if (opts.lastN && opts.lastN > 0) messages = messages.slice(-opts.lastN);
+  // "Nothing older exists beyond what we returned": the source was complete AND
+  // the slice didn't drop anything.
+  const historyComplete = (clientLogComplete ?? false) && preSliceCount === messages.length;
   // Gate on worker_status: a client-sent tool_result doesn't reliably appear in teleport-events,
   // so only surface a pending question when the worker is actually blocked (requires_action).
   let pendingQuestion: PendingQuestion | null = isRequiresAction(st?.body) ? findPendingQuestion(events) : null;
@@ -654,7 +662,7 @@ export async function cloudRead(opts: { sid: string; lastN?: number }): Promise<
       if (cr.pendingQuestion) pendingQuestion = cr.pendingQuestion;
     } catch { /* best-effort */ }
   }
-  return { sid: opts.sid, messages, pendingQuestion };
+  return { sid: opts.sid, messages, pendingQuestion, historyComplete };
 }
 
 /**
@@ -1124,6 +1132,137 @@ interface ClientEvent { event_type?: string; payload?: any; created_at?: string 
  * recent events, so the default 1 page suffices; `maxPages` bounds a busy session).
  * Account-authed (ccrOpts). Returns null pending on a missing/closed session rather than throwing.
  */
+// ── Incremental client-events cache ─────────────────────────────────────────
+// The client event log is APPEND-ONLY and sequence-numbered, so once fetched a
+// page never changes. Caching per cse means: a 4s poll costs ONE newest-page
+// fetch (instead of re-paging history every time), and older pages backfill on
+// demand until the true beginning — the whole conversation becomes reachable.
+
+export interface CachedEventLog {
+  /** oldest-first, strictly ascending sequence_num. */
+  events: ClientEvent[];
+  newestSeq: number;
+  /** cursor that fetches the page OLDER than events[0]; null once seeded from an exhausted read. */
+  oldestCursor: string | null;
+  /** true when the beginning of the log has been reached. */
+  complete: boolean;
+}
+
+export const EV_CACHE_MAX_EVENTS = 30_000;
+const EV_CACHE_MAX_SESSIONS = 24;
+const EV_CATCHUP_MAX_PAGES = 6;   // pages walked to reconnect after a poll gap
+const EV_BACKFILL_MAX_PAGES = 10; // history pages added per read that asks deeper
+
+const _clientEventLogs = new Map<string, CachedEventLog>();
+export function _resetClientEventCache(): void { _clientEventLogs.clear(); }
+
+const evSeq = (ev: ClientEvent): number => {
+  const n = Number((ev as { sequence_num?: unknown })?.sequence_num);
+  return Number.isFinite(n) ? n : Number.NEGATIVE_INFINITY;
+};
+
+/** Pure: append the > newestSeq portion of a NEWEST-FIRST page to an oldest-first log. */
+export function appendNewerEvents(log: CachedEventLog, pageNewestFirst: ClientEvent[]): number {
+  const fresh = pageNewestFirst.filter((e) => evSeq(e) > log.newestSeq).sort((a, b) => evSeq(a) - evSeq(b));
+  if (fresh.length) {
+    log.events.push(...fresh);
+    log.newestSeq = evSeq(fresh[fresh.length - 1]);
+  }
+  return fresh.length;
+}
+
+/** Pure: prepend a NEWEST-FIRST *older* page below the current oldest event. */
+export function prependOlderEvents(log: CachedEventLog, pageNewestFirst: ClientEvent[]): number {
+  const floor = log.events.length ? evSeq(log.events[0]) : Number.POSITIVE_INFINITY;
+  const older = pageNewestFirst.filter((e) => evSeq(e) < floor).sort((a, b) => evSeq(a) - evSeq(b));
+  if (older.length) log.events.unshift(...older);
+  return older.length;
+}
+
+type EventsPageFetcher = (cursor: string) => Promise<{ events: ClientEvent[]; nextCursor: string | null }>;
+
+function defaultPageFetcher(bridge: string): EventsPageFetcher {
+  return async (cursor: string) => {
+    const ccr = await ccrOpts();
+    const res = await anthropicOAuthGet(`/v1/code/sessions/${bridge}/events`, { ...ccr, query: cursor ? `cursor=${encodeURIComponent(cursor)}` : undefined });
+    if (res.status < 200 || res.status >= 300) throw new TerminalError('UPSTREAM_ERROR', `client events: HTTP ${res.status}`);
+    const body = res.body as { data?: ClientEvent[]; next_cursor?: string };
+    return { events: body?.data || [], nextCursor: body?.next_cursor || null };
+  };
+}
+
+/**
+ * Cached read of a session's client event log. `wantEvents` is how deep the
+ * caller needs the log to be (events, not messages); backfilling is budgeted
+ * per call so repeated deep reads walk further back each time.
+ */
+export async function cloudClientEventsReadCached(
+  cse: string,
+  wantEvents: number,
+  fetchPage?: EventsPageFetcher,
+): Promise<{ events: ClientEvent[]; pendingQuestion: PendingControlRequest | null; complete: boolean }> {
+  const bridge = toBridgeCse(cse);
+  const fetch = fetchPage ?? defaultPageFetcher(bridge);
+
+  let log = _clientEventLogs.get(bridge);
+  try {
+    // 1) Catch up with the newest page(s). Pages arrive NEWEST-first and walk
+    // older via cursor; accumulate the walk and merge ONCE (appendNewerEvents
+    // filters + sorts the whole batch) so cross-page ordering stays ascending.
+    let cursor = '';
+    const walk: ClientEvent[] = [];
+    for (let i = 0; i < EV_CATCHUP_MAX_PAGES; i++) {
+      const page = await fetch(cursor);
+      // Events without a sequence number can't be deduped — bypass the cache
+      // entirely for this session (rare / legacy shape).
+      if (page.events.some((e) => evSeq(e) === Number.NEGATIVE_INFINITY)) {
+        const direct = await cloudClientEventsRead(cse, { maxPages: Math.min(12, Math.max(3, Math.ceil(wantEvents / 90))) });
+        return { ...direct, complete: false };
+      }
+      if (!log) {
+        log = { events: [], newestSeq: Number.NEGATIVE_INFINITY, oldestCursor: page.nextCursor, complete: !page.nextCursor };
+        appendNewerEvents(log, page.events);
+        _clientEventLogs.set(bridge, log);
+        break;
+      }
+      walk.push(...page.events);
+      const lg = log; // narrow across the awaits — log is set on this path
+      const overlaps = page.events.some((e) => evSeq(e) <= lg.newestSeq);
+      if (overlaps || !page.nextCursor) { appendNewerEvents(lg, walk); break; }
+      if (i === EV_CATCHUP_MAX_PAGES - 1) {
+        // Couldn't reconnect within budget (huge burst between polls) — rebuild.
+        _clientEventLogs.delete(bridge);
+        return cloudClientEventsReadCached(cse, wantEvents, fetchPage);
+      }
+      cursor = page.nextCursor;
+    }
+    // 2) Backfill older history on demand.
+    for (let i = 0; log && !log.complete && log.events.length < Math.min(wantEvents, EV_CACHE_MAX_EVENTS) && i < EV_BACKFILL_MAX_PAGES; i++) {
+      if (!log.oldestCursor) { log.complete = true; break; }
+      const page = await fetch(log.oldestCursor);
+      const added = prependOlderEvents(log, page.events);
+      log.oldestCursor = page.nextCursor;
+      if (!page.nextCursor || (page.events.length > 0 && added === 0) || page.events.length === 0) {
+        log.complete = !page.nextCursor;
+        if (page.events.length === 0) log.complete = true;
+        if (!page.nextCursor) break;
+      }
+    }
+  } catch { /* best-effort — serve whatever the cache holds */ }
+
+  // LRU bound on cached sessions.
+  if (_clientEventLogs.size > EV_CACHE_MAX_SESSIONS) {
+    for (const key of _clientEventLogs.keys()) {
+      if (key !== bridge) { _clientEventLogs.delete(key); break; }
+    }
+  }
+
+  const events = log?.events ?? [];
+  // pendingQuestion wants oldest-first (last unresolved wins) — the recent tail suffices.
+  const pendingQuestion = findPendingControlRequest(events.slice(-800) as WorkerEvent[]);
+  return { events, pendingQuestion, complete: !!log?.complete };
+}
+
 export async function cloudClientEventsRead(cse: string, opts: { maxPages?: number } = {}): Promise<{ events: ClientEvent[]; pendingQuestion: PendingControlRequest | null }> {
   const bridge = toBridgeCse(cse);
   const maxPages = Math.max(1, opts.maxPages ?? 2);

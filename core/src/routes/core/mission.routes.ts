@@ -1108,14 +1108,21 @@ export async function handleSessionRead(sid: string, lastNRaw?: number, deps?: S
       });
       // Pass through the cloud pendingQuestion (already computed by cloudRead).
       const pendingQuestion = result.pendingQuestion ?? null;
-      return ok({ messages: normalized, pendingQuestion });
+      return ok({ messages: normalized, pendingQuestion, historyComplete: (result as { historyComplete?: boolean }).historyComplete ?? false });
     } else {
       // Best-effort: refresh the idle timer for resumed native sessions.
       try { touchActivity(sid, Date.now()); } catch { /* best-effort */ }
-      const result = await d.nativeRead(sid, lastN);
+      // Ask for one extra: N+1 returned ⇒ older history exists beyond the window.
+      const result = await d.nativeRead(sid, lastN !== undefined ? lastN + 1 : undefined);
+      let nativeMsgs = result.messages;
+      let historyComplete = true;
+      if (lastN !== undefined && nativeMsgs.length > lastN) {
+        historyComplete = false;
+        nativeMsgs = nativeMsgs.slice(-lastN);
+      }
       // Native ConversationMessage has { role, content, toolCalls? } — normalize content -> text
       // and map toolCalls[].name to tools: string[] for a uniform shape.
-      const normalized = result.messages.map((m) => {
+      const normalized = nativeMsgs.map((m) => {
         const out: { role: string; text: string; tools?: string[] } = {
           role: m.role,
           text: m.content,
@@ -1146,8 +1153,8 @@ export async function handleSessionRead(sid: string, lastNRaw?: number, deps?: S
           }
         } catch { /* best-effort: non-fatal */ }
       }
-      return ok({ messages: normalized, pendingQuestion });
-    }
+      return ok({ messages: normalized, pendingQuestion, historyComplete });
+}
   } catch (e) {
     return fail('READ_ERROR', (e as Error).message);
   }

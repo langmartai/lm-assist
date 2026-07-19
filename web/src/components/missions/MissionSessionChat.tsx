@@ -205,8 +205,10 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false, mi
       );
       const msgs = (res as any).data?.messages ?? (res as any).messages ?? [];
       const pq: PendingQuestion | null = (res as any).data?.pendingQuestion ?? (res as any).pendingQuestion ?? null;
-      // Fewer than asked ⇒ the beginning of the available history is on screen.
-      setReachedStart(msgs.length < depth);
+      // The server states whether older history exists (event-log cache /
+      // native N+1 probe); fall back to fewer-than-asked on older cores.
+      const hc = (res as any).data?.historyComplete ?? (res as any).historyComplete;
+      setReachedStart(hc === true || (hc === undefined && msgs.length < depth));
       // Stick to the bottom ONLY if the user is already there. A 4 s poll must not
       // yank a user who has scrolled up to read history back down. Capture the
       // at-bottom state from the CURRENT DOM, before setMessages re-renders. On the
