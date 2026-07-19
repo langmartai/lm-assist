@@ -19,7 +19,7 @@ import * as path from 'path';
 
 export interface ControlJournalEntry {
   at: number;
-  kind: 'boot' | 'tick' | 'drive' | 'lifecycle' | 'election';
+  kind: 'boot' | 'tick' | 'drive' | 'lifecycle' | 'election' | 'ack' | 'ack-missing';
   [k: string]: unknown;
 }
 
@@ -78,4 +78,28 @@ export function driveFailureStreak(entries: ControlJournalEntry[], sid: string):
  */
 export function recentLaunchCount(entries: ControlJournalEntry[], now: number, windowMs = 10 * 60_000): number {
   return entries.filter((e) => e.kind === 'lifecycle' && (e.event === 'launched' || e.event === 'resumed') && now - e.at <= windowMs).length;
+}
+
+/**
+ * Pure: command ids from successful drives that have no 'ack' entry after
+ * them yet (newest first, bounded). These are the commands whose verifiable
+ * ⟦RESULT⟧ block the loop still needs to find in the controller's reply.
+ */
+export function pendingCommandIds(entries: ControlJournalEntry[], opts: { limit?: number; maxAgeMs?: number; now?: number } = {}): string[] {
+  const { limit = 10, maxAgeMs = 2 * 60 * 60_000, now = Date.now() } = opts;
+  const acked = new Set(entries.filter((e) => e.kind === 'ack' && e.cmdId).map((e) => String(e.cmdId)));
+  const out: string[] = [];
+  for (let i = entries.length - 1; i >= 0 && out.length < limit; i--) {
+    const e = entries[i];
+    if (e.kind !== 'drive' || !e.cmdId || e.ok !== true) continue;
+    if (now - e.at > maxAgeMs) break;
+    const id = String(e.cmdId);
+    if (!acked.has(id) && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** Pure: has an ack-missing warning already been journaled for this cmd? */
+export function ackMissingWarned(entries: ControlJournalEntry[], cmdId: string): boolean {
+  return entries.some((e) => e.kind === 'ack-missing' && e.cmdId === cmdId);
 }

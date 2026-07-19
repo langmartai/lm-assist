@@ -1187,17 +1187,41 @@ export async function handleSessionDrive(sid: string, text: string, deps?: Sessi
       }
     } catch { /* best-effort — never block a normal drive on a store hiccup */ }
   }
+  // Command contract: a command aimed at THE CONTROLLER (user chat included)
+  // is tracked — wrapped with a cmd id + the per-task verifiable-⟦RESULT⟧
+  // instruction, and journaled so the tick's ack scan pairs it with its result.
+  let cmdId: string | null = null;
+  try {
+    const { getControllerSession } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
+    const ctl = await getControllerSession();
+    if (ctl && (ctl.sessionId === sid || ctl.cse === sid)) {
+      const mc = require('../../mission/mission-controller') as typeof import('../../mission/mission-controller');
+      cmdId = mc.newCmdId();
+      driveText = mc.wrapControllerCommand(driveText, cmdId);
+    }
+  } catch { /* contract is advisory — never block the drive */ }
+  const journalUserCmd = (transport: string, okFlag: boolean, error?: string) => {
+    if (!cmdId) return;
+    try {
+      const { recordControl } = require('../../mission/control-journal') as typeof import('../../mission/control-journal');
+      const { controllerCwd } = require('../../mission/mission-controller') as typeof import('../../mission/mission-controller');
+      recordControl(controllerCwd(), { at: Date.now(), kind: 'drive', sid, transport, ok: okFlag, cmdId, source: 'user', directive: text.slice(0, 80), ...(error ? { error: error.slice(0, 200) } : {}) });
+    } catch { /* advisory */ }
+  };
   try {
     if (r.transport === 'cloud') {
       const result = await d.cloudDrive({ sid, text: driveText });
-      return ok({ delivered: result.delivered });
+      journalUserCmd('cloud', true);
+      return ok({ delivered: result.delivered, ...(cmdId ? { cmdId } : {}) });
     } else {
       // Best-effort: refresh the idle timer for resumed native sessions.
       try { touchActivity(sid, Date.now()); } catch { /* best-effort */ }
       await d.nativeDrive(sid, driveText);
-      return ok({ delivered: true });
+      journalUserCmd('tmux', true);
+      return ok({ delivered: true, ...(cmdId ? { cmdId } : {}) });
     }
   } catch (e) {
+    journalUserCmd(r.transport === 'cloud' ? 'cloud' : 'tmux', false, (e as Error).message);
     return fail('DRIVE_ERROR', (e as Error).message);
   }
 }

@@ -3,6 +3,7 @@ import {
   Mission, MissionBinding, ExecutorState, ExecutorOutput, AdjustResult, PlacementDecision,
   decideMission, place, planMissionNudge, missionSessionTitle, MissionActor,
 } from './mission-model';
+import { randomBytes } from 'crypto';
 import { pickNewSession, cseToSessionSid, isNativeBinding } from './mission-native';
 import type { ExecNow } from './mission-engagement';
 import { listMissions, putMission, thisNode, getControllerSession, putControllerSession, ControllerSession, EngagementState } from './mission-store';
@@ -636,6 +637,40 @@ export function decideSupervisor(input: { isMonitor: boolean; live: boolean; dri
   return { action: 'idle' };
 }
 
+// ── Command contract: every command to the controller is TRACKED ─────────────
+// Each drive carries a cmd id and instructs the controller to end its reply
+// with a verifiable per-task ⟦RESULT⟧ block; the tick scans replies for those
+// blocks and journals ack / ack-missing — so "command sent" always pairs with
+// "verifiable result received" (or a visible gap).
+
+export function newCmdId(): string {
+  return `cmd-${randomBytes(3).toString('hex')}`;
+}
+
+/** Pure: append the response contract to a controller-bound command. */
+export function wrapControllerCommand(text: string, cmdId: string): string {
+  return `${text}
+
+⟦CMD ${cmdId}⟧ End your reply with the line "⟦RESULT ${cmdId}⟧" followed by ONE line per task assigned above, format: "- <task>: done|in-progress|blocked|skipped — <verifiable evidence: commit/file/id/count/url>". No tasks assigned → reply "⟦RESULT ${cmdId}⟧" then "- no-op: acknowledged".`;
+}
+
+/** Pure: find a ⟦RESULT <cmdId>⟧ block in reply text → its task lines. */
+export function extractResultBlock(text: string, cmdId: string): { found: boolean; tasks: string[] } {
+  const marker = `⟦RESULT ${cmdId}⟧`;
+  const idx = text.lastIndexOf(marker);
+  if (idx < 0) return { found: false, tasks: [] };
+  const after = text.slice(idx + marker.length).split('\n');
+  const tasks: string[] = [];
+  for (const raw of after) {
+    const line = raw.trim();
+    if (!line) { if (tasks.length) break; continue; }
+    if (line.startsWith('- ')) { tasks.push(line.slice(2, 200)); if (tasks.length >= 20) break; continue; }
+    if (line.startsWith('⟦')) break; // next marker/block
+    if (tasks.length) break;         // prose after the block ends it
+  }
+  return { found: true, tasks };
+}
+
 // Consecutive not-monitor ticks (module state — the supervisor is a singleton per Core).
 let _notMonitorStreak = 0;
 export function _resetNotMonitorStreak(): void { _notMonitorStreak = 0; }
@@ -669,10 +704,13 @@ export interface SupervisorDeps {
   putControllerSession: (cs: ControllerSession | null) => Promise<void>;
   isLive: (cs: ControllerSession) => boolean;
   /** Optional control-journal sink — real deps append to control-journal.jsonl; tests omit. */
-  journal?: (entry: { at: number; kind: 'boot' | 'tick' | 'drive' | 'lifecycle' | 'election'; [k: string]: unknown }) => void;
+  journal?: (entry: { at: number; kind: 'boot' | 'tick' | 'drive' | 'lifecycle' | 'election' | 'ack' | 'ack-missing'; [k: string]: unknown }) => void;
   /** Optional control-journal READER — the loop consumes its own traces
-   *  (drive-failure recovery, launch-churn back-off). Real deps read the file. */
+   *  (drive-failure recovery, launch-churn back-off, pending-command acks). */
   recentJournal?: () => Array<{ at: number; kind: string; [k: string]: unknown }>;
+  /** Optional: recent assistant reply text of the controller session — scanned
+   *  for ⟦RESULT cmd-…⟧ blocks to verify command acknowledgment. */
+  readControllerTail?: (sessionId: string) => Promise<string>;
   launch: () => Promise<ControllerSession>;
   /** Drive the live controller. `directive` defaults to CONTROLLER_PASS_DIRECTIVE; the
    *  supervisor passes CONTROLLER_ROSTER_CHANGED_DIRECTIVE when a cluster-roster change
@@ -984,6 +1022,30 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
         });
       }
       _lastJournaledMonitor = isMonitor;
+    } catch { /* advisory */ }
+  }
+
+  // ── Command-ack scan: pair every tracked command with its verifiable
+  //    ⟦RESULT⟧ block from the controller's replies (or journal the gap). ──
+  if (deps.journal && deps.recentJournal && deps.readControllerTail && cs) {
+    try {
+      const { pendingCommandIds, ackMissingWarned } = require('./control-journal') as typeof import('./control-journal');
+      const entries = deps.recentJournal() as never[];
+      const pending = pendingCommandIds(entries, { now: Date.now() });
+      if (pending.length) {
+        const tail = await deps.readControllerTail(cs.sessionId).catch(() => '');
+        for (const cmdId of pending) {
+          const res = extractResultBlock(tail, cmdId);
+          if (res.found) {
+            deps.journal({ at: Date.now(), kind: 'ack', cmdId, tasks: res.tasks.slice(0, 12) });
+          } else {
+            const sent = (entries as Array<{ kind: string; cmdId?: unknown; at: number }>).find((e) => e.kind === 'drive' && e.cmdId === cmdId);
+            if (sent && Date.now() - sent.at > 10 * 60_000 && !ackMissingWarned(entries as never, cmdId)) {
+              deps.journal({ at: Date.now(), kind: 'ack-missing', cmdId, sentAt: sent.at });
+            }
+          }
+        }
+      }
     } catch { /* advisory */ }
   }
 
@@ -1476,12 +1538,16 @@ export function registerMissionController(
         } catch { return []; }
       },
       drive: async (cs, directive) => {
-        const text = directive ?? CONTROLLER_PASS_DIRECTIVE;
+        // Every command carries the response CONTRACT: a cmd id + the
+        // instruction to end the reply with a per-task verifiable ⟦RESULT⟧
+        // block. The tick's ack scan pairs it back up.
+        const cmdId = newCmdId();
+        const text = wrapControllerCommand(directive ?? CONTROLLER_PASS_DIRECTIVE, cmdId);
         const sid = cs.cse || cs.sessionId;
         const journalDrive = (transport: string, ok: boolean, error?: string) => {
           try {
             const { recordControl } = require('./control-journal') as typeof import('./control-journal');
-            recordControl(controllerCwd(), { at: Date.now(), kind: 'drive', sid, transport, ok, ...(error ? { error: error.slice(0, 200) } : {}) });
+            recordControl(controllerCwd(), { at: Date.now(), kind: 'drive', sid, transport, ok, cmdId, directive: (directive ?? CONTROLLER_PASS_DIRECTIVE).slice(0, 80), ...(error ? { error: error.slice(0, 200) } : {}) });
           } catch { /* advisory */ }
         };
         if (cs.cse) {
@@ -1495,6 +1561,15 @@ export function registerMissionController(
             journalDrive('tmux', false, e.message);
           });
         }
+      },
+      readControllerTail: async (sessionId) => {
+        const { AgentSessionStore } = require('../agent-session-store') as typeof import('../agent-session-store');
+        const store = new AgentSessionStore({ projectPath: process.cwd(), persist: false });
+        const res = await store.getConversation({ sessionId, lastN: 30 });
+        return ((res?.messages ?? []) as Array<{ role?: string; content?: string }>)
+          .filter((m) => m.role === 'assistant')
+          .map((m) => m.content ?? '')
+          .join('\n');
       },
       teardown: async (cs) => {
         try {

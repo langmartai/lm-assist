@@ -41,10 +41,24 @@ export function describeJournal(e: TraceData['journal'][number]): { label: strin
   switch (e.kind) {
     case 'drive': {
       const via = e.transport === 'cloud' ? 'via its claude.ai bridge' : 'into its terminal';
+      const what = e.source === 'user' ? 'your command' : 'its work directive';
+      const cmd = e.cmdId ? ` [${e.cmdId}]` : '';
       return e.ok
-        ? { label: 'Pass delivered', detail: `sent the controller its work directive ${via}`, tone: 'good' }
-        : { label: 'Pass FAILED', detail: `couldn't deliver the directive ${via}${e.error ? ` — ${String(e.error).slice(0, 70)}` : ''} (3 in a row triggers auto-relaunch)`, tone: 'bad' };
+        ? { label: e.source === 'user' ? 'Command delivered' : 'Pass delivered', detail: `sent ${what} ${via}${cmd} — awaiting its verifiable ⟦RESULT⟧`, tone: 'good' }
+        : { label: e.source === 'user' ? 'Command FAILED' : 'Pass FAILED', detail: `couldn't deliver ${what} ${via}${cmd}${e.error ? ` — ${String(e.error).slice(0, 70)}` : ''} (3 in a row triggers auto-relaunch)`, tone: 'bad' };
     }
+    case 'ack': {
+      const tasks = Array.isArray(e.tasks) ? e.tasks as string[] : [];
+      const done = tasks.filter((t) => /:\s*done/i.test(t)).length;
+      const blocked = tasks.filter((t) => /:\s*blocked/i.test(t)).length;
+      return {
+        label: 'Result verified',
+        detail: `[${e.cmdId}] controller reported ${tasks.length} task${tasks.length === 1 ? '' : 's'}${tasks.length ? ` (${done} done${blocked ? `, ${blocked} blocked` : ''}) — ${tasks[0]?.slice(0, 60)}` : ''}`,
+        tone: blocked ? 'warn' : 'good',
+      };
+    }
+    case 'ack-missing':
+      return { label: 'No result yet', detail: `[${e.cmdId}] the controller has not answered with its ⟦RESULT⟧ block — check its reply or resend`, tone: 'warn' };
     case 'boot':
       return {
         label: 'Core started',

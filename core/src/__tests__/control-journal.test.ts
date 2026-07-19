@@ -121,3 +121,65 @@ test('the LOOP consumes traces: 3 failed drives → relaunch; launch churn → b
   assert.equal(launched, false);
   _resetNotMonitorStreak(); _resetJournalState();
 });
+
+test('command contract: wrap → extract → pending/ack lifecycle', async () => {
+  const { newCmdId, wrapControllerCommand, extractResultBlock } = await import('../mission/mission-controller');
+  const { pendingCommandIds, ackMissingWarned } = await import('../mission/control-journal');
+  const id = newCmdId();
+  assert.match(id, /^cmd-[0-9a-f]{6}$/);
+  const wrapped = wrapControllerCommand('Do task A and task B', id);
+  assert.ok(wrapped.includes('Do task A and task B'));
+  assert.ok(wrapped.includes(`⟦RESULT ${id}⟧`), 'contract names the exact result marker');
+
+  const reply = `I did the work.\n\n⟦RESULT ${id}⟧\n- task A: done — commit abc123\n- task B: blocked — waiting on review\n\nAnything else?`;
+  const res = extractResultBlock(reply, id);
+  assert.equal(res.found, true);
+  assert.deepEqual(res.tasks, ['task A: done — commit abc123', 'task B: blocked — waiting on review']);
+  assert.equal(extractResultBlock('no marker here', id).found, false);
+
+  const now = 1_000_000_000;
+  const j = [
+    { at: now - 60_000, kind: 'drive', cmdId: 'cmd-aaa', ok: true },
+    { at: now - 50_000, kind: 'drive', cmdId: 'cmd-bbb', ok: true },
+    { at: now - 40_000, kind: 'ack', cmdId: 'cmd-aaa' },
+    { at: now - 30_000, kind: 'drive', cmdId: 'cmd-fail', ok: false }, // failed sends aren't pending
+  ] as never;
+  assert.deepEqual(pendingCommandIds(j, { now }), ['cmd-bbb']);
+  assert.equal(ackMissingWarned(j, 'cmd-bbb'), false);
+  const j2 = [...(j as unknown as object[]), { at: now - 10_000, kind: 'ack-missing', cmdId: 'cmd-bbb' }] as never;
+  assert.equal(ackMissingWarned(j2, 'cmd-bbb'), true);
+});
+
+test('tick ack scan journals ack (found) and ack-missing (aged, once)', async () => {
+  _resetNotMonitorStreak(); _resetJournalState();
+  const cs: ControllerSession = { node: 'gw1', sessionId: 'sid-ack', cse: null, tmux: 'lmcc-a', startedAt: 1 };
+  const now = Date.now();
+  const journalEntries: Array<Record<string, unknown>> = [];
+  const priorJournal = [
+    { at: now - 20 * 60_000, kind: 'drive', cmdId: 'cmd-old', ok: true },  // aged, no result → ack-missing
+    { at: now - 60_000, kind: 'drive', cmdId: 'cmd-new', ok: true },       // has a RESULT in the tail → ack
+  ];
+  const deps: SupervisorDeps = {
+    amMonitor: async () => ({ isMonitor: true, monitorNodeId: 'gw1' }),
+    getControllerSession: async () => ({ ...cs, lastDriveAt: now }),
+    putControllerSession: async () => {},
+    isLive: () => true,
+    journal: (e) => journalEntries.push(e),
+    recentJournal: () => priorJournal as never,
+    readControllerTail: async () => '⟦RESULT cmd-new⟧\n- reviewed missions: done — 3 checked',
+    launch: async () => cs,
+    drive: async () => {},
+    teardown: async () => {},
+    driveIntervalMin: 5,
+    now,
+  };
+  await runSupervisorTick(deps);
+  const acks = journalEntries.filter((e) => e.kind === 'ack');
+  const missing = journalEntries.filter((e) => e.kind === 'ack-missing');
+  assert.equal(acks.length, 1);
+  assert.equal(acks[0].cmdId, 'cmd-new');
+  assert.deepEqual(acks[0].tasks, ['reviewed missions: done — 3 checked']);
+  assert.equal(missing.length, 1);
+  assert.equal(missing[0].cmdId, 'cmd-old');
+  _resetNotMonitorStreak(); _resetJournalState();
+});
