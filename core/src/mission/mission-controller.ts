@@ -611,17 +611,31 @@ export function buildControllerLaunchExtras(args: {
  * failover) from the costly adapt-DRIVE pass (run every ~5 min).
  *
  * Decision table:
- *   !isMonitor                      → teardown  (not the leader)
- *   isMonitor && !live              → launch     (no live session; always launch regardless of driveDue)
- *   isMonitor && live && driveDue   → drive      (time for another adapt pass)
- *   isMonitor && live && !driveDue  → idle       (lifecycle OK, drive cadence not yet elapsed)
+ *   !isMonitor (2+ consecutive ticks) → teardown  (leadership genuinely moved)
+ *   !isMonitor (first tick)           → idle      (election blip — see below)
+ *   isMonitor && !live                → launch    (no live session; always launch regardless of driveDue)
+ *   isMonitor && live && driveDue     → drive     (time for another adapt pass)
+ *   isMonitor && live && !driveDue    → idle      (lifecycle OK, drive cadence not yet elapsed)
+ *
+ * The teardown DEBOUNCE exists because the election reads hub + cluster state
+ * that is briefly wrong right after a core restart (hub not yet authenticated →
+ * amIMonitor throws → "not monitor"; cluster map cold → every node pools into
+ * `default` → a lower gateway-id on another cluster "wins"). One such tick used
+ * to DESTROY a healthy controller and relaunch a fresh one a minute later
+ * (observed live 2026-07-19: drive → teardown → launch across a deploy
+ * restart). Real leadership loss persists across ticks, so a 2-tick streak
+ * still tears down — just ~1 min later, which is fine for loser cleanup.
  */
-export function decideSupervisor(input: { isMonitor: boolean; live: boolean; driveDue: boolean }): { action: 'teardown' | 'launch' | 'drive' | 'idle' } {
-  if (!input.isMonitor) return { action: 'teardown' };
+export function decideSupervisor(input: { isMonitor: boolean; live: boolean; driveDue: boolean; notMonitorStreak?: number }): { action: 'teardown' | 'launch' | 'drive' | 'idle' } {
+  if (!input.isMonitor) return (input.notMonitorStreak ?? 0) >= 2 ? { action: 'teardown' } : { action: 'idle' };
   if (!input.live) return { action: 'launch' };
   if (input.driveDue) return { action: 'drive' };
   return { action: 'idle' };
 }
+
+// Consecutive not-monitor ticks (module state — the supervisor is a singleton per Core).
+let _notMonitorStreak = 0;
+export function _resetNotMonitorStreak(): void { _notMonitorStreak = 0; }
 
 /**
  * Pure drive-cadence gate. When there are active missions the controller drives
@@ -893,7 +907,8 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
     }
   }
 
-  const { action } = decideSupervisor({ isMonitor, live, driveDue });
+  _notMonitorStreak = isMonitor ? 0 : _notMonitorStreak + 1;
+  const { action } = decideSupervisor({ isMonitor, live, driveDue, notMonitorStreak: _notMonitorStreak });
 
   if (action === 'teardown') {
     if (cs) {

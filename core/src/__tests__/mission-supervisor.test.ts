@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import {
-  decideSupervisor, runSupervisorTick, discoverNewCse, isDriveDue,
+  decideSupervisor, runSupervisorTick, discoverNewCse, isDriveDue, _resetNotMonitorStreak,
   computeRosterKey, CONTROLLER_ROSTER_CHANGED_DIRECTIVE, CONTROLLER_PASS_DIRECTIVE,
 } from '../mission/mission-controller';
 import type { SupervisorDeps } from '../mission/mission-controller';
@@ -11,9 +11,9 @@ import type { ControllerSession } from '../mission/mission-store';
 // pure decideSupervisor — decision table (updated for driveDue)
 // ---------------------------------------------------------------------------
 
-test('decideSupervisor: not monitor -> teardown (regardless of live/driveDue)', () => {
-  assert.equal(decideSupervisor({ isMonitor: false, live: false, driveDue: false }).action, 'teardown');
-  assert.equal(decideSupervisor({ isMonitor: false, live: true, driveDue: true }).action, 'teardown');
+test('decideSupervisor: not monitor -> teardown only after a 2-tick streak (debounced)', () => {
+  assert.equal(decideSupervisor({ isMonitor: false, live: false, driveDue: false, notMonitorStreak: 2 }).action, 'teardown');
+  assert.equal(decideSupervisor({ isMonitor: false, live: true, driveDue: true, notMonitorStreak: 3 }).action, 'teardown');
 });
 
 // ---------------------------------------------------------------------------
@@ -72,7 +72,8 @@ function makeStubDeps(overrides: Partial<SupervisorDeps>): SupervisorDeps {
   };
 }
 
-test('runSupervisorTick: not monitor + existing cs -> calls teardown + clears', async () => {
+test('runSupervisorTick: not monitor + existing cs -> first tick is a blip (no teardown), streak tears down + clears', async () => {
+  _resetNotMonitorStreak();
   let tornDown = false;
   let cleared = false;
   const deps = makeStubDeps({
@@ -82,8 +83,11 @@ test('runSupervisorTick: not monitor + existing cs -> calls teardown + clears', 
     putControllerSession: async (x) => { if (x === null) cleared = true; },
   });
   await runSupervisorTick(deps);
-  assert.ok(tornDown, 'teardown should be called when not monitor');
+  assert.equal(tornDown, false, 'a single not-monitor tick (boot election blip) must NOT destroy the controller');
+  await runSupervisorTick(deps);
+  assert.ok(tornDown, 'teardown proceeds once not-monitor persists across ticks');
   assert.ok(cleared, 'putControllerSession(null) should be called after teardown');
+  _resetNotMonitorStreak();
 });
 
 test('runSupervisorTick: monitor + STALE existing cs + !live -> tears down old controller BEFORE launching', async () => {
@@ -465,4 +469,15 @@ test('engage: roster change WITH an out-of-cluster active worker → directive l
   assert.ok(drivenWith!.startsWith(CONTROLLER_ROSTER_CHANGED_DIRECTIVE), 'directive starts with the roster-changed base');
   assert.ok(drivenWith!.includes('session_orphan'), 'directive names the orphaned session to migrate');
   assert.ok(drivenWith!.includes('m-orphan'), 'directive names the orphaned mission');
+});
+
+test('decideSupervisor: a single not-monitor tick is a blip → idle, streak ≥2 → teardown', () => {
+  // boot-time election glitch (hub not authed / cluster map cold) must NOT destroy the controller
+  assert.deepEqual(decideSupervisor({ isMonitor: false, live: true, driveDue: false }), { action: 'idle' });
+  assert.deepEqual(decideSupervisor({ isMonitor: false, live: true, driveDue: false, notMonitorStreak: 1 }), { action: 'idle' });
+  // genuine leadership loss persists across ticks → teardown proceeds
+  assert.deepEqual(decideSupervisor({ isMonitor: false, live: true, driveDue: false, notMonitorStreak: 2 }), { action: 'teardown' });
+  assert.deepEqual(decideSupervisor({ isMonitor: false, live: false, driveDue: true, notMonitorStreak: 5 }), { action: 'teardown' });
+  // monitor path unchanged
+  assert.deepEqual(decideSupervisor({ isMonitor: true, live: false, driveDue: false }), { action: 'launch' });
 });
