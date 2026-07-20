@@ -45,6 +45,8 @@ import { evaluateAccess } from '../../mcp-server/access-control';
 import { createPending } from '../../mcp-server/mcp-pending';
 import { sharedLiveOverlay } from '../../mcp-server/registry/overlay-live';
 import { isToolDisabled, disabledResult } from '../../mcp-server/registry/overlay';
+import { isPluginToolName } from '../../mcp-server/plugins/model';
+import { getPluginAggregator } from '../../mcp-server/plugins/aggregator';
 
 // Dispatcher for StreamableHTTP mode — runs each tool in-process against
 // the data stores that already live in this core API process. No HTTP
@@ -63,6 +65,9 @@ export const dispatch: McpToolDispatcher = async (name, args) => {
     default: {
       const expanded = EXPANDED_HANDLERS[name];
       if (expanded) return expanded(args);
+      // Third-party plugin tools run in a subprocess via the aggregator, which strips
+      // the ext__<plugin>__ prefix and enforces enable-state, pins and limits.
+      if (isPluginToolName(name)) return getPluginAggregator().call(name, args);
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
     }
   }
@@ -87,7 +92,10 @@ function buildServer(): Server {
   );
   // Tool-registry overlay (spec §4.4): fresh Server per request + per-request provider
   // reads ⇒ registry edits reach tools/list + tools/call live, no Core restart.
-  configureMcpServer(server, dispatch, sharedLiveOverlay());
+  configureMcpServer(server, dispatch, sharedLiveOverlay(), {
+    // In-process: this surface IS the Core, so the aggregator is reachable directly.
+    list: () => getPluginAggregator().listToolDefs(),
+  });
   return server;
 }
 

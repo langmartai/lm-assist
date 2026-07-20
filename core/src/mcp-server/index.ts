@@ -40,6 +40,8 @@ import {
   mcpGenericCall,
 } from './api-client';
 import { EXPANDED_HANDLERS } from './tools/expanded';
+import { isPluginToolName } from './plugins/model';
+import { createHttpExtToolProvider, callPluginViaCore } from './plugins/ext-http';
 import { createHttpOverlayProvider } from './registry/overlay-http';
 
 // ─── Server Setup ──────────────────────────────────────────────────
@@ -74,6 +76,8 @@ const dispatch: McpToolDispatcher = async (name, args) => {
     case 'read_conversation':            return mcpReadConversation(args);
     default:
       if (name in EXPANDED_HANDLERS) return mcpGenericCall(name, args);
+      // Third-party plugin tools execute in Core's aggregator, never in this process.
+      if (isPluginToolName(name)) return callPluginViaCore(name, args);
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
   }
 };
@@ -81,7 +85,7 @@ const dispatch: McpToolDispatcher = async (name, args) => {
 // Tool-registry overlay (spec §4.4): fetched from the core API per list/call with a
 // short TTL — registry edits apply live; core unreachable ⇒ fail-open defaults (the
 // core-side shim guards still reject disabled calls).
-configureMcpServer(server, dispatch, createHttpOverlayProvider());
+configureMcpServer(server, dispatch, createHttpOverlayProvider(), createHttpExtToolProvider());
 
 // ─── Main ──────────────────────────────────────────────────
 

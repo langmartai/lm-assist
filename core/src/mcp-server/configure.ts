@@ -41,6 +41,21 @@ import { EXPANDED_TOOL_DEFS } from './tools/expanded';
 import { logToolCall } from './mcp-logger';
 import { applyOverlayToToolDefs, isToolDisabled, disabledResult, type OverlayProvider, type ToolOverlay } from './registry/overlay';
 
+/** A third-party plugin tool as advertised on our surface: already namespaced
+ *  `ext__<plugin>__<tool>`, described by the plugin's APPROVED manifest. */
+export interface ExtToolDef {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+/** How a transport obtains the current plugin tool list. Mirrors OverlayProvider:
+ *  in-process for hub `/mcp`, an HTTP fetch for the stdio binary. Listing is
+ *  manifest-derived and MUST never spawn a plugin. */
+export interface ExtToolDefsProvider {
+  list(): Promise<ExtToolDef[]>;
+}
+
 export interface McpToolResult {
   content: Array<{ type: string; text: string }>;
   isError?: boolean;
@@ -423,7 +438,12 @@ export const LM_ASSIST_INSTRUCTIONS = LM_ASSIST_INSTRUCTIONS_BODY;
  *   existed. Provider errors fail open (defaults served) — the registry is a
  *   management layer, not a security boundary.
  */
-export function configureMcpServer(server: Server, dispatch: McpToolDispatcher, overlay?: OverlayProvider): void {
+export function configureMcpServer(
+  server: Server,
+  dispatch: McpToolDispatcher,
+  overlay?: OverlayProvider,
+  extTools?: ExtToolDefsProvider,
+): void {
   assertScopesCoverTools();
 
   const currentOverlay = async (): Promise<ToolOverlay | null> => {
@@ -431,8 +451,21 @@ export function configureMcpServer(server: Server, dispatch: McpToolDispatcher, 
     try { return await overlay.get(); } catch { return null; }
   };
 
+  // Third-party plugin tools (ext__<plugin>__<tool>) are advertised alongside the
+  // built-ins and pass through the SAME registry overlay, so a plugin tool can be
+  // described or switched off from /mcp-tools like any other. Listing them comes from
+  // plugin MANIFESTS — it never spawns anything. Fail-open: a broken plugin subsystem
+  // must never take down the built-in tool surface.
+  const currentExtDefs = async (): Promise<ExtToolDef[]> => {
+    if (!extTools) return [];
+    try { return await extTools.list(); } catch { return []; }
+  };
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: applyOverlayToToolDefs(LM_ASSIST_TOOL_DEFS, await currentOverlay()),
+    tools: applyOverlayToToolDefs(
+      [...LM_ASSIST_TOOL_DEFS, ...(await currentExtDefs())],
+      await currentOverlay(),
+    ),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {

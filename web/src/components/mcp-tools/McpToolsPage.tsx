@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Wrench, RefreshCw, ShieldAlert } from 'lucide-react';
+import { Wrench, RefreshCw, ShieldAlert, Puzzle } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { errText, timeAgo } from '@/components/memory/format';
 import {
@@ -14,6 +14,7 @@ import {
   type ToolScope,
 } from '@/lib/mcp-tools';
 import { ToolDetail } from './ToolDetail';
+import { PluginsPanel } from './PluginsPanel';
 
 interface ToolListResponse {
   tools?: McpToolRow[];
@@ -80,6 +81,9 @@ export function McpToolsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  // Third-party plugins are a separate review surface on the same page: their tools
+  // are advertised here, but approving one authorises code execution.
+  const [showPlugins, setShowPlugins] = useState(false);
   const seqRef = useRef(0);
 
   const fetchAll = useCallback(async () => {
@@ -171,6 +175,13 @@ export function McpToolsPage() {
           <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
             {counts.tools} tools · {counts.overridden} overridden · {counts.disabled} disabled
           </span>
+          <button
+            className={`btn btn-sm ${showPlugins ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setShowPlugins((v) => !v)}
+            title="Third-party MCP plugins: review, enable/disable, checksum pin, health and audit"
+          >
+            <Puzzle size={12} /> Plugins
+          </button>
           <button
             className="btn btn-sm btn-ghost"
             onClick={() => void fetchAll()}
@@ -363,7 +374,9 @@ export function McpToolsPage() {
         </div>
 
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          {selected ? (
+          {showPlugins ? (
+            <PluginsPanel apiFetch={apiFetch} />
+          ) : selected ? (
             <ToolDetail
               name={selected}
               apiFetch={apiFetch}
