@@ -172,6 +172,7 @@ import {
 import { installBanner } from '../../utils/claudeai-banner';
 import { LM_ASSIST_TOOL_DEFS } from '../../mcp-server/configure';
 import { buildConnectorToolsArray, pickLmAssistConnector } from '../../mcp-server/connector-tools-array';
+import { getPluginAggregator } from '../../mcp-server/plugins/aggregator';
 import { parseChatMessages } from '../../claude-ai/chat-read';
 
 const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -1432,7 +1433,17 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
             const roster = await listMcpRemoteServers();
             const conn = pickLmAssistConnector((roster.body?.servers as unknown[] as never) || []);
             if (conn) {
-              toolsArr = buildConnectorToolsArray(conn, LM_ASSIST_TOOL_DEFS as never, names);
+              // Live defs = compiled-in built-ins + dynamically-registered third-party
+              // plugin tools (ext__…). LM_ASSIST_TOOL_DEFS alone is baked at build time,
+              // so plugin tools could NEVER be injected on a driven turn even when
+              // claude.ai's connector already lists them (root-caused 2026-07-21:
+              // driven e2e kept answering TOOLS-MISSING for ext__chart-context__*).
+              let defs = LM_ASSIST_TOOL_DEFS as unknown as import('../../mcp-server/connector-tools-array').ToolDef[];
+              try {
+                const ext = await getPluginAggregator().listToolDefs();
+                if (ext.length) defs = [...defs, ...ext];
+              } catch { /* plugin subsystem disabled → built-ins only */ }
+              toolsArr = buildConnectorToolsArray(conn, defs as never, names);
               if (autoApprove === undefined) autoApprove = true;
             }
           } catch { /* connector discovery failed → proceed with no tools (text-only) */ }
