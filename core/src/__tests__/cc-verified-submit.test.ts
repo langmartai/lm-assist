@@ -77,3 +77,12 @@ test('parseDialogPrompt: extracts the plan-approval question + 4 options from th
   ]);
   assert.equal(parseDialogPrompt('no dialog here\njust text'), null);
 });
+
+test('paneLooksStuck: only borders/blank = stuck; any real content = healthy', async () => {
+  const { paneLooksStuck } = await import('../terminal/cc');
+  assert.equal(paneLooksStuck('──\n──\n──\n'), true);       // the stale-paint case
+  assert.equal(paneLooksStuck('   \n\n  \n'), true);        // blank
+  assert.equal(paneLooksStuck(''), true);
+  assert.equal(paneLooksStuck('❯ \n─── Mission: X ───\n'), false); // idle prompt present
+  assert.equal(paneLooksStuck('no worktrees ctx:34% sid: 750fd632'), false); // footer present
+});

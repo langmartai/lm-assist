@@ -240,9 +240,37 @@ async function typeAndSubmitVerified(session: string, text: string): Promise<voi
 export async function prompt(session: string, opts: CCPromptInput): Promise<void> {
   assertPosix();
   return await withSessionLock(session, async () => {
+    await redrawIfStuck(session);
     inspector.assertPhase(session, ['idle']);
     await typeAndSubmitVerified(session, opts.text);
   });
+}
+
+/**
+ * A session detached/idle for a long time can accumulate STALE TUI PAINT — the
+ * pane shows only border rows, so the inspector derives phase 'launching' and a
+ * drive is wrongly rejected (observed live: it blocked a mission-controller
+ * drive to an idle executor). Force a repaint (Ctrl+L) and let it settle when
+ * the pane looks degenerate but the process is alive; harmless when the pane is
+ * already healthy. Pure detector `paneLooksStuck` is unit-tested.
+ */
+export async function redrawIfStuck(session: string): Promise<void> {
+  try {
+    const state = inspector.getCCState(session);
+    if (state.phase === 'idle') return;                 // healthy — no repaint needed
+    if (!paneLooksStuck(state.lastSnapshot?.text ?? '')) return;
+    tmux.sendKeysUnlocked(session, { keys: 'C-l', literal: false, enter: false, paneQualifier: null });
+    await sleep(700);
+  } catch { /* best-effort — assertPhase below still guards */ }
+}
+
+/** Pure: a pane is "stuck" when it has no real content — only borders/blank. */
+export function paneLooksStuck(paneText: string): boolean {
+  const rows = paneText.split('\n').map((r) => r.trim()).filter(Boolean);
+  if (rows.length === 0) return true;
+  // Real content = a line with letters/digits (a prompt ❯, footer, message).
+  const hasContent = rows.some((r) => /[A-Za-z0-9❯$]/.test(r));
+  return !hasContent;
 }
 
 /** Read-only state query (no lock — query is idempotent). */
