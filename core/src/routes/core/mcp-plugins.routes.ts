@@ -12,6 +12,7 @@ import { discoverPlugins, type DiscoveryOptions, type PluginRecord } from '../..
 import { readState, writeState } from '../../mcp-server/plugins/state-store';
 import { readPluginAudit } from '../../mcp-server/plugins/audit';
 import { getPluginAggregator } from '../../mcp-server/plugins/aggregator';
+import { syncConnectorForPluginTools } from '../../mcp-server/plugins/connector-sync';
 import { pluginsSubsystemEnabled, SEGMENT_RE, type PluginManifest } from '../../mcp-server/plugins/model';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string } }
@@ -21,6 +22,8 @@ const fail = (code: string, message: string): Envelope => ({ success: false, err
 export interface PluginRouteOptions extends DiscoveryOptions {
   auditFile?: string;
   scratchRoot?: string;
+  /** false = skip the automatic claude.ai connector propagation (tests). */
+  connectorSync?: boolean;
 }
 
 /** A plugin id must be a single safe segment — never a path fragment. */
@@ -114,10 +117,23 @@ export async function handlePluginEnable(
   }, opts.stateFile);
 
   const after = discoverPlugins(opts).find((r) => r.name === name)!;
+  const nsTools = (rec.manifest as PluginManifest).tools.map((t) => `ext__${name}__${t.name}`);
+  // Propagate to the claude.ai connector WITHOUT any restart (cache clear →
+  // bootstrap refetch → tool access → auto-approve). Best-effort + async: the
+  // enable itself must not block on (or fail with) claude.ai reachability;
+  // POST /mcp-plugins/sync-connector re-runs it manually anytime.
+  // (skipped when a custom stateFile is injected — that's the unit-test path,
+  // and the sync would otherwise touch the LIVE claude.ai account from tests)
+  if (opts.connectorSync !== false && !opts.stateFile) {
+    void syncConnectorForPluginTools({ addedTools: nsTools })
+      .then((r) => console.log(`[mcp-plugins] connector sync after enabling "${name}": ok=${r.ok} listed=${r.toolsListed} ${r.steps.map((s) => `${s.step}:${s.ok ? 'ok' : 'FAIL'}`).join(' ')}`))
+      .catch((e) => console.warn(`[mcp-plugins] connector sync after enabling "${name}" failed:`, e));
+  }
   return ok({
     plugin: view(after),
     approvedChecksum: state.approvedPayloadChecksum,
-    tools: (rec.manifest as PluginManifest).tools.map((t) => `ext__${name}__${t.name}`),
+    tools: nsTools,
+    connectorSync: opts.connectorSync !== false && !opts.stateFile ? 'started' : 'skipped',
   });
 }
 
@@ -131,6 +147,14 @@ export async function handlePluginDisable(name: string, req: ParsedRequest, opts
   writeState(name, { enabled: false, revertedReason: 'disabled by the owner' }, opts.stateFile);
   // Stop any running child immediately — disable is instant, not lazy.
   try { await getPluginAggregator().shutdown(); } catch { /* best effort */ }
+  // Refresh claude.ai's connector tool list so the removed tools disappear
+  // without a restart (no access changes needed — they just drop off the list).
+  if (opts.connectorSync !== false && !opts.stateFile) {
+    const removed = rec.manifest ? (rec.manifest as PluginManifest).tools.map((t) => `ext__${name}__${t.name}`) : [];
+    void syncConnectorForPluginTools({ removedTools: removed })
+      .then((r) => console.log(`[mcp-plugins] connector sync after disabling "${name}": ok=${r.ok}`))
+      .catch((e) => console.warn(`[mcp-plugins] connector sync after disabling "${name}" failed:`, e));
+  }
   const after = discoverPlugins(opts).find((r) => r.name === name)!;
   return ok({ plugin: view(after) });
 }
@@ -191,6 +215,19 @@ export async function handlePluginCall(body: Record<string, unknown>): Promise<E
   return ok(result);
 }
 
+/** POST /mcp-plugins/sync-connector — propagate the CURRENT plugin tool set to
+ *  the claude.ai connector without restarting anything (manual/no-restart
+ *  re-sync; the same chain runs automatically on enable/disable). Loopback-only:
+ *  it mutates claude.ai account state (cache, tool access, auto-approve). */
+export async function handleConnectorSync(req: ParsedRequest): Promise<Envelope> {
+  const denied = requireLoopback(req);
+  if (denied) return denied;
+  let tools: string[] = [];
+  try { tools = (await getPluginAggregator().listToolDefs()).map((t) => t.name); } catch { /* subsystem off */ }
+  const r = await syncConnectorForPluginTools({ addedTools: tools });
+  return ok({ ...r, syncedTools: tools });
+}
+
 export function createMcpPluginsRoutes(_ctx: RouteContext): RouteHandler[] {
   const wrap = (run: (req: ParsedRequest) => Promise<Envelope>): RouteHandler['handler'] =>
     async (req) => {
@@ -207,6 +244,7 @@ export function createMcpPluginsRoutes(_ctx: RouteContext): RouteHandler[] {
     { method: 'GET', pattern: /^\/mcp-plugins\/tool-defs$/, handler: wrap(() => handlePluginToolDefs()) },
     { method: 'POST', pattern: /^\/mcp-plugins\/call$/, handler: wrap((req) => handlePluginCall((req.body || {}) as Record<string, unknown>)) },
     { method: 'GET', pattern: /^\/mcp-plugins\/(?<name>[^/]+)\/audit$/, handler: wrap((req) => handlePluginAudit(req.params.name, req, req.query ?? {})) },
+    { method: 'POST', pattern: /^\/mcp-plugins\/sync-connector$/, handler: wrap((req) => handleConnectorSync(req)) },
     { method: 'POST', pattern: /^\/mcp-plugins\/(?<name>[^/]+)\/enable$/, handler: wrap((req) => handlePluginEnable(req.params.name, req, (req.body || {}) as Record<string, unknown>)) },
     { method: 'POST', pattern: /^\/mcp-plugins\/(?<name>[^/]+)\/disable$/, handler: wrap((req) => handlePluginDisable(req.params.name, req)) },
     { method: 'POST', pattern: /^\/mcp-plugins\/(?<name>[^/]+)\/grant$/, handler: wrap((req) => handlePluginGrant(req.params.name, req, (req.body || {}) as Record<string, unknown>)) },
