@@ -6,7 +6,7 @@ import { ChevronDown, Monitor, Globe, ExternalLink } from 'lucide-react';
 import { useMachineContext } from '@/contexts/MachineContext';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { useClusters, clusterBadge } from '@/hooks/useClusters';
-import { detectAppMode, workerFetch } from '@/lib/api-client';
+import { openRemoteMachineUrl } from '@/lib/proxy-token';
 import { getPlatformEmoji, getHubDomain } from '@/lib/utils';
 
 export function MachineDropdown() {
@@ -125,22 +125,11 @@ export function MachineDropdown() {
                 const remoteGatewayId = m.gatewayId || m.id;
                 const baseUrl = `https://${assistDomain}/w/${remoteGatewayId}/assist${currentPage}`;
 
-                if (proxy.isProxied) {
-                  window.open(baseUrl, '_blank');
-                  return;
-                }
-
-                // Local/hybrid: fetch a proxy token for authentication
-                try {
-                  const { baseUrl: apiBase } = detectAppMode();
-                  const res = await workerFetch(`${apiBase}/hub/machines/${remoteGatewayId}/proxy-token`, { method: 'POST' });
-                  const json = await res.json();
-                  if (json.success && json.data?.token) {
-                    window.open(`${baseUrl}?token=${json.data.token}`, '_blank');
-                    return;
-                  }
-                } catch { /* fall through */ }
-                window.open(baseUrl, '_blank');
+                // Always mint a fresh proxy token for the TARGET machine: the
+                // /w/ cookie is per-machine (30-day TTL) and the hub hard-401s
+                // ("invalid token") without one — a bare cross-node link only
+                // works if the browser happens to hold a still-valid cookie.
+                await openRemoteMachineUrl(baseUrl, remoteGatewayId, proxy);
               } else {
                 setSelectedMachineId(m.id);
               }

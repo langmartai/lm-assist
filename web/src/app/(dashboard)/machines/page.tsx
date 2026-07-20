@@ -3,7 +3,7 @@
 import { useMachineContext } from '@/contexts/MachineContext';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { useClusters, clusterBadge } from '@/hooks/useClusters';
-import { detectAppMode, workerFetch } from '@/lib/api-client';
+import { openRemoteMachineUrl } from '@/lib/proxy-token';
 import { CrossRefStats } from '@/components/shared/CrossRefStats';
 import { Monitor, LayoutDashboard } from 'lucide-react';
 import { getPlatformEmoji, getHubDomain } from '@/lib/utils';
@@ -24,25 +24,16 @@ export default function MachinesPage() {
     const dashboardPath = '/sessions';
     const baseUrl = `https://${assistDomain}/w/${remoteGatewayId}/assist${dashboardPath}`;
 
-    // Proxy (cloud) or non-proxied hub: open the machine's cloud URL directly —
-    // the cloud session carries auth. (In proxy mode `mode` is 'hybrid', not 'hub',
-    // so guarding on mode alone would fall through to a wrong-host proxy-token fetch.)
-    if (proxy.isProxied || mode === 'hub') {
+    // Non-proxied hub mode: the hub session on this origin carries auth.
+    if (!proxy.isProxied && mode === 'hub') {
       window.open(baseUrl, '_blank');
       return;
     }
 
-    // Local/hybrid: fetch a proxy token for authentication
-    try {
-      const { baseUrl: apiBase } = detectAppMode();
-      const res = await workerFetch(`${apiBase}/hub/machines/${remoteGatewayId}/proxy-token`, { method: 'POST' });
-      const json = await res.json();
-      if (json.success && json.data?.token) {
-        window.open(`${baseUrl}?token=${json.data.token}`, '_blank');
-        return;
-      }
-    } catch { /* fall through */ }
-    window.open(baseUrl, '_blank');
+    // Proxied or local/hybrid: always mint a fresh token for the TARGET machine.
+    // The /w/ cookie is per-machine (30-day TTL) and the hub hard-401s
+    // ("invalid token") without one — there is no cross-machine cloud session.
+    await openRemoteMachineUrl(baseUrl, remoteGatewayId, proxy);
   };
 
   const filtered = machines.filter(m => {
