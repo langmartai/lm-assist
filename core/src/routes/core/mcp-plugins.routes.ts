@@ -13,6 +13,7 @@ import { readState, writeState } from '../../mcp-server/plugins/state-store';
 import { readPluginAudit } from '../../mcp-server/plugins/audit';
 import { getPluginAggregator } from '../../mcp-server/plugins/aggregator';
 import { syncConnectorForPluginTools } from '../../mcp-server/plugins/connector-sync';
+import { callExtToolFleetAware } from '../../mcp-server/plugins/fleet-plugins';
 import { pluginsSubsystemEnabled, SEGMENT_RE, type PluginManifest } from '../../mcp-server/plugins/model';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string } }
@@ -206,12 +207,16 @@ export async function handlePluginToolDefs(): Promise<Envelope> {
   }
 }
 
-/** Execution shim for the stdio surface: `POST /mcp-plugins/call {tool, args}`. */
+/** Execution shim for the stdio surface AND the cross-node forward target:
+ *  `POST /mcp-plugins/call {tool, args, noForward?}`. Fleet-aware like the /mcp
+ *  surface — a call for a plugin this node doesn't own forwards one hop to the
+ *  owner. `noForward:true` marks an already-forwarded call (or a caller that
+ *  wants strictly-local execution): it never bounces again — loop-proof. */
 export async function handlePluginCall(body: Record<string, unknown>): Promise<Envelope> {
   const tool = String(body.tool || '');
   const args = (body.args || {}) as Record<string, unknown>;
   if (!tool) return fail('INVALID_INPUT', 'body.tool is required');
-  const result = await getPluginAggregator().call(tool, args);
+  const result = await callExtToolFleetAware(tool, args, { noForward: body.noForward === true });
   return ok(result);
 }
 

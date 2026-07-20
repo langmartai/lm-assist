@@ -47,6 +47,7 @@ import { sharedLiveOverlay } from '../../mcp-server/registry/overlay-live';
 import { isToolDisabled, disabledResult } from '../../mcp-server/registry/overlay';
 import { isPluginToolName } from '../../mcp-server/plugins/model';
 import { getPluginAggregator } from '../../mcp-server/plugins/aggregator';
+import { callExtToolFleetAware, fleetExtToolDefs } from '../../mcp-server/plugins/fleet-plugins';
 
 // Dispatcher for StreamableHTTP mode — runs each tool in-process against
 // the data stores that already live in this core API process. No HTTP
@@ -67,7 +68,10 @@ export const dispatch: McpToolDispatcher = async (name, args) => {
       if (expanded) return expanded(args);
       // Third-party plugin tools run in a subprocess via the aggregator, which strips
       // the ext__<plugin>__ prefix and enforces enable-state, pins and limits.
-      if (isPluginToolName(name)) return getPluginAggregator().call(name, args);
+      // Fleet-aware: when THIS node doesn't own the plugin (the hub routes the
+      // connector to the most-recently-connected worker, plugin or not), the
+      // call forwards one hop to the owning node instead of failing.
+      if (isPluginToolName(name)) return callExtToolFleetAware(name, args);
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
     }
   }
@@ -94,7 +98,12 @@ function buildServer(): Server {
   // reads ⇒ registry edits reach tools/list + tools/call live, no Core restart.
   configureMcpServer(server, dispatch, sharedLiveOverlay(), {
     // In-process: this surface IS the Core, so the aggregator is reachable directly.
-    list: () => getPluginAggregator().listToolDefs(),
+    // Local defs first, then remote-owned ext tools from the rest of the fleet so
+    // the connector sees every plugin tool regardless of which node it routed to.
+    list: async () => {
+      const local = await getPluginAggregator().listToolDefs();
+      try { return [...local, ...(await fleetExtToolDefs())]; } catch { return local; }
+    },
   });
   return server;
 }
