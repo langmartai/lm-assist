@@ -252,6 +252,43 @@ export function status(session: string): CCSessionState {
 }
 
 /**
+ * Pure: parse a numbered TUI dialog ("Would you like to proceed? ❯ 1. Yes …")
+ * from a pane capture. Lets mission-control surface terminal dialogs (plan
+ * approval, permission prompts) as answerable pendingQuestions — previously
+ * they were invisible to every remote surface.
+ */
+export function parseDialogPrompt(paneText: string): { question: string; options: Array<{ label: string }> } | null {
+  const rows = paneText.replace(/\n+$/, '').split('\n');
+  const optRe = /^\s*(?:❯\s*)?([1-9])\.\s+(.+?)\s*$/;
+  // The dialog's options are the BOTTOM-MOST contiguous numbered block that
+  // includes option 1 — plan/content text above the dialog often contains its
+  // own numbered lists and must not leak in.
+  let end = -1;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (optRe.test(rows[i])) { end = i; break; }
+  }
+  if (end < 0) return null;
+  let start = end;
+  while (start - 1 >= 0 && optRe.test(rows[start - 1])) start--;
+  const block = rows.slice(start, end + 1)
+    .map((r) => r.match(optRe) as RegExpMatchArray)
+    .map((m) => ({ n: Number(m[1]), label: m[2] }));
+  if (!block.some((o) => o.n === 1)) return null; // a trailing list, not a dialog
+  // The question = nearest meaningful line above the block (skip borders/blank).
+  let question = 'Session dialog';
+  for (let i = start - 1; i >= 0; i--) {
+    const t = rows[i].trim();
+    if (t && !/^[─╌═┄┈\-—]+$/.test(t)) { question = t; break; }
+  }
+  const seen = new Set<number>();
+  const options = block
+    .filter((o) => (seen.has(o.n) ? false : (seen.add(o.n), true)))
+    .sort((a, b) => a.n - b.n)
+    .map((o) => ({ label: o.label }));
+  return { question, options };
+}
+
+/**
  * Block until CC is idle (i.e. ready for the next prompt). Cheap wrapper
  * over `inspector.awaitPhase` that callers can use instead of polling
  * status or watching for the `ctx:` footer. Returns the final phase if

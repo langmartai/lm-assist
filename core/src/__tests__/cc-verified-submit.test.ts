@@ -46,3 +46,34 @@ test('composerHoldsText: true while pending, false after submit (tail in history
   assert.equal(composerHoldsText(PENDING_PANE, text), true);
   assert.equal(composerHoldsText(SUBMITTED_PANE, text), false);
 });
+
+// Real pane fixture from the incident: plan-approval dialog on the chart session.
+const PLAN_DIALOG_PANE = [
+  ' 5. Memory + arch doc updated (project convention).',
+  '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌',
+  '',
+  '──────────────────────────────────',
+  ' Claude has written up a plan and is ready to execute. Would you like to proceed?',
+  '',
+  ' ❯ 1. Yes, and bypass permissions',
+  '   2. Yes, manually approve edits',
+  '   3. No, refine with Ultraplan on Claude Code on the web',
+  '   4. Tell Claude what to change',
+  '      shift+tab to approve with this feedback',
+  '',
+  ' ctrl+g to edit in  VS Code  · ~/.claude/plans/x.md',
+].join('\n');
+
+test('parseDialogPrompt: extracts the plan-approval question + 4 options from the real pane', async () => {
+  const { parseDialogPrompt } = await import('../terminal/cc');
+  const d = parseDialogPrompt(PLAN_DIALOG_PANE)!;
+  assert.ok(d, 'dialog parsed');
+  assert.match(d.question, /ready to execute. Would you like to proceed\?$/);
+  assert.deepEqual(d.options.map((o) => o.label), [
+    'Yes, and bypass permissions',
+    'Yes, manually approve edits',
+    'No, refine with Ultraplan on Claude Code on the web',
+    'Tell Claude what to change',
+  ]);
+  assert.equal(parseDialogPrompt('no dialog here\njust text'), null);
+});

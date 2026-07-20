@@ -727,6 +727,10 @@ export interface SupervisorDeps {
   /** Optional: the session's transcript-declared bridge sid (bridge_status line)
    *  — backfills record.cse for resumed/adopted controllers. */
   readBridgeSid?: (sessionId: string) => Promise<string | null>;
+  /** Optional: a handoff-onboarded local session blocked on a TUI dialog →
+   *  its mission id. Makes the tick drive the controller within ~1 min so the
+   *  dialog gets answered instead of sitting until the next cadence. */
+  onboardedDialogPending?: () => Promise<string | null>;
   launch: () => Promise<ControllerSession>;
   /** Drive the live controller. `directive` defaults to CONTROLLER_PASS_DIRECTIVE; the
    *  supervisor passes CONTROLLER_ROSTER_CHANGED_DIRECTIVE when a cluster-roster change
@@ -989,6 +993,18 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
         activeMin: deps.driveIntervalMin,
         idleMin: deps.idleDriveIntervalMin ?? deps.driveIntervalMin,
       });
+    }
+    // Fast-track: a handoff-onboarded session blocked on a TUI dialog must not
+    // wait out the cadence — drive the controller NOW so it answers (the pass
+    // directive already says pendingQuestion is answered first).
+    if (!driveDue && deps.onboardedDialogPending) {
+      try {
+        const mid = await deps.onboardedDialogPending();
+        if (mid) {
+          driveDue = true;
+          deps.journal?.({ at: Date.now(), kind: 'tick', action: 'dialog-fasttrack', missionId: mid, isMonitor, live, driveDue: true });
+        }
+      } catch { /* advisory */ }
     }
   }
 
@@ -1651,6 +1667,20 @@ export function registerMissionController(
         const text = fsmod.readFileSync(jsonl, 'utf-8');
         const lines = text.split('\n');
         return extractBridgeSid(lines.slice(-400));
+      },
+      onboardedDialogPending: async () => {
+        const { listActiveMissions } = require('./mission-store') as typeof import('./mission-store');
+        const { probeTuiDialog } = require('../routes/core/mission.routes') as typeof import('../routes/core/mission.routes');
+        const self = thisNode();
+        const missions = await listActiveMissions().catch(() => []);
+        for (const m of missions as Array<{ id: string; origin?: string; manageMode?: string; binding?: { sessionId?: string | null; node?: string | null } | null }>) {
+          if (m.origin !== 'onboarded' || m.manageMode !== 'handoff') continue;
+          const sid = m.binding?.sessionId;
+          if (!sid || !/^[0-9a-f-]{36}$/.test(sid)) continue;
+          if (m.binding?.node && m.binding.node !== self) continue;
+          if (probeTuiDialog(sid)) return m.id;
+        }
+        return null;
       },
       teardown: async (cs) => {
         try {

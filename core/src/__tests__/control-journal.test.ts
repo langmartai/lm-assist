@@ -219,3 +219,29 @@ test('tick backfills record.cse from the transcript bridge sid and journals it',
   assert.ok(entries.some((e) => e.kind === 'lifecycle' && e.event === 'cse-discovered'));
   _resetNotMonitorStreak(); _resetJournalState();
 });
+
+test('tick fast-tracks a drive when a handoff-onboarded session is blocked on a TUI dialog', async () => {
+  _resetNotMonitorStreak(); _resetJournalState();
+  const now = Date.now();
+  const cs: ControllerSession = { node: 'gw1', sessionId: 'sid-c', cse: null, tmux: 'lmcc-c', startedAt: 1, lastDriveAt: now };
+  const entries: Array<Record<string, unknown>> = [];
+  let drove = false;
+  const deps: SupervisorDeps = {
+    amMonitor: async () => ({ isMonitor: true, monitorNodeId: 'gw1' }),
+    getControllerSession: async () => cs,
+    putControllerSession: async () => {},
+    isLive: () => true,
+    journal: (e) => entries.push(e),
+    onboardedDialogPending: async () => 'mission_dlg1',
+    launch: async () => cs,
+    drive: async () => { drove = true; },
+    teardown: async () => {},
+    driveIntervalMin: 60, // cadence NOT due — only the dialog fast-track can drive
+    now,
+  };
+  const r = await runSupervisorTick(deps);
+  assert.equal(r.action, 'drive', 'dialog fast-track must force a drive');
+  assert.ok(drove);
+  assert.ok(entries.some((e) => e.action === 'dialog-fasttrack' && e.missionId === 'mission_dlg1'));
+  _resetNotMonitorStreak(); _resetJournalState();
+});

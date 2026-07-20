@@ -868,6 +868,8 @@ export interface SessionOpsDeps {
   nativeRead: (sid: string, lastN?: number) => Promise<{ messages: Array<{ role: string; content: string; [k: string]: unknown }> }>;
   /** Return raw JSONL line objects for a native session (each parsed line, for pendingQuestion extraction). */
   nativeRawMessages: (sid: string) => Promise<Array<{ message?: { content?: unknown[] } }>>;
+  /** Optional: probe the session's terminal for a blocking TUI dialog (DI for tests). */
+  tuiDialog?: (sid: string) => import('../../terminal/ccr-cloud').PendingQuestion | null;
   nativeDrive: (sid: string, text: string) => Promise<void>;
   nativeInterrupt: (sid: string) => Promise<void>;
   nativeStop: (sid: string) => Promise<void>;
@@ -966,6 +968,29 @@ async function defaultBridgeCseFor(sid: string): Promise<string | null> {
     }
   } catch { /* best-effort */ }
   return null;
+}
+
+/**
+ * Probe a native session's terminal for a blocking TUI dialog (plan approval,
+ * permission, trust) and synthesize an answerable pendingQuestion from it.
+ * These dialogs live only on the pane — without this they are invisible to
+ * mission-control, so an onboarded/handoff session could sit blocked forever.
+ */
+export function probeTuiDialog(sid: string): import('../../terminal/ccr-cloud').PendingQuestion | null {
+  try {
+    const { sessionVerdict } = require('../../terminal/cc-sessions') as typeof import('../../terminal/cc-sessions');
+    const v = sessionVerdict(sid);
+    if (!v.tmuxSession || !v.live) return null;
+    const cc = require('../../terminal/cc') as typeof import('../../terminal/cc');
+    const state = cc.status(v.tmuxSession);
+    const dialogish = state.pendingDialog || state.phase === 'plan-mode' || state.phase === 'permission' || state.phase === 'trust-prompt';
+    if (!dialogish) return null;
+    const parsed = cc.parseDialogPrompt(state.lastSnapshot?.text ?? '');
+    if (!parsed) return null;
+    return { toolUseId: 'tui-dialog', questions: [{ question: parsed.question, options: parsed.options }] } as import('../../terminal/ccr-cloud').PendingQuestion;
+  } catch {
+    return null;
+  }
 }
 
 function defaultSessionOpsDeps(): SessionOpsDeps {
@@ -1152,6 +1177,11 @@ export async function handleSessionRead(sid: string, lastNRaw?: number, deps?: S
             if (wr.pendingQuestion) pendingQuestion = wr.pendingQuestion;
           }
         } catch { /* best-effort: non-fatal */ }
+      }
+      // TUI dialogs (plan approval / permission / trust) exist only on the pane —
+      // surface them as answerable pendingQuestions too.
+      if (!pendingQuestion) {
+        pendingQuestion = (d.tuiDialog ?? probeTuiDialog)(sid);
       }
       return ok({ messages: normalized, pendingQuestion, historyComplete });
 }
@@ -1340,7 +1370,9 @@ function defaultSessionAnswerDeps(): SessionAnswerDeps {
         if (!line.trim()) continue;
         try { lines.push(JSON.parse(line)); } catch { /* skip */ }
       }
-      return extractPendingQuestion(lines);
+      // TUI dialogs (plan approval / permission) live only on the pane — fall
+      // back to the terminal probe so option labels map to digits for them too.
+      return extractPendingQuestion(lines) ?? probeTuiDialog(sid);
     },
     nativeTmuxSession: (sid) => {
       const { sessionVerdict } = require('../../terminal/cc-sessions') as typeof import('../../terminal/cc-sessions');
