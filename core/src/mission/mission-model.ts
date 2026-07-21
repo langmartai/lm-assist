@@ -201,6 +201,17 @@ export function missionSessionTitle(m: Mission): string {
   return `Mission: ${m.title} · ${m.id.replace(/^mission_/, '')}`;
 }
 
+/** Concise, human-readable session name for `/rename` (the customTitle the sessions
+ *  UI shows). Prefers the mission's feature branch slug (e.g. feat/mobile-mcp-plugin
+ *  → "mobile-mcp-plugin"), else a slug of the title, else the short mission id. */
+export function missionSessionName(m: Mission): string {
+  const branch = m.env?.branch?.replace(/^(feat|fix|chore)\//, '').trim();
+  if (branch) return branch.slice(0, 48);
+  const titleSlug = (m.title || '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+  return titleSlug || m.id.replace(/^mission_/, '');
+}
+
 export interface NewMissionInput {
   title: string;
   objective: string;

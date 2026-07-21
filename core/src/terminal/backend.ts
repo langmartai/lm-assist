@@ -108,6 +108,10 @@ export interface CcLaunchOpts {
   mcpConfigPath?: string;
   /** Optional: display name passed as -n (session title — picker / terminal / account list). */
   name?: string;
+  /** Optional: after the TUI is ready, run `/rename <renameTo>` so the session gets a
+   *  proper customTitle (the -n flag sets the account/terminal title but NOT the local
+   *  customTitle the sessions UI shows). Best-effort; a failure never fails the launch. */
+  renameTo?: string;
   /** Optional tmux session-name prefix (default 'lmcc'). Executors MUST use a non-lmcc
    *  prefix ('lmx') — the controller stray-sweep kills every lmcc-* that isn't the
    *  recorded controller, so an lmcc-named executor gets murdered on the next tick. */

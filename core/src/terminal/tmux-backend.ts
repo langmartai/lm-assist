@@ -114,6 +114,17 @@ export const tmuxCcController: CcController = {
       mcpConfigPath: opts.mcpConfigPath,
       name: opts.name,
     } as any);
+    // Give the session a proper customTitle: `-n` sets the account/terminal title
+    // but not the local customTitle the sessions UI shows, so run `/rename` once
+    // the TUI is ready + idle (readyPattern 'ctx:' matched above, before any prompt).
+    // Best-effort: a rename failure must never fail the launch.
+    if (opts.renameTo) {
+      const clean = opts.renameTo.replace(/[\r\n]/g, ' ').trim().slice(0, 60);
+      if (clean) {
+        try { await cc.slash(name, { cmd: 'rename', args: clean }); }
+        catch (e) { console.debug(`[tmux-backend] rename to "${clean}" failed (non-fatal): ${(e as Error).message}`); }
+      }
+    }
     // Correlate the new tmux session to its registered Claude sessionId.
     const live = listLiveSessions().find((s) => s.tmuxSession === name);
     return {
