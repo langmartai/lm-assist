@@ -11,7 +11,7 @@
  *  - inline FULL-STATE history capped per spec, rollback restores as a NEW rev. */
 import {
   type OverlayChange, type OverlayDoc, type OverlayDocPort, type OverlayStoreSpec,
-  overlayStateChanged,
+  fieldEquals, overlayStateChanged,
 } from './doc-model';
 import type { MissionActor } from '../../mission/mission-model';
 import { getDataService } from '../../data/data-service';
@@ -30,6 +30,17 @@ export interface OverlayDocStore<S extends Record<string, unknown>> {
   get(name: string, port?: OverlayDocPort<S>): Promise<OverlayDoc<S> | null>;
   list(port?: OverlayDocPort<S>): Promise<OverlayDoc<S>[]>;
   put(input: { name: string } & Partial<S>, actor: MissionActor, port?: OverlayDocPort<S>): Promise<{ doc: OverlayDoc<S>; changed: boolean }>;
+  /** Atomic read-modify-write: `transform(prev)` runs INSIDE the per-name write lock, so
+   *  array-append operations (backlog link/discuss/…) can't lose updates to a concurrent
+   *  writer the way read-then-put would. `transform` returns the partial input for the
+   *  write, `null` for an explicit no-op, or throws a coded error (NOT_FOUND,
+   *  ID_COLLISION, …) to refuse. */
+  mutate(
+    name: string,
+    transform: (prev: OverlayDoc<S> | null) => Partial<S> | null | Promise<Partial<S> | null>,
+    actor: MissionActor,
+    port?: OverlayDocPort<S>,
+  ): Promise<{ doc: OverlayDoc<S> | null; changed: boolean }>;
   rollback(name: string, toRev: number, actor: MissionActor, port?: OverlayDocPort<S>): Promise<{ doc: OverlayDoc<S> } | { error: { code: string; message: string } }>;
   /** The live dataset-backed port (exposed so routes can pass it explicitly if needed). */
   livePort(): OverlayDocPort<S>;
@@ -109,6 +120,68 @@ export function createOverlayDocStore<S extends Record<string, unknown>>(spec: O
     return run;
   }
 
+  function validateInputFields(input: Record<string, unknown>): void {
+    for (const f of spec.fields) {
+      const provided = input[f.key];
+      if (provided !== undefined) {
+        const vf = f.validate(provided);
+        if (!vf.ok) throwCoded(vf.code, vf.message);
+      }
+    }
+  }
+
+  /** The write body proper. Runs INSIDE the per-name lock; `prev` was read there too
+   *  (extracted so `mutate` can share it — calling `put` from within `withNameLock`
+   *  would chain onto its own tail and deadlock). */
+  async function putLocked(
+    input: { name: string } & Partial<S>,
+    actor: MissionActor,
+    port: OverlayDocPort<S>,
+    prev: OverlayDoc<S> | null,
+  ): Promise<{ doc: OverlayDoc<S>; changed: boolean }> {
+    // Merge semantics: an omitted field keeps its current value (new docs start from
+    // the spec defaults = "pure default").
+    const next = {} as S;
+    for (const f of spec.fields) {
+      const provided = (input as Record<string, unknown>)[f.key];
+      (next as Record<string, unknown>)[f.key] =
+        provided !== undefined ? provided : (prev ? (prev as Record<string, unknown>)[f.key] : f.defaultValue);
+    }
+    if (spec.refuseWrite) {
+      const rw = spec.refuseWrite(input.name, next);
+      if (!rw.ok) throwCoded(rw.code, rw.message);
+    }
+    if (prev && !overlayStateChanged(spec.fields, prev, next)) return { doc: prev, changed: false };
+    const now = Date.now();
+    const rev = (prev?.rev ?? 0) + 1;
+    const summarize = (f: (typeof spec.fields)[number], v: unknown): unknown =>
+      f.summarize ? f.summarize(v as never) : v;
+    const change: OverlayChange<S> = {
+      rev, at: now, actor,
+      state: { ...next },
+      changes: Object.fromEntries(
+        spec.fields
+          .filter((f) => !fieldEquals(f, prev ? (prev as Record<string, unknown>)[f.key] : f.defaultValue, next[f.key]))
+          .map((f) => [f.key, {
+            from: summarize(f, prev ? (prev as Record<string, unknown>)[f.key] : f.defaultValue),
+            to: summarize(f, next[f.key]),
+          }]),
+      ),
+    };
+    const doc: OverlayDoc<S> = {
+      ...(next as S),
+      name: input.name,
+      rev,
+      history: [...(prev?.history ?? []), change].slice(-spec.historyCap),
+      createdBy: prev?.createdBy ?? actor,
+      lastUpdatedBy: actor,
+      createdAt: prev?.createdAt ?? now,
+      updatedAt: now,
+    } as OverlayDoc<S>;
+    await port.put(doc);
+    return { doc, changed: true };
+  }
+
   async function put(
     input: { name: string } & Partial<S>,
     actor: MissionActor,
@@ -116,57 +189,27 @@ export function createOverlayDocStore<S extends Record<string, unknown>>(spec: O
   ): Promise<{ doc: OverlayDoc<S>; changed: boolean }> {
     const vn = spec.validateName(input.name);
     if (!vn.ok) throwCoded(vn.code, vn.message);
-    for (const f of spec.fields) {
-      const provided = (input as Record<string, unknown>)[f.key];
-      if (provided !== undefined) {
-        const vf = f.validate(provided);
-        if (!vf.ok) throwCoded(vf.code, vf.message);
-      }
-    }
+    validateInputFields(input as Record<string, unknown>);
     if (!port.isEnabled()) throwDisabled(`${spec.label} doc write "${input.name}"`);
-    return withNameLock(input.name, async () => {
-      const prev = await port.get(input.name);
-      // Merge semantics: an omitted field keeps its current value (new docs start from
-      // the spec defaults = "pure default").
-      const next = {} as S;
-      for (const f of spec.fields) {
-        const provided = (input as Record<string, unknown>)[f.key];
-        (next as Record<string, unknown>)[f.key] =
-          provided !== undefined ? provided : (prev ? (prev as Record<string, unknown>)[f.key] : f.defaultValue);
-      }
-      if (spec.refuseWrite) {
-        const rw = spec.refuseWrite(input.name, next);
-        if (!rw.ok) throwCoded(rw.code, rw.message);
-      }
-      if (prev && !overlayStateChanged(spec.fields, prev, next)) return { doc: prev, changed: false };
-      const now = Date.now();
-      const rev = (prev?.rev ?? 0) + 1;
-      const summarize = (f: (typeof spec.fields)[number], v: unknown): unknown =>
-        f.summarize ? f.summarize(v as never) : v;
-      const change: OverlayChange<S> = {
-        rev, at: now, actor,
-        state: { ...next },
-        changes: Object.fromEntries(
-          spec.fields
-            .filter((f) => (prev ? (prev as Record<string, unknown>)[f.key] : f.defaultValue) !== next[f.key])
-            .map((f) => [f.key, {
-              from: summarize(f, prev ? (prev as Record<string, unknown>)[f.key] : f.defaultValue),
-              to: summarize(f, next[f.key]),
-            }]),
-        ),
-      };
-      const doc: OverlayDoc<S> = {
-        ...(next as S),
-        name: input.name,
-        rev,
-        history: [...(prev?.history ?? []), change].slice(-spec.historyCap),
-        createdBy: prev?.createdBy ?? actor,
-        lastUpdatedBy: actor,
-        createdAt: prev?.createdAt ?? now,
-        updatedAt: now,
-      } as OverlayDoc<S>;
-      await port.put(doc);
-      return { doc, changed: true };
+    return withNameLock(input.name, async () => putLocked(input, actor, port, await port.get(input.name)));
+  }
+
+  async function mutate(
+    name: string,
+    transform: (prev: OverlayDoc<S> | null) => Partial<S> | null | Promise<Partial<S> | null>,
+    actor: MissionActor,
+    port: OverlayDocPort<S> = defaultPort(),
+  ): Promise<{ doc: OverlayDoc<S> | null; changed: boolean }> {
+    const vn = spec.validateName(name);
+    if (!vn.ok) throwCoded(vn.code, vn.message);
+    if (!port.isEnabled()) throwDisabled(`${spec.label} doc write "${name}"`);
+    return withNameLock(name, async () => {
+      const prev = await port.get(name);
+      const patch = await transform(prev);
+      if (patch === null) return { doc: prev, changed: false };
+      const input = { name, ...patch } as { name: string } & Partial<S>;
+      validateInputFields(input as Record<string, unknown>);
+      return putLocked(input, actor, port, prev);
     });
   }
 
@@ -187,6 +230,7 @@ export function createOverlayDocStore<S extends Record<string, unknown>>(spec: O
     get: (name, port = defaultPort()) => port.get(name),
     list: (port = defaultPort()) => port.list(),
     put,
+    mutate,
     rollback,
     livePort: defaultPort,
   };

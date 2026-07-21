@@ -33,7 +33,7 @@ export interface ToolCatalogEntry {
 /** Display order for category groups (page left list). Alphabetical-ish by theme,
  *  orientation first. Kept exhaustive by the catalog test. */
 export const CATEGORY_ORDER: string[] = [
-  'core', 'session', 'mission', 'worker', 'agent', 'terminal', 'memory', 'data',
+  'core', 'session', 'mission', 'backlog', 'worker', 'agent', 'terminal', 'memory', 'data',
   'transfer', 'fleet', 'cluster', 'machine-access', 'ccr', 'claudeai', 'auth',
   'github', 'whatsapp', 'elevated',
 ];
@@ -73,6 +73,11 @@ mod('mission-schedule.ts', 'mission', ['mission_schedule', 'mission_changes']);
 mod('mission-workflow.ts', 'mission', [
   'mission_workflow_list', 'mission_workflow_get', 'mission_workflow_set',
   'mission_workflow_history', 'mission_workflow_rollback',
+]);
+// --- backlog / feature-idea graph ---
+mod('backlog.ts', 'backlog', [
+  'backlog_list', 'backlog_get', 'backlog_create', 'backlog_update', 'backlog_link',
+  'backlog_unlink', 'backlog_review', 'backlog_discuss', 'backlog_remove', 'backlog_graph',
 ]);
 // --- worker role protocol ---
 mod('worker-role.ts', 'worker', ['set_role', 'report_status', 'worker_status', 'list_workers', 'decide_gate']);

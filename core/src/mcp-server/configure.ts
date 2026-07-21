@@ -318,6 +318,17 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   mission_workflow_set: 'write',
   mission_workflow_history: 'read',
   mission_workflow_rollback: 'write',
+  // backlog / feature-idea graph registry
+  backlog_list: 'read',
+  backlog_get: 'read',
+  backlog_graph: 'read',
+  backlog_create: 'write',
+  backlog_update: 'write',
+  backlog_link: 'write',
+  backlog_unlink: 'write',
+  backlog_review: 'write',
+  backlog_discuss: 'write',
+  backlog_remove: 'write',
   // auth: guided re-login for cookie + OAuth
   claudeai_login: 'admin',
   // fleet build/upgrade tracking (read, pull)

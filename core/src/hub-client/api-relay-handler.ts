@@ -121,6 +121,7 @@ export class ApiRelayHandler {
     '/mcp-tools',    // tool-registry management (origin-anchored writes proxy here; web UI remote reads)
     '/mcp-plugins',  // third-party plugin review surface (READS only over the relay; enable/disable/grant are loopback-guarded in the handler)
     '/assist-content', // bootstrap/guide content registry (origin-anchored writes proxy here; web UI remote reads)
+    '/backlog',       // backlog/feature-idea graph registry (origin-anchored writes proxy here; web UI remote reads)
     '/session-messages', // cross-node session-to-session messaging (node-routed)
     '/mission',       // mission CRUD + controller-session operability (node-routed: chat with the leader's controller from any node)
     '/data',          // generic data service (access-key gated; see routes/core/data.routes.ts)
