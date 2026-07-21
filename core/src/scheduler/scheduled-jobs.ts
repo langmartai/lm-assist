@@ -292,6 +292,21 @@ export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
       updatedAt: at,
     },
     { id: 'auth-monitor', name: 'Auth monitor', description: 'Refresh Claude Code OAuth + track claude.ai cookie health into a per-node snapshot (browser-free).', type: 'auth-monitor', enabled: true, intervalMinutes: 15, config: {}, lastRunAt: null, lastResult: null, lastStatus: null, builtin: true, createdAt: at, updatedAt: at },
+    {
+      id: 'worktree-gc',
+      name: 'Worktree GC',
+      description: 'Reclaim disk from parked worktrees: remove CLEAN+MERGED worktrees of done/archived missions (dirty/unmerged/active are never touched; git re-verifies on remove), and trim idle .next build caches in kept ones. Born from the 2026-07-21 disk-full incident.',
+      type: 'worktree-gc',
+      enabled: true,
+      intervalMinutes: 360,
+      config: { dryRun: false, idleCacheHours: 24, staleNoMissionDays: 7 },
+      lastRunAt: null,
+      lastResult: null,
+      lastStatus: null,
+      builtin: true,
+      createdAt: at,
+      updatedAt: at,
+    },
   ];
 }
 
@@ -406,6 +421,11 @@ class ScheduledJobs {
     {
       const { registerStallMonitor } = require('../monitor/stall-monitor');
       registerStallMonitor(this);
+    }
+
+    {
+      const { registerWorktreeGc } = require('./worktree-gc');
+      registerWorktreeGc(this);
     }
 
     {

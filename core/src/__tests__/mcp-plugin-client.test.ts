@@ -176,7 +176,7 @@ test('spawn → handshake → tools/list → tools/call round-trip', async () =>
   assert.deepEqual(tools.map((t) => t.name).sort(), ['echo', 'env_dump']);
   const res = await p.call('echo', { a: 1 });
   assert.equal(res.isError, undefined);
-  assert.match(res.content[0].text, /got:/);
+  assert.match(res.content[0].text ?? '', /got:/);
   await p.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -186,7 +186,7 @@ test('the spawned process really has no parent credentials (end-to-end env proof
   const { root, dir, scratch, manifest } = fixture('good');
   const p = await spawnPlugin({ name: 'fix', dir, manifest, scratchDir: scratch, grants: {} });
   const res = await p.call('env_dump', {});
-  const childEnv = JSON.parse(res.content[0].text) as Record<string, string>;
+  const childEnv = JSON.parse(res.content[0].text ?? '') as Record<string, string>;
   assert.equal(childEnv.ANTHROPIC_API_KEY, undefined, 'REAL LEAK: credential reached the child process');
   assert.equal(childEnv.HOME, scratch);
   await p.close();
@@ -227,7 +227,7 @@ test('an oversized result is truncated and flagged, never passed through whole',
   const bytes = Buffer.byteLength(res.content.map((c) => c.text).join(''), 'utf8');
   assert.ok(bytes <= PLUGIN_LIMITS.maxResultBytes + 1024, `result ${bytes} bytes exceeded the 1 MiB cap`);
   assert.equal(res.isError, true, 'exceeding the cap is an error outcome');
-  assert.match(res.content[0].text, /truncat|too large|cap/i);
+  assert.match(res.content[0].text ?? '', /truncat|too large|cap/i);
   await p.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -236,7 +236,7 @@ test('concurrent calls are capped at the contracted limit', async () => {
   const { root, dir, scratch, manifest } = fixture('concurrent');
   const p = await spawnPlugin({ name: 'fix', dir, manifest, scratchDir: scratch, grants: {} });
   const results = await Promise.all(Array.from({ length: 10 }, () => p.call('work', {})));
-  const peak = Math.max(...results.map((r) => Number(r.content[0].text)));
+  const peak = Math.max(...results.map((r) => Number(r.content[0].text ?? '')));
   assert.ok(peak <= PLUGIN_LIMITS.maxConcurrentCalls,
     `peak in-flight ${peak} exceeded the cap of ${PLUGIN_LIMITS.maxConcurrentCalls}`);
   await p.close();

@@ -69,7 +69,7 @@ test('local plugin executes locally — never forwarded', async () => {
   });
   _configureFleetPlugins(deps);
   const r = await callExtToolFleetAware(CHART, {});
-  assert.strictEqual(r.content[0].text, `local:${CHART}`);
+  assert.strictEqual(r.content[0].text ?? '', `local:${CHART}`);
   assert.strictEqual(deps.calls.forwarded.length, 0);
 });
 
@@ -80,8 +80,8 @@ test('non-owner forwards one hop to the owner with noForward:true', async () => 
   assert.strictEqual(deps.calls.forwarded.length, 1);
   assert.strictEqual(deps.calls.forwarded[0].node, 'gw-owner');
   assert.deepStrictEqual(deps.calls.forwarded[0].body, { tool: CHART, args: { a: 1 }, noForward: true });
-  assert.ok(r.content.some((c) => c.text.includes('NATGAS summary')));
-  assert.ok(r.content.some((c) => c.text.includes('executed on gw-owner')), 'provenance note missing');
+  assert.ok(r.content.some((c) => c.text?.includes('NATGAS summary')));
+  assert.ok(r.content.some((c) => c.text?.includes('executed on gw-owner')), 'provenance note missing');
 });
 
 test('noForward call never bounces — executes (fails) locally', async () => {
@@ -89,7 +89,7 @@ test('noForward call never bounces — executes (fails) locally', async () => {
   _configureFleetPlugins(deps);
   const r = await callExtToolFleetAware(CHART, {}, { noForward: true });
   assert.strictEqual(deps.calls.forwarded.length, 0);
-  assert.strictEqual(r.content[0].text, `local:${CHART}`);
+  assert.strictEqual(r.content[0].text ?? '', `local:${CHART}`);
 });
 
 test('no owner anywhere → falls back to the local aggregator error', async () => {
@@ -100,7 +100,7 @@ test('no owner anywhere → falls back to the local aggregator error', async () 
   _configureFleetPlugins(deps);
   const r = await callExtToolFleetAware(CHART, {});
   assert.strictEqual(r.isError, true);
-  assert.ok(r.content[0].text.includes('no plugin named'));
+  assert.ok(r.content[0].text?.includes('no plugin named'));
 });
 
 test('forward failure reports the owner + reason as a tool error', async () => {
@@ -110,8 +110,8 @@ test('forward failure reports the owner + reason as a tool error', async () => {
   _configureFleetPlugins(deps);
   const r = await callExtToolFleetAware(CHART, {});
   assert.strictEqual(r.isError, true);
-  assert.ok(r.content[0].text.includes('gw-owner'));
-  assert.ok(r.content[0].text.includes('relay down'));
+  assert.ok(r.content[0].text?.includes('gw-owner'));
+  assert.ok(r.content[0].text?.includes('relay down'));
 });
 
 test('peer probe errors fail open and are negative-cached briefly', async () => {
@@ -135,6 +135,6 @@ test('non-ext names pass straight to local dispatch', async () => {
   const deps = makeDeps();
   _configureFleetPlugins(deps);
   const r = await callExtToolFleetAware('not_a_plugin_tool', {});
-  assert.strictEqual(r.content[0].text, 'local:not_a_plugin_tool');
+  assert.strictEqual(r.content[0].text ?? '', 'local:not_a_plugin_tool');
   assert.strictEqual(deps.calls.forwarded.length, 0);
 });

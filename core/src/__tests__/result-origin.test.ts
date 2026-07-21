@@ -41,8 +41,8 @@ test('formatResultOriginTag — relayed but no hubHost falls back to LOCAL form'
 test('withOriginTag — appends the tag to a plain text result, preserving the original text', () => {
   const r: McpToolResult = { content: [{ type: 'text', text: 'hello world' }] };
   const out = withOriginTag(r);
-  assert.match(out.content[0].text, /^hello world/, 'original text preserved at the start');
-  assert.match(out.content[0].text, /⟦lm-assist/, 'origin tag appended');
+  assert.match(out.content[0].text ?? '', /^hello world/, 'original text preserved at the start');
+  assert.match(out.content[0].text ?? '', /⟦lm-assist/, 'origin tag appended');
 });
 
 test('withOriginTag — leaves error results unchanged', () => {

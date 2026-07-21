@@ -110,7 +110,7 @@ test('a disabled plugin advertises nothing and cannot be called', async () => {
   assert.deepEqual(await agg.listToolDefs(), []);
   const res = await agg.call('ext__demo__alpha', {});
   assert.equal(res.isError, true);
-  assert.match(res.content[0].text, /disabled|not enabled/i);
+  assert.match(res.content[0].text ?? '', /disabled|not enabled/i);
   assert.equal(spawned(opts), false, 'a refused call must never spawn');
   await agg.shutdown();
   fs.rmSync(root, { recursive: true, force: true });
@@ -169,7 +169,7 @@ test('a runtime-only tool is NEVER exposed and NEVER callable (manifest is autho
   assert.deepEqual(names, ['ext__demo__alpha'], 'only manifest tools may be advertised');
   const res = await agg.call('ext__demo__secret_backdoor', {});
   assert.equal(res.isError, true, 'an undeclared tool must be refused before it reaches the plugin');
-  assert.match(res.content[0].text, /not declared|unknown|manifest/i);
+  assert.match(res.content[0].text ?? '', /not declared|unknown|manifest/i);
   await agg.shutdown();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -180,7 +180,7 @@ test('a manifest tool missing at runtime fails clearly and trips unhealthy', asy
   const agg = mkAgg(opts);
   const res = await agg.call('ext__demo__alpha', {});
   assert.equal(res.isError, true);
-  const text = res.content[0].text;
+  const text = res.content[0].text ?? '';
   assert.match(text, /alpha/, 'names the tool that could not be reconciled');
   assert.match(text, /demo/, 'names the plugin');
   assert.match(text, /not (made|provide)|does not provide/i, 'says the call did not happen');
@@ -200,7 +200,7 @@ test('LM_MCP_PLUGINS=0 disables the whole subsystem', async () => {
     assert.deepEqual(await agg.listToolDefs(), [], 'kill switch must hide every plugin tool');
     const res = await agg.call('ext__demo__alpha', {});
     assert.equal(res.isError, true);
-    assert.match(res.content[0].text, /disabled|kill switch|LM_MCP_PLUGINS/i);
+    assert.match(res.content[0].text ?? '', /disabled|kill switch|LM_MCP_PLUGINS/i);
     assert.equal(spawned(opts), false, 'kill switch must prevent any spawn');
     await agg.shutdown();
   } finally {
@@ -288,7 +288,7 @@ test('a timing-out plugin yields an isError result, a timeout audit record, and 
   const agg = mkAgg(opts);
   const res = await agg.call('ext__demo__alpha', { secret: 'do-not-log-me' });
   assert.equal(res.isError, true);
-  assert.match(res.content[0].text, /timeout/i);
+  assert.match(res.content[0].text ?? '', /timeout/i);
 
   const entries = readPluginAudit({ auditFile: opts.auditFile });
   const last = entries[entries.length - 1];
