@@ -243,7 +243,27 @@ code, pre, .font-mono {
   align-items: center;
   padding: 12px 0;
   gap: 2px;
+  overflow: hidden; /* outer never scrolls; the nav-items region does when short */
 }
+
+/* Scrollable middle region: the nav icons scroll when the viewport is too short
+   to show them all, while the logo (top) and settings (bottom) stay pinned. */
+.sidebar-scroll {
+  flex: 1;
+  min-height: 0;            /* lets the flex child actually shrink + scroll */
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  scrollbar-width: none;   /* Firefox: hide the scrollbar, keep scroll */
+}
+.sidebar-scroll::-webkit-scrollbar { width: 0; height: 0; }
+.sidebar > .sidebar-item:first-child,       /* logo */
+.sidebar > .sidebar-separator,
+.sidebar > .nav-item-pinned { flex-shrink: 0; }
 
 .sidebar-item {
   width: 40px;

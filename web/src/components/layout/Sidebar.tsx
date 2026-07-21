@@ -104,24 +104,24 @@ export function Sidebar() {
         />
       </div>
 
-      {/* Nav items */}
-      {navItems.map((item) => {
-        const isActive = effectivePath === item.href || effectivePath.startsWith(item.href + '/');
-        const Icon = item.icon;
-        return (
-          <NavItem key={item.href} href={item.href} basePath={proxy.basePath}>
-            <div
-              className={`sidebar-item ${isActive ? 'active' : ''}`}
-              title={item.label}
-            >
-              <Icon size={18} strokeWidth={isActive ? 2 : 1.5} />
-            </div>
-          </NavItem>
-        );
-      })}
-
-      {/* Spacer */}
-      <div style={{ flex: 1 }} />
+      {/* Nav items — scrollable middle region so lower icons stay reachable on
+          short viewports (logo above + settings below stay pinned). */}
+      <div className="sidebar-scroll">
+        {navItems.map((item) => {
+          const isActive = effectivePath === item.href || effectivePath.startsWith(item.href + '/');
+          const Icon = item.icon;
+          return (
+            <NavItem key={item.href} href={item.href} basePath={proxy.basePath}>
+              <div
+                className={`sidebar-item ${isActive ? 'active' : ''}`}
+                title={item.label}
+              >
+                <Icon size={18} strokeWidth={isActive ? 2 : 1.5} />
+              </div>
+            </NavItem>
+          );
+        })}
+      </div>
 
       {/* Separator + Settings */}
       <div className="sidebar-separator" />
