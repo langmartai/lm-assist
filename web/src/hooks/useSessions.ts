@@ -5,7 +5,7 @@ import { useAppMode } from '@/contexts/AppModeContext';
 import { useMachineContext } from '@/contexts/MachineContext';
 import type { Session } from '@/lib/types';
 import type { BatchCheckResponse } from '@/lib/api-client';
-import { workerFetch, detectProxyInfo } from '@/lib/api-client';
+import { workerFetch, detectProxyInfo, getLastLocalSessionsTotal } from '@/lib/api-client';
 
 export type SessionFilter = {
   machineId: string | null;
@@ -120,14 +120,20 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
           ? [selectedMachineId]
           : onlineMachines.map(m => m.id);
 
+        const lim = !loadedAllRef.current && options.initialLimit ? { limit: options.initialLimit } : undefined;
         if (machineIds.length === 0) {
           // No machines yet -- fall back to local-only fetch
-          sessions = await apiClient.getSessions();
+          sessions = await apiClient.getSessions(undefined, lim);
         } else {
           const results = await Promise.allSettled(
-            machineIds.map(id => apiClient.getSessions(id))
+            machineIds.map(id => apiClient.getSessions(id, lim))
           );
           sessions = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
+        }
+        if (lim) {
+          const total = getLastLocalSessionsTotal();
+          setListTotal(total);
+          setListTruncated(true);
         }
       } else {
         // Hub mode: parallel fetch from all online machines
@@ -135,11 +141,13 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
           ? [selectedMachineId]
           : onlineMachines.map(m => m.id);
 
+        const lim = !loadedAllRef.current && options.initialLimit ? { limit: options.initialLimit } : undefined;
         const results = await Promise.allSettled(
-          machineIds.map(id => apiClient.getSessions(id))
+          machineIds.map(id => apiClient.getSessions(id, lim))
         );
 
         sessions = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
+        if (lim) setListTruncated(true);
       }
 
       // Hide sessions with 0 user prompts AND no turns (truly empty sessions).
@@ -198,6 +206,12 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
   // NOTE: knownSessionCount/knownLatestModified track the server's single-project
   // values (echoed back for change detection), NOT the client's all-project count.
   const updateFromBatchCheck = useCallback((listStatus: BatchCheckResponse['listStatus']) => {
+    // Fast-first-paint mode: the batch-check listStatus carries the FULL
+    // session list and would silently replace our limited slice with
+    // thousands of rows (defeating the fast paint). Until the user loads
+    // all, ignore list replacement — per-session updates still flow via
+    // the sessions[] side of batch-check for the visible rows.
+    if (!loadedAllRef.current) return;
     if (!listStatus) return;
 
     // Always echo back the server's values for next poll's change detection.

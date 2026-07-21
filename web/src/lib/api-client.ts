@@ -1,3 +1,8 @@
+// Total session count reported by the last LIMITED sessions-list fetch (fast
+// first paint on hosts with many sessions) — set by getSessions({limit}).
+let lastLocalSessionsTotal: number | null = null;
+export function getLastLocalSessionsTotal(): number | null { return lastLocalSessionsTotal; }
+
 import type {
   Machine,
   Session,
@@ -419,11 +424,17 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
       return await mergeHubMachines(localMachine, hubMachines);
     },
 
-    async getSessions(machineId?: string): Promise<Session[]> {
+    async getSessions(machineId?: string, opts?: { limit?: number }): Promise<Session[]> {
       // Single call to get all sessions across all projects
       // Uses ifModifiedSince to avoid re-fetching unchanged data
       const params = new URLSearchParams();
-      if (cachedSessionsLastModified) {
+      // A LIMITED fetch is a fast-first-paint slice: no ifModifiedSince (we want
+      // the newest N regardless of cache) and NO cache writes below (a partial
+      // list must never become the ifModifiedSince merge base, or older
+      // sessions would vanish from every later poll).
+      if (opts?.limit && opts.limit > 0) {
+        params.set('limit', String(opts.limit));
+      } else if (cachedSessionsLastModified) {
         params.set('ifModifiedSince', cachedSessionsLastModified);
       }
       const qs = params.toString() ? `?${params.toString()}` : '';
@@ -489,6 +500,11 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
       } else {
         // Full response (first fetch or all sessions returned)
         mapped = sessions.map(mapSession);
+      }
+
+      if (opts?.limit && opts.limit > 0) {
+        lastLocalSessionsTotal = typeof total === 'number' ? total : null;
+        return mapped;
       }
 
       // Update cache for next call
@@ -879,7 +895,7 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
       }));
     },
 
-    async getSessions(machineId?: string): Promise<Session[]> {
+    async getSessions(machineId?: string, opts?: { limit?: number }): Promise<Session[]> {
       if (!machineId) throw new Error('Hub mode requires machineId');
       const machine = { id: machineId, hostname: machineId, platform: 'linux', status: 'online' as const };
       // Try to get machine info
@@ -889,7 +905,7 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
         if (m) Object.assign(machine, m);
       } catch { /* use defaults */ }
 
-      const result = await hubFetch<any>(machineApi(machineId, '/sessions'));
+      const result = await hubFetch<any>(machineApi(machineId, `/sessions${opts?.limit ? `?limit=${opts.limit}` : ''}`));
       const sessions: any[] = Array.isArray(result) ? result : result.sessions || [];
       return sessions.map(s => ({
         sessionId: s.sessionId || s.id,
@@ -1315,17 +1331,17 @@ export function createHybridClient(options: HybridClientOptions): ApiClient {
       return localClient.getMachines();
     },
 
-    async getSessions(machineId?: string): Promise<Session[]> {
+    async getSessions(machineId?: string, opts?: { limit?: number }): Promise<Session[]> {
       if (isLocal(machineId)) {
         // Use fast local API — sessions come with machineId = local gatewayId
-        const sessions = await localClient.getSessions();
+        const sessions = await localClient.getSessions(undefined, opts);
         // Stamp sessions with the gateway ID so they can be matched to the correct machine
         return sessions.map(s => ({
           ...s,
           machineId: localGatewayId,
         }));
       }
-      return hubClient.getSessions(machineId);
+      return hubClient.getSessions(machineId, opts);
     },
 
     async getSessionDetail(sessionId, machineId): Promise<SessionDetail> {
