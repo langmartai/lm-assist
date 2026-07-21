@@ -24,6 +24,7 @@ import {
 import { coarseActor, type MissionActor } from '../../mission/mission-model';
 import { thisNode } from '../../mission/mission-store';
 import { resolveMcpActor } from '../../mission/mission-actor';
+import { resolveCallerCandidates, type CallerCandidates } from '../../mcp-server/mcp-session-resolver';
 import { anchorToOrigin, realOriginAnchor, type OriginAnchorDeps } from './origin-anchor';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string } }
@@ -36,14 +37,35 @@ export function realBacklogOriginAnchor(): OriginAnchorDeps {
   return realOriginAnchor(BACKLOG_DATASET);
 }
 
+/** Pure: pick a conversation/session actor from the recency candidates (exported for
+ *  tests). Used when an MCP call carries NO tool-call id — claude.ai WEB conversations
+ *  are not tagged with `claudecode/toolUseId`, so without this they'd all collapse to
+ *  the anonymous coarse actor and backlog_discuss could never self-attribute them. */
+export function actorFromCandidates(c: CallerCandidates, node: string, now: number): MissionActor | null {
+  if (c.claudeAi) {
+    return { kind: 'claudeai-conversation', id: c.claudeAi.id, channel: 'mcp', label: c.claudeAi.label, toolUseId: null, at: now };
+  }
+  if (c.claudeCode) {
+    return { kind: 'local-session', id: c.claudeCode.id, node, channel: 'mcp', label: c.claudeCode.label, toolUseId: null, at: now };
+  }
+  return null;
+}
+
 /** Resolve the writing actor from the `_actor` transport hint (the mission.routes
- *  pattern): MCP callers resolve to their precise session/conversation; everything
- *  else is a coarse api actor. Consumes (deletes) the hint. */
+ *  pattern): MCP callers resolve to their precise session/conversation; a web
+ *  conversation (no tool-call id) resolves by RECENCY (the mcp-session-resolver
+ *  heuristic); everything else is a coarse api actor. Consumes (deletes) the hint. */
 async function actorFor(b: Record<string, unknown>): Promise<MissionActor> {
   const hint = b._actor as { channel?: string; toolUseId?: string | null } | undefined;
   delete (b as Record<string, unknown>)._actor;
   if (hint && hint.channel === 'mcp') {
-    return resolveMcpActor(hint.toolUseId, thisNode(), Date.now());
+    const resolved = await resolveMcpActor(hint.toolUseId, thisNode(), Date.now());
+    if (resolved.kind !== 'user') return resolved;
+    try {
+      const fallback = actorFromCandidates(await resolveCallerCandidates(), thisNode(), Date.now());
+      if (fallback) return fallback;
+    } catch { /* recency resolution is best-effort */ }
+    return resolved;
   }
   return coarseActor('api', thisNode(), Date.now());
 }

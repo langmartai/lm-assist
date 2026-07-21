@@ -230,3 +230,14 @@ test('reads NEVER write: list/get/graph/history leave the port untouched', async
   await handleBacklogGet('bl_nope9999', port);
   assert.equal(port.puts(), before, 'no read path performed a write');
 });
+
+test('actorFromCandidates: conversation by recency when no tool-call id; code session next; null when none', async () => {
+  const { actorFromCandidates } = await import('../routes/core/backlog.routes');
+  const conv = actorFromCandidates({ claudeAi: { id: 'conv-9', label: 'Backlog chat' }, claudeCode: { id: 'cc-1' }, resolvedAt: 1 }, 'gw-117', 5);
+  assert.equal(conv!.kind, 'claudeai-conversation');
+  assert.equal(conv!.id, 'conv-9');
+  const code = actorFromCandidates({ claudeCode: { id: 'cc-1', label: '/repo' }, resolvedAt: 1 }, 'gw-117', 5);
+  assert.equal(code!.kind, 'local-session');
+  assert.equal(code!.node, 'gw-117');
+  assert.equal(actorFromCandidates({ resolvedAt: 1 }, 'gw-117', 5), null);
+});
