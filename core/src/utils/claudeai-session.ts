@@ -693,6 +693,14 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
    * the new flow must opt in.
    */
   autoApproveTools?: boolean;
+  /**
+   * Live event tap for streaming callers: called once per parsed upstream SSE
+   * event as `(type, data)`, plus synthetic `lm_*` progress events during the
+   * auto-approve continuation phase (`lm_approval_fired`, `lm_approvals`,
+   * `lm_continuation_text`). Callback errors are swallowed. Purely additive —
+   * absent callback = unchanged behavior.
+   */
+  onEvent?: (type: string, data: unknown) => void;
 } = {}): Promise<{
   status: number;
   statusText: string;
@@ -841,7 +849,9 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
         if (!evMatch || !dataMatch) continue;
         let parsed: any = dataMatch[1].trim();
         try { parsed = JSON.parse(parsed); } catch {}
-        events.push({ type: evMatch[1].trim(), data: parsed });
+        const evType = evMatch[1].trim();
+        events.push({ type: evType, data: parsed });
+        try { opts.onEvent?.(evType, parsed); } catch { /* tap must never break the drain */ }
         if (parsed && typeof parsed === 'object') {
           if (parsed.delta?.text) text += parsed.delta.text;
           else if (typeof parsed.completion === 'string') text += parsed.completion;
@@ -883,6 +893,7 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
                   },
                 ),
               );
+              try { opts.onEvent?.('lm_approval_fired', { toolUseId: tu.id, toolName: tu.name }); } catch { /* tap */ }
             }
           }
         }
@@ -903,6 +914,7 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
   if (approvalPromises.length > 0) {
     approvals = await Promise.all(approvalPromises);
     debugAA(`approvals done: ${approvals.map(a => `${a.toolName}=${a.status}`).join(', ')}`);
+    try { opts.onEvent?.('lm_approvals', approvals); } catch { /* tap */ }
     const POLL_INTERVAL = 1500;
     const POLL_MAX_MS = Math.min(opts.timeoutMs ?? 120_000, 60_000);
     const pollStart = Date.now();
@@ -939,6 +951,7 @@ export async function sendMessage(convUuid: string, prompt: string, opts: {
         } else {
           stable = 0;
           lastLen = finalText.length;
+          try { opts.onEvent?.('lm_continuation_text', { text: finalText }); } catch { /* tap */ }
         }
       } catch (e) {
         debugAA(`poll error: ${(e as Error).message}`);

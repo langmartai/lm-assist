@@ -6,6 +6,7 @@
 
 import * as http from 'http';
 import { startApiTokenRotation, isValidToken, apiAuthEnabled, isLocalAddress } from './auth/api-token';
+import { validateScopedRequest } from './auth/scoped-token';
 import { isEnrollExempt } from './auth/enroll-exempt';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -520,7 +521,10 @@ export class TierRestServer {
       if (apiAuthEnabled() && authPath !== '/health' && !exemptLocal && !enrollExempt && !whatsappWebhookExempt) {
         const rawKey = req.headers['x-api-key'];
         const providedKey = (Array.isArray(rawKey) ? rawKey[0] : rawKey) || this.getQueryParam(req.url || '', 'apiKey');
-        const okAuth = isValidToken(providedKey) || (this.options.apiKey && providedKey === this.options.apiKey);
+        // Full ring token first; then the narrow scoped-token fallback (browser
+        // chat clients — only the scope's route allow-list, see auth/scoped-token.ts).
+        const okAuth = isValidToken(providedKey) || (this.options.apiKey && providedKey === this.options.apiKey)
+          || validateScopedRequest(providedKey, req.method || 'GET', authPath);
         if (!okAuth) {
           this.sendJson(res, 401, { success: false, error: { code: 'UNAUTHORIZED', message: 'Invalid or missing API token' } });
           return;
@@ -559,6 +563,19 @@ export class TierRestServer {
       if (url === '/mcp' && (req.method === 'POST' || req.method === 'GET' || req.method === 'DELETE')) {
         const { handleMcpRequest } = await import('./routes/core/mcp.routes');
         await handleMcpRequest(req, res);
+        return;
+      }
+    }
+
+    // Streaming claude.ai completion (embedded chat clients) — SSE needs the
+    // raw socket, so it's special-cased like /mcp and the cowork stream. Auth
+    // already ran above (full token or a 'claude-ai-chat' scoped token).
+    {
+      const url = (req.url || '').split('?')[0];
+      const m = req.method === 'POST' && url.match(/^\/claude-ai\/conversations\/(?<uuid>[0-9a-fA-F-]{36})\/completion\/stream$/);
+      if (m) {
+        const { handleCompletionStream } = await import('./routes/core/claude-ai.routes');
+        await handleCompletionStream(req, res, m.groups!.uuid);
         return;
       }
     }

@@ -212,6 +212,45 @@ function catchOAuth(err: unknown) {
   };
 }
 
+/**
+ * Resolve the SPA tools array + auto-approve for a driven completion. A caller
+ * may pass an explicit SPA `tools` array, OR ask lm-assist to BUILD it for the
+ * langmart connector via `enableConnectorTools` (true = all the connector's
+ * tools, or string[] of tool names) so a driver doesn't have to hand-craft the
+ * SPA shape. Auto-approve defaults ON when we build the tools (the intent is
+ * to DRIVE tool calls, so the gates should be released). Shared by the
+ * blocking /completion route and the streaming /completion/stream handler.
+ */
+async function resolveDrivenTools(body: Record<string, unknown>): Promise<{ toolsArr?: unknown[]; autoApprove?: boolean }> {
+  let toolsArr: unknown[] | undefined = Array.isArray(body.tools) ? body.tools : undefined;
+  let autoApprove: boolean | undefined = typeof body.autoApproveTools === 'boolean'
+    ? body.autoApproveTools
+    : (typeof body.auto_approve_tools === 'boolean' ? body.auto_approve_tools : undefined);
+  const enableConn = body.enableConnectorTools ?? body.enable_connector_tools;
+  if (!toolsArr && enableConn) {
+    try {
+      const names = Array.isArray(enableConn) ? enableConn.map(String) : undefined;
+      const roster = await listMcpRemoteServers();
+      const conn = pickLmAssistConnector((roster.body?.servers as unknown[] as never) || []);
+      if (conn) {
+        // Live defs = compiled-in built-ins + dynamically-registered third-party
+        // plugin tools (ext__…). LM_ASSIST_TOOL_DEFS alone is baked at build time,
+        // so plugin tools could NEVER be injected on a driven turn even when
+        // claude.ai's connector already lists them (root-caused 2026-07-21:
+        // driven e2e kept answering TOOLS-MISSING for ext__chart-context__*).
+        let defs = LM_ASSIST_TOOL_DEFS as unknown as import('../../mcp-server/connector-tools-array').ToolDef[];
+        try {
+          const ext = await getPluginAggregator().listToolDefs();
+          if (ext.length) defs = [...defs, ...ext];
+        } catch { /* plugin subsystem disabled → built-ins only */ }
+        toolsArr = buildConnectorToolsArray(conn, defs as never, names);
+        if (autoApprove === undefined) autoApprove = true;
+      }
+    } catch { /* connector discovery failed → proceed with no tools (text-only) */ }
+  }
+  return { toolsArr, autoApprove };
+}
+
 export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
     // GET /claude-ai/session-status[?probe=true]
@@ -1372,7 +1411,7 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
     // POST /claude-ai/conversations/:uuid/completion
     //   Body: { prompt: string, model?, timezone?, locale?, parentMessageUuid?,
     //           attachments?, files?, syncSources?, tools?,
-    //           autoApproveTools? }
+    //           autoApproveTools?, enableConnectorTools? }
     //
     //   WRITE OPERATION — creates real message history in the user's
     //   claude.ai account and consumes tokens. Auto-resolves
@@ -1417,37 +1456,7 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
             error: { code: 'MISSING_PROMPT', message: 'body.prompt is required (non-empty string)' },
           };
         }
-        // Resolve the tools array + auto-approve. A caller may pass an explicit SPA `tools` array, OR
-        // ask lm-assist to BUILD it for the langmart connector via `enableConnectorTools`
-        // (true = all the connector's tools, or string[] of tool names) so a driver doesn't have to
-        // hand-craft the SPA shape. Auto-approve defaults ON when we build the tools (the intent is to
-        // DRIVE tool calls, so the gates should be released).
-        let toolsArr: unknown[] | undefined = Array.isArray(body.tools) ? body.tools : undefined;
-        let autoApprove: boolean | undefined = typeof body.autoApproveTools === 'boolean'
-          ? body.autoApproveTools
-          : (typeof body.auto_approve_tools === 'boolean' ? body.auto_approve_tools : undefined);
-        const enableConn = body.enableConnectorTools ?? body.enable_connector_tools;
-        if (!toolsArr && enableConn) {
-          try {
-            const names = Array.isArray(enableConn) ? enableConn.map(String) : undefined;
-            const roster = await listMcpRemoteServers();
-            const conn = pickLmAssistConnector((roster.body?.servers as unknown[] as never) || []);
-            if (conn) {
-              // Live defs = compiled-in built-ins + dynamically-registered third-party
-              // plugin tools (ext__…). LM_ASSIST_TOOL_DEFS alone is baked at build time,
-              // so plugin tools could NEVER be injected on a driven turn even when
-              // claude.ai's connector already lists them (root-caused 2026-07-21:
-              // driven e2e kept answering TOOLS-MISSING for ext__chart-context__*).
-              let defs = LM_ASSIST_TOOL_DEFS as unknown as import('../../mcp-server/connector-tools-array').ToolDef[];
-              try {
-                const ext = await getPluginAggregator().listToolDefs();
-                if (ext.length) defs = [...defs, ...ext];
-              } catch { /* plugin subsystem disabled → built-ins only */ }
-              toolsArr = buildConnectorToolsArray(conn, defs as never, names);
-              if (autoApprove === undefined) autoApprove = true;
-            }
-          } catch { /* connector discovery failed → proceed with no tools (text-only) */ }
-        }
+        const { toolsArr, autoApprove } = await resolveDrivenTools(body);
         try {
           const r = await sendMessage(uuid, body.prompt, {
             model: typeof body.model === 'string' ? body.model : undefined,
@@ -2203,4 +2212,104 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
       ];
+}
+
+// ---------------------------------------------------------------------------
+// POST /claude-ai/conversations/:uuid/completion/stream — streaming variant of
+// the blocking /completion route, for embedded browser chat clients.
+//
+// Emits Server-Sent Events over the raw response socket (special-cased in
+// rest-server.ts because the buffered ApiResponse can't stream). Event frames:
+//   - every upstream claude.ai SSE event, verbatim under its original type
+//     (message_start, content_block_start, content_block_delta, …) — the
+//     client renders text deltas + tool_use starts live;
+//   - synthetic lm_* progress events from the auto-approve phase
+//     (lm_approval_fired, lm_approvals, lm_continuation_text);
+//   - one final `lm_result` with the blocking route's compact result shape
+//     (status, text, uuids, approvals, eventCount) — the client treats this
+//     as end-of-turn; then the stream closes.
+//   - on failure: `lm_error` { message } and the stream closes.
+//
+// Body: same as the blocking route ({ prompt, model?, enableConnectorTools?,
+// autoApproveTools?, timeoutMs?, attachments?, … }). Auth (full or scoped
+// token) has already run in rest-server before this is called.
+//
+// Client disconnect does NOT abort the upstream turn — the completion keeps
+// running server-side so the turn still lands in the conversation, and the
+// client picks it up from GET /:uuid/messages on reconnect.
+// ---------------------------------------------------------------------------
+export async function handleCompletionStream(
+  req: import('http').IncomingMessage,
+  res: import('http').ServerResponse,
+  uuid: string,
+): Promise<void> {
+  const sendJsonErr = (status: number, code: string, message: string): void => {
+    if (!res.headersSent) res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: false, error: { code, message } }));
+  };
+
+  // Read + parse the body ourselves (special-cased before parseRequest).
+  let body: Record<string, unknown>;
+  try {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const c of req) {
+      size += (c as Buffer).length;
+      if (size > 2 * 1024 * 1024) throw new Error('body too large');
+      chunks.push(c as Buffer);
+    }
+    body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+  } catch (err) {
+    return sendJsonErr(400, 'BAD_BODY', (err as Error).message);
+  }
+  if (typeof body.prompt !== 'string' || !body.prompt) {
+    return sendJsonErr(400, 'MISSING_PROMPT', 'body.prompt is required (non-empty string)');
+  }
+
+  let closed = false;
+  req.on('close', () => { closed = true; });
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  const emit = (type: string, data: unknown): void => {
+    if (closed) return;
+    try { res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`); } catch { closed = true; }
+  };
+  // Keep intermediaries from idling the socket out during long tool phases.
+  const hb = setInterval(() => { if (!closed) { try { res.write(':hb\n\n'); } catch { closed = true; } } }, 15_000);
+  hb.unref?.();
+
+  try {
+    const { toolsArr, autoApprove } = await resolveDrivenTools(body);
+    const r = await sendMessage(uuid, body.prompt, {
+      model: typeof body.model === 'string' ? body.model : undefined,
+      timezone: typeof body.timezone === 'string' ? body.timezone : undefined,
+      locale: typeof body.locale === 'string' ? body.locale : undefined,
+      parentMessageUuid: typeof body.parentMessageUuid === 'string' ? body.parentMessageUuid : undefined,
+      tools: toolsArr,
+      attachments: Array.isArray(body.attachments) ? body.attachments : undefined,
+      files: Array.isArray(body.files) ? (body.files as string[]) : undefined,
+      syncSources: Array.isArray(body.syncSources) ? (body.syncSources as string[])
+        : Array.isArray(body.sync_sources) ? (body.sync_sources as string[]) : undefined,
+      timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
+      autoApproveTools: autoApprove,
+      onEvent: emit,
+    });
+    emit('lm_result', {
+      status: r.status,
+      text: r.text,
+      humanMessageUuid: r.humanMessageUuid,
+      assistantMessageUuid: r.assistantMessageUuid,
+      eventCount: r.events.length,
+      approvals: r.approvals,
+    });
+  } catch (err) {
+    emit('lm_error', { message: (err as Error).message });
+  } finally {
+    clearInterval(hb);
+    try { res.end(); } catch { /* already gone */ }
+  }
 }
