@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import {
   runSupervisorTick, pickStrayControllers, CONTROLLER_ADOPT_RESUME_DIRECTIVE,
+  _resetNotMonitorStreak,
   type SupervisorDeps,
 } from '../mission/mission-controller';
 
@@ -111,7 +112,7 @@ test('sweep failures never sink the tick', async () => {
   assert.equal(r.action, 'idle');
 });
 
-test('non-leader: no sweep, no adopt-drive (teardown path unchanged)', async () => {
+test('non-leader: no sweep, no adopt-drive; teardown only after the anti-flap streak', async () => {
   const killed: string[] = [];
   let torn = false;
   const deps = baseDeps({
@@ -121,8 +122,14 @@ test('non-leader: no sweep, no adopt-drive (teardown path unchanged)', async () 
     killStrayTmux: async (n) => { killed.push(n); },
     bootAdopt: { done: () => false, mark: () => {} },
   });
-  const r = await runSupervisorTick(deps);
-  assert.equal(r.action, 'teardown');
+  // One flappy not-monitor answer must NOT tear down (decideSupervisor requires a
+  // ≥2-tick confident streak); the second consecutive tick does.
+  _resetNotMonitorStreak();
+  const first = await runSupervisorTick(deps);
+  assert.equal(first.action, 'idle', 'single not-monitor tick is anti-flap idle');
+  assert.equal(torn, false);
+  const second = await runSupervisorTick(deps);
+  assert.equal(second.action, 'teardown');
   assert.equal(torn, true);
   assert.deepEqual(killed, [], 'sweep is leader-only');
 });
