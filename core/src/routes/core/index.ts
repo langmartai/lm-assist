@@ -8,6 +8,7 @@ import type { RouteHandler, RouteContext } from '../index';
 
 // Import route factories (20 routes)
 import { createHealthRoutes } from './health.routes';
+import { createAuthTokensRoutes } from './auth-tokens.routes';
 import { createSessionsRoutes } from './sessions.routes';
 import { createSessionProjectsRoutes } from './session-projects.routes';
 import { createTasksRoutes } from './tasks.routes';
@@ -81,6 +82,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createAgentRoutes(ctx),
     ...createGithubRoutes(ctx),
     ...createHealthRoutes(ctx),
+    ...createAuthTokensRoutes(ctx),
     ...createSessionsRoutes(ctx),
     ...createSessionProjectsRoutes(ctx),
     ...createTasksRoutes(ctx),
