@@ -451,12 +451,15 @@ export async function startCore(config?: ServiceConfig): Promise<{ success: bool
   // Build environment variables to forward
   const forwardEnv: Record<string, string> = {};
   const dotenv = loadEnv();
-  const envKeys = ['ANTHROPIC_API_KEY', 'TIER_AGENT_HUB_URL', 'TIER_AGENT_API_KEY', 'API_PORT', 'WEB_PORT'];
+  const envKeys = ['ANTHROPIC_API_KEY', 'TIER_AGENT_HUB_URL', 'TIER_AGENT_API_KEY', 'API_PORT', 'WEB_PORT', 'LM_HTTPS', 'LM_HTTPS_PORT'];
   for (const key of envKeys) {
     const val = process.env[key] || dotenv[key];
     if (val) forwardEnv[key] = val;
   }
   forwardEnv.API_PORT = String(apiPort);
+  // The HTTPS terminator (LM_HTTPS=1) proxies to the web port — make sure the core
+  // process knows the actual one even when only defaults are in play.
+  if (!forwardEnv.WEB_PORT) forwardEnv.WEB_PORT = String(getConfig(config).webPort);
 
   const child = spawnDetached(
     process.execPath,

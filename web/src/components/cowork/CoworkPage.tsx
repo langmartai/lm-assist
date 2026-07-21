@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Sparkles } from 'lucide-react';
 import { useAppMode } from '@/contexts/AppModeContext';
 import { detectAppMode, resolveConsoleUrl } from '@/lib/api-client';
+import { buildVoiceWsUrl } from '@/lib/voice-url';
 import { CoworkComposer, type CoworkAttachmentRef } from '@/components/cowork/CoworkComposer';
 import { CoworkList } from '@/components/cowork/CoworkList';
 import { CoworkTaskView } from '@/components/cowork/CoworkTaskView';
@@ -45,15 +46,11 @@ export function CoworkPage() {
     if (isRemoteNode) return null;
     try { return resolveConsoleUrl(`${detectAppMode().baseUrl}/cowork/tasks/${sid}/stream`); } catch { return null; }
   }, [isRemoteNode]);
-  // Voice STT needs a DIRECT ws to Core (like SSE) → local mode only. The api-token rides the
-  // query string (browsers can't set WS headers). Null when proxied/remote → voice UI disabled.
+  // Voice STT WebSocket URL — buildVoiceWsUrl is THE shared transport contract
+  // (ws:// direct-to-core on localhost, wss:// same-origin on the LM_HTTPS
+  // terminator, null when the mic can't work here → voice UI hidden).
   const voiceWsUrl = useMemo((): string | null => {
-    if (isRemoteNode) return null;
-    try {
-      const httpUrl = resolveConsoleUrl(`${detectAppMode().baseUrl}/voice/stt/ws`);
-      const token = (window as unknown as { __LM_API_TOKEN__?: string }).__LM_API_TOKEN__ || '';
-      return httpUrl.replace(/^http/, 'ws') + (token ? `?token=${encodeURIComponent(token)}` : '');
-    } catch { return null; }
+    try { return buildVoiceWsUrl({ isRemoteNode }); } catch { return null; }
   }, [isRemoteNode]);
 
   const [mode, setMode] = useState<'chat' | 'cowork'>('cowork');
