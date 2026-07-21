@@ -57,7 +57,8 @@ export interface ExtToolDefsProvider {
 }
 
 export interface McpToolResult {
-  content: Array<{ type: string; text: string }>;
+  /** text blocks carry `text`; image blocks (plugin screenshots etc.) carry base64 `data` + `mimeType`. */
+  content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
   isError?: boolean;
 }
 

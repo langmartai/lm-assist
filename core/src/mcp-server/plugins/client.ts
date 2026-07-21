@@ -25,7 +25,8 @@ import {
 } from './model';
 
 export interface McpToolResultLike {
-  content: Array<{ type: string; text: string }>;
+  /** text blocks carry `text`; image blocks carry base64 `data` + `mimeType`. */
+  content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
   isError?: boolean;
 }
 
@@ -241,13 +242,20 @@ export async function spawnPlugin(opts: SpawnOptions): Promise<SpawnedPlugin> {
   function capResult(raw: unknown): McpToolResultLike {
     const r = (raw ?? {}) as { content?: unknown; isError?: unknown };
     const content = Array.isArray(r.content)
-      ? (r.content as Array<Record<string, unknown>>).map((c) => ({
-        type: typeof c.type === 'string' ? c.type : 'text',
-        text: typeof c.text === 'string' ? c.text : JSON.stringify(c.text ?? ''),
-      }))
+      ? (r.content as Array<Record<string, unknown>>).map((c) => {
+        // Image blocks pass through with their payload fields intact — flattening
+        // them to text would strip data/mimeType and blind the model.
+        if (c.type === 'image' && typeof c.data === 'string' && typeof c.mimeType === 'string') {
+          return { type: 'image', data: c.data, mimeType: c.mimeType };
+        }
+        return {
+          type: typeof c.type === 'string' ? c.type : 'text',
+          text: typeof c.text === 'string' ? c.text : JSON.stringify(c.text ?? ''),
+        };
+      })
       : [{ type: 'text', text: '' }];
 
-    const bytes = content.reduce((n, c) => n + Buffer.byteLength(c.text, 'utf8'), 0);
+    const bytes = content.reduce((n, c) => n + Buffer.byteLength(c.text ?? c.data ?? '', 'utf8'), 0);
     if (bytes > PLUGIN_LIMITS.maxResultBytes) {
       const head = content[0]?.text ?? '';
       const keep = Buffer.from(head, 'utf8').subarray(0, Math.min(4096, PLUGIN_LIMITS.maxResultBytes)).toString('utf8');

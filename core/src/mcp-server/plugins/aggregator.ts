@@ -246,7 +246,7 @@ export function createAggregator(opts: AggregatorOptions = {}): PluginAggregator
       proc.lastUsedAt = Date.now();
       try {
         const res = await proc.client.call(tool, args);   // LOCAL name — the prefix never crosses the boundary
-        const bytes = res.content.reduce((n, c) => n + Buffer.byteLength(c.text, 'utf8'), 0);
+        const bytes = res.content.reduce((n, c) => n + Buffer.byteLength(c.text ?? c.data ?? '', 'utf8'), 0);
         const truncated = res.isError === true && /result too large/.test(res.content[0]?.text ?? '');
         if (res.isError && !truncated) {
           // A tool-level error is the plugin's own business outcome, not a health fault.

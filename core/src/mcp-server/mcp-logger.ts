@@ -65,7 +65,7 @@ export function logToolCall(
   tool: string,
   args: Record<string, unknown>,
   durationMs: number,
-  response: { content: Array<{ type: string; text: string }>; isError?: boolean },
+  response: { content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean },
 ): void {
   try {
     ensureDir();
