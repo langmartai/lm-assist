@@ -594,6 +594,36 @@ export const ccrRemoteStopToolDef = {
     required: ['id'],
   },
 };
+export const ccrRestartToolDef = {
+  name: 'ccr_restart',
+  description:
+    'RESTART a LOCAL Claude Code session\'s process so it re-fetches its MCP tool list (Claude Code loads MCP tools at process start ONLY — no in-place reload exists; run refresh_connector_tools/sync-connector FIRST so the refreshed list is what the new process fetches). Corruption-safe by construction: stops existing CCR bridges for the session → KILLS the live owner (SIGTERM→verify→SIGKILL→verify) → an independent re-check must confirm NOTHING still owns the session → only then spawns the fresh `claude --resume`. A BUSY (mid-turn) session is refused without force:true (killing mid-write risks corrupting the turn); a kill that does not verify dead ABORTS (CONFLICT kill-failed) — it never resumes over a live process. Same session id, same history, fresh process + fresh tools.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      session_id: { type: 'string', description: 'Claude Code session UUID to restart.' },
+      force: { type: 'boolean', description: 'Kill even an actively-busy (mid-turn) session. Default false — busy sessions are refused to avoid corrupting the in-flight turn.' },
+    },
+    required: ['session_id'],
+  },
+};
+export const ccrCloudRestartToolDef = {
+  name: 'ccr_cloud_restart',
+  description:
+    'RESTART a CLOUD CCR session so it boots with the CURRENT MCP tool list (cloud sessions fetch tools at container boot; no in-place reload). STOPS (kills) the old session FIRST, then starts a NEW session seeded the same way — repo/branch/model/title recovered from the old session (pass repo/branch/model/title to override; repo is REQUIRED if unrecoverable). ⚠️ Returns a NEW session id; the fresh container CLONES the repo — UNCOMMITTED work in the old container is LOST (committed+pushed is safe) and conversation history is not carried over. Only for kind:cloud sessions — a bridge (remote) session\'s process is local: use ccr_restart with its Claude session id instead. Run refresh_connector_tools/sync-connector first so the new boot fetches the refreshed list.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      sid: { type: 'string', description: 'Cloud session id (session_… or cse_…).' },
+      prompt: { type: 'string', description: 'Optional first user turn for the new session.' },
+      repo: { type: 'string', description: 'Override/provide the GitHub repo seed (owner/name). Required if the old session\'s repo cannot be recovered.' },
+      branch: { type: 'string', description: 'Override the branch.' },
+      model: { type: 'string', description: 'Override the model.' },
+      title: { type: 'string', description: 'Override the title.' },
+    },
+    required: ['sid'],
+  },
+};
 // ─── Cloud CCR (BYOC cloud-run): claude runs in an Anthropic-cloud container ──
 export const ccrCloudStartToolDef = {
   name: 'ccr_cloud_start',
@@ -1027,6 +1057,8 @@ export const EXPANDED_TOOL_DEFS = [
   ccrConnectToolDef,
   ccrDriveToolDef,
   ccrRemoteStopToolDef,
+  ccrRestartToolDef,
+  ccrCloudRestartToolDef,
   ccrCloudStartToolDef,
   ccrCloudReposToolDef,
   ccrCloudDriveToolDef,
@@ -1631,6 +1663,27 @@ async function handleCcrRemoteStop(args: Record<string, unknown>): Promise<McpTo
   try { return ok(pretty(await workerPost(`/ccr/remote/${enc(id)}/stop`, {}))); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
+async function handleCcrRestart(args: Record<string, unknown>): Promise<McpToolResult> {
+  const sid = String(args.session_id || '').trim();
+  if (!sid) return err('session_id is required.');
+  const body: Record<string, unknown> = { sessionId: sid };
+  // Connector bool args can arrive as strings — coerce.
+  if (args.force === true || args.force === 'true') body.force = true;
+  try { return renderRaw(await workerPostRaw('/ccr/restart', body)); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
+async function handleCcrCloudRestart(args: Record<string, unknown>): Promise<McpToolResult> {
+  const sid = String(args.sid || '').trim();
+  if (!sid) return err('sid is required.');
+  const body: Record<string, unknown> = {};
+  if (args.prompt) body.prompt = String(args.prompt);
+  if (args.repo) body.repo = String(args.repo);
+  if (args.branch) body.branch = String(args.branch);
+  if (args.model) body.model = String(args.model);
+  if (args.title) body.title = String(args.title);
+  try { return renderRaw(await workerPostRaw(`/ccr/cloud/${enc(sid)}/restart`, body)); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
 async function handleCcrDrive(args: Record<string, unknown>): Promise<McpToolResult> {
   const text = String(args.text || '').trim();
   if (!text) return err('text is required.');
@@ -1994,6 +2047,8 @@ export const EXPANDED_HANDLERS: Record<
   ccr_connect: handleCcrConnect,
   ccr_drive: handleCcrDrive,
   ccr_remote_stop: handleCcrRemoteStop,
+  ccr_restart: handleCcrRestart,
+  ccr_cloud_restart: handleCcrCloudRestart,
   ccr_cloud_start: handleCcrCloudStart,
   ccr_cloud_repos: () => handleCcrCloudRepos(),
   ccr_cloud_drive: handleCcrCloudDrive,

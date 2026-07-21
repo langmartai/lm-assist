@@ -764,6 +764,66 @@ export async function cloudStop(sid: string): Promise<{ stopped: boolean; sid: s
   return { stopped: true, sid };
 }
 
+/**
+ * RESTART a cloud CCR session so it boots with the CURRENT MCP tool list.
+ *
+ * A cloud session's tools are fetched at container boot and cannot be reloaded
+ * in place, so a restart is: STOP (kill) the old session FIRST, then START a
+ * NEW session seeded the same way (repo/branch/model/title recovered from the
+ * old session; explicit args override). The result is a NEW session id.
+ *
+ * ⚠️ SEMANTICS TO BE CLEAR ABOUT: the new container CLONES THE REPO FRESH —
+ * any UNCOMMITTED work inside the old container is GONE (committed+pushed work
+ * is safe). The old session's conversation history is not carried over either.
+ * Only `kind:'cloud'` sessions restart here — a `remote` (bridge) session's
+ * process is local: use the LOCAL restart (POST /ccr/restart) for those.
+ */
+export async function cloudRestart(opts: {
+  sid: string;
+  prompt?: string;
+  repo?: string; branch?: string; model?: string; title?: string;
+  setup?: boolean; role?: CloudRole; primaryRepo?: string;
+}): Promise<{ oldSid: string; stopped: boolean; newSid: string; webUrl: string; repo: string | null; branch: string | null; model: string; note: string }> {
+  const sid = opts.sid;
+  if (!isCloudOrBridge(sid)) throw new TerminalError('INVALID_INPUT', 'sid must look like session_… or cse_…');
+
+  // Recover the old session's seed before killing it. Two sources, in order:
+  //   1. OUR registry record (written at cloudStart — authoritative for sessions
+  //      this node started, and immune to account-list lag on fresh sessions);
+  //   2. the account list (covers sessions started elsewhere), which also tells
+  //      us the KIND (a bridge session must use the local restart instead).
+  const reg = loadRegistry()[sid];
+  let old: CloudSessionInfo | undefined;
+  try { old = (await cloudListEnriched(100)).find((s) => s.sid === sid); } catch { /* absent list — registry/overrides may still cover it */ }
+  if (old && old.kind !== 'cloud') {
+    throw new TerminalError('INVALID_INPUT', `session ${sid} is a '${old.kind}' (bridge) session — its process runs LOCALLY; use the local restart (POST /ccr/restart with its Claude session id) instead`);
+  }
+  const repo = (opts.repo || reg?.repo || old?.repo || '').trim() || null;
+  const branch = (opts.branch || old?.branch || '').trim() || null;
+  const model = (opts.model || reg?.model || old?.model || '').trim() || undefined;
+  const title = (opts.title || reg?.title || old?.title || '').trim() || undefined;
+  if (!repo) {
+    throw new TerminalError('INVALID_INPUT',
+      `cannot recover a repo seed for ${sid} (not in the account list/registry, or it was seeded from a local bundle/empty scratch) — pass repo:"owner/name" explicitly to restart it`);
+  }
+
+  // 1. STOP (kill) the old session FIRST — no concurrent writer while the new one boots.
+  //    Idempotent: an already-dead session still proceeds to the fresh start.
+  await cloudStop(sid);
+
+  // 2. START the replacement — a fresh container boot fetches the CURRENT MCP tools.
+  const started = await cloudStart({
+    prompt: opts.prompt, repo, branch: branch ?? undefined, model, title,
+    setup: opts.setup, role: opts.role, primaryRepo: opts.primaryRepo,
+  });
+
+  return {
+    oldSid: sid, stopped: true, newSid: started.sid, webUrl: started.webUrl,
+    repo: started.repo, branch: started.branch, model: started.model,
+    note: 'NEW session id (cloud sessions cannot reload MCP in place). Fresh clone: uncommitted work in the OLD container is gone; conversation history not carried over.',
+  };
+}
+
 /** List cloud sessions WE created (from the registry). */
 export function cloudList(): CloudRecord[] {
   return Object.values(loadRegistry()).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));

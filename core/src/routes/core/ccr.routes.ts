@@ -154,6 +154,30 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // POST /ccr/restart — corruption-safe LOCAL session restart so the process
+    // re-fetches its MCP tool list. Stops existing bridge remotes → kills the
+    // live owner (verify-dead, twice) → only then `claude --resume` fresh.
+    // Busy sessions need force:true; kill-failed ⇒ CONFLICT, never resumes.
+    {
+      method: 'POST',
+      pattern: /^\/ccr\/restart$/,
+      handler: async (req) => {
+        const body = (req.body || {}) as { sessionId?: unknown; force?: unknown };
+        try {
+          const sessionId = parseSessionId(body.sessionId as string | undefined);
+          const data = await ccr.restart({ sessionId, force: body.force === true });
+          return ok(data);
+        } catch (e: unknown) {
+          if (e instanceof TerminalError) {
+            const status = httpStatusFor(e.code);
+            return { success: false, error: { code: e.code, message: e.message, details: e.details, httpStatus: status } } as Envelope;
+          }
+          const err = e as Error;
+          return fail('INTERNAL_ERROR', err.message || String(e));
+        }
+      },
+    },
+
     // POST /ccr/drive — deliver a prompt (user turn) to a connected session.
     // Primary: claude.ai cloud endpoint (reaches the session from anywhere).
     // Second option: same-host tmux send-keys (preferTmux, or cloud-failure fallback).
@@ -315,6 +339,30 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'POST',
       pattern: /^\/ccr\/cloud\/(?<sid>(?:session_|cse_)[^/]+)\/stop$/,
       handler: async (req) => envelope(async () => ccrCloud.cloudStop(parseCloudSid(req.params.sid))),
+    },
+
+    // POST /ccr/cloud/:sid/restart — STOP (kill) the old session first, then start
+    // a NEW one seeded the same (repo/branch/model/title recovered; body overrides).
+    // New session id; a fresh container boot fetches the CURRENT MCP tools. The old
+    // container's uncommitted work is gone (fresh clone) — the response says so.
+    {
+      method: 'POST',
+      pattern: /^\/ccr\/cloud\/(?<sid>(?:session_|cse_)[^/]+)\/restart$/,
+      handler: async (req) => envelope(async () => {
+        const sid = parseCloudSid(req.params.sid);
+        const body = (req.body || {}) as Record<string, unknown>;
+        return await ccrCloud.cloudRestart({
+          sid,
+          prompt: typeof body.prompt === 'string' ? body.prompt : undefined,
+          repo: typeof body.repo === 'string' ? body.repo : undefined,
+          branch: typeof body.branch === 'string' ? body.branch : undefined,
+          model: typeof body.model === 'string' ? body.model : undefined,
+          title: typeof body.title === 'string' ? body.title : undefined,
+          setup: body.setup === true,
+          role: body.role === 'worker' || body.role === 'orchestrator' ? body.role : undefined,
+          primaryRepo: typeof body.primaryRepo === 'string' ? body.primaryRepo : undefined,
+        });
+      }),
     },
 
     // GET /ccr/cloud/:sid/status — raw cloud session status

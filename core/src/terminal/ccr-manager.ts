@@ -440,6 +440,62 @@ export async function connect({ sessionId, force }: { sessionId: string; force?:
   return connectDeadCreateTmux(sessionId);
 }
 
+/**
+ * RESTART a local session's process so it re-fetches its MCP tool list (Claude
+ * Code loads MCP tools at process start only — no in-place reload exists).
+ *
+ * Corruption-safe by construction (ccr-restart.ts orchestrates): stops existing
+ * bridge remotes → kills the live owner (SIGTERM→verify→SIGKILL→verify) → an
+ * INDEPENDENT re-verdict must agree nothing owns the session → only then spawns
+ * the fresh `claude --resume`. A busy (mid-turn) session is refused without
+ * force:true. kill-failed ⇒ ABORT, never resume over a live process.
+ */
+export async function restart({ sessionId, force }: { sessionId: string; force?: boolean }): Promise<import('./ccr-restart').RestartResult> {
+  const { restartLocal } = require('./ccr-restart') as typeof import('./ccr-restart');
+  const { killOwner: killOwnerPrim } = require('./live-rc-connect') as typeof import('./live-rc-connect');
+  const IS_WINDOWS = process.platform === 'win32';
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+  const r = await restartLocal(sessionId, { force }, {
+    now: () => Date.now(),
+    verdict: (sid) => {
+      const v = sessionVerdict(sid);
+      return {
+        live: v.live, connectStrategy: v.connectStrategy, pid: v.owner?.pid ?? null,
+        tmuxSession: v.tmuxSession ?? null, updatedAt: v.owner?.updatedAt,
+      };
+    },
+    stopExistingRemotes: async (sid) => {
+      let n = 0;
+      for (const rec of Object.values(loadRegistry())) {
+        if (rec.sessionId !== sid) continue;
+        try { await stop(rec.id); n++; } catch { /* per-record best-effort */ }
+      }
+      return n;
+    },
+    killOwner: (pid) => killOwnerPrim(pid, { isWindows: IS_WINDOWS }, {
+      isAlive: (p) => { try { process.kill(p, 0); return true; } catch { return false; } },
+      signal: (p, sig) => process.kill(p, sig),
+      taskkill: (p) => { execFileSync('taskkill', ['/PID', String(p), '/T', '/F'], { encoding: 'utf-8', timeout: 8000 }); },
+      sleep,
+    }),
+    killStaleCcrTmux: async (sid) => {
+      const name = `ccr-${sid.slice(0, 8)}`;
+      try { execFileSync('tmux', ['kill-session', '-t', name], { encoding: 'utf-8', timeout: 5000 }); } catch { /* not there — fine */ }
+    },
+    resume: (sid) => connectDeadCreateTmux(sid),
+  });
+
+  if (!r.ok) {
+    const code: TerminalErrorCode =
+      r.state === 'gone' ? 'SESSION_NOT_FOUND'
+      : r.state === 'needs-force' || r.state === 'kill-failed' ? 'CONFLICT'
+      : 'INTERNAL_ERROR';
+    throw new TerminalError(code, r.reason, { restart: r });
+  }
+  return r;
+}
+
 /** List all registered remotes with liveness. */
 export function list(): Array<CcrRecord & { alive: boolean }> {
   return Object.values(loadRegistry()).map((rec) => ({ ...rec, alive: isAlive(rec.pid) }));
