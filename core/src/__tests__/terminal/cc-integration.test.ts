@@ -19,7 +19,7 @@
  *   RUN_LIVE_CC=1 node --test dist/__tests__/terminal/cc-integration.test.js
  */
 
-import { test, before, after, afterEach } from 'node:test';
+import { test as _test, before, after, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
 import { buildLaunchFlags, classifyNoTurn, classifyStabilizeTimeout, planSystemPromptAppend, launchKeyOf } from '../../runners/tmux-runner';
@@ -27,6 +27,25 @@ import { extractLastTurnFromJsonl, countUserPrompts } from '../../runners/cc-tra
 
 const API = process.env.TEST_API ?? 'http://localhost:3201';
 const LIVE_CC = process.env.RUN_LIVE_CC === '1';
+
+// These are INTEGRATION tests: they need a Core API serving on TEST_API (:3201)
+// plus tmux. When that server is ABSENT (e.g. a plain `npm test` that starts no
+// server), SKIP the whole suite instead of failing every test in the before-hook
+// with "fetch failed" — mirroring how RUN_LIVE_CC gates the live-CC cases. Set
+// TEST_API to a running Core (or start one on :3201) to actually run them.
+function serverUp(): boolean {
+  try { execFileSync('curl', ['-sf', '-o', '/dev/null', '--max-time', '2', `${API}/health`], { stdio: 'ignore' }); return true; }
+  catch { return false; }
+}
+const SERVER_DOWN = !serverUp();
+// Shadow `test` so every case in this file inherits the suite-level skip (merged
+// with each case's own skip, e.g. the RUN_LIVE_CC gate).
+const test = ((name: string, a?: unknown, b?: unknown) => {
+  const opts = (typeof a === 'object' && a !== null ? a : {}) as { skip?: unknown };
+  const fn = (typeof a === 'function' ? a : b) as () => unknown;
+  const skip = SERVER_DOWN ? `no TEST_API server at ${API} — integration suite skipped` : opts.skip;
+  return _test(name, { ...opts, skip } as never, fn as never);
+}) as typeof _test;
 
 // ---------- helpers ------------------------------------------------------
 
@@ -91,6 +110,7 @@ function sleep(ms: number): Promise<void> {
 // ---------- lifecycle ----------------------------------------------------
 
 before(async () => {
+  if (SERVER_DOWN) return; // suite skipped — no server to probe
   const h = await call<{ status: string; version: string }>('GET', '/health');
   assert.equal(h.success, true, 'API not healthy');
   const t = await call<{ sessions: unknown[] }>('GET', '/terminal/tmux');
