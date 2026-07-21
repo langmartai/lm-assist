@@ -1544,6 +1544,15 @@ export function detectAppMode(): { mode: AppMode; baseUrl: string } {
     return { mode: 'hub', baseUrl: '' }; // Same origin
   }
 
+  // Local mode over the opt-in HTTPS terminator (LM_HTTPS): the page is a secure
+  // context (that's what makes the mic exist off-localhost), so direct
+  // http://host:port core calls would be MIXED CONTENT (blocked). The terminator
+  // serves this Core same-origin under /_coreapi (prefix stripped, dispatched
+  // in-process) — same relative-base shape the cloud hybrid client already uses.
+  if (window.location.protocol === 'https:') {
+    return { mode: 'local', baseUrl: '/_coreapi' };
+  }
+
   // Local mode: localhost or local IP
   // Core API port: prefer the runtime value injected by the server layout
   // (window.__LM_LOCAL_API_PORT__) so one build serves prod (:3100) and dev (:3200);

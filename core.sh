@@ -56,6 +56,14 @@ fi
 API_PORT="${API_PORT:-$((3200 + WT_PORT_OFFSET))}"
 WEB_PORT="${WEB_PORT:-$((3948 + WT_PORT_OFFSET))}"
 
+# Opt-in HTTPS terminator (voice/secure-context transport): `--https` anywhere on
+# the command line = LM_HTTPS=1. Serves https on WEB_PORT+1 (LM_HTTPS_PORT overrides).
+for __arg in "$@"; do
+    if [ "$__arg" = "--https" ]; then
+        export LM_HTTPS=1
+    fi
+done
+
 # Project paths
 CORE_DIR="$PROJECT_ROOT/core"
 WEB_DIR="$PROJECT_ROOT/web"
@@ -433,6 +441,9 @@ start_core() {
     if [ -n "${TIER_AGENT_API_KEY:-}" ]; then
         env_vars="$env_vars TIER_AGENT_API_KEY=$TIER_AGENT_API_KEY"
     fi
+    # The HTTPS terminator (LM_HTTPS=1) proxies to the web port — tell core which one
+    # (worktree offsets shift it). LM_HTTPS itself inherits through `env` when exported.
+    env_vars="$env_vars WEB_PORT=$WEB_PORT"
 
     nohup env $env_vars node dist/cli.js serve --port $API_PORT --project "$HOME" > "$CORE_LOG" 2>&1 &
 
@@ -448,6 +459,9 @@ start_core() {
             echo ""
             echo -e "${GREEN}Core API started on port $API_PORT (PID: $pid)${NC}"
             echo -e "${CYAN}   URL: http://localhost:$API_PORT${NC}"
+            if [ -n "${LM_HTTPS:-}" ]; then
+                echo -e "${CYAN}   HTTPS: https://$HOST_IP:${LM_HTTPS_PORT:-$((WEB_PORT + 1))} (voice-capable; accept the self-signed cert once per device)${NC}"
+            fi
             return 0
         fi
     done

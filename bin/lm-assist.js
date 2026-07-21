@@ -126,7 +126,8 @@ lm-assist - LM Assistant CLI
 Usage: lm-assist <command> [options]
 
 Commands:
-  start              Start API and Web services
+  start              Start API and Web services (set LM_HTTPS=1 — env or .env —
+                     to add the HTTPS terminator: mic/voice over LAN)
   stop               Stop all services
   restart            Restart services
   status             Show service status and component locations

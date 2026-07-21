@@ -81,6 +81,10 @@ Dev (repo) and prod (npm package) use **separate port spaces** so both can run s
 
 **When adding new port references:** never hardcode `3100` or `3848`. Use the appropriate detection method for the component type. For core TypeScript, use the `__dirname.includes('node_modules')` pattern.
 
+### Opt-in HTTPS terminator (voice / secure context) — `LM_HTTPS=1`
+
+The browser mic needs a **secure context** (getUserMedia only exists on https/localhost) and an https page can't open `ws://`/`http://` (mixed content). `LM_HTTPS=1` (or `./core.sh start --https` / `lm-assist serve --https`; persist via `.env`) makes Core add ONE `https.Server` on **WEB_PORT+1** (dev `:3949` / prod `:3849`, `LM_HTTPS_PORT` overrides): `/_coreapi/*` → Core in-process (REST+SSE), `/voice/stt/ws` + `/ttyd*` → Core upgrade router, everything else → proxied to Next. Client: `detectAppMode()` returns `baseUrl:'/_coreapi'` on non-hub https pages; `web/src/lib/voice-url.ts` `buildVoiceWsUrl()` is THE voice URL contract (wss same-origin on https, ws://127.0.0.1 on localhost, null when the mic can't work — remote/hub v1 TODO). Self-signed cert auto-managed in `~/.lm-assist/tls[-dev]/` (key 0600; SANs = localhost+hostname+LAN IPv4s; regen on expiry/IP drift); one cert-accept per device+browser. Additive: plain HTTP untouched; TLS failure never kills HTTP. The decision logic is duplicated core↔web with a byte-identity test (`voice-url.test.ts`) — edit both. **Dep pin: `selfsigned` stays `^2.4.1`** (CJS; v5 pulls ESM-leaning deps — chokidar-class `ERR_REQUIRE_ESM` hazard). Full guide: [`docs/voice-https-transport.md`](./docs/voice-https-transport.md).
+
 ### Testing After Code Changes
 
 After modifying and rebuilding (`./core.sh build`), restart **dev** services:

@@ -54,6 +54,10 @@ const host = getArg(['--host', '-h'], '0.0.0.0')!;
 const extraCa = getArg(['--extra-ca'], process.env.LM_ASSIST_EXTRA_CA);
 if (extraCa) process.env.LM_ASSIST_EXTRA_CA = extraCa;
 
+// Opt-in HTTPS terminator (secure-context voice transport): `serve --https` is
+// sugar for LM_HTTPS=1 (see rest-server.maybeStartHttps).
+if (args.includes('--https')) process.env.LM_HTTPS = '1';
+
 // The Core's OWN outbound fetch (the cloud-API calls in ccr-cloud.ts run IN this
 // process, not a spawned helper) must also trust the extra CA — else behind an
 // MITM proxy (lm-proxy) every fetch fails with "self-signed certificate in chain".
@@ -286,6 +290,9 @@ Options:
   --project, -d     Project directory (default: current)
   --extra-ca        Extra CA cert path for outbound TLS from spawned helpers
                     (or set LM_ASSIST_EXTRA_CA); used behind an MITM proxy
+  --https           Also serve an HTTPS terminator (or set LM_HTTPS=1) on
+                    web-port+1 (LM_HTTPS_PORT overrides): secure-context page
+                    + same-origin /_coreapi + wss voice — mic works over LAN
 
 Examples:
   lm-assist serve --port 8080

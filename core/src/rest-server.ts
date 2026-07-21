@@ -20,6 +20,8 @@ import { handleTtydProxyRequest, handleTtydProxyUpgrade, isTtydProxyPath } from 
 import { isTcpUpgrade, handleTcpUpgrade } from './transport/tcp-upgrade';
 import { isPortfwdUpgrade, handlePortfwdUpgrade } from './transport/portfwd-upgrade';
 import { isVoiceSttUpgrade, handleVoiceSttUpgrade } from './voice/voice-relay';
+import { ensureTlsCert } from './tls/cert-manager';
+import { startHttpsTerminator } from './tls/https-terminator';
 import { getStartupProfiler } from './startup-profiler';
 
 // Modular Routes
@@ -60,6 +62,7 @@ interface ServerOptions {
 
 export class TierRestServer {
   private server: http.Server | null = null;
+  private httpsServer: import('https').Server | null = null;
   private api: TierControlApiImpl;
   private options: Required<ServerOptions>;
   // SSE clients with optional filter by executionId
@@ -413,20 +416,8 @@ export class TierRestServer {
 
       // Handle upgrades: ttyd WebSocket proxy, or the lm-tcp file-transfer path
       // (direct-TCP-for-LAN rides the Core port via an HTTP Upgrade — no
-      // dedicated listener port to open).
-      this.server.on('upgrade', (req, socket, head) => {
-        if (req.url && isTtydProxyPath(req.url)) {
-          handleTtydProxyUpgrade(req, socket, head);
-        } else if (isTcpUpgrade(req)) {
-          handleTcpUpgrade(req, socket, head);
-        } else if (isPortfwdUpgrade(req)) {
-          handlePortfwdUpgrade(req, socket, head);
-        } else if (isVoiceSttUpgrade(req)) {
-          handleVoiceSttUpgrade(req, socket, head, this.options.apiKey);
-        } else {
-          socket.destroy();
-        }
-      });
+      // dedicated listener port to open). Shared with the HTTPS terminator.
+      this.server.on('upgrade', (req, socket, head) => this.routeUpgrade(req, socket, head));
 
       this.server.on('error', reject);
 
@@ -434,9 +425,68 @@ export class TierRestServer {
         profiler.end('httpListen');
         console.log(`lm-assist API server listening on http://${this.options.host}:${this.options.port}`);
         try { require('./monitor/build-history').recordBuild(); } catch (e) { console.error('[Server] build-history record failed:', (e as any)?.message); }
+        // Opt-in HTTPS terminator (voice/secure-context transport). Never blocks or
+        // fails plain-HTTP startup.
+        this.maybeStartHttps().catch((e) =>
+          console.error('[HTTPS] terminator failed to start (plain HTTP unaffected):', (e as Error).message),
+        );
         resolve();
       });
     });
+  }
+
+  /** Upgrade router shared by the plain-HTTP listener and the HTTPS terminator. */
+  private routeUpgrade(req: http.IncomingMessage, socket: import('stream').Duplex, head: Buffer): void {
+    if (req.url && isTtydProxyPath(req.url)) {
+      handleTtydProxyUpgrade(req, socket, head);
+    } else if (isTcpUpgrade(req)) {
+      handleTcpUpgrade(req, socket, head);
+    } else if (isPortfwdUpgrade(req)) {
+      handlePortfwdUpgrade(req, socket, head);
+    } else if (isVoiceSttUpgrade(req)) {
+      handleVoiceSttUpgrade(req, socket, head, this.options.apiKey);
+    } else {
+      socket.destroy();
+    }
+  }
+
+  /**
+   * Opt-in (LM_HTTPS=1) HTTPS terminator: ONE https origin (default webPort+1 —
+   * dev :3949 / prod :3849, LM_HTTPS_PORT overrides) serving the web app by proxy
+   * plus this Core in-process under /_coreapi and the core WS paths, so a browser
+   * on https://<LAN-IP> gets a secure context (mic) with a single cert accept.
+   * Additive: plain HTTP keeps working exactly as before, enabled or not.
+   */
+  private async maybeStartHttps(): Promise<void> {
+    const flag = (process.env.LM_HTTPS || '').toLowerCase();
+    if (!['1', 'true', 'on', 'yes'].includes(flag)) return;
+
+    // Same prod/dev detection pattern as cli.ts (LM_ASSIST_PROD overrides).
+    const isProdInstall = process.env.LM_ASSIST_PROD === 'true' || __dirname.includes('node_modules');
+    const webPort = parseInt(
+      process.env.WEB_PORT || process.env.ASSIST_WEB_PORT || (isProdInstall ? '3848' : '3948'),
+      10,
+    );
+    const httpsPort = parseInt(process.env.LM_HTTPS_PORT || String(webPort + 1), 10);
+    const dataDir = process.env.LM_ASSIST_DATA_DIR || path.join(homedir(), '.lm-assist');
+    const tlsDir = path.join(dataDir, isProdInstall ? 'tls' : 'tls-dev');
+
+    const tls = ensureTlsCert({ dir: tlsDir, log: (m) => console.log(m) });
+    if (tls.regenerated) console.log(`[TLS] wrote ${tls.certPath} (accept it once per device/browser)`);
+
+    this.httpsServer = await startHttpsTerminator({
+      port: httpsPort,
+      host: this.options.host || '0.0.0.0',
+      key: tls.key,
+      cert: tls.cert,
+      webPort,
+      coreRequest: (req, res) => this.handleRequest(req, res),
+      coreUpgrade: (req, socket, head) => this.routeUpgrade(req, socket, head),
+      log: (m) => console.log(m),
+    });
+    console.log(
+      `lm-assist HTTPS terminator on https://${this.options.host}:${httpsPort} → web :${webPort} + core /_coreapi (LM_HTTPS)`,
+    );
   }
 
   /**
@@ -457,6 +507,11 @@ export class TierRestServer {
       if (this.claudeTasksWatcher) {
         this.claudeTasksWatcher.close();
         this.claudeTasksWatcher = null;
+      }
+
+      if (this.httpsServer) {
+        try { this.httpsServer.close(); } catch { /* already closed */ }
+        this.httpsServer = null;
       }
 
       if (this.server) {
