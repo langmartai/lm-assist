@@ -650,6 +650,31 @@ export function decideSupervisor(input: { isMonitor: boolean; live: boolean; dri
   return { action: 'idle' };
 }
 
+// ── Controller context-health: compact a near-full controller ────────────────
+// A controller near its context limit wedges (observed live 2026-07-21 at ctx:94%
+// — idle, not surfacing finished executor work; its next drive risks failing).
+// Compacting (native /compact) sheds context while KEEPING the session, so it
+// retains its identity + a running summary. NOTE resume-first recovery does NOT
+// help this case — resuming reloads the SAME full context.
+const CONTROLLER_COMPACT_THRESHOLD_PCT = 85;        // ctx% at/above which we compact
+const CONTROLLER_COMPACT_COOLDOWN_MS = 10 * 60_000; // don't re-fire while it settles
+let _lastControllerCompactAt: number | null = null;
+export function _resetControllerCompactState(): void { _lastControllerCompactAt = null; }
+
+/** Pure: should the supervisor compact the controller now? True when its context
+ *  is at/above the threshold and we're past the cooldown since the last compact. */
+export function shouldCompactController(input: {
+  contextPct: number | null;
+  threshold: number;
+  lastCompactAt: number | null;
+  now: number;
+  cooldownMs: number;
+}): boolean {
+  if (input.contextPct === null || input.contextPct < input.threshold) return false;
+  if (input.lastCompactAt !== null && input.now - input.lastCompactAt < input.cooldownMs) return false;
+  return true;
+}
+
 // ── Command contract: every command to the controller is TRACKED ─────────────
 // Each drive carries a cmd id and instructs the controller to end its reply
 // with a verifiable per-task ⟦RESULT⟧ block; the tick scans replies for those
@@ -737,6 +762,12 @@ export interface SupervisorDeps {
    *  triggered the engagement. */
   drive: (cs: ControllerSession, directive?: string) => Promise<void>;
   teardown: (cs: ControllerSession) => Promise<void>;
+  /** Read the controller session's context-usage percent (0-100), or null if unknown.
+   *  Absent → the context-health compact guard is skipped (behaviour unchanged). */
+  controllerContextPct?: (cs: ControllerSession) => Promise<number | null>;
+  /** Compact the controller (native /compact) to shed context. Returns true when the
+   *  compact was initiated; false if the session was busy (retry next tick). */
+  compactController?: (cs: ControllerSession) => Promise<boolean>;
   /** The adapt cadence in minutes (from project settings). Used to compute driveDue. */
   driveIntervalMin: number;
   /** Idle drive cadence (min) when there are no active missions. Default = driveIntervalMin (no change). */
@@ -968,6 +999,25 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
     const adopted: ControllerSession = { ...cs, lastDriveAt: deps.now };
     await deps.putControllerSession(adopted);
     return { action: 'adopt-drive', controllerSession: adopted };
+  }
+
+  // Context-health: compact a near-full controller BEFORE driving it. A controller
+  // at its context limit wedges (idle, not surfacing progress; its next drive risks
+  // failing). /compact sheds context while keeping the session. Idle-guarded by
+  // compactController (returns false when busy → retry next tick). Best-effort —
+  // a read/compact failure never sinks the tick.
+  if (isMonitor && live && cs && deps.controllerContextPct && deps.compactController) {
+    try {
+      const pct = await deps.controllerContextPct(cs);
+      if (shouldCompactController({ contextPct: pct, threshold: CONTROLLER_COMPACT_THRESHOLD_PCT, lastCompactAt: _lastControllerCompactAt, now: deps.now, cooldownMs: CONTROLLER_COMPACT_COOLDOWN_MS })) {
+        const sent = await deps.compactController(cs);
+        if (sent) {
+          _lastControllerCompactAt = deps.now;
+          deps.journal?.({ at: deps.now, kind: 'lifecycle', event: 'compact-controller', sessionId: cs.sessionId, contextPct: pct });
+          return { action: `compact-controller(ctx=${pct}%)`, controllerSession: cs };
+        }
+      }
+    } catch { /* context read / compact is best-effort */ }
   }
 
   // Drive gate. Wave 4 (when the engagement deps are present): change-based — the
@@ -1713,6 +1763,26 @@ export function registerMissionController(
         const backend = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
         await backend.tmuxTerminalBackend.close(name);
         console.log(`[mission-supervisor] swept stray controller tmux ${name}`);
+      },
+      controllerContextPct: async (cs) => {
+        if (!cs.tmux) return null;
+        try {
+          const { parseContextPct } = require('../terminal/inspector') as typeof import('../terminal/inspector');
+          const tmux = require('../terminal/tmux') as typeof import('../terminal/tmux');
+          return parseContextPct(tmux.capture(cs.tmux, { paneQualifier: null, lines: null, start: null }));
+        } catch { return null; }
+      },
+      compactController: async (cs) => {
+        if (!cs.tmux) return false;
+        try {
+          const cc = require('../terminal/cc') as typeof import('../terminal/cc');
+          await cc.slash(cs.tmux, { cmd: 'compact', args: null }); // cc.slash asserts idle → throws if the controller is busy
+          console.log(`[mission-supervisor] controller ctx high → /compact ${cs.tmux}`);
+          return true;
+        } catch (e) {
+          console.debug(`[mission-supervisor] /compact skipped (busy?): ${(e as Error).message}`);
+          return false;
+        }
       },
     };
 
