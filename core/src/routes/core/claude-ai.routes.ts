@@ -384,7 +384,16 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
               : (typeof b.auto_delete_hours === 'number' ? b.auto_delete_hours : undefined),
           });
           const wrapped = upstreamWrap(r);
-          if (wrapped.success) (wrapped as { data: unknown }).data = { ...r.body, uuid: r.uuid };
+          if (wrapped.success) {
+            (wrapped as { data: unknown }).data = {
+              ...r.body,
+              uuid: r.uuid,
+              // Surface the settings follow-up outcome (the create body's
+              // tool_search_mode is ignored upstream; createConversation
+              // applies it via a PUT and reports whether it stuck).
+              ...('toolSearchModeApplied' in r ? { toolSearchModeApplied: (r as { toolSearchModeApplied?: boolean }).toolSearchModeApplied } : {}),
+            };
+          }
           return wrapped;
         } catch (err) {
           return catchOAuth(err);

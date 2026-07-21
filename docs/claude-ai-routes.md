@@ -54,7 +54,7 @@ How to capture the cookie:
 | `DELETE` | `/claude-ai/conversations/:uuid` | **WRITE (destructive)** — permanently delete one conversation. UUID validated. claude.ai responds 204. |
 | `POST` | `/claude-ai/conversations/:uuid/completion` | **WRITE** — send a message, drain SSE, return `{ text, events, humanMessageUuid, assistantMessageUuid }`. Body: `{ prompt, model?, timezone?, locale?, parentMessageUuid?, tools?, enableConnectorTools?, autoApproveTools?, timeoutMs? }`. |
 | `POST` | `/claude-ai/conversations/:uuid/completion/stream` | **WRITE** — streaming variant for embedded chat clients: same body, answers `text/event-stream` over the raw socket (see "Embedded browser chat clients" below). |
-| `GET` | `/claude-ai/conversations/:uuid/messages` | Parsed transcript for chat UIs: `{ uuid, name, messages: [{ role, type, text, thinking?, toolCalls?: [{name, input, result, isError}] }] }` (core-side `parseChatMessages`). |
+| `GET` | `/claude-ai/conversations/:uuid/messages` | Parsed transcript for chat UIs: `{ uuid, name, messages: [{ role, type, text, thinking?, toolCalls?: [{name, input, result, isError, images?: [{fileUuid}]}] }] }` (core-side `parseChatMessages`; image tool-results become file refs, base64 never lands in `result`; successful `tool_search` meta-calls are suppressed). |
 | `POST` | `/claude-ai/conversations/:uuid/title` | **WRITE** — rename / auto-title. Body: `{ title? }` (omit `title` → server auto-generates). |
 | `GET` | `/claude-ai/projects?limit=&include_harmony_projects=&creator_filter=` | List projects. |
 | `GET` | `/claude-ai/artifacts/:uuid/versions` | Artifact version history. |
