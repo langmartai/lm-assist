@@ -55,6 +55,7 @@ How to capture the cookie:
 | `POST` | `/claude-ai/conversations/:uuid/completion` | **WRITE** — send a message, drain SSE, return `{ text, events, humanMessageUuid, assistantMessageUuid }`. Body: `{ prompt, model?, timezone?, locale?, parentMessageUuid?, tools?, enableConnectorTools?, autoApproveTools?, timeoutMs? }`. |
 | `POST` | `/claude-ai/conversations/:uuid/completion/stream` | **WRITE** — streaming variant for embedded chat clients: same body, answers `text/event-stream` over the raw socket (see "Embedded browser chat clients" below). |
 | `GET` | `/claude-ai/conversations/:uuid/messages` | Parsed transcript for chat UIs: `{ uuid, name, messages: [{ role, type, text, thinking?, toolCalls?: [{name, input, result, isError, images?: [{fileUuid}]}] }] }` (core-side `parseChatMessages`; image tool-results become file refs, base64 never lands in `result`; successful `tool_search` meta-calls are suppressed). |
+| `GET` | `/claude-ai/conversations/named?limit=&prefix=&refresh=` | Name-prefix-filtered list, newest-updated first: `{ prefix, conversations: [{uuid, name, updatedAt, createdAt}] }`. Scoped tokens may only use their mint-bound `listPrefix` (query ignored; none bound → 403); full-token callers must pass `?prefix=`. Defaults to a live upstream fetch (cache lags right after a create); `refresh=false` serves the cache index. |
 | `POST` | `/claude-ai/conversations/:uuid/title` | **WRITE** — rename / auto-title. Body: `{ title? }` (omit `title` → server auto-generates). |
 | `GET` | `/claude-ai/projects?limit=&include_harmony_projects=&creator_filter=` | List projects. |
 | `GET` | `/claude-ai/artifacts/:uuid/versions` | Artifact version history. |
@@ -565,17 +566,19 @@ allows it), and validated as a fallback in the rest-server auth gate. Scope
 - `POST /claude-ai/conversations` (create)
 - `POST /claude-ai/conversations/:uuid/completion` and `…/completion/stream`
 - `GET  /claude-ai/conversations/:uuid/messages`
+- `GET  /claude-ai/conversations/named` — only with a mint-bound `listPrefix`
+  (the token can list its own app's conversations, never the account's)
 
-Everything else — listing conversations (privacy), delete, rename, via-chrome,
-any non-claude-ai route, and the token-admin routes themselves — stays
-full-token-only. Tokens persist (0600) in `<dataDir>/scoped-tokens.json`
+Everything else — the unfiltered conversations list (privacy), delete, rename,
+via-chrome, any non-claude-ai route, and the token-admin routes themselves —
+stays full-token-only. Tokens persist (0600) in `<dataDir>/scoped-tokens.json`
 (default TTL 24 h, max 7 d, cap 50 live).
 
 Admin routes (full token required):
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/auth/scoped-tokens` | Mint. Body `{ scope: 'claude-ai-chat', ttlMs?, label? }` → `{ id, token, scope, expiresAt, … }` (secret returned once). |
+| `POST` | `/auth/scoped-tokens` | Mint. Body `{ scope: 'claude-ai-chat', ttlMs?, label?, listPrefix? }` → `{ id, token, scope, expiresAt, … }` (secret returned once). |
 | `GET` | `/auth/scoped-tokens` | List `{ id, scope, label, createdAt, expiresAt, lastUsedAt }` — never the secrets. |
 | `DELETE` | `/auth/scoped-tokens/:id` | Revoke immediately. |
 
