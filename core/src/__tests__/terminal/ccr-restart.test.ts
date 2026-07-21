@@ -133,4 +133,7 @@ test('resumePermissionFlags maps the LAST recorded mode to the right claude flag
   // LAST occurrence wins (the session's current operating mode)
   assert.equal(resumePermissionFlags(j(['{"permissionMode":"bypassPermissions"}', '{"permissionMode":"dontAsk"}'])), ' --permission-mode dontAsk');
   assert.equal(resumePermissionFlags('/nonexistent/x.jsonl'), '', 'unreadable jsonl adds no flag');
+  // SECURITY (allowlist): an unknown/tampered mode — even purely alphabetic — restores NOTHING
+  assert.equal(resumePermissionFlags(j(['{"permissionMode":"sneakyEvilMode"}'])), '', 'unknown mode is NOT passed to the CLI');
+  assert.equal(resumePermissionFlags(j(['{"permissionMode":"bypassPermissionsX"}'])), '', 'near-miss of the bypass name restores nothing');
 });

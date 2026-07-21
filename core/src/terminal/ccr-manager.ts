@@ -309,6 +309,24 @@ function resolveSessionCwd(jsonlPath: string): string {
  * is the session's current operating mode. Restoring the mode the user already
  * granted is fidelity, not escalation.
  */
+/**
+ * SECURITY MODEL (reviewed 2026-07-22): this restores a mode the session
+ * ALREADY ran under — it grants an API caller nothing new, because (a) the
+ * transcript is writable only by the local user, who could equally run
+ * `claude --dangerously-skip-permissions` directly (same trust domain), and
+ * (b) the Core API key already launches bypass sessions by design
+ * (tmux-backend launch, skipPermissions defaults true). Injection is
+ * precluded: the regex captures [A-Za-z]+ only, and the value must ALSO be
+ * in the strict allowlist below — an unknown/tampered mode restores nothing.
+ */
+const RESUME_MODE_FLAGS: Record<string, string> = {
+  bypassPermissions: ' --dangerously-skip-permissions',
+  acceptEdits: ' --permission-mode acceptEdits',
+  plan: ' --permission-mode plan',
+  dontAsk: ' --permission-mode dontAsk',
+  default: '',
+};
+
 export function resumePermissionFlags(jsonlPath: string): string {
   let mode: string | null = null;
   try {
@@ -316,11 +334,9 @@ export function resumePermissionFlags(jsonlPath: string): string {
     const re = /"permissionMode":"([A-Za-z]+)"/g;
     for (let m = re.exec(text); m; m = re.exec(text)) mode = m[1];
   } catch { /* unknown → default */ }
-  if (!mode || mode === 'default') return '';
-  if (mode === 'bypassPermissions') return ' --dangerously-skip-permissions';
-  // acceptEdits / plan / dontAsk / auto — pass through as a named mode.
-  if (/^[A-Za-z]+$/.test(mode)) return ` --permission-mode ${mode}`;
-  return '';
+  // Strict allowlist — anything unknown (corrupt/tampered transcript, or a
+  // future mode this build doesn't know) restores NO flag (default mode).
+  return (mode && RESUME_MODE_FLAGS[mode]) || '';
 }
 
 /**
