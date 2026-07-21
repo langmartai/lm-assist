@@ -111,10 +111,15 @@ export function useVoiceConversation(opts: { wsUrl: string; sendMessage: (text: 
       ws.onerror = () => { if (startingRef.current || stateRef.current === 'listening') fail('voice connection error'); };
       // If the relay drops mid-finalize, resolve the finalize wait early instead of blocking 2.5s.
       ws.onclose = () => { finalizeWaitRef.current?.(); };
-      ws.onopen = () => {
+      ws.onopen = async () => {
         startingRef.current = false;
         // Released before we finished opening → abort cleanly (no capture, no send).
         if (pendingAbortRef.current) { pendingAbortRef.current = false; teardownAudio(); closeWs(); setState('idle'); return; }
+        // The AudioContext is created (line above) AFTER the async getUserMedia — off the gesture
+        // tick — so Chrome can leave it 'suspended'. A suspended context never PULLS the worklet,
+        // so zero audio frames are sent (confirmed via relay log: WS opens + {ready} but 0 frames).
+        // Resume it before wiring the graph, or nothing is ever captured.
+        try { if (ctx.state !== 'running') await ctx.resume(); } catch { /* noop */ }
         // Chromium only pulls the worklet if the graph reaches the destination; route through a
         // muted gain so we process mic frames without hearing ourselves.
         const silent = ctx.createGain();
