@@ -52,7 +52,9 @@ How to capture the cookie:
 | `POST` | `/claude-ai/conversations` | **WRITE** — create a new empty conversation. Body: `{ name?, uuid? }` (UUID auto-generated if omitted). Returns `{ ...conversation, uuid }`. |
 | `GET` | `/claude-ai/conversations/:uuid?tree=&rendering_mode=&render_all_tools=` | Read one conversation (full message tree). |
 | `DELETE` | `/claude-ai/conversations/:uuid` | **WRITE (destructive)** — permanently delete one conversation. UUID validated. claude.ai responds 204. |
-| `POST` | `/claude-ai/conversations/:uuid/completion` | **WRITE** — send a message, drain SSE, return `{ text, events, humanMessageUuid, assistantMessageUuid }`. Body: `{ prompt, model?, timezone?, locale?, parentMessageUuid?, tools? }`. |
+| `POST` | `/claude-ai/conversations/:uuid/completion` | **WRITE** — send a message, drain SSE, return `{ text, events, humanMessageUuid, assistantMessageUuid }`. Body: `{ prompt, model?, timezone?, locale?, parentMessageUuid?, tools?, enableConnectorTools?, autoApproveTools?, timeoutMs? }`. |
+| `POST` | `/claude-ai/conversations/:uuid/completion/stream` | **WRITE** — streaming variant for embedded chat clients: same body, answers `text/event-stream` over the raw socket (see "Embedded browser chat clients" below). |
+| `GET` | `/claude-ai/conversations/:uuid/messages` | Parsed transcript for chat UIs: `{ uuid, name, messages: [{ role, type, text, thinking?, toolCalls?: [{name, input, result, isError}] }] }` (core-side `parseChatMessages`). |
 | `POST` | `/claude-ai/conversations/:uuid/title` | **WRITE** — rename / auto-title. Body: `{ title? }` (omit `title` → server auto-generates). |
 | `GET` | `/claude-ai/projects?limit=&include_harmony_projects=&creator_filter=` | List projects. |
 | `GET` | `/claude-ai/artifacts/:uuid/versions` | Artifact version history. |
@@ -545,6 +547,59 @@ Pass `?events=full` to also receive the raw event list.
 - The conversation must already exist — the completion route itself does not create one. Use `POST /claude-ai/conversations` (cookie-file) or `POST /claude-ai/via-chrome/conversations/create` (via-chrome) first, then send a completion to the returned `uuid`. Clean up test conversations with `DELETE /claude-ai/conversations/:uuid` or `POST /claude-ai/via-chrome/conversations/:uuid/delete`.
 - `parentMessageUuid` is auto-fetched from `chat_conversations/:uuid`. If the conversation is empty, the call errors with `no_leaf_message_uuid`.
 - The via-chrome snippet warns explicitly in its `instructions` field: *"This snippet is a WRITE — it creates real message history in the user's claude.ai account and consumes tokens. Verify intent before running."*
+
+---
+
+## Embedded browser chat clients (scoped tokens + streaming) — added 2026-07-21
+
+Support for pages that embed a chat UI and call this API **directly from the
+browser** (first consumer: the lm-unified-trade chart-chat panel). Two pieces:
+
+### Scoped, revocable tokens (`core/src/auth/scoped-token.ts`)
+
+The full node api-token must never ship to a page. A **scoped token** is minted
+by a full-token caller, sent in the same `x-api-key` header (CORS already
+allows it), and validated as a fallback in the rest-server auth gate. Scope
+`claude-ai-chat` allows exactly:
+
+- `POST /claude-ai/conversations` (create)
+- `POST /claude-ai/conversations/:uuid/completion` and `…/completion/stream`
+- `GET  /claude-ai/conversations/:uuid/messages`
+
+Everything else — listing conversations (privacy), delete, rename, via-chrome,
+any non-claude-ai route, and the token-admin routes themselves — stays
+full-token-only. Tokens persist (0600) in `<dataDir>/scoped-tokens.json`
+(default TTL 24 h, max 7 d, cap 50 live).
+
+Admin routes (full token required):
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/auth/scoped-tokens` | Mint. Body `{ scope: 'claude-ai-chat', ttlMs?, label? }` → `{ id, token, scope, expiresAt, … }` (secret returned once). |
+| `GET` | `/auth/scoped-tokens` | List `{ id, scope, label, createdAt, expiresAt, lastUsedAt }` — never the secrets. |
+| `DELETE` | `/auth/scoped-tokens/:id` | Revoke immediately. |
+
+### Streaming completion (`POST /claude-ai/conversations/:uuid/completion/stream`)
+
+Same body as the blocking route; answers `text/event-stream` (consume with a
+fetch reader — EventSource cannot POST). Frames:
+
+- every upstream claude.ai SSE event verbatim (`message_start`,
+  `content_block_start/delta/stop`, `message_delta`, …) — render text deltas
+  and tool_use starts live;
+- synthetic auto-approve progress: `lm_approval_fired` `{toolUseId, toolName}`,
+  `lm_approvals` (the resolved list), `lm_continuation_text` `{text}`
+  (full-text snapshots while the post-tool continuation is polled);
+- one final `lm_result` — the blocking route's compact shape
+  (`{status, text, humanMessageUuid, assistantMessageUuid, eventCount, approvals}`);
+- `lm_error` `{message}` on failure. `:hb` comment heartbeats every 15 s.
+
+Client disconnect does **not** abort the upstream turn — it still lands in the
+conversation; reconcile from `GET /:uuid/messages`.
+
+Verified 2026-07-21 (deployed 117 core): scoped-token 401 matrix, streamed
+turn with `enableConnectorTools:[ext__chart-context__*]` auto-approving and
+executing against the live chart view-context, `lm_result` text correct.
 
 ---
 
