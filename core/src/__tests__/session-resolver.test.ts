@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SESSION_STATUS_HANDLERS,
@@ -8,6 +8,11 @@ import {
   describeCandidates,
   identityHeader,
 } from '../mcp-server/mcp-session-resolver';
+import { stopSessionCache } from '../session-cache';
+
+// session_status() lazily starts the SessionCache chokidar watcher (open handle) —
+// release it so the runner exits instead of hanging. See fleet-identity-session-status.
+after(() => stopSessionCache());
 import { runWithMcpContext } from '../mcp-server/principal-context';
 
 /**

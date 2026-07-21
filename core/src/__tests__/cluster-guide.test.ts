@@ -1,8 +1,13 @@
 // Task 10: guide("clusters") topic + bootstrap/session_status cluster awareness
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { GUIDE_HANDLERS, GUIDES_TEST_EXPORT } from '../mcp-server/tools/guide';
 import { SESSION_STATUS_HANDLERS } from '../mcp-server/mcp-session-resolver';
+import { stopSessionCache } from '../session-cache';
+
+// session_status() lazily starts the SessionCache chokidar watcher (open handle) —
+// release it so the runner exits instead of hanging. See fleet-identity-session-status.
+after(() => stopSessionCache());
 
 const guide = (args: Record<string, unknown>) => GUIDE_HANDLERS.guide(args);
 const text = async (args: Record<string, unknown>) => (await guide(args)).content[0].text as string;

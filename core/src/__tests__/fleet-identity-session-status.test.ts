@@ -1,6 +1,12 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { SESSION_STATUS_HANDLERS } from '../mcp-server/mcp-session-resolver';
+import { stopSessionCache } from '../session-cache';
+
+// session_status() lazily constructs the singleton SessionCache, which starts a
+// chokidar file watcher — an open handle that keeps the process alive so the test
+// runner never exits (the "hang at setup" class). Release it after the suite.
+after(() => stopSessionCache());
 
 test('session_status leads with the fleet/connector identity', async () => {
   const r = await SESSION_STATUS_HANDLERS.session_status({});

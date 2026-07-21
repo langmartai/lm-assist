@@ -13,8 +13,9 @@
     "dev": "tsc --watch",
     "clean": "rm -rf dist dist-test",
     "start": "node dist/cli.js serve",
-    "test": "npm run build:test && node --test --test-reporter=spec --test-timeout=300000 dist-test/__tests__/**/*.test.js",
-    "test:live": "RUN_LIVE_CC=1 npm run test"
+    "test": "npm run build:test && node scripts/run-tests.js",
+    "test:live": "RUN_LIVE_CC=1 npm run test",
+    "test:raw": "node --test --test-reporter=spec --test-timeout=300000 dist-test/__tests__/**/*.test.js"
   },
   "author": "YiHuangDB",
   "license": "MIT",
