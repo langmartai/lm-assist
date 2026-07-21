@@ -69,3 +69,53 @@ test('tolerates empty / malformed input', () => {
   assert.deepEqual(parseChatMessages({}), []);
   assert.deepEqual(parseChatMessages({ chat_messages: 'nope' }), []);
 });
+
+test('extracts image file refs from a tool_result and keeps result text clean', () => {
+  // Real shape from a get_view_image turn (2026-07-21): claude.ai re-hosts the
+  // MCP image block as {type:'image', file_uuid} inside tool_result content.
+  const d = parseChatMessages({ chat_messages: [
+    { sender: 'assistant', content: [
+      { type: 'tool_use', id: 'img1', name: 'lm-assist langmart:ext__chart-context__get_view_image', input: { client: 'cabc.t1' } },
+      { type: 'tool_result', tool_use_id: 'img1', is_error: false, content: [
+        { type: 'image', file_uuid: '33201c04-ded9-4ecd-aef0-6ce6e9efd73e' },
+        { type: 'text', text: '{"client":{"clientId":"cabc.t1"},"imageAgeSeconds":12}' },
+      ] },
+      { type: 'text', text: 'looks choppy' },
+    ] },
+  ] });
+  const call = d[0].toolCalls![0];
+  assert.deepEqual(call.images, [{ fileUuid: '33201c04-ded9-4ecd-aef0-6ce6e9efd73e' }]);
+  assert.match(call.result as string, /imageAgeSeconds/);
+  assert.ok(!(call.result as string).includes('file_uuid'), 'image block must not be stringified into result');
+});
+
+test('suppresses successful tool_search meta-calls but keeps errored ones', () => {
+  const d = parseChatMessages({ chat_messages: [
+    { sender: 'assistant', content: [
+      { type: 'tool_use', id: 's1', name: 'tool_search', input: { query: 'chart' }, result: 'Loaded 2 tools', is_error: false },
+      { type: 'tool_use', id: 'r1', name: 'lm-assist langmart:ext__chart-context__get_view_summary', input: {}, result: '{"summary":"..."}', is_error: false },
+      { type: 'text', text: 'answer' },
+    ] },
+    { sender: 'assistant', content: [
+      { type: 'tool_use', id: 's2', name: 'tool_search', input: { query: 'x' }, result: 'catalog down', is_error: true },
+      { type: 'text', text: 'hmm' },
+    ] },
+  ] });
+  assert.equal(d[0].toolCalls?.length, 1);
+  assert.match(d[0].toolCalls![0].name, /get_view_summary/);
+  // errored tool_search stays visible
+  assert.equal(d[1].toolCalls?.length, 1);
+  assert.equal(d[1].toolCalls![0].name, 'tool_search');
+  assert.equal(d[1].toolCalls![0].isError, true);
+});
+
+test('drops a message left empty after tool_search suppression', () => {
+  const d = parseChatMessages({ chat_messages: [
+    { sender: 'assistant', content: [
+      { type: 'tool_use', id: 'only', name: 'tool_search', input: { query: 'q' }, result: 'ok', is_error: false },
+    ] },
+    { sender: 'assistant', content: [{ type: 'text', text: 'real answer' }] },
+  ] });
+  assert.equal(d.length, 1);
+  assert.equal(d[0].text, 'real answer');
+});

@@ -1589,6 +1589,86 @@ export async function listActiveSessions(opts: { page?: number; perPage?: number
  * If `title` is omitted, claude.ai auto-generates one from the conversation
  * content. Pass an explicit `title` to rename.
  */
+/**
+ * PUT a shallow settings patch onto a conversation (read → merge → write).
+ *
+ * Exists because the CREATE body's `settings` is not honored for every key —
+ * `tool_search_mode` in particular comes back "auto" regardless of what create
+ * sent (verified 2026-07-21). The SPA's own settings toggles PUT the
+ * conversation resource, so we mirror that: fetch current settings, merge the
+ * patch (never replace wholesale — enabled_mcp_tools etc. must survive), PUT.
+ *
+ * Returns { status, applied } where `applied` reflects whether the PUT
+ * response (or a fallback re-read) shows every patched key at its target
+ * value. Callers treat failure as advisory — a conversation without the patch
+ * still works, the SPA meta-tools just stay on.
+ */
+export async function setConversationSettings(
+  convUuid: string,
+  patch: Record<string, unknown>,
+  opts: { orgUuid?: string } = {},
+): Promise<{ status: number; applied: boolean; settings?: Record<string, unknown> }> {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(convUuid)) {
+    throw new Error(`Invalid conversation UUID: ${convUuid}`);
+  }
+  const orgUuid = _org(opts);
+  const read = await readConversation(convUuid, { orgUuid });
+  if (read.status >= 400) throw new Error(`settings read failed: HTTP ${read.status}`);
+  const current = ((read.body as any)?.settings ?? {}) as Record<string, unknown>;
+  const merged = { ...current, ...patch };
+
+  const url = `https://claude.ai/api/organizations/${orgUuid}/chat_conversations/${convUuid}`;
+  const id = deriveIdentity(cfg);
+  const headers: Record<string, string> = {
+    Host: 'claude.ai',
+    Connection: 'keep-alive',
+    'anthropic-client-platform': 'web_claude_ai',
+    'anthropic-client-version': '1.0.0',
+    'anthropic-client-sha': '8a753cbf88e19be0f5f67efefb1b07840b6402e9',
+    'content-type': 'application/json',
+    Accept: '*/*',
+    'User-Agent': cfg.userAgent ||
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+    Origin: 'https://claude.ai',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty',
+    Referer: `https://claude.ai/chat/${convUuid}`,
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept-Language': 'en-US,en;q=0.9',
+    Cookie: cfg.cookie,
+  };
+  if (id.anonymousId) headers['anthropic-anonymous-id'] = id.anonymousId;
+  if (id.activitySessionId) headers['x-activity-session-id'] = id.activitySessionId;
+  if (id.deviceId) headers['anthropic-device-id'] = id.deviceId;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15_000);
+  try {
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ settings: merged }),
+      signal: ctrl.signal,
+    });
+    const text = await res.text();
+    let parsed: any;
+    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+    // Prefer the PUT echo; fall back to a re-read when the response has no settings.
+    let after: Record<string, unknown> | undefined = parsed?.settings;
+    if (res.status < 400 && !after) {
+      try { after = ((await readConversation(convUuid, { orgUuid })).body as any)?.settings; } catch { /* verify is best-effort */ }
+    }
+    const applied = res.status < 400 && !!after
+      && Object.entries(patch).every(([k, v]) => (after as Record<string, unknown>)[k] === v);
+    return { status: res.status, applied, settings: after };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function setConversationTitle(convUuid: string, opts: { title?: string; orgUuid?: string } = {}) {
   const cfg = readClaudeAISession();
   if (!cfg) throw new Error('No claude.ai session configured');
@@ -1733,7 +1813,18 @@ export async function createConversation(opts: {
     const text = await res.text();
     let parsed: any;
     try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
-    return { status: res.status, statusText: res.statusText, headers: respHeaders, body: parsed, uuid: convUuid };
+    // claude.ai IGNORES settings.tool_search_mode in the CREATE body (verified
+    // 2026-07-21: created with 'off', conversation read back 'auto'). Apply it
+    // as a follow-up settings write; best-effort — a failure must not break
+    // conversation creation.
+    let toolSearchModeApplied: boolean | undefined;
+    if (res.status < 400 && opts.toolSearchMode) {
+      try {
+        const r = await setConversationSettings(convUuid, { tool_search_mode: opts.toolSearchMode }, { orgUuid });
+        toolSearchModeApplied = r.applied;
+      } catch { toolSearchModeApplied = false; }
+    }
+    return { status: res.status, statusText: res.statusText, headers: respHeaders, body: parsed, uuid: convUuid, ...(toolSearchModeApplied !== undefined ? { toolSearchModeApplied } : {}) };
   } finally {
     clearTimeout(timer);
   }

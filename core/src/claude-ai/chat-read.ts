@@ -9,7 +9,17 @@
  * content[] blocks and pair tool_use with its result (inline when the read used
  * render_all_tools=true, else a separate tool_result block matched by tool_use_id).
  */
-export interface ChatToolCall { name: string; input?: unknown; result?: string; isError?: boolean }
+export interface ChatToolCall {
+  name: string;
+  input?: unknown;
+  result?: string;
+  isError?: boolean;
+  /** Image blocks from the tool_result — claude.ai re-hosts MCP image content
+   *  as opaque file references ({type:'image', file_uuid}), so only the uuid
+   *  is available here (no bytes/URL). Extracted out of `result` so the text
+   *  stays clean for display. */
+  images?: Array<{ fileUuid: string }>;
+}
 export interface ChatMsg { role: 'user' | 'assistant'; type: 'user' | 'assistant'; text: string; thinking?: string; toolCalls?: ChatToolCall[] }
 
 function stringifyResult(content: unknown): string {
@@ -51,7 +61,18 @@ export function parseChatMessages(conversationBody: unknown): ChatMsg[] {
           if (b?.id) toolIndex.set(String(b.id), call);
         } else if (b?.type === 'tool_result') {
           const call = toolIndex.get(String(b?.tool_use_id || ''));
-          if (call) { call.result = stringifyResult(b?.content); call.isError = !!b?.is_error; attachedAResult = true; }
+          if (call) {
+            const content = b?.content;
+            if (Array.isArray(content)) {
+              const imgs = content.filter((x: any) => x?.type === 'image' && x?.file_uuid);
+              if (imgs.length) call.images = imgs.map((x: any) => ({ fileUuid: String(x.file_uuid) }));
+              call.result = stringifyResult(content.filter((x: any) => x?.type !== 'image'));
+            } else {
+              call.result = stringifyResult(content);
+            }
+            call.isError = !!b?.is_error;
+            attachedAResult = true;
+          }
         }
       }
     } else if (typeof content === 'string') {
@@ -67,5 +88,15 @@ export function parseChatMessages(conversationBody: unknown): ChatMsg[] {
     }
     out.push({ role: sender, type: sender, text, ...(think ? { thinking: think } : {}), ...(toolCalls.length ? { toolCalls } : {}) });
   }
-  return out;
+  // Suppress the SPA's internal `tool_search` meta-tool from the chat display —
+  // it's tool-catalog plumbing (the model looking up which tools exist), not a
+  // user-meaningful action, and it clutters driven-completion transcripts.
+  // Kept when it ERRORED (a failure the user should see). Runs after the whole
+  // loop because a call's result/isError can attach from a later carrier block.
+  for (const m of out) {
+    if (!m.toolCalls) continue;
+    const kept = m.toolCalls.filter((c) => !(c.name === 'tool_search' && !c.isError));
+    if (kept.length) m.toolCalls = kept; else delete m.toolCalls;
+  }
+  return out.filter((m) => m.text || m.thinking || (m.toolCalls && m.toolCalls.length));
 }
