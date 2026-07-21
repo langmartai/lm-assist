@@ -18,6 +18,7 @@ test('guide.ts no longer hardcodes "langmart MCP connector"', () => {
 
 test('handleBootstrap prepends fleetIdentity() to the response', () => {
   const src = fs.readFileSync(GUIDE_SRC, 'utf8');
-  // The bootstrap assembly must put fleetIdentity() ahead of BOOTSTRAP.
-  assert.match(src, /ok\(fleetIdentity\(\)\s*\+\s*'\\n\\n'\s*\+\s*BOOTSTRAP/);
+  // The bootstrap assembly must put fleetIdentity() ahead of the (now overlay-aware)
+  // bootstrap body — buildBootstrap(lookup) replaced the old BOOTSTRAP constant.
+  assert.match(src, /ok\(fleetIdentity\(\)\s*\+\s*'\\n\\n'\s*\+\s*buildBootstrap\(/);
 });
