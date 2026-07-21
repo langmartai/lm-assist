@@ -38,6 +38,11 @@ export interface ScopedToken {
   token: string;       // the secret — returned once at mint time
   scope: ScopeName;
   label?: string;      // free-form caller note ("trade-web chart chat")
+  /** Conversation-name prefix this token may LIST (GET /claude-ai/conversations/named).
+   *  Bound at mint time so a leaked token can only ever enumerate its own
+   *  app's conversations (e.g. "Chart chat — "), never the whole account.
+   *  Tokens without one cannot use the named-list route at all. */
+  listPrefix?: string;
   createdAt: number;
   expiresAt: number;
   lastUsedAt?: number;
@@ -58,6 +63,9 @@ const SCOPE_ROUTES: Record<ScopeName, Array<{ method: string; pattern: RegExp }>
     { method: 'POST', pattern: new RegExp(`^/claude-ai/conversations/${UUID_SEG}/completion$`) },
     { method: 'POST', pattern: new RegExp(`^/claude-ai/conversations/${UUID_SEG}/completion/stream$`) },
     { method: 'GET', pattern: new RegExp(`^/claude-ai/conversations/${UUID_SEG}/messages$`) },
+    // Filtered list — the ROUTE further requires the token to carry a bound
+    // listPrefix (see claude-ai.routes.ts); tokens without one get 403 there.
+    { method: 'GET', pattern: /^\/claude-ai\/conversations\/named$/ },
   ],
 };
 
@@ -85,6 +93,7 @@ function load(file: string): ScopedToken[] {
           list.push({
             id: t.id, token: t.token, scope: t.scope,
             label: typeof t.label === 'string' ? t.label : undefined,
+            listPrefix: typeof t.listPrefix === 'string' && t.listPrefix ? t.listPrefix : undefined,
             createdAt: typeof t.createdAt === 'number' ? t.createdAt : 0,
             expiresAt: t.expiresAt,
             lastUsedAt: typeof t.lastUsedAt === 'number' ? t.lastUsedAt : undefined,
@@ -112,16 +121,19 @@ function prune(list: ScopedToken[], now: number): ScopedToken[] {
 }
 
 const publicInfo = (t: ScopedToken): ScopedTokenInfo => ({
-  id: t.id, scope: t.scope, label: t.label,
+  id: t.id, scope: t.scope, label: t.label, listPrefix: t.listPrefix,
   createdAt: t.createdAt, expiresAt: t.expiresAt, lastUsedAt: t.lastUsedAt,
 });
 
 export function mintScopedToken(
-  opts: { scope: ScopeName; ttlMs?: number; label?: string },
+  opts: { scope: ScopeName; ttlMs?: number; label?: string; listPrefix?: string },
   file: string = scopedTokenFilePath(),
   now: number = Date.now(),
 ): ScopedToken {
   if (!isKnownScope(opts.scope)) throw new Error(`unknown scope: ${String(opts.scope)}`);
+  if (opts.listPrefix !== undefined && (typeof opts.listPrefix !== 'string' || !opts.listPrefix.trim())) {
+    throw new Error('listPrefix, when given, must be a non-empty string');
+  }
   const ttl = Math.min(Math.max(1_000, opts.ttlMs ?? DEFAULT_TTL_MS), MAX_TTL_MS);
   const list = prune(load(file), now);
   if (list.length >= MAX_TOKENS) {
@@ -132,6 +144,7 @@ export function mintScopedToken(
     token: TOKEN_PREFIX + randomBytes(32).toString('hex'),
     scope: opts.scope,
     label: opts.label?.slice(0, 120),
+    listPrefix: opts.listPrefix?.slice(0, 80),
     createdAt: now,
     expiresAt: now + ttl,
   };
@@ -179,6 +192,23 @@ export function validateScopedRequest(
     save(file, list);
   }
   return allowed;
+}
+
+/**
+ * Resolve a live scoped token to its public info (route-level checks that need
+ * more than the gate's yes/no — e.g. the named-list route reading the token's
+ * bound listPrefix). Returns null for non-scoped/unknown/expired tokens.
+ */
+export function scopedTokenFor(
+  token: string | string[] | undefined | null,
+  file: string = scopedTokenFilePath(),
+  now: number = Date.now(),
+): ScopedTokenInfo | null {
+  const t = Array.isArray(token) ? token[0] : token;
+  if (!t || typeof t !== 'string' || !t.startsWith(TOKEN_PREFIX)) return null;
+  const hit = load(file).find((x) => x.token === t);
+  if (!hit || hit.expiresAt <= now) return null;
+  return publicInfo(hit);
 }
 
 /** Test hook — drop the in-memory cache for a file. */

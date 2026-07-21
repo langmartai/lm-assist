@@ -8,6 +8,7 @@ import {
   listScopedTokens,
   revokeScopedToken,
   validateScopedRequest,
+  scopedTokenFor,
   isKnownScope,
   __resetScopedTokens,
 } from '../auth/scoped-token';
@@ -108,4 +109,28 @@ test('isKnownScope', () => {
   assert.ok(isKnownScope('claude-ai-chat'));
   assert.ok(!isKnownScope('everything'));
   assert.ok(!isKnownScope(undefined));
+});
+
+test('named-list route is in scope; listPrefix binds at mint and resolves via scopedTokenFor', () => {
+  const t = mintScopedToken({ scope: 'claude-ai-chat', listPrefix: 'Chart chat — ' }, file, 1000);
+  assert.ok(validateScopedRequest(t.token, 'GET', `${CONV}/named`, file, 2000));
+  const info = scopedTokenFor(t.token, file, 2000);
+  assert.ok(info);
+  assert.equal(info!.listPrefix, 'Chart chat — ');
+  assert.ok(!('token' in (info as object)));
+  // survives persistence round-trip
+  __resetScopedTokens(file);
+  assert.equal(scopedTokenFor(t.token, file, 2000)!.listPrefix, 'Chart chat — ');
+});
+
+test('scopedTokenFor rejects unknown/expired/non-scoped tokens', () => {
+  const t = mintScopedToken({ scope: 'claude-ai-chat', ttlMs: 5_000 }, file, 1000);
+  assert.equal(scopedTokenFor(t.token, file, 2000)!.listPrefix, undefined);
+  assert.equal(scopedTokenFor(t.token, file, 7000), null);        // expired
+  assert.equal(scopedTokenFor('lmsc_nope', file, 2000), null);    // unknown
+  assert.equal(scopedTokenFor('full-ring-token', file, 2000), null);
+});
+
+test('empty listPrefix refuses to mint', () => {
+  assert.throws(() => mintScopedToken({ scope: 'claude-ai-chat', listPrefix: '  ' }, file, 1000), /listPrefix/);
 });

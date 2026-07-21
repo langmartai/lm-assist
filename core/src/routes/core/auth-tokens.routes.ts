@@ -30,6 +30,7 @@ export function createAuthTokensRoutes(_ctx: RouteContext): RouteHandler[] {
             scope: b.scope,
             ttlMs: typeof b.ttlMs === 'number' ? b.ttlMs : undefined,
             label: typeof b.label === 'string' ? b.label : undefined,
+            listPrefix: typeof b.listPrefix === 'string' ? b.listPrefix : undefined,
           });
           return { success: true, data: t };
         } catch (err) {

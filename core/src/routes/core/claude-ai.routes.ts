@@ -174,6 +174,7 @@ import { LM_ASSIST_TOOL_DEFS } from '../../mcp-server/configure';
 import { buildConnectorToolsArray, pickLmAssistConnector } from '../../mcp-server/connector-tools-array';
 import { getPluginAggregator } from '../../mcp-server/plugins/aggregator';
 import { parseChatMessages } from '../../claude-ai/chat-read';
+import { scopedTokenFor } from '../../auth/scoped-token';
 
 const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
@@ -315,6 +316,74 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'POST',
       pattern: /^\/claude-ai\/via-chrome\/health-check$/,
       handler: async () => ({ success: true, data: snippetHealthCheck() }),
+    },
+
+    // GET /claude-ai/conversations/named?limit=30&refresh=false&prefix=...
+    //   Filtered conversation list for embedded chat clients: only
+    //   conversations whose NAME starts with a prefix, newest-updated first,
+    //   compact shape {uuid, name, updatedAt, createdAt}.
+    //
+    //   Prefix resolution is the privacy boundary: a SCOPED token may only use
+    //   the listPrefix bound to it at mint (query `prefix` is ignored; a
+    //   scoped token without one gets 403) — so a leaked panel token can
+    //   enumerate its own app's chats, never the account. Full-token callers
+    //   pass ?prefix= explicitly (required, non-empty).
+    //
+    //   Freshness: defaults to a LIVE upstream fetch (refresh=true) because
+    //   the panel lists right after creating a conversation and the cache
+    //   index lags; pass refresh=false to serve from the cache index.
+    //
+    //   MUST be registered before the /:uuid read route — its `[^/?]+`
+    //   pattern would otherwise swallow the literal "named" segment.
+    {
+      method: 'GET',
+      pattern: /^\/claude-ai\/conversations\/named$/,
+      handler: async (req) => {
+        const q = req.query || {};
+        const rawKey = req.headers?.['x-api-key'];
+        const scoped = scopedTokenFor(Array.isArray(rawKey) ? rawKey[0] : rawKey);
+        let prefix: string;
+        if (scoped) {
+          if (!scoped.listPrefix) {
+            return { success: false, httpStatus: 403, error: { code: 'NO_LIST_PREFIX', message: 'this scoped token has no listPrefix bound — re-mint with one to use the named list' } };
+          }
+          prefix = scoped.listPrefix;
+        } else {
+          if (typeof q.prefix !== 'string' || !q.prefix.trim()) {
+            return { success: false, error: { code: 'PREFIX_REQUIRED', message: 'pass ?prefix=<non-empty name prefix>' } };
+          }
+          prefix = q.prefix;
+        }
+        const limit = Math.min(Math.max(1, parseInt(q.limit || '30', 10) || 30), 100);
+        try {
+          type Row = { uuid?: string; name?: string; updated_at?: string; updatedAt?: string; created_at?: string; createdAt?: string };
+          let rows: Row[];
+          if (q.refresh === 'false') {
+            rows = (await claudeAiCache.listIndex()) as unknown as Row[];
+          } else {
+            // Fetch a deep window upstream — the prefix filter applies AFTER
+            // the upstream limit, so a shallow fetch could miss older chats.
+            const r = await listConversations({ limit: 200 });
+            if (r.status >= 400) return { success: false, error: { code: `UPSTREAM_${r.status}`, message: `claude.ai responded ${r.status}` } };
+            // chat_conversations_v2 answers { data: [...], has_more } (verified live 2026-07-21).
+            const body = r.body as { data?: Row[] } | Row[] | null;
+            rows = Array.isArray(body) ? body : (Array.isArray(body?.data) ? body.data : []);
+          }
+          const items = rows
+            .filter((c) => typeof c?.name === 'string' && c.name.startsWith(prefix) && typeof c?.uuid === 'string')
+            .map((c) => ({
+              uuid: c.uuid as string,
+              name: c.name as string,
+              updatedAt: c.updated_at ?? c.updatedAt ?? null,
+              createdAt: c.created_at ?? c.createdAt ?? null,
+            }))
+            .sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')))
+            .slice(0, limit);
+          return { success: true, data: { prefix, conversations: items } };
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
     },
 
     // GET /claude-ai/conversations?limit=30&starred=false&project_uuid=...
