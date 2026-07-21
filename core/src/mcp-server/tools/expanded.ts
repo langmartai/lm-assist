@@ -597,12 +597,13 @@ export const ccrRemoteStopToolDef = {
 export const ccrRestartToolDef = {
   name: 'ccr_restart',
   description:
-    'RESTART a LOCAL Claude Code session\'s process so it re-fetches its MCP tool list (Claude Code loads MCP tools at process start ONLY — no in-place reload exists; run refresh_connector_tools/sync-connector FIRST so the refreshed list is what the new process fetches). Corruption-safe by construction: stops existing CCR bridges for the session → KILLS the live owner (SIGTERM→verify→SIGKILL→verify) → an independent re-check must confirm NOTHING still owns the session → only then spawns the fresh `claude --resume`. A BUSY (mid-turn) session is refused without force:true (killing mid-write risks corrupting the turn); a kill that does not verify dead ABORTS (CONFLICT kill-failed) — it never resumes over a live process. Same session id, same history, fresh process + fresh tools.',
+    'RESTART a LOCAL Claude Code session\'s process so it re-fetches its MCP tool list (Claude Code loads MCP tools at process start ONLY — no in-place reload exists; run refresh_connector_tools/sync-connector FIRST so the refreshed list is what the new process fetches). Corruption-safe by construction: stops existing CCR bridges for the session → KILLS the live owner (SIGTERM→verify→SIGKILL→verify) → an independent re-check must confirm NOTHING still owns the session → only then spawns the fresh `claude --resume`. A session idle at its prompt restarts immediately. An actively-BUSY (mid-turn) session is WAITED FOR by default (wait_ms, default 120s): the restart proceeds the moment its current work finishes; force:true kills immediately instead; a wait timeout returns CONFLICT (retry with longer wait_ms or force). A kill that does not verify dead ABORTS (CONFLICT kill-failed) — it never resumes over a live process. Same session id, same history, fresh process + fresh tools.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       session_id: { type: 'string', description: 'Claude Code session UUID to restart.' },
-      force: { type: 'boolean', description: 'Kill even an actively-busy (mid-turn) session. Default false — busy sessions are refused to avoid corrupting the in-flight turn.' },
+      force: { type: 'boolean', description: 'Kill IMMEDIATELY even if actively mid-turn (skips waiting). Default false.' },
+      wait_ms: { type: 'number', description: 'When the session is actively mid-turn, WAIT up to this long (ms) for its current work to finish, then restart (default 120000; 0 = do not wait, refuse busy immediately). A session idle at its prompt restarts right away regardless.' },
     },
     required: ['session_id'],
   },
@@ -1667,8 +1668,10 @@ async function handleCcrRestart(args: Record<string, unknown>): Promise<McpToolR
   const sid = String(args.session_id || '').trim();
   if (!sid) return err('session_id is required.');
   const body: Record<string, unknown> = { sessionId: sid };
-  // Connector bool args can arrive as strings — coerce.
+  // Connector bool/number args can arrive as strings — coerce.
   if (args.force === true || args.force === 'true') body.force = true;
+  const w = Number(args.wait_ms);
+  if (Number.isFinite(w)) body.waitMs = w;
   try { return renderRaw(await workerPostRaw('/ccr/restart', body)); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }

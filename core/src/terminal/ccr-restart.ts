@@ -36,6 +36,8 @@ export interface RestartResult {
   oldPid?: number | null;
   wasLive?: boolean;
   killMethod?: string;
+  /** how long we waited for the in-flight turn to finish (wait-for-idle path) */
+  waitedMs?: number;
   /** the fresh resume's record (webUrl/tmux), present on ok */
   record?: unknown;
   reason: string;
@@ -47,6 +49,11 @@ export interface RestartDeps {
     live: boolean; connectStrategy: string; pid: number | null;
     tmuxSession: string | null; updatedAt: string | undefined;
   };
+  /** Real TUI activity: 'idle' = at the prompt (safe to recycle NOW, whatever the
+   *  transcript age); 'busy' = actively mid-turn; 'unknown' = can't tell (headless /
+   *  non-tmux) → the conservative transcript-age gate applies instead. */
+  phase?: (sid: string) => 'idle' | 'busy' | 'unknown';
+  sleep?: (ms: number) => Promise<void>;
   /** Stop existing CCR bridge remotes registered for this session (best-effort). */
   stopExistingRemotes: (sid: string) => Promise<number>;
   /** Kill + VERIFY-DEAD the owner pid. Must not resolve killed:true unless the process is gone. */
@@ -58,14 +65,34 @@ export interface RestartDeps {
 }
 
 const DEFAULT_IDLE_THRESHOLD_MS = 30 * 60 * 1000;
+const DEFAULT_WAIT_MS = 120_000;   // how long to wait for an in-flight turn to finish
+const WAIT_POLL_MS = 2_000;
+
+/** Is the session ACTUALLY working right now? Prefer the real TUI phase; fall back
+ *  to the transcript-age gate when the phase is unknowable. */
+function isActivelyBusy(
+  v: { updatedAt: string | undefined },
+  phase: 'idle' | 'busy' | 'unknown',
+  now: number,
+  idleThresholdMs: number,
+): boolean {
+  if (phase === 'idle') return false;   // at the prompt — safe now, whatever updatedAt says
+  if (phase === 'busy') return true;    // genuinely mid-turn
+  return killEligibility({ idleMs: idleMs(v.updatedAt, now), idleThresholdMs, force: false }) === 'needs-force';
+}
 
 export async function restartLocal(
   sid: string,
-  opts: { force?: boolean; idleThresholdMs?: number },
+  opts: { force?: boolean; idleThresholdMs?: number; waitMs?: number },
   deps: RestartDeps,
 ): Promise<RestartResult> {
   const force = !!opts.force;
   const idleThresholdMs = opts.idleThresholdMs ?? DEFAULT_IDLE_THRESHOLD_MS;
+  // How long to WAIT for an in-flight turn to finish before giving up (0 = don't
+  // wait — refuse a busy session immediately, the pre-wait behavior).
+  const waitMs = opts.waitMs === undefined ? DEFAULT_WAIT_MS : Math.max(0, Math.min(opts.waitMs, 600_000));
+  const phaseOf = deps.phase ?? (() => 'unknown' as const);
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
   let v: ReturnType<RestartDeps['verdict']>;
   try { v = deps.verdict(sid); }
@@ -75,17 +102,38 @@ export async function restartLocal(
     return { ok: false, state: 'gone', sid, reason: 'no transcript and no live process on this host' };
   }
 
-  const wasLive = v.live;
-  const oldPid = v.pid;
+  let wasLive = v.live;
+  let oldPid = v.pid;
+  let waitedMs = 0;
 
-  // BUSY gate BEFORE any destructive step: a mid-turn session is only killed with force.
-  if (wasLive) {
-    const idle = idleMs(v.updatedAt, deps.now());
-    if (killEligibility({ idleMs: idle, idleThresholdMs, force }) === 'needs-force') {
+  // BUSY gate BEFORE any destructive step: a session ACTUALLY mid-turn is not
+  // killed silently. force:true kills immediately; otherwise WAIT (bounded) for
+  // the current work to finish, then proceed. A session idle at its prompt
+  // restarts right away — whatever the transcript age.
+  if (wasLive && !force) {
+    let busy = isActivelyBusy(v, phaseOf(sid), deps.now(), idleThresholdMs);
+    if (busy && waitMs === 0) {
       return {
         ok: false, state: 'needs-force', sid, oldPid, wasLive,
-        reason: 'session is actively busy (mid-turn); killing it now risks corrupting the turn — pass force:true to restart anyway',
+        reason: 'session is actively busy (mid-turn) and waiting is disabled (waitMs:0) — pass force:true to kill immediately, or allow waitMs',
       };
+    }
+    const waitStart = deps.now();
+    while (busy) {
+      if (deps.now() - waitStart >= waitMs) {
+        return {
+          ok: false, state: 'needs-force', sid, oldPid, wasLive, waitedMs: deps.now() - waitStart,
+          reason: `session stayed busy for the full wait window (${Math.round(waitMs / 1000)}s) — its current work has not finished; retry with a longer waitMs or pass force:true to kill it mid-turn`,
+        };
+      }
+      await sleep(Math.min(WAIT_POLL_MS, waitMs));
+      busy = isActivelyBusy(v, phaseOf(sid), deps.now(), idleThresholdMs);
+    }
+    waitedMs = deps.now() - waitStart;
+    // The wait may have outlived the process (turn ended = session exited, or a
+    // user closed it) — refresh the verdict so the kill targets the CURRENT owner.
+    if (waitedMs > 0) {
+      try { v = deps.verdict(sid); wasLive = v.live; oldPid = v.pid; } catch { /* keep the entry verdict */ }
     }
   }
 
@@ -96,19 +144,19 @@ export async function restartLocal(
   let killMethod = 'none';
   if (wasLive) {
     // 2. Kill the owner and VERIFY it died.
-    if (!oldPid) return { ok: false, state: 'error', sid, wasLive, reason: 'live session but no owner pid to kill' };
+    if (!oldPid) return { ok: false, state: 'error', sid, wasLive, waitedMs, reason: 'live session but no owner pid to kill' };
     const k = await deps.killOwner(oldPid).catch(() => ({ killed: false, wasAlive: true, method: 'error' }));
     killMethod = k.method;
     // INVARIANT: never resume over a live process.
     if (!k.killed) {
-      return { ok: false, state: 'kill-failed', sid, oldPid, wasLive, killMethod, reason: 'owner process did not terminate; NOT resuming over a live process' };
+      return { ok: false, state: 'kill-failed', sid, oldPid, wasLive, killMethod, waitedMs, reason: 'owner process did not terminate; NOT resuming over a live process' };
     }
     // 3. Independent re-verify: a fresh verdict must agree nothing owns the session
     //    (catches a second process owning the transcript beyond the killed pid).
     let stillLive = false;
     try { stillLive = deps.verdict(sid).live; } catch { stillLive = false; }
     if (stillLive) {
-      return { ok: false, state: 'kill-failed', sid, oldPid, wasLive, killMethod, reason: 'session still reports a live owner after kill; ABORTING resume (no corruption)' };
+      return { ok: false, state: 'kill-failed', sid, oldPid, wasLive, killMethod, waitedMs, reason: 'session still reports a live owner after kill; ABORTING resume (no corruption)' };
     }
   }
 
@@ -119,13 +167,14 @@ export async function restartLocal(
   // 5. Fresh resume — new process ⇒ MCP tools re-fetched at startup.
   try {
     const record = await deps.resume(sid);
+    const waited = waitedMs > 0 ? ` (waited ${Math.round(waitedMs / 1000)}s for its in-flight work to finish)` : '';
     return {
-      ok: true, state: 'restarted', sid, oldPid, wasLive, killMethod, record,
+      ok: true, state: 'restarted', sid, oldPid, wasLive, killMethod, waitedMs, record,
       reason: wasLive
-        ? 'killed the old owner (verified dead) and resumed fresh — MCP tools re-fetched at startup'
-        : 'session was not running; resumed fresh — MCP tools re-fetched at startup',
+        ? `killed the old owner (verified dead) and resumed fresh — MCP tools re-fetched at startup${waited}`
+        : `session was not running; resumed fresh — MCP tools re-fetched at startup${waited}`,
     };
   } catch (e) {
-    return { ok: false, state: 'error', sid, oldPid, wasLive, killMethod, reason: `resume failed: ${(e as Error).message}` };
+    return { ok: false, state: 'error', sid, oldPid, wasLive, killMethod, waitedMs, reason: `resume failed: ${(e as Error).message}` };
   }
 }

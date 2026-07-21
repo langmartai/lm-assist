@@ -42,11 +42,11 @@ test('idle live session: stop-remotes → kill → re-verify → resume, in that
     'destructive order must be: verdict, stop remotes, kill, INDEPENDENT re-verdict, stale-tmux clear, resume');
 });
 
-test('BUSY session without force → needs-force and NOTHING destructive runs', async () => {
+test('BUSY session without force and waiting disabled → needs-force and NOTHING destructive runs', async () => {
   const { deps, calls } = mkDeps({
     verdicts: [{ live: true, connectStrategy: 'attach-existing', pid: 4242, tmuxSession: 't', updatedAt: new Date(NOW - 10_000).toISOString() }], // active 10s ago
   });
-  const r = await restartLocal('sid-1', {}, deps);
+  const r = await restartLocal('sid-1', { waitMs: 0 }, deps);
   assert.equal(r.ok, false);
   assert.equal(r.state, 'needs-force');
   assert.deepEqual(calls, ['verdict'], 'no stop/kill/resume on a busy session without force');
@@ -115,6 +115,86 @@ test('resume failure after a successful kill → state error with a clear reason
   assert.equal(r.ok, false);
   assert.equal(r.state, 'error');
   assert.match(r.reason, /resume failed: tmux spawn failed/);
+});
+
+// ── wait-for-idle: a busy session is WAITED for, not just refused ─────────────
+
+test('busy phase + wait: polls until the turn finishes, then kills and resumes (waitedMs reported)', async () => {
+  let clock = NOW;
+  let phaseCalls = 0;
+  const { deps, calls } = mkDeps({
+    verdicts: [
+      { live: true, connectStrategy: 'attach-existing', pid: 4242, tmuxSession: 't', updatedAt: new Date(NOW - 5_000).toISOString() },
+      { live: true, connectStrategy: 'attach-existing', pid: 4242, tmuxSession: 't', updatedAt: undefined }, // post-wait refresh
+      { live: false, connectStrategy: 'create-tmux', pid: null, tmuxSession: null, updatedAt: undefined },   // post-kill re-verdict
+    ],
+  });
+  deps.now = () => clock;
+  deps.phase = () => { phaseCalls++; return phaseCalls <= 3 ? 'busy' : 'idle'; }; // 3 busy polls, then idle
+  deps.sleep = async (ms) => { clock += ms; };
+  const r = await restartLocal('sid-1', { waitMs: 60_000 }, deps);
+  assert.equal(r.ok, true);
+  assert.equal(r.state, 'restarted');
+  assert.ok((r.waitedMs ?? 0) > 0, 'waitedMs must be reported');
+  assert.ok(calls.includes('kill') && calls.includes('resume'));
+});
+
+test('busy phase + wait TIMEOUT: needs-force, nothing destructive, waitedMs reported', async () => {
+  let clock = NOW;
+  const { deps, calls } = mkDeps({
+    verdicts: [{ live: true, connectStrategy: 'attach-existing', pid: 4242, tmuxSession: 't', updatedAt: new Date(NOW - 5_000).toISOString() }],
+  });
+  deps.now = () => clock;
+  deps.phase = () => 'busy'; // never finishes
+  deps.sleep = async (ms) => { clock += ms; };
+  const r = await restartLocal('sid-1', { waitMs: 10_000 }, deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.state, 'needs-force');
+  assert.ok((r.waitedMs ?? 0) >= 10_000);
+  assert.match(r.reason, /stayed busy/);
+  assert.ok(!calls.includes('kill') && !calls.includes('resume'), 'timeout must be non-destructive');
+});
+
+test('IDLE AT PROMPT restarts immediately without force — even with a recent transcript (fixes the false-busy)', async () => {
+  const { deps, calls } = mkDeps({
+    verdicts: [
+      { live: true, connectStrategy: 'attach-existing', pid: 4242, tmuxSession: 't', updatedAt: new Date(NOW - 5_000).toISOString() }, // active 5s ago
+      { live: false, connectStrategy: 'create-tmux', pid: null, tmuxSession: null, updatedAt: undefined },
+    ],
+  });
+  deps.phase = () => 'idle'; // but the TUI is at its prompt
+  const r = await restartLocal('sid-1', {}, deps);
+  assert.equal(r.ok, true);
+  assert.equal(r.state, 'restarted');
+  assert.equal(r.waitedMs, 0, 'no waiting needed for an idle prompt');
+  assert.ok(calls.includes('kill') && calls.includes('resume'));
+});
+
+test('force skips waiting entirely (no sleep, immediate kill)', async () => {
+  let slept = 0;
+  const { deps, calls } = mkDeps({
+    verdicts: [
+      { live: true, connectStrategy: 'attach-existing', pid: 4242, tmuxSession: 't', updatedAt: new Date(NOW - 5_000).toISOString() },
+      { live: false, connectStrategy: 'create-tmux', pid: null, tmuxSession: null, updatedAt: undefined },
+    ],
+  });
+  deps.phase = () => 'busy';
+  deps.sleep = async () => { slept++; };
+  const r = await restartLocal('sid-1', { force: true }, deps);
+  assert.equal(r.ok, true);
+  assert.equal(slept, 0, 'force must not wait');
+  assert.ok(calls.includes('kill'));
+});
+
+test('phase unknown + waitMs:0 falls back to the transcript-age gate (old behavior preserved)', async () => {
+  const { deps, calls } = mkDeps({
+    verdicts: [{ live: true, connectStrategy: 'attach-existing', pid: 4242, tmuxSession: null, updatedAt: new Date(NOW - 5_000).toISOString() }],
+  });
+  deps.phase = () => 'unknown';
+  const r = await restartLocal('sid-1', { waitMs: 0 }, deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.state, 'needs-force');
+  assert.ok(!calls.includes('kill'));
 });
 
 // ── resume-fidelity: permission-mode restoration (found live 2026-07-22) ──────

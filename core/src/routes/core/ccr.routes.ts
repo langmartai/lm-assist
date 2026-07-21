@@ -162,10 +162,11 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       method: 'POST',
       pattern: /^\/ccr\/restart$/,
       handler: async (req) => {
-        const body = (req.body || {}) as { sessionId?: unknown; force?: unknown };
+        const body = (req.body || {}) as { sessionId?: unknown; force?: unknown; waitMs?: unknown };
         try {
           const sessionId = parseSessionId(body.sessionId as string | undefined);
-          const data = await ccr.restart({ sessionId, force: body.force === true });
+          const waitMs = Number(body.waitMs);
+          const data = await ccr.restart({ sessionId, force: body.force === true, waitMs: Number.isFinite(waitMs) ? waitMs : undefined });
           return ok(data);
         } catch (e: unknown) {
           if (e instanceof TerminalError) {

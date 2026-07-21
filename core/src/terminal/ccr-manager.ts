@@ -491,13 +491,13 @@ export async function connect({ sessionId, force }: { sessionId: string; force?:
  * the fresh `claude --resume`. A busy (mid-turn) session is refused without
  * force:true. kill-failed ⇒ ABORT, never resume over a live process.
  */
-export async function restart({ sessionId, force }: { sessionId: string; force?: boolean }): Promise<import('./ccr-restart').RestartResult> {
+export async function restart({ sessionId, force, waitMs }: { sessionId: string; force?: boolean; waitMs?: number }): Promise<import('./ccr-restart').RestartResult> {
   const { restartLocal } = require('./ccr-restart') as typeof import('./ccr-restart');
   const { killOwner: killOwnerPrim } = require('./live-rc-connect') as typeof import('./live-rc-connect');
   const IS_WINDOWS = process.platform === 'win32';
   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-  const r = await restartLocal(sessionId, { force }, {
+  const r = await restartLocal(sessionId, { force, waitMs }, {
     now: () => Date.now(),
     verdict: (sid) => {
       const v = sessionVerdict(sid);
@@ -506,6 +506,42 @@ export async function restart({ sessionId, force }: { sessionId: string; force?:
         tmuxSession: v.tmuxSession ?? null, updatedAt: v.owner?.updatedAt,
       };
     },
+    // Real activity detection. The modern TUI keeps the ❯ input box visible
+    // DURING work, so inspector's "footer+prompt ⇒ idle" is unreliable mid-turn
+    // (observed live 2026-07-22: phase read 'idle' while a Bash tool ran).
+    // Robust order:
+    //   1. the in-progress marker on screen ("esc to interrupt" spinner) ⇒ busy;
+    //   2. transcript mtime fresh (a streaming turn appends continuously; also
+    //      covers just-submitted-before-any-render) ⇒ busy;
+    //   3. inspector phase idle ⇒ idle; anything else ⇒ unknown (conservative
+    //      transcript-age gate applies).
+    phase: (sid) => {
+      try {
+        const v = sessionVerdict(sid);
+        if (!v.tmuxSession) return 'unknown';
+        const tmux = require('./tmux') as typeof import('./tmux');
+        const screen = tmux.capture(v.tmuxSession, { paneQualifier: null, lines: null, start: null });
+        // ACTIVE-work markers (observed live 2026-07-22 on this TUI version):
+        //   "✽ Infusing… (37s · ↓ 650 tokens)"  ← running spinner: glyph + word + "… (Ns"
+        //   a finished turn renders "✻ Cogitated for 25s" (no paren) — no false match.
+        // "esc to interrupt" kept for TUI versions that render it.
+        if (screen.includes('esc to interrupt')) return 'busy';
+        if (/[✻✶✽✢✳✺·]\s?\S+…\s*\(\d+s/.test(screen)) return 'busy';
+        if (/↓\s*\d+\s+tokens/.test(screen)) return 'busy'; // streaming counter
+        if (v.jsonl) {
+          try {
+            const age = Date.now() - fs.statSync(v.jsonl).mtimeMs;
+            if (age < 12_000) return 'busy'; // records still flushing — the turn is live
+          } catch { /* stat failed — fall through */ }
+        }
+        const { getCCState } = require('./inspector') as typeof import('./inspector');
+        const p = getCCState(v.tmuxSession).phase;
+        if (p === 'idle') return 'idle';
+        if (p === 'busy') return 'busy';
+        return 'unknown';
+      } catch { return 'unknown'; }
+    },
+    sleep,
     stopExistingRemotes: async (sid) => {
       let n = 0;
       for (const rec of Object.values(loadRegistry())) {
