@@ -6,7 +6,7 @@ test('session_status leads with the fleet/connector identity', async () => {
   const r = await SESSION_STATUS_HANDLERS.session_status({});
   const t = r.content[0].text as string;
   assert.match(t, /FLEET \/ CONNECTOR IDENTITY/, 'session_status must include the fleet identity block');
-  assert.match(t, /OTHER lm-assist MCP connectors/, 'must carry the multi-connector caveat');
+  assert.match(t, /INDEPENDENT instances over DIFFERENT fleets/, 'must carry the multi-connector caveat');
 });
 
 test('session_status still reports the node cluster (additive, not replaced)', async () => {

@@ -326,6 +326,34 @@ Server-sent events with `execution_update` events. Omit `executionId` for all ev
 | GET | `/ttyd/status` | Get ttyd status |
 | GET | `/ttyd/processes` | List session processes |
 
+### Backlog / feature-idea graph (12 endpoints)
+
+A fleet-synced registry of NOT-YET-IMPLEMENTED ideas/features/issues/bugs/tasks forming a
+typed graph (edges: `depends-on|blocks|relates-to|parent-of|duplicate-of|spawned-mission`).
+Versioned like the other registries (every write = a rev with full-state history; rollback
+restores as a NEW rev). Dataset `backlog` (cache backend, scope fleet) — created by the
+FIRST WRITE on the origin node; reads never create it. Writes are origin-anchored; reads
+serve from the local replica. Web UI: `/backlog` (graph like missions). MCP tools (both
+surfaces): `backlog_list/get/create/update/link/unlink/review/discuss/remove/graph` —
+`backlog_discuss` auto-attaches the CALLER session (connector tool-call id → precise
+session; remote/CCR self-declare `sessionId`+`sessionKind:"remote"`). Removal is SOFT
+(`removed:true` rev; `restore:true` brings it back). Design:
+`docs/superpowers/specs/2026-07-21-backlog-graph-design.md`.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/backlog` | List items (`?status=&type=&tag=&includeRemoved=`) |
+| GET | `/backlog/graph` | Drawable `{nodes, edges:[{from,to,kind}]}` |
+| GET | `/backlog/:id` | Full item incl. discussion/reviews/history |
+| GET | `/backlog/:id/history` | Rev history, newest first |
+| POST | `/backlog` | Create `{title, description?, type?, priority?, tags?}` |
+| POST | `/backlog/:id` | Update whitelist fields (unknown field ⇒ `UNSUPPORTED_FIELD`) |
+| POST | `/backlog/:id/link` `/unlink` | Add/remove typed edge `{to, kind}` |
+| POST | `/backlog/:id/discuss` | Attach note `{note, session?}` (session defaults to caller) |
+| POST | `/backlog/:id/review` | Attach review `{verdict: approve\|reject\|concerns, note?, by?}` |
+| POST | `/backlog/:id/remove` | Soft delete (`{restore:true}` restores) |
+| POST | `/backlog/:id/rollback` | Restore rev `{toRev}` as a new rev |
+
 ### Hub Client (6 endpoints)
 | Method | Endpoint | Description |
 |--------|----------|-------------|

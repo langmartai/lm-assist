@@ -50,6 +50,18 @@ export interface OverlayFieldSpec<S> {
   defaultValue: S[keyof S];
   validate(v: unknown): Validation;
   summarize?(v: unknown): unknown;
+  /** Optional equality for change detection + the changes diff. Default is strict
+   *  `===` — right for the scalar registries; array/object-valued fields (backlog
+   *  edges/discussion/reviews) supply a deep comparison so identical re-writes stay
+   *  `changed:false` instead of minting junk revs. */
+  equals?(a: unknown, b: unknown): boolean;
+}
+
+/** Field equality honoring the optional per-field `equals` hook. */
+export function fieldEquals<S extends Record<string, unknown>>(
+  f: OverlayFieldSpec<S>, a: unknown, b: unknown,
+): boolean {
+  return f.equals ? f.equals(a, b) : a === b;
 }
 
 /** Everything that distinguishes one overlay registry from another. */
@@ -79,5 +91,5 @@ export function overlayStateChanged<S extends Record<string, unknown>>(
   next: S,
 ): boolean {
   if (!old) return true;
-  return fields.some((f) => (old as Record<string, unknown>)[f.key] !== next[f.key]);
+  return fields.some((f) => !fieldEquals(f, (old as Record<string, unknown>)[f.key], next[f.key]));
 }
