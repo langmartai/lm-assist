@@ -301,6 +301,29 @@ function resolveSessionCwd(jsonlPath: string): string {
 }
 
 /**
+ * Resume-fidelity: the flags that restore the session's recorded permission
+ * mode. A plain `claude --resume` comes up in the DEFAULT mode, silently
+ * downgrading e.g. a bypass-permissions session (found live 2026-07-22: a
+ * restarted session's MCP call was blocked by "don't ask" that the original
+ * never ran under). The jsonl records permissionMode per turn — the LAST one
+ * is the session's current operating mode. Restoring the mode the user already
+ * granted is fidelity, not escalation.
+ */
+export function resumePermissionFlags(jsonlPath: string): string {
+  let mode: string | null = null;
+  try {
+    const text = fs.readFileSync(jsonlPath, 'utf-8');
+    const re = /"permissionMode":"([A-Za-z]+)"/g;
+    for (let m = re.exec(text); m; m = re.exec(text)) mode = m[1];
+  } catch { /* unknown → default */ }
+  if (!mode || mode === 'default') return '';
+  if (mode === 'bypassPermissions') return ' --dangerously-skip-permissions';
+  // acceptEdits / plan / dontAsk / auto — pass through as a named mode.
+  if (/^[A-Za-z]+$/.test(mode)) return ` --permission-mode ${mode}`;
+  return '';
+}
+
+/**
  * Map an EnsureResult state to a TerminalError code+message, or null on success.
  * Used by connect() to surface clear errors from the ensure ladder.
  */
@@ -338,7 +361,9 @@ async function connectDeadCreateTmux(sessionId: string): Promise<CcrRecord> {
     }
     tmuxSession = `ccr-${sessionId.slice(0, 8)}`;
     const cwd = resolveSessionCwd(jsonlPath);
-    execFileSync('tmux', ['new-session', '-d', '-s', tmuxSession, '-c', cwd, `claude --resume ${sessionId}`], {
+    // Restore the session's recorded permission mode — a bare `claude --resume`
+    // silently downgrades it to default (see resumePermissionFlags).
+    execFileSync('tmux', ['new-session', '-d', '-s', tmuxSession, '-c', cwd, `claude --resume ${sessionId}${resumePermissionFlags(jsonlPath)}`], {
       encoding: 'utf-8',
       timeout: 10_000,
     });

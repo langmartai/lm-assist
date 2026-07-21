@@ -116,3 +116,21 @@ test('resume failure after a successful kill → state error with a clear reason
   assert.equal(r.state, 'error');
   assert.match(r.reason, /resume failed: tmux spawn failed/);
 });
+
+// ── resume-fidelity: permission-mode restoration (found live 2026-07-22) ──────
+import { resumePermissionFlags } from '../../terminal/ccr-manager';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+test('resumePermissionFlags maps the LAST recorded mode to the right claude flags', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rpf-'));
+  const j = (lines: string[]) => { const p = path.join(tmp, `${Math.random().toString(36).slice(2)}.jsonl`); fs.writeFileSync(p, lines.join('\n')); return p; };
+  assert.equal(resumePermissionFlags(j(['{"permissionMode":"bypassPermissions"}'])), ' --dangerously-skip-permissions');
+  assert.equal(resumePermissionFlags(j(['{"permissionMode":"acceptEdits"}'])), ' --permission-mode acceptEdits');
+  assert.equal(resumePermissionFlags(j(['{"permissionMode":"default"}'])), '', 'default mode adds no flag');
+  assert.equal(resumePermissionFlags(j(['{"x":1}'])), '', 'no recorded mode adds no flag');
+  // LAST occurrence wins (the session's current operating mode)
+  assert.equal(resumePermissionFlags(j(['{"permissionMode":"bypassPermissions"}', '{"permissionMode":"dontAsk"}'])), ' --permission-mode dontAsk');
+  assert.equal(resumePermissionFlags('/nonexistent/x.jsonl'), '', 'unreadable jsonl adds no flag');
+});
