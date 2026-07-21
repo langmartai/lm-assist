@@ -185,7 +185,55 @@ export async function handleGet(id: string, port?: MissionDataPort, leader?: Lea
   return m ? ok(m) : fail('NOT_FOUND', `no mission ${id}`);
 }
 
-export async function handlePatch(id: string, b: Record<string, unknown>, port?: MissionDataPort, actor?: MissionActor, leader?: LeaderAnchorDeps): Promise<Envelope> {
+/** Cross-cluster targeting seam for handlePatch — the cluster bits of OnboardDeps.
+ *  Real deps read the cluster store + peer fabric; tests inject mocks. */
+export interface XClusterDeps {
+  myCluster: () => string;
+  selfNode: () => string;
+  clusterRecords: () => Promise<Array<{ gatewayId: string; cluster?: string | null }>>;
+  onlineNodes: () => Promise<string[]>;
+  proxyPost: (node: string, path: string, body: unknown) => Promise<unknown>;
+}
+export function realXCluster(): XClusterDeps {
+  return {
+    myCluster: getMyCluster,
+    selfNode: thisNode,
+    clusterRecords: getClusterRecords,
+    onlineNodes: () => { const { listAllOnlineNodeIds } = require('../../data/peer-client') as typeof import('../../data/peer-client'); return listAllOnlineNodeIds(); },
+    proxyPost: (n, p, b) => { const { proxyPost } = require('../../data/peer-client') as typeof import('../../data/peer-client'); return proxyPost(n, p, b); },
+  };
+}
+
+export async function handlePatch(id: string, b: Record<string, unknown>, port?: MissionDataPort, actor?: MissionActor, leader?: LeaderAnchorDeps, xc?: XClusterDeps): Promise<Envelope> {
+  // Cross-cluster targeting (additive; mirrors handleOnboard). Mission datasets are
+  // CLUSTER-scoped, so when the connector relays an executor's mission_update into a
+  // DIFFERENT cluster than the mission's origin, the caller names its mission's
+  // `cluster` to reach the right store — otherwise the write hits "no mission <id>"
+  // on the wrong cluster and its progress never reaches the controller. Consumed here
+  // (never a patch field). Absent, or our own cluster → behaviour is unchanged.
+  if ('cluster' in b) {
+    const targetCluster = str(b.cluster);
+    delete (b as Record<string, unknown>).cluster; // routing hint, not a mission field
+    if (targetCluster) {
+      const x = xc ?? realXCluster();
+      if (targetCluster !== x.myCluster()) {
+        let leaderNode: string | null = null;
+        try {
+          leaderNode = pickClusterLeader(targetCluster, (await x.clusterRecords()) as any, await x.onlineNodes());
+        } catch (e) {
+          // Resolving the roster hits the hub (online nodes) — a hub hiccup must not
+          // crash the write into INTERNAL_ERROR; surface it as a routing failure.
+          return fail('LEADER_UNREACHABLE', `could not resolve cluster "${targetCluster}": ${(e as Error).message}`);
+        }
+        if (!leaderNode) return fail('LEADER_UNREACHABLE', `no online node in cluster "${targetCluster}"`);
+        if (leaderNode !== x.selfNode()) {
+          try { return proxyEnvelope(await x.proxyPost(leaderNode, `/mission/${encodeURIComponent(id)}`, b)); }
+          catch (e) { return fail('LEADER_UNREACHABLE', `cluster "${targetCluster}" leader unreachable: ${(e as Error).message}`); }
+        }
+        // we ARE the target cluster's leader → fall through to local handling
+      }
+    }
+  }
   const anchored = await anchorToLeader(leader, 'POST', `/mission/${encodeURIComponent(id)}`, b, true);
   if (anchored) return anchored;
   const who = actor ?? await actorFor(b);

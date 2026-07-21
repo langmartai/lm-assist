@@ -79,10 +79,14 @@ export const MISSION_TOOL_DEFS = [
       'can MONITOR it — binding is REQUIRED for the supervisor to detect the worker\'s pendingQuestion and engage you to ' +
       'answer it FAST (a cloud worker left unanswered idle-suspends and cannot resume). Pass binding:null to unbind. ' +
       'When wrapping up, resultsAppend records what was delivered ({ref, summary} — works for controllers). ' +
+      'If you are a mission EXECUTOR and this write fails with "no mission <id>", the connector relayed you to a ' +
+      'different cluster than the mission\'s origin — pass `cluster` = YOUR cluster (from bootstrap/session_status) so ' +
+      'the write is routed to the mission\'s store. ' +
       'Unknown fields are rejected (UNSUPPORTED_FIELD), never silently dropped.',
     inputSchema: obj(
       {
         id: S,
+        cluster: { ...S, description: 'Optional routing hint: the mission\'s origin cluster. Pass your own cluster when a cross-cluster relay makes the write land on the wrong node ("no mission <id>"). Not stored — used only to proxy the write to that cluster\'s leader.' },
         title: S,
         objective: S,
         plan: S,
