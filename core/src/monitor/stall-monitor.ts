@@ -75,11 +75,30 @@ export async function runStallMonitorTick(deps: TickDeps) {
   return { localNudged, remoteNudged, gaveUp, isMonitor };
 }
 
-/** Register the scheduled-job handler. Reads live config each run; assembles real deps. */
+/** Register the scheduled-job handler. Reads live config each run; assembles real deps.
+ *
+ *  Two INDEPENDENT passes share this job but nothing else:
+ *   - auto-resume  — server/network stalls → `continue`
+ *   - model-fallback — a per-model usage limit → `/model <fallback>`
+ *  Each has its own enable flag, detector and store, and either can be off. */
 export function registerStallMonitor(jobs: { registerHandler: (t: string, fn: any) => void }): void {
   jobs.registerHandler('stall-monitor', async (_config: any, _ctx: any) => {
     const s = getProjectSettings();
-    if (!s.autoResumeStalledEnabled) return { result: 'auto-resume disabled', status: 'skipped' };
+
+    // Model-fallback runs first and independently: a model-limited session is invisible
+    // to the resume pass (model_limit ∉ SERVER_STALL_STATES), so the two never contend.
+    let modelNote = '';
+    if (s.autoModelFallbackEnabled) {
+      try {
+        const { runModelFallbackWithRealDeps } = require('./model-fallback') as typeof import('./model-fallback');
+        const mf = await runModelFallbackWithRealDeps();
+        modelNote = ` modelSwitched=${mf.switched.length}`;
+      } catch (e) {
+        modelNote = ` modelSwitchError=${(e as Error).message.slice(0, 60)}`;
+      }
+    }
+
+    if (!s.autoResumeStalledEnabled) return { result: `auto-resume disabled${modelNote}`, status: modelNote ? 'ok' : 'skipped' };
     const r = await runStallMonitorTick({
       now: Date.now(),
       cfg: {
@@ -97,6 +116,6 @@ export function registerStallMonitor(jobs: { registerHandler: (t: string, fn: an
       load: loadStallStore,
       save: saveStallStore,
     });
-    return { result: `monitor=${r.isMonitor} localNudged=${r.localNudged.length} remoteNudged=${r.remoteNudged.length} gaveUp=${r.gaveUp.length}`, status: 'ok' };
+    return { result: `monitor=${r.isMonitor} localNudged=${r.localNudged.length} remoteNudged=${r.remoteNudged.length} gaveUp=${r.gaveUp.length}${modelNote}`, status: 'ok' };
   });
 }

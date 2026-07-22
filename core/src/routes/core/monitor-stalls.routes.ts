@@ -1,5 +1,6 @@
 import type { RouteHandler, RouteContext } from '../index';
 import { loadStallStore } from '../../monitor/stall-store';
+import { loadModelFallbackStore } from '../../monitor/model-fallback-store';
 import { amIMonitor } from '../../monitor/stall-election';
 import { getProjectSettings } from '../../project-settings';
 
@@ -16,6 +17,16 @@ export async function buildStallStatus(elect: () => Promise<{ isMonitor: boolean
     attempts: sessions.reduce((a, x) => a + x.attempts, 0),
     gaveUp: sessions.filter((x) => x.gaveUp).length,
     sessions,
+    // The MODEL class — a separate detector/action/store from the server-error resume
+    // above. `switches` is the journal of `/model <fallback>` sends.
+    modelFallback: {
+      enabled: s.autoModelFallbackEnabled,
+      fallbackModel: s.autoModelFallbackModel,
+      fromModels: s.autoModelFallbackFrom,
+      switches: Object.entries(loadModelFallbackStore()).map(([key, r]) => ({
+        key, from: r.from, to: r.to, attempts: r.attempts, switchedAt: r.switchedAt, verified: r.verified,
+      })),
+    },
   };
 }
 

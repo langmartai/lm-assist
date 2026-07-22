@@ -129,6 +129,39 @@ The backend is a raw Node.js HTTP server (no Express/Hono runtime — Hono is a 
 ### Auto-resume stalled sessions (server / network errors)
 A `scheduled-jobs` handler `stall-monitor` (5 min, on by default) resumes sessions stalled on SERVER or NETWORK errors (529/5xx/server-rate-limit, plus transient connectivity loss — `Unable to connect to API`/`Connection error` when the internet drops — NEVER user usage-limits or auth) by sending `continue`. Backoff **widens** as retries keep failing (5,5,10,10,15,15… min) but is **capped** at `autoResumeMaxIntervalMin` (default 30) so it never hammers, and by default it **never permanently gives up** (`autoResumeNeverGiveUp`, default true) — it keeps retrying at the capped interval so a long outage recovers the moment connectivity returns. Local sessions are handled per-node; remote cloud CCRs only by the single auto-elected monitor (lowest online gateway-id from the hub `/machines` list). Toggles in project-settings: `autoResumeStalledEnabled` (default true), `autoResumeIntervalMin`, `autoResumeMaxAttempts` (only bounds retries when `autoResumeNeverGiveUp` is off), `autoResumeMaxIntervalMin`, `autoResumeNeverGiveUp`, `autoResumeRemoteScan`. Status: `GET /monitor/stalls` / MCP `stall_status`. Run on demand: `POST /scheduler/jobs/stall-monitor/run`.
 
+### Auto model-limit mitigation (`/model` fallback)
+
+A **second, independent** class beside auto-resume. When ONE model is exhausted
+(`You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.`)
+the session stalls forever: `continue` cannot help — the *model* is out. The same
+`stall-monitor` job runs a model-fallback pass that detects the banner and sends
+`/model <fallback>` (default Opus 4.8), then verifies the status line moved off the
+limited model. Local sessions per-node; cloud CCRs only on the elected monitor.
+
+**The two classes never cross:** `model_limit` is deliberately absent from
+`SERVER_STALL_STATES`, so the resume pass cannot see a model-limited session (never sends
+`continue` on a usage limit) and the fallback pass only fires on a model-named
+"reached your … limit" banner (never switches model on a 5xx/529/network error).
+
+**THE invariant — you can only be blocked by the model you are actually on.** The banner
+is transcript history: it scrolls, never clears, and can be on screen for reasons that
+aren't a live block. So the *live status line* decides (`sid: <uuid> <Model>`, read from
+the BOTTOM of the pane). This gives idempotency (post-switch the banner remains, the model
+moved ⇒ no-op) and blocks false positives (a session merely displaying the text — reading
+a capture, editing these tests — is never switched; observed on this feature's own dev session).
+
+⚠️ **`/model` is not always one-shot.** A conversation already cached for the current model
+raises a `Switch model?` confirm dialog (a fresh session applies it silently). The shared
+`sendModelSlash()` answers only the option that both affirms AND names the target model.
+Both the tick and the mission-controller guard go through it.
+
+Settings: `autoModelFallbackEnabled` (default true), `autoModelFallbackModel` (default
+`'opus'`), `autoModelFallbackFrom` (default `['fable']`). Switches are journaled to
+`~/.lm-assist/model-fallback.json` (7-day TTL) and surfaced at `GET /monitor/stalls` /
+MCP `stall_status` under `modelFallback`. Modules: `core/src/monitor/model-limit.ts`
+(pure detector + policy), `model-fallback.ts` (tick + actions), `model-fallback-store.ts`.
+Design: [`docs/superpowers/specs/2026-07-22-auto-model-limit-mitigation-design.md`](./docs/superpowers/specs/2026-07-22-auto-model-limit-mitigation-design.md).
+
 ### Node Clusters
 
 A **cluster** partitions a hub's fleet into independent mini-fleets so you can dev/release on one while another serves. A node belongs to exactly one cluster; unassigned ⇒ implicit `default` ⇒ today's fleet-wide behavior (zero change until you split). Membership is lm-assist-only: a local `~/.lm-assist/cluster.json` (authoritative for self) published into a **fleet-wide-synced** `node-clusters` dataset, so every node converges on the `gatewayId→cluster` map. The scoping lands in two pure filters — `listOnlineNodeIds()` (election: stall-monitor + mission controller) and the data **sync-engine** (per-dataset `scope:'cluster'|'fleet'`, default `cluster`) — plus `selectFleetNodes` (build fan-out).
