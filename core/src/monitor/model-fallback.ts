@@ -21,6 +21,8 @@ import { coreGet } from './loopback';
 export const MODEL_SWITCH_COOLDOWN_MS = 10 * 60_000;
 /** How long a switch stays in the journal that `/monitor/stalls` surfaces. */
 export const MODEL_JOURNAL_TTL_MS = 7 * 24 * 60 * 60_000;
+/** Wall-clock ceiling for the sequential cloud-CCR scan (see findRemoteModelLimited). */
+export const REMOTE_SCAN_BUDGET_MS = 25_000;
 /** How long to wait before re-reading the screen to verify the switch landed. */
 const VERIFY_DELAY_MS = 2_500;
 
@@ -252,7 +254,12 @@ export async function findRemoteModelLimited(): Promise<ModelLimitedSession[]> {
 
   const sessions = await cloudListAccount();
   const out: ModelLimitedSession[] = [];
+  // Each read is a sequential HTTPS round-trip (~2s); a full account scan measured ~55s.
+  // Bound it so one tick can't eat the pass budget — the next tick picks up where the
+  // account list left off is not needed: a still-limited session is still limited later.
+  const deadline = Date.now() + REMOTE_SCAN_BUDGET_MS;
   for (const s of sessions) {
+    if (Date.now() > deadline) { console.log(`[model-fallback] remote scan budget reached (${out.length} found)`); break; }
     if (/completed|stopped|failed|terminated|ended/i.test(s.status || '')) continue;
     const r = await cloudRead({ sid: s.sid, lastN: 6 }).catch(() => null);
     if (!r) continue;
