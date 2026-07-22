@@ -33,8 +33,12 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl 
   const { detail, err, gone, sending, send, refresh } = useChatConversation({ uuid, apiFetch, model, seed });
   const [prompt, setPrompt] = useState('');
   const [manageErr, setManageErr] = useState<string | null>(null);
-  // Push-to-talk voice: the transcript is sent via `send` (which returns the reply to speak).
-  const voice = useVoiceConversation({ wsUrl: voiceWsUrl || '', sendMessage: (text) => send(text) });
+  // Voice DICTATION: the final transcript is inserted into the composer (NOT auto-sent), so you
+  // review/edit and send it yourself. Returning undefined stops the hook from speaking a reply.
+  const voice = useVoiceConversation({
+    wsUrl: voiceWsUrl || '',
+    sendMessage: async (text) => { setPrompt((p) => (p.trim() ? p.trimEnd() + ' ' : '') + text); return undefined; },
+  });
 
   // Inline rename — clicking the title swaps it for a text input (idiom copied from
   // CoworkTaskView's header rename, minus the surrounding title▾ menu — chat only
