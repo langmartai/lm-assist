@@ -250,6 +250,27 @@ describe('decideModelSwitch', () => {
     assert.equal(d.reason, 'no-model-limit');
   });
 
+  test('respects an explicit human decline ("Kept model as …") after the banner', () => {
+    // VERBATIM from live cloud CCR cse_01SwWF69Q2S7P47DU8ApFLAH: a human was offered the
+    // switch and chose "No, go back". An automated actor must not overrule that.
+    const declined = "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.\nKept model as Fable 5";
+    const d = decideModelSwitch({ screen: declined, cfg: cfg(), now: 0, cooldownMs: 0 });
+    assert.equal(d.action, 'noop');
+    assert.equal(d.reason, 'user-kept-model');
+  });
+
+  test('a FRESH limit after an older decline is still actionable', () => {
+    const reLimited = "Kept model as Fable 5\n...later...\nYou've reached your Fable 5 limit. Run /usage-credits to continue.";
+    assert.equal(decideModelSwitch({ screen: reLimited, cfg: cfg(), now: 0, cooldownMs: 0 }).action, 'switch');
+  });
+
+  test('a remote session with no status line derives its model from the last /model outcome', () => {
+    const applied = "You've reached your Fable 5 limit.\nSet model to Opus 4.8";
+    const d = decideModelSwitch({ screen: applied, cfg: cfg(), now: 0, cooldownMs: 0 });
+    assert.equal(d.currentModel, 'opus');
+    assert.equal(d.reason, 'already-on-fallback');
+  });
+
   test('currentModel can be injected when no status line exists (remote CCR)', () => {
     const text = "You've reached your Fable 5 limit. Run /usage-credits to continue.";
     assert.equal(decideModelSwitch({ screen: text, cfg: cfg(), now: 0, cooldownMs: 0, currentModel: null }).action, 'switch');

@@ -38,6 +38,32 @@ export function normalizeModel(s: string | null | undefined): ModelFamily | null
   return m ? (m[1].toLowerCase() as ModelFamily) : null;
 }
 
+/** What Claude Code prints after a `/model` interaction resolves — either it applied
+ *  ("Set model to Opus 4.8") or the user declined the confirm ("Kept model as Fable 5").
+ *  On a cloud CCR there is no status line, so this is the only current-model signal. */
+const MODEL_DECISION_RE = /(Set model to|Kept model as)\s+((?:opus|sonnet|haiku|fable)[\w.\s-]{0,8}?)(?=[.,\n]|\s+and\b|$)/gi;
+
+export interface ModelDecision {
+  kind: 'set' | 'kept';
+  model: ModelFamily;
+  index: number;
+}
+
+/** The MOST RECENT `/model` outcome in the text, or null. */
+export function parseModelDecision(text: string): ModelDecision | null {
+  const re = new RegExp(MODEL_DECISION_RE.source, MODEL_DECISION_RE.flags);
+  let last: RegExpExecArray | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text || ''))) {
+    last = m;
+    if (m.index === re.lastIndex) re.lastIndex++;
+  }
+  if (!last) return null;
+  const model = normalizeModel(last[2]);
+  if (!model) return null;
+  return { kind: /kept/i.test(last[1]) ? 'kept' : 'set', model, index: last.index };
+}
+
 export interface ModelLimitDetection {
   limited: boolean;
   /** the family that is exhausted, e.g. 'fable' */
@@ -46,18 +72,21 @@ export interface ModelLimitDetection {
   modelLabel: string | null;
   /** the matched banner line (trimmed, capped) */
   detail: string | null;
+  /** offset of the banner in the text — lets callers rank it against later events */
+  index: number;
 }
 
 /** Detect a per-model usage-limit banner in captured screen / message text. */
 export function detectModelLimit(text: string): ModelLimitDetection {
   const t = text || '';
+  const none: ModelLimitDetection = { limited: false, model: null, modelLabel: null, detail: null, index: -1 };
   const m = t.match(MODEL_LIMIT_BANNER_RE);
-  if (!m) return { limited: false, model: null, modelLabel: null, detail: null };
+  if (!m) return none;
   const label = m[1].trim();
   const family = normalizeModel(label);
-  if (!family) return { limited: false, model: null, modelLabel: null, detail: null };
+  if (!family) return none;
   const detail = m[0].length > 200 ? m[0].slice(0, 200) : m[0];
-  return { limited: true, model: family, modelLabel: label, detail: detail.trim() };
+  return { limited: true, model: family, modelLabel: label, detail: detail.trim(), index: m.index ?? 0 };
 }
 
 /** Read the session's CURRENT model off the status line. Null when not determinable. */
@@ -157,8 +186,20 @@ export function decideModelSwitch(input: {
   if (!det.limited || !det.model) return { action: 'noop', ...nil, reason: 'no-model-limit' };
 
   const limitedModel = det.model;
-  const currentModel = input.currentModel !== undefined ? input.currentModel : parseCurrentModel(screen);
+  const decision = parseModelDecision(screen);
+  // Current model, most trustworthy first: caller override → live status line → the last
+  // `/model` outcome (the only signal a cloud CCR has, since it renders no status line).
+  const currentModel =
+    input.currentModel !== undefined ? input.currentModel : parseCurrentModel(screen) ?? decision?.model ?? null;
   const base = { limitedModel, currentModel };
+
+  // A human was offered the switch and said no ("Kept model as Fable 5") AFTER the limit
+  // banner. That is an explicit decision to stay put — observed on a live cloud CCR — and
+  // an automated actor must not overrule it. Only a keep MORE RECENT than the banner
+  // counts, so a fresh limit after an old decline is still actionable.
+  if (decision && decision.kind === 'kept' && decision.model === limitedModel && decision.index > det.index) {
+    return { action: 'noop', to: null, ...base, reason: 'user-kept-model' };
+  }
 
   const from = cfg.fromModels.map((f) => normalizeModel(f)).filter(Boolean) as ModelFamily[];
   if (!from.includes(limitedModel)) {
