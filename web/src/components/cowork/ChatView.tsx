@@ -173,11 +173,9 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl 
               onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void handleSend(); } }} />
             {voiceWsUrl && voice.supported && (
               <button type="button" className="btn btn-ghost btn-sm btn-icon"
-                title={voice.state === 'listening' ? 'Release to send' : 'Hold to talk'}
-                onPointerDown={(e) => { e.preventDefault(); void voice.start(); }}
-                onPointerUp={(e) => { e.preventDefault(); void voice.stop(); }}
-                onPointerLeave={() => { if (voice.state === 'listening') void voice.stop(); }}
-                style={{ color: voice.state === 'listening' ? 'var(--color-accent)' : undefined, touchAction: 'none' }}>
+                title={voice.state === 'listening' ? 'Click to stop + send' : 'Click to talk'}
+                onClick={() => { if (voice.state === 'listening') void voice.stop(); else if (voice.state === 'idle' || voice.state === 'error') void voice.start(); }}
+                style={{ color: voice.state === 'listening' ? 'var(--color-accent)' : undefined }}>
                 <Mic size={14} />
               </button>
             )}

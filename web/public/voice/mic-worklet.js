@@ -38,9 +38,12 @@ class MicDownsampler extends AudioWorkletProcessor {
       i += this.step;
     }
 
-    // Keep one sample of context so the next block can interpolate from index 0
-    const keepFrom = Math.floor(i) - 1;
-    if (keepFrom > 0 && keepFrom < merged.length) {
+    // Keep only the UNconsumed remainder for the next block — BOUNDED. At high input
+    // rates (e.g. 96 kHz, step 6) floor(i)-1 overshoots merged.length, and the old
+    // `else { tail = merged }` kept the WHOLE buffer, so tail grew every block until
+    // process() starved the audio thread and frames stopped. Cap at merged.length-1.
+    const keepFrom = Math.min(Math.floor(i) - 1, merged.length - 1);
+    if (keepFrom > 0) {
       this.tail = merged.slice(keepFrom);
       this.readPos = i - keepFrom;
     } else {
