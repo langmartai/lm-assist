@@ -33,12 +33,24 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl 
   const { detail, err, gone, sending, send, refresh } = useChatConversation({ uuid, apiFetch, model, seed });
   const [prompt, setPrompt] = useState('');
   const [manageErr, setManageErr] = useState<string | null>(null);
-  // Voice DICTATION: the final transcript is inserted into the composer (NOT auto-sent), so you
-  // review/edit and send it yourself. Returning undefined stops the hook from speaking a reply.
-  const voice = useVoiceConversation({
-    wsUrl: voiceWsUrl || '',
-    sendMessage: async (text) => { setPrompt((p) => (p.trim() ? p.trimEnd() + ' ' : '') + text); return undefined; },
-  });
+  // Voice DICTATION: the transcript is mirrored LIVE into the composer (see the effect below),
+  // not auto-sent — you review/edit and send it yourself. sendMessage is a no-op because the
+  // composer already holds the text; returning undefined stops the hook from speaking a reply.
+  const dictationBaseRef = useRef<string | null>(null);
+  const voice = useVoiceConversation({ wsUrl: voiceWsUrl || '', sendMessage: async () => undefined });
+
+  // Mirror the growing transcript into the input box while the mic is active, appended after
+  // whatever was already typed. Release the base once dictation ends so the text persists.
+  useEffect(() => {
+    if (voice.state === 'listening' || voice.state === 'transcribing') {
+      if (dictationBaseRef.current === null) dictationBaseRef.current = prompt;
+      const base = dictationBaseRef.current;
+      setPrompt((base.trim() ? base.trimEnd() + ' ' : '') + voice.interim);
+    } else if (voice.state === 'idle' || voice.state === 'error') {
+      dictationBaseRef.current = null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voice.interim, voice.state]);
 
   // Inline rename — clicking the title swaps it for a text input (idiom copied from
   // CoworkTaskView's header rename, minus the surrounding title▾ menu — chat only
@@ -161,9 +173,6 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl 
               {voice.state === 'error' ? (voice.error || 'Voice error') : (
                 <>
                   <span style={{ flexShrink: 0 }}>{voiceStatusLabel(voice.state)}</span>
-                  {voice.state === 'listening' && voice.interim && (
-                    <span style={{ fontStyle: 'italic', opacity: 0.85, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>“{voice.interim}”</span>
-                  )}
                 </>
               )}
             </div>

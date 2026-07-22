@@ -72,13 +72,18 @@ export function useVoiceConversation(opts: { wsUrl: string; sendMessage: (text: 
     cancelSpeech(); // barge over any reply currently being spoken
     setError(null); setInterim(''); interimRef.current = ''; finalsRef.current = [];
     try {
+      console.log('[voice-client] start() v2 — requesting mic; wsUrl=', wsUrl);
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       streamRef.current = stream;
+      const track = stream.getAudioTracks()[0];
+      console.log('[voice-client] getUserMedia OK — track:', track?.label, 'enabled=', track?.enabled, 'muted=', track?.muted, 'readyState=', track?.readyState);
       const ctx = new AudioContext();
       ctxRef.current = ctx;
+      console.log('[voice-client] AudioContext created — state=', ctx.state, 'sampleRate=', ctx.sampleRate);
       await ctx.audioWorklet.addModule('/voice/mic-worklet.js');
+      console.log('[voice-client] worklet addModule OK');
       const source = ctx.createMediaStreamSource(stream);
       const node = new AudioWorkletNode(ctx, 'mic-downsampler');
       nodeRef.current = node;
@@ -87,9 +92,13 @@ export function useVoiceConversation(opts: { wsUrl: string; sendMessage: (text: 
       ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
 
+      let _frames = 0;
       node.port.onmessage = (ev: MessageEvent) => {
         const buf = ev.data;
-        if (buf instanceof ArrayBuffer && ws.readyState === WebSocket.OPEN) ws.send(buf);
+        if (!(buf instanceof ArrayBuffer)) return;
+        _frames++;
+        if (_frames === 1 || _frames % 25 === 0) console.log('[voice-client] worklet produced frame', _frames, '— wsOpen=', ws.readyState === WebSocket.OPEN, 'ctx.state=', ctx.state);
+        if (ws.readyState === WebSocket.OPEN) ws.send(buf);
       };
       ws.onmessage = (ev: MessageEvent) => {
         let m: { type?: string; text?: string; final?: boolean; message?: string };
@@ -97,10 +106,15 @@ export function useVoiceConversation(opts: { wsUrl: string; sendMessage: (text: 
         if (m.type === 'transcript') {
           if (m.final) {
             if (m.text) finalsRef.current.push(m.text);
-            interimRef.current = ''; setInterim('');
+            interimRef.current = '';
+            // Show the ACCUMULATED transcript (all finalized utterances). Do NOT blank it on
+            // each endpoint, or the dictated text visibly "disappears" every time you pause.
+            setInterim(finalsRef.current.join(' '));
             finalizeWaitRef.current?.();
           } else {
-            interimRef.current = m.text || ''; setInterim(m.text || '');
+            interimRef.current = m.text || '';
+            // committed finals + the live in-progress words
+            setInterim([finalsRef.current.join(' '), m.text || ''].filter(Boolean).join(' '));
           }
         } else if (m.type === 'error') {
           fail(m.message || 'voice error');
@@ -108,18 +122,19 @@ export function useVoiceConversation(opts: { wsUrl: string; sendMessage: (text: 
       };
       // Only treat an error as fatal while we're actively starting/listening — a late error on a
       // socket we already closed (after stop) must not clobber a good 'thinking'/'speaking'/'idle' turn.
-      ws.onerror = () => { if (startingRef.current || stateRef.current === 'listening') fail('voice connection error'); };
+      ws.onerror = (e) => { console.log('[voice-client] ws.onerror', e); if (startingRef.current || stateRef.current === 'listening') fail('voice connection error'); };
       // If the relay drops mid-finalize, resolve the finalize wait early instead of blocking 2.5s.
       ws.onclose = () => { finalizeWaitRef.current?.(); };
       ws.onopen = async () => {
         startingRef.current = false;
+        console.log('[voice-client] ws.onopen — pendingAbort=', pendingAbortRef.current, 'ctx.state=', ctx.state);
         // Released before we finished opening → abort cleanly (no capture, no send).
-        if (pendingAbortRef.current) { pendingAbortRef.current = false; teardownAudio(); closeWs(); setState('idle'); return; }
+        if (pendingAbortRef.current) { pendingAbortRef.current = false; teardownAudio(); closeWs(); setState('idle'); console.log('[voice-client] ABORT — released during setup'); return; }
         // The AudioContext is created (line above) AFTER the async getUserMedia — off the gesture
         // tick — so Chrome can leave it 'suspended'. A suspended context never PULLS the worklet,
         // so zero audio frames are sent (confirmed via relay log: WS opens + {ready} but 0 frames).
         // Resume it before wiring the graph, or nothing is ever captured.
-        try { if (ctx.state !== 'running') await ctx.resume(); } catch { /* noop */ }
+        try { if (ctx.state !== 'running') { await ctx.resume(); console.log('[voice-client] ctx.resume() → state=', ctx.state); } } catch (e) { console.log('[voice-client] ctx.resume() FAILED', e); }
         // Chromium only pulls the worklet if the graph reaches the destination; route through a
         // muted gain so we process mic frames without hearing ourselves.
         const silent = ctx.createGain();
@@ -127,15 +142,18 @@ export function useVoiceConversation(opts: { wsUrl: string; sendMessage: (text: 
         source.connect(node);
         node.connect(silent);
         silent.connect(ctx.destination);
+        console.log('[voice-client] audio graph connected → listening; ctx.state=', ctx.state);
         setState('listening');
       };
     } catch (e) {
+      console.log('[voice-client] start() threw', e);
       startingRef.current = false;
       fail(e instanceof Error ? e.message : 'could not start voice');
     }
   }, [supported, wsUrl, fail]);
 
   const stop = useCallback(async () => {
+    console.log('[voice-client] stop() — state=', stateRef.current, 'starting=', startingRef.current);
     if (startingRef.current) { pendingAbortRef.current = true; return; } // released before start finished
     if (stateRef.current !== 'listening') return;
     setState('transcribing');
