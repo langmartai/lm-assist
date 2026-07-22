@@ -660,6 +660,9 @@ const CONTROLLER_COMPACT_THRESHOLD_PCT = 85;        // ctx% at/above which we co
 const CONTROLLER_COMPACT_COOLDOWN_MS = 10 * 60_000; // don't re-fire while it settles
 let _lastControllerCompactAt: number | null = null;
 export function _resetControllerCompactState(): void { _lastControllerCompactAt = null; }
+/** Cooldown anchor for the controller's model-fallback guard (mirrors the compact one). */
+let _lastControllerModelSwitchAt: number | null = null;
+export function _resetControllerModelSwitchState(): void { _lastControllerModelSwitchAt = null; }
 
 /** Pure: should the supervisor compact the controller now? True when its context
  *  is at/above the threshold and we're past the cooldown since the last compact. */
@@ -768,6 +771,11 @@ export interface SupervisorDeps {
   /** Compact the controller (native /compact) to shed context. Returns true when the
    *  compact was initiated; false if the session was busy (retry next tick). */
   compactController?: (cs: ControllerSession) => Promise<boolean>;
+  /** Read the controller's screen (for the model-limit guard). Absent → guard skipped. */
+  controllerScreen?: (cs: ControllerSession) => Promise<string | null>;
+  /** Switch the controller onto `to` (native `/model <to>`). Returns true when sent;
+   *  false when the session was busy (retry next tick). */
+  switchControllerModel?: (cs: ControllerSession, to: string) => Promise<boolean>;
   /** The adapt cadence in minutes (from project settings). Used to compute driveDue. */
   driveIntervalMin: number;
   /** Idle drive cadence (min) when there are no active missions. Default = driveIntervalMin (no change). */
@@ -999,6 +1007,38 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
     const adopted: ControllerSession = { ...cs, lastDriveAt: deps.now };
     await deps.putControllerSession(adopted);
     return { action: 'adopt-drive', controllerSession: adopted };
+  }
+
+  // Model-health: a controller sitting on an exhausted model ("You've reached your
+  // Fable 5 limit") is wedged in a way /compact and `continue` can't fix — the model
+  // itself is out. Switch it onto the configured fallback BEFORE driving it, using the
+  // same idle-guarded slash path as /compact (returns false when busy → retry next
+  // tick). Idempotent: decideModelSwitch no-ops once the controller is on the fallback.
+  if (isMonitor && live && cs && deps.controllerScreen && deps.switchControllerModel) {
+    try {
+      const screen = await deps.controllerScreen(cs);
+      if (screen) {
+        const { decideModelSwitch } = require('../monitor/model-limit') as typeof import('../monitor/model-limit');
+        const { MODEL_SWITCH_COOLDOWN_MS, modelFallbackConfig } = require('../monitor/model-fallback') as typeof import('../monitor/model-fallback');
+        const decision = decideModelSwitch({
+          screen,
+          cfg: modelFallbackConfig(),
+          record: _lastControllerModelSwitchAt
+            ? { switchedAt: _lastControllerModelSwitchAt, attempts: 1, from: '', to: '', verified: false }
+            : undefined,
+          now: deps.now,
+          cooldownMs: MODEL_SWITCH_COOLDOWN_MS,
+        });
+        if (decision.action === 'switch' && decision.to) {
+          const sent = await deps.switchControllerModel(cs, decision.to);
+          if (sent) {
+            _lastControllerModelSwitchAt = deps.now;
+            deps.journal?.({ at: deps.now, kind: 'lifecycle', event: 'model-fallback-controller', sessionId: cs.sessionId, from: decision.limitedModel, to: decision.to });
+            return { action: `model-fallback-controller(${decision.limitedModel}→${decision.to})`, controllerSession: cs };
+          }
+        }
+      }
+    } catch { /* model-limit guard is best-effort — never sinks the tick */ }
   }
 
   // Context-health: compact a near-full controller BEFORE driving it. A controller
@@ -1781,6 +1821,27 @@ export function registerMissionController(
           return true;
         } catch (e) {
           console.debug(`[mission-supervisor] /compact skipped (busy?): ${(e as Error).message}`);
+          return false;
+        }
+      },
+      controllerScreen: async (cs) => {
+        if (!cs.tmux) return null;
+        try {
+          const tmux = require('../terminal/tmux') as typeof import('../terminal/tmux');
+          return tmux.capture(cs.tmux, { paneQualifier: null, lines: null, start: null });
+        } catch { return null; }
+      },
+      switchControllerModel: async (cs, to) => {
+        if (!cs.tmux) return false;
+        try {
+          // Shared with the model-fallback tick: idle-guarded slash + settle the
+          // "Switch model?" confirm a cached conversation raises.
+          const { sendModelSlash } = require('../monitor/model-fallback') as typeof import('../monitor/model-fallback');
+          await sendModelSlash(cs.tmux, to as never);
+          console.log(`[mission-supervisor] controller model limited → /model ${to} ${cs.tmux}`);
+          return true;
+        } catch (e) {
+          console.debug(`[mission-supervisor] /model skipped (busy?): ${(e as Error).message}`);
           return false;
         }
       },

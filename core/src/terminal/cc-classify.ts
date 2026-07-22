@@ -9,6 +9,7 @@ export type ScreenState =
   | 'folder_trust' // "Is this a project you created or one you trust?"
   | 'await_question' // a numbered choice / permission prompt waiting on the user
   | 'rate_limit_user' // the account's usage limit (5-hour / weekly) is reached
+  | 'model_limit' // ONE model is exhausted ("You've reached your Fable 5 limit") — switchable, not retryable
   | 'rate_limit_server' // "Server is temporarily limiting requests (not your usage limit)"
   | 'overloaded' // 529 / Overloaded / "Waiting for capacity"
   | 'server_error' // API Error 5xx / internal server error
@@ -47,7 +48,24 @@ function findLast(t: string, re: RegExp): { detail: string; index: number } | un
  *  already moved past, and a later, currently-relevant one. Ranked by RECENCY
  *  (closest to the end of the text), not this list's order, so a stale banner
  *  can't shadow the real current state. */
+/**
+ * ONE model is exhausted:
+ *   "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model."
+ *
+ * Both halves are required — the "reached your" phrasing AND a known model name — so the
+ * two look-alikes stay out: the promo notice ("…up to 50% of your weekly usage limit on
+ * Fable 5. If you hit your limit…") has the model but not the phrasing, and the
+ * account-wide banner ("Claude usage limit reached · resets at…") has the phrasing but no
+ * model, so it stays `rate_limit_user`. Group 1 is the model as printed ("Fable 5").
+ * Exported as the single source of truth for the auto-fallback monitor.
+ */
+export const MODEL_LIMIT_BANNER_RE =
+  /(?:you(?:'|’)?ve|you have)\s+reached\s+your\s+((?:claude\s+)?(?:opus|sonnet|haiku|fable)[\w.\s-]{0,8}?)\s+limit\b[^\n]*/i;
+
 const BANNER_PATTERNS: { state: ScreenState; re: RegExp }[] = [
+  // Listed before the account-wide rate_limit_user patterns so that on an exact index
+  // tie the more specific per-model reading wins.
+  { state: 'model_limit', re: MODEL_LIMIT_BANNER_RE },
   { state: 'auth_error', re: /OAuth token has expired[^\n]*/i },
   { state: 'auth_error', re: /Invalid API key[^\n]*/i },
   { state: 'auth_error', re: /Invalid authentication credentials[^\n]*/i },

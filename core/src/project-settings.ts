@@ -41,6 +41,14 @@ export interface ProjectSettings {
   autoResumeNeverGiveUp: boolean;
   /** Whether the elected monitor scans remote cloud CCRs. Default true. */
   autoResumeRemoteScan: boolean;
+  /** Auto-switch a session off a model whose usage limit is exhausted ("You've reached your
+   *  Fable 5 limit") by sending `/model <fallback>`. A DISTINCT class from auto-resume:
+   *  never fires on a server/network error, and never sends `continue`. Default true. */
+  autoModelFallbackEnabled: boolean;
+  /** The model to switch TO when a limit is hit. Default 'opus'. */
+  autoModelFallbackModel: string;
+  /** Model families whose limit triggers the switch. Default ['fable']. */
+  autoModelFallbackFrom: string[];
   /** Enable the super Mission Controller scheduled job. Default true. */
   missionControllerEnabled: boolean;
   /** Base interval (minutes) between Mission Controller ticks. Default 5. */
@@ -97,6 +105,9 @@ export const DEFAULTS: ProjectSettings = {
   autoResumeMaxIntervalMin: 30,
   autoResumeNeverGiveUp: true,
   autoResumeRemoteScan: true,
+  autoModelFallbackEnabled: true,
+  autoModelFallbackModel: 'opus',
+  autoModelFallbackFrom: ['fable'],
   missionControllerEnabled: true,
   missionControllerIntervalMin: 5,
   missionControllerIdleIntervalMin: 15,
@@ -149,6 +160,9 @@ export function getProjectSettings(): ProjectSettings {
       autoResumeMaxIntervalMin: typeof data.autoResumeMaxIntervalMin === 'number' ? data.autoResumeMaxIntervalMin : DEFAULTS.autoResumeMaxIntervalMin,
       autoResumeNeverGiveUp: typeof data.autoResumeNeverGiveUp === 'boolean' ? data.autoResumeNeverGiveUp : DEFAULTS.autoResumeNeverGiveUp,
       autoResumeRemoteScan: typeof data.autoResumeRemoteScan === 'boolean' ? data.autoResumeRemoteScan : DEFAULTS.autoResumeRemoteScan,
+      autoModelFallbackEnabled: typeof data.autoModelFallbackEnabled === 'boolean' ? data.autoModelFallbackEnabled : DEFAULTS.autoModelFallbackEnabled,
+      autoModelFallbackModel: typeof data.autoModelFallbackModel === 'string' && data.autoModelFallbackModel ? data.autoModelFallbackModel : DEFAULTS.autoModelFallbackModel,
+      autoModelFallbackFrom: Array.isArray(data.autoModelFallbackFrom) ? data.autoModelFallbackFrom.filter((x: unknown) => typeof x === 'string') : DEFAULTS.autoModelFallbackFrom,
       missionControllerEnabled: typeof data.missionControllerEnabled === 'boolean' ? data.missionControllerEnabled : DEFAULTS.missionControllerEnabled,
       missionControllerIntervalMin: typeof data.missionControllerIntervalMin === 'number' ? data.missionControllerIntervalMin : DEFAULTS.missionControllerIntervalMin,
       missionControllerIdleIntervalMin: typeof data.missionControllerIdleIntervalMin === 'number' ? data.missionControllerIdleIntervalMin : DEFAULTS.missionControllerIdleIntervalMin,
@@ -196,6 +210,9 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     autoResumeMaxIntervalMin: typeof partial.autoResumeMaxIntervalMin === 'number' ? partial.autoResumeMaxIntervalMin : current.autoResumeMaxIntervalMin,
     autoResumeNeverGiveUp: typeof partial.autoResumeNeverGiveUp === 'boolean' ? partial.autoResumeNeverGiveUp : current.autoResumeNeverGiveUp,
     autoResumeRemoteScan: typeof partial.autoResumeRemoteScan === 'boolean' ? partial.autoResumeRemoteScan : current.autoResumeRemoteScan,
+    autoModelFallbackEnabled: typeof partial.autoModelFallbackEnabled === 'boolean' ? partial.autoModelFallbackEnabled : current.autoModelFallbackEnabled,
+    autoModelFallbackModel: typeof partial.autoModelFallbackModel === 'string' && partial.autoModelFallbackModel ? partial.autoModelFallbackModel : current.autoModelFallbackModel,
+    autoModelFallbackFrom: Array.isArray(partial.autoModelFallbackFrom) ? partial.autoModelFallbackFrom.filter((x: unknown) => typeof x === 'string') : current.autoModelFallbackFrom,
     missionControllerEnabled: typeof partial.missionControllerEnabled === 'boolean' ? partial.missionControllerEnabled : current.missionControllerEnabled,
     missionControllerIntervalMin: typeof partial.missionControllerIntervalMin === 'number' ? partial.missionControllerIntervalMin : current.missionControllerIntervalMin,
     missionControllerIdleIntervalMin: typeof partial.missionControllerIdleIntervalMin === 'number' ? partial.missionControllerIdleIntervalMin : current.missionControllerIdleIntervalMin,
