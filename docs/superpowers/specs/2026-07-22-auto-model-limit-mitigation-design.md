@@ -192,6 +192,34 @@ last match.
 writing these tests was detected as a switch candidate. Fixed by rule 5 above — the
 strongest single guard in the design, and it came from being caught by it.
 
+Two more surfaced only after deploying to prod and watching the scheduler:
+
+**4. An unbounded pass doesn't run long — it disables the job forever.**
+`ScheduledJobs.runJob` marks a job running for its whole duration and returns the stale
+view for every later call (`scheduled-jobs.ts:543`). The cloud-CCR scan is sequential
+HTTPS per session, measured **54.7s** live. With model-fallback running first, the tick
+didn't return and **auto-resume stopped running entirely** — `stall-monitor` last ran
+05:14 while `mission-controller` (1 min) kept ticking, which is what exposed it. Now: the
+resume pass runs **first and unbounded**, model-fallback **second under a 45s deadline**,
+and the cloud scan carries its own 25s budget. Ordering is the real fix — the proven,
+load-bearing recovery must never be starved by the newer one.
+
+**5. Don't overrule a human.** The live cloud CCR `cse_01SwWF69…` read:
+
+```
+You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.
+Kept model as Fable 5
+```
+
+Someone was offered the switch and chose "No, go back" — and we would have switched
+anyway on the next tick. A `Kept model as <limited>` **more recent than the banner** is now
+an explicit decision to stay (`user-kept-model`). A fresh limit after an older decline is
+still actionable, so deferring to the human doesn't disable the feature.
+
+This also revealed the remote path was running with the safety invariant effectively off:
+a cloud CCR renders no status line, so `currentModel` was always null. It now falls back
+to the last `/model` outcome (`Set model to X` / `Kept model as X`).
+
 ## Journal retention
 
 The store is the switch **journal** `/monitor/stalls` surfaces, not merely a cooldown
