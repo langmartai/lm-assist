@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { MicButton } from '@/components/voice/MicButton';
 import { Cloud, Cast, Monitor, GitBranch, Code2, ChevronDown, Loader2, ArrowUp, Check, AlertTriangle, Settings2, Plus } from 'lucide-react';
 import { ModelEffortSelector } from '@/components/cowork/ModelEffortSelector';
 import { AttachmentTray } from '@/components/cowork/AttachmentTray';
@@ -218,6 +219,8 @@ export function CcrComposer({ apiFetch, onStarted }: { apiFetch: ApiFetch; onSta
           onClick={() => fileInputRef.current?.click()} style={{ padding: '3px 6px', color: 'var(--color-text-secondary)' }}>
           <Plus size={15} />
         </button>
+        {/* voice dictation → prompt (cloud only; hidden on insecure/remote origins) */}
+        <MicButton value={prompt} onChange={setPrompt} size={15} disabled={env !== 'cloud'} />
         <div style={{ position: 'relative' }}>
           <Pill icon={Settings2} label={permission} active={openMenu === 'perm'} onClick={() => setOpenMenu(openMenu === 'perm' ? null : 'perm')} />
           <Popover open={openMenu === 'perm'} onClose={close}>

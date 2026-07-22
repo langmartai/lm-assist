@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Loader2, Send, Wrench, HelpCircle, Eye, EyeOff } from 'lucide-react';
+import { MicButton } from '@/components/voice/MicButton';
 import { filterInjectedExchanges } from '@/lib/injected-message';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -534,6 +535,8 @@ export function MissionSessionChat({ sid, node, apiFetch, heightFill = false, mi
               }
             }}
           />
+          {/* voice dictation → draft (hidden on insecure/remote origins) */}
+          <MicButton value={draft} onChange={setDraft} size={15} />
           <button
             className="btn btn-primary btn-sm"
             onClick={sendMessage}
