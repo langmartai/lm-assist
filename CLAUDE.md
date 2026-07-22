@@ -155,6 +155,19 @@ raises a `Switch model?` confirm dialog (a fresh session applies it silently). T
 `sendModelSlash()` answers only the option that both affirms AND names the target model.
 Both the tick and the mission-controller guard go through it.
 
+⚠️ **Ordering + time-box are load-bearing.** `ScheduledJobs.runJob` marks a job running for
+its whole duration and skips every later tick until it returns (`scheduled-jobs.ts:543`) —
+so an unbounded pass doesn't run long, it **silently disables the job forever**. The
+cloud-CCR scan is sequential HTTPS per session (~55s live). Hence: auto-resume runs FIRST
+and unbounded; model-fallback runs SECOND under `MODEL_FALLBACK_BUDGET_MS` (45s) with its
+own `REMOTE_SCAN_BUDGET_MS` (25s), reporting `modelFallback=timeout` rather than holding
+the job open. Never reorder these.
+
+⚠️ **Never overrule an explicit human decision.** `Kept model as <limited>` (the user chose
+"No, go back") more recent than the banner ⇒ `user-kept-model` no-op. A cloud CCR has no
+status line, so current-model falls back to the last `/model` outcome (`Set model to X` /
+`Kept model as X`) — without it the remote path runs with the invariant switched off.
+
 Settings: `autoModelFallbackEnabled` (default true), `autoModelFallbackModel` (default
 `'opus'`), `autoModelFallbackFrom` (default `['fable']`). Switches are journaled to
 `~/.lm-assist/model-fallback.json` (7-day TTL) and surfaced at `GET /monitor/stalls` /
