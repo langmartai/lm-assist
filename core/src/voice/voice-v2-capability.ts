@@ -1,6 +1,11 @@
 import fs from 'node:fs';
 
-const CHROME_CANDIDATES = ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
+// Pure preflight gate for voice v2 (bidirectional, Chrome-relayed voice). Callers resolve
+// the three preconditions (LM_HTTPS terminator up, a claude.ai cookie on this node, a
+// system Chrome for puppeteer-core to drive) and pass them in — kept synchronous and
+// side-effect-free beyond fs.existsSync so it stays trivially testable.
+
+const CHROME_CANDIDATES =['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
 
 export function resolveChromePath(): string | null {
   const envPath = process.env.PUPPETEER_EXECUTABLE_PATH;
