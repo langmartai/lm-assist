@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { buildClaudeVoiceWsUrl } from '@/lib/voice-url';
 import { buildApprovalFrame, buildDenyFrame } from '@/lib/claude-voice-approval';
+import { clientToolResponse } from '@/lib/claude-voice-clienttools';
 import { demuxMessageSse, initialDemuxAcc, type ApprovalOption, type DemuxAcc, type VoiceState } from '@/lib/claude-voice-demux';
 
 export type { ApprovalOption, ApprovalReq, McpAuthReq, ToolUseView, VoiceState } from '@/lib/claude-voice-demux';
@@ -64,6 +65,9 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
   const engineRef = useRef<ClaudeVoiceEngine | null>(null);
   const startingEngineRef = useRef(false); // true while loadEngine()/engine.start() awaits mic permission
   const pendingAbortRef = useRef(false);   // stop() landed mid-async-setup -> tear down as soon as it resolves
+  // Client-tool ids already answered this session (Task 4's clientToolResponse) — guards
+  // against answering the same tool_use twice; reset per-session in start() below.
+  const handledToolIdsRef = useRef<Set<string>>(new Set());
 
   const wsUrl = useMemo(() => buildClaudeVoiceWsUrl({ isRemoteNode }), [isRemoteNode]);
 
@@ -150,6 +154,7 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
     if (stateRef.current !== 'idle' && stateRef.current !== 'error') return; // already active
 
     applyAcc(() => ({ ...initialDemuxAcc, state: 'connecting' }));
+    handledToolIdsRef.current = new Set();
 
     const ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
@@ -193,7 +198,32 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
       // signal. Silences queued playback without touching the mic/WS, same as interrupt().
       if (f?.type === 'server_interrupt') { try { engineRef.current?.clearPlayback(); } catch { /* noop */ } return; }
 
-      applyAcc((prev) => demuxMessageSse(frame, prev));
+      applyAcc((prev) => {
+        const next = demuxMessageSse(frame, prev);
+        // Bounded client-tool policy (Task 4, claude-voice-clienttools.ts): `tools` is
+        // strictly append-only in the demux, so any entries past `prev.tools.length` are
+        // NEW this frame. Connectors/web_search need no reply (server-executed);
+        // ask_user_question is left for the overlay to surface; every other
+        // client-executed builtin (memory_*, create_file, bash, …) gets an immediate error
+        // tool_result + turn_end so the model recovers instead of hanging on a reply
+        // lm-assist voice has no browser env to produce. handledToolIdsRef guards against
+        // ever answering the same tool_use twice.
+        if (next.tools.length > prev.tools.length) {
+          for (const tool of next.tools.slice(prev.tools.length)) {
+            if (handledToolIdsRef.current.has(tool.id)) continue;
+            handledToolIdsRef.current.add(tool.id);
+            const resp = clientToolResponse(tool);
+            if (resp.handled && resp.frames) {
+              for (const respFrame of resp.frames) {
+                if (ws.readyState === WebSocket.OPEN) {
+                  try { ws.send(JSON.stringify(respFrame)); } catch { /* noop */ }
+                }
+              }
+            }
+          }
+        }
+        return next;
+      });
     };
   }, [wsUrl, conversationUuid, model, effort, thinkingMode, applyAcc, fail, bootEngine]);
 
