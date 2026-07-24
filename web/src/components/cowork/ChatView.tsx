@@ -43,9 +43,22 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl,
 
   // Bidirectional voice v2 ("voice conversation" mode) — a separate toggle from the
   // dictation mic above; same null-hides-the-button gate as every other voice UI.
+  // buildClaudeVoiceWsUrl only checks https + local + token — it can't see whether THIS
+  // node actually has a claude.ai cookie or a system Chrome to drive the relay, so it's
+  // paired with a server-side capability probe (fetched once on mount) before the toggle
+  // is allowed to render; a fetch failure degrades to unavailable (hidden), same as the
+  // transport gate itself.
   const claudeVoiceWsUrl = useMemo((): string | null => {
     try { return buildClaudeVoiceWsUrl({ isRemoteNode }); } catch { return null; }
   }, [isRemoteNode]);
+  const [voiceV2Available, setVoiceV2Available] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch<{ available: boolean; reason: string }>('/voice/claude/capability')
+      .then((r) => { if (!cancelled) setVoiceV2Available(!!r?.available); })
+      .catch(() => { if (!cancelled) setVoiceV2Available(false); });
+    return () => { cancelled = true; };
+  }, [apiFetch]);
   const [voiceModeOpen, setVoiceModeOpen] = useState(false);
 
   // Mirror the growing transcript into the input box while the mic is active, appended after
@@ -201,7 +214,7 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl,
                 <Mic size={14} />
               </button>
             )}
-            {claudeVoiceWsUrl && (
+            {claudeVoiceWsUrl && voiceV2Available && (
               <button type="button" className="btn btn-ghost btn-sm btn-icon"
                 title="Voice conversation"
                 onClick={() => setVoiceModeOpen(true)}>
