@@ -10,7 +10,6 @@
  *                                route guards keep denying LAN callers)
  *     /voice/stt/ws            → Core's upgrade router (voice STT relay, ?token= auth)
  *     /voice/claude/ws         → Core's upgrade router (claude.ai voice v2 user bridge)
- *     /voice/claude/page-bridge→ Core's upgrade router (headless-Chrome page bridge, loopback-only)
  *     /ttyd-proxy/*, /ttyd/*   → Core's request/upgrade handling (terminal proxy)
  *     everything else          → proxied to the local Next web server (ws:true so
  *                                dev-mode HMR upgrades pass through)
@@ -28,7 +27,7 @@ import httpProxy from 'http-proxy';
 export const CORE_PROXY_PREFIX = '/_coreapi';
 
 /** Exact core WS endpoints reachable on the secure origin without the prefix. */
-const CORE_UPGRADE_PATHS = ['/voice/stt/ws', '/voice/claude/ws', '/voice/claude/page-bridge'];
+const CORE_UPGRADE_PATHS = ['/voice/stt/ws', '/voice/claude/ws'];
 
 /** Core path prefixes passed through as-is (terminal proxy family). */
 const CORE_PASSTHROUGH_PREFIXES = ['/ttyd-proxy/', '/ttyd/'];

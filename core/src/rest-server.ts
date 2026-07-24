@@ -22,9 +22,7 @@ import { isPortfwdUpgrade, handlePortfwdUpgrade } from './transport/portfwd-upgr
 import { isVoiceSttUpgrade, handleVoiceSttUpgrade } from './voice/voice-relay';
 import {
   isClaudeVoiceUpgrade,
-  isClaudeVoicePageBridgeUpgrade,
   handleClaudeVoiceUpgrade,
-  handleClaudeVoicePageBridgeUpgrade,
 } from './voice/claude-voice-relay';
 import { ensureTlsCert } from './tls/cert-manager';
 import { startHttpsTerminator } from './tls/https-terminator';
@@ -453,8 +451,6 @@ export class TierRestServer {
       handleVoiceSttUpgrade(req, socket, head, this.options.apiKey);
     } else if (isClaudeVoiceUpgrade(req)) {
       handleClaudeVoiceUpgrade(req, socket, head, { apiKey: this.options.apiKey });
-    } else if (isClaudeVoicePageBridgeUpgrade(req)) {
-      handleClaudeVoicePageBridgeUpgrade(req, socket, head, { apiKey: this.options.apiKey });
     } else {
       socket.destroy();
     }

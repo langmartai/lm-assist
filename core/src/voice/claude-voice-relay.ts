@@ -1,30 +1,31 @@
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import type { Socket } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { isValidToken, apiAuthEnabled } from '../auth/api-token';
 import { buildClaudeVoiceUrl } from './claude-voice-url';
-import { createChromeMgr, type ChromeMgr, type VoicePage } from './claude-chrome';
+import { createChromeMgr, type ChromeMgr, type VoiceChannel } from './claude-chrome';
 import { readClaudeAISession, parseCookieString } from '../utils/claudeai-session';
 
-// Bidirectional claude.ai voice v2 — the Core transport linchpin. Two loopback-paired
-// WS bridges per voice session:
+// Bidirectional claude.ai voice v2 — the Core transport linchpin. ONE user WS per voice
+// session, bridged to claude.ai's voice WS through a headless Chrome page:
 //
-//   browser ── /voice/claude/ws ──────────► Core (USER bridge, api-token auth)
-//                                             │  mints a one-time token, drives a
-//                                             │  headless Chrome that opens claude.ai's
-//                                             │  voice WS and dials back to:
-//   Core ◄── /voice/claude/page-bridge ──── headless Chrome (PAGE bridge, loopback-only,
-//                                             one-time-token auth)
+//   browser ── /voice/claude/ws ──► Core (USER bridge, api-token auth)
+//                                     │  loads the node's claude.ai cookie, drives a headless
+//                                     │  Chrome that opens claude.ai's SAME-ORIGIN voice WS,
+//                                     │  and bridges every frame over Puppeteer CDP bindings
+//                                     │  (page.exposeFunction page->Core, page.evaluate
+//                                     │  Core->page) — NOT a loopback WS. claude.ai's CSP
+//                                     │  (connect-src 'self') forbids the page connecting back
+//                                     │  to Core, but a CDP binding is CSP-immune.
 //
-// Once paired, Core is a VERBATIM pipe: user opus frames → page bridge → claude.ai, and
-// claude.ai PCM audio + message_sse text → page bridge → user. The ONLY interpreted frames
-// are the page asset's own `{type:'__page_status'}` control JSON, mapped to a small
-// {ready|reconnect|error} vocabulary for the browser. The node's claude.ai cookie is loaded
-// Core-side and handed to Chrome — it is NEVER sent to the user. Logging is structural
-// (frame/byte counts + states), never audio content. `makeChromeMgr` + `loadCookie` +
-// `waitForPageBridge` are injectable so the unit test never launches a real browser.
+// Core is a VERBATIM pipe: user opus frames → channel → claude.ai, and claude.ai PCM audio +
+// message_sse text → channel → user. The ONLY interpreted frames are the asset's own voice-WS
+// lifecycle signals (up_open/up_close/up_error), mapped to a small {ready|reconnect|error}
+// vocabulary for the browser. The node's claude.ai cookie is loaded Core-side and handed to
+// Chrome — it is NEVER sent to the user. Logging is structural (frame/byte counts + states),
+// never audio content. `makeChromeMgr` + `loadCookie` are injectable so the unit test never
+// launches a real browser.
 
 const OPEN = 1;
 
@@ -51,34 +52,13 @@ export interface BridgeDeps {
   makeChromeMgr: () => ChromeMgr;
   /** Loads this node's claude.ai Cookie header. Kept Core-side; never sent to the user. */
   loadCookie: () => Promise<string>;
-  /** Resolves with the page-bridge socket once THIS node's Chrome dials back with `token`. */
-  waitForPageBridge: (token: string) => Promise<BridgeSocket>;
-  /** HTTPS terminator port the page-bridge URL points at (wss://127.0.0.1:<port>). */
-  httpsPort: number;
-  /** One-time bridge-token mint. Defaults to 24 random bytes hex. */
-  mintToken?: () => string;
 }
 
 const userWss = new WebSocketServer({ noServer: true });
-const pageWss = new WebSocketServer({ noServer: true });
-
-// Pending pairings keyed by the one-time bridge token, shared between the user-side
-// (registers) and the page-bridge-side (matches + resolves) upgrade paths.
-interface PendingBridge {
-  resolve: (pageWs: BridgeSocket) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
-const pendingBridges = new Map<string, PendingBridge>();
-const PAGE_BRIDGE_TIMEOUT_MS = 30_000;
 
 export function isClaudeVoiceUpgrade(req: IncomingMessage): boolean {
   if (!req.url) return false;
   return req.url.split('?')[0] === '/voice/claude/ws';
-}
-
-export function isClaudeVoicePageBridgeUpgrade(req: IncomingMessage): boolean {
-  if (!req.url) return false;
-  return req.url.split('?')[0] === '/voice/claude/page-bridge';
 }
 
 export interface ClaudeVoiceUpgradeOpts {
@@ -114,53 +94,17 @@ export function handleClaudeVoiceUpgrade(
 }
 
 /**
- * Page-bridge upgrade (`/voice/claude/page-bridge`). LOOPBACK-ONLY — the bridge is dialed
- * by THIS node's own headless Chrome, so a non-127.0.0.1/::1 peer is rejected outright.
- * The `?token=` must match a pending pairing registered by the user side; on match the two
- * sockets are paired by resolving that pairing's promise.
- */
-export function handleClaudeVoicePageBridgeUpgrade(
-  req: IncomingMessage,
-  socket: Duplex,
-  head: Buffer,
-  _opts: ClaudeVoiceUpgradeOpts = {},
-): void {
-  const remote = (socket as unknown as Socket).remoteAddress;
-  if (!isLoopbackAddress(remote)) {
-    console.log(`[claude-voice] page-bridge upgrade REJECTED — non-loopback peer ${remote ?? '?'}`);
-    socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
-    socket.destroy();
-    return;
-  }
-  let token: string | null = null;
-  try { token = new URL(req.url || '', 'http://localhost').searchParams.get('token'); } catch { /* noop */ }
-  const pending = token ? pendingBridges.get(token) : undefined;
-  if (!pending || !token) {
-    console.log('[claude-voice] page-bridge upgrade REJECTED — unknown/expired token');
-    socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
-    socket.destroy();
-    return;
-  }
-  pendingBridges.delete(token);
-  clearTimeout(pending.timer);
-  console.log('[claude-voice] page-bridge upgrade OK — pairing with user session');
-  pageWss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
-    pending.resolve(ws as unknown as BridgeSocket);
-  });
-}
-
-/**
- * Pair a user WS to a claude.ai voice session and pipe frames. Resolves once the page
- * bridge is paired and wired (or a handled setup failure has closed the sockets) — never
- * rejects, so the `void`-called production path leaves no unhandled rejection.
+ * Pair a user WS to a claude.ai voice session and pipe frames through the headless-Chrome
+ * voice channel. Resolves once the channel is opened and wired (or a handled setup failure
+ * has closed the socket) — never rejects, so the `void`-called production path leaves no
+ * unhandled rejection.
  */
 export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promise<void> {
   const sid = randomBytes(4).toString('hex');
   const t0 = Date.now();
   const vlog = (m: string) => { try { console.log(`[claude-voice ${sid}] ${m}`); } catch { /* noop */ } };
 
-  let pageWs: BridgeSocket | null = null;
-  let voicePage: VoicePage | null = null;
+  let channel: VoiceChannel | null = null;
   let connected = false;
   let upFrames = 0, upCtrl = 0, downFrames = 0, downMsgs = 0;
 
@@ -169,16 +113,19 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
   let settled = false;
   const settle = () => { if (!settled) { settled = true; resolvePaired(); } };
 
+  const closeChannel = (ch: VoiceChannel | null) => {
+    if (!ch) return;
+    try { void ch.close().catch(() => { /* best-effort tab reclaim */ }); } catch { /* noop */ }
+  };
+
   const closeAll = (code?: number, reason?: string) => {
-    try { if (pageWs && pageWs.readyState === OPEN) pageWs.close(code, reason); } catch { /* noop */ }
     try { if (userWs.readyState === OPEN) userWs.close(code, reason); } catch { /* noop */ }
-    // Reclaim the headless-Chrome voice tab (openVoicePage's page handle) — closing the WS
-    // sockets never closes it, so without this every session leaks a tab. Null-out first so
-    // repeated closeAll() calls (user close + page close + guard) close it at most once.
-    if (voicePage) {
-      const p = voicePage;
-      voicePage = null;
-      try { void p.close().catch(() => { /* best-effort tab reclaim */ }); } catch { /* noop */ }
+    // Reclaim the headless-Chrome voice tab — closing the user WS never closes it. Null-out
+    // first so repeated closeAll() calls (user close + local close + guard) close it at most once.
+    if (channel) {
+      const c = channel;
+      channel = null;
+      closeChannel(c);
     }
   };
   const toUser = (obj: Record<string, unknown>) => {
@@ -203,24 +150,24 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
     }
     if (isBinary) {
       upFrames++;
-      if (upFrames === 1) vlog('first user audio frame relayed to page bridge');
-      if (pageWs && pageWs.readyState === OPEN) { try { pageWs.send(data, { binary: true }); } catch { /* noop */ } }
+      if (upFrames === 1) vlog('first user audio frame relayed to channel');
+      if (channel) { try { channel.send(data, true); } catch { /* noop */ } }
       return;
     }
     // Post-connect user text = control frames. `close` is a LOCAL teardown and `connect` is
     // the already-consumed handshake — neither is forwarded. EVERY other control frame
     // (interrupt / keep_alive, plus Plan-B tool_result / turn_end / approval) is relayed
-    // VERBATIM to the page bridge, which passes it to claude.ai's voice WS — otherwise
+    // VERBATIM to the channel (which passes it to claude.ai's voice WS) — otherwise
     // server-side barge-in etc. are silently dropped. Forward the raw bytes AS A TEXT frame
     // (binary:false) so claude.ai still sees JSON, not a binary audio frame.
     let msg: { type?: string };
     try { msg = JSON.parse(data.toString()); } catch { return; }
     if (msg.type === 'close') { closeAll(); return; }
     if (msg.type === 'connect') return; // handshake already ran — never re-forward it
-    if (pageWs && pageWs.readyState === OPEN) {
+    if (channel) {
       upCtrl++;
-      vlog(`user control frame relayed to page bridge (type=${msg.type ?? '?'}, #${upCtrl})`);
-      try { pageWs.send(data, { binary: false }); } catch { /* noop */ }
+      vlog(`user control frame relayed to channel (type=${msg.type ?? '?'}, #${upCtrl})`);
+      try { channel.send(data, false); } catch { /* noop */ }
     }
   });
   userWs.on('close', () => {
@@ -243,8 +190,6 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
       }
 
       const org = orgFromCookieHeader(cookie);
-      const mint = deps.mintToken ?? (() => randomBytes(24).toString('hex'));
-      const token = mint();
       const voiceUrl = buildClaudeVoiceUrl({
         org: org || '',
         conv: String(connectMsg.conversationUuid),
@@ -252,74 +197,47 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
         effort: connectMsg.effort,
         thinkingMode: connectMsg.thinkingMode,
       });
-      const bridgeUrl = `wss://127.0.0.1:${deps.httpsPort}/voice/claude/page-bridge?token=${encodeURIComponent(token)}`;
-
-      // Register the pending pairing BEFORE opening the page so the loopback page-bridge
-      // WS can match this token the instant Chrome dials back. The default waiter arms a 30s
-      // reject timer; attach a no-op catch NOW so that if setup below fails and returns
-      // WITHOUT awaiting this promise, its later rejection can never become an
-      // unhandledRejection (which, with no handler in the repo, would crash Core).
-      const bridgePromise = deps.waitForPageBridge(token);
-      void bridgePromise.catch(() => { /* handled by the await below, or cancelled on failure */ });
 
       const mgr = deps.makeChromeMgr();
+      let opened: VoiceChannel;
       try {
         await mgr.ensureLoaded(cookie);
-        voicePage = await mgr.openVoicePage(voiceUrl, bridgeUrl);
+        opened = await mgr.openVoicePage(voiceUrl, {
+          // claude.ai -> Core -> user. Binary is PCM audio (forward verbatim as a binary
+          // frame); text is message_sse JSON (forward verbatim as a string). The asset's own
+          // voice-WS lifecycle arrives via onStatus, mapped to {ready|reconnect|error}.
+          onFrame: (frameData: Buffer, binary: boolean) => {
+            if (userWs.readyState !== OPEN) return;
+            if (binary) {
+              downFrames++;
+              try { userWs.send(frameData, { binary: true }); } catch { /* noop */ }
+            } else {
+              downMsgs++;
+              try { userWs.send(frameData.toString()); } catch { /* noop */ }
+            }
+          },
+          onStatus: (state, info) => mapPageStatus({ state, timeout: info?.timeout }),
+        });
       } catch (err) {
         vlog(`chrome relay setup failed: ${(err as Error).message}`);
-        // Proactively cancel the pending pairing so its 30s timer + registry entry don't
-        // linger for half a minute after we've already given up.
-        cancelPendingBridge(token);
         toUser({ type: 'error', message: 'voice relay failed to start' });
         closeAll();
         return;
       }
 
-      try {
-        pageWs = await bridgePromise;
-      } catch (err) {
-        vlog(`page bridge did not connect: ${(err as Error).message}`);
-        toUser({ type: 'error', message: 'voice page bridge timed out' });
-        closeAll();
-        return;
-      }
-
-      // The user may have hung up while Chrome was still coming up. Wiring a freshly-paired
-      // page bridge (and its tab) to a closed user socket would leak a half-open bridge — tear
-      // it all down instead (closeAll now also closes pageWs + the voice tab).
+      // The user may have hung up while Chrome was still coming up. Wiring a freshly-opened
+      // channel (and its tab) to a closed user socket would leak the tab — reclaim it instead.
       if (userWs.readyState !== OPEN) {
-        vlog('user left during setup — closing the freshly-paired page bridge');
-        closeAll();
+        vlog('user left during setup — closing the freshly-opened voice channel');
+        closeChannel(opened);
         return;
       }
 
-      vlog('page bridge paired — relaying');
-      wirePageBridge(pageWs);
+      channel = opened;
+      vlog('voice channel opened — relaying');
     } finally {
       settle();
     }
-  }
-
-  function wirePageBridge(pw: BridgeSocket): void {
-    pw.on('message', (...a: unknown[]) => {
-      const data = a[0] as Buffer;
-      const isBinary = !!a[1];
-      if (isBinary) {
-        downFrames++;
-        if (userWs.readyState === OPEN) { try { userWs.send(data, { binary: true }); } catch { /* noop */ } }
-        return;
-      }
-      const text = data.toString();
-      let msg: { type?: string; state?: string; timeout?: boolean } | null;
-      try { msg = JSON.parse(text); } catch { msg = null; }
-      if (msg && msg.type === '__page_status') { mapPageStatus(msg); return; }
-      // claude.ai message_sse text — forward verbatim to the user.
-      downMsgs++;
-      if (userWs.readyState === OPEN) { try { userWs.send(text); } catch { /* noop */ } }
-    });
-    pw.on('close', () => { vlog('page bridge closed'); closeAll(); });
-    pw.on('error', () => { vlog('page bridge socket error'); closeAll(); });
   }
 
   function mapPageStatus(msg: { state?: string; timeout?: boolean }): void {
@@ -338,18 +256,12 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
 
 // ── production defaults ──────────────────────────────────────────────────────
 
-/** Strict loopback (NOT the machine's LAN IPs) — the page bridge is always same-host. */
-function isLoopbackAddress(ip: string | undefined | null): boolean {
-  if (!ip) return false;
-  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
-}
-
 /** `lastActiveOrg` cookie → org UUID for the voice URL. */
 function orgFromCookieHeader(cookie: string): string | undefined {
   return parseCookieString(cookie)['lastActiveOrg'];
 }
 
-// ONE headless Chrome is reused across voice sessions (createChromeMgr hands out a page
+// ONE headless Chrome is reused across voice sessions (createChromeMgr hands out a channel
 // per session and idles the browser down when unused).
 let sharedChromeMgr: ChromeMgr | null = null;
 function defaultMakeChromeMgr(): ChromeMgr {
@@ -363,52 +275,9 @@ async function defaultLoadCookie(): Promise<string> {
   return cfg.cookie;
 }
 
-/** Default (production) pairing wait: registers the token in `pendingBridges`, times out +
- *  cleans up if Chrome never dials. Exported so the teardown tests exercise the REAL registry
- *  (and thus the real cancel-on-failure path) rather than a fake that bypasses it. */
-export function defaultWaitForPageBridge(token: string): Promise<BridgeSocket> {
-  return new Promise<BridgeSocket>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pendingBridges.delete(token);
-      reject(new Error(`page bridge did not connect within ${PAGE_BRIDGE_TIMEOUT_MS}ms`));
-    }, PAGE_BRIDGE_TIMEOUT_MS);
-    timer.unref?.();
-    pendingBridges.set(token, { resolve, timer });
-  });
-}
-
-/** Cancel a pending pairing: clear its reject timer + drop the registry entry. Idempotent,
- *  and a no-op for a token that was never registered (e.g. a test-injected waiter that
- *  bypasses `pendingBridges`). */
-function cancelPendingBridge(token: string): void {
-  const p = pendingBridges.get(token);
-  if (p) {
-    clearTimeout(p.timer);
-    pendingBridges.delete(token);
-  }
-}
-
-/** @internal test-only — current pending page-bridge registry size (asserts cleanup on failure). */
-export function _pendingBridgeCountForTest(): number {
-  return pendingBridges.size;
-}
-
-/** HTTPS terminator port — same resolution as rest-server's maybeStartHttps / the terminator. */
-function resolveHttpsPort(): number {
-  const isProdInstall = process.env.LM_ASSIST_PROD === 'true' || __dirname.includes('node_modules');
-  const webPort = parseInt(
-    process.env.WEB_PORT || process.env.ASSIST_WEB_PORT || (isProdInstall ? '3848' : '3948'),
-    10,
-  );
-  return parseInt(process.env.LM_HTTPS_PORT || String(webPort + 1), 10);
-}
-
 function defaultDeps(): BridgeDeps {
   return {
     makeChromeMgr: defaultMakeChromeMgr,
     loadCookie: defaultLoadCookie,
-    waitForPageBridge: defaultWaitForPageBridge,
-    httpsPort: resolveHttpsPort(),
-    mintToken: () => randomBytes(24).toString('hex'),
   };
 }
