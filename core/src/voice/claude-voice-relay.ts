@@ -5,7 +5,7 @@ import type { Socket } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { isValidToken, apiAuthEnabled } from '../auth/api-token';
 import { buildClaudeVoiceUrl } from './claude-voice-url';
-import { createChromeMgr, type ChromeMgr } from './claude-chrome';
+import { createChromeMgr, type ChromeMgr, type VoicePage } from './claude-chrome';
 import { readClaudeAISession, parseCookieString } from '../utils/claudeai-session';
 
 // Bidirectional claude.ai voice v2 — the Core transport linchpin. Two loopback-paired
@@ -160,6 +160,7 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
   const vlog = (m: string) => { try { console.log(`[claude-voice ${sid}] ${m}`); } catch { /* noop */ } };
 
   let pageWs: BridgeSocket | null = null;
+  let voicePage: VoicePage | null = null;
   let connected = false;
   let upFrames = 0, downFrames = 0, downMsgs = 0;
 
@@ -171,6 +172,14 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
   const closeAll = (code?: number, reason?: string) => {
     try { if (pageWs && pageWs.readyState === OPEN) pageWs.close(code, reason); } catch { /* noop */ }
     try { if (userWs.readyState === OPEN) userWs.close(code, reason); } catch { /* noop */ }
+    // Reclaim the headless-Chrome voice tab (openVoicePage's page handle) — closing the WS
+    // sockets never closes it, so without this every session leaks a tab. Null-out first so
+    // repeated closeAll() calls (user close + page close + guard) close it at most once.
+    if (voicePage) {
+      const p = voicePage;
+      voicePage = null;
+      try { void p.close().catch(() => { /* best-effort tab reclaim */ }); } catch { /* noop */ }
+    }
   };
   const toUser = (obj: Record<string, unknown>) => {
     if (userWs.readyState === OPEN) { try { userWs.send(JSON.stringify(obj)); } catch { /* noop */ } }
@@ -235,15 +244,22 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
       const bridgeUrl = `wss://127.0.0.1:${deps.httpsPort}/voice/claude/page-bridge?token=${encodeURIComponent(token)}`;
 
       // Register the pending pairing BEFORE opening the page so the loopback page-bridge
-      // WS can match this token the instant Chrome dials back.
+      // WS can match this token the instant Chrome dials back. The default waiter arms a 30s
+      // reject timer; attach a no-op catch NOW so that if setup below fails and returns
+      // WITHOUT awaiting this promise, its later rejection can never become an
+      // unhandledRejection (which, with no handler in the repo, would crash Core).
       const bridgePromise = deps.waitForPageBridge(token);
+      void bridgePromise.catch(() => { /* handled by the await below, or cancelled on failure */ });
 
       const mgr = deps.makeChromeMgr();
       try {
         await mgr.ensureLoaded(cookie);
-        await mgr.openVoicePage(voiceUrl, bridgeUrl);
+        voicePage = await mgr.openVoicePage(voiceUrl, bridgeUrl);
       } catch (err) {
         vlog(`chrome relay setup failed: ${(err as Error).message}`);
+        // Proactively cancel the pending pairing so its 30s timer + registry entry don't
+        // linger for half a minute after we've already given up.
+        cancelPendingBridge(token);
         toUser({ type: 'error', message: 'voice relay failed to start' });
         closeAll();
         return;
@@ -254,6 +270,15 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
       } catch (err) {
         vlog(`page bridge did not connect: ${(err as Error).message}`);
         toUser({ type: 'error', message: 'voice page bridge timed out' });
+        closeAll();
+        return;
+      }
+
+      // The user may have hung up while Chrome was still coming up. Wiring a freshly-paired
+      // page bridge (and its tab) to a closed user socket would leak a half-open bridge — tear
+      // it all down instead (closeAll now also closes pageWs + the voice tab).
+      if (userWs.readyState !== OPEN) {
+        vlog('user left during setup — closing the freshly-paired page bridge');
         closeAll();
         return;
       }
@@ -327,8 +352,10 @@ async function defaultLoadCookie(): Promise<string> {
   return cfg.cookie;
 }
 
-/** Default pairing wait: registers the token, times out + cleans up if Chrome never dials. */
-function defaultWaitForPageBridge(token: string): Promise<BridgeSocket> {
+/** Default (production) pairing wait: registers the token in `pendingBridges`, times out +
+ *  cleans up if Chrome never dials. Exported so the teardown tests exercise the REAL registry
+ *  (and thus the real cancel-on-failure path) rather than a fake that bypasses it. */
+export function defaultWaitForPageBridge(token: string): Promise<BridgeSocket> {
   return new Promise<BridgeSocket>((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingBridges.delete(token);
@@ -337,6 +364,22 @@ function defaultWaitForPageBridge(token: string): Promise<BridgeSocket> {
     timer.unref?.();
     pendingBridges.set(token, { resolve, timer });
   });
+}
+
+/** Cancel a pending pairing: clear its reject timer + drop the registry entry. Idempotent,
+ *  and a no-op for a token that was never registered (e.g. a test-injected waiter that
+ *  bypasses `pendingBridges`). */
+function cancelPendingBridge(token: string): void {
+  const p = pendingBridges.get(token);
+  if (p) {
+    clearTimeout(p.timer);
+    pendingBridges.delete(token);
+  }
+}
+
+/** @internal test-only — current pending page-bridge registry size (asserts cleanup on failure). */
+export function _pendingBridgeCountForTest(): number {
+  return pendingBridges.size;
 }
 
 /** HTTPS terminator port — same resolution as rest-server's maybeStartHttps / the terminator. */
