@@ -85,7 +85,9 @@ async function probeAccount(page: any): Promise<number> {
   }
 }
 
-/** Cookie NAMES in the page's jar. Values are deliberately never touched. */
+/** Cookie NAMES in the page's jar. Values are deliberately never touched. Names are NOT unique
+ *  in a real jar — Cloudflare sets __cf_bm on both `claude.ai` and `.claude.ai` — so the caller
+ *  dedupes for logging; presence checks are unaffected either way. */
 async function cookieNames(page: any): Promise<string[]> {
   try {
     const list = await page.cookies(CLAUDE_AI_COOKIE_URL);
@@ -94,6 +96,11 @@ async function cookieNames(page: any): Promise<string[]> {
   } catch {
     return []; // injected test fakes have no .cookies(); a real failure is just "unknown"
   }
+}
+
+/** The CF cookies present, deduped + stable-ordered, for a readable one-line log. */
+function cfPresent(names: string[]): string {
+  return CF_COOKIE_NAMES.filter((n) => names.includes(n)).join(',');
 }
 
 /** One readiness sample: is claude.ai answering, and has Cloudflare minted a clearance cookie? */
@@ -150,8 +157,7 @@ function logReady(what: string, p: ReadyProbe): void {
     : p.status === 200
       ? 'cap reached (api 200, no cf_clearance) — proceeding'
       : `cap reached (api status=${p.status}) — proceeding`;
-  const cf = p.names.filter((n) => CF_COOKIE_NAMES.includes(n));
-  console.log(`[voice-chrome] ${what}: ${verdict} in ${p.ms}ms (cf=[${cf.join(',')}] jar=${p.names.length})`);
+  console.log(`[voice-chrome] ${what}: ${verdict} in ${p.ms}ms (cf=[${cfPresent(p.names)}] jar=${p.names.length})`);
 }
 
 /** Frame/status envelope the asset hands to Core over the `__lmToCore` binding. */
@@ -305,8 +311,7 @@ export function createChromeMgr(deps: { launch?: () => Promise<any>; chromePath?
       void (async () => {
         const status = await probeAccount(p);
         const names = await cookieNames(p);
-        const cf = names.filter((n) => CF_COOKIE_NAMES.includes(n));
-        console.log(`[voice-chrome] cf keepalive: api=${status} cf=[${cf.join(',')}] jar=${names.length}`);
+        console.log(`[voice-chrome] cf keepalive: api=${status} cf=[${cfPresent(names)}] jar=${names.length}`);
       })();
     }, ms);
     try { (keepaliveTimer as any).unref?.(); } catch { /* non-Node timer — nothing to unref */ }
@@ -414,8 +419,7 @@ export function createChromeMgr(deps: { launch?: () => Promise<any>; chromePath?
         // refresh, so a healthy hit both proves and improves readiness.
         const p = await probeOnce(primedPage);
         if (p.status === 200) {
-          const cf = p.names.filter((n) => CF_COOKIE_NAMES.includes(n));
-          console.log(`[voice-chrome] primed page reused in ${Date.now() - t0}ms (cf=[${cf.join(',')}] jar=${p.names.length})`);
+          console.log(`[voice-chrome] primed page reused in ${Date.now() - t0}ms (cf=[${cfPresent(p.names)}] jar=${p.names.length})`);
           return;
         }
         console.log(`[voice-chrome] primed page unhealthy (api=${p.status}) — re-priming`);

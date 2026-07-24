@@ -174,6 +174,32 @@ is then reported from prod 117 (`:3849` `/cowork`) for three cases:
 Verification is `page_status up_open -> ready` **plus `up>0`** in `core-prod.log` — never
 `ready` alone.
 
+## 6a. Measured result (117, against real claude.ai)
+
+Chrome phase only (`ensureLoaded` + `openVoicePage`), same harness against the real origin with
+the node's real cookie, old dist vs new:
+
+| case | before | after | |
+|---|---|---|---|
+| cold (Chrome launch + prime + page) | 21 950 ms | 4 033 ms | 5.4× |
+| warm browser | 22 007 ms | 2 597 ms | 8.5× |
+| primed page | 21 838 ms | 2 222 ms | 9.8× |
+
+Before, warm was *no better than cold* — every session paid the full ~22 s, which is the repeat
+cost the primed page removes. Live on prod, end-to-end to `{ready}` (which additionally includes
+claude.ai's own voice-WS handshake): 6.4 s cold, 2.9 s / 9.5 s primed.
+
+**Follow-up, not addressed here.** With the sleeps gone, the dominant remaining cost is
+`page.goto('https://claude.ai/')` on the voice page — it loads the entire SPA. Measured on prod
+as `voice page opened` minus `voice page: ready`: **~1.0 s / 2.0 s / 2.4 s / 7.0 s** across four
+runs — now the largest *and* by far the most variable term. Two candidate fixes, both needing
+their own live CF verification before shipping:
+
+1. Navigate the voice page to a cheaper same-origin document (the page needs the origin and the
+   jar, not the app). Risk: Cloudflare's challenge behaves differently on a non-HTML document.
+2. Pre-warm the *next* voice page in the background after each session, so `openVoicePage` pays
+   no navigation at all. Larger change — a page pool with binding-registration lifecycle.
+
 ## 7. Configuration
 
 | env | default | meaning |
