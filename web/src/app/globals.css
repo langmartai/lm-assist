@@ -258,9 +258,31 @@ code, pre, .font-mono {
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  scrollbar-width: none;   /* Firefox: hide the scrollbar, keep scroll */
+  /* A SLIM BUT VISIBLE scrollbar. It used to be hidden (scrollbar-width:none +
+     ::-webkit-scrollbar{width:0}), which made a scrollable nav look like missing
+     icons: on any viewport shorter than the rail's content the lower entries were
+     simply gone with no hint they existed or that the rail scrolls. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-default) transparent;
 }
-.sidebar-scroll::-webkit-scrollbar { width: 0; height: 0; }
+.sidebar-scroll::-webkit-scrollbar { width: 4px; height: 0; }
+.sidebar-scroll::-webkit-scrollbar-track { background: transparent; }
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-border-default);
+  border-radius: 2px;
+}
+
+/* Short viewports: shrink the rail so MORE icons fit before scrolling is needed at
+   all. The rail's content is ~(nav entries x item height) + logo/footer, which at the
+   default 40px overflows every laptop/phone-height screen — scrolling is the fallback,
+   fitting is the fix. */
+@media (max-height: 1000px) {
+  .sidebar-item { width: 34px; height: 34px; }
+  .sidebar-scroll { gap: 0; }
+}
+@media (max-height: 780px) {
+  .sidebar-item { width: 30px; height: 30px; }
+}
 .sidebar > .sidebar-item:first-child,       /* logo */
 .sidebar > .sidebar-separator,
 .sidebar > .nav-item-pinned { flex-shrink: 0; }
