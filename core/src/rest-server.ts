@@ -20,6 +20,10 @@ import { handleTtydProxyRequest, handleTtydProxyUpgrade, isTtydProxyPath } from 
 import { isTcpUpgrade, handleTcpUpgrade } from './transport/tcp-upgrade';
 import { isPortfwdUpgrade, handlePortfwdUpgrade } from './transport/portfwd-upgrade';
 import { isVoiceSttUpgrade, handleVoiceSttUpgrade } from './voice/voice-relay';
+import {
+  isClaudeVoiceUpgrade,
+  handleClaudeVoiceUpgrade,
+} from './voice/claude-voice-relay';
 import { ensureTlsCert } from './tls/cert-manager';
 import { startHttpsTerminator } from './tls/https-terminator';
 import { getStartupProfiler } from './startup-profiler';
@@ -445,6 +449,8 @@ export class TierRestServer {
       handlePortfwdUpgrade(req, socket, head);
     } else if (isVoiceSttUpgrade(req)) {
       handleVoiceSttUpgrade(req, socket, head, this.options.apiKey);
+    } else if (isClaudeVoiceUpgrade(req)) {
+      handleClaudeVoiceUpgrade(req, socket, head, { apiKey: this.options.apiKey });
     } else {
       socket.destroy();
     }

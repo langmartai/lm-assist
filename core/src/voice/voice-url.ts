@@ -1,16 +1,20 @@
 /**
- * Canonical voice STT WebSocket URL decision logic — THE transport contract the
- * web mic UIs consume (cowork today; MC/CCR/Code/chart-chat in the voice epic's
- * children). The browser adapter lives in `web/src/lib/voice-url.ts`; the block
- * between the SHARED markers below must stay BYTE-IDENTICAL in both files (a core
- * test enforces this), because the web bundle cannot import core sources.
+ * Canonical voice WebSocket URL decision logic — THE transport contract the web mic
+ * UIs consume (cowork today; MC/CCR/Code/chart-chat in the voice epic's children).
+ * Two builders share one decision matrix: `buildVoiceWsUrlFromParts` (dictation,
+ * path `/voice/stt/ws`) and `buildClaudeVoiceWsUrlFromParts` (claude.ai v2 duplex
+ * voice user bridge, path `/voice/claude/ws` — see `claude-voice-relay.ts`). The
+ * browser adapter lives in `web/src/lib/voice-url.ts`; the block between the SHARED
+ * markers below must stay BYTE-IDENTICAL in both files (a core test enforces this),
+ * because the web bundle cannot import core sources.
  *
- * Matrix (mirrors the secure-context reality of getUserMedia):
+ * Matrix (mirrors the secure-context reality of getUserMedia; `<path>` is whichever
+ * builder is called):
  *   remote/hub-proxied node        → null   (hub relay can't carry a WS upgrade — v1 TODO)
- *   https page + local mode        → wss://<page-host>/voice/stt/ws?token=…  (same-origin
+ *   https page + local mode        → wss://<page-host><path>?token=…  (same-origin
  *                                    via the LM_HTTPS terminator — mixed-content safe)
  *   https page + hub mode          → null   (hub origin has no local terminator)
- *   http page + localhost          → ws://127.0.0.1:<corePort>/… (today's working path)
+ *   http page + localhost          → ws://127.0.0.1:<corePort><path> (today's working path)
  *   http page + LAN IP             → null   (insecure context: the mic can't exist anyway;
  *                                    hide it cleanly instead of dangling a dead URL)
  */
@@ -50,5 +54,25 @@ export function buildVoiceWsUrlFromParts(i: VoiceWsUrlInput): string | null {
   if (!isLoopback) return null;
   if (!/^http:\/\//.test(i.coreBaseUrl)) return null;
   return `${i.coreBaseUrl.replace(/^http/, 'ws')}/voice/stt/ws${q}`;
+}
+
+/** Build the claude.ai v2 voice user-bridge WebSocket URL for the current page, or null
+ *  when the mic cannot work there — same rules as `buildVoiceWsUrlFromParts`, path
+ *  `/voice/claude/ws` (see `claude-voice-relay.ts`'s user bridge). */
+export function buildClaudeVoiceWsUrlFromParts(i: VoiceWsUrlInput): string | null {
+  if (i.isRemoteNode) return null; // hub relay can't upgrade — degrade silently (v1 TODO: WSS relay)
+  const q = i.token ? `?token=${encodeURIComponent(i.token)}` : '';
+  if (i.pageProtocol === 'https:') {
+    // Secure page: SAME-ORIGIN wss so the one accepted cert covers it (and no mixed
+    // content). Only the local LM_HTTPS terminator serves this; hub https origins
+    // (mode 'hub') have no terminator → null.
+    if (i.appMode !== 'local') return null;
+    return `wss://${i.pageHost}/voice/claude/ws${q}`;
+  }
+  // Insecure (http:) page: browsers only expose getUserMedia on localhost.
+  const isLoopback = i.pageHostname === 'localhost' || i.pageHostname === '127.0.0.1';
+  if (!isLoopback) return null;
+  if (!/^http:\/\//.test(i.coreBaseUrl)) return null;
+  return `${i.coreBaseUrl.replace(/^http/, 'ws')}/voice/claude/ws${q}`;
 }
 // ===END SHARED VOICE URL LOGIC===

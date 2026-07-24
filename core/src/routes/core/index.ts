@@ -74,6 +74,7 @@ import { createWhatsappRoutes } from './whatsapp.routes';
 import { createElevatedRoutes } from './elevated.routes';
 import { createCoworkRoutes } from './cowork.routes';
 import { createMachineAccessRoutes } from './machine-access.routes';
+import { createVoiceRoutes } from './voice.routes';
 
 /**
  * Create all core routes
@@ -147,5 +148,6 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createElevatedRoutes(ctx),
     ...createCoworkRoutes(ctx),
     ...createMachineAccessRoutes(ctx),
+    ...createVoiceRoutes(ctx),
   ];
 }

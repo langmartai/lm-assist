@@ -1,8 +1,11 @@
 'use client';
 
 /**
- * Voice STT WebSocket URL for the current page — THE transport contract for every
- * mic UI (cowork today; MC/CCR/Code/chart-chat in the voice epic's children).
+ * Voice WebSocket URL builders for the current page — THE transport contract for
+ * every mic UI (cowork today; MC/CCR/Code/chart-chat in the voice epic's children).
+ * Two builders: `buildVoiceWsUrl` (dictation, path `/voice/stt/ws`) and
+ * `buildClaudeVoiceWsUrl` (claude.ai v2 duplex voice user bridge, path
+ * `/voice/claude/ws`).
  *
  * Usage (see ChatView's gate `{voiceWsUrl && voice.supported}` — keep both legs):
  *   const voiceWsUrl = useMemo(() => buildVoiceWsUrl({ isRemoteNode }), [isRemoteNode]);
@@ -53,6 +56,26 @@ export function buildVoiceWsUrlFromParts(i: VoiceWsUrlInput): string | null {
   if (!/^http:\/\//.test(i.coreBaseUrl)) return null;
   return `${i.coreBaseUrl.replace(/^http/, 'ws')}/voice/stt/ws${q}`;
 }
+
+/** Build the claude.ai v2 voice user-bridge WebSocket URL for the current page, or null
+ *  when the mic cannot work there — same rules as `buildVoiceWsUrlFromParts`, path
+ *  `/voice/claude/ws` (see `claude-voice-relay.ts`'s user bridge). */
+export function buildClaudeVoiceWsUrlFromParts(i: VoiceWsUrlInput): string | null {
+  if (i.isRemoteNode) return null; // hub relay can't upgrade — degrade silently (v1 TODO: WSS relay)
+  const q = i.token ? `?token=${encodeURIComponent(i.token)}` : '';
+  if (i.pageProtocol === 'https:') {
+    // Secure page: SAME-ORIGIN wss so the one accepted cert covers it (and no mixed
+    // content). Only the local LM_HTTPS terminator serves this; hub https origins
+    // (mode 'hub') have no terminator → null.
+    if (i.appMode !== 'local') return null;
+    return `wss://${i.pageHost}/voice/claude/ws${q}`;
+  }
+  // Insecure (http:) page: browsers only expose getUserMedia on localhost.
+  const isLoopback = i.pageHostname === 'localhost' || i.pageHostname === '127.0.0.1';
+  if (!isLoopback) return null;
+  if (!/^http:\/\//.test(i.coreBaseUrl)) return null;
+  return `${i.coreBaseUrl.replace(/^http/, 'ws')}/voice/claude/ws${q}`;
+}
 // ===END SHARED VOICE URL LOGIC===
 
 /** Browser adapter: gather the page facts and decide. `isRemoteNode` comes from the
@@ -63,6 +86,24 @@ export function buildVoiceWsUrl(opts: { isRemoteNode: boolean }): string | null 
   const { mode, baseUrl } = detectAppMode();
   const token = (window as unknown as { __LM_API_TOKEN__?: string }).__LM_API_TOKEN__ || '';
   return buildVoiceWsUrlFromParts({
+    isRemoteNode: opts.isRemoteNode,
+    appMode: mode,
+    pageProtocol: window.location.protocol,
+    pageHost: window.location.host,
+    pageHostname: window.location.hostname,
+    coreBaseUrl: baseUrl,
+    token,
+  });
+}
+
+/** Browser adapter for the claude.ai v2 voice user bridge — same gathering as
+ *  `buildVoiceWsUrl`, routed through `buildClaudeVoiceWsUrlFromParts` (path
+ *  `/voice/claude/ws`). `isRemoteNode` comes from the caller's proxy context. */
+export function buildClaudeVoiceWsUrl(opts: { isRemoteNode: boolean }): string | null {
+  if (typeof window === 'undefined') return null;
+  const { mode, baseUrl } = detectAppMode();
+  const token = (window as unknown as { __LM_API_TOKEN__?: string }).__LM_API_TOKEN__ || '';
+  return buildClaudeVoiceWsUrlFromParts({
     isRemoteNode: opts.isRemoteNode,
     appMode: mode,
     pageProtocol: window.location.protocol,

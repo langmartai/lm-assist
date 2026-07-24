@@ -8,7 +8,7 @@
     "lm-assist": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-voice-assets.js",
     "build:test": "tsc -p tsconfig.test.json",
     "dev": "tsc --watch",
     "clean": "rm -rf dist dist-test",
@@ -36,6 +36,7 @@
     "http-proxy": "^1.18.1",
     "lmdb": "^3.5.1",
     "pidtree": "^0.6.0",
+    "puppeteer-core": "24.43.1",
     "selfsigned": "^2.4.1",
     "tree-kill": "^1.2.2",
     "uuid": "^9.0.0",
