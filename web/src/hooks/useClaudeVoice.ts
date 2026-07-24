@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { buildClaudeVoiceWsUrl } from '@/lib/voice-url';
-import { demuxMessageSse, initialDemuxAcc, type DemuxAcc, type VoiceState } from '@/lib/claude-voice-demux';
+import { buildApprovalFrame, buildDenyFrame } from '@/lib/claude-voice-approval';
+import { clientToolResponse } from '@/lib/claude-voice-clienttools';
+import { demuxMessageSse, initialDemuxAcc, type ApprovalOption, type DemuxAcc, type VoiceState } from '@/lib/claude-voice-demux';
 
-export type { VoiceState } from '@/lib/claude-voice-demux';
+export type { ApprovalOption, ApprovalReq, McpAuthReq, ToolUseView, VoiceState } from '@/lib/claude-voice-demux';
 
 /** The engine's own instance shape (web/public/voice/claude-voice-engine.js, Task 7) — a
  *  browser-only public static asset, dynamic-imported on demand (see `loadEngine` below),
@@ -63,6 +65,9 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
   const engineRef = useRef<ClaudeVoiceEngine | null>(null);
   const startingEngineRef = useRef(false); // true while loadEngine()/engine.start() awaits mic permission
   const pendingAbortRef = useRef(false);   // stop() landed mid-async-setup -> tear down as soon as it resolves
+  // Client-tool ids already answered this session (Task 4's clientToolResponse) — guards
+  // against answering the same tool_use twice; reset per-session in start() below.
+  const handledToolIdsRef = useRef<Set<string>>(new Set());
 
   const wsUrl = useMemo(() => buildClaudeVoiceWsUrl({ isRemoteNode }), [isRemoteNode]);
 
@@ -149,6 +154,7 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
     if (stateRef.current !== 'idle' && stateRef.current !== 'error') return; // already active
 
     applyAcc(() => ({ ...initialDemuxAcc, state: 'connecting' }));
+    handledToolIdsRef.current = new Set();
 
     const ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
@@ -192,7 +198,32 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
       // signal. Silences queued playback without touching the mic/WS, same as interrupt().
       if (f?.type === 'server_interrupt') { try { engineRef.current?.clearPlayback(); } catch { /* noop */ } return; }
 
-      applyAcc((prev) => demuxMessageSse(frame, prev));
+      applyAcc((prev) => {
+        const next = demuxMessageSse(frame, prev);
+        // Bounded client-tool policy (Task 4, claude-voice-clienttools.ts): `tools` is
+        // strictly append-only in the demux, so any entries past `prev.tools.length` are
+        // NEW this frame. Connectors/web_search need no reply (server-executed);
+        // ask_user_question is left for the overlay to surface; every other
+        // client-executed builtin (memory_*, create_file, bash, …) gets an immediate error
+        // tool_result + turn_end so the model recovers instead of hanging on a reply
+        // lm-assist voice has no browser env to produce. handledToolIdsRef guards against
+        // ever answering the same tool_use twice.
+        if (next.tools.length > prev.tools.length) {
+          for (const tool of next.tools.slice(prev.tools.length)) {
+            if (handledToolIdsRef.current.has(tool.id)) continue;
+            handledToolIdsRef.current.add(tool.id);
+            const resp = clientToolResponse(tool);
+            if (resp.handled && resp.frames) {
+              for (const respFrame of resp.frames) {
+                if (ws.readyState === WebSocket.OPEN) {
+                  try { ws.send(JSON.stringify(respFrame)); } catch { /* noop */ }
+                }
+              }
+            }
+          }
+        }
+        return next;
+      });
     };
   }, [wsUrl, conversationUuid, model, effort, thinkingMode, applyAcc, fail, bootEngine]);
 
@@ -209,13 +240,52 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
     try { engineRef.current?.clearPlayback(); } catch { /* noop */ }
   }, []);
 
+  // Answer a pending in-band approval (Once / For this chat / Always) or deny it. Both look
+  // up the matching ApprovalReq by toolUseId (for its approvalKey — the frame builders in
+  // claude-voice-approval.ts need it, not the caller), best-effort send the reply frame
+  // (same OPEN-guarded try/catch as interrupt() above), and drop the entry from
+  // pendingApprovals regardless of send success: once the user has decided, the prompt
+  // shouldn't linger in the UI, and a session too broken to deliver the frame is about to
+  // surface via onclose/onerror -> fail() anyway. acc.pendingApprovals (not a ref) is the
+  // right read here — these are plain synchronous click handlers, not long-lived async
+  // work, so the closure captured on the render that produced the currently-visible prompt
+  // is already current; unlike the ws/engine refs, there's no staleness risk to guard against.
+  const respondToApproval = useCallback(
+    (toolUseId: string, buildFrame: (approvalKey: string) => ReturnType<typeof buildApprovalFrame>) => {
+      const req = acc.pendingApprovals.find((p) => p.toolUseId === toolUseId);
+      if (!req) return;
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify(buildFrame(req.approvalKey))); } catch { /* noop */ }
+      }
+      applyAcc((prev) => ({ ...prev, pendingApprovals: prev.pendingApprovals.filter((p) => p.toolUseId !== toolUseId) }));
+    },
+    [acc.pendingApprovals, applyAcc],
+  );
+
+  const approve = useCallback(
+    (toolUseId: string, option: ApprovalOption) => respondToApproval(toolUseId, (approvalKey) => buildApprovalFrame(toolUseId, approvalKey, option)),
+    [respondToApproval],
+  );
+
+  const denyApproval = useCallback(
+    (toolUseId: string) => respondToApproval(toolUseId, (approvalKey) => buildDenyFrame(toolUseId, approvalKey)),
+    [respondToApproval],
+  );
+
   return {
     state: acc.state,
     transcript: acc.transcript,
     assistantText: acc.assistantText,
     liveModel: acc.liveModel,
+    tools: acc.tools,
+    connectorTexts: acc.connectorTexts,
+    pendingApprovals: acc.pendingApprovals,
+    mcpAuth: acc.mcpAuth,
     start,
     stop,
     interrupt,
+    approve,
+    denyApproval,
   };
 }
