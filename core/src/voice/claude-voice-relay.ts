@@ -216,7 +216,7 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
               try { userWs.send(frameData.toString()); } catch { /* noop */ }
             }
           },
-          onStatus: (state, info) => mapPageStatus({ state, timeout: info?.timeout }),
+          onStatus: (state, info) => mapPageStatus({ state, timeout: info?.timeout, code: info?.code, reason: info?.reason, clean: info?.clean }),
         });
       } catch (err) {
         vlog(`chrome relay setup failed: ${(err as Error).message}`);
@@ -240,13 +240,20 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
     }
   }
 
-  function mapPageStatus(msg: { state?: string; timeout?: boolean }): void {
+  function mapPageStatus(msg: { state?: string; timeout?: boolean; code?: number; reason?: string; clean?: boolean }): void {
+    // Diagnostic tail: the close CODE + reason + wasClean the asset now reports (previously
+    // discarded — which is why a prod up_error was undiagnosable without a page-level dig).
+    const detail = `${msg.code != null ? ` code=${msg.code}` : ''}${msg.reason ? ` reason=${JSON.stringify(String(msg.reason).slice(0, 80))}` : ''}${msg.clean != null ? ` clean=${msg.clean}` : ''}${msg.timeout ? ' (timeout)' : ''}`;
+    // The asset reconnects ONCE if claude.ai closed before its handshake (transient upstream/CF
+    // reject). Purely informational — no user frame; the retry either succeeds (up_open -> ready)
+    // or the second close reports up_close -> error.
+    if (msg.state === 'up_retry') { vlog(`page_status up_retry${detail} — claude.ai closed before init; reconnecting once`); return; }
     let out: { type: string } | null = null;
     if (msg.state === 'up_open') out = { type: 'ready' };
     else if (msg.state === 'up_close') out = msg.timeout === true ? { type: 'reconnect' } : { type: 'error' };
     else if (msg.state === 'up_error') out = { type: 'error' };
     if (out) {
-      vlog(`page_status ${msg.state}${msg.timeout ? ' (timeout)' : ''} -> ${out.type}`);
+      vlog(`page_status ${msg.state}${detail} -> ${out.type}`);
       toUser(out);
     }
   }

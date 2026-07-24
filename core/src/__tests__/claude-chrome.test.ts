@@ -43,9 +43,10 @@ test('openVoicePage installs the __lmToCore binding + __VOICE_URL__ global BEFOR
   const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
   await mgr.openVoicePage('wss://claude.ai/voice', { onFrame: () => {}, onStatus: () => {} });
   // Order matters: exposeFunction + evaluateOnNewDocument BOTH run before goto (the asset reads
-  // globalThis.__VOICE_URL__ and calls globalThis.__lmToCore synchronously at injection); the
-  // asset itself (page.evaluate) is injected LAST, after navigation + the CF settle.
-  assert.deepEqual(calls, ['exposeFunction', 'evaluateOnNewDocument', 'goto', 'evaluate']);
+  // globalThis.__VOICE_URL__ and calls globalThis.__lmToCore synchronously at injection); then,
+  // after navigation + the CF settle, the __cf_bm refresh (page.evaluate GET /api/account) runs,
+  // and the asset itself (page.evaluate) is injected LAST.
+  assert.deepEqual(calls, ['exposeFunction', 'evaluateOnNewDocument', 'goto', 'evaluate', 'evaluate']);
 });
 
 test('openVoicePage passes voiceUrl to the __VOICE_URL__ setter and injects the real Task 3 asset', async () => {
