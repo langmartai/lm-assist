@@ -170,7 +170,15 @@ export function createClaudeVoiceEngine() {
 
     try {
       ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SR_IN });
-      if (ac.state === 'suspended') await ac.resume();
+      // Do NOT `await ac.resume()`: start() runs on the async `{ready}` frame, well past the
+      // click's activation window, so a suspended-by-autoplay context's resume() promise never
+      // settles without a fresh gesture — the await HANGS start() at 'starting' and capture
+      // never begins (the prod up=0 bug). Capture (getUserMedia -> MediaStreamTrackProcessor ->
+      // AudioEncoder -> onFrame) does NOT touch the AudioContext at all; only playback does. So
+      // kick a best-effort resume (sticky page activation from the user's click usually lands
+      // it) and proceed to capture regardless; playPcm re-attempts the resume when downlink
+      // audio actually arrives, so playback recovers the moment the context can run.
+      if (ac.state === 'suspended') ac.resume().catch(function () {});
     } catch (e) {
       setState('error');
       throw new Error('audiocontext: ' + e);
@@ -207,6 +215,11 @@ export function createClaudeVoiceEngine() {
       const i16 = pcm instanceof Int16Array ? pcm : new Int16Array(pcm);
       const n = i16.length;
       if (!n || !ac) return;
+      // Downlink audio just arrived — if the context is still suspended (start()'s
+      // non-blocking resume didn't land), re-attempt it now so the assistant is audible. By
+      // this point the user has interacted with the page (opened voice mode), so the sticky
+      // activation lets the resume succeed; buffers scheduled while suspended play once it runs.
+      if (ac.state === 'suspended') ac.resume().catch(function () {});
       const buf = ac.createBuffer(1, n, SR_OUT);
       const ch = buf.getChannelData(0);
       for (let i = 0; i < n; i++) ch[i] = i16[i] / 32768;

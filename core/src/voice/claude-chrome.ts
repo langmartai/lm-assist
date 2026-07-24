@@ -22,13 +22,36 @@ const DEFAULT_IDLE_MS = 300_000;
 const DEFAULT_SETTLE_MS = 10_000;
 const CLAUDE_AI_URL = 'https://claude.ai/';
 const CLAUDE_AI_COOKIE_URL = 'https://claude.ai';
+// A REAL Chrome User-Agent — NOT the default headless "HeadlessChrome/..." token. Per
+// lm-mobile's validated CF findings (docs/claude-voice-implementation.md §4), the claude.ai
+// voice-WS upgrade needs Cookie + Origin: https://claude.ai + a Chrome UA; a headless UA draws
+// Cloudflare's bot challenge and the WS up_errors (the intermittent prod variant). Set via the
+// launch arg so every page (priming + voice) presents it.
+const CHROME_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
+
+/** Re-mint Cloudflare's short-lived __cf_bm (and let the JS challenge settle) via a same-origin
+ *  GET the HTTP API does NOT challenge — the browser applies the Set-Cookie into its own jar, so
+ *  the voice-WS upgrade that follows presents fresh, non-stale CF cookies (lm-mobile §4).
+ *  Best-effort: a failure just leaves the existing cookies (the asset's retry-once still covers a
+ *  transient reject). CSP `connect-src 'self'` permits the same-origin fetch. */
+async function refreshCfCookies(page: any): Promise<void> {
+  try {
+    await page.evaluate(async () => {
+      try { await fetch('/api/account', { credentials: 'include', headers: { accept: 'application/json' } }); } catch (e) { /* noop */ }
+    });
+  } catch { /* noop — best-effort */ }
+}
 
 /** Frame/status envelope the asset hands to Core over the `__lmToCore` binding. */
 export interface VoiceChannelHandlers {
   /** A frame arriving FROM claude.ai (binary=PCM audio, text=message_sse JSON). */
   onFrame: (data: Buffer, binary: boolean) => void;
-  /** The page asset's own voice-WS lifecycle signal. */
-  onStatus: (state: 'up_open' | 'up_close' | 'up_error', info?: { code?: number; timeout?: boolean }) => void;
+  /** The page asset's own voice-WS lifecycle signal. `up_retry` = claude.ai closed before its
+   *  handshake and the asset is reconnecting once (transient upstream/CF reject); diagnostic only. */
+  onStatus: (
+    state: 'up_open' | 'up_close' | 'up_error' | 'up_retry',
+    info?: { code?: number; timeout?: boolean; reason?: string; clean?: boolean },
+  ) => void;
 }
 
 /** A live voice page reduced to the two operations the relay needs. */
@@ -103,7 +126,14 @@ export function createChromeMgr(deps: { launch?: () => Promise<any>; chromePath?
     return puppeteer.launch({
       executablePath: chromePath,
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+      args: [
+        '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+        // Present a real Chrome UA (not HeadlessChrome) + drop the automation flag so
+        // Cloudflare treats the voice-WS upgrade as a real browser (lm-mobile §4). Without
+        // these the WS draws a CF bot challenge and up_errors intermittently.
+        `--user-agent=${CHROME_UA}`,
+        '--disable-blink-features=AutomationControlled',
+      ],
     });
   });
 
@@ -174,7 +204,7 @@ export function createChromeMgr(deps: { launch?: () => Promise<any>; chromePath?
         await page.exposeFunction('__lmToCore', (env: any) => {
           try {
             if (!env || typeof env !== 'object') return;
-            if (env.t === 'status') handlers.onStatus(env.state, { code: env.code, timeout: env.timeout });
+            if (env.t === 'status') handlers.onStatus(env.state, { code: env.code, timeout: env.timeout, reason: env.reason, clean: env.clean });
             else if (env.t === 'text') handlers.onFrame(Buffer.from(env.d, 'utf8'), false);
             else if (env.t === 'bin') handlers.onFrame(Buffer.from(env.d, 'base64'), true);
           } catch { /* best-effort — never let a handler throw back across the binding */ }
@@ -194,6 +224,13 @@ export function createChromeMgr(deps: { launch?: () => Promise<any>; chromePath?
         // ensureLoaded; tests set VOICE_CHROME_SETTLE_MS=0 to skip it.
         const settleMs = Number(process.env.VOICE_CHROME_SETTLE_MS ?? DEFAULT_SETTLE_MS);
         if (settleMs > 0) await new Promise((r) => setTimeout(r, settleMs));
+        // Refresh Cloudflare's SHORT-LIVED __cf_bm immediately before the voice-WS upgrade
+        // (lm-mobile §4): the HTTP API is NOT CF-challenged, so this same-origin GET re-mints a
+        // fresh __cf_bm into the browser jar (and lets the real-UA page settle CF's JS challenge,
+        // minting/refreshing a per-IP cf_clearance) so the upgrade presents non-stale CF cookies.
+        // CSP `connect-src 'self'` allows the same-origin fetch. Best-effort — on failure the
+        // existing cookies stand and the asset's retry-once still covers a transient reject.
+        await refreshCfCookies(page);
         await page.evaluate(loadRelayAssetSource());
       } catch (err) {
         try { await page.close(); } catch { /* noop */ }
