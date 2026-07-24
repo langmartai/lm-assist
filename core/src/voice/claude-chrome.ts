@@ -1,7 +1,10 @@
 import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import crypto from 'node:crypto';
 import { resolveChromePath } from './voice-v2-capability';
+import { ensureTlsCert } from '../tls/cert-manager';
 
 // Puppeteer lifecycle for the voice-v2 relay: launch/reuse ONE headless system Chrome,
 // prime it with the node's claude.ai cookie (ensureLoaded — this also lets THIS Chrome mint
@@ -10,6 +13,15 @@ import { resolveChromePath } from './voice-v2-capability';
 // finding), then hand out one fresh Page per voice session (openVoicePage) with the Task 3
 // relay asset injected. `launch`/`chromePath` are injectable so unit tests never touch a real
 // browser — see core/src/__tests__/claude-chrome.test.ts.
+//
+// TLS: this relay Chrome dials the loopback HTTPS terminator (self-signed, see
+// ../tls/cert-manager.ts) for the page-bridge wss — a bare --ignore-certificate-errors would
+// disable TLS validation BROWSER-WIDE, letting a network attacker MITM claude.ai itself inside
+// this Chrome (it carries the user's authenticated session + live voice audio — real exposure).
+// Instead we pin ONLY the terminator's own public key via
+// --ignore-certificate-errors-spki-list=<sha256 of its SPKI, base64> — claude.ai's real cert
+// still gets full validation (a different key is rejected as usual). See buildLaunchArgs/
+// computeSpkiPin/resolveSpkiPin below.
 
 const DEFAULT_IDLE_MS = 300_000;
 const DEFAULT_SETTLE_MS = 9_000;
@@ -28,7 +40,7 @@ export interface ChromeMgr {
   teardownIfIdle(): Promise<void>;
 }
 
-export type ChromeMgrErrorCode = 'launch_failed' | 'asset_missing' | 'page_failed';
+export type ChromeMgrErrorCode = 'launch_failed' | 'asset_missing' | 'page_failed' | 'cert_pin_failed';
 
 /** Typed so the relay (Task 5) can tell "no Chrome" / "asset missing" / a page-op failure
  *  apart and surface something meaningful to the browser client instead of a raw throw. */
@@ -77,14 +89,65 @@ function loadRelayAssetSource(): string {
   throw new ChromeMgrError('asset_missing', `claude-ws-relay.js not found — tried: ${candidates.join(', ')}`);
 }
 
+/**
+ * RFC 7469 SPKI pin: base64(sha256(DER SubjectPublicKeyInfo)) — the exact value Chrome's
+ * --ignore-certificate-errors-spki-list flag expects. Pure + exported so a unit test can
+ * assert it against a fixture cert without touching the real ~/.lm-assist/tls* files.
+ */
+export function computeSpkiPin(certPem: string): string {
+  const spkiDer = new crypto.X509Certificate(certPem).publicKey.export({ type: 'spki', format: 'der' });
+  return crypto.createHash('sha256').update(spkiDer).digest('base64');
+}
+
+/** Puppeteer launch args, scoped: TLS relaxation applies ONLY to a cert matching this one
+ *  pinned public key (the loopback terminator's), never a bare --ignore-certificate-errors. */
+export function buildLaunchArgs(spkiPin: string): string[] {
+  return [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    `--ignore-certificate-errors-spki-list=${spkiPin}`,
+  ];
+}
+
+/** Same tlsDir resolution as rest-server.ts's maybeStartHttps — MUST match exactly, or this
+ *  Chrome pins a different cert than the one the terminator actually serves and the page
+ *  bridge's wss handshake fails. */
+function resolveTlsDir(): string {
+  const isProdInstall = process.env.LM_ASSIST_PROD === 'true' || __dirname.includes('node_modules');
+  const dataDir = process.env.LM_ASSIST_DATA_DIR || path.join(os.homedir(), '.lm-assist');
+  return path.join(dataDir, isProdInstall ? 'tls' : 'tls-dev');
+}
+
+/**
+ * Read (or, on first run, generate — ensureTlsCert is idempotent either way) the SAME cert
+ * the HTTPS terminator serves, then pin it. FAILS CLOSED: any failure here — cert unreadable,
+ * pin uncomputable — throws a typed ChromeMgrError; it never falls back to a bare
+ * --ignore-certificate-errors, which would defeat the whole point of pinning.
+ */
+function resolveSpkiPin(): string {
+  let certPem: string;
+  try {
+    certPem = ensureTlsCert({ dir: resolveTlsDir() }).cert;
+  } catch (err) {
+    throw new ChromeMgrError('cert_pin_failed', `could not read/generate the HTTPS terminator cert: ${(err as Error).message}`, err);
+  }
+  try {
+    return computeSpkiPin(certPem);
+  } catch (err) {
+    throw new ChromeMgrError('cert_pin_failed', `could not compute the SPKI pin from the terminator cert: ${(err as Error).message}`, err);
+  }
+}
+
 export function createChromeMgr(deps: { launch?: () => Promise<any>; chromePath?: string | null } = {}): ChromeMgr {
   const chromePath = deps.chromePath !== undefined ? deps.chromePath : resolveChromePath();
   const doLaunch: () => Promise<any> = deps.launch ?? (async () => {
     if (!chromePath) throw new ChromeMgrError('launch_failed', 'no system Chrome resolved (resolveChromePath() returned null)');
+    const pin = resolveSpkiPin(); // throws ChromeMgrError('cert_pin_failed', ...) — see fail-closed note above
     return puppeteer.launch({
       executablePath: chromePath,
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--ignore-certificate-errors'],
+      args: buildLaunchArgs(pin),
     });
   });
 

@@ -1,11 +1,17 @@
-import { test } from 'node:test';
+import { test, mock, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createChromeMgr, ChromeMgrError } from '../voice/claude-chrome';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { createChromeMgr, ChromeMgrError, computeSpkiPin, buildLaunchArgs } from '../voice/claude-chrome';
+import * as certManager from '../tls/cert-manager';
 
 // ensureLoaded's real ~9s CF-settle wait is a production requirement, not something a unit
 // test should pay for on every run — set before any test calls ensureLoaded. Read at call
 // time (not module load) inside claude-chrome.ts, so this takes effect for the whole file.
 process.env.VOICE_CHROME_SETTLE_MS = '0';
+
+afterEach(() => { mock.restoreAll(); });
 
 // Brief's Step 1 test, verbatim — the mandatory RED/GREEN case (browser reuse across
 // ensureLoaded calls). Everything below extends coverage to the rest of the ChromeMgr
@@ -186,6 +192,67 @@ test('no chromePath and no injected launch fails fast with a typed error — nev
   await assert.rejects(() => mgr.ensureLoaded('a=b'), (err: unknown) => {
     assert.ok(err instanceof ChromeMgrError);
     assert.equal((err as ChromeMgrError).code, 'launch_failed');
+    return true;
+  });
+});
+
+// ── TLS: SPKI-pinned launch args, not a bare --ignore-certificate-errors ───────────────────
+// Security review finding: --ignore-certificate-errors disables TLS validation BROWSER-WIDE
+// (this relay Chrome carries the user's authenticated claude.ai session + live voice audio —
+// a network attacker could MITM claude.ai itself, not just the intended loopback bridge).
+// Fixed by pinning only the loopback terminator's own public key via
+// --ignore-certificate-errors-spki-list=<pin> (claude.ai's real cert still gets full
+// validation — a different key ⇒ rejected as usual).
+
+const tmpDirs: string[] = [];
+function tmpDir(): string {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'lm-chrome-tls-test-'));
+  tmpDirs.push(d);
+  return d;
+}
+afterEach(() => {
+  for (const d of tmpDirs.splice(0)) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
+});
+// keySize 512 keeps node-forge keygen fast in tests (same idiom as tls-cert-manager.test.ts);
+// production keeps cert-manager's 2048 default.
+const FAST_CERT = { keySize: 512 } as const;
+
+test('computeSpkiPin returns a well-formed base64 sha256 digest for a real fixture cert', () => {
+  const { cert } = certManager.ensureTlsCert({ ...FAST_CERT, dir: tmpDir(), hostnames: ['h'], ips: [] });
+  const pin = computeSpkiPin(cert);
+  // sha256 -> 32 bytes -> 44 base64 chars including the trailing '=' pad.
+  assert.match(pin, /^[A-Za-z0-9+/]{43}=$/, `pin should look like a base64 sha256 digest (got: ${pin})`);
+});
+
+test('computeSpkiPin is deterministic for the same cert, and differs across two different certs', () => {
+  const certA = certManager.ensureTlsCert({ ...FAST_CERT, dir: tmpDir(), hostnames: ['a'], ips: [] }).cert;
+  const certB = certManager.ensureTlsCert({ ...FAST_CERT, dir: tmpDir(), hostnames: ['b'], ips: [] }).cert;
+  assert.equal(computeSpkiPin(certA), computeSpkiPin(certA), 'same cert -> same pin every time');
+  assert.notEqual(computeSpkiPin(certA), computeSpkiPin(certB), 'different keys -> different pins');
+});
+
+test('computeSpkiPin throws on a non-certificate input (no bare-flag fallback possible from here)', () => {
+  assert.throws(() => computeSpkiPin('not a certificate'));
+});
+
+test('buildLaunchArgs pins the given SPKI value and never emits a bare --ignore-certificate-errors', () => {
+  const args = buildLaunchArgs('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');
+  assert.ok(args.includes('--ignore-certificate-errors-spki-list=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='));
+  assert.ok(!args.includes('--ignore-certificate-errors'), 'must not include the unscoped, browser-wide flag');
+  for (const safe of ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']) {
+    assert.ok(args.includes(safe), `expected ${safe} to still be present`);
+  }
+});
+
+test('the default (real) launch path fails closed with cert_pin_failed when the terminator cert cannot be pinned — never falls back to a bare --ignore-certificate-errors, never reaches puppeteer.launch', async () => {
+  mock.method(certManager, 'ensureTlsCert', () => { throw new Error('simulated: disk unreadable'); });
+  // No `launch` injected -> exercises the REAL default doLaunch closure. chromePath is a
+  // harmless placeholder; resolveSpkiPin() must throw before puppeteer.launch is ever called.
+  const mgr = createChromeMgr({ chromePath: '/fake/chrome-binary-that-does-not-exist' });
+  await assert.rejects(() => mgr.ensureLoaded('sessionKey=x'), (err: unknown) => {
+    assert.ok(err instanceof ChromeMgrError);
+    assert.equal((err as ChromeMgrError).code, 'cert_pin_failed');
+    assert.match((err as Error).message, /disk unreadable/);
     return true;
   });
 });
