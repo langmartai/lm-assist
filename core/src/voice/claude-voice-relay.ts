@@ -162,7 +162,7 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
   let pageWs: BridgeSocket | null = null;
   let voicePage: VoicePage | null = null;
   let connected = false;
-  let upFrames = 0, downFrames = 0, downMsgs = 0;
+  let upFrames = 0, upCtrl = 0, downFrames = 0, downMsgs = 0;
 
   let resolvePaired: () => void = () => {};
   const paired = new Promise<void>((res) => { resolvePaired = res; });
@@ -207,13 +207,24 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
       if (pageWs && pageWs.readyState === OPEN) { try { pageWs.send(data, { binary: true }); } catch { /* noop */ } }
       return;
     }
-    // Post-connect user text: only an explicit close is meaningful here.
+    // Post-connect user text = control frames. `close` is a LOCAL teardown and `connect` is
+    // the already-consumed handshake — neither is forwarded. EVERY other control frame
+    // (interrupt / keep_alive, plus Plan-B tool_result / turn_end / approval) is relayed
+    // VERBATIM to the page bridge, which passes it to claude.ai's voice WS — otherwise
+    // server-side barge-in etc. are silently dropped. Forward the raw bytes AS A TEXT frame
+    // (binary:false) so claude.ai still sees JSON, not a binary audio frame.
     let msg: { type?: string };
     try { msg = JSON.parse(data.toString()); } catch { return; }
-    if (msg.type === 'close') closeAll();
+    if (msg.type === 'close') { closeAll(); return; }
+    if (msg.type === 'connect') return; // handshake already ran — never re-forward it
+    if (pageWs && pageWs.readyState === OPEN) {
+      upCtrl++;
+      vlog(`user control frame relayed to page bridge (type=${msg.type ?? '?'}, #${upCtrl})`);
+      try { pageWs.send(data, { binary: false }); } catch { /* noop */ }
+    }
   });
   userWs.on('close', () => {
-    vlog(`user closed: up=${upFrames} downBin=${downFrames} downMsg=${downMsgs} ${Date.now() - t0}ms`);
+    vlog(`user closed: up=${upFrames} ctrl=${upCtrl} downBin=${downFrames} downMsg=${downMsgs} ${Date.now() - t0}ms`);
     closeAll();
     settle();
   });

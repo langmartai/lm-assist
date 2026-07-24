@@ -236,3 +236,42 @@ test('I2: user leaves during setup → page bridge is NOT wired and the tab is r
   assert.equal((page as unknown as { readyState: number }).readyState, 3, 'freshly-paired page bridge closed');
   assert.equal(tabClosed, true, 'voice tab reclaimed');
 });
+
+test('post-connect user control frames: interrupt/keep_alive forwarded to page bridge; close + connect are not', async () => {
+  const user = new FakeWs();
+  const page = new FakeWs();
+  const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
+    makeChromeMgr: () => fakeChromeMgr,
+    loadCookie: async () => 'sessionKey=x; lastActiveOrg=O',
+    waitForPageBridge: async () => page as unknown as BridgeSocket,
+    httpsPort: 3849,
+    mintToken: () => 'tokCtrl',
+  });
+  user.emit('message', connectFrame(), false);
+  await paired;
+
+  // The `type` of every TEXT frame the page bridge received (control forwards land as text).
+  const pageTextTypes = () =>
+    page.sent
+      .filter((s) => !s.binary)
+      .map((s) => {
+        try { return JSON.parse(Buffer.isBuffer(s.data) ? s.data.toString() : String(s.data)).type; } catch { return undefined; }
+      });
+
+  // interrupt → forwarded verbatim (server-side barge-in reaches claude.ai).
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'interrupt' })), false);
+  assert.ok(pageTextTypes().includes('interrupt'), 'interrupt forwarded to the page bridge');
+
+  // keep_alive → forwarded too (any non-connect/close control frame).
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'keep_alive' })), false);
+  assert.ok(pageTextTypes().includes('keep_alive'), 'keep_alive forwarded to the page bridge');
+
+  // a post-pair connect → NOT re-forwarded (the handshake already ran).
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'C2' })), false);
+  assert.ok(!pageTextTypes().includes('connect'), 'a post-pair connect is not re-forwarded');
+
+  // close → NOT forwarded; it is a LOCAL teardown.
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'close' })), false);
+  assert.ok(!pageTextTypes().includes('close'), 'close is not forwarded to the page bridge');
+  assert.equal(user.readyState, 3, 'close triggered local teardown');
+});
