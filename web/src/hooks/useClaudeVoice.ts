@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { buildClaudeVoiceWsUrl } from '@/lib/voice-url';
-import { demuxMessageSse, initialDemuxAcc, type DemuxAcc, type VoiceState } from '@/lib/claude-voice-demux';
+import { buildApprovalFrame, buildDenyFrame } from '@/lib/claude-voice-approval';
+import { demuxMessageSse, initialDemuxAcc, type ApprovalOption, type DemuxAcc, type VoiceState } from '@/lib/claude-voice-demux';
 
-export type { VoiceState } from '@/lib/claude-voice-demux';
+export type { ApprovalOption, ApprovalReq, McpAuthReq, ToolUseView, VoiceState } from '@/lib/claude-voice-demux';
 
 /** The engine's own instance shape (web/public/voice/claude-voice-engine.js, Task 7) — a
  *  browser-only public static asset, dynamic-imported on demand (see `loadEngine` below),
@@ -209,13 +210,52 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
     try { engineRef.current?.clearPlayback(); } catch { /* noop */ }
   }, []);
 
+  // Answer a pending in-band approval (Once / For this chat / Always) or deny it. Both look
+  // up the matching ApprovalReq by toolUseId (for its approvalKey — the frame builders in
+  // claude-voice-approval.ts need it, not the caller), best-effort send the reply frame
+  // (same OPEN-guarded try/catch as interrupt() above), and drop the entry from
+  // pendingApprovals regardless of send success: once the user has decided, the prompt
+  // shouldn't linger in the UI, and a session too broken to deliver the frame is about to
+  // surface via onclose/onerror -> fail() anyway. acc.pendingApprovals (not a ref) is the
+  // right read here — these are plain synchronous click handlers, not long-lived async
+  // work, so the closure captured on the render that produced the currently-visible prompt
+  // is already current; unlike the ws/engine refs, there's no staleness risk to guard against.
+  const respondToApproval = useCallback(
+    (toolUseId: string, buildFrame: (approvalKey: string) => ReturnType<typeof buildApprovalFrame>) => {
+      const req = acc.pendingApprovals.find((p) => p.toolUseId === toolUseId);
+      if (!req) return;
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify(buildFrame(req.approvalKey))); } catch { /* noop */ }
+      }
+      applyAcc((prev) => ({ ...prev, pendingApprovals: prev.pendingApprovals.filter((p) => p.toolUseId !== toolUseId) }));
+    },
+    [acc.pendingApprovals, applyAcc],
+  );
+
+  const approve = useCallback(
+    (toolUseId: string, option: ApprovalOption) => respondToApproval(toolUseId, (approvalKey) => buildApprovalFrame(toolUseId, approvalKey, option)),
+    [respondToApproval],
+  );
+
+  const denyApproval = useCallback(
+    (toolUseId: string) => respondToApproval(toolUseId, (approvalKey) => buildDenyFrame(toolUseId, approvalKey)),
+    [respondToApproval],
+  );
+
   return {
     state: acc.state,
     transcript: acc.transcript,
     assistantText: acc.assistantText,
     liveModel: acc.liveModel,
+    tools: acc.tools,
+    connectorTexts: acc.connectorTexts,
+    pendingApprovals: acc.pendingApprovals,
+    mcpAuth: acc.mcpAuth,
     start,
     stop,
     interrupt,
+    approve,
+    denyApproval,
   };
 }
