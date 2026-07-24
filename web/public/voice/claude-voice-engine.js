@@ -13,6 +13,9 @@
 // through plain callbacks instead:
 //   - onFrame(opusBytes)  <- this engine emits one Uint8Array per encoded Opus packet
 //   - playPcm(pcmFrame)   -> the hook feeds this engine one downlink PCM frame at a time
+//   - clearPlayback()     -> the hook calls this on a server-side barge-in
+//                            (server_interrupt) to silence queued assistant audio
+//                            without stopping mic capture
 // No Android/WebView bits carried over (the source had none in this file itself —
 // the native bridge lived in claude-ws-relay.js, not here).
 //
@@ -66,8 +69,12 @@ function resample(ad) {
  * `onFrame`. `playPcm()` enqueues one downlink PCM frame (16-bit LE mono @16k)
  * for gapless playback through the same AudioContext, whose destination doubles
  * as the AEC reference so the server's speech doesn't re-enter the uplink.
- * `stop()` tears everything down. `start`/`stop` are safe to call repeatedly on
- * one instance — each `stop()` fully resets state for the next `start()`.
+ * `clearPlayback()` immediately drops all queued downlink audio and resets the
+ * play head to now, WITHOUT touching the mic, encoder, or AudioContext — for a
+ * server-side barge-in (`server_interrupt`); idempotent, safe to call with
+ * nothing queued. `stop()` tears everything down. `start`/`stop` are safe to
+ * call repeatedly on one instance — each `stop()` fully resets state for the
+ * next `start()`.
  */
 export function createClaudeVoiceEngine() {
   let ac = null;
@@ -219,10 +226,21 @@ export function createClaudeVoiceEngine() {
     } catch (e) { /* noop */ }
   }
 
+  // Barge-in: silence whatever assistant audio is already queued, without
+  // touching capture. Reuses stopPlayback() (already idempotent — a no-op loop
+  // over an empty `sources` array) and re-bases the play head on the LIVE
+  // AudioContext clock rather than 0, since — unlike stop()'s teardown, where a
+  // fresh AudioContext starts its own clock at the next start() — the context
+  // stays open and running here.
+  function clearPlayback() {
+    stopPlayback();
+    if (ac) playHead = ac.currentTime;
+  }
+
   function stop() {
     stopLocal();
     setState('stopped');
   }
 
-  return { start, playPcm, stop };
+  return { start, playPcm, clearPlayback, stop };
 }
