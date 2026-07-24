@@ -71,9 +71,9 @@ function parseCookieHeader(header: string): Array<{ name: string; value: string 
 let cachedAssetSource: string | null = null;
 
 /**
- * Locate + read the Task 3 relay asset. Tried dist-adjacent first (prod, once a pack step
- * copies src/voice/assets -> dist/voice/assets — not wired yet, see task-4-report.md), then
- * falls back to the src tree (works today for both dev's dist-test and a src-only prod build).
+ * Locate + read the Task 3 relay asset. Tried dist-adjacent first (prod — `npm run build`
+ * runs scripts/copy-voice-assets.js after tsc, mirroring src/voice/assets -> dist/voice/assets),
+ * then falls back to the src tree (works for both dev's dist-test and a src-only build).
  */
 function loadRelayAssetSource(): string {
   if (cachedAssetSource !== null) return cachedAssetSource;
