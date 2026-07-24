@@ -77,15 +77,6 @@ function loadRelayAssetSource(): string {
   throw new ChromeMgrError('asset_missing', `claude-ws-relay.js not found — tried: ${candidates.join(', ')}`);
 }
 
-/** Puppeteer's Browser.process() returns null when connected (vs launched) and a ChildProcess
- *  otherwise; exitCode flips from null to a number once the process has actually died. Treat
- *  "no info" (null/undefined/no exitCode) as alive — only a recorded exit means relaunch. */
-function isProcessAlive(proc: unknown): boolean {
-  if (!proc || typeof proc !== 'object') return true;
-  const exitCode = (proc as { exitCode?: number | null }).exitCode;
-  return exitCode === null || exitCode === undefined;
-}
-
 export function createChromeMgr(deps: { launch?: () => Promise<any>; chromePath?: string | null } = {}): ChromeMgr {
   const chromePath = deps.chromePath !== undefined ? deps.chromePath : resolveChromePath();
   const doLaunch: () => Promise<any> = deps.launch ?? (async () => {
@@ -98,14 +89,19 @@ export function createChromeMgr(deps: { launch?: () => Promise<any>; chromePath?
   });
 
   let browser: any = null;
+  // Set by the browser's own 'disconnected' event (real puppeteer-core: Browser emits it
+  // whenever the underlying CDP transport closes — crash, SIGKILL/OOM signal kill, or a
+  // clean close all cascade through the same transport 'close' -> Connection -> Browser
+  // path). Deliberately NOT a process().exitCode check: a signal-killed process also has
+  // exitCode === null (it sets signalCode instead), so that check alone false-reports
+  // "alive" for exactly the crash case this exists to catch.
+  let browserDead = false;
   let lastOpenAt = 0;
 
   async function getBrowser(): Promise<any> {
-    if (browser) {
-      let alive = true;
-      try { alive = isProcessAlive(browser.process?.()); } catch { /* health-check hiccup — don't discard a possibly-fine browser over it */ }
-      if (alive) return browser;
-      console.log('[voice-chrome] reused browser process has exited — relaunching');
+    if (browser && !browserDead) return browser;
+    if (browser && browserDead) {
+      console.log('[voice-chrome] reused browser disconnected — relaunching');
       browser = null;
     }
     try {
@@ -113,6 +109,8 @@ export function createChromeMgr(deps: { launch?: () => Promise<any>; chromePath?
     } catch (err) {
       throw err instanceof ChromeMgrError ? err : new ChromeMgrError('launch_failed', `Chrome launch failed: ${(err as Error).message}`, err);
     }
+    browserDead = false;
+    try { browser.on?.('disconnected', () => { browserDead = true; }); } catch { /* best-effort — a fake without .on just skips crash-detection */ }
     lastOpenAt = Date.now();
     console.log('[voice-chrome] browser launched');
     return browser;

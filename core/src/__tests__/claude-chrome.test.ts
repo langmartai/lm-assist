@@ -94,23 +94,55 @@ test('ensureLoaded parses "name=value; name2=value2" into setCookie pairs scoped
   ]);
 });
 
-test('relaunches if the reused browser process has exited (crash recovery)', async () => {
+// A signal-killed process (SIGKILL, OOM) leaves exitCode === null too — it sets signalCode
+// instead — so a process().exitCode-only check would misreport a signal-crashed Chrome as
+// "alive" and hand back a dead browser reference. Real puppeteer-core's Browser emits
+// 'disconnected' whenever its CDP transport closes, which covers crash/signal-kill/clean
+// close uniformly (verified against node_modules/puppeteer-core/lib/esm/puppeteer/cdp/{Connection,Browser}.js:
+// transport 'close' -> Connection emits CDPSessionEvent.Disconnected -> Browser re-emits
+// 'disconnected'). This test drives that real callback, not a process()/exitCode mock.
+test('relaunches if the reused browser disconnects (crash / signal kill, not just a recorded exitCode)', async () => {
   let launches = 0;
-  let exited = false;
+  const calls: string[] = [];
+  const fakePage = makeVoicePageFake(calls);
+  let disconnectHandler: (() => void) | null = null;
+  const mgr = createChromeMgr({
+    chromePath: '/fake',
+    launch: async () => {
+      launches++;
+      disconnectHandler = null;
+      return {
+        newPage: async () => fakePage,
+        close: async () => {},
+        on: (ev: string, cb: () => void) => { if (ev === 'disconnected') disconnectHandler = cb; },
+      } as any;
+    },
+  });
+  await mgr.ensureLoaded('sessionKey=x');
+  assert.equal(launches, 1);
+  assert.ok(disconnectHandler, 'createChromeMgr must register a disconnected listener on each launched browser');
+  // Simulate a signal kill: exitCode would still read null on a real ChildProcess (signalCode
+  // would be set instead) — but the browser's own transport still tears down and fires this.
+  (disconnectHandler as unknown as () => void)();
+  await mgr.ensureLoaded('sessionKey=x');
+  assert.equal(launches, 2, 'a disconnected browser must trigger a relaunch, not a silent reuse');
+});
+
+test('a browser that never disconnects is reused as-is (no spurious relaunch)', async () => {
+  let launches = 0;
   const calls: string[] = [];
   const fakePage = makeVoicePageFake(calls);
   const mgr = createChromeMgr({
     chromePath: '/fake',
     launch: async () => {
       launches++;
-      return { newPage: async () => fakePage, close: async () => {}, process: () => (exited ? { exitCode: 1 } : {}) } as any;
+      return { newPage: async () => fakePage, close: async () => {}, on: () => {} } as any;
     },
   });
   await mgr.ensureLoaded('sessionKey=x');
-  assert.equal(launches, 1);
-  exited = true; // the reused Chrome process died between calls
+  await mgr.openVoicePage('v', 'b');
   await mgr.ensureLoaded('sessionKey=x');
-  assert.equal(launches, 2, 'a dead process() exitCode should trigger a relaunch, not a silent reuse');
+  assert.equal(launches, 1);
 });
 
 test('teardownIfIdle closes the browser once VOICE_CHROME_IDLE_MS has elapsed since the last openVoicePage', async () => {
