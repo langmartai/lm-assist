@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { MessageSquare, Mic, Plus, Send, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AudioLines, MessageSquare, Mic, Plus, Send, X } from 'lucide-react';
 import { TranscriptMessage } from '@/components/shared/TranscriptMessage';
 import { ModelEffortSelector } from '@/components/cowork/ModelEffortSelector';
 import { AttachmentTray } from '@/components/cowork/AttachmentTray';
@@ -9,6 +9,8 @@ import { useAttachments } from '@/components/cowork/useAttachments';
 import { fileToChatAttachment } from '@/lib/chat-attachments';
 import { useChatConversation, type ChatAttachment, type ChatDetailView } from '@/hooks/useChatConversation';
 import { useVoiceConversation, type VoiceState } from '@/hooks/useVoiceConversation';
+import { buildClaudeVoiceWsUrl } from '@/lib/voice-url';
+import { ClaudeVoiceOverlay } from '@/components/voice/ClaudeVoiceOverlay';
 
 /** Short label for the voice status line. */
 function voiceStatusLabel(s: VoiceState): string {
@@ -26,8 +28,8 @@ type ApiFetch = <T>(path: string, o?: { method?: string; body?: unknown }) => Pr
 /** claude.ai-look-alike Chat conversation view: transcript (center) + a bottom
  *  composer (model + send). Rename/delete via the header. No right rail / approvals
  *  / effort (chat has none). Mirrors CoworkTaskView's shell. */
-export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl }: {
-  uuid: string; apiFetch: ApiFetch; onClose: () => void; onDeleted: () => void; seed?: ChatDetailView; voiceWsUrl?: string | null;
+export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl, isRemoteNode }: {
+  uuid: string; apiFetch: ApiFetch; onClose: () => void; onDeleted: () => void; seed?: ChatDetailView; voiceWsUrl?: string | null; isRemoteNode: boolean;
 }) {
   const [model, setModel] = useState('claude-sonnet-5');
   const { detail, err, gone, sending, send, refresh } = useChatConversation({ uuid, apiFetch, model, seed });
@@ -38,6 +40,13 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl 
   // composer already holds the text; returning undefined stops the hook from speaking a reply.
   const dictationBaseRef = useRef<string | null>(null);
   const voice = useVoiceConversation({ wsUrl: voiceWsUrl || '', sendMessage: async () => undefined });
+
+  // Bidirectional voice v2 ("voice conversation" mode) — a separate toggle from the
+  // dictation mic above; same null-hides-the-button gate as every other voice UI.
+  const claudeVoiceWsUrl = useMemo((): string | null => {
+    try { return buildClaudeVoiceWsUrl({ isRemoteNode }); } catch { return null; }
+  }, [isRemoteNode]);
+  const [voiceModeOpen, setVoiceModeOpen] = useState(false);
 
   // Mirror the growing transcript into the input box while the mic is active, appended after
   // whatever was already typed. Release the base once dictation ends so the text persists.
@@ -192,6 +201,13 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl 
                 <Mic size={14} />
               </button>
             )}
+            {claudeVoiceWsUrl && (
+              <button type="button" className="btn btn-ghost btn-sm btn-icon"
+                title="Voice conversation"
+                onClick={() => setVoiceModeOpen(true)}>
+                <AudioLines size={14} />
+              </button>
+            )}
             <button className="btn btn-primary btn-sm btn-icon" disabled={!canSend} onClick={() => void handleSend()} title="Send (⌘/Ctrl+Enter)"><Send size={13} /></button>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -199,6 +215,16 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl 
             <ModelEffortSelector model={model} effort="" onChange={(m) => setModel(m)} hideEffort />
           </div>
         </div>
+      )}
+
+      {voiceModeOpen && (
+        <ClaudeVoiceOverlay
+          conversationUuid={uuid}
+          model={model}
+          onModelChange={setModel}
+          isRemoteNode={isRemoteNode}
+          onClose={() => setVoiceModeOpen(false)}
+        />
       )}
     </div>
   );

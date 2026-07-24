@@ -158,6 +158,7 @@ export function CoworkPage() {
               apiFetch={apiFetch}
               seed={openItem.seed}
               voiceWsUrl={voiceWsUrl}
+              isRemoteNode={isRemoteNode}
               onClose={() => setOpenItem(null)}
               onDeleted={() => { removedRef.current.add(openItem.id); setRows((prev) => prev.filter((r) => r.id !== openItem.id)); setOpenItem(null); }}
             />
