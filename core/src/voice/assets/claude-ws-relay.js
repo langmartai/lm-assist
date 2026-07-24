@@ -1,25 +1,25 @@
-// claude-ws-relay.js — injected into the claude.ai voice page. Bridges the
-// claude.ai voice WS <-> a loopback wss to Core. No audio here (audio is in
-// the user's browser); this only carries frames past Cloudflare via real Chrome.
+// claude-ws-relay.js — injected into the claude.ai voice page. Bridges the SAME-ORIGIN
+// claude.ai voice WS <-> Core via Puppeteer CDP bindings (NOT a loopback WebSocket): the
+// page's CSP (connect-src 'self') forbids connecting to Core, but a CDP binding is a native
+// binding, not a network connection, so it is CSP-immune. globalThis.__lmToCore is an
+// exposeFunction binding Core installed; globalThis.__lmFromCore is defined here and called
+// by Core via page.evaluate. Binary frames ride as base64 (exposeFunction args are JSON).
 (function () {
-  const VOICE_URL = window.__VOICE_URL__, BRIDGE_URL = window.__BRIDGE_URL__;
-  let up = null;      // claude.ai voice WS
-  let bridge = null;  // loopback wss to Core
-  const openBridge = () => {
-    bridge = new WebSocket(BRIDGE_URL);
-    bridge.binaryType = 'arraybuffer';
-    bridge.onopen = () => openUpstream();
-    bridge.onmessage = (ev) => { if (up && up.readyState === 1) up.send(ev.data); }; // browser->claude.ai
-    bridge.onclose = () => { try { up && up.close(); } catch (e) {} };
+  const VOICE_URL = globalThis.__VOICE_URL__;
+  let ws = null;
+  const toCore = (env) => { try { globalThis.__lmToCore(env); } catch (e) {} };
+  const b64 = (buf) => { let s = ''; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i++) s += String.fromCharCode(u[i]); return btoa(s); };
+  // Core -> page -> claude.ai
+  globalThis.__lmFromCore = (env) => {
+    if (!ws || ws.readyState !== 1) return;
+    try { ws.send(env.t === 'bin' ? Uint8Array.from(atob(env.d), (c) => c.charCodeAt(0)) : env.d); } catch (e) {}
   };
-  const openUpstream = () => {
-    up = new WebSocket(VOICE_URL);
-    up.binaryType = 'arraybuffer';
-    up.onopen = () => post({ type: '__page_status', state: 'up_open' });
-    up.onmessage = (ev) => { if (bridge && bridge.readyState === 1) bridge.send(ev.data); }; // claude.ai->browser
-    up.onclose = (e) => { post({ type: '__page_status', state: 'up_close', code: e.code, timeout: e.code === 4008 }); try { bridge && bridge.close(); } catch (er) {} };
-    up.onerror = () => post({ type: '__page_status', state: 'up_error' });
-  };
-  const post = (o) => { try { if (bridge && bridge.readyState === 1) bridge.send(JSON.stringify(o)); } catch (e) {} };
-  openBridge();
+  try {
+    ws = new WebSocket(VOICE_URL);
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => toCore({ t: 'status', state: 'up_open' });
+    ws.onmessage = (ev) => { if (typeof ev.data === 'string') toCore({ t: 'text', d: ev.data }); else toCore({ t: 'bin', d: b64(ev.data) }); };
+    ws.onclose = (e) => toCore({ t: 'status', state: 'up_close', code: e.code, timeout: e.code === 4008 });
+    ws.onerror = () => toCore({ t: 'status', state: 'up_error' });
+  } catch (e) { toCore({ t: 'status', state: 'up_error' }); }
 })();
