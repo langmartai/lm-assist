@@ -4,48 +4,57 @@ import { EventEmitter } from 'node:events';
 import {
   bridgeClaudeVoice,
   isClaudeVoiceUpgrade,
-  isClaudeVoicePageBridgeUpgrade,
-  defaultWaitForPageBridge,
-  _pendingBridgeCountForTest,
   type BridgeSocket,
 } from '../voice/claude-voice-relay';
-import type { ChromeMgr } from '../voice/claude-chrome';
+import type { ChromeMgr, VoiceChannel, VoiceChannelHandlers } from '../voice/claude-chrome';
 import type { IncomingMessage } from 'node:http';
 
 /**
- * Fake WS: EventEmitter for message/close/error, records every send with its binary flag so
- * the test can distinguish relayed audio (Buffer, binary) from control JSON (string). Tracks
- * whether a `message` listener was ever attached (`messageWired`) so a test can prove the page
- * bridge was NOT wired to a dead user socket. Mirrors the fake style in voice-relay.test.ts.
+ * Fake WS (the USER socket): EventEmitter for message/close/error, records every send with its
+ * binary flag so a test can distinguish relayed audio (Buffer, binary) from control JSON
+ * (string). Mirrors the fake style in voice-relay.test.ts.
  */
 class FakeWs extends EventEmitter {
   readyState = 1; // OPEN
   sent: Array<{ data: string | Buffer; binary: boolean }> = [];
-  messageWired = false;
   send(data: string | Buffer, opts?: { binary?: boolean }): void {
     this.sent.push({ data, binary: !!opts?.binary });
   }
   close(): void {
     this.readyState = 3;
   }
-  on(event: string, listener: (...args: any[]) => void): this {
-    if (event === 'message') this.messageWired = true;
-    return super.on(event, listener);
+}
+
+/** Fake voice channel (the Chrome-side handle openVoicePage returns): records each send with
+ *  its binary flag + counts close() calls, so a test can assert uplink framing + tab reclaim. */
+class FakeChannel {
+  sent: Array<{ data: Buffer; binary: boolean }> = [];
+  closed = 0;
+  send(data: Buffer, binary: boolean): void {
+    this.sent.push({ data, binary });
+  }
+  close(): Promise<void> {
+    this.closed++;
+    return Promise.resolve();
   }
 }
 
-const tick = () => new Promise<void>((r) => setImmediate(r));
-const connectFrame = (conversationUuid = 'C') =>
-  Buffer.from(JSON.stringify({ type: 'connect', conversationUuid }));
+interface Captured { handlers?: VoiceChannelHandlers }
 
-/** ChromeMgr whose openVoicePage RESOLVES with a page; `onClose` fires when that page closes. */
-function mgrWithPage(onClose: () => void): ChromeMgr {
+/** ChromeMgr whose openVoicePage captures the wiring handlers + returns `channel`. An optional
+ *  `gate` lets a test hold openVoicePage open to model "user hangs up mid-setup". */
+function makeMgr(channel: FakeChannel, captured: Captured, opts: { gate?: Promise<void> } = {}): ChromeMgr {
   return {
     ensureLoaded: async () => {},
-    openVoicePage: async () => ({ evaluate: async () => undefined, close: async () => { onClose(); }, on: () => {} }),
+    openVoicePage: async (_voiceUrl, handlers): Promise<VoiceChannel> => {
+      captured.handlers = handlers;
+      if (opts.gate) await opts.gate;
+      return channel;
+    },
     teardownIfIdle: async () => {},
   };
 }
+
 /** ChromeMgr whose openVoicePage REJECTS — models a Chrome-less node (launch_failed). */
 function mgrThatFailsOpen(msg: string): ChromeMgr {
   return {
@@ -54,111 +63,135 @@ function mgrThatFailsOpen(msg: string): ChromeMgr {
     teardownIfIdle: async () => {},
   };
 }
-/** ChromeMgr for the happy-path relay tests (page never asserted on). */
-const fakeChromeMgr: ChromeMgr = mgrWithPage(() => {});
 
-test('isClaudeVoiceUpgrade / isClaudeVoicePageBridgeUpgrade match only their own paths', () => {
+const tick = () => new Promise<void>((r) => setImmediate(r));
+const connectFrame = (conversationUuid = 'C') =>
+  Buffer.from(JSON.stringify({ type: 'connect', conversationUuid }));
+
+test('isClaudeVoiceUpgrade matches only /voice/claude/ws', () => {
   assert.equal(isClaudeVoiceUpgrade({ url: '/voice/claude/ws?token=x' } as IncomingMessage), true);
   assert.equal(isClaudeVoiceUpgrade({ url: '/voice/claude/ws' } as IncomingMessage), true);
   assert.equal(isClaudeVoiceUpgrade({ url: '/voice/claude/page-bridge' } as IncomingMessage), false);
+  assert.equal(isClaudeVoiceUpgrade({ url: '/voice/stt/ws' } as IncomingMessage), false);
   assert.equal(isClaudeVoiceUpgrade({ url: undefined } as IncomingMessage), false);
-
-  assert.equal(isClaudeVoicePageBridgeUpgrade({ url: '/voice/claude/page-bridge?token=y' } as IncomingMessage), true);
-  assert.equal(isClaudeVoicePageBridgeUpgrade({ url: '/voice/claude/ws' } as IncomingMessage), false);
-  assert.equal(isClaudeVoicePageBridgeUpgrade({ url: '/voice/stt/ws' } as IncomingMessage), false);
 });
 
-test('bridgeClaudeVoice: relays binary both ways verbatim + maps __page_status control', async () => {
+test('bridgeClaudeVoice: user binary → channel.send(data,true); onFrame both ways; status mapping', async () => {
   const user = new FakeWs();
-  const page = new FakeWs();
-
+  const channel = new FakeChannel();
+  const captured: Captured = {};
   const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
-    makeChromeMgr: () => fakeChromeMgr,
+    makeChromeMgr: () => makeMgr(channel, captured),
     loadCookie: async () => 'sessionKey=sk-ant-sid-x; lastActiveOrg=ORG',
-    // The test supplies the page-bridge socket out of band (no real Chrome / token pairing).
-    waitForPageBridge: async () => page as unknown as BridgeSocket,
-    httpsPort: 3849,
-    mintToken: () => 'tok',
   });
 
-  // Drive the connect handshake, then wait for pairing to complete.
+  // Drive the connect handshake, then wait for the channel to open.
   user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'C', model: 'claude-opus-4-8' })), false);
   await paired;
+  assert.ok(captured.handlers, 'openVoicePage received the wiring handlers');
 
-  // (a) a user binary frame reaches the page bridge, verbatim + flagged binary.
+  // (a) a user binary frame reaches the channel, verbatim + flagged binary.
   user.emit('message', Buffer.from([1, 2, 3]), true);
-  const up = page.sent.find((s) => Buffer.isBuffer(s.data));
-  assert.ok(up, 'page bridge received the user binary frame');
-  assert.deepEqual([...(up!.data as Buffer)], [1, 2, 3], 'user audio forwarded verbatim');
+  const up = channel.sent.find((s) => s.binary);
+  assert.ok(up, 'channel received the user binary frame');
+  assert.deepEqual([...up!.data], [1, 2, 3], 'user audio forwarded verbatim');
   assert.equal(up!.binary, true, 'forwarded as a binary frame');
 
-  // (b) a page-bridge binary frame reaches the user, verbatim.
-  page.emit('message', Buffer.from([7, 8, 9]), true);
+  // (b) a claude.ai binary frame (onFrame binary) reaches the user, verbatim.
+  captured.handlers!.onFrame(Buffer.from([7, 8, 9]), true);
   const down = user.sent.find((s) => Buffer.isBuffer(s.data));
-  assert.ok(down, 'user received the page-bridge binary frame');
+  assert.ok(down, 'user received the claude.ai binary frame');
   assert.deepEqual([...(down!.data as Buffer)], [7, 8, 9], 'claude.ai audio forwarded verbatim');
+  assert.equal(down!.binary, true);
 
-  // (c) __page_status up_open → user gets {type:'ready'}
-  page.emit('message', Buffer.from(JSON.stringify({ type: '__page_status', state: 'up_open' })), false);
+  // (c) a claude.ai message_sse text frame (onFrame text) is forwarded to the user as a string.
+  const sse = JSON.stringify({ type: 'message_start', foo: 1 });
+  captured.handlers!.onFrame(Buffer.from(sse, 'utf8'), false);
+  assert.ok(user.sent.some((s) => s.data === sse), 'text frame forwarded verbatim as a string');
+
+  // (d) onStatus('up_open') → user gets {type:'ready'}
+  captured.handlers!.onStatus('up_open');
   assert.ok(
     user.sent.some((s) => typeof s.data === 'string' && JSON.parse(s.data).type === 'ready'),
     'up_open mapped to {type:ready}',
   );
 
-  // (d) __page_status up_close with timeout:true → user gets {type:'reconnect'}
-  page.emit('message', Buffer.from(JSON.stringify({ type: '__page_status', state: 'up_close', timeout: true })), false);
+  // (e) onStatus('up_close', {timeout:true}) → user gets {type:'reconnect'}
+  captured.handlers!.onStatus('up_close', { timeout: true });
   assert.ok(
     user.sent.some((s) => typeof s.data === 'string' && JSON.parse(s.data).type === 'reconnect'),
     'up_close+timeout mapped to {type:reconnect}',
   );
 
-  // extra: up_close (no timeout) and up_error both map to {type:'error'}
-  page.emit('message', Buffer.from(JSON.stringify({ type: '__page_status', state: 'up_close' })), false);
-  page.emit('message', Buffer.from(JSON.stringify({ type: '__page_status', state: 'up_error' })), false);
+  // (f) up_close (no timeout) and up_error both map to {type:'error'}
+  captured.handlers!.onStatus('up_close');
+  captured.handlers!.onStatus('up_error');
   const errs = user.sent.filter((s) => typeof s.data === 'string' && JSON.parse(s.data).type === 'error');
   assert.ok(errs.length >= 2, 'non-timeout close and up_error both map to {type:error}');
 });
 
-test('bridgeClaudeVoice: a claude.ai message_sse text frame is forwarded verbatim to the user', async () => {
+test('post-connect user control frames: interrupt/keep_alive → channel.send(text); close + connect are not forwarded', async () => {
   const user = new FakeWs();
-  const page = new FakeWs();
+  const channel = new FakeChannel();
+  const captured: Captured = {};
   const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
-    makeChromeMgr: () => fakeChromeMgr,
-    loadCookie: async () => 'sessionKey=sk-ant-sid-x; lastActiveOrg=ORG',
-    waitForPageBridge: async () => page as unknown as BridgeSocket,
-    httpsPort: 3849,
-    mintToken: () => 'tok',
-  });
-  user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'C' })), false);
-  await paired;
-
-  const sse = JSON.stringify({ type: 'message_start', foo: 1 });
-  page.emit('message', Buffer.from(sse), false);
-  assert.ok(user.sent.some((s) => s.data === sse), 'non-__page_status page text forwarded verbatim');
-});
-
-// ── teardown / failure state machine (C1 crash, I1 tab leak, I2 half-open bridge) ────────────
-
-test('C1: openVoicePage failure cancels the REAL pending-bridge registry entry (no 30s leak)', async () => {
-  const before = _pendingBridgeCountForTest();
-  const user = new FakeWs();
-  const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
-    makeChromeMgr: () => mgrThatFailsOpen('launch_failed: no system Chrome'),
+    makeChromeMgr: () => makeMgr(channel, captured),
     loadCookie: async () => 'sessionKey=x; lastActiveOrg=O',
-    // REAL registry-backed waiter — proves cancelPendingBridge clears the entry + its 30s timer.
-    waitForPageBridge: defaultWaitForPageBridge,
-    httpsPort: 3849,
-    mintToken: () => 'tokC1a',
   });
   user.emit('message', connectFrame(), false);
   await paired;
 
-  assert.equal(_pendingBridgeCountForTest(), before, 'pending-bridge entry cleaned up (old code left it ~30s)');
+  // The `type` of every TEXT frame (binary:false) the channel received.
+  const textTypes = () =>
+    channel.sent
+      .filter((s) => !s.binary)
+      .map((s) => { try { return JSON.parse(s.data.toString()).type; } catch { return undefined; } });
+
+  // interrupt → forwarded verbatim as a TEXT frame (server-side barge-in reaches claude.ai).
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'interrupt' })), false);
+  assert.ok(textTypes().includes('interrupt'), 'interrupt forwarded to the channel');
+  assert.ok(channel.sent.every((s) => !s.binary), 'control frames forwarded as text, never binary');
+
+  // keep_alive → forwarded too (any non-connect/close control frame).
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'keep_alive' })), false);
+  assert.ok(textTypes().includes('keep_alive'), 'keep_alive forwarded to the channel');
+
+  // a post-pair connect → NOT re-forwarded (the handshake already ran).
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'C2' })), false);
+  assert.ok(!textTypes().includes('connect'), 'a post-pair connect is not re-forwarded');
+
+  // close → NOT forwarded; it is a LOCAL teardown that also reclaims the voice channel/tab.
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'close' })), false);
+  assert.ok(!textTypes().includes('close'), 'close is not forwarded to the channel');
+  assert.equal(user.readyState, 3, 'close triggered local teardown');
+  assert.equal(channel.closed, 1, 'close reclaimed the voice channel/tab');
+});
+
+test('cookie load failure → user told no session + socket closed (openVoicePage never reached)', async () => {
+  const user = new FakeWs();
+  const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
+    makeChromeMgr: () => makeMgr(new FakeChannel(), {}),
+    loadCookie: async () => { throw new Error('no claude.ai session'); },
+  });
+  user.emit('message', connectFrame(), false);
+  await paired;
+  assert.ok(user.sent.some((s) => typeof s.data === 'string' && JSON.parse(s.data).type === 'error'), 'user told relay failed');
+  assert.equal(user.readyState, 3, 'user socket closed on cookie failure');
+});
+
+test('openVoicePage failure → user told relay failed + socket closed (no dangling channel)', async () => {
+  const user = new FakeWs();
+  const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
+    makeChromeMgr: () => mgrThatFailsOpen('launch_failed: no system Chrome'),
+    loadCookie: async () => 'sessionKey=x; lastActiveOrg=O',
+  });
+  user.emit('message', connectFrame(), false);
+  await paired;
   assert.ok(user.sent.some((s) => typeof s.data === 'string' && JSON.parse(s.data).type === 'error'), 'user told relay failed');
   assert.equal(user.readyState, 3, 'user socket closed on setup failure');
 });
 
-test('C1: a rejecting page-bridge promise on the setup-failure path never becomes an unhandled rejection', async () => {
+test('a setup failure never becomes an unhandled rejection', async () => {
   const user = new FakeWs();
   const rejections: unknown[] = [];
   const onUnhandled = (err: unknown) => rejections.push(err);
@@ -167,16 +200,10 @@ test('C1: a rejecting page-bridge promise on the setup-failure path never become
     const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
       makeChromeMgr: () => mgrThatFailsOpen('launch_failed'),
       loadCookie: async () => 'sessionKey=x; lastActiveOrg=O',
-      // Mirrors the default 30s reject timer, compressed to 5ms. bridgeClaudeVoice returns on
-      // the openVoicePage throw WITHOUT awaiting this — only the early .catch keeps its later
-      // rejection from crashing Core (there is no unhandledRejection handler in the repo).
-      waitForPageBridge: () => new Promise<BridgeSocket>((_res, rej) => setTimeout(() => rej(new Error('bridge-timeout')), 5)),
-      httpsPort: 3849,
-      mintToken: () => 'tokC1b',
     });
     user.emit('message', connectFrame(), false);
     await paired;
-    await new Promise((r) => setTimeout(r, 25)); // let the 5ms reject fire + be swallowed
+    await new Promise((r) => setTimeout(r, 25));
     assert.equal(rejections.length, 0, 'no unhandled rejection escaped the setup-failure path');
     assert.ok(user.sent.some((s) => typeof s.data === 'string' && JSON.parse(s.data).type === 'error'), 'user told relay failed');
     assert.equal(user.readyState, 3, 'user socket closed');
@@ -185,93 +212,51 @@ test('C1: a rejecting page-bridge promise on the setup-failure path never become
   }
 });
 
-test('I1: the voice tab (openVoicePage page) is closed on normal teardown', async () => {
+test('I1: normal teardown (user close) reclaims the voice channel/tab', async () => {
   const user = new FakeWs();
-  const page = new FakeWs();
-  let tabClosed = false;
+  const channel = new FakeChannel();
   const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
-    makeChromeMgr: () => mgrWithPage(() => { tabClosed = true; }),
+    makeChromeMgr: () => makeMgr(channel, {}),
     loadCookie: async () => 'sessionKey=x; lastActiveOrg=O',
-    waitForPageBridge: async () => page as unknown as BridgeSocket,
-    httpsPort: 3849,
-    mintToken: () => 'tokI1',
   });
   user.emit('message', connectFrame(), false);
   await paired;
-  assert.equal(tabClosed, false, 'tab stays open while the session is live');
+  assert.equal(channel.closed, 0, 'channel stays open while the session is live');
 
-  // User hangs up → teardown must reclaim the tab (old closeAll only closed WS sockets).
+  // User hangs up → teardown must reclaim the tab (closing the user WS never closes it).
   user.readyState = 3;
   user.emit('close');
   await tick();
-  assert.equal(tabClosed, true, 'voice tab reclaimed on teardown');
+  assert.equal(channel.closed, 1, 'voice channel/tab reclaimed on teardown');
 });
 
-test('I2: user leaves during setup → page bridge is NOT wired and the tab is reclaimed', async () => {
+test('I2: user leaves DURING setup → freshly-opened channel is closed (tab reclaimed), never wired to the dead user', async () => {
   const user = new FakeWs();
-  const page = new FakeWs();
-  let tabClosed = false;
-  let resolveGate!: (s: BridgeSocket) => void;
-  const gate = new Promise<BridgeSocket>((r) => { resolveGate = r; });
+  const channel = new FakeChannel();
+  const captured: Captured = {};
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((r) => { releaseGate = r; });
 
   const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
-    makeChromeMgr: () => mgrWithPage(() => { tabClosed = true; }),
+    makeChromeMgr: () => makeMgr(channel, captured, { gate }),
     loadCookie: async () => 'sessionKey=x; lastActiveOrg=O',
-    waitForPageBridge: () => gate, // held open until the test releases it
-    httpsPort: 3849,
-    mintToken: () => 'tokI2',
   });
   user.emit('message', connectFrame(), false);
-  await tick(); // advance setup to `await gate` (page handle captured, pairing pending)
+  await tick(); // advance setup to `await gate` inside openVoicePage (handlers captured, channel pending)
+  assert.ok(captured.handlers, 'handlers captured before the user left');
 
-  // User hangs up BEFORE the page bridge pairs.
+  // User hangs up BEFORE the channel opens.
   user.readyState = 3;
   user.emit('close');
-  // ...then the page bridge finally connects.
-  resolveGate(page as unknown as BridgeSocket);
-  await tick();
+  // ...then the channel finally opens.
+  releaseGate();
   await paired;
+  await tick(); // flush the post-gate continuation that reclaims the channel
 
-  assert.equal(page.messageWired, false, 'no relay wired onto a dead user socket (half-open bridge avoided)');
-  assert.equal((page as unknown as { readyState: number }).readyState, 3, 'freshly-paired page bridge closed');
-  assert.equal(tabClosed, true, 'voice tab reclaimed');
-});
+  assert.equal(channel.closed, 1, 'freshly-opened channel closed because the user had already left');
 
-test('post-connect user control frames: interrupt/keep_alive forwarded to page bridge; close + connect are not', async () => {
-  const user = new FakeWs();
-  const page = new FakeWs();
-  const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
-    makeChromeMgr: () => fakeChromeMgr,
-    loadCookie: async () => 'sessionKey=x; lastActiveOrg=O',
-    waitForPageBridge: async () => page as unknown as BridgeSocket,
-    httpsPort: 3849,
-    mintToken: () => 'tokCtrl',
-  });
-  user.emit('message', connectFrame(), false);
-  await paired;
-
-  // The `type` of every TEXT frame the page bridge received (control forwards land as text).
-  const pageTextTypes = () =>
-    page.sent
-      .filter((s) => !s.binary)
-      .map((s) => {
-        try { return JSON.parse(Buffer.isBuffer(s.data) ? s.data.toString() : String(s.data)).type; } catch { return undefined; }
-      });
-
-  // interrupt → forwarded verbatim (server-side barge-in reaches claude.ai).
-  user.emit('message', Buffer.from(JSON.stringify({ type: 'interrupt' })), false);
-  assert.ok(pageTextTypes().includes('interrupt'), 'interrupt forwarded to the page bridge');
-
-  // keep_alive → forwarded too (any non-connect/close control frame).
-  user.emit('message', Buffer.from(JSON.stringify({ type: 'keep_alive' })), false);
-  assert.ok(pageTextTypes().includes('keep_alive'), 'keep_alive forwarded to the page bridge');
-
-  // a post-pair connect → NOT re-forwarded (the handshake already ran).
-  user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'C2' })), false);
-  assert.ok(!pageTextTypes().includes('connect'), 'a post-pair connect is not re-forwarded');
-
-  // close → NOT forwarded; it is a LOCAL teardown.
-  user.emit('message', Buffer.from(JSON.stringify({ type: 'close' })), false);
-  assert.ok(!pageTextTypes().includes('close'), 'close is not forwarded to the page bridge');
-  assert.equal(user.readyState, 3, 'close triggered local teardown');
+  // A late claude.ai frame must NOT be forwarded onto the dead user socket.
+  const before = user.sent.length;
+  captured.handlers!.onFrame(Buffer.from([1, 2, 3]), true);
+  assert.equal(user.sent.length, before, 'no frame relayed to a closed user socket');
 });

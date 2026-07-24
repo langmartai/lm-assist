@@ -1,37 +1,33 @@
-import { test, mock, afterEach } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import * as fs from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
-import { createChromeMgr, ChromeMgrError, computeSpkiPin, buildLaunchArgs } from '../voice/claude-chrome';
-import * as certManager from '../tls/cert-manager';
+import { createChromeMgr, ChromeMgrError } from '../voice/claude-chrome';
 
-// ensureLoaded's real ~9s CF-settle wait is a production requirement, not something a unit
-// test should pay for on every run — set before any test calls ensureLoaded. Read at call
-// time (not module load) inside claude-chrome.ts, so this takes effect for the whole file.
+// ensureLoaded / openVoicePage's real CF-settle wait is a production requirement, not something
+// a unit test should pay for on every run — set before any test runs. Read at call time (not
+// module load) inside claude-chrome.ts, so this takes effect for the whole file.
 process.env.VOICE_CHROME_SETTLE_MS = '0';
 
-afterEach(() => { mock.restoreAll(); });
+const tick = () => new Promise<void>((r) => setImmediate(r));
 
 // Brief's Step 1 test, verbatim — the mandatory RED/GREEN case (browser reuse across
 // ensureLoaded calls). Everything below extends coverage to the rest of the ChromeMgr
 // interface, using the same injected-fake pattern so no test ever touches real Chrome.
 test('reuses one browser across ensureLoaded calls', async () => {
   let launches = 0;
-  const fakePage = { evaluate: async () => null, close: async () => {}, on: () => {}, setCookie: async () => {}, goto: async () => {}, addScriptToEvaluateOnNewDocument: async () => {}, addStyleTag: async () => {} };
-  const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, process: () => ({}) };
+  const fakePage = { evaluate: async () => null, close: async () => {}, on: () => {}, setCookie: async () => {}, goto: async () => {}, exposeFunction: async () => {}, evaluateOnNewDocument: async () => {} };
+  const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
   const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => { launches++; return fakeBrowser as any; } });
   await mgr.ensureLoaded('sessionKey=x');
   await mgr.ensureLoaded('sessionKey=x');
   assert.equal(launches, 1);
 });
 
-// A fresh fake page for the openVoicePage tests — needs evaluateOnNewDocument (the real
-// puppeteer-core Page method; see task-4-report.md for why this differs from the brief's
-// literal "addScriptToEvaluateOnNewDocument", which is the CDP wire name, not a Page method).
+// A fresh fake page for the openVoicePage tests — needs exposeFunction (the page->Core CDP
+// binding) + evaluateOnNewDocument (the __VOICE_URL__ global) + evaluate (asset injection).
 function makeVoicePageFake(calls: string[]) {
   return {
-    evaluate: async (_src: unknown) => { calls.push('evaluate'); return null; },
+    exposeFunction: async (_name: string, _fn: (...a: unknown[]) => unknown) => { calls.push('exposeFunction'); },
+    evaluate: async (_src: unknown, ..._args: unknown[]) => { calls.push('evaluate'); return null; },
     close: async () => { calls.push('close'); },
     on: () => {},
     setCookie: async () => {},
@@ -40,22 +36,23 @@ function makeVoicePageFake(calls: string[]) {
   };
 }
 
-test('openVoicePage registers the globals via evaluateOnNewDocument, THEN navigates, THEN injects the relay asset', async () => {
+test('openVoicePage installs the __lmToCore binding + __VOICE_URL__ global BEFORE navigating, THEN injects the relay asset', async () => {
   const calls: string[] = [];
   const fakePage = makeVoicePageFake(calls);
-  const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, process: () => ({}) };
+  const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
   const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
-  await mgr.openVoicePage('wss://claude.ai/voice', 'wss://127.0.0.1/bridge');
-  // Order matters: the relay asset (claude-ws-relay.js) reads window.__VOICE_URL__/__BRIDGE_URL__
-  // synchronously at injection time — if evaluateOnNewDocument ran after the asset, the asset
-  // would throw `new WebSocket(undefined)`.
-  assert.deepEqual(calls, ['evaluateOnNewDocument', 'goto', 'evaluate']);
+  await mgr.openVoicePage('wss://claude.ai/voice', { onFrame: () => {}, onStatus: () => {} });
+  // Order matters: exposeFunction + evaluateOnNewDocument BOTH run before goto (the asset reads
+  // globalThis.__VOICE_URL__ and calls globalThis.__lmToCore synchronously at injection); the
+  // asset itself (page.evaluate) is injected LAST, after navigation + the CF settle.
+  assert.deepEqual(calls, ['exposeFunction', 'evaluateOnNewDocument', 'goto', 'evaluate']);
 });
 
-test('openVoicePage passes voiceUrl/bridgeUrl through to the globals setter, and injects the real relay asset', async () => {
+test('openVoicePage passes voiceUrl to the __VOICE_URL__ setter and injects the real Task 3 asset', async () => {
   let globalsArgs: unknown[] = [];
   let injectedSource = '';
   const fakePage = {
+    exposeFunction: async () => {},
     evaluate: async (src: unknown) => { injectedSource = String(src); return null; },
     close: async () => {},
     on: () => {},
@@ -63,35 +60,115 @@ test('openVoicePage passes voiceUrl/bridgeUrl through to the globals setter, and
     goto: async () => {},
     evaluateOnNewDocument: async (_fn: unknown, ...args: unknown[]) => { globalsArgs = args; },
   };
-  const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, process: () => ({}) };
+  const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
   const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
-  await mgr.openVoicePage('wss://VOICE-URL', 'wss://BRIDGE-URL');
-  assert.deepEqual(globalsArgs, ['wss://VOICE-URL', 'wss://BRIDGE-URL']);
-  // Sanity check we loaded Task 3's actual asset off disk, not a stub — look for a
-  // recognizable symbol from core/src/voice/assets/claude-ws-relay.js.
+  await mgr.openVoicePage('wss://VOICE-URL', { onFrame: () => {}, onStatus: () => {} });
+  assert.deepEqual(globalsArgs, ['wss://VOICE-URL']);
+  // Confirm we loaded Task 3's actual asset off disk, not a stub — look for symbols unique to
+  // core/src/voice/assets/claude-ws-relay.js.
   assert.match(injectedSource, /__VOICE_URL__/);
-  assert.match(injectedSource, /__page_status/);
+  assert.match(injectedSource, /__lmFromCore/);
 });
 
-test('openVoicePage returns the live page (caller owns close(), not torn down on success)', async () => {
+test('openVoicePage registers the __lmToCore CDP binding, which routes status/text/bin envelopes to the handlers', async () => {
+  let boundName = '';
+  // Init to a no-op (not `| null`): the real fn is captured inside the exposeFunction closure,
+  // which TS flow-analysis can't see — a null union would narrow to `never` at the call sites.
+  let boundFn: (env: any) => void = () => {};
+  const fakePage = {
+    exposeFunction: async (name: string, fn: (env: any) => void) => { boundName = name; boundFn = fn; },
+    evaluate: async () => null,
+    close: async () => {},
+    on: () => {},
+    setCookie: async () => {},
+    goto: async () => {},
+    evaluateOnNewDocument: async () => {},
+  };
+  const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
+  const frames: Array<{ data: Buffer; binary: boolean }> = [];
+  const statuses: Array<{ state: string; timeout?: boolean }> = [];
+  const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
+  await mgr.openVoicePage('v', {
+    onFrame: (data, binary) => { frames.push({ data, binary }); },
+    onStatus: (state, info) => { statuses.push({ state, timeout: info?.timeout }); },
+  });
+  assert.equal(boundName, '__lmToCore', 'the page->Core binding is named __lmToCore');
+
+  boundFn({ t: 'status', state: 'up_open' });
+  boundFn({ t: 'status', state: 'up_close', timeout: true });
+  boundFn({ t: 'text', d: 'hello' });
+  boundFn({ t: 'bin', d: Buffer.from([1, 2, 3]).toString('base64') });
+
+  assert.deepEqual(statuses, [{ state: 'up_open', timeout: undefined }, { state: 'up_close', timeout: true }]);
+  assert.equal(frames.length, 2, 'text + bin routed to onFrame; status routed to onStatus');
+  assert.equal(frames[0].binary, false);
+  assert.equal(frames[0].data.toString('utf8'), 'hello');
+  assert.equal(frames[1].binary, true);
+  assert.deepEqual([...frames[1].data], [1, 2, 3], 'base64 bin envelope decoded to the original bytes');
+});
+
+test('the returned channel.send(data, binary) invokes page.evaluate with the __lmFromCore envelope (text vs base64 bin)', async () => {
+  const evalCalls: unknown[][] = [];
+  const fakePage = {
+    exposeFunction: async () => {},
+    evaluate: async (...args: unknown[]) => { evalCalls.push(args); return null; },
+    close: async () => {},
+    on: () => {},
+    setCookie: async () => {},
+    goto: async () => {},
+    evaluateOnNewDocument: async () => {},
+  };
+  const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
+  const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
+  const channel = await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
+  evalCalls.length = 0; // drop the asset-injection evaluate call
+
+  channel.send(Buffer.from('ctrl'), false);
+  channel.send(Buffer.from([9, 9]), true);
+  await tick(); // send is fire-and-forget (void page.evaluate(...).catch())
+
+  assert.equal(evalCalls.length, 2);
+  assert.equal(typeof evalCalls[0][0], 'function', 'first evaluate arg is the page-side __lmFromCore invoker');
+  assert.deepEqual(evalCalls[0][1], { t: 'text', d: 'ctrl' }, 'text frame → utf8 envelope');
+  assert.deepEqual(evalCalls[1][1], { t: 'bin', d: Buffer.from([9, 9]).toString('base64') }, 'binary frame → base64 envelope');
+});
+
+test('channel.close() closes the underlying page (reclaims the tab)', async () => {
+  let closed = 0;
+  const fakePage = {
+    exposeFunction: async () => {},
+    evaluate: async () => null,
+    close: async () => { closed++; },
+    on: () => {},
+    setCookie: async () => {},
+    goto: async () => {},
+    evaluateOnNewDocument: async () => {},
+  };
+  const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
+  const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
+  const channel = await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
+  await channel.close();
+  assert.equal(closed, 1);
+});
+
+test('openVoicePage returns a channel (send + close) and does not close the page on success', async () => {
   const calls: string[] = [];
   const fakePage = makeVoicePageFake(calls);
-  const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, process: () => ({}) };
+  const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
   const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
-  const page = await mgr.openVoicePage('v', 'b');
-  assert.equal(calls.includes('close'), false);
-  assert.equal(typeof page.evaluate, 'function');
-  assert.equal(typeof page.close, 'function');
-  assert.equal(typeof page.on, 'function');
+  const channel = await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
+  assert.equal(calls.includes('close'), false, 'the live page is not torn down on success');
+  assert.equal(typeof channel.send, 'function');
+  assert.equal(typeof channel.close, 'function');
 });
 
 test('ensureLoaded parses "name=value; name2=value2" into setCookie pairs scoped to https://claude.ai', async () => {
   let captured: unknown[] = [];
   const fakePage = {
-    evaluate: async () => null, close: async () => {}, on: () => {}, goto: async () => {}, evaluateOnNewDocument: async () => {},
+    evaluate: async () => null, close: async () => {}, on: () => {}, goto: async () => {}, exposeFunction: async () => {}, evaluateOnNewDocument: async () => {},
     setCookie: async (...cookies: unknown[]) => { captured = cookies; },
   };
-  const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, process: () => ({}) };
+  const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
   const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
   await mgr.ensureLoaded('sessionKey=sk-ant-abc; lastActiveOrg=org-123');
   assert.deepEqual(captured, [
@@ -146,7 +223,7 @@ test('a browser that never disconnects is reused as-is (no spurious relaunch)', 
     },
   });
   await mgr.ensureLoaded('sessionKey=x');
-  await mgr.openVoicePage('v', 'b');
+  await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
   await mgr.ensureLoaded('sessionKey=x');
   assert.equal(launches, 1);
 });
@@ -158,9 +235,9 @@ test('teardownIfIdle closes the browser once VOICE_CHROME_IDLE_MS has elapsed si
     let closed = 0;
     const calls: string[] = [];
     const fakePage = makeVoicePageFake(calls);
-    const fakeBrowser = { newPage: async () => fakePage, close: async () => { closed++; }, process: () => ({}) };
+    const fakeBrowser = { newPage: async () => fakePage, close: async () => { closed++; }, on: () => {} };
     const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
-    await mgr.openVoicePage('v', 'b');
+    await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
 
     await mgr.teardownIfIdle();
     assert.equal(closed, 0, 'not idle yet — must not close');
@@ -192,67 +269,6 @@ test('no chromePath and no injected launch fails fast with a typed error — nev
   await assert.rejects(() => mgr.ensureLoaded('a=b'), (err: unknown) => {
     assert.ok(err instanceof ChromeMgrError);
     assert.equal((err as ChromeMgrError).code, 'launch_failed');
-    return true;
-  });
-});
-
-// ── TLS: SPKI-pinned launch args, not a bare --ignore-certificate-errors ───────────────────
-// Security review finding: --ignore-certificate-errors disables TLS validation BROWSER-WIDE
-// (this relay Chrome carries the user's authenticated claude.ai session + live voice audio —
-// a network attacker could MITM claude.ai itself, not just the intended loopback bridge).
-// Fixed by pinning only the loopback terminator's own public key via
-// --ignore-certificate-errors-spki-list=<pin> (claude.ai's real cert still gets full
-// validation — a different key ⇒ rejected as usual).
-
-const tmpDirs: string[] = [];
-function tmpDir(): string {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'lm-chrome-tls-test-'));
-  tmpDirs.push(d);
-  return d;
-}
-afterEach(() => {
-  for (const d of tmpDirs.splice(0)) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
-});
-// keySize 512 keeps node-forge keygen fast in tests (same idiom as tls-cert-manager.test.ts);
-// production keeps cert-manager's 2048 default.
-const FAST_CERT = { keySize: 512 } as const;
-
-test('computeSpkiPin returns a well-formed base64 sha256 digest for a real fixture cert', () => {
-  const { cert } = certManager.ensureTlsCert({ ...FAST_CERT, dir: tmpDir(), hostnames: ['h'], ips: [] });
-  const pin = computeSpkiPin(cert);
-  // sha256 -> 32 bytes -> 44 base64 chars including the trailing '=' pad.
-  assert.match(pin, /^[A-Za-z0-9+/]{43}=$/, `pin should look like a base64 sha256 digest (got: ${pin})`);
-});
-
-test('computeSpkiPin is deterministic for the same cert, and differs across two different certs', () => {
-  const certA = certManager.ensureTlsCert({ ...FAST_CERT, dir: tmpDir(), hostnames: ['a'], ips: [] }).cert;
-  const certB = certManager.ensureTlsCert({ ...FAST_CERT, dir: tmpDir(), hostnames: ['b'], ips: [] }).cert;
-  assert.equal(computeSpkiPin(certA), computeSpkiPin(certA), 'same cert -> same pin every time');
-  assert.notEqual(computeSpkiPin(certA), computeSpkiPin(certB), 'different keys -> different pins');
-});
-
-test('computeSpkiPin throws on a non-certificate input (no bare-flag fallback possible from here)', () => {
-  assert.throws(() => computeSpkiPin('not a certificate'));
-});
-
-test('buildLaunchArgs pins the given SPKI value and never emits a bare --ignore-certificate-errors', () => {
-  const args = buildLaunchArgs('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');
-  assert.ok(args.includes('--ignore-certificate-errors-spki-list=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='));
-  assert.ok(!args.includes('--ignore-certificate-errors'), 'must not include the unscoped, browser-wide flag');
-  for (const safe of ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']) {
-    assert.ok(args.includes(safe), `expected ${safe} to still be present`);
-  }
-});
-
-test('the default (real) launch path fails closed with cert_pin_failed when the terminator cert cannot be pinned — never falls back to a bare --ignore-certificate-errors, never reaches puppeteer.launch', async () => {
-  mock.method(certManager, 'ensureTlsCert', () => { throw new Error('simulated: disk unreadable'); });
-  // No `launch` injected -> exercises the REAL default doLaunch closure. chromePath is a
-  // harmless placeholder; resolveSpkiPin() must throw before puppeteer.launch is ever called.
-  const mgr = createChromeMgr({ chromePath: '/fake/chrome-binary-that-does-not-exist' });
-  await assert.rejects(() => mgr.ensureLoaded('sessionKey=x'), (err: unknown) => {
-    assert.ok(err instanceof ChromeMgrError);
-    assert.equal((err as ChromeMgrError).code, 'cert_pin_failed');
-    assert.match((err as Error).message, /disk unreadable/);
     return true;
   });
 });
