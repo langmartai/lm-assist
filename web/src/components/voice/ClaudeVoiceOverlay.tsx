@@ -118,7 +118,13 @@ export function ClaudeVoiceOverlay({
         <span style={{ fontSize: 12.5, color: status.color }}>{status.label}</span>
         {liveModel && <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>· live model: {liveModel}</span>}
         {canRetry && (
-          <button className="btn btn-ghost btn-sm" onClick={start} style={{ marginLeft: 4 }}>
+          // stop() first, not just start(): start()'s guard only proceeds from
+          // 'idle'/'error' (useClaudeVoice.ts), so a bare start() silently no-ops from
+          // 'reconnect' — exactly the state this button exists to recover from. stop()
+          // synchronously resets stateRef to 'idle' (the whole reason that ref mirror
+          // exists), so the immediately-following start() sees 'idle' and proceeds,
+          // reusing the same conversationUuid to resume the same conversation.
+          <button className="btn btn-ghost btn-sm" onClick={() => { stop(); start(); }} style={{ marginLeft: 4 }}>
             <RefreshCw size={12} /> {state === 'error' ? 'Retry' : 'Reconnect'}
           </button>
         )}
