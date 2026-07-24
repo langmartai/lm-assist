@@ -159,7 +159,16 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
         ws.send(JSON.stringify({ type: 'connect', conversationUuid, model, effort, thinkingMode }));
       } catch { /* noop */ }
     };
-    ws.onerror = () => { fail('voice connection error'); };
+    ws.onerror = () => {
+      // Same staleness guard as onclose below, and for the same reason it's load-bearing
+      // here too: closing a still-CONNECTING socket is GUARANTEED to fire error (WebSocket
+      // spec), and closeWs()/stop() call .close() unconditionally, including mid-handshake.
+      // Without this check, start() -> stop() before onopen fires would flip the state BACK
+      // to 'error' right after stop() set 'idle'; worse, start() -> stop() -> start() in
+      // quick succession would let the FIRST (abandoned) socket's queued error land after the
+      // second session is already live and tear it down via the shared refs.
+      if (wsRef.current === ws) fail('voice connection error');
+    };
     ws.onclose = () => {
       // A close with no prior ready/reconnect/error relay frame — e.g. the network dropped.
       // A clean stop() already nulled wsRef before closing, so this self-check skips that path.
