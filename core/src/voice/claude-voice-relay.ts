@@ -150,7 +150,10 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
     }
     if (isBinary) {
       upFrames++;
-      if (upFrames === 1) vlog('first user audio frame relayed to channel');
+      // Time-to-first-audio-frame, measured from the user's WS opening. THE latency number for
+      // the startup work (docs/superpowers/specs/2026-07-25-voice-v2-latency-hardening-design.md
+      // §6) — compare it across cold / warm-browser / primed-page starts.
+      if (upFrames === 1) vlog(`first user audio frame relayed to channel (+${Date.now() - t0}ms)`);
       if (channel) { try { channel.send(data, true); } catch { /* noop */ } }
       return;
     }
@@ -201,7 +204,12 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
       const mgr = deps.makeChromeMgr();
       let opened: VoiceChannel;
       try {
+        // Phase timings: `prime` is the persistent-page path (a reuse is ~100ms, a cold prime is
+        // the Chrome launch + navigate + CF settle), `page` is this session's own voice tab.
+        const tPrime = Date.now();
         await mgr.ensureLoaded(cookie);
+        const primeMs = Date.now() - tPrime;
+        const tPage = Date.now();
         opened = await mgr.openVoicePage(voiceUrl, {
           // claude.ai -> Core -> user. Binary is PCM audio (forward verbatim as a binary
           // frame); text is message_sse JSON (forward verbatim as a string). The asset's own
@@ -218,6 +226,7 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
           },
           onStatus: (state, info) => mapPageStatus({ state, timeout: info?.timeout, code: info?.code, reason: info?.reason, clean: info?.clean }),
         });
+        vlog(`chrome setup: prime=${primeMs}ms page=${Date.now() - tPage}ms total=${Date.now() - t0}ms`);
       } catch (err) {
         vlog(`chrome relay setup failed: ${(err as Error).message}`);
         toUser({ type: 'error', message: 'voice relay failed to start' });

@@ -5,6 +5,7 @@ import { buildClaudeVoiceWsUrl } from '@/lib/voice-url';
 import { buildApprovalFrame, buildDenyFrame } from '@/lib/claude-voice-approval';
 import { clientToolResponse } from '@/lib/claude-voice-clienttools';
 import { demuxMessageSse, initialDemuxAcc, type ApprovalOption, type DemuxAcc, type VoiceState } from '@/lib/claude-voice-demux';
+import { createUplinkGate, type UplinkGate } from '@/lib/claude-voice-uplink';
 
 export type { ApprovalOption, ApprovalReq, McpAuthReq, ToolUseView, VoiceState } from '@/lib/claude-voice-demux';
 
@@ -65,6 +66,9 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
   const engineRef = useRef<ClaudeVoiceEngine | null>(null);
   const startingEngineRef = useRef(false); // true while loadEngine()/engine.start() awaits mic permission
   const pendingAbortRef = useRef(false);   // stop() landed mid-async-setup -> tear down as soon as it resolves
+  // Holds the Opus captured between the click and {ready} (claude-voice-uplink.ts). A ref, not
+  // state: it is written ~50x/second from the engine callback and must never trigger a render.
+  const uplinkRef = useRef<UplinkGate | null>(null);
   // Client-tool ids already answered this session (Task 4's clientToolResponse) — guards
   // against answering the same tool_use twice; reset per-session in start() below.
   const handledToolIdsRef = useRef<Set<string>>(new Set());
@@ -93,6 +97,14 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
   const teardownEngine = useCallback(() => {
     try { engineRef.current?.stop(); } catch { /* noop */ }
     engineRef.current = null;
+    uplinkRef.current?.reset();
+  }, []);
+
+  /** One encoded Opus packet from the engine. Resolves `wsRef` per frame rather than closing over
+   *  a socket, so an engine that outlives a stop()/start() cycle can never write into the
+   *  abandoned session's socket. */
+  const pushUplink = useCallback((opus: Uint8Array) => {
+    uplinkRef.current?.push(opus);
   }, []);
 
   const fail = useCallback((msg: string) => {
@@ -116,10 +128,15 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
     engineRef.current = null;
   }, []);
 
-  const bootEngine = useCallback(async (ws: WebSocket) => {
-    // Optimistic: the connect handshake is live the instant the server says ready — the
-    // mic-permission prompt below is the only thing that could still be pending.
-    applyAcc((prev) => ({ ...prev, state: 'listening' }));
+  /**
+   * Load the engine and open the mic. Called from `start()` — i.e. from the click — NOT from the
+   * `{ready}` frame as it was originally. The whole Chrome relay chain (launch, prime, navigate,
+   * Cloudflare) used to run first, so the mic permission prompt and capture began many seconds
+   * after the user clicked; the frames produced in the meantime now go to the ring instead.
+   *
+   * Takes no socket: frames go to the session's uplink gate, which resolves `wsRef` per frame.
+   */
+  const bootEngine = useCallback(async () => {
     startingEngineRef.current = true;
     try {
       const engine = await loadEngine();
@@ -131,11 +148,11 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
       }
       engineRef.current = engine;
       await engine.start({
-        onFrame: (opusBytes) => { if (ws.readyState === WebSocket.OPEN) { try { ws.send(opusBytes); } catch { /* noop */ } } },
-        onState: (s) => {
-          if (s === 'capturing') applyAcc((prev) => ({ ...prev, state: 'listening' }));
-          else if (s === 'error') fail('voice engine error');
-        },
+        onFrame: pushUplink,
+        // 'capturing' deliberately does NOT advance the state now. The mic being live is not the
+        // same claim as the session being live, and the mic is live long before the relay is —
+        // the overlay's pulsing "Connecting…" stays honest until {ready} says otherwise.
+        onState: (s) => { if (s === 'error') fail('voice engine error'); },
       });
       startingEngineRef.current = false;
       if (pendingAbortRef.current) { // stop() landed while engine.start() awaited mic permission
@@ -147,7 +164,7 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
       pendingAbortRef.current = false;
       fail(e instanceof Error ? e.message : 'voice engine failed to start');
     }
-  }, [applyAcc, fail, teardownEngine]);
+  }, [pushUplink, fail, teardownEngine]);
 
   const start = useCallback(() => {
     if (!wsUrl) return; // mic can't work on this page — the caller should already be hiding the UI
@@ -159,6 +176,17 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
     const ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
+    // A fresh gate per session, closed until {ready}. It sends through `wsRef`, not this local
+    // `ws`, so frames can never leak into a socket a stop()/start() cycle has replaced.
+    uplinkRef.current = createUplinkGate((frame) => {
+      const live = wsRef.current;
+      if (live && live.readyState === WebSocket.OPEN) live.send(frame);
+    });
+
+    // Open the mic NOW, in the same task as the user's click, rather than waiting for the
+    // server's {ready}. The socket and the audio engine come up CONCURRENTLY: whichever finishes
+    // last decides when audio starts flowing, instead of the two costs stacking.
+    void bootEngine();
 
     ws.onopen = () => {
       try {
@@ -191,7 +219,13 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
 
       // Core's OWN relay-control frames (claude-voice-relay.ts's mapPageStatus) — these are
       // never routed through demuxMessageSse, which only ever sees claude.ai's own protocol.
-      if (f?.type === 'ready') { void bootEngine(ws); return; }
+      // The relay is live. The engine has been capturing since the click, so this is where the
+      // ring drains and the uplink switches to straight passthrough.
+      if (f?.type === 'ready') {
+        applyAcc((prev) => ({ ...prev, state: 'listening' }));
+        uplinkRef.current?.open();
+        return;
+      }
       if (f?.type === 'reconnect') { applyAcc((prev) => ({ ...prev, state: 'reconnect' })); return; }
       if (f?.type === 'error') { fail(f.message || 'voice error'); return; }
       // Speculative (protocol name unconfirmed — see task report): a server-side barge-in

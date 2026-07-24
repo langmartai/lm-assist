@@ -85,6 +85,57 @@ Dev (repo) and prod (npm package) use **separate port spaces** so both can run s
 
 The browser mic needs a **secure context** (getUserMedia only exists on https/localhost) and an https page can't open `ws://`/`http://` (mixed content). `LM_HTTPS=1` (or `./core.sh start --https` / `lm-assist serve --https`; persist via `.env`) makes Core add ONE `https.Server` on **WEB_PORT+1** (dev `:3949` / prod `:3849`, `LM_HTTPS_PORT` overrides): `/_coreapi/*` → Core in-process (REST+SSE), `/voice/stt/ws` + `/ttyd*` → Core upgrade router, everything else → proxied to Next. Client: `detectAppMode()` returns `baseUrl:'/_coreapi'` on non-hub https pages; `web/src/lib/voice-url.ts` `buildVoiceWsUrl()` is THE voice URL contract (wss same-origin on https, ws://127.0.0.1 on localhost, null when the mic can't work — remote/hub v1 TODO). Self-signed cert auto-managed in `~/.lm-assist/tls[-dev]/` (key 0600; SANs = localhost+hostname+LAN IPv4s; regen on expiry/IP drift); one cert-accept per device+browser. Additive: plain HTTP untouched; TLS failure never kills HTTP. The decision logic is duplicated core↔web with a byte-identity test (`voice-url.test.ts`) — edit both. **Dep pin: `selfsigned` stays `^2.4.1`** (CJS; v5 pulls ESM-leaning deps — chokidar-class `ERR_REQUIRE_ESM` hazard). Full guide: [`docs/voice-https-transport.md`](./docs/voice-https-transport.md).
 
+### Bidirectional voice v2 — startup latency + Chrome lifecycle
+
+Voice bridges the browser mic to claude.ai's own voice WS through ONE headless Chrome
+(`core/src/voice/claude-chrome.ts`). Two independent mechanisms keep it fast; they solve
+different halves and **both** are needed:
+
+- **Condition-based readiness** — `waitForClaudeReady` polls the REAL signals (same-origin
+  `GET /api/account` → 200 **and** `cf_clearance` in the jar) instead of the two hardcoded 10s
+  sleeps that used to cost ~20s *per session*. `VOICE_CHROME_SETTLE_MS` is now a **CAP, not a
+  floor**. On cap it PROCEEDS (a 200 without cf_clearance just means CF never challenged this
+  browser) — the asset's reconnect-once still covers a transient reject.
+- **Persistent primed page + CF keepalive** — ONE long-lived navigated claude.ai page holds a
+  warm `cf_clearance`/`__cf_bm` in the browser-scoped jar, so the *next* session doesn't redo
+  the challenge. It is NOT the voice page (that still needs its own binding + navigation).
+  Cheap-validated before reuse, re-primed on any failure, recycled by age, single-flight.
+
+🔴 **The keepalive must be a REAL same-origin `GET /api/account`** (`probeAccount`) — a no-op
+`setInterval` JS ping does NOT refresh cookies; only a real request makes Cloudflare re-issue
+`Set-Cookie`. This is also why the readiness poll and the keepalive share one function.
+
+🔴 **Never regress the CF fix** (`0f33806`, lm-mobile `docs/claude-voice-implementation.md` §4):
+the real-Chrome UA launch arg, and a `GET /api/account` immediately before the WS upgrade. A
+headless UA draws CF's bot challenge → `up_error`. Cookie **NAMES** only in logs, never values.
+
+🔴 **`teardownIfIdle()` had NO caller** before this pass — Chrome lived until Core restarted.
+It is now driven by an internal unref'd sweeper, and gated on a **live-channel count**:
+`lastOpenAt` is stamped when a channel OPENS, so a long call looks idle by timestamp alone and
+a naive sweep would kill it mid-conversation.
+
+Client (`web/src/hooks/useClaudeVoice.ts`): the mic opens at **click**, not on `{ready}` — the
+socket and the audio engine come up concurrently instead of stacking. Frames captured before
+the relay is ready go to a bounded ~5s ring (`web/src/lib/claude-voice-uplink.ts`) and flush on
+`{ready}`. The engine's `ac.resume()` **stays non-blocking** (`await` there is the original
+`up=0` hang).
+
+| env | default | meaning |
+|---|---|---|
+| `VOICE_CHROME_SETTLE_MS` | `10000` | **cap** on the readiness poll |
+| `VOICE_CHROME_READY_POLL_MS` | `250` | poll interval |
+| `VOICE_PRIMED_PAGE` | `1` | `0` disables the persistent primed page |
+| `VOICE_PRIMED_MAX_AGE_MS` | `1800000` | recycle the primed page |
+| `VOICE_CF_KEEPALIVE_MS` | `480000` | CF keepalive (below `__cf_bm` lifetime); `0` = off |
+| `VOICE_CHROME_IDLE_MS` | `300000` | idle teardown window |
+| `VOICE_CHROME_IDLE_SWEEP_MS` | `60000` | idle sweeper tick |
+
+**Verify voice with `up>0`, never `{ready}` alone.** `{ready}` proves the transport; prod once
+ran `page_status up_open -> ready` with `up=0` (no audio at all). `core/src/__tests__/voice-audio-flow.test.ts`
+is the regression test — real Chrome + fake mic + the real engine asset through the real relay,
+asserting frames arrive; it self-skips where no Chrome resolves. Design:
+[`docs/superpowers/specs/2026-07-25-voice-v2-latency-hardening-design.md`](./docs/superpowers/specs/2026-07-25-voice-v2-latency-hardening-design.md).
+
 ### Testing After Code Changes
 
 After modifying and rebuilding (`./core.sh build`), restart **dev** services:
