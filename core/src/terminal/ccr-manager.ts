@@ -20,6 +20,13 @@ import { TerminalError, type TerminalErrorCode } from './errors';
 import { sessionVerdict } from './cc-sessions';
 import type { ConnectStrategy } from './cc-sessions';
 import { anthropicOAuthPost, getOrganizationUuid } from '../utils/claude-oauth';
+import {
+  computeLiveness,
+  reapRecords,
+  DEFAULT_REAP_AFTER_MS,
+  type CcrLiveness,
+  type LivenessDeps,
+} from './ccr-liveness';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -94,6 +101,33 @@ function newCcrId(): string {
 function isAlive(pid: number | null): boolean {
   if (!pid) return false;
   try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+/**
+ * Liveness probes for ccr-liveness.ts.
+ *
+ * `sessionLive` is the one that matters: the registry's own `pid` belongs to the
+ * detached ccr-bridge.js relay, NOT to `claude`, so it can never answer "is this
+ * session alive?". sessionVerdict can — it carries the pid-alive check, the /proc
+ * starttime pid-reuse guard, and the tmux pane mapping.
+ */
+function livenessDeps(): LivenessDeps {
+  return {
+    pidAlive: (pid) => isAlive(pid),
+    sessionLive: (sessionId) => {
+      const v = sessionVerdict(sessionId);
+      return { live: v.live, pid: v.owner?.pid ?? null, tmuxSession: v.tmuxSession ?? null };
+    },
+    tmuxExists: (name) => {
+      const tmux = require('./tmux') as typeof import('./tmux');
+      return tmux.exists(name);
+    },
+  };
+}
+
+function reapTtlMs(): number {
+  const raw = parseInt(process.env.CCR_REAP_AFTER_MS || '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_REAP_AFTER_MS;
 }
 
 /** Build spawn env — always pass NODE_EXTRA_CA_CERTS through if set (for lm-proxy). */
@@ -573,16 +607,34 @@ export async function restart({ sessionId, force, waitMs }: { sessionId: string;
   return r;
 }
 
-/** List all registered remotes with liveness. */
-export function list(): Array<CcrRecord & { alive: boolean }> {
-  return Object.values(loadRegistry()).map((rec) => ({ ...rec, alive: isAlive(rec.pid) }));
+/**
+ * List all registered remotes with CROSS-CHECKED liveness, reaping entries that are
+ * both not-alive and older than the TTL.
+ *
+ * `alive` here means "the session behind this entry is live" — cross-checked against
+ * the session registry / tmux — NOT "the bridge helper's pid responds", which is what
+ * it used to mean and why this listing once reported 3/3 dead for 3 live sessions.
+ *
+ * Reaping is bookkeeping only (it drops rows, never signals a process), so it is safe
+ * on a read path. A failed cleanup write must never fail the read.
+ */
+export function list(): { rows: Array<CcrRecord & CcrLiveness>; reaped: string[] } {
+  const data = loadRegistry();
+  const { kept, rows, reaped, changed } = reapRecords(data, livenessDeps(), {
+    now: Date.now(),
+    ttlMs: reapTtlMs(),
+  });
+  if (changed) {
+    try { saveRegistry(kept); } catch { /* a read must not fail because cleanup could not persist */ }
+  }
+  return { rows, reaped };
 }
 
 /** Get a single remote by id. */
-export function get(id: string): (CcrRecord & { alive: boolean }) | undefined {
+export function get(id: string): (CcrRecord & CcrLiveness) | undefined {
   const rec = loadRegistry()[id];
   if (!rec) return undefined;
-  return { ...rec, alive: isAlive(rec.pid) };
+  return { ...rec, ...computeLiveness(rec, livenessDeps()) };
 }
 
 /** Kill the child process and remove from registry. */
@@ -624,12 +676,20 @@ export interface DriveResult {
   detail?: string;
 }
 
-/** Find the best live `connected` bridge record for a session id (most-recent, alive-preferred). */
+/**
+ * Find the best live `connected` bridge record for a session id (most-recent, alive-preferred).
+ *
+ * Preference is on SESSION liveness, not the bridge pid: a live session whose relay
+ * helper has exited is the best drive target there is, yet the old bridge-pid test
+ * ranked it below nothing and fell through to `recs[0]`.
+ */
 function pickConnectedBySession(sessionId: string): CcrRecord | undefined {
   const recs = Object.values(loadRegistry())
     .filter((r) => r.mode === 'connected' && r.sessionId === sessionId)
     .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1)); // most-recent first
-  return recs.find((r) => isAlive(r.pid)) || recs[0];
+  if (recs.length <= 1) return recs[0];
+  const deps = livenessDeps();
+  return recs.find((r) => computeLiveness(r, deps).alive) || recs[0];
 }
 
 /** POST a client `user` event to the public code-session endpoint (cloud relays it to the worker). */

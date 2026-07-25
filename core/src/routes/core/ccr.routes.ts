@@ -18,8 +18,24 @@ import { TerminalError, httpStatusFor } from '../../terminal/errors';
 import { sessionVerdict } from '../../terminal/cc-sessions';
 import * as ccr from '../../terminal/ccr-manager';
 import * as ccrCloud from '../../terminal/ccr-cloud';
+import { buildRemoteListReport } from '../../terminal/ccr-liveness';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string; details?: unknown }; }
+
+/** Which node/cluster is answering. Degrades to placeholders; never throws. */
+function whereAmI(): { node: string; cluster: string } {
+  let node = 'this node';
+  let cluster = 'default';
+  try {
+    const { getHubConfig } = require('../../hub-client/hub-config') as typeof import('../../hub-client/hub-config');
+    node = getHubConfig().hostname || node;
+  } catch { /* minimal */ }
+  try {
+    const { getMyCluster } = require('../../cluster/cluster-config') as typeof import('../../cluster/cluster-config');
+    cluster = getMyCluster();
+  } catch { /* default */ }
+  return { node, cluster };
+}
 
 function ok<T>(data: T) {
   return { success: true, data } as Envelope;
@@ -384,11 +400,18 @@ export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
       }),
     },
 
-    // GET /ccr/remote — list all registered remotes with liveness
+    // GET /ccr/remote — registered remotes with CROSS-CHECKED liveness, plus the
+    // scope this answer covers. `searched` is built HERE, on the node that actually
+    // served the request, so a hub-relayed call names the right host — the MCP layer
+    // would name the local one. An empty list that cannot say where it looked reads
+    // as "nothing is running anywhere", which is how the original incident went.
     {
       method: 'GET',
       pattern: /^\/ccr\/remote$/,
-      handler: async () => envelope(() => ({ remotes: ccr.list() })),
+      handler: async () => envelope(() => {
+        const { rows, reaped } = ccr.list();
+        return { remotes: rows, ...buildRemoteListReport(rows, whereAmI(), reaped.length) };
+      }),
     },
 
     // GET /ccr/remote-control — local remote-control sessions: the Mission Controller +

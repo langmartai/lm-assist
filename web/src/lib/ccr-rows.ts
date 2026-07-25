@@ -55,8 +55,11 @@ export function buildFleetRows(fleet: CcrFleetPayload): CcrRow[] {
       });
     }
 
+    // Only bridges that are actually alive may mark a session "connected". Without this
+    // a bridge dead for days still rendered as connected, because the old field name
+    // (`live`) was never emitted by the server and so nothing was ever checked.
     const bridgeBySession = new Map<string, Remote>();
-    for (const r of n.remotes || []) if (r.sessionId) bridgeBySession.set(r.sessionId, r);
+    for (const r of n.remotes || []) if (r.sessionId && r.alive !== false) bridgeBySession.set(r.sessionId, r);
 
     for (const s of n.locals || []) {
       const bridge = bridgeBySession.get(s.sessionId);

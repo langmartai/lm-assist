@@ -531,7 +531,14 @@ export const ccrPreflightToolDef = {
 };
 export const ccrRemoteListToolDef = {
   name: 'ccr_remote_list',
-  description: 'List running CCR remotes (load/mirror/connect bridges started via ccr_*), with liveness.',
+  description:
+    'List the CCR bridge REGISTRATIONS on ONE node (load/mirror/connect bridges started via ccr_*). ' +
+    'This is NOT the answer to "what sessions are running" — use cc_sessions (this host) or ' +
+    'session_footprints (cross-fleet) for that. Each entry is cross-checked against live session/tmux ' +
+    'state: `alive` = the SESSION is live, `bridgeAlive` = the relay helper process is up (a live session ' +
+    'with a dead bridge just needs reconnecting), and `unverified` marks an entry nothing could be ' +
+    'checked against — never read it as proof the session is gone. The result also reports which ' +
+    'node/cluster it searched; an empty list means empty ON THAT NODE only.',
   inputSchema: { type: 'object' as const, properties: {} },
 };
 export const ccrLoadToolDef = {

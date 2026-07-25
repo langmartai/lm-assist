@@ -26,13 +26,21 @@ export interface CloudSessionInfo {
   tags: string[];
 }
 
-/** A running CCR bridge we started (GET /ccr/remote). */
+/**
+ * A CCR bridge registration (GET /ccr/remote).
+ *
+ * The server emits `alive`, not `live` — this type said `live` for so long that the
+ * UI read nothing at all and rendered days-dead bridges as "connected".
+ * `alive` = the SESSION is live; `bridgeAlive` = the relay helper process is up.
+ */
 export interface Remote {
   id: string;
   mode: 'load' | 'mirror' | 'connected';
   sessionId: string | null;
   webUrl: string | null;
-  live?: boolean;
+  alive?: boolean;
+  bridgeAlive?: boolean;
+  unverified?: boolean;
   strategy?: string;
 }
 

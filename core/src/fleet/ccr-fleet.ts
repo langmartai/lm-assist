@@ -61,7 +61,7 @@ export async function collectLocalCcrSnapshot(): Promise<CcrNodeSnapshot> {
   let remotes: unknown[] = [];
   try {
     const ccr = require('../terminal/ccr-manager') as typeof import('../terminal/ccr-manager');
-    remotes = ccr.list();
+    remotes = ccr.list().rows;
   } catch { /* registry unavailable — no bridges */ }
 
   let controller: unknown | null = null;
