@@ -135,6 +135,27 @@ export async function workerPostRaw(
   return (await res.json()) as Record<string, unknown>;
 }
 
+/**
+ * GET an lm-assist route on loopback and return the FULL response body
+ * verbatim — no `{success,data,error}` unwrapping and no throw on
+ * `success:false`.
+ *
+ * workerGet's unwrapEnvelope keeps only `error.message`, dropping `error.code`.
+ * A caller that needs to ACT on the classification (retry? different argument?
+ * is Core even up?) cannot recover it from prose, so reads that classify their
+ * own failures take the envelope raw. See handleMemoryFile.
+ */
+export async function workerGetRaw(
+  routePath: string,
+  timeoutMs = 15000,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${BASE_URL}${routePath}`, {
+    headers: { ...lmAuthHeaders() },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  return (await res.json()) as Record<string, unknown>;
+}
+
 /** PUT an lm-assist route on loopback. Same envelope handling as workerGet. */
 export async function workerPut<T = unknown>(
   routePath: string,

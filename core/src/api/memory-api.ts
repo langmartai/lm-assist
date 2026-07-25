@@ -398,10 +398,53 @@ export interface MemoryApiDeps {
   cache?: MemoryCache;
 }
 
+/** How many project names a resolution error may list before it truncates. */
+const MAX_SUGGESTED_PROJECTS = 8;
+
+/**
+ * Outcome of resolving a caller-supplied project_id.
+ *
+ * The two failure codes are distinguishable on purpose, mirroring the backlog
+ * write-path fix's ORIGIN_TIMEOUT vs ORIGIN_UNREACHABLE: the caller must learn
+ * whether a DIFFERENT id would help (NOT_FOUND) or whether they must pick
+ * between several (AMBIGUOUS). A single flat error teaches neither.
+ */
+type ProjectResolution =
+  | { ok: true; cwd: string }
+  | { ok: false; code: 'PROJECT_NOT_FOUND' | 'PROJECT_AMBIGUOUS'; message: string };
+
 export function createMemoryApiImpl(deps: MemoryApiDeps = {}): MemoryApi {
   const cache = deps.cache || getMemoryCache();
 
-  function resolveProjectIdToCwd(projectId: string): string | null {
+  /**
+   * Every project the memory API can serve: {projectId, cwd, name}. Mirrors
+   * listProjects' filter exactly, so the candidates named in a resolution error
+   * are precisely the ids `memory_projects` advertises — a caller told "did you
+   * mean X" can pass X straight back.
+   */
+  function enumerateMemoryProjects(): Array<{ projectId: string; cwd: string; name: string }> {
+    const projectsDir = getProjectsDir();
+    const out: Array<{ projectId: string; cwd: string; name: string }> = [];
+    if (!fs.existsSync(projectsDir)) return out;
+    for (const slug of fs.readdirSync(projectsDir)) {
+      // One unreadable/dangling entry must not sink resolution — same
+      // per-entry guard listProjects uses.
+      try {
+        const storage = path.join(projectsDir, slug);
+        if (!fs.statSync(storage).isDirectory()) continue;
+        const cwd = decodePath(slug);
+        const snap = cache.resolveProject(cwd);
+        if (!fs.existsSync(path.join(storage, 'memory')) && !snap.repoBaseDir) continue;
+        out.push({ projectId: snap.projectId, cwd: snap.projectPath || cwd, name: path.basename(cwd) });
+      } catch {
+        continue;
+      }
+    }
+    return out;
+  }
+
+  /** Strict resolution: an encoded slug, or a string decodePath maps to a real dir. */
+  function resolveProjectIdStrict(projectId: string): string | null {
     // projectId may already be an encoded slug or a decoded path
     const projectsDir = getProjectsDir();
 
@@ -429,6 +472,75 @@ export function createMemoryApiImpl(deps: MemoryApiDeps = {}): MemoryApi {
       }
     } catch { /* fall through */ }
     return null;
+  }
+
+  /**
+   * Resolve a caller-supplied project_id to a cwd.
+   *
+   * Strict resolution (slug / decodable path) runs FIRST and is unchanged, so
+   * the fast path and every existing caller keep their exact behavior. Only
+   * when that fails do we consider what a caller actually tends to send.
+   *
+   * A caller — a human speaking, or a model reasoning about "the lm-assist
+   * project" — names the project, not its encoding. `lm-assist` has no leading
+   * dash, so it is not legacy-slug shaped: decodePath falls through to base64,
+   * decodes to garbage, and the old resolver returned null. That is the whole
+   * of the "memory_file intermittently fails" bug — a 0ms validation refusal
+   * that read as a transport fault (mission_9efbbefb / bl_4140a6fc).
+   *
+   * Matching is against the ENUMERATED project set only, so resolution can
+   * never yield a path outside the projects the memory API already serves —
+   * a name cannot be steered into path traversal.
+   *
+   * Ambiguity is refused, never guessed: silently picking one of two projects
+   * named `core` would hand back the wrong file with full confidence.
+   */
+  function resolveProjectId(projectId: string): ProjectResolution {
+    const wanted = String(projectId ?? '').trim();
+    if (!wanted) {
+      return { ok: false, code: 'PROJECT_NOT_FOUND', message: 'Project not found: (empty project_id). Pass an id from memory_projects.' };
+    }
+
+    const strict = resolveProjectIdStrict(wanted);
+    if (strict) return { ok: true, cwd: strict };
+
+    const projects = enumerateMemoryProjects();
+    const norm = (s: string) => s.trim().toLowerCase();
+
+    // An absolute path the strict pass could not decode, then the project name.
+    const byPath = projects.filter((p) => p.cwd === wanted);
+    const matches = byPath.length ? byPath : projects.filter((p) => norm(p.name) === norm(wanted));
+
+    if (matches.length === 1) return { ok: true, cwd: matches[0].cwd };
+    if (matches.length > 1) {
+      const list = matches.map((p) => `${p.projectId} (${p.cwd})`).join(', ');
+      return {
+        ok: false,
+        code: 'PROJECT_AMBIGUOUS',
+        message: `Project id "${wanted}" is ambiguous — ${matches.length} projects share that name: ${list}. Pass one of those ids.`,
+      };
+    }
+
+    // Not found. Echo what was sent and name real candidates — without both, a
+    // caller retries the same value forever (the backlog write-path lesson).
+    const near = projects.filter((p) => norm(p.name).includes(norm(wanted)) || norm(wanted).includes(norm(p.name)));
+    const pool = near.length ? near : projects;
+    const shown = pool.slice(0, MAX_SUGGESTED_PROJECTS).map((p) => p.name).join(', ');
+    const more = pool.length > MAX_SUGGESTED_PROJECTS ? `, … (${pool.length} total)` : '';
+    const hint = pool.length
+      ? ` ${near.length ? 'Did you mean' : 'Known projects'}: ${shown}${more}. Call memory_projects for the full list.`
+      : ' No projects with memory were found on this node.';
+    return {
+      ok: false,
+      code: 'PROJECT_NOT_FOUND',
+      message: `Project not found: ${wanted} — no project matches that id, path, or name.${hint}`,
+    };
+  }
+
+  /** Back-compat shape for callers that only need "did it resolve". */
+  function resolveProjectIdToCwd(projectId: string): string | null {
+    const r = resolveProjectId(projectId);
+    return r.ok ? r.cwd : null;
   }
 
   return {
@@ -479,8 +591,9 @@ export function createMemoryApiImpl(deps: MemoryApiDeps = {}): MemoryApi {
     getByProject: async (projectId, opts = {}) => {
       const start = Date.now();
       try {
-        const cwd = resolveProjectIdToCwd(projectId);
-        if (!cwd) return wrapError('PROJECT_NOT_FOUND', `Project not found: ${projectId}`, start);
+        const resolved = resolveProjectId(projectId);
+        if (!resolved.ok) return wrapError(resolved.code, resolved.message, start);
+        const cwd = resolved.cwd;
 
         const detail: MemoryDetail = opts.detail ?? 'list';
         const { snapshot, dirs } = cache.getForProject(cwd, {
@@ -534,8 +647,9 @@ export function createMemoryApiImpl(deps: MemoryApiDeps = {}): MemoryApi {
     getIndex: async (projectId, opts = {}) => {
       const start = Date.now();
       try {
-        const cwd = resolveProjectIdToCwd(projectId);
-        if (!cwd) return wrapError('PROJECT_NOT_FOUND', `Project not found: ${projectId}`, start);
+        const resolved = resolveProjectId(projectId);
+        if (!resolved.ok) return wrapError(resolved.code, resolved.message, start);
+        const cwd = resolved.cwd;
         const { dirs } = cache.getForProject(cwd, { sources: opts.source ? (opts.source === 'live' ? 'live' : 'repo') : 'all' });
         const target = opts.source
           ? dirs.find(d => d.source === opts.source)
@@ -550,8 +664,9 @@ export function createMemoryApiImpl(deps: MemoryApiDeps = {}): MemoryApi {
     getFile: async (projectId, source, filename) => {
       const start = Date.now();
       try {
-        const cwd = resolveProjectIdToCwd(projectId);
-        if (!cwd) return wrapError('PROJECT_NOT_FOUND', `Project not found: ${projectId}`, start);
+        const resolved = resolveProjectId(projectId);
+        if (!resolved.ok) return wrapError(resolved.code, resolved.message, start);
+        const cwd = resolved.cwd;
         const { snapshot, dirs } = cache.getForProject(cwd, {
           sources: source === 'live' ? 'live' : 'repo',
           hostFilter: source.startsWith('repo:') ? [source.slice(5)] : undefined,
@@ -600,8 +715,9 @@ export function createMemoryApiImpl(deps: MemoryApiDeps = {}): MemoryApi {
     getSources: async (projectId) => {
       const start = Date.now();
       try {
-        const cwd = resolveProjectIdToCwd(projectId);
-        if (!cwd) return wrapError('PROJECT_NOT_FOUND', `Project not found: ${projectId}`, start);
+        const resolved = resolveProjectId(projectId);
+        if (!resolved.ok) return wrapError(resolved.code, resolved.message, start);
+        const cwd = resolved.cwd;
         const { snapshot, dirs } = cache.getForProject(cwd, { sources: 'all' });
         const resp: MemorySourcesInfo = {
           projectId: snapshot.projectId,
@@ -624,8 +740,9 @@ export function createMemoryApiImpl(deps: MemoryApiDeps = {}): MemoryApi {
     getDiff: async (projectId) => {
       const start = Date.now();
       try {
-        const cwd = resolveProjectIdToCwd(projectId);
-        if (!cwd) return wrapError('PROJECT_NOT_FOUND', `Project not found: ${projectId}`, start);
+        const resolved = resolveProjectId(projectId);
+        if (!resolved.ok) return wrapError(resolved.code, resolved.message, start);
+        const cwd = resolved.cwd;
         const diff = cache.getDiff(cwd);
         return wrapResponse({
           projectId: legacyEncodeProjectPath(cwd),
@@ -639,8 +756,9 @@ export function createMemoryApiImpl(deps: MemoryApiDeps = {}): MemoryApi {
     hasUpdate: async (projectId, sinceMs) => {
       const start = Date.now();
       try {
-        const cwd = resolveProjectIdToCwd(projectId);
-        if (!cwd) return wrapError('PROJECT_NOT_FOUND', `Project not found: ${projectId}`, start);
+        const resolved = resolveProjectId(projectId);
+        if (!resolved.ok) return wrapError(resolved.code, resolved.message, start);
+        const cwd = resolved.cwd;
         const maxMtimeMs = cache.getMaxMtime(cwd);
         return wrapResponse({
           projectId: legacyEncodeProjectPath(cwd),
@@ -741,8 +859,9 @@ export function createMemoryApiImpl(deps: MemoryApiDeps = {}): MemoryApi {
     crossHost: async (projectId, opts = {}) => {
       const start = Date.now();
       try {
-        const cwd = resolveProjectIdToCwd(projectId);
-        if (!cwd) return wrapError('PROJECT_NOT_FOUND', `Project not found: ${projectId}`, start);
+        const resolved = resolveProjectId(projectId);
+        if (!resolved.ok) return wrapError(resolved.code, resolved.message, start);
+        const cwd = resolved.cwd;
 
         const snap = cache.resolveProject(cwd);
         if (!snap.repoBaseDir) {
@@ -841,8 +960,9 @@ export function createMemoryApiImpl(deps: MemoryApiDeps = {}): MemoryApi {
     getImportCandidates: async (projectId, opts = {}) => {
       const start = Date.now();
       try {
-        const cwd = resolveProjectIdToCwd(projectId);
-        if (!cwd) return wrapError('PROJECT_NOT_FOUND', `Project not found: ${projectId}`, start);
+        const resolved = resolveProjectId(projectId);
+        if (!resolved.ok) return wrapError(resolved.code, resolved.message, start);
+        const cwd = resolved.cwd;
 
         const snap = cache.resolveProject(cwd);
         if (!snap.repoBaseDir) {
@@ -977,8 +1097,9 @@ export function createMemoryApiImpl(deps: MemoryApiDeps = {}): MemoryApi {
         // bulk-clear, we re-scan affected dirs which effectively refreshes
         // the cached entry.
         if (projectId) {
-          const cwd = resolveProjectIdToCwd(projectId);
-          if (!cwd) return wrapError('PROJECT_NOT_FOUND', `Project not found: ${projectId}`, start);
+          const resolved = resolveProjectId(projectId);
+          if (!resolved.ok) return wrapError(resolved.code, resolved.message, start);
+          const cwd = resolved.cwd;
           const { dirs } = cache.getForProject(cwd, { sources: 'all' });
           for (const d of dirs) cache.getDirData(d.dirPath, d.source);
           return wrapResponse({ cleared: dirs.length }, start);

@@ -21,6 +21,7 @@ import {
   ok,
   err,
   workerGet,
+  workerGetRaw,
   workerPost,
   workerPostRaw,
   workerPut,
@@ -1280,15 +1281,55 @@ async function handleMemoryImportCandidates(args: Record<string, unknown>): Prom
   }
 }
 
+/**
+ * How long a single memory-file read may take before it is called a timeout.
+ *
+ * Deliberately left at workerGet's default: measurement, not guesswork. A
+ * 200KB body round-trips through this path in milliseconds and the real
+ * MEMORY.md (~20KB) in single-digit ms, so 15s is orders of magnitude of
+ * headroom. Raising it would only make a wedged Core take longer to say so.
+ */
+const MEMORY_FILE_TIMEOUT_MS = 15000;
+
+/**
+ * Name the failure class of a read that never produced an envelope.
+ *
+ * Mirrors the backlog write-path fix's ORIGIN_TIMEOUT vs ORIGIN_UNREACHABLE:
+ * "it failed" is not actionable, and a caller that cannot tell a wedged Core
+ * from a dead one — or from a bad argument — retries the same doomed call.
+ * Each branch says what it means AND whether retrying is what helps.
+ */
+export function classifyMemoryReadFailure(e: unknown, route: string): string {
+  const name = (e as { name?: string } | null)?.name;
+  const msg = e instanceof Error ? e.message : String(e);
+  if (name === 'TimeoutError' || name === 'AbortError' || /timed? ?out|aborted/i.test(msg)) {
+    return `[READ_TIMEOUT] ${route} did not answer within ${MEMORY_FILE_TIMEOUT_MS}ms. Core is reachable but slow or wedged — the read MAY have been served and lost, so a retry is safe (this is a read). A different project_id will not help.`;
+  }
+  if (/ECONNREFUSED|fetch failed|ENOTFOUND|EHOSTUNREACH|ECONNRESET|socket hang up|network/i.test(msg)) {
+    return `[CORE_UNREACHABLE] could not reach lm-assist Core on loopback (${msg}). NOTHING was read. Start Core (\`lm-assist start\`) and retry — a different project_id will not help.`;
+  }
+  return `[MEMORY_FILE_ERROR] ${msg}`;
+}
+
 async function handleMemoryFile(args: Record<string, unknown>): Promise<McpToolResult> {
   const pid = String(args.project_id || '').trim();
   const filename = String(args.filename || '').trim();
   if (!pid || !filename) return err('project_id and filename are required.');
   const source = String(args.source || 'live').trim() || 'live';
+  const route = `/memory/by-project/${enc(pid)}/file/${enc(filename)}?source=${enc(source)}`;
   try {
-    return ok(pretty(await workerGet(`/memory/by-project/${enc(pid)}/file/${enc(filename)}?source=${enc(source)}`)));
+    // Raw envelope: the API's error.code (PROJECT_NOT_FOUND, PROJECT_AMBIGUOUS,
+    // FILE_NOT_FOUND, SOURCE_NOT_FOUND) is the actionable part, and workerGet
+    // would discard it — which is exactly how a 0ms bad-id refusal reached the
+    // caller as a bare "MCP tool call failed" and got read as a transport fault.
+    const body = await workerGetRaw(route, MEMORY_FILE_TIMEOUT_MS);
+    if (body && body.success === false) {
+      const e = (body.error || {}) as { code?: string; message?: string };
+      return err(`[${e.code || 'MEMORY_FILE_ERROR'}] ${e.message || 'memory_file failed.'}`);
+    }
+    return ok(pretty(body?.data ?? body));
   } catch (e) {
-    return err(e instanceof Error ? e.message : String(e));
+    return err(classifyMemoryReadFailure(e, route));
   }
 }
 
