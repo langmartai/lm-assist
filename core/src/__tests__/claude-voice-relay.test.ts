@@ -148,11 +148,54 @@ test('bridgeClaudeVoice: user binary → channel.send(data,true); onFrame both w
     'up_close+timeout mapped to {type:reconnect}',
   );
 
-  // (f) up_close (no timeout) and up_error both map to {type:'error'}
-  captured.handlers!.onStatus('up_close');
+  // (f) a DIRTY close (unclean, non-1000) and up_error both map to {type:'error'}
+  captured.handlers!.onStatus('up_close', { code: 1006, clean: false });
   captured.handlers!.onStatus('up_error');
   const errs = user.sent.filter((s) => typeof s.data === 'string' && JSON.parse(s.data).type === 'error');
-  assert.ok(errs.length >= 2, 'non-timeout close and up_error both map to {type:error}');
+  assert.ok(errs.length >= 2, 'unclean close and up_error both map to {type:error}');
+});
+
+// Regression: a CLEAN close was reported to the browser as {type:'error'}, so claude.ai ending a
+// session normally surfaced as "Voice error" after a conversation that had worked. Reproduced
+// live on prod before the fix — real speech -> Listening -> Thinking ->
+// `page_status up_close code=1000 clean=true -> error`.
+test('a CLEAN upstream close (code 1000 / wasClean) is {type:ended}, never {type:error}', async () => {
+  for (const close of [{ code: 1000, clean: true }, { code: 1000 }, { code: 1005, clean: true }]) {
+    const user = new FakeWs();
+    const captured: Captured = {};
+    const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
+      makeChromeMgr: () => makeMgr(new FakeChannel(), captured),
+      loadCookie: async () => 'sessionKey=x; lastActiveOrg=O',
+    });
+    user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'C' })), false);
+    await paired;
+    captured.handlers!.onStatus('up_close', close);
+    const types = user.sent.filter((x) => typeof x.data === 'string').map((x) => JSON.parse(x.data as string).type);
+    assert.ok(types.includes('ended'), `clean close ${JSON.stringify(close)} must map to {type:ended}`);
+    assert.ok(!types.includes('error'), `clean close ${JSON.stringify(close)} must NOT map to {type:error}`);
+  }
+});
+
+test('the idle cutoff (4008) still means reconnect, and a dirty close carries its code to the browser', async () => {
+  const user = new FakeWs();
+  const captured: Captured = {};
+  const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
+    makeChromeMgr: () => makeMgr(new FakeChannel(), captured),
+    loadCookie: async () => 'sessionKey=x; lastActiveOrg=O',
+  });
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'C' })), false);
+  await paired;
+  // claude.ai's ~10min inactivity cutoff (lm-mobile §3a) — recoverable, not an error.
+  captured.handlers!.onStatus('up_close', { code: 4008, timeout: true, clean: true });
+  const afterTimeout = user.sent.filter((x) => typeof x.data === 'string').map((x) => JSON.parse(x.data as string).type);
+  assert.ok(afterTimeout.includes('reconnect'), '4008 stays reconnect even though wasClean is true');
+  assert.ok(!afterTimeout.includes('ended'), 'the timeout branch must win over the clean-close branch');
+
+  captured.handlers!.onStatus('up_close', { code: 1006, clean: false });
+  const err = user.sent.map((x) => (typeof x.data === 'string' ? JSON.parse(x.data as string) : null))
+    .find((f) => f && f.type === 'error');
+  assert.ok(err, 'an unclean close is still an error');
+  assert.match(String(err.message), /1006/, 'the close CODE reaches the browser, so the user need not read core-prod.log');
 });
 
 test('post-connect user control frames: interrupt/keep_alive → channel.send(text); close + connect are not forwarded', async () => {

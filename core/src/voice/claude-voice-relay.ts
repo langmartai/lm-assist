@@ -260,10 +260,21 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
     // reject). Purely informational — no user frame; the retry either succeeds (up_open -> ready)
     // or the second close reports up_close -> error.
     if (msg.state === 'up_retry') { vlog(`page_status up_retry${detail} — claude.ai closed before init; reconnecting once`); return; }
-    let out: { type: string } | null = null;
+    let out: { type: string; message?: string } | null = null;
     if (msg.state === 'up_open') out = { type: 'ready' };
-    else if (msg.state === 'up_close') out = msg.timeout === true ? { type: 'reconnect' } : { type: 'error' };
-    else if (msg.state === 'up_error') out = { type: 'error' };
+    else if (msg.state === 'up_close') {
+      // A CLEAN close is not a failure. claude.ai ends a voice session normally with code 1000 /
+      // wasClean — and mapping every non-timeout close to `error` reported exactly that as
+      // "Voice error" to the user, after a session that had been working. Reproduced live:
+      // real speech -> Listening -> Thinking -> `up_close code=1000 clean=true -> error`.
+      // 4008 is claude.ai's ~10min idle cutoff (lm-mobile §3a) and still means "reconnect".
+      if (msg.timeout === true) out = { type: 'reconnect' };
+      else if (msg.code === 1000 || msg.clean === true) out = { type: 'ended' };
+      // Anything else IS a failure — carry the code so the browser can say which, instead of
+      // making the next person dig through core-prod.log to learn it.
+      else out = { type: 'error', message: `voice session closed (code ${msg.code ?? '?'})` };
+    }
+    else if (msg.state === 'up_error') out = { type: 'error', message: msg.reason ? `voice upstream error: ${String(msg.reason).slice(0, 120)}` : 'voice upstream error' };
     if (out) {
       vlog(`page_status ${msg.state}${detail} -> ${out.type}`);
       toUser(out);

@@ -236,6 +236,15 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
         return;
       }
       if (f?.type === 'reconnect') { applyAcc((prev) => ({ ...prev, state: 'reconnect' })); return; }
+      // claude.ai ended the session normally (clean close). NOT a failure — tear down quietly
+      // and return to idle. Reporting this as an error is what surfaced "Voice error" at the end
+      // of sessions that had been working perfectly.
+      if (f?.type === 'ended') {
+        closeWs();
+        teardownEngine();
+        applyAcc((prev) => ({ ...prev, state: 'idle' }));
+        return;
+      }
       if (f?.type === 'error') { fail(f.message || 'voice error'); return; }
       // Speculative (protocol name unconfirmed — see task report): a server-side barge-in
       // signal. Silences queued playback without touching the mic/WS, same as interrupt().
