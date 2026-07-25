@@ -11,7 +11,6 @@ import { useChatConversation, type ChatAttachment, type ChatDetailView } from '@
 import { useVoiceConversation, type VoiceState } from '@/hooks/useVoiceConversation';
 import { buildClaudeVoiceWsUrl } from '@/lib/voice-url';
 import { ClaudeVoiceOverlay } from '@/components/voice/ClaudeVoiceOverlay';
-import { voiceV2BrowserSupport } from '@/lib/voice-v2-browser';
 
 /** Short label for the voice status line. */
 function voiceStatusLabel(s: VoiceState): string {
@@ -61,13 +60,6 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl,
     return () => { cancelled = true; };
   }, [apiFetch]);
   const [voiceModeOpen, setVoiceModeOpen] = useState(false);
-  // Client-only: evaluated in an effect, never during render, so SSR and the first client
-  // render agree (a mismatch would be a hydration error).
-  const [browserVoice, setBrowserVoice] = useState<{ ok: boolean; reason: string }>({ ok: false, reason: '' });
-  // Shown on screen when the voice control is tapped but unavailable — a tooltip cannot be
-  // reached on a touch device, which is exactly where this was reported.
-  const [voiceWhy, setVoiceWhy] = useState<string | null>(null);
-  useEffect(() => { setBrowserVoice(voiceV2BrowserSupport()); }, []);
 
   // Mirror the growing transcript into the input box while the mic is active, appended after
   // whatever was already typed. Release the base once dictation ends so the text persists.
@@ -208,12 +200,6 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl,
             </div>
           )}
           <input ref={fileInputRef} type="file" multiple hidden onChange={(e) => { att.addFiles(e.target.files); e.target.value = ''; }} />
-          {voiceWhy && (
-            <div role="status" style={{ fontSize: 11.5, color: 'var(--color-status-yellow)', padding: '4px 6px', marginBottom: 4, display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span style={{ flex: 1 }}>Voice conversation unavailable — {voiceWhy}</span>
-              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setVoiceWhy(null)} style={{ fontSize: 11 }}>Dismiss</button>
-            </div>
-          )}
           <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
             <button type="button" className="btn btn-ghost btn-sm btn-icon" disabled={sending} title="Add text files" onClick={() => fileInputRef.current?.click()}><Plus size={14} /></button>
             <textarea className="input" value={prompt} rows={2} placeholder="Reply to Claude…" disabled={sending}
@@ -235,18 +221,14 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl,
                 Deliberately DISABLED-with-a-reason rather than hidden: a control that silently
                 vanishes just moves the confusion ("where did voice go?"), and the two causes need
                 opposite fixes — accept the certificate vs. switch to Chrome. */}
-            {claudeVoiceWsUrl && voiceV2Available && !browserVoice.ok && browserVoice.reason && (
-              // Tappable, NOT disabled. The reason used to live only in a `title` tooltip — which
-              // a touch device can never show, so on a tablet this was an unexplained dead
-              // control. Tapping now prints the reason on screen.
-              <button type="button" className="btn btn-ghost btn-sm btn-icon"
-                title={`Voice conversation unavailable — ${browserVoice.reason}`}
-                onClick={() => setVoiceWhy(browserVoice.reason)}
-                style={{ opacity: 0.5 }}>
-                <AudioLines size={14} />
-              </button>
-            )}
-            {claudeVoiceWsUrl && voiceV2Available && browserVoice.ok && (
+            {/* Gated ONLY on a reachable ws URL + a Chrome on the NODE — deliberately NOT on a
+                browser-capability probe. A probe here was a REGRESSION: it blocked a device that
+                had been holding real voice conversations (up=2998 downBin=1069 in the relay log),
+                because the capability set it tested was my inference rather than a measurement.
+                If the browser genuinely cannot do it, the engine fails and the overlay reports the
+                reason (useClaudeVoice's `error`) — a wrong diagnosis must degrade to a message,
+                never to a control the user cannot reach. */}
+            {claudeVoiceWsUrl && voiceV2Available && (
               <button type="button" className="btn btn-ghost btn-sm btn-icon"
                 title="Voice conversation"
                 onClick={() => setVoiceModeOpen(true)}>
