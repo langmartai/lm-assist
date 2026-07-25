@@ -303,6 +303,10 @@ export interface ClaudeAIGetOpts {
   timeoutMs?: number;
   /** Sec-Fetch-Dest. Defaults to 'empty' (XHR/fetch). */
   secFetchDest?: 'empty' | 'document';
+  /** Caller-owned cancellation, combined with (not replaced by) the internal timeout.
+   *  The internal abort is timer-driven, and a timer only fires when the event loop gets a
+   *  turn — a caller that must hold a real deadline under load needs its own handle. */
+  signal?: AbortSignal;
 }
 
 export interface ClaudeAIResponse<T = any> {
@@ -380,6 +384,9 @@ export async function claudeaiGet<T = any>(
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const onCallerAbort = () => ctrl.abort();
+  opts.signal?.addEventListener('abort', onCallerAbort, { once: true });
+  if (opts.signal?.aborted) ctrl.abort();
   try {
     const res = await fetch(url, { method: 'GET', headers, signal: ctrl.signal });
     const respHeaders: Record<string, string> = {};
@@ -394,6 +401,7 @@ export async function claudeaiGet<T = any>(
     return { status: res.status, statusText: res.statusText, headers: respHeaders, body };
   } finally {
     clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', onCallerAbort);
   }
 }
 
@@ -523,6 +531,9 @@ export async function listConversations(opts: {
   starred?: boolean;
   consistency?: 'eventual' | 'strong';
   extraQuery?: Record<string, string | number | boolean>;
+  /** Caller-owned cancellation + deadline, for callers on a latency-critical path. */
+  signal?: AbortSignal;
+  timeoutMs?: number;
 } = {}) {
   const cfg = readClaudeAISession();
   if (!cfg) throw new Error('No claude.ai session configured');
@@ -538,7 +549,11 @@ export async function listConversations(opts: {
   }
   return claudeaiGet(
     `/api/organizations/${orgUuid}/chat_conversations_v2?${params}`,
-    { referer: 'https://claude.ai/' },
+    {
+      referer: 'https://claude.ai/',
+      ...(opts.signal ? { signal: opts.signal } : {}),
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    },
   );
 }
 
