@@ -369,7 +369,7 @@ export function createMcpApiRoutes(_ctx: RouteContext): RouteHandler[] {
           // Tag the result with its origin INSIDE the context so resultOriginTag()
           // reads this call's principal (relayed vs local).
           const result = await runWithMcpContext({ principal }, async () =>
-            withOriginTag(await handler(body.args || {})));
+            withOriginTag(await handler(body.args || {}), tool));
           return wrapResponse(result, start);
         } catch (err) {
           return wrapError('MCP_CALL_ERROR', err instanceof Error ? err.message : String(err), start);

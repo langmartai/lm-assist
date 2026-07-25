@@ -11,26 +11,10 @@ import { fleetIdentity } from '../fleet-identity';
 import type { AuthSnapshot } from '../../monitor/auth-monitor';
 import { describeCookieTtl } from '../../utils/claudeai-session';
 import type { ContentState } from '../registry/content-model';
-
-/** topic → the tools it covers (drives the index + tool-name → topic resolution). */
-const TOPIC_TOOLS: Record<string, string[]> = {
-  sessions: ['list_recent_sessions', 'list_session_messages', 'session_dag', 'list_executions', 'get_execution', 'list_projects'],
-  knowledge: ['search', 'detail', 'search_memory', 'memory_projects', 'memory_map', 'memory_cross_host', 'memory_record', 'memory_file', 'memory_write', 'memory_import_candidates', 'memory_sync_status', 'rule_map', 'feedback'],
-  data: ['data_catalog', 'data_request_access', 'data_get', 'data_query', 'data_search', 'data_put', 'data_delete', 'data_create_dataset', 'data_drop_dataset', 'data_keys', 'data_revoke_key', 'data_sync', 'data_sync_status', 'data_admin'],
-  agents: ['agent_execute', 'agent_resume', 'agent_abort', 'get_execution', 'list_executions', 'browser_task'],
-  terminals: ['terminal_open_tab', 'terminal_list', 'terminal_capture', 'terminal_prompt', 'terminal_slash', 'terminal_interrupt', 'send_session_message', 'get_message_status', 'cc_sessions', 'windows_terminal_create', 'windows_terminal_list', 'windows_terminal_send', 'windows_terminal_capture', 'windows_terminal_state', 'windows_terminal_launch', 'windows_terminal_close', 'windows_terminal_auto_handle'],
-  ccr: ['ccr_preflight', 'ccr_load', 'ccr_mirror', 'ccr_connect', 'ccr_remote_list', 'ccr_remote_stop', 'cc_sessions'],
-  nodes: ['list_nodes', 'open_port_forward', 'close_port_forward', 'list_port_forwards', 'port_forward_stats'],
-  'claude-ai': ['list_claudeai_conversations', 'read_conversation', 'claudeai_create_conversation', 'claudeai_completion', 'delete_conversation', 'claudeai_list_marketplaces', 'claudeai_list_marketplace_plugins', 'claudeai_list_plugins', 'claudeai_add_marketplace', 'claudeai_remove_marketplace', 'claudeai_set_plugin_enabled', 'list_claudeai_connectors', 'refresh_connector_tools', 'set_connector_tool_access'],
-  account: ['auth_status', 'claude_code_usage', 'claude_code_account', 'claudeai_account', 'claudeai_active_sessions'],
-  github: ['github_query', 'github_mutate'],
-  files: ['fs_drives', 'fs_list', 'fs_stat', 'fs_read', 'transfer_queue', 'transfer_send_file', 'transfer_list_remote', 'transfer_stats', 'transfer_cancel', 'transfer_status'],
-  roles: ['set_role', 'report_status', 'worker_status', 'list_workers', 'decide_gate'],
-  missions: ['mission_create', 'mission_list', 'mission_update', 'mission_control_status'],
-  'mission-controller': ['mission_place', 'mission_executor_status', 'mission_sessions', 'mission_session_read', 'mission_session_drive', 'mission_session_control'],
-  clusters: ['cluster_list', 'cluster_assign', 'cluster_unassign', 'cluster_describe'],
-  'machine-access': ['machine_access'],
-};
+// topic → the tools it covers. Lives in its own dependency-free module because the
+// per-result trailer (result-origin.ts) needs the same mapping and must not import
+// this prose module to get it.
+import { TOPIC_TOOLS } from '../tool-topics';
 
 // Ordered so the multi-node model + combination workflows surface first in the index.
 const GUIDES: Record<string, string> = {
@@ -65,6 +49,21 @@ flowchart LR
   A["lm-assist tools"] -->|"REACH: other nodes, sessions, data, actions"| Y
   Y --> C["combine: local guides the how, lm-assist acts beyond this machine"]
 \`\`\``,
+
+  speaking: `# Guide: speaking — name things; never read ids aloud
+Almost every lm-assist tool returns IDS: \`bl_2ec8bf24\`, \`mission_38836df5\`, \`cse_01T4vuRj…\`, session uuids, \`gw4-332c…\`. They are HANDLES FOR TOOLS — the argument you pass back to the next call. They are not names, and they carry no meaning for the user.
+
+RULE — identify a session / mission / backlog item / node by its NAME and WHAT IT IS ABOUT.
+- ✅ "the mission controller session on the prod node", "the CCR stale-registry bug", "the chart-chat session"
+- ❌ "cse_01T4vuRjS5", "bl_d29e16fb", "mission_38836df5"
+
+**When SPEAKING (voice), never say an id at all.** A hex string is unusable in speech: the listener cannot copy it, spell it back, or act on it, and reading it burns seconds of the conversation. Say what the thing IS. If the user needs the id, they are looking at a screen — offer to put it in text.
+
+**In TEXT, ids are fine and often useful** (they can be copied into the next call). Pair them: name first, id in parentheses or a column — \`the CCR stale-registry bug (bl_d29e16fb)\` — so the sentence still reads correctly if the id is stripped.
+
+No name available? Say what it is ABOUT, from whatever the row carries: its title, its cwd/repo, its branch, its task, its model, or how recently it ran — "the session working in the lm-assist worktree", "the one that started twenty minutes ago". Falling back to the id is the last resort, not the default.
+
+This applies to EVERY surface where output reaches a person: lists, summaries, status reports, spoken replies. It is a presentation rule, not a data rule — keep passing ids to tools exactly as before.`,
 
   'cross-node': `# Guide: single-node vs cross-node (READ THIS for multi-machine)
 MODEL: each host behind this connector is a "node". \`list_nodes\` → hostId, hostname, platform, online, and which is DEFAULT. EVERY tool takes an optional \`node\` (hostId or hostname).
@@ -493,6 +492,7 @@ GATHER RECIPE (populate a node): (1) \`POST /machine-access/import\` dry-run to 
 /** Synonyms + every tool name → its topic, so guide("data_get") or guide("storage") both resolve. */
 const ALIASES: Record<string, string> = {
   index: 'index', help: 'index', list: 'index', topics: 'index', 'getting-started': 'index', overview: 'index',
+  speaking: 'speaking', speak: 'speaking', voice: 'speaking', spoken: 'speaking', naming: 'speaking', names: 'speaking', 'read-aloud': 'speaking', tts: 'speaking', ids: 'speaking', identifiers: 'speaking',
   orientation: 'orientation', start: 'orientation', about: 'orientation', priorities: 'orientation', priority: 'orientation', prioritize: 'orientation', 'when-to-use': 'orientation', 'when to use': 'orientation', 'claude.md': 'orientation', claudemd: 'orientation', skills: 'orientation',
   'cross node': 'cross-node', crossnode: 'cross-node', 'multi-node': 'cross-node', multinode: 'cross-node', 'multi node': 'cross-node', fleet: 'cross-node',
   'access-paths': 'access-paths', 'access path': 'access-paths', 'access paths': 'access-paths', accesspaths: 'access-paths', routing: 'access-paths', route: 'access-paths', failover: 'access-paths', fallback: 'access-paths', 'fall-back': 'access-paths', 'circuit-breaker': 'access-paths', retry: 'access-paths', 'best-path': 'access-paths', reach: 'access-paths', ssh: 'access-paths', transport: 'access-paths', 'multiple-paths': 'access-paths',
@@ -519,6 +519,7 @@ for (const [topic, tools] of Object.entries(TOPIC_TOOLS)) for (const t of tools)
 
 const BLURB: Record<string, string> = {
   orientation: 'what lm-assist IS + how it WORKS WITH (complements, not replaces) your local CLAUDE.md / memory / skills (READ FIRST)',
+  speaking: 'how to REFER to sessions/missions/items when talking to the user — name + what it is about; ids are tool handles, and in VOICE you never read them aloud',
   'cross-node': 'single-node vs cross-node model — node targeting, per-node keys, sync, local-only (READ for multi-machine)',
   connectors: 'which FLEET this connector serves (hub + node + cluster) + multi-connector disambiguation — read if you have more than one lm-assist connector',
   'access-paths': 'MANY ways reach the SAME resource (local bash / ssh / connector node / terminal) — how to pick best, fail over when one is down, and revisit when it recovers',
@@ -608,7 +609,7 @@ function buildIndex(lookup?: ContentLookup | null): string {
 
 /** Bootstrap section order — `mission-controller` is DELIBERATELY absent (the controller
  *  contract loads via guide only, not into every bootstrapped session). */
-export const BOOTSTRAP_SECTION_ORDER: readonly string[] = ['orientation', 'cross-node', 'connectors', 'access-paths', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'machine-access', 'claude-ai', 'account', 'login', 'github', 'files', 'clusters'];
+export const BOOTSTRAP_SECTION_ORDER: readonly string[] = ['orientation', 'speaking', 'cross-node', 'connectors', 'access-paths', 'workflows', 'install', 'roles', 'missions', 'data', 'sessions', 'knowledge', 'agents', 'terminals', 'ccr', 'nodes', 'machine-access', 'claude-ai', 'account', 'login', 'github', 'files', 'clusters'];
 
 /** The bootstrap preamble — content doc `bootstrap.header`. */
 export const BOOTSTRAP_HEADER_DEFAULT = [
