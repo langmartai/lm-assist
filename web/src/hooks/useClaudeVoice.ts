@@ -6,6 +6,7 @@ import { buildApprovalFrame, buildDenyFrame } from '@/lib/claude-voice-approval'
 import { clientToolResponse } from '@/lib/claude-voice-clienttools';
 import { demuxMessageSse, initialDemuxAcc, type ApprovalOption, type DemuxAcc, type VoiceState } from '@/lib/claude-voice-demux';
 import { createUplinkGate, type UplinkGate } from '@/lib/claude-voice-uplink';
+import { reportVoiceFailure } from '@/lib/voice-report';
 
 export type { ApprovalOption, ApprovalReq, McpAuthReq, ToolUseView, VoiceState } from '@/lib/claude-voice-demux';
 
@@ -128,24 +129,26 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
     // CF-gating — must be readable on the device that hit it, not only in a console.
     try { console.error('[claude-voice]', msg); } catch { /* noop */ }
     setErrorMsg(msg);
-    // Report the reason to Core BEFORE tearing the socket down, so a failure on a device we
-    // cannot inspect lands in core-prod.log instead of a devtools console nobody has open.
-    // Best-effort and never throws; Core logs it and does NOT forward it to claude.ai.
+    // Report the reason to Core over HTTP — NOT the voice socket.
+    //
+    // The socket-based version of this dropped the cases that matter most: when the engine
+    // fails fast (unsupported API, instantly-denied mic) the socket is still CONNECTING, so
+    // readyState !== OPEN and nothing was ever sent. That is precisely the shape of the failure
+    // on a device we cannot inspect — `up=0 ... 1ms`, no explanation. HTTP does not care about
+    // connection state. Fire-and-forget: a failed report must never mask the real failure.
     try {
-      const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'client_error',
-          message: String(msg).slice(0, 200),
-          ua: typeof navigator !== 'undefined' ? String(navigator.userAgent).slice(0, 180) : '',
-          caps: typeof window !== 'undefined' ? {
-            secure: !!window.isSecureContext,
-            mediaDevices: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
-            audioEncoder: typeof (window as unknown as Record<string, unknown>).AudioEncoder !== 'undefined',
-            trackProcessor: typeof (window as unknown as Record<string, unknown>).MediaStreamTrackProcessor !== 'undefined',
-          } : undefined,
-        }));
-      }
+      const w = window as unknown as Record<string, unknown>;
+      void reportVoiceFailure({
+        message: String(msg).slice(0, 200),
+        ua: typeof navigator !== 'undefined' ? String(navigator.userAgent).slice(0, 200) : '',
+        caps: {
+          secure: typeof window !== 'undefined' ? !!window.isSecureContext : false,
+          mediaDevices: typeof navigator !== 'undefined' && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+          audioEncoder: typeof w.AudioEncoder !== 'undefined',
+          trackProcessor: typeof w.MediaStreamTrackProcessor !== 'undefined',
+          audioContext: !!(w.AudioContext || w.webkitAudioContext),
+        },
+      });
     } catch { /* noop */ }
     startingEngineRef.current = false;
     pendingAbortRef.current = false;
