@@ -11,6 +11,7 @@ import { useChatConversation, type ChatAttachment, type ChatDetailView } from '@
 import { useVoiceConversation, type VoiceState } from '@/hooks/useVoiceConversation';
 import { buildClaudeVoiceWsUrl } from '@/lib/voice-url';
 import { ClaudeVoiceOverlay } from '@/components/voice/ClaudeVoiceOverlay';
+import { voiceV2BrowserSupported } from '@/lib/voice-v2-browser';
 
 /** Short label for the voice status line. */
 function voiceStatusLabel(s: VoiceState): string {
@@ -60,6 +61,10 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl,
     return () => { cancelled = true; };
   }, [apiFetch]);
   const [voiceModeOpen, setVoiceModeOpen] = useState(false);
+  // Client-only: evaluated in an effect, never during render, so SSR and the first client
+  // render agree (a mismatch would be a hydration error).
+  const [browserVoiceOk, setBrowserVoiceOk] = useState(false);
+  useEffect(() => { setBrowserVoiceOk(voiceV2BrowserSupported()); }, []);
 
   // Mirror the growing transcript into the input box while the mic is active, appended after
   // whatever was already typed. Release the base once dictation ends so the text persists.
@@ -214,7 +219,12 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl,
                 <Mic size={14} />
               </button>
             )}
-            {claudeVoiceWsUrl && voiceV2Available && (
+            {/* THREE gates, all required: a reachable ws URL, a Chrome on the NODE
+                (voiceV2Available, server-side), and WebCodecs in THIS browser. The last one was
+                missing — so on Safari/Firefox the control rendered, connected, then died the
+                instant the engine loaded, showing only "Voice error". Hiding it matches the
+                dictation mic above (`voice.supported`). */}
+            {claudeVoiceWsUrl && voiceV2Available && browserVoiceOk && (
               <button type="button" className="btn btn-ghost btn-sm btn-icon"
                 title="Voice conversation"
                 onClick={() => setVoiceModeOpen(true)}>
