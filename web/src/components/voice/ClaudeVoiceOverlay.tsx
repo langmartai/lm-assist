@@ -234,7 +234,17 @@ export function ClaudeVoiceOverlay({
           lives down here (room to open into the transcript area above), not in the
           header where it would clip against the viewport top. */}
       <div style={{ borderTop: '1px solid var(--color-border-subtle)', flexShrink: 0 }}>
-        <div style={{ padding: '8px 16px 0', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6 }}>
+        {/* ONE row: the actions sit on the SAME line as the next-start selectors rather
+            than stacking into a second row (the stacked layout wasted a whole line of
+            vertical space in a panel whose transcript is the thing worth showing). */}
+        <div style={{ padding: '8px 16px 12px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <button className="btn btn-secondary btn-sm" disabled={!canInterrupt} onClick={interrupt} title="Interrupt Claude">
+            <Square size={13} /> Interrupt
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={handleExit} title="Exit voice conversation">
+            <PhoneOff size={13} /> Exit
+          </button>
+          <div style={{ flex: 1, minWidth: 8 }} />
           <span style={{ fontSize: 10.5, color: 'var(--color-text-tertiary)' }}>Applies on next start:</span>
           <ModelEffortSelector
             model={model}
@@ -243,14 +253,6 @@ export function ClaudeVoiceOverlay({
             onChange={(m, e, t) => { onModelChange(m); setEffort(e); if (t !== undefined) setThinking(t); }}
             hideThinking={false}
           />
-        </div>
-        <div style={{ padding: '8px 16px 12px', display: 'flex', justifyContent: 'center', gap: 10 }}>
-          <button className="btn btn-secondary btn-sm" disabled={!canInterrupt} onClick={interrupt} title="Interrupt Claude">
-            <Square size={13} /> Interrupt
-          </button>
-          <button className="btn btn-ghost btn-sm" onClick={handleExit} title="Exit voice conversation">
-            <PhoneOff size={13} /> Exit
-          </button>
         </div>
       </div>
     </div>,
