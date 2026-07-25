@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { voiceV2BrowserSupported, voiceV2BrowserSupport } from './voice-v2-browser';
+import { voiceV2BrowserSupported, voiceV2BrowserSupport, isAppleMobile } from './voice-v2-browser';
 
 /**
  * The predicate duplicates `supported()` from the engine asset (a public static file that is
@@ -85,6 +85,33 @@ describe('voiceV2BrowserSupported', () => {
   it('reports no reason when supported', () => {
     withCaps({ encoder: true, processor: true, getUserMedia: true, audioContext: true });
     expect(voiceV2BrowserSupport()).toEqual({ ok: true, reason: '' });
+  });
+
+  // Telling an iPad user to "use Chrome or Edge" is WRONG, not merely unhelpful: iOS forces every
+  // browser onto WebKit, so installing Chrome changes nothing. The advice must differ.
+  it('on iPad/iPhone, does NOT tell the user to switch browser — it points at dictation', () => {
+    withCaps({ getUserMedia: true, audioContext: true, secure: true });
+    (g.navigator as Record<string, unknown>).userAgent = 'Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15';
+    const r = voiceV2BrowserSupport();
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/iPad/i);
+    expect(r.reason).toMatch(/WebKit/i);
+    expect(r.reason).toMatch(/dictation/i);
+    expect(r.reason).not.toMatch(/voice needs Chrome or Edge \(Safari/);
+  });
+
+  it('detects modern iPadOS Safari, which masquerades as MacIntel with a touchscreen', () => {
+    withCaps({ getUserMedia: true, audioContext: true, secure: true });
+    Object.assign(g.navigator as Record<string, unknown>, { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15', platform: 'MacIntel', maxTouchPoints: 5 });
+    expect(isAppleMobile()).toBe(true);
+    expect(voiceV2BrowserSupport().reason).toMatch(/iPad/i);
+  });
+
+  it('a real desktop Mac (no touch) still gets the switch-browser advice', () => {
+    withCaps({ getUserMedia: true, audioContext: true, secure: true });
+    Object.assign(g.navigator as Record<string, unknown>, { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15', platform: 'MacIntel', maxTouchPoints: 0 });
+    expect(isAppleMobile()).toBe(false);
+    expect(voiceV2BrowserSupport().reason).toMatch(/Chrome or Edge/);
   });
 
   it('checks exactly the capabilities the engine asset checks (anti-drift)', () => {

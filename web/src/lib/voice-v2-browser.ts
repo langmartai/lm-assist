@@ -19,6 +19,12 @@
  * Reporting only "unsupported" would send someone to reinstall a browser when the real problem
  * is a certificate.
  *
+ * iOS/iPadOS is called out separately and deliberately. Apple requires every browser on the
+ * platform to use WebKit, and WebKit has never shipped MediaStreamTrackProcessor — so "use
+ * Chrome or Edge" is not merely unhelpful there, it is WRONG: installing Chrome on an iPad gets
+ * you WebKit with a different icon. What DOES work on iPad is the dictation mic beside this
+ * control, which needs only getUserMedia + AudioWorklet, so that is what we point at.
+ *
  * MUST mirror `supported()` in `web/public/voice/claude-voice-engine.js` — that function is
  * module-local to a public static asset (never bundled, so it cannot be imported), which makes
  * this a deliberate duplication. `voice-v2-browser.test.ts` reads the asset off disk and fails if
@@ -28,6 +34,18 @@ export interface VoiceV2BrowserSupport {
   ok: boolean;
   /** Empty when ok; otherwise a user-facing explanation naming the actual blocker. */
   reason: string;
+}
+
+/**
+ * iOS/iPadOS, including modern iPadOS Safari — which reports itself as "MacIntel" and is
+ * distinguishable from a real Mac only by having a touchscreen.
+ */
+export function isAppleMobile(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/iPad|iPhone|iPod/.test(ua)) return true;
+  const nav = navigator as unknown as { platform?: string; maxTouchPoints?: number };
+  return nav.platform === 'MacIntel' && (nav.maxTouchPoints || 0) > 1;
 }
 
 export function voiceV2BrowserSupport(): VoiceV2BrowserSupport {
@@ -45,7 +63,14 @@ export function voiceV2BrowserSupport(): VoiceV2BrowserSupport {
     };
   }
   if (typeof w.AudioEncoder === 'undefined' || typeof w.MediaStreamTrackProcessor === 'undefined') {
-    return { ok: false, reason: 'this browser lacks WebCodecs — voice needs Chrome or Edge (Safari and Firefox cannot do it)' };
+    return {
+      ok: false,
+      reason: isAppleMobile()
+        // Every iOS/iPadOS browser is WebKit, so switching browser cannot help — say so, and
+        // point at the dictation mic, which does work here.
+        ? 'iPhone and iPad cannot run voice conversation — every iOS browser uses WebKit, which lacks the audio-encoding APIs it needs. Use the mic button for dictation, or open this page on desktop Chrome or Edge.'
+        : 'this browser lacks WebCodecs — voice needs Chrome or Edge (Safari and Firefox cannot do it)',
+    };
   }
   if (!(w.AudioContext || w.webkitAudioContext)) {
     return { ok: false, reason: 'this browser has no AudioContext, so playback is impossible' };
