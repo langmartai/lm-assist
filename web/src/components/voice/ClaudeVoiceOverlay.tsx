@@ -75,6 +75,7 @@ export function ClaudeVoiceOverlay({
 
   const {
     state,
+    error,
     transcript,
     assistantText,
     liveModel,
@@ -150,6 +151,14 @@ export function ClaudeVoiceOverlay({
       <div style={{ padding: '10px 16px 0', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
         <span className="status-dot" style={{ background: status.color, animation: status.pulse ? 'pulse-dot 2s ease-in-out infinite' : undefined }} />
         <span style={{ fontSize: 12.5, color: status.color }}>{status.label}</span>
+        {/* The REASON, not just the state. A bare "Voice error" is indistinguishable between a
+            denied mic, a dead relay and a CF-gated upstream — which is exactly how a prod voice
+            failure stayed un-actionable. Only rendered when there is something to say. */}
+        {state === 'error' && error && (
+          <span title={error} style={{ fontSize: 11.5, color: 'var(--color-text-tertiary)', maxWidth: 420, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            — {error}
+          </span>
+        )}
         {liveModel && <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>· live model: {liveModel}</span>}
         {canRetry && (
           // stop() first, not just start(): start()'s guard only proceeds from

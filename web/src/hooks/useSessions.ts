@@ -5,7 +5,7 @@ import { useAppMode } from '@/contexts/AppModeContext';
 import { useMachineContext } from '@/contexts/MachineContext';
 import type { Session } from '@/lib/types';
 import type { BatchCheckResponse } from '@/lib/api-client';
-import { workerFetch, detectProxyInfo, getLastLocalSessionsTotal } from '@/lib/api-client';
+import { workerFetch, detectProxyInfo, detectAppMode, getLastLocalSessionsTotal } from '@/lib/api-client';
 import { mergeSessionLists, sortByLastModifiedDesc, applySummaries } from '@/lib/session-list';
 import { dedupedRequest } from '@/lib/request-dedupe';
 
@@ -158,10 +158,14 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
   const enrichSummaries = useCallback(async () => {
     try {
       const proxyInfo = detectProxyInfo();
-      const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
-      const apiHost = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
       // In proxy mode, hostname:3100 is the wrong host — route via the _coreapi relay.
-      const sumBase = proxyInfo.isProxied ? `${proxyInfo.basePath}/_coreapi` : `http://${apiHost}:${port}`;
+      // Otherwise defer to detectAppMode(), the ONE place that knows how to reach Core from
+      // this page. Hand-rolling `http://${hostname}:${port}` here was wrong twice over: on the
+      // LM_HTTPS terminator (:3849) an http:// call from an https page is MIXED CONTENT and the
+      // browser blocks it outright — summaries silently never loaded — and it read only the
+      // build-time NEXT_PUBLIC port, missing the runtime window.__LM_LOCAL_API_PORT__ override
+      // that lets one build serve prod (:3100) and dev (:3200).
+      const sumBase = proxyInfo.isProxied ? `${proxyInfo.basePath}/_coreapi` : detectAppMode().baseUrl;
       const data = await dedupedRequest(
         `sessions-summaries:${sumBase}`,
         5000,

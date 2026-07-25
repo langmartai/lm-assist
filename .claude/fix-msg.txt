@@ -1,0 +1,27 @@
+fix(voice): real Chrome UA + __cf_bm refresh (CF up_error) + non-blocking AudioContext resume (up=0) + close diagnostics
+
+Prod bidirectional voice failed two ways on 117, both root-caused:
+
+- up=0 (no audio at all — universal): the browser engine's start() did
+  `await ac.resume()`, which HANGS without a user gesture. start() runs on the
+  async `{ready}` frame — well past the click's activation window — so the resume
+  promise never settles and capture never begins. Capture (getUserMedia ->
+  MediaStreamTrackProcessor -> AudioEncoder -> onFrame) does NOT need the
+  AudioContext; only playback does. Made resume non-blocking in start() and
+  re-attempt it in playPcm. Proven headless-with-fake-audio: 0 -> 247 frames.
+
+- up_error (intermittent): the headless Chrome presented a "HeadlessChrome" UA,
+  so Cloudflare bot-challenged the voice-WS upgrade. Per lm-mobile's validated CF
+  findings (docs/claude-voice-implementation.md §4): set a real Chrome UA
+  (--user-agent launch arg) and refresh the SHORT-LIVED __cf_bm via a same-origin
+  GET /api/account (the HTTP API is not CF-challenged) right before opening the WS;
+  the real-UA browser keeps/mints a fresh per-IP cf_clearance (117's egress is the
+  same-household NAT, so replay is valid — no re-login needed). Empirically A/B
+  proven on 117: headless UA -> 403 empty body; real UA -> 200 + fresh __cf_bm.
+
+Diagnostics: the injected asset now reports the WS close code/reason/wasClean
+(previously discarded — why up_error was undiagnosable) and reconnects ONCE on a
+pre-handshake close; the relay logs the code/reason.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YTgqADR9WsL89babdyRPAT

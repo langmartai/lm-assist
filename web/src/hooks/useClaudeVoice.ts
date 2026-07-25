@@ -64,6 +64,11 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
 
   const [acc, setAcc] = useState<DemuxAcc>(initialDemuxAcc);
   const stateRef = useRef<VoiceState>('idle');
+  // WHY the session failed, surfaced to the UI. Without this the overlay could only ever say
+  // "Voice error", which is indistinguishable between a denied mic, a dead relay and a
+  // CF-gated upstream — and left prod failures diagnosable only from a devtools console
+  // nobody has open on the device that hit them.
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const engineRef = useRef<ClaudeVoiceEngine | null>(null);
@@ -111,10 +116,10 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
   }, []);
 
   const fail = useCallback((msg: string) => {
-    // Not part of the returned state (the interface has no error-message field, only
-    // `state`) — logged so a real failure (mic permission, Chrome relay, CF-gating, …) is
-    // diagnosable in devtools instead of surfacing only as a silent 'error' state.
+    // Logged AND surfaced (see errorMsg): a real failure — mic permission, Chrome relay,
+    // CF-gating — must be readable on the device that hit it, not only in a console.
     try { console.error('[claude-voice]', msg); } catch { /* noop */ }
+    setErrorMsg(msg);
     startingEngineRef.current = false;
     pendingAbortRef.current = false;
     closeWs();
@@ -174,6 +179,7 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
     if (stateRef.current !== 'idle' && stateRef.current !== 'error') return; // already active
 
     applyAcc(() => ({ ...initialDemuxAcc, state: 'connecting' }));
+    setErrorMsg(null);
     handledToolIdsRef.current = new Set();
 
     const ws = new WebSocket(wsUrl);
@@ -265,6 +271,7 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
   }, [wsUrl, conversationUuid, model, effort, thinkingMode, voice, applyAcc, fail, bootEngine]);
 
   const stop = useCallback(() => {
+    setErrorMsg(null);
     if (startingEngineRef.current) pendingAbortRef.current = true; // engine mid-setup -> release it once it lands
     closeWs();
     teardownEngine();
@@ -312,6 +319,8 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
 
   return {
     state: acc.state,
+    /** Why the session failed, when `state === 'error'`. Null otherwise. */
+    error: errorMsg,
     transcript: acc.transcript,
     assistantText: acc.assistantText,
     liveModel: acc.liveModel,
