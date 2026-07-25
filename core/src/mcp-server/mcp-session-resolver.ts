@@ -103,26 +103,64 @@ function findPreciseClaudeCodeSession(toolUseId: string): Candidate | null {
 
 // ── recency fallback (cached) ──────────────────────────────────────────────
 
-/** Resolve BOTH the most-recent claude.ai conversation and Claude Code session by recency. */
-async function resolveRecencyCandidates(): Promise<CallerCandidates> {
+/** The two expensive loaders, injectable so the concurrency behaviour is testable. */
+export interface RecencyDeps {
+  conversations: () => Promise<unknown>;
+  sessions: () => unknown[];
+}
+const liveDeps: RecencyDeps = {
+  conversations: () => listConversations({ limit: 5, consistency: 'eventual' }) as Promise<unknown>,
+  sessions: () => getSessionCache().getAllSessionsFromCache() as unknown[],
+};
+
+/** The resolution currently running, shared by every caller that arrives while it is in
+ *  flight. WITHOUT this the 8s cache is useless under concurrency: it is written only
+ *  AFTER the network call returns, so N simultaneous callers all miss it, all call
+ *  claude.ai, and all queue on a single-threaded Core — measured on prod 117 as
+ *  server_ms p50 8804ms / max 14867ms at just 4 concurrent, versus 8ms with no identity
+ *  resolution at all. That latency is what walks a write toward the relay's fixed 25s
+ *  local / 30s gateway cutoffs, and a write that COMMITS and then blows the cutoff is
+ *  precisely the lost ack (write applied, caller sees a failure, caller retries).
+ *
+ *  This resolver was designed for bootstrap/session_status (see the file header — "resolved
+ *  only for bootstrap/session_status"); the backlog/mission write paths later put it on
+ *  EVERY write, which is how a rare read-path cost became a hot write-path cost. */
+let inFlight: Promise<CallerCandidates> | null = null;
+
+/** Tests only: drop the cache and any in-flight resolution. */
+export function __resetRecencyCacheForTest(): void {
+  cache = null;
+  inFlight = null;
+}
+
+/** Resolve BOTH the most-recent claude.ai conversation and Claude Code session by recency.
+ *  Cached for RESOLVE_TTL_MS and SINGLE-FLIGHT while running. */
+export async function resolveRecencyCandidates(deps: RecencyDeps = liveDeps): Promise<CallerCandidates> {
   const now = Date.now();
   if (cache && now - cache.at < RESOLVE_TTL_MS) return cache.value;
-  const out: CallerCandidates = { resolvedAt: now };
-  // claude.ai (network; the node's real cookie) — most-recently-updated conversation.
-  try {
-    const resp: any = await withTimeout(listConversations({ limit: 5, consistency: 'eventual' }), RESOLVE_TIMEOUT_MS);
-    const arr: any[] = Array.isArray(resp) ? resp : (resp?.conversations ?? resp?.data ?? []);
-    const top = arr.filter((c) => c && c.uuid).sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))[0];
-    if (top) out.claudeAi = { id: String(top.uuid), label: top.name || '(untitled)', updatedAt: top.updated_at };
-  } catch { /* claude.ai not configured / timeout → omit */ }
-  // Claude Code (in-memory session cache) — most-recently-modified session.
-  try {
-    const all = getSessionCache().getAllSessionsFromCache();
-    const top = all.filter((s: any) => s?.sessionId).sort((a: any, b: any) => (b.cacheData?.fileMtime || 0) - (a.cacheData?.fileMtime || 0))[0];
-    if (top) out.claudeCode = candidateFromRow(top as SessionRow);
-  } catch { /* no sessions → omit */ }
-  cache = { at: now, value: out };
-  return out;
+  if (inFlight) return inFlight;
+  const run = (async (): Promise<CallerCandidates> => {
+    const out: CallerCandidates = { resolvedAt: now };
+    // claude.ai (network; the node's real cookie) — most-recently-updated conversation.
+    try {
+      const resp: any = await withTimeout(deps.conversations(), RESOLVE_TIMEOUT_MS);
+      const arr: any[] = Array.isArray(resp) ? resp : (resp?.conversations ?? resp?.data ?? []);
+      const top = arr.filter((c) => c && c.uuid).sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))[0];
+      if (top) out.claudeAi = { id: String(top.uuid), label: top.name || '(untitled)', updatedAt: top.updated_at };
+    } catch { /* claude.ai not configured / timeout → omit */ }
+    // Claude Code (in-memory session cache) — most-recently-modified session.
+    try {
+      const all = deps.sessions() as any[];
+      const top = all.filter((s: any) => s?.sessionId).sort((a: any, b: any) => (b.cacheData?.fileMtime || 0) - (a.cacheData?.fileMtime || 0))[0];
+      if (top) out.claudeCode = candidateFromRow(top as SessionRow);
+    } catch { /* no sessions → omit */ }
+    cache = { at: now, value: out };
+    return out;
+  })();
+  inFlight = run;
+  // Release the slot however it settles — a failed resolution must never wedge it.
+  void run.then(() => undefined, () => undefined).finally(() => { if (inFlight === run) inFlight = null; });
+  return run;
 }
 
 /** Resolve the caller: precise tool-call-id match when available (overrides the CC candidate and
