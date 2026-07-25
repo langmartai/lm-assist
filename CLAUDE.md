@@ -558,9 +558,36 @@ Proxies `api.anthropic.com` endpoints that use Claude Code's OAuth token (from `
 | GET | `/claude-ai/user-access` | Per-user permissions/roles |
 | GET | `/claude-ai/sessions-active` | **Live sessions across devices** — security view |
 | POST | `/claude-ai/conversations/:uuid/completion` | **WRITE** — send a message, drain SSE, return aggregated text + events |
-| POST | `/claude-ai/conversations/:uuid/title` | **WRITE** — rename / auto-title (omit body for auto-title) |
+| PUT | `/claude-ai/conversations/:uuid` | **WRITE** — **rename** a conversation (`{name}` or `{title}`); returns `previousName` |
+| POST | `/claude-ai/conversations/:uuid/title` | **WRITE** — claude.ai's **auto-title generator** (needs `message_content`). ⚠️ NOT a rename — see below |
 | POST | `/claude-ai/via-chrome` | Generic snippet generator (path whitelist: `/api/`, `/edge-api/`, `/v1/`) |
 | POST | `/claude-ai/via-chrome/...` | Convenience snippet generators mirroring every cookie-file route above |
+
+**Renaming a conversation — `/title` is NOT the rename endpoint.** Despite its
+name, `POST .../:uuid/title` is claude.ai's **auto-title generator**: it derives a
+title from message content and takes `{message_content, recent_titles}`. Handing it
+a title returns `400 "message_content is required."` — it can never set a title of
+your choosing. The real rename is a plain `PUT` on the conversation resource:
+
+```
+PUT /api/organizations/{org}/chat_conversations/{uuid}   {"name": "New title"}   -> 202
+```
+
+Established twice independently (live probe + reading claude.ai's own front-end
+bundle, where the "Rename chat" dialog submits `{name}`). Neighbours, so a future
+"fix" doesn't wander back: `PATCH`/`POST` on the resource → **405**; `POST .../rename`
+→ **404**. Sibling PUTs that *do* exist carry `?rendering_mode=raw` (settings,
+`is_starred`) — the rename has **no query string**. Wrapped by
+`renameConversation()` (`claudeai-session.ts`), the `PUT /claude-ai/conversations/:uuid`
+route, and the `rename_conversation` MCP tool; regression-locked by
+`core/src/__tests__/rename-conversation.test.ts`.
+
+Two traps fall out of this: anything that renames by rewriting the chat name (e.g.
+`setConversationAutoDelete`'s `[lm-autodel:…]` marker) must go through
+`renameConversation`, **and** a successful rename must call
+`ClaudeAiCache.updateName()` — `GET /claude-ai/conversations` answers from
+`listIndex()` with **no TTL**, so a rename that skips it reads back stale forever
+and looks like it silently failed.
 
 **Header fingerprint** — both paths re-inject the application-level headers claude.ai's web app normally adds (`anthropic-client-platform`, `anthropic-client-version`, `anthropic-client-sha`, `anthropic-device-id`, `anthropic-anonymous-id`, `x-activity-session-id`). Identity values come from non-HttpOnly cookies. `x-datadog-*` and `traceparent` are intentionally omitted (random per request, not load-bearing).
 
