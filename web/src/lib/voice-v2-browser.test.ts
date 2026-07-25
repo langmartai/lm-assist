@@ -27,7 +27,7 @@ function withCaps(caps: { encoder?: boolean; processor?: boolean; getUserMedia?:
 }
 
 afterEach(() => {
-  for (const k of ['window', 'AudioEncoder', 'MediaStreamTrackProcessor', 'navigator', 'AudioContext', 'webkitAudioContext', 'isSecureContext']) {
+  for (const k of ['window', 'AudioEncoder', 'MediaStreamTrackProcessor', 'AudioWorklet', 'navigator', 'AudioContext', 'webkitAudioContext', 'isSecureContext']) {
     delete g[k];
   }
 });
@@ -38,12 +38,21 @@ describe('voiceV2BrowserSupported', () => {
     expect(voiceV2BrowserSupported()).toBe(true);
   });
 
-  it('is false on Safari/Firefox — no WebCodecs AudioEncoder', () => {
+  it('is false without the WebCodecs AudioEncoder — nothing can produce Opus', () => {
     withCaps({ processor: true, getUserMedia: true, audioContext: true });
     expect(voiceV2BrowserSupported()).toBe(false);
   });
 
-  it('is false without MediaStreamTrackProcessor (insertable streams) — the other Safari/Firefox gap', () => {
+  // Measured on a real iPad (iPadOS 26.5): audioEncoder TRUE, trackProcessor FALSE. Requiring
+  // MediaStreamTrackProcessor specifically excluded a device that can run voice through an
+  // AudioWorklet instead — the engine now falls back to exactly that.
+  it('is TRUE on WebKit: no MediaStreamTrackProcessor, but AudioWorklet can supply the frames', () => {
+    withCaps({ encoder: true, getUserMedia: true, audioContext: true });
+    (globalThis as unknown as Record<string, unknown>).AudioWorklet = function () {};
+    expect(voiceV2BrowserSupported()).toBe(true);
+  });
+
+  it('is false when NEITHER capture mechanism exists', () => {
     withCaps({ encoder: true, getUserMedia: true, audioContext: true });
     expect(voiceV2BrowserSupported()).toBe(false);
   });
@@ -90,14 +99,16 @@ describe('voiceV2BrowserSupported', () => {
   // Telling an iPad user to "use Chrome or Edge" is WRONG, not merely unhelpful: iOS forces every
   // browser onto WebKit, so installing Chrome changes nothing. The advice must differ.
   it('on iPad/iPhone, does NOT tell the user to switch browser — it points at dictation', () => {
-    withCaps({ getUserMedia: true, audioContext: true, secure: true });
+    withCaps({ getUserMedia: true, audioContext: true, secure: true }); // no encoder at all
     (g.navigator as Record<string, unknown>).userAgent = 'Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15';
     const r = voiceV2BrowserSupport();
     expect(r.ok).toBe(false);
     expect(r.reason).toMatch(/iPad/i);
-    expect(r.reason).toMatch(/WebKit/i);
     expect(r.reason).toMatch(/dictation/i);
-    expect(r.reason).not.toMatch(/voice needs Chrome or Edge \(Safari/);
+    // Must NOT blame WebKit as a platform: measured on a real iPad, WebKit HAS AudioEncoder.
+    // The old wording said iOS "lacks the audio-encoding APIs", which was simply false and led
+    // to excluding a device that can run voice through the AudioWorklet path.
+    expect(r.reason).not.toMatch(/WebKit/i);
   });
 
   it('detects modern iPadOS Safari, which masquerades as MacIntel with a touchscreen', () => {
@@ -119,11 +130,14 @@ describe('voiceV2BrowserSupported', () => {
     // change to one side without the other fails here instead of in production.
     const body = ENGINE.match(/function supported\(\)\s*\{([\s\S]*?)\n\}/)?.[1];
     expect(body, 'engine asset must still define supported()').toBeTruthy();
-    for (const cap of ['AudioEncoder', 'MediaStreamTrackProcessor', 'getUserMedia', 'AudioContext']) {
+    for (const cap of ['AudioEncoder', 'getUserMedia', 'AudioContext']) {
       expect(body).toContain(cap);
     }
+    // Both capture mechanisms must be named on the engine side too.
+    expect(ENGINE).toContain('MediaStreamTrackProcessor');
+    expect(ENGINE).toContain('AudioWorklet');
     const ours = fs.readFileSync(path.resolve(__dirname, 'voice-v2-browser.ts'), 'utf-8');
-    for (const cap of ['AudioEncoder', 'MediaStreamTrackProcessor', 'getUserMedia', 'AudioContext']) {
+    for (const cap of ['AudioEncoder', 'MediaStreamTrackProcessor', 'AudioWorklet', 'getUserMedia', 'AudioContext']) {
       expect(ours, `predicate must check ${cap}, like the engine does`).toContain(cap);
     }
   });

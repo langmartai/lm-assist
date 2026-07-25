@@ -62,14 +62,19 @@ export function voiceV2BrowserSupport(): VoiceV2BrowserSupport {
         : 'this page is not a secure context — accept the site certificate (or use localhost), then reload',
     };
   }
-  if (typeof w.AudioEncoder === 'undefined' || typeof w.MediaStreamTrackProcessor === 'undefined') {
+  // Capture needs SOME frame source: MediaStreamTrackProcessor (Chromium) OR AudioWorklet
+  // (WebKit). Requiring the former specifically excluded iPad, which has AudioEncoder and
+  // AudioWorklet and can run voice fine through the worklet path — measured on the device:
+  // {audioEncoder:true, trackProcessor:false, audioContext:true}.
+  const hasCapture = typeof w.MediaStreamTrackProcessor !== 'undefined' || typeof w.AudioWorklet !== 'undefined';
+  if (typeof w.AudioEncoder === 'undefined' || !hasCapture) {
     return {
       ok: false,
       reason: isAppleMobile()
         // Every iOS/iPadOS browser is WebKit, so switching browser cannot help — say so, and
         // point at the dictation mic, which does work here.
-        ? 'iPhone and iPad cannot run voice conversation — every iOS browser uses WebKit, which lacks the audio-encoding APIs it needs. Use the mic button for dictation, or open this page on desktop Chrome or Edge.'
-        : 'this browser lacks WebCodecs — voice needs Chrome or Edge (Safari and Firefox cannot do it)',
+        ? 'this iPhone/iPad lacks the WebCodecs audio encoder voice needs — use the mic button for dictation, or open this page on desktop Chrome or Edge'
+        : 'this browser lacks WebCodecs — voice needs Chrome or Edge',
     };
   }
   if (!(w.AudioContext || w.webkitAudioContext)) {

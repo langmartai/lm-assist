@@ -31,9 +31,24 @@ const SR_OUT = 16000;
 /** RMS of the most recently resampled frame — see resample(). */
 let lastLevel = 0;
 
+/**
+ * Capture needs SOME way to get raw mic samples. Chromium has MediaStreamTrackProcessor
+ * (insertable streams); WebKit does not — but it does have AudioWorklet, and (measured on a
+ * real iPad, iPadOS 26.5) it DOES have WebCodecs AudioEncoder:
+ *   caps: {mediaDevices:true, audioEncoder:true, trackProcessor:false, audioContext:true}
+ * So the only genuinely missing piece there is the frame source, and an AudioWorklet supplies
+ * it. Requiring MediaStreamTrackProcessor specifically was excluding a device that can run
+ * everything else.
+ */
+function captureMode() {
+  if (typeof MediaStreamTrackProcessor !== 'undefined') return 'track-processor';
+  if (typeof AudioWorklet !== 'undefined') return 'worklet';
+  return null;
+}
+
 function supported() {
   return typeof AudioEncoder !== 'undefined' &&
-         typeof MediaStreamTrackProcessor !== 'undefined' &&
+         captureMode() !== null &&
          !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) &&
          !!(window.AudioContext || window.webkitAudioContext);
 }
@@ -96,6 +111,7 @@ export function createClaudeVoiceEngine() {
   let micStream = null;
   let enc = null;
   let reader = null;
+  let workletNode = null, workletSrc = null, workletSink = null;
   let running = false;
   let sources = [];
   let playHead = 0;
@@ -128,7 +144,7 @@ export function createClaudeVoiceEngine() {
   // per-chunk `output` callback below still swallows on its own, matching the
   // source's steady-state resilience (a rare mid-stream delivery hiccup drops
   // one frame instead of killing the pipeline).
-  function startEncoder() {
+  function createEncoder() {
     enc = new AudioEncoder({
       output: (chunk) => {
         try {
@@ -145,10 +161,62 @@ export function createClaudeVoiceEngine() {
     } catch (e) {
       enc.configure(base);
     }
+  }
+
+  /** Chromium: pull AudioData straight off the track (insertable streams). */
+  function startCaptureTrackProcessor() {
     const track = micStream.getAudioTracks()[0];
     const proc = new MediaStreamTrackProcessor({ track });
     reader = proc.readable.getReader();
     readLoop();
+  }
+
+  /**
+   * WebKit (iPad/iPhone/Safari): no MediaStreamTrackProcessor, so take the samples through an
+   * AudioWorklet instead and hand them to the SAME WebCodecs encoder. Reuses the dictation
+   * mic's worklet, which already downsamples to 16 kHz mono Int16 and carries its bounded-tail
+   * fix (an unbounded tail starved the audio thread at 96 kHz and stopped frames entirely).
+   *
+   * The node is connected through a ZERO-gain sink to the destination: a worklet that reaches
+   * no destination is not guaranteed to be pulled by the graph, and a zero gain keeps the mic
+   * from being played back audibly while still driving it.
+   */
+  async function startCaptureWorklet() {
+    await ac.audioWorklet.addModule('/voice/mic-worklet.js');
+    workletSrc = ac.createMediaStreamSource(micStream);
+    workletNode = new AudioWorkletNode(ac, 'mic-downsampler');
+    workletSink = ac.createGain();
+    workletSink.gain.value = 0;
+    workletSrc.connect(workletNode);
+    workletNode.connect(workletSink);
+    workletSink.connect(ac.destination);
+
+    let tsUs = 0;
+    workletNode.port.onmessage = (ev) => {
+      try {
+        if (!running || !enc || enc.state !== 'configured') return;
+        const i16 = new Int16Array(ev.data);
+        const n = i16.length;
+        if (!n) return;
+        const f32 = new Float32Array(n);
+        let sq = 0;
+        for (let i = 0; i < n; i++) { const v = i16[i] / 32768; f32[i] = v; sq += v * v; }
+        lastLevel = Math.sqrt(sq / n);
+        const ad = new AudioData({
+          format: 'f32-planar', sampleRate: SR_OUT, numberOfFrames: n,
+          numberOfChannels: 1, timestamp: tsUs, data: f32,
+        });
+        tsUs += Math.round((n / SR_OUT) * 1e6);
+        framesSeen++;
+        enc.encode(ad);
+        ad.close();
+      } catch (e) { /* drop this chunk, keep capturing */ }
+    };
+
+    // Capture through a worklet REQUIRES a running context (unlike the track-processor path,
+    // which is independent of it). Still non-blocking — awaiting resume() is the original
+    // start()-hangs-forever bug.
+    if (ac.state === 'suspended') ac.resume().catch(function () {});
   }
 
   function stopPlayback() {
@@ -164,6 +232,10 @@ export function createClaudeVoiceEngine() {
     lastLevel = 0; peak = 0; framesSeen = 0;
     try { if (reader) reader.cancel(); } catch (e) { /* noop */ }
     reader = null;
+    try { if (workletNode) { workletNode.port.onmessage = null; workletNode.disconnect(); } } catch (e) { /* noop */ }
+    try { if (workletSrc) workletSrc.disconnect(); } catch (e) { /* noop */ }
+    try { if (workletSink) workletSink.disconnect(); } catch (e) { /* noop */ }
+    workletNode = null; workletSrc = null; workletSink = null;
     try { if (enc && enc.state !== 'closed') enc.close(); } catch (e) { /* noop */ }
     enc = null;
     stopPlayback();
@@ -220,7 +292,9 @@ export function createClaudeVoiceEngine() {
 
     running = true;
     try {
-      startEncoder();
+      createEncoder();
+      if (captureMode() === 'track-processor') startCaptureTrackProcessor();
+      else await startCaptureWorklet();
     } catch (e) {
       running = false;
       setState('error');
