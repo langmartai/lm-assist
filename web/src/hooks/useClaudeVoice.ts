@@ -36,6 +36,9 @@ export interface UseClaudeVoiceOpts {
   model: string;
   effort: string;
   thinkingMode?: string;
+  /** WHO speaks back — a `VoiceSelector` VOICES id. Fixed at connect like model/effort:
+   *  changing it mid-call takes effect on the NEXT start(), never the live turn. */
+  voice?: string;
   /** Viewing a hub-proxied / other-machine node — same gate as buildClaudeVoiceWsUrl; the
    *  hub relay can't carry a WS upgrade (v1), so voice is unavailable there. */
   isRemoteNode: boolean;
@@ -57,7 +60,7 @@ export interface UseClaudeVoiceOpts {
  * the same degrade-silently rule as dictation); callers hide the mic UI on that same null.
  */
 export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
-  const { conversationUuid, model, effort, thinkingMode, isRemoteNode } = opts;
+  const { conversationUuid, model, effort, thinkingMode, voice, isRemoteNode } = opts;
 
   const [acc, setAcc] = useState<DemuxAcc>(initialDemuxAcc);
   const stateRef = useRef<VoiceState>('idle');
@@ -190,7 +193,7 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
 
     ws.onopen = () => {
       try {
-        ws.send(JSON.stringify({ type: 'connect', conversationUuid, model, effort, thinkingMode }));
+        ws.send(JSON.stringify({ type: 'connect', conversationUuid, model, effort, thinkingMode, voice }));
       } catch { /* noop */ }
     };
     ws.onerror = () => {
@@ -259,7 +262,7 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
         return next;
       });
     };
-  }, [wsUrl, conversationUuid, model, effort, thinkingMode, applyAcc, fail, bootEngine]);
+  }, [wsUrl, conversationUuid, model, effort, thinkingMode, voice, applyAcc, fail, bootEngine]);
 
   const stop = useCallback(() => {
     if (startingEngineRef.current) pendingAbortRef.current = true; // engine mid-setup -> release it once it lands

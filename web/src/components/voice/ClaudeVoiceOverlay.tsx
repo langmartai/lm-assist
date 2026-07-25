@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AudioLines, PhoneOff, RefreshCw, ShieldAlert, Square } from 'lucide-react';
 import { ModelEffortSelector } from '@/components/cowork/ModelEffortSelector';
+import { VoiceSelector, loadStoredVoice, storeVoice, DEFAULT_VOICE } from './VoiceSelector';
 import { ConnectorCard } from './ConnectorCard';
 import { ApprovalPrompt } from './ApprovalPrompt';
 import { useClaudeVoice, type VoiceState } from '@/hooks/useClaudeVoice';
@@ -25,14 +26,19 @@ const STATUS: Record<VoiceState, { label: string; color: string; pulse: boolean 
  * voice-mode toggle; portal-rendered to `document.body` like `FullScreenOverlay`
  * so it covers the whole page while open.
  *
- * Owns its own effort/thinking as local state (ChatView only tracks `model`,
+ * Owns its own effort/thinking/voice as local state (ChatView only tracks `model`,
  * shared back via `onModelChange` so the text composer stays in sync). A live
  * voice turn's params are fixed at connect — `useClaudeVoice.start()` is a no-op
- * once a session is active — so picking a new model/effort/thinking mid-call only
- * takes effect on the NEXT `start()`; the "Applies on next start" label by the
- * selector says so rather than implying a live switch that doesn't happen. The
- * selector lives in the FOOTER, not the header — its popover opens upward
- * (`bottom: 100%`) and would clip against the viewport top up there.
+ * once a session is active — so picking a new model/effort/thinking/voice mid-call
+ * only takes effect on the NEXT `start()`; the "Applies on next start" label by the
+ * selectors says so rather than implying a live switch that doesn't happen. The
+ * selectors live in the FOOTER, not the header — their popovers open upward
+ * (`bottom: 100%`) and would clip against the viewport top up there. Both share one
+ * footer row that wraps rather than stacking into a second line.
+ *
+ * The voice (WHO speaks back) is the one param that OUTLIVES the overlay: it persists
+ * to localStorage, because a preferred voice is a standing choice rather than a
+ * per-call knob. See `VoiceSelector.tsx`.
  *
  * `tool_use`/`connector_text` (Plan B): `useClaudeVoice`'s `tools`/`connectorTexts`/
  * `pendingApprovals`/`mcpAuth` (sourced from the demux's typed classification of the
@@ -57,6 +63,15 @@ export function ClaudeVoiceOverlay({
 }) {
   const [effort, setEffort] = useState('medium');
   const [thinking, setThinking] = useState('off');
+  // Unlike effort/thinking, the voice is REMEMBERED across sessions (claude.ai persists its own
+  // pick too) — "who I talk to" is a standing preference, not a per-call knob.
+  //
+  // Read during the FIRST render, not in a mount effect: this overlay auto-starts on mount, and
+  // a mount effect lands in the same flush as that auto-start, so start() would close over the
+  // default and the remembered voice would be ignored on exactly the call that matters most.
+  // Safe here — ChatView only mounts this on a click and the unguarded createPortal below
+  // already proves it never server-renders (loadStoredVoice also defaults if storage throws).
+  const [voice, setVoice] = useState(loadStoredVoice);
 
   const {
     state,
@@ -77,6 +92,7 @@ export function ClaudeVoiceOverlay({
     model,
     effort,
     thinkingMode: thinking,
+    voice,
     isRemoteNode,
   });
 
@@ -246,6 +262,7 @@ export function ClaudeVoiceOverlay({
           </button>
           <div style={{ flex: 1, minWidth: 8 }} />
           <span style={{ fontSize: 10.5, color: 'var(--color-text-tertiary)' }}>Applies on next start:</span>
+          <VoiceSelector voice={voice} onChange={(v) => { setVoice(v); storeVoice(v); }} />
           <ModelEffortSelector
             model={model}
             effort={effort}

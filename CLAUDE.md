@@ -130,6 +130,19 @@ the relay is ready go to a bounded ~5s ring (`web/src/lib/claude-voice-uplink.ts
 | `VOICE_CHROME_IDLE_MS` | `300000` | idle teardown window |
 | `VOICE_CHROME_IDLE_SWEEP_MS` | `60000` | idle sweeper tick |
 
+**Selectable voice (who speaks back).** The voice is a WS query param **fixed at connect**, so
+it applies on the NEXT start, never the live call. Catalogue = claude.ai's own five —
+`buttery` (default), `airy`, `mellow`, `glassy`, `rounded` — read out of its shipped bundle,
+NOT from an API (there is none; every plausible route 404s). Ids are a **closed set**: an
+unknown value makes claude.ai reject the WS upgrade (`up_error`, no audio), so
+`normalizeVoice()` whitelists before it reaches the wire. Kept in two places on purpose —
+`core/src/voice/claude-voice-url.ts` (`CLAUDE_VOICES`, validation) and
+`web/src/components/voice/VoiceSelector.tsx` (`VOICES`, labels + localStorage) — **edit both**.
+Path: selector → overlay → `useClaudeVoice` → connect frame `voice` → `ConnectMsg` →
+`buildClaudeVoiceUrl`. Catalogue, the rolldown asset-graph crawl that recovers it (claude.ai is
+no longer Next.js — no `_buildManifest`), and the unwired extras (`tts_speed` tiers, activation
+mode): [`docs/claude-ai-voice-protocol.md`](./docs/claude-ai-voice-protocol.md).
+
 **Verify voice with `up>0`, never `{ready}` alone.** `{ready}` proves the transport; prod once
 ran `page_status up_open -> ready` with `up=0` (no audio at all). `core/src/__tests__/voice-audio-flow.test.ts`
 is the regression test — real Chrome + fake mic + the real engine asset through the real relay,
