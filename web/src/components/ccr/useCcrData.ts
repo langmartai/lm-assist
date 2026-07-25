@@ -38,7 +38,18 @@ export function useCcrData(apiFetch: ApiFetch): CcrData {
   const [error, setError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(0);
 
+  // Re-entrancy guard, same shape as useSessions' fetchingRef. WITHOUT it the 5s poll below
+  // fires again while the previous /fleet/ccr is still in flight — and that request is not
+  // cheap (~4s on the LM_HTTPS origin, where Core proxies every page asset on the SAME event
+  // loop it serves /_coreapi from). The polls then stack, saturate the browser's per-origin
+  // connection pool, and NOTHING completes: the page sits on "Loading sessions…" forever while
+  // the identical page over plain http — where Next serves assets from its own process — stays
+  // just fast enough to keep ahead. Skipping a tick is always correct here; the next one is 5s away.
+  const inFlightRef = useRef(false);
+
   const fetchAll = useCallback(async () => {
+    if (inFlightRef.current) return; // a poll is still running — let it finish
+    inFlightRef.current = true;
     setError(null);
     try {
       const f = await apiFetch<CcrFleetPayload>('/fleet/ccr');
@@ -51,6 +62,7 @@ export function useCcrData(apiFetch: ApiFetch): CcrData {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
+      inFlightRef.current = false;
       setLoading(false);
     }
   }, [apiFetch]);
