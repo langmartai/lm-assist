@@ -47,6 +47,51 @@ test('composerHoldsText: true while pending, false after submit (tail in history
   assert.equal(composerHoldsText(SUBMITTED_PANE, text), false);
 });
 
+// ── REAL captured panes (117, 2026-07-26) ───────────────────────────────────
+// Captured live from a busy Claude Code session while reproducing the
+// send_session_message false-negative. Two details the older hand-written
+// fixtures above do NOT model, and which together caused the bug:
+//   1. The live composer marker is '❯' (U+276F) between two border rules.
+//   2. Below it sits the lm-assist STATUSLINE, whose first line echoes the
+//      LAST SUBMITTED PROMPT on a '>' line ending in '<N> tokens'.
+// extractComposerBlock anchored on /^\s*>/ and so latched onto the statusline
+// echo, then swept upward through the queued-message block.
+const QUEUED_PANE = [
+  '  ⏺ Working on it…',
+  '',
+  '  ❯ INJECTED_PROBE_MESSAGE please acknowledge this unique token ZQX7RAVEN',
+  '──────────────────────────────────────────────',
+  '❯ Press up to edit queued messages',
+  '──────────────────────────────────────────────',
+  '    > Run exactly this and report output: bash -c "seq 1 30"                    42297 tokens',
+  '    /tmp/scratchpad/qtest main                                                          /rc',
+  '    no worktrees ctx:21% $0.092 ram:365M sid: 652f3f8e-96e9-4aca-8046-8ecda3a5aac6 Haiku 4.5',
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+].join('\n');
+
+test('QUEUED message is a SUCCESSFUL submit — not "still in the composer"', () => {
+  const queued = 'INJECTED_PROBE_MESSAGE please acknowledge this unique token ZQX7RAVEN';
+  // The incident: this returned true, so typeAndSubmitVerified threw
+  // SUBMIT_UNVERIFIED for a message Claude Code had already queued.
+  assert.equal(composerHoldsText(QUEUED_PANE, queued), false);
+});
+
+test('the statusline last-prompt echo is never mistaken for composer content', () => {
+  // The statusline renders the SUBMITTED prompt on a '>' line with a trailing
+  // token count. Reading it back as pending input false-negatives every send.
+  const submitted = 'Run exactly this and report output: bash -c "seq 1 30"';
+  assert.equal(composerHoldsText(QUEUED_PANE, submitted), false);
+  assert.ok(!extractComposerBlock(QUEUED_PANE).includes('42297 tokens'),
+    'statusline must stay out of the composer block');
+});
+
+test('paneShowsQueuedMessage detects Claude Code queueing input while busy', async () => {
+  const { paneShowsQueuedMessage } = await import('../terminal/cc');
+  assert.equal(paneShowsQueuedMessage(QUEUED_PANE), true);
+  assert.equal(paneShowsQueuedMessage(PENDING_PANE), false);
+  assert.equal(paneShowsQueuedMessage(SUBMITTED_PANE), false);
+});
+
 // Real pane fixture from the incident: plan-approval dialog on the chart session.
 const PLAN_DIALOG_PANE = [
   ' 5. Memory + arch doc updated (project convention).',

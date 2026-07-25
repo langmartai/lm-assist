@@ -20,6 +20,7 @@
  */
 
 import type { RouteContext, RouteHandler, ParsedRequest } from '../index';
+import { wrapResponse, wrapError } from '../../api/helpers';
 import {
   sendMessage,
   listMessages,
@@ -58,7 +59,10 @@ export function createSessionMessagingRoutes(_ctx: RouteContext): RouteHandler[]
       method: 'POST',
       pattern: /^\/session-messages$/,
       handler: async (req: ParsedRequest) => {
+        const start = Date.now();
         const b = req.body || {};
+        // `node` is the connector's ROUTING key and rides on relayed calls; it
+        // is consumed as provenance below, never treated as a message field.
         try {
           const result = await sendMessage(
             {
@@ -68,12 +72,20 @@ export function createSessionMessagingRoutes(_ctx: RouteContext): RouteHandler[]
               toNode: b.toNode ? String(b.toNode) : undefined,
               fromNode: b.fromNode ? String(b.fromNode) : undefined,
               fromSession: b.fromSession ? String(b.fromSession) : undefined,
+              messageId: b.messageId !== undefined ? String(b.messageId) : undefined,
             },
             { localNode: localNode() },
           );
-          return { success: true, data: result };
+          return wrapResponse(result, start);
         } catch (e) {
-          return { success: false, error: e instanceof Error ? e.message : String(e) };
+          // Typed refusal → typed code, so the caller can tell a validation
+          // rejection from a transport failure instead of parsing prose.
+          const code = (e as { code?: unknown })?.code;
+          return wrapError(
+            typeof code === 'string' && code ? code : 'SEND_FAILED',
+            e instanceof Error ? e.message : String(e),
+            start,
+          );
         }
       },
     },

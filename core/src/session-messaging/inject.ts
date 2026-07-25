@@ -27,7 +27,7 @@
  * this module never re-implements tmux/CC mechanics.
  */
 
-import type { InjectionDriverName, InjectionResult } from './types';
+import type { InjectionDriverName, InjectionResult, InjectionAttempt } from './types';
 import { lmAuthHeaders } from '../auth/api-token';
 
 /**
@@ -81,17 +81,36 @@ function enc(s: string): string {
   return encodeURIComponent(s);
 }
 
-/** Unwrap the standard {success,data,error} envelope; throw on failure. */
+/** Unwrap the standard {success,data,error} envelope; throw on failure. The
+ *  typed `error.code` is carried onto the thrown Error so the chain can tell an
+ *  AMBIGUOUS failure (text typed, submit unconfirmed) from a definite one. */
 function unwrap(json: unknown): Record<string, unknown> {
   const j = (json || {}) as { success?: boolean; data?: unknown; error?: unknown };
   if (j.success === false) {
-    const msg =
-      typeof j.error === 'string'
-        ? j.error
-        : (j.error as { message?: string })?.message || 'request failed';
-    throw new Error(msg);
+    const e = j.error as { message?: string; code?: string } | string | undefined;
+    const msg = typeof e === 'string' ? e : e?.message || 'request failed';
+    const err = new Error(msg) as Error & { code?: string };
+    if (e && typeof e === 'object' && typeof e.code === 'string') err.code = e.code;
+    throw err;
   }
   return (j.data ?? j) as Record<string, unknown>;
+}
+
+/**
+ * Pure: did this driver failure leave the message POSSIBLY delivered?
+ *
+ * `SUBMIT_UNVERIFIED` means the body was already TYPED INTO the target session
+ * and only the submit could not be confirmed — Claude Code may well have taken
+ * it (it queues input typed while busy). Re-sending such a message can DOUBLE
+ * deliver, so it must never be reported as a clean failure. Everything else
+ * (probe failed, session absent, transport refused) never reached the session.
+ *
+ * Mirrors ORIGIN_TIMEOUT vs ORIGIN_UNREACHABLE on the backlog write path.
+ */
+export function failedAmbiguously(e: unknown): boolean {
+  const err = e as Error & { code?: string };
+  if (err?.code === 'SUBMIT_UNVERIFIED') return true;
+  return typeof err?.message === 'string' && /did not submit|SUBMIT_UNVERIFIED/i.test(err.message);
 }
 
 /** A single driver: probe availability + attempt delivery. */
@@ -181,6 +200,8 @@ export async function injectViaChain(
   transport: DriverTransport = loopbackTransport(),
 ): Promise<InjectionResult> {
   const skipped: string[] = [];
+  const attempts: InjectionAttempt[] = [];
+  let ambiguous = false;
   for (const d of drivers) {
     let isAvail = false;
     try {
@@ -190,18 +211,28 @@ export async function injectViaChain(
     }
     if (!isAvail) {
       skipped.push(`${d.name}:unavailable`);
+      attempts.push({ driver: d.name, outcome: 'unavailable' });
       continue;
     }
     try {
       await d.deliver(session, wrapped, transport);
-      return { driver: d.name, delivered: true, detail: `delivered via ${d.name}` };
+      return { driver: d.name, delivered: true, ambiguous: false, attempts, detail: `delivered via ${d.name}` };
     } catch (e) {
-      skipped.push(`${d.name}:error(${e instanceof Error ? e.message : String(e)})`);
+      const detail = e instanceof Error ? e.message : String(e);
+      const code = (e as { code?: string })?.code;
+      // An ambiguous failure means the body reached the session's composer and
+      // only the SUBMIT is unconfirmed — a retry could double-deliver.
+      const amb = failedAmbiguously(e);
+      if (amb) ambiguous = true;
+      skipped.push(`${d.name}:error(${detail})`);
+      attempts.push({ driver: d.name, outcome: amb ? 'unverified' : 'error', code, detail });
     }
   }
   return {
     driver: 'none',
     delivered: false,
+    ambiguous,
+    attempts,
     detail: skipped.length ? `no driver delivered — ${skipped.join('; ')}` : 'no drivers available',
   };
 }

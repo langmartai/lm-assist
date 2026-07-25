@@ -25,11 +25,27 @@ export type MessageCategory = 'reference' | 'guided' | 'overwrite';
 
 /** Lifecycle state of a stored inbound message. */
 export type MessageStatus =
-  | 'pending'   // stored, no driver available yet — sweeper will retry injection
-  | 'received'  // injected into the target session (or stored awaiting pickup)
-  | 'read'      // the receiving session reported it has seen the message
-  | 'executed'  // the receiving session reported it acted on the message
-  | 'failed';   // injection failed terminally or the receiver reported failure
+  | 'pending'     // stored, no driver reached the session — provably NOT delivered
+  | 'unverified'  // TYPED INTO the session but the submit could not be confirmed —
+                  // it MAY have been delivered. Never auto-retried: re-injecting
+                  // would double-deliver. Retry only with the SAME messageId.
+  | 'received'    // injected into the target session (or stored awaiting pickup)
+  | 'read'        // the receiving session reported it has seen the message
+  | 'executed'    // the receiving session reported it acted on the message
+  | 'failed';     // injection failed terminally or the receiver reported failure
+
+/**
+ * Typed outcome codes returned to the SENDER. The distinction that matters is
+ * whether a retry is safe, mirroring ORIGIN_UNREACHABLE vs ORIGIN_TIMEOUT on
+ * the backlog write path:
+ *
+ *   TARGET_UNREACHABLE  — nothing was ever typed into the session. Retry freely.
+ *   DELIVERY_UNVERIFIED — the body reached the composer; the submit is
+ *                         unconfirmed and it MAY already have been delivered.
+ *                         Retry ONLY with the same messageId (idempotent).
+ *   INVALID_INPUT       — refused before any delivery attempt; echoes the value.
+ */
+export type SendFailureCode = 'TARGET_UNREACHABLE' | 'DELIVERY_UNVERIFIED' | 'INVALID_INPUT';
 
 /** One status-transition record (audit trail of a message's life). */
 export interface MessageAck {
@@ -67,11 +83,27 @@ export interface SessionMessage {
 /** The injection drivers, in fallback order. */
 export type InjectionDriverName = 'remote-control' | 'cc-session' | 'tmux-send-keys' | 'none';
 
+/** What one driver did on one pass of the chain. */
+export interface InjectionAttempt {
+  driver: InjectionDriverName;
+  /** unavailable = never reached the session; error = definite failure;
+   *  unverified = body was typed in, submit unconfirmed (may have landed). */
+  outcome: 'unavailable' | 'error' | 'unverified';
+  /** Typed code from the driver route, when it carried one. */
+  code?: string;
+  detail?: string;
+}
+
 /** Result of one injection attempt by a driver. */
 export interface InjectionResult {
   driver: InjectionDriverName;
   /** True only if the body was actually delivered into the session. */
   delivered: boolean;
+  /** True when SOME driver typed the body in but could not confirm the submit.
+   *  The message may already be in the target — retrying risks a duplicate. */
+  ambiguous?: boolean;
+  /** Per-driver breakdown, so the caller sees WHERE it failed. */
+  attempts?: InjectionAttempt[];
   /** Why a driver was skipped or why it failed (for diagnostics + acks). */
   detail?: string;
 }
@@ -87,4 +119,11 @@ export interface SendMessageArgs {
   /** Best-effort sender identity for provenance. */
   fromNode?: string;
   fromSession?: string;
+  /**
+   * Client-supplied IDEMPOTENCY KEY, and the message's id. Re-sending with the
+   * SAME messageId resolves to the message already stored instead of injecting
+   * a second copy — so a retry after an ambiguous/lost ack cannot double
+   * deliver. Omit and the server mints one (retry is then NOT safe).
+   */
+  messageId?: string;
 }

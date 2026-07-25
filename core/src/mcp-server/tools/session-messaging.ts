@@ -58,6 +58,11 @@ export const sendSessionMessageToolDef = {
       },
       body: { type: 'string', description: 'The message content to deliver.' },
       fromSession: { type: 'string', description: 'Optional — your session identifier, for provenance shown to the receiver.' },
+      messageId: {
+        type: 'string',
+        description:
+          'Idempotency key (≤128 chars of [A-Za-z0-9._:-]) which also becomes the messageId. Reuse the SAME value when retrying so a lost or unverified ack cannot deliver the message twice — always reuse it after a DELIVERY_UNVERIFIED result, which means the message may already have landed. Omit and the server mints one (a retry is then NOT safe).',
+      },
     },
     required: ['toSession', 'category', 'body'],
   },
@@ -76,8 +81,8 @@ export const listSessionMessagesToolDef = {
       session: { type: 'string', description: 'Filter to messages for this target session name.' },
       status: {
         type: 'string',
-        enum: ['pending', 'received', 'read', 'executed', 'failed'],
-        description: 'Filter by message status.',
+        enum: ['pending', 'unverified', 'received', 'read', 'executed', 'failed'],
+        description: 'Filter by message status. pending = nothing reached the session (safe to retry); unverified = typed in but submit unconfirmed (may already be delivered).',
       },
     },
   },
@@ -118,23 +123,38 @@ async function handleSendSessionMessage(args: Record<string, unknown>): Promise<
   if (!body.trim()) return err('body is required.');
   const payload: Record<string, unknown> = { toSession, category, body };
   if (args.fromSession) payload.fromSession = String(args.fromSession);
+  if (args.messageId !== undefined) payload.messageId = String(args.messageId);
   // The `node` selector has already routed this call to the target node; the
   // worker stamps fromNode/toNode itself. Pass node through as provenance only
   // if present (harmless — the route uses its own localNode()).
   if (args.node) payload.toNode = String(args.node);
   try {
-    const result = (await workerPost('/session-messages', payload)) as { id?: string; status?: string; detail?: string };
-    // status 'pending' means NO live driver delivered it — it was only stored.
-    // Returning ok() here would read as "delivered" to the caller, so surface
-    // it as an error with the reason + how to follow up (this is the same
-    // non-delivery the Windows Session-0 fix exposed).
-    if (result?.status === 'pending') {
-      const mid = result.id ?? '(unknown)';
-      const detail = result.detail || 'no live driver delivered it';
+    const result = (await workerPost('/session-messages', payload)) as {
+      id?: string; status?: string; detail?: string; code?: string;
+    };
+    const mid = result.id ?? '(unknown)';
+    const detail = result.detail || 'no live driver delivered it';
+
+    // AMBIGUOUS: the body reached the target's composer but the submit could
+    // not be confirmed — it MAY already be delivered. Reporting this as a
+    // clean failure is what caused duplicate sends, so say so explicitly and
+    // name the only safe retry.
+    if (result.status === 'unverified') {
       return err(
-        `message ${mid} was QUEUED but NOT delivered to "${toSession}" (${detail}). ` +
-        'It is stored and the sweeper will retry if that session becomes live — confirm the ' +
-        `target exists via cc_sessions / terminal_list, then check get_message_status(id="${mid}").`,
+        `message ${mid} to "${toSession}" is DELIVERY_UNVERIFIED — the text was typed into the ` +
+        `session but the submit could not be confirmed, so it MAY ALREADY HAVE BEEN DELIVERED (${detail}). ` +
+        `Do NOT blindly re-send: check with get_message_status(id="${mid}") or read the target, and if you ` +
+        `do retry, pass the SAME messageId="${mid}" so it resolves to this message instead of delivering twice.`,
+      );
+    }
+    // status 'pending' means NO driver reached the session — nothing was typed
+    // in, so a retry is safe. Returning ok() would read as "delivered".
+    if (result.status === 'pending') {
+      return err(
+        `message ${mid} was NOT delivered to "${toSession}" — TARGET_UNREACHABLE: no driver could reach ` +
+        `the session, so nothing was typed into it (${detail}). Nothing was delivered, so retrying is safe. ` +
+        `Confirm the target exists via cc_sessions / terminal_list; it stays stored and ` +
+        `POST /session-messages/sweep (or a later send) can retry it. Check get_message_status(id="${mid}").`,
       );
     }
     return ok(pretty(result));

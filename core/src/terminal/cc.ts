@@ -184,20 +184,56 @@ export function computeSettleMs(textLength: number): number {
   return Math.max(150, Math.min(1500, 150 + Math.floor(textLength / 8)));
 }
 
+/** Pure: a composer prompt marker — CC renders '❯' (U+276F); older/narrow
+ *  paints and some themes render '>'. Both are accepted. */
+const COMPOSER_MARKER_RE = /^\s*(?:>|❯)/;
+
+/** Pure: the lm-assist STATUSLINE's own echo of the LAST SUBMITTED prompt.
+ *  It is rendered on a '>' line ending in '<N> tokens' — directly below the
+ *  composer. Anchoring the composer scan there reads ALREADY-SENT text back as
+ *  pending input, which false-negatives the submit of every message. */
+const STATUSLINE_PROMPT_RE = /\d[\d,]*\s+tokens\s*$/;
+
+/** Pure: a box-drawing rule. CC brackets the composer with one above and below;
+ *  the block ABOVE the upper rule is queued (already-submitted) messages. */
+function isRule(row: string): boolean {
+  return row.trim().length > 0 && /^[\s─-╿]+$/.test(row);
+}
+
+/**
+ * Pure: Claude Code QUEUES input typed while it is working — the composer
+ * clears and the text moves into a queued block above it. That is a SUCCESSFUL
+ * submit, not a stuck one, and the pane says so explicitly.
+ */
+export function paneShowsQueuedMessage(pane: string): boolean {
+  return /press up to edit queued messages?/i.test(pane);
+}
+
 /**
  * Pure: the composer block of a captured pane — the contiguous lines between
- * the last blank line and the cwd/footer block at the bottom. Pending input
- * lives here; submitted history scrolls above the blank separator.
+ * the last blank line (or the rule separating queued messages) and the
+ * cwd/footer block at the bottom. Pending input lives here; submitted history
+ * scrolls above the separator.
  */
 export function extractComposerBlock(pane: string): string {
   const rows = pane.replace(/\n+$/, '').split('\n');
   // Walk up past the footer/status region (footer carries the ctx:/sid footer,
   // then the cwd line) to the input area, then collect until a blank line.
+  // The statusline's last-prompt echo also starts with '>', so it is skipped
+  // explicitly — otherwise the scan anchors on SENT text and never terminates
+  // the verify loop.
   let i = rows.length - 1;
-  while (i >= 0 && rows[i].trim() !== '' && !/^\s*>/.test(rows[i])) i--; // skip footer lines upward
+  while (
+    i >= 0 && rows[i].trim() !== ''
+    && !(COMPOSER_MARKER_RE.test(rows[i]) && !STATUSLINE_PROMPT_RE.test(rows[i]))
+  ) i--; // skip footer lines upward
   const block: string[] = [];
   for (; i >= 0; i--) {
     if (rows[i].trim() === '') break;
+    // Stop at the rule bracketing the composer: everything above it is the
+    // QUEUED-message block, which is already submitted and must not read as
+    // pending composer input.
+    if (isRule(rows[i]) && block.length) break;
     block.unshift(rows[i]);
   }
   return block.join('\n');
@@ -222,9 +258,14 @@ async function typeAndSubmitVerified(session: string, text: string): Promise<voi
     await sleep(350 * attempt);
     // Submitted if the model left idle (working on it) …
     try { if (inspector.getCCState(session).phase !== 'idle') return; } catch { /* fall through to pane check */ }
-    // … or if the composer no longer holds our text (instant completions).
     try {
       const pane = tmux.capture(session, { start: null, lines: 30, paneQualifier: null });
+      // … or if CC QUEUED it because it was busy. A busy CC still paints '❯' +
+      // the ctx: footer, so derivePhase reports 'idle' and the check above never
+      // fires — queueing is the normal outcome of driving a working session and
+      // is a SUCCESSFUL submit, not a stuck one.
+      if (paneShowsQueuedMessage(pane)) return;
+      // … or if the composer no longer holds our text (instant completions).
       if (!composerHoldsText(pane, text)) return;
     } catch { /* capture hiccup — retry */ }
   }

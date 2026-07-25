@@ -40,7 +40,17 @@ function wrap(fn: () => Promise<unknown> | unknown): Promise<Envelope> {
   return Promise.resolve()
     .then(fn)
     .then((data) => ok(data))
-    .catch((e: unknown) => fail('INTERNAL_ERROR', e instanceof Error ? e.message : String(e)));
+    .catch((e: unknown) => {
+      // Preserve a typed code (TerminalError.code) instead of flattening every
+      // failure to INTERNAL_ERROR. Callers must be able to tell an ambiguous
+      // SUBMIT_UNVERIFIED (the text may already have landed — retry only with
+      // the same id) from a definite refusal (safe to retry freely).
+      const code = (e as { code?: unknown })?.code;
+      return fail(
+        typeof code === 'string' && code ? code : 'INTERNAL_ERROR',
+        e instanceof Error ? e.message : String(e),
+      );
+    });
 }
 
 export function createTerminalStdRoutes(_ctx: RouteContext): RouteHandler[] {
