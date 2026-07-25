@@ -58,6 +58,13 @@ export type BacklogState = {
   discussion: BacklogDiscussionEntry[];
   reviews: BacklogReview[];
   removed: boolean;
+  /** Client-supplied idempotency key stamped at CREATE (empty = none). Persisted so a
+   *  retry resolves to the same item across a Core restart and across the fleet
+   *  replica, not just within one process's memory. Never patchable.
+   *
+   *  Optional because every item written BEFORE this field existed simply has none —
+   *  the live dataset is full of them, and they must keep reading cleanly. */
+  requestId?: string;
 };
 
 export type BacklogChange = OverlayChange<BacklogState>;
@@ -105,12 +112,188 @@ export function validateDescription(v: unknown): Validation {
 function enumValidator(name: string, allowed: readonly string[]): (v: unknown) => Validation {
   return (v) => (typeof v === 'string' && allowed.includes(v)
     ? { ok: true }
-    : fail('INVALID_INPUT', `${name} must be one of: ${allowed.join(', ')}`));
+    : fail('INVALID_INPUT', `${name} ${JSON.stringify(v)} is not valid — must be one of: ${allowed.join(', ')}`));
 }
 
 export const validateType = enumValidator('type', BACKLOG_TYPES);
 export const validateStatus = enumValidator('status', BACKLOG_STATUSES);
 export const validatePriority = enumValidator('priority', BACKLOG_PRIORITIES);
+
+// ── enum coercion (route-layer, like normalizeTags) ────────────────────────
+//
+// The 2026-07-25 incident: three consecutive backlog_create calls died on
+// `priority: "medium"` because the canonical token is `med`. The caller had no way
+// to recover — the schema advertises the enum, but nothing enforces it on the way in
+// and nothing mapped the obvious synonym on the way through. These tables map the
+// words a caller actually reaches for; anything genuinely unmappable still fails the
+// validator (coercion must never INVENT a value), and the refusal now echoes what
+// was sent so the next attempt can be different.
+
+const canon = (v: unknown): string | null =>
+  typeof v === 'string' ? v.trim().toLowerCase().replace(/[\s_]+/g, '-').replace(/^-+|-+$/g, '') || null : null;
+
+const PRIORITY_ALIASES: Record<string, BacklogPriority> = {
+  medium: 'med', normal: 'med', moderate: 'med', mid: 'med', middle: 'med', m: 'med', p2: 'med', '2': 'med',
+  important: 'high', major: 'high', h: 'high', p1: 'high', '1': 'high',
+  urgent: 'critical', blocker: 'critical', blocking: 'critical', crit: 'critical', highest: 'critical',
+  emergency: 'critical', asap: 'critical', p0: 'critical', '0': 'critical',
+  minor: 'low', trivial: 'low', lowest: 'low', l: 'low', 'nice-to-have': 'low', someday: 'low', p3: 'low', '3': 'low',
+};
+
+const TYPE_ALIASES: Record<string, BacklogType> = {
+  enhancement: 'feature', improvement: 'feature', story: 'feature', request: 'feature', capability: 'feature',
+  defect: 'bug', error: 'bug', fault: 'bug', regression: 'bug', broken: 'bug', fix: 'bug',
+  chore: 'task', todo: 'task', work: 'task', action: 'task', 'action-item': 'task',
+  proposal: 'idea', suggestion: 'idea', concept: 'idea', thought: 'idea', brainstorm: 'idea',
+  problem: 'issue', incident: 'issue', concern: 'issue', gap: 'issue',
+};
+
+const STATUS_ALIASES: Record<string, BacklogStatus> = {
+  new: 'open', todo: 'open', backlog: 'open', pending: 'open', 'not-started': 'open', filed: 'open',
+  discussion: 'discussing', 'in-discussion': 'discussing', reviewing: 'discussing', 'under-review': 'discussing',
+  approved: 'accepted', agreed: 'accepted', 'signed-off': 'accepted',
+  postponed: 'deferred', later: 'deferred', 'on-hold': 'deferred', paused: 'deferred', snoozed: 'deferred',
+  declined: 'rejected', wontfix: 'rejected', 'wont-fix': 'rejected', 'will-not-fix': 'rejected', dropped: 'rejected',
+  scheduled: 'planned', 'in-progress': 'planned', 'in-flight': 'planned', doing: 'planned', wip: 'planned', started: 'planned',
+  done: 'implemented', complete: 'implemented', completed: 'implemented', shipped: 'implemented',
+  merged: 'implemented', delivered: 'implemented', resolved: 'implemented', fixed: 'implemented',
+};
+
+function coerceEnum<T extends string>(v: unknown, allowed: readonly T[], aliases: Record<string, T>): T | null {
+  const c = canon(v);
+  if (c === null) return null;
+  if ((allowed as readonly string[]).includes(c)) return c as T;
+  return aliases[c] ?? null;
+}
+
+/** `"medium"`/`"P0"`/`"urgent"` → a canonical priority; null when unmappable. */
+export const normalizePriority = (v: unknown): BacklogPriority | null => coerceEnum(v, BACKLOG_PRIORITIES, PRIORITY_ALIASES);
+/** `"enhancement"`/`"defect"` → a canonical type; null when unmappable. */
+export const normalizeType = (v: unknown): BacklogType | null => coerceEnum(v, BACKLOG_TYPES, TYPE_ALIASES);
+/** `"done"`/`"wip"` → a canonical status; null when unmappable (`"closed"` is
+ *  deliberately absent — implemented or rejected? guessing would corrupt the board). */
+export const normalizeStatus = (v: unknown): BacklogStatus | null => coerceEnum(v, BACKLOG_STATUSES, STATUS_ALIASES);
+
+// ── idempotency + duplicate detection ──────────────────────────────────────
+
+export const MAX_REQUEST_ID_CHARS = 128;
+/** How long an identical create is treated as a repeat of the same intent rather than
+ *  a deliberate second filing. Long enough to cover a relay timeout + agent retry
+ *  (seconds), short enough that re-raising an old title next week still works. */
+export const DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
+/** Dice coefficient above which two titles are REPORTED as possible duplicates. Never
+ *  refuses a write — a false positive must not be able to eat a legitimate item. */
+export const DUPLICATE_SIMILARITY = 0.5;
+/** Minimum shared content words before similarity counts at all. */
+export const MIN_SHARED_TITLE_TOKENS = 3;
+export const MAX_DUPLICATE_HINTS = 3;
+
+const REQUEST_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+
+export function validateRequestId(v: unknown): Validation {
+  if (typeof v !== 'string' || !REQUEST_ID_RE.test(v)) {
+    return fail('INVALID_INPUT', `requestId must be ≤${MAX_REQUEST_ID_CHARS} chars of [A-Za-z0-9._:-]`);
+  }
+  return { ok: true };
+}
+
+/** Case/punctuation-insensitive title key — the exact-repeat identity. */
+export function normalizeTitleKey(title: unknown): string {
+  return String(title ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+const STOPWORDS = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'with', 'is', 'are', 'be', 'not', 'so', 'at', 'by', 'it', 'that', 'this']);
+
+/** Crude singular-ing so "sessions"/"session" and "reports"/"report" are one token —
+ *  enough for title matching, and cheaper than pulling in a stemmer. */
+const stem = (t: string): string => (t.length > 3 && t.endsWith('s') && !t.endsWith('ss') ? t.slice(0, -1) : t);
+
+function titleTokens(title: unknown): Set<string> {
+  return new Set(normalizeTitleKey(title).split(' ').filter((t) => t.length > 1 && !STOPWORDS.has(t)).map(stem));
+}
+
+export function sharedTitleTokens(a: unknown, b: unknown): number {
+  const tb = titleTokens(b);
+  let shared = 0;
+  for (const t of titleTokens(a)) if (tb.has(t)) shared++;
+  return shared;
+}
+
+/** How alike two titles are: 1 = same words, 0 = nothing shared.
+ *
+ *  `max(dice, overlap)` rather than Dice alone, because the real duplicates are LOPSIDED
+ *  — the second filing of an idea is usually a longer rewrite of the first ("CCR remote
+ *  registry out of sync with live tmux sessions" vs "…keeps stale entries — dead
+ *  sessions still registered, breaking cloud/remote list visibility"). Dice divides by
+ *  the combined length and scores that pair 0.36, i.e. invisible; the overlap
+ *  coefficient divides by the SHORTER title and scores it 0.5. Caller-side a minimum
+ *  shared-token count keeps short titles from riding overlap to a false positive. */
+export function titleSimilarity(a: unknown, b: unknown): number {
+  const ta = titleTokens(a);
+  const tb = titleTokens(b);
+  if (ta.size === 0 || tb.size === 0) return 0;
+  let shared = 0;
+  for (const t of ta) if (tb.has(t)) shared++;
+  if (shared === 0) return 0;
+  const dice = (2 * shared) / (ta.size + tb.size);
+  const overlap = shared / Math.min(ta.size, tb.size);
+  return Math.max(dice, overlap);
+}
+
+/** The field validator: '' means "no key" (the default for items created without one). */
+export function validateRequestIdField(v: unknown): Validation {
+  if (v === '') return { ok: true };
+  return validateRequestId(v);
+}
+
+export interface CreateIdentity { requestId?: string; title: string; description?: string; now: number }
+
+/** An EXISTING item this create is a repeat of, or null to mint a new one. Pure, so the
+ *  policy is testable without a store:
+ *   - `requestId` is an exact contract — it matches however old the item is and whatever
+ *     the rest of the payload says (the FIRST write is authoritative);
+ *   - otherwise an identical title+description inside DUPLICATE_WINDOW_MS is treated as
+ *     the same intent (covers a retry that carried no key). Outside the window the same
+ *     title is a legitimate new filing.
+ *  Removed items never match — re-filing a killed idea must work. */
+export function findIdempotentMatch(
+  docs: readonly BacklogDoc[],
+  input: CreateIdentity,
+): { doc: BacklogDoc; reason: 'requestId' | 'exact-repeat' } | null {
+  if (input.requestId) {
+    const byKey = docs.find((d) => d.requestId === input.requestId);
+    if (byKey) return { doc: byKey, reason: 'requestId' };
+  }
+  const key = normalizeTitleKey(input.title);
+  const desc = String(input.description ?? '');
+  if (!key) return null;
+  const repeat = docs
+    .filter((d) => !d.removed
+      && normalizeTitleKey(d.title) === key
+      && String(d.description ?? '') === desc
+      && input.now - d.createdAt <= DUPLICATE_WINDOW_MS)
+    .sort((a, b) => a.createdAt - b.createdAt)[0];
+  return repeat ? { doc: repeat, reason: 'exact-repeat' } : null;
+}
+
+/** Near-duplicates worth telling the caller about — ADVISORY only. This is what the
+ *  2026-07-25 pairs actually were: one assistant turn firing rephrased siblings 13ms
+ *  apart, too different for any exact rule to catch, obvious to a similarity check. */
+export function findPossibleDuplicates(
+  docs: readonly BacklogDoc[],
+  title: string,
+  excludeId?: string,
+): { id: string; title: string; score: number }[] {
+  return docs
+    .filter((d) => !d.removed && d.name !== excludeId)
+    .map((d) => ({ id: d.name, title: d.title, score: titleSimilarity(title, d.title), shared: sharedTitleTokens(title, d.title) }))
+    // The shared-token floor is what keeps the overlap coefficient honest: two 2-word
+    // titles sharing one word would otherwise score 0.5 on nothing.
+    .filter((c) => c.score >= DUPLICATE_SIMILARITY && c.shared >= MIN_SHARED_TITLE_TOKENS)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, MAX_DUPLICATE_HINTS)
+    .map(({ id, title: t, score }) => ({ id, title: t, score: Math.round(score * 100) / 100 }));
+}
 
 export function validateTags(v: unknown): Validation {
   if (!Array.isArray(v)) return fail('INVALID_INPUT', 'tags must be an array of strings');

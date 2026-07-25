@@ -15,8 +15,9 @@ import {
   BACKLOG_DATASET, type BacklogPort,
 } from '../../mcp-server/registry/backlog-store';
 import {
-  appendCapped, buildBacklogGraph, normalizeTags, toApiItem, toListRow,
-  validateBacklogId,
+  appendCapped, buildBacklogGraph, normalizePriority, normalizeStatus, normalizeTags,
+  normalizeType, toApiItem, toListRow,
+  validateBacklogId, validateRequestId,
   BACKLOG_EDGE_KINDS, MAX_DISCUSSION_ENTRIES, MAX_REVIEWS, REVIEW_VERDICTS, SESSION_KINDS,
   type BacklogDiscussionEntry, type BacklogDoc, type BacklogEdgeKind, type BacklogReview,
   type BacklogReviewVerdict, type BacklogSessionKind, type BacklogState,
@@ -26,6 +27,7 @@ import { thisNode } from '../../mission/mission-store';
 import { resolveMcpActor } from '../../mission/mission-actor';
 import { resolveCallerCandidates, type CallerCandidates } from '../../mcp-server/mcp-session-resolver';
 import { anchorToOrigin, realOriginAnchor, type OriginAnchorDeps } from './origin-anchor';
+import { stripRoutingKeys } from './transport-keys';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string } }
 const ok = <T>(data: T): Envelope => ({ success: true, data });
@@ -142,25 +144,45 @@ export async function handleBacklogHistory(id: string, port?: BacklogPort): Prom
 
 // ── writes (origin-anchored) ───────────────────────────────────────────────
 
+/** Coerce a caller-plausible enum value ("medium", "done", "enhancement") to the
+ *  canonical token; an unmappable value falls THROUGH unchanged so the store's
+ *  validator produces the real refusal (which now echoes what was sent). */
+function coerced<T>(raw: unknown, normalize: (v: unknown) => T | null): T {
+  return (normalize(raw) ?? raw) as T;
+}
+
 export async function handleBacklogCreate(
   b: Record<string, unknown>,
   port?: BacklogPort, actor?: MissionActor, origin?: OriginAnchorDeps,
 ): Promise<Envelope> {
   const hopped = b._originHop === true;
   delete b._originHop;
+  stripRoutingKeys(b);
   const anchored = hopped ? null : await anchorToOrigin(origin, '/backlog', b, BACKLOG_ANCHOR_LABEL);
   if (anchored) return anchored;
   const who = actor ?? await actorFor(b);
   if (typeof b.title !== 'string' || b.title.trim().length === 0) return fail('INVALID_INPUT', 'title (non-empty string) is required');
   const fields: Partial<BacklogState> & { title: string } = { title: b.title.trim() };
   if (b.description !== undefined) fields.description = String(b.description);
-  if (b.type !== undefined) fields.type = b.type as BacklogState['type'];
-  if (b.status !== undefined) fields.status = b.status as BacklogState['status'];
-  if (b.priority !== undefined) fields.priority = b.priority as BacklogState['priority'];
+  if (b.type !== undefined) fields.type = coerced(b.type, normalizeType);
+  if (b.status !== undefined) fields.status = coerced(b.status, normalizeStatus);
+  if (b.priority !== undefined) fields.priority = coerced(b.priority, normalizePriority);
   if (b.tags !== undefined) fields.tags = normalizeTags(b.tags);
+  if (b.requestId !== undefined) {
+    const vr = validateRequestId(b.requestId);
+    if (!vr.ok) return fail(vr.code, vr.message);
+    fields.requestId = String(b.requestId);
+  }
   try {
     const r = await createBacklogItem(fields, who, port);
-    return ok({ item: toApiItem(r.doc), changed: r.changed });
+    return ok({
+      item: toApiItem(r.doc),
+      changed: r.changed,
+      // A repeat resolves to the SAME item — the caller can retry a lost/late ack
+      // without ever minting a second one.
+      ...(r.idempotent ? { idempotent: true, idempotentReason: r.idempotent.reason } : {}),
+      ...(r.possibleDuplicates ? { possibleDuplicates: r.possibleDuplicates } : {}),
+    });
   } catch (e) {
     return fail(codeOf(e), msgOf(e));
   }
@@ -174,6 +196,10 @@ export async function handleBacklogUpdate(
 ): Promise<Envelope> {
   const hopped = b._originHop === true;
   delete b._originHop;
+  // `node` is transport (hub routing), and `requestId` is a create-time idempotency key
+  // that updates do not need (a patch is already idempotent — an unchanged patch is a
+  // no-op rev). Consume both so neither trips the unknown-field guard below.
+  stripRoutingKeys(b, ['requestId']);
   const anchored = hopped ? null : await anchorToOrigin(origin, `/backlog/${encodeURIComponent(id)}`, b, BACKLOG_ANCHOR_LABEL);
   if (anchored) return anchored;
   const who = actor ?? await actorFor(b);
@@ -187,9 +213,9 @@ export async function handleBacklogUpdate(
   const patch: Partial<BacklogState> = {};
   if (b.title !== undefined) patch.title = typeof b.title === 'string' ? b.title.trim() : (b.title as never);
   if (b.description !== undefined) patch.description = b.description as string;
-  if (b.type !== undefined) patch.type = b.type as BacklogState['type'];
-  if (b.status !== undefined) patch.status = b.status as BacklogState['status'];
-  if (b.priority !== undefined) patch.priority = b.priority as BacklogState['priority'];
+  if (b.type !== undefined) patch.type = coerced(b.type, normalizeType);
+  if (b.status !== undefined) patch.status = coerced(b.status, normalizeStatus);
+  if (b.priority !== undefined) patch.priority = coerced(b.priority, normalizePriority);
   if (b.tags !== undefined) patch.tags = normalizeTags(b.tags);
   if (Object.keys(patch).length === 0) return fail('INVALID_INPUT', 'no fields to update');
   try {

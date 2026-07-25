@@ -7,10 +7,11 @@
  *  `equals`/`mutate` factory extensions for junk-rev-free, race-free appends. */
 import {
   BACKLOG_DATASET, BACKLOG_HISTORY_CAP,
-  genBacklogId, jsonEq, countOf, refuseSelfEdges,
+  findIdempotentMatch, findPossibleDuplicates,
+  genBacklogId, jsonEq, countOf, normalizeTitleKey, refuseSelfEdges,
   validateBacklogId, validateDescription, validateDiscussion, validateEdges,
-  validatePriority, validateRemoved, validateReviews, validateStatus, validateTags,
-  validateTitle, validateType,
+  validatePriority, validateRemoved, validateRequestIdField, validateReviews,
+  validateStatus, validateTags, validateTitle, validateType,
   type BacklogDoc, type BacklogState,
 } from './backlog-model';
 import { lenOf, type OverlayDocPort } from './doc-model';
@@ -45,6 +46,7 @@ const backlogStore = createOverlayDocStore<BacklogState>({
     { key: 'discussion', defaultValue: [], validate: validateDiscussion, equals: jsonEq, summarize: countOf },
     { key: 'reviews', defaultValue: [], validate: validateReviews, equals: jsonEq, summarize: countOf },
     { key: 'removed', defaultValue: false, validate: validateRemoved },
+    { key: 'requestId', defaultValue: '', validate: validateRequestIdField },
   ],
   // Self-edges need the doc's own name — refuseWrite covers EVERY write path incl. rollback.
   refuseWrite: refuseSelfEdges,
@@ -58,22 +60,58 @@ export async function listBacklogDocs(port?: BacklogPort): Promise<BacklogDoc[]>
   return backlogStore.list(port);
 }
 
-/** Atomic create-if-absent under a freshly generated id (collision ⇒ coded throw —
- *  practically unreachable with 8 hex chars, but never silently merged). */
+/** Serialize creates that share an identity key, so two calls racing on the same
+ *  requestId (or the same title) cannot both pass the "does it exist yet?" check and
+ *  both mint an id. The per-NAME lock inside the doc-store cannot help here: each
+ *  create invents a different name, so they never contend. Writes are origin-anchored,
+ *  so one process sees them all — same reasoning as the store's own lock. */
+const createLocks = new Map<string, Promise<unknown>>();
+function withCreateLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = createLocks.get(key) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  const tail = run.catch(() => undefined);
+  createLocks.set(key, tail);
+  void tail.finally(() => { if (createLocks.get(key) === tail) createLocks.delete(key); });
+  return run;
+}
+
+export interface BacklogCreateResult {
+  doc: BacklogDoc;
+  changed: boolean;
+  /** Set when this create RESOLVED to an existing item instead of minting one. */
+  idempotent?: { reason: 'requestId' | 'exact-repeat' };
+  /** Advisory near-duplicates (never blocks the write). */
+  possibleDuplicates?: { id: string; title: string; score: number }[];
+}
+
+/** Create — IDEMPOTENT. A repeat (same `requestId`, or an identical title+description
+ *  inside the dedupe window) resolves to the EXISTING item instead of minting a second,
+ *  so a caller that retries after a lost/late ack cannot duplicate. Otherwise: atomic
+ *  create-if-absent under a freshly generated id (collision ⇒ coded throw — practically
+ *  unreachable with 8 hex chars, but never silently merged). */
 export async function createBacklogItem(
   fields: Partial<BacklogState> & { title: string },
   actor: MissionActor,
   port?: BacklogPort,
   idGen: () => string = genBacklogId,
-): Promise<{ doc: BacklogDoc; changed: boolean }> {
+  now: number = Date.now(),
+): Promise<BacklogCreateResult> {
   const vt = validateTitle(fields.title);
   if (!vt.ok) throwCoded(vt.code, vt.message);
-  const id = idGen();
-  const r = await backlogStore.mutate(id, (prev) => {
-    if (prev) throwCoded('ID_COLLISION', `backlog id ${id} already exists — retry the create`);
-    return fields;
-  }, actor, port);
-  return { doc: r.doc as BacklogDoc, changed: r.changed };
+  const requestId = typeof fields.requestId === 'string' ? fields.requestId : '';
+  const lockKey = requestId ? `rid:${requestId}` : `title:${normalizeTitleKey(fields.title)}`;
+  return withCreateLock(lockKey, async () => {
+    const docs = await listBacklogDocs(port);
+    const hit = findIdempotentMatch(docs, { requestId, title: fields.title, description: fields.description, now });
+    if (hit) return { doc: hit.doc, changed: false, idempotent: { reason: hit.reason } };
+    const dups = findPossibleDuplicates(docs, fields.title);
+    const id = idGen();
+    const r = await backlogStore.mutate(id, (prev) => {
+      if (prev) throwCoded('ID_COLLISION', `backlog id ${id} already exists — retry the create`);
+      return requestId ? { ...fields, requestId } : fields;
+    }, actor, port);
+    return { doc: r.doc as BacklogDoc, changed: r.changed, ...(dups.length ? { possibleDuplicates: dups } : {}) };
+  });
 }
 
 /** Merge-update an EXISTING item (missing ⇒ coded NOT_FOUND, unlike raw put which

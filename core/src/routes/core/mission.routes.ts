@@ -29,6 +29,7 @@ import { getWorkflow, listWorkflows, putWorkflow, rollbackWorkflow, getWorkflowR
 import { isControllerActor, type WorkflowEditPolicy } from '../../mission/workflow-model';
 import { WORKFLOW_DATASET } from '../../mission/workflow-store';
 import { anchorToOrigin, realOriginAnchor as sharedRealOriginAnchor, type OriginAnchorDeps } from './origin-anchor';
+import { stripRoutingKeys } from './transport-keys';
 import { DEFAULT_WORKFLOWS } from '../../mission/workflow-defaults';
 import { buildOnboardMission, detectTransport, pickClusterLeader, markDriveText } from '../../mission/mission-onboard';
 
@@ -211,6 +212,11 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
   // `cluster` to reach the right store — otherwise the write hits "no mission <id>"
   // on the wrong cluster and its progress never reaches the controller. Consumed here
   // (never a patch field). Absent, or our own cluster → behaviour is unchanged.
+  // `node` is the connector's ROUTING key — consumed at the hub, vestigial by the time
+  // it lands here. It used to reach the unknown-field guard below and refuse the WHOLE
+  // patch (2026-07-25: `unsupported field(s): "node"` killed a mission_update while
+  // reads sailed through). Consumed like `cluster`; a genuine typo is still refused.
+  stripRoutingKeys(b);
   if ('cluster' in b) {
     const targetCluster = str(b.cluster);
     delete (b as Record<string, unknown>).cluster; // routing hint, not a mission field

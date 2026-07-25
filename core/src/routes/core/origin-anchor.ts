@@ -16,6 +16,10 @@
 
 export interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string } }
 
+/** Below the relay's own 25s local-request / 30s gateway cut-offs, so a stuck hop is
+ *  reported as a timeout by US (with the origin named) rather than by the relay. */
+export const ORIGIN_PROXY_TIMEOUT_MS = 20_000;
+
 export interface OriginAnchorDeps {
   getOrigin: () => Promise<string | null>;
   thisNode: () => string;
@@ -40,16 +44,25 @@ export function realOriginAnchor(dataset: string): OriginAnchorDeps {
     proxyPost: async (n, p, b) => {
       const { getHubConfig } = require('../../hub-client/hub-config') as typeof import('../../hub-client/hub-config');
       const { getHubHttpUrl } = require('../../hub-client/hub-proxy') as typeof import('../../hub-client/hub-proxy');
+      // Bounded on purpose: the relay itself gives up at 25s (local request) / 30s
+      // (gateway) and answers 504, so an UNBOUNDED fetch here would sit past the point
+      // where the origin may already have committed — the lost-ack shape. Aborting
+      // first keeps that case classifiable as ORIGIN_TIMEOUT instead of a hang.
       const res = await fetch(`${getHubHttpUrl()}/api/tier-agent/machines/${n}/proxy${p}`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${getHubConfig().apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(b),
+        signal: AbortSignal.timeout(ORIGIN_PROXY_TIMEOUT_MS),
       });
       const text = await res.text();
       let json: unknown = null;
       try { json = JSON.parse(text); } catch { /* non-JSON relay error */ }
       if (json && typeof json === 'object' && 'success' in (json as object)) return json;
-      if (!res.ok) throw new Error(`Proxy POST to ${n}${p} returned ${res.status}`);
+      if (!res.ok) {
+        const e = new Error(`Proxy POST to ${n}${p} returned ${res.status}`) as Error & { status?: number };
+        e.status = res.status;
+        throw e;
+      }
       return json ?? text;
     },
   };
@@ -65,9 +78,65 @@ export function isRegistryEnvelope(v: unknown): v is Envelope {
   return !!e.error && typeof e.error === 'object' && typeof (e.error as { code?: unknown }).code === 'string';
 }
 
+/** Positive evidence that the request was IN FLIGHT when it failed — i.e. the origin
+ *  may already have committed the write and only the ack died. That is the case a
+ *  caller must not blindly retry.
+ *
+ *  Classified on evidence rather than by defaulting: ORIGIN_UNREACHABLE is a long-
+ *  standing fail-closed contract shared by four registries (workflow, tool-registry,
+ *  assist-content, backlog), and an unclassifiable throw from the proxy is almost
+ *  always connection-level — nothing was sent. A carried HTTP `status` counts as
+ *  evidence because it proves the request DID reach the hub. */
+const IN_FLIGHT_RE = /timeout|timed out|abort|socket hang up|ECONNRESET|EPIPE|ETIMEDOUT/i;
+const IN_FLIGHT_NAMES = new Set(['AbortError', 'TimeoutError']);
+
+function failedInFlight(e: unknown): boolean {
+  const err = e as Error & { status?: number };
+  if (IN_FLIGHT_NAMES.has(err?.name)) return true;
+  if (typeof err?.message === 'string' && IN_FLIGHT_RE.test(err.message)) return true;
+  return typeof err?.status === 'number' && (err.status === 408 || err.status >= 500);
+}
+
+/** Relay shapes that mean "the hop timed out somewhere" rather than "here is a body":
+ *  the ApiRelayHandler answers 504 `Gateway timeout - local API did not respond` after
+ *  30s, and its inner local request gives up at 25s. */
+function relayTimedOut(v: unknown): boolean {
+  if (!v || typeof v !== 'object') return false;
+  const o = v as { status?: unknown; error?: unknown };
+  if (typeof o.status === 'number' && [408, 504, 522, 524].includes(o.status)) return true;
+  return typeof o.error === 'string' && /timeout|timed out/i.test(o.error);
+}
+
+function unreachableEnvelope(label: string, target: string, detail: string): Envelope {
+  return {
+    success: false,
+    error: {
+      code: 'ORIGIN_UNREACHABLE',
+      message: `${label} dataset origin "${target}" unreachable — the write was NOT applied; retry shortly (${detail})`,
+    },
+  };
+}
+
+function timeoutEnvelope(label: string, target: string, detail: string): Envelope {
+  return {
+    success: false,
+    error: {
+      code: 'ORIGIN_TIMEOUT',
+      message: `${label} dataset origin "${target}" did not answer in time — the write MAY HAVE BEEN APPLIED there. `
+        + `Do NOT blindly retry: re-send with the SAME requestId, which resolves to the item that was created instead of minting a duplicate. `
+        + `Verify with a read if unsure. (${detail})`,
+    },
+  };
+}
+
 /** Proxy a write to the dataset origin when it is another node; null ⇒ handle locally
  *  (owned here / unstamped / no deps). Fail-CLOSED on proxy errors. `label` names the
- *  registry in error messages (e.g. "workflow", "tool-registry", "assist-content"). */
+ *  registry in error messages (e.g. "workflow", "tool-registry", "assist-content").
+ *
+ *  Three distinguishable outcomes, because "it failed" is not actionable on a WRITE:
+ *   - the origin's own refusal, relayed VERBATIM (rejected ⇒ nothing written, retry safe);
+ *   - ORIGIN_UNREACHABLE (provably never sent ⇒ nothing written, retry safe);
+ *   - ORIGIN_TIMEOUT (ambiguous ⇒ may have landed, retry only with the same requestId). */
 export async function anchorToOrigin(
   origin: OriginAnchorDeps | undefined,
   path: string,
@@ -85,11 +154,17 @@ export async function anchorToOrigin(
     // write back to a new-build leader, which would origin-anchor it away again.
     const result = await origin.proxyPost(target, path, { ...(body as Record<string, unknown> ?? {}), _originHop: true });
     if (isRegistryEnvelope(result)) return result;
+    // A relay TIMEOUT body has no `success`, so it used to slip through the branch below
+    // and masquerade as a successful write — the worst possible answer for this class.
+    if (relayTimedOut(result)) return timeoutEnvelope(label, target, `relay reported ${JSON.stringify(result).slice(0, 120)}`);
     if (result && typeof result === 'object' && !('success' in (result as object))) {
       return { success: true, data: (result as { data?: unknown })?.data ?? result };
     }
-    return { success: false, error: { code: 'ORIGIN_UNREACHABLE', message: `${label} dataset origin "${target}" returned an unrecognized relay response; retry shortly` } };
+    return unreachableEnvelope(label, target, 'unrecognized relay response');
   } catch (e) {
-    return { success: false, error: { code: 'ORIGIN_UNREACHABLE', message: `${label} dataset origin "${target}" unreachable; retry shortly (${(e as Error).message})` } };
+    const detail = (e as Error).message;
+    return failedInFlight(e)
+      ? timeoutEnvelope(label, target, detail)
+      : unreachableEnvelope(label, target, detail);
   }
 }

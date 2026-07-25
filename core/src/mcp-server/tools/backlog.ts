@@ -42,7 +42,20 @@ function hinted(a: Record<string, unknown>): Record<string, unknown> {
 export const BACKLOG_TOOL_DEFS = [
   { name: 'backlog_list', description: 'List backlog items (the fleet-synced idea/feature/issue/bug/task graph — things NOT yet turned into missions). Filters: {status?, type?, tag?, includeRemoved?}. Returns compact rows with edge/discussion/review counts.', annotations: { readOnlyHint: true }, inputSchema: obj({ status: { ...S, enum: STATUSES }, type: { ...S, enum: TYPES }, tag: S, includeRemoved: B }) },
   { name: 'backlog_get', description: 'Get ONE backlog item by id (bl_…): full markdown description, edges, discussion, reviews, and version history (every write is a numbered rev).', annotations: { readOnlyHint: true }, inputSchema: obj({ id: S }, ['id']) },
-  { name: 'backlog_create', description: 'Create a backlog item: {title, description? (markdown), type?: idea|feature|issue|bug|task, priority?: low|med|high|critical, tags?}. Returns the item with its generated id (bl_…). Use backlog_link afterwards to relate it to other items.', inputSchema: obj({ title: S, description: S, type: { ...S, enum: TYPES }, priority: { ...S, enum: PRIORITIES }, tags: TAGS }, ['title']) },
+  {
+    name: 'backlog_create',
+    description: 'Create a backlog item: {title, description? (markdown), type?: idea|feature|issue|bug|task, '
+      + 'priority?: low|med|high|critical (common synonyms like "medium"/"urgent"/"p1" are accepted and mapped), tags?, requestId?}. '
+      + 'Returns the item with its generated id (bl_…). Use backlog_link afterwards to relate it to other items. '
+      + 'IDEMPOTENT: pass a requestId and a repeat of the SAME call resolves to the SAME item (response carries idempotent:true) — '
+      + 'always reuse it when retrying after an ORIGIN_TIMEOUT, which means the write may already have landed. '
+      + 'Do NOT file the same idea twice in one turn: if the response carries possibleDuplicates, link duplicate-of or backlog_remove the extra.',
+    inputSchema: obj({
+      title: S, description: S,
+      type: { ...S, enum: TYPES }, priority: { ...S, enum: PRIORITIES }, tags: TAGS,
+      requestId: { ...S, description: 'Idempotency key (≤128 chars of [A-Za-z0-9._:-]). Reuse the SAME value when retrying so a lost/late ack cannot create a duplicate.' },
+    }, ['title']),
+  },
   { name: 'backlog_update', description: 'Update fields of a backlog item: {id, title?, description?, type?, status? (open|discussing|accepted|deferred|rejected|planned|implemented), priority?, tags?}. Edges/discussion/reviews/removal have their own tools. Every change is a new rev.', inputSchema: obj({ id: S, title: S, description: S, type: { ...S, enum: TYPES }, status: { ...S, enum: STATUSES }, priority: { ...S, enum: PRIORITIES }, tags: TAGS }, ['id']) },
   { name: 'backlog_link', description: 'Add a typed edge between backlog items: {from, to, kind: depends-on|blocks|relates-to|parent-of|duplicate-of|spawned-mission}. depends-on means FROM depends on TO. Duplicate edges no-op; the target must exist.', inputSchema: obj({ from: S, to: S, kind: { ...S, enum: EDGE_KINDS } }, ['from', 'to', 'kind']) },
   { name: 'backlog_unlink', description: 'Remove edge(s) from→to: {from, to, kind?} — omit kind to remove every edge to that target.', inputSchema: obj({ from: S, to: S, kind: { ...S, enum: EDGE_KINDS } }, ['from', 'to']) },
@@ -73,6 +86,7 @@ export const BACKLOG_HANDLERS: Record<string, (args: Record<string, unknown>) =>
       const body: Record<string, unknown> = { title: a.title, description: a.description, type: a.type, priority: a.priority };
       const tags = coerceTags(a.tags);
       if (tags !== undefined) body.tags = tags;
+      if (a.requestId !== undefined) body.requestId = String(a.requestId);
       return pretty(await workerPost('/backlog', hinted(body)));
     } catch (e) { return err((e as Error).message); }
   },
