@@ -456,6 +456,14 @@ export async function startCore(config?: ServiceConfig): Promise<{ success: bool
     const val = process.env[key] || dotenv[key];
     if (val) forwardEnv[key] = val;
   }
+  // The voice relay's tuning knobs (VOICE_CHROME_IDLE_MS, VOICE_CHROME_SETTLE_MS,
+  // VOICE_PRIMED_PAGE, …) are read by Core at runtime, so they must reach the CHILD.
+  // Forwarded by PREFIX rather than by name: this list silently dropped anything not
+  // spelled out, so a knob set in .env looked applied but never was (a 4h idle timeout
+  // set to stop the voice browser being torn down had no effect at all).
+  for (const [key, val] of Object.entries({ ...dotenv, ...process.env })) {
+    if (key.startsWith('VOICE_') && val) forwardEnv[key] = String(val);
+  }
   forwardEnv.API_PORT = String(apiPort);
   // The HTTPS terminator (LM_HTTPS=1) proxies to the web port — make sure the core
   // process knows the actual one even when only defaults are in play.

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 
 const MODELS = [
+  { id: 'claude-opus-5', label: 'Opus 5' },
   { id: 'claude-opus-4-8', label: 'Opus 4.8' },
   { id: 'claude-sonnet-5', label: 'Sonnet 5' },
   { id: 'claude-fable-5', label: 'Fable 5' },
