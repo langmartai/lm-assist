@@ -222,6 +222,15 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
     applyAcc(() => ({ ...initialDemuxAcc, state: 'connecting' }));
     setErrorMsg(null);
     handledToolIdsRef.current = new Set();
+    // Clear the PREVIOUS session's in-flight flags. stop() raises pendingAbort when it lands
+    // while an engine start is still resolving, and nothing used to lower it again — so the very
+    // next start()'s bootEngine() saw a stale abort, tore the fresh engine down and returned.
+    // The socket still opened, so the relay logged a session and the overlay showed "Listening…"
+    // (that state reflects the TRANSPORT), while no audio was ever captured and the call died.
+    // Latent for any stop()/start() cycle — the Retry button, an error-then-restart — and made
+    // reliable by the model-change reconnect, which always stops and immediately starts.
+    pendingAbortRef.current = false;
+    startingEngineRef.current = false;
 
     const ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
