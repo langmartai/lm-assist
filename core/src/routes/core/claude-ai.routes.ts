@@ -491,7 +491,11 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
           const wrapped = upstreamWrap(r);
           if (!wrapped.success) return wrapped;
           const body: any = r.body || {};
-          return { success: true, data: { uuid: body.uuid || uuid, name: body.name, messages: parseChatMessages(body) } };
+          // `model` is the model claude.ai PINNED to this conversation at creation. It is
+          // surfaced because it cannot be changed afterwards — claude.ai answers a model update
+          // on an existing conversation with 400 "Cannot update model for existing conversation"
+          // — so a client that lets the user pick one is showing a control that does nothing.
+          return { success: true, data: { uuid: body.uuid || uuid, name: body.name, model: body.model, messages: parseChatMessages(body) } };
         } catch (err) {
           return catchOAuth(err);
         }

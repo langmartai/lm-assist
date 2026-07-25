@@ -9,6 +9,10 @@ export interface ChatAttachment { file_name: string; file_type: string; file_siz
 export interface ChatDetailView {
   uuid: string;
   name?: string;
+  /** The model claude.ai PINNED to this conversation at creation. Not changeable afterwards —
+   *  claude.ai rejects a model update on an existing conversation with 400 "Cannot update model
+   *  for existing conversation" (measured). Present for existing chats, absent for a fresh seed. */
+  model?: string;
   messages: Array<{ role: string; type: string; text: string; thinking?: string; toolCalls?: Array<{ name: string; input?: unknown; result?: string; isError?: boolean }> }>;
 }
 
