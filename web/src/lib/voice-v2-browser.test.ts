@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { voiceV2BrowserSupported } from './voice-v2-browser';
+import { voiceV2BrowserSupported, voiceV2BrowserSupport } from './voice-v2-browser';
 
 /**
  * The predicate duplicates `supported()` from the engine asset (a public static file that is
@@ -17,8 +17,9 @@ const ENGINE = fs.readFileSync(
 const g = globalThis as unknown as Record<string, unknown>;
 
 /** Install a fake browser env with the given capabilities present. */
-function withCaps(caps: { encoder?: boolean; processor?: boolean; getUserMedia?: boolean; audioContext?: boolean }) {
+function withCaps(caps: { encoder?: boolean; processor?: boolean; getUserMedia?: boolean; audioContext?: boolean; secure?: boolean }) {
   g.window = g;
+  g.isSecureContext = caps.secure !== false;
   if (caps.encoder) g.AudioEncoder = function () {};
   if (caps.processor) g.MediaStreamTrackProcessor = function () {};
   g.navigator = caps.getUserMedia ? { mediaDevices: { getUserMedia: () => {} } } : { mediaDevices: undefined };
@@ -26,7 +27,7 @@ function withCaps(caps: { encoder?: boolean; processor?: boolean; getUserMedia?:
 }
 
 afterEach(() => {
-  for (const k of ['window', 'AudioEncoder', 'MediaStreamTrackProcessor', 'navigator', 'AudioContext', 'webkitAudioContext']) {
+  for (const k of ['window', 'AudioEncoder', 'MediaStreamTrackProcessor', 'navigator', 'AudioContext', 'webkitAudioContext', 'isSecureContext']) {
     delete g[k];
   }
 });
@@ -59,6 +60,31 @@ describe('voiceV2BrowserSupported', () => {
 
   it('is false during SSR, where there is no window at all', () => {
     expect(voiceV2BrowserSupported()).toBe(false);
+  });
+
+  // The two failures that both hid the control, and why they must NOT share a message: one is
+  // fixed by accepting a certificate, the other by changing browser. Reporting a flat
+  // "unsupported" would send someone to reinstall a browser over a cert problem.
+  it('blames the CERTIFICATE, not the browser, when the origin is not a secure context', () => {
+    withCaps({ encoder: true, processor: true, audioContext: true, secure: false });
+    const r = voiceV2BrowserSupport();
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/secure context/i);
+    expect(r.reason).toMatch(/certificate/i);
+    expect(r.reason).not.toMatch(/WebCodecs/i);
+  });
+
+  it('blames WebCodecs (Chrome/Edge) on Safari/Firefox, where the mic API DOES exist', () => {
+    withCaps({ processor: true, getUserMedia: true, audioContext: true, secure: true });
+    const r = voiceV2BrowserSupport();
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/WebCodecs/i);
+    expect(r.reason).not.toMatch(/certificate/i);
+  });
+
+  it('reports no reason when supported', () => {
+    withCaps({ encoder: true, processor: true, getUserMedia: true, audioContext: true });
+    expect(voiceV2BrowserSupport()).toEqual({ ok: true, reason: '' });
   });
 
   it('checks exactly the capabilities the engine asset checks (anti-drift)', () => {
