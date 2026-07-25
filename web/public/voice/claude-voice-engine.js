@@ -64,6 +64,33 @@ function resample(ad) {
 }
 
 /**
+ * RMS of one AudioData frame, 0..1 — measured on the samples we are ABOUT TO ENCODE, so it
+ * reflects exactly what claude.ai receives.
+ *
+ * Deliberately NOT an AnalyserNode: that reads through the AudioContext, which starts
+ * suspended under autoplay policy and would report a flat zero for a perfectly good mic. This
+ * path touches no AudioContext at all.
+ *
+ * Why this exists: `up>0` in the relay log only proves frames FLOWED. Opus encodes silence just
+ * as happily as speech, so a muted or wrong-input mic produces a full-rate stream of nothing,
+ * claude.ai transcribes nothing, and the session dies with downMsg=2 and no reply — visually
+ * identical to a server fault. This is the number that tells those two apart.
+ */
+function frameLevel(ad) {
+  try {
+    const n = ad.numberOfFrames;
+    if (!n) return 0;
+    const buf = new Float32Array(n);
+    ad.copyTo(buf, { planeIndex: 0, format: 'f32-planar' });
+    let sum = 0;
+    for (let i = 0; i < n; i++) sum += buf[i] * buf[i];
+    return Math.sqrt(sum / n);
+  } catch (e) {
+    return 0;
+  }
+}
+
+/**
  * Create one voice-engine instance. `start()` opens the mic (AEC3 constraints),
  * captures @48k, resamples to 16k, and streams WebCodecs-encoded Opus packets to
  * `onFrame`. `playPcm()` enqueues one downlink PCM frame (16-bit LE mono @16k)
@@ -86,6 +113,9 @@ export function createClaudeVoiceEngine() {
   let playHead = 0;
   let onFrame = null;
   let onState = null;
+  let level = 0;          // RMS of the most recent encoded frame
+  let peak = 0;           // loudest frame seen since start() — survives a pause in speech
+  let framesSeen = 0;
 
   function setState(s) {
     try { if (onState) onState(s); } catch (e) { /* noop */ }
@@ -98,6 +128,9 @@ export function createClaudeVoiceEngine() {
         if (r.done) break;
         let frame = r.value;
         if (frame.sampleRate !== SR_OUT) frame = resample(frame);
+        level = frameLevel(frame);
+        if (level > peak) peak = level;
+        framesSeen++;
         try { if (enc && enc.state === 'configured') enc.encode(frame); } catch (e) { /* noop */ }
         frame.close();
       }
@@ -143,6 +176,7 @@ export function createClaudeVoiceEngine() {
 
   function stopLocal() {
     running = false;
+    level = 0; peak = 0; framesSeen = 0;
     try { if (reader) reader.cancel(); } catch (e) { /* noop */ }
     reader = null;
     try { if (enc && enc.state !== 'closed') enc.close(); } catch (e) { /* noop */ }
@@ -255,5 +289,13 @@ export function createClaudeVoiceEngine() {
     setState('stopped');
   }
 
-  return { start, playPcm, clearPlayback, stop };
+  /** Live mic input: `level` = most recent frame's RMS, `peak` = loudest since start(),
+   *  `frames` = how many have been encoded. A moving level with a flat peak-near-zero means the
+   *  mic is open but capturing silence — the single most common "voice is broken" cause, and
+   *  otherwise invisible from either side of the relay. */
+  function micInput() {
+    return { level: level, peak: peak, frames: framesSeen };
+  }
+
+  return { start, playPcm, clearPlayback, stop, micInput };
 }

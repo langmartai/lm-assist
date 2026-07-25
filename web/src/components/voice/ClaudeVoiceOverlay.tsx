@@ -76,6 +76,7 @@ export function ClaudeVoiceOverlay({
   const {
     state,
     error,
+    micInput,
     transcript,
     assistantText,
     liveModel,
@@ -154,6 +155,22 @@ export function ClaudeVoiceOverlay({
         {/* The REASON, not just the state. A bare "Voice error" is indistinguishable between a
             denied mic, a dead relay and a CF-gated upstream — which is exactly how a prod voice
             failure stayed un-actionable. Only rendered when there is something to say. */}
+        {/* Live mic meter. Without it, "voice isn't working" is unfalsifiable from the UI: a muted
+            or wrong-input mic streams silence at full frame rate, so the relay logs up>0, claude.ai
+            transcribes nothing, and it looks exactly like a server fault. A flat bar while you
+            speak means the problem is the microphone, not the relay. */}
+        {(state === 'listening' || state === 'thinking' || state === 'speaking') && (
+          <span title={`mic level ${micInput.level.toFixed(3)} · peak ${micInput.peak.toFixed(3)} · ${micInput.frames} frames encoded`}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11 }}>
+            <span style={{ position: 'relative', width: 54, height: 5, borderRadius: 3, background: 'var(--color-border)', overflow: 'hidden' }}>
+              <span style={{ position: 'absolute', inset: 0, width: `${Math.min(100, micInput.level * 400)}%`,
+                background: micInput.peak > 0.01 ? 'var(--color-status-green)' : 'var(--color-status-yellow)', transition: 'width 90ms linear' }} />
+            </span>
+            {micInput.frames > 40 && micInput.peak <= 0.01 && (
+              <span style={{ color: 'var(--color-status-yellow)' }}>mic silent — check input device</span>
+            )}
+          </span>
+        )}
         {state === 'error' && error && (
           <span title={error} style={{ fontSize: 11.5, color: 'var(--color-text-tertiary)', maxWidth: 420, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             — {error}

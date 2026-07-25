@@ -17,6 +17,8 @@ interface ClaudeVoiceEngine {
   playPcm(pcm: ArrayBuffer | Int16Array): void;
   clearPlayback(): void;
   stop(): void;
+  /** Present from the mic-level build onward; optional so an older cached asset still works. */
+  micInput?: () => { level: number; peak: number; frames: number };
 }
 
 async function loadEngine(): Promise<ClaudeVoiceEngine> {
@@ -69,6 +71,11 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
   // CF-gated upstream — and left prod failures diagnosable only from a devtools console
   // nobody has open on the device that hit them.
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Live mic input, polled from the engine. `up>0` in the relay log only proves frames flowed —
+  // opus encodes silence just as happily as speech — so this is the only signal that
+  // distinguishes "your mic is muted / wrong input" from "the relay is broken". Those two look
+  // identical from every other vantage point, which is why they were so hard to tell apart.
+  const [micInput, setMicInput] = useState<{ level: number; peak: number; frames: number }>({ level: 0, peak: 0, frames: 0 });
 
   const wsRef = useRef<WebSocket | null>(null);
   const engineRef = useRef<ClaudeVoiceEngine | null>(null);
@@ -106,6 +113,7 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
     try { engineRef.current?.stop(); } catch { /* noop */ }
     engineRef.current = null;
     uplinkRef.current?.reset();
+    setMicInput({ level: 0, peak: 0, frames: 0 });
   }, []);
 
   /** One encoded Opus packet from the engine. Resolves `wsRef` per frame rather than closing over
@@ -126,6 +134,17 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
     teardownEngine();
     applyAcc((prev) => ({ ...prev, state: 'error' }));
   }, [closeWs, teardownEngine, applyAcc]);
+
+  // Poll the engine's input level while a session is live (10Hz — enough to look responsive,
+  // cheap enough to ignore). Stops itself as soon as the engine is gone.
+  useEffect(() => {
+    const t = setInterval(() => {
+      const eng = engineRef.current;
+      if (!eng || typeof eng.micInput !== 'function') return;
+      try { setMicInput(eng.micInput()); } catch { /* noop */ }
+    }, 100);
+    return () => clearInterval(t);
+  }, []);
 
   // Release the mic/engine/socket if the component unmounts mid-session. Refs only (always
   // current, no stale closure) — mirrors useDictation's unmount effect.
@@ -330,6 +349,8 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
     state: acc.state,
     /** Why the session failed, when `state === 'error'`. Null otherwise. */
     error: errorMsg,
+    /** Live mic input (level/peak/frames). peak≈0 while speaking ⇒ the mic is capturing silence. */
+    micInput,
     transcript: acc.transcript,
     assistantText: acc.assistantText,
     liveModel: acc.liveModel,
