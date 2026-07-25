@@ -44,6 +44,8 @@ interface ConnectMsg {
   model?: string;
   effort?: string;
   thinkingMode?: string;
+  /** WHO speaks back — a `CLAUDE_VOICES` id; unknown/absent degrades to the default. */
+  voice?: string;
 }
 
 /** Injectable dependencies for `bridgeClaudeVoice` (production defaults via `defaultDeps`). */
@@ -199,6 +201,7 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
         model: connectMsg.model,
         effort: connectMsg.effort,
         thinkingMode: connectMsg.thinkingMode,
+        voice: connectMsg.voice,
       });
 
       const mgr = deps.makeChromeMgr();

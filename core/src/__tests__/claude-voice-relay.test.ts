@@ -39,14 +39,15 @@ class FakeChannel {
   }
 }
 
-interface Captured { handlers?: VoiceChannelHandlers }
+interface Captured { handlers?: VoiceChannelHandlers; voiceUrl?: string }
 
 /** ChromeMgr whose openVoicePage captures the wiring handlers + returns `channel`. An optional
  *  `gate` lets a test hold openVoicePage open to model "user hangs up mid-setup". */
 function makeMgr(channel: FakeChannel, captured: Captured, opts: { gate?: Promise<void> } = {}): ChromeMgr {
   return {
     ensureLoaded: async () => {},
-    openVoicePage: async (_voiceUrl, handlers): Promise<VoiceChannel> => {
+    openVoicePage: async (voiceUrl, handlers): Promise<VoiceChannel> => {
+      captured.voiceUrl = voiceUrl;
       captured.handlers = handlers;
       if (opts.gate) await opts.gate;
       return channel;
@@ -74,6 +75,30 @@ test('isClaudeVoiceUpgrade matches only /voice/claude/ws', () => {
   assert.equal(isClaudeVoiceUpgrade({ url: '/voice/claude/page-bridge' } as IncomingMessage), false);
   assert.equal(isClaudeVoiceUpgrade({ url: '/voice/stt/ws' } as IncomingMessage), false);
   assert.equal(isClaudeVoiceUpgrade({ url: undefined } as IncomingMessage), false);
+});
+
+test('the connect frame\'s voice reaches the claude.ai WS URL (and an unknown one degrades)', async () => {
+  // The whole point of the feature: WHO speaks back is chosen in the browser, travels in the
+  // connect handshake, and must survive into the WS query — it is fixed at connect, so if it
+  // is dropped here the user silently gets the default voice for the entire call.
+  async function urlFor(connect: Record<string, unknown>): Promise<string> {
+    const captured: Captured = {};
+    const user = new FakeWs();
+    const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
+      makeChromeMgr: () => makeMgr(new FakeChannel(), captured),
+      loadCookie: async () => 'sessionKey=sk-ant-sid-x; lastActiveOrg=ORG',
+    });
+    user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'C', ...connect })), false);
+    await paired;
+    return captured.voiceUrl!;
+  }
+
+  assert.match(await urlFor({ voice: 'glassy' }), /[?&]voice=glassy(&|$)/);
+  assert.match(await urlFor({ voice: 'rounded', model: 'claude-opus-4-8' }), /[?&]voice=rounded(&|$)/);
+  // Omitted -> claude.ai's default, i.e. today's shipped behaviour is unchanged.
+  assert.match(await urlFor({}), /[?&]voice=buttery(&|$)/);
+  // Unknown -> default rather than a rejected upgrade.
+  assert.match(await urlFor({ voice: 'nonsense' }), /[?&]voice=buttery(&|$)/);
 });
 
 test('bridgeClaudeVoice: user binary → channel.send(data,true); onFrame both ways; status mapping', async () => {
