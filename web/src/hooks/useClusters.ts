@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAppMode } from '@/contexts/AppModeContext';
+import { dedupedRequest } from '@/lib/request-dedupe';
 
 export interface ClusterMember {
   gatewayId: string;
@@ -49,10 +50,22 @@ export function useClusters() {
 
   const machineId = proxy.machineId || undefined;
 
-  const refresh = useCallback(async () => {
+  /**
+   * @param force Bypass the read dedupe. Always set after a write — an assign/
+   *   unassign/describe must never be followed by a cached pre-write list.
+   */
+  const load = useCallback(async (force = false) => {
     setError(null);
     try {
-      const d = await apiClient.fetchPath<ClusterList>('/cluster/list', { machineId });
+      // Deduped: /cluster/list is fetched on mount and again when the api client
+      // upgrades local->hybrid, and both the machine dropdown and any cluster
+      // page ask for the same fleet-wide map. There is no poller here.
+      const d = await dedupedRequest(
+        `cluster-list:${machineId ?? 'self'}`,
+        3000,
+        () => apiClient.fetchPath<ClusterList>('/cluster/list', { machineId }),
+        { force },
+      );
       setData(d);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -61,10 +74,13 @@ export function useClusters() {
     }
   }, [apiClient, machineId]);
 
+  /** Public refresh is always authoritative (user-initiated). */
+  const refresh = useCallback(() => load(true), [load]);
+
   useEffect(() => {
     setLoading(true);
-    refresh();
-  }, [refresh]);
+    load();
+  }, [load]);
 
   // gatewayId -> cluster name, for badging nodes in the dropdown/elsewhere.
   // Keyed by BOTH gatewayId and hostname so a node string in either form resolves.

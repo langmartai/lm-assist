@@ -6,6 +6,8 @@ import { useMachineContext } from '@/contexts/MachineContext';
 import type { Session } from '@/lib/types';
 import type { BatchCheckResponse } from '@/lib/api-client';
 import { workerFetch, detectProxyInfo, getLastLocalSessionsTotal } from '@/lib/api-client';
+import { mergeSessionLists, sortByLastModifiedDesc, applySummaries } from '@/lib/session-list';
+import { dedupedRequest } from '@/lib/request-dedupe';
 
 export type SessionFilter = {
   machineId: string | null;
@@ -35,6 +37,14 @@ function isCommandSession(s: Session): boolean {
 interface UseSessionsOptions {
   /** When true, disables internal polling -- caller manages polling externally */
   externalPolling?: boolean;
+  /**
+   * Fast first paint. Fetch only this many (most recent) sessions up front, then
+   * fill in the remainder in the background once that paint has committed.
+   *
+   * 117 holds ~6300 sessions => the unlimited fetch is a 9.5MB response; the
+   * limit=10 slice is 20KB. Omit to keep the old load-everything behaviour.
+   */
+  initialLimit?: number;
 }
 
 interface UseSessionsResult {
@@ -45,6 +55,14 @@ interface UseSessionsResult {
   filters: SessionFilter;
   setFilters: (f: Partial<SessionFilter>) => void;
   refetch: () => void;
+  /** True while the list is still the truncated fast-first-paint slice */
+  listTruncated: boolean;
+  /** Server-reported total session count while truncated (null when unknown) */
+  listTotal: number | null;
+  /** True while the post-paint background fetch of the remaining sessions runs */
+  isLoadingRest: boolean;
+  /** Load the complete list now, bypassing the initialLimit slice */
+  loadAll: () => void;
   /** Update session list from batch-check listStatus data (avoids separate getSessions call) */
   updateFromBatchCheck: (listStatus: BatchCheckResponse['listStatus']) => void;
   /** Current known session count for listCheck change detection (getter to avoid stale snapshots) */
@@ -57,11 +75,36 @@ interface UseSessionsResult {
 
 export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
   const externalPolling = options?.externalPolling ?? false;
+  const initialLimit = options?.initialLimit;
   const { apiClient, isLocal, isHybrid } = useAppMode();
   const { onlineMachines, selectedMachineId } = useMachineContext();
   const [allSessions, setAllSessions] = useState<Session[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // ── Fast-first-paint state ──
+  // `loadedAllRef` is a ref, not state: fetchSessions reads it to decide whether
+  // to request a slice or the full list, and that decision must see the value
+  // written by the fetch that just finished (a state update wouldn't be visible
+  // yet). listTruncated/listTotal drive the UI indicator.
+  const loadedAllRef = useRef(false);
+  const [listTruncated, setListTruncated] = useState(false);
+  const [listTotal, setListTotal] = useState<number | null>(null);
+  const [isLoadingRest, setIsLoadingRest] = useState(false);
+  // Bumped every time a truncated slice lands. The background-fill effect keys
+  // off this rather than off `listTruncated`, so a *second* slice (after the
+  // api client upgrades local->hybrid, or after a machine switch) reliably
+  // schedules its own fill instead of being swallowed by an unchanged boolean.
+  const [sliceGen, setSliceGen] = useState(0);
+
+  // Online machine ids as a stable primitive. onlineMachines is a fresh array on
+  // every machines poll; depending on the array identity is what used to refire
+  // fetchSessions (and so re-fetch the whole 9.5MB list) every few seconds.
+  const machineIdsKey = onlineMachines.map(m => m.id).join(',');
+  const machineIds = useMemo(
+    () => (machineIdsKey ? machineIdsKey.split(',') : []),
+    [machineIdsKey],
+  );
   const [filters, setFiltersState] = useState<SessionFilter>(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -104,50 +147,110 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
   // Guard against concurrent fetchSessions calls
   const fetchingRef = useRef(false);
 
-  const fetchSessions = useCallback(async () => {
-    if (fetchingRef.current) return;
+  /**
+   * Overlay LLM summaries / display names onto whatever list is on screen.
+   *
+   * Fire-and-forget: never await this from the fetch path. The endpoint carries a
+   * 3s timeout and awaiting it delayed first rows by however long it took —
+   * summaries are cosmetic, the rows are not. Deduped because every fetch asks
+   * for it and each in-flight copy holds one of the ~6 connections.
+   */
+  const enrichSummaries = useCallback(async () => {
+    try {
+      const proxyInfo = detectProxyInfo();
+      const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
+      const apiHost = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
+      // In proxy mode, hostname:3100 is the wrong host — route via the _coreapi relay.
+      const sumBase = proxyInfo.isProxied ? `${proxyInfo.basePath}/_coreapi` : `http://${apiHost}:${port}`;
+      const data = await dedupedRequest(
+        `sessions-summaries:${sumBase}`,
+        5000,
+        async () => {
+          const res = await workerFetch(`${sumBase}/sessions/summaries`, { signal: AbortSignal.timeout(3000) });
+          if (!res.ok) throw new Error(`summaries ${res.status}`);
+          return res.json();
+        },
+      );
+      const summaryMap = new Map<string, { summary: string; displayName?: string }>();
+      for (const s of data?.data?.summaries || []) {
+        if (s.sessionId && s.summary) summaryMap.set(s.sessionId, { summary: s.summary, displayName: s.displayName });
+      }
+      if (summaryMap.size === 0) return;
+      // Functional update: applies to whatever list is current, so a fetch that
+      // landed in the meantime is never clobbered.
+      setAllSessions(prev => applySummaries(prev, summaryMap));
+    } catch {
+      // Non-critical — proceed without LLM summaries
+    }
+  }, []);
+
+  // WHICH sessions the list is showing. A machine switch is a genuinely
+  // different list, so it goes back through the fast-slice-then-fill path.
+  //
+  // Deliberately NOT keyed on isLocal/isHybrid/apiClient: the local->hybrid
+  // upgrade fires mid-load and shows the SAME sessions, so treating it as a new
+  // source ran the whole truncate-then-fill cycle a second time — two full
+  // 9.3MB fetches per page load. It just refreshes in place instead.
+  const listScopeKey = `${selectedMachineId ?? ''}|${selectedMachineId ? '' : machineIdsKey}`;
+  const lastScopeKeyRef = useRef<string | null>(null);
+
+  /**
+   * Fetch the session list. Resolves `true` when it actually ran, `false` when it
+   * bailed because another fetch was already in flight (the caller may retry).
+   */
+  const fetchSessions = useCallback(async (fetchOpts?: { loadAll?: boolean }): Promise<boolean> => {
+    if (fetchingRef.current) return false;
     fetchingRef.current = true;
+
+    // A different list scope invalidates "we already have everything".
+    if (lastScopeKeyRef.current !== listScopeKey) {
+      const previous = lastScopeKeyRef.current;
+      lastScopeKeyRef.current = listScopeKey;
+      // ...but NOT the "no machine selected yet" -> "local machine selected"
+      // transition. MachineContext resolves the local machine a beat after mount
+      // and it resolves to the very sessions we just fetched, so treating it as a
+      // new scope threw away the slice and ran a whole extra truncate+fill.
+      const wasUninitialised = previous === null || previous.startsWith('|');
+      if (!wasUninitialised) loadedAllRef.current = false;
+    }
+
+    // Decide ONCE per fetch, so every branch below agrees.
+    const wantAll = fetchOpts?.loadAll === true || loadedAllRef.current || !initialLimit;
+    const lim = wantAll ? undefined : { limit: initialLimit };
+    // True only for the background fill that follows a truncated first paint —
+    // the one case where the incoming list is merged onto what's on screen
+    // instead of replacing it.
+    const isProgressiveFill = wantAll && !loadedAllRef.current && !!initialLimit;
+
     try {
       let sessions: Session[];
 
       if (isLocal) {
         // Pure local mode: single fetch, no machineId needed
-        sessions = await apiClient.getSessions();
+        sessions = await apiClient.getSessions(undefined, lim);
       } else if (isHybrid) {
         // Hybrid mode: parallel fetch from all online machines
         // The hybrid client routes local vs remote internally
-        const machineIds = selectedMachineId
-          ? [selectedMachineId]
-          : onlineMachines.map(m => m.id);
+        const targets = selectedMachineId ? [selectedMachineId] : machineIds;
 
-        const lim = !loadedAllRef.current && options.initialLimit ? { limit: options.initialLimit } : undefined;
-        if (machineIds.length === 0) {
+        if (targets.length === 0) {
           // No machines yet -- fall back to local-only fetch
           sessions = await apiClient.getSessions(undefined, lim);
         } else {
           const results = await Promise.allSettled(
-            machineIds.map(id => apiClient.getSessions(id, lim))
+            targets.map(id => apiClient.getSessions(id, lim))
           );
           sessions = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
         }
-        if (lim) {
-          const total = getLastLocalSessionsTotal();
-          setListTotal(total);
-          setListTruncated(true);
-        }
       } else {
         // Hub mode: parallel fetch from all online machines
-        const machineIds = selectedMachineId
-          ? [selectedMachineId]
-          : onlineMachines.map(m => m.id);
+        const targets = selectedMachineId ? [selectedMachineId] : machineIds;
 
-        const lim = !loadedAllRef.current && options.initialLimit ? { limit: options.initialLimit } : undefined;
         const results = await Promise.allSettled(
-          machineIds.map(id => apiClient.getSessions(id, lim))
+          targets.map(id => apiClient.getSessions(id, lim))
         );
 
         sessions = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
-        if (lim) setListTruncated(true);
       }
 
       // Hide sessions with 0 user prompts AND no turns (truly empty sessions).
@@ -157,80 +260,128 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
       );
 
       // Sort by lastModified descending
-      sessions.sort((a, b) =>
-        new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime()
-      );
+      sortByLastModifiedDesc(sessions);
 
-      // Merge LLM summaries from session-summary-store (non-blocking)
-      try {
-        const proxyInfo = detectProxyInfo();
-        const port = process.env.NEXT_PUBLIC_LOCAL_API_PORT || '3100';
-        const apiHost = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
-        // In proxy mode, hostname:3100 is the wrong host — route via the _coreapi relay.
-        const sumBase = proxyInfo.isProxied ? `${proxyInfo.basePath}/_coreapi` : `http://${apiHost}:${port}`;
-        const summariesRes = await workerFetch(`${sumBase}/sessions/summaries`, { signal: AbortSignal.timeout(3000) });
-        if (summariesRes.ok) {
-          const summariesData = await summariesRes.json();
-          const summaryMap = new Map<string, { summary: string; displayName?: string }>();
-          for (const s of summariesData?.data?.summaries || []) {
-            if (s.sessionId && s.summary) summaryMap.set(s.sessionId, { summary: s.summary, displayName: s.displayName });
-          }
-          if (summaryMap.size > 0) {
-            for (const session of sessions) {
-              const entry = summaryMap.get(session.sessionId);
-              if (entry) {
-                session.llmSummary = entry.summary;
-                if (entry.displayName && !session.customTitle) {
-                  session.displayName = entry.displayName;
-                }
-              }
-            }
-          }
-        }
-      } catch {
-        // Non-critical — proceed without LLM summaries
+      // LLM summaries are enriched AFTER this paint — see enrichSummaries. This
+      // used to be an `await` right here, which is why the rows sat invisible for
+      // another 1.7s (up to 3s, its timeout) after the list had already arrived.
+      void enrichSummaries();
+
+      // The background fill MERGES onto the slice already on screen so the rows
+      // the user is looking at never flicker out. Every other fetch (first
+      // paint, poll, refetch) replaces, so deleted sessions really disappear.
+      if (isProgressiveFill) {
+        setAllSessions(prev => (prev.length > 0 ? mergeSessionLists(prev, sessions) : sessions));
+      } else {
+        setAllSessions(sessions);
       }
 
-      setAllSessions(sessions);
+      if (wantAll) {
+        loadedAllRef.current = true;
+        setListTruncated(false);
+      } else {
+        // getLastLocalSessionsTotal() is only populated by the local client, so
+        // it stays null for a purely remote fetch — the indicator handles that.
+        setListTotal(getLastLocalSessionsTotal());
+        setListTruncated(true);
+        setSliceGen(g => g + 1);
+      }
       setError(null);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch sessions');
+      return true;
     } finally {
       fetchingRef.current = false;
       setIsLoading(false);
     }
-  }, [apiClient, isLocal, isHybrid, onlineMachines, selectedMachineId]);
+  }, [apiClient, isLocal, isHybrid, machineIds, selectedMachineId, listScopeKey, initialLimit, enrichSummaries]);
+
+  // Latest fetchSessions, for effects that must not re-run when it changes identity.
+  const fetchSessionsRef = useRef(fetchSessions);
+  fetchSessionsRef.current = fetchSessions;
+
+  const loadAll = useCallback(() => {
+    void fetchSessionsRef.current({ loadAll: true });
+  }, []);
+
+  // ── Background fill: the remaining sessions, after the first paint commits ──
+  // Scheduled on requestIdleCallback (rAF fallback) rather than a blind timer, so
+  // the truncated rows are actually on screen before the big fetch starts.
+  useEffect(() => {
+    if (sliceGen === 0) return;          // no truncated slice has landed yet
+    if (loadedAllRef.current) return;    // already have everything
+
+    let cancelled = false;
+
+    const run = async () => {
+      if (cancelled || loadedAllRef.current) return;
+      setIsLoadingRest(true);
+      try {
+        // fetchSessions declines while another fetch is in flight (e.g. a poll
+        // landed first); retry briefly rather than silently never filling in.
+        for (let attempt = 0; attempt < 20; attempt++) {
+          if (cancelled || loadedAllRef.current) return;
+          if (await fetchSessionsRef.current({ loadAll: true })) return;
+          await new Promise(r => setTimeout(r, 150));
+        }
+      } finally {
+        if (!cancelled) setIsLoadingRest(false);
+      }
+    };
+
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
+      cancelIdleCallback?: (h: number) => void;
+    };
+
+    if (typeof w.requestIdleCallback === 'function') {
+      const handle = w.requestIdleCallback(() => { void run(); }, { timeout: 1500 });
+      return () => { cancelled = true; w.cancelIdleCallback?.(handle); };
+    }
+    // Safari: rAF fires after paint, the 0ms timeout then yields to the browser.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const raf = requestAnimationFrame(() => { timer = setTimeout(() => { void run(); }, 0); });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      if (timer) clearTimeout(timer);
+    };
+  }, [sliceGen]);
 
   // Process batch-check listStatus: update tracking metadata and trigger
   // a full refetch when the session list has changed.
   // NOTE: knownSessionCount/knownLatestModified track the server's single-project
   // values (echoed back for change detection), NOT the client's all-project count.
   const updateFromBatchCheck = useCallback((listStatus: BatchCheckResponse['listStatus']) => {
-    // Fast-first-paint mode: the batch-check listStatus carries the FULL
-    // session list and would silently replace our limited slice with
-    // thousands of rows (defeating the fast paint). Until the user loads
-    // all, ignore list replacement — per-session updates still flow via
-    // the sessions[] side of batch-check for the visible rows.
-    if (!loadedAllRef.current) return;
     if (!listStatus) return;
 
-    // Always echo back the server's values for next poll's change detection.
+    // Always echo back the server's values for next poll's change detection —
+    // BEFORE the truncation gate below. Skipping the echo while truncated would
+    // leave knownSessionCount at 0, so the first poll after the background fill
+    // would report `changed` and burn a whole extra full refetch.
     // These track the server's scope (single project), not our all-project list.
     knownSessionCountRef.current = listStatus.totalSessions;
     knownLatestModifiedRef.current = listStatus.latestModified;
 
+    // Fast-first-paint mode: a refetch here would pull the full list and replace
+    // our slice with thousands of rows, defeating the fast paint. The background
+    // fill is already on its way; per-session updates for the visible rows still
+    // flow through the sessions[] side of batch-check.
+    if (!loadedAllRef.current) return;
+
     // If the list changed, trigger a full multi-project refetch
     if (listStatus.changed) {
-      fetchSessions();
+      void fetchSessions();
     }
   }, [fetchSessions]);
 
   // Poll by calling fetchSessions directly -- getSessions() uses ifModifiedSince
   // internally, returning cached data (~200 bytes) when nothing has changed.
   useEffect(() => {
-    fetchSessions();
+    void fetchSessions();
     if (!externalPolling) {
-      intervalRef.current = setInterval(fetchSessions, 3000);
+      intervalRef.current = setInterval(() => { void fetchSessions(); }, 3000);
     }
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
@@ -322,13 +473,13 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
         break;
       case 'recent':
       default:
-        result.sort((a, b) =>
-          new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime()
-        );
+        sortByLastModifiedDesc(result);
     }
 
     return result;
   }, [allSessions, filters]);
+
+  const refetch = useCallback(() => { void fetchSessionsRef.current(); }, []);
 
   return {
     sessions,
@@ -337,7 +488,11 @@ export function useSessions(options?: UseSessionsOptions): UseSessionsResult {
     error,
     filters,
     setFilters,
-    refetch: fetchSessions,
+    refetch,
+    listTruncated,
+    listTotal,
+    isLoadingRest,
+    loadAll,
     updateFromBatchCheck,
     getKnownSessionCount: () => knownSessionCountRef.current,
     getKnownLatestModified: () => knownLatestModifiedRef.current,

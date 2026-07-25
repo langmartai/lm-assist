@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Search, X, Clock, MessageSquare, Cpu, ListChecks, User, Users, ExternalLink, GitFork, ChevronDown, Terminal } from 'lucide-react';
+import { Search, X, Clock, MessageSquare, Cpu, ListChecks, User, Users, ExternalLink, GitFork, ChevronDown, Terminal, Loader2 } from 'lucide-react';
 import { useHighlight } from '@/hooks/useHighlight';
 import { useMachineContext } from '@/contexts/MachineContext';
 import { formatTimeAgo, getSessionIdShort, formatCost, getModelShortName, formatBytes, getSessionDisplayName } from '@/lib/utils';
@@ -30,7 +30,7 @@ export function SessionSidebar({
   gitProjectNames,
   scrollToSessionId,
 }: SessionSidebarProps) {
-  const { sessions, allSessions, isLoading, filters, setFilters, projectNames } = sessionsHook;
+  const { sessions, allSessions, isLoading, filters, setFilters, projectNames, isLoadingRest, listTotal } = sessionsHook;
   const [displayLimit, setDisplayLimit] = useState(50);
   // Reset display limit when filters change
   const filterKey = `${filters.search}|${filters.machineId}|${filters.projectName}|${filters.timeRange}`;
@@ -93,6 +93,22 @@ export function SessionSidebar({
           {sessions.length !== allSessions.length && (
             <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
               of {allSessions.length}
+            </span>
+          )}
+          {/* Fast first paint: the list starts as a small slice while the rest
+              streams in behind it. Without this the count visibly jumping from
+              10 to thousands (and a project filter briefly matching nothing)
+              looks like a bug. */}
+          {isLoadingRest && (
+            <span
+              title={listTotal ? `Loading all ${listTotal} sessions…` : 'Loading remaining sessions…'}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                fontSize: 11, color: 'var(--color-text-tertiary)',
+              }}
+            >
+              <Loader2 size={11} className="animate-spin" />
+              {listTotal ? `of ${listTotal}` : 'loading…'}
             </span>
           )}
         </div>

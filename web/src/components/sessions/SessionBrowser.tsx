@@ -14,7 +14,11 @@ import { ArrowLeft } from 'lucide-react';
 export function SessionBrowser() {
   const searchParams = useSearchParams();
   const { apiClient } = useAppMode();
-  const sessionsHook = useSessions({ externalPolling: true });
+  // initialLimit: paint the 10 most recent sessions immediately (a ~20KB
+  // response), then fill in the rest once that paint has committed. On a host
+  // with thousands of sessions the unlimited fetch is a 9.5MB response that
+  // blocked first rows for ~10s.
+  const sessionsHook = useSessions({ externalPolling: true, initialLimit: 10 });
   const { projects } = useProjects();
   const gitProjectNames = useMemo(() => {
     const names = new Set<string>();

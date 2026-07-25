@@ -3,6 +3,43 @@
 let lastLocalSessionsTotal: number | null = null;
 export function getLastLocalSessionsTotal(): number | null { return lastLocalSessionsTotal; }
 
+/**
+ * How long a settled response stays shareable, per endpoint family.
+ *
+ * These endpoints are read-only GETs that one page load asks for several times
+ * over (a hook fires on mount, then again when AppModeContext swaps the api
+ * client under it local->hybrid). Over HTTP/1.1's ~6 connections per origin the
+ * duplicates don't just waste responses, they starve everything else: on
+ * /sessions, /health — a 0ms endpoint — was taking 3-4s behind six copies of
+ * /projects.
+ *
+ * Each TTL sits BELOW its caller's poll interval so polling still sees fresh
+ * data. In-flight sharing is unconditional (see request-dedupe.ts), which is
+ * what actually collapses the mount burst.
+ */
+const DEDUPE_TTL = {
+  /** /health, /hub/machines, /hub/status — driven by useMachines' 10s poll. */
+  machines: 3000,
+  /** /projects — no poller at all, and it costs 1-5s server-side. */
+  projects: 5000,
+} as const;
+
+/**
+ * ifModifiedSince merge base for the local sessions list, keyed by resolved URL.
+ *
+ * MODULE level on purpose. AppModeContext swaps the api client when it upgrades
+ * local -> hybrid, and createHybridClient builds a *fresh* createLocalClient — so
+ * a per-instance cache threw the merge base away exactly once per page load and
+ * re-downloaded the entire list. On a host with 6300 sessions that is 9.3MB,
+ * twice. Sharing it turns the second fetch into a small partial (or a
+ * ~200 byte notModified).
+ *
+ * Machine identity is re-stamped on read: the entry may have been written while
+ * this machine was still 'localhost', before the hub handed us a gatewayId.
+ */
+const localSessionsCache = new Map<string, { sessions: Session[]; lastModified: string | null }>();
+
+import { dedupedRequest } from './request-dedupe';
 import type {
   Machine,
   Session,
@@ -110,7 +147,13 @@ export interface ApiClient {
   getMachines(): Promise<Machine[]>;
 
   // Sessions
-  getSessions(machineId?: string): Promise<Session[]>;
+  /**
+   * @param opts.limit Fetch only the N most recent sessions (fast first paint).
+   *   A limited fetch deliberately skips the ifModifiedSince cache — see the
+   *   local implementation — and records the server total in
+   *   getLastLocalSessionsTotal().
+   */
+  getSessions(machineId?: string, opts?: { limit?: number }): Promise<Session[]>;
   getSessionDetail(sessionId: string, machineId?: string): Promise<SessionDetail>;
   getSessionConversation(
     sessionId: string,
@@ -316,9 +359,7 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
       ? `${proxyInfo.basePath}/api/tier-agent${path}`
       : null;
 
-  // Cache for ifModifiedSince optimization — avoids re-fetching unchanged data
-  let cachedSessions: Session[] | null = null;
-  let cachedSessionsLastModified: string | null = null;
+  // (sessions ifModifiedSince cache is module-level — see localSessionsCache)
 
   // Track the effective local machine ID (may be gatewayId when hub is connected)
   let localMachineId = 'localhost';
@@ -338,7 +379,9 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
     // Get local gatewayId from hub status
     let localGatewayId: string | null = null;
     try {
-      const statusResult = await fetchJsonWithTimeout<any>(api('/hub/status'));
+      const statusUrl = api('/hub/status');
+      const statusResult = await dedupedRequest(`GET ${statusUrl}`, DEDUPE_TTL.machines,
+        () => fetchJsonWithTimeout<any>(statusUrl));
       localGatewayId = statusResult?.gatewayId || null;
     } catch { /* ignore */ }
 
@@ -395,10 +438,17 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
     mode: 'local',
 
     async getMachines(): Promise<Machine[]> {
-      // Fetch health and hub machines in parallel
+      // Fetch health and hub machines in parallel. Both are deduped: getMachines()
+      // is called on mount AND again the moment the api client upgrades to
+      // hybrid, and the mapping below stays per-instance so each caller still
+      // gets its own Machine objects.
+      const healthUrl = api('/health');
+      const hubMachinesUrl = api('/hub/machines');
       const [healthResult, hubResult] = await Promise.allSettled([
-        fetchJson<{ hostname?: string; platform?: string; localIp?: string }>(api('/health')),
-        fetchJsonWithTimeout<any>(api('/hub/machines')),
+        dedupedRequest(`GET ${healthUrl}`, DEDUPE_TTL.machines,
+          () => fetchJson<{ hostname?: string; platform?: string; localIp?: string }>(healthUrl)),
+        dedupedRequest(`GET ${hubMachinesUrl}`, DEDUPE_TTL.machines,
+          () => fetchJsonWithTimeout<any>(hubMachinesUrl)),
       ]);
 
       const health = healthResult.status === 'fulfilled' ? healthResult.value : {} as { hostname?: string; platform?: string; localIp?: string };
@@ -427,6 +477,25 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
     async getSessions(machineId?: string, opts?: { limit?: number }): Promise<Session[]> {
       // Single call to get all sessions across all projects
       // Uses ifModifiedSince to avoid re-fetching unchanged data
+      const cacheKey = api('/projects/sessions');
+      const cacheEntry = localSessionsCache.get(cacheKey) ?? null;
+      const cachedSessionsLastModified = cacheEntry?.lastModified ?? null;
+      // Re-stamp machine identity — the entry may predate the hub handing this
+      // machine its gatewayId, and a stale 'localhost' would break the machine
+      // filter and the machine picker.
+      const cachedSessions = cacheEntry
+        ? cacheEntry.sessions.map(s => (
+            s.machineId === localMachineId
+              ? s
+              : {
+                  ...s,
+                  machineId: localMachineId,
+                  machineHostname: localMachineHostname,
+                  machinePlatform: localMachinePlatform,
+                }
+          ))
+        : null;
+
       const params = new URLSearchParams();
       // A LIMITED fetch is a fast-first-paint slice: no ifModifiedSince (we want
       // the newest N regardless of cache) and NO cache writes below (a partial
@@ -508,8 +577,7 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
       }
 
       // Update cache for next call
-      cachedSessions = mapped;
-      cachedSessionsLastModified = result.lastModified || null;
+      localSessionsCache.set(cacheKey, { sessions: mapped, lastModified: result.lastModified || null });
 
       return mapped;
     },
@@ -557,7 +625,12 @@ export function createLocalClient(baseUrl: string, proxyInfo?: ProxyInfo): ApiCl
 
     async getProjects(_machineId?: string, options?: { force?: boolean }): Promise<Project[]> {
       const qs = options?.force ? '?force=true' : '';
-      const result = await fetchJson<any>(api(`/projects${qs}`));
+      const url = api(`/projects${qs}`);
+      // Deduped on the RAW response only — the mapping below stamps per-instance
+      // machine identity, so each client still maps for itself. An explicit
+      // force refresh always goes to the network.
+      const result = await dedupedRequest(`GET ${url}`, DEDUPE_TTL.projects,
+        () => fetchJson<any>(url), { force: !!options?.force });
       const projects: any[] = Array.isArray(result) ? result : result.projects || [];
       return projects.map(p => ({
         projectPath: p.projectPath || p.path,
@@ -1002,7 +1075,9 @@ export function createHubClient(hubBaseUrl: string, apiKey?: string): ApiClient 
       } catch { /* use defaults */ }
 
       const qs = options?.force ? '?force=true' : '';
-      const result = await hubFetch<any>(machineApi(machineId, `/projects${qs}`));
+      const url = machineApi(machineId, `/projects${qs}`);
+      const result = await dedupedRequest(`GET ${url}`, DEDUPE_TTL.projects,
+        () => hubFetch<any>(url), { force: !!options?.force });
       const projects: any[] = Array.isArray(result) ? result : result.projects || [];
       return projects.map(p => ({
         projectPath: p.projectPath || p.path,

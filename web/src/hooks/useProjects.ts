@@ -12,6 +12,16 @@ export function useProjects() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Online machine ids as a stable primitive. onlineMachines is a fresh array on
+  // every machines poll, and depending on that identity is what turned one page
+  // load into six /projects fetches — note the isLocal branch below doesn't even
+  // read it.
+  const machineIdsKey = onlineMachines.map(m => m.id).join(',');
+  const machineIds = useMemo(
+    () => (machineIdsKey ? machineIdsKey.split(',') : []),
+    [machineIdsKey],
+  );
+
   const fetchProjects = useCallback(async (options?: { force?: boolean }) => {
     try {
       setError(null);
@@ -22,11 +32,11 @@ export function useProjects() {
       } else {
         // Hub: fetch from each online machine (or selected machine)
         const targets = selectedMachineId
-          ? onlineMachines.filter(m => m.id === selectedMachineId)
-          : onlineMachines;
+          ? machineIds.filter(id => id === selectedMachineId)
+          : machineIds;
 
         const results = await Promise.allSettled(
-          targets.map(m => apiClient.getProjects(m.id, options))
+          targets.map(id => apiClient.getProjects(id, options))
         );
 
         for (const r of results) {
@@ -42,7 +52,7 @@ export function useProjects() {
     } finally {
       setIsLoading(false);
     }
-  }, [apiClient, isLocal, onlineMachines, selectedMachineId]);
+  }, [apiClient, isLocal, machineIds, selectedMachineId]);
 
   useEffect(() => {
     fetchProjects();
