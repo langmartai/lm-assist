@@ -165,10 +165,20 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
     // VERBATIM to the channel (which passes it to claude.ai's voice WS) — otherwise
     // server-side barge-in etc. are silently dropped. Forward the raw bytes AS A TEXT frame
     // (binary:false) so claude.ai still sees JSON, not a binary audio frame.
-    let msg: { type?: string };
+    let msg: { type?: string; message?: string; ua?: string; caps?: Record<string, unknown> };
     try { msg = JSON.parse(data.toString()); } catch { return; }
     if (msg.type === 'close') { closeAll(); return; }
     if (msg.type === 'connect') return; // handshake already ran — never re-forward it
+    // The browser telling us WHY it failed. Logged, never forwarded — claude.ai has no such
+    // frame. This exists because a voice failure on someone else's device was otherwise visible
+    // only in a devtools console we cannot reach, which cost several wrong diagnoses.
+    if (msg.type === 'client_error') {
+      const m = msg as { message?: string; ua?: string; caps?: Record<string, unknown> };
+      vlog(`CLIENT ERROR: ${JSON.stringify(String(m.message ?? '').slice(0, 200))}`);
+      if (m.ua) vlog(`  client ua: ${String(m.ua).slice(0, 180)}`);
+      if (m.caps) vlog(`  client caps: ${JSON.stringify(m.caps)}`);
+      return;
+    }
     if (channel) {
       upCtrl++;
       vlog(`user control frame relayed to channel (type=${msg.type ?? '?'}, #${upCtrl})`);

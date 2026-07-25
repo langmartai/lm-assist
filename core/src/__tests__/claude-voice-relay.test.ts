@@ -328,3 +328,31 @@ test('I2: user leaves DURING setup → freshly-opened channel is closed (tab rec
   captured.handlers!.onFrame(Buffer.from([1, 2, 3]), true);
   assert.equal(user.sent.length, before, 'no frame relayed to a closed user socket');
 });
+
+// A voice failure on someone else's device was previously visible only in a devtools console we
+// cannot reach — which is exactly how several wrong diagnoses got made. The browser now reports
+// the reason up the same socket; it must be LOGGED and must never reach claude.ai (which has no
+// such frame and would be handed a control message it cannot parse).
+test('client_error is logged and NEVER forwarded to claude.ai', async () => {
+  const user = new FakeWs();
+  const channel = new FakeChannel();
+  const captured: Captured = {};
+  const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
+    makeChromeMgr: () => makeMgr(channel, captured),
+    loadCookie: async () => 'sessionKey=x; lastActiveOrg=O',
+  });
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'C' })), false);
+  await paired;
+  channel.sent.length = 0;
+
+  user.emit('message', Buffer.from(JSON.stringify({
+    type: 'client_error', message: 'mic permission: NotAllowedError',
+    ua: 'Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)', caps: { secure: true, trackProcessor: false },
+  })), false);
+
+  assert.equal(channel.sent.length, 0, 'client_error must not be relayed upstream');
+
+  // A normal control frame still IS relayed — the filter must be specific, not a blanket drop.
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'interrupt' })), false);
+  assert.equal(channel.sent.length, 1, 'interrupt still reaches claude.ai');
+});

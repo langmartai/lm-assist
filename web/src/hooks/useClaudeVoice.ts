@@ -128,6 +128,25 @@ export function useClaudeVoice(opts: UseClaudeVoiceOpts) {
     // CF-gating — must be readable on the device that hit it, not only in a console.
     try { console.error('[claude-voice]', msg); } catch { /* noop */ }
     setErrorMsg(msg);
+    // Report the reason to Core BEFORE tearing the socket down, so a failure on a device we
+    // cannot inspect lands in core-prod.log instead of a devtools console nobody has open.
+    // Best-effort and never throws; Core logs it and does NOT forward it to claude.ai.
+    try {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'client_error',
+          message: String(msg).slice(0, 200),
+          ua: typeof navigator !== 'undefined' ? String(navigator.userAgent).slice(0, 180) : '',
+          caps: typeof window !== 'undefined' ? {
+            secure: !!window.isSecureContext,
+            mediaDevices: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+            audioEncoder: typeof (window as unknown as Record<string, unknown>).AudioEncoder !== 'undefined',
+            trackProcessor: typeof (window as unknown as Record<string, unknown>).MediaStreamTrackProcessor !== 'undefined',
+          } : undefined,
+        }));
+      }
+    } catch { /* noop */ }
     startingEngineRef.current = false;
     pendingAbortRef.current = false;
     closeWs();
