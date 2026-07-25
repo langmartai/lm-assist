@@ -86,6 +86,8 @@ import {
   getCurrentUserAccess,
   listActiveSessions,
   setConversationTitle,
+  renameConversation,
+  normalizeConversationName,
   createConversation,
   deleteConversation,
   cleanupTestConversations,
@@ -853,7 +855,61 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
         }));
       } catch (err) { return catchOAuth(err); } } },
 
-    // WRITE — rename / auto-title a conversation
+    // PUT /claude-ai/conversations/:uuid — RENAME a conversation (set its chat title).
+    //
+    //   WRITE. Mirrors the upstream call the web app itself uses:
+    //     PUT /api/organizations/{org}/chat_conversations/{uuid}  {name}  -> 202
+    //   Verified live 2026-07-26. Do NOT route renames through the /title
+    //   endpoint below — that one is the AUTO-TITLE GENERATOR and 400s
+    //   ("message_content is required.") when handed a title.
+    //
+    //   Body accepts `name` (upstream's field) or `title` (what callers who
+    //   think in "chat title" reach for). Only the name is writable here —
+    //   this is a rename, not a general conversation update.
+    {
+      method: 'PUT',
+      pattern: /^\/claude-ai\/conversations\/(?<uuid>[^/?]+)$/,
+      handler: async (req) => {
+        const uuid = req.params.uuid;
+        if (!UUID_RE.test(uuid)) {
+          return { success: false, error: { code: 'INVALID_UUID', message: `Conversation UUID must be a UUIDv4: got ${uuid}` } };
+        }
+        const b = req.body || {};
+        const raw = typeof b.name === 'string' ? b.name : (typeof b.title === 'string' ? b.title : undefined);
+        if (raw === undefined) {
+          return { success: false, error: { code: 'NAME_REQUIRED', message: 'Body must include `name` (or `title`) — the new conversation title.' } };
+        }
+        // Report the title we are replacing so a mis-targeted rename is
+        // visible and trivially reversible by the caller.
+        let previousName: string | null = null;
+        try {
+          const before = await readConversation(uuid, { tree: false });
+          if (before.status < 400) previousName = (before.body as { name?: string } | null)?.name ?? null;
+        } catch { /* best-effort — never block the rename on the pre-read */ }
+        try {
+          const r = await renameConversation(uuid, raw);
+          const wrapped = upstreamWrap(r);
+          if (wrapped.success) {
+            const newName = (r.body as { name?: string } | null)?.name ?? normalizeConversationName(raw);
+            // The list route serves from the index with no TTL — without this
+            // the rename reads back stale.
+            await claudeAiCache.updateName(uuid, newName).catch(() => {});
+            (wrapped as { data: unknown }).data = { uuid, name: newName, previousName, renamed: previousName !== newName };
+          }
+          return wrapped;
+        } catch (err) {
+          // normalizeConversationName rejects blank/overlong titles — surface
+          // that as a validation error, not an upstream/auth failure.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/^name must/.test(msg)) return { success: false, error: { code: 'INVALID_NAME', message: msg } };
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // WRITE — auto-title a conversation from its message content.
+    //   ⚠️ NOT a rename — see the PUT route above. Kept because the upstream
+    //   endpoint is real; it just needs `message_content`, not `title`.
     { method: 'POST', pattern: /^\/claude-ai\/conversations\/(?<uuid>[^/?]+)\/title$/,
       handler: async (req) => {
         const uuid = req.params.uuid;

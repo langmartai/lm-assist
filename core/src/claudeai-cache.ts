@@ -41,6 +41,15 @@ export interface ClaudeAiCache {
   set(uuid: string, payload: CachedConversation): Promise<void>;
   /** Return all index entries (does not apply TTL filter). */
   listIndex(): Promise<IndexEntry[]>;
+  /**
+   * Point-update a cached conversation's name after a rename.
+   *
+   * Load-bearing: `GET /claude-ai/conversations` answers from `listIndex()`
+   * whenever the index is non-empty and listIndex applies NO TTL — so without
+   * this a renamed chat keeps reporting its OLD title indefinitely, and the
+   * rename looks like it silently failed. No-op when the uuid isn't cached.
+   */
+  updateName(uuid: string, name: string): Promise<void>;
   /** Remove entries older than evictAfterDays. Returns count removed. */
   sweep(): Promise<number>;
 }
@@ -102,6 +111,30 @@ export function createClaudeAiCache(opts: ClaudeAiCacheOptions): ClaudeAiCache {
 
     async listIndex() {
       return Object.values(loadIndex());
+    },
+
+    async updateName(uuid, name) {
+      const idx = loadIndex();
+      const entry = idx[uuid];
+      if (entry) {
+        entry.name = name;
+        saveIndex(idx);
+      }
+      // Keep the per-conversation blob consistent too, so a subsequent
+      // cached read of the conversation itself doesn't contradict the index.
+      const fp = entryPath(uuid);
+      if (fs.existsSync(fp)) {
+        try {
+          const payload = JSON.parse(fs.readFileSync(fp, 'utf8')) as CachedConversation;
+          payload.name = name;
+          const tmp = fp + '.tmp';
+          fs.writeFileSync(tmp, JSON.stringify(payload));
+          fs.renameSync(tmp, fp);
+        } catch {
+          // A corrupt blob is not worth failing a successful rename over —
+          // the next read repopulates it.
+        }
+      }
     },
 
     async sweep() {

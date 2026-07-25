@@ -38,6 +38,7 @@ import { FS_INSPECT_TOOL_DEFS, FS_INSPECT_HANDLERS } from './fs-inspect';
 import { SESSION_MESSAGING_TOOL_DEFS, SESSION_MESSAGING_HANDLERS } from './session-messaging';
 import { DATA_TOOL_DEFS, DATA_HANDLERS } from './data-tools';
 import { AUTH_STATUS_TOOL_DEFS, AUTH_STATUS_HANDLERS } from './auth-status';
+import { resolveCallerCandidates } from '../mcp-session-resolver';
 import { CLAUDE_CODE_ACCOUNT_TOOL_DEFS, CLAUDE_CODE_ACCOUNT_HANDLERS } from './claude-code-account';
 import { CLAUDEAI_ACCOUNT_TOOL_DEFS, CLAUDEAI_ACCOUNT_HANDLERS } from './claudeai-account';
 import { SESSION_DAG_TOOL_DEFS, SESSION_DAG_HANDLERS } from './session-dag-tool';
@@ -496,6 +497,29 @@ export const terminalOpenTabToolDef = {
       tmuxSession: { type: 'string', description: 'For kind=tmux: tmux session name to open the tab in.' },
     },
     required: ['command'],
+  },
+};
+
+export const renameConversationToolDef = {
+  name: 'rename_conversation',
+  description:
+    'Rename a claude.ai WEB conversation — set the chat title shown in the sidebar. WRITE, reversible.\n' +
+    'Pass `conversation_uuid` whenever you know it. If you OMIT it the tool targets the ' +
+    'most-recently-updated conversation on the account, which is a RECENCY GUESS, not your ' +
+    'verified identity: the MCP connector does not tell a tool which claude.ai conversation ' +
+    'called it. That guess is usually right for "rename this chat" (your own turn just made ' +
+    'this conversation the most recent) but it is WRONG if another chat was touched more ' +
+    'recently. The result always reports `resolution` (explicit|recency-guess), the ' +
+    '`previousName` it replaced, and the uuid it hit — check them, and rename back with the ' +
+    'reported `previousName` if it targeted the wrong chat.',
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      title: { type: 'string', description: 'The new chat title. Non-empty, <= 200 chars; whitespace is collapsed to one line.' },
+      conversation_uuid: { type: 'string', description: 'Conversation uuid to rename. Omit ONLY to accept the recency guess described above.' },
+    },
+    required: ['title'],
   },
 };
 
@@ -1043,6 +1067,7 @@ export const EXPANDED_TOOL_DEFS = [
   claudeaiAddMarketplaceToolDef,
   claudeaiRemoveMarketplaceToolDef,
   claudeaiSetPluginEnabledToolDef,
+  renameConversationToolDef,
   agentAbortToolDef,
   agentResumeToolDef,
   terminalPromptToolDef,
@@ -1614,6 +1639,55 @@ async function handleTerminalOpenTab(args: Record<string, unknown>): Promise<Mcp
   }
 }
 
+/**
+ * rename_conversation — set a claude.ai conversation's chat title.
+ *
+ * The uuid is the honest part of this tool. An MCP call carries no claude.ai
+ * conversation id (the connector only tags `claudecode/toolUseId`, which
+ * matches LOCAL Claude Code sessions), so "the current conversation" cannot be
+ * resolved — only guessed from recency. We therefore act on the guess but
+ * always label it and return the previous name, rather than presenting a guess
+ * as a verified target.
+ */
+async function handleRenameConversation(args: Record<string, unknown>): Promise<McpToolResult> {
+  const title = typeof args.title === 'string' ? args.title.trim() : '';
+  if (!title) return err('title is required — the new chat title.');
+
+  let uuid = String(args.conversation_uuid || '').trim();
+  let resolution = 'explicit';
+  if (!uuid) {
+    try {
+      const candidates = await resolveCallerCandidates();
+      if (!candidates.claudeAi?.id) {
+        return err(
+          'No conversation_uuid given and no claude.ai conversation could be resolved on this node. ' +
+          'Pass conversation_uuid explicitly (list_claudeai_conversations shows the uuids).',
+        );
+      }
+      uuid = candidates.claudeAi.id;
+      resolution = 'recency-guess';
+    } catch (e) {
+      return err(`Could not resolve a conversation to rename: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  try {
+    const data = await workerPut(`/claude-ai/conversations/${enc(uuid)}`, { name: title });
+    const out: Record<string, unknown> = (data && typeof data === 'object')
+      ? { ...(data as Record<string, unknown>) }
+      : { result: data };
+    out.resolution = resolution;
+    if (resolution === 'recency-guess') {
+      out.warning =
+        'Target was NOT verified — it is the most-recently-updated conversation on this account, ' +
+        'not a confirmed "you are here". If this is the wrong chat, rename it back to previousName.';
+    }
+    return ok(pretty(out));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 async function handleDeleteConversation(args: Record<string, unknown>): Promise<McpToolResult> {
   const uuid = String(args.conversation_uuid || '').trim();
   if (!uuid) return err('conversation_uuid is required.');
@@ -2032,6 +2106,7 @@ export const EXPANDED_HANDLERS: Record<
   agent_execute: handleAgentExecute,
   terminal_interrupt: handleTerminalInterrupt,
   terminal_open_tab: handleTerminalOpenTab,
+  rename_conversation: handleRenameConversation,
   delete_conversation: handleDeleteConversation,
   // memory map + rules map (read — shell out to CLIs)
   memory_map: handleMemoryMap,

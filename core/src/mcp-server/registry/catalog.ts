@@ -133,7 +133,7 @@ mod('read-conversation.ts', 'claudeai', ['read_conversation']);
 mod('expanded.ts', 'claudeai', [
   'claudeai_list_marketplaces', 'claudeai_list_marketplace_plugins', 'claudeai_list_plugins',
   'claudeai_create_conversation', 'claudeai_completion', 'claudeai_add_marketplace', 'claudeai_remove_marketplace',
-  'claudeai_set_plugin_enabled', 'delete_conversation',
+  'claudeai_set_plugin_enabled', 'delete_conversation', 'rename_conversation',
 ]);
 mod('refresh-connector.ts', 'claudeai', [
   'list_claudeai_connectors', 'refresh_connector_tools', 'set_connector_tool_access', 'set_connector_auto_approve',

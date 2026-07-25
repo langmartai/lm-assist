@@ -333,6 +333,7 @@ GOTCHA: "my server"/"the other machine"/"node X" → list_nodes first, then pass
 Read/operate the user's claude.ai:
 • \`list_claudeai_conversations\` → recent; \`read_conversation(uuid)\` → full message tree.
 • \`claudeai_create_conversation\` / \`claudeai_completion(uuid, prompt)\` → start / send (drains the SSE, returns text). \`delete_conversation\`.
+• \`rename_conversation(title, conversation_uuid?)\` → set a chat's title. PASS THE UUID when you know it: an MCP call carries no claude.ai conversation id, so omitting it falls back to the most-recently-updated chat (a guess). The result reports \`resolution\` + \`previousName\` — rename back with previousName if it hit the wrong chat.
 • marketplace/plugins: claudeai_list_marketplaces/_marketplace_plugins/_plugins, claudeai_add_marketplace/_remove_marketplace, claudeai_set_plugin_enabled.
 Manage THIS connector's tool surface (after you add/deploy tools):
 • \`list_claudeai_connectors\` → connectors + tool counts • \`refresh_connector_tools\` → re-fetch tools/list (NEW tools surface only after this, in a FRESH session) • \`set_connector_tool_access(enable[]/block[])\` → show/hide tools.

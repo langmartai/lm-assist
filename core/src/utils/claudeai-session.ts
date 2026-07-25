@@ -1669,6 +1669,18 @@ export async function setConversationSettings(
   }
 }
 
+/**
+ * POST /api/organizations/{org_uuid}/chat_conversations/{conv_uuid}/title
+ *
+ * ⚠️ NOT a rename. Despite the path this is claude.ai's AUTO-TITLE GENERATOR:
+ * it derives a title from message content and REQUIRES `message_content`.
+ * Verified live 2026-07-26 — posting `{title}` alone returns
+ * `400 invalid_request_error: "message_content is required."`, so this call
+ * cannot set a title of your choosing.
+ *
+ * To rename a conversation use `renameConversation()` (PUT .../{conv_uuid}
+ * with `{name}`) instead.
+ */
 export async function setConversationTitle(convUuid: string, opts: { title?: string; orgUuid?: string } = {}) {
   const cfg = readClaudeAISession();
   if (!cfg) throw new Error('No claude.ai session configured');
@@ -1709,6 +1721,101 @@ export async function setConversationTitle(convUuid: string, opts: { title?: str
       method: 'POST',
       headers,
       body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    const respHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => (respHeaders[k] = v));
+    const text = await res.text();
+    let parsed: any;
+    try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+    return { status: res.status, statusText: res.statusText, headers: respHeaders, body: parsed };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Longest name claude.ai's own UI accepts before it truncates. Kept as a guard so a
+ *  runaway model-generated title can't silently become the chat's identity. */
+export const MAX_CONVERSATION_NAME_LEN = 200;
+
+/** Validate + normalize a requested conversation name. Throws on anything the
+ *  upstream would reject or that would make the chat unfindable (blank). */
+export function normalizeConversationName(raw: unknown): string {
+  if (typeof raw !== 'string') throw new Error('name must be a string');
+  // Collapse newlines/tabs — the sidebar renders one line, and a multi-line
+  // name round-trips as an unreadable blob.
+  const name = raw.replace(/\s+/g, ' ').trim();
+  if (!name) throw new Error('name must not be empty');
+  if (name.length > MAX_CONVERSATION_NAME_LEN) {
+    throw new Error(`name must be <= ${MAX_CONVERSATION_NAME_LEN} chars (got ${name.length})`);
+  }
+  return name;
+}
+
+/**
+ * PUT /api/organizations/{org_uuid}/chat_conversations/{conv_uuid} — RENAME a
+ * conversation (set its chat title).
+ *
+ * WRITE. This — not `setConversationTitle` — is how a manual rename is done.
+ * Verified live against claude.ai 2026-07-26 on a throwaway conversation:
+ *
+ *   PUT   /chat_conversations/:uuid  {name}   -> 202, body echoes the new name  ← rename
+ *   PATCH /chat_conversations/:uuid  {name}   -> 405 Method Not Allowed
+ *   POST  /chat_conversations/:uuid  {name}   -> 405 Method Not Allowed
+ *   POST  /chat_conversations/:uuid/rename    -> 404 Not found
+ *   POST  /chat_conversations/:uuid/title {title} -> 400 "message_content is required."
+ *
+ * That last one is the trap: `/title` is claude.ai's AUTO-TITLE GENERATOR (it
+ * derives a title from message content), NOT a setter — passing `{title}` to it
+ * fails outright. See `setConversationTitle` below for the corrected note.
+ *
+ * Returns the usual { status, statusText, headers, body }; on success (202) the
+ * body is the full conversation object with `name` set to the new value.
+ */
+export async function renameConversation(
+  convUuid: string,
+  name: string,
+  opts: { orgUuid?: string } = {},
+): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: any }> {
+  const cfg = readClaudeAISession();
+  if (!cfg) throw new Error('No claude.ai session configured');
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(convUuid)) {
+    throw new Error(`Invalid conversation UUID: ${convUuid}`);
+  }
+  const newName = normalizeConversationName(name);
+  const orgUuid = _org(opts);
+  const url = `https://claude.ai/api/organizations/${orgUuid}/chat_conversations/${convUuid}`;
+  const id = deriveIdentity(cfg);
+  const headers: Record<string, string> = {
+    Host: 'claude.ai',
+    Connection: 'keep-alive',
+    'anthropic-client-platform': 'web_claude_ai',
+    'anthropic-client-version': '1.0.0',
+    'anthropic-client-sha': '8a753cbf88e19be0f5f67efefb1b07840b6402e9',
+    'content-type': 'application/json',
+    Accept: '*/*',
+    'User-Agent': cfg.userAgent ||
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+    Origin: 'https://claude.ai',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty',
+    Referer: `https://claude.ai/chat/${convUuid}`,
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept-Language': 'en-US,en;q=0.9',
+    Cookie: cfg.cookie,
+  };
+  if (id.anonymousId) headers['anthropic-anonymous-id'] = id.anonymousId;
+  if (id.activitySessionId) headers['x-activity-session-id'] = id.activitySessionId;
+  if (id.deviceId) headers['anthropic-device-id'] = id.deviceId;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15_000);
+  try {
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ name: newName }),
       signal: ctrl.signal,
     });
     const respHeaders: Record<string, string> = {};
@@ -1983,7 +2090,11 @@ export async function cleanupTestConversations(opts: {
 /** Set, update, or CLEAR the auto-delete TTL on an EXISTING conversation by rewriting the `[lm-autodel:…]`
  *  marker in its name. `hours > 0` → (re)arm the TTL (now + hours); `hours` null/0/undefined → CLEAR it
  *  (strip the marker, so the conversation will NEVER be auto-deleted). Reads the current name, strips any
- *  old marker, applies the new one, and renames via setConversationTitle. */
+ *  old marker, applies the new one, and renames via renameConversation.
+ *
+ *  (Was routed through `setConversationTitle` until 2026-07-26 — that endpoint is
+ *  the auto-title generator and 400s on `{title}`, so arming/clearing a TTL could
+ *  never actually take effect. Same root cause as the rename fix.) */
 export async function setConversationAutoDelete(
   convUuid: string,
   hours: number | null | undefined,
@@ -1994,8 +2105,11 @@ export async function setConversationAutoDelete(
   const base = stripAutoDeleteMarker(String((conv.body as { name?: string } | null)?.name || ''));
   const now = opts.nowMs ?? Date.now();
   const arm = typeof hours === 'number' && hours > 0;
-  const newName = arm ? withAutoDeleteMarker(base, hours as number, now) : base;
-  const r = await setConversationTitle(convUuid, { title: newName, orgUuid: opts.orgUuid });
+  // Clearing a TTL on a chat whose whole name WAS the marker leaves an empty base,
+  // and a rename to "" is not a legal title — fall back to claude.ai's own default
+  // label rather than throwing on the clear path.
+  const newName = arm ? withAutoDeleteMarker(base, hours as number, now) : (base || 'New chat');
+  const r = await renameConversation(convUuid, newName, { orgUuid: opts.orgUuid });
   return { status: r.status, uuid: convUuid, name: newName, autoDeleteAtMs: arm ? now + Math.round((hours as number) * 3600_000) : null };
 }
 
