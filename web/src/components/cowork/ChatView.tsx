@@ -33,13 +33,19 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl,
 }) {
   const [model, setModel] = useState('claude-sonnet-5');
   const { detail, err, gone, sending, send, refresh } = useChatConversation({ uuid, apiFetch, model, seed });
-  // claude.ai FIXES the model when a conversation is created and refuses to change it after —
-  // `PUT .../chat_conversations/{uuid} {model}` answers 400 "Cannot update model for existing
-  // conversation" (measured; PATCH 405, /model and /settings 404). So for an existing chat the
-  // picker cannot do anything, and showing a freely-changeable control was a lie. Adopt the
-  // conversation's real model and say that it is fixed.
-  const pinnedModel = detail?.model;
-  useEffect(() => { if (pinnedModel) setModel(pinnedModel); }, [pinnedModel]);
+  // The conversation's STORED model (immutable: `PUT .../chat_conversations/{uuid} {model}` is
+  // refused with 400 "Cannot update model for existing conversation"). That immutability is
+  // about the stored default ONLY — it does NOT pin interactions: the completion endpoint takes
+  // a per-message `model`, and claude.ai's voice WS takes a per-session `model` query param
+  // (read out of its own bundle: `e.model && s.set("model", e.model)`). So the picker is real;
+  // this value just seeds it with what the conversation was created as.
+  const conversationModel = detail?.model;
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (!conversationModel || seededRef.current) return;
+    seededRef.current = true;          // seed ONCE, never fight a later user choice
+    setModel(conversationModel);
+  }, [conversationModel]);
   const [prompt, setPrompt] = useState('');
   const [manageErr, setManageErr] = useState<string | null>(null);
   // Voice DICTATION: the transcript is mirrored LIVE into the composer (see the effect below),
@@ -247,12 +253,7 @@ export function ChatView({ uuid, apiFetch, onClose, onDeleted, seed, voiceWsUrl,
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ flex: 1 }} />
             <ModelEffortSelector model={model} effort="" onChange={(m) => setModel(m)} hideEffort />
-            {pinnedModel && (
-              <span title={`claude.ai fixes a conversation's model when it is created and will not change it afterwards (the API answers "Cannot update model for existing conversation"). Start a new chat to use a different model.`}
-                    style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                fixed for this chat — new chat to change
-              </span>
-            )}
+
           </div>
         </div>
       )}

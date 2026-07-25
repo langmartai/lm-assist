@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AudioLines, PhoneOff, RefreshCw, ShieldAlert, Square } from 'lucide-react';
 import { ModelEffortSelector } from '@/components/cowork/ModelEffortSelector';
@@ -72,6 +72,9 @@ export function ClaudeVoiceOverlay({
   // Safe here — ChatView only mounts this on a click and the unguarded createPortal below
   // already proves it never server-renders (loadStoredVoice also defaults if storage throws).
   const [voice, setVoice] = useState(loadStoredVoice);
+  // Synchronous mirror of `state` for the model-reconnect guard: that effect runs before the
+  // re-render that would give it a fresh `state` closure.
+  const stateRef = useRef<VoiceState>('idle');
 
   const {
     state,
@@ -98,6 +101,8 @@ export function ClaudeVoiceOverlay({
     isRemoteNode,
   });
 
+  useEffect(() => { stateRef.current = state; }, [state]);
+
   // Auto-start on open (the brief allows either; auto-start reads as "answering the
   // call" the moment the overlay appears). Unmount always releases the mic/socket —
   // Exit below also calls stop() explicitly so the mic drops the instant the user
@@ -110,6 +115,27 @@ export function ClaudeVoiceOverlay({
     return () => stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // MODEL changes reconnect the session; effort/thinking/voice still wait for the next start.
+  //
+  // The model is a QUERY PARAM on claude.ai's voice socket — read out of its own bundle:
+  //   e.model && s.set("model", e.model)
+  // so it is fixed for the life of a connection and the only way to change it is to reopen,
+  // which is exactly what claude.ai's own voice UI does. Deferring to "next start" left the
+  // picker looking functional while doing nothing for the session in front of the user.
+  //
+  // Seeded from the CURRENT model so merely opening the overlay never triggers a reconnect.
+  const modelRef = useRef(model);
+  useEffect(() => {
+    if (modelRef.current === model) return;
+    modelRef.current = model;
+    if (stateRef.current === 'idle') return;   // nothing live to reconnect
+    stop();
+    // Next tick: stop() resets the state synchronously, and start() is a no-op unless idle.
+    const t = setTimeout(() => start(), 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { stop(); onClose(); } };
@@ -287,7 +313,7 @@ export function ClaudeVoiceOverlay({
             <PhoneOff size={13} /> Exit
           </button>
           <div style={{ flex: 1, minWidth: 8 }} />
-          <span style={{ fontSize: 10.5, color: 'var(--color-text-tertiary)' }}>Applies on next start:</span>
+          <span style={{ fontSize: 10.5, color: 'var(--color-text-tertiary)' }}>Model reconnects now · effort/voice on next start:</span>
           <VoiceSelector voice={voice} onChange={(v) => { setVoice(v); storeVoice(v); }} />
           <ModelEffortSelector
             model={model}
