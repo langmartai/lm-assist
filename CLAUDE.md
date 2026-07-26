@@ -169,12 +169,21 @@ single-flights the PRIMING, one layer above the launch. Two concurrent cold star
 divorced the primed cookie-warm page from the browser serving voice pages → `403`, `jar=14`,
 both sessions dead at `up=0`. Measured before/after: 2 launches→1, `up=0`→`up=2245`.
 
-**Routing itself was NOT the bug** — measured with two real fake-mic sessions (sequential and
-concurrent on one shared Chrome) plus an account-wide sweep: each transcript landed only in
-the conversation from its own connect handshake. What was missing was any *assertion* or any
-*attribution*: not one log line named the conversation a session bound to, which is why the
-incident was discoverable only by a human reading a chat. Both log lines now carry `conv=`
-(an id, never content). Regression suite: the cross-talk, refusal and single-flight tests in
+🔴 **A synthetic voice repro did NOT reproduce this leak — even with the fix reverted.** Real
+fake-mic sessions (sequential, concurrent, and two sessions sharing ONE long-lived browser),
+each speaking a unique marker word, plus an account-wide sweep: every transcript landed only
+in its own conversation, in all three shapes, both with and without the `/chat/<conv>`
+pinning. So that harness is **not a detector for this failure mode** and a green run from it
+is not evidence the leak is gone — the real trigger lives in state it doesn't recreate
+(freshly-created empty conversations, no concurrent traffic on the account, a browser whose
+SPA has never rendered a conversation). The load-bearing evidence for the pinning fix is the
+prod before/after in `ea489ff`, not a synthetic run. If you touch this path, verify the way
+that commit did — on prod, counting messages per conversation across real sessions.
+
+Attribution was the other gap: not one log line named the conversation a session bound to,
+which is why the incident was discoverable only by a human reading a chat. Both sides of the
+bridge now log `conv=` (an id, never content). Regression suite: the pinning, cross-talk,
+refusal and single-flight tests in `voice-conversation-pinning.test.ts` /
 `claude-voice-relay.test.ts` / `claude-chrome.test.ts` — each **mutation-verified** (bug
 reintroduced ⇒ test fails).
 

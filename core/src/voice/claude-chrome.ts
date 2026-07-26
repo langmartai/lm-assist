@@ -55,12 +55,15 @@ const CLAUDE_AI_COOKIE_URL = 'https://claude.ai';
  * behaviour rather than navigating somewhere wrong.
  */
 export function conversationPageUrl(voiceWsUrl: string): string | null {
-  const m = /\/chat_conversations\/([^/?#]+)/.exec(voiceWsUrl || '');
-  if (!m) return null;
-  const conv = decodeURIComponent(m[1]);
+  // ONE parser for the WS URL, shared with the binding assertion below, so the conversation
+  // the page is pinned to and the conversation the binding is verified against are recovered
+  // by the same code and can never disagree. parseClaudeVoiceUrl also pins the ORIGIN, which
+  // a `/chat_conversations/(...)` substring match alone does not.
+  const binding = parseClaudeVoiceUrl(voiceWsUrl || '');
+  if (!binding) return null;
   // Guard the path segment: only a plain uuid-ish token, never a traversal or a new origin.
-  if (!/^[A-Za-z0-9._-]+$/.test(conv)) return null;
-  return `https://claude.ai/chat/${encodeURIComponent(conv)}`;
+  if (!/^[A-Za-z0-9._-]+$/.test(binding.conv)) return null;
+  return `https://claude.ai/chat/${encodeURIComponent(binding.conv)}`;
 }
 // A REAL Chrome User-Agent — NOT the default headless "HeadlessChrome/..." token. Per
 // lm-mobile's validated CF findings (docs/claude-voice-implementation.md §4), the claude.ai
