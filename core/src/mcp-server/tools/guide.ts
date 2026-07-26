@@ -327,7 +327,15 @@ SINGLE + CROSS NODE
 3. Reach a remote service: \`open_port_forward(node=B, ...)\`, \`list_port_forwards\`, \`port_forward_stats\`, \`close_port_forward\`.
    Transport is automatic + transparent: same-cluster (same-LAN) forwards run DIRECT at native TCP speed (hub out of the data path, ~4× the relay, no per-connection hub round-trip); cross-cluster / off-LAN transparently falls back to the hub relay. \`port_forward_stats\` shows per-forward MB/s + rttMs. Good for bulk (DB dumps, artifacts) between same-cluster nodes, not just interactive.
 See guide "cross-node" for the full single-vs-cross model, per-node keys, sync, and local-only rules.
-GOTCHA: "my server"/"the other machine"/"node X" → list_nodes first, then pass its hostId.`,
+GOTCHA: "my server"/"the other machine"/"node X" → list_nodes first, then pass its hostId.
+
+🔴 A DISPLAY NAME IS NOT AN IDENTITY — the hostId is.
+Display names are non-unique, decorated, and are NOT the set of targetable nodes. Measured on this fleet 2026-07-26: \`auth_status({allNodes:true})\` returned **13 rows keyed by display name** while \`list_nodes\` showed **3 targetable nodes**; \`ubuntu-Virtual-Machine\` appeared 3×, \`DESKTOP-GDKLATG\` 2×, \`vm\` 4×. The single \`cookie:ok\` row read \`ubuntu-Virtual-Machine (dev)\` — a name \`list_nodes\` NEVER prints — which reads exactly like some unreachable dev-fleet host. It is not: \`mission_control_status.leader\` showed that same display name resolving to hostId \`gw4-332c6620-…\`, i.e. the DEFAULT node you were already talking to.
+**Never conclude a node is absent, foreign, offline, or "someone else's fleet" from a name.** Cross-check before you act:
+1. \`list_nodes\` → the authoritative hostIds (the only targetable set).
+2. \`mission_control_status\` → resolves a decorated display name to its hostId.
+3. \`auth_status({node:<hostId>})\` → confirm the per-node fact against the id, not the label.
+A \` (dev)\` suffix marks a node's ENVIRONMENT (dev Core :3200 vs prod :3100), not a different machine.`,
 
   'claude-ai': `# Guide: claude.ai web account + this connector's tools
 Read/operate the user's claude.ai:
@@ -345,7 +353,11 @@ CROSS-NODE: these run on the host holding the claude.ai cookie (IP-pinned) — p
 • \`claude_code_account\` → Claude Code profile/org/role/policy-limits.
 • \`claudeai_account\` → claude.ai org + subscription (no card details).
 • \`claudeai_active_sessions\` → live device sessions (security view).
-CROSS-NODE: each is per-host (different OAuth/cookie per machine) — pass \`node=B\`; loop \`list_nodes\` for a fleet sweep (workflow #10).`,
+CROSS-NODE: each is per-host (different OAuth/cookie per machine) — pass \`node=B\`; loop \`list_nodes\` for a fleet sweep (workflow #10).
+
+🔴 \`auth_status({allNodes:true})\` IS A SMELL TEST, NOT AN INVENTORY. Its rows are keyed by DISPLAY NAME, carry NO hostId, and are neither unique nor 1:1 with \`list_nodes\` — measured 2026-07-26: 13 rows for 3 real nodes, with one name repeated 3× and the only \`cookie:ok\` row wearing a \` (dev)\` suffix that \`list_nodes\` never prints. Do not conclude "the good cookie is on some other/unreachable host" from that. Resolve the hostId first (guide("nodes")), then re-check with \`auth_status({node:<hostId>})\` before acting.
+
+🔑 CREDENTIAL vs ACCOUNT — the node is a proxy, not a scope. The claude.ai cookie is IP-PINNED to the host that captured it, but CONVERSATIONS are ACCOUNT-scoped: every cookie-bearing node sees the SAME conversation store, so "which node" does not narrow which chats you can reach. What it DOES decide is WHOSE account — different nodes can hold cookies for different accounts, so picking a node implicitly picks an identity. Confirm with \`claudeai_account(node=…)\` before attributing a conversation, a usage figure, or a quota to "the" account.`,
 
   github: `# Guide: GitHub
 • \`github_query(...)\` → READ (issues, PRs, repos, search) via the user's gh auth.
@@ -362,26 +374,64 @@ GOTCHA: fs_read REFUSES credential/secret paths (.ssh/.aws/.env/tokens/keys, the
   missions: `# Guide: missions — durable goals the fleet drives to done
 A **Mission** is a durable, cross-project record of WHAT to achieve. The fleet-elected **super Mission Controller** (ONE node — lowest online gateway-id) binds ONE primary executor and, every few minutes, reads its feedback, ADAPTS the mission (revises objective/plan from the results — not a binary done/failed), and pushes it toward done. It places executors to avoid conflict — isolate (cloud > git worktree+branch) when possible, else serialize on shared resources; \`dependsOn\` orders missions. Fully autonomous BUT it never auto-approves a human gate or a material pivot (those PAUSE for you).
 
+🔴 STATUS LIFECYCLE — READ THIS BEFORE YOU CREATE A MISSION
+**\`waiting\` is the state the controller schedules from. \`active\` is not — and \`mission_create\` is born \`active\`.**
+So a mission created and left alone is NEVER scheduled: no executor, \`binding:null\`, indefinitely. After \`mission_create\`, always \`mission_update({id, status:"waiting"})\` and confirm the read-back says \`waiting\`.
+
+| status | what it means | scheduled? |
+|---|---|---|
+| \`draft\` | still being written | yes |
+| \`waiting\` | ready to be picked up — **the state you want at birth** | yes |
+| \`blocked\` | gated on dependency/resource/serialize; re-evaluated every pass | yes |
+| \`active\` | an executor IS running it | **no** — "already running", so it is never started |
+| \`paused\` | deliberately held by a human | no |
+| \`done\` / \`failed\` | terminal | no |
+
+(Root cause: bl_28543c78. When the default is fixed, delete the extra \`mission_update\`. Full case: \`case.mission-status-waiting-not-active\`.)
+
+⚠️ **\`mission_place({id})\` returning \`{go:true}\` does NOT mean the mission is queued.** It answers a hypothetical — dependency gate → resource conflict → isolation — and never consults the scheduler's status filter, so it happily says \`go:true\` for an \`active\` mission the controller will never look at. Take gating from \`mission_schedule\` (which DOES apply the status filter); use \`mission_place\` only to ask "would deps/resources allow this?".
+
+⚠️ **Being in \`mission_schedule.ready\` is still not placement.** \`ready\` means the deterministic gate passed. The controller is an AGENT that then judges contention (\`session_footprints\`), parallel-vs-sequence, and cluster scope — it may legitimately defer and retag. A mission can sit in \`ready\` for several ticks. \`mission_spawn(id)\` is the direct lever when you want it placed now.
+
+✅ **Evidence, not status fields.** Placement = \`binding.sessionId\` (cross-check \`mission_sessions\`). Liveness = \`mission_executor_status\` (\`alive\`/\`idle\`). A binding record alone does not prove a process is running — and \`go:true\` proves nothing at all.
+
+🔴 ENV — three fields that misfire SILENTLY
+• **\`env.repo\` MUST be an ABSOLUTE path.** A bare name (\`"lm-assist"\`) is resolved against Core's own install directory and the spawn dies with \`git worktree add …/node_modules/lm-assist/core/lm-assist/.claude/worktrees/… spawnSync git ENOENT\` — which reads like a missing git binary and is actually a bad cwd. Use \`/home/ubuntu/<repo>\`.
+• **\`env.effort\` (\`low|medium|high|xhigh|max\`) OVERRIDES the priority default — so setting it can DOWNGRADE.** Omitted, a \`critical\`/\`high\` mission gets \`max\` and everything else inherits the CLI default. Writing \`effort:"high"\` onto a high-priority mission therefore makes it WEAKER than leaving it out. Omit to inherit; set \`max\` only deliberately (subtle root-cause hunts), \`low\` for mechanical deploy/sync work. An unknown level is refused at the boundary (\`INVALID_EFFORT\`) rather than stored.
+• **\`env.isolation\` defaults to \`cloud\`.** A cloud container holds no IP-pinned claude.ai cookie and cannot reach node-local resources — choose \`worktree\` (with an absolute \`env.repo\`) whenever the work must be verified on the node itself.
+
 EXECUTORS: a mission's worker is either a **cloud** CCR session, or a **native** local session the controller launches in a git worktree with \`claude --remote-control\` (the session self-registers a cloud handle so it's remotely controllable — the controller reads from its local transcript and drives it via the cloud relay). An executor may be an **orchestrator** that spawns **sub-workers** under the same mission. Controller-spawned sessions are titled \`Mission: <title> · <id>\`.
 
 CONNECT + DRIVE: you can watch and drive a mission's executor (and an orchestrator's sub-workers) DIRECTLY, alongside the autonomous controller (it keeps adapting in the background). The Missions web page lists each mission's sessions (\`GET /mission/:id/sessions\` → the primary executor + sub-workers), each with an Open button → a live transcript + a prompt box. Connect/drive a cloud session via the \`ccr_cloud_*\` tools — see guide("ccr"); a native session via the terminal/session tools — see guide("terminals").
 
-Tools: \`mission_create\` (title+objective; optional projects/dependsOn/env{isolation:cloud|worktree|shared}), \`mission_list\`, \`mission_update\` (refine/pause/resume/mark done/edit objective), \`mission_control_status\` (which node is elected + its last tick), \`mission_session_resume(sid, force?)\` (revive a dead/idle bound worker in place — resume-first before spawning fresh; returns \`{resumed, reason}\` where \`reason: ok|alive|gone|conflict|status-unknown|needs-force|kill-failed\`. Resume is inject-first: a live worker reconnects via /remote-control in place; pass \`force:true\` only after a needs-force (idle workers auto-kill)).
+Tools: \`mission_create\` (title+objective; optional projects/dependsOn/env{isolation:cloud|worktree|shared, repo:ABSOLUTE, effort}), \`mission_list\`/\`mission_query\` (summary projection — page \`detail:"full"\`), \`mission_update\` (refine/pause/resume/mark done/edit objective — **and the \`status:"waiting"\` flip above**), \`mission_schedule\` (the authoritative {ready, blocked, serializeGroups} plan), \`mission_place\` (hypothetical only — see the warning above), \`mission_spawn(id)\` (place a native worker NOW), \`mission_sessions\`/\`mission_executor_status\` (placement + liveness evidence), \`mission_control_status\` (which node is elected + its last tick), \`mission_session_resume(sid, force?)\` (revive a dead/idle bound worker in place — resume-first before spawning fresh; returns \`{resumed, reason}\` where \`reason: ok|alive|gone|conflict|status-unknown|needs-force|kill-failed\`. Resume is inject-first: a live worker reconnects via /remote-control in place; pass \`force:true\` only after a needs-force (idle workers auto-kill)).
 
 ONBOARDING AN EXISTING SESSION: from any session, call mission_onboard({}) to hand the CURRENT session to mission control (or mission_onboard({sessionId}) for another one). mode:"standby" (default) = mission control analyzes + watches, the human keeps driving; mode:"handoff" = mission control takes over and drives it to completion per the workflow playbooks (onboard.analyze → drive.<work-type>/recover.stuck/wrapup.completed). Switch anytime with mission_update({id, manageMode:"handoff"|"standby"}) — human-only. The playbooks themselves are editable: mission_workflow_list/get/set/history/rollback.
 
 Requires the data service enabled (cross-node mission store). Settings: missionControllerEnabled, missionControllerIntervalMin, missionControllerMaxNudges, missionControllerModel.
 
+GOTCHAS
+• **\`tags\` values must be ARRAYS.** \`{priority:["high"]}\` is right; a bare string \`{priority:"high"}\` throws \`TypeError: (vals ?? []).map is not a function\` and fails the WHOLE create. If a create rejects on a shape you cannot place, create it minimal (title+objective) and \`mission_update\` the rest.
+• **A nested \`env\` object can be DROPPED on some connector paths** — the write reports success and the field never lands. Set \`env\` at CREATE time and read it back; \`effort\` is also accepted top-level as an alias for exactly this reason. If a patch will not stick, PATCH the node's local route directly.
+• **\`mission_list\`/\`mission_query\` return a SUMMARY projection** (narrative fields are counted, not sent). \`detail:"full"\` is ~20KB PER mission — scope with \`id\` or page it with \`limit\`/\`offset\`; an unscoped \`full\` sweep is the call that once blew a whole context window.
+• **The mission and workflow-doc stores are FLEET-SHARED.** \`createdBy.node\` records which gateway a write came THROUGH, not where the doc lives — a doc written via one node reads identically from another. Never diagnose a "split library" from that field.
+
 FLOW
 \`\`\`mermaid
 flowchart TD
-  C["mission_create (or mission_onboard an existing session)"] --> S["controller schedules: ready?"]
-  S -->|native| SP["mission_spawn (named worker, worktree)"]
-  S -->|cloud| CC["ccr_cloud_start + bind"]
-  SP & CC --> LOOP["adapt loop: read feedback -> drive / answer questions"]
+  C["mission_create — born status:active"] --> F{"status in draft/waiting/blocked?"}
+  F -->|"no — active or paused"| X["NEVER scheduled: set status=waiting"]
+  X --> F
+  F -->|yes| S["mission_schedule.ready = deps + resources + serialize passed"]
+  S --> J["controller judges contention / order (may defer)"]
+  J -->|native| SP["mission_spawn (named worker, worktree)"]
+  J -->|cloud| CC["ccr_cloud_start + bind"]
+  SP & CC --> B["binding.sessionId — the ONLY placement evidence"]
+  B --> LOOP["adapt loop: read feedback -> drive / answer questions"]
   LOOP -->|"gate / material pivot"| H["PAUSES for the human"]
   LOOP --> W["wrapup: resultsAppend -> progress=100 -> done"]
-\`\`\``,
+\`\`\`
+(\`mission_onboard\` hands an EXISTING session over instead — it is already bound, so it never enters the ready path.)`,
 
   login: `# Guide: log in / re-login for a node (cookie + OAuth)
 Two credentials per host (see auth_status): the claude.ai WEB cookie and the Claude Code OAuth token.
@@ -533,13 +583,13 @@ const BLURB: Record<string, string> = {
   agents: 'run / resume / monitor a Claude Code agent remotely (incl. browser control)',
   terminals: 'drive a terminal or inject a prompt into a running session (Linux/mac/Windows)',
   ccr: 'CCR — view/drive a Claude Code session from claude.ai/code (load=replay, mirror=live view, connect=two-way; safety-gated)',
-  nodes: 'list hosts, target a specific machine, port-forward',
+  nodes: 'list hosts, target a specific machine, port-forward — and why a DISPLAY NAME is not an identity (hostIds are the only targetable set; names repeat and carry `(dev)` suffixes)',
   'claude-ai': "read/operate the user's claude.ai web account + manage this connector's tools",
   login: 'guided re-login per node — fix the claude.ai cookie (browser-capture or manual steps) and/or the Claude Code OAuth token; auth-monitor keeps OAuth fresh automatically',
-  account: 'Claude Code OAuth + claude.ai account / usage / active sessions (per node)',
+  account: 'Claude Code OAuth + claude.ai account / usage / active sessions (per node) — incl. why `auth_status(allNodes)` is a smell test, not an inventory, and how a node picks an ACCOUNT rather than a set of conversations',
   github: 'query/mutate GitHub via the user gh auth',
   files: 'list/stat/read files + transfer files between hosts',
-  missions: 'durable cross-project goals — the fleet-elected Mission Controller launches/binds an executor (cloud, or native via claude --remote-control), adapts + pushes to done, places to avoid conflict; watch+drive executors & sub-workers directly; never auto-approves gates/pivots',
+  missions: 'durable cross-project goals — the fleet-elected Mission Controller binds an executor (cloud or native worktree), adapts + drives it to done, never auto-approves gates/pivots. READ BEFORE CREATING ONE: a mission is born `active`, and `active` is NEVER scheduled — set `status:"waiting"`',
   'mission-controller': 'the controller agent loop contract — the exact per-pass workflow, hard rules (never auto-approve gates/pivots), and tool usage for the autonomous controller session',
   clusters: 'isolated fleet partitions — concept, shared-vs-within table, cluster_list/assign/unassign/describe, build one cluster at a time, respect-other-clusters scope norm',
   'machine-access': 'how to reach OTHER machines FROM a node — node-local SSH profiles (user/host/key-path/notes) via machine_access, with ssh-config import + reachability check; run the reported command ON that node',

@@ -22,8 +22,11 @@ export const TOPIC_TOOLS: Record<string, string[]> = {
   github: ['github_query', 'github_mutate'],
   files: ['fs_drives', 'fs_list', 'fs_stat', 'fs_read', 'transfer_queue', 'transfer_send_file', 'transfer_list_remote', 'transfer_stats', 'transfer_cancel', 'transfer_status'],
   roles: ['set_role', 'report_status', 'worker_status', 'list_workers', 'decide_gate'],
-  missions: ['mission_create', 'mission_list', 'mission_update', 'mission_control_status'],
-  'mission-controller': ['mission_place', 'mission_executor_status', 'mission_sessions', 'mission_session_read', 'mission_session_drive', 'mission_session_control'],
+  // `mission_place`/`mission_schedule` live HERE, not on mission-controller: their trap
+  // (go:true / ready is NOT placement) is documented in the missions playbook, and that
+  // topic — unlike mission-controller — is part of bootstrap. A tool maps to ONE topic.
+  missions: ['mission_create', 'mission_list', 'mission_query', 'mission_update', 'mission_control_status', 'mission_schedule', 'mission_place', 'mission_spawn'],
+  'mission-controller': ['mission_executor_status', 'mission_sessions', 'mission_session_read', 'mission_session_drive', 'mission_session_control'],
   clusters: ['cluster_list', 'cluster_assign', 'cluster_unassign', 'cluster_describe'],
   'machine-access': ['machine_access'],
 };

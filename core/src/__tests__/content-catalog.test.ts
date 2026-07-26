@@ -7,7 +7,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { getContentCatalog, CONTENT_GROUP_ORDER } from '../mcp-server/registry/content-catalog';
-import { validateContentId } from '../mcp-server/registry/content-model';
+import {
+  validateContentId,
+  MAX_CONTENT_OVERRIDE_BYTES,
+  MAX_BLURB_OVERRIDE_BYTES,
+} from '../mcp-server/registry/content-model';
 import {
   GUIDES_TEST_EXPORT,
   BOOTSTRAP_SECTION_ORDER,
@@ -91,6 +95,28 @@ test('every topic BLURB is editable on its owning unit (index one-liners are con
   }
   assert.equal(catalog.get('bootstrap.header')!.hasBlurb, false);
   assert.equal(catalog.get('guide.index')!.hasBlurb, false);
+});
+
+/**
+ * "Editable" is a lie if the SHIPPED default is already bigger than the override the
+ * store will accept: an editor could never tweak-and-restore that unit, only shrink it.
+ * Caught for real — a `missions` blurb grown to 446 B against a 300 B cap (2026-07-26).
+ * This is the part that rots, because bodies and one-liners only ever get longer.
+ */
+test('every code default FITS the override limit it is edited through', () => {
+  for (const unit of getContentCatalog().values()) {
+    const bodyBytes = Buffer.byteLength(unit.defaultBody, 'utf8');
+    assert.ok(
+      bodyBytes <= MAX_CONTENT_OVERRIDE_BYTES,
+      `${unit.id} default body is ${bodyBytes} B > MAX_CONTENT_OVERRIDE_BYTES ${MAX_CONTENT_OVERRIDE_BYTES} — it could not be edited back to itself`,
+    );
+    if (!unit.hasBlurb) continue;
+    const blurbBytes = Buffer.byteLength(unit.defaultBlurb ?? '', 'utf8');
+    assert.ok(
+      blurbBytes <= MAX_BLURB_OVERRIDE_BYTES,
+      `${unit.id} default blurb is ${blurbBytes} B > MAX_BLURB_OVERRIDE_BYTES ${MAX_BLURB_OVERRIDE_BYTES} — shorten the blurb, it is one index line`,
+    );
+  }
 });
 
 test('units carry non-empty titles + defaults; group order is bootstrap-first', () => {
