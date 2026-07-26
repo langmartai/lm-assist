@@ -182,6 +182,42 @@ Two of these grow along axes we do not control:
 - `memory_map` grows monotonically — memory records are never pruned, so this one
   only ever moves in one direction.
 
+### 3.1 Where the 905 KB actually is — a list view returning revision history
+
+Field-level breakdown of the live `mission_list` payload (50 missions, 927,614 B
+body). This is the most actionable number in the audit, because it says what to
+cut rather than just how much:
+
+| field | total | share | B/mission |
+|---|---|---|---|
+| `history` | 379.9 KB | **54.6%** | 7,780 |
+| `objective` | 140.2 KB | 20.1% | 2,870 |
+| `results` | 68.3 KB | 9.8% | 1,399 |
+| `nextSteps` | 19.3 KB | 2.8% | 395 |
+| `tags` | 19.2 KB | 2.8% | 393 |
+| `plan` | 15.4 KB | 2.2% | 315 |
+| everything else | ~85 KB | ~7.7% | — |
+
+**`history` alone is 54.6% of the result.** `mission_list` is a *list* view that
+returns every mission's full revision history — 401 revs across 50 missions (avg
+8, max 19), each a full-state change record. Revs only accumulate, so this is the
+compounding term: per-mission cost rises even if the mission count never does.
+
+`history` + `objective` + `results` = **84.5%** of the whole payload. So:
+
+- dropping `history` from the list projection cuts it ~55% (905 KB → ~410 KB);
+- dropping all three cuts it ~84.5% (→ ~140 KB), under a 200 KB ceiling with no
+  pagination at all;
+- `objective` averages 2,836 chars but peaks at 15,890 — one mission's objective
+  is 15.9 KB by itself, so truncate it to a preview rather than dropping it if the
+  list should stay readable.
+
+The general rule this suggests: **a list or write result should never carry
+per-record revision history.** That is what `mission_history` is for, and it
+already takes a `limit`. The same shape explains why writes are big — a
+`mission_update` returns ~11 KB because it echoes the full record including every
+rev.
+
 ---
 
 ## 4. Structural findings — what a byte cap alone will not fix
@@ -221,6 +257,12 @@ server (`core/src/mcp-server/index.ts`) and the HTTP `/mcp` endpoint
 `EXPANDED_HANDLERS` map; stdio is a thin HTTP client to Core while `/mcp` runs
 in-process. A cap applied at the handler or dispatcher layer covers both. A cap
 applied in only one transport covers neither properly.
+
+This was **verified rather than inferred** — the stdio server was driven directly
+over a pipe (`initialize` + `tools/list`) and its catalogue diffed against the
+HTTP one: **244 tools each, zero tools unique to either side.** Worth stating
+because the two surfaces reach the tools by completely different routes, and
+"they share a module" is the kind of claim that quietly stops being true.
 
 ---
 
