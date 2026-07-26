@@ -385,6 +385,14 @@ today; it cannot notice a tool added tomorrow. So the guard has three parts:
    fails with `mission_list: 930573B exceeds its budget of 1000B`.
 3. **Cap assertion.** The ext-plugin 1 MiB cap must still exist, asserted against
    the compiled `capResult` rather than only the constant.
+4. **Truncation must not be a dead end.** A tool that hits the ceiling must expose
+   some way to ask for less (`limit`/`offset`/`cursor`/`since`/…), or be recorded
+   in `TRUNCATING_WITHOUT_NARROWING` with a reason. Otherwise the truncation
+   marker asks the caller to narrow a call it cannot narrow. This ratchets both
+   ways: once a listed tool gains narrowing arguments, the test fails until the
+   stale entry is deleted, so the excuse list cannot quietly accumulate.
+   Mutation-verified: removing `mission_workflow_list` from the list fails with
+   exactly that diagnosis.
 
 Operational notes:
 - The size sweep is **wall-clock bounded (25s default) and ordered
@@ -428,16 +436,70 @@ Not chased further because it is outside this mission's scope.
 
 ---
 
-## 9. Recommended ceiling
+## 8a. Post-guardrail — what the fix actually did, and what is left
 
-From the measured distribution rather than a round number: **~25 KB soft / 50 KB
-hard per result.** Of the 70 read-only tools measured, 60 already return under
-20 KB, so a 25 KB soft ceiling leaves the large majority untouched and flags
-exactly the tools listed in §1-2. 50 KB hard (~14k tokens) bounds one call to ~7%
-of a 200k context, so a conversation survives several such calls.
+`mission_f4055461` landed the central ceiling (`612c8b9`, `06e616b`) and deployed
+it to 117 prod while this audit was running, so every number in §1-3 above is
+**pre-cap**. Re-measured on the same fleet afterwards:
+
+| tool | pre-cap | post | outcome |
+|---|---|---|---|
+| `claudeai_list_plugins` | 1,156,396 | 32,995 | 35× — projection |
+| `mission_query` | 960,675 | 34,102 | 28× — projection |
+| `mission_list` | 923,758 | 34,132 | 27× — projection |
+| `memory_map` | 827,724 | 35,747 | 23× — pagination (default 60) |
+| `cc_sessions` | 52,379 | 20,578 | projection |
+| `bootstrap` | 55,572 | 55,654 | untouched, by design |
+
+The enforced ceiling is **64 KiB** (`DEFAULT_MAX_RESULT_BYTES` in
+`core/src/mcp-server/result-cap.ts`, env `MCP_RESULT_MAX_BYTES`). This audit
+originally proposed 50 KB hard; that was **rejected on measurement** — `bootstrap`
+is 55,572 B by design, so a 50 KB ceiling would have truncated session onboarding
+on every fresh connect and made a truncation marker the first thing a new session
+read. 64 KiB is the smallest round number that clears it. The advisory 25 KB soft
+budget survives in `tool-output-budget.ts` and does a different job: it keeps
+pressure on tools well before anything gets cut.
+
+**Still truncated after the fix** — 4 of the 83 re-measured tools hit the ceiling
+and return an incomplete prefix: `data_query`, `mission_workflow_list`,
+`mission_changes`, `fs_read`. Truncation is explicit and the conversation
+survives, which is the point of the cap. But two of them — `data_query` and
+`mission_workflow_list` — **expose no argument a caller could use to narrow the
+call.** The truncation marker correctly tells the model to "pass this tool's
+paging/filter arguments"; for a tool whose schema is `{node}`, that is advice it
+cannot follow, and repeating the call returns the same prefix forever. That is the
+remaining projection/pagination work, and it is now an enforced invariant (§7).
+
+`mission_list`'s no-parameters defect is **fixed** — it now takes
+`detail/limit/offset/id`.
+
+### The lesson from their deploy: a default page size is derived, not chosen
+
+Worth recording because it generalises. After shipping the projections,
+`mission_list` came back at 65,859 B — sitting exactly *on* the ceiling and
+truncating. The projection was fine; the **default page was 50 rows and a real
+summary row measured 1,333 B**, so the routine call overshot. The fix was the
+default page (50 → 25), not lossier rows.
+
+**A cap that fires on the normal path is worse than useless — it trains callers to
+ignore the marker.** So a default page size has to be derived from the measured
+row cost, or the ceiling silently becomes the pagination.
+
+## 9. The ceiling
+
+**Enforced: 64 KiB** (`DEFAULT_MAX_RESULT_BYTES`, `core/src/mcp-server/result-cap.ts`,
+override `MCP_RESULT_MAX_BYTES`). **Advisory: 25 KB soft** (`TOOL_OUTPUT_SOFT_BYTES`).
+
+This audit proposed 50 KB hard and was overruled by measurement — see §8a. The two
+numbers do different jobs and both should exist: the cap is an enforcement backstop
+that cuts a result, the soft budget is where a tool becomes worth looking at, well
+before anything is cut. There is deliberately no hard number in
+`tool-output-budget.ts` — even an alias would be a second name for the ceiling, and
+a second name is how two numbers start drifting apart.
 
 The ten NEEDS-SUMMARY tools need a compact projection plus pagination regardless of
-where the ceiling lands — for them, a truncated dump is worse than a summary.
+where the ceiling lands — for them, a truncated dump is worse than a summary. Six
+have been done (§8a); `data_query` and `mission_workflow_list` remain.
 
 ## 10. Backlog items filed
 

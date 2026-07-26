@@ -28,8 +28,11 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   MEASURED_BUDGETS, NOT_MEASURED, EXT_TOOL_PREFIX, EXT_AGGREGATOR_CAP_BYTES,
-  TOOL_OUTPUT_SOFT_BYTES, TOOL_OUTPUT_HARD_BYTES,
+  TOOL_OUTPUT_SOFT_BYTES, TRUNCATING_WITHOUT_NARROWING, NARROWING_ARG_PATTERN,
+  TRUNCATION_MARKER,
 } from '../mcp-server/tool-output-budget';
+// The ONE hard number lives with the cap that enforces it, never duplicated here.
+import { DEFAULT_MAX_RESULT_BYTES as TOOL_OUTPUT_HARD_BYTES } from '../mcp-server/result-cap';
 
 const PORT = Number(process.env.LM_TEST_MCP_PORT || (__dirname.includes('node_modules') ? 3100 : 3200));
 /**
@@ -99,19 +102,29 @@ function resultTextBytes(result: any): number {
   return n;
 }
 
-async function liveToolNames(): Promise<string[] | null> {
+async function liveTools(): Promise<any[] | null> {
   try {
     const r = await rpc('tools/list', {});
     const tools = r?.result?.tools;
     if (!Array.isArray(tools) || tools.length === 0) return null;
-    return tools.map((t: any) => String(t.name));
+    return tools;
   } catch { return null; }
 }
 
-let cachedNames: string[] | null | undefined;
+let cachedTools: any[] | null | undefined;
+async function allTools(): Promise<any[] | null> {
+  if (cachedTools === undefined) cachedTools = await liveTools();
+  return cachedTools;
+}
 async function toolNames(): Promise<string[] | null> {
-  if (cachedNames === undefined) cachedNames = await liveToolNames();
-  return cachedNames;
+  const t = await allTools();
+  return t ? t.map((x) => String(x.name)) : null;
+}
+
+/** Does this tool give a caller any way to ask for less? */
+function isNarrowable(def: any): boolean {
+  const props = Object.keys(def?.inputSchema?.properties || {});
+  return props.some((k) => NARROWING_ARG_PATTERN.test(k));
 }
 
 // ── pure checks — always run ─────────────────────────────────────────────
@@ -245,5 +258,51 @@ test('no budgeted read-only tool has grown past its budget', async (t) => {
     `Either the tool needs a cap/pagination, or the fleet grew and the budget needs a ` +
     `deliberate bump in core/src/mcp-server/tool-output-budget.ts (bump it knowingly — ` +
     `these numbers are the early warning, not paperwork).`,
+  );
+});
+
+test('a tool that gets truncated leaves its caller a way to ask for less', async (t) => {
+  const tools = await allTools();
+  if (!tools) return t.skip(`no Core on :${PORT}`);
+
+  // The truncation marker tells the model to "narrow the call instead of
+  // repeating it — pass this tool's paging/filter arguments". For a tool whose
+  // schema is {node}, that is advice it cannot follow, and repeating returns the
+  // same prefix forever. The cap still saves the conversation; this test is
+  // about whether it degrades into a nudge or a dead end.
+  const deadEnds: string[] = [];
+  const fixed: string[] = [];
+
+  for (const def of tools) {
+    const name = String(def.name);
+    if (name.startsWith(EXT_TOOL_PREFIX)) continue;         // capped by the aggregator, own contract
+    if (!(name in MEASURED_BUDGETS)) continue;              // not safely invokable here
+    const args = name === 'data_query' ? { dataset: 'knowledge' }
+      : name === 'search' || name === 'search_memory' ? { query: 'voice' }
+      : {};
+    let truncated = false;
+    try {
+      const r = await rpc('tools/call', { name, arguments: args });
+      const content = r?.result?.content;
+      if (!Array.isArray(content)) continue;
+      truncated = content.some((c: any) => typeof c?.text === 'string' && c.text.includes(TRUNCATION_MARKER));
+    } catch { continue; }
+
+    const known = name in TRUNCATING_WITHOUT_NARROWING;
+    if (truncated && !isNarrowable(def) && !known) {
+      deadEnds.push(`${name}: truncates but its schema exposes no limit/offset/cursor/since — the truncation marker asks for something the caller cannot do`);
+    }
+    // Ratchet the other way too: once a tool grows narrowing args, drop it from
+    // the list rather than letting a stale excuse accumulate.
+    if (known && isNarrowable(def)) {
+      fixed.push(`${name}: now has narrowing arguments — remove it from TRUNCATING_WITHOUT_NARROWING`);
+    }
+  }
+
+  assert.deepStrictEqual(
+    [...deadEnds, ...fixed], [],
+    `${[...deadEnds, ...fixed].join('\n  ')}\n` +
+    `Give the tool a paging/filter argument, or record it in TRUNCATING_WITHOUT_NARROWING ` +
+    `in core/src/mcp-server/tool-output-budget.ts with the reason.`,
   );
 });
