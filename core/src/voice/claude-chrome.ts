@@ -38,6 +38,29 @@ const DEFAULT_IDLE_SWEEP_MS = 60_000;
 
 const CLAUDE_AI_URL = 'https://claude.ai/';
 const CLAUDE_AI_COOKIE_URL = 'https://claude.ai';
+
+/**
+ * The page a VOICE session must sit on: the conversation the voice WS is for.
+ *
+ * Loading the bare origin instead let the claude.ai SPA restore whatever conversation was
+ * last used in this (shared, long-lived) browser — and claude.ai attributes a voice turn to
+ * the page's ACTIVE conversation, not to the uuid in the WS URL. The observable result was
+ * transcripts from one voice session landing as `human` messages in an UNRELATED
+ * conversation (bl_91ebabe8: 8 stray messages in one, 6 and 5 in two others, while the
+ * intended target got 2). Pinning the page to /chat/<conv> keeps the page context and the
+ * WS target on the same conversation.
+ *
+ * Returns null when the uuid can't be recovered, so the caller falls back to the old
+ * behaviour rather than navigating somewhere wrong.
+ */
+export function conversationPageUrl(voiceWsUrl: string): string | null {
+  const m = /\/chat_conversations\/([^/?#]+)/.exec(voiceWsUrl || '');
+  if (!m) return null;
+  const conv = decodeURIComponent(m[1]);
+  // Guard the path segment: only a plain uuid-ish token, never a traversal or a new origin.
+  if (!/^[A-Za-z0-9._-]+$/.test(conv)) return null;
+  return `https://claude.ai/chat/${encodeURIComponent(conv)}`;
+}
 // A REAL Chrome User-Agent — NOT the default headless "HeadlessChrome/..." token. Per
 // lm-mobile's validated CF findings (docs/claude-voice-implementation.md §4), the claude.ai
 // voice-WS upgrade needs Cookie + Origin: https://claude.ai + a Chrome UA; a headless UA draws
@@ -458,7 +481,10 @@ export function createChromeMgr(deps: { launch?: () => Promise<any>; chromePath?
           // has no DOM lib, so globalThis (not window) is what type-checks here in Node.
           (globalThis as any).__VOICE_URL__ = v;
         }, voiceUrl);
-        await page.goto(CLAUDE_AI_URL, { waitUntil: 'domcontentloaded' });
+        // Navigate to THIS conversation, not the bare origin — see conversationPageUrl().
+        // The SPA restoring a different (last-used) conversation is what made voice
+        // transcripts surface in unrelated chats.
+        await page.goto(conversationPageUrl(voiceUrl) || CLAUDE_AI_URL, { waitUntil: 'domcontentloaded' });
         // Wait for the REAL signals before injecting the asset — the old code slept a blind 10s
         // here, which was both far too long on a warm browser and no guarantee at all on a cold
         // one. With a primed page in the same browser this normally returns on the first sample.
