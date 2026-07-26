@@ -137,11 +137,13 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
     note: 'WAS 65,829 B (truncated). Now 23,013 B via the actor projection + paging. Revs only ' +
       'accumulate, so this one keeps climbing by construction — narrow with sinceRev/sinceTs.',
   },
-  bootstrap: { measuredBytes: 55654, budgetBytes: 78000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: 'Deliberately large — loads every use case in one call; 55,572 B set the floor for the ' +
-    'enforced ceiling. Does NOT scale with fleet data: ~52,344 B is STATIC prose (GUIDES sections), ' +
+  bootstrap: { measuredBytes: 62255, budgetBytes: 78000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: 'Deliberately large — loads every use case in one call; 55,572 B set the floor for the ' +
+    'enforced ceiling. Does NOT scale with fleet data: the bulk is STATIC prose (GUIDES sections), ' +
     'plus optional admin-curated content-registry overrides and a clusterBlock that grows with ' +
     'CLUSTER count (2-3), not nodes/sessions/missions. The 101KB->54KB swing since the incident was ' +
-    'override prose in the registry, not data growth. Fix is trimming prose, not capping a list.' },
+    'override prose in the registry, not data growth. Fix is trimming prose, not capping a list. ' +
+    'Re-measured 62,255 B on 2026-07-26 after the mission-lifecycle + node-identity lessons landed ' +
+    '(+6.6 KB of prose across missions/nodes/account) — prose is exactly what moves this number.' },
   data_keys: {
     measuredBytes: 61574, budgetBytes: 78000, bound: 'PAGINATED', verdict: 'NEEDS-CAP',
     note: 'PRE-PAGING 61,574 B and climbing — it was 55,967 B at the audit and reached 94% of the ' +
@@ -170,7 +172,8 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
   machine_access: { measuredBytes: 6254, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   mission_control_status: { measuredBytes: 5442, budgetBytes: 25000, bound: 'SMALL_BY_CONSTRUCTION', verdict: 'SAFE' },
   memory_projects: { measuredBytes: 5149, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
-  guide: { measuredBytes: 5127, budgetBytes: 25000, bound: 'HARD_LIMIT', verdict: 'SAFE', note: 'One topic per call; largest shipped topic is small.' },
+  guide: { measuredBytes: 8984, budgetBytes: 25000, bound: 'HARD_LIMIT', verdict: 'SAFE', note: 'One topic per call. Measured on the LARGEST topic (`missions`, 8,984 B on 2026-07-26) — ' +
+    'the earlier 5,127 B was a mid-sized one, so a growing topic read as flat. Still ~3x headroom.' },
   data_catalog: { measuredBytes: 4617, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   search_memory: { measuredBytes: 4359, budgetBytes: 25000, bound: 'CALLER_LIMIT_SANE_DEFAULT', verdict: 'SAFE' },
   list_projects: { measuredBytes: 4185, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
