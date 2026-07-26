@@ -8,6 +8,7 @@ import { networkInterfaces } from 'os';
 import type { RouteHandler, RouteContext } from '../index';
 import { wrapResponse } from '../../api/helpers';
 import { getEventLoopMonitor } from '../../diagnostics/event-loop-monitor';
+import { resolverSlotState } from '../../mcp-server/mcp-session-resolver';
 
 /** Get all local IPv4 addresses (loopback + LAN) */
 function getLocalAddresses(): Set<string> {
@@ -61,6 +62,21 @@ export function createHealthRoutes(ctx: RouteContext): RouteHandler[] {
         const start = Date.now();
         getEventLoopMonitor().reset();
         return wrapResponse({ reset: true }, start);
+      },
+    },
+
+    // GET /diagnostics/mcp-resolver - The caller-identity resolver's single-flight slot.
+    // A slot whose ageMs approaches deadlineMs is a resolution that is wedging; a rising
+    // `timeouts` says it already did. This exists because the original incident
+    // (bootstrap/session_status hanging forever) was diagnosable ONLY by noticing that a
+    // Core restart cured it — which is precisely the evidence you cannot gather while it
+    // is happening, and which destroys the state you wanted to inspect.
+    {
+      method: 'GET',
+      pattern: /^\/diagnostics\/mcp-resolver$/,
+      handler: async () => {
+        const start = Date.now();
+        return wrapResponse(resolverSlotState(), start);
       },
     },
 

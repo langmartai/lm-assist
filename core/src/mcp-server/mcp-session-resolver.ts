@@ -35,7 +35,14 @@ import { liveness } from '../worker-role/model';
 import { getRecord } from '../worker-role/worker-store';
 
 export interface Candidate { id: string; label?: string; updatedAt?: string }
-export interface CallerCandidates { claudeAi?: Candidate; claudeCode?: Candidate; precise?: boolean; resolvedAt: number }
+export interface CallerCandidates {
+  claudeAi?: Candidate; claudeCode?: Candidate; precise?: boolean; resolvedAt: number;
+  /** Set when the answer came from the slot DEADLINE rather than a completed resolution.
+   *  Identity is best-effort, so a timeout degrades instead of throwing — every caller
+   *  (mission-actor, backlog actorFor, rename_conversation) already handles "no candidates",
+   *  and throwing here would trade a hang for a hard bootstrap failure. */
+  degraded?: boolean;
+}
 
 interface SessionState { firstSeen: number; lastSeen: number; bootstrappedAt?: number }
 const REGISTRY = new Map<string, SessionState>();           // keyed by candidate id
@@ -44,6 +51,10 @@ const RESOLVE_TIMEOUT_MS = 2500;
 /** Beyond this, a stale identity stops being "best-effort" and we block for a fresh one.
  *  Between TTL and here, callers are served stale while a refresh runs behind them. */
 const RESOLVE_MAX_STALE_MS = 60_000;
+/** Hard deadline on ONE resolution slot. Above the 2.5s inner bound so a merely-slow (but
+ *  live) resolution still completes normally, and far below the relay's fixed 25s local /
+ *  30s gateway cutoffs — past this the slot is treated as poisoned and evicted. */
+const RESOLVE_SLOT_DEADLINE_MS = 4000;
 /** How long ONE listing of the recent sessions is reused — see walkRecentSessions(). */
 const SESSIONS_TTL_MS = 3000;
 let cache: { at: number; value: CallerCandidates } | null = null;
@@ -60,16 +71,20 @@ let cache: { at: number; value: CallerCandidates } | null = null;
  *    - an AbortController actually cancels the fetch, and
  *    - the WALL CLOCK is re-checked after the await, so a late timer cannot smuggle a
  *      long result back in. */
-async function loadConversationsBounded(deps: RecencyDeps): Promise<unknown> {
+async function loadConversationsBounded(deps: RecencyDeps, outer?: AbortSignal): Promise<unknown> {
   const ctrl = new AbortController();
   const deadline = Date.now() + RESOLVE_TIMEOUT_MS;
   const timer = setTimeout(() => ctrl.abort(), RESOLVE_TIMEOUT_MS);
   timer.unref?.();
+  // Relay the SLOT's abort inward, so evicting a poisoned slot actually cancels the request
+  // it was waiting on instead of leaving it running with nobody to receive it.
+  const relay = () => ctrl.abort();
+  if (outer?.aborted) ctrl.abort(); else outer?.addEventListener('abort', relay, { once: true });
   try {
     const resp = await deps.conversations(ctrl.signal);
     if (Date.now() > deadline) { ctrl.abort(); throw new Error('resolve deadline exceeded'); }
     return resp;
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer); outer?.removeEventListener('abort', relay); }
 }
 
 /** How many recent sessions the resolver considers. The caller's own session is being
@@ -232,15 +247,71 @@ const liveDeps: RecencyDeps = {
  *
  *  This resolver was designed for bootstrap/session_status (see the file header — "resolved
  *  only for bootstrap/session_status"); the backlog/mission write paths later put it on
- *  EVERY write, which is how a rare read-path cost became a hot write-path cost. */
-let inFlight: Promise<CallerCandidates> | null = null;
+ *  EVERY write, which is how a rare read-path cost became a hot write-path cost.
+ *
+ *  🔴 AND IT MUST BE BOUNDED. Storing the promise is only half the contract: the release
+ *  used to be `run`'s own `.finally`, which is correct in isolation but can ONLY fire if
+ *  `run` settles. Any never-settling call inside it pinned this slot permanently and handed
+ *  every later caller the same dead promise — one hung call became a permanent process-wide
+ *  outage of exactly bootstrap + session_status (90s+, never returning), curable only by a
+ *  Core RESTART. That is why it looked intermittent and why it kept coming back: restarting
+ *  MASKED it. So the slot now carries its own deadline and is evicted on timeout as well as
+ *  on settle, and joiners inherit that deadline instead of awaiting `run` directly. */
+interface Slot {
+  run: Promise<CallerCandidates>;
+  startedAt: number;
+  deadlineAt: number;
+  /** Aborted when the slot is evicted, so a poisoned resolution's request is cancelled
+   *  rather than left running with nobody to receive it. */
+  ctrl: AbortController;
+  /** Set once when this slot is written off, so N waiting joiners count as ONE timeout. */
+  timedOut?: boolean;
+}
+let inFlight: Slot | null = null;
+let slotDeadlineOverride: number | null = null;
+let slotTimeouts = 0;
+let lastSlotTimeoutAt: number | null = null;
+function slotDeadlineMs(): number { return slotDeadlineOverride ?? RESOLVE_SLOT_DEADLINE_MS; }
+
+/** What the resolver's slot is doing right now. Served by GET /diagnostics/mcp-resolver so a
+ *  pinned slot is OBSERVABLE — the original incident was diagnosable only by noticing that a
+ *  restart cured it, which is precisely the evidence you cannot gather while it is happening
+ *  (and the restart destroys the state you wanted to look at). */
+export interface ResolverSlotState {
+  inFlight: boolean;
+  /** How long the current resolution has been running. A value near deadlineMs is a wedge. */
+  ageMs: number | null;
+  deadlineMs: number;
+  timeouts: number;
+  lastTimeoutAt: number | null;
+  cacheAgeMs: number | null;
+}
+export function resolverSlotState(): ResolverSlotState {
+  const now = Date.now();
+  return {
+    inFlight: !!inFlight,
+    ageMs: inFlight ? now - inFlight.startedAt : null,
+    deadlineMs: slotDeadlineMs(),
+    timeouts: slotTimeouts,
+    lastTimeoutAt: lastSlotTimeoutAt,
+    cacheAgeMs: cache ? now - cache.at : null,
+  };
+}
 
 /** Tests only: drop the cache, the session snapshot and any in-flight resolution. */
 export function __resetRecencyCacheForTest(): void {
   cache = null;
+  if (inFlight) { try { inFlight.ctrl.abort(); } catch { /* best-effort */ } }
   inFlight = null;
   sessionsMemo = null;
+  slotDeadlineOverride = null;
+  slotTimeouts = 0;
+  lastSlotTimeoutAt = null;
 }
+
+/** Tests only: shrink the hard slot deadline so the wedge + recovery paths can be exercised
+ *  without sleeping through the production bound. Cleared by __resetRecencyCacheForTest. */
+export function __setSlotDeadlineForTest(ms: number | null): void { slotDeadlineOverride = ms; }
 
 /** Tests only: age the cached entry so the TTL / stale-while-revalidate boundaries can be
  *  exercised without sleeping through them. */
@@ -256,15 +327,83 @@ export function __cacheAgeForTest(): number | null {
   return cache ? Date.now() - cache.at : null;
 }
 
-/** Start (or join) the one shared resolution. Never throws: a degraded result is still an
- *  answer, and callers of this resolver only ever want a best-effort identity. */
+/** The answer handed back when the slot hits its deadline. Identity is explicitly
+ *  best-effort, so a STALE answer beats no answer and both beat a throw. */
+function degradedAnswer(): CallerCandidates {
+  if (cache) return cache.value;
+  return { resolvedAt: Date.now(), degraded: true };
+}
+
+/** Drop the current slot. On a timeout this also aborts its request, so a poisoned
+ *  resolution cannot outlive the one call that started it.
+ *
+ *  IDEMPOTENT: every joiner on a wedged slot reaches its deadline, so this is called once
+ *  per waiter for ONE poisoned resolution. Counting each of those would report six timeouts
+ *  where one slot went bad, which is the opposite of what the metric is for. */
+function evictSlot(slot: Slot, timedOut: boolean): void {
+  if (inFlight === slot) inFlight = null;
+  if (!timedOut || slot.timedOut) return;
+  slot.timedOut = true;
+  slotTimeouts++;
+  lastSlotTimeoutAt = Date.now();
+  try { slot.ctrl.abort(); } catch { /* best-effort */ }
+}
+
+/** The slot to use for this call — evicting a past-deadline one first.
+ *
+ *  🔴 This check is the STARVATION-PROOF half, and the reason recovery needs no restart: it
+ *  runs on the CALLER's own turn against the WALL CLOCK, so it holds even if no timer in the
+ *  process ever fires again. mission_035c72e3 fixed an event-loop block during which a
+ *  2500ms timer did not fire AT ALL, so a deadline that depended on a punctual timer would
+ *  be precisely the regression that incident warns about. The timer in joinBounded() only
+ *  releases the CURRENT waiters early; it is never what heals the slot. */
+function currentSlot(deps: RecencyDeps): Slot {
+  if (inFlight && Date.now() >= inFlight.deadlineAt) evictSlot(inFlight, true);
+  return inFlight ?? startSlot(deps);
+}
+
+const SLOT_EXPIRED = Symbol('resolver-slot-expired');
+
+/** Join the shared resolution WITHOUT inheriting its (unbounded) fate: a joiner waits only
+ *  until the slot's absolute deadline, then takes the degraded answer. */
+async function joinBounded(slot: Slot): Promise<CallerCandidates> {
+  const remaining = slot.deadlineAt - Date.now();
+  if (remaining <= 0) { evictSlot(slot, true); return degradedAnswer(); }
+  let timer: NodeJS.Timeout | undefined;
+  // Deliberately NOT unref'd: a caller is awaiting this, so it must hold the loop until it
+  // fires or is cleared below. It is bounded (<= the slot deadline) and always cleared.
+  const expiry = new Promise<typeof SLOT_EXPIRED>((resolve) => {
+    timer = setTimeout(() => resolve(SLOT_EXPIRED), remaining);
+  });
+  try {
+    const out = await Promise.race([slot.run, expiry]);
+    if (out === SLOT_EXPIRED) { evictSlot(slot, true); return degradedAnswer(); }
+    return out as CallerCandidates;
+  } catch {
+    return degradedAnswer();          // a rejected run is still an answer, never a throw
+  } finally { clearTimeout(timer); }
+}
+
+/** Start (or join) the one shared resolution, bounded by the slot deadline. Never throws:
+ *  a degraded result is still an answer, and callers only ever want best-effort identity. */
 function refresh(deps: RecencyDeps): Promise<CallerCandidates> {
-  if (inFlight) return inFlight;
+  return joinBounded(currentSlot(deps));
+}
+
+/** Ensure a resolution is running, for the stale-while-revalidate path where nobody awaits
+ *  the result. Deliberately NOT joinBounded(): a background refresh needs no joiner (nor its
+ *  timer), but it must still take the wall-clock eviction above — so even the callers being
+ *  served from cache help heal a pinned slot. */
+function kickRefresh(deps: RecencyDeps): void { currentSlot(deps); }
+
+function startSlot(deps: RecencyDeps): Slot {
+  const ctrl = new AbortController();
+  const startedAt = Date.now();
   const run = (async (): Promise<CallerCandidates> => {
     const out: CallerCandidates = { resolvedAt: Date.now() };
     // claude.ai (network; the node's real cookie) — most-recently-updated conversation.
     try {
-      const resp: any = await loadConversationsBounded(deps);
+      const resp: any = await loadConversationsBounded(deps, ctrl.signal);
       const arr: any[] = Array.isArray(resp) ? resp : (resp?.conversations ?? resp?.data ?? []);
       const top = arr.filter((c) => c && c.uuid).sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))[0];
       if (top) out.claudeAi = { id: String(top.uuid), label: top.name || '(untitled)', updatedAt: top.updated_at };
@@ -282,10 +421,13 @@ function refresh(deps: RecencyDeps): Promise<CallerCandidates> {
     cache = { at: Date.now(), value: out };
     return out;
   })();
-  inFlight = run;
-  // Release the slot however it settles — a failed resolution must never wedge it.
-  void run.then(() => undefined, () => undefined).finally(() => { if (inFlight === run) inFlight = null; });
-  return run;
+  const slot: Slot = { run, startedAt, deadlineAt: startedAt + slotDeadlineMs(), ctrl };
+  inFlight = slot;
+  // Release the slot however it settles — a failed resolution must never wedge it. This is
+  // the FAST path only: it cannot fire for a run that never settles, which is exactly why
+  // currentSlot() evicts by wall clock rather than trusting this to be the only release.
+  void run.then(() => undefined, () => undefined).finally(() => { if (inFlight === slot) inFlight = null; });
+  return slot;
 }
 
 /** Resolve BOTH the most-recent claude.ai conversation and Claude Code session by recency.
@@ -297,7 +439,7 @@ function refresh(deps: RecencyDeps): Promise<CallerCandidates> {
 export async function resolveRecencyCandidates(deps: RecencyDeps = liveDeps): Promise<CallerCandidates> {
   const age = cache ? Date.now() - cache.at : Infinity;
   if (cache && age < RESOLVE_TTL_MS) return cache.value;
-  if (cache && age < RESOLVE_MAX_STALE_MS) { void refresh(deps); return cache.value; }
+  if (cache && age < RESOLVE_MAX_STALE_MS) { kickRefresh(deps); return cache.value; }
   return refresh(deps);
 }
 
@@ -324,7 +466,11 @@ export function describeCandidates(c: CallerCandidates): string {
   const lines: string[] = [];
   if (c.claudeAi) lines.push(`• If you are a claude.ai CONVERSATION → "${c.claudeAi.label}" (${c.claudeAi.id})${c.claudeAi.updatedAt ? `, updated ${c.claudeAi.updatedAt}` : ''}`);
   if (c.claudeCode) lines.push(`• If you are a Claude Code SESSION → ${c.claudeCode.id}${c.claudeCode.label ? ` (cwd ${c.claudeCode.label})` : ''}${c.claudeCode.updatedAt ? `, updated ${c.claudeCode.updatedAt}` : ''}`);
-  if (!lines.length) return '(could not resolve — claude.ai not configured on this node and no recent Claude Code session).';
+  if (!lines.length) {
+    return c.degraded
+      ? '(identity resolution timed out — continuing without it, which is why this is best-effort. Everything else in this result is unaffected.)'
+      : '(could not resolve — claude.ai not configured on this node and no recent Claude Code session).';
+  }
   return lines.join('\n');
 }
 
