@@ -89,6 +89,8 @@ test('wiring — both MCP dispatch surfaces append the origin tag', () => {
   const mcpApi = readFileSync(join(root, 'routes', 'core', 'mcp-api.routes.ts'), 'utf8');
   // Both surfaces must pass the TOOL NAME too — that is what lets the trailer name the
   // playbook governing the tool that answered (session-start routing, layer 2).
-  assert.match(configure, /withOriginTag\(result, name\)/, 'configure.ts CallTool must apply withOriginTag with the tool name');
+  // The third arg (the measured result size) is optional and arrived with the per-result
+  // byte ceiling; the TOOL NAME is the part this test exists to pin.
+  assert.match(configure, /withOriginTag\(result, name[,)]/, 'configure.ts CallTool must apply withOriginTag with the tool name');
   assert.match(mcpApi, /withOriginTag\(await handler\(body\.args \|\| \{\}\), tool\)/, '/mcp-call must apply withOriginTag with the tool name');
 });

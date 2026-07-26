@@ -30,6 +30,7 @@ import {
   type McpToolResult,
 } from './_passthrough';
 import { planOpenTab } from './open-tab-plan';
+import { ccSessionSummary, claudeaiPluginSummary, detailLevel, intArg, paginate } from './projections';
 import * as os from 'os';
 import { handleListNodes } from './list-nodes';
 import { GITHUB_TOOL_DEFS, GITHUB_HANDLERS } from './github';
@@ -541,8 +542,15 @@ export const deleteConversationToolDef = {
 export const ccSessionsToolDef = {
   name: 'cc_sessions',
   description:
-    'List the live Claude Code sessions on this host (from the ~/.claude/sessions registry), each with an ownership verdict (connectStrategy: attach-existing | create-tmux | refuse | none, plus safeToCreateTmux). Read-only.',
-  inputSchema: { type: 'object' as const, properties: {} },
+    'List the live Claude Code sessions on this host (from the ~/.claude/sessions registry), each with an ownership verdict (connectStrategy: attach-existing | create-tmux | refuse | none, plus safeToCreateTmux). Returns a SUMMARY projection by default; pass detail:"full" for every field. Read-only. {detail?:"summary"|"full", limit?, offset?}.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      detail: { type: 'string' as const, enum: ['summary', 'full'], description: 'summary (default) | full' },
+      limit: { type: 'number' as const, description: 'page size (default 100 summary / 20 full)' },
+      offset: { type: 'number' as const, description: 'page offset (default 0)' },
+    },
+  },
 };
 export const ccrPreflightToolDef = {
   name: 'ccr_preflight',
@@ -816,12 +824,18 @@ export const claudeaiListPluginsToolDef = {
   description:
     'List the plugins in the user\'s claude.ai DEFAULT marketplace, with each plugin\'s id, ' +
     'name, and enabled state. Pass enabled_only=true to return only enabled plugins. For ' +
-    'account-marketplace plugins use `claudeai_list_marketplace_plugins` instead. Read-only.',
+    'account-marketplace plugins use `claudeai_list_marketplace_plugins` instead. Returns a ' +
+    'SUMMARY projection by default (capability arrays collapsed to a "provides" count map); ' +
+    'pass detail:"full" for whole entries — ~12KB EACH, so page it. Read-only. ' +
+    '{enabled_only?, detail?:"summary"|"full", limit?, offset?}.',
   annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object' as const,
     properties: {
       enabled_only: { type: 'boolean', description: 'Return only enabled plugins (default false).' },
+      detail: { type: 'string', enum: ['summary', 'full'], description: 'summary (default) | full' },
+      limit: { type: 'number', description: 'page size (default 100 summary / 10 full)' },
+      offset: { type: 'number', description: 'page offset (default 0)' },
     },
   },
 };
@@ -861,7 +875,7 @@ export const memoryMapToolDef = {
       category: { type: 'string', description: 'Comma-separated categories.' },
       q: { type: 'string', description: 'Keyword query — all terms must appear in title+brief+complete.' },
       since: { type: 'number', description: 'Only records modified after this Unix ms timestamp.' },
-      limit: { type: 'number', description: 'Max records to return (0 = all).' },
+      limit: { type: 'number', description: 'Max records to return. DEFAULT 80 — the full map is 1,300+ records / ~800KB and grows forever. Narrow with q/projects/nodes/since instead of raising this; 0 = all (subject to the per-result byte ceiling).' },
       stats: { type: 'boolean', description: 'Return count/stats summary only instead of records.' },
     },
   },
@@ -1740,9 +1754,27 @@ async function handleDeleteConversation(args: Record<string, unknown>): Promise<
 }
 
 // ─── ccr handlers ────────────────────────────────────────────────
-async function handleCcSessions(): Promise<McpToolResult> {
-  try { return ok(pretty(await workerGet('/terminal/cc-sessions'))); }
-  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+// SUMMARY by default (measured 52,379 bytes before this change). The fat fields are the
+// absolute `jsonl` path, `owner.entrypoint` and `verdict.reason` (a prose sentence) —
+// none of which a "what is running" answer needs. detail:'full' restores every field.
+async function handleCcSessions(args: Record<string, unknown> = {}): Promise<McpToolResult> {
+  try {
+    const res = await workerGet('/terminal/cc-sessions') as Record<string, unknown>;
+    const all = Array.isArray(res?.sessions) ? res.sessions as Array<Record<string, unknown>> : [];
+    const detail = detailLevel(args.detail);
+    const limit = intArg(args.limit, detail === 'full' ? 20 : 100);
+    const { rows, meta } = paginate(all, limit, intArg(args.offset, 0));
+    return ok(pretty({
+      backend: res?.backend,
+      liveCount: res?.liveCount,
+      detail,
+      ...meta,
+      ...(detail === 'summary'
+        ? { hint: 'SUMMARY projection (default) — jsonl path, entrypoint and the verdict prose are omitted. Call cc_sessions({detail:"full"}) for every field.' }
+        : {}),
+      sessions: detail === 'full' ? rows : rows.map(ccSessionSummary),
+    }));
+  } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
 async function handleCcrPreflight(args: Record<string, unknown>): Promise<McpToolResult> {
   const sid = String(args.session_id || '').trim();
@@ -1934,10 +1966,26 @@ async function handleClaudeaiListMarketplacePlugins(args: Record<string, unknown
   }
 }
 
+// SUMMARY by default. Measured 1,156,396 bytes for 92 plugins — the largest result on
+// the entire MCP surface (~321k tokens, more than a whole context window from one call).
+// The nested capability arrays are replaced by a `provides` count map; detail:'full'
+// restores them.
 async function handleClaudeaiListPlugins(args: Record<string, unknown>): Promise<McpToolResult> {
   const qs = args.enabled_only ? '?enabled_only=true' : '';
   try {
-    return ok(pretty(await workerGet(`/claude-ai/plugins${qs}`)));
+    const res = await workerGet(`/claude-ai/plugins${qs}`) as Record<string, unknown>;
+    const all = Array.isArray(res?.plugins) ? res.plugins as Array<Record<string, unknown>> : [];
+    const detail = detailLevel(args.detail);
+    const { rows, meta } = paginate(all, intArg(args.limit, detail === 'full' ? 10 : 100), intArg(args.offset, 0));
+    return ok(pretty({
+      ...res,
+      detail,
+      ...meta,
+      ...(detail === 'summary'
+        ? { hint: 'SUMMARY projection (default) — per-plugin skills/commands/agents/mcp_servers bodies are replaced by the "provides" counts. Call claudeai_list_plugins({detail:"full"}) for the full entries (~12KB each, so page it).' }
+        : {}),
+      plugins: detail === 'full' ? rows : rows.map(claudeaiPluginSummary),
+    }));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -2003,7 +2051,11 @@ async function handleMemoryMap(args: Record<string, unknown>): Promise<McpToolRe
   if (args.category) argv.push('--category', String(args.category));
   if (args.q) argv.push('--q', String(args.q));
   if (args.since) argv.push('--since', String(args.since));
-  if (args.limit) argv.push('--limit', String(args.limit));
+  // A DEFAULT limit, not just an optional one. memory_map measured 827,724 bytes across
+  // 1,313 records (~630B each) and grows monotonically forever — every memory ever
+  // written on any node. Unbounded by default it is a guaranteed future incident, so the
+  // caller now opts INTO a bigger page rather than opting out of an unbounded one.
+  argv.push('--limit', String(intArg(args.limit, 80)));
   if (args.stats) argv.push('--stats');
   try {
     return ok(await runCli(argv));
@@ -2165,7 +2217,7 @@ export const EXPANDED_HANDLERS: Record<
   // elevated worker (Windows-only) — each wraps an /elevated/* loopback route
   ...ELEVATED_HANDLERS,
   // ccr — Claude Code remote support
-  cc_sessions: () => handleCcSessions(),
+  cc_sessions: (a) => handleCcSessions(a),
   ccr_preflight: handleCcrPreflight,
   ccr_remote_list: () => handleCcrRemoteList(),
   ccr_load: handleCcrLoad,

@@ -59,6 +59,13 @@ export interface McpLogEntry {
   result?: string;
   error?: string;
   isError?: boolean;
+  /** Text bytes the tool produced BEFORE the per-result cap. The field that makes an
+   *  oversized tool findable by query instead of by a human reading a dead conversation
+   *  — sort mcp-calls.jsonl by this to rank offenders. */
+  resultBytes?: number;
+  /** Present only when the cap fired; bytes actually returned. */
+  keptBytes?: number;
+  truncated?: boolean;
 }
 
 export function logToolCall(
@@ -66,6 +73,7 @@ export function logToolCall(
   args: Record<string, unknown>,
   durationMs: number,
   response: { content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean },
+  size?: { originalBytes: number; keptBytes: number; truncated: boolean } | null,
 ): void {
   try {
     ensureDir();
@@ -78,6 +86,14 @@ export function logToolCall(
       args: truncateArgs(args),
       durationMs: Math.round(durationMs),
     };
+
+    if (size) {
+      entry.resultBytes = size.originalBytes;
+      if (size.truncated) {
+        entry.keptBytes = size.keptBytes;
+        entry.truncated = true;
+      }
+    }
 
     if (text.length > 0) {
       entry.result = truncate(text, MAX_RESULT_LENGTH);

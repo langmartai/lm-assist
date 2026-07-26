@@ -23,6 +23,7 @@
 import type { McpToolResult } from '../configure';
 import { ok, err, workerGet, workerPost } from './_passthrough';
 import { currentMcpContext } from '../principal-context';
+import { projectMissions } from './projections';
 
 export function withActorHint(args: Record<string, unknown>, toolUseId: string | undefined): Record<string, unknown> {
   return { ...args, _actor: { channel: 'mcp', toolUseId: toolUseId ?? null } };
@@ -67,8 +68,17 @@ export const MISSION_TOOL_DEFS = [
   },
   {
     name: 'mission_list',
-    description: 'List all missions and their status/progress/binding.',
-    inputSchema: obj({}),
+    description:
+      'List missions with status/progress/binding. Returns a SUMMARY projection by default ' +
+      '(id/title/status/progress/deps/binding/env/tags + an "omitted" count of the narrative ' +
+      'fields); pass detail:"full" for whole missions — that is ~20KB EACH, so page it. ' +
+      '{detail?:"summary"|"full", limit?, offset?, id?}.',
+    inputSchema: obj({
+      detail: { ...S, enum: ['summary', 'full'], description: 'summary (default) | full' },
+      limit: { type: 'number' as const, description: 'page size (default 50 summary / 5 full)' },
+      offset: { type: 'number' as const, description: 'page offset (default 0)' },
+      id: { ...S, description: 'scope to one mission — the cheap way to get full detail' },
+    }),
   },
   {
     name: 'mission_update',
@@ -207,9 +217,14 @@ export const MISSION_HANDLERS: Record<
     } catch (e) { return err((e as Error).message); }
   },
 
-  mission_list: async () => {
+  // Returns a SUMMARY projection by default. Measured before this change: the full list
+  // was 923,758 bytes on this fleet — more than a 200K-token context window, from one
+  // call. Full objects remain one flag away (`detail:'full'`), which the Mission
+  // Controller relies on. See tools/projections.ts.
+  mission_list: async (a) => {
     try {
-      return pretty(await workerGet('/mission'));
+      const all = await workerGet('/mission');
+      return pretty(projectMissions(Array.isArray(all) ? all : [], a || {}, 'mission_list'));
     } catch (e) {
       return err((e as Error).message);
     }

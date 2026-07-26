@@ -421,6 +421,7 @@ TALKING TO THE USER — ids (bl_…, mission_…, cse_…, uuids) are handles fo
 
 import { enrichBootstrapWithIdentity } from './mcp-session-resolver';
 import { withOriginTag } from './result-origin';
+import { capToolResult, type ResultSize } from './result-cap';
 import { getHubConfig } from '../hub-client/hub-config';
 import { hubHostOf, envLabelOf } from './fleet-identity';
 
@@ -511,12 +512,29 @@ export function configureMcpServer(
     if (name === 'bootstrap' && !result.isError) {
       try { result = await enrichBootstrapWithIdentity(result); } catch { /* never break bootstrap */ }
     }
+    // HARD per-result byte ceiling — the guardrail that makes it impossible for ONE tool
+    // call to exceed the context window and destroy the conversation (see result-cap.ts
+    // for the measured incident). Applied HERE because this function is the single seam
+    // both transports share, so it covers every built-in tool, every ext__ plugin tool,
+    // and anything added later without a per-tool opt-in to forget.
+    //
+    // Ordering is load-bearing: the cap runs BEFORE the footer so the footer — which
+    // carries the truncation warning and the size — can never itself be cut off. It also
+    // runs on ERROR results, which withOriginTag deliberately skips: an error echoing a
+    // huge payload kills a conversation exactly like a successful result does.
+    let size: ResultSize | null = null;
+    try {
+      const capped = capToolResult(result, name);
+      result = capped.result;
+      size = capped.size;
+    } catch { /* a cap failure must never swallow the tool's answer */ }
     // Append the per-result trailer: the origin tag (connector·node·cluster, local-aware)
     // so the LLM routes follow-up calls to the SAME connector / respects the cluster scope,
-    // plus this tool's governing playbook and — when the result carries ids — the naming
-    // rule. MCP cannot make a client call `bootstrap`, so the routing rides the results.
-    try { result = withOriginTag(result, name); } catch { /* never break a result over a tag */ }
-    logToolCall(name, args, Date.now() - t0, result);
+    // plus this tool's governing playbook, the result's byte cost, and — when the result
+    // carries ids — the naming rule. MCP cannot make a client call `bootstrap`, so the
+    // routing rides the results.
+    try { result = withOriginTag(result, name, size); } catch { /* never break a result over a tag */ }
+    logToolCall(name, args, Date.now() - t0, result, size);
     // The SDK's CallToolResult type includes optional fields (task tracking,
     // structured content, etc.) that our handlers never produce; widen the
     // narrower `McpToolResult` to satisfy the typechecker without a

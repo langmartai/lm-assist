@@ -6,6 +6,7 @@ import type { McpToolResult } from '../configure';
 import { ok, err, workerGet, workerPost } from './_passthrough';
 import { currentMcpContext } from '../principal-context';
 import { withActorHint } from './mission-query';
+import { compactBacklogWrite, intArg, paginate } from './projections';
 
 const S = { type: 'string' as const };
 const B = { type: 'boolean' as const };
@@ -66,12 +67,18 @@ export const BACKLOG_TOOL_DEFS = [
 ] as const;
 
 export const BACKLOG_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
+  // Rows are already a projection server-side (no description/discussion/reviews/history),
+  // but the collection itself was unbounded — it only ever grows. Paged here so it cannot
+  // become the next mission_list.
   backlog_list: async (a) => {
     try {
       const qs = new URLSearchParams();
       for (const k of ['status', 'type', 'tag'] as const) if (typeof a[k] === 'string' && a[k]) qs.set(k, String(a[k]));
       if (flag(a.includeRemoved)) qs.set('includeRemoved', 'true');
-      return pretty(await workerGet(`/backlog${qs.toString() ? `?${qs}` : ''}`));
+      const res = await workerGet(`/backlog${qs.toString() ? `?${qs}` : ''}`) as Record<string, unknown>;
+      const all = Array.isArray(res?.items) ? res.items as Array<Record<string, unknown>> : [];
+      const { rows, meta } = paginate(all, intArg(a.limit, 100), intArg(a.offset, 0));
+      return pretty({ ...res, ...meta, items: rows });
     } catch (e) { return err((e as Error).message); }
   },
   backlog_get: async (a) => {
@@ -87,7 +94,10 @@ export const BACKLOG_HANDLERS: Record<string, (args: Record<string, unknown>) =>
       const tags = coerceTags(a.tags);
       if (tags !== undefined) body.tags = tags;
       if (a.requestId !== undefined) body.requestId = String(a.requestId);
-      return pretty(await workerPost('/backlog', hinted(body)));
+      // Compact echo: on the IDEMPOTENT path this used to return the resolved item's
+      // whole accumulated discussion[] + reviews[] (measured 63KB), which made a
+      // well-discussed item expensive merely to re-create.
+      return pretty(compactBacklogWrite(await workerPost('/backlog', hinted(body))));
     } catch (e) { return err((e as Error).message); }
   },
   backlog_update: async (a) => {
@@ -98,28 +108,28 @@ export const BACKLOG_HANDLERS: Record<string, (args: Record<string, unknown>) =>
       for (const k of ['title', 'description', 'type', 'status', 'priority'] as const) if (a[k] !== undefined) body[k] = a[k];
       const tags = coerceTags(a.tags);
       if (tags !== undefined) body.tags = tags;
-      return pretty(await workerPost(`/backlog/${encodeURIComponent(id)}`, hinted(body)));
+      return pretty(compactBacklogWrite(await workerPost(`/backlog/${encodeURIComponent(id)}`, hinted(body))));
     } catch (e) { return err((e as Error).message); }
   },
   backlog_link: async (a) => {
     try {
       const from = String(a.from || '');
       if (!from) return err('from is required');
-      return pretty(await workerPost(`/backlog/${encodeURIComponent(from)}/link`, hinted({ to: a.to, kind: a.kind })));
+      return pretty(compactBacklogWrite(await workerPost(`/backlog/${encodeURIComponent(from)}/link`, hinted({ to: a.to, kind: a.kind }))));
     } catch (e) { return err((e as Error).message); }
   },
   backlog_unlink: async (a) => {
     try {
       const from = String(a.from || '');
       if (!from) return err('from is required');
-      return pretty(await workerPost(`/backlog/${encodeURIComponent(from)}/unlink`, hinted({ to: a.to, ...(a.kind !== undefined ? { kind: a.kind } : {}) })));
+      return pretty(compactBacklogWrite(await workerPost(`/backlog/${encodeURIComponent(from)}/unlink`, hinted({ to: a.to, ...(a.kind !== undefined ? { kind: a.kind } : {}) }))));
     } catch (e) { return err((e as Error).message); }
   },
   backlog_review: async (a) => {
     try {
       const id = String(a.id || '');
       if (!id) return err('id is required');
-      return pretty(await workerPost(`/backlog/${encodeURIComponent(id)}/review`, hinted({ verdict: a.verdict, note: a.note, by: a.by })));
+      return pretty(compactBacklogWrite(await workerPost(`/backlog/${encodeURIComponent(id)}/review`, hinted({ verdict: a.verdict, note: a.note, by: a.by }))));
     } catch (e) { return err((e as Error).message); }
   },
   backlog_discuss: async (a) => {
@@ -132,14 +142,14 @@ export const BACKLOG_HANDLERS: Record<string, (args: Record<string, unknown>) =>
       if (typeof a.sessionId === 'string' && a.sessionId) {
         body.session = { id: a.sessionId, kind: typeof a.sessionKind === 'string' && a.sessionKind ? a.sessionKind : 'remote' };
       }
-      return pretty(await workerPost(`/backlog/${encodeURIComponent(id)}/discuss`, hinted(body)));
+      return pretty(compactBacklogWrite(await workerPost(`/backlog/${encodeURIComponent(id)}/discuss`, hinted(body))));
     } catch (e) { return err((e as Error).message); }
   },
   backlog_remove: async (a) => {
     try {
       const id = String(a.id || '');
       if (!id) return err('id is required');
-      return pretty(await workerPost(`/backlog/${encodeURIComponent(id)}/remove`, hinted({ ...(flag(a.restore) ? { restore: true } : {}) })));
+      return pretty(compactBacklogWrite(await workerPost(`/backlog/${encodeURIComponent(id)}/remove`, hinted({ ...(flag(a.restore) ? { restore: true } : {}) }))));
     } catch (e) { return err((e as Error).message); }
   },
   backlog_graph: async (a) => {
