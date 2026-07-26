@@ -27,7 +27,7 @@
  * once returned an unrelated session entirely. Both tools therefore require an
  * explicit `conversation_uuid`. There is no "this conversation".
  */
-import { ok, err, workerGet, workerPost } from './_passthrough';
+import { ok, err, workerGet, workerPostRaw } from './_passthrough';
 import type { McpToolResult } from './_passthrough';
 import { collectLocalCredential } from '../../fleet/credential-collector';
 import { getCredentialFleet, pickCredentialedNode, describeNoCredential } from '../../fleet/credential-fleet';
@@ -35,6 +35,16 @@ import { credentialDeps } from '../../routes/core/fleet.routes';
 import { proxyPost } from '../../hub-client/hub-proxy';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Which claude.ai ACCOUNT served this. Falls back to the org uuid: measured on
+ *  prod, /api/account_profile carries no organization object, so a name is often
+ *  absent — but an unlabelled result would hide which login a fork landed in. */
+function acctLabel(a: { organizationName?: string; orgUuid?: string } | undefined): string {
+  if (!a) return '';
+  if (a.organizationName) return ` · account: ${a.organizationName}`;
+  if (a.orgUuid) return ` · account org: ${a.orgUuid}`;
+  return '';
+}
 
 /** Set on a forwarded call so a hop can never forward again. Two nodes each
  *  believing the other holds the cookie would otherwise ping-pong. */
@@ -160,7 +170,7 @@ export async function handleConversationTokens(args: Record<string, unknown>): P
       'NOT included in this estimate:',
       ...(Array.isArray(d.unmeasured) ? d.unmeasured.map((u: string) => `  - ${u}`) : []),
       '',
-      `Served by ${d.servedByNodeId}${d.account?.organizationName ? ` · account: ${d.account.organizationName}` : ''}`,
+      `Served by ${d.servedByNodeId}${acctLabel(d.account)}`,
     ];
     return ok(lines.join('\n'));
   } catch (e) {
@@ -211,7 +221,15 @@ export async function handleConversationFork(args: Record<string, unknown>): Pro
   if (typeof args.model === 'string') body.model = args.model;
 
   try {
-    const d = await workerPost<Record<string, any>>(`/claude-ai/conversations/${encodeURIComponent(uuid)}/fork`, body);
+    // workerPost's 30s budget is shorter than a fork (create + seed + drain),
+    // and a timeout there would report failure for a conversation that WAS
+    // created — measured. workerPostRaw allows 120s and keeps error.code.
+    const env = await workerPostRaw(`/claude-ai/conversations/${encodeURIComponent(uuid)}/fork`, body);
+    if (env && env.success === false) {
+      const e = (env.error || {}) as { code?: string; message?: string };
+      return err(`${e.code ? `[${e.code}] ` : ''}${e.message || 'fork failed'}`);
+    }
+    const d = ((env || {}).data || {}) as Record<string, any>;
     const p = d.pointers || {};
     const ptrLine = Object.entries(p)
       .filter(([, v]) => Array.isArray(v) && (v as unknown[]).length)
@@ -232,7 +250,11 @@ export async function handleConversationFork(args: Record<string, unknown>): Pro
     }
 
     const lines = [
-      d.seeded ? 'Forked.' : 'Conversation CREATED but the handoff did NOT land — open it and paste the handoff, or retry.',
+      d.seeded
+        ? (d.replyPending
+            ? 'Forked. The handoff landed; the model is still composing its first reply.'
+            : 'Forked.')
+        : 'Conversation CREATED but the handoff did NOT land — open it and paste the handoff, or retry.',
       `New conversation: ${d.conversationUuid}`,
       `URL             : ${d.webUrl}`,
       `Title           : ${d.title}`,
@@ -240,7 +262,7 @@ export async function handleConversationFork(args: Record<string, unknown>): Pro
       `Source          : ${d.sourceUuid} (live ~${Number(d.sourceEstimate?.liveTokens || 0).toLocaleString()} tokens)`,
       ...(d.seedError ? [`Seed error      : ${d.seedError}`] : []),
       '',
-      `Served by ${d.servedByNodeId}${d.account?.organizationName ? ` · account: ${d.account.organizationName}` : ''}`,
+      `Served by ${d.servedByNodeId}${acctLabel(d.account)}`,
     ];
     return ok(lines.join('\n'));
   } catch (e) {

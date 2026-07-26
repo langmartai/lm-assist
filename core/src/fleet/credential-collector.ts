@@ -33,10 +33,20 @@ export async function collectLocalCredential(probe = true): Promise<NodeCredenti
 
   let configured = false;
   let sessionKeyExpiresAt: number | null | undefined;
+  // Account identity comes from the COOKIE, not from the probe. Measured on
+  // prod: /api/account_profile returns a flat preferences object with no
+  // `account` or `organization` key, so probe.accountUuid/organizationName are
+  // always undefined — and a credential report with no account would let a fork
+  // land in the wrong login silently, which is the thing this must prevent.
+  // `lastActiveOrg` / `ajs_user_id` are in the cookie jar and cost nothing.
+  let orgUuid: string | undefined;
+  let userId: string | undefined;
   try {
     const s = getClaudeAISessionStatus();
     configured = Boolean(s.present);
     sessionKeyExpiresAt = s.sessionKeyExpiresAt;
+    orgUuid = s.identity?.orgUuid;
+    userId = s.identity?.userId;
   } catch {
     /* treat an unreadable session file as not configured */
   }
@@ -52,6 +62,8 @@ export async function collectLocalCredential(probe = true): Promise<NodeCredenti
         ok: false,
         reason: 'unprobed' as CredentialReason,
         hint: 'Not live-checked. Only a 200 from claude.ai proves the cookie is usable.',
+        accountUuid: orgUuid,
+        userId,
         sessionKeyExpiresAt,
       },
     };
@@ -69,8 +81,9 @@ export async function collectLocalCredential(probe = true): Promise<NodeCredenti
         ok: Boolean(p.ok),
         reason: p.reason as CredentialReason,
         hint: p.hint,
-        accountUuid: p.accountUuid,
+        accountUuid: p.accountUuid || orgUuid,
         organizationName: p.organizationName,
+        userId,
         sessionKeyExpiresAt,
       },
     };
@@ -85,6 +98,8 @@ export async function collectLocalCredential(probe = true): Promise<NodeCredenti
         ok: false,
         reason: 'unknown' as CredentialReason,
         hint: err instanceof Error ? err.message : String(err),
+        accountUuid: orgUuid,
+        userId,
         sessionKeyExpiresAt,
       },
     };

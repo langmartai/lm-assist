@@ -52,8 +52,11 @@ export interface NodeCredential {
     hint?: string;
     /** Which claude.ai ACCOUNT this cookie belongs to. Node choice implicitly
      *  selects an account, so a fork must never land somewhere silently. */
+    /** claude.ai org uuid — the ACCOUNT scope this cookie acts in. */
     accountUuid?: string;
     organizationName?: string;
+    /** claude.ai user id, for telling two logins apart on one org. */
+    userId?: string;
     sessionKeyExpiresAt?: number | null;
   };
 }
@@ -147,7 +150,9 @@ export function describeNoCredential(
     lines.push('');
     lines.push('Nodes that CAN serve this call (pass one as `node`):');
     for (const n of eligible) {
-      const acct = n.cookie.organizationName ? ` — account: ${n.cookie.organizationName}` : '';
+      const acct = n.cookie.organizationName
+        ? ` — account: ${n.cookie.organizationName}`
+        : n.cookie.accountUuid ? ` — account org: ${n.cookie.accountUuid}` : '';
       lines.push(`  • ${n.hostId}  (${n.displayName})${acct}`);
     }
   } else {

@@ -179,6 +179,13 @@ import { parseChatMessages } from '../../claude-ai/chat-read';
 import { estimateConversationTokens } from '../../claude-ai/conversation-tokens';
 import { buildHandoff } from '../../claude-ai/conversation-handoff';
 import { collectLocalCredential } from '../../fleet/credential-collector';
+
+/** How long a fork waits for the model to answer the handoff before returning.
+ *  The turn is NOT cancelled by returning early — claude.ai completes it
+ *  regardless of client disconnect — so this only bounds how long the CALLER
+ *  blocks. Kept under the MCP tool's own budget so the tool never times out on
+ *  a fork that actually succeeded. */
+const SEED_DRAIN_MS = 20_000;
 import { scopedTokenFor } from '../../auth/scoped-token';
 
 const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -601,14 +608,41 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
           // Seed the first turn. A conversation created moments ago has no leaf,
           // and sendMessage falls back to the all-zero root parent for exactly
           // this create -> completion flow.
+          //
+          // 🔴 sendMessage DRAINS the SSE, i.e. it waits for the model to answer
+          // the whole handoff. Measured: an 11 KB handoff ran past 30s and the
+          // caller timed out — reporting FAILURE for a fork that had in fact
+          // been created AND seeded. That is the send_session_message
+          // false-negative all over again, so the drain is bounded here and its
+          // expiry is NOT treated as failure: claude.ai completes the turn
+          // regardless of client disconnect.
+          //
+          // Delivery is then VERIFIED by re-reading the conversation rather than
+          // assumed — the only honest way to say "seeded".
           let seeded = false;
+          let replyPending = false;
           let seedError: string | undefined;
           try {
-            const sent = await sendMessage(newUuid, built.seed, {});
+            const sent = await sendMessage(newUuid, built.seed, { timeoutMs: SEED_DRAIN_MS });
             seeded = sent.status < 400;
             if (!seeded) seedError = `claude.ai responded ${sent.status}`;
           } catch (err) {
-            seedError = err instanceof Error ? err.message : String(err);
+            const msg = err instanceof Error ? err.message : String(err);
+            // Drain expired (or the socket dropped) — ask the conversation
+            // itself whether the handoff landed.
+            try {
+              const back = await readConversation(newUuid, { tree: true, renderingMode: 'messages' });
+              const msgs = ((back.body as { chat_messages?: unknown[] } | null)?.chat_messages || []) as Array<Record<string, unknown>>;
+              const landed = msgs.some((m) => m.sender === 'human' || m.sender === 'user');
+              if (landed) {
+                seeded = true;
+                replyPending = !msgs.some((m) => m.sender === 'assistant');
+              } else {
+                seedError = msg;
+              }
+            } catch {
+              seedError = msg;
+            }
           }
 
           return {
@@ -619,6 +653,10 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
               webUrl: `https://claude.ai/chat/${newUuid}`,
               title: built.title,
               seeded,
+              // The handoff landed but the model is still answering it. NOT an
+              // error — reporting it as one would repeat the false-negative
+              // this bound exists to prevent.
+              ...(replyPending ? { replyPending: true } : {}),
               // A created-but-unseeded fork is reported honestly rather than as
               // a clean success: the chat exists and the caller must know the
               // handoff did not land in it.
