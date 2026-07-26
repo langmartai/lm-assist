@@ -372,19 +372,29 @@ export const readConversationToolDef = {
 //      registry of the user's connected workers; a lone worker answers with
 //      just itself (fallback in tools/list-nodes.ts).
 
-/** Optional per-tool node selector. Injected into every tool's inputSchema. */
+/**
+ * Optional per-tool node selector. Injected into every tool's inputSchema.
+ *
+ * KEEP THIS SHORT — its cost is its length TIMES the tool count. It is injected
+ * into 188 tools, so it is the one string on this surface where a sentence costs
+ * ~188 sentences. At 751 bytes it was 141,188 B of `tools/list`: 40.3% of the
+ * entire catalogue, and 97% of all repeated-string waste on the surface — a
+ * fixed ~35K-token tax every conversation paid before calling anything, for 188
+ * copies of one paragraph (measured on node 117, 2026-07-26).
+ *
+ * What survives here is only what a caller needs AT THE CALL SITE: where a value
+ * comes from, what omitting it does, and the empty-result heuristic (which exists
+ * to stop a model concluding an item is absent when it merely lives elsewhere).
+ * The full explanation — cluster grouping, the retry recipe, the trigger phrases
+ * — moved into `list_nodes`'s own description and `guide("clusters")`, where it
+ * is paid for ONCE. Guarded by mcp-catalog-size.test.ts.
+ */
 export const NODE_PARAM = {
   type: 'string' as const,
   description:
-    'Target a specific lm-assist node/host. Nodes are grouped into CLUSTERS (see ' +
-    '`cluster_list`; e.g. prod, stage) and a call is SERVED BY the target node, so its ' +
-    'results — sessions, cloud CCR sessions, registries, files — are SCOPED to that ' +
-    'node/cluster. Pass the node\'s hostId or hostname from `list_nodes`. Omit to use the ' +
-    'default (most-recently-connected) node in YOUR cluster — correct for the single-node ' +
-    'case. IMPORTANT: if a read comes back EMPTY or "not found", the item may simply live ' +
-    'on ANOTHER node/cluster rather than being absent — call `list_nodes` / `cluster_list` ' +
-    'and retry with `node=<a node on that cluster>` BEFORE concluding it does not exist. ' +
-    'Use when the user says "on my server", "the other machine", "prod", "node X", etc.',
+    'Target lm-assist node/host: hostId or hostname from `list_nodes`; omit for your default ' +
+    'node. Results are SCOPED to that node/cluster — an EMPTY or "not found" read may mean the ' +
+    'item lives on ANOTHER node, so check `list_nodes` before concluding it is absent.',
 };
 
 export const listNodesToolDef = {
@@ -396,6 +406,17 @@ export const listNodesToolDef = {
     'server", "list nodes", "what hosts are connected". Also call this BEFORE targeting a ' +
     'tool at a specific node via the `node` parameter, so you know the valid hostIds. ' +
     'Returns each node\'s hostId, hostname, platform, and online status.\n\n' +
+    'HOW `node` ROUTING WORKS (the full version of the one-line note on every tool\'s `node` ' +
+    'parameter — it lives here so the surface pays for it once instead of on all 188 tools). ' +
+    'Nodes are grouped into CLUSTERS (see `cluster_list`; e.g. prod, stage). A call is SERVED ' +
+    'BY the target node, so its results — sessions, cloud CCR sessions, registries, files — ' +
+    'are SCOPED to that node/cluster. Omitting `node` uses the default (most-recently-' +
+    'connected) node in YOUR cluster, which is correct for the single-node case. IMPORTANT: ' +
+    'if a read comes back EMPTY or "not found", the item may simply live on ANOTHER ' +
+    'node/cluster rather than being absent — call `list_nodes` / `cluster_list` and retry ' +
+    'with `node=<a node on that cluster>` BEFORE concluding it does not exist. Target a node ' +
+    'when the user says "on my server", "the other machine", "prod", "node X", etc. Full ' +
+    'playbook: guide("clusters").\n\n' +
     'This is about PHYSICAL HOSTS behind the connector — not Claude Code code sessions ' +
     '(`list_recent_sessions`) and not claude.ai web conversations ' +
     '(`list_claudeai_conversations`).',
