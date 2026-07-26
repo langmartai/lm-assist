@@ -114,6 +114,9 @@ mod('node-status.ts', 'fleet', ['node_status']);
 mod('lifecycle.ts', 'fleet', ['node_lifecycle']);
 mod('node-builds.ts', 'fleet', ['node_builds']);
 mod('node-upgrade.ts', 'fleet', ['node_upgrade']);
+// Placement selection sits with the other node_* tools: 'nodes' is a guide TOPIC,
+// not a catalog CATEGORY (CATEGORY_ORDER above is the closed set).
+mod('node-profile.ts', 'fleet', ['node_profile', 'node_select']);
 mod('fabric-probe.ts', 'fleet', ['fabric_probe']);
 mod('bus.ts', 'fleet', ['bus_publish', 'bus_read', 'bus_topics']);
 mod('scheduler.ts', 'fleet', ['scheduler_jobs']);
@@ -121,7 +124,7 @@ mod('scheduler.ts', 'fleet', ['scheduler_jobs']);
 mod('cluster.ts', 'cluster', ['cluster_list', 'cluster_assign', 'cluster_unassign', 'cluster_describe']);
 // --- machine access profiles ---
 mod('machine-access.ts', 'machine-access', ['machine_access']);
-mod('node-profile.ts', 'nodes', ['node_profile', 'node_select']);
+
 // --- ccr / cloud Claude Code ---
 mod('expanded.ts', 'ccr', [
   'cc_sessions', 'ccr_preflight', 'ccr_remote_list', 'ccr_load', 'ccr_mirror', 'ccr_connect', 'ccr_drive',
