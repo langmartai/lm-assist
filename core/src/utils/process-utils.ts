@@ -38,6 +38,7 @@ export const IS_POSIX = !IS_WINDOWS; // Linux, macOS, etc.
 interface ProcessSnapshot {
   ps: string;
   psPidPpid: string;
+  tmuxPanes: string;
   pgrep: Map<string, number[]>;
   at: number;
 }
@@ -73,17 +74,29 @@ function runAsync(file: string, args: string[]): Promise<string> {
 export async function refreshProcessSnapshot(pgrepNames: string[] = ['ttyd']): Promise<void> {
   if (!IS_POSIX) return;
   try {
-    const [ps, psPidPpid, ...pgreps] = await Promise.all([
+    const [ps, psPidPpid, tmuxPanes, ...pgreps] = await Promise.all([
       runAsync('ps', ['-eo', 'pid,ppid,etimes,tty,%cpu,rss,cmd']),
       runAsync('ps', ['-eo', 'pid,ppid', '--no-headers']),
+      runAsync('tmux', ['list-panes', '-a', '-F', '#{session_name} #{pane_pid}']),
       ...pgrepNames.map(n => runAsync('pgrep', ['-x', n])),
     ]);
     const pgrep = new Map<string, number[]>();
     pgrepNames.forEach((n, i) => pgrep.set(n, parsePids(pgreps[i])));
-    snapshot = { ps, psPidPpid, pgrep, at: Date.now() };
+    snapshot = { ps, psPidPpid, tmuxPanes, pgrep, at: Date.now() };
   } catch {
     // Leave the previous snapshot in place; it ages out on its own.
   }
+}
+
+/**
+ * `tmux list-panes -a` output, served from the snapshot when fresh.
+ * Returns null when there is no usable snapshot, so the caller can decide whether
+ * to fall back to its own synchronous call.
+ */
+export function getTmuxPanesOutput(): string | null {
+  if (!IS_POSIX) return null;
+  const fresh = freshSnapshot();
+  return fresh ? fresh.tmuxPanes : null;
 }
 
 /** Drop the cached snapshot (tests). */

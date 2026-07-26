@@ -29,6 +29,58 @@ const execFileAsync = promisify(execFile);
  */
 const NGRAM_YIELD_CHUNK = 50;
 
+/**
+ * Files statted concurrently while listing session candidates.
+ *
+ * A bare `Promise.all` over the directory is NOT safe here: one project dir on a
+ * busy host holds 4678 .jsonl files, and fs.promises.stat runs on libuv's
+ * 4-thread pool — firing all of them at once starves every other async fs
+ * operation in Core, which showed up as a WORSE tail latency than the synchronous
+ * version it replaced.
+ */
+const STAT_CONCURRENCY = 24;
+
+/**
+ * How long a directory listing is reused. identify() runs once per unidentified
+ * PID and many PIDs share a project, so without this the same 4678-file directory
+ * is re-statted for each of them.
+ */
+const DIR_LISTING_TTL_MS = 10_000;
+
+interface DirEntry { file: string; filePath: string; mtime: number; birthtime: number }
+
+const dirListingCache = new Map<string, { at: number; entries: DirEntry[] }>();
+
+/** List + stat a session directory with bounded concurrency and a short TTL cache. */
+export async function listSessionDir(sessionDir: string): Promise<DirEntry[]> {
+  const cached = dirListingCache.get(sessionDir);
+  if (cached && Date.now() - cached.at < DIR_LISTING_TTL_MS) return cached.entries;
+
+  const names = (await fs.promises.readdir(sessionDir)).filter(f => f.endsWith('.jsonl'));
+  const entries: DirEntry[] = [];
+  for (let i = 0; i < names.length; i += STAT_CONCURRENCY) {
+    const batch = await Promise.all(names.slice(i, i + STAT_CONCURRENCY).map(async f => {
+      const fp = path.join(sessionDir, f);
+      try {
+        const stat = await fs.promises.stat(fp);
+        const birthtimeMs = (stat as any).birthtimeMs || stat.ctimeMs;
+        return { file: f, filePath: fp, mtime: stat.mtime.getTime(), birthtime: birthtimeMs };
+      } catch {
+        return null;
+      }
+    }));
+    for (const e of batch) if (e) entries.push(e);
+    await yieldToLoop();
+  }
+  dirListingCache.set(sessionDir, { at: Date.now(), entries });
+  return entries;
+}
+
+/** Drop cached directory listings (tests). */
+export function clearDirListingCache(): void {
+  dirListingCache.clear();
+}
+
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
 // ─── Types ──────────────────────────────────────────────────
@@ -662,20 +714,7 @@ export class SessionIdentifier {
       // Async readdir + stat: a project dir holds thousands of .jsonl files, and
       // statting them synchronously blocked the loop once per identification.
       const processMs = processStartedAt.getTime();
-      const names = (await fs.promises.readdir(sessionDir)).filter(f => f.endsWith('.jsonl'));
-      const statted = await Promise.all(
-        names.map(async f => {
-          const fp = path.join(sessionDir, f);
-          try {
-            const stat = await fs.promises.stat(fp);
-            const birthtimeMs = (stat as any).birthtimeMs || stat.ctimeMs;
-            return { file: f, filePath: fp, mtime: stat.mtime.getTime(), birthtime: birthtimeMs };
-          } catch {
-            return null;
-          }
-        }),
-      );
-      const allEntries = statted.filter((f): f is NonNullable<typeof f> => f !== null);
+      const allEntries = await listSessionDir(sessionDir);
 
       // Pre-filter: include files that were active around the process lifetime.
       // - mtime within 2h before process start to now (covers idle-before-resume)

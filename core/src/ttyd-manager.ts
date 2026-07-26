@@ -27,6 +27,7 @@ import {
   getDiskStats,
   getPsOutput as getPsOutputXPlat,
   getPsPidPpidOutput,
+  getTmuxPanesOutput,
   getClaudeBinaryPath,
   findAvailablePort as findAvailablePortXPlat,
 } from './utils/process-utils';
@@ -343,10 +344,15 @@ function buildTmuxPanePidMap(): Map<number, string> {
   const pidToSession = new Map<number, string>();
   if (IS_WINDOWS) return pidToSession;
   try {
-    const output = execFileSync('tmux', ['list-panes', '-a', '-F', '#{session_name} #{pane_pid}'], {
-      encoding: 'utf-8',
-      timeout: 3000,
-    });
+    // Prefer the async-refreshed snapshot: this runs inside the 1s process scan,
+    // where a blocking `tmux list-panes` cost ~1.4s of main-thread time per 120s.
+    const cached = getTmuxPanesOutput();
+    const output = cached !== null
+      ? cached
+      : execFileSync('tmux', ['list-panes', '-a', '-F', '#{session_name} #{pane_pid}'], {
+          encoding: 'utf-8',
+          timeout: 3000,
+        });
     for (const line of output.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;

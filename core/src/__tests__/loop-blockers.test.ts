@@ -1,6 +1,9 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { SessionIdentifier } from '../session-identifier';
+import fsp = require('fs/promises');
+import * as osmod from 'os';
+import * as pathmod from 'path';
+import { SessionIdentifier, listSessionDir, clearDirListingCache } from '../session-identifier';
 // Bind the REAL module objects: `import * as x` compiles to an __importStar copy
 // whose properties are getters, and mock.method reads descriptor.value on those.
 import pu = require('../utils/process-utils');
@@ -166,6 +169,66 @@ test('falls back to the synchronous call when no snapshot exists', () => {
   } finally {
     mock.restoreAll();
     pu.clearProcessSnapshot();
+  }
+});
+
+// ─── Session-dir listing: bounded fan-out ──────────────────────────────
+
+test('stats a large session dir with BOUNDED concurrency, not all at once', async () => {
+  const dir = await fsp.mkdtemp(pathmod.join(osmod.tmpdir(), 'lm-listdir-'));
+  try {
+    // Comfortably more files than the concurrency bound.
+    for (let i = 0; i < 200; i++) await fsp.writeFile(pathmod.join(dir, `s${i}.jsonl`), 'x');
+    clearDirListingCache();
+
+    // Watch how many stats are in flight at once. An unbounded Promise.all over a
+    // real project dir (4678 files here) floods libuv's 4-thread pool and starves
+    // every other async fs op in Core — that regression made tail latency WORSE.
+    let inFlight = 0;
+    let peak = 0;
+    const realStat = fsp.stat;
+    mock.method(fsp, 'stat', async (...args: any[]) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      try {
+        return await (realStat as any)(...args);
+      } finally {
+        inFlight--;
+      }
+    });
+
+    const entries = await listSessionDir(dir);
+    assert.equal(entries.length, 200, 'every session file must still be listed');
+    assert.ok(peak > 1, `precondition: stats should run concurrently, peak was ${peak}`);
+    assert.ok(peak <= 24, `stat fan-out must stay bounded, peaked at ${peak}`);
+  } finally {
+    mock.restoreAll();
+    clearDirListingCache();
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('reuses a recent directory listing instead of re-statting for every PID', async () => {
+  const dir = await fsp.mkdtemp(pathmod.join(osmod.tmpdir(), 'lm-listdir-'));
+  try {
+    for (let i = 0; i < 10; i++) await fsp.writeFile(pathmod.join(dir, `s${i}.jsonl`), 'x');
+    clearDirListingCache();
+
+    await listSessionDir(dir); // populate
+
+    let statsAfterWarm = 0;
+    mock.method(fsp, 'stat', async (...args: any[]) => {
+      statsAfterWarm++;
+      return (fsp.stat as any)(...args);
+    });
+    const again = await listSessionDir(dir);
+
+    assert.equal(again.length, 10);
+    assert.equal(statsAfterWarm, 0, 'a warm listing must not re-stat the directory');
+  } finally {
+    mock.restoreAll();
+    clearDirListingCache();
+    await fsp.rm(dir, { recursive: true, force: true });
   }
 });
 
