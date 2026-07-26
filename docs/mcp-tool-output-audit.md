@@ -199,13 +199,24 @@ cut rather than just how much:
 | everything else | ~85 KB | ~7.7% | — |
 
 **`history` alone is 54.6% of the result.** `mission_list` is a *list* view that
-returns every mission's full revision history — 401 revs across 50 missions (avg
-8, max 19), each a full-state change record. Revs only accumulate, so this is the
-compounding term: per-mission cost rises even if the mission count never does.
+returns every mission's inline revision history — 401 revs across 50 missions (avg
+8, max 19). Revs accumulate, so this is the compounding term: per-mission cost
+rises even if the mission count never does.
+
+Correction on the shape, from source: these history entries are **diffs, not
+full-state snapshots** — `{rev, at, actor, changes}` where each `{from,to}` value
+is already truncated to 500 chars, inlined ~50 deep. Verified against the live
+payload (`any_entry_has_state === false`). That matters for the fix: because they
+are diffs, dropping history from the list projection is safe and lossless for a
+list view. The one place that *does* embed a full post-change state per revision
+is `backlog_get` — see §4(f).
 
 `history` + `objective` + `results` = **84.5%** of the whole payload. So:
 
-- dropping `history` from the list projection cuts it ~55% (905 KB → ~410 KB);
+- dropping `history` from the list projection cuts it ~55% (905 KB → ~410 KB) —
+  this is the single biggest lever, and it must come first: a projection that
+  keeps history and drops only `objective`+`results` removes just ~30%, which is
+  not enough on its own;
 - dropping all three cuts it ~84.5% (→ ~140 KB), under a 200 KB ceiling with no
   pagination at all;
 - `objective` averages 2,836 chars but peaks at 15,890 — one mission's objective
@@ -289,6 +300,46 @@ returns 244 tools totalling 347,430 bytes of names, descriptions and JSON schema
 the per-result ceiling, silently shrinking the budget every result competes for.
 Largest definitions: `scheduler_jobs` 4,497 B, `mission_update` 3,978 B,
 `github_mutate` 3,802 B, `data_get` 3,483 B.
+
+**(f) Three unbounded reads the empirical sweep could not see, and one
+compounding case it under-rated.** Static analysis of every handler caught four
+things a measurement sweep structurally cannot:
+
+- **`get_execution`, `ccr_cloud_read`, `mission_session_read` return full
+  transcripts on a plain call.** All three need a target id, so no automated sweep
+  can measure them — and "not measured" reads as "fine" unless it is written down.
+  `ccr_cloud_read` is the sneakiest: its description implies `last_n` bounds the
+  read, but there is **no default**, so omitting it returns the whole cloud-session
+  transcript. `mission_session_read` is the same shape (`lastN` undefined when
+  omitted; the route clamps to [1,2000] only when a value is supplied), and
+  `get_execution` merges the agent's entire result text with no limit argument at
+  all. Recorded in `UNBOUNDED_BY_DEFAULT_UNMEASURED`.
+- **`backlog_get` measured 5.7 KB and was rated SAFE — that rating was an accident
+  of which item got sampled.** It reads with `includeHistory:true`, and each
+  revision embeds a **full post-change state snapshot** (not a diff), capped at 20
+  revs, each snapshot carrying discussion (≤200 notes × 4000 chars) and reviews
+  (≤100 × 4000). An item with an active discussion revised 20× is 300 KB+; at the
+  caps it is multi-MB. It is the single clearest instance of this audit's own
+  warning that 52 tools rate SAFE on today's data rather than any guarantee — and
+  the only true full-state-per-rev embed on the surface.
+- **`fs_read` is better bounded than this audit first classified it.** Beyond the
+  64 KiB default there is a hard server clamp — `Math.min(maxBytes, READ_MAX_BYTES)`
+  with `READ_MAX_BYTES` = 1 MiB — that a caller *cannot* exceed by any request
+  argument (only the `LM_FS_READ_MAX` env var raises it), plus a secret-file
+  refusal. Not the arbitrary-read hole it looked like.
+- **`bootstrap` does not scale with fleet data at all.** ~52,344 B of it is static
+  prose; the rest is optional admin-curated content-registry overrides plus a
+  roster that grows with *cluster* count (2-3), not nodes or sessions. The
+  101 KB → 54 KB swing since the incident was override prose being removed from the
+  registry, not data shrinking. So the fix is trimming prose, not capping a list —
+  a numeric cap would truncate a playbook mid-sentence.
+
+**(g) Two more measurement caveats worth carrying forward.** The MCP layer
+serialises with `JSON.stringify(v, null, 2)`, so 2-space indent **inflates every
+number in this audit ~1.27×** over the raw route payload (14,511 B/mission raw vs
+18,483 B/mission measured — same record). And pre-guardrail the layer truncated
+*nothing* on the success path; only error text was cut, at 600 chars. Every bound
+that existed was one a route or store happened to impose.
 
 **(e) Both MCP surfaces expose the same tool set, so a fix lands once.** The stdio
 server (`core/src/mcp-server/index.ts`) and the HTTP `/mcp` endpoint
@@ -394,6 +445,15 @@ today; it cannot notice a tool added tomorrow. So the guard has three parts:
    Mutation-verified: removing `mission_workflow_list` from the list fails with
    exactly that diagnosis.
 
+**The ratchet fired during this audit, on real growth.** `list_session_messages`
+went 19,362 B → 27,840 B (+44%) *within the audit session* and the guard failed
+until it was reclassified. The cause was the audit's own four handoff messages to
+the sibling mission: the tool returns every stored session-message with its full
+free-text body and no limit, so ordinary fleet chatter moves it. It was rated SAFE
+on the first measurement and is now NEEDS-CAP. This is the failure mode the whole
+exercise is about — a tool that is fine until it is not — caught in hours rather
+than by a dead conversation.
+
 Operational notes:
 - The size sweep is **wall-clock bounded (25s default) and ordered
   biggest-budget-first**, so the tools that can actually kill a conversation are
@@ -427,12 +487,32 @@ is a state that develops rather than a permanent condition.
 
 Those two tools are precisely the ones that run full caller-identity resolution
 (`mcp-session-resolver.ts`) — a path already documented as being on the hot path of
-every connector call and previously optimised for this exact class of stall. The
-host now holds **13,628 session JSONL files / 4.2 GB**, including one 164 MB file.
+every connector call and previously optimised for this exact class of stall.
 
-This matters disproportionately because the connector instructions tell **every**
-session to call `bootstrap` first — a hang here stalls session startup fleet-wide.
-Not chased further because it is outside this mission's scope.
+**Mechanism confirmed, trigger NOT.** `resolveCallerCandidates` → `refresh()` is
+**single-flight** (`if (inFlight) return inFlight`), so once one resolution wedges,
+every later caller joins the *same* wedged promise. That explains precisely why
+only these two tools hang, why it reproduces 3/3, and why it never recovers. It
+also explains why the 2.5 s `RESOLVE_TIMEOUT_MS` does not save it: that file's own
+documented lesson is that a `setTimeout` cannot fire while the event loop is
+blocked synchronously.
+
+Two candidate triggers were proposed and **both were tested and refuted**, which is
+worth recording so nobody re-runs them:
+
+- *"`enrichRow(top)` decodes the 164 MB session because, being live and growing, it
+  is the most-recently-modified row."* — **Refuted.** The newest session is 1.5 MB;
+  the 164 MB file is not `top`.
+- *"prod is running a build that predates the fix removing the synchronous
+  `getAllSessionsFromCache()` sweep."* — **Refuted.** The two occurrences in the
+  deployed resolver are **comments** describing what was replaced, not live calls,
+  and the deployed dist matches source.
+
+So: the amplifier is understood, the thing being amplified is not. Filed as
+`bl_c6d0921b` and left there deliberately — it is outside this mission's scope, and
+guessing a third trigger without measuring is how the first two got proposed. It
+matters disproportionately because the connector instructions tell **every** session
+to call `bootstrap` first, so a hang here stalls session startup fleet-wide.
 
 ---
 

@@ -122,7 +122,11 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
     measuredBytes: 65829, budgetBytes: 92000, bound: 'NOTHING', verdict: 'NEEDS-SUMMARY',
     note: 'TRUNCATED at the ceiling today: full change/rev feed, ~469 B per rev, revs only accumulate. Narrowable via sinceRev/sinceTs.',
   },
-  bootstrap: { measuredBytes: 55654, budgetBytes: 78000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: 'Deliberately large — loads every use case in one call. 55,572 B set the floor for the enforced ceiling: a 50 KB cap would truncate onboarding on every fresh connect.' },
+  bootstrap: { measuredBytes: 55654, budgetBytes: 78000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: 'Deliberately large — loads every use case in one call; 55,572 B set the floor for the ' +
+    'enforced ceiling. Does NOT scale with fleet data: ~52,344 B is STATIC prose (GUIDES sections), ' +
+    'plus optional admin-curated content-registry overrides and a clusterBlock that grows with ' +
+    'CLUSTER count (2-3), not nodes/sessions/missions. The 101KB->54KB swing since the incident was ' +
+    'override prose in the registry, not data growth. Fix is trimming prose, not capping a list.' },
   data_keys: { measuredBytes: 55967, budgetBytes: 78000, bound: 'NOTHING', verdict: 'NEEDS-SUMMARY', note: 'Schema is {node} only — its dataset arg is ignored; enumerates all keys. No narrowing argument.' },
   cc_sessions: { measuredBytes: 20578, budgetBytes: 29000, bound: 'NOTHING', verdict: 'NEEDS-SUMMARY', note: '~950 B per session x 55.' },
   windows_terminal_list: { measuredBytes: 52395, budgetBytes: 73000, bound: 'NOTHING', verdict: 'NEEDS-SUMMARY', note: '~950 B per terminal x 55.' },
@@ -131,7 +135,16 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
   backlog_list: { measuredBytes: 24015, budgetBytes: 34000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: '~895 B per item x 22; unbounded but small today.' },
   session_footprints: { measuredBytes: 19547, budgetBytes: 27000, bound: 'NOTHING', verdict: 'NEEDS-CAP' },
   backlog_graph: { measuredBytes: 13146, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
-  list_session_messages: { measuredBytes: 19362, budgetBytes: 27000, bound: 'NOTHING', verdict: 'SAFE' },
+  list_session_messages: {
+    measuredBytes: 27840, budgetBytes: 45000, bound: 'NOTHING', verdict: 'NEEDS-CAP',
+    note: 'GREW 19,362 -> 27,840 B (+44%) DURING the audit session, and the guard caught it — the ' +
+      'only live demonstration we have of the ratchet firing on real growth. Cause: it returns ' +
+      'EVERY stored session-message with its full free-text body plus ack history, filterable by ' +
+      'session/status but with NO limit. The audit itself sent four long messages to a sibling ' +
+      'mission; that alone moved it 8 KB. It therefore grows with ordinary fleet chatter, not with ' +
+      'anything rare. Budget raised deliberately to 45,000 with the reclassification, not to ' +
+      'silence the failure.',
+  },
   terminal_list: { measuredBytes: 9007, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   machine_access: { measuredBytes: 6254, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   mission_control_status: { measuredBytes: 5442, budgetBytes: 25000, bound: 'SMALL_BY_CONSTRUCTION', verdict: 'SAFE' },
@@ -178,13 +191,26 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
   // ── read-only but need a target id; measured with a real id ─────────────
   fs_read: {
     measuredBytes: 65856, budgetBytes: 92000, bound: 'CALLER_LIMIT_SANE_DEFAULT', verdict: 'NEEDS-CAP',
-    note: 'Default cap is 64 KiB (verified: a 107 KB file truncated to exactly 65,536 B of content). 64 KiB is still ~18k tokens.',
+    note: 'BETTER BOUNDED than this audit first classified it. Default 64 KiB (READ_DEFAULT_BYTES) ' +
+      'and a HARD server clamp a caller cannot exceed: Math.min(maxBytes, READ_MAX_BYTES=1 MiB) in ' +
+      'file-transfer/fs-inspect.ts, raisable only by the LM_FS_READ_MAX env var, never by a request ' +
+      'arg. Also refuses secret files. Not the arbitrary-read hole it looked like.',
   },
   mission_neighbors: { measuredBytes: 26267, budgetBytes: 37000, bound: 'CALLER_LIMIT_SANE_DEFAULT', verdict: 'NEEDS-CAP', note: 'Depth arg; full records per neighbour.' },
   memory_file: { measuredBytes: 16760, budgetBytes: 25000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: 'Whole memory file; bounded only by the file on disk.' },
   mission_history: { measuredBytes: 13661, budgetBytes: 25000, bound: 'CALLER_LIMIT_SANE_DEFAULT', verdict: 'SAFE' },
   terminal_capture: { measuredBytes: 6279, budgetBytes: 25000, bound: 'HARD_LIMIT', verdict: 'SAFE', note: 'One pane of terminal text.' },
-  backlog_get: { measuredBytes: 5860, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE', note: 'One item incl. discussion + rev history.' },
+  backlog_get: {
+    measuredBytes: 5860, budgetBytes: 25000, bound: 'NOTHING', verdict: 'NEEDS-CAP',
+    note: 'MEASURED SMALL, STRUCTURALLY THE WORST COMPOUNDING CASE on the surface — and the ' +
+      'clearest example of a SAFE rating that is an accident of which item got sampled. ' +
+      'backlog.routes.ts reads it with includeHistory:true, and each OverlayChange embeds a FULL ' +
+      'post-change state snapshot (doc-model.ts `state: S`), capped at 20 revs. So one call can ' +
+      'return the current item PLUS 20 complete copies of its prior states, each carrying ' +
+      'discussion (<=200 notes x 4000 chars) and reviews (<=100 x 4000). An item with an active ' +
+      'discussion revised 20x is 300KB+; at the caps it is multi-MB. Unlike mission_list this IS ' +
+      'full-state-per-rev, not diffs.',
+  },
   mission_workflow_get: { measuredBytes: 5127, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   detail: { measuredBytes: 1119, budgetBytes: 25000, bound: 'PAGINATED', verdict: 'SAFE' },
   mission_workflow_history: { measuredBytes: 715, budgetBytes: 25000, bound: 'CALLER_LIMIT_SANE_DEFAULT', verdict: 'SAFE' },
@@ -248,6 +274,28 @@ export const NOT_MEASURED: Record<string, string> = Object.fromEntries([
     'windows_terminal_capture', 'mission_view_get',
   ].map((n) => [n, 'read-only but needs a target id or a live peer; covered statically']),
 ]);
+
+/**
+ * Read-only tools that the guard cannot safely auto-measure (they need a target
+ * id or a live peer) but that are KNOWN UNBOUNDED when called without arguments.
+ *
+ * These are the audit's blind spot made explicit. They sit in `NOT_MEASURED`
+ * because no id can be synthesised for them, which means an empirical sweep says
+ * nothing about them — and "not measured" reads as "fine" unless it is written
+ * down. Each returns a full transcript on a plain call.
+ *
+ * All three are now backstopped by the central 64 KiB ceiling, so they can no
+ * longer kill a conversation; they will simply truncate. They are listed so the
+ * follow-up work (a sane default, not just a cap) has a target.
+ */
+export const UNBOUNDED_BY_DEFAULT_UNMEASURED: Record<string, string> = {
+  get_execution:
+    'Merges the agent execution\'s FULL result text into the status object; grows with whatever the agent produced. No limit argument at all.',
+  ccr_cloud_read:
+    'The sneakiest of the three: its description implies `last_n` bounds the read, but there is NO default — omit it and the whole cloud-session transcript is returned.',
+  mission_session_read:
+    '`lastN` is undefined when omitted and forwarded as such, so a plain call returns the full session transcript. The route clamps to [1,2000] only when a value is supplied.',
+};
 
 /**
  * Third-party plugin tools (`ext__<plugin>__<tool>`) are exempt from per-tool
