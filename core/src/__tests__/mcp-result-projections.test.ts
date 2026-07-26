@@ -17,6 +17,9 @@ import {
   claudeaiPluginSummary,
   backlogItemSummary,
   compactBacklogWrite,
+  compactActor,
+  missionWorkflowSummary,
+  missionChangeSummary,
   projectMissions,
   DEFAULT_LIMIT_FULL,
   DEFAULT_LIMIT_SUMMARY,
@@ -216,4 +219,55 @@ test('compactBacklogWrite passes through anything that is not an item envelope',
   assert.equal(compactBacklogWrite(null), null);
   assert.equal(compactBacklogWrite('text'), 'text');
   assert.deepEqual(compactBacklogWrite({ error: 'nope' }), { error: 'nope' });
+});
+
+// ─── truncating tools must be NARROWABLE (audit mission_8bc12731 finding) ────
+
+test('workflow summary drops the body — the body IS the workflow, and a list is not a read', () => {
+  // Measured 116,668 B for 35 workflows; body ~2KB each plus a full state per rev.
+  const w = { id: 'controller.pass', title: 'Controller pass', editPolicy: 'open', rev: 4,
+    body: 'b'.repeat(2_000), history: [{}, {}, {}],
+    lastUpdatedBy: { kind: 'local-session', id: 'ce6749c4-9b56-4', node: 'gw4-x', channel: 'mcp', label: '/very/long/path', toolUseId: 'toolu_x', at: 1 } };
+  const s = missionWorkflowSummary(w);
+  assert.ok(!('body' in s) && !('history' in s));
+  assert.deepEqual(s.omitted, { bodyChars: 2_000, history: 3 });
+  assert.equal(s.fullDoc, 'mission_workflow_get({id:"controller.pass"})');
+  assert.equal(s.lastUpdatedBy, 'local-session:ce6749c4', 'the 7-field actor collapses');
+});
+
+test('mission change summary collapses the per-row actor', () => {
+  const c = { missionId: 'mission_8bc12731', rev: 9, at: 1785033412982,
+    actor: { kind: 'local-session', id: 'ce6749c4-9b56-4', node: 'gw4-x', channel: 'mcp', label: '/home/ubuntu/lm-assist/.claude/worktrees/x', toolUseId: 'toolu_x', at: 1 },
+    changedFields: ['tags.ctl:readiness'] };
+  const s = missionChangeSummary(c);
+  assert.equal(s.by, 'local-session:ce6749c4');
+  assert.ok(!('actor' in s), 'the full actor was the fattest field on every row');
+  assert.deepEqual(s.changedFields, ['tags.ctl:readiness']);
+  assert.ok(bytes(s) < bytes(c) / 2);
+});
+
+test('compactActor never throws on junk', () => {
+  assert.equal(compactActor(null), undefined);
+  assert.equal(compactActor('nope'), undefined);
+  assert.equal(compactActor({}), 'actor');
+  assert.equal(compactActor({ kind: 'human' }), 'human');
+});
+
+test('every tool the ceiling can truncate exposes a narrowing argument', () => {
+  // The truncation marker tells the model to "pass this tool's paging/filter arguments".
+  // For a tool with NO such argument that advice cannot be followed and repeating returns
+  // the same prefix forever — the cap saves the conversation but becomes a dead end.
+  const { MISSION_WORKFLOW_TOOL_DEFS } = require('../mcp-server/tools/mission-workflow');
+  const { MISSION_SCHEDULE_TOOL_DEFS } = require('../mcp-server/tools/mission-schedule');
+  const { MISSION_TOOL_DEFS } = require('../mcp-server/tools/mission');
+  const { MISSION_QUERY_TOOL_DEFS } = require('../mcp-server/tools/mission-query');
+  const defs = [...MISSION_WORKFLOW_TOOL_DEFS, ...MISSION_SCHEDULE_TOOL_DEFS, ...MISSION_TOOL_DEFS, ...MISSION_QUERY_TOOL_DEFS];
+  const NARROWING = ['limit', 'offset', 'cursor', 'id', 'filter', 'since', 'sinceTs', 'detail'];
+  for (const name of ['mission_workflow_list', 'mission_changes', 'mission_list', 'mission_query']) {
+    const def = defs.find((d: { name: string }) => d.name === name);
+    assert.ok(def, `${name} must be advertised`);
+    const props = Object.keys(def.inputSchema.properties || {});
+    assert.ok(props.some((p) => NARROWING.includes(p)),
+      `${name} can be truncated but exposes no narrowing argument (has: ${props.join(',') || 'none'})`);
+  }
 });

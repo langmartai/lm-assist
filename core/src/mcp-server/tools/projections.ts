@@ -229,6 +229,49 @@ export function claudeaiPluginSummary(p: Record<string, unknown>): Record<string
 }
 
 /**
+ * A MissionActor, compacted. The full object is 7 fields / ~274 bytes (kind, id, node,
+ * channel, label — an absolute path — toolUseId, at) and it is embedded once per record,
+ * so on `mission_changes` it was the single fattest field across 252 changes. `kind` plus a
+ * short id answers "who did this"; the rest is addressing detail nobody reads in a list.
+ */
+export function compactActor(a: unknown): string | undefined {
+  if (!a || typeof a !== 'object') return undefined;
+  const o = a as Record<string, unknown>;
+  const id = typeof o.id === 'string' ? o.id.slice(0, 8) : '';
+  const kind = typeof o.kind === 'string' ? o.kind : 'actor';
+  return id ? `${kind}:${id}` : kind;
+}
+
+/**
+ * One workflow doc, small. Measured 116,668 B for 35 workflows: the `body` IS the workflow
+ * (~2KB each) and `history` carries a full post-change state per rev. A LIST of workflows
+ * only has to say which ones exist; `mission_workflow_get` serves the body.
+ */
+export function missionWorkflowSummary(w: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { id: w.id, title: w.title };
+  for (const k of ['editPolicy', 'rev', 'updatedAt'] as const) if (w[k] !== undefined) out[k] = w[k];
+  const by = compactActor(w.lastUpdatedBy);
+  if (by) out.lastUpdatedBy = by;
+  const has: Record<string, unknown> = {};
+  if (typeof w.body === 'string' && w.body) has.bodyChars = (w.body as string).length;
+  if (len(w.history)) has.history = len(w.history);
+  if (Object.keys(has).length) {
+    out.omitted = has;
+    out.fullDoc = `mission_workflow_get({id:"${String(w.id)}"})`;
+  }
+  return out;
+}
+
+/** One mission change, small — the actor collapses to `kind:id8`. */
+export function missionChangeSummary(c: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { missionId: c.missionId, rev: c.rev, at: c.at };
+  const by = compactActor(c.actor);
+  if (by) out.by = by;
+  if (c.changedFields !== undefined) out.changedFields = c.changedFields;
+  return out;
+}
+
+/**
  * Default page size per detail level.
  *
  * Sized from measurement, not taste: a real mission SUMMARY row is 1,333 bytes on this

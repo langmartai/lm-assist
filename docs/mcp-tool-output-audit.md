@@ -508,8 +508,44 @@ worth recording so nobody re-runs them:
   deployed resolver are **comments** describing what was replaced, not live calls,
   and the deployed dist matches source.
 
-So: the amplifier is understood, the thing being amplified is not. Filed as
-`bl_c6d0921b` and left there deliberately — it is outside this mission's scope, and
+**A third party reproduced it and showed a Core RESTART CLEARS IT** — 90 s+ never
+returning before, 458 ms then 40 ms warm after, with the deployed handlers serving
+`bootstrap` in 5 ms when called directly in-process. So it is wedged runtime state,
+not code on disk. That pinned the structure:
+
+`refresh()` assigns `run` to the single-flight slot, but **nothing bounds `run`
+itself**. The release is correct in isolation — `.finally` clears the slot on both
+settle paths — but `.finally` can only fire if `run` settles, and `run`'s only
+`await` sits between two error-swallowing `try` blocks. So *any* never-settling
+call inside it pins `inFlight` permanently, and every later caller is handed that
+same dead promise.
+
+The ~60 s of grace before anyone notices comes from stale-while-revalidate:
+`RESOLVE_TTL_MS` 8 s, `RESOLVE_MAX_STALE_MS` 60 s, and in the stale window the
+refresh is fired as **`void refresh(deps)`** — nobody awaits it, so the first hang
+is silent while callers are still served fast from cache. Only once the cache
+passes 60 s does every caller fall through to `return refresh(deps)` and hang
+forever. That predicts ≤60 s between the last fast call and the permanent wedge;
+the observed last two successes were 42 s apart, inside the window. It also means
+that when correlating with scheduled-job ticks, the wedge time is ~60 s *after*
+whatever actually hung.
+
+The abort path was checked end-to-end and is **not** obviously the culprit:
+`AbortController` + 2.5 s timer + a post-await wall-clock re-check, `{signal,
+timeoutMs}` forwarded through `listConversations` into `claudeaiGet`, which
+registers a caller-abort listener and clears its timer in a `finally` that runs
+*after* `res.text()` — so the body read is covered too, not just the headers.
+
+**Fix shape, trigger-agnostic:** never let a single-flight slot be pinned by a
+promise it does not bound — race `run` against a timer that *settles* (not one
+that merely aborts a callee which may ignore it), or watchdog-clear `inFlight`
+after a hard deadline so the next caller starts fresh. Identity here is explicitly
+best-effort, so a degraded answer is always acceptable and there is no correctness
+reason to wait unbounded. That turns this from an availability bug into a latency
+one, without needing the trigger.
+
+So: the amplifier is fully understood and cheaply fixable, the thing being
+amplified is not. Filed as `bl_c6d0921b` and left there deliberately — it is outside this mission's scope, and
 guessing a third trigger without measuring is how the first two got proposed. It
 matters disproportionately because the connector instructions tell **every** session
 to call `bootstrap` first, so a hang here stalls session startup fleet-wide.

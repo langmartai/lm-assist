@@ -1,6 +1,7 @@
 /** Workflow-registry MCP tools (proxy the /mission/workflows routes). */
 import type { McpToolResult } from '../configure';
 import { ok, err, workerGet, workerPost } from './_passthrough';
+import { detailLevel, intArg, paginate, missionWorkflowSummary } from './projections';
 import { currentMcpContext } from '../principal-context';
 import { withActorHint } from './mission-query';
 
@@ -9,7 +10,7 @@ const obj = (props: Record<string, unknown>, required: string[] = []) => ({ type
 const pretty = (v: unknown): McpToolResult => ok(JSON.stringify(v, null, 2));
 
 export const MISSION_WORKFLOW_TOOL_DEFS = [
-  { name: 'mission_workflow_list', description: 'List mission-control workflow/playbook docs (stored + un-seeded TS defaults). These agent-interpreted docs define how the controller onboards, drives, and wraps up work.', inputSchema: obj({}) },
+  { name: 'mission_workflow_list', description: 'List mission-control workflow/playbook docs (stored + un-seeded TS defaults). These agent-interpreted docs define how the controller onboards, drives, and wraps up work. Returns a SUMMARY projection by default (bodies+history omitted); {detail?:"summary"|"full", limit?, offset?}.', inputSchema: obj({ detail: { ...S, enum: ['summary', 'full'], description: 'summary (default) | full' }, limit: { type: 'number' as const, description: 'page size (default 50 summary / 5 full)' }, offset: { type: 'number' as const, description: 'page offset (default 0)' } }) },
   { name: 'mission_workflow_get', description: 'Get one workflow doc by id (e.g. controller.pass, onboard.analyze, drive.bugfix): {doc (stored or null), defaultBody, rendered (invariant preamble + body — the text to FOLLOW)}.', inputSchema: obj({ id: S }, ['id']) },
   { name: 'mission_workflow_set', description: 'Create/update a workflow doc: {id, body, title?, editPolicy?:open|human-only}. Versioned + attributed; human-only docs and editPolicy changes reject controller callers. Self-edits must be announced in chat.', inputSchema: obj({ id: S, body: S, title: S, editPolicy: { ...S, enum: ['open', 'human-only'] } }, ['id', 'body']) },
   { name: 'mission_workflow_history', description: 'Snapshot history of a workflow doc, newest-first: {id, limit?, beforeRev?} → rev/at/actor/title/bodyBytes per revision.', inputSchema: obj({ id: S, limit: { type: 'number' as const }, beforeRev: { type: 'number' as const } }, ['id']) },
@@ -17,7 +18,28 @@ export const MISSION_WORKFLOW_TOOL_DEFS = [
 ] as const;
 
 export const MISSION_WORKFLOW_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
-  mission_workflow_list: async () => { try { return pretty(await workerGet('/mission/workflows')); } catch (e) { return err((e as Error).message); } },
+  // SUMMARY + paging. Measured 116,668 B for 35 workflows — the `body` IS the workflow
+  // (~2KB each) and `history` stores a full post-change state per rev. Before this it had
+  // NO narrowing argument at all, so the byte ceiling truncated it into unparseable JSON
+  // and the truncation marker's advice ("pass this tool's paging/filter arguments") could
+  // not be followed — repeating returned the same prefix forever.
+  mission_workflow_list: async (a) => {
+    try {
+      const res = await workerGet('/mission/workflows') as Record<string, unknown>;
+      const all = Array.isArray(res?.workflows) ? res.workflows as Array<Record<string, unknown>> : [];
+      const detail = detailLevel((a || {}).detail);
+      const { rows, meta } = paginate(all, intArg((a || {}).limit, detail === 'full' ? 5 : 50), intArg((a || {}).offset, 0));
+      return pretty({
+        ...res,
+        detail,
+        ...meta,
+        ...(detail === 'summary'
+          ? { hint: 'SUMMARY projection (default) — workflow bodies and rev history are omitted (see "omitted"). Use mission_workflow_get({id}) for one body, or mission_workflow_list({detail:"full"}) to page whole docs.' }
+          : {}),
+        workflows: detail === 'full' ? rows : rows.map(missionWorkflowSummary),
+      });
+    } catch (e) { return err((e as Error).message); }
+  },
   mission_workflow_get: async (a) => { try { const id = String(a.id || ''); if (!id) return err('id is required'); return pretty(await workerGet(`/mission/workflows/${encodeURIComponent(id)}`)); } catch (e) { return err((e as Error).message); } },
   mission_workflow_set: async (a) => { try { const id = String(a.id || ''); if (!id) return err('id is required'); return pretty(await workerPost(`/mission/workflows/${encodeURIComponent(id)}`, withActorHint(a, currentMcpContext()?.toolUseId))); } catch (e) { return err((e as Error).message); } },
   mission_workflow_history: async (a) => { try { const id = String(a.id || ''); if (!id) return err('id is required'); const qs = new URLSearchParams(); if (a.limit != null) qs.set('limit', String(a.limit)); if (a.beforeRev != null) qs.set('beforeRev', String(a.beforeRev)); return pretty(await workerGet(`/mission/workflows/${encodeURIComponent(id)}/history${qs.toString() ? `?${qs}` : ''}`)); } catch (e) { return err((e as Error).message); } },
