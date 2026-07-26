@@ -91,6 +91,10 @@ export interface Candidate {
   /** Carried through for an LLM consumer; excluded from `score` by construction. */
   notes?: string;
   degraded?: string[];
+  /** Needs this node has NO declared capability for. Not a blocker — an unprofiled
+   *  node is "nothing learned yet" — but a caller must be able to see that its top
+   *  pick does not actually claim the trait the work requires. */
+  unmetNeeds?: string[];
 }
 
 export interface RankOptions {
@@ -208,6 +212,7 @@ export function rankNodes(
       score,
       why,
       blockers,
+      ...(unmatched.length ? { unmetNeeds: unmatched } : {}),
       ...(opts.includeNotes && p?.notes ? { notes: p.notes } : {}),
       ...(f.degraded?.length ? { degraded: f.degraded } : {}),
     };

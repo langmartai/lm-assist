@@ -56,6 +56,12 @@ export async function liveFacts(): Promise<{ facts: NodeFacts[]; degraded: strin
         .map((p) => p.path)
         .filter((p): p is string => !!p);
     },
+    // The full roster, so out-of-cluster nodes appear with a reason instead of vanishing.
+    knownNodes: async () => records.map((r) => ({
+      nodeId: r.gatewayId,
+      hostname: (r as { hostname?: string }).hostname,
+      cluster: r.cluster,
+    })),
     missionsBySession: async () => {
       const map = new Map<string, { resources?: string[]; exclusive?: boolean }>();
       for (const m of await listMissions()) map.set(m.id, { resources: m.env.resources, exclusive: m.env.exclusive });
@@ -101,12 +107,25 @@ export async function handleNodeSelect(b: Record<string, unknown>): Promise<Enve
   const candidates = rankNodes(need, facts, profiles, { includeNotes: true });
   const eligible = candidates.filter((c) => c.blockers.length === 0);
 
+  // 🔴 A recommendation that does not actually claim the required trait must SAY SO.
+  // Measured on prod: asking for `elevated-worker` recommended the only in-cluster
+  // node, which does not have it — "recommended" read as "yes, this node can do it".
+  // Being the best of one is not the same as being able.
+  const top = eligible[0];
+  const unmetOnTop = top?.unmetNeeds ?? [];
+
   return ok({
     need,
     // Both lists, always: `eligible` for the decision, `candidates` so a refusal or a
     // surprising pick can be explained without a second call.
     eligible: eligible.map((c) => c.node),
-    recommended: eligible[0]?.node ?? null,
+    recommended: top?.node ?? null,
+    ...(unmetOnTop.length
+      ? {
+        warning: `the recommended node has NO declared capability for: ${unmetOnTop.join(', ')}. It is the best AVAILABLE node, not a node known to satisfy this work. Verify before relying on it — and once you know, record it with node_profile so the next caller does not have to.`,
+        unmetNeeds: unmetOnTop,
+      }
+      : {}),
     candidates,
     ...(degraded.length ? { degraded } : {}),
     ...(eligible.length === 0

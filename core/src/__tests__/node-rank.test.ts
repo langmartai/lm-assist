@@ -139,6 +139,37 @@ test('pickDeterministic returns the best ELIGIBLE node, or null', () => {
   );
 });
 
+// ── both found by the FIRST live run on prod, not by unit tests ─────────────
+
+test('REGRESSION: an out-of-cluster node still APPEARS, with a reason', () => {
+  // Measured on prod: node_select returned ONE candidate for a three-node fleet.
+  // The other two were out-of-cluster, so the cluster-scoped footprint survey never
+  // mentioned them — and absence reads as "there is no such node", not "out of scope".
+  const r = rankNodes({}, [
+    node('prod-1'),
+    node('stage-1', { inCluster: false, cluster: 'stage' }),
+  ], profiles({}));
+
+  assert.strictEqual(r.length, 2, 'every known node must be accounted for');
+  const stage = r.find((c) => c.node === 'stage-1')!;
+  assert.match(stage.blockers[0], /not in this cluster.*stage/,
+    'the reason must be crisp and actionable, not silence');
+});
+
+test('REGRESSION: a node with no declared capability reports it as an UNMET need', () => {
+  // Measured on prod: asking for `elevated-worker` recommended the only in-cluster
+  // node, which does not have it. Being the best of one is not being able.
+  const r = rankNodes({ need: ['elevated-worker'] }, [node('a')], profiles({ a: { capabilities: ['linux'] } }));
+  assert.deepStrictEqual(r[0].blockers, [], 'still eligible — nothing is KNOWN to prevent it');
+  assert.deepStrictEqual(r[0].unmetNeeds, ['elevated-worker'],
+    'but the caller must be able to see the requirement is unsatisfied');
+});
+
+test('a node that DOES declare the capability reports no unmet need', () => {
+  const r = rankNodes({ need: ['elevated-worker'] }, [node('a')], profiles({ a: { capabilities: ['elevated-worker'] } }));
+  assert.strictEqual(r[0].unmetNeeds, undefined);
+});
+
 test('ranking is STABLE for equal scores — the net must not pick differently per run', () => {
   const facts = [node('c'), node('a'), node('b')];
   const first = pickDeterministic({}, facts, profiles({}))!.node;

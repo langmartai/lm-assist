@@ -38,6 +38,11 @@ export interface FactsDeps {
   selfId: () => string | null;
   /** Absolute repo paths on THIS node — exhaustive. */
   localRepos: () => Promise<string[]>;
+  /** EVERY node the fleet knows about, in-cluster or not. Footprints are cluster-scoped,
+   *  so without this an out-of-cluster node is simply ABSENT from the answer — and
+   *  "why not node X?" becomes unanswerable in the one case where the reason is
+   *  crisp and actionable ("it is in cluster stage"). Absence reads as "no such node". */
+  knownNodes?: () => Promise<Array<{ nodeId: string; hostname?: string; cluster?: string }>>;
   /** Mission records, for resource/exclusivity held by each bound session. */
   missionsBySession?: () => Promise<Map<string, { resources?: string[]; exclusive?: boolean }>>;
 }
@@ -124,6 +129,7 @@ export async function collectNodeFacts(deps: FactsDeps): Promise<{ facts: NodeFa
   // not exist in the answer, which reads as "there is no such node".
   for (const id of composed?.unreachable ?? []) {
     if (seen.has(id)) continue;
+    seen.add(id);
     const cluster = deps.clusterOf(id);
     facts.push({
       nodeId: id,
@@ -132,6 +138,32 @@ export async function collectNodeFacts(deps: FactsDeps): Promise<{ facts: NodeFa
       inCluster: cluster === myCluster,
       degraded: ['unreachable — no footprint snapshot'],
     });
+  }
+
+  // …and so must an OUT-OF-CLUSTER node. Footprints are cluster-scoped, so these never
+  // appear above; measured on prod, `node_select` returned exactly ONE candidate while
+  // the fleet has three, and the two absent ones looked like they did not exist rather
+  // than like they were out of scope. They are ELIGIBLE-FALSE with a crisp reason, which
+  // is far more useful than silence — and the reason is actionable (change cluster, or
+  // ask that cluster's leader).
+  if (deps.knownNodes) {
+    try {
+      for (const n of await deps.knownNodes()) {
+        if (seen.has(n.nodeId)) continue;
+        const cluster = n.cluster ?? deps.clusterOf(n.nodeId);
+        facts.push({
+          nodeId: n.nodeId,
+          hostname: n.hostname,
+          // Reachability is unknown for a node we have no snapshot of; claiming it is
+          // online would be a guess. `inCluster:false` is the operative fact and it
+          // blocks on its own, so the honest answer costs nothing here.
+          online: true,
+          cluster,
+          inCluster: cluster === myCluster,
+          degraded: ['no footprint snapshot (out of cluster — not surveyed)'],
+        });
+      }
+    } catch { globalDegraded.push('node roster unavailable — out-of-cluster nodes omitted'); }
   }
 
   return { facts, degraded: globalDegraded };
