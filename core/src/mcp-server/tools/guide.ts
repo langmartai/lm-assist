@@ -374,24 +374,21 @@ GOTCHA: fs_read REFUSES credential/secret paths (.ssh/.aws/.env/tokens/keys, the
   missions: `# Guide: missions — durable goals the fleet drives to done
 A **Mission** is a durable, cross-project record of WHAT to achieve. The fleet-elected **super Mission Controller** (ONE node — lowest online gateway-id) binds ONE primary executor and, every few minutes, reads its feedback, ADAPTS the mission (revises objective/plan from the results — not a binary done/failed), and pushes it toward done. It places executors to avoid conflict — isolate (cloud > git worktree+branch) when possible, else serialize on shared resources; \`dependsOn\` orders missions. Fully autonomous BUT it never auto-approves a human gate or a material pivot (those PAUSE for you).
 
-🔴 STATUS LIFECYCLE — READ THIS BEFORE YOU CREATE A MISSION
-**\`waiting\` is the state the controller schedules from. \`active\` is not — and \`mission_create\` is born \`active\`.**
-So a mission created and left alone is NEVER scheduled: no executor, \`binding:null\`, indefinitely. After \`mission_create\`, always \`mission_update({id, status:"waiting"})\` and confirm the read-back says \`waiting\`.
+🔴 STATUS LIFECYCLE
+**\`waiting\` is the birth state and the state the controller schedules from. \`active\` means an executor IS running it** — it is written by the controller (or \`mission_spawn\`) once a worker is bound, never by you at create time. Create a mission and leave it alone: it gets picked up.
 
 | status | what it means | scheduled? |
 |---|---|---|
 | \`draft\` | still being written | yes |
-| \`waiting\` | ready to be picked up — **the state you want at birth** | yes |
+| \`waiting\` | queued for an executor — **the birth state** | yes |
 | \`blocked\` | gated on dependency/resource/serialize; re-evaluated every pass | yes |
-| \`active\` | an executor IS running it | **no** — "already running", so it is never started |
+| \`active\` | an executor IS running it | no — it is already running |
 | \`paused\` | deliberately held by a human | no |
 | \`done\` / \`failed\` | terminal | no |
 
-(Root cause: bl_28543c78. When the default is fixed, delete the extra \`mission_update\`. Full case: \`case.mission-status-waiting-not-active\`.)
+⚠️ **\`mission_place({id})\` answers a HYPOTHETICAL, not "is this queued".** It reports the dependency gate → resource conflict → isolation chain, plus \`schedulable\` + \`status\`: a non-schedulable mission now returns \`{go:false, reason:"status"}\` naming the status rather than a misleading \`go:true\`. Gating still comes from \`mission_schedule\`, which applies the full filter.
 
-⚠️ **\`mission_place({id})\` returning \`{go:true}\` does NOT mean the mission is queued.** It answers a hypothetical — dependency gate → resource conflict → isolation — and never consults the scheduler's status filter, so it happily says \`go:true\` for an \`active\` mission the controller will never look at. Take gating from \`mission_schedule\` (which DOES apply the status filter); use \`mission_place\` only to ask "would deps/resources allow this?".
-
-⚠️ **Being in \`mission_schedule.ready\` is still not placement.** \`ready\` means the deterministic gate passed. The controller is an AGENT that then judges contention (\`session_footprints\`), parallel-vs-sequence, and cluster scope — it may legitimately defer and retag. A mission can sit in \`ready\` for several ticks. \`mission_spawn(id)\` is the direct lever when you want it placed now.
+⚠️ **Being in \`mission_schedule.ready\` is not yet placement.** \`ready\` means the deterministic gate passed. The controller is an AGENT that then judges contention (\`session_footprints\`), parallel-vs-sequence, and cluster scope — it may legitimately defer and retag, so a mission can sit in \`ready\` for a few ticks. It will not sit there forever: unplaced schedulable work re-engages the controller, and after ~15 ticks a supervisor safety net places the mission itself (journalled \`placement-safety-net\`). \`mission_spawn(id)\` is the direct lever when you want it placed NOW.
 
 ✅ **Evidence, not status fields.** Placement = \`binding.sessionId\` (cross-check \`mission_sessions\`). Liveness = \`mission_executor_status\` (\`alive\`/\`idle\`). A binding record alone does not prove a process is running — and \`go:true\` proves nothing at all.
 
@@ -404,7 +401,7 @@ EXECUTORS: a mission's worker is either a **cloud** CCR session, or a **native**
 
 CONNECT + DRIVE: you can watch and drive a mission's executor (and an orchestrator's sub-workers) DIRECTLY, alongside the autonomous controller (it keeps adapting in the background). The Missions web page lists each mission's sessions (\`GET /mission/:id/sessions\` → the primary executor + sub-workers), each with an Open button → a live transcript + a prompt box. Connect/drive a cloud session via the \`ccr_cloud_*\` tools — see guide("ccr"); a native session via the terminal/session tools — see guide("terminals").
 
-Tools: \`mission_create\` (title+objective; optional projects/dependsOn/env{isolation:cloud|worktree|shared, repo:ABSOLUTE, effort}), \`mission_list\`/\`mission_query\` (summary projection — page \`detail:"full"\`), \`mission_update\` (refine/pause/resume/mark done/edit objective — **and the \`status:"waiting"\` flip above**), \`mission_schedule\` (the authoritative {ready, blocked, serializeGroups} plan), \`mission_place\` (hypothetical only — see the warning above), \`mission_spawn(id)\` (place a native worker NOW), \`mission_sessions\`/\`mission_executor_status\` (placement + liveness evidence), \`mission_control_status\` (which node is elected + its last tick), \`mission_session_resume(sid, force?)\` (revive a dead/idle bound worker in place — resume-first before spawning fresh; returns \`{resumed, reason}\` where \`reason: ok|alive|gone|conflict|status-unknown|needs-force|kill-failed\`. Resume is inject-first: a live worker reconnects via /remote-control in place; pass \`force:true\` only after a needs-force (idle workers auto-kill)).
+Tools: \`mission_create\` (title+objective; optional projects/dependsOn/env{isolation:cloud|worktree|shared, repo:ABSOLUTE, effort}), \`mission_list\`/\`mission_query\` (summary projection — page \`detail:"full"\`), \`mission_update\` (refine/pause/resume/mark done/edit objective), \`mission_schedule\` (the authoritative {ready, blocked, serializeGroups} plan), \`mission_place\` (hypothetical only — see the warning above), \`mission_spawn(id)\` (place a native worker NOW), \`mission_sessions\`/\`mission_executor_status\` (placement + liveness evidence), \`mission_control_status\` (which node is elected + its last tick), \`mission_session_resume(sid, force?)\` (revive a dead/idle bound worker in place — resume-first before spawning fresh; returns \`{resumed, reason}\` where \`reason: ok|alive|gone|conflict|status-unknown|needs-force|kill-failed\`. Resume is inject-first: a live worker reconnects via /remote-control in place; pass \`force:true\` only after a needs-force (idle workers auto-kill)).
 
 ONBOARDING AN EXISTING SESSION: from any session, call mission_onboard({}) to hand the CURRENT session to mission control (or mission_onboard({sessionId}) for another one). mode:"standby" (default) = mission control analyzes + watches, the human keeps driving; mode:"handoff" = mission control takes over and drives it to completion per the workflow playbooks (onboard.analyze → drive.<work-type>/recover.stuck/wrapup.completed). Switch anytime with mission_update({id, manageMode:"handoff"|"standby"}) — human-only. The playbooks themselves are editable: mission_workflow_list/get/set/history/rollback.
 
@@ -419,11 +416,12 @@ GOTCHAS
 FLOW
 \`\`\`mermaid
 flowchart TD
-  C["mission_create — born status:active"] --> F{"status in draft/waiting/blocked?"}
-  F -->|"no — active or paused"| X["NEVER scheduled: set status=waiting"]
-  X --> F
+  C["mission_create — born status:waiting"] --> F{"status in draft/waiting/blocked?"}
+  F -->|"no — active (running) or paused"| X["not scheduled — already running, or held"]
   F -->|yes| S["mission_schedule.ready = deps + resources + serialize passed"]
   S --> J["controller judges contention / order (may defer)"]
+  J -->|"still unplaced after ~15 ticks"| NET["supervisor safety net places it"]
+  NET --> B
   J -->|native| SP["mission_spawn (named worker, worktree)"]
   J -->|cloud| CC["ccr_cloud_start + bind"]
   SP & CC --> B["binding.sessionId — the ONLY placement evidence"]
@@ -589,7 +587,7 @@ const BLURB: Record<string, string> = {
   account: 'Claude Code OAuth + claude.ai account / usage / active sessions (per node) — incl. why `auth_status(allNodes)` is a smell test, not an inventory, and how a node picks an ACCOUNT rather than a set of conversations',
   github: 'query/mutate GitHub via the user gh auth',
   files: 'list/stat/read files + transfer files between hosts',
-  missions: 'durable cross-project goals — the fleet-elected Mission Controller binds an executor (cloud or native worktree), adapts + drives it to done, never auto-approves gates/pivots. READ BEFORE CREATING ONE: a mission is born `active`, and `active` is NEVER scheduled — set `status:"waiting"`',
+  missions: 'durable cross-project goals — the fleet-elected Mission Controller binds an executor (cloud or native worktree), adapts + drives it to done, never auto-approves gates/pivots. Born `waiting`; `active` = already running. `env.repo` must be ABSOLUTE, `env.isolation` defaults to `cloud`',
   'mission-controller': 'the controller agent loop contract — the exact per-pass workflow, hard rules (never auto-approve gates/pivots), and tool usage for the autonomous controller session',
   clusters: 'isolated fleet partitions — concept, shared-vs-within table, cluster_list/assign/unassign/describe, build one cluster at a time, respect-other-clusters scope norm',
   'machine-access': 'how to reach OTHER machines FROM a node — node-local SSH profiles (user/host/key-path/notes) via machine_access, with ssh-config import + reachability check; run the reported command ON that node',
