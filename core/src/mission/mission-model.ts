@@ -232,6 +232,30 @@ export interface NewMissionInput {
   nextSteps?: string[];
 }
 
+/**
+ * The birth isolation of a mission nobody specified one for.
+ *
+ * 🔴 It is NATIVE, not `cloud`. A cloud mission cannot be placed by `mission_spawn`
+ * or by the supervisor's starvation safety net — both refuse it with
+ * `CLOUD_PLACEMENT`, because cloud needs `ccr_cloud_start`. While `cloud` was the
+ * DEFAULT, the most common mission in the fleet was precisely the one no automated
+ * placement path could rescue (bl_1c861246). Native placement is the one both the
+ * controller and the backstop can actually perform.
+ *
+ * The flavour follows the work, not a preference:
+ *   • a repo ⇒ `worktree` — branch isolation, so concurrent missions on one repo
+ *     cannot tread on each other;
+ *   • no repo ⇒ `shared` — research, fleet ops, investigations. Forcing a worktree
+ *     on repo-less work would refuse legitimate missions (several in this store), and
+ *     leaving them on `cloud` would preserve the exact hole this closes.
+ *
+ * `cloud` remains fully supported — it is now an explicit opt-in rather than what you
+ * get by saying nothing.
+ */
+export function defaultIsolation(repo: string | undefined): Isolation {
+  return repo && repo.trim() ? 'worktree' : 'shared';
+}
+
 export function newMission(input: NewMissionInput, now: number, genId: () => string): Mission {
   return {
     id: genId(),
@@ -244,7 +268,7 @@ export function newMission(input: NewMissionInput, now: number, genId: () => str
     tags: input.tags ?? {},
     parentId: input.parentId ?? null,
     env: {
-      isolation: input.env?.isolation ?? 'cloud',
+      isolation: input.env?.isolation ?? defaultIsolation(input.env?.repo),
       host: input.env?.host,
       repo: input.env?.repo,
       branch: input.env?.branch,

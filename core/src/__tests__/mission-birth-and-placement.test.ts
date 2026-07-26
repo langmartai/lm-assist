@@ -153,6 +153,37 @@ test('handlePatch also REJECTS a relative env.repo', async () => {
   assert.strictEqual(r.error?.code, 'INVALID_REPO');
 });
 
+// ── 4b. default isolation is NATIVE, and the flavour follows the work ───────
+//
+// `cloud` was the default, and neither mission_spawn nor the supervisor safety net
+// can place a cloud mission (CLOUD_PLACEMENT — it needs ccr_cloud_start). So the
+// most common mission in the fleet was precisely the one no automated placement
+// path could rescue (bl_1c861246).
+
+test('a mission with a repo is born WORKTREE — branch isolation', async () => {
+  const port = fakePort();
+  const r = await handleCreate(
+    { title: 'T', objective: 'O', env: { repo: '/home/ubuntu/lm-assist' } }, 'gw4-1', port, actor(),
+  );
+  assert.strictEqual(r.success, true);
+  assert.strictEqual((r.data as Mission).env.isolation, 'worktree');
+});
+
+test('a repo-less mission is born SHARED, not cloud — it must stay placeable', async () => {
+  const port = fakePort();
+  const r = await handleCreate({ title: 'T', objective: 'O' }, 'gw4-1', port, actor());
+  assert.strictEqual((r.data as Mission).env.isolation, 'shared',
+    'research/fleet-ops work has no repo, but must still be spawnable by the net');
+});
+
+test('an EXPLICIT cloud request is still honoured — it is opt-in, not removed', async () => {
+  const port = fakePort();
+  const r = await handleCreate(
+    { title: 'T', objective: 'O', env: { isolation: 'cloud' } }, 'gw4-1', port, actor(),
+  );
+  assert.strictEqual((r.data as Mission).env.isolation, 'cloud');
+});
+
 // ── 5. mission_place must not report go:true for something never scheduled ──
 //
 // The trap that HID defect 1: an operator checks placement, sees go:true, and concludes

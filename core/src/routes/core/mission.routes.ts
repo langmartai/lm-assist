@@ -4,7 +4,7 @@ import type { RouteHandler, RouteContext } from '../index';
 import { randomBytes } from 'crypto';
 import * as path from 'path';
 import { touchActivity, trackResumedNative } from '../../mission/mission-session-reaper';
-import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActor, place, ExecutorState, MissionBinding, validateResultsPatch } from '../../mission/mission-model';
+import { newMission, defaultIsolation, Mission, MissionStatus, Isolation, coarseActor, MissionActor, place, ExecutorState, MissionBinding, validateResultsPatch } from '../../mission/mission-model';
 import { resolveMcpActor, upgradeControllerActor } from '../../mission/mission-actor';
 import { normalizeTags, mergeTags, validateParent, validateDependsOn } from '../../mission/mission-graph';
 import {
@@ -195,7 +195,12 @@ export async function handleCreate(b: Record<string, unknown>, ownerNode: string
     projects: arr(b.projects), dependsOn: arr(b.dependsOn),
     plan: str(b.plan), nextSteps: arr(b.nextSteps), tags, parentId,
     env: {
-      isolation: (str(env.isolation) as Isolation) ?? 'cloud',
+      // Delegate to the ONE definition (mission-model `defaultIsolation`) rather than
+      // repeating a literal here. This line used to hardcode 'cloud' independently, so
+      // changing the constructor's default silently did nothing for the API path — the
+      // same shape as the `effort` field that was validated here and then dropped by
+      // the constructor. Two defaults for one field is one too many.
+      isolation: (str(env.isolation) as Isolation) ?? defaultIsolation(str(env.repo)),
       host: str(env.host), repo: str(env.repo), branch: str(env.branch),
       resources: arr(env.resources) ?? [],
       exclusive: env.exclusive === true || env.exclusive === 'true',
@@ -1811,6 +1816,24 @@ async function defaultSpawnNativeDeps(m: Record<string, unknown>): Promise<unkno
   };
 }
 
+/**
+ * Where a repo-less (`shared`) mission's executor runs.
+ *
+ * One directory per mission under the lm-assist data dir, created on demand. Chosen
+ * over `process.cwd()` (Core's install dir — see the call site) and over `$HOME`
+ * (missions would share a cwd and collide on scratch files). Created eagerly so the
+ * launch cannot fail with "cwd does not exist", which surfaces from the terminal
+ * layer as an opaque spawn error.
+ */
+export function defaultMissionWorkspace(missionId: string): string {
+  const pathmod = require('path') as typeof import('path');
+  const fsmod = require('fs') as typeof import('fs');
+  const { getDataDir } = require('../../utils/path-utils') as typeof import('../../utils/path-utils');
+  const dir = pathmod.join(getDataDir(), 'mission-workspaces', missionId);
+  try { fsmod.mkdirSync(dir, { recursive: true }); } catch { /* best-effort — launch reports a real error if it truly cannot be used */ }
+  return dir;
+}
+
 export async function handleMissionSpawn(id: string, b: Record<string, unknown>, d: MissionSpawnDeps = {}): Promise<Envelope> {
   const stores = () => require('../../mission/mission-store') as typeof import('../../mission/mission-store');
   const getM = d.getMission ?? (async (mid: string) => stores().getMission(mid) as Promise<Record<string, unknown> | null>);
@@ -1840,7 +1863,12 @@ export async function handleMissionSpawn(id: string, b: Record<string, unknown>,
   const startNative = d.startNative ?? ((require('../../mission/mission-controller') as typeof import('../../mission/mission-controller')).startNativeExecutor as unknown as NonNullable<MissionSpawnDeps['startNative']>);
   const buildDeps = d.buildNativeDeps ?? (defaultSpawnNativeDeps as NonNullable<MissionSpawnDeps['buildNativeDeps']>);
   const pathmod = require('path') as typeof import('path');
-  const repoRaw = (pd as { repo?: string }).repo || process.cwd();
+  // A repo-less mission (isolation 'shared' — research, fleet ops, investigations)
+  // used to fall back to `process.cwd()`, which for a prod Core is its own npm INSTALL
+  // directory. The executor would open there: not a workspace, not writable in any
+  // meaningful sense, and the same confusing-cwd class as the relative-repo trap
+  // (INVALID_REPO). Give it a real, isolated, obviously-not-a-repo workspace instead.
+  const repoRaw = (pd as { repo?: string }).repo || defaultMissionWorkspace(id);
   const repoAbs = pathmod.isAbsolute(repoRaw) ? repoRaw : pathmod.resolve(process.cwd(), repoRaw);
   // startNativeExecutor derives kind from m.binding?.kind — preset the requested one.
   if (kindRaw) (m as Record<string, unknown>).binding = { ...(binding ?? {}), kind: kindRaw };

@@ -12,7 +12,11 @@ test('newMission fills defaults and starts waiting (schedulable, no executor yet
   // Was 'active' — see mission-birth-and-placement.test.ts. `active` means an executor
   // is already running it, so a newborn (binding:null) mission asserting it was the bug.
   assert.strictEqual(m.status, 'waiting');
-  assert.strictEqual(m.env.isolation, 'cloud');
+  // Was 'cloud'. Default isolation is now NATIVE, because neither mission_spawn nor
+  // the supervisor's safety net can place a cloud mission (CLOUD_PLACEMENT — cloud
+  // needs ccr_cloud_start), so the DEFAULT mission was the one no automated path
+  // could rescue. No repo was given here, hence 'shared'; see defaultIsolation().
+  assert.strictEqual(m.env.isolation, 'shared');
   assert.deepStrictEqual(m.env.resources, []);
   assert.deepStrictEqual(m.dependsOn, []);
   assert.deepStrictEqual(m.projects, []);
