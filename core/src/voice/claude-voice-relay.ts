@@ -3,8 +3,8 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { randomBytes } from 'node:crypto';
 import { isValidToken, apiAuthEnabled } from '../auth/api-token';
-import { buildClaudeVoiceUrl } from './claude-voice-url';
-import { createChromeMgr, type ChromeMgr, type VoiceChannel } from './claude-chrome';
+import { buildClaudeVoiceUrl, isValidConversationUuid } from './claude-voice-url';
+import { createChromeMgr, ChromeMgrError, type ChromeMgr, type VoiceChannel } from './claude-chrome';
 import { readClaudeAISession, parseCookieString } from '../utils/claudeai-session';
 
 // Bidirectional claude.ai voice v2 — the Core transport linchpin. ONE user WS per voice
@@ -146,6 +146,16 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
         vlog('first user frame was not a valid connect — ignoring');
         return;
       }
+      // Refuse a malformed conversation id HERE, in ~0ms, instead of after ~3s of Chrome
+      // startup and a bare `up_close code=1006` that says nothing about why. claude.ai rejects
+      // the upgrade for anything non-uuid (measured: 'conv-e2e' and '' both 1006), so this
+      // changes no outcome — only how fast and how legibly it fails.
+      if (!isValidConversationUuid(msg.conversationUuid)) {
+        vlog(`connect REFUSED — conversationUuid is not a uuid (len=${String(msg.conversationUuid).length})`);
+        toUser({ type: 'error', message: 'voice needs a valid conversation id' });
+        closeAll();
+        return;
+      }
       connected = true;
       void startBridge(msg);
       return;
@@ -241,6 +251,15 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
         });
         vlog(`chrome setup: prime=${primeMs}ms page=${Date.now() - tPage}ms total=${Date.now() - t0}ms`);
       } catch (err) {
+        // A conversation we could not prove this account owns is NOT a generic startup failure —
+        // it is the one outcome the user must be told about plainly, because the alternative
+        // (relaying anyway) is speech landing somewhere it does not belong.
+        if (err instanceof ChromeMgrError && err.code === 'conversation_unverified') {
+          vlog(`voice REFUSED for conv=${connectMsg.conversationUuid}: ${err.message}`);
+          toUser({ type: 'error', message: 'that conversation could not be verified on this account — voice not started' });
+          closeAll();
+          return;
+        }
         vlog(`chrome relay setup failed: ${(err as Error).message}`);
         toUser({ type: 'error', message: 'voice relay failed to start' });
         closeAll();
@@ -256,7 +275,10 @@ export function bridgeClaudeVoice(userWs: BridgeSocket, deps: BridgeDeps): Promi
       }
 
       channel = opened;
-      vlog('voice channel opened — relaying');
+      // Say WHICH conversation this session is relaying into. The 2026-07-25 misrouting was
+      // only discoverable by a human noticing stray messages in a chat, because no log line on
+      // either side of the bridge ever named the conversation. An id, never content.
+      vlog(`voice channel opened — relaying into conv=${connectMsg.conversationUuid}`);
     } finally {
       settle();
     }

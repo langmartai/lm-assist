@@ -143,6 +143,41 @@ Path: selector → overlay → `useClaudeVoice` → connect frame `voice` → `C
 no longer Next.js — no `_buildManifest`), and the unwired extras (`tts_speed` tiers, activation
 mode): [`docs/claude-ai-voice-protocol.md`](./docs/claude-ai-voice-protocol.md).
 
+**A voice session must PROVE it owns the conversation before any audio flows.**
+
+Investigating a report that a live voice transcript surfaced in an unrelated claude.ai
+conversation (2026-07-25) produced one finding that outranks the report itself:
+
+🔴 **claude.ai ACCEPTS any well-formed conversation uuid, existing or not.** Measured live:
+a nonexistent uuid returns `up_open` + `session_server_initialized` + live interim
+transcripts, then **silently discards every turn** (`message_complete` never fires, nothing
+persists). Only a *malformed* id (`conv-e2e`, empty) or a bad org is rejected (1006). So
+`{ready}` says nothing about WHERE speech lands — a session can be open and recording
+against a conversation that isn't the caller's, looking perfectly healthy the whole time.
+
+The guard is a same-origin `GET /api/organizations/{org}/chat_conversations/{conv}` run
+**inside the voice page**, so what is verified is the exact origin, jar and identity the WS
+upgrade will use (existing→200, nonexistent→404, wrong org→404). It parses `{org, conv}`
+back out of the URL it is about to dial (`parseClaudeVoiceUrl`), so the pair checked and the
+pair used cannot drift. It fails **closed on 404/403** and **open on inconclusive** (0/5xx) —
+a transport blip is not evidence of a wrong conversation. It runs *before* the final
+`GET /api/account`, so the CF ordering invariant above is untouched.
+
+🔴 **`getBrowser()` needs its own single-flight** — `ensureLoaded`'s `primingPromise`
+single-flights the PRIMING, one layer above the launch. Two concurrent cold starts both saw
+`browser === null`, both launched Chrome; the second assignment orphaned the first AND
+divorced the primed cookie-warm page from the browser serving voice pages → `403`, `jar=14`,
+both sessions dead at `up=0`. Measured before/after: 2 launches→1, `up=0`→`up=2245`.
+
+**Routing itself was NOT the bug** — measured with two real fake-mic sessions (sequential and
+concurrent on one shared Chrome) plus an account-wide sweep: each transcript landed only in
+the conversation from its own connect handshake. What was missing was any *assertion* or any
+*attribution*: not one log line named the conversation a session bound to, which is why the
+incident was discoverable only by a human reading a chat. Both log lines now carry `conv=`
+(an id, never content). Regression suite: the cross-talk, refusal and single-flight tests in
+`claude-voice-relay.test.ts` / `claude-chrome.test.ts` — each **mutation-verified** (bug
+reintroduced ⇒ test fails).
+
 **Verify voice with `up>0`, never `{ready}` alone.** `{ready}` proves the transport; prod once
 ran `page_status up_open -> ready` with `up=0` (no audio at all). `core/src/__tests__/voice-audio-flow.test.ts`
 is the regression test — real Chrome + fake mic + the real engine asset through the real relay,

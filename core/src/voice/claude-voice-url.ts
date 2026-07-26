@@ -51,6 +51,39 @@ export interface ClaudeVoiceParams {
   tz?: string;
 }
 
+/**
+ * A conversation uuid claude.ai will actually accept in the voice path.
+ *
+ * NOT cosmetic validation. Measured against the live upstream (2026-07-26):
+ *   - a malformed id (`conv-e2e`, empty)  -> the WS upgrade is REJECTED, close 1006
+ *   - a WELL-FORMED id that does not exist -> the upgrade is ACCEPTED: up_open,
+ *     session_server_initialized, live interim transcripts — and every turn is then
+ *     SILENTLY DISCARDED (`message_complete` never fires, nothing is persisted).
+ *
+ * So shape alone proves nothing about where speech will land; it only lets us refuse the
+ * hopeless case in ~0ms instead of after ~3s of Chrome startup and a bare 1006. Existence
+ * is what actually matters, and that is `assertConversationBinding` in claude-chrome.ts.
+ */
+export function isValidConversationUuid(conv: unknown): conv is string {
+  return typeof conv === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(conv);
+}
+
+/**
+ * Recover `{org, conv}` from a URL built by `buildClaudeVoiceUrl`.
+ *
+ * The binding guard verifies THE URL IT IS ABOUT TO DIAL rather than a pair of ids passed
+ * alongside it, so the thing checked and the thing used can never drift apart. Returns null
+ * for anything that is not a claude.ai voice URL.
+ */
+export function parseClaudeVoiceUrl(url: string): { org: string; conv: string } | null {
+  let u: URL;
+  try { u = new URL(url); } catch { return null; }
+  if (u.hostname !== 'claude.ai') return null;
+  const m = u.pathname.match(/^\/api\/ws\/voice\/organizations\/([^/]+)\/chat_conversations\/([^/]+)$/);
+  if (!m) return null;
+  return { org: decodeURIComponent(m[1]), conv: decodeURIComponent(m[2]) };
+}
+
 export function buildClaudeVoiceUrl(p: ClaudeVoiceParams): string {
   const q = new URLSearchParams({
     input_encoding: 'opus',

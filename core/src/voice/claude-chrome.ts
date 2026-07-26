@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { resolveChromePath } from './voice-v2-capability';
+import { parseClaudeVoiceUrl } from './claude-voice-url';
 
 // Puppeteer lifecycle for the voice-v2 relay: launch/reuse ONE headless system Chrome, keep it
 // primed with the node's claude.ai cookie (ensureLoaded — this also lets THIS Chrome mint its
@@ -108,6 +109,38 @@ async function probeAccount(page: any): Promise<number> {
   }
 }
 
+/**
+ * Does THIS page, with THIS jar, actually own the conversation the voice WS is about to
+ * address? Same-origin `GET /api/organizations/{org}/chat_conversations/{conv}` — status only,
+ * body cancelled (a real conversation body is ~100KB and we need none of it).
+ *
+ * Measured against the live upstream (2026-07-26), which is why a status is a usable verdict:
+ *   existing conversation -> 200 · nonexistent -> 404 · wrong org -> 404
+ *
+ * Runs in the voice page itself, so what is verified is the exact origin, cookie jar and
+ * identity that the WS upgrade will use a moment later — not a separate Core-side call that
+ * could agree while the browser disagrees.
+ */
+async function probeConversation(page: any, org: string, conv: string): Promise<number> {
+  try {
+    const status = await page.evaluate(async (o: string, c: string) => {
+      try {
+        const r = await fetch(`/api/organizations/${o}/chat_conversations/${c}`, {
+          credentials: 'include',
+          headers: { accept: 'application/json' },
+        });
+        try { await (r as any).body?.cancel(); } catch { /* body already settled — nothing to cancel */ }
+        return r.status;
+      } catch (e) {
+        return 0;
+      }
+    }, org, conv);
+    return Number(status) || 0;
+  } catch {
+    return 0; // page gone / navigating — inconclusive, not a refusal
+  }
+}
+
 /** Cookie NAMES in the page's jar. Values are deliberately never touched. Names are NOT unique
  *  in a real jar — Cloudflare sets __cf_bm on both `claude.ai` and `.claude.ai` — so the caller
  *  dedupes for logging; presence checks are unaffected either way. */
@@ -119,6 +152,11 @@ async function cookieNames(page: any): Promise<string[]> {
   } catch {
     return []; // injected test fakes have no .cookies(); a real failure is just "unknown"
   }
+}
+
+/** How the binding assertion resolved, for the one-line session log. */
+function convStatusLabel(status: number): string {
+  return status === 200 ? 'verified' : `unverified(${status})`;
 }
 
 /** The CF cookies present, deduped + stable-ordered, for a readable one-line log. */
@@ -209,10 +247,11 @@ export interface ChromeMgr {
   teardownIfIdle(): Promise<void>;
 }
 
-export type ChromeMgrErrorCode = 'launch_failed' | 'asset_missing' | 'page_failed';
+export type ChromeMgrErrorCode = 'launch_failed' | 'asset_missing' | 'page_failed' | 'conversation_unverified';
 
 /** Typed so the relay (Task 5) can tell "no Chrome" / "asset missing" / a page-op failure
- *  apart and surface something meaningful to the browser client instead of a raw throw. */
+ *  / a conversation we could not prove we own apart, and surface something meaningful to the
+ *  browser client instead of a raw throw. */
 export class ChromeMgrError extends Error {
   constructor(public code: ChromeMgrErrorCode, message: string, public cause?: unknown) {
     super(message);
@@ -358,8 +397,21 @@ export function createChromeMgr(deps: { launch?: () => Promise<any>; chromePath?
     return true;
   }
 
+  /**
+   * SINGLE-FLIGHT. Two voice sessions starting together from cold both used to see
+   * `browser === null` and both called doLaunch(); the second assignment orphaned the first
+   * Chrome (a leaked process) AND divorced the primed, cookie-warm page from the browser that
+   * then served the voice pages — so both pages navigated with an empty jar, got `403`, and
+   * every session died `1006` with `up=0`. Measured directly: two concurrent starts logged
+   * "browser launched" twice, `jar=14` instead of 27.
+   *
+   * ensureLoaded's `primingPromise` did not cover this — that single-flights the PRIMING, one
+   * layer above the launch it depends on.
+   */
+  let launchPromise: Promise<any> | null = null;
   async function getBrowser(): Promise<any> {
     if (browser && !browserDead) return browser;
+    if (launchPromise) return launchPromise;
     if (browser && browserDead) {
       console.log('[voice-chrome] reused browser disconnected — relaunching');
       browser = null;
@@ -369,16 +421,21 @@ export function createChromeMgr(deps: { launch?: () => Promise<any>; chromePath?
       primedAt = 0;
       primedCookieKey = null;
     }
-    try {
-      browser = await doLaunch();
-    } catch (err) {
-      throw err instanceof ChromeMgrError ? err : new ChromeMgrError('launch_failed', `Chrome launch failed: ${(err as Error).message}`, err);
-    }
-    browserDead = false;
-    try { browser.on?.('disconnected', () => { browserDead = true; }); } catch { /* best-effort — a fake without .on just skips crash-detection */ }
-    lastOpenAt = Date.now();
-    console.log('[voice-chrome] browser launched');
-    return browser;
+    launchPromise = (async () => {
+      let b: any;
+      try {
+        b = await doLaunch();
+      } catch (err) {
+        throw err instanceof ChromeMgrError ? err : new ChromeMgrError('launch_failed', `Chrome launch failed: ${(err as Error).message}`, err);
+      }
+      browser = b;
+      browserDead = false;
+      try { b.on?.('disconnected', () => { browserDead = true; }); } catch { /* best-effort — a fake without .on just skips crash-detection */ }
+      lastOpenAt = Date.now();
+      console.log('[voice-chrome] browser launched');
+      return b;
+    })().finally(() => { launchPromise = null; });
+    return launchPromise;
   }
 
   async function newPageOr(err0: string): Promise<any> {
@@ -457,7 +514,14 @@ export function createChromeMgr(deps: { launch?: () => Promise<any>; chromePath?
 
     async openVoicePage(voiceUrl: string, handlers: VoiceChannelHandlers): Promise<VoiceChannel> {
       const t0 = Date.now();
+      // Parsed from the URL we are ABOUT TO DIAL, so the pair we verify and the pair the WS
+      // uses cannot drift. A URL this doesn't recognise is not something to open a mic for.
+      const binding = parseClaudeVoiceUrl(voiceUrl);
+      if (!binding) {
+        throw new ChromeMgrError('conversation_unverified', 'voice URL is not a claude.ai conversation voice URL — refusing to open a voice page');
+      }
       const page = await newPageOr('openVoicePage');
+      let convStatus = 0;
       try {
         // The page->Core CDP binding. Registered BEFORE navigation so it exists the instant the
         // relay asset calls globalThis.__lmToCore. exposeFunction args are JSON, so binary rides
@@ -489,6 +553,27 @@ export function createChromeMgr(deps: { launch?: () => Promise<any>; chromePath?
         // here, which was both far too long on a warm browser and no guarantee at all on a cold
         // one. With a primed page in the same browser this normally returns on the first sample.
         logReady('voice page', await waitForClaudeReady(page, settleCapMs(), readyPollMs()));
+        // ── THE BINDING ASSERTION ────────────────────────────────────────────────────────
+        // Prove this page owns the conversation BEFORE any audio can flow. Without it a voice
+        // session can be wide open and recording against a conversation that is not the
+        // caller's: claude.ai accepts any well-formed uuid, reports up_open, transcribes — and
+        // the relay reports a perfectly healthy {ready} the whole time.
+        //
+        // Fail CLOSED only on a definitive negative (404/403 = not ours / not there). An
+        // inconclusive answer (0 or 5xx — claude.ai hiccup, page navigating) is logged loudly
+        // and PROCEEDS: a transport blip is not evidence of a wrong conversation, and failing
+        // closed on it would take voice down for everyone. Same honest-failure split as the
+        // registry write paths (ORIGIN_UNREACHABLE vs ORIGIN_TIMEOUT).
+        convStatus = await probeConversation(page, binding.org, binding.conv);
+        if (convStatus === 404 || convStatus === 403) {
+          throw new ChromeMgrError(
+            'conversation_unverified',
+            `conversation ${binding.conv} is not reachable by this account (HTTP ${convStatus}) — refusing to relay voice into it`,
+          );
+        }
+        if (convStatus !== 200) {
+          console.log(`[voice-chrome] conversation binding INCONCLUSIVE (status=${convStatus}) for conv=${binding.conv} — proceeding`);
+        }
         // One final same-origin GET immediately before the voice-WS upgrade, so the CF fix's
         // ordering invariant holds even when the poll above was skipped (capMs<=0) or ended on a
         // cap. Cheap, and it is the one thing that must not regress (0f33806 / lm-mobile §4).
@@ -501,7 +586,10 @@ export function createChromeMgr(deps: { launch?: () => Promise<any>; chromePath?
       lastOpenAt = Date.now();
       liveChannels++;
       ensureSweeper();
-      console.log(`[voice-chrome] voice page opened in ${Date.now() - t0}ms (live channels: ${liveChannels})`);
+      // conv= is what made the 2026-07-25 misrouting incident un-attributable: not one log line
+      // recorded WHICH conversation a voice session bound to, so "whose transcript went where"
+      // could only be answered by a human reading a chat. An id is not content.
+      console.log(`[voice-chrome] voice page opened in ${Date.now() - t0}ms (live channels: ${liveChannels}, conv=${binding.conv}, binding=${convStatusLabel(convStatus)})`);
       let channelClosed = false;
       // Perf: Core->page is a page.evaluate per uplink frame (~50 fps) + base64; page->Core is
       // the exposeFunction binding (~100 fps downlink). Acceptable for v1 — a CDP

@@ -6,7 +6,7 @@ import {
   isClaudeVoiceUpgrade,
   type BridgeSocket,
 } from '../voice/claude-voice-relay';
-import type { ChromeMgr, VoiceChannel, VoiceChannelHandlers } from '../voice/claude-chrome';
+import { ChromeMgrError, type ChromeMgr, type VoiceChannel, type VoiceChannelHandlers } from '../voice/claude-chrome';
 import type { IncomingMessage } from 'node:http';
 
 /**
@@ -66,7 +66,12 @@ function mgrThatFailsOpen(msg: string): ChromeMgr {
 }
 
 const tick = () => new Promise<void>((r) => setImmediate(r));
-const connectFrame = (conversationUuid = 'C') =>
+/** claude.ai rejects a non-uuid conversation in the voice path (measured: 1006), and the
+ *  relay now refuses one up front — so every fixture below has to be a real uuid. */
+const CONV_A = '11111111-1111-4111-8111-aaaaaaaaaaaa';
+const CONV_B = '22222222-2222-4222-8222-bbbbbbbbbbbb';
+
+const connectFrame = (conversationUuid = CONV_A) =>
   Buffer.from(JSON.stringify({ type: 'connect', conversationUuid }));
 
 test('isClaudeVoiceUpgrade matches only /voice/claude/ws', () => {
@@ -88,7 +93,7 @@ test('the connect frame\'s voice reaches the claude.ai WS URL (and an unknown on
       makeChromeMgr: () => makeMgr(new FakeChannel(), captured),
       loadCookie: async () => 'sessionKey=sk-ant-sid-x; lastActiveOrg=ORG',
     });
-    user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'C', ...connect })), false);
+    user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: CONV_A, ...connect })), false);
     await paired;
     return captured.voiceUrl!;
   }
@@ -111,7 +116,7 @@ test('bridgeClaudeVoice: user binary → channel.send(data,true); onFrame both w
   });
 
   // Drive the connect handshake, then wait for the channel to open.
-  user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'C', model: 'claude-opus-4-8' })), false);
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: CONV_A, model: 'claude-opus-4-8' })), false);
   await paired;
   assert.ok(captured.handlers, 'openVoicePage received the wiring handlers');
 
@@ -167,7 +172,7 @@ test('a CLEAN upstream close (code 1000 / wasClean) is {type:ended}, never {type
       makeChromeMgr: () => makeMgr(new FakeChannel(), captured),
       loadCookie: async () => 'sessionKey=x; lastActiveOrg=O',
     });
-    user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'C' })), false);
+    user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: CONV_A })), false);
     await paired;
     captured.handlers!.onStatus('up_close', close);
     const types = user.sent.filter((x) => typeof x.data === 'string').map((x) => JSON.parse(x.data as string).type);
@@ -183,7 +188,7 @@ test('the idle cutoff (4008) still means reconnect, and a dirty close carries it
     makeChromeMgr: () => makeMgr(new FakeChannel(), captured),
     loadCookie: async () => 'sessionKey=x; lastActiveOrg=O',
   });
-  user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'C' })), false);
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: CONV_A })), false);
   await paired;
   // claude.ai's ~10min inactivity cutoff (lm-mobile §3a) — recoverable, not an error.
   captured.handlers!.onStatus('up_close', { code: 4008, timeout: true, clean: true });
@@ -225,7 +230,7 @@ test('post-connect user control frames: interrupt/keep_alive → channel.send(te
   assert.ok(textTypes().includes('keep_alive'), 'keep_alive forwarded to the channel');
 
   // a post-pair connect → NOT re-forwarded (the handshake already ran).
-  user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'C2' })), false);
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: CONV_B })), false);
   assert.ok(!textTypes().includes('connect'), 'a post-pair connect is not re-forwarded');
 
   // close → NOT forwarded; it is a LOCAL teardown that also reclaims the voice channel/tab.
@@ -341,7 +346,7 @@ test('client_error is logged and NEVER forwarded to claude.ai', async () => {
     makeChromeMgr: () => makeMgr(channel, captured),
     loadCookie: async () => 'sessionKey=x; lastActiveOrg=O',
   });
-  user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'C' })), false);
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: CONV_A })), false);
   await paired;
   channel.sent.length = 0;
 
@@ -355,4 +360,126 @@ test('client_error is logged and NEVER forwarded to claude.ai', async () => {
   // A normal control frame still IS relayed — the filter must be specific, not a blanket drop.
   user.emit('message', Buffer.from(JSON.stringify({ type: 'interrupt' })), false);
   assert.equal(channel.sent.length, 1, 'interrupt still reaches claude.ai');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// CONFIDENTIALITY: a transcript must reach ONLY the conversation in its own connect handshake.
+//
+// On 2026-07-25 six `sender=human` messages — a live voice transcript — appeared in an
+// unrelated claude.ai conversation on this account. Measurement afterwards cleared the relay's
+// routing (each transcript did land in the conversation it named, sequentially AND with two
+// concurrent sessions sharing one headless Chrome), but NOTHING in the pipeline asserted it and
+// nothing logged it, so the misrouting was discoverable only by a human reading a chat.
+// These tests are that missing assertion.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+/** A ChromeMgr that serves MANY concurrent sessions, keyed by the conversation in the URL —
+ *  the shared-singleton shape production actually uses (`defaultMakeChromeMgr`). */
+function makeMultiMgr() {
+  const opened: Array<{ conv: string; voiceUrl: string; channel: FakeChannel; handlers: VoiceChannelHandlers }> = [];
+  const mgr: ChromeMgr = {
+    ensureLoaded: async () => {},
+    openVoicePage: async (voiceUrl, handlers): Promise<VoiceChannel> => {
+      const conv = new URL(voiceUrl.replace(/^wss:/, 'https:')).pathname.split('/chat_conversations/')[1] ?? '';
+      const channel = new FakeChannel();
+      opened.push({ conv, voiceUrl, channel, handlers });
+      return channel;
+    },
+    teardownIfIdle: async () => {},
+  };
+  return { mgr, opened };
+}
+
+test('the connect handshake\'s conversation is the ONLY one its voice URL addresses', async () => {
+  const { mgr, opened } = makeMultiMgr();
+  const user = new FakeWs();
+  const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
+    makeChromeMgr: () => mgr,
+    loadCookie: async () => 'sessionKey=x; lastActiveOrg=ORG',
+  });
+  user.emit('message', connectFrame(CONV_A), false);
+  await paired;
+
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0].conv, CONV_A, 'the voice URL must address the handshake conversation');
+  // Belt and braces: the OTHER conversation must appear nowhere in the dialled URL.
+  assert.ok(!opened[0].voiceUrl.includes(CONV_B), 'no other conversation may appear in the voice URL');
+});
+
+test('two CONCURRENT sessions on ONE shared Chrome never cross: each conversation gets only its own audio, and each user only its own transcript', async () => {
+  const { mgr, opened } = makeMultiMgr();
+  const userA = new FakeWs();
+  const userB = new FakeWs();
+  const deps = { makeChromeMgr: () => mgr, loadCookie: async () => 'sessionKey=x; lastActiveOrg=ORG' };
+
+  // Both bridges share ONE manager, exactly as production does.
+  const pairedA = bridgeClaudeVoice(userA as unknown as BridgeSocket, deps);
+  const pairedB = bridgeClaudeVoice(userB as unknown as BridgeSocket, deps);
+  userA.emit('message', connectFrame(CONV_A), false);
+  userB.emit('message', connectFrame(CONV_B), false);
+  await Promise.all([pairedA, pairedB]);
+
+  assert.equal(opened.length, 2, 'each session gets its OWN voice page — never a shared/reused one');
+  const a = opened.find((o) => o.conv === CONV_A);
+  const b = opened.find((o) => o.conv === CONV_B);
+  assert.ok(a && b, 'both conversations must have their own channel');
+  assert.notEqual(a!.channel, b!.channel, 'the two sessions must not share a channel');
+
+  // UPLINK: A's speech must reach only A's conversation.
+  userA.emit('message', Buffer.from('AUDIO-FROM-A'), true);
+  userB.emit('message', Buffer.from('AUDIO-FROM-B'), true);
+  const upA = a!.channel.sent.map((s) => s.data.toString());
+  const upB = b!.channel.sent.map((s) => s.data.toString());
+  assert.deepEqual(upA, ['AUDIO-FROM-A'], 'conversation A must receive only A\'s audio');
+  assert.deepEqual(upB, ['AUDIO-FROM-B'], 'conversation B must receive only B\'s audio');
+
+  // DOWNLINK: a transcript committed for one conversation must reach only that user.
+  a!.handlers.onFrame(Buffer.from(JSON.stringify({ type: 'message_complete', conv: CONV_A })), false);
+  b!.handlers.onFrame(Buffer.from(JSON.stringify({ type: 'message_complete', conv: CONV_B })), false);
+  const downA = userA.sent.map((s) => String(s.data)).join('|');
+  const downB = userB.sent.map((s) => String(s.data)).join('|');
+  assert.ok(downA.includes(CONV_A), 'user A must receive A\'s transcript');
+  assert.ok(!downA.includes(CONV_B), 'user A must NEVER receive conversation B\'s transcript');
+  assert.ok(downB.includes(CONV_B), 'user B must receive B\'s transcript');
+  assert.ok(!downB.includes(CONV_A), 'user B must NEVER receive conversation A\'s transcript');
+});
+
+test('a malformed conversationUuid is refused at the handshake — no Chrome page, no mic, a typed error', async () => {
+  const { mgr, opened } = makeMultiMgr();
+  const user = new FakeWs();
+  const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
+    makeChromeMgr: () => mgr,
+    loadCookie: async () => 'sessionKey=x; lastActiveOrg=ORG',
+  });
+  // The literal the stubbed audio e2e uses. Against the live upstream it yields a bare 1006.
+  user.emit('message', Buffer.from(JSON.stringify({ type: 'connect', conversationUuid: 'conv-e2e' })), false);
+  await tick();
+
+  assert.equal(opened.length, 0, 'no voice page may be opened for a conversation id claude.ai cannot address');
+  const errs = user.sent.map((s) => String(s.data)).filter((d) => d.includes('"error"'));
+  assert.equal(errs.length, 1, 'the user is told why, rather than left on "Connecting…"');
+  assert.match(errs[0], /valid conversation id/);
+  assert.equal(user.readyState, 3, 'the socket is closed rather than left half-open');
+});
+
+test('a conversation this account cannot be proven to own surfaces a DISTINCT error, and no channel is retained', async () => {
+  const user = new FakeWs();
+  const refusing: ChromeMgr = {
+    ensureLoaded: async () => {},
+    openVoicePage: async () => {
+      throw new ChromeMgrError('conversation_unverified', 'conversation X is not reachable by this account (HTTP 404)');
+    },
+    teardownIfIdle: async () => {},
+  };
+  const paired = bridgeClaudeVoice(user as unknown as BridgeSocket, {
+    makeChromeMgr: () => refusing,
+    loadCookie: async () => 'sessionKey=x; lastActiveOrg=ORG',
+  });
+  user.emit('message', connectFrame(CONV_A), false);
+  await paired;
+
+  const errs = user.sent.map((s) => String(s.data)).filter((d) => d.includes('"error"'));
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /could not be verified/, 'a refused binding must not read as a generic startup failure');
+  assert.equal(user.readyState, 3);
 });

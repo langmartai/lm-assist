@@ -71,6 +71,14 @@ async function captureLogs(fn: () => Promise<void>): Promise<string[]> {
 
 const tick = () => new Promise<void>((r) => setImmediate(r));
 
+// openVoicePage verifies the conversation in the URL it is about to dial before any audio can
+// flow, so a placeholder like 'v' is now (correctly) refused. These are real-shaped URLs.
+const ORG = '7cad1e03-e98e-42ca-8571-311a4ce74b8b';
+const CONV = '11111111-1111-4111-8111-aaaaaaaaaaaa';
+const VOICE_URL = `wss://claude.ai/api/ws/voice/organizations/${ORG}/chat_conversations/${CONV}?input_encoding=opus`;
+const CONV2 = '22222222-2222-4222-8222-bbbbbbbbbbbb';
+const VOICE_URL2 = `wss://claude.ai/api/ws/voice/organizations/${ORG}/chat_conversations/${CONV2}?input_encoding=opus`;
+
 // Brief's Step 1 test, verbatim — the mandatory RED/GREEN case (browser reuse across
 // ensureLoaded calls). Everything below extends coverage to the rest of the ChromeMgr
 // interface, using the same injected-fake pattern so no test ever touches real Chrome.
@@ -103,12 +111,15 @@ test('openVoicePage installs the __lmToCore binding + __VOICE_URL__ global BEFOR
   const fakePage = makeVoicePageFake(calls);
   const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
   const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
-  await mgr.openVoicePage('wss://claude.ai/voice', { onFrame: () => {}, onStatus: () => {} });
+  await mgr.openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} });
   // Order matters: exposeFunction + evaluateOnNewDocument BOTH run before goto (the asset reads
   // globalThis.__VOICE_URL__ and calls globalThis.__lmToCore synchronously at injection); then,
   // after navigation + the CF settle, the __cf_bm refresh (page.evaluate GET /api/account) runs,
   // and the asset itself (page.evaluate) is injected LAST.
-  assert.deepEqual(calls, ['exposeFunction', 'evaluateOnNewDocument', 'goto', 'evaluate', 'evaluate']);
+  // The three trailing evaluates are, in order: the conversation-binding probe, the __cf_bm
+  // refresh (GET /api/account), and the relay asset. The account GET stays LAST before the
+  // asset — the binding check was inserted ahead of it precisely to preserve that invariant.
+  assert.deepEqual(calls, ['exposeFunction', 'evaluateOnNewDocument', 'goto', 'evaluate', 'evaluate', 'evaluate']);
 });
 
 test('openVoicePage passes voiceUrl to the __VOICE_URL__ setter and injects the real Task 3 asset', async () => {
@@ -125,8 +136,8 @@ test('openVoicePage passes voiceUrl to the __VOICE_URL__ setter and injects the 
   };
   const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
   const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
-  await mgr.openVoicePage('wss://VOICE-URL', { onFrame: () => {}, onStatus: () => {} });
-  assert.deepEqual(globalsArgs, ['wss://VOICE-URL']);
+  await mgr.openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} });
+  assert.deepEqual(globalsArgs, [VOICE_URL]);
   // Confirm we loaded Task 3's actual asset off disk, not a stub — look for symbols unique to
   // core/src/voice/assets/claude-ws-relay.js.
   assert.match(injectedSource, /__VOICE_URL__/);
@@ -151,7 +162,7 @@ test('openVoicePage registers the __lmToCore CDP binding, which routes status/te
   const frames: Array<{ data: Buffer; binary: boolean }> = [];
   const statuses: Array<{ state: string; timeout?: boolean }> = [];
   const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
-  await mgr.openVoicePage('v', {
+  await mgr.openVoicePage(VOICE_URL, {
     onFrame: (data, binary) => { frames.push({ data, binary }); },
     onStatus: (state, info) => { statuses.push({ state, timeout: info?.timeout }); },
   });
@@ -183,7 +194,7 @@ test('the returned channel.send(data, binary) invokes page.evaluate with the __l
   };
   const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
   const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
-  const channel = await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
+  const channel = await mgr.openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} });
   evalCalls.length = 0; // drop the asset-injection evaluate call
 
   channel.send(Buffer.from('ctrl'), false);
@@ -209,7 +220,7 @@ test('channel.close() closes the underlying page (reclaims the tab)', async () =
   };
   const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
   const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
-  const channel = await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
+  const channel = await mgr.openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} });
   await channel.close();
   assert.equal(closed, 1);
 });
@@ -219,7 +230,7 @@ test('openVoicePage returns a channel (send + close) and does not close the page
   const fakePage = makeVoicePageFake(calls);
   const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
   const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
-  const channel = await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
+  const channel = await mgr.openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} });
   assert.equal(calls.includes('close'), false, 'the live page is not torn down on success');
   assert.equal(typeof channel.send, 'function');
   assert.equal(typeof channel.close, 'function');
@@ -286,7 +297,7 @@ test('a browser that never disconnects is reused as-is (no spurious relaunch)', 
     },
   });
   await mgr.ensureLoaded('sessionKey=x');
-  await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
+  await mgr.openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} });
   await mgr.ensureLoaded('sessionKey=x');
   assert.equal(launches, 1);
 });
@@ -300,7 +311,7 @@ test('teardownIfIdle closes the browser once VOICE_CHROME_IDLE_MS has elapsed an
     const fakePage = makeVoicePageFake(calls);
     const fakeBrowser = { newPage: async () => fakePage, close: async () => { closed++; }, on: () => {} };
     const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
-    const channel = await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
+    const channel = await mgr.openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} });
 
     await mgr.teardownIfIdle();
     assert.equal(closed, 0, 'not idle yet — must not close');
@@ -332,7 +343,7 @@ test('teardownIfIdle refuses to close while a voice channel is still live, howev
     const fakePage = makeVoicePageFake(calls);
     const fakeBrowser = { newPage: async () => fakePage, close: async () => { closed++; }, on: () => {} };
     const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
-    const channel = await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
+    const channel = await mgr.openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} });
 
     await new Promise((r) => setTimeout(r, 25)); // idle window elapsed, but the call is ongoing
     await mgr.teardownIfIdle();
@@ -356,8 +367,8 @@ test('two channels: teardown waits for BOTH to close, and a double close() canno
     const fakePage = makeVoicePageFake(calls);
     const fakeBrowser = { newPage: async () => fakePage, close: async () => { closed++; }, on: () => {} };
     const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
-    const a = await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
-    const b = await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
+    const a = await mgr.openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} });
+    const b = await mgr.openVoicePage(VOICE_URL2, { onFrame: () => {}, onStatus: () => {} });
     await new Promise((r) => setTimeout(r, 25));
 
     await a.close();
@@ -402,7 +413,7 @@ test('openVoicePage returns as soon as /api/account is 200 AND cf_clearance is p
     const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
     const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
     const t0 = Date.now();
-    await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
+    await mgr.openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} });
     const elapsed = Date.now() - t0;
     // The whole point of the pass: this used to be a hardcoded 10_000ms sleep.
     assert.ok(elapsed < 1000, `must not sleep out the cap when both signals are already up (took ${elapsed}ms)`);
@@ -418,7 +429,7 @@ test('openVoicePage proceeds (does not fail) when the cap is reached with a 200 
     const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
     const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
     const t0 = Date.now();
-    await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
+    await mgr.openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} });
     assert.ok(Date.now() - t0 >= 60, 'it should have polled up to the cap');
     assert.equal(fakePage.state.assetInjected, 1, 'cap reached must still inject the asset, not throw');
   });
@@ -440,7 +451,7 @@ test('a same-origin GET /api/account always runs immediately before the relay as
   };
   const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
   const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
-  await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
+  await mgr.openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} });
   assert.deepEqual(order, ['goto', 'account-get', 'asset']);
 });
 
@@ -543,11 +554,137 @@ test('readiness + keepalive logging emits cookie NAMES only — never a cookie v
     const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
     const lines = await captureLogs(async () => {
       await mgr.ensureLoaded('sessionKey=sk-ant-MUST-NOT-APPEAR');
-      await mgr.openVoicePage('v', { onFrame: () => {}, onStatus: () => {} });
+      await mgr.openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} });
     });
     const blob = lines.join('\n');
     assert.ok(blob.length > 0, 'the pass is supposed to add measurable phase logging');
     assert.ok(!blob.includes('MUST-NOT-APPEAR'), `a cookie value leaked into the logs:\n${blob}`);
     assert.match(blob, /__cf_bm/, 'cookie NAMES are what we report');
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// THE BINDING ASSERTION + the concurrency defect it travelled with (2026-07-25 misrouting).
+//
+// Measured against the live upstream: claude.ai ACCEPTS any well-formed conversation uuid —
+// a nonexistent one still yields up_open + session_server_initialized + live transcription,
+// and then silently discards every turn. So `{ready}` proves nothing about WHERE speech will
+// land, and a voice session can be open and recording against a conversation that is not the
+// caller's. The only pre-flight signal that discriminates is the same-origin conversation GET:
+// existing -> 200, nonexistent -> 404, wrong org -> 404.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+/** A voice page whose conversation-binding probe answers `convStatus`. The binding probe is the
+ *  evaluate(fn, org, conv) call (2 rest args); the /api/account refresh is evaluate(fn); the
+ *  asset is evaluate(string). Demuxed exactly as production shapes them. */
+function makeBindingPageFake(convStatus: number) {
+  const state = { assetInjected: 0, closed: false, bindingProbes: [] as Array<{ org: string; conv: string }> };
+  const page = {
+    state,
+    exposeFunction: async () => {},
+    evaluateOnNewDocument: async () => {},
+    setCookie: async () => {},
+    goto: async () => {},
+    cookies: async () => [],
+    isClosed: () => state.closed,
+    close: async () => { state.closed = true; },
+    evaluate: async (a: unknown, ...rest: unknown[]) => {
+      if (typeof a === 'string') { state.assetInjected++; return null; }
+      if (typeof a === 'function' && rest.length === 2) {
+        state.bindingProbes.push({ org: String(rest[0]), conv: String(rest[1]) });
+        return convStatus;
+      }
+      return 200; // the /api/account refresh
+    },
+  };
+  return page;
+}
+
+function mgrWithBindingPage(page: ReturnType<typeof makeBindingPageFake>) {
+  const fakeBrowser = { newPage: async () => page, close: async () => {}, on: () => {} };
+  return createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
+}
+
+test('the binding probe asks about the org+conversation FROM THE URL being dialled (not some other pair)', async () => {
+  const page = makeBindingPageFake(200);
+  await mgrWithBindingPage(page).openVoicePage(VOICE_URL2, { onFrame: () => {}, onStatus: () => {} });
+  assert.deepEqual(page.state.bindingProbes, [{ org: ORG, conv: CONV2 }]);
+});
+
+test('a conversation this account does not own (404) REFUSES the voice page — the asset is never injected and the tab is reclaimed', async () => {
+  const page = makeBindingPageFake(404);
+  await assert.rejects(
+    () => mgrWithBindingPage(page).openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} }),
+    (err: unknown) => {
+      assert.ok(err instanceof ChromeMgrError);
+      assert.equal((err as ChromeMgrError).code, 'conversation_unverified');
+      return true;
+    },
+  );
+  // The whole point: no relay asset means no WS to claude.ai means no audio can leave.
+  assert.equal(page.state.assetInjected, 0, 'a refused binding must never inject the relay asset');
+  assert.equal(page.state.closed, true, 'the refused page must be closed, not leaked');
+});
+
+test('a forbidden conversation (403) is refused the same way', async () => {
+  const page = makeBindingPageFake(403);
+  await assert.rejects(
+    () => mgrWithBindingPage(page).openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} }),
+    (err: unknown) => (err as ChromeMgrError).code === 'conversation_unverified',
+  );
+  assert.equal(page.state.assetInjected, 0);
+});
+
+test('an INCONCLUSIVE binding answer (upstream 5xx / page gone) proceeds — a transport blip is not evidence of a wrong conversation', async () => {
+  for (const status of [0, 500, 503]) {
+    const page = makeBindingPageFake(status);
+    await mgrWithBindingPage(page).openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} });
+    assert.equal(page.state.assetInjected, 1, `status ${status} must not take voice down`);
+    assert.equal(page.state.closed, false);
+  }
+});
+
+test('a URL that is not a claude.ai conversation voice URL is refused before a page is even created', async () => {
+  let pagesCreated = 0;
+  const fakeBrowser = { newPage: async () => { pagesCreated++; return makeBindingPageFake(200); }, close: async () => {}, on: () => {} };
+  const mgr = createChromeMgr({ chromePath: '/fake', launch: async () => fakeBrowser as any });
+  for (const bad of ['v', 'wss://claude.ai/voice', 'wss://evil.example/api/ws/voice/organizations/O/chat_conversations/C', 'not a url']) {
+    await assert.rejects(
+      () => mgr.openVoicePage(bad, { onFrame: () => {}, onStatus: () => {} }),
+      (err: unknown) => (err as ChromeMgrError).code === 'conversation_unverified',
+      `"${bad}" must be refused`,
+    );
+  }
+  assert.equal(pagesCreated, 0, 'an unparseable voice URL must not even allocate a tab');
+});
+
+test('the session log names the conversation it bound to (an id, never content) — the 2026-07-25 incident was un-attributable without it', async () => {
+  const page = makeBindingPageFake(200);
+  const lines = await captureLogs(async () => {
+    await mgrWithBindingPage(page).openVoicePage(VOICE_URL, { onFrame: () => {}, onStatus: () => {} });
+  });
+  const opened = lines.find((l) => l.includes('voice page opened'));
+  assert.ok(opened, 'a voice page open must be logged');
+  assert.match(opened!, new RegExp(`conv=${CONV}`), 'the log must name the bound conversation');
+  assert.match(opened!, /binding=verified/);
+});
+
+test('CONCURRENT cold starts launch exactly ONE browser (single-flight) — two used to race, orphaning a Chrome and leaving voice pages with an empty cookie jar', async () => {
+  let launches = 0;
+  const fakePage = {
+    evaluate: async () => 200, close: async () => {}, on: () => {}, setCookie: async () => {},
+    goto: async () => {}, exposeFunction: async () => {}, evaluateOnNewDocument: async () => {}, cookies: async () => [],
+  };
+  const fakeBrowser = { newPage: async () => fakePage, close: async () => {}, on: () => {} };
+  const mgr = createChromeMgr({
+    chromePath: '/fake',
+    launch: async () => { launches++; await new Promise((r) => setTimeout(r, 20)); return fakeBrowser as any; },
+  });
+  // Four sessions starting at once from cold — the shape that produced two "browser launched"
+  // lines and jar=14 (instead of 27) in the live two-session repro.
+  await Promise.all([
+    mgr.ensureLoaded('sessionKey=x'), mgr.ensureLoaded('sessionKey=x'),
+    mgr.ensureLoaded('sessionKey=x'), mgr.ensureLoaded('sessionKey=x'),
+  ]);
+  assert.equal(launches, 1, 'concurrent cold starts must share ONE browser, or the primed cookie jar and the voice pages end up in different Chromes');
 });

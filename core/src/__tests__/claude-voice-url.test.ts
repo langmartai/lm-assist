@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildClaudeVoiceUrl,
+  isValidConversationUuid,
+  parseClaudeVoiceUrl,
   normalizeVoice,
   CLAUDE_VOICES,
   DEFAULT_CLAUDE_VOICE,
@@ -53,4 +55,41 @@ test('unknown/empty voice degrades to the default instead of poisoning the upgra
   }
   assert.equal(normalizeVoice(undefined), 'buttery');
   assert.equal(normalizeVoice('mellow'), 'mellow');
+});
+
+// ── the conversation-id contract (measured against the live upstream, 2026-07-26) ──────────
+// malformed id -> claude.ai REJECTS the upgrade (1006). Well-formed but nonexistent -> the
+// upgrade is ACCEPTED and every turn is silently discarded. Shape is therefore a cheap early
+// refusal, never a proof of where speech lands.
+
+test('isValidConversationUuid accepts a real uuid and refuses what claude.ai cannot address', () => {
+  assert.equal(isValidConversationUuid('0363e03c-45bb-4b74-8967-406d941f569f'), true);
+  assert.equal(isValidConversationUuid('0363E03C-45BB-4B74-8967-406D941F569F'), true, 'uuids are case-insensitive');
+  // The literal the stubbed audio e2e uses — against the live upstream this yields a bare 1006.
+  assert.equal(isValidConversationUuid('conv-e2e'), false);
+  assert.equal(isValidConversationUuid(''), false);
+  assert.equal(isValidConversationUuid(undefined), false);
+  assert.equal(isValidConversationUuid(null), false);
+  assert.equal(isValidConversationUuid('0363e03c-45bb-4b74-8967-406d941f569'), false, 'one char short');
+  assert.equal(isValidConversationUuid('../../etc/passwd'), false);
+});
+
+test('parseClaudeVoiceUrl round-trips buildClaudeVoiceUrl, so the guard checks the URL actually dialled', () => {
+  const org = '7cad1e03-e98e-42ca-8571-311a4ce74b8b';
+  const conv = '0363e03c-45bb-4b74-8967-406d941f569f';
+  assert.deepEqual(parseClaudeVoiceUrl(buildClaudeVoiceUrl({ org, conv })), { org, conv });
+  // and with every optional param set — the query must not disturb the path parse
+  assert.deepEqual(
+    parseClaudeVoiceUrl(buildClaudeVoiceUrl({ org, conv, model: 'claude-opus-5', effort: 'high', thinkingMode: 'on', voice: 'airy' })),
+    { org, conv },
+  );
+});
+
+test('parseClaudeVoiceUrl refuses anything that is not a claude.ai conversation voice URL', () => {
+  assert.equal(parseClaudeVoiceUrl('v'), null);
+  assert.equal(parseClaudeVoiceUrl('not a url'), null);
+  assert.equal(parseClaudeVoiceUrl('wss://claude.ai/voice'), null, 'right host, wrong path');
+  // A look-alike host must never satisfy the guard.
+  assert.equal(parseClaudeVoiceUrl('wss://evil.example/api/ws/voice/organizations/O/chat_conversations/C'), null);
+  assert.equal(parseClaudeVoiceUrl('wss://claude.ai.evil.example/api/ws/voice/organizations/O/chat_conversations/C'), null);
 });
