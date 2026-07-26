@@ -283,6 +283,79 @@ MCP `stall_status` under `modelFallback`. Modules: `core/src/monitor/model-limit
 (pure detector + policy), `model-fallback.ts` (tick + actions), `model-fallback-store.ts`.
 Design: [`docs/superpowers/specs/2026-07-22-auto-model-limit-mitigation-design.md`](./docs/superpowers/specs/2026-07-22-auto-model-limit-mitigation-design.md).
 
+### Measuring + forking a claude.ai conversation (`conversation_tokens` / `conversation_fork`)
+
+A claude.ai web conversation has a hard context ceiling and no operator-controlled
+compaction, so a long working chat eventually strands its state. Two tools measure it
+and carry it forward. Both take an EXPLICIT `conversation_uuid` — the web client does
+not tag MCP calls with a caller id, so there is no "this conversation", ever
+(`rename_conversation`'s recency guess once returned an unrelated session).
+
+🔴 **Naive counting over-reports the live context by 3.8x.** Measured on a real
+62-message / 2.0 MB conversation. Four traps, all of which a "sum the messages"
+implementation walks into:
+
+| trap | what it costs |
+|---|---|
+| `msg.text` (flat mirror) is **EMPTY** — content lives only in `content[]` | reports **0** for a full chat |
+| `display_content` is a separate, non-identical **render** copy, not model input | 669 KB of 1.81 MB — roughly **doubles** the count |
+| messages are a **TREE**; edited/retried turns sit on dead branches | 10 of 62 messages counted that aren't in context |
+| **COMPACTION** — `compaction_summary` REPLACES everything before it | 1,808,999 → 892,971 → **475,302** chars |
+
+So the estimate is **not** simply a lower bound: it over-counts (compaction, dead
+branches, display_content) *and* under-counts (system prompt, tool schemas). It reports
+`liveTokens` vs `totalTokens` separately with an explicit `unmeasured[]`.
+
+chars/token is calibrated **per block class** against `/v1/messages/count_tokens` on real
+sampled blocks — text 4.074, tool_use 3.584, **tool_result 2.834**. A flat 4.0 under-counts
+tool_result (the dominant class in any operational chat) by ~30%. Thinking is stored with
+`thinking_hidden=true` and an EMPTY body — only one-line summaries persist, so the rest is
+declared in `unmeasured[]` rather than silently reported as zero.
+
+**Credential-aware routing.** These tools are REGISTERED on every node but only FUNCTIONAL
+where a claude.ai cookie lives. Each call preflights the local cookie, serves in place if
+good, else forwards to a cookie-bearing node via `/mcp-call` (relay-allowed) reporting
+`servedByNodeId`, else refuses with the eligible hostIds + the `claudeai_login` remedy.
+A forwarded call carries `_noForward` so two nodes cannot ping-pong.
+
+🔴 **`/claude-ai` is deliberately NOT on the hub relay's `ALLOWED_API_PREFIXES`** — it can
+send messages and DELETE conversations. The consequence: `auth_status({allNodes:true})`
+probes peers with `proxyGet('/claude-ai/healthz')`, the relay rejects it, and **every remote
+node reports `cookie:?`** — which reads as "no cookie" but means "never asked". That is why
+the fleet looked like it had exactly one cookie-bearing node when it has at least two. The
+credential survey therefore lives at **`GET /fleet/credentials[/local]`** (read-only,
+secret-free) and keeps `unreachable` strictly distinct from "no cookie".
+
+🔴 **A display name is not an identity.** One live sweep returned 13 rows in which `vm`
+appeared 4x, `ubuntu-Virtual-Machine` 3x and `DESKTOP-GDKLATG` 2x, and a dev-repo Core
+appends `" (dev)"` to its hostname. Everything routes on **hostId** (`gw4-…`). An explicit
+`node` that lacks a cookie is REFUSED, never rerouted — node choice implicitly selects an
+ACCOUNT, so the resolved account is reported on every result. Account identity comes from
+the **cookie** (`lastActiveOrg`/`ajs_user_id`), not the probe: `/api/account_profile`
+returns a flat preferences object with no `account`/`organization` key.
+
+⚠️ **Forking waits for the model, so it must not confuse "slow" with "failed".**
+`sendMessage` drains the SSE; an 11 KB handoff ran past `workerPost`'s 30s and reported
+FAILURE for a fork that had been created AND seeded — the `send_session_message`
+false-negative class, where a retry would create a SECOND conversation in the real account.
+The drain is now bounded (20s; returning early does not cancel the turn) and on expiry the
+route **re-reads the conversation to VERIFY** a human message landed rather than guessing.
+Landed-but-unanswered is `replyPending`, a state, not an error.
+
+**The handoff is POINTERS, not prose.** This feature was scoped inside an already-compacted
+conversation whose summary kept the narrative and dropped the provenance — the assistant
+then re-derived the CCR taxonomy from inference instead of re-reading `guide("ccr")` and
+needed two human corrections. So the seed carries verbatim human turns, ids with the command
+that re-reads each, and the playbook names — and **excludes tool_result bodies** (77% of the
+source). Real numbers: 2.0 MB source → 11 KB seed. Both live forks opened with the successor
+saying it would *re-read the pointers rather than trust the summary*.
+
+Modules: `core/src/claude-ai/conversation-tokens.ts` (pure estimator),
+`conversation-handoff.ts` (pure handoff), `core/src/fleet/credential-fleet.ts` +
+`credential-collector.ts`, `core/src/mcp-server/tools/conversation-ops.ts`.
+Routes: `GET /claude-ai/conversations/:uuid/tokens`, `POST …/fork` (`dryRun` supported),
+`GET /fleet/credentials[/local]`.
+
 ### Session messaging — delivery verification + idempotency
 
 `send_session_message` injects into the TARGET's terminal via a driver chain
