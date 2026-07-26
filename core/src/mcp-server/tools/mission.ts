@@ -54,6 +54,9 @@ export const MISSION_TOOL_DEFS = [
         nextSteps: SARR,
         tags: { type: 'object' as const },
         parentId: S,
+        /** Top-level alias for env.effort — see liftEffort(). */
+        effort: { ...S, enum: ['low', 'medium', 'high', 'xhigh', 'max'],
+          description: 'Alias for env.effort, accepted top-level because some connectors drop nested objects. Same meaning: the --effort the executor is LAUNCHED with.' },
         env: obj({
           isolation: { ...S, enum: ['cloud', 'worktree', 'shared'] },
           host: S,
@@ -61,6 +64,8 @@ export const MISSION_TOOL_DEFS = [
           branch: S,
           resources: SARR,
           exclusive: { type: 'boolean' as const },
+          effort: { ...S, enum: ['low', 'medium', 'high', 'xhigh', 'max'],
+            description: 'Reasoning effort the executor is LAUNCHED with (--effort). Omit to let priority decide: a critical/high mission gets max, anything else inherits the CLI default. Set it explicitly for work whose difficulty does not match its priority — e.g. max for a subtle root-cause hunt, low for a mechanical deploy/sync/rollout where max only costs latency and tokens.' },
         }),
       },
       ['title', 'objective'],
@@ -213,7 +218,7 @@ export const MISSION_HANDLERS: Record<
 > = {
   mission_create: async (a) => {
     try {
-      return pretty(await workerPost('/mission', withActorHint(a, currentMcpContext()?.toolUseId)));
+      return pretty(await workerPost('/mission', withActorHint(liftEffort(a), currentMcpContext()?.toolUseId)));
     } catch (e) { return err((e as Error).message); }
   },
 
@@ -375,3 +380,23 @@ export const MISSION_HANDLERS: Record<
     } catch (e) { return err((e as Error).message); }
   },
 };
+
+/**
+ * Accept `effort` at the TOP LEVEL and fold it into `env.effort`.
+ *
+ * `env.effort` is the canonical field, but a nested object is exactly what some connector
+ * paths drop on the way to the worker — so a caller that sets only `env.effort` can have it
+ * silently vanish and the executor launches at the default while the caller believes
+ * otherwise. Accepting the flat form too means the choice survives either path. An explicit
+ * `env.effort` always wins; the alias never overwrites it.
+ */
+export function liftEffort<T extends Record<string, unknown>>(a: T): T {
+  const flat = (a as { effort?: unknown }).effort;
+  if (typeof flat !== 'string' || !flat.trim()) return a;
+  const env = (a as { env?: Record<string, unknown> }).env;
+  const merged = { ...(env && typeof env === 'object' ? env : {}) };
+  if (!merged.effort) merged.effort = flat.trim();
+  const out = { ...a, env: merged } as Record<string, unknown>;
+  delete out.effort;
+  return out as T;
+}

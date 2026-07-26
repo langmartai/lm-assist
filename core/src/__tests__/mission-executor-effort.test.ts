@@ -40,3 +40,24 @@ test('policy: critical/high default to max, others inherit the CLI default', () 
   assert.equal(missionEffort({ tags: {} }), undefined);
   assert.equal(missionEffort(null), undefined);
 });
+
+// MCP exposure: an LLM must be able to CHOOSE effort, and its choice must survive a
+// connector that drops nested objects.
+import { liftEffort } from '../mcp-server/tools/mission';
+
+test('top-level effort is folded into env.effort (survives nested-env drop)', () => {
+  const out = liftEffort({ title: 't', effort: 'max' } as Record<string, unknown>);
+  assert.deepEqual((out as { env: Record<string, unknown> }).env, { effort: 'max' });
+  assert.equal((out as { effort?: string }).effort, undefined, 'flat alias is consumed');
+});
+
+test('explicit env.effort always wins over the alias', () => {
+  const out = liftEffort({ effort: 'low', env: { effort: 'max', repo: '/x' } } as Record<string, unknown>);
+  assert.equal((out as { env: { effort: string } }).env.effort, 'max');
+  assert.equal((out as { env: { repo: string } }).env.repo, '/x', 'other env fields preserved');
+});
+
+test('no effort given → payload untouched', () => {
+  const input = { title: 't', env: { repo: '/x' } };
+  assert.deepEqual(liftEffort({ ...input } as Record<string, unknown>), input);
+});
