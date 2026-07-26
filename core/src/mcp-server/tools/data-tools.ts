@@ -9,6 +9,43 @@ import { currentMcpContext } from '../principal-context';
 import { getDataService, type CallCtx } from '../../data/data-service';
 import type { DataRecord, QuerySpec, SearchSpec, AccessRequest } from '../../data/types';
 import { getHubConfig } from '../../hub-client/hub-config';
+import { rowArg, MAX_QUERY_ROWS } from '../../data/backends/query-filter';
+
+/**
+ * Default page size for `data_query` / `data_keys` when the caller does not ask.
+ *
+ * This is the number that protects a CONVERSATION, and it lives at the MCP layer
+ * so only LLM callers are affected — the REST route the web UI reads stays
+ * unbounded-by-default, exactly as the mission projections did it.
+ *
+ * Sized from measurement on node 117: `data_query` on the `knowledge` dataset
+ * returned 997 records / 962,799 bytes pre-cap, i.e. ~966 B per SUMMARISED
+ * record. 25 rows projects to ~24 KB — comfortably under half the 64 KiB result
+ * ceiling, so the guardrail stays a backstop instead of shaping the routine call.
+ */
+export const DEFAULT_MCP_QUERY_ROWS = 25;
+
+/**
+ * The paging envelope every bounded collection tool returns.
+ *
+ * `total` + `hasMore` are the whole point: a bare array of 25 rows is
+ * indistinguishable from a dataset that only HAS 25 rows, and a model reads the
+ * short list as the complete one. When there is more, `more` says exactly which
+ * call fetches the next page — truncation as a nudge, not a dead end.
+ */
+function paged<T>(rows: T[], total: number, offset: number, limit: number, nextCall: (nextOffset: number) => string) {
+  const hasMore = offset + rows.length < total;
+  return {
+    total,
+    shown: rows.length,
+    offset,
+    limit,
+    hasMore,
+    ...(hasMore
+      ? { more: `${total - offset - rows.length} more row(s) not shown — next page: ${nextCall(offset + rows.length)}` }
+      : {}),
+  };
+}
 
 function ctxFromArgs(args: Record<string, unknown>): CallCtx | { error: string } {
   const c = currentMcpContext();
@@ -116,10 +153,25 @@ async function handleDataQuery(args: Record<string, unknown>): Promise<McpToolRe
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
+  // Window the request BEFORE it runs. A top-level limit/offset wins over the same
+  // key nested in `query`, because the top-level ones are what the schema advertises
+  // and therefore what a caller reaching for "less" will actually set.
+  const limit = Math.min(rowArg(args.limit ?? q.limit, DEFAULT_MCP_QUERY_ROWS), MAX_QUERY_ROWS);
+  const offset = rowArg(args.offset ?? q.offset, 0);
+  q.limit = limit;
+  q.offset = offset;
   const r = await svc.query(ctx, dataset, q);
   if (!r.ok) return err(`${r.code}: ${r.reason}`);
   // Records can be large; project to a bounded form (full record via data_get).
-  return ok(pretty(compactResult(r.value)));
+  const compacted = compactResult(r.value) as { records?: unknown[] };
+  const records = Array.isArray(compacted.records) ? compacted.records : [];
+  const total = typeof r.value.total === 'number' ? r.value.total : offset + records.length;
+  return ok(pretty({
+    dataset,
+    ...paged(records, total, offset, limit,
+      (next) => `data_query({dataset:"${dataset}", offset:${next}, limit:${limit}})`),
+    records,
+  }));
 }
 
 async function handleDataSearch(args: Record<string, unknown>): Promise<McpToolResult> {
@@ -230,12 +282,24 @@ async function handleDataDropDataset(args: Record<string, unknown>): Promise<Mcp
   return ok(pretty(r.value));
 }
 
-async function handleDataKeys(_args: Record<string, unknown>): Promise<McpToolResult> {
+async function handleDataKeys(args: Record<string, unknown>): Promise<McpToolResult> {
   const ctx = requireLocalCtx(); if ('error' in ctx) return err(ctx.error);
   const svc = getDataService(); if (!svc.isEnabled()) return err('data service is disabled');
   const r = await svc.listKeys(ctx);
   if (!r.ok) return err(`${r.code}: ${r.reason}`);
-  return ok(pretty(r.value));
+  // Was `(_args)` — the tool advertised no arguments and ignored any it was given,
+  // then enumerated every issued key (55,967 B at the audit, a hair under the
+  // ceiling and growing with the fleet). Paging happens HERE and not in the
+  // service, because `GET /data/keys` is what the web UI's Data page reads.
+  const all = Array.isArray(r.value) ? r.value : ((r.value as { keys?: unknown[] })?.keys ?? []);
+  const limit = Math.min(rowArg(args.limit, DEFAULT_MCP_QUERY_ROWS), MAX_QUERY_ROWS);
+  const offset = rowArg(args.offset, 0);
+  const rows = (all as unknown[]).slice(offset, offset + limit);
+  return ok(pretty({
+    ...paged(rows, (all as unknown[]).length, offset, limit,
+      (next) => `data_keys({offset:${next}, limit:${limit}})`),
+    keys: rows,
+  }));
 }
 
 async function handleDataRevokeKey(args: Record<string, unknown>): Promise<McpToolResult> {
@@ -307,9 +371,15 @@ export const DATA_TOOL_DEFS = [
   },
   {
     name: 'data_query',
-    description: 'Query records in a data-service dataset with filter/sort/limit. Returns matching records as type-aware SUMMARIES: each field/text is auto-classified (text|code|json|binary) with size (+ code language/snippet); large values are collapsed to a descriptor (binary never inlined). To read a specific part of a record, call data_get with field/part/offset/limit. Pass `key` if you have one. filter is an ARRAY of { field, op, value, flags? } clauses, AND-ed together; valid op values are eq, ne, gt, gte, lt, lte, in, nin, contains, regex, wildcard, exists (symbolic >=, >, <=, <, =, != also accepted). regex matches value as a regex (optional flags:"i"); wildcard is an anchored *,? glob; nin = not-in-array; exists checks field presence (value:true/false). A bad operator → BAD_FILTER_OP, an invalid regex → BAD_REGEX (never silently-empty results).',
+    description: `PAGED: returns at most ${DEFAULT_MCP_QUERY_ROWS} records by default — the response carries total/shown/offset/hasMore and, when there is more, a \`more\` line with the exact next call. Query records in a data-service dataset with filter/sort/limit. Returns matching records as type-aware SUMMARIES: each field/text is auto-classified (text|code|json|binary) with size (+ code language/snippet); large values are collapsed to a descriptor (binary never inlined). To read a specific part of a record, call data_get with field/part/offset/limit. Pass \`key\` if you have one. filter is an ARRAY of { field, op, value, flags? } clauses, AND-ed together; valid op values are eq, ne, gt, gte, lt, lte, in, nin, contains, regex, wildcard, exists (symbolic >=, >, <=, <, =, != also accepted). regex matches value as a regex (optional flags:"i"); wildcard is an anchored *,? glob; nin = not-in-array; exists checks field presence (value:true/false). A bad operator → BAD_FILTER_OP, an invalid regex → BAD_REGEX (never silently-empty results).`,
     annotations: { readOnlyHint: true },
-    inputSchema: { type: 'object' as const, properties: { dataset: STR('Dataset id.'), query: { type: 'object' as const, description: 'QuerySpec: { filter?: [{field, op, value, flags?}], sort?: [{field, dir}], limit?, offset? }. op ∈ eq|ne|gt|gte|lt|lte|in|nin|contains|regex|wildcard|exists (symbolic >=,>,<=,<,=,!= accepted). dir ∈ asc|desc.' }, key: STR('Access key (omit if local).') }, required: ['dataset'] },
+    inputSchema: { type: 'object' as const, properties: {
+      dataset: STR('Dataset id.'),
+      query: { type: 'object' as const, description: 'QuerySpec: { filter?: [{field, op, value, flags?}], sort?: [{field, dir}], limit?, offset? }. op ∈ eq|ne|gt|gte|lt|lte|in|nin|contains|regex|wildcard|exists (symbolic >=,>,<=,<,=,!= accepted). dir ∈ asc|desc.' },
+      limit: { type: 'number' as const, description: `Max records to return (default ${DEFAULT_MCP_QUERY_ROWS}, hard max ${MAX_QUERY_ROWS}). Overrides query.limit.` },
+      offset: { type: 'number' as const, description: 'Page offset (default 0). Overrides query.offset; use with the `more` line in the response to page.' },
+      key: STR('Access key (omit if local).'),
+    }, required: ['dataset'] },
   },
   {
     name: 'data_search',
@@ -376,9 +446,12 @@ export const DATA_TOOL_DEFS = [
   },
   {
     name: 'data_keys',
-    description: 'List issued access keys (metadata only — keyId, principal, grants, expiry, revoked; NEVER secrets). LOCAL-ONLY (remote sessions refused). Check data_catalog -> you.canManage.',
+    description: `PAGED: returns at most ${DEFAULT_MCP_QUERY_ROWS} keys by default (total/shown/hasMore + a "more" line when there are more). List issued access keys (metadata only — keyId, principal, grants, expiry, revoked; NEVER secrets). LOCAL-ONLY (remote sessions refused). Check data_catalog -> you.canManage.`,
     annotations: { readOnlyHint: true },
-    inputSchema: { type: 'object' as const, properties: {}, required: [] as string[] },
+    inputSchema: { type: 'object' as const, properties: {
+      limit: { type: 'number' as const, description: `Max keys to return (default ${DEFAULT_MCP_QUERY_ROWS}).` },
+      offset: { type: 'number' as const, description: 'Page offset (default 0).' },
+    }, required: [] as string[] },
   },
   {
     name: 'data_revoke_key',

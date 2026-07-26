@@ -14,6 +14,7 @@ import { KnowledgeBackend } from './backends/knowledge-backend';
 import { VectorsBackend } from './backends/vectors-backend';
 import { FileBackend } from './backends/file-backend';
 import { SqlBackend } from './backends/sql-backend';
+import { boundQuerySpec } from './backends/query-filter';
 import { ensureSystemDatasets, ensureTrackedFiles } from './system-datasets';
 import { getKeyStore } from './key-store';
 import { redactRecord, redactValueDeep, scrubValueDeep } from './redaction';
@@ -124,7 +125,11 @@ export class DataService {
   async query(ctx: CallCtx, datasetId: string, q: QuerySpec): Promise<DataResult<{ records: DataRecord[]; total?: number }>> {
     const a = await this.authorize(ctx, datasetId, 'query');
     if (!a.ok) return a;
-    const r = await a.value.backend!.query(datasetId, q);
+    // Bound the window HERE, at the one seam every backend and every caller passes
+    // through — the MCP tools, the REST route, and the internal stores. Doing it in
+    // `applyQuery` alone would miss the sql backend, which pages natively and never
+    // calls it. See MAX_QUERY_ROWS for why the number is what it is.
+    const r = await a.value.backend!.query(datasetId, boundQuerySpec(q));
     return { ok: true, value: { records: r.records.map(redactRecord), total: r.total } };
   }
 
