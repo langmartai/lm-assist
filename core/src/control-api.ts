@@ -16,6 +16,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { TierManager } from './tier-manager';
+import { getEventLoopMonitor } from './diagnostics/event-loop-monitor';
 import {
   EventStore,
   createEventStore,
@@ -302,6 +303,10 @@ export class TierControlApiImpl {
           }
           if (localIp !== 'localhost') break;
         }
+        // Event-loop lag belongs on the health check: Core is single-threaded, so a
+        // blocked loop makes every endpoint slow while each handler still reports a
+        // near-zero durationMs. Without this, that failure mode is invisible here.
+        const loop = getEventLoopMonitor().snapshot();
         return wrapResponse({
           status: 'healthy',
           uptime: Date.now() - this.startTime.getTime(),
@@ -311,6 +316,14 @@ export class TierControlApiImpl {
           hostname: os.hostname(),
           platform: os.platform(),
           localIp,
+          eventLoop: {
+            lagP50Ms: loop.lagMs.p50,
+            lagP99Ms: loop.lagMs.p99,
+            lagMaxMs: loop.lagMs.max,
+            blockedPct: loop.longBlocks.blockedPct,
+            longBlocks: loop.longBlocks.count,
+            topBlocker: loop.topBlockers[0]?.label ?? null,
+          },
         }, start);
       },
     };

@@ -153,11 +153,31 @@ export interface SystemStats {
   diskUsagePercent: number;
 }
 
+/**
+ * CPU topology is fixed for the life of the process, but `os.cpus()` walks every
+ * core and allocates on each call — ~11ms a tick at the 1-second refresh rate.
+ * Compute it once.
+ */
+let cpuInfoCache: { count: number; model: string } | null = null;
+function getCpuInfo(): { count: number; model: string } {
+  if (!cpuInfoCache) {
+    const cpus = os.cpus();
+    cpuInfoCache = { count: cpus.length, model: cpus[0]?.model || 'unknown' };
+  }
+  return cpuInfoCache;
+}
+
+/**
+ * Disk usage barely moves between ticks, but reading it ran a synchronous `df`
+ * on POSIX every second. Serve a cached value and refresh it in the background.
+ */
+const DISK_STATS_TTL_MS = 30_000;
+let diskStatsCache: { stats: Awaited<ReturnType<typeof getDiskStats>>; at: number } | null = null;
+let diskStatsRefreshing = false;
+
 /** Get system-level CPU, memory, and disk stats (async for cross-platform disk stats) */
 export async function getSystemStats(): Promise<SystemStats> {
-  const cpus = os.cpus();
-  const cpuCount = cpus.length;
-  const cpuModel = cpus[0]?.model || 'unknown';
+  const { count: cpuCount, model: cpuModel } = getCpuInfo();
   const [loadAvg1, loadAvg5, loadAvg15] = os.loadavg();
   const cpuUsagePercent = Math.round((loadAvg1 / cpuCount) * 100 * 10) / 10;
   const totalMemoryMb = Math.round(os.totalmem() / (1024 * 1024));
@@ -165,9 +185,21 @@ export async function getSystemStats(): Promise<SystemStats> {
   const usedMemoryMb = totalMemoryMb - freeMemoryMb;
   const memoryUsagePercent = Math.round((usedMemoryMb / totalMemoryMb) * 100 * 10) / 10;
 
-  // Disk stats: use async cross-platform check-disk-space on Windows,
-  // sync df on POSIX (faster, no async overhead)
-  const diskStats = IS_WINDOWS ? await getDiskStats() : getDiskStatsSync();
+  // Disk stats: served from cache. The first call populates it inline so the very
+  // first response is complete; afterwards a stale entry is refreshed in the
+  // background (async on both platforms) while the last known value is returned.
+  let diskStats = diskStatsCache?.stats;
+  const diskAge = diskStatsCache ? Date.now() - diskStatsCache.at : Infinity;
+  if (!diskStats) {
+    diskStats = IS_WINDOWS ? await getDiskStats() : getDiskStatsSync();
+    diskStatsCache = { stats: diskStats, at: Date.now() };
+  } else if (diskAge > DISK_STATS_TTL_MS && !diskStatsRefreshing) {
+    diskStatsRefreshing = true;
+    void getDiskStats()
+      .then(ds => { diskStatsCache = { stats: ds, at: Date.now() }; })
+      .catch(() => { /* keep the previous value */ })
+      .finally(() => { diskStatsRefreshing = false; });
+  }
   const totalDiskGb = diskStats.totalGb;
   const usedDiskGb = diskStats.usedGb;
   const freeDiskGb = diskStats.freeGb;

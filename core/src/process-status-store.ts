@@ -11,10 +11,22 @@
  */
 
 import { createHash } from 'crypto';
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
 import * as os from 'os';
+import { promisify } from 'util';
 import type { ClaudeProcessInfo, SystemStats } from './ttyd-manager';
-import { IS_WINDOWS } from './utils/process-utils';
+import { IS_WINDOWS, refreshProcessSnapshot } from './utils/process-utils';
+import { timeSection } from './diagnostics/event-loop-monitor';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Upper bound for the adaptive refresh delay. The refresh scans every process on
+ * the box; on a busy host that is not free, so the next tick is spaced out
+ * proportionally to how long the last one took rather than firing blindly at a
+ * fixed 1s and starving everything else on the single main thread.
+ */
+const MAX_REFRESH_INTERVAL_MS = 15_000;
 
 export interface ProcessRunningInfo {
   pid: number;
@@ -39,6 +51,8 @@ export interface CachedProcessResponse {
     runningSessions: number;
     lastRefreshedAt: string | null;
     intervalMs: number | null;
+    /** How long the last refresh took — visible so an expensive scan is obvious. */
+    lastDurationMs?: number;
   };
   systemStats: SystemStats;
 }
@@ -48,8 +62,13 @@ export class ProcessStatusStore {
   private cachedResponse: CachedProcessResponse | null = null;
   private runningBySession = new Map<string, ProcessRunningInfo>();
   private lastRefreshedAt: Date | null = null;
-  private refreshInterval: NodeJS.Timeout | null = null;
+  private refreshTimer: NodeJS.Timeout | null = null;
+  private stopped = true;
   private refreshing = false;
+  /** How long the last refresh took — drives the adaptive delay. */
+  private lastDurationMs = 0;
+  /** The delay currently scheduled, reported by getStats(). */
+  private currentDelayMs = 0;
   /** Hash of the current process state — changes when process list changes */
   private _hash: string = '';
   /** Counter for periodic deep health checks (every 15 refreshes = ~15s at 1s interval) */
@@ -63,35 +82,54 @@ export class ProcessStatusStore {
 
   /** Start background refresh loop */
   start(): void {
-    if (this.refreshInterval) return;
-    this.refresh(); // initial sync refresh
-    this.refreshInterval = setInterval(() => this.refresh(), this.intervalMs);
+    if (!this.stopped) return;
+    this.stopped = false;
+    void this.refresh().finally(() => this.scheduleNext());
   }
 
   /** Stop background refresh */
   stop(): void {
-    if (this.refreshInterval) {
-      clearInterval(this.refreshInterval);
-      this.refreshInterval = null;
+    this.stopped = true;
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
     }
+  }
+
+  /**
+   * Schedule the next refresh, spacing it out when the last one was expensive.
+   * A fixed interval means a refresh that costs more than the interval leaves the
+   * main thread no room for anything else.
+   */
+  private scheduleNext(): void {
+    if (this.stopped) return;
+    this.currentDelayMs = Math.min(
+      Math.max(this.intervalMs, this.lastDurationMs * 2),
+      MAX_REFRESH_INTERVAL_MS,
+    );
+    this.refreshTimer = setTimeout(() => {
+      void this.refresh().finally(() => this.scheduleNext());
+    }, this.currentDelayMs);
   }
 
   /** Refresh from ttydManager.getRunningClaudeProcesses() + cleanup */
   async refresh(): Promise<void> {
     if (this.refreshing) return;
     this.refreshing = true;
+    const startedAt = Date.now();
     try {
       // On Windows: skip all process management (no ttyd/tmux/ps).
       // Just collect system stats using Node.js built-ins.
       if (IS_WINDOWS) {
-        await this.refreshWindows();
+        await timeSection('processStatusStore.refresh', () => this.refreshWindows());
         return;
       }
 
-      await this.refreshPosix();
+      await timeSection('processStatusStore.refresh', () => this.refreshPosix());
     } catch (e) {
       console.error('ProcessStatusStore refresh error:', e);
     } finally {
+      this.lastDurationMs = Date.now() - startedAt;
       this.refreshing = false;
     }
   }
@@ -169,6 +207,11 @@ export class ProcessStatusStore {
       // Cleanup dead ttyd instances (previously done per-request)
       mgr.cleanup();
 
+      // Populate the ps/pgrep snapshot asynchronously FIRST, so the synchronous
+      // readers inside getRunningClaudeProcesses() serve from it instead of each
+      // spawning their own blocking `ps`.
+      await refreshProcessSnapshot();
+
       const processes = mgr.getRunningClaudeProcesses();
       this.cachedProcesses = processes;
 
@@ -230,9 +273,10 @@ export class ProcessStatusStore {
       if (this.deepCheckCounter % 15 === 0) {
         let aliveTmuxSessions: Set<string>;
         try {
-          const tmuxOut = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], {
-            encoding: 'utf-8', timeout: 3000,
-          }).trim();
+          const { stdout } = await execFileAsync('tmux', ['list-sessions', '-F', '#{session_name}'], {
+            encoding: 'utf-8', timeout: 3000, windowsHide: true,
+          });
+          const tmuxOut = stdout.trim();
           aliveTmuxSessions = new Set(tmuxOut ? tmuxOut.split('\n').map(s => s.trim()) : []);
         } catch {
           aliveTmuxSessions = new Set(); // tmux not running or no sessions
@@ -358,7 +402,8 @@ export class ProcessStatusStore {
       totalProcesses: this.cachedProcesses.length,
       runningSessions: this.runningBySession.size,
       lastRefreshedAt: this.lastRefreshedAt?.toISOString() || null,
-      intervalMs: this.refreshInterval ? this.intervalMs : null,
+      intervalMs: this.stopped ? null : (this.currentDelayMs || this.intervalMs),
+      lastDurationMs: this.lastDurationMs,
     };
   }
 }

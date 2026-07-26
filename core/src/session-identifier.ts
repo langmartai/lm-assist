@@ -11,11 +11,23 @@
  * @packageDocumentation
  */
 
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { promisify } from 'util';
+import { setImmediate as yieldToLoop } from 'timers/promises';
 import { legacyEncodeProjectPath } from './utils/path-utils';
+import { timeSection } from './diagnostics/event-loop-monitor';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Candidates matched between yields. Identification is a long CPU-bound string
+ * search; without breaking it up it holds the single main thread for the whole
+ * run and every pending request waits behind it.
+ */
+const NGRAM_YIELD_CHUNK = 50;
 
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
@@ -428,22 +440,25 @@ function buildSessionText(sessionData: {
  * For large files (>maxBytes), only reads the tail portion to keep
  * performance acceptable when many candidates need the fallback.
  */
-function buildSessionTextFromJSONL(filePath: string, maxBytes: number = 200_000): string {
+async function buildSessionTextFromJSONL(filePath: string, maxBytes: number = 200_000): Promise<string> {
   try {
     let raw: string;
-    const stat = fs.statSync(filePath);
+    const stat = await fs.promises.stat(filePath);
     if (stat.size > maxBytes) {
       // Read only the tail of large files (most recent content)
-      const fd = fs.openSync(filePath, 'r');
-      const buf = Buffer.alloc(maxBytes);
-      fs.readSync(fd, buf, 0, maxBytes, stat.size - maxBytes);
-      fs.closeSync(fd);
-      raw = buf.toString('utf-8');
+      const fh = await fs.promises.open(filePath, 'r');
+      try {
+        const buf = Buffer.alloc(maxBytes);
+        await fh.read(buf, 0, maxBytes, stat.size - maxBytes);
+        raw = buf.toString('utf-8');
+      } finally {
+        await fh.close();
+      }
       // Skip first partial line (cut off by the seek)
       const firstNewline = raw.indexOf('\n');
       if (firstNewline > 0) raw = raw.slice(firstNewline + 1);
     } else {
-      raw = fs.readFileSync(filePath, 'utf-8');
+      raw = await fs.promises.readFile(filePath, 'utf-8');
     }
     const parts: string[] = [];
     for (const line of raw.split('\n')) {
@@ -507,10 +522,22 @@ function extractSessionChunks(sessionText: string): string[] {
 export class SessionIdentifier {
   /** PID → identification result (persistent until process exits) */
   private identifiedSessions = new Map<number, IdentificationResult>();
-  /** PID → timestamp of last attempt (30s retry cooldown) */
+  /** PID → timestamp of last attempt (base 30s retry cooldown, backed off on failure) */
   private lastAttempt = new Map<number, number>();
+  /** PID → consecutive failed attempts, driving exponential backoff */
+  private failures = new Map<number, number>();
+  /** Identifications currently running — bounds concurrent CPU-bound scans */
+  private inFlight = 0;
 
   private readonly RETRY_INTERVAL_MS = 30_000;
+  /** Ceiling for the backed-off retry interval */
+  private readonly MAX_RETRY_INTERVAL_MS = 15 * 60_000;
+  /**
+   * Only one identification at a time. Each is a multi-second CPU-bound scan;
+   * letting a refresh tick start one per unidentified PID stacked them and held
+   * the single main thread for the sum of all of them.
+   */
+  private readonly MAX_CONCURRENT = 1;
   private readonly MIN_CONFIDENCE = 0.15;
   /** Absolute score threshold — if score >= this, accept even if confidence ratio is low */
   private readonly MIN_ABSOLUTE_SCORE = 25;
@@ -529,9 +556,30 @@ export class SessionIdentifier {
    */
   shouldAttempt(pid: number): boolean {
     if (this.identifiedSessions.has(pid)) return false;
+    // Refuse while one is already running: these scans are CPU-bound and serialize.
+    if (this.inFlight >= this.MAX_CONCURRENT) return false;
     const last = this.lastAttempt.get(pid);
-    if (last && Date.now() - last < this.RETRY_INTERVAL_MS) return false;
+    if (last && Date.now() - last < this.retryDelayFor(pid)) return false;
     return true;
+  }
+
+  /**
+   * Exponential backoff on repeated failure.
+   *
+   * Many tmux panes are never identifiable (plain shells, non-Claude panes, or a
+   * pane whose scrollback no longer matches any session). At a flat 30s retry each
+   * of those re-ran a multi-second scan forever — on a 51-tmux-session host that
+   * alone kept the main thread busy roughly a quarter of the time.
+   */
+  private retryDelayFor(pid: number): number {
+    // The FIRST failure keeps the original 30s cooldown — a single transient miss
+    // must not change existing behaviour. Only repeat failures back off.
+    const fails = this.failures.get(pid) || 0;
+    const doublings = Math.min(Math.max(fails - 1, 0), 6);
+    return Math.min(
+      this.RETRY_INTERVAL_MS * Math.pow(2, doublings),
+      this.MAX_RETRY_INTERVAL_MS,
+    );
   }
 
   /**
@@ -555,6 +603,11 @@ export class SessionIdentifier {
         this.lastAttempt.delete(pid);
       }
     }
+    for (const pid of this.failures.keys()) {
+      if (!activePids.has(pid)) {
+        this.failures.delete(pid);
+      }
+    }
   }
 
   /**
@@ -576,13 +629,17 @@ export class SessionIdentifier {
     debug?: boolean,
   ): Promise<(IdentificationResult & { _debug?: any }) | null> {
     try {
-      // 1. Capture terminal content (full scrollback)
+      // 1. Capture terminal content (full scrollback).
+      // Async on purpose: execFileSync here blocked the main thread for the whole
+      // capture (measured ~3.6s aggregate per 45s on a 51-tmux-session host).
       let raw: string;
       try {
-        raw = execFileSync('tmux', ['capture-pane', '-t', tmuxSessionName, '-p', '-S', '-'], {
-          encoding: 'utf-8',
-          timeout: 5000,
-        });
+        const { stdout } = await execFileAsync(
+          'tmux',
+          ['capture-pane', '-t', tmuxSessionName, '-p', '-S', '-'],
+          { encoding: 'utf-8', timeout: 5000, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
+        );
+        raw = stdout;
       } catch {
         return null;
       }
@@ -602,20 +659,23 @@ export class SessionIdentifier {
       const sessionDir = path.join(CLAUDE_PROJECTS_DIR, projectKey);
       if (!fs.existsSync(sessionDir)) return null;
 
+      // Async readdir + stat: a project dir holds thousands of .jsonl files, and
+      // statting them synchronously blocked the loop once per identification.
       const processMs = processStartedAt.getTime();
-      const allEntries = fs.readdirSync(sessionDir)
-        .filter(f => f.endsWith('.jsonl'))
-        .map(f => {
+      const names = (await fs.promises.readdir(sessionDir)).filter(f => f.endsWith('.jsonl'));
+      const statted = await Promise.all(
+        names.map(async f => {
           const fp = path.join(sessionDir, f);
           try {
-            const stat = fs.statSync(fp);
+            const stat = await fs.promises.stat(fp);
             const birthtimeMs = (stat as any).birthtimeMs || stat.ctimeMs;
             return { file: f, filePath: fp, mtime: stat.mtime.getTime(), birthtime: birthtimeMs };
           } catch {
             return null;
           }
-        })
-        .filter((f): f is NonNullable<typeof f> => f !== null);
+        }),
+      );
+      const allEntries = statted.filter((f): f is NonNullable<typeof f> => f !== null);
 
       // Pre-filter: include files that were active around the process lifetime.
       // - mtime within 2h before process start to now (covers idle-before-resume)
@@ -675,6 +735,8 @@ export class SessionIdentifier {
       const stage1Results: Stage1Result[] = [];
 
       for (const { file, filePath, mtime, birthtime } of files) {
+        // Breathe between candidates so pending requests interleave with this scan.
+        await yieldToLoop();
         const sessionId = file.replace('.jsonl', '');
 
         let sessionData = cache.getSessionDataFromMemory(filePath);
@@ -688,7 +750,7 @@ export class SessionIdentifier {
         // This handles: cache not warmed, compacted sessions with stale byte offsets,
         // or any other cache failure.
         if (sessionText.length < 100) {
-          sessionText = buildSessionTextFromJSONL(filePath);
+          sessionText = await buildSessionTextFromJSONL(filePath);
           if (debug && sessionText.length > 100) {
             console.error(`[SessionIdentifier] JSONL fallback for ${sessionId.slice(0, 12)}: ${sessionText.length} chars (cache ${sessionData ? 'had little data' : 'returned null'})`);
           }
@@ -696,10 +758,13 @@ export class SessionIdentifier {
         if (sessionText.length < 50) continue;  // skip sessions with truly no content
         const sessionTextLower = sessionText.toLowerCase();
 
-        // Count how many screen n-grams appear in session text
+        // Count how many screen n-grams appear in session text.
+        // Chunked: each `includes` scans the whole session text, so an unbroken
+        // 150-n-gram pass over a multi-MB transcript is a single long block.
         let matchedNgrams = 0;
-        for (const ng of screenNgrams) {
-          if (sessionTextLower.includes(ng)) {
+        for (let i = 0; i < screenNgrams.length; i++) {
+          if (i > 0 && i % NGRAM_YIELD_CHUNK === 0) await yieldToLoop();
+          if (sessionTextLower.includes(screenNgrams[i])) {
             matchedNgrams++;
           }
         }
@@ -762,6 +827,7 @@ export class SessionIdentifier {
       }> = [];
 
       for (const candidate of topCandidates) {
+        await yieldToLoop();
         // Stage 2: Extract text chunks from session, check what % of screen they cover
         const sessionChunks = extractSessionChunks(candidate.sessionText);
         let coveredChars = 0;
@@ -890,12 +956,24 @@ export class SessionIdentifier {
     projectPath: string,
     processStartedAt: Date,
   ): Promise<IdentificationResult | null> {
+    // Stamped at start so a concurrent tick can't re-enter, and again at completion
+    // so the backoff window measures from when the scan actually finished.
     this.lastAttempt.set(pid, Date.now());
-    const result = await this.identify(tmuxSessionName, projectPath, processStartedAt);
-    if (result) {
-      this.cacheResult(pid, result);
+    this.inFlight++;
+    try {
+      const result = await timeSection('sessionIdentifier.identify', () =>
+        this.identify(tmuxSessionName, projectPath, processStartedAt));
+      if (result) {
+        this.cacheResult(pid, result);
+        this.failures.delete(pid);
+      } else {
+        this.failures.set(pid, (this.failures.get(pid) || 0) + 1);
+      }
+      return result;
+    } finally {
+      this.inFlight--;
+      this.lastAttempt.set(pid, Date.now());
     }
-    return result;
   }
 }
 

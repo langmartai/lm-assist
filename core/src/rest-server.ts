@@ -5,6 +5,7 @@
  */
 
 import * as http from 'http';
+import { getEventLoopMonitor } from './diagnostics/event-loop-monitor';
 import { startApiTokenRotation, isValidToken, apiAuthEnabled, isLocalAddress } from './auth/api-token';
 import { validateScopedRequest } from './auth/scoped-token';
 import { isEnrollExempt } from './auth/enroll-exempt';
@@ -415,6 +416,10 @@ export class TierRestServer {
     const profiler = getStartupProfiler();
     profiler.start('httpListen', 'HTTP Listen');
     startApiTokenRotation();
+    // Start measuring event-loop lag before the server accepts traffic, so the
+    // numbers on /health cover the whole serving lifetime.
+    getEventLoopMonitor().start();
+
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => this.handleRequest(req, res));
 

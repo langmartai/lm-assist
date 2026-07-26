@@ -6,7 +6,7 @@
  * using npm packages: tree-kill, pidtree, find-process, check-disk-space, get-port-please.
  */
 
-import { execFileSync } from './exec';
+import { execFileSync, execFile } from './exec';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -17,6 +17,79 @@ import * as path from 'path';
 
 export const IS_WINDOWS = process.platform === 'win32';
 export const IS_POSIX = !IS_WINDOWS; // Linux, macOS, etc.
+
+// ============================================================================
+// Process Snapshot Cache (async refresh, synchronous read)
+// ============================================================================
+
+/**
+ * `ps` and `pgrep` are the hot path of the 1-second process-status refresh, and
+ * in their synchronous form (`execFileSync`) they blocked the single main thread
+ * on every tick — measured at ~6.4s of blocking per 45s of wall clock on a host
+ * with 57 Claude processes.
+ *
+ * The readers below stay synchronous, because they have many callers that are not
+ * async. What changed is where the data comes from: the background refresh calls
+ * {@link refreshProcessSnapshot} (async `execFile`), and the readers serve that
+ * snapshot. Staleness is bounded — past {@link SNAPSHOT_MAX_AGE_MS} a reader falls
+ * back to the original synchronous call rather than returning stale data, so any
+ * caller running without the background refresh behaves exactly as before.
+ */
+interface ProcessSnapshot {
+  ps: string;
+  psPidPpid: string;
+  pgrep: Map<string, number[]>;
+  at: number;
+}
+
+/** Beyond this age the snapshot is ignored and the reader falls back to sync. */
+export const SNAPSHOT_MAX_AGE_MS = 5_000;
+
+let snapshot: ProcessSnapshot | null = null;
+
+function freshSnapshot(): ProcessSnapshot | null {
+  if (!snapshot) return null;
+  return Date.now() - snapshot.at <= SNAPSHOT_MAX_AGE_MS ? snapshot : null;
+}
+
+function parsePids(out: string): number[] {
+  if (!out) return [];
+  return out.split('\n').map(l => parseInt(l.trim(), 10)).filter(n => Number.isFinite(n));
+}
+
+function runAsync(file: string, args: string[]): Promise<string> {
+  return new Promise(resolve => {
+    execFile(file, args, { encoding: 'utf-8', windowsHide: true }, (err, stdout) => {
+      // pgrep exits non-zero when nothing matched — that is an empty result, not a failure.
+      resolve(err && !stdout ? '' : String(stdout || '').trim());
+    });
+  });
+}
+
+/**
+ * Populate the snapshot the synchronous readers serve from.
+ * Safe to call on a timer; never throws.
+ */
+export async function refreshProcessSnapshot(pgrepNames: string[] = ['ttyd']): Promise<void> {
+  if (!IS_POSIX) return;
+  try {
+    const [ps, psPidPpid, ...pgreps] = await Promise.all([
+      runAsync('ps', ['-eo', 'pid,ppid,etimes,tty,%cpu,rss,cmd']),
+      runAsync('ps', ['-eo', 'pid,ppid', '--no-headers']),
+      ...pgrepNames.map(n => runAsync('pgrep', ['-x', n])),
+    ]);
+    const pgrep = new Map<string, number[]>();
+    pgrepNames.forEach((n, i) => pgrep.set(n, parsePids(pgreps[i])));
+    snapshot = { ps, psPidPpid, pgrep, at: Date.now() };
+  } catch {
+    // Leave the previous snapshot in place; it ages out on its own.
+  }
+}
+
+/** Drop the cached snapshot (tests). */
+export function clearProcessSnapshot(): void {
+  snapshot = null;
+}
 
 // ============================================================================
 // Process Cmdline
@@ -120,6 +193,9 @@ export async function findProcessesByName(name: string): Promise<FoundProcess[]>
  */
 export function findProcessesByNameSync(name: string): number[] {
   if (IS_POSIX) {
+    const fresh = freshSnapshot();
+    const cached = fresh?.pgrep.get(name);
+    if (cached) return cached;
     try {
       const output = execFileSync('pgrep', ['-x', name], { encoding: 'utf-8' }).trim();
       if (!output) return [];
@@ -347,6 +423,8 @@ export function requireTerminalSupport(): TerminalSupport {
  */
 export function getPsOutput(): string {
   if (!IS_POSIX) return '';
+  const fresh = freshSnapshot();
+  if (fresh) return fresh.ps;
   try {
     return execFileSync('ps', ['-eo', 'pid,ppid,etimes,tty,%cpu,rss,cmd'], {
       encoding: 'utf-8',
@@ -362,6 +440,8 @@ export function getPsOutput(): string {
  */
 export function getPsPidPpidOutput(): string {
   if (!IS_POSIX) return '';
+  const fresh = freshSnapshot();
+  if (fresh) return fresh.psPidPpid;
   try {
     return execFileSync('ps', ['-eo', 'pid,ppid', '--no-headers'], {
       encoding: 'utf-8',
