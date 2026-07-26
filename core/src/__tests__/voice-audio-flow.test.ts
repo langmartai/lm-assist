@@ -57,6 +57,16 @@ const skip = !CHROME_PATH
 const READY_DELAY_MS = 600;
 const DEADLINE_MS = 25_000;
 
+/**
+ * A REAL uuid, not the old `'conv-e2e'` placeholder.
+ *
+ * claude.ai rejects a non-uuid conversation in the voice path outright (measured: close 1006,
+ * no session), so the relay now refuses one at the handshake rather than burning ~3s of Chrome
+ * startup to reach the same dead end. The placeholder therefore never described a session that
+ * could exist — it only worked here because claude.ai is stubbed at the makeChromeMgr seam.
+ */
+const CONV = '11111111-1111-4111-8111-aaaaaaaaaaaa';
+
 function pageHtml(wsUrl: string): string {
   return `<!doctype html><html><body><script type="module">
 window.__r = { frames: 0, framesBeforeReady: 0, sent: 0, ready: false, err: null };
@@ -66,7 +76,7 @@ window.__r = { frames: 0, framesBeforeReady: 0, sent: 0, ready: false, err: null
     ws.binaryType = 'arraybuffer';
     let ring = [];
     const send = (f) => { if (ws.readyState === 1) { ws.send(f); window.__r.sent++; } };
-    ws.onopen = () => ws.send(JSON.stringify({ type: 'connect', conversationUuid: 'conv-e2e' }));
+    ws.onopen = () => ws.send(JSON.stringify({ type: 'connect', conversationUuid: ${JSON.stringify(CONV)} }));
     ws.onmessage = (ev) => {
       if (typeof ev.data !== 'string') return;
       let f; try { f = JSON.parse(ev.data); } catch (e) { return; }
