@@ -834,7 +834,7 @@ export const claudeaiListPluginsToolDef = {
     properties: {
       enabled_only: { type: 'boolean', description: 'Return only enabled plugins (default false).' },
       detail: { type: 'string', enum: ['summary', 'full'], description: 'summary (default) | full' },
-      limit: { type: 'number', description: 'page size (default 100 summary / 10 full)' },
+      limit: { type: 'number', description: 'page size (default 50 summary / 10 full)' },
       offset: { type: 'number', description: 'page offset (default 0)' },
     },
   },
@@ -875,7 +875,7 @@ export const memoryMapToolDef = {
       category: { type: 'string', description: 'Comma-separated categories.' },
       q: { type: 'string', description: 'Keyword query — all terms must appear in title+brief+complete.' },
       since: { type: 'number', description: 'Only records modified after this Unix ms timestamp.' },
-      limit: { type: 'number', description: 'Max records to return. DEFAULT 80 — the full map is 1,300+ records / ~800KB and grows forever. Narrow with q/projects/nodes/since instead of raising this; 0 = all (subject to the per-result byte ceiling).' },
+      limit: { type: 'number', description: 'Max records to return. DEFAULT 60 — the full map is 1,300+ records / ~800KB and grows forever. Narrow with q/projects/nodes/since instead of raising this; 0 = all (subject to the per-result byte ceiling).' },
       stats: { type: 'boolean', description: 'Return count/stats summary only instead of records.' },
     },
   },
@@ -1976,7 +1976,7 @@ async function handleClaudeaiListPlugins(args: Record<string, unknown>): Promise
     const res = await workerGet(`/claude-ai/plugins${qs}`) as Record<string, unknown>;
     const all = Array.isArray(res?.plugins) ? res.plugins as Array<Record<string, unknown>> : [];
     const detail = detailLevel(args.detail);
-    const { rows, meta } = paginate(all, intArg(args.limit, detail === 'full' ? 10 : 100), intArg(args.offset, 0));
+    const { rows, meta } = paginate(all, intArg(args.limit, detail === 'full' ? 10 : 50), intArg(args.offset, 0));
     return ok(pretty({
       ...res,
       detail,
@@ -2055,7 +2055,7 @@ async function handleMemoryMap(args: Record<string, unknown>): Promise<McpToolRe
   // 1,313 records (~630B each) and grows monotonically forever — every memory ever
   // written on any node. Unbounded by default it is a guaranteed future incident, so the
   // caller now opts INTO a bigger page rather than opting out of an unbounded one.
-  argv.push('--limit', String(intArg(args.limit, 80)));
+  argv.push('--limit', String(intArg(args.limit, 60)));
   if (args.stats) argv.push('--stats');
   try {
     return ok(await runCli(argv));

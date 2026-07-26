@@ -228,9 +228,18 @@ export function claudeaiPluginSummary(p: Record<string, unknown>): Record<string
   return out;
 }
 
-/** Default page size per detail level. Full missions measured ~20KB EACH on this fleet,
- *  so a full page must be small; summaries are ~300-500 bytes, so 50 is still tiny. */
-export const DEFAULT_LIMIT_SUMMARY = 50;
+/**
+ * Default page size per detail level.
+ *
+ * Sized from measurement, not taste: a real mission SUMMARY row is 1,333 bytes on this
+ * fleet (tags 236 B, objectivePreview 213 B, env 105 B, title 76 B…). A 50-row default
+ * therefore produced 67.2KB and tripped the 64KB ceiling — the guardrail was shaping the
+ * routine call, which is exactly what it must NOT do. 25 rows lands ~33KB, about half the
+ * ceiling, leaving headroom as tags and titles grow.
+ *
+ * Full missions measure ~20KB EACH, so a full page has to be far smaller.
+ */
+export const DEFAULT_LIMIT_SUMMARY = 25;
 export const DEFAULT_LIMIT_FULL = 5;
 
 /**
