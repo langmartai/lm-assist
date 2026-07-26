@@ -218,6 +218,45 @@ already takes a `limit`. The same shape explains why writes are big — a
 `mission_update` returns ~11 KB because it echoes the full record including every
 rev.
 
+### 3.2 The other two mega-offenders need *different* fixes
+
+Running the same field breakdown on them shows the top five do not share one
+remedy — which matters, because applying the wrong one leaves the tool just as
+broken:
+
+**`claudeai_list_plugins` — one fat field, 82% of the payload.**
+
+| field | total | share | B/plugin |
+|---|---|---|---|
+| `skills` | 663.6 KB | **82.3%** | 7,386 |
+| `mcp_servers` | 40.7 KB | 5.1% | 453 |
+| `description` | 16.5 KB | 2.0% | 184 |
+| `hooks` / `agents` / `commands` | ~44 KB | ~5.5% | ~164 each |
+
+Every plugin record embeds its **full skills manifest**. Dropping `skills` from
+the list view takes it from 1,129 KB to roughly 200 KB — a one-field fix, and the
+skills detail belongs behind a per-plugin lookup anyway.
+
+**`memory_map` — no dominant field; it is death by record count.**
+
+| field | share | B/record |
+|---|---|---|
+| `brief` | 35.6% | 143 |
+| `recordId` | 21.6% | 87 |
+| `title` | 9.0% | 36 |
+| `project` | 6.9% | 28 |
+| remainder | ~27% | ~100 |
+
+Nothing here is fat — the widest field is a 143-byte summary. 808 KB is simply
+1,313 records × ~630 B of already-minimal fields. **Field projection cannot fix
+this one**; it needs pagination and a default scope narrower than "every record on
+every host". Worth noting `recordId` is 21.6% of the payload on its own, because
+the ids are long fully-qualified strings — a cheaper id form is free savings.
+
+So the three fix shapes across the top five are: **projection** (`mission_list`,
+`mission_query`, `claudeai_list_plugins`), **pagination + narrower default scope**
+(`memory_map`), and **a row cap in the owning service** (`data_query`).
+
 ---
 
 ## 4. Structural findings — what a byte cap alone will not fix
