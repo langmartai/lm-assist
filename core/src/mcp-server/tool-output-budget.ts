@@ -29,6 +29,13 @@
  * Measured 2026-07-26 on node 117 against live fleet data (50 missions, 1,313
  * memory records, 92 claude.ai plugins, 55 sessions, 22 backlog items).
  * Full audit: docs/mcp-tool-output-audit.md
+ *
+ * THE CONNECT-TIME TAX IS A SEPARATE BUDGET AND LIVES ELSEWHERE. Everything here
+ * bounds what a tool RETURNS. `tools/list` itself cost 350,402 B / ~87.6K tokens
+ * for 244 tools — paid by every conversation before a single call — and 40.3% of
+ * it was ONE 751-byte `node` paragraph repeated on 188 tools. That is guarded by
+ * mcp-catalog-size.test.ts, whose rule is different in kind: shared boilerplate is
+ * multiplied by the surface, so its cost is length x tool count.
  */
 
 /**
@@ -111,23 +118,37 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
     note: 'PRE-CAP 923,758 B, 54.6% of it per-record REVISION HISTORY. Schema was {node} only — no way to ask for less; now takes detail/limit/offset/id.',
   },
   memory_map: {
-    measuredBytes: 35747, budgetBytes: 50000, bound: 'NOTHING', verdict: 'NEEDS-SUMMARY',
-    note: 'PRE-CAP 827,724 B = 1,313 records x 629 B. NO fat field (widest 143 B), so projection could not fix it — paginated instead (default 60). Grows monotonically; never pruned.',
+    measuredBytes: 36053, budgetBytes: 50000, bound: 'PAGINATED', verdict: 'NEEDS-CAP',
+    note: 'PRE-CAP 827,724 B = 1,313 records x 629 B. NO fat field (widest 143 B), so projection could ' +
+      'not fix it — paginated instead (default 60). THE MONOTONIC GROWTH IS NOT THEORETICAL: the same ' +
+      'map measured 1,323 records on 2026-07-26, up 10 from the audit days earlier, because records ' +
+      'are never pruned and every host mirror re-emits the whole set. Being bounded was not enough — ' +
+      'it returned a BARE ARRAY, so 60 of 1,323 read as the complete map; it now reports ' +
+      'total/shown/offset/hasMore plus the next call (bl_8a737823).',
   },
   mission_workflow_list: {
-    measuredBytes: 65829, budgetBytes: 92000, bound: 'NOTHING', verdict: 'NEEDS-SUMMARY',
-    note: 'TRUNCATED at the ceiling today: full workflow doc bodies, ~2.0 KB each x 59, and the schema is {node} only — no narrowing argument, so the truncation marker asks for something the caller cannot do. See TRUNCATING_WITHOUT_NARROWING.',
+    measuredBytes: 13498, budgetBytes: 30000, bound: 'PAGINATED', verdict: 'SAFE',
+    note: 'WAS 65,829 B — truncated at the ceiling with a {node}-only schema, the second dead end. ' +
+      'Fixed by the body projection + detail/limit/offset: 13,498 B measured 2026-07-26, a 4.9x cut, ' +
+      'and it no longer truncates at all.',
   },
   mission_changes: {
-    measuredBytes: 65829, budgetBytes: 92000, bound: 'NOTHING', verdict: 'NEEDS-SUMMARY',
-    note: 'TRUNCATED at the ceiling today: full change/rev feed, ~469 B per rev, revs only accumulate. Narrowable via sinceRev/sinceTs.',
+    measuredBytes: 23013, budgetBytes: 40000, bound: 'PAGINATED', verdict: 'NEEDS-CAP',
+    note: 'WAS 65,829 B (truncated). Now 23,013 B via the actor projection + paging. Revs only ' +
+      'accumulate, so this one keeps climbing by construction — narrow with sinceRev/sinceTs.',
   },
   bootstrap: { measuredBytes: 55654, budgetBytes: 78000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: 'Deliberately large — loads every use case in one call; 55,572 B set the floor for the ' +
     'enforced ceiling. Does NOT scale with fleet data: ~52,344 B is STATIC prose (GUIDES sections), ' +
     'plus optional admin-curated content-registry overrides and a clusterBlock that grows with ' +
     'CLUSTER count (2-3), not nodes/sessions/missions. The 101KB->54KB swing since the incident was ' +
     'override prose in the registry, not data growth. Fix is trimming prose, not capping a list.' },
-  data_keys: { measuredBytes: 55967, budgetBytes: 78000, bound: 'NOTHING', verdict: 'NEEDS-SUMMARY', note: 'Schema is {node} only — its dataset arg is ignored; enumerates all keys. No narrowing argument.' },
+  data_keys: {
+    measuredBytes: 61574, budgetBytes: 78000, bound: 'PAGINATED', verdict: 'NEEDS-CAP',
+    note: 'PRE-PAGING 61,574 B and climbing — it was 55,967 B at the audit and reached 94% of the ' +
+      'ceiling before anyone touched it, purely from the fleet issuing keys. Its handler took ' +
+      '`_args` and enumerated everything. Now limit/offset with a 25 default AT THE MCP LAYER ONLY: ' +
+      'GET /data/keys is what the web UI Data page reads.',
+  },
   cc_sessions: { measuredBytes: 20578, budgetBytes: 29000, bound: 'NOTHING', verdict: 'NEEDS-SUMMARY', note: '~950 B per session x 55.' },
   windows_terminal_list: { measuredBytes: 52395, budgetBytes: 73000, bound: 'NOTHING', verdict: 'NEEDS-SUMMARY', note: '~950 B per terminal x 55.' },
   mission_graph: { measuredBytes: 42771, budgetBytes: 60000, bound: 'NOTHING', verdict: 'NEEDS-CAP', note: 'Nodes+edges for every mission.' },
@@ -217,8 +238,15 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
   session_dag: { measuredBytes: 2213, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   data_search: { measuredBytes: 108, budgetBytes: 25000, bound: 'CALLER_LIMIT_SANE_DEFAULT', verdict: 'SAFE' },
   data_query: {
-    measuredBytes: 65856, budgetBytes: 92000, bound: 'NOTHING', verdict: 'NEEDS-SUMMARY',
-    note: 'TRUNCATED at the ceiling today. Returns the whole named dataset; datasets are user-extensible so no static per-tool number is right — the row cap belongs in the data service (follow-up bl_47b5c8d8). No narrowing argument.',
+    measuredBytes: 65856, budgetBytes: 92000, bound: 'PAGINATED', verdict: 'NEEDS-CAP',
+    note: 'PRE-PAGING 962,799 B on the `knowledge` dataset (997 records x ~966 B summarised) — it ' +
+      'TRUNCATED at the ceiling and its schema offered no way to ask for less, the only true dead ' +
+      'end on the surface. Fixed in three places because one was not enough (bl_47b5c8d8): ' +
+      'top-level limit/offset with a 25 default at the MCP layer; a MAX_QUERY_ROWS ceiling in ' +
+      'DataService.query so the REST path and the natively-paging sql backend are bounded too; and ' +
+      'coercion of a numeric-STRING limit, which the relay sends and which made ' +
+      'slice(offset, offset+limit) CONCATENATE (10 + "50" = "1050" -> 1,040 rows). ' +
+      'Remeasure after deploy; datasets are user-extensible so this budget bounds the TOOL, not the data.',
   },
 };
 
@@ -333,8 +361,17 @@ export const EXT_AGGREGATOR_CAP_BYTES = 1024 * 1024;
  * out of convenience.
  */
 export const TRUNCATING_WITHOUT_NARROWING: Record<string, string> = {
-  data_query: 'schema is {dataset, query, key, node} — no limit/offset/cursor. Row cap belongs in the data service (bl_47b5c8d8).',
-  mission_workflow_list: 'schema is {node} only — returns every workflow doc body with no way to page.',
+  // EMPTY, and that is the point — every tool observed truncating now exposes a way
+  // to ask for less, so the marker's advice is always followable.
+  //
+  //   - data_query   (bl_47b5c8d8) took top-level limit/offset with a 25-row default;
+  //                  the hard row ceiling moved into DataService.query so the REST path
+  //                  and every backend are bounded too. 962,799 B -> a bounded page.
+  //   - mission_workflow_list  gained detail/limit/offset + a body projection and now
+  //                  measures 13,498 B, so it no longer truncates at all.
+  //
+  // Do not append here to make a failing guard pass. An entry is an admission that a
+  // tool truncates into a dead end; the fix is a paging/filter argument.
 };
 
 /**

@@ -627,3 +627,62 @@ have been done (§8a); `data_query` and `mission_workflow_list` remain.
 | `bl_47b5c8d8` | `data_query`/`data_keys` have no row cap; datasets are user-extensible |
 | `bl_c6d0921b` | `bootstrap`/`session_status` hang on prod (caller-identity resolution) |
 | `bl_bb31b031` | `tools/list` is 347 KB — a fixed connect-time context tax |
+
+## 11. Follow-through (2026-07-26, mission_ac9383fe)
+
+Every item in §10 is now closed. Re-measured live on node 117 through `POST /mcp`,
+so these are the bytes a conversation actually receives, not estimates.
+
+| tool | before | after | fix shape |
+|---|---:|---:|---|
+| `claudeai_list_plugins` | 1,156,396 | **32,995** | projection (capability COUNTS) — already landed, confirmed |
+| `mission_list` | 923,758 | **34,132** | projection + paging — already landed, confirmed |
+| `mission_query` | 960,675 | **34,102** | projection + paging — already landed, confirmed |
+| `data_query` | 962,799 | bounded page | row cap in the service + first-class `limit`/`offset` |
+| `data_keys` | 61,574 | bounded page | `limit`/`offset` at the MCP layer only |
+| `memory_map` | 827,724 | **36,053** | paging — plus honest `total`/`hasMore` |
+| `mission_workflow_list` | 65,829 | **13,498** | body projection + paging |
+| `mission_changes` | 65,829 | **23,013** | actor projection + paging |
+| `tools/list` | 350,402 | **~257,700** | deduplicate shared boilerplate |
+
+### What the follow-through changed about the audit's own conclusions
+
+**1. The `tools/list` tax was not spread across 244 tools — it was one paragraph.**
+The audit suggested trimming descriptions. Measured, tool descriptions are only
+95,746 B (27%); the input SCHEMAS are 233,632 B (67%), and inside them the
+per-property prose is 177,014 B — 50.5% of the whole catalogue. Of that, a single
+751-byte `node` routing paragraph, injected into 188 tools by `withNodeParam`, cost
+**141,188 B: 40.3% of the entire catalogue and 97% of all repeated-string waste.**
+Every conversation paid ~35K tokens for 188 copies of one paragraph.
+
+That is a fourth fix shape, distinct from the three in §8a: **shared boilerplate is
+multiplied by the surface, so its cost is length × tool count.** The paragraph is now
+261 B (the four facts a caller needs AT THE CALL SITE); the full explanation moved
+into `list_nodes`'s own description, where it is paid for once. Catalogue: 298,011 →
+205,294 B for this server's own tools, a 31% cut with no capability removed.
+
+**2. A BOUNDED answer is not automatically an HONEST one.** `memory_map` was already
+capped at 60 records — and still returned a bare array, so 60 of 1,323 was
+indistinguishable from a map that only HAS 60. A model reads the short list as
+complete and concludes a memory does not exist. Bounding and disclosure are separate
+fixes, and the first without the second converts a liveness bug into a correctness
+one. (The count moved 1,313 → 1,323 during the audit week: the monotonic growth is
+observable, not theoretical.)
+
+**3. `data_query` had a correctness bug hiding under the size bug.** `q.limit` was
+never coerced, and the relay serialises number args as strings, so
+`rows.slice(offset, offset + limit)` CONCATENATED: `10 + "50"` = `"1050"`, and a
+caller asking for 50 rows silently got 1,040. Found only by reading the path while
+fixing the size.
+
+**4. The row cap's number was set by a caller nobody had counted.** "Put the cap in
+the data service" is right, but `mission-store`, `workflow-store`, `mission-views-store`
+and `doc-store` all enumerate with an explicit `{limit: 10000}`. A cap below that
+would have silently truncated the mission, workflow and backlog stores — they would
+read as partly empty with no error anywhere. Hence two numbers: `MAX_QUERY_ROWS`
+(10,000) clears every internal enumeration exactly, and the small default that
+protects a conversation (25) sits at the MCP layer, where only LLM callers are
+affected and the web UI's REST path is untouched.
+
+`TRUNCATING_WITHOUT_NARROWING` is now **empty**: every tool observed truncating
+exposes a way to ask for less, so the marker's advice is always followable.
