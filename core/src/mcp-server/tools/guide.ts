@@ -271,6 +271,7 @@ GOTCHA: the vector DB is intentionally minimal — text/BM25 is the designed pat
 
   agents: `# Guide: run a Claude Code agent remotely
 GOAL: execute a Claude Code task on a host and monitor it.
+🔴 WHICH host is a real decision, not just routing: an agent needs the repo to EXIST there, and browser work needs a node whose headless Chrome can actually navigate — one in this fleet cannot, and it fails as a silent zero-request run, not an error. \`node_select({need:[...], repo:"/abs/path"})\` ranks them with reasons; teach what you learn back with \`node_profile\` (guide "nodes").
 
 SINGLE-NODE
 1. \`agent_execute(prompt, model?)\` → DETACHED run; returns an executionId BEFORE completion. model ∈ opus|sonnet|haiku or a claude-* id.
@@ -354,6 +355,7 @@ WHAT BELONGS IN A PROFILE: only what Core CANNOT observe. Online status, platfor
 \`capabilities\`/\`avoid\` are lowercase tokens matched EXACTLY against a need (\`claudeai-cookie\`, \`browser-navigation\`); an \`avoid\` hit ELIMINATES the node for that need. \`notes\` is prose for agents — deliberately never scored, so editing it cannot silently change where unattended work lands. A binding preference must be said in the structured fields. An unprofiled node is "nothing learned yet", never "unusable".`,
 
   'claude-ai': `# Guide: claude.ai web account + this connector's tools
+🔴 THESE TOOLS ONLY WORK ON A NODE HOLDING THE COOKIE, and the cookie is IP-PINNED — it cannot be copied between machines. Picking the wrong node fails as a 401/HTML, not as "wrong node". Ask before you call: \`node_select({need:["claudeai-cookie"]})\`, and when you learn which node holds it (or loses it), record that with \`node_profile\` — see guide("nodes"). Different nodes may hold cookies for DIFFERENT accounts, so the node you choose implicitly chooses the ACCOUNT.
 Read/operate the user's claude.ai:
 • \`list_claudeai_conversations\` → recent; \`read_conversation(uuid)\` → full message tree.
 • \`claudeai_create_conversation\` / \`claudeai_completion(uuid, prompt)\` → start / send (drains the SSE, returns text). \`delete_conversation\`.
@@ -681,7 +683,7 @@ export const BOOTSTRAP_SECTION_ORDER: readonly string[] = ['orientation', 'speak
 export const BOOTSTRAP_HEADER_DEFAULT = [
   '# lm-assist — capability bootstrap (you have now loaded ALL use cases for this session)',
   '',
-  'You called `bootstrap`, so the COMPLETE set of lm-assist use-case playbooks is below — you do not need to look anything else up to start. lm-assist COMPLEMENTS your local CLAUDE.md / memory / skills (it does NOT replace them; they work together — see ORIENTATION). Every tool takes an optional `node` (omit = the default host; pass it, after `list_nodes`, to target another machine). To re-read ONE topic later, call `guide(topic=...)`.',
+  'You called `bootstrap`, so the COMPLETE set of lm-assist use-case playbooks is below — you do not need to look anything else up to start. lm-assist COMPLEMENTS your local CLAUDE.md / memory / skills (it does NOT replace them; they work together — see ORIENTATION). Every tool takes an optional `node` (omit = the default host; pass it, after `list_nodes`, to target another machine). 🔴 When the work only succeeds on the RIGHT machine — a node-bound credential, a working browser, an elevated worker, a repo that exists there — do not guess and do not infer from a hostname: `node_select` ranks the nodes with reasons, and `node_profile` is where you WRITE BACK what you learn so the next session does not rediscover it (guide "nodes"). To re-read ONE topic later, call `guide(topic=...)`.',
   '',
   'FLOW',
   '```mermaid',
