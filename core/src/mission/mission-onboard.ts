@@ -34,6 +34,12 @@ export function buildOnboardMission(
   m.origin = 'onboarded';
   m.manageMode = input.mode;
   m.binding = { sessionId: input.sid, node: input.node, kind: 'onboarded', boundAt: now };
+  // Onboarding is the ONE create path that is born already-running: it adopts a session
+  // that is live RIGHT NOW (bound on the line above), so `active` is the truthful state
+  // and it must never be offered to the scheduler for placement. Stated explicitly here
+  // rather than inherited from newMission's default, which is `waiting` precisely because
+  // every OTHER create path has no executor yet (bl_28543c78).
+  m.status = 'active';
   return m;
 }
 

@@ -2,14 +2,16 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { newMission, coarseActor } from '../mission/mission-model';
 
-test('newMission fills defaults and starts active', () => {
+test('newMission fills defaults and starts waiting (schedulable, no executor yet)', () => {
   const m = newMission(
     { title: 'T', objective: 'Do X', ownerNode: 'gw4-1', createdBy: coarseActor('api', 'gw4-1', 1000) },
     1000,
     () => 'mission_abc',
   );
   assert.strictEqual(m.id, 'mission_abc');
-  assert.strictEqual(m.status, 'active');
+  // Was 'active' — see mission-birth-and-placement.test.ts. `active` means an executor
+  // is already running it, so a newborn (binding:null) mission asserting it was the bug.
+  assert.strictEqual(m.status, 'waiting');
   assert.strictEqual(m.env.isolation, 'cloud');
   assert.deepStrictEqual(m.env.resources, []);
   assert.deepStrictEqual(m.dependsOn, []);

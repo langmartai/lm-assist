@@ -24,7 +24,9 @@ test('a tracked change bumps rev, appends inline history, spills durably', async
   const saved = await getMission('mission_a', port);
   assert.equal(saved!.rev, 2);
   assert.equal(saved!.history.length, 1);
-  assert.deepEqual(saved!.history[0].changes.status, { from: 'active', to: 'done' });
+  // 'waiting' is newMission's birth status (mk builds via newMission) — this test is about
+  // rev/history mechanics, not the birth state itself.
+  assert.deepEqual(saved!.history[0].changes.status, { from: 'waiting', to: 'done' });
   assert.equal(saved!.lastUpdatedBy.channel, 'mcp');
   assert.ok(hp.db.has('mission_a:2'));
 });

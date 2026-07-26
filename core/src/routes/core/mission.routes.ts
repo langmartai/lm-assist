@@ -2,6 +2,7 @@ import { CC_EFFORT_LEVELS } from '../../terminal/types';
 /** Mission CRUD + controller status. Bare {success,data}/{success,error} envelope (like worker.routes). */
 import type { RouteHandler, RouteContext } from '../index';
 import { randomBytes } from 'crypto';
+import * as path from 'path';
 import { touchActivity, trackResumedNative } from '../../mission/mission-session-reaper';
 import { newMission, Mission, MissionStatus, Isolation, coarseActor, MissionActor, place, ExecutorState, MissionBinding, validateResultsPatch } from '../../mission/mission-model';
 import { resolveMcpActor, upgradeControllerActor } from '../../mission/mission-actor';
@@ -128,6 +129,30 @@ function ccEffortOrUndefined(v: string | undefined): string | undefined {
   return v && (CC_EFFORT_LEVELS as readonly string[]).includes(v) ? v : undefined;
 }
 
+/**
+ * `env.repo` must be ABSOLUTE.
+ *
+ * A relative repo is resolved with `path.resolve(process.cwd(), repo)` when the worktree
+ * is created (mission-controller.ts). Core's cwd is its own install directory — for a
+ * prod npm install that is `<npm-root>/lm-assist/core` — so `repo:"lm-assist"` became
+ * `<npm-root>/lm-assist/core/lm-assist/.claude/worktrees/mission-<id>` and git died with
+ * a bare `spawnSync git ENOENT`, which reads as "git is not installed" and is actually
+ * "that directory does not exist". Refusing here names the real problem to the caller
+ * instead of surfacing a misleading failure three layers down.
+ *
+ * Verified before enabling: all 51 repo-carrying missions in the live prod store already
+ * use absolute paths, so this rejects nothing that previously worked.
+ */
+function repoRefusal(v: string | undefined): Envelope | null {
+  if (!v || path.isAbsolute(v)) return null;
+  return fail(
+    'INVALID_REPO',
+    `env.repo must be an absolute path — got "${v}". A relative repo resolves against Core's ` +
+    `install directory, not your project, and fails later as a confusing git ENOENT. ` +
+    `Use the full path (e.g. "/home/<user>/${v.replace(/^\.\/+/, '')}").`,
+  );
+}
+
 async function actorFor(b: Record<string, unknown>): Promise<MissionActor> {
   const hint = b._actor as { channel?: string; toolUseId?: string | null } | undefined;
   delete (b as any)._actor;
@@ -153,6 +178,15 @@ export async function handleCreate(b: Record<string, unknown>, ownerNode: string
     if (!placementAllowed(envHost, records, thisNode(), getMyCluster())) {
       return fail('HOST_NOT_IN_CLUSTER', `host "${envHost}" is not in this node's cluster`);
     }
+  }
+  const badRepo = repoRefusal(str(env.repo));
+  if (badRepo) return badRepo;
+  // Match handlePatch: an unknown effort is REFUSED, not silently coerced to undefined.
+  // The comment below has always claimed create rejects; until now only patch did, so a
+  // typo'd level was accepted with a 200 and the executor quietly launched at the default.
+  const rawEffort = str(env.effort);
+  if (rawEffort && !ccEffortOrUndefined(rawEffort)) {
+    return fail('INVALID_EFFORT', `env.effort must be one of ${CC_EFFORT_LEVELS.join(', ')} — got "${rawEffort}"`);
   }
   const tags = (b.tags && typeof b.tags === 'object') ? normalizeTags(b.tags as Record<string, string[]>) : {};
   const parentId = (b.parentId === null || b.parentId === '') ? null : (str(b.parentId) ?? null);
@@ -319,7 +353,11 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
       }
       m.env.host = newHost;
     }
-    if (str(e.repo) !== undefined) m.env.repo = str(e.repo);
+    if (str(e.repo) !== undefined) {
+      const badRepo = repoRefusal(str(e.repo));
+      if (badRepo) return badRepo;
+      m.env.repo = str(e.repo);
+    }
     if (str(e.branch) !== undefined) m.env.branch = str(e.branch);
     if (arr(e.resources)) m.env.resources = arr(e.resources)!;
     if (e.exclusive !== undefined) m.env.exclusive = e.exclusive === true || e.exclusive === 'true';
@@ -734,7 +772,29 @@ export async function handlePlace(id: string, port?: MissionDataPort, leader?: L
   const m = await getMission(id, port);
   if (!m) return fail('NOT_FOUND', `no mission ${id}`);
   const all = await listMissions(port);
-  return ok(place(m, all));
+  // The STATUS gate first (bl_28543c78). `place()` is deliberately status-blind — the
+  // controller calls it on missions it has already selected, and making it status-aware
+  // would break its nudge/rebind paths, which run on `active` missions by design. But as
+  // an ANSWER TO A CALLER, "go:true" for a mission the controller will never look at is a
+  // false confirmation: it reads as "this is queued" while nothing will ever start it.
+  // So the API surface applies the same filter the scheduler does, and names the status
+  // as the disqualifier.
+  const { isSchedulableStatus } = require('../../mission/mission-scheduler') as typeof import('../../mission/mission-scheduler');
+  const schedulable = isSchedulableStatus(m.status);
+  if (!schedulable) {
+    const why = m.status === 'active'
+      ? (m.binding?.sessionId
+        ? `an executor is already running it (${m.binding.sessionId})`
+        : 'it is marked as already running, but has no binding — it will never be started; set status "waiting" to queue it')
+      : m.status === 'paused' ? 'it is deliberately held by a human'
+        : 'it is terminal';
+    return ok({
+      go: false, reason: 'status', status: m.status, schedulable: false,
+      detail: `mission ${id} is "${m.status}", which the controller never schedules from — ${why}. `
+        + `Schedulable statuses: draft, waiting, blocked.`,
+    });
+  }
+  return ok({ ...place(m, all), status: m.status, schedulable });
 }
 
 export async function handleExecutorStatus(
@@ -1789,6 +1849,14 @@ export async function handleMissionSpawn(id: string, b: Record<string, unknown>,
   const nativeDeps = await buildDeps(m);
   const newBinding = await startNative(m, decision, nativeDeps);
   (m as Record<string, unknown>).binding = newBinding;
+  // An executor is now RUNNING this mission, so it must leave the schedulable set —
+  // exactly what the controller's own placement path does after startExecutor
+  // (mission-controller.ts). Without this, a manually-spawned mission stayed `waiting`
+  // and reappeared in computeSchedule().ready on EVERY tick despite having a live
+  // worker: 5 of 5 `ready` missions on prod were already bound. That is what made
+  // "sits in ready and is never placed" look like a broken placement loop — the loop
+  // was fine, the list was lying.
+  (m as Record<string, unknown>).status = 'active';
   try { await persist(m); } catch { /* best-effort — the session is up either way */ }
   const { missionSessionTitle, missionSessionName, missionEffort } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
   return ok({ binding: newBinding, name: missionSessionTitle(m as never) });

@@ -34,7 +34,12 @@ function makeMission(overrides: Partial<Mission>): Mission {
     adjustments: [],
     createdBy: { kind: 'user', channel: 'user', node: 'gw1', at: 0 },
     lastUpdatedBy: { kind: 'user', channel: 'user', node: 'gw1', at: 0 },
-    status: 'active',
+    // 'waiting' is the birth status (newMission). These handlePlace tests are about the
+    // dependency / isolation chain, so the fixture must be a mission the scheduler would
+    // actually look at — an 'active' one is now correctly refused with reason:'status'
+    // before that chain is ever evaluated (bl_28543c78). Status-specific behaviour is
+    // covered in mission-birth-and-placement.test.ts.
+    status: 'waiting',
     ownerNode: 'gw1',
     createdAt: 0,
     updatedAt: 0,

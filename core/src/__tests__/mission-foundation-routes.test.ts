@@ -28,7 +28,9 @@ test('patch of a tracked field records a grouped diff + bumps rev + sets lastUpd
   const m = r.data as Mission;
   assert.equal(m.rev, 2);
   const last = m.history[m.history.length - 1];
-  assert.deepEqual(last.changes.status, { from: 'active', to: 'paused' });
+  // 'waiting' is the birth status from handleCreate — this test asserts grouped-diff
+  // mechanics, not the birth state.
+  assert.deepEqual(last.changes.status, { from: 'waiting', to: 'paused' });
   assert.deepEqual(last.changes.title, { from: 't', to: 't2' });
 });
 

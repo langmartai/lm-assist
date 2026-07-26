@@ -250,6 +250,11 @@ export function newMission(input: NewMissionInput, now: number, genId: () => str
       branch: input.env?.branch,
       resources: input.env?.resources ?? [],
       exclusive: input.env?.exclusive,
+      // `env` is rebuilt field-by-field, so every field must be listed HERE or it is
+      // silently discarded no matter how carefully the caller and the route validated
+      // it. `effort` was missing: the MCP top-level alias (liftEffort) and the route's
+      // own ccEffortOrUndefined check both worked, and the value died on this line.
+      effort: input.env?.effort,
     },
     binding: null,
     progress: null,
@@ -260,7 +265,13 @@ export function newMission(input: NewMissionInput, now: number, genId: () => str
     lastUpdatedBy: input.createdBy,
     rev: 1,
     history: [],
-    status: 'active',
+    // A newborn mission has NO executor (binding is null two fields up), so it must be
+    // born in a state the scheduler will start: SCHEDULABLE is {draft,waiting,blocked}
+    // (mission-scheduler.ts). `active` is a RUNTIME state the controller writes only
+    // after startExecutor succeeds, and that isRunning()/epic rollups read as "an
+    // executor IS on this". Born `active`, every API-created mission was invisible to
+    // the scheduler forever and never received an executor (bl_28543c78).
+    status: 'waiting',
     ownerNode: input.ownerNode,
     createdAt: now,
     updatedAt: now,

@@ -18,6 +18,16 @@ export const CTL_SERIALIZE_DIM = 'ctl:serialize-group';
 /** Statuses that are candidates to START now (active=running, paused=held, done/failed=terminal are excluded). */
 const SCHEDULABLE = new Set<MissionStatus>(['draft', 'waiting', 'blocked']);
 
+/**
+ * THE status filter — exported so every surface answers "would the controller start this?"
+ * from ONE definition. `mission_place` used to re-derive placement WITHOUT it and so
+ * returned `go:true` for missions the controller would never look at (bl_28543c78); that
+ * false confirmation is what hid the born-`active` bug for as long as it did.
+ */
+export function isSchedulableStatus(s: MissionStatus): boolean {
+  return SCHEDULABLE.has(s);
+}
+
 export function computeSchedule(missions: Mission[]): Schedule {
   const byId = new Map(missions.map((m) => [m.id, m]));
 

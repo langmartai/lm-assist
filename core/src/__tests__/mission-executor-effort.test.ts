@@ -67,8 +67,14 @@ test('no effort given → payload untouched', () => {
 // mission stored no effort and the executor launched at default while the caller believed
 // it had asked for max. (Caught live: env.effort came back empty on a real create.)
 test('effort must survive create/patch — it is whitelisted, not free-form', () => {
+  // Tests run COMPILED from dist-test/__tests__/, so '../routes/...' resolved to
+  // dist-test/routes/core/mission.routes.ts — which does not exist (no .ts in the build
+  // output). This guard therefore threw ENOENT on every run instead of guarding, and the
+  // effort drop it exists to catch shipped anyway. Reach back into the SOURCE tree:
+  // dist-test/__tests__ -> core -> src/...  (behavioural coverage now also lives in
+  // mission-birth-and-placement.test.ts; this stays as the whitelist-shape guard.)
   const src = require('node:fs').readFileSync(
-    require('node:path').join(__dirname, '../routes/core/mission.routes.ts'), 'utf8') as string;
+    require('node:path').join(__dirname, '../../src/routes/core/mission.routes.ts'), 'utf8') as string;
   const create = src.slice(src.indexOf('resources: arr(env.resources)'));
   assert.match(create.slice(0, 600), /effort:\s*ccEffortOrUndefined/, 'create must carry env.effort');
   assert.match(src, /if \(e\.effort !== undefined\)/, 'patch must carry env.effort');
