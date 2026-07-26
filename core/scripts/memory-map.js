@@ -30,6 +30,16 @@ const fRefs = list(opt('references'));
 const q = (opt('q') || '').toLowerCase().split(/\s+/).filter(Boolean);
 const since = parseInt(opt('since', '0'), 10);
 const limit = parseInt(opt('limit', '0'), 10);
+// `--offset` + `--meta` exist for the MCP layer (backlog bl_8a737823). The map grows
+// MONOTONICALLY — records are never pruned, and every host mirror re-emits the full
+// set — so a bounded page is mandatory, but a bare array of 60 rows is
+// indistinguishable from a map that only HAS 60. `--meta` wraps the output in
+// {total, shown, offset, limit, records} so the caller can tell.
+// ADDITIVE ON PURPOSE: without `--meta` the output shape is byte-identical to before,
+// because `GET /memory/map` feeds the web UI's MemoryBrowser, which does
+// `Array.isArray(r) ? r : []` and would silently render nothing for an envelope.
+const offset = Math.max(0, parseInt(opt('offset', '0'), 10) || 0);
+const wantMeta = has('meta');
 const wantRecord = opt('record');
 const wantStats = has('stats');
 const format = opt('format', wantRecord ? 'md' : 'json');
@@ -181,10 +191,13 @@ function appendLog(obj){ fs.appendFileSync(CHLOG, JSON.stringify(obj) + String.f
     return;
   }
 
-  if (limit) recs = recs.slice(0, limit);
+  const total = recs.length;
+  recs = recs.slice(offset, limit ? offset + limit : undefined);
 
   if (format === 'json') {
-    console.log(JSON.stringify(recs.map(r => level === 'complete' ? r : { recordId: r.recordId, node: r.node, project: r.project, file: r.file, kind: r.kind, title: r.title, brief: r.brief, type: r.type, category: r.category, validity: r.validity, referencedProjects: r.referencedProjects, recordedAtMs: r.recordedAtMs }), null, 2));
+    const project = (r) => (level === 'complete' ? r : { recordId: r.recordId, node: r.node, project: r.project, file: r.file, kind: r.kind, title: r.title, brief: r.brief, type: r.type, category: r.category, validity: r.validity, referencedProjects: r.referencedProjects, recordedAtMs: r.recordedAtMs });
+    const rows = recs.map(project);
+    console.log(JSON.stringify(wantMeta ? { total, shown: rows.length, offset, limit, records: rows } : rows, null, 2));
   } else {
     for (const r of recs) {
       if (level === 'complete') console.log(`## ${r.title}\n_${r.node} · ${r.project} · ${r.file} · ${r.type}_\n\n${r.complete}\n`);

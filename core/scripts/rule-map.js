@@ -40,6 +40,10 @@ const fOsDependent = has('os-dependent');
 const fActive = has('active');
 const q = (opt('q') || '').toLowerCase().split(/\s+/).filter(Boolean);
 const limit = parseInt(opt('limit', '0'), 10);
+// See memory-map.js for why these exist and why they are additive: the default
+// (no `--meta`) output shape is unchanged for the REST route and the web UI.
+const offset = Math.max(0, parseInt(opt('offset', '0'), 10) || 0);
+const wantMeta = has('meta');
 const wantRecord = opt('record');
 const wantStats = has('stats');
 const format = opt('format', wantRecord ? 'md' : 'json');
@@ -201,10 +205,12 @@ function appendLog(obj){ fs.appendFileSync(CHLOG, JSON.stringify(obj) + String.f
     return;
   }
 
-  if (limit) recs = recs.slice(0, limit);
+  const total = recs.length;
+  recs = recs.slice(offset, limit ? offset + limit : undefined);
 
   if (format === 'json') {
-    console.log(JSON.stringify(recs.map(r => level === 'complete' ? r : { recordId: r.recordId, node: r.node, project: r.project, source: r.source, scope: r.scope, file: r.file, title: r.title, brief: r.brief, category: r.category, loadCondition: r.loadCondition, paths: r.paths, os: r.os, osDependent: r.osDependent, active: r.active, recordedAtMs: r.recordedAtMs }), null, 2));
+    const rows = recs.map(r => level === 'complete' ? r : { recordId: r.recordId, node: r.node, project: r.project, source: r.source, scope: r.scope, file: r.file, title: r.title, brief: r.brief, category: r.category, loadCondition: r.loadCondition, paths: r.paths, os: r.os, osDependent: r.osDependent, active: r.active, recordedAtMs: r.recordedAtMs });
+    console.log(JSON.stringify(wantMeta ? { total, shown: rows.length, offset, limit, records: rows } : rows, null, 2));
   } else {
     for (const r of recs) {
       const cond = r.loadCondition === 'always' ? 'always' : 'paths:' + r.paths.join('|');

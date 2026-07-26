@@ -876,6 +876,7 @@ export const memoryMapToolDef = {
       q: { type: 'string', description: 'Keyword query — all terms must appear in title+brief+complete.' },
       since: { type: 'number', description: 'Only records modified after this Unix ms timestamp.' },
       limit: { type: 'number', description: 'Max records to return. DEFAULT 60 — the full map is 1,300+ records / ~800KB and grows forever. Narrow with q/projects/nodes/since instead of raising this; 0 = all (subject to the per-result byte ceiling).' },
+      offset: { type: 'number', description: 'Page offset (default 0). The response reports total/shown/hasMore and, when more remain, the exact next call.' },
       stats: { type: 'boolean', description: 'Return count/stats summary only instead of records.' },
     },
   },
@@ -915,7 +916,8 @@ export const ruleMapToolDef = {
       always: { type: 'boolean', description: 'If true, only return rules with loadCondition=always.' },
       category: { type: 'string', description: 'Comma-separated categories to filter.' },
       q: { type: 'string', description: 'Keyword query over rule title+brief+complete+paths.' },
-      limit: { type: 'number', description: 'Max records to return (0 = all).' },
+      limit: { type: 'number', description: 'Max records to return. DEFAULT 60; 0 = all (subject to the per-result byte ceiling).' },
+      offset: { type: 'number', description: 'Page offset (default 0). The response reports total/shown/hasMore and, when more remain, the exact next call.' },
       stats: { type: 'boolean', description: 'Return count/stats summary only instead of records.' },
       os: { type: 'string', description: 'Filter to rules matching this OS slug (e.g. windows, linux, macos).' },
       os_dependent: { type: 'boolean', description: 'If true, only return rules that declare an os constraint.' },
@@ -2042,6 +2044,40 @@ function runCli(argv: string[]): Promise<string> {
   });
 }
 
+/**
+ * Default page for the `*_map` tools. These maps grow MONOTONICALLY — records are
+ * never pruned, and each host mirror re-emits the whole set — so their size is a
+ * function of how long the fleet has been running, not of anything the caller did.
+ */
+const MAP_DEFAULT_LIMIT = 60;
+
+/**
+ * Turn a `*-map.js --meta` envelope into an honest page.
+ *
+ * The bound alone was not enough. `memory_map` already defaulted to 60 records, but
+ * it returned a BARE ARRAY: 60 rows out of 1,313 is indistinguishable from a map
+ * that only HAS 60, and a model reads the short list as the complete one and
+ * concludes a memory does not exist. `total`/`hasMore` plus the exact next call are
+ * what make a bounded answer safe to reason from — the same rule as the truncation
+ * marker: say what was dropped and how to get it.
+ */
+export function mapPage(raw: string, nextCall: (offset: number) => string): string {
+  let env: { total?: number; shown?: number; offset?: number; limit?: number; records?: unknown[] };
+  try { env = JSON.parse(raw); } catch { return raw; }   // stats/md mode — pass through
+  if (!env || !Array.isArray(env.records)) return raw;
+  const total = env.total ?? env.records.length;
+  const offset = env.offset ?? 0;
+  const shown = env.records.length;
+  const hasMore = offset + shown < total;
+  return JSON.stringify({
+    total, shown, offset, limit: env.limit ?? 0, hasMore,
+    ...(hasMore
+      ? { more: `${total - offset - shown} more record(s) not shown — next page: ${nextCall(offset + shown)}` }
+      : {}),
+    records: env.records,
+  }, null, 2);
+}
+
 async function handleMemoryMap(args: Record<string, unknown>): Promise<McpToolResult> {
   const argv: string[] = [cliPath('memory-map.js'), '--port', apiPort(), '--format', 'json'];
   if (args.level) argv.push('--level', String(args.level));
@@ -2055,10 +2091,16 @@ async function handleMemoryMap(args: Record<string, unknown>): Promise<McpToolRe
   // 1,313 records (~630B each) and grows monotonically forever — every memory ever
   // written on any node. Unbounded by default it is a guaranteed future incident, so the
   // caller now opts INTO a bigger page rather than opting out of an unbounded one.
-  argv.push('--limit', String(intArg(args.limit, 60)));
+  const limit = intArg(args.limit, MAP_DEFAULT_LIMIT);
+  const offset = intArg(args.offset, 0);
+  argv.push('--limit', String(limit));
+  if (offset) argv.push('--offset', String(offset));
   if (args.stats) argv.push('--stats');
+  else argv.push('--meta');   // stats has its own shape; never wrap it
   try {
-    return ok(await runCli(argv));
+    const raw = await runCli(argv);
+    if (args.stats) return ok(raw);
+    return ok(mapPage(raw, (next) => `memory_map({offset:${next}, limit:${limit}})`));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -2083,13 +2125,23 @@ async function handleRuleMap(args: Record<string, unknown>): Promise<McpToolResu
   if (args.always) argv.push('--always');
   if (args.category) argv.push('--category', String(args.category));
   if (args.q) argv.push('--q', String(args.q));
-  if (args.limit) argv.push('--limit', String(args.limit));
+  // Was `if (args.limit)` — an optional pass-through with NO default and no clamp, so
+  // a plain call returned every rule on every node. Small today (2,392 B) only because
+  // the fleet has few rules; it is the same monotonic shape as memory_map, one incident
+  // behind it. Same default + honest paging.
+  const limit = intArg(args.limit, MAP_DEFAULT_LIMIT);
+  const offset = intArg(args.offset, 0);
+  argv.push('--limit', String(limit));
+  if (offset) argv.push('--offset', String(offset));
   if (args.stats) argv.push('--stats');
+  else argv.push('--meta');
   if (args.os) argv.push('--os', String(args.os));
   if (args.os_dependent) argv.push('--os-dependent');
   if (args.active) argv.push('--active');
   try {
-    return ok(await runCli(argv));
+    const raw = await runCli(argv);
+    if (args.stats) return ok(raw);
+    return ok(mapPage(raw, (next) => `rule_map({offset:${next}, limit:${limit}})`));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
