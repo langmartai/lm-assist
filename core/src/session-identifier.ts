@@ -453,8 +453,17 @@ function extractScreenNgrams(screenLines: string[], maxNgrams: number = 500): st
 /**
  * Build searchable text from session cache data.
  * Includes responses, tool inputs/outputs, and user prompts.
+ *
+ * CAPPED to the most recent {@link SESSION_TEXT_MAX_BYTES}, matching what the
+ * JSONL fallback below has always done. Sessions on a long-lived host reach
+ * 163MB, and every n-gram is a full scan of this string: measured, 50 `includes`
+ * over 100MB costs 1179ms of unbroken main-thread time, so one oversized
+ * candidate alone produced a 17s stall. The screen being matched only ever shows
+ * RECENT output, so older history cannot match anyway — keep the tail.
  */
-function buildSessionText(sessionData: {
+const SESSION_TEXT_MAX_BYTES = 200_000;
+
+export function buildSessionText(sessionData: {
   userPrompts: Array<{ text: string }>;
   responses: Array<{ text: string }>;
   toolUses: Array<{ input: any }>;
@@ -481,7 +490,15 @@ function buildSessionText(sessionData: {
     }
   }
 
-  return parts.join('\n');
+  // Take the tail without materialising the whole join for huge sessions.
+  const kept: string[] = [];
+  let size = 0;
+  for (let i = parts.length - 1; i >= 0 && size < SESSION_TEXT_MAX_BYTES; i--) {
+    kept.push(parts[i]);
+    size += parts[i].length + 1;
+  }
+  kept.reverse();
+  return kept.join('\n');
 }
 
 /**

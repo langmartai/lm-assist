@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fsp = require('fs/promises');
 import * as osmod from 'os';
 import * as pathmod from 'path';
-import { SessionIdentifier, listSessionDir, clearDirListingCache } from '../session-identifier';
+import { SessionIdentifier, listSessionDir, clearDirListingCache, buildSessionText } from '../session-identifier';
 // Bind the REAL module objects: `import * as x` compiles to an __importStar copy
 // whose properties are getters, and mock.method reads descriptor.value on those.
 import pu = require('../utils/process-utils');
@@ -170,6 +170,33 @@ test('falls back to the synchronous call when no snapshot exists', () => {
     mock.restoreAll();
     pu.clearProcessSnapshot();
   }
+});
+
+// ─── Session text: capped, tail-biased ──────────────────────────────
+
+test('caps the searchable session text and keeps the most RECENT content', () => {
+  // Sessions on a long-lived host reach 163MB. Every n-gram is a full scan of
+  // this string — 50 `includes` over 100MB costs 1179ms of unbroken main-thread
+  // time (measured), which is how one candidate produced a 17s stall.
+  const responses = [];
+  for (let i = 0; i < 20_000; i++) responses.push({ text: `line ${i} ` + 'x'.repeat(200) });
+  responses.push({ text: 'NEEDLE_MOST_RECENT' });
+
+  const out = buildSessionText({ userPrompts: [], responses, toolUses: [] });
+
+  assert.ok(out.length <= 220_000, `text must be capped, got ${out.length} bytes`);
+  assert.ok(out.includes('NEEDLE_MOST_RECENT'), 'the newest content must survive the cap');
+  assert.ok(!out.includes('line 0 '), 'the oldest content is what gets dropped');
+});
+
+test('leaves a small session completely intact', () => {
+  const out = buildSessionText({
+    userPrompts: [{ text: 'hello' }],
+    responses: [{ text: 'world' }],
+    toolUses: [{ input: { a: 1 } }],
+  });
+  assert.ok(out.includes('hello') && out.includes('world') && out.includes('"a":1'),
+    `a small session must not be truncated at all, got: ${out}`);
 });
 
 // ─── Session-dir listing: bounded fan-out ──────────────────────────────
