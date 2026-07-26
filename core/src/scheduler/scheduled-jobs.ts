@@ -307,6 +307,30 @@ export function makeBuiltinJobs(nowMs: number): ScheduledJob[] {
       createdAt: at,
       updatedAt: at,
     },
+    {
+      id: 'executor-reaper',
+      name: 'Executor reaper',
+      description:
+        'Retire mission executor panes whose work is finished: mission done/failed + pane idle + context exhausted (or idle past the threshold). Harvests results from the merge commits BEFORE reaping so the record is never silently empty. Never touches an active/waiting mission, a mid-turn pane, an onboarded session, or a pane it cannot resolve to a mission. SHIPS DRY-RUN — arm with config.dryRun=false.',
+      type: 'executor-reaper',
+      enabled: true,
+      intervalMinutes: 60,
+      config: {
+        // dryRun TRUE → reports the full would-reap list without killing anything.
+        // The human arms it after reviewing that list.
+        dryRun: true,
+        ctxExhaustedPct: 95,
+        idleMinutes: 120,
+        graceMinutes: 30,
+        maxReapsPerRun: 10,
+      },
+      lastRunAt: null,
+      lastResult: null,
+      lastStatus: null,
+      builtin: true,
+      createdAt: at,
+      updatedAt: at,
+    },
   ];
 }
 
@@ -426,6 +450,11 @@ class ScheduledJobs {
     {
       const { registerWorktreeGc } = require('./worktree-gc');
       registerWorktreeGc(this);
+    }
+
+    {
+      const { registerExecutorReaper } = require('./executor-reaper');
+      registerExecutorReaper(this);
     }
 
     {
