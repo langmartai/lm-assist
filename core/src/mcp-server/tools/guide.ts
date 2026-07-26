@@ -335,7 +335,23 @@ Display names are non-unique, decorated, and are NOT the set of targetable nodes
 1. \`list_nodes\` → the authoritative hostIds (the only targetable set).
 2. \`mission_control_status\` → resolves a decorated display name to its hostId.
 3. \`auth_status({node:<hostId>})\` → confirm the per-node fact against the id, not the label.
-A \` (dev)\` suffix marks a node's ENVIRONMENT (dev Core :3200 vs prod :3100), not a different machine.`,
+A \` (dev)\` suffix marks a node's ENVIRONMENT (dev Core :3200 vs prod :3100), not a different machine.
+
+🔴 WHICH NODE SHOULD THIS WORK RUN ON? — \`node_select\`, and TEACH what you learn
+Do not guess, and do not re-derive it from memory prose. \`node_select({need:[...]})\` — or \`node_select({missionId})\` for a mission — ranks the nodes in your cluster by combining LIVE facts (online, in-cluster, repos present, what \`session_footprints\` says is already running there) with the LEARNED \`node-profiles\` registry.
+
+It returns EVERY node it considered, best first:
+• eligible ones carry \`why[]\` — what earned the score;
+• ELIMINATED ones carry \`blockers[]\` — so "why not node X?" is always answerable;
+• \`recommended\` is a SUGGESTION. Read the candidates' \`notes\` and override it when you know better.
+
+**The registry is TAUGHT, and you are the one who teaches it.** It starts empty. The moment you learn that a node can or cannot do something — it holds an IP-pinned credential, its headless browser cannot navigate, a service must never be installed there — write it back:
+\`node_profile({node:"<hostId>", capabilities:["claudeai-cookie"], avoid:["browser-navigation"], notes:"why"})\`
+Only the fields you send change, so recording one lesson never clobbers another session's. Every fact this registry will ever hold cost some session a discovery; writing it back is what stops the next one paying again.
+
+WHAT BELONGS IN A PROFILE: only what Core CANNOT observe. Online status, platform, cluster, repos present and current load are read fresh at every selection — never copy them in. A declared fact goes stale silently, and a stale placement fact is worse than a missing one: it is confidently wrong in the direction of "yes, put work there".
+
+\`capabilities\`/\`avoid\` are lowercase tokens matched EXACTLY against a need (\`claudeai-cookie\`, \`browser-navigation\`); an \`avoid\` hit ELIMINATES the node for that need. \`notes\` is prose for agents — deliberately never scored, so editing it cannot silently change where unattended work lands. A binding preference must be said in the structured fields. An unprofiled node is "nothing learned yet", never "unusable".`,
 
   'claude-ai': `# Guide: claude.ai web account + this connector's tools
 Read/operate the user's claude.ai:
@@ -395,7 +411,8 @@ A **Mission** is a durable, cross-project record of WHAT to achieve. The fleet-e
 🔴 ENV — three fields that misfire SILENTLY
 • **\`env.repo\` MUST be an ABSOLUTE path.** A bare name (\`"lm-assist"\`) is resolved against Core's own install directory and the spawn dies with \`git worktree add …/node_modules/lm-assist/core/lm-assist/.claude/worktrees/… spawnSync git ENOENT\` — which reads like a missing git binary and is actually a bad cwd. Use \`/home/ubuntu/<repo>\`.
 • **\`env.effort\` (\`low|medium|high|xhigh|max\`) OVERRIDES the priority default — so setting it can DOWNGRADE.** Omitted, a \`critical\`/\`high\` mission gets \`max\` and everything else inherits the CLI default. Writing \`effort:"high"\` onto a high-priority mission therefore makes it WEAKER than leaving it out. Omit to inherit; set \`max\` only deliberately (subtle root-cause hunts), \`low\` for mechanical deploy/sync work. An unknown level is refused at the boundary (\`INVALID_EFFORT\`) rather than stored.
-• **\`env.isolation\` defaults to \`cloud\`.** A cloud container holds no IP-pinned claude.ai cookie and cannot reach node-local resources — choose \`worktree\` (with an absolute \`env.repo\`) whenever the work must be verified on the node itself.
+• **\`env.isolation\` defaults to NATIVE, and the flavour follows the work:** give an \`env.repo\` and you get \`worktree\` (branch isolation); give none and you get \`shared\` (research, fleet ops — it runs in a per-mission workspace under \`~/.lm-assist/mission-workspaces/\`). \`cloud\` is still fully supported but is now an explicit opt-in, because NEITHER \`mission_spawn\` NOR the supervisor safety net can place a cloud mission (\`CLOUD_PLACEMENT\` — cloud needs \`ccr_cloud_start\`), so a cloud default made the commonest mission the one no automated path could rescue. A cloud container also holds no IP-pinned claude.ai cookie and cannot reach node-local resources.
+• **\`env.host\` is chosen at PLACEMENT, not create.** Leave it unset and the controller picks with \`node_select\` (live facts + the learned \`node-profiles\` registry) and records the reasoning; the safety net picks deterministically if the controller never does. Set it explicitly only when the work must run on a specific machine — and if you learn WHY it must, write that back with \`node_profile\` so the next mission is placed correctly without being told. See guide("nodes").
 
 EXECUTORS: a mission's worker is either a **cloud** CCR session, or a **native** local session the controller launches in a git worktree with \`claude --remote-control\` (the session self-registers a cloud handle so it's remotely controllable — the controller reads from its local transcript and drives it via the cloud relay). An executor may be an **orchestrator** that spawns **sub-workers** under the same mission. Controller-spawned sessions are titled \`Mission: <title> · <id>\`.
 

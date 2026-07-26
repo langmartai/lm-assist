@@ -850,6 +850,13 @@ export interface SupervisorDeps {
    *  drift from the path already proven to place cleanly. Absent → the net journals
    *  starvation but never places. */
   spawnMission?: (id: string) => Promise<{ ok: boolean; code?: string; error?: string }>;
+  /** Deterministic node choice for a mission with no `env.host` — ranks on the
+   *  STRUCTURED profile fields + live facts, with `notes` prose excluded, so
+   *  unattended placement can never be moved by someone editing free text.
+   *  Absent → the net spawns un-hosted (legacy behaviour: locally). */
+  selectNode?: (m: Mission) => Promise<{ node: string; why: string[] } | null>;
+  /** Persist a mission the net has just modified (host choice / binding). */
+  saveMission?: (m: Mission) => Promise<void>;
 }
 
 /**
@@ -1040,6 +1047,34 @@ async function placeStarvedMissions(starved: string[], deps: SupervisorDeps): Pr
       const records = await getClusterRecords();
       if (!placementAllowed(m.env.host, records, thisNode(), getMyCluster())) continue;
     } catch { continue; }
+
+    // ── No host chosen yet? Choose one DETERMINISTICALLY (bl_1c861246). ──
+    // `notes` prose is excluded from this ranking by construction — a node's free
+    // text must never move unattended placement. If the pick is not THIS node we do
+    // not pretend we can spawn there: mission_spawn launches locally, so we record
+    // the choice (real progress, and visible) and leave the actual start to the node
+    // that owns it. Silently spawning here instead would put the work on the wrong
+    // machine while reporting success.
+    if (!m.env.host && deps.selectNode) {
+      let chosen: { node: string; why: string[] } | null = null;
+      try {
+        chosen = await deps.selectNode(m);
+      } catch { /* selection is best-effort — fall through to the un-hosted spawn */ }
+      if (chosen) {
+        m.env.host = chosen.node;
+        addAdjustment(m, deps.now, 'placement-safety-net',
+          `node ${chosen.node} chosen deterministically: ${chosen.why.join('; ')}`);
+        if (deps.saveMission) { try { await deps.saveMission(m); } catch { /* best-effort */ } }
+        if (chosen.node !== thisNode()) {
+          deps.journal?.({
+            at: Date.now(), kind: 'tick', action: 'placement-safety-net-remote',
+            missionId: id, reason: `chose ${chosen.node}; this node cannot spawn there`,
+          } as never);
+          console.info(`[mission-controller] safety net assigned ${id} to ${chosen.node} (remote — not spawned here)`);
+          continue;
+        }
+      }
+    }
     try {
       const r = await deps.spawnMission!(id);
       const outcome = r.ok ? 'placement-safety-net' : 'placement-safety-net-refused';
@@ -1682,6 +1717,19 @@ export function registerMissionController(
       // persist), not through a second implementation that can drift from it.
       // ⚠️ The require MUST stay lazy — mission.routes.ts imports `placementAllowed` from
       // THIS module at top level, so hoisting this to an import makes the cycle load-time.
+      // Deterministic pick for the safety net. Same ranker the controller's
+      // `node_select` uses, but with the prose excluded from scoring.
+      selectNode: async (m) => {
+        const { selectDeterministic } = require('../routes/core/node-profile.routes') as typeof import('../routes/core/node-profile.routes');
+        return selectDeterministic({
+          missionId: m.id, repo: m.env.repo, branch: m.env.branch,
+          resources: m.env.resources, exclusive: m.env.exclusive, need: m.env.resources ?? [],
+        });
+      },
+      saveMission: async (m) => {
+        const { putMission: pm } = require('./mission-store') as typeof import('./mission-store');
+        await pm(m);
+      },
       spawnMission: async (id: string) => {
         const { handleMissionSpawn } = require('../routes/core/mission.routes') as typeof import('../routes/core/mission.routes');
         const r = await handleMissionSpawn(id, {});
