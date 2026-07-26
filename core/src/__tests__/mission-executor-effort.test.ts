@@ -61,3 +61,16 @@ test('no effort given → payload untouched', () => {
   const input = { title: 't', env: { repo: '/x' } };
   assert.deepEqual(liftEffort({ ...input } as Record<string, unknown>), input);
 });
+
+// The persistence gap that made the whole feature look wired-but-dead: the create/patch
+// routes whitelist env fields, so an un-whitelisted `effort` was silently DROPPED — the
+// mission stored no effort and the executor launched at default while the caller believed
+// it had asked for max. (Caught live: env.effort came back empty on a real create.)
+test('effort must survive create/patch — it is whitelisted, not free-form', () => {
+  const src = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '../routes/core/mission.routes.ts'), 'utf8') as string;
+  const create = src.slice(src.indexOf('resources: arr(env.resources)'));
+  assert.match(create.slice(0, 600), /effort:\s*ccEffortOrUndefined/, 'create must carry env.effort');
+  assert.match(src, /if \(e\.effort !== undefined\)/, 'patch must carry env.effort');
+  assert.match(src, /INVALID_EFFORT/, 'an unknown level must be rejected, not stored');
+});

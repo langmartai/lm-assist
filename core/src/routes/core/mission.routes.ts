@@ -1,3 +1,4 @@
+import { CC_EFFORT_LEVELS } from '../../terminal/types';
 /** Mission CRUD + controller status. Bare {success,data}/{success,error} envelope (like worker.routes). */
 import type { RouteHandler, RouteContext } from '../index';
 import { randomBytes } from 'crypto';
@@ -122,6 +123,11 @@ const WORKFLOW_ANCHOR_LABEL = 'workflow';
 
 // --- testable handlers (port-injected) ---
 
+/** Accept only a level the CLI honours; anything else ⇒ undefined (no false claim). */
+function ccEffortOrUndefined(v: string | undefined): string | undefined {
+  return v && (CC_EFFORT_LEVELS as readonly string[]).includes(v) ? v : undefined;
+}
+
 async function actorFor(b: Record<string, unknown>): Promise<MissionActor> {
   const hint = b._actor as { channel?: string; toolUseId?: string | null } | undefined;
   delete (b as any)._actor;
@@ -159,6 +165,10 @@ export async function handleCreate(b: Record<string, unknown>, ownerNode: string
       host: str(env.host), repo: str(env.repo), branch: str(env.branch),
       resources: arr(env.resources) ?? [],
       exclusive: env.exclusive === true || env.exclusive === 'true',
+      // Validated at the boundary: an unknown level is REJECTED here rather than stored,
+      // because a stored-but-invalid effort would be dropped again at launch and the
+      // mission record would claim an effort the executor never ran with.
+      effort: ccEffortOrUndefined(str(env.effort)),
     },
   }, Date.now(), genId);
   const all = await listMissions(port);
@@ -313,6 +323,11 @@ export async function handlePatch(id: string, b: Record<string, unknown>, port?:
     if (str(e.branch) !== undefined) m.env.branch = str(e.branch);
     if (arr(e.resources)) m.env.resources = arr(e.resources)!;
     if (e.exclusive !== undefined) m.env.exclusive = e.exclusive === true || e.exclusive === 'true';
+    if (e.effort !== undefined) {
+      const lvl = ccEffortOrUndefined(str(e.effort));
+      if (str(e.effort) && !lvl) return fail('INVALID_EFFORT', `env.effort must be one of ${CC_EFFORT_LEVELS.join(', ')}`);
+      m.env.effort = lvl;   // an explicit empty/null clears it back to the priority default
+    }
   }
   // Bind a spawned executor to the mission. WITHOUT this the controller could ccr_cloud_start a
   // worker but had no way to attach it (the guide said "bind via mission_update" but the field was
