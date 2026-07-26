@@ -130,6 +130,24 @@ test mutation-verified: cap made a no-op → 5 fail; seam stops calling the cap 
 which is what makes the guarantee fleet-wide — without it a future surface could dispatch
 uncapped while every other test still passed.
 
+## Commit provenance (history is mislabeled, deliberately not rewritten)
+
+The narrowability work — `compactActor` / `missionWorkflowSummary` / `missionChangeSummary`
+in `tools/projections.ts`, the `mission_workflow_list` and `mission_changes` handlers, and the
+"every truncatable tool exposes a narrowing argument" test — belongs to this spec, but it is
+committed inside **`b85e06e`**, whose message describes the identity-resolver single-flight
+defect. Two missions were working the same `main` checkout concurrently and a `git add` there
+swept up files it did not author.
+
+Left as-is on purpose: `b85e06e` was already pushed and the other mission had built on it, so
+rewriting shared history would be worse than a mislabeled commit. The code is correct,
+reviewed, tested and deployed; only the attribution is wrong. Recorded here so the history is
+self-explaining.
+
+**Process lesson:** stage explicit paths, never `git add -A`/`git add .`, in a checkout another
+session may be using — the same rule the repo already learned about worktree `node_modules`
+symlinks, for the same reason.
+
 ## Known follow-ups
 
 - `data_query` row cap belongs in the data service.
