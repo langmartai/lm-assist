@@ -433,7 +433,12 @@ export function journalRun(result: ExecutorReaperResult, dryRun: boolean, at: nu
   } catch { /* best effort — losing the journal must never block the sweep */ }
 }
 
-function productionDeps(missions: ReaperMission[], isLeader: boolean, repoOf: (m: ReaperMission) => string | null): ExecutorReaperDeps {
+/**
+ * The real production wiring. Exported so a pre-deploy validation can exercise
+ * THIS function against live tmux/session/git state — a validation that rebuilds
+ * its own deps is only testing the copy.
+ */
+export function productionDeps(missions: ReaperMission[], isLeader: boolean): ExecutorReaperDeps {
   /* eslint-disable @typescript-eslint/no-var-requires */
   const { execFileSync } = require('child_process');
   const fs = require('fs');
@@ -556,7 +561,7 @@ export function registerExecutorReaper(jobs: {
       maxReapsPerRun: num('maxReapsPerRun'),
     };
 
-    const deps = productionDeps(all, isMonitor, (m) => m.repo ?? null);
+    const deps = productionDeps(all, isMonitor);
     const r = await runExecutorReaper(cfg, deps);
     journalRun(r, cfg.dryRun !== false, Date.now());
 
