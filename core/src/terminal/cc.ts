@@ -18,6 +18,7 @@ import { withSessionLock } from './mutex';
 import { TerminalError } from './errors';
 import { decideOnboardingKeys } from './onboarding-prompts';
 import type { CCLaunchInput, CCPivotInput, CCPromptInput, CCSessionState, CCPhase, SlashCommandInput, SelectChoiceInput, AwaitIdleInput } from './types';
+import { CC_EFFORT_LEVELS } from './types';
 
 function assertPosix(): void {
   if (!IS_POSIX) throw new TerminalError('PLATFORM_UNSUPPORTED', 'CC control requires a POSIX host');
@@ -30,6 +31,19 @@ function shellQuote(s: string): string {
 
 export function remoteControlFlags(rc?: boolean): string[] {
   return rc ? ['--remote-control'] : [];
+}
+
+/**
+ * `--effort <level>` — only for a level the CLI actually accepts.
+ *
+ * An unknown value is DROPPED rather than forwarded: `claude` warns and falls back to its
+ * default ("Unknown --effort value 'x' — ignoring it"), so passing it through would leave
+ * the caller believing effort was applied while the session ran at default. Dropping keeps
+ * the launch command honest — no flag means no claim.
+ */
+export function effortFlags(effort?: string): string[] {
+  if (!effort) return [];
+  return (CC_EFFORT_LEVELS as readonly string[]).includes(effort) ? ['--effort', effort] : [];
 }
 
 export function buildLaunchCmd(opts: CCLaunchInput): string {
@@ -48,6 +62,9 @@ export function buildLaunchCmd(opts: CCLaunchInput): string {
     ...(opts.mcpConfigPath ? ['--mcp-config', opts.mcpConfigPath] : []),
     ...opts.extraFlags,                              // MERGED with default, not replaced
     ...(opts.model ? ['--model', opts.model] : []),
+    // Reasoning effort. AFTER extraFlags so an explicit caller-supplied --effort in
+    // extraFlags still wins by position, and dropped entirely when not a valid level.
+    ...effortFlags(opts.effort),
   ];
   return `${shellQuote(bin)} ${flags.map(shellQuote).join(' ')}`.trim();
 }

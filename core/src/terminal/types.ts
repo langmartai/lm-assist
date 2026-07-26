@@ -162,6 +162,17 @@ export interface CaptureInput {
   start: number | null;
 }
 
+/**
+ * Reasoning-effort levels the `claude` CLI accepts for `--effort`.
+ *
+ * Kept as a closed set on purpose: the CLI treats an UNKNOWN value as a warning and
+ * silently falls back to its default ("Unknown --effort value 'x' — ignoring it"), so an
+ * unvalidated pass-through would read as "effort applied" while the session actually ran
+ * at default. Verified against `claude --help` + a live probe, 2026-07-26.
+ */
+export const CC_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type CCEffort = (typeof CC_EFFORT_LEVELS)[number];
+
 export interface CCLaunchInput {
   cwd: string;
   model: string | null;
@@ -171,6 +182,8 @@ export interface CCLaunchInput {
   skipPermissions: boolean;
   /** Pass --remote-control to enable remote-control mode. Default false. */
   remoteControl?: boolean;
+  /** Reasoning effort (`--effort`). Omitted ⇒ the CLI's own default. Invalid ⇒ dropped. */
+  effort?: string;
   cols: number;
   rows: number;
   /** Indicator pattern for "ready" — default 'ctx:'. */

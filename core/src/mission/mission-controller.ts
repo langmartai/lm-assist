@@ -1,7 +1,7 @@
 /** The super Mission Controller tick: election → per-mission liveness/adjust/placement. */
 import {
   Mission, MissionBinding, ExecutorState, ExecutorOutput, AdjustResult, PlacementDecision,
-  decideMission, place, planMissionNudge, missionSessionTitle, missionSessionName, MissionActor,
+  decideMission, place, planMissionNudge, missionSessionTitle, missionSessionName, missionEffort, MissionActor,
 } from './mission-model';
 import { randomBytes } from 'crypto';
 import { pickNewSession, cseToSessionSid, isNativeBinding } from './mission-native';
@@ -346,7 +346,7 @@ async function startCloudExecutor(m: Mission, decision: PlacementDecision): Prom
       return absDir;
     },
     launch: async (cwd: string): Promise<{ sessionId: string | null; tmuxSession: string }> => {
-      const res = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true, name: missionSessionTitle(m), renameTo: missionSessionName(m), tmuxPrefix: 'lmx' });
+      const res = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true, effort: missionEffort(m), name: missionSessionTitle(m), renameTo: missionSessionName(m), tmuxPrefix: 'lmx' });
       return {
         sessionId: (res.sessionId as string | null) ?? null,
         tmuxSession: res.tmuxSession as string,

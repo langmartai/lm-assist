@@ -102,6 +102,8 @@ export interface CcLaunchOpts {
   autoTrust?: boolean;
   skipPermissions?: boolean;
   remoteControl?: boolean | string;
+  /** Optional: reasoning effort passed as --effort (low|medium|high|xhigh|max). Invalid ⇒ dropped. */
+  effort?: string;
   /** Optional: path to a file passed as --append-system-prompt-file (controller bootstrap). */
   appendSystemPromptFile?: string;
   /** Optional: path to an MCP config JSON passed as --mcp-config (controller bootstrap). */

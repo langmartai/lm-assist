@@ -1707,7 +1707,7 @@ async function defaultSpawnNativeDeps(m: Record<string, unknown>): Promise<unkno
   const { cloudListAccount, cloudDrive } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
   const { tmuxCcController } = require('../../terminal/tmux-backend') as typeof import('../../terminal/tmux-backend');
   const { gitCommand } = require('../../checkpoint/git-utils') as typeof import('../../checkpoint/git-utils');
-  const { missionSessionTitle, missionSessionName } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
+  const { missionSessionTitle, missionSessionName, missionEffort } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
   const pathmod = require('path') as typeof import('path');
   const baselineArr = await cloudListAccount().then((ss: Array<{ sid: string }>) => ss.map((s) => s.sid)).catch(() => [] as string[]);
   return {
@@ -1727,7 +1727,7 @@ async function defaultSpawnNativeDeps(m: Record<string, unknown>): Promise<unkno
       return absDir;
     },
     launch: async (cwd: string): Promise<{ sessionId: string | null; tmuxSession: string }> => {
-      const res = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true, name: missionSessionTitle(m as never), renameTo: missionSessionName(m as never), tmuxPrefix: 'lmx' });
+      const res = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true, effort: missionEffort(m as never), name: missionSessionTitle(m as never), renameTo: missionSessionName(m as never), tmuxPrefix: 'lmx' });
       return { sessionId: (res.sessionId as string | null) ?? null, tmuxSession: res.tmuxSession as string };
     },
     listAccount: cloudListAccount,
@@ -1775,7 +1775,7 @@ export async function handleMissionSpawn(id: string, b: Record<string, unknown>,
   const newBinding = await startNative(m, decision, nativeDeps);
   (m as Record<string, unknown>).binding = newBinding;
   try { await persist(m); } catch { /* best-effort — the session is up either way */ }
-  const { missionSessionTitle, missionSessionName } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
+  const { missionSessionTitle, missionSessionName, missionEffort } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
   return ok({ binding: newBinding, name: missionSessionTitle(m as never) });
 }
 
@@ -1793,7 +1793,7 @@ function defaultSessionResumeDeps(): SessionResumeDeps {
     const { cloudListAccount, cloudDrive } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
     const { tmuxCcController } = require('../../terminal/tmux-backend') as typeof import('../../terminal/tmux-backend');
     const { gitCommand } = require('../../checkpoint/git-utils') as typeof import('../../checkpoint/git-utils');
-    const { missionSessionTitle, missionSessionName } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
+    const { missionSessionTitle, missionSessionName, missionEffort } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
     const pathmod = require('path') as typeof import('path');
     const all = await lm();
     const pd = place(m, all);
@@ -1819,7 +1819,7 @@ function defaultSessionResumeDeps(): SessionResumeDeps {
       },
       // CHANGE (a): pass resume: sid → `claude --resume <sid>` continues the SAME session.
       launch: async (cwd: string): Promise<{ sessionId: string | null; tmuxSession: string }> => {
-        const res = await tmuxCcController.launch({ cwd, resume: sid, remoteControl: true, skipPermissions: true, autoTrust: true, name: missionSessionTitle(m), renameTo: missionSessionName(m), tmuxPrefix: 'lmx' });
+        const res = await tmuxCcController.launch({ cwd, resume: sid, remoteControl: true, skipPermissions: true, autoTrust: true, effort: missionEffort(m), name: missionSessionTitle(m), renameTo: missionSessionName(m), tmuxPrefix: 'lmx' });
         return { sessionId: (res.sessionId as string | null) ?? null, tmuxSession: res.tmuxSession as string };
       },
       listAccount: cloudListAccount,

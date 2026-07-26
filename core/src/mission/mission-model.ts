@@ -14,6 +14,12 @@ export interface MissionEnv {
   branch?: string;
   resources: string[];
   exclusive?: boolean;
+  /**
+   * Reasoning effort for THIS mission's executor (`--effort`: low|medium|high|xhigh|max).
+   * Omitted ⇒ `missionEffort()` decides from priority. An invalid value is dropped at
+   * launch rather than forwarded, so it can never silently read as "effort applied".
+   */
+  effort?: string;
 }
 export interface MissionBinding {
   sessionId: string | null;
@@ -411,4 +417,22 @@ export function parseAdjustResult(raw: string): AdjustResult {
   } catch {
     return { ...DEFAULT_ADJUST };
   }
+}
+
+/**
+ * Reasoning effort for a mission's executor (`--effort`).
+ *
+ * Precedence: an explicit `env.effort` always wins. Otherwise effort scales with the
+ * mission's own priority — `critical`/`high` work gets `max`, everything else inherits the
+ * CLI default (returned as undefined, so no flag is passed and nothing is claimed).
+ *
+ * Deliberately NOT max-for-everything: a lot of mission work is mechanical (deploy, sync,
+ * rollout) where max effort buys nothing and costs latency and tokens on every executor in
+ * the fleet. The hard root-cause missions are the ones that need it.
+ */
+export function missionEffort(m: { env?: Partial<MissionEnv> | null; tags?: Record<string, string[]> | null } | null | undefined): string | undefined {
+  const explicit = m?.env?.effort;
+  if (typeof explicit === 'string' && explicit.trim()) return explicit.trim();
+  const priority = (m?.tags?.priority ?? [])[0];
+  return priority === 'critical' || priority === 'high' ? 'max' : undefined;
 }
