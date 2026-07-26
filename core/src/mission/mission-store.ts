@@ -43,6 +43,13 @@ export interface EngagementState {
    *  engagement. Gates the safety-interval fallback in shouldEngage so it never fires on
    *  pure elapsed time alone. Cleared (false) whenever an engage actually happens. */
   dirtySinceEngage?: boolean;
+  /** Ids that were SCHEDULABLE and UNBOUND last tick — lets shouldEngage tell NEW unplaced
+   *  work from the same unplaced work it already raised (bl_28543c78). */
+  lastReadyUnbound?: string[];
+  /** Consecutive ticks each mission has been schedulable-and-unbound. Drives the
+   *  starvation safety net; rebuilt from the current set every tick, so ids that get
+   *  placed simply disappear. */
+  unplacedTicks?: Record<string, number>;
 }
 
 /** Controller session state — stored in the missions dataset under reserved key __controller__. */
@@ -278,6 +285,9 @@ export async function getEngagementState(port: MissionDataPort = defaultPort()):
     seen: (f.seen as EngagementState['seen']) ?? {},
     lastRosterKey: typeof f.lastRosterKey === 'string' ? (f.lastRosterKey as string) : undefined,
     dirtySinceEngage: typeof f.dirtySinceEngage === 'boolean' ? (f.dirtySinceEngage as boolean) : undefined,
+    lastReadyUnbound: Array.isArray(f.lastReadyUnbound) ? (f.lastReadyUnbound as string[]) : undefined,
+    unplacedTicks: (f.unplacedTicks && typeof f.unplacedTicks === 'object')
+      ? (f.unplacedTicks as Record<string, number>) : undefined,
   };
 }
 

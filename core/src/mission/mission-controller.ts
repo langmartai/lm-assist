@@ -12,7 +12,8 @@ import { clusterOf, type ClusterRecord } from '../cluster/cluster-map';
 import { getClusterRecords } from '../cluster/cluster-store';
 import { getMyCluster } from '../cluster/cluster-config';
 import { fleetIdentity } from '../mcp-server/fleet-identity';
-import { classifyExecutorActivity, shouldEngage } from './mission-engagement';
+import { classifyExecutorActivity, shouldEngage, advanceStarvation, STARVATION_TICKS } from './mission-engagement';
+import { computeSchedule } from './mission-scheduler';
 import { runAdjust } from './mission-adjust';
 import { getProjectSettings } from '../project-settings';
 import { deriveHubMcpUrl, upsertHubMcpServer } from '../utils/claude-mcp-config';
@@ -833,6 +834,22 @@ export interface SupervisorDeps {
    *  evaluateEngagement is computed in-memory but never durably persisted (unchanged legacy
    *  behavior for callers that don't wire this dep — e.g. tests that don't care about it). */
   persistMissionControl?: (m: Mission) => Promise<void>;
+  // ── bl_28543c78 — unplaced work is its own engagement signal, with a safety net ──
+  /** ALL missions (not just active), so `readyUnbound` is derived from the SAME
+   *  `computeSchedule` the `mission_schedule` tool reports. Deriving it any other way
+   *  would recreate the exact disagreement this fixes. Absent → no placement trigger
+   *  and no safety net (unchanged legacy behavior). */
+  listAllForSchedule?: () => Promise<Mission[]>;
+  /** Minutes before an UNCHANGED non-empty readyUnbound set re-engages. Default 10. */
+  placementRetryMin?: number;
+  /** Consecutive schedulable-and-unbound ticks before the safety net places a mission
+   *  itself. Default STARVATION_TICKS (15). */
+  starvationTicks?: number;
+  /** Place ONE mission deterministically — the safety net's action. Production wires it to
+   *  `handleMissionSpawn`, the SAME path a human's `mission_spawn` takes, so the net cannot
+   *  drift from the path already proven to place cleanly. Absent → the net journals
+   *  starvation but never places. */
+  spawnMission?: (id: string) => Promise<{ ok: boolean; code?: string; error?: string }>;
 }
 
 /**
@@ -858,7 +875,15 @@ export interface SupervisorDeps {
  */
 async function evaluateEngagement(
   deps: SupervisorDeps,
-): Promise<{ engage: boolean; reason?: 'roster-change'; migrationCandidates?: MigrationCandidate[] }> {
+): Promise<{
+  engage: boolean;
+  reason?: 'roster-change';
+  migrationCandidates?: MigrationCandidate[];
+  /** Schedulable + unbound this tick (see shouldEngage). */
+  readyUnbound?: string[];
+  /** Of those, the ones that have waited past the starvation threshold. */
+  starved?: string[];
+}> {
   const eng = await deps.getEngagement!();
   const active = await deps.listActiveForEngage!();
   const now = deps.now;
@@ -907,6 +932,21 @@ async function evaluateEngagement(
   }
   const activeIds = active.map((m) => m.id);
   const dirtySinceEngage = (eng.dirtySinceEngage ?? false) || anyUpdateThisTick;
+  // ── Unplaced schedulable work (bl_28543c78) ──
+  // Derived from computeSchedule over ALL missions so this set and `mission_schedule.ready`
+  // can never disagree — the disagreement IS the bug. `ready` already applies the status
+  // filter, dependency gate, resource/serialize conflicts and epic-container exclusion, so
+  // the only extra condition is "no executor yet".
+  let readyUnbound: string[] = [];
+  if (deps.listAllForSchedule) {
+    try {
+      const all = await deps.listAllForSchedule();
+      const byId = new Map(all.map((m) => [m.id, m]));
+      readyUnbound = computeSchedule(all).ready.filter((id) => !byId.get(id)?.binding?.sessionId);
+    } catch { /* best-effort — a schedule read failure must never sink the tick */ }
+  }
+  const starve = advanceStarvation(readyUnbound, eng.unplacedTicks, deps.starvationTicks ?? STARVATION_TICKS);
+
   let engage = shouldEngage({
     now,
     lastEngagedAt: eng.lastEngagedAt,
@@ -915,6 +955,9 @@ async function evaluateEngagement(
     activeIds,
     lastActiveIds: eng.lastActiveIds,
     anyUpdateSinceEngage: dirtySinceEngage,
+    readyUnbound,
+    lastReadyUnbound: eng.lastReadyUnbound,
+    placementRetryMin: deps.placementRetryMin,
   });
 
   // ── Cluster-roster change — ADDITIONAL force-engage trigger ──
@@ -952,14 +995,75 @@ async function evaluateEngagement(
   // lastRosterKey so a detected roster change fires exactly once; dirtySinceEngage
   // clears on any engage (its purpose served) and otherwise carries forward so an
   // interim-only tick is still remembered by the next safety-interval check.
+  // `lastReadyUnbound` stamps on ENGAGE only — it records "the unplaced set the controller
+  // was last shown". Stamping it every tick would make a newly-appearing mission look
+  // already-raised on the very next tick and silently re-open the starvation hole.
   await deps.putEngagement!({
     lastEngagedAt: engage ? now : eng.lastEngagedAt,
     lastActiveIds: engage ? activeIds : eng.lastActiveIds,
     seen: curSeen,
     lastRosterKey: nextRosterKey,
     dirtySinceEngage: engage ? false : dirtySinceEngage,
+    lastReadyUnbound: engage ? readyUnbound : eng.lastReadyUnbound,
+    unplacedTicks: starve.next,
   });
-  return { engage, reason, migrationCandidates };
+  return { engage, reason, migrationCandidates, readyUnbound, starved: starve.starved };
+}
+
+/**
+ * Deterministically place missions that have starved in `readyUnbound` (bl_28543c78).
+ *
+ * This restores — narrowly, and only as a last resort — the guarantee that
+ * `runMissionTick` used to provide before the supervisor replaced it and left it with no
+ * caller: a schedulable, unblocked, unbound mission eventually RUNS, whether or not an
+ * agent decides to start it.
+ *
+ * It re-runs the FULL gate rather than trusting the starved list: `place()` re-checks
+ * dependencies and resource/exclusivity conflicts, and `checkPlacement` re-checks cluster
+ * ownership. A mission that fails either is left alone (setWaiting records why) — the net
+ * must never spawn something the deterministic rules would refuse, and `starved` was
+ * computed up to a tick ago.
+ */
+async function placeStarvedMissions(starved: string[], deps: SupervisorDeps): Promise<void> {
+  let all: Mission[];
+  try {
+    all = await deps.listAllForSchedule!();
+  } catch { return; }
+  for (const id of starved) {
+    const m = all.find((x) => x.id === id);
+    // Re-assert the preconditions against state read THIS instant — `starved` was computed
+    // up to a tick ago, and the spawn path re-checks place() itself.
+    if (!m || m.binding?.sessionId) continue;
+    // Cluster ownership is NOT re-checked by the spawn path (mission_spawn is human-invoked
+    // against a node the caller chose). An automatic placement must respect it.
+    try {
+      const records = await getClusterRecords();
+      if (!placementAllowed(m.env.host, records, thisNode(), getMyCluster())) continue;
+    } catch { continue; }
+    try {
+      const r = await deps.spawnMission!(id);
+      const outcome = r.ok ? 'placement-safety-net' : 'placement-safety-net-refused';
+      deps.journal?.({
+        at: Date.now(), kind: 'tick', action: outcome, missionId: id,
+        ...(r.ok ? {} : { reason: `${r.code ?? 'ERROR'}: ${r.error ?? ''}`.slice(0, 200) }),
+      } as never);
+      if (r.ok) {
+        console.info(`[mission-controller] placement safety net started ${id} after ${deps.starvationTicks ?? STARVATION_TICKS} unplaced ticks`);
+      } else {
+        // Loudly, every time. A cloud-isolation mission CANNOT be placed by this path
+        // (it needs ccr_cloud_start), so the counter keeps climbing and the net keeps
+        // refusing — that must be visible in the journal, not a silent no-op loop.
+        console.warn(`[mission-controller] placement safety net could not place ${id}: ${r.code ?? 'ERROR'} ${r.error ?? ''}`);
+      }
+    } catch (e) {
+      // A failed spawn must not stop the others, and must not be silent: the counter keeps
+      // climbing, so the next tick retries and the journal shows the attempt.
+      deps.journal?.({
+        at: Date.now(), kind: 'tick', action: 'placement-safety-net-error',
+        missionId: id, reason: (e as Error)?.message?.slice(0, 200) ?? 'unknown',
+      } as never);
+    }
+  }
 }
 
 export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action: string; controllerSession: ControllerSession | null }> {
@@ -1074,6 +1178,14 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
       driveDue = ev.engage;
       driveReason = ev.reason;
       driveCands = ev.migrationCandidates;
+      // ── Placement safety net (bl_28543c78) ──
+      // The engagement trigger above ASKS the controller — repeatedly. This places the
+      // mission when asking has demonstrably not worked. Deliberately AFTER the drive
+      // gate and best-effort: it is a backstop, so it must never sink a tick, and it
+      // must never pre-empt a controller that is about to be driven anyway.
+      if (ev.starved?.length && deps.spawnMission && deps.listAllForSchedule) {
+        await placeStarvedMissions(ev.starved, deps);
+      }
     } else {
       const activeCount = deps.activeMissionCount ? await deps.activeMissionCount() : 1;
       driveDue = isDriveDue({
@@ -1558,6 +1670,24 @@ export function registerMissionController(
       listActiveForEngage: async () => {
         const { listActiveMissions } = require('./mission-store') as typeof import('./mission-store');
         return listActiveMissions();
+      },
+      // bl_28543c78 — the SAME list computeSchedule/mission_schedule run over, so the
+      // supervisor's idea of "unplaced work" cannot drift from the tool's.
+      listAllForSchedule: async () => {
+        const { listMissions: lm } = require('./mission-store') as typeof import('./mission-store');
+        return lm();
+      },
+      // Deliberately the mission_spawn handler: the net must place EXACTLY the way the
+      // proven manual path does (place gate, cloud refusal, binding, status='active',
+      // persist), not through a second implementation that can drift from it.
+      // ⚠️ The require MUST stay lazy — mission.routes.ts imports `placementAllowed` from
+      // THIS module at top level, so hoisting this to an import makes the cycle load-time.
+      spawnMission: async (id: string) => {
+        const { handleMissionSpawn } = require('../routes/core/mission.routes') as typeof import('../routes/core/mission.routes');
+        const r = await handleMissionSpawn(id, {});
+        return r.success
+          ? { ok: true }
+          : { ok: false, code: r.error?.code, error: r.error?.message };
       },
       readSignal: async (m) => {
         if (m.origin === 'onboarded') {
