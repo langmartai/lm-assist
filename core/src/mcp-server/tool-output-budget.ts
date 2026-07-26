@@ -170,6 +170,14 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
   },
   terminal_list: { measuredBytes: 9007, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   machine_access: { measuredBytes: 6254, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
+  // Honestly 'NOTHING': both serialise a whole collection with no caller limit (the
+  // machine_access precedent). SAFE only because the collection is the IN-CLUSTER NODE
+  // LIST — one row per node, a handful of tokens plus <=4KB of notes — not user data.
+  // If a cluster ever grew large enough to matter, these need paging, not a bigger
+  // budget: a cap that truncates a node list would hide candidates and make
+  // "why not node X?" unanswerable, which is the whole point of the tool.
+  node_profile: { measuredBytes: 2400, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
+  node_select: { measuredBytes: 3200, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   mission_control_status: { measuredBytes: 5442, budgetBytes: 25000, bound: 'SMALL_BY_CONSTRUCTION', verdict: 'SAFE' },
   memory_projects: { measuredBytes: 5149, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   guide: { measuredBytes: 8984, budgetBytes: 25000, bound: 'HARD_LIMIT', verdict: 'SAFE', note: 'One topic per call. Measured on the LARGEST topic (`missions`, 8,984 B on 2026-07-26) — ' +

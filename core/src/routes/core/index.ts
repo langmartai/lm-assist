@@ -34,6 +34,7 @@ import { createMcpToolsRoutes } from './mcp-tools.routes';
 import { createMcpPluginsRoutes } from './mcp-plugins.routes';
 import { createAssistContentRoutes } from './assist-content.routes';
 import { createBacklogRoutes } from './backlog.routes';
+import { createNodeProfileRoutes } from './node-profile.routes';
 import { createDevModeRoutes } from './dev-mode.routes';
 import { createProjectSettingsRoutes } from './project-settings.routes';
 import { createSkillRoutes } from './skills.routes';
@@ -108,6 +109,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createMcpPluginsRoutes(ctx),
     ...createAssistContentRoutes(ctx),
     ...createBacklogRoutes(ctx),
+    ...createNodeProfileRoutes(),
     ...createDevModeRoutes(ctx),
     ...createProjectSettingsRoutes(ctx),
     ...createSkillRoutes(ctx),

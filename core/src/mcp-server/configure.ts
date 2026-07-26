@@ -347,6 +347,9 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   cluster_describe: 'write',
   // machine access profiles — node-local reachability meta (read)
   machine_access: 'read',
+  // node profiles: reading is a survey, writing TEACHES the placement registry
+  node_profile: 'write',
+  node_select: 'read',
   // fleet session footprints (read — non-blocking survey)
   session_footprints: 'read',
   // whatsapp cloud-api connector (send mutates/spends; the rest are reads)

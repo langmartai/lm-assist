@@ -121,6 +121,7 @@ mod('scheduler.ts', 'fleet', ['scheduler_jobs']);
 mod('cluster.ts', 'cluster', ['cluster_list', 'cluster_assign', 'cluster_unassign', 'cluster_describe']);
 // --- machine access profiles ---
 mod('machine-access.ts', 'machine-access', ['machine_access']);
+mod('node-profile.ts', 'nodes', ['node_profile', 'node_select']);
 // --- ccr / cloud Claude Code ---
 mod('expanded.ts', 'ccr', [
   'cc_sessions', 'ccr_preflight', 'ccr_remote_list', 'ccr_load', 'ccr_mirror', 'ccr_connect', 'ccr_drive',

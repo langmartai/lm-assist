@@ -16,7 +16,9 @@ export const TOPIC_TOOLS: Record<string, string[]> = {
   agents: ['agent_execute', 'agent_resume', 'agent_abort', 'get_execution', 'list_executions', 'browser_task'],
   terminals: ['terminal_open_tab', 'terminal_list', 'terminal_capture', 'terminal_prompt', 'terminal_slash', 'terminal_interrupt', 'send_session_message', 'get_message_status', 'cc_sessions', 'windows_terminal_create', 'windows_terminal_list', 'windows_terminal_send', 'windows_terminal_capture', 'windows_terminal_state', 'windows_terminal_launch', 'windows_terminal_close', 'windows_terminal_auto_handle'],
   ccr: ['ccr_preflight', 'ccr_load', 'ccr_mirror', 'ccr_connect', 'ccr_remote_list', 'ccr_remote_stop', 'cc_sessions'],
-  nodes: ['list_nodes', 'open_port_forward', 'close_port_forward', 'list_port_forwards', 'port_forward_stats'],
+  // node_profile/node_select join the NODES playbook: choosing WHERE work runs is a
+  // cross-node concern, and a tool maps to exactly ONE topic.
+  nodes: ['list_nodes', 'open_port_forward', 'close_port_forward', 'list_port_forwards', 'port_forward_stats', 'node_profile', 'node_select'],
   'claude-ai': ['list_claudeai_conversations', 'read_conversation', 'conversation_tokens', 'conversation_fork', 'claudeai_create_conversation', 'claudeai_completion', 'delete_conversation', 'rename_conversation', 'claudeai_list_marketplaces', 'claudeai_list_marketplace_plugins', 'claudeai_list_plugins', 'claudeai_add_marketplace', 'claudeai_remove_marketplace', 'claudeai_set_plugin_enabled', 'list_claudeai_connectors', 'refresh_connector_tools', 'set_connector_tool_access'],
   account: ['auth_status', 'claude_code_usage', 'claude_code_account', 'claudeai_account', 'claudeai_active_sessions'],
   github: ['github_query', 'github_mutate'],
