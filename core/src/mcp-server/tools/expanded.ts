@@ -29,6 +29,7 @@ import {
   isCwdAllowed,
   type McpToolResult,
 } from './_passthrough';
+import { CONVERSATION_OPS_TOOL_DEFS, CONVERSATION_OPS_HANDLERS } from './conversation-ops';
 import { planOpenTab } from './open-tab-plan';
 import { ccSessionSummary, claudeaiPluginSummary, detailLevel, intArg, paginate } from './projections';
 import * as os from 'os';
@@ -1085,6 +1086,7 @@ export const EXPANDED_TOOL_DEFS = [
   claudeaiRemoveMarketplaceToolDef,
   claudeaiSetPluginEnabledToolDef,
   renameConversationToolDef,
+  ...CONVERSATION_OPS_TOOL_DEFS,
   agentAbortToolDef,
   agentResumeToolDef,
   terminalPromptToolDef,
@@ -2252,6 +2254,7 @@ export const EXPANDED_HANDLERS: Record<
   terminal_interrupt: handleTerminalInterrupt,
   terminal_open_tab: handleTerminalOpenTab,
   rename_conversation: handleRenameConversation,
+  ...CONVERSATION_OPS_HANDLERS,
   delete_conversation: handleDeleteConversation,
   // memory map + rules map (read — shell out to CLIs)
   memory_map: handleMemoryMap,

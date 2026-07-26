@@ -130,6 +130,7 @@ mod('expanded.ts', 'ccr', [
 // --- claude.ai web ---
 mod('list-claudeai-conversations.ts', 'claudeai', ['list_claudeai_conversations']);
 mod('read-conversation.ts', 'claudeai', ['read_conversation']);
+mod('conversation-ops.ts', 'claudeai', ['conversation_tokens', 'conversation_fork']);
 mod('expanded.ts', 'claudeai', [
   'claudeai_list_marketplaces', 'claudeai_list_marketplace_plugins', 'claudeai_list_plugins',
   'claudeai_create_conversation', 'claudeai_completion', 'claudeai_add_marketplace', 'claudeai_remove_marketplace',

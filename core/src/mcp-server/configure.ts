@@ -179,6 +179,8 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   claudeai_remove_marketplace: 'write',
   claudeai_set_plugin_enabled: 'write',
   rename_conversation: 'write',
+  conversation_tokens: 'read',
+  conversation_fork: 'write',
   list_claudeai_connectors: 'read',
   refresh_connector_tools: 'write',
   set_connector_tool_access: 'write',

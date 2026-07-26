@@ -176,6 +176,9 @@ import { LM_ASSIST_TOOL_DEFS } from '../../mcp-server/configure';
 import { buildConnectorToolsArray, pickLmAssistConnector } from '../../mcp-server/connector-tools-array';
 import { getPluginAggregator } from '../../mcp-server/plugins/aggregator';
 import { parseChatMessages } from '../../claude-ai/chat-read';
+import { estimateConversationTokens } from '../../claude-ai/conversation-tokens';
+import { buildHandoff } from '../../claude-ai/conversation-handoff';
+import { collectLocalCredential } from '../../fleet/credential-collector';
 import { scopedTokenFor } from '../../auth/scoped-token';
 
 const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -498,6 +501,136 @@ export function createClaudeAIRoutes(_ctx: RouteContext): RouteHandler[] {
           // on an existing conversation with 400 "Cannot update model for existing conversation"
           // — so a client that lets the user pick one is showing a control that does nothing.
           return { success: true, data: { uuid: body.uuid || uuid, name: body.name, model: body.model, messages: parseChatMessages(body) } };
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // GET /claude-ai/conversations/:uuid/tokens
+    //   Server-side context estimate. NUMBERS ONLY — measuring a conversation's
+    //   budget must never pull its bodies back into the caller's own context.
+    //   Registered BEFORE the generic /:uuid read so "tokens" isn't read as a uuid.
+    {
+      method: 'GET',
+      pattern: /^\/claude-ai\/conversations\/(?<uuid>[^/?]+)\/tokens$/,
+      handler: async (req) => {
+        const uuid = req.params.uuid;
+        if (!UUID_RE.test(uuid)) {
+          return { success: false, error: { code: 'INVALID_UUID', message: `Conversation UUID must be a UUIDv4: got ${uuid}` } };
+        }
+        const ceilingRaw = Number(req.query?.ceiling);
+        const ceilingTokens = Number.isFinite(ceilingRaw) && ceilingRaw > 0 ? ceilingRaw : undefined;
+        try {
+          // Deliberately NOT the 60s-cached generic read: a budget answer that
+          // silently lags a minute of heavy tool traffic is the wrong answer.
+          const r = await readConversation(uuid, { tree: true, renderingMode: 'messages', renderAllTools: true });
+          const wrapped = upstreamWrap(r);
+          if (!wrapped.success) return wrapped;
+          const est = estimateConversationTokens(r.body, { ceilingTokens });
+          const cred = await collectLocalCredential(false);
+          return {
+            success: true,
+            data: {
+              ...est,
+              name: (r.body as { name?: string } | null)?.name,
+              servedByNodeId: cred.hostId,
+              account: { orgUuid: cred.cookie.accountUuid, organizationName: cred.cookie.organizationName },
+            },
+          };
+        } catch (err) {
+          return catchOAuth(err);
+        }
+      },
+    },
+
+    // POST /claude-ai/conversations/:uuid/fork
+    //   Build a pointers-over-prose handoff from a conversation and seed a NEW
+    //   one with it. Body: { title?, objective?, extraPointers?, maxHumanTurns?,
+    //   model?, autoDeleteHours?, dryRun? }.
+    {
+      method: 'POST',
+      pattern: /^\/claude-ai\/conversations\/(?<uuid>[^/?]+)\/fork$/,
+      handler: async (req) => {
+        const uuid = req.params.uuid;
+        if (!UUID_RE.test(uuid)) {
+          return { success: false, error: { code: 'INVALID_UUID', message: `Conversation UUID must be a UUIDv4: got ${uuid}` } };
+        }
+        const b = (req.body || {}) as Record<string, unknown>;
+        const str = (k: string) => (typeof b[k] === 'string' && b[k] ? String(b[k]) : undefined);
+        const maxHumanTurnsRaw = Number(b.maxHumanTurns);
+        try {
+          const r = await readConversation(uuid, { tree: true, renderingMode: 'messages', renderAllTools: true });
+          const wrapped = upstreamWrap(r);
+          if (!wrapped.success) return wrapped;
+
+          const built = buildHandoff({
+            body: r.body,
+            overrides: {
+              title: str('title'),
+              objective: str('objective'),
+              extraPointers: Array.isArray(b.extraPointers) ? (b.extraPointers as unknown[]).map(String) : undefined,
+              maxHumanTurns: Number.isFinite(maxHumanTurnsRaw) && maxHumanTurnsRaw > 0 ? maxHumanTurnsRaw : undefined,
+            },
+          });
+          const est = estimateConversationTokens(r.body);
+          const cred = await collectLocalCredential(false);
+
+          // dryRun renders the handoff WITHOUT creating anything — so a caller
+          // can inspect what would be carried before spending a real chat.
+          if (b.dryRun === true || b.dryRun === 'true') {
+            return {
+              success: true,
+              data: {
+                dryRun: true, sourceUuid: uuid, title: built.title, seed: built.seed,
+                seedChars: built.seedChars, pointers: built.pointers, humanTurns: built.humanTurns,
+                sourceEstimate: { liveTokens: est.liveTokens, totalTokens: est.totalTokens },
+                servedByNodeId: cred.hostId,
+              },
+            };
+          }
+
+          const created = await createConversation({
+            name: built.title,
+            model: str('model'),
+            autoDeleteHours: Number.isFinite(Number(b.autoDeleteHours)) ? Number(b.autoDeleteHours) : undefined,
+          });
+          if (created.status >= 400) return upstreamWrap(created);
+          const newUuid = created.uuid;
+
+          // Seed the first turn. A conversation created moments ago has no leaf,
+          // and sendMessage falls back to the all-zero root parent for exactly
+          // this create -> completion flow.
+          let seeded = false;
+          let seedError: string | undefined;
+          try {
+            const sent = await sendMessage(newUuid, built.seed, {});
+            seeded = sent.status < 400;
+            if (!seeded) seedError = `claude.ai responded ${sent.status}`;
+          } catch (err) {
+            seedError = err instanceof Error ? err.message : String(err);
+          }
+
+          return {
+            success: true,
+            data: {
+              sourceUuid: uuid,
+              conversationUuid: newUuid,
+              webUrl: `https://claude.ai/chat/${newUuid}`,
+              title: built.title,
+              seeded,
+              // A created-but-unseeded fork is reported honestly rather than as
+              // a clean success: the chat exists and the caller must know the
+              // handoff did not land in it.
+              ...(seedError ? { seedError } : {}),
+              seedChars: built.seedChars,
+              pointers: built.pointers,
+              humanTurns: built.humanTurns,
+              sourceEstimate: { liveTokens: est.liveTokens, totalTokens: est.totalTokens },
+              servedByNodeId: cred.hostId,
+              account: { orgUuid: cred.cookie.accountUuid, organizationName: cred.cookie.organizationName },
+            },
+          };
         } catch (err) {
           return catchOAuth(err);
         }

@@ -289,14 +289,14 @@ export const NOT_MEASURED: Record<string, string> = Object.fromEntries([
   ].map((n) => [n, 'destructive/lifecycle: starts, stops or reconfigures real resources']),
   // Third-party side effects (sends a message, creates a conversation, spends).
   ...['claudeai_create_conversation', 'claudeai_completion', 'rename_conversation',
-    'delete_conversation', 'whatsapp_send', 'whatsapp_get_media',
+    'conversation_fork', 'delete_conversation', 'whatsapp_send', 'whatsapp_get_media',
   ].map((n) => [n, 'third-party side effect: writes to claude.ai or WhatsApp']),
   // Read-only, but need an id/argument the guard cannot synthesise safely, or
   // reach a remote/offline peer. Covered statically in the audit doc.
   ...['get_execution', 'mission_session_read', 'get_message_status', 'transfer_status',
     'ccr_cloud_read', 'ccr_cloud_repos', 'github_query', 'whatsapp_list_chats',
     'whatsapp_read_messages', 'whatsapp_search', 'claudeai_list_marketplace_plugins',
-    'read_conversation', 'data_get', 'memory_cross_host', 'memory_import_candidates',
+    'read_conversation', 'conversation_tokens', 'data_get', 'memory_cross_host', 'memory_import_candidates',
     'rule_cross_host', 'worker_status', 'transfer_list_remote', 'bus_read',
     'windows_terminal_state', 'list_claudeai_conversations', 'ccr_preflight',
     'fabric_probe', 'mission_executor_status', 'fs_list', 'fs_stat',

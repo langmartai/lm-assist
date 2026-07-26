@@ -90,7 +90,16 @@ export async function handleReadConversation(args: Record<string, unknown>): Pro
     return { content: [{ type: 'text', text: `Error reading conversation: ${msg}` }], isError: true };
   }
 
-  const conv = resp as Record<string, unknown>;
+  // readConversation returns the ClaudeAIResponse ENVELOPE
+  // ({status, statusText, headers, body}) — the conversation is `.body`.
+  // Treating the envelope as the conversation made every field undefined, so
+  // this tool reported `(untitled)` / `Messages: 0 total` for EVERY
+  // conversation (verified live on prod against a 62-message chat). `resp` is
+  // typed `unknown`, so the compiler never caught it.
+  const env = resp as Record<string, unknown>;
+  const conv = (env && typeof env === 'object' && 'body' in env
+    ? (env.body as Record<string, unknown>)
+    : env) || {};
   const name = String(conv.name || '(untitled)');
   const created = fmtRelative(conv.created_at as string | undefined);
   const updated = fmtRelative(conv.updated_at as string | undefined);
