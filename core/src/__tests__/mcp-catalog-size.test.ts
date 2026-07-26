@@ -54,11 +54,17 @@ const MAX_SHARED_DESCRIPTION_BYTES = 320;
 /**
  * Budget for the whole advertised catalogue (this server's own tools only —
  * third-party `ext__` tools are not in these defs and are governed by the plugin
- * aggregator). Measured 281,172 B for 189 own tools before the `node` dedup.
- * Set with headroom for new tools, tight enough that re-inlining a paragraph
- * across the surface trips it.
+ * aggregator).
+ *
+ * 298,011 B for 189 tools before the `node` dedup, 206,319 B after. The budget is
+ * NOT set just above the current figure: a ratchet with 2% headroom fails on the
+ * third routine tool addition, and a guard that cries wolf gets its number bumped
+ * without thought, which is how it stops meaning anything. 240,000 B leaves room
+ * for roughly 28 more average-sized tools (~1.2 KB each) while still failing hard
+ * on the regression this exists to catch — re-inlining shared boilerplate across
+ * the surface costs ~90 KB and blows straight through it.
  */
-const CATALOG_BUDGET_BYTES = 210_000;
+const CATALOG_BUDGET_BYTES = 240_000;
 
 function properties(def: { inputSchema?: { properties?: Record<string, unknown> } }): Record<string, unknown> {
   return def.inputSchema?.properties || {};
