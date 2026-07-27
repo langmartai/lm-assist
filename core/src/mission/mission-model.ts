@@ -37,6 +37,12 @@ export interface MissionControl {
   lastOutputCursor?: number;
   waitReason?: 'dependency' | 'resource';
   gaveUp?: boolean;
+  /** Step B: a relayed spawn is outstanding to this node. Present ⇒ do not relay again
+   *  until it is older than the TTL — a second send is how one mission gets two executors. */
+  spawnInFlight?: { node: string; requestId: string; at: number };
+  /** Step B: the idempotency key of the spawn that produced the current binding. Written in
+   *  the SAME persist as the binding, so a repeat resolves instead of launching again. */
+  lastSpawnRequest?: string;
 }
 export interface MissionResult { at: number; ref: string; summary?: string; by?: MissionActor; }
 export interface MissionAdjustment { at: number; trigger: string; change: string; by: 'controller' | 'user'; actor: MissionActor; }

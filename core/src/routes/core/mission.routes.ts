@@ -1845,6 +1845,19 @@ export async function handleMissionSpawn(id: string, b: Record<string, unknown>,
   if (!m) return fail('MISSION_NOT_FOUND', `mission ${id} not found`);
   const force = b.force === true || b.force === 'true';
   const binding = m.binding as { sessionId?: string; kind?: string } | undefined;
+  // ── Idempotency key (bl_1c861246 step B) ──
+  // `ALREADY_BOUND` alone cannot close the window that produces a duplicate: request in
+  // flight, binding not yet persisted, a second request arrives. `requestId` is recorded in
+  // the SAME persist as the binding, so a repeat of a request that LANDED resolves to the
+  // stored binding instead of launching a second executor — and it answers SUCCESS, because
+  // the caller's intent was carried out. Checked BEFORE the ALREADY_BOUND refusal: a relayed
+  // spawn whose response was lost must be able to discover that it worked.
+  const requestId = typeof b.requestId === 'string' ? b.requestId : '';
+  const control = (m.control ?? {}) as Record<string, unknown>;
+  if (requestId && binding?.sessionId && control.lastSpawnRequest === requestId) {
+    const { missionSessionTitle: mst } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
+    return ok({ binding, name: mst(m as never), idempotent: true });
+  }
   if (binding?.sessionId && !force) {
     return fail('ALREADY_BOUND', `mission ${id} is already bound to ${binding.sessionId} — pass force:true to spawn a replacement (the old session is left running for you to retire)`);
   }
@@ -1885,6 +1898,11 @@ export async function handleMissionSpawn(id: string, b: Record<string, unknown>,
   // "sits in ready and is never placed" look like a broken placement loop — the loop
   // was fine, the list was lying.
   (m as Record<string, unknown>).status = 'active';
+  // Same persist as the binding — a requestId recorded separately could be written while the
+  // binding was not, which is exactly the split that lets a retry spawn twice.
+  if (requestId) {
+    (m as Record<string, unknown>).control = { ...control, lastSpawnRequest: requestId };
+  }
   try { await persist(m); } catch { /* best-effort — the session is up either way */ }
   const { missionSessionTitle, missionSessionName, missionEffort } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
   return ok({ binding: newBinding, name: missionSessionTitle(m as never) });

@@ -1,6 +1,10 @@
 # Step B — a chosen node that actually receives the work
 
-**Status: DESIGN ONLY — awaiting approval. No code written.**
+**Status: IMPLEMENTED, DEFAULT OFF (2026-07-28).** Approved and built as designed —
+`core/src/mission/relay-spawn.ts` + the `placeStarvedMissions` branch, behind
+`missionRelayedSpawnEnabled` (default `false`, confirmed `false` on prod 117). 22 tests,
+the two safety properties mutation-verified. **NOT yet proven end-to-end**: the bar is a
+binding whose node is not the leader, which is only reachable on `stage` — see §8.
 Context: `bl_1c861246` / `bl_28543c78`. Step A (shipped separately) makes the node *choice*
 reach the controller. This makes the choice *move the work*.
 

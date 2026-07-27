@@ -281,3 +281,79 @@ test('controller.pass instructs the controller to consult node_select before pla
   assert.match(CONTROLLER_PASS_DIRECTIVE, /ctl:placement-remote/,
     'and it must say what to do when the pick is not this node');
 });
+
+// ── 6. step B: relaying a starved mission to the node that owns it ─────────
+//
+// Default OFF. On prod this branch is unreachable anyway (cluster `prod` has one member,
+// and pickDeterministic eliminates out-of-cluster nodes), so the gate is what keeps it from
+// being enabled by accident on a multi-node cluster before it has been proven there.
+
+test('with the relay DISABLED, a starved remote mission is deferred exactly as before', async () => {
+  _resetNotMonitorStreak();
+  const relayed: string[] = [];
+  const m = readyMission('mission_off', { env: { isolation: 'shared', resources: [], host: PEER } as never });
+  const { deps, spawned, journal } = starvedDeps(m, {
+    relayEnabled: () => false,
+    relaySpawn: async (_n: string, id: string) => { relayed.push(id); return { status: 'placed', binding: {} }; },
+  });
+
+  await runSupervisorTick(deps);
+
+  assert.deepStrictEqual(relayed, [], 'the gate is the whole point — off means off');
+  assert.deepStrictEqual(spawned, [], 'and it must still never spawn a peer\'s mission locally');
+  assert.ok(journal.some((e) => String(e.action).includes('remote')));
+  _resetNotMonitorStreak();
+});
+
+test('with the relay ENABLED, the mission is sent to the node that owns it', async () => {
+  _resetNotMonitorStreak();
+  const relayed: Array<{ node: string; id: string; requestId: string }> = [];
+  const m = readyMission('mission_on', { env: { isolation: 'shared', resources: [], host: PEER } as never });
+  const { deps, spawned } = starvedDeps(m, {
+    relayEnabled: () => true,
+    relaySpawn: async (node: string, id: string, requestId: string) => { relayed.push({ node, id, requestId }); return { status: 'placed', binding: { sessionId: 'sid-remote' } }; },
+  });
+
+  await runSupervisorTick(deps);
+
+  assert.strictEqual(relayed.length, 1);
+  assert.strictEqual(relayed[0].node, PEER, 'it goes to the OWNING node, not to whoever noticed');
+  assert.ok(relayed[0].requestId, 'a relayed spawn without an idempotency key can be double-sent');
+  assert.deepStrictEqual(spawned, [], 'relaying replaces the local spawn — it never does both');
+  _resetNotMonitorStreak();
+});
+
+test('🔴 an UNVERIFIED relay leaves the in-flight marker so the next tick does not re-send', async () => {
+  _resetNotMonitorStreak();
+  const saved: Mission[] = [];
+  const m = readyMission('mission_amb', { env: { isolation: 'shared', resources: [], host: PEER } as never });
+  const { deps } = starvedDeps(m, {
+    relayEnabled: () => true,
+    relaySpawn: async () => ({ status: 'unverified', detail: 'AbortError' }),
+    saveMission: async (x) => { saved.push(JSON.parse(JSON.stringify(x))); },
+  });
+
+  await runSupervisorTick(deps);
+
+  const last = saved[saved.length - 1];
+  assert.ok(last?.control?.spawnInFlight, 'a may-have-landed relay must stay marked, or the next tick sends again');
+  assert.strictEqual(last.control.spawnInFlight?.node, PEER);
+  _resetNotMonitorStreak();
+});
+
+test('a settled relay CLEARS the marker so the mission is retryable', async () => {
+  _resetNotMonitorStreak();
+  const saved: Mission[] = [];
+  const m = readyMission('mission_gone', { env: { isolation: 'shared', resources: [], host: PEER } as never });
+  const { deps } = starvedDeps(m, {
+    relayEnabled: () => true,
+    relaySpawn: async () => ({ status: 'unreachable', detail: 'Worker not found' }),
+    saveMission: async (x) => { saved.push(JSON.parse(JSON.stringify(x))); },
+  });
+
+  await runSupervisorTick(deps);
+
+  const last = saved[saved.length - 1];
+  assert.strictEqual(last?.control?.spawnInFlight, undefined, 'nothing was delivered — holding the marker would strand it');
+  _resetNotMonitorStreak();
+});

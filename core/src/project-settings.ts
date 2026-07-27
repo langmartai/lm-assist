@@ -45,6 +45,11 @@ export interface ProjectSettings {
    *  Fable 5 limit") by sending `/model <fallback>`. A DISTINCT class from auto-resume:
    *  never fires on a server/network error, and never sends `continue`. Default true. */
   autoModelFallbackEnabled: boolean;
+  /** Step B (bl_1c861246): may the placement safety net RELAY a spawn to the node that owns
+   *  the mission, instead of only recording the choice? Default FALSE — on a single-node
+   *  cluster the branch is unreachable, and on a multi-node one it must be proven there
+   *  first. The failure it guards against is two executors on one mission, on two machines. */
+  missionRelayedSpawnEnabled: boolean;
   /** The model to switch TO when a limit is hit. Default 'opus'. */
   autoModelFallbackModel: string;
   /** Model families whose limit triggers the switch. Default ['fable']. */
@@ -106,6 +111,7 @@ export const DEFAULTS: ProjectSettings = {
   autoResumeNeverGiveUp: true,
   autoResumeRemoteScan: true,
   autoModelFallbackEnabled: true,
+  missionRelayedSpawnEnabled: false,
   autoModelFallbackModel: 'opus',
   autoModelFallbackFrom: ['fable'],
   missionControllerEnabled: true,
@@ -161,6 +167,7 @@ export function getProjectSettings(): ProjectSettings {
       autoResumeNeverGiveUp: typeof data.autoResumeNeverGiveUp === 'boolean' ? data.autoResumeNeverGiveUp : DEFAULTS.autoResumeNeverGiveUp,
       autoResumeRemoteScan: typeof data.autoResumeRemoteScan === 'boolean' ? data.autoResumeRemoteScan : DEFAULTS.autoResumeRemoteScan,
       autoModelFallbackEnabled: typeof data.autoModelFallbackEnabled === 'boolean' ? data.autoModelFallbackEnabled : DEFAULTS.autoModelFallbackEnabled,
+      missionRelayedSpawnEnabled: typeof data.missionRelayedSpawnEnabled === 'boolean' ? data.missionRelayedSpawnEnabled : DEFAULTS.missionRelayedSpawnEnabled,
       autoModelFallbackModel: typeof data.autoModelFallbackModel === 'string' && data.autoModelFallbackModel ? data.autoModelFallbackModel : DEFAULTS.autoModelFallbackModel,
       autoModelFallbackFrom: Array.isArray(data.autoModelFallbackFrom) ? data.autoModelFallbackFrom.filter((x: unknown) => typeof x === 'string') : DEFAULTS.autoModelFallbackFrom,
       missionControllerEnabled: typeof data.missionControllerEnabled === 'boolean' ? data.missionControllerEnabled : DEFAULTS.missionControllerEnabled,
@@ -211,6 +218,7 @@ export function saveProjectSettings(partial: Partial<ProjectSettings>): ProjectS
     autoResumeNeverGiveUp: typeof partial.autoResumeNeverGiveUp === 'boolean' ? partial.autoResumeNeverGiveUp : current.autoResumeNeverGiveUp,
     autoResumeRemoteScan: typeof partial.autoResumeRemoteScan === 'boolean' ? partial.autoResumeRemoteScan : current.autoResumeRemoteScan,
     autoModelFallbackEnabled: typeof partial.autoModelFallbackEnabled === 'boolean' ? partial.autoModelFallbackEnabled : current.autoModelFallbackEnabled,
+    missionRelayedSpawnEnabled: typeof partial.missionRelayedSpawnEnabled === 'boolean' ? partial.missionRelayedSpawnEnabled : current.missionRelayedSpawnEnabled,
     autoModelFallbackModel: typeof partial.autoModelFallbackModel === 'string' && partial.autoModelFallbackModel ? partial.autoModelFallbackModel : current.autoModelFallbackModel,
     autoModelFallbackFrom: Array.isArray(partial.autoModelFallbackFrom) ? partial.autoModelFallbackFrom.filter((x: unknown) => typeof x === 'string') : current.autoModelFallbackFrom,
     missionControllerEnabled: typeof partial.missionControllerEnabled === 'boolean' ? partial.missionControllerEnabled : current.missionControllerEnabled,

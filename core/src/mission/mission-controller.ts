@@ -16,6 +16,7 @@ import {
   classifyExecutorActivity, shouldEngage, advanceStarvation, STARVATION_TICKS,
   decideNetPlacement, placementAdvisory, type PlacementAdvice,
 } from './mission-engagement';
+import { shouldRelaySpawn, type RelayOutcome } from './relay-spawn';
 import { computeSchedule } from './mission-scheduler';
 import { runAdjust } from './mission-adjust';
 import { getProjectSettings } from '../project-settings';
@@ -860,6 +861,12 @@ export interface SupervisorDeps {
   selectNode?: (m: Mission) => Promise<{ node: string; why: string[] } | null>;
   /** Persist a mission the net has just modified (host choice / binding). */
   saveMission?: (m: Mission) => Promise<void>;
+  /** Step B — send the spawn to the node that OWNS the mission, through the hub
+   *  machine-proxy. Absent (or `relayEnabled` false) ⇒ step-A behaviour: record the host,
+   *  refuse to spawn here, and leave it for a human. Never called with `force`. */
+  relaySpawn?: (node: string, missionId: string, requestId: string) => Promise<RelayOutcome>;
+  /** Read fresh each tick so the kill switch takes effect without a restart. Default false. */
+  relayEnabled?: () => boolean;
 }
 
 /**
@@ -1068,6 +1075,10 @@ async function buildPlacementAdvisory(ids: string[], deps: SupervisorDeps): Prom
  * must never spawn something the deterministic rules would refuse, and `starved` was
  * computed up to a tick ago.
  */
+/** How long a relayed spawn may be outstanding before another leader may retry it. The
+ *  retry reuses the same requestId, so the target dedupes it rather than spawning twice. */
+const RELAY_INFLIGHT_TTL_MS = 5 * 60_000;
+
 async function placeStarvedMissions(starved: string[], deps: SupervisorDeps): Promise<void> {
   let all: Mission[];
   try {
@@ -1113,13 +1124,53 @@ async function placeStarvedMissions(starved: string[], deps: SupervisorDeps): Pr
       if (deps.saveMission) { try { await deps.saveMission(m); } catch { /* best-effort */ } }
     }
     if (!decision.spawnHere) {
+      const host = decision.defer?.host;
+      // ── Step B: send it to the node that OWNS it (default OFF) ──
+      // Gated so a multi-node cluster cannot start relaying before this has been proven
+      // there. On a single-node cluster the branch is unreachable anyway: pickDeterministic
+      // eliminates out-of-cluster nodes, so the pick is always self.
+      if (host && deps.relaySpawn && (deps.relayEnabled?.() ?? false)
+          && shouldRelaySpawn(m.control, deps.now, RELAY_INFLIGHT_TTL_MS)) {
+        // 🔴 REUSE a stale marker's requestId. A leader that died mid-flight leaves one
+        // behind; retrying with a FRESH key would defeat the target's dedupe and spawn a
+        // second executor for the attempt that may already have landed.
+        const prior = m.control.spawnInFlight;
+        const requestId = prior?.node === host ? prior.requestId : `net-${id}-${deps.now}`;
+        m.control.spawnInFlight = { node: host, requestId, at: deps.now };
+        if (deps.saveMission) { try { await deps.saveMission(m); } catch { /* best-effort */ } }
+
+        let outcome: RelayOutcome;
+        try {
+          outcome = await deps.relaySpawn(host, id, requestId);
+        } catch (e) {
+          // A throw is indistinguishable from a timeout: it MAY have landed.
+          outcome = { status: 'unverified', detail: (e as Error)?.message?.slice(0, 200) ?? 'relay threw' };
+        }
+        // `unverified` KEEPS the marker — that is the whole point of it. Everything else is
+        // settled, so the marker is cleared and the mission is free to be retried.
+        if (outcome.status !== 'unverified') delete m.control.spawnInFlight;
+        if (outcome.status === 'placed' && (outcome as { binding?: unknown }).binding) {
+          m.binding = (outcome as { binding: MissionBinding }).binding;
+          m.status = 'active';
+          addAdjustment(m, deps.now, 'placement-relay', `spawned on ${host} (relayed)`);
+        }
+        if (deps.saveMission) { try { await deps.saveMission(m); } catch { /* best-effort */ } }
+        deps.journal?.({
+          at: Date.now(), kind: 'tick', action: `placement-relay-${outcome.status}`,
+          missionId: id, reason: `${host}: ${(outcome as { detail?: string; code?: string }).detail ?? (outcome as { code?: string }).code ?? ''}`.slice(0, 200),
+        } as never);
+        if (outcome.status === 'unverified') {
+          console.warn(`[mission-controller] relayed spawn of ${id} to ${host} is UNVERIFIED — NOT retrying; resolve by reading the mission on ${host}`);
+        }
+        continue;
+      }
       // Every tick, not once: a mission this node cannot start must not look placed, and the
       // operator needs to see that it is stuck waiting on a machine rather than on the queue.
       deps.journal?.({
         at: Date.now(), kind: 'tick', action: 'placement-safety-net-remote',
         missionId: id, reason: decision.defer?.reason ?? 'not this node',
       } as never);
-      console.info(`[mission-controller] safety net: ${id} belongs to ${decision.defer?.host} — not spawned here`);
+      console.info(`[mission-controller] safety net: ${id} belongs to ${host} — not spawned here`);
       continue;
     }
     try {
@@ -1783,6 +1834,50 @@ export function registerMissionController(
       saveMission: async (m) => {
         const { putMission: pm } = require('./mission-store') as typeof import('./mission-store');
         await pm(m);
+      },
+      // Read per tick, not captured at registration — so the kill switch works live.
+      relayEnabled: () => getProjectSettings().missionRelayedSpawnEnabled === true,
+      // Step B. The transport is the SAME hub machine-proxy the web's peer-relay uses; the
+      // target runs the SAME `handleMissionSpawn` a human's `mission_spawn(node:X)` runs.
+      // Nothing here classifies on the HTTP status — `relaySpawn` reads the body shape and,
+      // when that is inconclusive, RE-READS the mission on the target instead of re-sending.
+      relaySpawn: async (node: string, missionId: string, requestId: string) => {
+        const { relaySpawn: doRelay } = require('./relay-spawn') as typeof import('./relay-spawn');
+        const { getHubConfig: hubCfg } = require('../hub-client/hub-config') as typeof import('../hub-client/hub-config');
+        const { proxyUrlPath } = require('../memory/mcp-transport') as typeof import('../memory/mcp-transport');
+        const cfg = hubCfg();
+        const base = (cfg.hubUrl || '').replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
+        if (!base || !cfg.apiKey) {
+          return { status: 'unverified' as const, detail: 'HUB_NOT_CONFIGURED — cannot reach the peer, and cannot prove nothing was sent' };
+        }
+        const call = async (method: 'GET' | 'POST', path: string, body?: unknown, timeoutMs = 30_000) => {
+          const ac = new AbortController();
+          const t = setTimeout(() => ac.abort(), timeoutMs);
+          try {
+            const res = await fetch(`${base}${proxyUrlPath(node, path)}`, {
+              method,
+              headers: { Authorization: `Bearer ${cfg.apiKey}`, 'Content-Type': 'application/json' },
+              ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+              signal: ac.signal,
+            });
+            const raw = await res.text();
+            try { return { httpStatus: res.status, body: JSON.parse(raw) }; }
+            catch { return { httpStatus: res.status, raw }; }
+          } catch (e) {
+            return { threw: (e as Error)?.message ?? 'fetch failed' };
+          } finally { clearTimeout(t); }
+        };
+        return doRelay(node, missionId, requestId, {
+          post: (n, path, body) => call('POST', path, body),
+          readMission: async (n, id) => {
+            const r = await call('GET', `/mission/${encodeURIComponent(id)}`, undefined, 15_000);
+            const env = (r as { body?: { success?: boolean; data?: unknown } }).body;
+            if (!env || env.success !== true) throw new Error('mission re-read inconclusive');
+            const d = env.data as { mission?: { binding?: { sessionId?: string } | null }; binding?: { sessionId?: string } | null };
+            return d?.mission ?? d ?? null;
+          },
+          sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+        });
       },
       spawnMission: async (id: string) => {
         const { handleMissionSpawn } = require('../routes/core/mission.routes') as typeof import('../routes/core/mission.routes');
