@@ -56,7 +56,8 @@ How to capture the cookie:
 | `POST` | `/claude-ai/conversations/:uuid/completion/stream` | **WRITE** — streaming variant for embedded chat clients: same body, answers `text/event-stream` over the raw socket (see "Embedded browser chat clients" below). |
 | `GET` | `/claude-ai/conversations/:uuid/messages` | Parsed transcript for chat UIs: `{ uuid, name, messages: [{ role, type, text, thinking?, toolCalls?: [{name, input, result, isError, images?: [{fileUuid}]}] }] }` (core-side `parseChatMessages`; image tool-results become file refs, base64 never lands in `result`; successful `tool_search` meta-calls are suppressed). |
 | `GET` | `/claude-ai/conversations/named?limit=&prefix=&refresh=` | Name-prefix-filtered list, newest-updated first: `{ prefix, conversations: [{uuid, name, updatedAt, createdAt}] }`. Scoped tokens may only use their mint-bound `listPrefix` (query ignored; none bound → 403); full-token callers must pass `?prefix=`. Defaults to a live upstream fetch (cache lags right after a create); `refresh=false` serves the cache index. |
-| `POST` | `/claude-ai/conversations/:uuid/title` | **WRITE** — rename / auto-title. Body: `{ title? }` (omit `title` → server auto-generates). |
+| `PUT` | `/claude-ai/conversations/:uuid` | **WRITE — THE RENAME.** Body: `{ name }` (or `{ title }`, for callers who think in "chat title"); missing both → `NAME_REQUIRED`. Returns `{ uuid, name, previousName }` so a mis-targeted rename is visible and trivially reversible. Upstream is `PUT /api/organizations/{org}/chat_conversations/{uuid} {"name": …}` → 202, **no query string**. |
+| `POST` | `/claude-ai/conversations/:uuid/title` | **WRITE — NOT a rename.** This is claude.ai's **auto-title GENERATOR**: it derives a title from message content and requires `{ message_content, recent_titles? }`. Handing it a title returns `400 "message_content is required."` — it can never set a title of your choosing. Use the `PUT` above. |
 | `GET` | `/claude-ai/projects?limit=&include_harmony_projects=&creator_filter=` | List projects. |
 | `GET` | `/claude-ai/artifacts/:uuid/versions` | Artifact version history. |
 
@@ -216,7 +217,7 @@ All accept a JSON body. All return `{ success: true, data: { snippet, descriptio
 | `POST` | `/claude-ai/via-chrome/conversations/:uuid/delete` | `{}` — **WRITE (destructive)** snippet; UUID validated host-side. |
 | `POST` | `/claude-ai/via-chrome/conversations/:uuid` | `{ tree?, renderingMode?, renderAllTools? }` |
 | `POST` | `/claude-ai/via-chrome/conversations/:uuid/completion` | `{ prompt, model?, timezone?, locale?, parentMessageUuid? }` — **WRITE** snippet that reads `current_leaf_message_uuid`, POSTs `/completion`, drains the SSE stream in-page, and returns `{ status, text, events, eventTypes, eventCount, humanMessageUuid, assistantMessageUuid }`. |
-| `POST` | `/claude-ai/via-chrome/conversations/:uuid/title` | `{ title? }` — **WRITE** snippet (omit `title` for auto-title). |
+| `POST` | `/claude-ai/via-chrome/conversations/:uuid/title` | `{ title? }` — **WRITE** snippet for the auto-title **generator**, NOT a rename. ⚠️ It posts `{title}`/`{}` to `chat_conversations/{uuid}/title`, which requires `message_content` and answers `400` without it — so this snippet cannot set a title of your choosing, and there is currently **no via-chrome rename snippet**. Rename through the cookie-file `PUT /claude-ai/conversations/:uuid` instead. |
 | `POST` | `/claude-ai/via-chrome/projects` | `{ limit?, includeHarmonyProjects?, creatorFilter? }` |
 | `POST` | `/claude-ai/via-chrome/artifacts/:uuid/versions` | `{}` |
 
