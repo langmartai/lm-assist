@@ -47,9 +47,19 @@ you hit them while doing something else entirely, and the symptom is a Core that
 
 ### Dependency pin — chokidar MUST stay `^3.6.0` (do NOT bump)
 
-chokidar 4.x/5.x are **ESM-only**. The core build is CommonJS (`core/tsconfig.json` → `"module": "commonjs"`), so `core/dist/*.js` does `require("chokidar")`. `require()` of an ESM-only module throws **`ERR_REQUIRE_ESM`** and **Core crashes on boot** — the Web UI still starts, but Core never binds `:3100` (prod) / `:3200` (dev). Symptom: services look half-up, `curl localhost:3100/health` fails, and anything the hub relays (the MCP) errors → "lm-assist MCP is down". Loaders that import it: `task-store.ts`, `rest-server.ts`, `session-cache.ts`, `memory-cache.ts`.
+**chokidar 5 is ESM-only.** The core build is CommonJS (`core/tsconfig.json` → `"module": "commonjs"`), so `core/dist/*.js` does `require("chokidar")`. `require()` of an ESM-only module throws **`ERR_REQUIRE_ESM`** and **Core crashes on boot** — the Web UI still starts, but Core never binds `:3100` (prod) / `:3200` (dev). Symptom: services look half-up, `curl localhost:3100/health` fails, and anything the hub relays (the MCP) errors → "lm-assist MCP is down". Six call sites `require` it: `rest-server.ts`, `task-store.ts`, `session-cache.ts`, `memory-cache.ts`, `memory/cross-project-signpost.ts`, `rules/autosync.ts`.
 
-The source uses the v3 API (`import chokidar, { FSWatcher }` + `chokidar.watch(...)`), so **`^3.6.0`** (last CommonJS release) matches the code and can never resolve to the ESM v4/v5 line. Keep it pinned in BOTH `package.json` and `core/package.json`.
+⚠️ **This note used to say "4.x/5.x are ESM-only". That is wrong about 4.x, and the error hid the real hazard.** Verified against the registry:
+
+| version | module format | engines |
+|---|---|---|
+| `3.6.0` (pinned) | CJS | `>= 8.10.0` |
+| `4.0.3` | **dual** — `exports["."].require = "./index.js"` | `>= 14.16.0` |
+| `5.0.0` | `type: "module"`, `default` export only | **`>= 20.19.0`** |
+
+So v4 would `require()` fine. **v5 is the one that breaks**, and it breaks *selectively*: `require(esm)` exists on Node ≥ 20.19, so a bump looks healthy on a modern dev box and dies on a Node 18 user. Never validate this pin only on the machine you are sitting at.
+
+**Keep `^3.6.0` anyway.** The range cannot resolve to v4 or v5, so it is doing its job. v4 is *plausibly* compatible — all six call sites pass `ignored` as RegExp arrays, a function, or not at all, and none rely on the string globs v4 dropped — but nobody has validated a v4 build end-to-end here, so "plausible" is not a reason to move. Keep it pinned in BOTH `package.json` and `core/package.json`.
 
 Recover if Core won't boot with `ERR_REQUIRE_ESM`:
 1. `npm install chokidar@^3.6.0 --ignore-scripts` (the `prepare` hook runs `next build`; `--ignore-scripts` skips it).
