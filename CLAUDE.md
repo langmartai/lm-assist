@@ -47,6 +47,7 @@ lm-assist/
 ./core.sh restart      # Restart all services
 ./core.sh status       # Show service status + health check
 ./core.sh build        # Compile TypeScript (core)
+./core.sh pack         # Build a prebuilt prod tarball (lm-assist-<ver>.tgz) for deploy/upgrade
 ./core.sh clean        # Clean and rebuild
 ./core.sh test         # Test API endpoints
 ./core.sh hub start    # Connect Hub Client
@@ -1113,6 +1114,7 @@ Dev + prod run **simultaneously** — separate port spaces (3200/3948 vs 3100/38
 | 3 | `./core.sh` web "Failed to start" / "Not Running" | the probe wants 200 on `/`, but the app **307-redirects** `/` → `/sessions` | False negative — ignore it; `curl :3948` → 307 means it's up. |
 | 4 | chokidar must be `^3.6.0` (see the pin section above) | v4/v5 are ESM-only → `ERR_REQUIRE_ESM` → Core never binds :3200/:3100 | the repo + its `npm pack` tgz carry the pin (safe). Only `npm install -g lm-assist@latest` from the registry re-breaks it. |
 | 5 | `lm-assist upgrade` (no flag) reinstalls from npm | overwrites a local-tgz / source build with npm `latest` (possibly older / chokidar-broken) | use `lm-assist upgrade --from ./<tgz>` to keep your source build. |
+| 6 | **Git source-build is unsupported** — `npm install -g github:…#ref`, `lm-assist upgrade --from github:…`, and `node_upgrade({ref})` all clone-and-build, running a full dep install **with scripts** that DIES on onnxruntime-node's postinstall (`global-agent` MODULE_NOT_FOUND). | `node_upgrade`/`lm-assist upgrade` from a git ref restarts the node on the OLD build (no LinkedIn/whatever change lands). | **Deploy a prebuilt tarball, never a git ref.** Build it with `./core.sh pack` (= `npm install --ignore-scripts && npm pack`), then `npm install -g ./<tgz>` or `node_upgrade source=<abs .tgz on the target node>` (its Windows EBUSY robocopy fallback handles the in-use install dir). |
 
 The hub is a **separate, user-confirmed step**: bootstrapping writes no hub credentials and connects to nothing — `lm-assist setup --key <KEY>` runs only on explicit user instruction (both Core instances report Hub Client *Not configured* until then, and the local services still work).
 
