@@ -12,7 +12,12 @@ works if you actually go and read it, so:
 
 1. **Match the triggers below against the task you were just given**, the file you are about to
    open, or the error you are staring at. Triggers are deliberately literal — paths, symbol
-   names, tool names, error strings — so matching is mechanical, not a judgement call.
+   names, tool names, error strings — so matching is mechanical, not a judgement call. They are
+   written in BOTH vocabularies on purpose: what you would *see* (`up_error`, `SUBMIT_UNVERIFIED`)
+   and what you would *ask* ("get one turn out of a session"). A trigger list written only in the
+   words of the answer is unmatchable by someone who does not have the answer yet — measured: a
+   row keyed on `fromUserPromptIndex` was skipped by a session asking "how do I fetch the 5th
+   user prompt", because that is not how the question sounds.
 2. **Read the file BEFORE you act**, not after you are stuck. A 3 KB topic file costs less than
    one wrong edit, and far less than a wrong edit shipped to prod.
 3. 🔴 **A tripwire is a WARNING, not a summary.** Each row carries one trap so a reader who never
@@ -39,7 +44,7 @@ stop. To mention a path without importing it, wrap it in backticks or use a `[li
 | [memory reads](docs/memory-reads.md) | `memory_file` · `search_memory` · `project_id` · `PROJECT_NOT_FOUND` · `memory-api.ts` | "Intermittent" was **deterministic per input** — sort failures by ARGUMENT, not by time. A dropped `error.code` manufactures phantom transport bugs. |
 | [backlog + registry writes](docs/backlog-registry.md) | `backlog_*` tools · any fleet-synced registry WRITE · `UNSUPPORTED_FIELD` · `requestId` · `ORIGIN_TIMEOUT` | Coerce caller-plausible enums and refuse the rest LOUDLY, echoing what was sent. Strip transport keys before the unknown-field guard. `ORIGIN_TIMEOUT` **may** have landed; `ORIGIN_UNREACHABLE` did not. |
 | [install + running modes](docs/install-and-modes.md) | `lm-assist upgrade` · `install.sh` · `npm pack` · fresh host · "dev or prod?" · which port is serving | `lm-assist upgrade` from npm **re-breaks the chokidar pin**; use `--from <tgz>` to keep a source build. |
-| [API endpoints](docs/api-endpoints.md) | "which endpoint …?" · `GET /sessions/:id` · `fromUserPromptIndex` · route lookup | Reference only — no rules live here. |
+| [API endpoints](docs/api-endpoints.md) | "which endpoint …?" · read/slice a stored session · get one turn / prompt / response out of a session · list sessions, projects, tasks, knowledge · delta or conditional fetch · `GET /sessions/:id` · `fromUserPromptIndex` | Reference only — no rules live here. |
 | [architecture](docs/architecture.md) | "where does X live?" · `RouteHandler` · `RouteContext` · `ApiResponse` · Core/Web split | — |
 | [plugin + hooks](docs/plugin-and-hooks.md) | `.claude-plugin/` · `hooks/hooks.json` · `commands/` · context-inject · statusline · slash command | — |
 | [hub client](docs/hub-client.md) | `hub.json` · `/hub/status` · "the MCP is down" · `assist-api` · `TIER_AGENT_*` · `auth_confirmed` | Effective config is `~/.lm-assist/hub.json`, **not** `.env`. Dev dials xeenhub, prod dials langmart — never mix. |
