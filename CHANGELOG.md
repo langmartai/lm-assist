@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased] — LinkedIn CDP connector (16 MCP tools) (2026-07-27)
+
+### Added
+- **LinkedIn connector (CDP-only).** LinkedIn has no usable personal messaging/posting API, so this connector drives the operator's OWN logged-in linkedin.com session in a real Chrome over the DevTools Protocol and mirrors messaging into the shared store — same shape as the WhatsApp connector. 16 MCP tools appear in any Claude Code / claude.ai session connected to the node: reads `linkedin_status`, `linkedin_list_conversations`, `linkedin_read_messages`, `linkedin_search`, `linkedin_read_feed`, `linkedin_read_notifications`, `linkedin_search_people`; writes `linkedin_send_message`, `linkedin_post`, `linkedin_publish_article`, `linkedin_follow`, `linkedin_connect`, `linkedin_message_profile`, `linkedin_comment`, `linkedin_delete_post`; admin `linkedin_login`. REST surface under `/linkedin/*` on loopback; 15-minute session keep-alive.
+- **`userDataDir` launch option** on the shared `claudeai-browser-launch` launcher: an explicit persistent user-data-dir that takes precedence over `profile`, so a connector can own a durable Chrome profile (LinkedIn uses `~/.lm-assist/linkedin[-dev]/` on debug port 9223) whose one-time password/2FA login survives restarts, rather than colliding with `isolated` (shared) or `Default` (the user's own Chrome).
+- Docs: [`docs/linkedin-connector.md`](docs/linkedin-connector.md).
+
 ## [0.1.110] — node_upgrade MCP tool (2026-06-26)
 
 node_upgrade MCP tool: trigger a per-node lm-assist upgrade to a specified prebuilt source (.tgz/URL/github:ref) via the relay, then confirm with node_builds. Refuses to default to npm latest (would downgrade — we don't publish).
