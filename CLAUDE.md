@@ -5,30 +5,44 @@ Monorepo for the LM Assistant — a web UI for managing Claude Code sessions, wi
 > **This file is an INDEX.** It carries only what bites you when you are not thinking about it;
 > everything else lives in a topic file below and is read on demand.
 
-## Topic index — read the file when you are working in that area
+## Topic index — READ the matching file before you act
+
+The prose that used to live here was moved into topic files so it is read ON DEMAND. That only
+works if you actually go and read it, so:
+
+1. **Match the triggers below against the task you were just given**, the file you are about to
+   open, or the error you are staring at. Triggers are deliberately literal — paths, symbol
+   names, tool names, error strings — so matching is mechanical, not a judgement call.
+2. **Read the file BEFORE you act**, not after you are stuck. A 3 KB topic file costs less than
+   one wrong edit, and far less than a wrong edit shipped to prod.
+3. 🔴 **A tripwire is a WARNING, not a summary.** Each row carries one trap so a reader who never
+   opens the file is not completely blind. It is *not* the content of the file. Answering from
+   the tripwire alone is how you ship the plausible-but-wrong version — and every one of these
+   files exists because a real session did exactly that.
+4. **If you are unsure, that IS the trigger.** About to answer a question about this repo from
+   inference? Cannot name the file that told you something? Read. When no row matches, try
+   `grep -rl "<term>" docs/` — `docs/` holds ~45 files and `docs/superpowers/specs/` holds the
+   design specs; `ls docs/` is cheap.
 
 🔴 **Use plain markdown links here, never `@docs/foo.md`.** An `@path` is an *import*: Claude Code
 expands it into context at launch (recursive, 4 hops deep), which is exactly what this split exists to
 stop. To mention a path without importing it, wrap it in backticks or use a `[link](path)`.
 
-These files were split out of this one so they are read ON DEMAND. Each line names when to open it and
-the one thing that bites if you don't.
-
-| topic | open it when | the tripwire |
+| topic | triggers — match these | the tripwire (a warning, not the answer) |
 |---|---|---|
-| [voice](docs/voice.md) | touching `core/src/voice/`, `useClaudeVoice.ts`, or `LM_HTTPS` | Verify with **`up>0`**, never `{ready}` alone. Never regress the CF fix (real-Chrome UA + `GET /api/account` before the WS upgrade). claude.ai ACCEPTS any well-formed conversation uuid and silently discards the turns — a session must prove it owns the conversation before audio flows. |
-| [claude.ai integration](docs/claude-ai.md) | any `/claude-ai/*` route or `core/src/claude-ai/` | Rename is `PUT …/chat_conversations/:uuid {name}`; `/title` is the auto-title **generator** and 400s on a title. Naive token counting over-reports LIVE context by **3.8×**. |
-| [mission control](docs/mission-control.md) | stall monitor, `/model` fallback, `core/src/monitor/` | An unbounded scheduled pass doesn't run long — it **silently disables the job forever**. Auto-resume runs first and unbounded; model-fallback second under a budget. Never reorder. |
-| [node placement](docs/node-placement.md) | placement, election, cluster scoping, machine access | A display name is not an identity — route on **hostId**. Respect each cluster's declared scope; `frozen`/`release`/`busy` are off-limits by default. |
-| [MCP surfaces](docs/mcp-surfaces.md) | adding an MCP tool, or `mcp-session-resolver.ts` | That resolver is on the hot path of **every** connector call — no store sweeps, no unbounded network, no timer-only deadlines. Shared boilerplate in a tool description costs length × tool count. |
-| [session messaging](docs/session-messaging.md) | `send_session_message`, the driver chain, `terminal/cc.ts` | Claude Code **queues** input while busy — that IS a successful submit. Never anchor composer detection on `>`. `unverified` is deliberately not `pending`. |
-| [memory reads](docs/memory-reads.md) | `memory_file`, `search_memory`, project-id resolution | "Intermittent" was **deterministic per input** — sort failures by ARGUMENT, not by time. A dropped `error.code` manufactures phantom transport bugs. |
-| [backlog + registry writes](docs/backlog-registry.md) | any fleet-synced registry write path | Coerce caller-plausible enums and refuse the rest LOUDLY, echoing what was sent. Strip transport keys before the unknown-field guard. `ORIGIN_TIMEOUT` **may** have landed; `ORIGIN_UNREACHABLE` did not. |
-| [install + running modes](docs/install-and-modes.md) | new host, upgrade flow, "which environment is serving?" | `lm-assist upgrade` from npm **re-breaks the chokidar pin**; use `--from <tgz>` to keep a source build. |
-| [API endpoints](docs/api-endpoints.md) | looking up a route or a session-history query | Reference only — no rules live here. |
-| [architecture](docs/architecture.md) | orientation: Core/Web split, shared route + response types | — |
-| [plugin + hooks](docs/plugin-and-hooks.md) | plugin manifest, context-inject hook, slash commands | — |
-| [hub client](docs/hub-client.md) | hub connectivity, or "the MCP is down" | Effective config is `~/.lm-assist/hub.json`, **not** `.env`. Dev dials xeenhub, prod dials langmart — never mix. |
+| [voice](docs/voice.md) | `core/src/voice/` · `useClaudeVoice.ts` · `claude-chrome.ts` · `LM_HTTPS` · voice · mic · TTS · `up_error` · `cf_clearance` · `{ready}` | Verify with **`up>0`**, never `{ready}` alone. Never regress the CF fix (real-Chrome UA + `GET /api/account` before the WS upgrade). claude.ai ACCEPTS any well-formed conversation uuid and silently discards the turns — a session must prove it owns the conversation before audio flows. |
+| [claude.ai integration](docs/claude-ai.md) | `/claude-ai/*` · `core/src/claude-ai/` · `claudeai-session.ts` · rename a conversation · `conversation_tokens` · `conversation_fork` · claude.ai cookie | Rename is `PUT …/chat_conversations/:uuid {name}`; `/title` is the auto-title **generator** and 400s on a title. Naive token counting over-reports LIVE context by **3.8×**. |
+| [mission control](docs/mission-control.md) | `core/src/monitor/` · stall · auto-resume · `/model` fallback · `stall_status` · `scheduled-jobs` · "reached your … limit" | An unbounded scheduled pass doesn't run long — it **silently disables the job forever**. Auto-resume runs first and unbounded; model-fallback second under a budget. Never reorder. |
+| [node placement](docs/node-placement.md) | placement · `env.host` · cluster · election · `node_select` · `node_profile` · `machine_access` · `mission_spawn` | A display name is not an identity — route on **hostId**. Respect each cluster's declared scope; `frozen`/`release`/`busy` are off-limits by default. |
+| [MCP surfaces](docs/mcp-surfaces.md) | adding/editing an MCP tool · `core/src/mcp-server/` · `mcp-session-resolver.ts` · `tools/list` · `_actor` · tool description | That resolver is on the hot path of **every** connector call — no store sweeps, no unbounded network, no timer-only deadlines. Shared boilerplate in a tool description costs length × tool count. |
+| [session messaging](docs/session-messaging.md) | `send_session_message` · `core/src/terminal/cc.ts` · `SUBMIT_UNVERIFIED` · `DELIVERY_UNVERIFIED` · composer · queued input · `messageId` | Claude Code **queues** input while busy — that IS a successful submit. Never anchor composer detection on `>`. `unverified` is deliberately not `pending`. |
+| [memory reads](docs/memory-reads.md) | `memory_file` · `search_memory` · `project_id` · `PROJECT_NOT_FOUND` · `memory-api.ts` | "Intermittent" was **deterministic per input** — sort failures by ARGUMENT, not by time. A dropped `error.code` manufactures phantom transport bugs. |
+| [backlog + registry writes](docs/backlog-registry.md) | `backlog_*` tools · any fleet-synced registry WRITE · `UNSUPPORTED_FIELD` · `requestId` · `ORIGIN_TIMEOUT` | Coerce caller-plausible enums and refuse the rest LOUDLY, echoing what was sent. Strip transport keys before the unknown-field guard. `ORIGIN_TIMEOUT` **may** have landed; `ORIGIN_UNREACHABLE` did not. |
+| [install + running modes](docs/install-and-modes.md) | `lm-assist upgrade` · `install.sh` · `npm pack` · fresh host · "dev or prod?" · which port is serving | `lm-assist upgrade` from npm **re-breaks the chokidar pin**; use `--from <tgz>` to keep a source build. |
+| [API endpoints](docs/api-endpoints.md) | "which endpoint …?" · `GET /sessions/:id` · `fromUserPromptIndex` · route lookup | Reference only — no rules live here. |
+| [architecture](docs/architecture.md) | "where does X live?" · `RouteHandler` · `RouteContext` · `ApiResponse` · Core/Web split | — |
+| [plugin + hooks](docs/plugin-and-hooks.md) | `.claude-plugin/` · `hooks/hooks.json` · `commands/` · context-inject · statusline · slash command | — |
+| [hub client](docs/hub-client.md) | `hub.json` · `/hub/status` · "the MCP is down" · `assist-api` · `TIER_AGENT_*` · `auth_confirmed` | Effective config is `~/.lm-assist/hub.json`, **not** `.env`. Dev dials xeenhub, prod dials langmart — never mix. |
 
 **Deeper single-subject docs** (referenced from the topics above, same on-demand rule):
 [claude-ai-routes](docs/claude-ai-routes.md) · [claude-code-routes](docs/claude-code-routes.md) ·
