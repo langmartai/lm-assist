@@ -359,6 +359,23 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   whatsapp_read_messages: 'read',
   whatsapp_search: 'read',
   whatsapp_status: 'read',
+  // linkedin CDP connector (reads observe; writes publish/message/connect; login drives interactive auth)
+  linkedin_status: 'read',
+  linkedin_list_conversations: 'read',
+  linkedin_read_messages: 'read',
+  linkedin_search: 'read',
+  linkedin_read_feed: 'read',
+  linkedin_read_notifications: 'read',
+  linkedin_search_people: 'read',
+  linkedin_send_message: 'write',
+  linkedin_post: 'write',
+  linkedin_publish_article: 'write',
+  linkedin_follow: 'write',
+  linkedin_connect: 'write',
+  linkedin_message_profile: 'write',
+  linkedin_comment: 'write',
+  linkedin_delete_post: 'write',
+  linkedin_login: 'admin',
   // cowork task creation (write — starts a real background session)
   cowork_create_task: 'write',
 };

@@ -71,6 +71,7 @@ import { BUS_TOOL_DEFS, BUS_HANDLERS } from './bus';
 import { sessionFootprintsToolDef, handleSessionFootprints } from './session-footprints';
 import { nodeLifecycleToolDef, handleNodeLifecycle } from './lifecycle';
 import { WHATSAPP_TOOL_DEFS, WHATSAPP_HANDLERS } from './whatsapp';
+import { LINKEDIN_TOOL_DEFS, LINKEDIN_HANDLERS } from './linkedin';
 import { ELEVATED_TOOL_DEFS, ELEVATED_HANDLERS } from './elevated';
 import { coworkCreateTaskDef, handleCoworkCreateTask } from './cowork';
 
@@ -1123,6 +1124,7 @@ export const EXPANDED_TOOL_DEFS = [
   ...PORT_FORWARD_TOOL_DEFS,
   // whatsapp cloud-api connector (send: write; chats/messages/search/status: read)
   ...WHATSAPP_TOOL_DEFS,
+  ...LINKEDIN_TOOL_DEFS,
   ...TRANSFER_TOOL_DEFS,
   ...FS_INSPECT_TOOL_DEFS,
   // session-to-session messaging (send: write/admin; list+status: read)
@@ -2295,6 +2297,7 @@ export const EXPANDED_HANDLERS: Record<
   ...PORT_FORWARD_HANDLERS,
   // whatsapp cloud-api connector
   ...WHATSAPP_HANDLERS,
+  ...LINKEDIN_HANDLERS,
   ...TRANSFER_HANDLERS,
   ...FS_INSPECT_HANDLERS,
   // session-to-session messaging

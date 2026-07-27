@@ -38,6 +38,15 @@ import {
 export interface LaunchOptions {
   /** Profile id ('Default', 'Profile 1', …) or 'isolated' for a fresh data dir. */
   profile?: string;
+  /**
+   * Explicit persistent user-data-dir. Takes precedence over `profile` when set:
+   * the browser runs against exactly this dir (created recursively if missing),
+   * with `profileSource: 'isolated'`. Use this when a connector needs its OWN
+   * durable profile — e.g. the LinkedIn connector's `~/.lm-assist/linkedin[-dev]/`
+   * on port 9223, so a one-time password/2FA login survives restarts rather than
+   * colliding with 'isolated' (single shared dir) or 'Default' (the user's Chrome).
+   */
+  userDataDir?: string;
   /** Debug port; defaults to 9222. */
   port?: number;
   /** Run hidden (no window). Useful for CI; humans want headless=false. */
@@ -244,7 +253,20 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<LaunchResu
   let profileDirectory: string | null = null;
   let profileSource: 'isolated' | 'existing';
 
-  if (profileChoice === 'isolated') {
+  if (opts.userDataDir) {
+    // Explicit persistent dir wins over `profile` — a connector-owned profile.
+    userDataDir = opts.userDataDir;
+    profileSource = 'isolated';
+    try {
+      fs.mkdirSync(userDataDir, { recursive: true });
+    } catch (e) {
+      return {
+        ok: false,
+        code: 'spawn_failed',
+        message: `Cannot create user-data-dir '${userDataDir}': ${(e as Error).message}`,
+      };
+    }
+  } else if (profileChoice === 'isolated') {
     userDataDir = ISOLATED_PROFILE_DIR;
     profileSource = 'isolated';
     try {
