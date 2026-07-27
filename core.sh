@@ -257,7 +257,10 @@ build_project() {
     if [ ! -d "$PROJECT_ROOT/node_modules" ]; then
         echo -e "${YELLOW}Installing dependencies...${NC}"
         cd "$PROJECT_ROOT"
-        npm install > "$BUILD_LOG" 2>&1
+        # --ignore-scripts: skip onnxruntime-node's native postinstall (pulled in
+        # transitively; it fails on a fresh tree). sqlite is lazy-loaded, so the
+        # skipped better-sqlite3 native build is harmless for a dev build.
+        npm install --ignore-scripts > "$BUILD_LOG" 2>&1
         if [ $? -ne 0 ]; then
             echo -e "${RED}npm install failed. Check $BUILD_LOG${NC}"
             return 1
@@ -275,6 +278,45 @@ build_project() {
         echo -e "${RED}Build failed. Check $BUILD_LOG${NC}"
         return 1
     fi
+}
+
+# Function to produce a prebuilt prod tarball (the supported deploy artifact).
+#
+# `npm pack` runs the root `prepare` script (build:core + build:web) and emits
+# lm-assist-<ver>.tgz carrying core/dist + web/.next. Installing THAT tarball
+# (`npm install -g ./lm-assist-*.tgz`, or `node_upgrade source=<abs .tgz>`)
+# lays down the clean prod-only dependency tree — it does NOT rebuild from a git
+# remote, so it avoids the onnxruntime-node postinstall failure that breaks
+# `npm install -g github:…` / `lm-assist upgrade --from github:…`.
+pack_prod() {
+    echo -e "${BLUE}Packing prod tarball...${NC}"
+    cd "$PROJECT_ROOT" || return 1
+    # Always reconcile deps (idempotent) so the web build finds `next` etc. — a
+    # merely-present but partial root node_modules would otherwise fail `next
+    # build`. --ignore-scripts avoids onnxruntime-node's native postinstall.
+    echo -e "${YELLOW}Ensuring dependencies (npm install --ignore-scripts)...${NC}"
+    npm install --ignore-scripts > "$BUILD_LOG" 2>&1
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}npm install failed. Check $BUILD_LOG${NC}"
+        return 1
+    fi
+    rm -f "$PROJECT_ROOT"/lm-assist-*.tgz
+    echo -e "${BLUE}Running npm pack (builds core + web)...${NC}"
+    npm pack >> "$BUILD_LOG" 2>&1
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}npm pack failed. Check $BUILD_LOG${NC}"
+        return 1
+    fi
+    local tgz
+    tgz=$(ls -1 "$PROJECT_ROOT"/lm-assist-*.tgz 2>/dev/null | head -1)
+    if [ -z "$tgz" ]; then
+        echo -e "${RED}npm pack produced no tarball. Check $BUILD_LOG${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}Packed: $tgz${NC}"
+    echo -e "Install it:  ${BLUE}npm install -g \"$tgz\"${NC}"
+    echo -e "Or deploy to a node:  ${BLUE}node_upgrade source=<abs path to this .tgz on that node>${NC}"
+    return 0
 }
 
 # Function to check web build status
@@ -301,7 +343,10 @@ build_web() {
     if [ ! -d "$PROJECT_ROOT/node_modules" ]; then
         echo -e "${YELLOW}Installing dependencies...${NC}"
         cd "$PROJECT_ROOT"
-        npm install > "$BUILD_LOG" 2>&1
+        # --ignore-scripts: skip onnxruntime-node's native postinstall (pulled in
+        # transitively; it fails on a fresh tree). sqlite is lazy-loaded, so the
+        # skipped better-sqlite3 native build is harmless for a dev build.
+        npm install --ignore-scripts > "$BUILD_LOG" 2>&1
         if [ $? -ne 0 ]; then
             echo -e "${RED}npm install failed. Check $BUILD_LOG${NC}"
             return 1
@@ -549,7 +594,7 @@ check_web_deps() {
     if [ ! -d "$PROJECT_ROOT/node_modules" ]; then
         echo -e "${YELLOW}Installing dependencies...${NC}"
         cd "$PROJECT_ROOT"
-        npm install > /dev/null 2>&1
+        npm install --ignore-scripts > /dev/null 2>&1
         if [ $? -ne 0 ]; then
             echo -e "${RED}Failed to install dependencies${NC}"
             return 1
@@ -1340,6 +1385,9 @@ case "${1:-}" in
     build)
         build_project
         ;;
+    pack)
+        pack_prod
+        ;;
     cleandata)
         clean_data "${@:2}"
         ;;
@@ -1403,6 +1451,7 @@ case "${1:-}" in
         echo "  restart [service] Restart a service (default: all)"
         echo "  status            Show all service status (dev + prod)"
         echo "  build             Build Core (TypeScript)"
+        echo "  pack              Build a prebuilt prod tarball (lm-assist-<ver>.tgz) for deploy/upgrade"
         echo "  cleandata [-y]    Stop services and delete all lm-assist data (~/.lm-assist)"
         echo "  test              Test API endpoints"
         echo "  logs [service]    View service logs"

@@ -398,15 +398,32 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<LaunchResu
     };
   }
 
-  // Post-spawn verification: if our spawned PID died between port-bind and now,
-  // a different Chrome may now own the port. Refuse the launch rather than
-  // silently capturing cookies from someone else's profile.
+  // Post-spawn verification. A dead child.pid does NOT by itself mean the launch
+  // failed: Chrome on Windows routinely relaunches itself (the process we spawned
+  // exits while the real browser keeps running on the debug port), so failing on
+  // `!isPidAlive(child.pid)` false-negatives every launch on that platform. The
+  // risk this guard exists for — a *foreign* Chrome owning the port — is already
+  // excluded by the pre-spawn port-free check above (we refused with
+  // 'already_running' if anything answered on `port`). So treat the launch as
+  // good while the debug port is still live; only fail if the spawned PID is gone
+  // AND the port has stopped responding.
   if (!isPidAlive(child.pid)) {
-    return {
-      ok: false,
-      code: 'spawn_failed',
-      message: `Spawned Chrome (PID ${child.pid}) exited; debug port may belong to another instance.`,
-    };
+    let portAlive = false;
+    try {
+      await httpGetJSON(`http://127.0.0.1:${port}/json/version`, 1500);
+      portAlive = true;
+    } catch {
+      /* port no longer answering — the browser really did go away */
+    }
+    if (!portAlive) {
+      return {
+        ok: false,
+        code: 'spawn_failed',
+        message: `Spawned Chrome (PID ${child.pid}) exited and debug port ${port} stopped responding.`,
+      };
+    }
+    // else: the spawned PID re-parented but the browser is up on the port we
+    // verified was free before spawn — normal on Windows; accept it.
   }
 
   // The capture endpoint uses this name when no profile is named at capture time.

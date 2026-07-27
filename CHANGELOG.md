@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased] — Windows browser-launch fix + prebuilt-tgz deploy path (2026-07-27)
+
+### Fixed
+- **Headless/headed browser launch on Windows** (`claudeai-browser-launch.ts`): the post-spawn `isPidAlive(child.pid)` guard treated Chrome's normal Windows self-relaunch (the spawned process exits while the real browser keeps running on the debug port) as a failure, returning `SPAWN_FAILED` even though the browser was up. It now accepts a re-parented PID as long as the debug port is still live (the foreign-Chrome risk is already excluded by the pre-spawn port-free check). This is what broke `linkedin_login` on the Windows node despite a working session.
+
+### Changed
+- **Deploy path is now explicitly "prebuilt tarball, never a git ref."** Building lm-assist from a git remote (`npm install -g github:…`, `lm-assist upgrade --from github:…`, `node_upgrade({ref})`) runs a full dependency install that trips onnxruntime-node's native postinstall and fails; the running Core is then restarted on the *old* build. `upgrade.js` now detects a git source-build and logs an up-front warning plus an actionable failure hint; the `node_upgrade` tool description steers callers to a prebuilt `.tgz`.
+- **`./core.sh pack`** — new target that produces the supported prod artifact `lm-assist-<ver>.tgz` (`npm install --ignore-scripts && npm pack`, building core + web). `./core.sh` dependency installs now use `--ignore-scripts` so a fresh checkout doesn't die on the onnxruntime postinstall.
+- Docs: `guide("install")`, CLAUDE.md (commands list + bootstrapping gotcha) now state the git-source-build hazard and the `./core.sh pack` → tarball deploy flow.
+
 ## [Unreleased] — LinkedIn CDP connector (16 MCP tools) (2026-07-27)
 
 ### Added

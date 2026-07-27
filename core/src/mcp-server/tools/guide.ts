@@ -199,6 +199,7 @@ PROD (CLI ports — API :3100, Web :3848), also from the repo ROOT:
 DEV + PROD run SIMULTANEOUSLY — separate port spaces (3200/3948 vs 3100/3848), no conflict ("./core.sh status" shows both).
 
 GOTCHAS:
+- SOURCE-BUILD FROM GIT IS UNSUPPORTED (redeploy = a prebuilt tgz, never a git ref). "npm install -g github:langmartai/lm-assist#<ref>" / "lm-assist upgrade --from github:…" / node_upgrade({ref}) all CLONE-AND-BUILD, which runs a full dep install WITH scripts and DIES on onnxruntime-node's postinstall (the same failure as plain "npm install", "global-agent" MODULE_NOT_FOUND). The supported artifact is a prebuilt tarball: run "./core.sh pack" (= npm install --ignore-scripts && npm pack -> lm-assist-<ver>.tgz), then deploy it (npm install -g ./<tgz>, or node_upgrade source=<abs .tgz on the target node> — its Windows EBUSY robocopy fallback handles the in-use install dir).
 - chokidar re-break: installing from THIS REPO's tgz is safe (carries ^3.6.0). But "npm install -g lm-assist@latest" from the public registry can ship chokidar ^5 -> ERR_REQUIRE_ESM on boot. Install from the local tgz until a fixed version is published.
 - "lm-assist upgrade" (no flag) reinstalls from npm and OVERWRITES a local-tgz build — use "lm-assist upgrade --from ./<tgz>" to keep your source build.
 - Agent-SDK (@anthropic-ai/claude-agent-sdk) is ESM-only; tsc (module:commonjs) must NOT downlevel its dynamic import (sdk-runner.ts indirects it via new Function('m','return import(m)')). Already fixed in source — a concern only if you edit those imports.

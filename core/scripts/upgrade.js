@@ -174,6 +174,21 @@ function resolveSource(argv) {
   return { spec, tgz: null, label: spec, isCustom: true };
 }
 
+/**
+ * True when `source` will make npm CLONE-AND-BUILD from a git remote (github:,
+ * git+…, git://, git@). Those run the package's `prepare` build, which does a
+ * FULL dependency install WITH lifecycle scripts — and on this repo that trips
+ * onnxruntime-node's native postinstall (`global-agent` MODULE_NOT_FOUND) and
+ * fails the whole upgrade. A prebuilt .tgz (see `./core.sh pack`) installs the
+ * clean prod-only tree instead and is the supported way to deploy an unpublished
+ * build. This does NOT block the attempt — it only flags it so the failure (and
+ * the fix) are obvious in the log rather than a raw MODULE_NOT_FOUND stack.
+ */
+function isGitSourceBuild(source) {
+  if (source.tgz) return false; // a prebuilt local tarball — fine
+  return /^(github:|git\+|git:\/\/|git@)/i.test(source.spec || '');
+}
+
 // ── Process killing ─────────────────────────────────────────────────────────
 
 /**
@@ -546,6 +561,14 @@ async function main() {
   // ── Step 3: npm install ─────────────────────────────────────────────────
   log(`--- Step 3: npm install -g ${source.spec} ---`);
 
+  if (isGitSourceBuild(source)) {
+    log(`WARNING: '${source.spec}' is a git source-build. Building lm-assist from a git`);
+    log('  remote runs a full dependency install that trips onnxruntime-node\'s native');
+    log('  postinstall on this repo and will most likely FAIL. Supported path: build a');
+    log('  prebuilt tarball with `./core.sh pack` (or `npm install --ignore-scripts && npm');
+    log('  pack`), then re-run this upgrade with `--from <lm-assist-*.tgz>`.');
+  }
+
   // Clean npm staging directories from any previous failed installs
   if (isWindows && npmGlobalRoot) {
     try {
@@ -574,6 +597,11 @@ async function main() {
 
   if (!npmOk) {
     log(`ERROR: All upgrade methods failed. Run manually: npm install -g ${source.spec}`);
+    if (isGitSourceBuild(source)) {
+      log('  This was a git source-build; it almost certainly failed on onnxruntime-node\'s');
+      log('  postinstall. Build a prebuilt tarball with `./core.sh pack` and re-run with');
+      log('  `--from <lm-assist-*.tgz>` — that installs the clean prod tree and skips the build.');
+    }
   }
 
   // ── Step 4: Start services ──────────────────────────────────────────────

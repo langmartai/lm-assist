@@ -51,7 +51,10 @@ export const nodeUpgradeToolDef = {
   description:
     'Upgrade a node\'s lm-assist build to a SPECIFIED prebuilt source (then confirm with ' +
     'node_builds). source = a prebuilt .tgz path (absolute, ON the target node) / .tgz URL / ' +
-    'GitHub release URL / github:owner/repo#ref (builds from source, slower). ' +
+    'GitHub release URL. STRONGLY PREFER a prebuilt .tgz: a github:owner/repo#ref (or ref=) ' +
+    'builds FROM SOURCE, which on this repo runs a full dependency install that trips ' +
+    'onnxruntime-node\'s native postinstall and FAILS — build a tarball first with ' +
+    '`./core.sh pack` and pass it as source. ' +
     'To actually upgrade you MUST pass source (or ref). Calling with NEITHER is SAFE and ' +
     'side-effect-free: the tool returns a guard error and dispatches/restarts NOTHING — so a ' +
     'bare node_upgrade({}) is a no-op you can call freely to see the guard. (The guard exists ' +
@@ -77,7 +80,8 @@ export const nodeUpgradeToolDef = {
         type: 'string',
         description:
           'Git ref shorthand — expands to github:langmartai/lm-assist#<ref>. Only used when ' +
-          'source is absent. Slower (builds from source).',
+          'source is absent. DISCOURAGED: this builds from source and FAILS on this repo ' +
+          '(onnxruntime-node postinstall). Prefer a prebuilt .tgz `source` from `./core.sh pack`.',
       },
       node: {
         type: 'string',
