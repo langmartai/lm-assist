@@ -12,7 +12,10 @@ import { clusterOf, type ClusterRecord } from '../cluster/cluster-map';
 import { getClusterRecords } from '../cluster/cluster-store';
 import { getMyCluster } from '../cluster/cluster-config';
 import { fleetIdentity } from '../mcp-server/fleet-identity';
-import { classifyExecutorActivity, shouldEngage, advanceStarvation, STARVATION_TICKS } from './mission-engagement';
+import {
+  classifyExecutorActivity, shouldEngage, advanceStarvation, STARVATION_TICKS,
+  decideNetPlacement, placementAdvisory, type PlacementAdvice,
+} from './mission-engagement';
 import { computeSchedule } from './mission-scheduler';
 import { runAdjust } from './mission-adjust';
 import { getProjectSettings } from '../project-settings';
@@ -1018,6 +1021,40 @@ async function evaluateEngagement(
 }
 
 /**
+ * Build the placement block appended to a drive (bl_1c861246 step A).
+ *
+ * `node_select` shipped reachable-in-principle and unused-in-fact: the pass directive and
+ * the controller's system prompt never named it, and `handleMissionSpawn` never reads
+ * `env.host` — so a native mission ran wherever the elected leader was and the choice was
+ * never made at all. This is the seam that carries the ranking to the agent that places.
+ *
+ * Best-effort by construction: placement ADVICE must never cost a pass. A ranker that
+ * throws is reported as such — deliberately distinct from "no node is eligible", which is
+ * a real answer about the fleet rather than a failure to ask.
+ */
+async function buildPlacementAdvisory(ids: string[], deps: SupervisorDeps): Promise<string> {
+  if (!ids.length || !deps.listAllForSchedule) return '';
+  try {
+    const all = await deps.listAllForSchedule();
+    const byId = new Map(all.map((m) => [m.id, m]));
+    const items: PlacementAdvice[] = [];
+    for (const id of ids) {
+      const m = byId.get(id);
+      if (!m) continue;
+      let chosen: { node: string; why: string[] } | null = null;
+      let error: string | undefined;
+      if (!m.env.host && deps.selectNode) {
+        try { chosen = await deps.selectNode(m); } catch (e) { error = (e as Error)?.message?.slice(0, 120) || 'ranking failed'; }
+      }
+      items.push({ missionId: id, host: m.env.host, chosen, ...(error ? { error } : {}) });
+    }
+    return placementAdvisory(items, deps.selfId?.() ?? null);
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Deterministically place missions that have starved in `readyUnbound` (bl_28543c78).
  *
  * This restores — narrowly, and only as a last resort — the guarantee that
@@ -1042,38 +1079,48 @@ async function placeStarvedMissions(starved: string[], deps: SupervisorDeps): Pr
     // up to a tick ago, and the spawn path re-checks place() itself.
     if (!m || m.binding?.sessionId) continue;
     // Cluster ownership is NOT re-checked by the spawn path (mission_spawn is human-invoked
-    // against a node the caller chose). An automatic placement must respect it.
+    // against a node the caller chose). An automatic placement must respect it. The deps are
+    // preferred over the module-level globals so this path is reachable in a test — reading
+    // real cluster state made the whole net a no-op under test, which is how it shipped
+    // never having been exercised at all.
+    const self = deps.selfId ? deps.selfId() : thisNode();
     try {
-      const records = await getClusterRecords();
-      if (!placementAllowed(m.env.host, records, thisNode(), getMyCluster())) continue;
+      const records = deps.listClusterRecords ? await deps.listClusterRecords() : await getClusterRecords();
+      const cluster = deps.myCluster ? deps.myCluster() : getMyCluster();
+      if (!placementAllowed(m.env.host, records, self, cluster)) continue;
     } catch { continue; }
 
-    // ── No host chosen yet? Choose one DETERMINISTICALLY (bl_1c861246). ──
-    // `notes` prose is excluded from this ranking by construction — a node's free
-    // text must never move unattended placement. If the pick is not THIS node we do
-    // not pretend we can spawn there: mission_spawn launches locally, so we record
-    // the choice (real progress, and visible) and leave the actual start to the node
-    // that owns it. Silently spawning here instead would put the work on the wrong
-    // machine while reporting success.
+    // ── Where does this belong? (bl_1c861246) ──
+    // `notes` prose is excluded from this ranking by construction — a node's free text must
+    // never move unattended placement.
+    //
+    // 🔴 The guard reads the mission's CURRENT host, NOT "did I just choose one". The original
+    // recorded the choice and skipped exactly ONE tick; the next tick saw a host already set,
+    // skipped this block entirely, and spawned LOCALLY — with place() returning the peer as
+    // `host`, so the binding was labelled with a machine the worker was not running on. A
+    // starved mission re-fires every tick (`n >= threshold`), so that tick always came.
+    let chosen: { node: string; why: string[] } | null = null;
     if (!m.env.host && deps.selectNode) {
-      let chosen: { node: string; why: string[] } | null = null;
       try {
         chosen = await deps.selectNode(m);
       } catch { /* selection is best-effort — fall through to the un-hosted spawn */ }
-      if (chosen) {
-        m.env.host = chosen.node;
-        addAdjustment(m, deps.now, 'placement-safety-net',
-          `node ${chosen.node} chosen deterministically: ${chosen.why.join('; ')}`);
-        if (deps.saveMission) { try { await deps.saveMission(m); } catch { /* best-effort */ } }
-        if (chosen.node !== thisNode()) {
-          deps.journal?.({
-            at: Date.now(), kind: 'tick', action: 'placement-safety-net-remote',
-            missionId: id, reason: `chose ${chosen.node}; this node cannot spawn there`,
-          } as never);
-          console.info(`[mission-controller] safety net assigned ${id} to ${chosen.node} (remote — not spawned here)`);
-          continue;
-        }
-      }
+    }
+    const decision = decideNetPlacement({ host: m.env.host, chosen, thisNode: self });
+    if (decision.record) {
+      m.env.host = decision.record.host;
+      addAdjustment(m, deps.now, 'placement-safety-net',
+        `node ${decision.record.host} chosen deterministically: ${decision.record.why.join('; ')}`);
+      if (deps.saveMission) { try { await deps.saveMission(m); } catch { /* best-effort */ } }
+    }
+    if (!decision.spawnHere) {
+      // Every tick, not once: a mission this node cannot start must not look placed, and the
+      // operator needs to see that it is stuck waiting on a machine rather than on the queue.
+      deps.journal?.({
+        at: Date.now(), kind: 'tick', action: 'placement-safety-net-remote',
+        missionId: id, reason: decision.defer?.reason ?? 'not this node',
+      } as never);
+      console.info(`[mission-controller] safety net: ${id} belongs to ${decision.defer?.host} — not spawned here`);
+      continue;
     }
     try {
       const r = await deps.spawnMission!(id);
@@ -1207,12 +1254,14 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
   let driveDue = false;
   let driveReason: 'roster-change' | undefined;
   let driveCands: MigrationCandidate[] | undefined;
+  let driveReadyUnbound: string[] | undefined;
   if (isMonitor && live && cs) {
     if (deps.listActiveForEngage && deps.readSignal && deps.getEngagement && deps.putEngagement) {
       const ev = await evaluateEngagement(deps);
       driveDue = ev.engage;
       driveReason = ev.reason;
       driveCands = ev.migrationCandidates;
+      driveReadyUnbound = ev.readyUnbound;
       // ── Placement safety net (bl_28543c78) ──
       // The engagement trigger above ASKS the controller — repeatedly. This places the
       // mission when asking has demonstrably not worked. Deliberately AFTER the drive
@@ -1383,6 +1432,11 @@ export async function runSupervisorTick(deps: SupervisorDeps): Promise<{ action:
         + driveCands.map((c) => `- mission ${c.missionId} · session ${c.sid} · was on ${c.host} · ${c.transport}`).join('\n')
         + '\n\nFor each — CLOUD: call mission_session_resume(sid) so an in-cluster node takes over driving the same session, then mission_update its binding host to an in-cluster node. NATIVE: mission_update(env.host=<an in-cluster host from cluster_list>) then mission_session_resume(sid, missionId) (or mission_place) to re-place it in-cluster. Keep the orphaned session running until its replacement is up, then retire it. Never drop in-flight work.';
     }
+  }
+  // WHERE the unplaced work belongs — appended to whichever directive is going out, so a
+  // roster-change pass (which is itself about nodes) carries it too.
+  if (driveReadyUnbound?.length) {
+    directive += await buildPlacementAdvisory(driveReadyUnbound, deps);
   }
   await deps.drive(cs!, directive);
   // Stamp lastDriveAt and persist so the next tick knows when we last drove.
