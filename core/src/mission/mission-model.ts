@@ -313,7 +313,7 @@ export type PlacementDecision =
   | { go: false; reason: 'resource'; conflictWith: string }
   | { go: true; env: 'cloud' }
   | { go: true; env: 'worktree'; host: string; repo: string; branch: string }
-  | { go: true; env: 'shared'; lease: string };
+  | { go: true; env: 'shared'; host: string; lease: string };
 
 function isRunning(m: Mission): boolean {
   return m.status === 'active' && !!m.binding?.sessionId;
@@ -351,7 +351,11 @@ export function place(m: Mission, all: Mission[]): PlacementDecision {
   if (m.env.isolation === 'worktree') {
     return { go: true, env: 'worktree', host: m.env.host ?? '', repo: m.env.repo ?? '', branch: m.env.branch ?? `mission/${m.id}` };
   }
-  return { go: true, env: 'shared', lease: m.env.resources.join(',') || m.id };
+  // `host` travels with EVERY placement that can run on a specific machine. Without it
+  // startNativeExecutor's `decision.host || 'local'` recorded a worker on another node as
+  // `binding.node: 'local'` — the only durable record of WHICH MACHINE is running the
+  // mission, and the field a relayed placement is verified from.
+  return { go: true, env: 'shared', host: m.env.host ?? '', lease: m.env.resources.join(',') || m.id };
 }
 
 export interface ExecutorOutput {

@@ -202,3 +202,54 @@ test('a DIFFERENT requestId on a bound mission still refuses with ALREADY_BOUND'
   assert.strictEqual(r.error?.code, 'ALREADY_BOUND');
   assert.strictEqual(calls.started, 0);
 });
+
+// ── binding provenance: the field the Step-B proof actually reads ──────────
+//
+// Measured on the prod probe (mission_8a064264): `env.host` held the chosen gateway id, but
+// `binding.node` came back **"local"**. `place()`'s `shared` branch returned no `host`, so
+// startNativeExecutor's `decision.host || 'local'` fell back. Harmless while every spawn was
+// local; fatal for a relayed one, where `binding.node` is the ONLY record of which machine
+// the worker is on — and the exact field the proof is read from.
+
+import { place, type Mission as M } from '../mission/mission-model';
+
+function sharedMission(host?: string): M {
+  return {
+    id: 'mission_prov', title: 't', objective: 'o', dependsOn: [], projects: [], tags: {}, parentId: null,
+    env: { isolation: 'shared', resources: [], ...(host ? { host } : {}) }, status: 'waiting', binding: null,
+    progress: null, control: { nudgeCount: 0, backoffStep: 0 }, results: [], adjustments: [],
+    rev: 1, history: [], ownerNode: 'gw4-a', createdAt: 1, updatedAt: 1,
+  } as unknown as M;
+}
+
+test('🔴 a shared placement carries the HOST, so the binding can name the real machine', () => {
+  const d = place(sharedMission('gw4-peer'), []) as { go: boolean; env: string; host?: string };
+  assert.strictEqual(d.env, 'shared');
+  assert.strictEqual(d.host, 'gw4-peer', 'without this the binding records "local" for a worker on another machine');
+});
+
+test('a shared placement with no host is unchanged — still falls back to local', () => {
+  const d = place(sharedMission(), []) as { go: boolean; env: string; host?: string };
+  assert.strictEqual(d.host ?? '', '', 'no host chosen ⇒ nothing to record; the legacy local spawn is untouched');
+});
+
+test('the spawned binding NAMES the host end-to-end', async () => {
+  const state = { mission: { id: 'mission_prov2', title: 't', objective: 'o', status: 'waiting', binding: null, dependsOn: [], env: { isolation: 'shared', resources: [], host: 'gw4-peer' }, control: {} } as Record<string, unknown> };
+  const calls = { started: 0 };
+  const captured: Array<Record<string, unknown>> = [];
+  const r = await handleMissionSpawn('mission_prov2', {}, {
+    getMission: async () => state.mission,
+    listMissions: async () => [],
+    // the REAL place(), not a stub — the bug lived in it
+    startNative: async (_m, decision) => {
+      captured.push(decision as Record<string, unknown>);
+      calls.started++;
+      return { sessionId: 'sid-1', node: (decision as { host?: string }).host || 'local', kind: 'worker', boundAt: 1 } as never;
+    },
+    buildNativeDeps: async () => ({}) as never,
+    persist: async (m) => { state.mission = m as Record<string, unknown>; },
+  });
+  assert.strictEqual(r.success, true);
+  assert.strictEqual((r.data as { binding: { node: string } }).binding.node, 'gw4-peer',
+    'binding.node is the only durable record of WHICH MACHINE the worker is on');
+});

@@ -30,7 +30,7 @@ test('shared running resource on same host serializes', () => {
 test('paused non-exclusive holder does NOT block', () => {
   const m = base({ id: 'a', env: { isolation: 'shared', host: 'h1', resources: ['db:main'] } });
   const holder = base({ id: 'z', status: 'paused', env: { isolation: 'shared', host: 'h1', resources: ['db:main'] } });
-  assert.deepStrictEqual(place(m, [m, holder]), { go: true, env: 'shared', lease: 'db:main' });
+  assert.deepStrictEqual(place(m, [m, holder]), { go: true, env: 'shared', host: 'h1', lease: 'db:main' });
 });
 
 test('exclusive resource is reserved even when holder paused', () => {
@@ -53,5 +53,5 @@ test('incoming exclusive mission is blocked by a non-terminal shared holder', ()
 test('a done holder releases the resource (no block)', () => {
   const m = base({ id: 'a', env: { isolation: 'shared', host: 'h1', resources: ['gpu:0'], exclusive: true } });
   const holder = base({ id: 'z', status: 'done', env: { isolation: 'shared', host: 'h1', resources: ['gpu:0'], exclusive: true } });
-  assert.deepStrictEqual(place(m, [m, holder]), { go: true, env: 'shared', lease: 'gpu:0' });
+  assert.deepStrictEqual(place(m, [m, holder]), { go: true, env: 'shared', host: 'h1', lease: 'gpu:0' });
 });
