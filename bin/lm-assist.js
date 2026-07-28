@@ -989,6 +989,9 @@ async function main() {
       const webStatus = s.web.running ? 'Running' : 'Stopped';
       console.log('  Prod:');
       console.log(`    API (port ${s.core.port}):  ${apiStatus}${s.core.pid ? ` (PID ${s.core.pid})` : ''}`);
+      // A Core that cannot drive still reports Running/Healthy — say so here, or
+      // the degradation stays invisible for as long as the process lives.
+      if (s.driveable === false) console.log(`    ⚠ NOT DRIVEABLE: ${s.driveWarning}`);
       console.log(`    Web (port ${s.web.port}):  ${webStatus}${s.web.pid ? ` (PID ${s.web.pid})` : ''}`);
       // Show dev status if enabled
       if (devCfg.enabled && typeof svc.devStatus === 'function') {

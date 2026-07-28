@@ -5,13 +5,14 @@
  * without requiring bash. Uses existing deps: tree-kill, find-process.
  */
 
-import { spawn, execSync, ChildProcess } from 'child_process';
+import { spawn, execSync, execFileSync, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as net from 'net';
 import * as os from 'os';
 import { rotateNow } from './utils/log-rotate';
 import { readTmuxServerPid, describeTmuxServerChange, type TmuxServerChange } from './terminal/tmux-server-guard';
+import { planWindowsStart, windowsDriveHealth, INTERACTIVE_TASK, type WindowsStartFacts } from './windows-session-guard';
 
 // ─── Paths ──────────────────────────────────────────────────
 
@@ -161,6 +162,64 @@ function checkPort(port: number): Promise<boolean> {
   });
 }
 
+/**
+ * The Windows session a SPECIFIC pid runs in. `null` = unknown.
+ *
+ * `status` must ask about the RUNNING CORE, not about itself: run over SSH the
+ * CLI always sits in session 0 while Core may be correctly in session 1, so
+ * probing `$PID` there reports the wrong process entirely.
+ */
+function windowsSessionOfPid(pid: number): number | null {
+  if (process.platform !== 'win32') return null;
+  try {
+    const out = execFileSync('powershell',
+      ['-NoProfile', '-Command', `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).SessionId`],
+      { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    const n = parseInt(String(out).trim(), 10);
+    return Number.isInteger(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Probe the Windows session layout in ONE PowerShell call.
+ *
+ * Memoized: a process never changes Windows session, and the interactive session
+ * / task registration do not change between a start and its own status line.
+ */
+let winFactsCache: WindowsStartFacts | null = null;
+function windowsStartFacts(): WindowsStartFacts {
+  if (winFactsCache) return winFactsCache;
+  if (process.platform !== 'win32') {
+    winFactsCache = { isWindows: false, mySessionId: null, interactiveSessionId: null, taskName: null };
+    return winFactsCache;
+  }
+  let mySessionId: number | null = null;
+  let interactiveSessionId: number | null = null;
+  let taskName: string | null = null;
+  try {
+    // explorer.exe only runs in an interactive desktop session, so its SessionId
+    // is the cheapest reliable "is anyone logged on, and where".
+    const ps = '$me=(Get-Process -Id $PID).SessionId; '
+      + '$ex=(Get-Process explorer -ErrorAction SilentlyContinue | Select-Object -First 1).SessionId; '
+      + `$t=(Get-ScheduledTask -TaskName ${INTERACTIVE_TASK} -ErrorAction SilentlyContinue).TaskName; `
+      + 'ConvertTo-Json @{ me=$me; ex=$ex; task=$t } -Compress';
+    // execFileSync with an argv array — no shell, so nothing here is re-parsed
+    // for metacharacters and the script needs no quote-escaping dance.
+    const out = execFileSync('powershell', ['-NoProfile', '-Command', ps],
+      { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    const j = JSON.parse(String(out).trim()) as { me?: number; ex?: number; task?: string };
+    if (typeof j.me === 'number') mySessionId = j.me;
+    if (typeof j.ex === 'number') interactiveSessionId = j.ex;
+    if (typeof j.task === 'string' && j.task) taskName = j.task;
+  } catch {
+    // Unknown, and the planner treats unknown as "do not block".
+  }
+  winFactsCache = { isWindows: true, mySessionId, interactiveSessionId, taskName };
+  return winFactsCache;
+}
+
 function isManagedBySystemd(unit: string): boolean {
   if (process.platform === 'win32') return false;
   const q = (cmd: string): string => {
@@ -261,6 +320,26 @@ async function killByPid(pid: number): Promise<void> {
   // Verify the process is actually dead
   if (isPidAlive(pid)) {
     try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
+  }
+}
+
+/**
+ * Who is actually LISTENING on this port? `null` when nothing is, or on failure.
+ *
+ * 🔴 Not the PID FILE. The file only reflects a Core the CLI started; a Core
+ * launched any other way — the scheduled task, a bare `node cli.js`, whatever
+ * someone did by hand — leaves it stale. Those are exactly the Cores the
+ * session-0 warning exists for, so resolving from the port is the only reading
+ * that is true regardless of how Core got there.
+ */
+async function pidOnPort(port: number): Promise<number | null> {
+  try {
+    const fpModule = require('find-process');
+    const findProcess = (fpModule.default || fpModule) as (type: string, value: number) => Promise<Array<{ pid: number }>>;
+    const list = await findProcess('port', port);
+    return list.length && typeof list[0].pid === 'number' ? list[0].pid : null;
+  } catch {
+    return null;
   }
 }
 
@@ -439,6 +518,11 @@ export async function startCore(config?: ServiceConfig): Promise<{ success: bool
   if (isManagedBySystemd('lm-assist')) {
     return { success: false, message: `lm-assist core is managed by systemd ('lm-assist.service') - use \`sudo systemctl restart lm-assist\` instead of the CLI (running both spawns a duplicate that crash-loops on EADDRINUSE).` };
   }
+  // The Windows counterpart. Its failure mode is the opposite of the systemd one:
+  // nothing crashes, Core just silently cannot drive anything (Session 0 isolation).
+  const winPlan = planWindowsStart(windowsStartFacts());
+  if (winPlan.action === 'refuse') return { success: false, message: winPlan.message! };
+  if (winPlan.action === 'warn') console.warn(winPlan.message);
   // Port held by some other (non-systemd) instance - don't spawn a duplicate.
   if (await checkPort(apiPort)) {
     return { success: true, message: `Core API already running on port ${apiPort} (another instance holds the port).` };
@@ -674,6 +758,10 @@ export async function stopAll(config?: ServiceConfig): Promise<{ core: { success
 export interface ServiceStatus {
   core: { running: boolean; healthy: boolean; port: number; pid: number | null };
   web: { running: boolean; port: number; pid: number | null };
+  /** Present and false ONLY when Core cannot drive sessions (Windows session 0). */
+  driveable?: boolean;
+  /** Why driving is impossible, and how to fix it. Set with `driveable:false`. */
+  driveWarning?: string | null;
 }
 
 export async function status(config?: ServiceConfig): Promise<ServiceStatus> {
@@ -686,9 +774,24 @@ export async function status(config?: ServiceConfig): Promise<ServiceStatus> {
   const webRunning = await checkPort(webPort);
   const webPid = readPid(getWebPidFile());
 
+  // The PERSISTENT half of the session-0 guard. The start-time refusal is seen
+  // once, by whoever ran the command; a Core already running in session 0 looks
+  // perfectly healthy forever. Surfacing it here is how the next person finds out.
+  //
+  // 🔴 Ask about the RUNNING CORE's session, not this process's. Run over SSH the
+  // CLI is always in session 0 while Core may be correctly in session 1 — probing
+  // ourselves would warn on a healthy node and stay silent on a stranded one.
+  const base = windowsStartFacts();
+  // Resolve the Core pid from the PORT, not the pid file — see pidOnPort. A Core
+  // started outside the CLI (scheduled task, bare node) leaves the file stale,
+  // and those are precisely the ones worth warning about.
+  const livePid = coreRunning ? await pidOnPort(apiPort) : null;
+  const drive = windowsDriveHealth({ ...base, mySessionId: livePid ? windowsSessionOfPid(livePid) : null });
+
   return {
     core: { running: coreRunning, healthy: coreHealthy, port: apiPort, pid: corePid },
     web: { running: webRunning, port: webPort, pid: webPid },
+    ...(drive.driveable ? {} : { driveable: false, driveWarning: drive.reason }),
   };
 }
 
