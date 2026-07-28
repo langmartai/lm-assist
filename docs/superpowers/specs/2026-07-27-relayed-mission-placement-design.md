@@ -1,6 +1,6 @@
 # Step B — a chosen node that actually receives the work
 
-**Status: IMPLEMENTED, DEFAULT OFF (2026-07-28).** Approved and built as designed —
+**Status: IMPLEMENTED, DEFAULT OFF, PARTIALLY PROVEN (2026-07-28).** Approved and built as designed —
 `core/src/mission/relay-spawn.ts` + the `placeStarvedMissions` branch, behind
 `missionRelayedSpawnEnabled` (default `false`, confirmed `false` on prod 117). 22 tests,
 the two safety properties mutation-verified. **NOT yet proven end-to-end**: the bar is a
@@ -121,6 +121,35 @@ mission created on stage, placed without human intervention, binding on the non-
 node, `mission_executor_status alive:true` read through the relay, and the chosen host
 attributable to `node_select` via the mission's own `adjustments` entry. A passing unit test
 is not that, and I will say "not proven" rather than let a green suite stand in for it.
+
+## 8a. What the live stage run actually proved — and what it could not
+
+Run on stage 2026-07-28 with `missionRelayedSpawnEnabled` enabled on the **leader only**
+(123), a repo-less mission declaring `resources:['elevated-worker']` — a capability only the
+Windows node 107 declares, so the ranker put a NON-LEADER first (-6 vs -8).
+
+**Proven:**
+- the leader chose a node that was **not itself**, and recorded it with `node_select`'s own
+  reasons: `env.host=107`, adjustment *"chosen deterministically: capabilities:
+  elevated-worker; 2 session(s) already here, 2 unmanaged"*;
+- the spawn was **relayed to 107 exactly once** (`grep -c placement-relay` = 1 — no loop);
+- 107 executed `handleMissionSpawn` and answered in its own envelope;
+- the leader classified `success:false` as **`refused`**, not `unverified` — so it cleared
+  the in-flight marker, left `binding: null` / `status: waiting`, and **spawned nothing
+  locally**. No phantom binding, no duplicate, no wrong-machine spawn.
+
+**NOT proven — and not provable on this fleet as configured.** 107's refusal was
+`Error: CC control requires a POSIX host` (its `core-prod.log`): native executors launch
+through tmux, and 107 is Windows. The only non-leader node in a multi-node cluster here is
+that Windows box, so **no `binding.node != leader` can be produced** until the cluster has a
+second POSIX node. The relay is proven as transport and as an outcome classifier; the final
+binding is not.
+
+**Follow-up this run surfaced:** a permanent refusal (POSIX-only host, `CLOUD_PLACEMENT`) is
+retried on every subsequent tick — journaled each time, never silent, but pointless. It
+should be tagged and stood down rather than retried forever. And the POSIX refusal surfaces
+as a bare `INTERNAL_ERROR` rather than a typed code, which is why the cause had to be read
+out of the target's log instead of the journal.
 
 ## 9. Explicitly out of scope
 
