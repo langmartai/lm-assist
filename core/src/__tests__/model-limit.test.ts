@@ -166,10 +166,20 @@ describe('class separation (model vs server/network)', () => {
     assert.equal(isServerStall(LIMITED_SCREEN).retryable, false, 'must never be sent `continue`');
   });
 
-  test('the banner beats the over-eager busy heuristic', () => {
-    // ⏵⏵ / ✻ are present on essentially every bypass-mode session; without the banner
-    // this same screen reads as `busy`, which is why detection must be a banner pattern.
-    assert.equal(classifyScreen(PROMO_SCREEN).state, 'busy');
+  test('a promo banner is never a limit banner — and this idle screen reads idle', () => {
+    // The load-bearing assertion: a promo banner must not be mistaken for a model
+    // limit. Detection is a banner pattern precisely so these cannot cross.
+    assert.equal(detectModelLimit(PROMO_SCREEN).limited, false);
+
+    // This used to assert `busy`, under the name "the banner beats the over-eager
+    // busy heuristic" — and over-eager is exactly what it was. The screen has an
+    // EMPTY composer (`❯ `), ctx:0% and no interrupt affordance; it is idle. It
+    // only read `busy` because the heuristic matched `⏵⏵` (a permission MODE
+    // indicator) and `✻` (which also heads the COMPLETED summary), both of which
+    // persist on every bypass-mode session. That made every session that had ever
+    // finished a turn read busy forever — measured on a session idle 60s+ after
+    // replying. Fixed in cc-classify; `idle` is the correct answer here.
+    assert.equal(classifyScreen(PROMO_SCREEN).state, 'idle');
   });
 
   test('server errors never produce a model switch', () => {
