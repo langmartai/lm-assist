@@ -187,6 +187,70 @@ async function ghCall(args: string[], token: any) {
 
 const WORKDIR_ROOT = path.join(os.homedir(), '.lm-assist', 'github-workdirs');
 function httpsHeaderEnv(token: string) { return { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader', GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from('x-access-token:' + token).toString('base64')}` }; }
+export interface CloneRemote {
+  url: string;
+  env: Record<string, string>;
+  anonymous: boolean;
+}
+
+/**
+ * PURE — choose the clone remote and its auth env.
+ *
+ * A clone is a READ, so with no credential we fall through to an ANONYMOUS
+ * https clone instead of refusing. The URL is byte-identical to the token
+ * path's; only the Authorization header is dropped, and it succeeds for any
+ * public repo. (Measured 2026-07-28: a credential-less node could not clone
+ * the PUBLIC langmartai/lm-assist — it got AUTH_MISSING.)
+ *
+ * This does NOT weaken the fail-closed identity rule. That rule stops a
+ * request to act AS a named account from silently borrowing a different
+ * account's credential, and it still applies — an explicit but unresolved
+ * `account` is refused before reaching here. An anonymous clone asserts no
+ * identity at all, so there is nothing to impersonate.
+ *
+ * Pushing is different: gitCommitPush still requires a real credential.
+ */
+export function resolveCloneRemote(opts: {
+  owner: string;
+  repo: string;
+  ssh?: boolean;
+  sshHost?: string;
+  token?: string | null;
+}): CloneRemote {
+  const { owner, repo, ssh = false, sshHost = 'github.com', token } = opts;
+  if (ssh) {
+    return { url: `git@${sshHost}:${owner}/${repo}.git`, env: {}, anonymous: false };
+  }
+  const url = `https://github.com/${owner}/${repo}.git`;
+  if (token) return { url, env: httpsHeaderEnv(token), anonymous: false };
+  return { url, env: {}, anonymous: true };
+}
+
+/**
+ * PURE — classify a failed `git clone`.
+ *
+ * The anonymous note matters: without it, dropping the AUTH_MISSING refusal
+ * would make diagnostics WORSE, because GitHub answers "Repository not found"
+ * for a private repo you cannot see — identical to one that does not exist.
+ */
+export function classifyCloneError(
+  stderr: string,
+  anonymous: boolean,
+): { code: string; message: string } {
+  const raw = (stderr ?? '').trim();
+  let code = 'GIT_ERROR';
+  if (/Authentication failed|403|denied/i.test(raw)) code = 'AUTH_INVALID';
+  else if (/not found|Repository not found/i.test(raw)) code = 'NOT_FOUND';
+  let message = raw.slice(0, 300);
+  if (code === 'NOT_FOUND' && anonymous) {
+    message +=
+      ' — this was an ANONYMOUS clone (no GitHub credential on this host), so a PRIVATE ' +
+      'repo is indistinguishable from one that does not exist. If it is private, add a ' +
+      'credential for the owning account on this node (github_query accounts/list shows what it has).';
+  }
+  return { code, message };
+}
+
 // Resolve the working directory for a git op. A caller-supplied `dir` is gated by the lm-assist
 // allowlist (same gate as agent_execute, /home/ubuntu/*). The default managed scratch dir is the
 // ONLY one ever wiped; a caller dir is never clobbered.
@@ -205,16 +269,15 @@ async function gitClone(owner: string, repo: string, token: any, { ssh = false, 
     dir = path.join(WORKDIR_ROOT, owner, repo); managed = true;
     await rm(dir, { recursive: true, force: true }); await mkdir(path.dirname(dir), { recursive: true });
   }
-  let url: string, env: any = {};
-  if (ssh) url = `git@${sshHost}:${owner}/${repo}.git`;
-  else if (token) { url = `https://github.com/${owner}/${repo}.git`; env = httpsHeaderEnv(token); }
-  else return { ok: false, error: { code: 'AUTH_MISSING', message: 'no token/ssh for git clone', backend: 'git' } };
+  const remote = resolveCloneRemote({ owner, repo, ssh, sshHost, token });
   const args = ['clone'];
   if (depth && Number(depth) > 0) args.push('--depth', String(depth));
-  args.push(url, dir);
-  const r = await exec('git', args, { env });
-  if (r.code !== 0) { let code = 'GIT_ERROR'; if (/Authentication failed|403|denied/i.test(r.err)) code = 'AUTH_INVALID'; else if (/not found|Repository not found/i.test(r.err)) code = 'NOT_FOUND'; return { ok: false, error: { code, message: r.err.trim().slice(0, 300), backend: 'git' } }; }
-  return { ok: true, backend: 'git', data: { dir, managed } };
+  args.push(remote.url, dir);
+  const r = await exec('git', args, { env: remote.env });
+  if (r.code !== 0) {
+    return { ok: false, error: { ...classifyCloneError(r.err, remote.anonymous), backend: 'git' } };
+  }
+  return { ok: true, backend: 'git', data: { dir, managed, anonymous: remote.anonymous } };
 }
 async function gitCommitPush(owner: string, repo: string, token: any, { branch, files = [], message, ssh = false, sshHost = 'github.com', name = 'lm-assist', email = 'lm-assist@local', dir: targetDir }: any) {
   const env = ssh ? {} : httpsHeaderEnv(token);
