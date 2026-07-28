@@ -73,3 +73,30 @@ test('🔴 THE REGRESSION: a Windows-shaped launch produces a real binding, not 
   assert.strictEqual(binding.node, 'gw4-win', 'the binding must name the machine it actually runs on');
   assert.strictEqual(binding.kind, 'worker');
 });
+
+// ── the CONTROLLER's own launch (bl_ee6b080c, second call site) ─────────────
+//
+// The worker spawn was fixed first; the supervisor that launches the Mission
+// CONTROLLER still asked for `tmuxCcController` BY NAME, so a Windows node could
+// never host a controller — same cause, different call site. These pin the two
+// things that made it POSIX-only: which backend is asked, and which field the
+// resulting terminal handle is read from.
+
+test('🔴 the controller records a NEUTRAL terminal handle, not launched.tmuxSession', () => {
+  // wtCcController.launch resolves to this shape. Reading `.tmuxSession` yields
+  // '' on Windows, which is what erased the controller's terminal handle.
+  const winLaunch = { launched: true, sessionId: 'ctl-win', pid: 700, tabRid: 'rid-ctl' };
+  assert.strictEqual((winLaunch as Record<string, unknown>).tmuxSession, undefined,
+    'a Windows launch has no tmuxSession — reading it is the bug');
+  assert.strictEqual(normalizeLaunchResult(winLaunch).terminal, 'rid-ctl');
+});
+
+test('the controller handle still resolves to the tmux NAME on POSIX', () => {
+  const posixLaunch = { sessionId: 'ctl-posix', tmuxSession: 'lmcc-ms44i3o6' };
+  assert.strictEqual(normalizeLaunchResult(posixLaunch).terminal, 'lmcc-ms44i3o6',
+    'POSIX behaviour must be unchanged by the neutral read');
+});
+
+test('a controller launch that registered nothing yields an empty handle, not a fake one', () => {
+  assert.strictEqual(normalizeLaunchResult({ sessionId: null }).terminal, '');
+});

@@ -1932,7 +1932,13 @@ export function registerMissionController(
       selfId: thisNode,
       now: Date.now(),
       launch: async () => {
-        const { tmuxCcController } = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
+        // getCcController() — NOT tmuxCcController. The worker spawn path was fixed
+        // in 3bdad7d; this one, the CONTROLLER's own launch, still named the POSIX
+        // backend, so `assertPosix()` threw before Windows Terminal was ever tried
+        // and a Windows node could never host a Mission Controller (bl_ee6b080c,
+        // same cause, different call site).
+        const { getCcController: getCc, normalizeLaunchResult: norm } =
+          require('../terminal/backend') as typeof import('../terminal/backend');
         const cwd = controllerCwd();
         // Build the controller bootstrap extras (guarded system prompt + hub-MCP
         // keystone). Non-fatal: on any failure, launch without extras (the
@@ -1983,7 +1989,7 @@ export function registerMissionController(
           const { sessionVerdict } = require('../terminal/cc-sessions') as typeof import('../terminal/cc-sessions');
           resumeSid = latestResumableController(cwd, (sid) => sessionVerdict(sid));
         } catch { /* lineage unavailable — fresh launch */ }
-        const launched = await tmuxCcController.launch({
+        const launched = await getCc().launch({
           cwd, remoteControl: true, skipPermissions: true, autoTrust: true,
           appendSystemPromptFile: extras.appendSystemPromptFile,
           mcpConfigPath: extras.mcpConfigPath,
@@ -1991,7 +1997,9 @@ export function registerMissionController(
           ...(resumeSid ? { resume: resumeSid } : {}),
         });
         const sessionId = ((launched.sessionId as string | null) ?? '') || (resumeSid ?? '');
-        const tmux = (launched.tmuxSession as string) ?? '';
+        // Neutral handle: a tmux session NAME on POSIX, a tab RuntimeId (or pid) on
+        // Windows. `launched.tmuxSession` is unfillable on Windows and read as ''.
+        const tmux = norm(launched).terminal;
         try {
           const { recordControllerEvent } = require('./controller-history') as typeof import('./controller-history');
           if (resumeSid && !sessionId) {
@@ -2105,10 +2113,15 @@ export function registerMissionController(
       },
       teardown: async (cs) => {
         try {
-          if (cs.tmux) {
+          if (cs.tmux && getCcController().backend === 'tmux') {
             const backend = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
             // tmuxTerminalBackend.close(id) kills a tmux session by its session name.
             await backend.tmuxTerminalBackend.close(cs.tmux);
+          } else if (cs.sessionId) {
+            // Windows (and any non-tmux backend): the handle is a tab RuntimeId, not a
+            // tmux name, so close by SESSION id. Without this the guard above was simply
+            // false on Windows and teardown silently did nothing, leaking the controller.
+            await getCcController().close(cs.sessionId).catch(() => {});
           }
         } catch {
           // Best-effort teardown — don't crash the tick
