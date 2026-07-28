@@ -26,7 +26,9 @@ export interface MissionBinding {
   node: string | null;
   kind: ExecutorKind | null;
   boundAt?: number;
-  ccr?: { cse: string; sid: string; webUrl?: string | null; tmuxSession?: string };
+  /** `terminal` is the platform-neutral handle (tmux session name / WT tab RuntimeId);
+   *  `tmuxSession` is the legacy POSIX-only alias, still written on tmux hosts. */
+  ccr?: { cse: string; sid: string; webUrl?: string | null; terminal?: string; tmuxSession?: string };
 }
 export interface MissionProgress { percent: number; summary: string; updatedAt: number; }
 export interface MissionControl {

@@ -335,7 +335,7 @@ async function startCloudExecutor(m: Mission, decision: PlacementDecision): Prom
   const repoRaw: string = (decision.go ? decisionAny.repo : null) || process.cwd();
   const repoAbs = path.isAbsolute(repoRaw) ? repoRaw : path.resolve(process.cwd(), repoRaw);
   const baselineArr = await cloudListAccount().then((ss) => ss.map((s) => s.sid)).catch(() => [] as string[]);
-  const { tmuxCcController } = require('../terminal/tmux-backend') as typeof import('../terminal/tmux-backend');
+  const { getCcController: getCc, normalizeLaunchResult: norm } = require('../terminal/backend') as typeof import('../terminal/backend');
   const realNativeDeps: NativeStartDeps = {
     ensureWorktree: async (repo: string, dir: string, branch: string): Promise<string> => {
       const absRepo = path.isAbsolute(repo) ? repo : path.resolve(process.cwd(), repo);
@@ -350,12 +350,12 @@ async function startCloudExecutor(m: Mission, decision: PlacementDecision): Prom
       }
       return absDir;
     },
-    launch: async (cwd: string): Promise<{ sessionId: string | null; tmuxSession: string }> => {
-      const res = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true, effort: missionEffort(m), name: missionSessionTitle(m), renameTo: missionSessionName(m), tmuxPrefix: 'lmx' });
-      return {
-        sessionId: (res.sessionId as string | null) ?? null,
-        tmuxSession: res.tmuxSession as string,
-      };
+    launch: async (cwd: string): Promise<{ sessionId: string | null; terminal: string }> => {
+      // getCcController() — NOT tmuxCcController. Naming the POSIX backend here is what made
+      // every Windows node unusable for mission work (bl_ee6b080c). tmuxPrefix is a tmux-only
+      // hint the Windows backend ignores.
+      const res = await getCc().launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true, effort: missionEffort(m), name: missionSessionTitle(m), renameTo: missionSessionName(m), tmuxPrefix: 'lmx' });
+      return norm(res);
     },
     listAccount: cloudListAccount,
     baseline: baselineArr,
@@ -405,7 +405,9 @@ export async function readNativeExecutor(m: Mission, deps: NativeReadDeps): Prom
 
 export interface NativeStartDeps {
   ensureWorktree: (repo: string, dir: string, branch: string) => Promise<string>;
-  launch: (cwd: string) => Promise<{ sessionId: string | null; tmuxSession: string }>;
+  /** Platform-neutral: `terminal` is a tmux session name on POSIX, a Windows Terminal tab
+   *  RuntimeId (or pid) on Windows. Normalize with `normalizeLaunchResult`. */
+  launch: (cwd: string) => Promise<{ sessionId: string | null; terminal: string }>;
   listAccount: () => Promise<Array<{ sid: string; status?: string }>>;
   baseline: string[];
   drive: (sid: string, text: string) => Promise<void>;
@@ -424,7 +426,9 @@ export async function startNativeExecutor(m: Mission, decision: any, deps: Nativ
   const binding: MissionBinding = { sessionId: uuid, node: decision.host || 'local', kind, boundAt: Date.now() };
   if (hit) {
     const sid = cseToSessionSid(hit.sid);
-    binding.ccr = { cse: hit.sid, sid, webUrl: `https://claude.ai/code/${sid}`, tmuxSession: launched.tmuxSession };
+    // `terminal` is the neutral handle; `tmuxSession` is kept populated on POSIX so nothing
+    // reading the older field breaks, and is simply absent on Windows rather than lying.
+    binding.ccr = { cse: hit.sid, sid, webUrl: `https://claude.ai/code/${sid}`, terminal: launched.terminal, ...(getCcController().backend === 'tmux' ? { tmuxSession: launched.terminal } : {}) };
     await deps.drive(sid, `Mission: ${m.title}\n\nObjective:\n${m.objective}`).catch(() => {});
   }
   return binding;

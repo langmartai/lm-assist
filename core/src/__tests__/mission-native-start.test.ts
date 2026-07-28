@@ -13,7 +13,7 @@ const mission = {
 test('startNativeExecutor launches, discovers the cse, returns a native binding', async () => {
   const deps = {
     ensureWorktree: async () => '/wt/mission_x',
-    launch: async () => ({ sessionId: 'uuid-123', tmuxSession: 'lmcc-1' }),
+    launch: async () => ({ sessionId: 'uuid-123', terminal: 'lmcc-1' }),
     listAccount: async () => [{ sid: 'cse_NEW', status: 'active' }],
     baseline: ['cse_OLD'],
     drive: async () => {},
@@ -28,7 +28,7 @@ test('startNativeExecutor launches, discovers the cse, returns a native binding'
 test('no new cse discovered -> binding without ccr (local-only fallback)', async () => {
   const deps = {
     ensureWorktree: async () => '/wt',
-    launch: async () => ({ sessionId: 'uuid-9', tmuxSession: 't' }),
+    launch: async () => ({ sessionId: 'uuid-9', terminal: 't' }),
     listAccount: async () => [{ sid: 'cse_OLD' }],
     baseline: ['cse_OLD'],
     drive: async () => {},

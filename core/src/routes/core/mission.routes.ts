@@ -1785,7 +1785,7 @@ export interface MissionSpawnDeps {
 
 async function defaultSpawnNativeDeps(m: Record<string, unknown>): Promise<unknown> {
   const { cloudListAccount, cloudDrive } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
-  const { tmuxCcController } = require('../../terminal/tmux-backend') as typeof import('../../terminal/tmux-backend');
+  const { getCcController, normalizeLaunchResult } = require('../../terminal/backend') as typeof import('../../terminal/backend');
   const { gitCommand } = require('../../checkpoint/git-utils') as typeof import('../../checkpoint/git-utils');
   const { missionSessionTitle, missionSessionName, missionEffort } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
   const pathmod = require('path') as typeof import('path');
@@ -1806,9 +1806,11 @@ async function defaultSpawnNativeDeps(m: Record<string, unknown>): Promise<unkno
       }
       return absDir;
     },
-    launch: async (cwd: string): Promise<{ sessionId: string | null; tmuxSession: string }> => {
-      const res = await tmuxCcController.launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true, effort: missionEffort(m as never), name: missionSessionTitle(m as never), renameTo: missionSessionName(m as never), tmuxPrefix: 'lmx' });
-      return { sessionId: (res.sessionId as string | null) ?? null, tmuxSession: res.tmuxSession as string };
+    launch: async (cwd: string): Promise<{ sessionId: string | null; terminal: string }> => {
+      // THE line that refused every Windows placement (bl_ee6b080c): this asked for
+      // tmuxCcController by name, so assertPosix() threw before Windows Terminal was tried.
+      const res = await getCcController().launch({ cwd, remoteControl: true, skipPermissions: true, autoTrust: true, effort: missionEffort(m as never), name: missionSessionTitle(m as never), renameTo: missionSessionName(m as never), tmuxPrefix: 'lmx' });
+      return normalizeLaunchResult(res);
     },
     listAccount: cloudListAccount,
     baseline: baselineArr,
@@ -1920,7 +1922,6 @@ function defaultSessionResumeDeps(): SessionResumeDeps {
     const { place } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
     const { listMissions: lm } = require('../../mission/mission-store') as typeof import('../../mission/mission-store');
     const { cloudListAccount, cloudDrive } = require('../../terminal/ccr-cloud') as typeof import('../../terminal/ccr-cloud');
-    const { tmuxCcController } = require('../../terminal/tmux-backend') as typeof import('../../terminal/tmux-backend');
     const { gitCommand } = require('../../checkpoint/git-utils') as typeof import('../../checkpoint/git-utils');
     const { missionSessionTitle, missionSessionName, missionEffort } = require('../../mission/mission-model') as typeof import('../../mission/mission-model');
     const pathmod = require('path') as typeof import('path');
@@ -1947,9 +1948,12 @@ function defaultSessionResumeDeps(): SessionResumeDeps {
         return absDir;
       },
       // CHANGE (a): pass resume: sid → `claude --resume <sid>` continues the SAME session.
-      launch: async (cwd: string): Promise<{ sessionId: string | null; tmuxSession: string }> => {
-        const res = await tmuxCcController.launch({ cwd, resume: sid, remoteControl: true, skipPermissions: true, autoTrust: true, effort: missionEffort(m), name: missionSessionTitle(m), renameTo: missionSessionName(m), tmuxPrefix: 'lmx' });
-        return { sessionId: (res.sessionId as string | null) ?? null, tmuxSession: res.tmuxSession as string };
+      launch: async (cwd: string): Promise<{ sessionId: string | null; terminal: string }> => {
+        // Same fix as the spawn path: RESUME was POSIX-only for the same reason. A Windows
+        // mission that could never start also could never be resumed (bl_ee6b080c).
+        const { getCcController: getCc2, normalizeLaunchResult: norm2 } = require('../../terminal/backend') as typeof import('../../terminal/backend');
+        const res = await getCc2().launch({ cwd, resume: sid, remoteControl: true, skipPermissions: true, autoTrust: true, effort: missionEffort(m), name: missionSessionTitle(m), renameTo: missionSessionName(m), tmuxPrefix: 'lmx' });
+        return norm2(res);
       },
       listAccount: cloudListAccount,
       baseline: baselineArr,

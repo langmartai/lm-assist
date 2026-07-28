@@ -178,6 +178,24 @@ export function getTerminalBackend(): TerminalBackend {
   return _terminal;
 }
 
+/**
+ * One neutral handle for a launched Claude session's terminal.
+ *
+ * The two backends describe the same thing differently: tmux by session NAME
+ * (`tmuxSession`), Windows Terminal by tab RuntimeId (`tabRid`, title-independent so a
+ * still-animating title cannot break drive), falling back to the process id when concurrent
+ * launches make the new tab ambiguous. Callers above this layer must not have to know which
+ * one they got — a field literally called `tmuxSession` is unfillable on Windows, and that
+ * is how the mission layer ended up POSIX-only (bl_ee6b080c).
+ *
+ * Pure. Returns `terminal: ''` when nothing registered, rather than inventing a handle.
+ */
+export function normalizeLaunchResult(res: Record<string, unknown>): { sessionId: string | null; terminal: string } {
+  const sessionId = (res.sessionId as string | null) ?? null;
+  const handle = res.tmuxSession ?? res.tabRid ?? res.pid ?? '';
+  return { sessionId, terminal: handle === null || handle === undefined ? '' : String(handle) };
+}
+
 /** The Claude Code controller for this host. */
 export function getCcController(): CcController {
   if (_cc) return _cc;
