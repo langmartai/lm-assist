@@ -12,6 +12,7 @@
 import { IS_WINDOWS } from '../utils/process-utils';
 import { listLiveSessions, sessionVerdict, Verdict } from './cc-sessions';
 import { composerHolds } from './windows-submit-verify';
+import { planCcRestart, safeToResume } from './cc-restart';
 import {
   listTerminalProcs,
   spawnTerminal,
@@ -46,6 +47,24 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 function pidForSession(sessionId: string): number | null {
   const s = listLiveSessions().find((x) => x.sessionId === sessionId);
   return s ? s.owner.pid : null;
+}
+
+/**
+ * Is this pid still running? `null` = could not tell.
+ *
+ * The restart gate treats `null` as "still alive", so an unknown must stay
+ * distinguishable from a confirmed death — never collapse it to a boolean.
+ */
+function pidAlive(pid: number): boolean | null {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return false; // definitively gone
+    if (code === 'EPERM') return true;  // exists, not ours to signal
+    return null;                        // anything else: unknown, so treat as alive
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +138,56 @@ export const wtCcController: CcController = {
 
   async launch(opts: CcLaunchOpts): Promise<Record<string, unknown>> {
     return (await launchSession({ ...opts, mode: opts.mode as 'window' | 'tab' | undefined })) as unknown as Record<string, unknown>;
+  },
+
+  /**
+   * Kill a live session and resume its transcript in a fresh window.
+   *
+   * The load-bearing step is the liveness poll between the two: a resume must not
+   * start until the old pid is OBSERVED gone, or two processes end up writing one
+   * JSONL. `close()` returning ok is not that proof.
+   */
+  async restart(sessionId: string, opts?: { force?: boolean }): Promise<Record<string, unknown>> {
+    const v = sessionVerdict(sessionId);
+    const pid = pidForSession(sessionId);
+    const cwd = v.owner?.cwd ?? null;
+    let busy = false;
+    if (pid) {
+      const cap = await captureScreen(pid);
+      busy = cap.ok && classifyScreen(cap.text || '').state === 'busy';
+    }
+
+    const plan = planCcRestart({
+      live: !!pid, busy, force: opts?.force === true,
+      hasTranscript: !!v.jsonl, cwd,
+    });
+    if (plan.action === 'refuse') return { ok: false, sessionId, refused: true, reason: plan.reason };
+
+    if (pid) {
+      await closeWindow(pid, true, getTabRid(sessionId));
+      forgetTabRid(sessionId);
+      // Poll for actual death — never trust the kill's own report.
+      let alive: boolean | null = null;
+      for (let i = 0; i < 20; i++) {
+        await sleep(300);
+        alive = pidAlive(pid);
+        if (alive === false) break;
+      }
+      const gate = safeToResume(alive);
+      if (!gate.ok) return { ok: false, sessionId, refused: true, reason: gate.reason, oldPid: pid };
+    }
+
+    const launched = await launchSession({ cwd: cwd!, resume: sessionId, mode: 'window' });
+    const newSid = (launched as { sessionId?: string | null }).sessionId ?? null;
+    return {
+      ok: !!newSid,
+      sessionId,
+      resumed: newSid,
+      oldPid: pid,
+      newPid: (launched as { pid?: number | null }).pid ?? null,
+      reason: plan.reason,
+      ...(newSid ? {} : { note: 'the old session was terminated but the resume did not register — check for a folder-trust prompt' }),
+    };
   },
 
   async prompt(sessionId: string, text: string, opts?: { submit?: boolean }): Promise<Record<string, unknown>> {

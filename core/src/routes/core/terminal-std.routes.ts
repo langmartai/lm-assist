@@ -174,6 +174,18 @@ export function createTerminalStdRoutes(_ctx: RouteContext): RouteHandler[] {
       handler: async (req: ParsedRequest): Promise<Envelope> => wrap(() => getCcController().screen(req.params.id)),
     },
     {
+      // Kill a live session and resume its transcript in a fresh terminal.
+      // { force?: true } overrides the mid-turn guard only.
+      method: 'POST',
+      pattern: /^\/terminal\/cc-sessions\/(?<id>[^/]+)\/restart$/,
+      handler: async (req: ParsedRequest): Promise<Envelope> => {
+        const ctl = getCcController();
+        if (!ctl.restart) return notSupported(ctl.backend);
+        const b = (req.body ?? {}) as { force?: boolean };
+        return wrap(() => ctl.restart!(req.params.id, { force: b.force === true }));
+      },
+    },
+    {
       method: 'POST',
       pattern: /^\/terminal\/cc-sessions\/(?<id>[^/]+)\/auto-handle$/,
       handler: async (req: ParsedRequest): Promise<Envelope> => {

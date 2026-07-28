@@ -14,7 +14,7 @@ export const TOPIC_TOOLS: Record<string, string[]> = {
   knowledge: ['search', 'detail', 'search_memory', 'memory_projects', 'memory_map', 'memory_cross_host', 'memory_record', 'memory_file', 'memory_write', 'memory_import_candidates', 'memory_sync_status', 'rule_map', 'feedback'],
   data: ['data_catalog', 'data_request_access', 'data_get', 'data_query', 'data_search', 'data_put', 'data_delete', 'data_create_dataset', 'data_drop_dataset', 'data_keys', 'data_revoke_key', 'data_sync', 'data_sync_status', 'data_admin'],
   agents: ['agent_execute', 'agent_resume', 'agent_abort', 'get_execution', 'list_executions', 'browser_task'],
-  terminals: ['terminal_open_tab', 'terminal_list', 'terminal_capture', 'terminal_prompt', 'terminal_slash', 'terminal_interrupt', 'send_session_message', 'get_message_status', 'cc_sessions', 'windows_terminal_create', 'windows_terminal_list', 'windows_terminal_send', 'windows_terminal_capture', 'windows_terminal_state', 'windows_terminal_launch', 'windows_terminal_close', 'windows_terminal_auto_handle'],
+  terminals: ['terminal_open_tab', 'terminal_list', 'terminal_capture', 'terminal_prompt', 'terminal_slash', 'terminal_interrupt', 'send_session_message', 'get_message_status', 'cc_sessions', 'windows_terminal_create', 'windows_terminal_list', 'windows_terminal_send', 'windows_terminal_restart', 'windows_terminal_capture', 'windows_terminal_state', 'windows_terminal_launch', 'windows_terminal_close', 'windows_terminal_auto_handle'],
   ccr: ['ccr_preflight', 'ccr_load', 'ccr_mirror', 'ccr_connect', 'ccr_remote_list', 'ccr_remote_stop', 'cc_sessions'],
   // node_profile/node_select join the NODES playbook: choosing WHERE work runs is a
   // cross-node concern, and a tool maps to exactly ONE topic.

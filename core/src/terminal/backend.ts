@@ -153,6 +153,12 @@ export interface CcController {
   interrupt(sessionId: string): Promise<void>;
   /** terminate the session (optionally close its tab/window). */
   close(sessionId: string, opts?: { closeTab?: boolean }): Promise<Record<string, unknown>>;
+  /**
+   * Optional: kill a live session and resume its transcript in a fresh terminal.
+   * Optional because tmux hosts already have the ccr_restart path; a backend that
+   * does not implement it reports NOT_SUPPORTED rather than pretending.
+   */
+  restart?(sessionId: string, opts?: { force?: boolean }): Promise<Record<string, unknown>>;
 }
 
 // ---------------------------------------------------------------------------

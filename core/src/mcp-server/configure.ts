@@ -166,6 +166,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   windows_terminal_launch: 'write',
   windows_terminal_create: 'write',
   windows_terminal_send: 'write',
+  windows_terminal_restart: 'write',
   windows_terminal_auto_handle: 'write',
   windows_terminal_close: 'write',
   // claude.ai marketplaces + plugins (read)

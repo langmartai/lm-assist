@@ -134,7 +134,13 @@ export function classifyScreen(text: string): ScreenClassification {
   }
 
   // 8. Busy (actively working)
-  if (/esc to interrupt|\besc\b.*interrupt|Running…|tokens? ·|⏵⏵|✻|✶|·\s*\d+\s*tokens/i.test(t)) {
+  // 🔴 Anchored on the INTERRUPT AFFORDANCE, which exists only while a turn is in
+  // flight. Bare spinner glyphs are NOT evidence of activity and used to be here:
+  // `✻`/`✶` also head the COMPLETED summary ("✻ Sautéed for 2s"), and `⏵⏵` is the
+  // permission MODE indicator ("⏵⏵ bypass permissions on"). Both persist on a
+  // finished screen, so matching them reported every session that had ever run a
+  // turn as permanently busy — measured on a session idle for 60s+ after replying.
+  if (/esc to interrupt|\besc\b.*interrupt|Running…|·\s*\d+\s*tokens/i.test(t)) {
     return { state: 'busy', detail: find(/[^\n]*esc to interrupt[^\n]*/i) };
   }
 

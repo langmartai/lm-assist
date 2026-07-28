@@ -268,6 +268,26 @@ export const windowsTerminalCreateToolDef = {
   },
 };
 
+export const windowsTerminalRestartToolDef = {
+  name: 'windows_terminal_restart',
+  description:
+    'Restart a Windows Claude Code session IN PLACE: kill it, verify it is gone, then relaunch with ' +
+    '`--resume` so its transcript continues. This is the supported way to recycle a LIVE session — ' +
+    'picking up new MCP tools, clearing a wedged context — which `ccr_connect` refuses, because a second ' +
+    '`--resume` against a transcript a live process still owns double-writes and corrupts it. Safe here ' +
+    'only because the old writer is removed and OBSERVED dead first. Refuses a mid-turn session unless ' +
+    '`force`. WRITE — destructive to the running process (the transcript is preserved).',
+  annotations: { readOnlyHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      sessionId: { type: 'string', description: 'Session id from windows_terminal_list.' },
+      force: { type: 'boolean', description: 'Restart even if mid-turn, losing the in-flight turn (default false).' },
+    },
+    required: ['sessionId'],
+  },
+};
+
 export const windowsTerminalSendToolDef = {
   name: 'windows_terminal_send',
   description:
@@ -1066,6 +1086,7 @@ export const EXPANDED_TOOL_DEFS = [
   windowsTerminalLaunchToolDef,
   windowsTerminalCreateToolDef,
   windowsTerminalSendToolDef,
+  windowsTerminalRestartToolDef,
   windowsTerminalAutoHandleToolDef,
   windowsTerminalCloseToolDef,
   claudeaiListMarketplacesToolDef,
@@ -1527,6 +1548,15 @@ async function handleWindowsTerminalSend(a: Record<string, unknown>): Promise<Mc
   if (!text) return err('text is required.');
   try {
     return renderRaw(await workerPostRaw(`/terminal/cc-sessions/${enc(sid)}/prompt`, { text, submit: a.submit === true }));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+async function handleWindowsTerminalRestart(a: Record<string, unknown>): Promise<McpToolResult> {
+  const sid = winSid(a);
+  if (!sid) return err('sessionId is required.');
+  try {
+    return renderRaw(await workerPostRaw(`/terminal/cc-sessions/${enc(sid)}/restart`, { force: a.force === true }));
   } catch (e) {
     return err(e instanceof Error ? e.message : String(e));
   }
@@ -2236,6 +2266,7 @@ export const EXPANDED_HANDLERS: Record<
   windows_terminal_launch: handleWindowsTerminalLaunch,
   windows_terminal_create: handleWindowsTerminalCreate,
   windows_terminal_send: handleWindowsTerminalSend,
+  windows_terminal_restart: handleWindowsTerminalRestart,
   windows_terminal_auto_handle: handleWindowsTerminalAutoHandle,
   windows_terminal_close: handleWindowsTerminalClose,
   // claude.ai marketplaces + plugins (read)
