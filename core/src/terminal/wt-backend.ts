@@ -11,6 +11,7 @@
 
 import { IS_WINDOWS } from '../utils/process-utils';
 import { listLiveSessions, sessionVerdict, Verdict } from './cc-sessions';
+import { composerHolds } from './windows-submit-verify';
 import {
   listTerminalProcs,
   spawnTerminal,
@@ -123,9 +124,35 @@ export const wtCcController: CcController = {
   async prompt(sessionId: string, text: string, opts?: { submit?: boolean }): Promise<Record<string, unknown>> {
     const pid = pidForSession(sessionId);
     if (!pid) throw new Error(`no live session ${sessionId} on this host`);
-    const r = await focusAndSend({ pid, rid: getTabRid(sessionId), text, submit: opts?.submit !== false });
+    const wantSubmit = opts?.submit !== false;
+    // Paste the text only. The Enter that used to ride along here was a
+    // `SendKeys("{ENTER}")` fired 150ms after a clipboard paste, and it did not
+    // land — measured on DESKTOP-GDKLATG: text in the composer, session idle,
+    // and `submitted: true` reported anyway.
+    const r = await focusAndSend({ pid, rid: getTabRid(sessionId), text, submit: false });
     if (!r.ok) throw new Error(r.error || 'prompt failed');
-    return r as unknown as Record<string, unknown>;
+    if (!wantSubmit) return { ...r, submitted: false } as unknown as Record<string, unknown>;
+
+    // Submit through the focus-free console-input path (WriteConsoleInput), which
+    // does not depend on the window holding foreground, then VERIFY by looking at
+    // the composer. `submitted` is observed, never an echo of the request.
+    let submitted = false;
+    let attempts = 0;
+    for (; attempts < 2 && !submitted; attempts++) {
+      await focusAndSend({ pid, keys: 'ENTER' });
+      await sleep(700);
+      const cap = await captureScreen(pid);
+      submitted = cap.ok ? !composerHolds(cap.text || '', text) : false;
+    }
+    return {
+      ...r,
+      submitted,
+      submitAttempts: attempts,
+      ...(submitted ? {} : {
+        note: 'text reached the composer but Enter did not submit it — the prompt is '
+          + 'still pending in the session. Nothing was sent to the model.',
+      }),
+    } as unknown as Record<string, unknown>;
   },
 
   async screen(sessionId: string): Promise<CcScreen> {

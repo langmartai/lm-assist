@@ -413,6 +413,13 @@ if($Action -eq 'send'){
   # Text paste: prefer RuntimeId (title-independent), else console-title marker.
   if($RuntimeId){
     $loc = Locate-ByRid $RuntimeId
+    # A UIA RuntimeId is EPHEMERAL — it changes when the tab element is rebuilt,
+    # so a cached rid goes stale and every later send died with 'could not locate
+    # window/tab' while the window was demonstrably alive and driveable
+    # (measured on DESKTOP-GDKLATG). Fall back to the pid path instead of failing.
+    if((-not $loc.found -or -not $loc.hwnd) -and $ClaudePid -gt 0){
+      $loc = Locate-Authoritative $ClaudePid
+    }
   } else {
     if($ClaudePid -le 0){ ConvertTo-Json @{ ok=$false; error='ClaudePid or RuntimeId required' } -Compress; exit 1 }
     $loc = Locate-Authoritative $ClaudePid
