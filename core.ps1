@@ -165,15 +165,21 @@ function Ensure-WorkerRelocated($installRoot) {
   Info ("copied worker closure to " + $WorkerRoot)
 
   # 2. Re-point the task FIRST (via the worker's own elevation).
+  # Set-ScheduledTask, NOT `schtasks /change`: schtasks prompts for the run-as
+  # password on a task with a named user and, with no stdin behind /exec, simply
+  # HANGS until the request times out. Set-ScheduledTask does not re-prompt for an
+  # Interactive-logon task.
   $nodeExe = (Get-Command node).Source
-  $tr = '"{0}" "{1}" --port {2}' -f $nodeExe, $newWorker, $WorkerPort
-  # Single-quoted /tr so the inner double quotes survive to schtasks intact.
-  $psCmd = "schtasks /change /tn $WorkerTask /tr '$tr'"
+  $arg = '"{0}" --port {1}' -f $newWorker, $WorkerPort
+  $psCmd = "`$a = New-ScheduledTaskAction -Execute '$nodeExe' -Argument '$arg'; " +
+           "Set-ScheduledTask -TaskName '$WorkerTask' -Action `$a | Out-Null; 'CHANGED'"
   $r = Invoke-WorkerExec $psCmd
   if (-not $r -or $r.exitCode -ne 0) {
     Warn 'could not re-point the task via the worker; trying directly (needs admin)'
-    & schtasks /change /tn $WorkerTask /tr $tr | Out-Host
-    if ($LASTEXITCODE -ne 0) { Err 'failed to re-point the scheduled task - aborting relocation'; return $false }
+    try {
+      $a = New-ScheduledTaskAction -Execute $nodeExe -Argument $arg
+      Set-ScheduledTask -TaskName $WorkerTask -Action $a | Out-Null
+    } catch { Err ('failed to re-point the scheduled task - aborting relocation: ' + $_.Exception.Message); return $false }
   }
   Info 'scheduled task now points at the relocated worker'
 
