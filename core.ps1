@@ -36,6 +36,12 @@ function Ok($m)   { Write-Host "[core] $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "[core] $m" -ForegroundColor Yellow }
 function Err($m)  { Write-Host "[core] $m" -ForegroundColor Red }
 
+# Take only the LAST value a function emits. PowerShell returns every uncaptured
+# object, so a stray Write-Output or command stdout would otherwise be read as the
+# result - which made a failed deploy exit 0 on 2026-07-28.
+function Last($v) { if ($v -is [array]) { return $v[-1] } return $v }
+
+
 # Resolve a WORKING git. On at least one node a scoop shim shadows a healthy
 # Git install and fails with "Could not create process", which breaks any
 # sync-then-deploy flow - so prefer a real git.exe over whatever is first on PATH.
@@ -84,6 +90,105 @@ function Do-Pack {
   } finally { Pop-Location }
 }
 
+# ---------------------------------------------------------------------------
+# Elevated-worker relocation
+#
+# The worker runs FROM the install dir (core\dist\elevated\worker.js). On Windows
+# a directory cannot be renamed while a process holds files open inside it, and
+# `npm install -g` replaces the package by renaming - so the worker makes every
+# upgrade fail with EBUSY. (Linux never hits this: an open file can be renamed.)
+#
+# Rather than stop a privileged helper on every deploy, relocate it ONCE to a
+# 4-file, zero-dependency copy outside node_modules. Verified closure:
+#   elevated\worker.js  elevated\common.js  auth\api-token.js  utils\path-utils.js
+# ...requiring only node builtins, so no node_modules is needed at the new home.
+#
+# Order matters. The worker is SINGLE-INSTANCE: a second one exits 0 on
+# EADDRINUSE, so "start the new one and let it kill the old" cannot work. And the
+# scheduled task must be re-pointed BEFORE the handoff, so a crash midway still
+# leaves a task aimed somewhere valid rather than at a path the upgrade deletes.
+$WorkerRoot = Join-Path $env:USERPROFILE '.lm-assist\worker-runtime'
+$WorkerTask = 'LmAssistElevatedWorker'
+$WorkerPort = 3110
+
+function Get-WorkerProc {
+  $l = Get-NetTCPConnection -LocalPort $WorkerPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $l) { return $null }
+  return (Get-CimInstance Win32_Process -Filter ("ProcessId=" + $l.OwningProcess) -ErrorAction SilentlyContinue)
+}
+
+# Ask the RUNNING elevated worker to do a privileged thing. Used for schtasks
+# /change, which needs admin - the worker already has it, so the deploy does not.
+function Invoke-WorkerExec($cmd, [string[]]$ExecArgs) {
+  $tokenFile = Join-Path $env:USERPROFILE '.lm-assist\api-token'
+  if (-not (Test-Path $tokenFile)) { return $null }
+  $token = (Get-Content $tokenFile -Raw).Trim()
+  $body = @{ cmd = $cmd; args = $ExecArgs; shell = 'cmd' } | ConvertTo-Json -Compress
+  try {
+    return Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$WorkerPort/exec" `
+      -Headers @{ 'x-api-key' = $token; 'content-type' = 'application/json' } -Body $body -TimeoutSec 30
+  } catch { return $null }
+}
+
+function Ensure-WorkerRelocated($installRoot) {
+  $proc = Get-WorkerProc
+  if (-not $proc) { Info 'elevated worker not running - nothing to relocate'; return $true }
+  if ($proc.CommandLine -notlike "*node_modules\lm-assist*") {
+    Info 'elevated worker already runs outside the install dir - no relocation needed'
+    return $true
+  }
+
+  Info 'elevated worker runs FROM the install dir - relocating it so the upgrade cannot hit EBUSY'
+
+  # 1. Copy the closure, mirroring core\dist so the relative requires resolve.
+  $srcDist = Join-Path $installRoot 'core\dist'
+  $files = @(
+    @{ from = 'elevated\worker.js';   to = 'elevated\worker.js' },
+    @{ from = 'elevated\common.js';   to = 'elevated\common.js' },
+    @{ from = 'auth\api-token.js';    to = 'auth\api-token.js' },
+    @{ from = 'utils\path-utils.js';  to = 'utils\path-utils.js' }
+  )
+  foreach ($f in $files) {
+    $src = Join-Path $srcDist $f.from
+    if (-not (Test-Path $src)) { Err ("missing from the build: " + $f.from); return $false }
+    $dst = Join-Path $WorkerRoot $f.to
+    New-Item -ItemType Directory -Path (Split-Path $dst -Parent) -Force | Out-Null
+    Copy-Item $src $dst -Force
+  }
+  $newWorker = Join-Path $WorkerRoot 'elevated\worker.js'
+  if (-not (Test-Path $newWorker)) { Err 'copy failed'; return $false }
+  Info ("copied worker closure to " + $WorkerRoot)
+
+  # 2. Re-point the task FIRST (via the worker's own elevation).
+  $nodeExe = (Get-Command node).Source
+  $tr = '"{0}" "{1}" --port {2}' -f $nodeExe, $newWorker, $WorkerPort
+  $r = Invoke-WorkerExec 'schtasks' @('/change', '/tn', $WorkerTask, '/tr', $tr)
+  if (-not $r -or $r.exitCode -ne 0) {
+    Warn 'could not re-point the task via the worker; trying directly (needs admin)'
+    & schtasks /change /tn $WorkerTask /tr $tr | Out-Host
+    if ($LASTEXITCODE -ne 0) { Err 'failed to re-point the scheduled task - aborting relocation'; return $false }
+  }
+  Info 'scheduled task now points at the relocated worker'
+
+  # 3. Stop the old worker, THEN start the new one (single-instance guard).
+  try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop } catch { }
+  Start-Sleep -Seconds 3
+  & schtasks /run /tn $WorkerTask | Out-Null
+
+  # 4. Verify by OBSERVATION: running, and demonstrably outside the install dir.
+  for ($i = 0; $i -lt 20; $i++) {
+    Start-Sleep -Seconds 2
+    $now = Get-WorkerProc
+    if ($now -and $now.CommandLine -notlike "*node_modules\lm-assist*") {
+      Ok ("elevated worker relocated: pid=" + $now.ProcessId + " now outside node_modules")
+      return $true
+    }
+  }
+  Err 'worker did not come back outside the install dir - refusing to continue'
+  Warn ("start it manually: schtasks /run /tn " + $WorkerTask)
+  return $false
+}
+
 function Do-Deploy {
   Info 'Deploying this checkout to the local install...'
 
@@ -115,6 +220,13 @@ function Do-Deploy {
     Warn 'No working git found - deploying without a provenance check.'
     Warn 'If a scoop shim is shadowing Git, prefer C:\Program Files\Git\cmd\git.exe.'
   }
+
+  # --- free the install dir ----------------------------------------------
+  # Must happen BEFORE the install: a process running from node_modules\lm-assist
+  # makes `npm install -g` fail with EBUSY, and the worker's task restarts it
+  # faster than npm can rename the directory.
+  $instRoot = Join-Path (& npm root -g) 'lm-assist'
+  if (-not (Last(Ensure-WorkerRelocated $instRoot))) { return $false }
 
   # --- pack --------------------------------------------------------------
   $tgz = Do-Pack
@@ -154,11 +266,6 @@ function Do-Deploy {
   Err 'Deployed but Core is not healthy - check: lm-assist logs core'
   return $false
 }
-
-# Take only the LAST value a function emits. PowerShell returns every uncaptured
-# object, so a stray Write-Output or command stdout would otherwise be read as the
-# result - which made a failed deploy exit 0 on 2026-07-28.
-function Last($v) { if ($v -is [array]) { return $v[-1] } return $v }
 
 switch ($Command.ToLower()) {
   'build'  { if (Last(Do-Build)) { exit 0 } else { exit 1 } }
