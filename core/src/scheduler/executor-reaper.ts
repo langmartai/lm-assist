@@ -368,6 +368,44 @@ export async function runExecutorReaper(
 
 /** Executor panes carry the `lmx-` prefix; `lmcc-` is the CONTROLLER and is never touched. */
 const EXECUTOR_PREFIX = 'lmx-';
+
+/** Field separator — tmux will not put \x1f in a session name or a path. */
+const FACTS_SEP = '\x1f';
+
+/**
+ * argv to read one session's facts.
+ *
+ * 🔴 This must NEVER be `display-message -p -t '=NAME' '#{session_created}'`.
+ * That call SEGFAULTS the tmux server, killing every Claude Code pane on the
+ * host: `-t` on display-message is a target-PANE, `=` is a SESSION qualifier, so
+ * the target resolves to NULL and a session-scoped format dereferences it.
+ * Measured on tmux 3.2a — `dmesg` shows `tmux: server[N]: segfault at 0`, and
+ * the client prints "server exited unexpectedly". It ran hourly on prod at :28
+ * from a DRY-RUN sweep that was correctly reaping nothing; the damage was
+ * entirely in the read.
+ *
+ * `list-sessions` takes a SESSION target and `-f` filters on an exact name
+ * match, so it cannot mis-resolve and cannot crash. An older tmux without `-f`
+ * errors out, which yields '' -> null -> the pane is KEPT: fail-safe.
+ */
+export function paneFactsArgv(pane: string): string[] {
+  return [
+    'list-sessions',
+    '-f', `#{==:#{session_name},${pane}}`,
+    '-F', `#{session_created}${FACTS_SEP}#{session_activity}${FACTS_SEP}#{pane_current_path}`,
+  ];
+}
+
+/** Parse `paneFactsArgv` output. Empty/!created => null, which the sweep treats as KEEP. */
+export function parsePaneFacts(out: string): PaneFacts | null {
+  const first = (out || '').trim().split('\n')[0];
+  if (!first) return null;
+  const [c, a, cwd] = first.split(FACTS_SEP);
+  const createdMs = (parseInt(c, 10) || 0) * 1000;
+  const activityMs = (parseInt(a, 10) || 0) * 1000;
+  if (!createdMs) return null;
+  return { createdMs, activityMs: activityMs || createdMs, cwd: cwd || null };
+}
 const MISSION_CWD_RE = /worktrees\/mission-(mission_[a-z0-9]+)/;
 
 /**
@@ -459,15 +497,7 @@ export function productionDeps(missions: ReaperMission[], isLeader: boolean): Ex
     listExecutorPanes: () =>
       raw(['list-sessions', '-F', '#{session_name}']).split('\n').map((s) => s.trim())
         .filter((s) => s.startsWith(EXECUTOR_PREFIX)),
-    paneFacts: (pane) => {
-      const out = raw(['display-message', '-p', '-t', `=${pane}`, '#{session_created}\x1f#{session_activity}\x1f#{pane_current_path}']).trim();
-      if (!out) return null;
-      const [c, a, cwd] = out.split('\x1f');
-      const createdMs = (parseInt(c, 10) || 0) * 1000;
-      const activityMs = (parseInt(a, 10) || 0) * 1000;
-      if (!createdMs) return null;
-      return { createdMs, activityMs: activityMs || createdMs, cwd: cwd || null };
-    },
+    paneFacts: (pane) => parsePaneFacts(raw(paneFactsArgv(pane))),
     // Visible screen only — no scrollback, so a scrolled-up transcript cannot
     // contribute a stale `ctx:` or a phantom busy marker.
     capture: (pane) => { try { return tmux.capture(pane, { paneQualifier: null, lines: null, start: null }); } catch { return ''; } },
