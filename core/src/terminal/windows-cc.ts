@@ -25,7 +25,9 @@ import {
   listTabIds,
   setTabRid,
   spawnTerminal,
+  getCoreWindowsSessionId,
 } from './windows-terminal';
+import { describeWindowsLaunch } from './windows-launch-verdict';
 import { classifyScreen, type ScreenState } from './cc-classify';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -255,8 +257,20 @@ export async function launchSession(opts: {
 
   let win: WinMapping | null = null;
   if (pid) win = (await mapPidsToWindows([pid]))[0] ?? null;
+
+  // `launched` reports what was OBSERVED, never a hardcoded true. On a Session 0
+  // Core the wt.exe spawn creates nothing at all — measured on DESKTOP-GDKLATG,
+  // where this returned launched:true while the host gained no process — so the
+  // caller has to be told that instead of being handed a success.
+  const verdict = describeWindowsLaunch({
+    sessionRegistered: !!sid,
+    tabAppeared: (await listTabIds()).some((t) => !beforeRids.has(t.rid)),
+    processAppeared: !!pid,
+    coreSessionId: win?.coreSessionId ?? (await getCoreWindowsSessionId()),
+    desktopSessionId: win?.sessionId ?? null,
+  });
   return {
-    launched: true,
+    launched: verdict.launched,
     sessionId: sid,
     pid,
     win,
@@ -264,10 +278,8 @@ export async function launchSession(opts: {
     trustHandled,
     mode,
     cwd,
-    note: sid
-      ? trustHandled
-        ? 'folder-trust prompt was auto-accepted during launch'
-        : undefined
-      : 'launched, but no new session registered within the wait window — a folder-trust prompt may still be pending (autoTrust may have been disabled or the prompt differs); GET /terminal/windows/capture?pid=<newClaudePid> to see it',
+    note: sid && trustHandled
+      ? 'folder-trust prompt was auto-accepted during launch'
+      : verdict.note,
   };
 }

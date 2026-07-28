@@ -36,6 +36,7 @@
 
 import { execFile, spawn } from '../utils/exec';
 import { IS_WINDOWS } from '../utils/process-utils';
+import { describeWindowsLaunch } from './windows-launch-verdict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -553,6 +554,32 @@ function enginePath(): string {
   return p;
 }
 
+/**
+ * The Windows session the Core runs in. 0 is the non-interactive SERVICE
+ * session, which cannot create a window on the interactive desktop (Session 0
+ * isolation) — the reason a launch can silently produce nothing.
+ *
+ * Memoized: a process never moves between Windows sessions. PowerShell is a
+ * child of Core and inherits its session, which is how the engine derives it too.
+ */
+let coreWinSession: number | null | undefined;
+export async function getCoreWindowsSessionId(): Promise<number | null> {
+  if (coreWinSession !== undefined) return coreWinSession;
+  if (!IS_WINDOWS) { coreWinSession = null; return null; }
+  coreWinSession = await new Promise<number | null>((resolve) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-Command', '(Get-Process -Id $PID).SessionId'],
+      { timeout: 8000, windowsHide: true } as any,
+      (_err: any, stdout: string) => {
+        const n = parseInt(String(stdout || '').trim(), 10);
+        resolve(Number.isInteger(n) ? n : null);
+      },
+    );
+  });
+  return coreWinSession;
+}
+
 function runEngine(args: string[], timeoutMs = 25000): Promise<any> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -746,19 +773,36 @@ export async function launchWindow(opts: {
   spawnTerminal({ cwd, command: opts.command, mode });
   const deadline = Date.now() + (opts.waitMs ?? 9000);
   let tabRid: string | null = null;
+  // Track whether the tab set moved AT ALL, separately from whether we could
+  // pin down exactly one new tab: >1 new tab is ambiguous but still proves the
+  // launch worked, while 0 new tabs means nothing was created.
+  let tabAppeared = false;
   while (Date.now() < deadline && !tabRid) {
     await sleep(500);
     const neu = (await listTabIds()).filter((t) => !beforeRids.has(t.rid));
+    if (neu.length > 0) tabAppeared = true;
     if (neu.length === 1) tabRid = neu[0].rid;
     else if (neu.length > 1) break; // ambiguous (concurrent launches)
   }
+  // `launched` is decided by what was OBSERVED — never hardcoded. A Session 0
+  // Core cannot create a window on the interactive desktop, and the caller has
+  // to be told that rather than handed a success.
+  const verdict = describeWindowsLaunch({
+    sessionRegistered: tabAppeared, // no Claude notion here — a tab IS the deliverable
+    tabAppeared,
+    processAppeared: false,
+    coreSessionId: await getCoreWindowsSessionId(),
+    desktopSessionId: null,
+  });
   return {
-    launched: true,
+    launched: verdict.launched,
     tabRid,
     mode,
     cwd,
     command: opts.command,
-    note: tabRid ? undefined : 'launched, but could not isolate the new tab (concurrent launches?)',
+    note: verdict.launched && !tabRid
+      ? 'launched, but could not isolate the new tab (concurrent launches?)'
+      : verdict.note,
   };
 }
 
