@@ -12,6 +12,48 @@ import { listConversations, readConversation } from '../../utils/claudeai-sessio
 
 export { listClaudeaiConversationsToolDef } from './definitions';
 
+/**
+ * `claudeaiGet` resolves to the ClaudeAIResponse ENVELOPE
+ * ({status, statusText, headers, body}) — the payload is `.body`. Both helpers used
+ * here return that envelope untouched, and both are typed loosely enough
+ * (`Promise<unknown>` / `any`) that the compiler never objected.
+ *
+ * Missing this made `list_claudeai_conversations` fail 100% of the time on a
+ * PERFECTLY HEALTHY cookie: claude.ai answered `200 OK` with the real list at
+ * `body.data`, this file looked for `resp.data`, found nothing, and reported
+ * "Unexpected response shape from claude.ai." — a message that reads like claude.ai
+ * changed its API when nothing was wrong at all. Verified on prod 117 (2026-07-28).
+ * `read-conversation.ts` had already been fixed for exactly this; this file was missed.
+ */
+function payloadOf(resp: unknown): unknown {
+  return resp && typeof resp === 'object' && 'body' in (resp as Record<string, unknown>)
+    ? (resp as Record<string, unknown>).body
+    : resp;
+}
+
+/** HTTP status of the envelope, or 0 when the caller handed us a bare payload. */
+function statusOf(resp: unknown): number {
+  const s = resp && typeof resp === 'object' ? (resp as Record<string, unknown>).status : undefined;
+  return typeof s === 'number' ? s : 0;
+}
+
+/**
+ * Map an upstream status onto the SAME coarse reason vocabulary `probeClaudeAISession`
+ * uses (ok / session_expired / cloudflare_blocked / network_error / upstream_error), so a
+ * failure names a cause and an action instead of a bare sentence. A caller that only sees
+ * "MCP tool call failed" cannot tell "log in again" from "claude.ai is down" from "this is
+ * the wrong node" — and will usually go read the wrong store instead.
+ */
+function describeFailure(status: number, statusText: string): string {
+  if (status === 401) {
+    return 'session_expired — the claude.ai cookie is no longer valid. Fix: claudeai_login(which="cookie") on the node holding it.';
+  }
+  if (status === 403 || status === 503) {
+    return 'cloudflare_blocked — Cloudflare rejected the request (cf_clearance/__cf_bm expired, or the source IP changed since capture). The cookie is IP-PINNED: run this on the node that captured it, or refresh from a browser on that machine.';
+  }
+  return `upstream_error — claude.ai responded ${status}${statusText ? ` ${statusText}` : ''}.`;
+}
+
 function fmtRelative(iso: string | undefined): string {
   if (!iso) return '?';
   const ms = new Date(iso).getTime();
@@ -48,8 +90,9 @@ async function tailMessages(uuid: string, n: number, charLimit: number): Promise
       tree: true,
       renderingMode: 'messages',
       renderAllTools: true,
-    })) as unknown as Record<string, unknown>;
-    const msgs = (resp.chat_messages || []) as Array<Record<string, unknown>>;
+    })) as unknown;
+    const conv = (payloadOf(resp) || {}) as Record<string, unknown>;
+    const msgs = (conv.chat_messages || []) as Array<Record<string, unknown>>;
     const tail = msgs.slice(-n);
     return tail.map((m) => {
       const sender = String(m.sender || '?');
@@ -116,6 +159,14 @@ export async function handleListClaudeaiConversations(args: Record<string, unkno
       };
     }
     return { content: [{ type: 'text', text: `Error: ${msg}` }], isError: true };
+  }
+
+  const status = statusOf(resp);
+  if (status !== 0 && status !== 200) {
+    return {
+      content: [{ type: 'text', text: describeFailure(status, String((resp as { statusText?: string })?.statusText ?? '')) }],
+      isError: true,
+    };
   }
 
   const list = extractConversationRows(resp);

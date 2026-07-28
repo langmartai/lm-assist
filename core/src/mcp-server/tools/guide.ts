@@ -22,7 +22,7 @@ const GUIDES: Record<string, string> = {
   orientation: `# Guide: orientation — what lm-assist is + how it works WITH your CLAUDE.md / memory / skills
 WHAT IT IS: your bridge to context and actions BEYOND this conversation and machine. Through this ONE connector you reach, across ALL the user's connected hosts ("nodes"):
 - PROJECTS — every Claude Code project on each host (list_projects, list_recent_sessions).
-- SESSIONS — conversation history + live/finished runs on any host (list_session_messages, session_dag, list_executions, get_execution).
+- SESSIONS — Claude Code transcript history + live/finished runs on any host (list_session_messages, session_dag, list_executions, get_execution). NOTE the word: these are SESSIONS. A "conversation" is always a claude.ai chat — see guide("speaking").
 - MEMORY — saved memory, incl. OTHER machines: search_memory across projects; memory_map/memory_record to browse+read; memory_write to create/update/delete (hash-guarded); memory_cross_host / memory_import_candidates for peer hosts.
 - NODES — the machines themselves: run agents, drive terminals, move files, query a shared data service on any of them (list_nodes -> node=<host>).
 Plus a structured cross-node DATA service (cache/vector/sql), remote AGENTS, TERMINAL driving, file transfer, claude.ai, GitHub.
@@ -51,7 +51,19 @@ flowchart LR
   Y --> C["combine: local guides the how, lm-assist acts beyond this machine"]
 \`\`\``,
 
-  speaking: `# Guide: speaking — name things; never read ids aloud
+  speaking: `# Guide: words — what the USER's words mean, and how to name things back
+Two halves: (1) the VOCABULARY the user speaks in — get this wrong and you read the wrong STORE; (2) how you refer to things when you answer.
+
+## 1. VOCABULARY — "conversation" and "session" are NOT interchangeable
+🔴 **"conversation" = a claude.ai conversation. ALWAYS.** Nothing else is a conversation — not a Claude Code run, not a CCR run, not a transcript.
+🔴 **"session" = a Claude Code / CCR run — cloud OR local.** Both are sessions.
+
+**When the user does NOT qualify it — "the conversation", "the most recent one", "that chat" — read the claude.ai store FIRST:** \`list_claudeai_conversations\` → \`read_conversation(uuid)\`. Do NOT reach for \`list_recent_sessions\`: that lists Claude Code sessions on a host — a DIFFERENT store, a different uuid space.
+Reach for \`list_recent_sessions\` / \`cc_sessions\` / \`session_footprints\` only when the user actually said SESSION, or named a repo, branch, terminal, or host.
+
+MEASURED FAILURE (2026-07-28): asked for "the most recent conversation", a session called \`list_recent_sessions\` — local Claude Code sessions only — missed the claude.ai conversation the user meant, and reported the wrong thing TWICE. The tool descriptions ALREADY said "different store, different verb" and it still happened: that wording only helps someone who has already decided which store they want. THIS rule is the default for when the user did not say.
+
+## 2. NAMING — never read ids aloud
 Almost every lm-assist tool returns IDS: \`bl_2ec8bf24\`, \`mission_38836df5\`, \`cse_01T4vuRj…\`, session uuids, \`gw4-332c…\`. They are HANDLES FOR TOOLS — the argument you pass back to the next call. They are not names, and they carry no meaning for the user.
 
 RULE — identify a session / mission / backlog item / node by its NAME and WHAT IT IS ABOUT.
@@ -64,7 +76,7 @@ RULE — identify a session / mission / backlog item / node by its NAME and WHAT
 
 No name available? Say what it is ABOUT, from whatever the row carries: its title, its cwd/repo, its branch, its task, its model, or how recently it ran — "the session working in the lm-assist worktree", "the one that started twenty minutes ago". Falling back to the id is the last resort, not the default.
 
-This applies to EVERY surface where output reaches a person: lists, summaries, status reports, spoken replies. It is a presentation rule, not a data rule — keep passing ids to tools exactly as before.`,
+This applies to EVERY surface where output reaches a person: lists, summaries, status reports, spoken replies. §2 is a presentation rule, not a data rule — keep passing ids to tools exactly as before. §1 is the opposite: it decides which TOOL you call, before any output exists.`,
 
   'cross-node': `# Guide: single-node vs cross-node (READ THIS for multi-machine)
 MODEL: each host behind this connector is a "node". \`list_nodes\` → hostId, hostname, platform, online, and which is DEFAULT. EVERY tool takes an optional \`node\` (hostId or hostname).
@@ -245,10 +257,11 @@ flowchart LR
 
   sessions: `# Guide: investigate a Claude Code session
 GOAL: understand what happened in a past/running Claude Code run.
+🔴 WRONG STORE CHECK: everything here is a SESSION (a Claude Code / CCR run). If the user said "conversation" / "chat" / "the most recent one" with no repo, branch, host or terminal named, they mean a claude.ai conversation — go to guide("claude-ai") and start with \`list_claudeai_conversations\`, not \`list_recent_sessions\`.
 
 SINGLE-NODE
 1. \`list_recent_sessions\` → recent sessions (id, project, time, status). \`list_projects\` for the project list.
-2. \`list_session_messages(id, ...)\` → conversation (user prompts, tool uses, responses); slice with from/to indices.
+2. \`list_session_messages(id, ...)\` → the session transcript (user prompts, tool uses, responses); slice with from/to indices.
 3. \`session_dag(id)\` → fork/branch structure. Drill in: \`session_dag(id, message=<uuid>, view="ancestry"|"subtree")\`. Stat-fresh from disk.
 4. \`list_executions\` / \`get_execution(id)\` → live/finished agent runs (status, turns, cost, result).
 5. Find sessions by CONTENT → \`search\` (guide "knowledge").
@@ -437,6 +450,7 @@ WHAT BELONGS IN A PROFILE: only what Core CANNOT observe. Online status, platfor
   'claude-ai': `# Guide: claude.ai web account + this connector's tools
 🔴 THESE TOOLS ONLY WORK ON A NODE HOLDING THE COOKIE, and the cookie is IP-PINNED — it cannot be copied between machines. Picking the wrong node fails as a 401/HTML, not as "wrong node". Ask before you call: \`node_select({need:["claudeai-cookie"]})\`, and when you learn which node holds it (or loses it), record that with \`node_profile\` — see guide("nodes"). Different nodes may hold cookies for DIFFERENT accounts, so the node you choose implicitly chooses the ACCOUNT.
 Read/operate the user's claude.ai:
+🔴 THIS is what "conversation" means — always. An unqualified "the conversation" / "the most recent one" / "that chat" starts HERE, not at \`list_recent_sessions\` (that is Claude Code sessions — a different store). See guide("speaking").
 • \`list_claudeai_conversations\` → recent; \`read_conversation(uuid)\` → full message tree.
 • \`claudeai_create_conversation\` / \`claudeai_completion(uuid, prompt)\` → start / send (drains the SSE, returns text). \`delete_conversation\`.
 • \`rename_conversation(title, conversation_uuid?)\` → set a chat's title. PASS THE UUID when you know it: an MCP call carries no claude.ai conversation id, so omitting it falls back to the most-recently-updated chat (a guess). The result reports \`resolution\` + \`previousName\` — rename back with previousName if it hit the wrong chat.
@@ -741,6 +755,12 @@ PLATFORM-SIDE STATUS + SCREENSHOTS: the Core heartbeats each page's serving stat
 const ALIASES: Record<string, string> = {
   index: 'index', help: 'index', list: 'index', topics: 'index', 'getting-started': 'index', overview: 'index',
   speaking: 'speaking', speak: 'speaking', voice: 'speaking', spoken: 'speaking', naming: 'speaking', names: 'speaking', 'read-aloud': 'speaking', tts: 'speaking', ids: 'speaking', identifiers: 'speaking',
+  // The vocabulary rule (conversation vs session) lives in `speaking` — route the words
+  // someone reaches for when they are UNSURE which store a term names.
+  vocabulary: 'speaking', vocab: 'speaking', terminology: 'speaking', glossary: 'speaking', wording: 'speaking', words: 'speaking', 'what-does-x-mean': 'speaking',
+  // "conversation"/"chat" resolve to the claude.ai playbook — which is itself the answer to
+  // the question, and carries a pointer back to the full rule.
+  conversation: 'claude-ai', conversations: 'claude-ai', chat: 'claude-ai', chats: 'claude-ai',
   orientation: 'orientation', start: 'orientation', about: 'orientation', priorities: 'orientation', priority: 'orientation', prioritize: 'orientation', 'when-to-use': 'orientation', 'when to use': 'orientation', 'claude.md': 'orientation', claudemd: 'orientation', skills: 'orientation',
   'cross node': 'cross-node', crossnode: 'cross-node', 'multi-node': 'cross-node', multinode: 'cross-node', 'multi node': 'cross-node', fleet: 'cross-node',
   'access-paths': 'access-paths', 'access path': 'access-paths', 'access paths': 'access-paths', accesspaths: 'access-paths', routing: 'access-paths', route: 'access-paths', failover: 'access-paths', fallback: 'access-paths', 'fall-back': 'access-paths', 'circuit-breaker': 'access-paths', retry: 'access-paths', 'best-path': 'access-paths', reach: 'access-paths', ssh: 'access-paths', transport: 'access-paths', 'multiple-paths': 'access-paths',
@@ -772,7 +792,7 @@ for (const [topic, tools] of Object.entries(TOPIC_TOOLS)) for (const t of tools)
 
 const BLURB: Record<string, string> = {
   orientation: 'what lm-assist IS + how it WORKS WITH (complements, not replaces) your local CLAUDE.md / memory / skills (READ FIRST)',
-  speaking: 'how to REFER to sessions/missions/items when talking to the user — name + what it is about; ids are tool handles, and in VOICE you never read them aloud',
+  speaking: 'VOCABULARY + naming — "conversation" ALWAYS means claude.ai (read it FIRST when unqualified, not `list_recent_sessions`), "session" means a Claude Code/CCR run; plus how to REFER to things back to the user (name, not id; never read an id aloud in VOICE)',
   'cross-node': 'single-node vs cross-node model — node targeting, per-node keys, sync, local-only (READ for multi-machine)',
   connectors: 'which FLEET this connector serves (hub + node + cluster) + multi-connector disambiguation — read if you have more than one lm-assist connector',
   'access-paths': 'MANY ways reach the SAME resource (local bash / ssh / connector node / terminal) — how to pick best, fail over when one is down, and revisit when it recovers',
@@ -800,8 +820,18 @@ const BLURB: Record<string, string> = {
   'machine-access': 'how to reach OTHER machines FROM a node — node-local SSH profiles (user/host/key-path/notes) via machine_access, with ssh-config import + reachability check; run the reported command ON that node, wrap it in `bash -lc`, and never read an EMPTY registry as "no route"',
 };
 
-/** Separator line used between sections in the bootstrap output (reused by the auth block). */
-const sep = '\n\n' + '─'.repeat(64) + '\n\n';
+/** Separator line used between sections in the bootstrap output (reused by the auth block).
+ *
+ *  A plain markdown rule, NOT a box-drawing run. `'─'.repeat(64)` looks free and is not:
+ *  `─` is THREE bytes in UTF-8, so each separator cost 196 B and the 23 of them cost
+ *  4,508 B — 6.9% of the whole bootstrap, spent entirely on decoration. That mattered
+ *  because bootstrap was over the enforced 64 KiB result cap and was being CUT: measured
+ *  on prod 117 (v0.1.135) the tool returned `⚠ 66.0KB→63.2KB TRUNCATED`, slicing
+ *  mid-sentence through guide("clusters") and dropping the SCOPE NORM, the auth block and
+ *  the cluster block from EVERY session's onboarding — silently, since a truncated
+ *  bootstrap still reads like a complete one. `---` is 7 B, reclaims 4,347 B, and is the
+ *  canonical markdown horizontal rule for the model actually reading this. */
+const sep = '\n\n---\n\n';
 
 // ── Content registry seam (assist-content design §4) ────────────────────────
 // Every unit of PROSE below is overridable through the fleet `assist-content-registry`
@@ -836,6 +866,7 @@ export const INDEX_PREAMBLE_DEFAULT = [
   'You are connected to lm-assist over the lm-assist MCP connector. These tools operate on Claude Code sessions, a structured data service, remote agents, terminals, and claude.ai — across one or more machines ("nodes"). Call `bootstrap` (no args) ONCE to load EVERY use case into this session; or `guide(topic=...)` for a single copy-pasteable recipe (a tool name works too, e.g. guide(topic="data_get")). New here? read `orientation` (what this is + how it works WITH — complements — your local CLAUDE.md/memory/skills), then `cross-node` and `workflows`.',
   '',
   '## Golden rules (ALL tools)',
+  '- **Words:** "conversation" ALWAYS = a claude.ai conversation; "session" = a Claude Code / CCR run (cloud or local). Unqualified ("the conversation", "the most recent one") → `list_claudeai_conversations` FIRST, NOT `list_recent_sessions`. See guide("speaking").',
   '- **Node targeting:** every tool takes an optional `node` (hostId or hostname). Omit it for the DEFAULT host (single-node, the common case). Pass it to act on another machine; call `list_nodes` when the user means "my server"/"the other machine". Management ops (data create/drop/sync/keys, raw SQL) are LOCAL-ONLY — not over this connector. See guide("cross-node").',
   '- **Cloud data reads need a key:** `data_request_access` first — on the SAME node you will read (keys are per-node). See guide("data").',
   '- **Big results are paged/summarized** by default — drill in with the documented params (field/grep/lines, from/to indices) instead of asking for everything.',
@@ -870,6 +901,8 @@ export const BOOTSTRAP_SECTION_ORDER: readonly string[] = ['orientation', 'speak
 /** The bootstrap preamble — content doc `bootstrap.header`. */
 export const BOOTSTRAP_HEADER_DEFAULT = [
   '# lm-assist — capability bootstrap (loading ALL use cases for this session)',
+  '',
+  '🔴 WORDS FIRST: **"conversation" ALWAYS means a claude.ai conversation**; **"session" means a Claude Code / CCR run (cloud or local)**. Unqualified — "the conversation", "the most recent one" — read claude.ai FIRST with `list_claudeai_conversations`, NOT `list_recent_sessions`. Full rule + the measured failure: guide("speaking").',
   '',
   'You called `bootstrap`. The COMPLETE set of lm-assist use-case playbooks is delivered here, but it is larger than one MCP result may be, so it is PAGED: this is page 1, it carries the MANIFEST (every topic + which page it is on) plus the first run of full playbooks, and the footer tells you the exact call for the next page. Read the manifest and pull the remaining pages with `bootstrap(page=N)` — or jump straight to any single topic with `guide(topic=...)` (a tool name works too). Following the pages loses nothing; nothing is truncated. lm-assist COMPLEMENTS your local CLAUDE.md / memory / skills (it does NOT replace them; they work together — see ORIENTATION).',
   '',
