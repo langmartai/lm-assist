@@ -57,7 +57,7 @@ function Do-Build {
   Info 'Building Core (TypeScript)...'
   Push-Location $Root
   try {
-    & npm run build:core
+    & npm run build:core | Out-Host
     if ($LASTEXITCODE -ne 0) { Err 'build failed'; return $false }
     Ok 'Core built.'
     return $true
@@ -127,7 +127,7 @@ function Do-Deploy {
   Info "Installing $tgz via lm-assist upgrade --from ..."
   $cli = Get-Command lm-assist -ErrorAction SilentlyContinue
   if (-not $cli) { Err "lm-assist CLI not on PATH - install once with: npm install -g `"$tgz`""; return $false }
-  & lm-assist upgrade --from $tgz
+  & lm-assist upgrade --from $tgz | Out-Host
   if ($LASTEXITCODE -ne 0) { Err 'upgrade failed'; return $false }
 
   # --- verify ------------------------------------------------------------
@@ -155,10 +155,15 @@ function Do-Deploy {
   return $false
 }
 
+# Take only the LAST value a function emits. PowerShell returns every uncaptured
+# object, so a stray Write-Output or command stdout would otherwise be read as the
+# result - which made a failed deploy exit 0 on 2026-07-28.
+function Last($v) { if ($v -is [array]) { return $v[-1] } return $v }
+
 switch ($Command.ToLower()) {
-  'build'  { if (Do-Build) { exit 0 } else { exit 1 } }
-  'pack'   { if (Do-Pack)  { exit 0 } else { exit 1 } }
-  'deploy' { if (Do-Deploy) { exit 0 } else { exit 1 } }
+  'build'  { if (Last(Do-Build)) { exit 0 } else { exit 1 } }
+  'pack'   { if (Last(Do-Pack))  { exit 0 } else { exit 1 } }
+  'deploy' { if (Last(Do-Deploy)) { exit 0 } else { exit 1 } }
   'status' { & lm-assist status; exit $LASTEXITCODE }
   default  {
     Write-Host ''
