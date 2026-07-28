@@ -43,12 +43,16 @@ import { EXPANDED_HANDLERS } from './tools/expanded';
 import { isPluginToolName } from './plugins/model';
 import { createHttpExtToolProvider, callPluginViaCore } from './plugins/ext-http';
 import { createHttpOverlayProvider } from './registry/overlay-http';
+import { startToolsChangeWatcher } from './tools-change-watcher';
 
 // ─── Server Setup ──────────────────────────────────────────────────
 
 const server = new Server(
   { name: mcpServerName(), version: '2.0.0' },
-  { capabilities: { tools: {} }, instructions: getLmAssistInstructions() }
+  // tools.listChanged is a PROMISE: it is declared only because
+  // startToolsChangeWatcher() below actually sends the notification. Advertising
+  // a capability we do not honour would leave clients trusting a stale list.
+  { capabilities: { tools: { listChanged: true } }, instructions: getLmAssistInstructions() }
 );
 
 /** Distinct server name per environment so the two connectors read apart. */
@@ -97,6 +101,10 @@ async function main(): Promise<void> {
   ensureCoreApi().catch(err => {
     console.error('[MCP] Failed to ensure core API:', err);
   });
+
+  // Core mutates the tool set (registry overlay, plugin sync) in ANOTHER process
+  // and cannot reach this client. Poll its rev stamp and forward the change.
+  startToolsChangeWatcher(() => server.sendToolListChanged());
 
   console.error('[MCP] lm-assist server started (v2 — HTTP client mode)');
 }

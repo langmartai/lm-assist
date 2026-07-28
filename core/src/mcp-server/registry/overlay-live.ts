@@ -6,6 +6,7 @@ import type { ToolRegistryDoc } from './model';
 import { overlayFromDocs, type OverlayProvider, type ToolOverlay } from './overlay';
 import { listToolDocs } from './store';
 import { peekDataService } from '../../data/data-service';
+import { bumpToolsRev } from './tools-rev';
 
 export interface LiveOverlayProvider extends OverlayProvider {
   invalidate(): void;
@@ -21,6 +22,20 @@ function listDocsIfServiceUp(): Promise<ToolRegistryDoc[]> {
   const svc = peekDataService();
   if (!svc || !svc.isEnabled()) return Promise.resolve([]);
   return listToolDocs();
+}
+
+/**
+ * A stable fingerprint of an overlay, for "did this actually change?".
+ *
+ * Key-sorted so map iteration order can never manufacture a change — a false
+ * positive here means every poll tells clients to re-fetch.
+ */
+export function overlayDigest(overlay: ToolOverlay | null): string {
+  if (!overlay) return 'null';
+  const byName = (overlay as { byName?: Record<string, unknown> }).byName ?? overlay;
+  const entries = Object.entries(byName as Record<string, unknown>)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return JSON.stringify(entries);
 }
 
 export function createLiveOverlayProvider(opts?: {
@@ -59,6 +74,9 @@ export function sharedLiveOverlay(): LiveOverlayProvider {
 /** Called by the /mcp-tools write routes after a local write lands. */
 export function invalidateOverlayCache(): void {
   shared.invalidate();
+  // The MCP server is a separate process and cannot see this. Move the rev so its
+  // poller can tell connected clients their tool list is stale.
+  bumpToolsRev();
 }
 
 /** Test-only seam: swap the shared instance (restore it in a finally). */

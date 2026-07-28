@@ -18,6 +18,9 @@ import {
 import { getToolCatalog, handlerSourceFor, CATEGORY_ORDER, type ToolCatalogEntry } from '../../mcp-server/registry/catalog';
 import { overlayFromDocs } from '../../mcp-server/registry/overlay';
 import { invalidateOverlayCache } from '../../mcp-server/registry/overlay-live';
+import { currentToolsRev } from '../../mcp-server/registry/tools-rev';
+import { sharedLiveOverlay, overlayDigest } from '../../mcp-server/registry/overlay-live';
+import { createHash } from 'crypto';
 import type { ToolRegistryDoc } from '../../mcp-server/registry/model';
 import { coarseActor, type MissionActor } from '../../mission/mission-model';
 import { thisNode } from '../../mission/mission-store';
@@ -61,6 +64,26 @@ function toolRow(e: ToolCatalogEntry, doc: ToolRegistryDoc | null) {
     hasOverride: doc?.descriptionOverride != null,
     ...(doc ? { rev: doc.rev, lastUpdatedBy: doc.lastUpdatedBy, updatedAt: doc.updatedAt } : {}),
   };
+}
+
+/**
+ * The staleness stamp: this process's counter PLUS a digest of the effective
+ * overlay.
+ *
+ * The counter alone is not enough. Registry writes are ORIGIN-anchored, so a
+ * write lands on the origin node and reaches every other node by SYNC — a
+ * replica's tools/list changes with no local write to bump anything, and its
+ * clients would never be told. Measured on stage: a write proxied to the origin
+ * left this node's rev untouched through the whole change.
+ *
+ * Reads through the TTL-cached live provider, so polling it is cheap.
+ */
+export async function composedToolsRev(): Promise<string> {
+  let digest = 'na';
+  try {
+    digest = createHash('sha1').update(overlayDigest(await sharedLiveOverlay().get())).digest('hex').slice(0, 8);
+  } catch { /* fail-open: the counter still tracks local writes */ }
+  return `${currentToolsRev()}.${digest}`;
 }
 
 export async function handleToolList(port?: ToolRegistryPort): Promise<Envelope> {
@@ -189,6 +212,10 @@ export function createMcpToolsRoutes(_ctx: RouteContext): RouteHandler[] {
     // literals MUST precede the /:name patterns
     { method: 'GET', pattern: /^\/mcp-tools$/, handler: wrapped(() => handleToolList()) },
     { method: 'GET', pattern: /^\/mcp-tools\/overlay$/, handler: wrapped(() => handleToolOverlay()) },
+    // The staleness stamp the (separate-process) MCP servers poll. Deliberately
+    // trivial — an in-memory counter, no store access — because every connected
+    // MCP process hits it on an interval.
+    { method: 'GET', pattern: /^\/mcp-tools\/rev$/, handler: wrapped(async () => ok({ rev: await composedToolsRev() })) },
     { method: 'GET', pattern: /^\/mcp-tools\/(?<name>[^/]+)\/history$/, handler: wrapped((req) => handleToolHistory(req.params.name, req.query ?? {})) },
     { method: 'POST', pattern: /^\/mcp-tools\/(?<name>[^/]+)\/rollback$/, handler: wrapped((req) => handleToolRollback(req.params.name, (req.body || {}) as Record<string, unknown>, undefined, undefined, realToolOriginAnchor())) },
     { method: 'GET', pattern: /^\/mcp-tools\/(?<name>[^/]+)$/, handler: wrapped((req) => handleToolGet(req.params.name)) },

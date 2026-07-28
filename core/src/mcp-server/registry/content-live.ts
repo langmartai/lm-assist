@@ -8,6 +8,7 @@ import type { ContentState } from './content-model';
 import type { ContentDoc } from './content-model';
 import { listContentDocs } from './content-store';
 import { peekDataService } from '../../data/data-service';
+import { bumpToolsRev } from './tools-rev';
 
 /** Default doc source: read the registry ONLY when the data service is already up
  *  (peek — never construct); see overlay-live.ts for the full rationale. guide/
@@ -64,6 +65,9 @@ export function sharedContentOverlay(): ContentOverlayProvider {
 /** Called by the /assist-content write routes after a local write lands. */
 export function invalidateContentOverlayCache(): void {
   shared.invalidate();
+  // Content overrides rewrite tool DESCRIPTIONS, so tools/list would answer
+  // differently — same staleness problem as the tool overlay.
+  bumpToolsRev();
 }
 
 /** Test-only seam: swap the shared instance (restore it in a finally). */

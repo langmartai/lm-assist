@@ -88,7 +88,7 @@ mod('browser-task.ts', 'agent', ['browser_task']);
 mod('expanded.ts', 'terminal', [
   'terminal_list', 'terminal_capture', 'terminal_prompt', 'terminal_slash', 'terminal_interrupt', 'terminal_open_tab',
   'windows_terminal_list', 'windows_terminal_capture', 'windows_terminal_state', 'windows_terminal_launch',
-  'windows_terminal_create', 'windows_terminal_send', 'windows_terminal_auto_handle', 'windows_terminal_close',
+  'windows_terminal_create', 'windows_terminal_send', 'windows_terminal_restart', 'windows_terminal_auto_handle', 'windows_terminal_close',
 ]);
 // --- memory + rules ---
 mod('search-memory.ts', 'memory', ['search_memory']);
