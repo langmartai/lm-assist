@@ -280,6 +280,96 @@ build_project() {
     fi
 }
 
+# Function to deploy THIS checkout to the local prod install: pack -> install -> verify.
+#
+# The one-command path for "sync git to main, then deploy". It exists because the
+# two-step version (pack, then install the printed path by hand) is how a deploy
+# silently ships the wrong thing: a `core/dist`-only sync on 2026-07-28 missed
+# `bin/lm-assist.js` entirely, and nothing noticed until the next audit. Packing
+# and installing the SAME artifact removes the step a human can get wrong.
+#
+# Refuses a dirty or behind-origin checkout by default: the whole point is that
+# what runs on the node equals what is on main. --allow-dirty when you are
+# deliberately testing local changes.
+deploy_local() {
+    local allow_dirty=0
+    for arg in "$@"; do
+        case "$arg" in
+            --allow-dirty|--force) allow_dirty=1 ;;
+        esac
+    done
+
+    cd "$PROJECT_ROOT" || return 1
+
+    echo -e "${BLUE}Deploying this checkout to the local prod install...${NC}"
+
+    # --- provenance gate -------------------------------------------------
+    if git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+        local branch head dirty behind
+        branch=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)
+        head=$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null)
+        dirty=$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+        git -C "$PROJECT_ROOT" fetch origin --quiet 2>/dev/null || true
+        behind=$(git -C "$PROJECT_ROOT" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+        echo -e "  source: ${BLUE}${branch}${NC} @ ${BLUE}${head}${NC}  (dirty=${dirty}, behind origin/main=${behind})"
+        if [ "$allow_dirty" -eq 0 ]; then
+            if [ "$dirty" != "0" ]; then
+                echo -e "${RED}Refusing: working tree has ${dirty} uncommitted file(s).${NC}"
+                echo -e "A deploy should be reproducible from git. Commit them, or pass ${BLUE}--allow-dirty${NC} to deploy local edits anyway."
+                return 1
+            fi
+            if [ "$behind" != "0" ]; then
+                echo -e "${RED}Refusing: this checkout is ${behind} commit(s) behind origin/main.${NC}"
+                echo -e "Run ${BLUE}git pull${NC} first, or pass ${BLUE}--allow-dirty${NC} to deploy anyway."
+                return 1
+            fi
+        elif [ "$dirty" != "0" ] || [ "$behind" != "0" ]; then
+            echo -e "${YELLOW}--allow-dirty: deploying a build that does NOT match origin/main.${NC}"
+        fi
+    else
+        echo -e "${YELLOW}Not a git checkout — deploying without a provenance check.${NC}"
+    fi
+
+    # --- pack ------------------------------------------------------------
+    pack_prod || return 1
+    local tgz
+    tgz=$(ls -1 "$PROJECT_ROOT"/lm-assist-*.tgz 2>/dev/null | head -1)
+    [ -z "$tgz" ] && { echo -e "${RED}No tarball to install.${NC}"; return 1; }
+
+    # --- install ---------------------------------------------------------
+    # `lm-assist upgrade --from` (not `npm i -g`): it also restarts services and
+    # records the install source, so `lm-assist version` can tell you what is
+    # actually running rather than what npm last published.
+    echo -e "${BLUE}Installing ${tgz} via lm-assist upgrade --from ...${NC}"
+    if ! command -v lm-assist >/dev/null 2>&1; then
+        echo -e "${RED}lm-assist CLI not found on PATH — install it once with: npm install -g \"$tgz\"${NC}"
+        return 1
+    fi
+    lm-assist upgrade --from "$tgz" || { echo -e "${RED}upgrade failed${NC}"; return 1; }
+
+    # --- verify ----------------------------------------------------------
+    # Deploying and reporting success without checking is the failure this whole
+    # command exists to remove.
+    echo -e "${BLUE}Verifying...${NC}"
+    local ok=1
+    local health
+    health=$(curl -sf "http://127.0.0.1:${PROD_API_PORT:-3100}/health" >/dev/null 2>&1 && echo OK || echo DOWN)
+    echo -e "  core health: ${health}"
+    [ "$health" = "OK" ] || ok=0
+    local installed
+    installed=$(node -e "try{console.log(require('$(npm root -g)/lm-assist/package.json').version)}catch(e){console.log('?')}" 2>/dev/null)
+    echo -e "  installed version: ${installed}"
+    if command -v tmux >/dev/null 2>&1; then
+        echo -e "  tmux sessions: $(tmux ls 2>&1 | head -3 | tr '\n' ' ')"
+    fi
+    if [ "$ok" -eq 1 ]; then
+        echo -e "${GREEN}Deployed and healthy.${NC}"
+        return 0
+    fi
+    echo -e "${RED}Deployed but Core is not healthy — check: lm-assist logs core${NC}"
+    return 1
+}
+
 # Function to produce a prebuilt prod tarball (the supported deploy artifact).
 #
 # `npm pack` runs the root `prepare` script (build:core + build:web) and emits
@@ -1388,6 +1478,9 @@ case "${1:-}" in
     pack)
         pack_prod
         ;;
+    deploy)
+        deploy_local "${@:2}"
+        ;;
     cleandata)
         clean_data "${@:2}"
         ;;
@@ -1452,6 +1545,8 @@ case "${1:-}" in
         echo "  status            Show all service status (dev + prod)"
         echo "  build             Build Core (TypeScript)"
         echo "  pack              Build a prebuilt prod tarball (lm-assist-<ver>.tgz) for deploy/upgrade"
+        echo "  deploy [--allow-dirty]  Pack THIS checkout and install it locally, then verify"
+        echo "                    (refuses a dirty or behind-origin/main tree by default)"
         echo "  cleandata [-y]    Stop services and delete all lm-assist data (~/.lm-assist)"
         echo "  test              Test API endpoints"
         echo "  logs [service]    View service logs"
