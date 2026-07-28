@@ -34,9 +34,15 @@ export interface WindowsStartFacts {
 }
 
 export interface WindowsStartVerdict {
-  /** refuse = do not start; warn = start, but say it will be undriveable. */
-  action: 'proceed' | 'refuse' | 'warn';
+  /**
+   * redirect = start it through the interactive task instead (self-correcting);
+   * refuse   = do not start, nothing better is available to redirect to;
+   * warn     = start anyway, but say it will not be able to drive.
+   */
+  action: 'proceed' | 'redirect' | 'refuse' | 'warn';
   message: string | null;
+  /** The task to redirect through. Set only with action 'redirect'. */
+  taskName?: string;
 }
 
 /**
@@ -55,17 +61,19 @@ export function planWindowsStart(f: WindowsStartFacts): WindowsStartVerdict {
 
   // From here: we are in session 0, the non-interactive service session.
   if (f.taskName && f.interactiveSessionId !== null) {
+    // REDIRECT rather than refuse. Session 0 can trigger a scheduled task, and the
+    // task's own principal decides where Core lands — so the fix can simply be
+    // APPLIED instead of printed. Telling someone to run a command we could run
+    // ourselves is a worse answer to the same problem.
     return {
-      action: 'refuse',
+      action: 'redirect',
+      taskName: f.taskName,
       message:
-        `lm-assist would start in Windows session 0 (the non-interactive service session) — `
-        + `Session 0 isolation means it could list sessions but never TYPE into them, create a `
-        + `terminal, or drive a mission worker, while still reporting healthy. `
-        + `An interactive desktop session (${f.interactiveSessionId}) is available and the `
-        + `"${f.taskName}" scheduled task exists to use it. Start with:\n`
-        + `    schtasks /run /tn ${f.taskName}\n`
-        + `(This is the Windows counterpart of refusing to start when systemd owns the unit. `
-        + `Starting over SSH is the usual way to land here — OpenSSH runs in session 0.)`,
+        `starting through "${f.taskName}" so Core lands in the interactive desktop session `
+        + `(${f.interactiveSessionId}). A direct start here would be in Windows session 0, where `
+        + `Session 0 isolation lets it list sessions but never TYPE into them, create a terminal, `
+        + `or drive a mission worker — while still reporting healthy. `
+        + `(Starting over SSH is the usual way to land in session 0 — OpenSSH runs there.)`,
     };
   }
 
@@ -107,5 +115,39 @@ export function windowsDriveHealth(f: WindowsStartFacts): { driveable: boolean; 
       `Core is running in Windows session 0 (service session); interactive sessions live in `
       + `session ${f.interactiveSessionId ?? '<none>'}. Session 0 isolation blocks typing, terminal `
       + `creation and mission-worker driving. Restart via "${f.taskName ?? INTERACTIVE_TASK}".`,
+  };
+}
+
+/**
+ * Did the redirect actually work?
+ *
+ * Firing the task and reporting success would be the same false-confidence bug
+ * this branch has fixed four times over. The only acceptable evidence is a Core
+ * that answers AND is demonstrably out of session 0.
+ */
+export function describeRedirectOutcome(
+  healthy: boolean, coreSession: number | null, taskName: string,
+): { success: boolean; message: string } {
+  if (!healthy) {
+    return {
+      success: false,
+      message:
+        `started "${taskName}" but Core did not come up. Run it by hand to see why:\n`
+        + `    schtasks /run /tn ${taskName}\n`
+        + `then check: lm-assist status`,
+    };
+  }
+  if (coreSession === 0) {
+    return {
+      success: false,
+      message:
+        `"${taskName}" ran and Core is healthy, but it is STILL in Windows session 0 — it cannot `
+        + `drive sessions. Check the task's principal: it needs LogonType=Interactive so it uses `
+        + `the logged-on user's session.`,
+    };
+  }
+  return {
+    success: true,
+    message: `Core API started via "${taskName}" in Windows session ${coreSession ?? '?'} (driveable)`,
   };
 }

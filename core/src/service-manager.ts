@@ -12,7 +12,7 @@ import * as net from 'net';
 import * as os from 'os';
 import { rotateNow } from './utils/log-rotate';
 import { readTmuxServerPid, describeTmuxServerChange, type TmuxServerChange } from './terminal/tmux-server-guard';
-import { planWindowsStart, windowsDriveHealth, INTERACTIVE_TASK, type WindowsStartFacts } from './windows-session-guard';
+import { planWindowsStart, windowsDriveHealth, describeRedirectOutcome, INTERACTIVE_TASK, type WindowsStartFacts } from './windows-session-guard';
 
 // ─── Paths ──────────────────────────────────────────────────
 
@@ -503,6 +503,31 @@ function spawnDetachedWin32(
 
 // ─── Start Functions ──────────────────────────────────────────────────
 
+/**
+ * Start Core through the interactive scheduled task, then PROVE where it landed.
+ *
+ * Session 0 can trigger a task, and the task's principal decides the session — so
+ * an SSH `lm-assist start` can self-correct instead of just printing advice.
+ * The verification is the point: `schtasks` returning SUCCESS only means the task
+ * was triggered, never that Core came up, and certainly not that it came up
+ * somewhere it can drive from.
+ */
+async function startCoreViaInteractiveTask(
+  plan: { taskName?: string; message: string | null }, apiPort: number,
+): Promise<{ success: boolean; message: string }> {
+  const task = plan.taskName ?? INTERACTIVE_TASK;
+  if (plan.message) console.log(`  ${plan.message}`);
+  try {
+    execFileSync('schtasks', ['/run', '/tn', task],
+      { encoding: 'utf8', timeout: 15_000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+  } catch (e) {
+    return { success: false, message: `could not trigger "${task}": ${(e as Error).message}. Run \`schtasks /run /tn ${task}\` manually.` };
+  }
+  const healthy = await waitForHealth(apiPort, 60_000);
+  const livePid = healthy ? await pidOnPort(apiPort) : null;
+  return describeRedirectOutcome(healthy, livePid ? windowsSessionOfPid(livePid) : null, task);
+}
+
 export async function startCore(config?: ServiceConfig): Promise<{ success: boolean; message: string }> {
   const { apiPort, projectPath } = getConfig(config);
 
@@ -521,6 +546,7 @@ export async function startCore(config?: ServiceConfig): Promise<{ success: bool
   // The Windows counterpart. Its failure mode is the opposite of the systemd one:
   // nothing crashes, Core just silently cannot drive anything (Session 0 isolation).
   const winPlan = planWindowsStart(windowsStartFacts());
+  if (winPlan.action === 'redirect') return await startCoreViaInteractiveTask(winPlan, apiPort);
   if (winPlan.action === 'refuse') return { success: false, message: winPlan.message! };
   if (winPlan.action === 'warn') console.warn(winPlan.message);
   // Port held by some other (non-systemd) instance - don't spawn a duplicate.

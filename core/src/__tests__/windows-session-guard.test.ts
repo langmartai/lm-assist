@@ -11,7 +11,7 @@
 
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { planWindowsStart, windowsDriveHealth, INTERACTIVE_TASK, type WindowsStartFacts } from '../windows-session-guard';
+import { planWindowsStart, windowsDriveHealth, describeRedirectOutcome, INTERACTIVE_TASK, type WindowsStartFacts } from '../windows-session-guard';
 
 function facts(over: Partial<WindowsStartFacts> = {}): WindowsStartFacts {
   return { isWindows: true, mySessionId: 0, interactiveSessionId: 1, taskName: INTERACTIVE_TASK, ...over };
@@ -19,23 +19,20 @@ function facts(over: Partial<WindowsStartFacts> = {}): WindowsStartFacts {
 
 // ── the refusal ────────────────────────────────────────────────────────────
 
-test('🔴 THE TRAP: session 0 + a desktop + the task => REFUSE', () => {
+test('🔴 THE TRAP: session 0 + a desktop + the task => REDIRECT, not refuse', () => {
+  // Session 0 can trigger the task, so APPLY the fix rather than print it.
   const v = planWindowsStart(facts());
-  assert.equal(v.action, 'refuse');
+  assert.equal(v.action, 'redirect');
+  assert.equal(v.taskName, INTERACTIVE_TASK, 'the caller needs to know what to run');
 });
 
-test('the refusal gives the exact command, not just a diagnosis', () => {
-  const v = planWindowsStart(facts());
-  assert.match(v.message!, /schtasks \/run \/tn LmAssistCoreInteractive/);
-});
-
-test('the refusal explains that it would look HEALTHY — that is the whole hazard', () => {
+test('the redirect explains that a direct start would look HEALTHY — the whole hazard', () => {
   const v = planWindowsStart(facts());
   assert.match(v.message!, /healthy/i);
   assert.match(v.message!, /session 0/i);
 });
 
-test('the refusal names SSH, the usual way people land here', () => {
+test('the redirect names SSH, the usual way people land here', () => {
   assert.match(planWindowsStart(facts()).message!, /SSH/i);
 });
 
@@ -114,4 +111,35 @@ test('status WARNS when Core is in session 0, whoever asked', () => {
 test('an unresolvable Core session is not reported as broken', () => {
   // Core not running, or the probe failed — absence of evidence, not evidence.
   assert.equal(windowsDriveHealth(facts({ mySessionId: null })).driveable, true);
+});
+
+// ── did the redirect actually work? ────────────────────────────────────────
+//
+// 🔴 Firing the task and reporting success would be the same false-confidence
+// bug this branch fixed four times (`success:false`, `launched:true`,
+// `submitted:true`, DRY-RUN `would-reap=0`). Only observed evidence counts.
+
+test('redirect SUCCESS requires health AND a non-zero session', () => {
+  const r = describeRedirectOutcome(true, 1, INTERACTIVE_TASK);
+  assert.equal(r.success, true);
+  assert.match(r.message, /session 1/);
+});
+
+test('🔴 Core never came up => NOT success, with the manual command', () => {
+  const r = describeRedirectOutcome(false, null, INTERACTIVE_TASK);
+  assert.equal(r.success, false);
+  assert.match(r.message, /schtasks \/run \/tn LmAssistCoreInteractive/);
+});
+
+test('🔴 healthy but STILL in session 0 => NOT success — health is not driveability', () => {
+  // The exact trap: a Core that answers perfectly and can drive nothing.
+  const r = describeRedirectOutcome(true, 0, INTERACTIVE_TASK);
+  assert.equal(r.success, false);
+  assert.match(r.message, /still in Windows session 0/i);
+  assert.match(r.message, /LogonType=Interactive/, 'name the misconfiguration to fix');
+});
+
+test('an unknown session on a healthy Core is accepted rather than failed', () => {
+  // The probe can fail; that is not evidence the redirect did not work.
+  assert.equal(describeRedirectOutcome(true, null, INTERACTIVE_TASK).success, true);
 });
