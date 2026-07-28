@@ -14,8 +14,11 @@
  */
 
 import * as fs from 'fs';
+import * as path from 'path';
 import { execFileSync } from '../utils/exec';
 import { IS_POSIX } from '../utils/process-utils';
+import { planDetachedTmuxSpawn, type DetachProbe } from './detach-plan';
+import { readTmuxServerPid } from './tmux-server-guard';
 import { TerminalError } from './errors';
 import { withSessionLock } from './mutex';
 import type { TmuxSessionState, TmuxWindowState, SendKeysInput, WaitForInput, CaptureInput, CreateWindowInput } from './types';
@@ -51,6 +54,47 @@ function tmuxCmd(args: string[], timeoutMs = DEFAULT_TIMEOUT_MS): { stdout: stri
 
 function targetFor(session: string, paneQualifier: string | null): string {
   return paneQualifier ? `${session}:${paneQualifier}` : session;
+}
+
+// ---------- detached server start ----------------------------------------
+
+/** Is `name` an executable on PATH? (No shell, no `which` dependency.) */
+function onPath(name: string): boolean {
+  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue;
+    try {
+      fs.accessSync(path.join(dir, name), fs.constants.X_OK);
+      return true;
+    } catch { /* try the next PATH entry */ }
+  }
+  return false;
+}
+
+function realDetachProbe(): DetachProbe {
+  return {
+    hasBinary: onPath,
+    pathExists: (p) => { try { fs.statSync(p); return true; } catch { return false; } },
+    uid: typeof process.getuid === 'function' ? process.getuid() : 0,
+    xdgRuntimeDir: process.env.XDG_RUNTIME_DIR || null,
+    dbusAddress: process.env.DBUS_SESSION_BUS_ADDRESS || null,
+  };
+}
+
+/**
+ * Start the tmux server in a cgroup of its own. Best effort by design: the
+ * caller re-checks and falls back to a plain `tmux new-session`, because
+ * process isolation must never be the reason a session fails to start.
+ */
+function startServerDetached(args: string[]): void {
+  const plan = planDetachedTmuxSpawn(args, realDetachProbe());
+  if (plan.kind === 'plain') return; // nothing a wrapper would buy us
+  try {
+    execFileSync(plan.file, plan.args, {
+      timeout: DEFAULT_TIMEOUT_MS,
+      env: { ...process.env, ...plan.env },
+      stdio: 'ignore',
+    });
+  } catch { /* fall through to the caller's plain spawn */ }
 }
 
 // ---------- queries (no mutex) -------------------------------------------
@@ -179,7 +223,16 @@ export function createUnlocked(name: string, opts: CreateOptions): { existed: bo
   if (opts.cols) args.push('-x', String(opts.cols));
   if (opts.rows) args.push('-y', String(opts.rows));
   if (opts.cwd) args.push('-c', opts.cwd);
-  tmuxCmd(args);
+  // The FIRST new-session on a host starts the tmux SERVER, and the server
+  // inherits the cgroup of whichever process starts it. When that process is
+  // Core, `systemctl restart lm-assist` SIGTERMs the server and every Claude Code
+  // pane with it — KillMode defaults to control-group. Reproduced on yitest
+  // 2026-07-28, where the server was already ppid=1 and died anyway. So start it
+  // in a cgroup of its own. Once a server exists, later sessions just talk to it
+  // over the socket and there is nothing left to detach.
+  if (readTmuxServerPid() === null) startServerDetached(args);
+  // Either a server was already up, or the detached start did not take.
+  if (!exists(name)) tmuxCmd(args);
   if (!exists(name)) {
     throw new TerminalError('POSTCONDITION_FAILED', `tmux new-session reported success but session ${name} does not exist`);
   }

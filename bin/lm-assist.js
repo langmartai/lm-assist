@@ -954,6 +954,15 @@ async function main() {
       console.log('  Prod:');
       console.log(`    API: ${result.core.message}`);
       console.log(`    Web: ${result.web.message}`);
+      // A restart that reaped the tmux server killed every Claude Code pane on
+      // this host. That must never again be reported as a clean restart.
+      if (result.tmux && !result.tmux.ok) {
+        console.error('');
+        console.error(`    ${result.tmux.message}`);
+        process.exitCode = 1;
+      } else if (result.tmux && result.tmux.before !== null) {
+        console.log(`    ${result.tmux.message}`);
+      }
       // Restart dev if enabled
       if (devCfg.enabled && devCfg.repoPath) {
         console.log('');

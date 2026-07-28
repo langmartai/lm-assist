@@ -11,6 +11,7 @@ import * as path from 'path';
 import * as net from 'net';
 import * as os from 'os';
 import { rotateNow } from './utils/log-rotate';
+import { readTmuxServerPid, describeTmuxServerChange, type TmuxServerChange } from './terminal/tmux-server-guard';
 
 // ─── Paths ──────────────────────────────────────────────────
 
@@ -693,10 +694,16 @@ export async function status(config?: ServiceConfig): Promise<ServiceStatus> {
 
 // ─── Restart ──────────────────────────────────────────────────
 
-export async function restartAll(config?: ServiceConfig): Promise<{ core: { success: boolean; message: string }; web: { success: boolean; message: string } }> {
+export async function restartAll(config?: ServiceConfig): Promise<{ core: { success: boolean; message: string }; web: { success: boolean; message: string }; tmux: TmuxServerChange }> {
+  // Sample the tmux server pid across the restart. On 2026-07-28 a restart on prod
+  // reaped the tmux server and every Claude Code pane on the node, and still
+  // reported success — nothing in this path was watching the thing that died.
+  const before = readTmuxServerPid();
   await stopAll(config);
   await sleep(2000);
-  return startAll(config);
+  const started = await startAll(config);
+  const tmux = describeTmuxServerChange(before, readTmuxServerPid());
+  return { ...started, tmux };
 }
 
 // ─── Log Helpers ──────────────────────────────────────────────────
