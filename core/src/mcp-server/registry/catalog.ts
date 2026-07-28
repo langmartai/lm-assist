@@ -35,7 +35,7 @@ export interface ToolCatalogEntry {
 export const CATEGORY_ORDER: string[] = [
   'core', 'session', 'mission', 'backlog', 'worker', 'agent', 'terminal', 'memory', 'data',
   'transfer', 'fleet', 'cluster', 'machine-access', 'ccr', 'claudeai', 'auth',
-  'github', 'whatsapp', 'elevated',
+  'github', 'whatsapp', 'linkedin', 'elevated',
 ];
 
 const T = 'core/src/mcp-server/tools';
@@ -153,6 +153,14 @@ mod('claude-code-usage.ts', 'auth', ['claude_code_usage']);
 mod('claudeai-login.ts', 'auth', ['claudeai_login']);
 // --- github ---
 mod('github.ts', 'github', ['github_query', 'github_mutate']);
+// --- linkedin ---
+mod('linkedin.ts', 'linkedin', [
+  'linkedin_status', 'linkedin_login', 'linkedin_list_conversations', 'linkedin_read_messages',
+  'linkedin_search', 'linkedin_send_message', 'linkedin_read_feed', 'linkedin_read_notifications',
+  'linkedin_post', 'linkedin_publish_article', 'linkedin_search_people', 'linkedin_follow',
+  'linkedin_connect', 'linkedin_message_profile', 'linkedin_comment', 'linkedin_delete_post',
+]);
+
 // --- whatsapp ---
 mod('whatsapp.ts', 'whatsapp', [
   'whatsapp_send', 'whatsapp_get_media', 'whatsapp_list_chats', 'whatsapp_read_messages', 'whatsapp_search', 'whatsapp_status',
