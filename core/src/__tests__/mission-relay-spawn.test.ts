@@ -253,3 +253,35 @@ test('the spawned binding NAMES the host end-to-end', async () => {
   assert.strictEqual((r.data as { binding: { node: string } }).binding.node, 'gw4-peer',
     'binding.node is the only durable record of WHICH MACHINE the worker is on');
 });
+
+// ── 🔴 success:false is NOT proof that nothing happened ────────────────────
+//
+// Caught live on stage 2026-07-28, not by reasoning. The relayed spawn to the Windows node
+// came back `{"success":false,"error":{"code":"INTERNAL_ERROR"}}` and was classified
+// `refused` — "the peer answered, nothing spawned, safe". But 107's log showed
+// `[ApiRelayHandler] Error relaying request …: Error: Local API request timeout`: the
+// envelope was produced by the RELAY LAYER while its own local call to the route was STILL
+// RUNNING. The handler had not declined anything.
+//
+// So the original rule was unsound one level deeper than the design caught: a body WITHOUT
+// `success` says nothing, and a body WITH `success:false` also says nothing unless the code
+// identifies a decision the ROUTE made. Only a known route-level refusal is safe; everything
+// else must be verified by reading the target.
+
+test('🔴 a relay-layer INTERNAL_ERROR is UNVERIFIED — the route may still be running', () => {
+  const r = classifyRelayResponse({ httpStatus: 500, body: { success: false, error: { code: 'INTERNAL_ERROR', message: 'Local API request timeout' } } });
+  assert.strictEqual(r.status, 'unverified',
+    'treating this as "refused" tells the caller nothing spawned while the spawn is in flight — the duplicate-executor path');
+});
+
+test('a route-level refusal is still REFUSED — those are real decisions', () => {
+  for (const code of ['MISSION_NOT_FOUND', 'PLACEMENT_NOT_GO', 'CLOUD_PLACEMENT', 'ALREADY_BOUND', 'BAD_KIND']) {
+    const r = classifyRelayResponse({ httpStatus: 400, body: { success: false, error: { code } } });
+    assert.strictEqual(r.status, 'refused', `${code} is the handler declining, not the transport failing`);
+  }
+});
+
+test('an UNKNOWN error code is unverified, not assumed safe', () => {
+  const r = classifyRelayResponse({ httpStatus: 400, body: { success: false, error: { code: 'SOMETHING_NEW' } } });
+  assert.strictEqual(r.status, 'unverified', 'a closed list fails safe — a new code must not silently mean "nothing happened"');
+});

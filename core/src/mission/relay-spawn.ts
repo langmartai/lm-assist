@@ -39,6 +39,13 @@ export interface RelayResponse {
 
 /** The hub's own "that worker is not connected" answer. Pre-dispatch, so it PROVES
  *  non-delivery — the only non-peer answer that is safe to retry freely. */
+/** Error codes `handleMissionSpawn` itself returns — i.e. the ROUTE ran and declined. Any
+ *  other `success:false` may have come from the relay layer with the spawn still in flight. */
+const ROUTE_REFUSALS = new Set([
+  'MISSION_NOT_FOUND', 'PLACEMENT_NOT_GO', 'CLOUD_PLACEMENT', 'ALREADY_BOUND', 'BAD_KIND',
+  'INVALID_REPO', 'INVALID_EFFORT', 'UNSUPPORTED_FIELD',
+]);
+
 const HUB_NO_MACHINE_RE = /machine not found|worker not found/i;
 
 function asRecord(v: unknown): Record<string, unknown> | null {
@@ -63,11 +70,15 @@ export function classifyRelayResponse(r: RelayResponse): RelayOutcome {
       return { status: 'placed', binding: data?.binding ?? null };
     }
     const err = asRecord(body.error);
-    return {
-      status: 'refused',
-      code: typeof err?.code === 'string' ? err.code : 'REFUSED',
-      message: typeof err?.message === 'string' ? err.message.slice(0, 300) : '',
-    };
+    const code = typeof err?.code === 'string' ? err.code : '';
+    const message = typeof err?.message === 'string' ? err.message.slice(0, 300) : '';
+    // 🔴 `success:false` is NOT proof that nothing happened. Measured on stage: the RELAY
+    // LAYER emits `{success:false, error:{code:'INTERNAL_ERROR'}}` when its own local call to
+    // the route TIMES OUT — while that call is still running. Only a code naming a decision
+    // the ROUTE made proves the handler declined. Closed list, so a new code fails SAFE
+    // (unverified → re-read) instead of silently meaning "nothing spawned".
+    if (ROUTE_REFUSALS.has(code)) return { status: 'refused', code, message };
+    return { status: 'unverified', detail: `peer error ${code || '?'}: ${message}` };
   }
 
   // No peer envelope. The ONE case that proves nothing was delivered is the hub telling us
