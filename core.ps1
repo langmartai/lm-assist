@@ -119,11 +119,16 @@ function Get-WorkerProc {
 
 # Ask the RUNNING elevated worker to do a privileged thing. Used for schtasks
 # /change, which needs admin - the worker already has it, so the deploy does not.
-function Invoke-WorkerExec($cmd, [string[]]$ExecArgs) {
+# NOTE the worker joins `args` with plain spaces and NO quoting
+# (`${cmd} ${args.join(' ')}`), so an argument containing quotes or spaces is
+# re-parsed by the shell and mangled. Send ONE fully-quoted command string
+# instead, and use powershell as the shell because single quotes there preserve
+# the embedded double quotes that schtasks /tr requires.
+function Invoke-WorkerExec($cmd, $Shell = 'powershell') {
   $tokenFile = Join-Path $env:USERPROFILE '.lm-assist\api-token'
   if (-not (Test-Path $tokenFile)) { return $null }
   $token = (Get-Content $tokenFile -Raw).Trim()
-  $body = @{ cmd = $cmd; args = $ExecArgs; shell = 'cmd' } | ConvertTo-Json -Compress
+  $body = @{ cmd = $cmd; shell = $Shell } | ConvertTo-Json -Compress
   try {
     return Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$WorkerPort/exec" `
       -Headers @{ 'x-api-key' = $token; 'content-type' = 'application/json' } -Body $body -TimeoutSec 30
@@ -162,7 +167,9 @@ function Ensure-WorkerRelocated($installRoot) {
   # 2. Re-point the task FIRST (via the worker's own elevation).
   $nodeExe = (Get-Command node).Source
   $tr = '"{0}" "{1}" --port {2}' -f $nodeExe, $newWorker, $WorkerPort
-  $r = Invoke-WorkerExec 'schtasks' @('/change', '/tn', $WorkerTask, '/tr', $tr)
+  # Single-quoted /tr so the inner double quotes survive to schtasks intact.
+  $psCmd = "schtasks /change /tn $WorkerTask /tr '$tr'"
+  $r = Invoke-WorkerExec $psCmd
   if (-not $r -or $r.exitCode -ne 0) {
     Warn 'could not re-point the task via the worker; trying directly (needs admin)'
     & schtasks /change /tn $WorkerTask /tr $tr | Out-Host
