@@ -4,6 +4,7 @@ import type { RouteHandler, RouteContext } from '../index';
 import { randomBytes } from 'crypto';
 import * as path from 'path';
 import { touchActivity, trackResumedNative } from '../../mission/mission-session-reaper';
+import { isAbsoluteRepoPath } from '../../mission/repo-path';
 import { newMission, defaultIsolation, Mission, MissionStatus, Isolation, coarseActor, MissionActor, place, ExecutorState, MissionBinding, validateResultsPatch } from '../../mission/mission-model';
 import { resolveMcpActor, upgradeControllerActor } from '../../mission/mission-actor';
 import { normalizeTags, mergeTags, validateParent, validateDependsOn } from '../../mission/mission-graph';
@@ -98,7 +99,18 @@ async function anchorToLeader(leader: LeaderAnchorDeps | undefined, method: 'GET
     // LOCAL write on a proxy error would either strand the mission on a non-leader
     // or (if the leader committed but the response was lost) create a duplicate.
     // Return a clear error so the caller retries (e.g. after a ~1-min failover).
-    if (failClosed) return fail('LEADER_UNREACHABLE', `mission leader unreachable; retry shortly (${(e as Error).message})`);
+    if (failClosed) {
+      // 🔴 A 4xx is NOT unreachability — the leader answered and REJECTED the body.
+      // Telling the caller "unreachable; retry shortly" sends them to diagnose the
+      // network while a validation error sits unread, and retrying can never help.
+      // Measured: an INVALID_REPO refusal surfaced as "mission leader unreachable".
+      const msg = (e as Error).message || '';
+      const status = Number(msg.match(/returned (\d{3})/)?.[1] ?? 0);
+      if (status >= 400 && status < 500) {
+        return fail('LEADER_REJECTED', `the mission leader REJECTED this write (HTTP ${status}) — it is reachable, so retrying will not help. Fix the request: ${msg}`);
+      }
+      return fail('LEADER_UNREACHABLE', `mission leader unreachable; retry shortly (${msg})`);
+    }
     return null; // reads fall back to the local (synced) store
   }
 }
@@ -144,12 +156,17 @@ function ccEffortOrUndefined(v: string | undefined): string | undefined {
  * use absolute paths, so this rejects nothing that previously worked.
  */
 function repoRefusal(v: string | undefined): Envelope | null {
-  if (!v || path.isAbsolute(v)) return null;
+  // isAbsoluteRepoPath, NOT path.isAbsolute: the leader validating this path is
+  // frequently not the machine that will use it. `path.isAbsolute` is the POSIX
+  // variant on a Linux leader, which rejected every Windows repo ("C:\ws\app")
+  // and made it impossible to place a mission on a Windows node's repo at all.
+  if (!v || isAbsoluteRepoPath(v)) return null;
   return fail(
     'INVALID_REPO',
     `env.repo must be an absolute path — got "${v}". A relative repo resolves against Core's ` +
     `install directory, not your project, and fails later as a confusing git ENOENT. ` +
-    `Use the full path (e.g. "/home/<user>/${v.replace(/^\.\/+/, '')}").`,
+    `Use the full path for the TARGET node's platform (e.g. "/home/<user>/${v.replace(/^\.\/+/, '')}" ` +
+    `on POSIX, "C:\\\\<path>\\\\${v.replace(/^\.\/+/, '')}" on Windows).`,
   );
 }
 

@@ -114,6 +114,23 @@ export const MISSION_TOOL_DEFS = [
         projects: SARR,
         tags: { type: 'object' as const },
         parentId: S,
+        env: {
+          type: 'object' as const,
+          description:
+            'Placement: {host, repo, isolation:"cloud"|"worktree"|"shared", branch, effort, exclusive, resources}. '
+            + 'The description has always advertised env, but it was missing from this schema, so placement could not '
+            + 'be set after creation — a mission created without a host could never be given one. `repo` must be '
+            + 'absolute for the TARGET node\'s platform (a Windows path like "C:\\\\ws\\\\app" is valid).',
+          properties: {
+            host: { type: 'string' as const },
+            repo: { type: 'string' as const },
+            branch: { type: 'string' as const },
+            isolation: { type: 'string' as const, enum: ['cloud', 'worktree', 'shared'] },
+            effort: { type: 'string' as const, enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
+            exclusive: { type: 'boolean' as const },
+            resources: { type: 'array' as const, items: { type: 'string' as const } },
+          },
+        },
         binding: {
           type: 'object' as const,
           description: 'Bind a spawned executor: {sessionId, kind:"worker"|"orchestrator", node?}. Required so the supervisor monitors it + answers its question fast.',

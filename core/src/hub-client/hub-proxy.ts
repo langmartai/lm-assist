@@ -19,6 +19,24 @@ export function getHubHttpUrl(): string {
     .replace(/^wss:/, 'https:');
 }
 
+/**
+ * Best-effort: carry the REMOTE's reason into the thrown error.
+ *
+ * 🔴 These throws used to report only the status code, discarding the response
+ * body — so a remote node's precise refusal (e.g. `INVALID_REPO: env.repo must be
+ * an absolute path`) reached the caller as a bare "returned 400", and every
+ * proxied write failure in the fleet looked like a transport problem. Capped so a
+ * large error page cannot bloat a log line.
+ */
+async function remoteReason(res: Response): Promise<string> {
+  try {
+    const t = (await res.text()).trim();
+    return t ? ` — ${t.slice(0, 400)}` : '';
+  } catch {
+    return '';
+  }
+}
+
 /** GET a hub API path with the node's Bearer token. Throws on non-2xx. */
 export async function hubFetch(urlPath: string): Promise<unknown> {
   const cfg = getHubConfig();
@@ -27,7 +45,7 @@ export async function hubFetch(urlPath: string): Promise<unknown> {
     headers: { Authorization: `Bearer ${cfg.apiKey}` },
   });
   if (!res.ok) {
-    throw new Error(`Hub returned ${res.status} for ${urlPath}`);
+    throw new Error(`Hub returned ${res.status} for ${urlPath}${await remoteReason(res)}`);
   }
   return res.json();
 }
@@ -48,7 +66,7 @@ export async function proxyFetch(node: string, urlPath: string, opts?: ProxyGetO
     },
   });
   if (!res.ok) {
-    throw new Error(`Proxy request to ${node}${urlPath} returned ${res.status}`);
+    throw new Error(`Proxy request to ${node}${urlPath} returned ${res.status}${await remoteReason(res)}`);
   }
   return res.json();
 }
@@ -67,7 +85,7 @@ export async function proxyPost(node: string, urlPath: string, body: unknown): P
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    throw new Error(`Proxy POST to ${node}${urlPath} returned ${res.status}`);
+    throw new Error(`Proxy POST to ${node}${urlPath} returned ${res.status}${await remoteReason(res)}`);
   }
   return res.json();
 }
