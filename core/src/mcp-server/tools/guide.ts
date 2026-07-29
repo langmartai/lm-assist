@@ -329,7 +329,7 @@ NAMING: \`<node-ip-last-octet>-<repo>-ccr[-N]\` — e.g. \`117-lm-assist-ccr\`, 
 
 GOTCHAS ON THIS PATH — each one cost a real session
 • \`ccr_connect\` can fail with an opaque **"MCP tool call failed"** EVEN WHEN \`ccr_preflight\` returned \`allowedModes\` including \`connect\` and \`connectStrategy: attach-existing\`. A green preflight is not a working connect — fall back to the native \`/remote-control\` inject above rather than re-running the preflight.
-• A session connected this way is INVISIBLE to \`ccr_remote_list\` — that tool lists only the bridges lm-assist itself spawned, and a native \`/remote-control\` inject was never registered as one, so it returns EMPTY even while the session is live and web-reachable. Tracked as \`bl_e7cd6c71\`.
+• It will NOT appear in \`ccr_remote_list\` — no bridge was registered for it. Use \`ccr_live_list\` (step 7), which reads the ACCOUNT and so does see native injects.
 • \`send_session_message\` BY sessionId returns \`TARGET_UNREACHABLE\` with drivers \`remote-control\` AND \`cc-session\` both reporting unavailable. Pass the raw **tmux session name** instead — the tmux-send-keys fallback delivers.
 • 🔴 \`status:"received"\` IS NOT PROOF OF ACTION. \`send_session_message\` can ack a message the session NEVER acts on — a large paste can land without being submitted or read. ALWAYS confirm with \`terminal_capture\` that the session actually STARTED the task, and prefer \`terminal_prompt\` for the real instruction.
 • A freshly opened \`claude\` in a repo may AUTO-LOAD a pre-existing handoff brief (e.g. \`.claude/briefs/*.md\`) and start working on THAT — then sit on an AskUserQuestion menu. \`terminal_capture\` FIRST, Escape to cancel the menu, and only then give your own task.
