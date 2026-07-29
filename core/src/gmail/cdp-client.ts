@@ -262,10 +262,32 @@ function connect(wsUrl: string): Promise<Cdp> {
     });
     ws.on('open', () => {
       clearTimeout(to);
+      // MEASURED 2026-07-30: a wedged Gmail renderer still accepts the debugger
+      // socket and simply never answers. Unbounded, that pends FOREVER, and
+      // because every Gmail tool funnels through here a single wedged tab hung
+      // the entire connector - gmail_status included - with no error and no
+      // recovery, surviving a full Core restart because the fault is in the
+      // browser. Bounded, the same fault surfaces as an error the caller can act
+      // on, and lets openSession recycle the tab. The ceiling is generous: some
+      // page scripts legitimately await a second or two inside one evaluate.
       const send = (method: string, params: Record<string, unknown> = {}): Promise<unknown> =>
         new Promise((res, rej) => {
           const mid = ++id;
-          pending.set(mid, { res, rej });
+          const timer = setTimeout(() => {
+            if (!pending.has(mid)) return;
+            pending.delete(mid);
+            rej(new GmError('CDP_TIMEOUT', `${method} did not answer within 45s - the page is not responding`));
+          }, 45000);
+          pending.set(mid, {
+            res: (v: unknown) => {
+              clearTimeout(timer);
+              res(v);
+            },
+            rej: (e: unknown) => {
+              clearTimeout(timer);
+              rej(e);
+            },
+          });
           ws.send(JSON.stringify({ id: mid, method, params }));
         });
       const cdp: Cdp = {
@@ -331,10 +353,73 @@ function connect(wsUrl: string): Promise<Cdp> {
 }
 
 /** Open an owned session. The caller MUST close it. */
+/**
+ * Is the page's JS thread actually alive?
+ *
+ * MEASURED 2026-07-30, twice, under sustained automation: the Gmail tab's
+ * renderer wedges. The target still lists over HTTP and the debugger WebSocket
+ * still opens, but Runtime.enable never returns. Every Gmail tool then hangs
+ * FOREVER - including gmail_status, which does almost nothing - and restarting
+ * Core does not help, because the fault is in the browser, not the server. The
+ * only observable difference between "wedged" and "busy" is that this never
+ * answers, so it has to be bounded.
+ */
+async function pageResponds(cdp: Cdp, timeoutMs = 8000): Promise<boolean> {
+  return await Promise.race([
+    cdp.evaluate<number>('return 1;').then((v) => v === 1).catch(() => false),
+    sleep(timeoutMs).then(() => false),
+  ]);
+}
+
+/**
+ * Close the wedged Gmail tab and open a fresh one.
+ *
+ * The login lives in the browser PROFILE, not the tab, so it survives. This is
+ * the only recovery that works: the renderer is gone and nothing sent to it will
+ * ever be answered.
+ */
+async function recycleGmailTab(base: string): Promise<void> {
+  const list = (await fetch(base + '/json/list').then((r) => r.json())) as Array<{ id: string; type: string; url?: string }>;
+  for (const t of list) {
+    if (t.type === 'page' && /mail\.google/.test(t.url || '')) {
+      await fetch(base + '/json/close/' + t.id).catch(() => undefined);
+    }
+  }
+  await sleep(1500);
+  const target = base + '/json/new?' + encodeURIComponent(MAIL_BASE + '#inbox');
+  await fetch(target, { method: 'PUT' })
+    .catch(() => fetch(target))
+    .catch(() => undefined);
+  // A cold Gmail load is slow; this is the SPA booting, not just a view swap.
+  await sleep(12000);
+}
+
 async function openSession(): Promise<{ cdp: Cdp; close(): void }> {
   const base = resolveCdpBase();
-  const wsUrl = await findPageWs(base);
-  const cdp = await connect(wsUrl);
+  let cdp = await connect(await findPageWs(base));
+
+  // A wedged renderer accepts the connection and answers nothing, so every op
+  // would hang forever. Probe first, and recycle the tab if it is gone.
+  if (await pageResponds(cdp)) return { cdp, close: () => cdp.close() };
+
+  try {
+    cdp.close();
+  } catch {
+    /* the socket to a dead renderer may already be unusable */
+  }
+  await recycleGmailTab(base);
+  cdp = await connect(await findPageWs(base));
+  if (!(await pageResponds(cdp))) {
+    try {
+      cdp.close();
+    } catch {
+      /* nothing more to do */
+    }
+    throw new GmError(
+      'BROWSER_UNRESPONSIVE',
+      'the Gmail page is not responding to CDP even after the tab was recycled - the browser itself needs restarting (gmail_login relaunches it)',
+    );
+  }
   return { cdp, close: () => cdp.close() };
 }
 
