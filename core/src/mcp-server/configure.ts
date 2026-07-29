@@ -377,6 +377,16 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   linkedin_comment: 'write',
   linkedin_delete_post: 'write',
   linkedin_login: 'admin',
+  // gmail CDP connector (reads observe the mailbox; writes send real mail; login drives interactive auth)
+  gmail_status: 'read',
+  gmail_list_threads: 'read',
+  gmail_read_thread: 'read',
+  gmail_search: 'read',
+  gmail_labels: 'read',
+  gmail_send: 'write',
+  gmail_reply: 'write',
+  gmail_draft: 'write',
+  gmail_login: 'admin',
   // cowork task creation (write — starts a real background session)
   cowork_create_task: 'write',
 };

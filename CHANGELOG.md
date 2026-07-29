@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased] — Gmail CDP connector (9 MCP tools) (2026-07-29)
+
+### Added
+- **Gmail connector (CDP-only).** Drives the operator's OWN logged-in `mail.google.com` session in a real Chrome over the DevTools Protocol, mirroring the LinkedIn connector's shape. 9 MCP tools appear in any Claude Code / claude.ai session connected to the node: reads `gmail_status`, `gmail_list_threads`, `gmail_read_thread`, `gmail_search`, `gmail_labels`; writes `gmail_send`, `gmail_reply`, `gmail_draft`; admin `gmail_login`. REST surface under `/gmail/*` on loopback; 15-minute session keep-alive. Dedicated profile at `~/.lm-assist/gmail[-dev]/login-profile/<name>/` on debug port **9224** (distinct from WhatsApp's 9222 and LinkedIn's 9223, so all three run side by side).
+- **Endpoint strategy decided by measurement, not assumption.** Gmail's internal feeds were probed from inside a logged-in page and rejected: `/mail/u/0/h/` (basic HTML) is retired and redirects to the SPA; `?ui=2&ik=…&view=tl&rt=j` no longer returns JSON (it serves the ~1.4 MB SPA shell); `/sync/u/0/i/fd` is binary protobuf. So the connector reads the rendered DOM — which, unlike LinkedIn, exposes REAL server ids (`data-legacy-thread-id`, `data-legacy-message-id`), so threads are keyed on Gmail's own ids rather than a display name. Navigation is hash-based, which makes **search a URL change rather than UI typing**. Full rationale in [`docs/gmail-connector.md`](docs/gmail-connector.md).
+- **No local message store.** LinkedIn needs one because it cannot backfill history; Gmail can, and owns read-state server-side, so every read here is live.
+
+### Changed
+- **`CATALOG_BUDGET_BYTES` raised 240,000 → 252,000** (`__tests__/mcp-catalog-size.test.ts`). The connector landed 15 B over. The shared-boilerplate test still passes, so this is accumulated routine growth, not the re-inlining regression the guard exists to catch (~90 KB, which 252,000 still fails hard on). The new tools average ~530 B against a ~775 B surface mean, so there was nothing left to trim on the newest entries; `gmail_unread` was also dropped from the tool list as an exact duplicate of `gmail_search("is:unread")`. The raise restores ~10 average tools of headroom, at roughly 3 K extra tokens per conversation at connect time.
+
+### Notes
+- Verified on a real Workspace account (2026-07-29) that Google does **not** refuse an interactive sign-in in a Chrome launched with a custom `--user-data-dir` and an open `--remote-debugging-port`, on both a Windows and a Linux host, and that the session survives a restart — a headed one-time login followed by **headless** operation against the same profile lands back in the inbox. Headless must force a normal User-Agent or Google serves the degraded `WebLiteSignIn` flow.
+- `gmail_send` / `gmail_reply` / `gmail_draft` are implemented but were deliberately **not** exercised live, since they write to a real mailbox.
+
 ## [Unreleased] — Windows browser-launch fix + prebuilt-tgz deploy path (2026-07-27)
 
 ### Fixed

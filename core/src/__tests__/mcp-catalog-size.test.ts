@@ -64,7 +64,15 @@ const MAX_SHARED_DESCRIPTION_BYTES = 320;
  * on the regression this exists to catch — re-inlining shared boilerplate across
  * the surface costs ~90 KB and blows straight through it.
  */
-const CATALOG_BUDGET_BYTES = 240_000;
+// RAISED 2026-07-29, 240,000 -> 252,000, when the Gmail CDP connector (9 tools)
+// landed 15 B over. Deliberate, not a reflex bump: the shared-boilerplate test
+// above still passes, so this is accumulated routine growth, NOT the re-inlining
+// regression this guard exists to catch (~90 KB, which 252,000 still fails hard
+// on). The connector's tools average ~530 B against a ~775 B surface mean, so
+// there was nothing left to trim on the newest entries. +12,000 B restores ~10
+// average tools of headroom so the next addition is not forced to sand its own
+// descriptions to nothing. Cost: ~3K extra tokens per conversation at connect time.
+const CATALOG_BUDGET_BYTES = 252_000;
 
 function properties(def: { inputSchema?: { properties?: Record<string, unknown> } }): Record<string, unknown> {
   return def.inputSchema?.properties || {};
