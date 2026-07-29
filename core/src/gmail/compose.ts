@@ -508,15 +508,22 @@ export const JS_LIB = `
    * editor (which is not a role=dialog at all).
    */
   const __scope = () => {
-    const body = __last(__visAll(${q(S.body)}));
-    if (!body) return __last(__visAll('div[role="dialog"]'));
-    let n = body;
-    for (let i = 0; i < 12 && n; i++) {
-      n = n.parentElement;
-      if (!n) break;
-      if (__all(${q(S.send)}, n).some(__vis)) return n;
+    // MEASURED: the previous ancestor-walk (last visible body -> up to 12 levels
+    // for a visible Send button -> else body.parentElement) resolved a container
+    // too narrow to hold the To field, so every send failed with
+    // RECIPIENT_FIELD_UNAVAILABLE even with the dialog open.
+    //
+    // Resolve the way the confirmed end-to-end send did: prefer the LAST VISIBLE
+    // dialog that actually contains a compose body, else the dialog ancestor of
+    // the last visible body, else the document. "Last visible" is the part that
+    // matters — it is what stops text landing in a minimised compose.
+    const dlgs = __visAll('div[role="dialog"]');
+    for (let i = dlgs.length - 1; i >= 0; i--) {
+      if (__all(${q(S.body)}, dlgs[i]).length) return dlgs[i];
     }
-    return body.closest('div[role="dialog"]') || body.parentElement || null;
+    const body = __last(__visAll(${q(S.body)}));
+    if (body) return body.closest('div[role="dialog"]') || document;
+    return __last(dlgs) || document;
   };
 
   const __bodyEl = () => { const sc = __scope(); return sc ? __last(__visAll(${q(S.body)}, sc)) : null; };
@@ -1384,32 +1391,91 @@ async function openReplyEditor(
  * to clicking Compose and letting ensureRecipients() do the work — the same code
  * forward has to use anyway, since there is no prefill URL for a forward.
  */
-async function openPrefilledCompose(ctx: ComposeCtx, input: ComposeInput): Promise<boolean> {
-  const url = buildComposeUrl({ to: input.to, cc: input.cc, bcc: input.bcc, subject: input.subject });
-  await ctx.navigate(url);
-  await sleep(T.navSettle);
+/**
+ * Make sure the driver is on the Gmail APP view before composing. A previous
+ * failed operation can leave the tab on a non-app URL, after which every
+ * landmark check fails; re-entering #inbox is what unwedges it.
+ */
+async function ensureMailView(ctx: ComposeCtx): Promise<void> {
   try {
-    await waitForCompose(ctx);
-    return true;
-  } catch {
-    await gotoHash(ctx, '#inbox', S.listReady);
-    await evalPage(
-      ctx,
-      `let el = __last(__visAll(${q(S.composeBtn)}));
-       if (!el) el = __last(__visAll('div[role="button"], button').filter((x) => __norm(x.textContent).toLowerCase() === 'compose'));
-       if (!el) return { ok: false, code: 'COMPOSE_BUTTON_NOT_FOUND', message: 'could not find the Compose button' };
-       __click(el);
-       return { ok: true };`,
+    const ok = await ctx.evaluate<boolean>(
+      `return /(^|\\.)mail\\.google\\.com$/.test(location.hostname) &&
+        !!document.querySelector('[gh="mtb"], tr.zA, div[role="button"].T-I.T-I-KE.L3');`,
     );
-    await waitForCompose(ctx);
-    return false;
+    if (ok) return;
+    await ctx.navigate('https://mail.google.com/mail/u/0/#inbox');
+    for (let i = 0; i < 25; i++) {
+      const ready = await ctx
+        .evaluate<boolean>(`return !!document.querySelector('[gh="mtb"], tr.zA');`)
+        .catch(() => false);
+      if (ready) return;
+      await new Promise((r) => setTimeout(r, 800));
+    }
+  } catch {
+    /* best effort — the caller's own guard reports a still-broken UI */
   }
+}
+
+async function openPrefilledCompose(ctx: ComposeCtx, input: ComposeInput): Promise<boolean> {
+  // DISABLED 2026-07-29 after measuring the ?tf=cm page: it renders a STANDALONE
+  // compose (no div[role="dialog"], no [gh="mtb"]/tr.zA/Compose-button landmarks)
+  // and — decisively — `to=` does NOT populate the recipient field, so the path
+  // bought nothing while breaking the live-compose scope and stranding the view.
+  // Always use the in-app Compose button, which has a confirmed end-to-end send.
+  //
+  // Returning false makes fillCompose() take the Compose-button branch. We only
+  // make sure we are ON the mail app first, so that branch has a button to click.
+  await ensureMailView(ctx);
+  return await openComposeDialog(ctx);
+}
+
+/**
+ * Click Gmail's Compose button and wait for the dialog's To field.
+ *
+ * MEASURED: `[gh="cm"]` does NOT exist on current Gmail; the real control is
+ * div[role="button"].T-I.T-I-KE.L3. Classes are hashable, so fall back to
+ * matching the button TEXT. Readiness is the peoplekit To combobox appearing —
+ * not the click returning, which tells us nothing.
+ */
+async function openComposeDialog(ctx: ComposeCtx): Promise<boolean> {
+  const clicked = await ctx
+    .evaluate<boolean>(
+      `const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+       let el = [...document.querySelectorAll('div[role="button"].T-I.T-I-KE.L3')].filter(vis).pop();
+       if (!el) el = [...document.querySelectorAll('div[role="button"], button')].filter(vis)
+         .find((x) => (x.textContent || '').trim().toLowerCase() === 'compose');
+       if (!el) return false;
+       el.scrollIntoView({ block: 'center' });
+       await new Promise((r) => setTimeout(r, 150));
+       el.click();
+       return true;`,
+    )
+    .catch(() => false);
+  if (!clicked) return false;
+
+  for (let i = 0; i < 25; i++) {
+    const ready = await ctx
+      .evaluate<boolean>(
+        `const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+         // The scope resolver walks UP from the BODY to the Send-button container,
+         // so readiness needs the body too — waiting only for the To field resolved
+         // an empty scope and reported RECIPIENT_FIELD_UNAVAILABLE.
+         const to = [...document.querySelectorAll('input[aria-label="To recipients"], input[peoplekit-id]')].filter(vis);
+         const body = [...document.querySelectorAll('div[aria-label="Message Body"][role="textbox"], div[g_editable="true"][role="textbox"]')].filter(vis);
+         const send = [...document.querySelectorAll('div[role="button"][data-tooltip^="Send"]')].filter(vis);
+         return to.length > 0 && body.length > 0 && send.length > 0;`,
+      )
+      .catch(() => false);
+    if (ready) return true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
 }
 
 /** Fill everything except Send. Shared by send and draft. */
 async function fillCompose(ctx: ComposeCtx, input: ComposeInput, prefilled: boolean): Promise<string[]> {
   const notes: string[] = [];
-  if (!prefilled) notes.push('URL prefill did not open a compose; fell back to the Compose button');
+  if (!prefilled) notes.push('the Compose dialog did not open');
 
   if (input.fromAlias) await applyFromAlias(ctx, input.fromAlias);
 
