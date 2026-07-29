@@ -692,6 +692,14 @@ export interface GmailThreadDetail {
   messages: GmailMessage[];
   /** Stubs still collapsed after the expand-all attempt. Non-zero = suspect the read. */
   collapsedCount: number;
+  /**
+   * The data-legacy-thread-id values the OPEN conversation actually renders.
+   *
+   * Evidence for assertThreadMatches. Message ids alone are not enough: a thread
+   * id equals its first message id for RECEIVED mail but not for mail the account
+   * sent itself, so identity was only ever provable by coincidence.
+   */
+  observedThreadIds: string[];
   note?: string;
 }
 
@@ -1125,6 +1133,9 @@ async function readThreadDom(cdp: Cdp, id: string): Promise<{ detail: GmailThrea
       labels: Array.isArray(d?.labels) ? d.labels : [],
       messages,
       collapsedCount: typeof d?.collapsedCount === 'number' ? d.collapsedCount : 0,
+      // Evidence for identity checks — see assertThreadMatches. Without this the
+      // only evidence is message ids, which match the thread id by coincidence.
+      observedThreadIds: Array.isArray(d?.observedThreadIds) ? d.observedThreadIds : [],
     },
     ik,
   };

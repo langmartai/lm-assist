@@ -351,7 +351,7 @@ export const JS_THREAD_FULL = `
   ${JS_VISIBLE}
   ${JS_UTIL}
   ${JS_ATTACH}
-  const __empty = { subject: null, labels: [], messages: [], collapsedCount: 0, url: location.href };
+  const __empty = { subject: null, labels: [], messages: [], collapsedCount: 0, observedThreadIds: [], url: location.href };
   try {
     // ── 0. expand-all, if this thread is collapsed ──────────────────────────
     try {
@@ -437,7 +437,24 @@ export const JS_THREAD_FULL = `
         .filter(el => !el.querySelector('.a3s')).length;
     } catch (e) { collapsedCount = 0; }
 
-    return { subject, labels, messages, collapsedCount, url: location.href };
+    // The data-legacy-thread-id values actually RENDERED, scoped to the open
+    // conversation and visible-only. Identity was previously provable only from
+    // message ids, and a thread id equals its first message id for RECEIVED mail
+    // but NOT for mail the account sent itself — so on a self-sent thread the
+    // check had no valid evidence and failed a correct read. Gmail also keeps the
+    // list mounted behind the conversation, hence the scoping.
+    let observedThreadIds = [];
+    try {
+      const __hdr = __vis("h2.hP")[0];
+      const __root = (__hdr && __hdr.closest('div[role="main"]')) || document;
+      observedThreadIds = [...new Set(
+        [...__root.querySelectorAll('[data-legacy-thread-id]')]
+          .filter((n) => { const r = n.getBoundingClientRect(); return r.width > 0 && r.height > 0 && n.offsetParent !== null; })
+          .map((n) => n.getAttribute('data-legacy-thread-id'))
+          .filter(Boolean),
+      )];
+    } catch (err) { observedThreadIds = []; }
+    return { subject, labels, messages, collapsedCount, observedThreadIds, url: location.href };
   } catch (e) {
     return __empty;
   }`;
@@ -681,6 +698,14 @@ export interface GmailThreadFull {
   messages: GmailMessageFull[];
   /** Stubs still collapsed AFTER the expand-all attempt. Non-zero = suspect the expansion. */
   collapsedCount: number;
+  /**
+   * The data-legacy-thread-id values the OPEN conversation actually renders.
+   *
+   * Evidence for assertThreadMatches. Message ids alone are not enough: a thread
+   * id equals its first message id for RECEIVED mail but not for mail the account
+   * sent itself, so identity was only ever provable by coincidence.
+   */
+  observedThreadIds: string[];
   url: string;
 }
 

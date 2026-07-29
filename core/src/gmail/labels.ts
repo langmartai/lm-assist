@@ -1103,6 +1103,32 @@ async function readLocation(cdp: LabelCdp): Promise<PageLocation> {
  * browser is not on Gmail at all we say so plainly rather than driving a
  * cross-origin page — the connector's own entry points own that navigation.
  */
+/**
+ * Is the requested thread the one actually RENDERED?
+ *
+ * Scoped to the open conversation and to VISIBLE elements on purpose: Gmail keeps
+ * the thread list mounted behind a conversation, so a document-wide scan matches
+ * every listed thread's id and would answer true for all of them.
+ */
+async function threadRendered(cdp: LabelCdp, threadId: string): Promise<boolean> {
+  const id = JSON.stringify(threadId);
+  return (
+    (await cdp
+      .evaluate<boolean>(
+        `const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+         const hdr = [...document.querySelectorAll('h2.hP')].filter(vis)[0];
+         if (!hdr) return false;
+         const root = hdr.closest('div[role="main"]') || document;
+         const ids = [...root.querySelectorAll('[data-legacy-message-id]')].filter(vis)
+           .map((e) => e.getAttribute('data-legacy-message-id'));
+         const tids = [...root.querySelectorAll('[data-legacy-thread-id]')].filter(vis)
+           .map((e) => e.getAttribute('data-legacy-thread-id'));
+         return ids.includes(${id}) || tids.includes(${id});`,
+      )
+      .catch(() => false)) === true
+  );
+}
+
 async function openThread(cdp: LabelCdp, threadId: string, opts: { force?: boolean } = {}): Promise<void> {
   const id = String(threadId || '').trim();
   if (!id) throw new GmError('INVALID_THREAD', 'threadId is required');
@@ -1114,9 +1140,21 @@ async function openThread(cdp: LabelCdp, threadId: string, opts: { force?: boole
       `the driver browser is on "${loc.host || 'about:blank'}", not mail.google.com — open Gmail (gmail_status / gmail_login) before driving labels.`,
     );
   }
-  if (!opts.force && loc.onThread && loc.hash.includes(id)) return;
+  // MEASURED 2026-07-30: the hash is not evidence. A hash-only write does NOT
+  // re-route Gmail to another conversation — it leaves the PREVIOUS thread
+  // rendered while location.hash reads exactly as requested. And on a navigation
+  // that does land, Gmail rewrites the hash to its own permalink id, so the hex
+  // is no longer in it. `loc.hash.includes(id)` was therefore wrong in both
+  // directions: true while showing the wrong thread, false while showing the
+  // right one. Ask the DOM instead.
+  if (!opts.force && (await threadRendered(cdp, id))) return;
 
-  await cdp.evaluate(jsGotoHash(`#all/${encodeURIComponent(id)}`));
+  // Only a real document load routes the SPA to a conversation.
+  await cdp.evaluate(`location.hash = ${JSON.stringify(`#all/${encodeURIComponent(id)}`)}; return true;`).catch(() => undefined);
+  await sleep(300);
+  await cdp.evaluate('location.reload(); return true;').catch(() => undefined);
+  await sleep(3200);
+
   const ready = await waitFor(
     cdp,
     `return !!document.querySelector(${JSON.stringify(LABEL_SELECTORS.threadReady)});`,
@@ -1126,6 +1164,14 @@ async function openThread(cdp: LabelCdp, threadId: string, opts: { force?: boole
     throw new GmError('THREAD_NOT_OPEN', `timed out opening thread ${id} (no ${LABEL_SELECTORS.threadReady})`);
   }
   await sleep(600);
+  // Prove it is the requested thread before any label verb touches it. Labelling
+  // or moving the WRONG conversation is silent and not self-correcting.
+  if (!(await threadRendered(cdp, id))) {
+    throw new GmError(
+      'THREAD_MISMATCH',
+      `opened a conversation but it does not carry thread id ${id} — refusing to act on another thread`,
+    );
+  }
 }
 
 /** The nav label tree, as LabelInfo (unread parsed to a number). */

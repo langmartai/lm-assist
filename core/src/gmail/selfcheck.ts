@@ -255,6 +255,88 @@ export const JS_COMPOSE = `
   out.stillOpen = __visAll(${q(S.body)}).length > 0;
   return out;`;
 
+
+/**
+ * @internal Exported so the unit tests can compile this exact string.
+ *
+ * Writes through the connector's REAL body resolver and verifies through a
+ * DIFFERENT one. That asymmetry is the whole point: the bug this exists to catch
+ * had the write and the readback share \`__bodyEl()\`, so they agreed perfectly
+ * while the text went into Gmail's "Describe your message" AI prompt and every
+ * message went out EMPTY reporting verified: true. A readback that reuses the
+ * writer's resolver cannot detect a targeting error — it can only confirm that
+ * the resolver is self-consistent.
+ *
+ * So the assertion is two-sided: the marker must be in the canonical Message
+ * Body, AND in no other editable textbox on the page.
+ */
+export const JS_BODY_TARGET = `
+  ${JS_LIB}
+  const out = { preexisting: false, clicked: false, wroteVia: '', inCanonical: false,
+                strays: [], discarded: false, note: '' };
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const MARK = 'lmcanary-' + Math.random().toString(36).slice(2, 10);
+
+  if (__visAll(${q(S.body)}).length > 0) { out.preexisting = true; return out; }
+
+  let btn = __last(__visAll(${q(S.composeBtn)}));
+  if (!btn) btn = __last(__visAll('div[role="button"], button').filter(x => __label(x).toLowerCase() === 'compose'));
+  if (!btn) { out.note = 'the Compose button was not found'; return out; }
+  out.clicked = __click(btn);
+
+  for (let i = 0; i < 25 && !__bodyEl(); i++) await sleep(400);
+  const el = __bodyEl();
+  if (!el) { out.note = 'the body resolver returned nothing after opening a compose'; return out; }
+  out.wroteVia = String(el.getAttribute('aria-label') || el.className || el.tagName);
+
+  el.replaceChildren();
+  el.appendChild(document.createTextNode(MARK));
+  el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  await sleep(500);
+
+  const canon = __visAll('div[aria-label="Message Body"][role="textbox"]');
+  out.inCanonical = canon.some(b => String(b.innerText || '').indexOf(MARK) >= 0);
+  out.strays = __visAll('div[contenteditable="true"][role="textbox"]')
+    .filter(b => b.getAttribute('aria-label') !== 'Message Body')
+    .filter(b => String(b.innerText || '').indexOf(MARK) >= 0)
+    .map(b => String(b.getAttribute('aria-label') || b.className || 'unlabelled'));
+
+  try {
+    const sc = __scope();
+    let d = __last(__visAll(${q(S.discard)}, sc)) || __last(__visAll(${q(S.discard)}));
+    if (!d && sc) d = __last(__visAll('[role="button"]', sc).filter(x => /discard/i.test(__label(x))));
+    if (d) out.discarded = __click(d);
+    else out.note = (out.note ? out.note + '; ' : '') + 'no Discard control found';
+  } catch (e) {
+    out.note = (out.note ? out.note + '; ' : '') + 'discard threw: ' + String((e && e.message) || e);
+  }
+  await sleep(900);
+  return out;`;
+
+/**
+ * Does text written through the connector's body resolver actually reach the
+ * message body? See JS_BODY_TARGET for why this is verified independently.
+ */
+async function checkBodyTarget(): Promise<string> {
+  const r = await pageProbe(async (cdp) =>
+    cdp.evaluate<{
+      preexisting: boolean; clicked: boolean; wroteVia: string;
+      inCanonical: boolean; strays: string[]; discarded: boolean; note: string;
+    }>(JS_BODY_TARGET),
+  );
+  if (r.preexisting) throw new SoftFail('a compose was already open — leaving the operator\'s unfinished mail alone');
+  if (!r.clicked || !r.wroteVia) throw new SoftFail(r.note || 'could not open a compose to test');
+  if (!r.inCanonical || r.strays.length > 0) {
+    throw new GmDriftError(
+      'COMPOSE_BODY_MISTARGETED',
+      'text written through the connector\'s own body resolver lands in the canonical Message Body and nowhere else',
+      `resolved "${r.wroteVia}"; reached the Message Body: ${r.inCanonical}; also landed in: ${r.strays.join(', ') || '(nothing)'} — a mistargeted body sends EMPTY mail, and any readback sharing the resolver will still report success`,
+      r,
+    );
+  }
+  return `body text reaches the canonical Message Body and nothing else (resolved "${r.wroteVia}")`;
+}
+
 // ─── shared run state ────────────────────────────────────────────────────────
 
 /**
@@ -404,9 +486,15 @@ async function checkPageTokens(): Promise<string> {
  */
 async function checkRawSource(state: RunState): Promise<string> {
   const rows = state.inbox?.length ? state.inbox : await listThreads({ label: 'inbox', limit: 25 });
-  const target = rows.find((r) => !r.unread && r.threadId && looksLikeThreadId(r.threadId));
-  if (!target) throw new SoftFail('no already-read inbox row to sample (opening an unread one would mark it read)');
-  const id = String(target.threadId);
+  // MEASURED 2026-07-30: sampling ONE thread conflates "this message has no raw
+  // source" with "the raw-source path is broken". Threads the connector itself
+  // created answer notExist=true, so a canary that happened to pick one reported
+  // a dead read path while it was working. Try several; fail only if none works.
+  const cands = rows.filter((r) => !r.unread && r.threadId && looksLikeThreadId(r.threadId)).slice(0, 5);
+  if (cands.length === 0) throw new SoftFail('no already-read inbox row to sample (opening an unread one would mark it read)');
+  const tried: Array<{ id: string; status: number; len: number; notExist: boolean }> = [];
+  for (const cand of cands) {
+    const id = String(cand.threadId);
   const r = await pageProbe(async (cdp) =>
     cdp.evaluate<{ status: number; len: number; rfc822: boolean; notExist: boolean }>(
       `const g = window.GLOBALS || [];
@@ -421,15 +509,17 @@ async function checkRawSource(state: RunState): Promise<string> {
                 notExist: /does not exist/i.test(html) };`,
     ),
   );
-  if (!r.rfc822) {
-    throw new GmDriftError(
-      'RAW_SOURCE_UNAVAILABLE',
-      'view=om returns RFC822 source for a known thread',
-      `thread ${id}: status ${r.status}, ${r.len} chars extracted, notExist=${r.notExist}, and it does not start with RFC822 headers — full-message reads would silently return nothing`,
-      r,
-    );
+    if (r.rfc822) return `raw source reachable (${r.len} chars of RFC822 for ${id}; ${tried.length} thread(s) skipped as notExist)`;
+    tried.push({ id, status: r.status, len: r.len, notExist: r.notExist });
   }
-  return `raw source reachable (${r.len} chars of RFC822 for ${id})`;
+  throw new GmDriftError(
+    'RAW_SOURCE_UNAVAILABLE',
+    'view=om returns RFC822 source for at least one known thread',
+    `${tried.length} thread(s) tried, none returned RFC822: ${tried
+      .map((t) => `${t.id} (status ${t.status}, ${t.len} chars, notExist=${t.notExist})`)
+      .join('; ')} — full-message reads would silently return nothing`,
+    { tried },
+  );
 }
 
 async function checkThreadIdentity(state: RunState): Promise<string> {
@@ -595,6 +685,7 @@ export async function runSelfCheck(opts?: { deep?: boolean }): Promise<SelfCheck
   // and clicking Compose mid-navigation is how a probe invents its own flake.
   await sleep(500);
   checks.push(await run('compose.fields', 'critical', checkCompose));
+  checks.push(await run('compose.body_target', 'critical', checkBodyTarget));
 
   if (opts?.deep === true) {
     checks.push(await run('attachments.deep', 'warn', checkAttachments));
