@@ -218,6 +218,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   cc_sessions: 'read',
   ccr_preflight: 'read',
   ccr_remote_list: 'read',
+  ccr_live_list: 'read',
   ccr_load: 'write',
   ccr_mirror: 'write',
   ccr_remote_stop: 'write',

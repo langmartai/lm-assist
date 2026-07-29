@@ -308,6 +308,14 @@ OPERATE FLOW
 5. OPEN the returned webUrl to view/drive in the browser.
 6. MANAGE bridges: ccr_remote_list → the bridge REGISTRATIONS on one node (id, mode, webUrl, alive, bridgeAlive, unverified, searched:{node,cluster}); ccr_remote_stop(id) → tear one down (stops the bridge; only kills a tmux WE created, never the user's existing one).
    ⚠️ ccr_remote_list is NOT "what is running" — it lists bridges, not sessions, and only on ONE node. To answer "what sessions are running" use cc_sessions (this host) or session_footprints(scope:'fleet'). \`alive\` = the session is live; \`bridgeAlive\` = the relay helper is up — a live session with a dead bridge just needs reconnecting, it is not gone. An empty list means empty ON THAT NODE, not fleet-wide: check searched.node/searched.cluster and widen with node=<host> (list_nodes / cluster_list) before concluding nothing is running.
+7. WHAT IS CONNECTED TO claude.ai RIGHT NOW: ccr_live_list → the SOURCE OF TRUTH, read from the ACCOUNT (\`GET /v1/sessions\`) rather than any local store, so it is account-wide, not node-scoped.
+   ⚠️ THE TWO LIST TOOLS ANSWER DIFFERENT QUESTIONS — pick by what you actually want:
+     • ccr_remote_list = the LOCAL BRIDGE REGISTRY — only bridges lm-assist itself spawned (ccr_load/mirror/connect), on ONE node. A session connected by a native \`/remote-control\` inject was never registered, so this returns EMPTY for it even while that session is live and web-reachable.
+     • ccr_live_list = THE ACCOUNT'S OWN LIST — sees every remote-control + cloud session regardless of who started it, including native injects.
+   Each row: \`kind\` (local-remote-control = a real machine's Claude Code driven from the web | cloud = an Anthropic-run container) and \`via\` (native-inject | lm-assist-bridge).
+   🔴 \`live\` combines BOTH liveness axes and is the field to trust. An ARCHIVED session very often still reports \`connection: connected\` (measured: 67 such rows in one page), so reading \`connection\` alone reports finished work as running.
+   🔴 \`cwd\` is EMPTY on every row upstream — location is reported as repo/branch instead. Do not plan on cwd from this surface.
+   The result is an OBJECT (returned / matched / scanned / truncated / note), never a bare array: a short list is not proof there is no more. Default is live-only, 25 rows, 1 page — pass include_archived, limit, or pages to widen.
 
 CREATE A NEW LOCAL CCR SESSION (POSIX/tmux) — the verified recipe
 WHEN: you want a NEW Claude Code session on a node that is driveable from claude.ai/code — NOT to bridge one that already exists. The OPERATE FLOW above adopts an EXISTING session; this is the from-scratch path, and it is also the fallback when \`ccr_connect\` fails.

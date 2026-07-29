@@ -187,6 +187,13 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
   list_projects: { measuredBytes: 4185, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   rule_sync_status: { measuredBytes: 1630, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   ccr_remote_list: { measuredBytes: 3354, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
+  ccr_live_list: { measuredBytes: 4614, budgetBytes: 25000, bound: 'CALLER_LIMIT_SANE_DEFAULT', verdict: 'SAFE', note:
+    'Measured on 117, 2026-07-29, against a real account of 357 sessions. Default call (live only, ' +
+    'limit 25, 1 page) = 4,614 B. The RAW upstream page this projects from is 544,910 B — the row ' +
+    'projection is what makes the tool safe, so do not widen it back out. The limit ceiling is 40, ' +
+    'set BY measurement: at ~495 B/row a ceiling of 100 measured 49,982 B, i.e. 2x over budget, so ' +
+    'the bound would only have fired after the damage. `pages` (max 5) widens the SCAN, not the ' +
+    'result, so it does not move this number.' },
   memory_sync_status: { measuredBytes: 1486, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   scheduler_jobs: { measuredBytes: 3031, budgetBytes: 25000, bound: 'SMALL_BY_CONSTRUCTION', verdict: 'SAFE' },
   rule_map: { measuredBytes: 2392, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },

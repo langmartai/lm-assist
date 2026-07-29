@@ -127,7 +127,7 @@ mod('machine-access.ts', 'machine-access', ['machine_access']);
 
 // --- ccr / cloud Claude Code ---
 mod('expanded.ts', 'ccr', [
-  'cc_sessions', 'ccr_preflight', 'ccr_remote_list', 'ccr_load', 'ccr_mirror', 'ccr_connect', 'ccr_drive',
+  'cc_sessions', 'ccr_preflight', 'ccr_remote_list', 'ccr_live_list', 'ccr_load', 'ccr_mirror', 'ccr_connect', 'ccr_drive',
   'ccr_remote_stop', 'ccr_restart', 'ccr_cloud_start', 'ccr_cloud_repos', 'ccr_cloud_drive', 'ccr_cloud_answer',
   'ccr_cloud_read', 'ccr_cloud_stop', 'ccr_cloud_restart', 'ccr_cloud_list',
 ]);
