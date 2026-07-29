@@ -796,9 +796,7 @@ function stList(labels: readonly string[]): Strategy {
   return {
     name: 'list-toolbar',
     async run(cdp, id) {
-      const here = await snapshot(cdp, id);
-      if (here.view !== 'list') await gotoHash(cdp, '#inbox', SELECTORS.listReady);
-      if (!(await ensureRowRendered(cdp, id))) return { ok: false, miss: 'row-not-in-current-list' };
+      if (!(await ensureRowInSomeList(cdp, id))) return { ok: false, miss: 'row-not-in-inbox-or-all' };
       const sel = await cdp.evaluate<ClickOutcome>(jsSelectRow(id));
       if (!sel.ok) return sel;
       const hit = await clickCtl(cdp, labels, SELECTORS.listToolbar);
@@ -810,6 +808,29 @@ function stList(labels: readonly string[]): Strategy {
       return wide.ok ? { ok: true, seen: wide.seen } : { ok: false, miss: fmtMiss(hit) };
     },
   };
+}
+
+/**
+ * Make the target row renderable in SOME list, not merely "a list".
+ *
+ * MEASURED 2026-07-30: the list strategies asked `view !== 'list'` and, if a list
+ * was showing, went straight to ensureRowRendered. But after a label/remove or a
+ * move the visible list can be one the thread is no longer IN - an emptied label
+ * view, for instance - so the row never rendered and the verb quietly did
+ * nothing, while the direction that happened to be a no-op still "passed". Being
+ * in a list is not the same as being in a list that contains the thread.
+ */
+async function ensureRowInSomeList(cdp: Cdp, id: string): Promise<boolean> {
+  const here = await snapshot(cdp, id);
+  if (here.view !== 'list') await gotoHash(cdp, '#inbox', SELECTORS.listReady);
+  if (await ensureRowRendered(cdp, id)) return true;
+  // The current list does not hold it. #inbox first (the common case), then #all,
+  // which holds everything except Trash and Spam.
+  for (const hash of ['#inbox', '#all']) {
+    await gotoHash(cdp, hash, SELECTORS.listReady).catch(() => undefined);
+    if (await ensureRowRendered(cdp, id)) return true;
+  }
+  return false;
 }
 
 /** (a) Open the thread and use its toolbar — `[gh="mtb"]`, which MAY be empty. */
@@ -858,9 +879,7 @@ function stMoreMenu(labels: readonly string[]): Strategy {
 const stRowStar: Strategy = {
   name: 'row-star',
   async run(cdp, id) {
-    const here = await snapshot(cdp, id);
-    if (here.view !== 'list') await gotoHash(cdp, '#inbox', SELECTORS.listReady);
-    if (!(await ensureRowRendered(cdp, id))) return { ok: false, miss: 'row-not-in-current-list' };
+    if (!(await ensureRowInSomeList(cdp, id))) return { ok: false, miss: 'row-not-in-inbox-or-all' };
     return await clickStar(cdp, id);
   },
 };
