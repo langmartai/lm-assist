@@ -99,6 +99,12 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  */
 export interface LabelCdp {
   evaluate<T = unknown>(expr: string): Promise<T>;
+  /**
+   * Raw CDP. Optional so this module still compiles standalone, but WITHOUT it
+   * the toolbar menus cannot be opened at all — Gmail ignores synthetic clicks
+   * on them. See trustedClickControl.
+   */
+  send?(method: string, params?: Record<string, unknown>): Promise<unknown>;
 }
 
 // ─── result types ────────────────────────────────────────────────────────────
@@ -1152,8 +1158,8 @@ async function openThread(cdp: LabelCdp, threadId: string, opts: { force?: boole
   // Only a real document load routes the SPA to a conversation.
   await cdp.evaluate(`location.hash = ${JSON.stringify(`#all/${encodeURIComponent(id)}`)}; return true;`).catch(() => undefined);
   await sleep(300);
-  await cdp.evaluate('location.reload(); return true;').catch(() => undefined);
-  await sleep(3200);
+  await reloadPage(cdp);
+  await sleep(3000);
 
   const ready = await waitFor(
     cdp,
@@ -1219,7 +1225,46 @@ async function readToast(cdp: LabelCdp): Promise<string | null> {
 }
 
 /** Open the Labels menu on the currently open thread. Reports the winner. */
-async function openLabelMenu(cdp: LabelCdp): Promise<{ via: string; items: number; hasFilter: boolean }> {
+/**
+ * Click a toolbar control with a TRUSTED mouse event.
+ *
+ * MEASURED 2026-07-30: element.click() on the Labels control opens nothing — a
+ * before/after diff of every visible container found zero new nodes. The same
+ * control clicked through CDP Input.dispatchMouseEvent opens
+ * div[role="menu"].J-M.agd.aYO with 79 items. Gmail evidently gates these menus
+ * on event.isTrusted, which a synthetic MouseEvent can never satisfy. This is the
+ * same class of failure as the recipient field, which ignores synthetic key
+ * events and only accepts a native value set.
+ *
+ * Returns false when no control matched or the transport has no raw CDP, so the
+ * caller can still report the honest reason.
+ */
+async function trustedClickControl(cdp: LabelCdp, labelRe: string): Promise<{ ok: boolean; al: string | null; why?: string }> {
+  if (typeof cdp.send !== 'function') return { ok: false, al: null, why: 'this transport exposes no raw CDP, so no trusted event can be sent' };
+  const box = await cdp
+    .evaluate<{ ok: boolean; x?: number; y?: number; al?: string | null }>(
+      `const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+       const b = [...document.querySelectorAll('div[role="button"],button')].filter(vis).find((e) => {
+         const a = String(e.getAttribute('aria-label') || '').trim();
+         const t = String(e.getAttribute('data-tooltip') || '').trim();
+         return new RegExp(${JSON.stringify(labelRe)}, 'i').test(a) || new RegExp(${JSON.stringify(labelRe)}, 'i').test(t);
+       });
+       if (!b) return { ok: false };
+       const r = b.getBoundingClientRect();
+       return { ok: true, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), al: b.getAttribute('aria-label') };`,
+    )
+    .catch(() => ({ ok: false }) as { ok: boolean; x?: number; y?: number; al?: string | null });
+  if (!box.ok || typeof box.x !== 'number') return { ok: false, al: null, why: `no visible control matching /${labelRe}/i` };
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y, buttons: 0 });
+  await sleep(120);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', clickCount: 1, buttons: 1 });
+  await sleep(70);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', clickCount: 1, buttons: 0 });
+  await sleep(900);
+  return { ok: true, al: box.al ?? null };
+}
+
+async function openLabelMenu(cdp: LabelCdp, threadId?: string): Promise<{ via: string; items: number; hasFilter: boolean }> {
   const already = await cdp.evaluate<MenuStateRead>(JS_MENU_STATE);
   if (already.open && already.items > 0) return { via: 'already-open', items: already.items, hasFilter: already.hasFilter };
 
@@ -1238,14 +1283,44 @@ async function openLabelMenu(cdp: LabelCdp): Promise<{ via: string; items: numbe
      return !!m && m.querySelectorAll(${JSON.stringify(LABEL_SELECTORS.menuItem)}).length > 0;`,
     6000,
   );
-  const st = await cdp.evaluate<MenuStateRead>(JS_MENU_STATE);
+  let st = await cdp.evaluate<MenuStateRead>(JS_MENU_STATE);
+  let via = click.via;
+
+  // The synthetic click is expected to fail — Gmail gates this menu on a trusted
+  // event. Retry properly before giving up. Kept as a FALLBACK rather than the
+  // only path so the module still works over a transport with no raw CDP.
   if (!opened || !st.open) {
+    // reselect before the trusted retry: the toolbar controls exist only while a
+    // row is checked, and the failed synthetic click may have cleared or moved
+    // that state. MEASURED: at retry time no control matched, even though the
+    // selection had succeeded moments earlier.
+    if (threadId) await selectRowForThread(cdp, threadId).catch(() => false);
+    const t = await trustedClickControl(cdp, '^labels?$|^label as');
+    if (t.ok) {
+      await waitFor(
+        cdp,
+        `const m = [...document.querySelectorAll(${JSON.stringify(LABEL_SELECTORS.menu)})]
+           .filter((e) => e.offsetParent !== null && e.getBoundingClientRect().height > 0).pop();
+         return !!m && m.querySelectorAll(${JSON.stringify(LABEL_SELECTORS.menuItem)}).length > 0;`,
+        6000,
+      );
+      st = await cdp.evaluate<MenuStateRead>(JS_MENU_STATE);
+      if (st.open) via = `trusted-click(${t.al ?? 'Labels'})`;
+    } else if (t.why) {
+      throw new GmError(
+        'LABEL_MENU_NOT_OPEN',
+        `clicked the Labels control (strategy "${click.via}") and the menu stayed shut, and the trusted-event retry could not run: ${t.why}.`,
+      );
+    }
+  }
+
+  if (!st.open) {
     throw new GmError(
       'LABEL_MENU_NOT_OPEN',
-      `clicked the Labels control (strategy "${click.via}") but no menu with items appeared — the menu selector (${LABEL_SELECTORS.menu}) or the item selector (${LABEL_SELECTORS.menuItem}) is wrong.`,
+      `the Labels control was clicked (strategy "${click.via}") both synthetically and with a trusted mouse event, and no menu with items appeared — the menu selector (${LABEL_SELECTORS.menu}) or the item selector (${LABEL_SELECTORS.menuItem}) is wrong.`,
     );
   }
-  return { via: click.via, items: st.items, hasFilter: st.hasFilter };
+  return { via, items: st.items, hasFilter: st.hasFilter };
 }
 
 async function readMenuItems(cdp: LabelCdp): Promise<MenuItem[]> {
@@ -1451,6 +1526,100 @@ interface WriteOutcome {
  *   4. toggle, checking the row's state changed before bothering with Apply;
  *   5. re-read to verify.
  */
+/**
+ * Force a real document load.
+ *
+ * Uses the CDP Page.reload method when the transport exposes raw CDP. The
+ * evaluate() form is a fallback and is RACED against a timer on purpose: a
+ * reload destroys the execution context the evaluate is running in, so that
+ * promise can simply never settle, and an unbounded await there wedges the whole
+ * operation rather than failing it.
+ */
+async function reloadPage(cdp: LabelCdp): Promise<void> {
+  if (typeof cdp.send === 'function') {
+    await Promise.race([cdp.send('Page.reload', {}).catch(() => undefined), sleep(4000)]);
+    return;
+  }
+  await Promise.race([cdp.evaluate('location.reload(); return true;').catch(() => undefined), sleep(4000)]);
+}
+
+/**
+ * Put the UI in the state the label and move menus actually require: the LIST
+ * view, with this thread's row CHECKED.
+ *
+ * MEASURED 2026-07-30: the thread view exposes no Labels control at all. Its
+ * toolbar offers only "Create new label", "Search for all messages with label
+ * Inbox" and "Remove label Inbox from this conversation". Labels
+ * (T-I.J-J5-Ji.T-I-Js-Gs), Move to (T-I-Js-IF) and Archive (lR) live on the LIST
+ * toolbar and materialise only once a row is checked. setThreadLabel opened the
+ * thread and then hunted for a control that is not in that view, which is why
+ * every label write failed with LABEL_MENU_NOT_OPEN.
+ *
+ * The row checkbox DOES respond to a synthetic click (measured: the row gains
+ * .x7); it is the toolbar menu buttons that need a trusted event.
+ */
+async function selectRowForThread(cdp: LabelCdp, threadId: string): Promise<boolean> {
+  for (const hash of ['#inbox', '#all']) {
+    await cdp.evaluate(`location.hash = ${JSON.stringify(hash)}; return true;`).catch(() => undefined);
+    await sleep(250);
+    // A real load: a hash-only write does not re-route the SPA reliably.
+    await reloadPage(cdp);
+    await sleep(3000);
+    const ok = await cdp
+      .evaluate<boolean>(
+        `const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+         const row = [...document.querySelectorAll('tr.zA')].filter(vis).find((tr) => {
+           const el = tr.querySelector('[data-legacy-thread-id]');
+           return el && el.getAttribute('data-legacy-thread-id') === ${JSON.stringify(threadId)};
+         });
+         if (!row) return false;
+         const cb = row.querySelector('div[role="checkbox"]');
+         if (!cb) return false;
+         if (String(row.className).indexOf('x7') < 0) cb.click();
+         await new Promise((r) => setTimeout(r, 800));
+         return String(row.className).indexOf('x7') >= 0;`,
+      )
+      .catch(() => false);
+    if (ok === true) return true;
+  }
+  return false;
+}
+
+/**
+ * Click a MENU ROW with a trusted mouse event.
+ *
+ * MEASURED 2026-07-30: the same gate that keeps the Labels button shut against a
+ * synthetic click also applies to the rows inside the menu — jsClickMenuItem
+ * reported the checkbox state stayed "off" after clicking. Gmail accepts the
+ * trusted event.
+ */
+async function trustedClickMenuRow(cdp: LabelCdp, target: string): Promise<boolean> {
+  if (typeof cdp.send !== 'function') return false;
+  const box = await cdp
+    .evaluate<{ ok: boolean; x?: number; y?: number }>(
+      `const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+       const menu = [...document.querySelectorAll(${JSON.stringify(LABEL_SELECTORS.menu)})].filter(vis).pop();
+       if (!menu) return { ok: false };
+       const want = ${JSON.stringify(target)}.trim().toLowerCase();
+       const leaf = want.split('/').pop();
+       const rows = [...menu.querySelectorAll(${JSON.stringify(LABEL_SELECTORS.menuItem)})].filter(vis);
+       const norm = (r) => String(r.innerText || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+       const row = rows.find((r) => norm(r) === want) || rows.find((r) => norm(r) === leaf) || rows.find((r) => norm(r).indexOf(leaf) >= 0);
+       if (!row) return { ok: false };
+       const b = row.getBoundingClientRect();
+       return { ok: true, x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2) };`,
+    )
+    .catch(() => ({ ok: false }) as { ok: boolean; x?: number; y?: number });
+  if (!box.ok || typeof box.x !== 'number' || typeof box.y !== 'number') return false;
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y, buttons: 0 });
+  await sleep(100);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', clickCount: 1, buttons: 1 });
+  await sleep(60);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', clickCount: 1, buttons: 0 });
+  await sleep(800);
+  return true;
+}
+
 async function setThreadLabel(cdp: LabelCdp, threadId: string, label: string, want: 'on' | 'off'): Promise<WriteOutcome> {
   const wanted = String(label || '').trim();
   if (!wanted) throw new GmError('INVALID_LABEL', 'label is required');
@@ -1464,7 +1633,16 @@ async function setThreadLabel(cdp: LabelCdp, threadId: string, label: string, wa
   const nav = await readNavLabels(cdp);
   const navNames = nav.map((l) => l.name);
 
-  const menu = await openLabelMenu(cdp);
+  // The chips above were read from the thread view; the MENU only exists on the
+  // list toolbar with the row checked. See selectRowForThread.
+  if (!(await selectRowForThread(cdp, threadId))) {
+    throw new GmError(
+      'ROW_NOT_SELECTABLE',
+      `could not check thread ${threadId}'s row in #inbox or #all — the Labels menu exists only on the LIST toolbar with a row selected, so there is no way to reach it from here`,
+    );
+  }
+
+  const menu = await openLabelMenu(cdp, threadId);
   const trace: string[] = [`labels-btn=${menu.via}`, `menu-items=${menu.items}`, `menu-filter=${menu.hasFilter}`];
 
   try {
@@ -1530,10 +1708,18 @@ async function setThreadLabel(cdp: LabelCdp, threadId: string, label: string, wa
     trace.push(`row=${click.before}->${click.after}${click.noop ? ' (noop)' : ''}`);
 
     if (!click.noop && !click.autoClosed && click.after !== 'unknown' && click.after !== want) {
-      throw new GmError(
-        'ITEM_TOGGLE_FAILED',
-        `clicked the "${target}" row but its state stayed "${click.after}" — Gmail did not accept the click, so nothing was applied.`,
-      );
+      // Gmail ignores the synthetic click on menu rows exactly as it does on the
+      // Labels button. Retry with a trusted event and let verifyThreadLabel below
+      // be the authority on whether it actually took — asserting here would just
+      // be a second reading from the same doubtful source.
+      const retried = await trustedClickMenuRow(cdp, target);
+      trace.push(`item-trusted-retry=${retried ? 'sent' : 'unavailable'}`);
+      if (!retried) {
+        throw new GmError(
+          'ITEM_TOGGLE_FAILED',
+          `clicked the "${target}" row but its state stayed "${click.after}", and no trusted-event retry was possible (this transport exposes no raw CDP) — nothing was applied.`,
+        );
+      }
     }
 
     if (!click.autoClosed) {
