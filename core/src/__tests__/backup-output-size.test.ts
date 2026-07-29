@@ -123,6 +123,7 @@ test('status stays bounded even with hundreds of legacy secrets', () => {
     // The store walk decides this length — it is DATA, so it must be bounded.
     legacySecrets: Array.from({ length: 500 }, (_, i) => ({
       path: `${MONSTER_PATH}/${i}`, reason: 'live Claude Code OAuth token', bytes: 555,
+      isDir: i % 3 === 0,
     })),
     recentRemovals: Array.from({ length: 5 }, (_, i) => ({
       at: '2026-07-29 12:00:00', path: `${MONSTER_PATH}/${i}`, reason: 'purge of a captured credential',

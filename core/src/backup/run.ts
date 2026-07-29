@@ -178,7 +178,7 @@ export interface StatusReport {
   missing: string[];
   run: RunState | null;
   index: IndexMeta;
-  legacySecrets: { path: string; reason: string; bytes: number }[];
+  legacySecrets: { path: string; reason: string; bytes: number; isDir: boolean }[];
   recentRemovals: ReturnType<typeof readRemovals>;
   history: string[];
   diskFreeGB: number | null;
