@@ -73,6 +73,11 @@
  */
 interface Cdp {
   evaluate<T = unknown>(expr: string): Promise<T>;
+  /**
+   * Raw CDP. Optional so this module compiles standalone, but WITHOUT it every
+   * toolbar click is synthetic, and Gmail ignores those — see clickCtl.
+   */
+  send?(method: string, params?: Record<string, unknown>): Promise<unknown>;
 }
 
 /**
@@ -520,6 +525,91 @@ interface ClickOutcome {
 }
 
 /** Click a control by label, optionally scoped to a container selector. */
+/** Locate a control by label and return its CENTRE, without clicking. */
+function jsFindCtl(labels: readonly string[], scopeSel?: string): string {
+  const j = JSON.stringify;
+  return `${JS_PRE}
+  const scope = ${scopeSel ? `__scope(${j(scopeSel)})` : 'document'};
+  if (!scope) return { ok: false, miss: 'scope-not-visible:' + ${j(scopeSel || '')} };
+  const seen = [...scope.querySelectorAll('[aria-label], [data-tooltip], [role="menuitem"], [role="button"], button')]
+    .filter(el => __shown(el))
+    .map(el => (el.getAttribute('aria-label') || el.getAttribute('data-tooltip') || (el.textContent || '').trim()).slice(0, 40))
+    .filter(Boolean).slice(0, 25);
+  const el = __findCtl(${j(labels)}, scope);
+  if (!el) return { ok: false, miss: 'no-control-matching:' + ${j(labels.join('|'))}, seen: seen };
+  el.scrollIntoView({ block: 'center' });
+  await new Promise(r => setTimeout(r, 150));
+  const b = el.getBoundingClientRect();
+  if (b.width <= 0 || b.height <= 0) return { ok: false, miss: 'control-has-no-box', seen: seen };
+  return { ok: true, x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2), seen: seen };`;
+}
+
+/** Locate a row's star control and return its CENTRE, without clicking. */
+function jsFindStar(id: string): string {
+  const j = JSON.stringify;
+  return `${JS_PRE}
+  const row = __row(${j(id)});
+  if (!row) return { ok: false, miss: 'row-not-visible' };
+  const els = [...row.querySelectorAll(${j(SELECTORS.star)})].filter(__shown);
+  const star = els.find(el => /^(not starred|starred|add star|remove star|star)$/i
+      .test((el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('data-tooltip') || '').trim()))
+    || els.find(el => el.classList && el.classList.contains('T-KT'));
+  if (!star) return { ok: false, miss: 'row-has-no-star-control' };
+  star.scrollIntoView({ block: 'center' });
+  await new Promise(r => setTimeout(r, 150));
+  const b = star.getBoundingClientRect();
+  if (b.width <= 0 || b.height <= 0) return { ok: false, miss: 'star-has-no-box' };
+  return { ok: true, x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2) };`;
+}
+
+/** Send a trusted press/release at a point. */
+async function dispatchTrustedClick(cdp: Cdp, x: number, y: number): Promise<void> {
+  if (typeof cdp.send !== 'function') return;
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, buttons: 0 });
+  await sleep(100);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1, buttons: 1 });
+  await sleep(60);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1, buttons: 0 });
+  await sleep(500);
+}
+
+/**
+ * Click a control, preferring a TRUSTED mouse event.
+ *
+ * Falls back to the synthetic click when the transport exposes no raw CDP, so
+ * behaviour is never worse than before. A genuine "no control matched" is
+ * returned as-is rather than retried synthetically — that is a real miss and its
+ * `seen` list is the diagnostic.
+ */
+async function clickCtl(cdp: Cdp, labels: readonly string[], scopeSel?: string): Promise<ClickOutcome> {
+  if (typeof cdp.send === 'function') {
+    const box = await cdp
+      .evaluate<ClickOutcome & { x?: number; y?: number }>(jsFindCtl(labels, scopeSel))
+      .catch(() => ({ ok: false, miss: 'find-threw' }) as ClickOutcome & { x?: number; y?: number });
+    if (box.ok && typeof box.x === 'number' && typeof box.y === 'number') {
+      await dispatchTrustedClick(cdp, box.x, box.y);
+      return { ok: true, seen: box.seen };
+    }
+    if (typeof box.miss === 'string' && box.miss.indexOf('no-control-matching') === 0) return box;
+  }
+  return cdp.evaluate<ClickOutcome>(jsClickCtl(labels, scopeSel));
+}
+
+/** Click a row's star, preferring a TRUSTED mouse event. */
+async function clickStar(cdp: Cdp, id: string): Promise<ClickOutcome> {
+  if (typeof cdp.send === 'function') {
+    const box = await cdp
+      .evaluate<ClickOutcome & { x?: number; y?: number }>(jsFindStar(id))
+      .catch(() => ({ ok: false, miss: 'find-threw' }) as ClickOutcome & { x?: number; y?: number });
+    if (box.ok && typeof box.x === 'number' && typeof box.y === 'number') {
+      await dispatchTrustedClick(cdp, box.x, box.y);
+      return { ok: true };
+    }
+    if (typeof box.miss === 'string' && box.miss !== 'find-threw') return box;
+  }
+  return cdp.evaluate<ClickOutcome>(jsClickStar(id));
+}
+
 function jsClickCtl(labels: readonly string[], scopeSel?: string): string {
   const j = JSON.stringify;
   return `${JS_PRE}
@@ -711,11 +801,11 @@ function stList(labels: readonly string[]): Strategy {
       if (!(await ensureRowRendered(cdp, id))) return { ok: false, miss: 'row-not-in-current-list' };
       const sel = await cdp.evaluate<ClickOutcome>(jsSelectRow(id));
       if (!sel.ok) return sel;
-      const hit = await cdp.evaluate<ClickOutcome>(jsClickCtl(labels, SELECTORS.listToolbar));
+      const hit = await clickCtl(cdp, labels, SELECTORS.listToolbar);
       if (hit.ok) return hit;
       // The toolbar container selector is a CANDIDATE; retry unscoped before
       // giving up, then always disarm the selection we just made.
-      const wide = await cdp.evaluate<ClickOutcome>(jsClickCtl(labels));
+      const wide = await clickCtl(cdp, labels);
       if (!wide.ok) await cdp.evaluate(JS_CLEAR_SELECTION).catch(() => undefined);
       return wide.ok ? { ok: true, seen: wide.seen } : { ok: false, miss: fmtMiss(hit) };
     },
@@ -728,7 +818,7 @@ function stThreadToolbar(labels: readonly string[]): Strategy {
     name: 'thread-toolbar',
     async run(cdp, id) {
       await openThread(cdp, id);
-      return await cdp.evaluate<ClickOutcome>(jsClickCtl(labels, SELECTORS.threadToolbar));
+      return await clickCtl(cdp, labels, SELECTORS.threadToolbar);
     },
   };
 }
@@ -739,7 +829,7 @@ function stThreadChip(labels: readonly string[]): Strategy {
     name: 'thread-label-chip',
     async run(cdp, id) {
       await openThread(cdp, id);
-      return await cdp.evaluate<ClickOutcome>(jsClickCtl(labels));
+      return await clickCtl(cdp, labels);
     },
   };
 }
@@ -771,7 +861,7 @@ const stRowStar: Strategy = {
     const here = await snapshot(cdp, id);
     if (here.view !== 'list') await gotoHash(cdp, '#inbox', SELECTORS.listReady);
     if (!(await ensureRowRendered(cdp, id))) return { ok: false, miss: 'row-not-in-current-list' };
-    return await cdp.evaluate<ClickOutcome>(jsClickStar(id));
+    return await clickStar(cdp, id);
   },
 };
 
