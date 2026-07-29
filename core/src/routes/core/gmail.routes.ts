@@ -27,9 +27,30 @@
  *   POST /gmail/send                  { to, subject, body, format? }
  *   POST /gmail/reply                 { threadId, body, format? }
  *   POST /gmail/draft                 { to, subject, body, format? } — save, do not send
+ *   POST /gmail/archive               { threadId } — remove the Inbox label
+ *   POST /gmail/trash                 { threadId } — move to Trash (30-day recovery)
+ *   POST /gmail/mark-read             { threadId, read } — read flag; `read` REQUIRED
+ *   POST /gmail/star                  { threadId, starred } — `starred` REQUIRED
+ *   POST /gmail/spam                  { threadId, spam } — `spam` REQUIRED
+ *   POST /gmail/label/apply           { threadId, label } — add an EXISTING label
+ *   POST /gmail/label/remove          { threadId, label } — take a label off a thread
+ *   POST /gmail/label/create          { name, parent? } — create a label
+ *   POST /gmail/move-to               { threadId, label } — apply label + archive
  *   POST /gmail/login                 launch/drive a login browser
  *   GET  /gmail/login/status?port=    poll the login browser
  *   POST /gmail/keepalive             force one keep-alive tick
+ *
+ * 🔴 TRIAGE + LABEL WRITES CARRY `verified`. gmail/actions.ts and gmail/labels.ts
+ * return `{ ok, verified, note }` and deliberately separate "did it and CONFIRMED
+ * it" (`verified:true`) from "drove the control but could not observe the change"
+ * (`verified:false`). These routes pass that through UNTOUCHED and never collapse
+ * it into the `success` flag: `success:true, verified:false` is a real and common
+ * outcome, and anything above that renders it as a plain success is lying about a
+ * mutation to someone's mailbox. `note` carries the strategy trace that says why.
+ *
+ * DELIBERATELY NOT ROUTED: permanent delete, snooze, mute, importance and the
+ * bulk verb. See gmail/actions.ts — they compile, but exposing them is a separate
+ * scope decision, not an oversight.
  *
  * `format` (send/reply/draft) is 'markdown' | 'text' | 'html', default
  * 'markdown' — markdown is rendered into real rich mail (bold, italics, links,
@@ -61,6 +82,19 @@ import {
   replyToThread,
   keepSessionWarm,
   listSendAs,
+  // Triage + label verbs. These are the SESSION-OWNING wrappers: each one takes
+  // the CDP connection through op(), normalises the thrown error via toGmError
+  // and validates threadId, so a route never touches a raw `cdp` and never has
+  // to import ./actions or ./labels directly.
+  archiveThread,
+  trashThread,
+  markRead,
+  starThread,
+  markSpam,
+  applyLabel,
+  removeLabel,
+  createLabel,
+  moveToLabel,
   GmError,
 } from '../../gmail/cdp-client';
 import { searchLocal, syncStatus } from '../../gmail/store';
@@ -91,6 +125,48 @@ function fail(e: unknown): { success: false; error: string; code?: string } {
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : '';
+}
+
+// ─── required arguments for the triage + label verbs ─────────────────────────
+
+/**
+ * A REQUIRED, non-empty thread id. A number is accepted because a connector-
+ * relayed argument does not always keep its JSON type and Gmail's legacy ids are
+ * all-hex (so an id like `1980000000000000` arrives as a number).
+ */
+function reqThreadId(v: unknown): { id: string } | { error: string } {
+  const id = (typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : '').trim();
+  if (!id) return { error: 'Body must include a non-empty { threadId } (from /gmail/threads or /gmail/search)' };
+  return { id };
+}
+
+/**
+ * A REQUIRED boolean. Absent or unparseable is an ERROR, never a default.
+ *
+ * 🔴 This is the whole point of the helper: `bool()` above takes a fallback, and
+ * a `mark-read` that fell back to `true` would silently mark someone's mail read
+ * on a malformed call — a state change nobody asked for, with no undo from the
+ * caller's side. Same for `starred` and `spam`. Refuse loudly instead, echoing
+ * what was actually sent so the caller can see the coercion that failed.
+ */
+function reqBool(v: unknown, name: string): { value: boolean } | { error: string } {
+  if (typeof v === 'boolean') return { value: v };
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if (s === 'true' || s === '1' || s === 'yes') return { value: true };
+    if (s === 'false' || s === '0' || s === 'no') return { value: false };
+  }
+  if (v === undefined || v === null || v === '') {
+    return { error: `Body must include { ${name}: true | false } — there is no default for this flag.` };
+  }
+  return { error: `\`${name}\` must be a boolean (true | false); got ${JSON.stringify(v)}` };
+}
+
+/** A REQUIRED, non-empty string argument (label names). */
+function reqStr(v: unknown, name: string, hint: string): { value: string } | { error: string } {
+  const s = str(v).trim();
+  if (!s) return { error: `Body must include a non-empty { ${name} } — ${hint}` };
+  return { value: s };
 }
 
 // ─── body format ─────────────────────────────────────────────────────────────
@@ -426,6 +502,190 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
             bcc: str(b.bcc).trim() || undefined,
           });
           return { success: true, data: { ...saved, format: f.format } };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // ─── triage ──────────────────────────────────────────────────────────────
+    //
+    // Five thread-scoped verbs, all delegated to gmail/actions.ts via the
+    // session-owning wrappers in cdp-client. Every one returns
+    // `{ ok, threadId, action, verified, note? }` and the route returns that
+    // VERBATIM — see the 🔴 note in the header: `verified:false` means the
+    // control was driven but the change was never observed, and collapsing it
+    // into `success` would misreport a real mutation.
+
+    // POST /gmail/archive { threadId } — removes the Inbox label. Reversible.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/archive$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const t = reqThreadId(b.threadId);
+        if ('error' in t) return { success: false, error: t.error };
+        try {
+          return { success: true, data: await archiveThread(t.id) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/trash { threadId } — Trash, not permanent deletion. Google
+    // keeps it ~30 days; there is deliberately no delete-forever route here.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/trash$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const t = reqThreadId(b.threadId);
+        if ('error' in t) return { success: false, error: t.error };
+        try {
+          return { success: true, data: await trashThread(t.id) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/mark-read { threadId, read } — `read` is REQUIRED (reqBool).
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/mark-read$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const t = reqThreadId(b.threadId);
+        if ('error' in t) return { success: false, error: t.error };
+        const r = reqBool(b.read, 'read');
+        if ('error' in r) return { success: false, error: r.error };
+        try {
+          return { success: true, data: await markRead(t.id, r.value) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/star { threadId, starred } — `starred` is REQUIRED.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/star$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const t = reqThreadId(b.threadId);
+        if ('error' in t) return { success: false, error: t.error };
+        const s = reqBool(b.starred, 'starred');
+        if ('error' in s) return { success: false, error: s.error };
+        try {
+          return { success: true, data: await starThread(t.id, s.value) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/spam { threadId, spam } — `spam` is REQUIRED. Reporting spam
+    // trains Google's filter for the whole ACCOUNT, not just this thread.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/spam$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const t = reqThreadId(b.threadId);
+        if ('error' in t) return { success: false, error: t.error };
+        const s = reqBool(b.spam, 'spam');
+        if ('error' in s) return { success: false, error: s.error };
+        try {
+          return { success: true, data: await markSpam(t.id, s.value) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // ─── labels ──────────────────────────────────────────────────────────────
+    //
+    // Delegated to gmail/labels.ts. An unknown label is a LOUD LABEL_NOT_FOUND
+    // carrying near-matches — never a silent create — and `fail()` preserves
+    // that code so the caller can act on it.
+
+    // POST /gmail/label/apply { threadId, label } — the label must already exist.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/label\/apply$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const t = reqThreadId(b.threadId);
+        if ('error' in t) return { success: false, error: t.error };
+        const l = reqStr(b.label, 'label', 'an EXISTING label name (see GET /gmail/labels)');
+        if ('error' in l) return { success: false, error: l.error };
+        try {
+          // `applied` is the label as GMAIL knows it, which may differ in case or
+          // nesting from what was asked for — hence threadId is added rather than
+          // the request being echoed back over the result.
+          return { success: true, data: { threadId: t.id, requested: l.value, ...(await applyLabel(t.id, l.value)) } };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/label/remove { threadId, label } — the label itself survives.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/label\/remove$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const t = reqThreadId(b.threadId);
+        if ('error' in t) return { success: false, error: t.error };
+        const l = reqStr(b.label, 'label', 'the label to take off this thread (see GET /gmail/labels)');
+        if ('error' in l) return { success: false, error: l.error };
+        try {
+          return { success: true, data: { threadId: t.id, requested: l.value, ...(await removeLabel(t.id, l.value)) } };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/label/create { name, parent? } — existing name is a no-op
+    // success. Gmail reads `/` inside `name` as NESTING and there is no escape,
+    // so a label whose name literally contains a slash cannot be created here.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/label\/create$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const n = reqStr(b.name, 'name', 'the label to create');
+        if ('error' in n) return { success: false, error: n.error };
+        const parent = str(b.parent).trim();
+        try {
+          return { success: true, data: await createLabel(n.value, parent ? { parent } : undefined) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/move-to { threadId, label } — apply the label AND archive out
+    // of the Inbox. Unlike Gmail's native "Move to", other user labels on the
+    // thread are LEFT in place; `verified` is true only if BOTH halves were
+    // observed, and `note` carries the per-step trace.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/move-to$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const t = reqThreadId(b.threadId);
+        if ('error' in t) return { success: false, error: t.error };
+        const l = reqStr(b.label, 'label', 'the destination label (see GET /gmail/labels)');
+        if ('error' in l) return { success: false, error: l.error };
+        try {
+          // MoveResult carries neither the thread nor the label, so both are
+          // added here — a bare `{ ok, verified }` is not attributable.
+          return { success: true, data: { threadId: t.id, label: l.value, ...(await moveToLabel(t.id, l.value)) } };
         } catch (e) {
           return fail(e);
         }

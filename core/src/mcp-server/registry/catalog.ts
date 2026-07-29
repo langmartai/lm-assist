@@ -166,7 +166,9 @@ mod('gmail.ts', 'gmail', [
   'gmail_status', 'gmail_login', 'gmail_list_threads', 'gmail_read_thread',
   'gmail_search', 'gmail_search_local', 'gmail_sync', 'gmail_sync_status',
   'gmail_attachments', 'gmail_labels', 'gmail_aliases', 'gmail_send',
-  'gmail_reply', 'gmail_draft',
+  'gmail_reply', 'gmail_draft', 'gmail_archive', 'gmail_trash', 'gmail_mark_read',
+  'gmail_star', 'gmail_spam', 'gmail_apply_label', 'gmail_remove_label',
+  'gmail_create_label', 'gmail_move_to',
 ]);
 
 // --- whatsapp ---

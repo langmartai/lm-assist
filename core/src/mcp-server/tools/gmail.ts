@@ -19,6 +19,21 @@
  * quotes, so DOM scraping is lossy. `gmail_read_thread full:false` opts back
  * into the rendered view.
  *
+ * 🔴 TRIAGE + LABEL WRITES ARE VERIFIED-OR-NOT, NEVER JUST "DONE". Driving a real
+ * UI is not the same as knowing the change took, so gmail/actions.ts and
+ * gmail/labels.ts return `verified` — true ONLY when the new state (or a Gmail
+ * toast) was actually OBSERVED. Every handler below renders that distinction in
+ * its TEXT: `verified:false` prints as UNVERIFIED with an explicit "it may not
+ * have taken, re-read before relying on it". Printing an unverified mutation as
+ * plain success is the one failure mode these tools exist to avoid — a caller
+ * told "archived" who was not archived will act on a mailbox that never changed.
+ *
+ * NOT EXPOSED, on purpose: permanent delete, snooze, mute, importance and the
+ * bulk verb. They compile and are reachable from cdp-client, but permanent
+ * deletion must not be one tool call away from an LLM and the rest are
+ * unverified against a live mailbox. Adding them is a scope decision, not a
+ * cleanup.
+ *
  * Each tool wraps this node's own `/gmail/*` REST route on loopback (single
  * source of truth), so the same behavior is reachable from the stdio MCP, the
  * HTTP `/mcp` endpoint, and remotely via the hub relay.
@@ -286,6 +301,146 @@ export const gmailDraftToolDef = {
   },
 };
 
+// ─── triage + label defs ─────────────────────────────────────────────────────
+//
+// These nine are the tightest tools on this surface for a measured reason: the
+// catalogue budget (252,000 B, __tests__/mcp-catalog-size.test.ts) had 6,605 B
+// of headroom and 306 B per tool goes to the injected `node` selector before a
+// word is written. So each carries exactly three things — what it does, the
+// trigger words that drive selection, and the ONE thing a caller gets wrong —
+// and nothing else. The `verified` contract is deliberately NOT re-explained
+// here: it is a property of the RESULT, and the handlers print it every time.
+//
+// The REQUIRED booleans (`read`, `starred`, `spam`) carry no property
+// description on purpose: the polarity of `read: true` is its own name, and a
+// line restating the schema would cost bytes on every conversation to say
+// nothing. What a caller can get wrong — that there is no default — is in the
+// tool description, and the route refuses a missing flag outright.
+
+/** Shared shape: every triage/label verb is scoped to ONE thread. */
+const GM_THREAD_ID = { type: 'string', description: 'Thread id from a list/search.' };
+const GM_LABEL = { type: 'string', description: 'Label name (gmail_labels).' };
+
+export const gmailArchiveToolDef = {
+  name: 'gmail_archive',
+  description:
+    'Archive a Gmail thread: removes the Inbox label. Trigger words: "archive that email". ' +
+    'Reversible; it stays in All Mail.',
+  annotations: { readOnlyHint: false, destructiveHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: { threadId: GM_THREAD_ID },
+    required: ['threadId'],
+  },
+};
+
+export const gmailTrashToolDef = {
+  name: 'gmail_trash',
+  description:
+    'Move a Gmail thread to TRASH. Trigger words: "delete that email". DESTRUCTIVE: Google erases ' +
+    'it after 30 days. gmail_archive only clears the inbox.',
+  annotations: { readOnlyHint: false, destructiveHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: { threadId: GM_THREAD_ID },
+    required: ['threadId'],
+  },
+};
+
+export const gmailMarkReadToolDef = {
+  name: 'gmail_mark_read',
+  description:
+    'Mark a Gmail thread read or unread. Trigger words: "mark as read", "mark unread". `read` is ' +
+    'REQUIRED, no default.',
+  annotations: { readOnlyHint: false, destructiveHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: { threadId: GM_THREAD_ID, read: { type: 'boolean' } },
+    required: ['threadId', 'read'],
+  },
+};
+
+export const gmailStarToolDef = {
+  name: 'gmail_star',
+  description:
+    'Star or unstar a Gmail thread. Trigger words: "star that email", "unstar it". `starred` is ' +
+    'REQUIRED, no default.',
+  annotations: { readOnlyHint: false, destructiveHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: { threadId: GM_THREAD_ID, starred: { type: 'boolean' } },
+    required: ['threadId', 'starred'],
+  },
+};
+
+export const gmailSpamToolDef = {
+  name: 'gmail_spam',
+  description:
+    "Report a Gmail thread as spam, or un-spam it. DESTRUCTIVE: TRAINS Google's filter account-wide, " +
+    'hiding later mail from that sender. `spam` is REQUIRED.',
+  annotations: { readOnlyHint: false, destructiveHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: { threadId: GM_THREAD_ID, spam: { type: 'boolean' } },
+    required: ['threadId', 'spam'],
+  },
+};
+
+export const gmailApplyLabelToolDef = {
+  name: 'gmail_apply_label',
+  description:
+    'Add an EXISTING Gmail label to a thread. Trigger words: "label that email", "tag it as". ' +
+    'Unknown label FAILS with near-matches; see gmail_create_label.',
+  annotations: { readOnlyHint: false, destructiveHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: { threadId: GM_THREAD_ID, label: GM_LABEL },
+    required: ['threadId', 'label'],
+  },
+};
+
+export const gmailRemoveLabelToolDef = {
+  name: 'gmail_remove_label',
+  description:
+    'Take a label off a Gmail thread. Trigger words: "unlabel", "remove the tag". The label ' +
+    'itself survives.',
+  annotations: { readOnlyHint: false, destructiveHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: { threadId: GM_THREAD_ID, label: GM_LABEL },
+    required: ['threadId', 'label'],
+  },
+};
+
+export const gmailCreateLabelToolDef = {
+  name: 'gmail_create_label',
+  description:
+    'Create a Gmail label. Trigger words: "make a label". Existing name = no-op. Gmail reads ' +
+    '"/" in `name` as NESTING.',
+  annotations: { readOnlyHint: false, destructiveHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      name: { type: 'string', description: 'Label name.' },
+      parent: { type: 'string', description: 'Parent label.' },
+    },
+    required: ['name'],
+  },
+};
+
+export const gmailMoveToToolDef = {
+  name: 'gmail_move_to',
+  description:
+    'Move a Gmail thread to a label: applies it AND archives out of the Inbox. Trigger words: ' +
+    '"move that email to", "file it under".',
+  annotations: { readOnlyHint: false, destructiveHint: false },
+  inputSchema: {
+    type: 'object' as const,
+    properties: { threadId: GM_THREAD_ID, label: GM_LABEL },
+    required: ['threadId', 'label'],
+  },
+};
+
 export const GMAIL_TOOL_DEFS = [
   gmailStatusToolDef,
   gmailLoginToolDef,
@@ -301,6 +456,15 @@ export const GMAIL_TOOL_DEFS = [
   gmailSendToolDef,
   gmailReplyToolDef,
   gmailDraftToolDef,
+  gmailArchiveToolDef,
+  gmailTrashToolDef,
+  gmailMarkReadToolDef,
+  gmailStarToolDef,
+  gmailSpamToolDef,
+  gmailApplyLabelToolDef,
+  gmailRemoveLabelToolDef,
+  gmailCreateLabelToolDef,
+  gmailMoveToToolDef,
 ];
 
 // ─── argument coercion ───────────────────────────────────────────────────────
@@ -770,6 +934,225 @@ async function handleDraft(args: Record<string, unknown>): Promise<McpToolResult
   }
 }
 
+// ─── triage + label handlers ─────────────────────────────────────────────────
+
+/**
+ * What every triage/label route returns. `verified` is the load-bearing field:
+ * gmail/actions.ts and gmail/labels.ts set it TRUE only when the new state (or a
+ * Gmail toast) was actually OBSERVED, and FALSE when the control was driven but
+ * the result could not be confirmed. `note` carries the strategy trace behind
+ * that verdict; the label results name the label as GMAIL knows it, which is not
+ * necessarily the string that was requested.
+ */
+interface MutationOut {
+  threadId?: string;
+  action?: string;
+  verified?: boolean;
+  note?: string;
+  /** applyLabel: the label Gmail actually matched. */
+  applied?: string;
+  /** removeLabel: the label Gmail actually matched. */
+  removed?: string;
+  /** createLabel: the full (possibly nested) name Gmail created. */
+  created?: string;
+  /** Echoed by the route for move-to / apply / remove. */
+  label?: string;
+  requested?: string;
+}
+
+/**
+ * Render a mutation, stating whether it was CONFIRMED — never as plain success.
+ *
+ * 🔴 THIS IS THE POINT OF THESE TOOLS. `success:true, verified:false` is a real,
+ * routine outcome: the click landed, the DOM never showed the change. A caller
+ * told "Archived." who was not archived will go on to act on a mailbox that did
+ * not move, and nothing downstream can detect that. So an unverified mutation is
+ * labelled UNVERIFIED, says what that means, and says what to do about it.
+ */
+function fmtMutation(headline: string, d: MutationOut): string {
+  const lines: string[] = [];
+  if (d.verified === true) {
+    lines.push(`${headline} — CONFIRMED (Gmail was observed in the new state).`);
+  } else {
+    lines.push(
+      `${headline} — UNVERIFIED. The control was driven in Gmail, but the change was NOT observed, ` +
+        'so it may or may not have taken. Do not report this as done: re-check with gmail_read_thread ' +
+        'or gmail_list_threads before relying on it.',
+    );
+  }
+  if (d.note) lines.push(`Trace: ${d.note}`);
+  return lines.join('\n');
+}
+
+/**
+ * POST a triage/label route and render the result.
+ *
+ * workerPostRaw, not workerPost, for two reasons. (1) These drive a real browser
+ * — gmail_move_to alone navigates, clicks, waits out a toast and re-reads the
+ * chips — so workerPost's 30s ceiling is too low; 120s is the right bound.
+ * (2) workerPost's unwrapEnvelope keeps only `error.message` and DROPS
+ * `error.code`, and the code is the actionable part here: LABEL_NOT_FOUND (with
+ * near-matches in the message) means "pick another name", NOT_ON_GMAIL means
+ * "the driver browser wandered off", ARCHIVE_UNVERIFIED means "the label write
+ * STANDS but the move did not".
+ */
+async function gmailMutate(
+  route: string,
+  payload: Record<string, unknown>,
+  headline: (d: MutationOut) => string,
+): Promise<McpToolResult> {
+  try {
+    const resp = await workerPostRaw(route, payload);
+    if (resp.success === false) {
+      const bits = [String(resp.error || 'unknown error')];
+      if (resp.code) bits.push(`code: ${String(resp.code)}`);
+      return err(bits.join('\n'));
+    }
+    const d = (resp.data || {}) as MutationOut;
+    return ok(fmtMutation(headline(d), d));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+/** A required, non-empty thread id. */
+function threadIdArg(args: Record<string, unknown>): string {
+  const v = args.threadId;
+  return (typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : '').trim();
+}
+
+/**
+ * A REQUIRED boolean flag, or an explicit error result.
+ *
+ * 🔴 Never defaulted. `gmail_mark_read` falling back to `true` would silently
+ * mark someone's mail read on a malformed call; the same reasoning covers
+ * `starred` and `spam`. The route refuses it too — this check just fails faster
+ * and names the tool's own argument.
+ */
+function flagArg(args: Record<string, unknown>, name: string): { value: boolean } | { error: McpToolResult } {
+  const v = boolArg(args[name]);
+  if (v === undefined) {
+    return {
+      error: err(
+        `${name} is required and must be true or false — there is no default, because guessing would ` +
+          "change the state of real mail nobody asked to change.",
+      ),
+    };
+  }
+  return { value: v };
+}
+
+/** A required, non-empty string argument. */
+function reqStrArg(args: Record<string, unknown>, name: string): string {
+  const v = args[name];
+  return (typeof v === 'string' ? v : '').trim();
+}
+
+async function handleArchive(args: Record<string, unknown>): Promise<McpToolResult> {
+  const threadId = threadIdArg(args);
+  if (!threadId) return err('threadId is required (get one from gmail_list_threads or gmail_search).');
+  return gmailMutate('/gmail/archive', { threadId }, (d) => `Archived thread ${d.threadId || threadId}`);
+}
+
+async function handleTrash(args: Record<string, unknown>): Promise<McpToolResult> {
+  const threadId = threadIdArg(args);
+  if (!threadId) return err('threadId is required (get one from gmail_list_threads or gmail_search).');
+  return gmailMutate(
+    '/gmail/trash',
+    { threadId },
+    (d) => `Moved thread ${d.threadId || threadId} to Trash (recoverable for ~30 days, then Google erases it)`,
+  );
+}
+
+async function handleMarkRead(args: Record<string, unknown>): Promise<McpToolResult> {
+  const threadId = threadIdArg(args);
+  if (!threadId) return err('threadId is required (get one from gmail_list_threads or gmail_search).');
+  const f = flagArg(args, 'read');
+  if ('error' in f) return f.error;
+  return gmailMutate(
+    '/gmail/mark-read',
+    { threadId, read: f.value },
+    (d) => `Marked thread ${d.threadId || threadId} ${f.value ? 'READ' : 'UNREAD'}`,
+  );
+}
+
+async function handleStar(args: Record<string, unknown>): Promise<McpToolResult> {
+  const threadId = threadIdArg(args);
+  if (!threadId) return err('threadId is required (get one from gmail_list_threads or gmail_search).');
+  const f = flagArg(args, 'starred');
+  if ('error' in f) return f.error;
+  return gmailMutate(
+    '/gmail/star',
+    { threadId, starred: f.value },
+    (d) => `${f.value ? 'Starred' : 'Unstarred'} thread ${d.threadId || threadId}`,
+  );
+}
+
+async function handleSpam(args: Record<string, unknown>): Promise<McpToolResult> {
+  const threadId = threadIdArg(args);
+  if (!threadId) return err('threadId is required (get one from gmail_list_threads or gmail_search).');
+  const f = flagArg(args, 'spam');
+  if ('error' in f) return f.error;
+  return gmailMutate('/gmail/spam', { threadId, spam: f.value }, (d) =>
+    f.value
+      ? `Reported thread ${d.threadId || threadId} as SPAM — this also trains Google's filter for the whole account`
+      : `Marked thread ${d.threadId || threadId} NOT spam and moved it back to the Inbox`,
+  );
+}
+
+async function handleApplyLabel(args: Record<string, unknown>): Promise<McpToolResult> {
+  const threadId = threadIdArg(args);
+  if (!threadId) return err('threadId is required (get one from gmail_list_threads or gmail_search).');
+  const label = reqStrArg(args, 'label');
+  if (!label) return err('label is required — an EXISTING label name (list them with gmail_labels).');
+  return gmailMutate('/gmail/label/apply', { threadId, label }, (d) => {
+    // `applied` is the label as GMAIL matched it. Say so when it differs from
+    // what was asked for, so a fuzzy match is visible rather than assumed.
+    const got = d.applied || label;
+    const via = got !== label ? ` (matched "${label}")` : '';
+    return `Applied label "${got}"${via} to thread ${threadId}`;
+  });
+}
+
+async function handleRemoveLabel(args: Record<string, unknown>): Promise<McpToolResult> {
+  const threadId = threadIdArg(args);
+  if (!threadId) return err('threadId is required (get one from gmail_list_threads or gmail_search).');
+  const label = reqStrArg(args, 'label');
+  if (!label) return err('label is required — the label to take off this thread (gmail_labels lists them).');
+  return gmailMutate('/gmail/label/remove', { threadId, label }, (d) => {
+    const got = d.removed || label;
+    const via = got !== label ? ` (matched "${label}")` : '';
+    return `Removed label "${got}"${via} from thread ${threadId} — the label itself still exists`;
+  });
+}
+
+async function handleCreateLabel(args: Record<string, unknown>): Promise<McpToolResult> {
+  const name = reqStrArg(args, 'name');
+  if (!name) return err('name is required — the label to create.');
+  const parent = reqStrArg(args, 'parent');
+  const payload: Record<string, unknown> = { name };
+  if (parent) payload.parent = parent;
+  // "is now in Gmail" rather than "Created": an already-existing name is a no-op
+  // SUCCESS, and claiming a create that did not happen is the same class of lie
+  // as claiming an unverified mutation.
+  return gmailMutate('/gmail/label/create', payload, (d) => `Label "${d.created || name}" is now in Gmail`);
+}
+
+async function handleMoveTo(args: Record<string, unknown>): Promise<McpToolResult> {
+  const threadId = threadIdArg(args);
+  if (!threadId) return err('threadId is required (get one from gmail_list_threads or gmail_search).');
+  const label = reqStrArg(args, 'label');
+  if (!label) return err('label is required — the destination label (gmail_labels lists them).');
+  // Two steps behind one verb, and `verified` is the AND of both. A partial move
+  // (label written, archive not confirmed) therefore reads as UNVERIFIED, which
+  // is exactly right — the thread is labelled but may still be in the Inbox.
+  return gmailMutate(
+    '/gmail/move-to',
+    { threadId, label },
+    () => `Moved thread ${threadId} to "${label}" (label applied + archived out of the Inbox; other labels left in place)`,
+  );
+}
+
 export const GMAIL_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<McpToolResult>> = {
   gmail_status: () => handleStatus(),
   gmail_login: handleLogin,
@@ -785,4 +1168,13 @@ export const GMAIL_HANDLERS: Record<string, (args: Record<string, unknown>) => P
   gmail_send: handleSend,
   gmail_reply: handleReply,
   gmail_draft: handleDraft,
+  gmail_archive: handleArchive,
+  gmail_trash: handleTrash,
+  gmail_mark_read: handleMarkRead,
+  gmail_star: handleStar,
+  gmail_spam: handleSpam,
+  gmail_apply_label: handleApplyLabel,
+  gmail_remove_label: handleRemoveLabel,
+  gmail_create_label: handleCreateLabel,
+  gmail_move_to: handleMoveTo,
 };

@@ -72,7 +72,20 @@ const MAX_SHARED_DESCRIPTION_BYTES = 320;
 // there was nothing left to trim on the newest entries. +12,000 B restores ~10
 // average tools of headroom so the next addition is not forced to sand its own
 // descriptions to nothing. Cost: ~3K extra tokens per conversation at connect time.
-const CATALOG_BUDGET_BYTES = 252_000;
+// RAISED again 2026-07-29, 252,000 -> 264,000, when the 9 triage/label tools
+// landed leaving 82 B of headroom -- a rounding error that would turn this test
+// red on the next tool added ANYWHERE on the server, which is exactly the
+// "cries wolf" failure the comment above warns about.
+//
+// MEASURED while sizing them: the 9 new tools average 419 B of their own prose,
+// the leanest on the surface (existing gmail 618 B, surface-wide 1,095 B), but
+// each also carries 306 B of INJECTED node-param boilerplate -- 2,754 B, or 42%
+// of the headroom they consumed, spent before a word was written. The real
+// lever remains that shared paragraph, not per-tool sanding; until someone
+// takes it on, +12,000 B keeps ~10 tools of slack. The shared-boilerplate test
+// above still passes, so this is routine growth, not the re-inlining
+// regression (~90 KB) this guard exists to catch.
+const CATALOG_BUDGET_BYTES = 264_000;
 
 function properties(def: { inputSchema?: { properties?: Record<string, unknown> } }): Record<string, unknown> {
   return def.inputSchema?.properties || {};
