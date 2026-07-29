@@ -42,7 +42,7 @@
  * scoped in configure.ts TOOL_SCOPES, catalogued in registry/catalog.ts.
  */
 
-import { ok, err, workerGet, workerPost, workerPostRaw, type McpToolResult } from './_passthrough';
+import { ok, err, workerGet, workerGetLong, workerPost, workerPostRaw, type McpToolResult } from './_passthrough';
 
 // ─── tool defs ───────────────────────────────────────────────────────────────
 
@@ -193,6 +193,22 @@ export const gmailAttachmentsToolDef = {
       limit: { type: 'number', description: 'Default 50, max 200.' },
     },
     required: ['threadId'],
+  },
+};
+
+export const gmailSelfcheckToolDef = {
+  name: 'gmail_selfcheck',
+  description:
+    'Drift check for the Gmail connector: probes the live mail app and returns a PASS/FAIL matrix. ' +
+    "Run it when Gmail tools return plausible-but-WRONG data (one view serving another's rows, 0 " +
+    'aliases, the wrong thread) or before trusting a bulk read. Never mutates mail: opens no unread ' +
+    'thread, sends nothing, leaves no draft.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      deep: { type: 'boolean', description: 'Also probe attachments. Opens one more thread.' },
+    },
   },
 };
 
@@ -441,6 +457,38 @@ export const gmailMoveToToolDef = {
   },
 };
 
+interface SelfCheckRow { name: string; ok: boolean; detail: string; ms: number; severity: 'critical' | 'warn'; }
+interface SelfCheckOut { ok: boolean; passed: number; failed: number; checks: SelfCheckRow[]; startedAt: number; ms: number; }
+
+async function handleSelfcheck(args: Record<string, unknown>): Promise<McpToolResult> {
+  try {
+    const deep = args.deep === true || String(args.deep ?? '') === 'true';
+    // workerGet's 15s default is far too short — this drives a real browser through
+    // ~8 navigations, and a timeout would report a transport failure as if the
+    // connector itself were broken.
+    const d = await workerGetLong<SelfCheckOut>(`/gmail/selfcheck${deep ? '?deep=true' : ''}`, 300000);
+    const rows = Array.isArray(d.checks) ? d.checks : [];
+    const crit = rows.filter((c) => !c.ok && c.severity === 'critical');
+    const warn = rows.filter((c) => !c.ok && c.severity === 'warn');
+    const w = rows.reduce((m, c) => Math.max(m, c.name.length), 0);
+    const secs = (d.ms / 1000).toFixed(1);
+    const head = d.ok
+      ? `PASS — Gmail connector self-check: ${d.passed}/${rows.length} checks passed${warn.length ? `, ${warn.length} ambiguous` : ''} (${secs}s)`
+      : `FAIL — Gmail connector self-check: ${crit.length} CRITICAL failure(s) across ${rows.length} checks (${secs}s). ` +
+        'The connector is returning WRONG data, not no data — do not act on Gmail reads until the failing rows below are fixed.';
+    const lines = [head, ''];
+    for (const c of rows) {
+      const tag = c.ok ? 'PASS' : c.severity === 'warn' ? 'WARN' : 'FAIL';
+      lines.push(`  ${tag}  ${c.name.padEnd(w)}  ${String(c.ms).padStart(6)}ms  ${c.detail}`);
+    }
+    if (warn.length) lines.push('', 'WARN = the check could not decide (nothing to sample, or a legitimately empty account). Reported, not counted against the verdict.');
+    if (!deep) lines.push('', 'Attachments were not probed — pass deep:true to include them.');
+    return ok(lines.join('\n'));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 export const GMAIL_TOOL_DEFS = [
   gmailStatusToolDef,
   gmailLoginToolDef,
@@ -452,6 +500,7 @@ export const GMAIL_TOOL_DEFS = [
   gmailSyncStatusToolDef,
   gmailAttachmentsToolDef,
   gmailLabelsToolDef,
+  gmailSelfcheckToolDef,
   gmailAliasesToolDef,
   gmailSendToolDef,
   gmailReplyToolDef,
@@ -1164,6 +1213,7 @@ export const GMAIL_HANDLERS: Record<string, (args: Record<string, unknown>) => P
   gmail_sync_status: () => handleSyncStatus(),
   gmail_attachments: handleAttachments,
   gmail_labels: () => handleLabels(),
+  gmail_selfcheck: handleSelfcheck,
   gmail_aliases: handleAliases,
   gmail_send: handleSend,
   gmail_reply: handleReply,

@@ -387,6 +387,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   gmail_attachments: 'read',
   gmail_sync_status: 'read',
   gmail_search_local: 'read',
+  gmail_selfcheck: 'read',
   gmail_send: 'write',
   gmail_sync: 'write',
   gmail_reply: 'write',

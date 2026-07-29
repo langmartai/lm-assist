@@ -488,6 +488,13 @@ export function planAttachments(paths: string[] | undefined): AttachmentPlan {
  * @internal Exported ONLY so the unit tests can run this exact source against a
  * fake DOM. Testing a copy of the scope/chip resolution would test the copy.
  */
+/**
+ * @internal Exported ONLY so ./selfcheck can probe the compose with the SAME
+ * selectors the sender uses. A canary carrying its own copy would sail straight
+ * through the __scope() bug it exists to catch.
+ */
+export const COMPOSE_SELECTORS = S;
+
 export const JS_LIB = `
   const __vis = (el) => { if (!el) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
   const __all = (sel, root) => Array.prototype.slice.call((root || document).querySelectorAll(sel));

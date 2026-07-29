@@ -803,6 +803,18 @@ async function op<T>(kind: SafetyNS.ActionKind, fn: (cdp: Cdp) => Promise<T>): P
  * operator may be looking at — a read that silently strands them in Settings is
  * a read they will stop trusting.
  */
+/**
+ * Run a read-only page probe inside the standard entry sequence — rate budget →
+ * session → assertLoggedIn → assertDesktopUi → work — and close the session after.
+ *
+ * Exposed for ./selfcheck, which must connect EXACTLY the way the code it watches
+ * connects. A canary that opens its own CDP socket tests its own plumbing: it
+ * would keep passing through a broken op() and miss a MOBILE_UI surface entirely.
+ */
+export async function pageProbe<T>(fn: (cdp: Cdp) => Promise<T>): Promise<T> {
+  return op('read', fn);
+}
+
 export async function listSendAs(): Promise<SendAsIdentity[]> {
   return op('read', (cdp) => readSendAs(cdp));
 }
@@ -1041,7 +1053,7 @@ function shapeAttachments(
 export async function listAttachments(threadId: string): Promise<GmailAttachmentRow[]> {
   const id = requireThreadId(threadId);
   return op('read', async (cdp) => {
-    await gotoHash(cdp, `#all/${encodeURIComponent(id)}`, SELECTORS.threadReady);
+    await openThreadByLegacyId(cdp, id);
     await expandThread(cdp);
     await sleep(400);
     const scan = await cdp.evaluate<GmailAttachmentScan>(JS_ATTACHMENTS_IN_THREAD);
@@ -1060,7 +1072,7 @@ function clip(text: string, max: number): { body: string; truncated: boolean } {
 
 /** The rendered-DOM read, shared by both paths (the raw path uses it as its skeleton). */
 async function readThreadDom(cdp: Cdp, id: string): Promise<{ detail: GmailThreadDetail; ik: string | null }> {
-  await gotoHash(cdp, `#all/${encodeURIComponent(id)}`, SELECTORS.threadReady);
+  await openThreadByLegacyId(cdp, id);
   // JS_THREAD_FULL performs the expand-all itself, then reads visible-scoped.
   const d = await cdp.evaluate<GmailThreadFull>(JS_THREAD_FULL);
   const ik = (await cdp.evaluate<{ ik: string | null }>(JS_IK).catch(() => ({ ik: null }))).ik;
@@ -1100,6 +1112,83 @@ async function readThreadDom(cdp: Cdp, id: string): Promise<{ detail: GmailThrea
  * Lossy by nature: Gmail clips long messages ("[Message clipped]") and hides
  * trimmed quotes, so this is the `full:false` path. Prefer readThreadFull().
  */
+
+/**
+ * Open a thread identified by its `data-legacy-thread-id` and PROVE the right
+ * one rendered.
+ *
+ * MEASURED: navigating `#all/<legacy-hex>` does NOT open that thread — Gmail's
+ * URL uses a different (permalink) id space, so it ignores the hex and leaves
+ * whatever was already rendered on screen, WHILE STILL updating location.hash to
+ * the requested id. Verifying against the hash therefore certifies the wrong
+ * thread; only data-legacy-message-id is trustworthy.
+ *
+ * The one route that works is: land on a list that contains the row, click it,
+ * then confirm the rendered conversation actually carries the requested id.
+ */
+async function openThreadByLegacyId(cdp: Cdp, threadId: string): Promise<void> {
+  const id = JSON.stringify(threadId);
+  const clickInCurrentView = async (): Promise<boolean> =>
+    (await cdp
+      .evaluate<boolean>(
+        `const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+         const row = [...document.querySelectorAll('tr.zA')].filter(vis)
+           .find((tr) => { const el = tr.querySelector('[data-legacy-thread-id]');
+                           return el && el.getAttribute('data-legacy-thread-id') === ${id}; });
+         if (!row) return false;
+         row.scrollIntoView({ block: 'center' });
+         await new Promise((r) => setTimeout(r, 150));
+         row.click();
+         return true;`,
+      )
+      .catch(() => false));
+
+  // Already showing it? Then nothing to do.
+  if (await threadShows(cdp, threadId)) return;
+
+  // Try the current list first, then the broad views most likely to hold it.
+  let clicked = await clickInCurrentView();
+  if (!clicked) {
+    for (const hash of ['#inbox', '#all', '#sent']) {
+      await gotoHash(cdp, hash, SELECTORS.listReady, 15000).catch(() => undefined);
+      await ensureRows(cdp, 50);
+      clicked = await clickInCurrentView();
+      if (clicked) break;
+    }
+  }
+  if (!clicked) {
+    throw new GmError('THREAD_NOT_FOUND', `could not find thread ${threadId} in inbox/all/sent to open it (Gmail cannot be navigated to a legacy thread id directly)`);
+  }
+
+  for (let i = 0; i < 24; i++) {
+    if (await threadShows(cdp, threadId)) return;
+    await sleep(500);
+  }
+  throw new GmError('THREAD_MISMATCH', `clicked thread ${threadId} but the rendered conversation does not carry that id — refusing to read another thread's mail`);
+}
+
+/**
+ * Is the CURRENTLY rendered conversation the one we asked for?
+ *
+ * Checked against data-legacy-message-id, never location.hash: the hash updates
+ * to whatever was requested even when Gmail ignored the route entirely.
+ */
+async function threadShows(cdp: Cdp, threadId: string): Promise<boolean> {
+  const id = JSON.stringify(threadId);
+  return (
+    (await cdp
+      .evaluate<boolean>(
+        `if (!document.querySelector('h2.hP')) return false;
+         const ids = [...document.querySelectorAll('[data-legacy-message-id]')]
+           .map((e) => e.getAttribute('data-legacy-message-id'));
+         const tids = [...document.querySelectorAll('[data-legacy-thread-id]')]
+           .map((e) => e.getAttribute('data-legacy-thread-id'));
+         return ids.includes(${id}) || tids.includes(${id});`,
+      )
+      .catch(() => false)) === true
+  );
+}
+
 export async function readThread(threadId: string): Promise<GmailThreadDetail> {
   const id = requireThreadId(threadId);
   return op('read', async (cdp) => (await readThreadDom(cdp, id)).detail);

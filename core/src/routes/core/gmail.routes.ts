@@ -99,6 +99,7 @@ import {
 } from '../../gmail/cdp-client';
 import { searchLocal, syncStatus } from '../../gmail/store';
 import { gmailLogin, gmailLoginStatus } from '../../gmail/login';
+import { runSelfCheck } from '../../gmail/selfcheck';
 import { startGmailKeepAlive } from '../../gmail/keepalive';
 
 function clampInt(v: unknown, def: number, min: number, max: number): number {
@@ -361,6 +362,24 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // GET /gmail/labels
+    // GET /gmail/selfcheck?deep= — the drift canary.
+    //
+    // A FAILING MATRIX IS STILL success:true. The call succeeded; the CONNECTOR
+    // failed, and the answer is the matrix. Collapsing it into success:false makes
+    // _passthrough's unwrapEnvelope() THROW, and the caller gets one error string
+    // instead of the row that says WHICH invariant broke.
+    {
+      method: 'GET',
+      pattern: /^\/gmail\/selfcheck$/,
+      handler: async (req: ParsedRequest) => {
+        try {
+          return { success: true, data: await runSelfCheck({ deep: String(req.query?.deep ?? '') === 'true' }) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
     {
       method: 'GET',
       pattern: /^\/gmail\/labels$/,
