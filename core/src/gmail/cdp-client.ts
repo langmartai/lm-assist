@@ -514,7 +514,15 @@ const JS_ATT_NAME = `
 const JS_SENDAS = `
   ${JS_VISIBLE}
   try {
-    const rows = __vis('tr').filter(tr => !tr.querySelector('tr'));
+    // Scope to the table that actually holds the "Send mail as" header. The
+    // settings page carries several tables (notably "Grant access to your
+    // account"), and scanning all of them over-captured ~2 extra identities.
+    const __all = __vis('tr').filter(tr => !tr.querySelector('tr'));
+    const __hdr = __all.find(tr => /send mail as/i.test(tr.innerText || tr.textContent || ''));
+    const __tbl = __hdr && __hdr.closest ? __hdr.closest('table') : null;
+    const rows = __tbl
+      ? [...__tbl.querySelectorAll('tr')].filter(tr => !tr.querySelector('tr'))
+      : __all;
     const out = []; const seen = new Set();
     for (const tr of rows) {
       // innerText, NOT textContent: textContent concatenates adjacent elements

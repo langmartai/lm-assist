@@ -279,9 +279,17 @@ export const JS_ATTACH = `
         || el.getAttribute('title') || __txt(el);
       let name = el.getAttribute('download') || (a ? a.getAttribute('download') : null) || '';
       if (!name) {
-        // Gmail's a11y strings look like "report.pdf, 128K, Download" — the first
-        // comma segment is the filename. HEURISTIC, not measured.
-        name = String(raw || '').split(',')[0].trim().replace(/^(Download|Preview|Open)\\s+/i, '');
+        // MEASURED 2026-07-29 on a real a[href*="attid"] anchor:
+        //   download / aria-label / title are all NULL, and
+        //   innerText   = "Preview attachment <filename>\\nPreview attachment <filename>…"
+        //   textContent = "<filename>Preview attachment <filename>…"   <- newline LOST
+        // So take innerText's FIRST LINE and strip the label. textContent must not
+        // be used here: it joins adjacent elements with no separator (the same trap
+        // that silently emptied the send-as parser).
+        const __firstLine = String((el.innerText || '') || raw || '').split('\\n')[0].trim();
+        const __label = /^\\s*(?:preview|download|open)?\\s*attachment\\s+/i;
+        name = __firstLine.replace(__label, '').trim()
+          || String(raw || '').split(',')[0].trim().replace(/^(Download|Preview|Open)\\s+/i, '');
       }
       name = name.trim();
       if (!name || __ATT_UI_WORDS.has(name.toLowerCase())) return null;
