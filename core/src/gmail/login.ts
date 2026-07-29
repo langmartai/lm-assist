@@ -20,7 +20,7 @@
  * Two gotchas this file exists to absorb:
  *   - the shared launcher hardcodes a `https://claude.ai/` start URL, so we
  *     always issue our own Page.navigate (same workaround LinkedIn uses);
- *   - headless MUST force a normal UA (see HEADLESS_UA in config.ts) or Google
+ *   - headless MUST force a normal UA (see headlessUa() in config.ts) or Google
  *     serves a degraded sign-in flow.
  *
  * The browser stays alive after this returns. Close it later with the returned
@@ -41,7 +41,7 @@ import {
   createTab,
   type CDPTarget,
 } from '../utils/browser-control';
-import { GM_DATA_DIR, DEFAULT_LOGIN_PORT, HEADLESS_UA } from './config';
+import { GM_DATA_DIR, DEFAULT_LOGIN_PORT, headlessUa } from './config';
 
 const GMAIL_URL = 'https://mail.google.com/mail/u/0/';
 /** How long gmailLogin waits for the mail UI to appear. */
@@ -185,7 +185,7 @@ export async function gmailLogin(
   const profileDir = profileDirFor(opts.profile || 'gmail');
 
   // Headless MUST carry a normal UA or Google degrades the sign-in flow.
-  const extraArgs = headless ? [`--user-agent=${HEADLESS_UA}`] : undefined;
+  const extraArgs = headless ? [`--user-agent=${headlessUa()}`] : undefined;
   const launch = await launchChrome({ userDataDir: profileDir, port, headless, extraArgs });
   if (!launch.ok) {
     return toLoginError(launch);

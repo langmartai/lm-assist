@@ -48,14 +48,49 @@ export const GM_DATA_DIR = path.join(LM_DIR, `gmail${DEV_SUFFIX}`);
 export const DEFAULT_LOGIN_PORT = 9224;
 
 /**
- * A normal desktop-Chrome User-Agent, forced when the driver browser runs
- * headless. MEASURED: with the default `HeadlessChrome/...` UA, Google serves
- * the degraded `flowName=WebLiteSignIn` sign-in flow; with a normal UA it
- * serves the full `GlifWebSignIn`. Same class of problem the existing
- * /browser/switch-to-headless route already solves for Cloudflare.
+ * Chrome major version used when the real browser has not been probed.
+ *
+ * Only a fallback - prefer the version reported by the live browser, since a UA
+ * claiming a version the installed Chrome does not have is itself a mismatch
+ * signal. Bump freely; nothing depends on the exact number.
  */
-export const HEADLESS_UA =
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36';
+export const DEFAULT_CHROME_MAJOR = 146;
+
+/**
+ * A normal desktop-Chrome User-Agent FOR THIS HOST, forced when the driver
+ * browser runs headless.
+ *
+ * MEASURED: with the default `HeadlessChrome/...` UA, Google serves the degraded
+ * `flowName=WebLiteSignIn` sign-in flow; with a normal UA it serves the full
+ * `GlifWebSignIn`. Same class of problem the /browser/switch-to-headless route
+ * already solves for Cloudflare.
+ *
+ * MEASURED 2026-07-30 on Windows (107): this used to be a hardcoded
+ * `X11; Linux x86_64` string with `Chrome/146`. So a Windows host launched Chrome
+ * announcing itself as Linux, at a version the installed browser (149) did not
+ * have. A UA that contradicts the platform it runs on is the SAME class of signal
+ * as the headless UA it was introduced to hide - it just fails somewhere less
+ * obvious than the sign-in flow, and only on the platform nobody tested on.
+ *
+ * So build it from the host, and pass the real major version whenever a browser
+ * has already been probed.
+ */
+export function headlessUa(chromeMajor?: number): string {
+  const major = Number.isFinite(chromeMajor) && Number(chromeMajor) > 0 ? Math.floor(Number(chromeMajor)) : DEFAULT_CHROME_MAJOR;
+  const platform =
+    process.platform === 'win32'
+      ? 'Windows NT 10.0; Win64; x64'
+      : process.platform === 'darwin'
+        ? 'Macintosh; Intel Mac OS X 10_15_7'
+        : 'X11; Linux x86_64';
+  return `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
+
+/**
+ * Back-compat alias. Evaluated at module load, so it cannot carry a probed
+ * version - call headlessUa() directly when one is available.
+ */
+export const HEADLESS_UA = headlessUa();
 
 // ─── viewport (MEASURED — do not tune by feel) ───────────────────────────────
 
