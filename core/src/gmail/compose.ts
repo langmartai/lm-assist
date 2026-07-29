@@ -187,8 +187,28 @@ const T = {
  * Fix breakage HERE, never inline.
  */
 const S = {
-  /** VERIFIED — the compose body. */
-  body: 'div[aria-label="Message Body"][role="textbox"], div[g_editable="true"][role="textbox"], div[contenteditable="true"][role="textbox"]',
+  /**
+   * VERIFIED — the compose body, CANONICAL markers only.
+   *
+   * This doubles as the "is a compose open?" test, so it must not match anything
+   * a compose-less page renders. MEASURED 2026-07-30: it used to also include a
+   * bare \`div[contenteditable="true"][role="textbox"]\`, which matches Gmail's
+   * Gemini "Describe your message" prompt — present on the plain inbox. That made
+   * every presence check trivially true (selfcheck skipped its compose check as
+   * \`preexisting\`; gotoHash stopped waiting instantly) and, because a comma-list
+   * resolves in DOCUMENT order, made "last visible body" the AI prompt.
+   */
+  body: 'div[aria-label="Message Body"][role="textbox"], div[g_editable="true"][role="textbox"]',
+  /** VERIFIED — the primary marker, tried before anything else. */
+  bodyPrimary: 'div[aria-label="Message Body"][role="textbox"]',
+  /** VERIFIED — Gmail's own editable flag; the fallback when the label changes. */
+  bodyEditable: 'div[g_editable="true"][role="textbox"]',
+  /**
+   * UNVERIFIED, last resort — only if Gmail renames BOTH markers above. This one
+   * DOES match the AI prompt box, so callers MUST keep the height guard in
+   * __bodyEl. Never use it for a presence test.
+   */
+  bodyLoose: 'div[contenteditable="true"][role="textbox"]',
   /** VERIFIED — aria-label is "Send ‪(Ctrl-Enter)‬", so anchor on the tooltip prefix. */
   send: 'div[role="button"][data-tooltip^="Send"], div[role="button"][aria-label^="Send"]',
   /**
@@ -533,7 +553,37 @@ export const JS_LIB = `
     return __last(dlgs) || document;
   };
 
-  const __bodyEl = () => { const sc = __scope(); return sc ? __last(__visAll(${q(S.body)}, sc)) : null; };
+  /*
+   * MEASURED 2026-07-30, live: this was \`__last(__visAll(<comma-list>))\`, and a
+   * comma-list resolves in DOCUMENT order rather than selector order. Gmail
+   * renders a Gemini "Describe your message" prompt (a contenteditable
+   * role=textbox, ~28px tall) BELOW the compose, so "last visible" selected the
+   * AI prompt: the body was written into it, and readBodyText() — using this very
+   * same resolver — read it straight back and pronounced the body good. Messages
+   * went out EMPTY with verified: true.
+   *
+   * So walk the tiers ONE SELECTOR AT A TIME. Scope first, because that is the
+   * compose whose Send button will be clicked; an earlier revision resolved the
+   * body document-wide and could fill a different compose than the one being
+   * sent. Then document-wide, so a drifted scope still cannot leave us empty.
+   */
+  const __bodyTiers = [${q(S.bodyPrimary)}, ${q(S.bodyEditable)}];
+  const __bodyEl = () => {
+    const sc = __scope();
+    const roots = sc && sc !== document ? [sc, document] : [document];
+    for (const root of roots) {
+      for (const t of __bodyTiers) {
+        const hits = __visAll(t, root);
+        if (hits.length) return __last(hits);
+      }
+      // Reachable only if Gmail renamed BOTH canonical markers. Height-guarded: a
+      // compose body is ~360px tall and the AI prompt ~28px, so a short editable
+      // box is never the thing we mean.
+      const loose = __visAll(${q(S.bodyLoose)}, root).filter((e) => e.getBoundingClientRect().height >= 80);
+      if (loose.length) return __last(loose);
+    }
+    return null;
+  };
 
   /** Recipient input for one field, matched on the FIRST WORD of its label. */
   const __fieldInput = (sc, kind) => {
