@@ -333,7 +333,15 @@ function connect(wsUrl: string): Promise<Cdp> {
         },
       };
       Promise.all([
-        send('Runtime.enable'),
+        // Bounded tightly: this is the first request on a new socket, so a slow
+        // answer here means a wedged renderer, not a busy one. The 45s ceiling
+        // that protects long in-page work is far too patient for a handshake.
+        Promise.race([
+          send('Runtime.enable'),
+          sleep(9000).then(() => {
+            throw new GmError('CDP_TIMEOUT', 'Runtime.enable did not answer within 9s - the page is not responding');
+          }),
+        ]),
         send('Page.enable').catch(() => undefined),
         // DOM.enable is REQUIRED, not decorative: DOM.setFileInputFiles (the
         // attachment path in ./compose) needs the DOM agent enabled on the target.
@@ -394,33 +402,48 @@ async function recycleGmailTab(base: string): Promise<void> {
   await sleep(12000);
 }
 
-async function openSession(): Promise<{ cdp: Cdp; close(): void }> {
-  const base = resolveCdpBase();
-  let cdp = await connect(await findPageWs(base));
-
-  // A wedged renderer accepts the connection and answers nothing, so every op
-  // would hang forever. Probe first, and recycle the tab if it is gone.
-  if (await pageResponds(cdp)) return { cdp, close: () => cdp.close() };
-
+/**
+ * Connect and prove the page answers.
+ *
+ * connect() itself calls Runtime.enable, so on a wedged renderer it THROWS
+ * rather than returning a dead handle - which is why this has to treat a failed
+ * connect and a failed probe identically. An earlier version only probed after
+ * connecting, and never reached the probe.
+ */
+async function openLiveSession(base: string): Promise<Cdp | null> {
+  let cdp: Cdp;
+  try {
+    cdp = await connect(await findPageWs(base));
+  } catch {
+    return null;
+  }
+  if (await pageResponds(cdp)) return cdp;
   try {
     cdp.close();
   } catch {
     /* the socket to a dead renderer may already be unusable */
   }
+  return null;
+}
+
+async function openSession(): Promise<{ cdp: Cdp; close(): void }> {
+  const base = resolveCdpBase();
+
+  // A wedged renderer accepts the debugger socket and answers nothing, so every
+  // op would hang. Prove the page is alive; recycle the tab if it is not.
+  const first = await openLiveSession(base);
+  if (first) return { cdp: first, close: () => first.close() };
+
   await recycleGmailTab(base);
-  cdp = await connect(await findPageWs(base));
-  if (!(await pageResponds(cdp))) {
-    try {
-      cdp.close();
-    } catch {
-      /* nothing more to do */
-    }
+  const cdp = await openLiveSession(base);
+  if (!cdp) {
     throw new GmError(
       'BROWSER_UNRESPONSIVE',
       'the Gmail page is not responding to CDP even after the tab was recycled - the browser itself needs restarting (gmail_login relaunches it)',
     );
   }
-  return { cdp, close: () => cdp.close() };
+  const live = cdp;
+  return { cdp: live, close: () => live.close() };
 }
 
 async function withCdp<T>(fn: (cdp: Cdp) => Promise<T>): Promise<T> {
