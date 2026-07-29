@@ -18,6 +18,12 @@
  * than synthesizing them from display names.
  *
  * Files live under `~/.lm-assist/gmail[-dev].json` + `~/.lm-assist/gmail[-dev]/`.
+ *
+ * ── What lives HERE vs in cdp-client.ts ──────────────────────────────────────
+ * This file owns DEPLOYMENT facts (paths, ports, the debug endpoint, the
+ * viewport, cached account identity). cdp-client.ts owns DOM facts (selectors,
+ * page snippets). A selector must never appear in this file, and a file path
+ * must never appear in that one.
  */
 
 import * as fs from 'fs';
@@ -51,15 +57,82 @@ export const DEFAULT_LOGIN_PORT = 9224;
 export const HEADLESS_UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36';
 
+// ─── viewport (MEASURED — do not tune by feel) ───────────────────────────────
+
+/**
+ * The viewport the driver page is forced to at connect
+ * (`Emulation.setDeviceMetricsOverride`).
+ *
+ * 🔴 MEASURED live 2026-07-29, and the reason this is a named constant rather
+ * than an inline literal:
+ *   - at **1280** wide Gmail COLLAPSES its action toolbar and exposes only
+ *     "Move to" and "Labels" — every other verb (Delete, Mark as unread,
+ *     Snooze, Add to Tasks, More) is simply not in the DOM, so an action that
+ *     "cannot find the button" is a VIEWPORT bug wearing a selector bug's
+ *     clothes;
+ *   - at **1680** and **1920** the full action set appears.
+ * 1920x1080 is therefore taken from the range that works, at its low end so the
+ * page stays cheap to raster.
+ *
+ * 🔴 Do NOT go wider chasing more controls — nothing further appears above 1920.
+ *
+ * Also MEASURED: forcing a MOBILE viewport (390x844) does NOT flip Gmail to a
+ * mobile UI — it clamps to 980px and the desktop selectors keep working. So no
+ * code anywhere may branch on viewport to decide which UI it is talking to;
+ * that is what cdp-client's MOBILE_UI landmark guard is for.
+ */
+export const VIEWPORT = { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false } as const;
+
+// ─── send-as identities ──────────────────────────────────────────────────────
+
+/**
+ * One row of Gmail's "Send mail as" table (`#settings/accounts`).
+ *
+ * 🔴 MEASURED 2026-07-29 and the single most surprising fact about this
+ * account: the compose dialog's hidden `input[name="from"]` was
+ * `support@langmart.ai`, NOT the primary `yi.huang@databunny.sg`. The account
+ * carries 8 send-as identities. So "who is this mail from" is NEVER inferable
+ * from the signed-in address and must be READ.
+ */
+export interface SendAsIdentity {
+  /** The address itself, lowercased. */
+  email: string;
+  /** The display name Gmail shows for it, when there is one. */
+  name: string | null;
+  /**
+   * True for the row whose control reads a bare `default` rather than
+   * `make default` — that is the identity a new compose starts with.
+   */
+  isDefault: boolean;
+  /** False when the row says "Not an alias." */
+  alias: boolean;
+}
+
 export interface GmailConfig {
   /** Optional stable persistent-profile name (default 'gmail'). */
   profile?: string;
   /** The signed-in address, cached from the last status probe. */
   selfEmail?: string;
+  /**
+   * Cached "Send mail as" table. Cached because reading it means NAVIGATING the
+   * driver browser to `#settings/accounts`, which yanks the operator's view out
+   * from under them; `gmail_status` must not pay that on every call.
+   */
+  sendAs?: SendAsIdentity[];
+  /** The address Gmail will send as unless a compose overrides it. */
+  defaultSendAs?: string | null;
+  /** When `sendAs` was last read from the live settings page (epoch ms). */
+  sendAsCheckedAt?: number;
 }
 
 /** Fields a caller may set via PUT /gmail/config. */
-export const CONFIG_FIELDS: ReadonlyArray<keyof GmailConfig> = ['profile', 'selfEmail'];
+export const CONFIG_FIELDS: ReadonlyArray<keyof GmailConfig> = [
+  'profile',
+  'selfEmail',
+  'sendAs',
+  'defaultSendAs',
+  'sendAsCheckedAt',
+];
 
 export function readGmailConfig(): GmailConfig {
   try {
@@ -75,6 +148,50 @@ export function writeGmailConfig(patch: Partial<GmailConfig>): GmailConfig {
   fs.mkdirSync(LM_DIR, { recursive: true });
   fs.writeFileSync(GM_CONFIG_FILE, JSON.stringify(next, null, 2), { mode: 0o600 });
   return next;
+}
+
+/**
+ * How long a cached send-as table is trusted before `gmail_status` re-reads it.
+ *
+ * Read from the environment on EVERY call (like `gmailProvider()` and
+ * `syncWindowDays()`) so it can be changed without a restart, and so a test can
+ * set it per case. 12h by default: adding a send-as identity is a rare, manual
+ * act in Google's settings UI, and the cost of being stale is a stale line in
+ * `gmail_status` — whereas the cost of re-reading is navigating the operator's
+ * browser away from whatever they were looking at.
+ *
+ * `0` means "never trust the cache" (always re-read); a negative or unparseable
+ * value falls back to the default rather than disabling refresh entirely.
+ */
+export function sendAsTtlMs(): number {
+  const DEF = 12 * 60 * 60 * 1000;
+  const raw = process.env.GMAIL_SENDAS_TTL_MS;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return DEF;
+  const n = Number(String(raw).trim());
+  if (!Number.isFinite(n) || n < 0) return DEF;
+  return Math.min(Math.floor(n), 30 * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * Per-message body ceiling for a thread read, and the whole-thread ceiling.
+ *
+ * The RAW read path is COMPLETE by design (that is the entire reason it exists),
+ * and "complete" on a 7-message thread MEASURED at 24k–66k chars per message.
+ * Unbounded, one `gmail_read_thread` would exceed an MCP result ceiling — the
+ * exact failure that killed a 110-message conversation with a 923 KB
+ * `mission_list`. So the raw text is bounded on the way out and the truncation
+ * is REPORTED per message; it is never silently dropped.
+ */
+export function maxBodyChars(): number {
+  const raw = process.env.GMAIL_MAX_BODY_CHARS;
+  const n = Number(String(raw ?? '').trim());
+  if (!Number.isFinite(n) || n <= 0) return 20_000;
+  return Math.max(1_000, Math.min(Math.floor(n), 200_000));
+}
+
+/** Whole-thread ceiling. Six full messages' worth, then the rest is summarised out. */
+export function maxThreadChars(): number {
+  return maxBodyChars() * 6;
 }
 
 // ─── CDP provider config ─────────────────────────────────────────────────────
