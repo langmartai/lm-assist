@@ -1905,7 +1905,61 @@ export async function createLabel(cdp: LabelCdp, name: string, opts?: { parent?:
  * Inbox, leaving any other user labels in place. If that matters, remove them
  * explicitly with removeLabel().
  */
+/**
+ * Move an archived thread back to the Inbox.
+ *
+ * MEASURED 2026-07-30: moveToLabel's generic path is "apply the label, then
+ * archive" - and in Gmail, archiving IS removing the Inbox label. For the Inbox
+ * destination the two steps annihilate and the thread stays exactly where it was,
+ * so restoring an archived thread had no working path at all. Gmail's own
+ * affordance is the "Move to" control (T-I.J-J5-Ji.T-I-Js-IF) on the LIST toolbar
+ * with a row checked, which is what this drives - with trusted events, since that
+ * menu ignores synthetic clicks like every other one.
+ */
+async function moveToInbox(cdp: LabelCdp, threadId: string): Promise<MoveResult> {
+  if (!(await selectRowForThread(cdp, threadId))) {
+    throw new GmError(
+      'ROW_NOT_SELECTABLE',
+      'could not check the row for thread ' + threadId + ' in #inbox or #all - the "Move to" menu exists only on the list toolbar with a row selected',
+    );
+  }
+  // MEASURED 2026-07-30: for an ARCHIVED thread Gmail offers a dedicated
+  // one-click "Move to Inbox" button (T-I.J-J5-Ji.aFj) and does NOT show the
+  // "Move to" menu at all. Prefer it - one trusted click, no menu to drive.
+  const direct = await trustedClickControl(cdp, '^move to inbox$');
+  let via = 'the "Move to Inbox" button';
+  if (!direct.ok) {
+    // Fall back to the menu, which is what a thread that is already in the
+    // Inbox (or in some other view) shows instead.
+    const opened = await trustedClickControl(cdp, '^move to$');
+    if (!opened.ok) {
+      throw new GmError(
+        'MOVE_MENU_NOT_OPEN',
+        'neither a "Move to Inbox" button nor a "Move to" menu could be found: ' + (direct.why || '') + ' / ' + (opened.why || ''),
+      );
+    }
+    await sleep(800);
+    if (!(await trustedClickMenuRow(cdp, 'Inbox'))) {
+      await closeMenu(cdp);
+      throw new GmError('MOVE_TARGET_NOT_FOUND', 'the "Move to" menu opened but no Inbox row could be clicked');
+    }
+    via = 'the "Move to" menu';
+  }
+  await sleep(1300);
+  const toast = await readToast(cdp);
+  await closeMenu(cdp);
+  return {
+    ok: true,
+    verified: false,
+    note: 'moved to Inbox via ' + via + (toast ? '; toast="' + toast.slice(0, 80) + '"' : '; no toast matched') + ' - confirm with a listing of #inbox',
+  };
+}
+
 export async function moveToLabel(cdp: LabelCdp, threadId: string, label: string): Promise<MoveResult> {
+  // Inbox is not a label you can apply - it is a system view, absent from the
+  // Labels menu, and "apply then archive" cancels itself for it. See moveToInbox.
+  if (/^inbox$/i.test(String(label || '').trim())) return moveToInbox(cdp, threadId);
+
   const applied = await setThreadLabel(cdp, threadId, label, 'on');
   const trace: string[] = [`apply: ${applied.note}`];
 
