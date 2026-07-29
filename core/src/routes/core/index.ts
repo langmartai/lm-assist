@@ -73,6 +73,7 @@ import { createFleetRoutes } from './fleet.routes';
 import { createLifecycleRoutes } from './lifecycle.routes';
 import { createWhatsappRoutes } from './whatsapp.routes';
 import { createLinkedinRoutes } from './linkedin.routes';
+import { createBackupRoutes } from './backup.routes';
 import { createElevatedRoutes } from './elevated.routes';
 import { createCoworkRoutes } from './cowork.routes';
 import { createMachineAccessRoutes } from './machine-access.routes';
@@ -149,6 +150,7 @@ export function createCoreRoutes(ctx: RouteContext): RouteHandler[] {
     ...createLifecycleRoutes(ctx),
     ...createWhatsappRoutes(ctx),
     ...createLinkedinRoutes(ctx),
+    ...createBackupRoutes(ctx),
     ...createElevatedRoutes(ctx),
     ...createCoworkRoutes(ctx),
     ...createMachineAccessRoutes(ctx),

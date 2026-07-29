@@ -35,7 +35,7 @@ export interface ToolCatalogEntry {
 export const CATEGORY_ORDER: string[] = [
   'core', 'session', 'mission', 'backlog', 'worker', 'agent', 'terminal', 'memory', 'data',
   'transfer', 'fleet', 'cluster', 'machine-access', 'ccr', 'claudeai', 'auth',
-  'github', 'whatsapp', 'linkedin', 'elevated',
+  'github', 'whatsapp', 'linkedin', 'backup', 'elevated',
 ];
 
 const T = 'core/src/mcp-server/tools';
@@ -159,6 +159,11 @@ mod('linkedin.ts', 'linkedin', [
   'linkedin_search', 'linkedin_send_message', 'linkedin_read_feed', 'linkedin_read_notifications',
   'linkedin_post', 'linkedin_publish_article', 'linkedin_search_people', 'linkedin_follow',
   'linkedin_connect', 'linkedin_message_profile', 'linkedin_comment', 'linkedin_delete_post',
+]);
+
+// --- backup ---
+mod('backup.ts', 'backup', [
+  'backup_run', 'backup_status', 'backup_list', 'backup_search', 'backup_read', 'backup_remove',
 ]);
 
 // --- whatsapp ---
