@@ -309,6 +309,23 @@ OPERATE FLOW
 6. MANAGE bridges: ccr_remote_list → the bridge REGISTRATIONS on one node (id, mode, webUrl, alive, bridgeAlive, unverified, searched:{node,cluster}); ccr_remote_stop(id) → tear one down (stops the bridge; only kills a tmux WE created, never the user's existing one).
    ⚠️ ccr_remote_list is NOT "what is running" — it lists bridges, not sessions, and only on ONE node. To answer "what sessions are running" use cc_sessions (this host) or session_footprints(scope:'fleet'). \`alive\` = the session is live; \`bridgeAlive\` = the relay helper is up — a live session with a dead bridge just needs reconnecting, it is not gone. An empty list means empty ON THAT NODE, not fleet-wide: check searched.node/searched.cluster and widen with node=<host> (list_nodes / cluster_list) before concluding nothing is running.
 
+CREATE A NEW LOCAL CCR SESSION (POSIX/tmux) — the verified recipe
+WHEN: you want a NEW Claude Code session on a node that is driveable from claude.ai/code — NOT to bridge one that already exists. The OPERATE FLOW above adopts an EXISTING session; this is the from-scratch path, and it is also the fallback when \`ccr_connect\` fails.
+1. \`terminal_open_tab({command:"claude", cwd:"<ABSOLUTE repo path>", node})\` → returns the tmux session NAME. The cwd must be ABSOLUTE.
+2. \`terminal_slash({name:<tmux>, cmd:"remote-control"})\` → prints the \`https://claude.ai/code/session_…\` URL.
+3. 🔴 CLEAR THE MODAL — THE STEP EVERYONE MISSES. \`/remote-control\` leaves a BLOCKING menu ("Disconnect this session / Show QR code / Continue — Enter to select, Esc to continue"). Until it is dismissed the session is NOT at its prompt and NOTHING can be typed into it, and **nothing in lm-assist auto-dismisses it**. Clear it with \`tmux send-keys -t <tmux> Escape\`.
+   **Send ESCAPE, never ENTER.** Enter activates the HIGHLIGHTED row — which can be "Disconnect this session", i.e. it tears down the very connection you just made.
+4. \`terminal_slash({name:<tmux>, cmd:"rename", args:"<name>"})\` → renames the LIVE session, with no restart and no context loss. (The CLI help for \`--remote-control [name]\` implies naming is start-time-only. That is MISLEADING — \`/rename\` works at runtime.)
+5. VERIFY with \`terminal_capture\`: the new name appears in the status bar, and \`/rc\` shows remote control active.
+NAMING: \`<node-ip-last-octet>-<repo>-ccr[-N]\` — e.g. \`117-lm-assist-ccr\`, \`117-lm-assist-ccr-2\` (both verified on 10.0.1.117).
+
+GOTCHAS ON THIS PATH — each one cost a real session
+• \`ccr_connect\` can fail with an opaque **"MCP tool call failed"** EVEN WHEN \`ccr_preflight\` returned \`allowedModes\` including \`connect\` and \`connectStrategy: attach-existing\`. A green preflight is not a working connect — fall back to the native \`/remote-control\` inject above rather than re-running the preflight.
+• A session connected this way is INVISIBLE to \`ccr_remote_list\` — that tool lists only the bridges lm-assist itself spawned, and a native \`/remote-control\` inject was never registered as one, so it returns EMPTY even while the session is live and web-reachable. Tracked as \`bl_e7cd6c71\`.
+• \`send_session_message\` BY sessionId returns \`TARGET_UNREACHABLE\` with drivers \`remote-control\` AND \`cc-session\` both reporting unavailable. Pass the raw **tmux session name** instead — the tmux-send-keys fallback delivers.
+• 🔴 \`status:"received"\` IS NOT PROOF OF ACTION. \`send_session_message\` can ack a message the session NEVER acts on — a large paste can land without being submitted or read. ALWAYS confirm with \`terminal_capture\` that the session actually STARTED the task, and prefer \`terminal_prompt\` for the real instruction.
+• A freshly opened \`claude\` in a repo may AUTO-LOAD a pre-existing handoff brief (e.g. \`.claude/briefs/*.md\`) and start working on THAT — then sit on an AskUserQuestion menu. \`terminal_capture\` FIRST, Escape to cancel the menu, and only then give your own task.
+
 CROSS-NODE: pass node=<host> (after list_nodes) to operate on a session living on another machine.
 GOLDEN RULE: load is always safe; connect = preflight first and respect the verdict — the gate protects a live session's transcript from corruption.
 
