@@ -239,9 +239,17 @@ function connect(wsUrl: string): Promise<Cdp> {
           await send('Input.insertText', { text });
         },
         async pressEnter() {
-          const k = { windowsVirtualKeyCode: 13, key: 'Enter', code: 'Enter' };
-          await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...k });
-          await send('Input.dispatchKeyEvent', { type: 'char', text: '\r', ...k });
+          // A keyDown that CARRIES `text` is what makes Chromium synthesize the
+          // keypress/char for the page. Two things were wrong here:
+          //   - `rawKeyDown` is by definition "keydown that generates no character",
+          //     and CDP documents `text` as "not needed for keyUp and rawKeyDown";
+          //   - the separate `type:'char'` event is a 2016-era recipe that neither
+          //     Puppeteer nor Playwright has emitted in years. Both use exactly
+          //     `type: text ? 'keyDown' : 'rawKeyDown'`.
+          // utils/browser-control.ts in this same repo already sends the correct
+          // keyDown/keyUp pair, so this was also an internal inconsistency.
+          const k = { windowsVirtualKeyCode: 13, key: 'Enter', code: 'Enter', location: 0 };
+          await send('Input.dispatchKeyEvent', { type: 'keyDown', text: '\r', unmodifiedText: '\r', ...k });
           await send('Input.dispatchKeyEvent', { type: 'keyUp', ...k });
         },
         async navigate(url: string) {
