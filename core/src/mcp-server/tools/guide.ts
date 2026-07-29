@@ -565,6 +565,80 @@ SCHEDULING INTELLIGENCE (sub-project 3): each pass, FIRST call mission_changes (
 
 SELF-HEAL: if lm-assist Core is not running on this host, start it (\`lm-assist start\`) before calling any tools. See guide("install") if lm-assist is not installed.`,
 
+  backup: `# Guide: backup — query and manage the fleet backup
+
+WHAT IS BACKED UP, and WHERE. One store, on ONE node: \`E:\\claude-backup\` on
+DESKTOP-GDKLATG (node 107). It holds every host's \`.claude\` — sessions, memory,
+rules, settings, tasks, plugins — plus the claude.ai conversations (including the
+markdown attached inside them) and claude.ai ACCOUNT memory, which lives in the
+web account and in no \`.claude\` folder.
+
+| target | what | how |
+|---|---|---|
+| windows-desk | node 107's own \`.claude\` — 107 IS windows-desk, not a 4th node | incremental mirror |
+| linux-117 | 117's \`.claude\` | dated .tar.gz over ssh, newest 5 kept |
+| linux-123 | 123's \`.claude\` | same |
+| claudeai | web conversations + account memory | incremental by updated_at |
+| memory-rules | every host's rules/ + projects/*/memory/ | browsable extract, additive |
+
+🔴 ONLY 107 CAN SERVE THESE. Pass \`node:"DESKTOP-GDKLATG"\`. 117 deliberately
+cannot be the collector — it has ~3 GB free against its own 6.8 GB \`.claude\`, so
+it can neither hold a snapshot nor repack one. Called elsewhere the tools return
+a pointer, never an empty result.
+
+## Seeing what is IN there, and querying it
+
+\`backup_list\` bare = an overview (items + bytes per host and kind, snapshots
+held). Add \`source\`/\`kind\`/\`project\`/\`prefix\`/\`container\` to page the entries
+themselves. Use it to discover; use \`backup_search\` to find text inside.
+
+Everything is PAGED, because the MCP result ceiling is 64 KB and a silent
+truncation reads as a complete answer. Pages: list 30 rows (max 100), search 10
+hits (max 25 — each carries an excerpt), read 12 KB (max 24 KB). Every reply
+states \`Showing X–Y of Z\` and the exact next call, so there is no such thing as
+a result that quietly stopped early.
+
+\`backup_search\` answers from a SQLite FTS index, so content sealed inside a 2 GB
+snapshot is searchable without unpacking it. \`backup_read\` then streams out one
+member. Sessions index user prompts and assistant prose only — tool payloads are
+most of the bytes and would bury real hits. Each hit carries an \`id\`; that id is
+what \`backup_read\` and \`backup_remove\` take.
+
+\`source\` filters WHICH BACKED-UP HOST; \`node\` routes the call. They are different.
+
+## Running
+
+\`backup_run\` is ASYNC — it returns a runId because a full pass re-pulls ~2 GB.
+Poll \`backup_status\`. One run at a time. \`dryRun:true\` reports what would be
+captured and excluded, writing nothing.
+
+## Removal — what it does and does not touch
+
+Removal NEVER rewrites git history and never affects the remote. The payload is
+gitignored and was never committed: the private repo holds only the scripts and
+STATUS.md. What removal does have to defeat is different:
+
+- the mirror RE-CREATES what you delete, so removal records a persistent
+  exclusion by default (\`exclude:false\` to skip that, knowing it comes back),
+- a member inside a .tar.gz cannot be deleted in place, so the snapshot is
+  REPACKED without it and swapped only after the rewrite verifies — minutes on a
+  2 GB archive, and the original survives any failure,
+- the same file may exist in OTHER snapshots. Search again before calling it gone.
+
+Every removal is audited in removals.jsonl.
+
+## Secrets
+
+Credential files are excluded AT CAPTURE: Claude Code OAuth tokens
+(\`.credentials.json\`), claude.ai session cookies (\`claudeai-session*.json\`),
+browser profiles, SSH keys, \`.env\`. Sessions, memory and rules are kept in full —
+a token is re-obtainable by logging in, a transcript is not.
+
+\`backup_status\` reports any credential file left in the store from before this
+filter existed. Those are NOT on GitHub (the payload is gitignored) but they sit
+in plaintext on the backup volume; remove them with \`backup_remove\`.
+`,
+
   'machine-access': `# Guide: machine-access — how to reach OTHER machines FROM a node
 WHAT IT IS: a NODE-LOCAL registry (\`~/.lm-assist/machine-access.json\`, NOT synced) of how THIS node reaches other machines — SSH endpoint (user/host/port), the identity-key PATH on this node, and per-machine operational notes/gotchas. It turns "how do I get to box X from here?" from a memory-grep into one structured call.
 
@@ -635,6 +709,7 @@ const BLURB: Record<string, string> = {
   missions: 'durable cross-project goals — the fleet-elected Mission Controller binds an executor (cloud or native worktree), adapts + drives it to done, never auto-approves gates/pivots. Born `waiting`; `active` = already running. `env.repo` must be ABSOLUTE, `env.isolation` defaults to `cloud`',
   'mission-controller': 'the controller agent loop contract — the exact per-pass workflow, hard rules (never auto-approve gates/pivots), and tool usage for the autonomous controller session',
   clusters: 'isolated fleet partitions — concept, shared-vs-within table, cluster_list/assign/unassign/describe, build one cluster at a time, respect-other-clusters scope norm',
+  backup: 'browse/query and manage the fleet backup on node 107 — list what is in it, search/read backed-up sessions, memory, rules and claude.ai conversations WITHOUT restoring, run a capture, and remove an item for real (incl. repacking a snapshot); secrets are excluded at capture',
   'machine-access': 'how to reach OTHER machines FROM a node — node-local SSH profiles (user/host/key-path/notes) via machine_access, with ssh-config import + reachability check; run the reported command ON that node',
 };
 

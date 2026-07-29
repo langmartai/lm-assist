@@ -59,12 +59,26 @@ const MAX_SHARED_DESCRIPTION_BYTES = 320;
  * 298,011 B for 189 tools before the `node` dedup, 206,319 B after. The budget is
  * NOT set just above the current figure: a ratchet with 2% headroom fails on the
  * third routine tool addition, and a guard that cries wolf gets its number bumped
- * without thought, which is how it stops meaning anything. 240,000 B leaves room
+ * without thought, which is how it stops meaning anything. 240,000 B left room
  * for roughly 28 more average-sized tools (~1.2 KB each) while still failing hard
  * on the regression this exists to catch — re-inlining shared boilerplate across
  * the surface costs ~90 KB and blows straight through it.
+ *
+ * RAISED to 260,000 B on 2026-07-29, adding the five `backup_*` tools. That
+ * headroom is now spent, exactly as designed: the surface reached 234,551 B over
+ * 211 tools, so the 28 anticipated tools had already arrived. The guard worked —
+ * it caught the addition and forced a 13% trim (6,480 B → 5,608 B, 1,122 B/tool,
+ * below the 1.2 KB average it budgets for) before anything landed.
+ *
+ * This is a REAL COST, not an accounting move: ~240 KB is ~60K tokens paid by
+ * every conversation before it calls anything, and +20,000 B is ~5K more. The new
+ * ceiling is again sized for ~16 average tools rather than set just above today's
+ * figure, for the reason in the paragraph above. The next addition to trip this
+ * should shrink the surface, not raise the number a third time — the durable fix
+ * is fewer/leaner advertised tools, and `guide()` exists so prose can live off the
+ * catalogue.
  */
-const CATALOG_BUDGET_BYTES = 240_000;
+const CATALOG_BUDGET_BYTES = 260_000;
 
 function properties(def: { inputSchema?: { properties?: Record<string, unknown> } }): Record<string, unknown> {
   return def.inputSchema?.properties || {};
