@@ -370,6 +370,24 @@ async function waitFor(cdp: Cdp, boolExpr: string, timeoutMs = 12000): Promise<b
  * that does not change the value, so we blank it first when re-entering the
  * same view — otherwise a repeated call silently returns the previous render.
  */
+/**
+ * Does this hash address ONE record (a thread or draft) rather than a list?
+ *
+ * MEASURED 2026-07-30: a hash-only navigation does NOT re-route Gmail to another
+ * conversation. Both \`location.hash = …\` and a hash-only Page.navigate leave the
+ * PREVIOUS thread rendered while the URL reads exactly as asked — so the caller
+ * sees the id it requested and the wrong mail on screen, which is why read_thread
+ * returned wrong threads instead of failing. Only a real document load routes it.
+ * List hashes are unaffected and keep the cheap path.
+ *
+ * \`search\` is excluded because its segment is a QUERY, not an id, and the length
+ * floor keeps short non-record segments (e.g. #settings/accounts) on the fast path.
+ */
+function isRecordHash(hash: string): boolean {
+  const m = /^#([^/]+)\/([^/?#]+)$/.exec(hash);
+  return !!m && m[1].toLowerCase() !== 'search' && m[2].length >= 10;
+}
+
 async function gotoHash(cdp: Cdp, hash: string, readySel: string, timeoutMs = 15000): Promise<void> {
   const h = JSON.stringify(hash);
   const sel = JSON.stringify(readySel);
@@ -377,6 +395,12 @@ async function gotoHash(cdp: Cdp, hash: string, readySel: string, timeoutMs = 15
   if (!onMail) {
     await cdp.navigate(MAIL_BASE + hash);
     await sleep(2500);
+  } else if (isRecordHash(hash)) {
+    // A record hash only routes on a real document load — see isRecordHash.
+    await cdp.evaluate(`location.hash = ${h}; return true;`).catch(() => undefined);
+    await sleep(300);
+    await cdp.evaluate('location.reload(); return true;').catch(() => undefined);
+    await sleep(3200);
   } else {
     await cdp.evaluate(
       `if (location.hash === ${h}) { location.hash = '#__reroute'; await new Promise(r=>setTimeout(r,150)); }
@@ -1117,14 +1141,17 @@ async function readThreadDom(cdp: Cdp, id: string): Promise<{ detail: GmailThrea
  * Open a thread identified by its `data-legacy-thread-id` and PROVE the right
  * one rendered.
  *
- * MEASURED: navigating `#all/<legacy-hex>` does NOT open that thread — Gmail's
- * URL uses a different (permalink) id space, so it ignores the hex and leaves
- * whatever was already rendered on screen, WHILE STILL updating location.hash to
- * the requested id. Verifying against the hash therefore certifies the wrong
- * thread; only data-legacy-message-id is trustworthy.
+ * CORRECTED 2026-07-30. This used to say Gmail rejects the legacy hex because the
+ * URL uses a different (permalink) id space. That was wrong, and the wrong
+ * diagnosis cost a workaround: Gmail accepts the hex fine. What failed was
+ * HASH-ONLY navigation, which does not re-route the SPA and leaves the previous
+ * conversation rendered while location.hash reads exactly as requested. Force a
+ * real document load and `#all/<hex>` lands, after which Gmail rewrites the hash
+ * to its own permalink id.
  *
- * The one route that works is: land on a list that contains the row, click it,
- * then confirm the rendered conversation actually carries the requested id.
+ * The hash therefore still cannot be trusted as proof — it reads correct in the
+ * failure case — so identity is confirmed against data-legacy-message-id inside
+ * the OPEN conversation. URL first, click the row as a fallback.
  */
 async function openThreadByLegacyId(cdp: Cdp, threadId: string): Promise<void> {
   const id = JSON.stringify(threadId);
@@ -1146,7 +1173,16 @@ async function openThreadByLegacyId(cdp: Cdp, threadId: string): Promise<void> {
   // Already showing it? Then nothing to do.
   if (await threadShows(cdp, threadId)) return;
 
-  // Try the current list first, then the broad views most likely to hold it.
+  // MEASURED 2026-07-30: `#all/<legacy-hex>` DOES open the thread, as long as the
+  // navigation is a REAL document load — Gmail accepts the hex and rewrites the
+  // hash to its own permalink id. What used to fail was hash-only routing, which
+  // silently leaves the previous conversation rendered (see isRecordHash). Try it
+  // first: it is one load instead of a list scroll, and it reaches threads that
+  // are not among the first rows of inbox/all/sent.
+  await gotoHash(cdp, `#all/${encodeURIComponent(threadId)}`, SELECTORS.threadReady, 15000).catch(() => undefined);
+  if (await threadShows(cdp, threadId)) return;
+
+  // Otherwise fall back to finding and clicking the row.
   let clicked = await clickInCurrentView();
   if (!clicked) {
     for (const hash of ['#inbox', '#all', '#sent']) {
@@ -1172,16 +1208,26 @@ async function openThreadByLegacyId(cdp: Cdp, threadId: string): Promise<void> {
  *
  * Checked against data-legacy-message-id, never location.hash: the hash updates
  * to whatever was requested even when Gmail ignored the route entirely.
+ *
+ * MEASURED 2026-07-30: it must also be scoped to the OPEN conversation and to
+ * VISIBLE elements. Gmail keeps the thread list mounted behind an open
+ * conversation, so a document-wide scan finds EVERY listed thread's id and this
+ * returned true for any thread in the list. openThreadByLegacyId short-circuits
+ * on it, so the guard against reading the wrong thread was itself handing back
+ * the previously-opened one.
  */
 async function threadShows(cdp: Cdp, threadId: string): Promise<boolean> {
   const id = JSON.stringify(threadId);
   return (
     (await cdp
       .evaluate<boolean>(
-        `if (!document.querySelector('h2.hP')) return false;
-         const ids = [...document.querySelectorAll('[data-legacy-message-id]')]
+        `const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+         const hdr = [...document.querySelectorAll('h2.hP')].filter(vis)[0];
+         if (!hdr) return false;
+         const root = hdr.closest('div[role="main"]') || document;
+         const ids = [...root.querySelectorAll('[data-legacy-message-id]')].filter(vis)
            .map((e) => e.getAttribute('data-legacy-message-id'));
-         const tids = [...document.querySelectorAll('[data-legacy-thread-id]')]
+         const tids = [...root.querySelectorAll('[data-legacy-thread-id]')].filter(vis)
            .map((e) => e.getAttribute('data-legacy-thread-id'));
          return ids.includes(${id}) || tids.includes(${id});`,
       )

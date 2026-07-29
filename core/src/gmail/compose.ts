@@ -741,6 +741,24 @@ async function assertDesktopMailUi(ctx: ComposeCtx): Promise<void> {
  * value, so re-entering the same view is done via a throwaway hash first —
  * otherwise a repeated call silently returns the PREVIOUS render.
  */
+/**
+ * Does this hash address ONE record (a thread or draft) rather than a list?
+ *
+ * MEASURED 2026-07-30: a hash-only navigation does NOT re-route Gmail to another
+ * conversation. Both \`location.hash = …\` and a hash-only Page.navigate leave the
+ * PREVIOUS thread rendered while the URL reads exactly as asked — so the caller
+ * sees the id it requested and the wrong mail on screen, which is why read_thread
+ * returned wrong threads instead of failing. Only a real document load routes it.
+ * List hashes are unaffected and keep the cheap path.
+ *
+ * \`search\` is excluded because its segment is a QUERY, not an id, and the length
+ * floor keeps short non-record segments (e.g. #settings/accounts) on the fast path.
+ */
+function isRecordHash(hash: string): boolean {
+  const m = /^#([^/]+)\/([^/?#]+)$/.exec(hash);
+  return !!m && m[1].toLowerCase() !== 'search' && m[2].length >= 10;
+}
+
 async function gotoHash(ctx: ComposeCtx, hash: string, readySel: string, timeoutMs = 15000): Promise<void> {
   const onMail = await evalPage<{ hit: boolean }>(
     ctx,
@@ -750,6 +768,12 @@ async function gotoHash(ctx: ComposeCtx, hash: string, readySel: string, timeout
   if (!onMail.hit) {
     await ctx.navigate(mailBase() + hash);
     await sleep(2500);
+  } else if (isRecordHash(hash)) {
+    // A record hash only routes on a real document load — see isRecordHash.
+    await evalPage(ctx, `location.hash = ${q(hash)}; return { ok: true };`).catch(() => undefined);
+    await sleep(300);
+    await evalPage(ctx, 'location.reload(); return { ok: true };').catch(() => undefined);
+    await sleep(3200);
   } else {
     await evalPage(
       ctx,

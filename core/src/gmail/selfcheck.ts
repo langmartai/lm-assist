@@ -357,6 +357,81 @@ async function checkViewsDistinct(state: RunState): Promise<string> {
  * certifies the wrong conversation. Verified here the only way that works:
  * against `data-legacy-message-id` on what actually rendered.
  */
+
+/**
+ * The page-supplied tokens the connector depends on outside the DOM.
+ *
+ * These are the values that make the NON-DOM paths work, and each one fails
+ * silently: a wrong `ik` yields an error page that parses as an empty message,
+ * and a missing XSRF token makes the internal endpoints reject before reading
+ * the payload. If Google moves them, this is where we find out.
+ */
+async function checkPageTokens(): Promise<string> {
+  const r = await pageProbe(async (cdp) =>
+    cdp.evaluate<{ ik: string | null; email: string | null; xsrf: string | null }>(
+      `const g = window.GLOBALS || [];
+       const ik = typeof g[9] === 'string' ? g[9] : null;
+       const email = typeof g[10] === 'string' && g[10].indexOf('@') > 0 ? g[10] : null;
+       let xsrf = null;
+       try {
+         const src = [...document.querySelectorAll('script')].map((x) => x.textContent || '').join('');
+         const m = src.match(/"sdpc","([^"]+)"/);
+         xsrf = m ? m[1] : null;
+       } catch (e) {}
+       return { ik, email, xsrf };`,
+    ),
+  );
+  const missing: string[] = [];
+  if (!r.ik || !/^[0-9a-f]{6,}$/i.test(r.ik)) missing.push(`ik (GLOBALS[9] = ${JSON.stringify(r.ik)})`);
+  if (!r.email) missing.push(`account address (GLOBALS[10] = ${JSON.stringify(r.email)})`);
+  if (!r.xsrf) missing.push('XSRF token (inline script ["sdpc","<token>"])');
+  if (missing.length) {
+    throw new GmDriftError(
+      'PAGE_TOKENS_MOVED',
+      'the page still publishes ik, the account address and the XSRF token where the connector reads them',
+      `missing or malformed: ${missing.join('; ')} — Google has moved or renamed them, and the paths that use them fail SILENTLY (a bad ik returns an error page that parses as an empty message)`,
+      r,
+    );
+  }
+  return `ik, account address and XSRF token all present and well-formed`;
+}
+
+/**
+ * The raw-source read path (view=om), which is what makes a FULL message
+ * readable — the rendered DOM clips long messages and hides trimmed quotes.
+ * A wrong ik or a changed endpoint returns an HTML error page, and the parser
+ * would report that as an empty message rather than a failure.
+ */
+async function checkRawSource(state: RunState): Promise<string> {
+  const rows = state.inbox?.length ? state.inbox : await listThreads({ label: 'inbox', limit: 25 });
+  const target = rows.find((r) => !r.unread && r.threadId && looksLikeThreadId(r.threadId));
+  if (!target) throw new SoftFail('no already-read inbox row to sample (opening an unread one would mark it read)');
+  const id = String(target.threadId);
+  const r = await pageProbe(async (cdp) =>
+    cdp.evaluate<{ status: number; len: number; rfc822: boolean; notExist: boolean }>(
+      `const g = window.GLOBALS || [];
+       const ik = typeof g[9] === 'string' ? g[9] : '';
+       const res = await fetch('/mail/u/0/?ui=2&ik=' + ik + '&view=om&th=' + ${JSON.stringify(id)}, { credentials: 'include' });
+       const html = await res.text();
+       const m = html.match(/<pre[^>]*>([\\s\\S]*?)<\\/pre>/i);
+       const dec = (x) => x.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"');
+       const src = m ? dec(m[1]) : '';
+       return { status: res.status, len: src.length,
+                rfc822: /^(Delivered-To|Received|Return-Path|MIME-Version|From):/mi.test(src.slice(0, 3000)),
+                notExist: /does not exist/i.test(html) };`,
+    ),
+  );
+  if (!r.rfc822) {
+    throw new GmDriftError(
+      'RAW_SOURCE_UNAVAILABLE',
+      'view=om returns RFC822 source for a known thread',
+      `thread ${id}: status ${r.status}, ${r.len} chars extracted, notExist=${r.notExist}, and it does not start with RFC822 headers — full-message reads would silently return nothing`,
+      r,
+    );
+  }
+  return `raw source reachable (${r.len} chars of RFC822 for ${id})`;
+}
+
 async function checkThreadIdentity(state: RunState): Promise<string> {
   const rows = state.inbox?.length ? state.inbox : await listThreads({ label: 'inbox', limit: 25 });
 
@@ -513,6 +588,8 @@ export async function runSelfCheck(opts?: { deep?: boolean }): Promise<SelfCheck
   checks.push(await run('thread.identity', 'critical', () => checkThreadIdentity(state)));
   checks.push(await run('sendas.identities', 'critical', checkSendAs));
   checks.push(await run('labels.nav', 'critical', checkLabels));
+  checks.push(await run('api.page_tokens', 'critical', checkPageTokens));
+  checks.push(await run('api.raw_source', 'critical', () => checkRawSource(state)));
 
   // Small settle before driving the compose UI: the preceding checks navigate,
   // and clicking Compose mid-navigation is how a probe invents its own flake.

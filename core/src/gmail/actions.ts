@@ -446,13 +446,39 @@ async function assertDesktopUi(cdp: Cdp): Promise<void> {
  * call silently keeps the previous render and every subsequent read describes the
  * WRONG view (same trap as cdp-client.gotoHash).
  */
+/**
+ * Does this hash address ONE record (a thread or draft) rather than a list?
+ *
+ * MEASURED 2026-07-30: a hash-only navigation does NOT re-route Gmail to another
+ * conversation. Both \`location.hash = …\` and a hash-only Page.navigate leave the
+ * PREVIOUS thread rendered while the URL reads exactly as asked — so the caller
+ * sees the id it requested and the wrong mail on screen, which is why read_thread
+ * returned wrong threads instead of failing. Only a real document load routes it.
+ * List hashes are unaffected and keep the cheap path.
+ *
+ * \`search\` is excluded because its segment is a QUERY, not an id, and the length
+ * floor keeps short non-record segments (e.g. #settings/accounts) on the fast path.
+ */
+function isRecordHash(hash: string): boolean {
+  const m = /^#([^/]+)\/([^/?#]+)$/.exec(hash);
+  return !!m && m[1].toLowerCase() !== 'search' && m[2].length >= 10;
+}
+
 async function gotoHash(cdp: Cdp, hash: string, readySel: string, timeoutMs = 15000): Promise<void> {
   const h = JSON.stringify(hash);
-  await cdp.evaluate(
-    `if (location.hash === ${h}) { location.hash = '#__reroute'; await new Promise(r=>setTimeout(r,150)); }
-     location.hash = ${h}; return true;`,
-  );
-  await sleep(900);
+  if (isRecordHash(hash)) {
+    // A record hash only routes on a real document load — see isRecordHash.
+    await cdp.evaluate(`location.hash = ${h}; return true;`).catch(() => undefined);
+    await sleep(300);
+    await cdp.evaluate('location.reload(); return true;').catch(() => undefined);
+    await sleep(3200);
+  } else {
+    await cdp.evaluate(
+      `if (location.hash === ${h}) { location.hash = '#__reroute'; await new Promise(r=>setTimeout(r,150)); }
+       location.hash = ${h}; return true;`,
+    );
+    await sleep(900);
+  }
   const ready = await waitFor(cdp, `document.querySelector(${JSON.stringify(readySel)})`, timeoutMs);
   if (!ready) throw new GmError('PAGE_NOT_READY', `timed out waiting for ${hash} to render (${readySel})`);
   await sleep(400);
