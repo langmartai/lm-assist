@@ -74,6 +74,71 @@ The session persists in a dedicated Chrome profile at
 `~/.lm-assist/gmail[-dev]/login-profile/<name>/`, on debug port **9224** (distinct
 from WhatsApp's 9222 and LinkedIn's 9223 — all three can run side by side).
 
+## Per-node readiness — WHICH node can serve a Gmail call
+
+🔴 **A Gmail tool only works on a node that has a signed-in browser of its own.**
+The login lives in a Chrome profile on one machine; it does not travel with the
+branch and it is not fleet state. Deploying the code to a node does NOT make that
+node able to read mail.
+
+That matters because every `gmail_*` call routes to exactly ONE node — your default
+node unless you pass `node`. So the failure mode is: the code is installed
+everywhere, the default node has no login, and every call fails there while another
+node would have answered.
+
+There is no fleet-wide readiness call — `node` selects a single node per call. Ask
+each one:
+
+```bash
+list_nodes                      # which nodes exist
+gmail_status node=<hostId>      # per node: loggedIn true/false, and which account
+# use a node whose loggedIn is true; if none, gmail_login on the node you want
+```
+
+`gmail_status` is the authority, not the presence of the tools: the tools are
+advertised by any node running the code, signed in or not.
+
+**Measured 2026-07-31**, the current fleet:
+
+| node | code | signed in | notes |
+|---|---|---|---|
+| 123 (`yitest`, Linux) | yes | **yes** | primary validation host |
+| 107 (`DESKTOP-GDKLATG`, Windows) | yes | **yes** | profile survived a Core restart |
+| 117 (`ubuntu-Virtual-Machine`, prod) | yes | **no** | deployed 2026-07-31; run `gmail_login` there to use it |
+
+A call that lands on a node without a login now fails with **`BROWSER_NOT_RUNNING`**,
+which names the fix rather than surfacing an opaque `fetch failed`. 🔴 Note that
+**restarting Core kills the Chrome that Core launched**, so a node that was ready
+can stop being ready after any deploy or `lm-assist restart` — re-run `gmail_login`
+(no new sign-in; the profile persists).
+
+## Deploy and e2e verification
+
+Deploying is a dist sync, not `npm i -g` (see `docs/build-pack-install-upgrade.md`):
+
+```bash
+# on a build host, from the branch
+npm run build:core                       # tsc AND copy-voice-assets
+#   🔴 running tsc alone then `rsync --delete` STRIPS the voice assets from the
+#   install. Compare the trees before syncing.
+sudo rsync -a --delete core/dist/ <install>/core/dist/
+lm-assist restart                        # kills the Gmail browser; re-login after
+```
+
+Then verify, in this order — each step is a precondition for the next:
+
+```bash
+curl -s localhost:3100/health                    # Core is up
+gmail_status node=<n>                            # routes registered; loggedIn?
+gmail_login node=<n>                             # only if loggedIn:false
+gmail_selfcheck node=<n>                         # the canary: 11 checks
+```
+
+`gmail_selfcheck` is the real gate. It drives the live UI and fails closed on
+drift — a green `/health` proves only that the process booted. Anything less than
+11/11 means the connector is mis-reading Gmail even when individual calls look
+fine.
+
 **Verified 2026-07-29** on a real Workspace account, on both a Windows host and a
 Linux host: Google does **not** refuse a sign-in in a Chrome launched with a custom
 `--user-data-dir` and an open `--remote-debugging-port`, and the session survives a
@@ -154,12 +219,22 @@ by every conversation. Its trigger words live on `gmail_search`.
 
 ## Validation status
 
+**Updated 2026-07-31.** Verified LIVE, each by an INDEPENDENT read (a view listing
+or a row state), never the tool's own return value — several of these tools
+reported success while doing nothing before that rule was applied.
+
 | Check | Where | Result |
 |---|---|---|
-| `tsc --noEmit` | 123 | clean |
-| scope parity + catalog completeness | 123 | 15/15 tests pass |
-| Core boots, `/gmail/*` registers | 123, non-prod port 3399 | pass |
-| `gmail_status` | 123, live | `loggedIn:true`, correct account |
-| `gmail_list_threads`, `gmail_read_thread`, `gmail_search` | 123, live | real data returned |
-| `gmail_send` / `gmail_reply` / `gmail_draft` | — | **NOT exercised live** — they write to a real mailbox |
-| Windows (headed) end-to-end | 107 | login verified; read/write path not yet run |
+| `gmail_selfcheck` (11 checks) | 123 **and** 107 | **11/11 pass on both** |
+| `tsc --noEmit`, scope parity, catalogue budget | 123 | clean |
+| page-script compile tests | 123 | 27/27 (all 10 embedded page scripts) |
+| `gmail_status` / `list_threads` / `read_thread` / `search` | 123, 107 live | real data; A→B→A reads 3/3 correct |
+| `gmail_send` | 123 live | **real delivery**, body + markdown intact |
+| `gmail_reply` | 123 live | landed in-thread (1→2 messages) with body |
+| `gmail_draft` | 123 live | body in the canonical Message Body |
+| `archive` / `trash` / `star` / `mark_read` | 123 live | each confirmed by view membership |
+| `apply_label` / `remove_label` / `create_label` / `move_to` | 123 live | `verified:true` via the chip reader |
+| `gmail_sync` / `sync_status` / `search_local` | 123 live | 45 threads, `complete:true`; ranked local matches |
+| `gmail_attachments` | 123 live | metadata + signed URLs (`size` unpopulated) |
+| `gmail_spam` | — | **deliberately never exercised**: marking the operator's own address as spam trains Google's filter against their real mail, with no API undo. A successful test is worse than no test. |
+| 117 (prod) | deployed 2026-07-31 | routes + MCP live; **not signed in** |

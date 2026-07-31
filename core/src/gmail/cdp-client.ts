@@ -402,9 +402,12 @@ async function recycleGmailTab(base: string): Promise<void> {
   } catch {
     throw new GmError(
       'BROWSER_NOT_RUNNING',
-      `no Chrome is listening on ${base} — the Gmail driver browser is not running. ` +
-        'Start it with gmail_login (POST /gmail/login); the profile persists, so an existing session does NOT need a new sign-in. ' +
-        'Note that restarting Core kills the browser it launched.',
+      `no Chrome is listening on ${base} — the Gmail driver browser is not running on THIS node. ` +
+        'Gmail readiness is per-NODE: the login lives in a Chrome profile on one machine and does not travel with the code, ' +
+        'so a node can advertise every gmail_* tool and still not be able to read mail. ' +
+        'Start it here with gmail_login (POST /gmail/login) — the profile persists, so an existing session does NOT need a new sign-in — ' +
+        'or another node may have one already: check gmail_status on each node from list_nodes. ' +
+        'Note that restarting Core kills the browser it launched, so a node that was ready stops being ready after a deploy.',
     );
   }
   for (const t of list) {
