@@ -1856,11 +1856,50 @@ export async function listDrafts(ctx: ComposeCtx, limit = 25): Promise<DraftRow[
 
 /** Open a draft and verify it can be opened + edited. */
 async function openDraft(ctx: ComposeCtx, draftId: string): Promise<void> {
-  try {
-    await gotoHash(ctx, `#drafts/${encodeURIComponent(draftId)}`, S.body, 15000);
-  } catch {
-    await gotoHash(ctx, `#all/${encodeURIComponent(draftId)}`, S.threadReady, 15000);
+  // openDraft: MEASURED 2026-07-31 — a draft CANNOT be opened by URL. A real
+  // document load of `#drafts/<id>` does not route there: Gmail rewrote it to
+  // `#all/<unrelated-id>`, title and all, and plain `#drafts` landed on `#inbox`.
+  // So the old implementation opened somebody else's conversation, found no
+  // compose body, fell through to an `#all/<id>` fallback and timed out — which
+  // is why sendDraft failed while every other draft verb looked fine.
+  //
+  // The route that works is the one already proven for threads and labels: land
+  // on the LIST, find the row by its id, and click it.
+  await gotoHash(ctx, '#drafts', S.listReady, 15000);
+
+  const found = await evalPage<{ hit: boolean; rows: number; scrolled: number }>(
+    ctx,
+    `const want = ${q(draftId)};
+     const rowFor = () => __visAll(${q(S.row)}).find((tr) => {
+       const el = tr.querySelector('[data-legacy-thread-id]');
+       return !!el && el.getAttribute('data-legacy-thread-id') === want;
+     });
+     let scrolled = 0;
+     let row = rowFor();
+     // The list is virtualised: a draft below the fold is simply not in the DOM.
+     while (!row && scrolled < 6) {
+       const sc = document.querySelector('div[role="main"]') || document.scrollingElement;
+       if (!sc) break;
+       sc.scrollBy(0, sc.clientHeight * 1.5);
+       await new Promise((r) => setTimeout(r, 700));
+       scrolled++;
+       row = rowFor();
+     }
+     if (!row) return { ok: true, hit: false, rows: __visAll(${q(S.row)}).length, scrolled };
+     row.scrollIntoView({ block: 'center' });
+     await new Promise((r) => setTimeout(r, 200));
+     row.click();
+     return { ok: true, hit: true, rows: __visAll(${q(S.row)}).length, scrolled };`,
+  );
+  if (!found.hit) {
+    throw new GmComposeError(
+      'DRAFT_NOT_FOUND',
+      `draft ${draftId} is not in the Drafts list (${found.rows} row(s) seen after ${found.scrolled} scroll(s)) — ` +
+        'it may have been sent or discarded already. Run gmail_drafts to see what is there.',
+      { draftId },
+    );
   }
+
   try {
     await waitForCompose(ctx, 12000);
   } catch {
