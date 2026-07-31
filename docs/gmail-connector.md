@@ -170,19 +170,31 @@ exists for). Trust `gmail_status`, not the pid.
 
 ## Tools & scopes
 
-9 tools. Reads observe the mailbox; writes send real mail; `gmail_login` drives
-interactive auth.
+28 tools. Reads observe the mailbox; writes send real mail or mutate threads;
+`gmail_login` drives interactive auth.
 
 | Tool | Scope | Purpose |
 |---|---|---|
-| `gmail_status` | read | provider, logged-in state, signed-in address |
+| `gmail_status` | read | provider, logged-in state, signed-in address, watch state |
+| `gmail_summary` | read | account snapshot — label/draft/inbox counts, what arrived, unread |
 | `gmail_list_threads` | read | threads in a view (default inbox), newest first |
 | `gmail_read_thread` | read | open one thread, return its messages |
 | `gmail_search` | read | Gmail's own query syntax (`from:`, `is:unread`, …) |
+| `gmail_search_local` | read | search the local cache — no browser, no Gmail round-trip |
 | `gmail_labels` | read | labels from the left nav |
-| `gmail_send` | write | compose and send a new message |
+| `gmail_aliases` | read | send-as addresses on the account |
+| `gmail_drafts` | read | list saved drafts |
+| `gmail_attachments` | read | attachment metadata on a thread (names/types, not bytes) |
+| `gmail_selfcheck` | read | internal validation sweep over the endpoints |
+| `gmail_sync` / `gmail_sync_status` | read | populate + report on the local cache |
+| `gmail_send` | write | compose and send a new message (attachments supported) |
 | `gmail_reply` | write | reply to an existing thread |
+| `gmail_forward` | write | forward a thread to new recipients |
 | `gmail_draft` | write | compose and save a draft, sending nothing |
+| `gmail_archive` · `gmail_trash` · `gmail_spam` | write | move a thread out of the inbox |
+| `gmail_mark_read` · `gmail_star` | write | per-thread state |
+| `gmail_triage` | write | mute/unmute, important/unimportant, **snooze** |
+| `gmail_apply_label` · `gmail_remove_label` · `gmail_create_label` · `gmail_move_to` | write | label management |
 | `gmail_login` | admin | launch a browser for the one-time sign-in |
 
 `gmail_unread` is deliberately **not** a tool — it is exactly
@@ -191,12 +203,25 @@ by every conversation. Its trigger words live on `gmail_search`.
 
 ## REST routes
 
-`GET /gmail/status` · `GET /gmail/threads?limit=&label=` · `GET /gmail/thread?id=` ·
-`GET /gmail/search?q=&limit=` · `GET /gmail/unread?limit=` · `GET /gmail/labels` ·
-`POST /gmail/send` · `POST /gmail/reply` · `POST /gmail/draft` · `POST /gmail/login` ·
+`GET /gmail/status` · `GET /gmail/summary?window=&refresh=` · `GET /gmail/threads?limit=&label=` ·
+`GET /gmail/thread?id=` · `GET /gmail/search?q=&limit=` · `GET /gmail/search-local` ·
+`GET /gmail/unread?limit=` · `GET /gmail/labels` · `GET /gmail/aliases` · `GET /gmail/drafts` ·
+`GET /gmail/attachments` · `GET /gmail/selfcheck` · `GET /gmail/sync-status` · `POST /gmail/sync` ·
+`POST /gmail/send` · `POST /gmail/reply` · `POST /gmail/forward` · `POST /gmail/draft` ·
+`POST /gmail/draft/send` · `POST /gmail/draft/delete` · `POST /gmail/triage` ·
+`POST /gmail/archive` · `POST /gmail/trash` · `POST /gmail/spam` · `POST /gmail/mark-read` ·
+`POST /gmail/star` · `POST /gmail/move-to` · `POST /gmail/label/apply` ·
+`POST /gmail/label/remove` · `POST /gmail/label/create` · `POST /gmail/login` ·
 `GET /gmail/login/status?port=` · `POST /gmail/keepalive`
 
 (`/gmail/unread` and `/gmail/keepalive` have no MCP tool — REST only.)
+
+🔴 **Snooze lives on `/gmail/triage`, not a `/gmail/snooze` route.** A caller reaching for
+the obvious path gets `Route not found`, which reads like a missing feature.
+
+🔴 **`BROWSER_BUSY` is normal, not a fault.** One browser serves every Gmail call, so a
+sync or an auto-sync triggered by an arrival push holds it — a 30-day sync measured 255s.
+The lock waits up to 120s, then refuses rather than queueing forever. Retry.
 
 ## Environment
 

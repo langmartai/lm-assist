@@ -175,10 +175,30 @@ const LABELS = {
 } as const;
 
 /** Snooze presets -> the picker's English item text. CANDIDATE. */
+/**
+ * Snooze presets, matched by PREFIX.
+ *
+ * 🔴 MEASURED 2026-07-31: the picker renders the label and the resolved time as
+ * SEPARATE elements, so `textContent` concatenates them with NO separator and the
+ * items read "TomorrowSat, 8:00 AM" / "Next weekMon, 8:00 AM" — never a bare
+ * "Tomorrow". The old `^Tomorrow$` matched nothing and snooze failed with
+ * "no-menu-item", which reads like a missing control rather than a text mismatch.
+ *
+ * These are PREFIXES with no trailing `\b` on purpose: in "TomorrowSat" the w->S
+ * junction is not a word boundary, so `^Tomorrow\b` fails on the very string it
+ * was written for. The picker holds only these three items, so a bare prefix is
+ * unambiguous.
+ *
+ * 🔴 "Later today" is CONDITIONAL: Gmail only offers it while there is still
+ * enough of the day left. Measured mid-morning the picker showed only Tomorrow,
+ * Next week and "Pick date & time". A caller asking for later-today at the wrong
+ * hour is not hitting a bug, and the verb says so rather than reporting a generic
+ * failure.
+ */
 const SNOOZE_TEXT: Record<'tomorrow' | 'later-today' | 'next-week', string[]> = {
-  tomorrow: ['^Tomorrow$'],
-  'later-today': ['^Later today$'],
-  'next-week': ['^Next week$'],
+  tomorrow: ['^Tomorrow'],
+  'later-today': ['^Later today'],
+  'next-week': ['^Next week'],
 };
 
 /** Toast phrasings that corroborate a given verb. CANDIDATE (English). */
@@ -968,6 +988,31 @@ async function openMoreAndClick(cdp: Cdp, labels: readonly string[]): Promise<Cl
   return cdp.evaluate<ClickOutcome>(jsClickMenuItem(labels));
 }
 
+/**
+ * Click an item in an ALREADY-OPEN menu with TRUSTED events.
+ *
+ * MEASURED 2026-07-31 on the snooze picker: the picker opens fine (a trusted
+ * click on the Snooze control), the item is found, `hit.click()` reports success
+ * — and the thread stays in the inbox with no toast. Same `isTrusted` gate as
+ * the Labels and More menus, but reached by a different route, so it needed its
+ * own fix rather than being covered by openMoreAndClick.
+ *
+ * Falls back to the synthetic click when the transport exposes no raw CDP, so
+ * behaviour is never worse than before.
+ */
+async function clickOpenMenuItem(cdp: Cdp, labels: readonly string[]): Promise<ClickOutcome> {
+  if (typeof cdp.send === 'function') {
+    const item = await cdp
+      .evaluate<ClickOutcome & { x?: number; y?: number }>(jsFindMenuItem(labels))
+      .catch(() => ({ ok: false, miss: 'find-item-threw' }) as ClickOutcome & { x?: number; y?: number });
+    if (!item.ok || typeof item.x !== 'number' || typeof item.y !== 'number') return item;
+    await dispatchTrustedClick(cdp, item.x, item.y);
+    await sleep(600);
+    return { ok: true, seen: item.seen };
+  }
+  return cdp.evaluate<ClickOutcome>(jsClickMenuItem(labels));
+}
+
 /** (a'') Open the thread, open "More email options", click the item. */
 function stMoreMenu(labels: readonly string[]): Strategy {
   return {
@@ -1410,6 +1455,12 @@ export async function snoozeThread(
 ): Promise<ActionResult> {
   const wanted = SNOOZE_TEXT[until];
   if (!wanted) throw new GmError('INVALID_SNOOZE', `unknown snooze preset "${until}"`);
+  // "Later today" only exists for part of the day — see SNOOZE_TEXT. Naming that
+  // beats a generic no-menu-item failure the caller cannot act on.
+  const laterTodayHint =
+    until === 'later-today'
+      ? ' — note Gmail only offers "Later today" while enough of the day remains; try tomorrow or next-week'
+      : '';
 
   const pick = (opener: Strategy): Strategy => ({
     name: `${opener.name}+picker`,
@@ -1418,7 +1469,12 @@ export async function snoozeThread(
       if (!open.ok) return open;
       const ready = await waitFor(c, `document.querySelector(${JSON.stringify(SELECTORS.menu)})`, 6000);
       if (!ready) return { ok: false, miss: 'snooze-clicked-but-no-picker-appeared' };
-      return await c.evaluate<ClickOutcome>(jsClickMenuItem(wanted));
+      const hit = await clickOpenMenuItem(c, wanted);
+      if (!hit.ok && String(hit.miss || '').startsWith('no-menu-item')) {
+        // The picker opened and we read it — so `seen` is the real answer, not a guess.
+        return { ...hit, miss: `${hit.miss}${laterTodayHint}` };
+      }
+      return hit;
     },
   });
 
