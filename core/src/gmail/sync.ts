@@ -1437,13 +1437,22 @@ function finalize(slot: JobSlot, stopReason: string, oldestWanted: number | null
     notes.push('Gmail did not accept the /pN page suffix and re-rendered the previous page — paging may have changed.');
   }
 
+  // `windowDays` here is the RETENTION window (syncWindowDays(), i.e.
+  // GMAIL_SYNC_DAYS) - NOT what this run was asked to cover. Record the REQUESTED
+  // window so sync-status can answer "is this gap outside what we synced?",
+  // falling back to retention when the caller named no window.
+  const syncedDays = typeof slot.opts.days === 'number' && slot.opts.days > 0 ? slot.opts.days : windowDays;
+
+  // MEASURED 2026-07-31: a 30-day run stored 297 threads reaching back to 1 July
+  // and recorded NOTHING, because it had not reached state 'done' when this ran.
+  // sync-status therefore still reported windowDays=2 from an earlier run, and
+  // every `window=30d` query judged coverage against the wrong number. A run that
+  // fetched fresh mail HAS synced, whether or not it also finished, so record it
+  // if it stored anything at all. `complete` is reported separately and stays the
+  // flag for "did it finish" - the two were being conflated in one condition.
+  if (p.threadsUpserted > 0) markSynced(undefined, syncedDays);
+
   if (state === 'done') {
-    // `windowDays` here is the RETENTION window (syncWindowDays(), i.e.
-    // GMAIL_SYNC_DAYS) - NOT what this run was asked to cover. Record the
-    // REQUESTED window so sync-status can answer "is this gap outside what we
-    // synced?", falling back to retention when the caller named no window.
-    const syncedDays = typeof slot.opts.days === 'number' && slot.opts.days > 0 ? slot.opts.days : windowDays;
-    markSynced(undefined, syncedDays);
     // 🔴 Prune ONLY when this run stayed inside the retention window. A deep
     // historical sync followed by a prune would delete precisely what it just
     // spent minutes fetching. An open-ended run (no floor) counts as outside.
