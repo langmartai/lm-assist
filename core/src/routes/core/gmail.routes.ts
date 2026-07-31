@@ -431,13 +431,27 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
         const label = str(b.label).trim() || 'inbox';
         try {
           const r = await syncWindow({ days, label });
+          // MEASURED 2026-07-30, first ever run of this path: the response used to
+          // carry only the four counters below, so a run that stored 44 threads and
+          // then stopped early was indistinguishable from a complete one. syncWindow
+          // produces `complete`, `stopReason`, `threadsSkipped` and a human `note`
+          // precisely so a caller can tell those apart - dropping them turned an
+          // honest partial result into a clean-looking success, and left
+          // `lastSyncAt: null` (only written when the run ends 'done') with no
+          // visible explanation.
           return {
             success: true,
             data: {
               threadsSynced: r.threadsSynced ?? 0,
               messagesSynced: r.messagesSynced ?? 0,
+              threadsSkipped: r.threadsSkipped ?? 0,
+              pagesFetched: r.pagesFetched ?? 0,
               windowDays: r.windowDays ?? days,
               label,
+              complete: r.complete ?? false,
+              stopReason: r.stopReason ?? null,
+              error: r.error ?? null,
+              note: r.note ?? null,
             },
           };
         } catch (e) {

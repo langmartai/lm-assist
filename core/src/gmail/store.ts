@@ -110,7 +110,19 @@ export interface SyncStatus {
   oldestMs: number | null;
   newestMs: number | null;
   lastSyncAt: number | null;
+  /**
+   * The window the last sync ACTUALLY covered - not the retention config.
+   *
+   * MEASURED 2026-07-30: this reported syncWindowDays() (the GMAIL_SYNC_DAYS
+   * default, 10) even after a `days: 2` sync. search-local hands this field to
+   * the caller specifically so an empty result can be read as "outside the
+   * synced window" rather than "not in the mailbox" - so reporting the config
+   * instead of the truth inverts the one decision it exists to inform.
+   * Falls back to the retention default when this node has never synced.
+   */
   windowDays: number;
+  /** The retention/prune window from config, independent of what was synced. */
+  retentionWindowDays: number;
   dataDir: string;
 }
 
@@ -130,6 +142,7 @@ let messages = new Map<string, CachedMessage>();
 /** threadId -> its cached messages. Derived; rebuilt on load and after prune. */
 let byThread = new Map<string, CachedMessage[]>();
 let lastSyncAt: number | null = null;
+let lastSyncWindowDays: number | null = null;
 
 // ─── sync window ─────────────────────────────────────────────────────────────
 
@@ -239,10 +252,15 @@ function ensureLoaded(): void {
   reindexMessages();
 
   try {
-    const st = JSON.parse(fs.readFileSync(syncStateFile(), 'utf-8')) as { lastSyncAt?: number };
+    const st = JSON.parse(fs.readFileSync(syncStateFile(), 'utf-8')) as {
+      lastSyncAt?: number;
+      lastSyncWindowDays?: number;
+    };
     lastSyncAt = typeof st.lastSyncAt === 'number' ? st.lastSyncAt : null;
+    lastSyncWindowDays = typeof st.lastSyncWindowDays === 'number' && st.lastSyncWindowDays > 0 ? st.lastSyncWindowDays : null;
   } catch {
     lastSyncAt = null;
+    lastSyncWindowDays = null;
   }
 }
 
@@ -381,7 +399,7 @@ function rewriteJsonl(file: string, records: unknown[]): void {
 
 function persistSyncState(): void {
   fs.mkdirSync(GM_DATA_DIR, { recursive: true });
-  fs.writeFileSync(syncStateFile(), JSON.stringify({ version: 1, lastSyncAt }, null, 2));
+  fs.writeFileSync(syncStateFile(), JSON.stringify({ version: 1, lastSyncAt, lastSyncWindowDays }, null, 2));
 }
 
 // ─── normalization ───────────────────────────────────────────────────────────
@@ -618,9 +636,10 @@ function normalizeAttachments(v: unknown): Array<{ name: string; sizeLabel: stri
 }
 
 /** Record that a sync completed, so `syncStatus()` can report staleness. */
-export function markSynced(at?: number): void {
+export function markSynced(at?: number, windowDays?: number): void {
   ensureLoaded();
   lastSyncAt = typeof at === 'number' && at > 0 ? at : Date.now();
+  if (typeof windowDays === 'number' && windowDays > 0) lastSyncWindowDays = Math.floor(windowDays);
   persistSyncState();
 }
 
@@ -923,7 +942,8 @@ export function syncStatus(): SyncStatus {
     oldestMs,
     newestMs,
     lastSyncAt,
-    windowDays: syncWindowDays(),
+    windowDays: lastSyncWindowDays ?? syncWindowDays(),
+    retentionWindowDays: syncWindowDays(),
     dataDir: GM_DATA_DIR,
   };
 }
@@ -935,4 +955,5 @@ export function _resetForTest(): void {
   messages = new Map();
   byThread = new Map();
   lastSyncAt = null;
+  lastSyncWindowDays = null;
 }

@@ -1438,7 +1438,12 @@ function finalize(slot: JobSlot, stopReason: string, oldestWanted: number | null
   }
 
   if (state === 'done') {
-    markSynced();
+    // `windowDays` here is the RETENTION window (syncWindowDays(), i.e.
+    // GMAIL_SYNC_DAYS) - NOT what this run was asked to cover. Record the
+    // REQUESTED window so sync-status can answer "is this gap outside what we
+    // synced?", falling back to retention when the caller named no window.
+    const syncedDays = typeof slot.opts.days === 'number' && slot.opts.days > 0 ? slot.opts.days : windowDays;
+    markSynced(undefined, syncedDays);
     // 🔴 Prune ONLY when this run stayed inside the retention window. A deep
     // historical sync followed by a prune would delete precisely what it just
     // spent minutes fetching. An open-ended run (no floor) counts as outside.
