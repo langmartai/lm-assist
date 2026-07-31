@@ -85,6 +85,25 @@ const MAX_SHARED_DESCRIPTION_BYTES = 320;
 // takes it on, +12,000 B keeps ~10 tools of slack. The shared-boilerplate test
 // above still passes, so this is routine growth, not the re-inlining
 // regression (~90 KB) this guard exists to catch.
+// MEASURED 2026-07-31, after the Gmail connector landed — the raise above was
+// justified on an estimate, so here is the arithmetic it was owed:
+//
+//   234 tools, catalogue          252,759 B
+//   budget                        264,000 B  -> 11,241 B headroom
+//   at the 1,080 B surface average that is ~10 tools of slack, as intended.
+//   the previous 240,000 B budget would now be 12,759 B OVER.
+//
+//   gmail: 24 tools = 20,299 B (8.0% of the catalogue), of which its own prose is
+//   only 5,171 B — 215 B/tool, the LEANEST on the surface (surface-wide average
+//   1,095 B). The other ~7,344 B is the injected node-param paragraph: 36% of
+//   Gmail's entire footprint, spent before a word of Gmail-specific prose.
+//
+// So there is nothing left to sand on the Gmail side; per-tool trimming there
+// would reclaim bytes from the leanest descriptions on the server. The lever is
+// still the shared paragraph, and it is bigger than it looks: ~306 B x 234 tools
+// = ~71,600 B, roughly 28% of the whole catalogue. Every conversation pays it up
+// front. Taking that on would fund ~66 tools of growth and is worth far more
+// than any amount of per-tool sanding.
 const CATALOG_BUDGET_BYTES = 264_000;
 
 function properties(def: { inputSchema?: { properties?: Record<string, unknown> } }): Record<string, unknown> {
