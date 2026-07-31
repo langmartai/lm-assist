@@ -2008,6 +2008,37 @@ export function gmailSummaryCached(): GmailSummary | null {
   return readSummary();
 }
 
+/**
+ * The cheapest possible "has anything arrived?" read.
+ *
+ * MEASURED 2026-07-31: the open Gmail tab self-updates on arrival — a sent
+ * message appeared as the top row and the nav count moved, within 15s, with
+ * nothing navigating the page. So this deliberately does NOT navigate, click, or
+ * wait for a view: it reads whatever the already-open page is showing. That keeps
+ * it cheap enough to run every couple of minutes and, just as importantly, keeps
+ * it from yanking the view out from under an operator watching the same browser.
+ *
+ * Returns nulls rather than throwing when the page is not on a list view; the
+ * caller treats "nothing to compare" as "no arrival", which is correct.
+ */
+export async function peekInbox(): Promise<{ topId: string | null; unread: string | null; loggedIn: boolean }> {
+  return withCdp(async (cdp) => {
+    const st = await readStatusRaw(cdp);
+    if (!st.loggedIn) return { topId: null, unread: null, loggedIn: false };
+    const r = await cdp
+      .evaluate<{ topId: string | null; unread: string | null }>(
+        `const vis = (e) => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && e.offsetParent !== null; };
+         const rows = [...document.querySelectorAll('tr.zA')].filter(vis);
+         const h = rows.length ? rows[0].querySelector('[data-legacy-thread-id]') : null;
+         const nav = [...document.querySelectorAll('a[href*="#inbox"]')].filter(vis)
+           .map((a) => a.getAttribute('aria-label') || '').find((a) => /^Inbox/.test(a)) || null;
+         return { topId: h ? h.getAttribute('data-legacy-thread-id') : null, unread: nav };`,
+      )
+      .catch(() => ({ topId: null, unread: null }));
+    return { topId: r?.topId ?? null, unread: r?.unread ?? null, loggedIn: true };
+  });
+}
+
 export async function keepSessionWarm(): Promise<{ loggedIn: boolean; warmed: boolean; self: string | null }> {
   return withCdp(async (cdp) => {
     const st = await readStatusRaw(cdp);

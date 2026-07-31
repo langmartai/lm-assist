@@ -101,6 +101,7 @@ import { searchLocal, syncStatus } from '../../gmail/store';
 import { gmailLogin, gmailLoginStatus } from '../../gmail/login';
 import { runSelfCheck } from '../../gmail/selfcheck';
 import { startGmailKeepAlive } from '../../gmail/keepalive';
+import { startGmailArrivalWatch, arrivalState } from '../../gmail/arrival';
 import { gmailSummary, gmailSummaryCached, syncJob } from '../../gmail/cdp-client';
 import { resolveWindow } from '../../gmail/summary';
 import { countInWindow } from '../../gmail/store';
@@ -204,6 +205,7 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
   // Start the session keep-alive once at Core boot (idempotent; quiet unless the
   // session drops). Keeps the logged-in Google session from idle-expiring.
   startGmailKeepAlive();
+  startGmailArrivalWatch();
   return [
     // GET /gmail/status — provider + logged-in state + account.
     {
@@ -216,6 +218,7 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
         let sendAsCount = 0;
         let sendAsCheckedAt: number | null = null;
         let ui: string = 'unknown';
+        let watch: ReturnType<typeof arrivalState> | null = null;
         try {
           const s = await cdpStatus();
           loggedIn = s.loggedIn;
@@ -225,6 +228,10 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
           sendAsCheckedAt = s.sendAsCheckedAt;
           ui = s.ui;
           if (self) writeGmailConfig({ selfEmail: self });
+          // Surface the arrival watch here: a background loop nobody can observe
+          // is indistinguishable from one that silently died. This says whether it
+          // is running, how often, when it last looked, and when it last saw mail.
+          watch = arrivalState();
         } catch {
           /* CDP unreachable — report loggedIn:false rather than failing the call */
         }
@@ -245,6 +252,7 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
             sendAsCount,
             sendAsCheckedAt,
             ui,
+            watch,
           },
         };
       },
