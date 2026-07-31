@@ -75,6 +75,9 @@ import {
   readThreadFull,
   listAttachments,
   downloadAttachment,
+  untrashThread,
+  renameLabel,
+  deleteLabel,
   syncWindow,
   searchThreads,
   unreadThreads,
@@ -855,6 +858,25 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+    // POST /gmail/untrash { threadId } — restore from Trash.
+    //
+    // Separate from /gmail/move-to because Gmail's All Mail EXCLUDES Trash, so the
+    // generic move could never find the row. See Labels.untrashThread.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/untrash$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const t = reqThreadId(b.threadId);
+        if ('error' in t) return { success: false, error: t.error };
+        try {
+          return { success: true, data: { threadId: t.id, ...(await untrashThread(t.id)) } };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
     // POST /gmail/mark-read { threadId, read } — `read` is REQUIRED (reqBool).
     {
       method: 'POST',
@@ -968,6 +990,42 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
         const parent = str(b.parent).trim();
         try {
           return { success: true, data: await createLabel(n.value, parent ? { parent } : undefined) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/label/rename { from, to }
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/label\/rename$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const from = typeof b.from === 'string' ? b.from.trim() : '';
+        const to = typeof b.to === 'string' ? b.to.trim() : '';
+        if (!from || !to) return { success: false, error: 'both `from` and `to` are required' };
+        try {
+          return { success: true, data: await renameLabel(from, to) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/label/delete { name }
+    //
+    // Deletes the LABEL, not the mail — Gmail leaves every message in place. Said
+    // here because "delete label" reads like data loss to a caller.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/label\/delete$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const name = typeof b.name === 'string' ? b.name.trim() : '';
+        if (!name) return { success: false, error: '`name` is required' };
+        try {
+          return { success: true, data: await deleteLabel(name) };
         } catch (e) {
           return fail(e);
         }

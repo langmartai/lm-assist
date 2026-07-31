@@ -170,7 +170,7 @@ exists for). Trust `gmail_status`, not the pid.
 
 ## Tools & scopes
 
-29 tools. Reads observe the mailbox; writes send real mail or mutate threads;
+32 tools. Reads observe the mailbox; writes send real mail or mutate threads;
 `gmail_login` drives interactive auth.
 
 | Tool | Scope | Purpose |
@@ -193,9 +193,11 @@ exists for). Trust `gmail_status`, not the pid.
 | `gmail_forward` | write | forward a thread to new recipients |
 | `gmail_draft` | write | compose and save a draft, sending nothing |
 | `gmail_archive` · `gmail_trash` · `gmail_spam` | write | move a thread out of the inbox |
+| `gmail_untrash` | write | restore a thread OUT of Trash (only while it is still there) |
 | `gmail_mark_read` · `gmail_star` | write | per-thread state |
 | `gmail_triage` | write | mute/unmute, important/unimportant, **snooze** |
 | `gmail_apply_label` · `gmail_remove_label` · `gmail_create_label` · `gmail_move_to` | write | label management |
+| `gmail_rename_label` · `gmail_delete_label` | write | rename/delete a label via Settings → Labels |
 | `gmail_login` | admin | launch a browser for the one-time sign-in |
 
 `gmail_unread` is deliberately **not** a tool — it is exactly
@@ -210,9 +212,10 @@ by every conversation. Its trigger words live on `gmail_search`.
 `GET /gmail/attachments` · `POST /gmail/attachment/download` · `GET /gmail/selfcheck` · `GET /gmail/sync-status` · `POST /gmail/sync` ·
 `POST /gmail/send` · `POST /gmail/reply` · `POST /gmail/forward` · `POST /gmail/draft` ·
 `POST /gmail/draft/send` · `POST /gmail/draft/delete` · `POST /gmail/triage` ·
-`POST /gmail/archive` · `POST /gmail/trash` · `POST /gmail/spam` · `POST /gmail/mark-read` ·
+`POST /gmail/archive` · `POST /gmail/trash` · `POST /gmail/untrash` · `POST /gmail/spam` · `POST /gmail/mark-read` ·
 `POST /gmail/star` · `POST /gmail/move-to` · `POST /gmail/label/apply` ·
-`POST /gmail/label/remove` · `POST /gmail/label/create` · `POST /gmail/login` ·
+`POST /gmail/label/remove` · `POST /gmail/label/create` · `POST /gmail/label/rename` · `POST /gmail/label/delete` ·
+`POST /gmail/login` ·
 `GET /gmail/login/status?port=` · `POST /gmail/keepalive`
 
 (`/gmail/unread` and `/gmail/keepalive` have no MCP tool — REST only.)
@@ -261,6 +264,28 @@ true `bytes` alongside `reportedSizeBytes` so the gap cannot be misread as a tru
 Verified end-to-end on 123 (Linux) and 107 (Windows): a 700,000-byte binary containing NUL, CR and
 LF round-tripped **byte-identical** (sha256 equal on both nodes), crossing the 256 KB chunk boundary
 three times.
+
+## Restoring and label surgery — measured 2026-08-01
+
+🔴 **`move-to {label:"inbox"}` cannot untrash.** Gmail's All Mail (`#all`) EXCLUDES Trash and
+Spam, and the row selector only searched `#inbox`/`#all` — so restoring a trashed thread failed
+with `ROW_NOT_SELECTABLE` while the thread sat in `#trash` the whole time. `gmail_untrash` is the
+same machinery scoped to `#trash`. A thread purged from Trash (30 days) is unrecoverable.
+
+🔴 **Label rename/delete live on the Settings → Labels page**, not the left-nav hover menu — the
+hover overflow control never rendered under automation. Two traps there, both of which produce a
+silent no-op rather than an error:
+
+- the name cell carries a trailing conversation count (`"Paypal 88 conversations"`), so an exact
+  compare against the label name never matches;
+- the page is long — the `edit`/`remove` controls sat at **y≈4700** on a 1080 viewport, so clicking
+  their raw coordinates lands outside the window and opens nothing. Scroll first, re-read the rect,
+  then click.
+
+Both dialogs are `role="alertdialog"`: edit shows a pre-filled input with **Cancel/Save**, remove
+shows `Delete the label "X"?` with **Cancel/Delete**. Deleting a label does **not** delete mail.
+
+A nested label's real name is its FULL path (`Parent/Child`) — that is what both verbs expect.
 
 ## Limits and caveats
 

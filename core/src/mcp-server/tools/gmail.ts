@@ -283,6 +283,53 @@ export const gmailAttachmentsToolDef = {
   },
 };
 
+export const gmailRenameLabelToolDef = {
+  name: 'gmail_rename_label',
+  description:
+    'Rename an existing Gmail label. Trigger words: "rename that label", "call it something else". ' +
+    'Use the label\'s FULL path for a nested label ("Parent/Child") — that is its real name. ' +
+    'Renaming keeps every message on the label.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      from: { type: 'string', description: 'Current label name (full path if nested).' },
+      to: { type: 'string', description: 'New label name.' },
+    },
+    required: ['from', 'to'],
+  },
+};
+
+export const gmailDeleteLabelToolDef = {
+  name: 'gmail_delete_label',
+  description:
+    'Delete a Gmail label. The LABEL is removed; the messages it was applied to are NOT deleted and stay ' +
+    'in All Mail. Trigger words: "delete that label", "get rid of the label". Irreversible — a deleted ' +
+    'label cannot be restored, only recreated empty.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      name: { type: 'string', description: 'Label name to delete (full path if nested).' },
+    },
+    required: ['name'],
+  },
+};
+
+export const gmailUntrashToolDef = {
+  name: 'gmail_untrash',
+  description:
+    'Restore a thread OUT of Trash and back to the Inbox. Use after a mistaken gmail_trash, or when the ' +
+    'user says "undelete that", "get that back", "restore it from trash", "I deleted it by accident". ' +
+    'Only works while the thread is still in Trash — Gmail purges Trash after 30 days and a purged ' +
+    'thread is gone for good.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      threadId: { type: 'string', description: 'Thread id, e.g. from gmail_list_threads with label "trash".' },
+    },
+    required: ['threadId'],
+  },
+};
+
 export const gmailAttachmentDownloadToolDef = {
   name: 'gmail_attachment_download',
   description:
@@ -612,6 +659,9 @@ export const GMAIL_TOOL_DEFS = [
   gmailSyncStatusToolDef,
   gmailAttachmentsToolDef,
   gmailAttachmentDownloadToolDef,
+  gmailUntrashToolDef,
+  gmailRenameLabelToolDef,
+  gmailDeleteLabelToolDef,
   gmailLabelsToolDef,
   gmailSelfcheckToolDef,
   gmailAliasesToolDef,
@@ -1106,6 +1156,46 @@ async function handleTriage(args: Record<string, unknown>): Promise<McpToolResul
   }
 }
 
+async function handleRenameLabel(args: Record<string, unknown>): Promise<McpToolResult> {
+  const from = String(args.from ?? '').trim();
+  const to = String(args.to ?? '').trim();
+  if (!from || !to) return err('both `from` and `to` are required.');
+  try {
+    const d = await workerPostLong<{ label: string; verified: boolean; note?: string }>(
+      '/gmail/label/rename', { from, to }, 300000);
+    return ok(`Renamed "${from}" to "${d.label}"${d.verified ? '' : ' (NOT confirmed)'}.${d.note ? ` ${d.note}` : ''}`);
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleDeleteLabel(args: Record<string, unknown>): Promise<McpToolResult> {
+  const name = String(args.name ?? '').trim();
+  if (!name) return err('`name` is required.');
+  try {
+    const d = await workerPostLong<{ label: string; verified: boolean; note?: string }>(
+      '/gmail/label/delete', { name }, 300000);
+    return ok(`Deleted label "${d.label}"${d.verified ? '' : ' (NOT confirmed — it may still exist)'}. The messages it was on are untouched.${d.note ? ` ${d.note}` : ''}`);
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleUntrash(args: Record<string, unknown>): Promise<McpToolResult> {
+  const threadId = String(args.threadId ?? '').trim();
+  if (!threadId) return err('threadId is required (list label "trash" to find one).');
+  try {
+    const d = await workerPostLong<{ ok: boolean; verified?: boolean; note?: string }>(
+      '/gmail/untrash',
+      { threadId },
+      300000,
+    );
+    return ok(`Restored ${threadId} from Trash${d.verified === false ? ' (not independently confirmed)' : ''}.${d.note ? ` ${d.note}` : ''}`);
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 async function handleAttachmentDownload(args: Record<string, unknown>): Promise<McpToolResult> {
   const threadId = String(args.threadId ?? '').trim();
   if (!threadId) return err('threadId is required (get one from gmail_list_threads or gmail_search).');
@@ -1484,6 +1574,9 @@ export const GMAIL_HANDLERS: Record<string, (args: Record<string, unknown>) => P
   gmail_sync_status: () => handleSyncStatus(),
   gmail_attachments: handleAttachments,
   gmail_attachment_download: handleAttachmentDownload,
+  gmail_untrash: handleUntrash,
+  gmail_rename_label: handleRenameLabel,
+  gmail_delete_label: handleDeleteLabel,
   gmail_labels: () => handleLabels(),
   gmail_selfcheck: handleSelfcheck,
   gmail_aliases: handleAliases,

@@ -2205,6 +2205,23 @@ export async function createLabel(name: string, opts?: { parent?: string }): Pro
   return op('mutate', (cdp) => Labels.createLabel(cdp, name, opts));
 }
 
+/** Rename a user label (Settings -> Labels -> edit). */
+export async function renameLabel(from: string, to: string): Promise<Labels.LabelOpResult> {
+  return op('mutate', (cdp) => Labels.renameLabel(cdp, from, to));
+}
+
+/** Delete a user label. The messages it was applied to are NOT deleted. */
+export async function deleteLabel(name: string): Promise<Labels.LabelOpResult> {
+  return op('mutate', (cdp) => Labels.deleteLabel(cdp, name));
+}
+
+/** Restore a thread from Trash — see Labels.untrashThread for why this is not
+ *  just moveToLabel(id, 'inbox'). */
+export async function untrashThread(threadId: string): Promise<Labels.MoveResult> {
+  const id = requireThreadId(threadId);
+  return op('mutate', (cdp) => Labels.untrashThread(cdp, id));
+}
+
 export async function moveToLabel(threadId: string, label: string): Promise<Labels.MoveResult> {
   const id = requireThreadId(threadId);
   return op('mutate', (cdp) => Labels.moveToLabel(cdp, id, label));
@@ -2419,7 +2436,7 @@ export async function keepSessionWarm(): Promise<{ loggedIn: boolean; warmed: bo
 
 export type { SendAsIdentity } from './config';
 export type { MailFormat, DraftRow, ForwardResult, SendDraftResult, DeleteDraftResult } from './compose';
-export type { ApplyResult, RemoveResult, CreateResult, MoveResult, LabelInfo } from './labels';
+export type { ApplyResult, RemoveResult, CreateResult, LabelOpResult, MoveResult, LabelInfo } from './labels';
 export type { ActionResult, BulkResult } from './actions';
 export type { SyncProgress, SyncOptions } from './sync';
 export type { GmailAttachment, GmailThreadRowFull, GmailThreadFull } from './extractors';

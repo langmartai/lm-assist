@@ -140,6 +140,20 @@ export interface CreateResult {
   verified: boolean;
 }
 
+/**
+ * Result of a label-level operation (rename / delete).
+ *
+ * Separate from CreateResult on purpose: reusing it would report `created:"X"` for
+ * a DELETE, which reads like the opposite of what happened.
+ */
+export interface LabelOpResult {
+  ok: true;
+  /** The label the operation ended on — the NEW name after a rename. */
+  label: string;
+  verified: boolean;
+  note?: string;
+}
+
 export interface MoveResult {
   ok: true;
   verified: boolean;
@@ -1622,8 +1636,21 @@ async function reloadPage(cdp: LabelCdp): Promise<void> {
  * The row checkbox DOES respond to a synthetic click (measured: the row gains
  * .x7); it is the toolbar menu buttons that need a trusted event.
  */
-async function selectRowForThread(cdp: LabelCdp, threadId: string): Promise<boolean> {
-  for (const hash of ['#inbox', '#all']) {
+/**
+ * Check the row for a thread, trying each list view in turn.
+ *
+ * 🔴 The default views deliberately EXCLUDE Trash and Spam, because Gmail's
+ * "All Mail" (#all) excludes them too — a trashed thread is in neither, so a
+ * caller wanting one must say so. That is exactly why restoring from Trash
+ * needed its own verb: moveToInbox searched #inbox/#all and reported
+ * ROW_NOT_SELECTABLE for a thread sitting in #trash the whole time.
+ */
+async function selectRowForThread(
+  cdp: LabelCdp,
+  threadId: string,
+  hashes: readonly string[] = ['#inbox', '#all'],
+): Promise<boolean> {
+  for (const hash of hashes) {
     await cdp.evaluate(`location.hash = ${JSON.stringify(hash)}; return true;`).catch(() => undefined);
     await sleep(250);
     // A real load: a hash-only write does not re-route the SPA reliably.
@@ -1873,6 +1900,225 @@ export async function removeLabel(cdp: LabelCdp, threadId: string, label: string
  * (the measured `HDB/CPF`) can be read by this module but cannot be created by
  * it. There is no UI affordance for escaping it.
  */
+/**
+ * Open Settings -> Labels and confirm we actually landed there.
+ *
+ * 🔴 Core's arrival watch and autosync drive the SAME page, so a navigation can be
+ * undone before the next evaluate runs — measured repeatedly while building this:
+ * a `#settings/labels` request came back reading `#search/in:inbox...`. Re-assert
+ * until the hash sticks rather than acting on whichever view happened to win.
+ */
+async function openLabelSettings(cdp: LabelCdp): Promise<void> {
+  for (let i = 0; i < 5; i++) {
+    await cdp
+      .evaluate(`location.hash = '#settings/labels'; return true;`)
+      .catch(() => undefined);
+    await sleep(i === 0 ? 400 : 900);
+    await reloadPage(cdp);
+    await sleep(i === 0 ? 4000 : 3000);
+    const hash = await cdp.evaluate<string>(`return String(location.hash || '');`).catch(() => '');
+    if (typeof hash === 'string' && /settings\/labels/.test(hash)) return;
+  }
+  throw new GmError(
+    'SETTINGS_NOT_REACHED',
+    'could not get the driver browser onto Settings -> Labels (something else may be driving the page)',
+  );
+}
+
+/**
+ * Locate a per-label action link ("edit" / "remove") on the Labels settings page.
+ *
+ * Two measured traps, both of which silently produce a no-op rather than an error:
+ *  - the name cell carries a trailing conversation count ("Paypal 88 conversations"),
+ *    so an exact compare against the label name NEVER matches;
+ *  - the page is long — the control sat at y≈4700 on a 1080 viewport — so clicking
+ *    its raw coordinates lands outside the window and opens nothing.
+ */
+function jsFindLabelAction(name: string, action: 'edit' | 'remove'): string {
+  const j = JSON.stringify;
+  return `
+  const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+  const rows = [...document.querySelectorAll('tr')].filter(vis);
+  const seen = [];
+  for (const tr of rows) {
+    const raw = String((tr.querySelector('td') || {}).innerText || '').replace(/\\s+/g, ' ').trim();
+    const cell = raw.replace(/\\s*\\d+\\s+conversations?$/i, '').trim();
+    if (!cell) continue;
+    const acts = [...tr.querySelectorAll('span,a')].filter(vis).map((x) => String(x.innerText || '').trim());
+    if (acts.some((t) => /^remove$/i.test(t))) seen.push(cell);
+    if (cell !== ${j(name)}) continue;
+    const hit = [...tr.querySelectorAll('span,a')].filter(vis)
+      .find((x) => String(x.innerText || '').trim().toLowerCase() === ${j(action)});
+    if (!hit) return { ok: false, miss: 'row-found-but-no-' + ${j(action)}, acts: acts.slice(0, 8) };
+    hit.scrollIntoView({ block: 'center' });
+    await new Promise((r) => setTimeout(r, 500));
+    const b = hit.getBoundingClientRect();
+    if (b.top < 0 || b.bottom > innerHeight) return { ok: false, miss: 'off-screen-after-scroll' };
+    return { ok: true, x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2) };
+  }
+  return { ok: false, miss: 'no-such-label', seen: seen.slice(0, 25) };`;
+}
+
+/** Read the settings dialog that a label action opens. */
+const JS_LABEL_DIALOG = `
+  const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+  const d = [...document.querySelectorAll('div[role="alertdialog"],div[role="dialog"]')].filter(vis).pop();
+  if (!d) return { ok: false };
+  const input = [...d.querySelectorAll('input[type="text"],input:not([type])')].filter(vis)[0] || null;
+  const buttons = [...d.querySelectorAll('button,div[role="button"]')].filter(vis)
+    .map((b) => String(b.innerText || '').trim()).filter(Boolean);
+  return { ok: true, text: String(d.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 120),
+           hasInput: !!input, value: input ? String(input.value || '') : null, buttons: buttons.slice(0, 6) };`;
+
+/** Click a button inside the open settings dialog, by exact label. */
+function jsClickDialogButton(label: string): string {
+  const j = JSON.stringify;
+  return `
+  const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+  const d = [...document.querySelectorAll('div[role="alertdialog"],div[role="dialog"]')].filter(vis).pop();
+  if (!d) return { ok: false, miss: 'no-dialog' };
+  const btns = [...d.querySelectorAll('button,div[role="button"]')].filter(vis);
+  const hit = btns.find((b) => String(b.innerText || '').trim().toLowerCase() === ${j(label.toLowerCase())});
+  if (!hit) return { ok: false, miss: 'no-button', saw: btns.map((b) => String(b.innerText || '').trim()).slice(0, 6) };
+  hit.scrollIntoView({ block: 'center' });
+  await new Promise((r) => setTimeout(r, 200));
+  const b = hit.getBoundingClientRect();
+  return { ok: true, x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2) };`;
+}
+
+/** Replace the dialog input's text. */
+function jsSetDialogInput(value: string): string {
+  const j = JSON.stringify;
+  return `
+  const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+  const d = [...document.querySelectorAll('div[role="alertdialog"],div[role="dialog"]')].filter(vis).pop();
+  if (!d) return { ok: false, miss: 'no-dialog' };
+  const input = [...d.querySelectorAll('input[type="text"],input:not([type])')].filter(vis)[0];
+  if (!input) return { ok: false, miss: 'no-input' };
+  input.focus();
+  // Drive the NATIVE setter: assigning .value directly is invisible to a framework
+  // that tracks its own state, and the dialog would save the OLD name.
+  const proto = Object.getPrototypeOf(input);
+  const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+  if (desc && desc.set) desc.set.call(input, ${j(value)}); else input.value = ${j(value)};
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  return { ok: true, now: String(input.value || '') };`;
+}
+
+/** One trusted click at a point produced by the helpers above. */
+async function trustedAt(cdp: LabelCdp, x: number, y: number): Promise<void> {
+  if (typeof cdp.send !== 'function') return;
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, buttons: 0 });
+  await sleep(100);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1, buttons: 1 });
+  await sleep(60);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1, buttons: 0 });
+  await sleep(600);
+}
+
+interface ActionPoint {
+  ok: boolean;
+  x?: number;
+  y?: number;
+  miss?: string;
+  seen?: string[];
+  acts?: string[];
+}
+
+/** Open a label's settings dialog and leave it open. Shared by rename and delete. */
+async function openLabelDialog(cdp: LabelCdp, name: string, action: 'edit' | 'remove'): Promise<void> {
+  if (typeof cdp.send !== 'function') {
+    throw new GmError('NO_RAW_CDP', 'label settings need trusted clicks, which need raw CDP on this transport');
+  }
+  await openLabelSettings(cdp);
+  const pt = await cdp.evaluate<ActionPoint>(jsFindLabelAction(name, action));
+  if (!pt?.ok || typeof pt.x !== 'number' || typeof pt.y !== 'number') {
+    if (pt?.miss === 'no-such-label') {
+      // Name what DOES exist — "not found" against an invisible list is unactionable,
+      // and a nested label's real name is its full path ("Parent/Child").
+      throw new GmError(
+        'LABEL_NOT_FOUND',
+        `no user label named "${name}" on the Labels settings page; it has: ${(pt.seen || []).join(', ') || '(none read)'}`,
+      );
+    }
+    throw new GmError('LABEL_ACTION_NOT_FOUND', `could not reach "${action}" for label "${name}": ${pt?.miss || 'unknown'}`);
+  }
+  await trustedAt(cdp, pt.x, pt.y);
+  await sleep(1200);
+  const dlg = await cdp.evaluate<{ ok: boolean }>(JS_LABEL_DIALOG);
+  if (!dlg?.ok) throw new GmError('LABEL_DIALOG_NOT_OPEN', `clicking "${action}" for "${name}" opened no dialog`);
+}
+
+/**
+ * Rename a label.
+ *
+ * MEASURED 2026-08-01: the edit dialog is `role="alertdialog"` reading
+ * "Edit label / Label name: / Nest label under: / Cancel Save", with the current
+ * name pre-filled in a single text input.
+ */
+export async function renameLabel(cdp: LabelCdp, from: string, to: string): Promise<LabelOpResult> {
+  const src = String(from || '').trim();
+  const dst = String(to || '').trim();
+  if (!src || !dst) throw new GmError('INVALID_LABEL', 'both the current name and the new name are required');
+  if (src === dst) throw new GmError('INVALID_LABEL', `"${src}" is already the name — nothing to rename`);
+
+  await openLabelDialog(cdp, src, 'edit');
+  const set = await cdp.evaluate<{ ok: boolean; miss?: string; now?: string }>(jsSetDialogInput(dst));
+  if (!set?.ok) throw new GmError('LABEL_RENAME_FAILED', `could not type the new name: ${set?.miss || 'unknown'}`);
+
+  const save = await cdp.evaluate<ActionPoint>(jsClickDialogButton('Save'));
+  if (!save?.ok || typeof save.x !== 'number' || typeof save.y !== 'number') {
+    throw new GmError('LABEL_RENAME_FAILED', `no Save button in the Edit label dialog: ${save?.miss || 'unknown'}`);
+  }
+  await trustedAt(cdp, save.x, save.y);
+  await sleep(2500);
+
+  // Verify from the page, not from the click: re-read the settings list.
+  const after = await cdp.evaluate<ActionPoint>(jsFindLabelAction(dst, 'edit')).catch(() => ({ ok: false }) as ActionPoint);
+  return {
+    ok: true,
+    label: dst,
+    verified: after?.ok === true,
+    note:
+      after?.ok === true
+        ? `renamed "${src}" to "${dst}" — confirmed by re-reading the Labels settings page`
+        : `clicked Save for "${src}" -> "${dst}", but the renamed label could not be re-read; confirm with gmail_labels`,
+  };
+}
+
+/**
+ * Delete a label. The mail keeps existing — only the label goes.
+ *
+ * MEASURED 2026-08-01: the confirm is `role="alertdialog"` reading
+ * "Remove label / Delete the label "X"? / Cancel Delete".
+ */
+export async function deleteLabel(cdp: LabelCdp, name: string): Promise<LabelOpResult> {
+  const target = String(name || '').trim();
+  if (!target) throw new GmError('INVALID_LABEL', 'name is required');
+
+  await openLabelDialog(cdp, target, 'remove');
+  const del = await cdp.evaluate<ActionPoint>(jsClickDialogButton('Delete'));
+  if (!del?.ok || typeof del.x !== 'number' || typeof del.y !== 'number') {
+    throw new GmError('LABEL_DELETE_FAILED', `no Delete button in the Remove label dialog: ${del?.miss || 'unknown'}`);
+  }
+  await trustedAt(cdp, del.x, del.y);
+  await sleep(2500);
+
+  // Verify by ABSENCE — a delete that reports success while the label survives is
+  // the failure a caller is least likely to notice.
+  const still = await cdp.evaluate<ActionPoint>(jsFindLabelAction(target, 'remove')).catch(() => ({ ok: true }) as ActionPoint);
+  const gone = still?.ok !== true;
+  return {
+    ok: true,
+    label: target,
+    verified: gone,
+    note: gone
+      ? `deleted "${target}" — confirmed absent from the Labels settings page (the messages it was on are untouched)`
+      : `clicked Delete for "${target}" but it is STILL listed; confirm with gmail_labels`,
+  };
+}
+
 export async function createLabel(cdp: LabelCdp, name: string, opts?: { parent?: string }): Promise<CreateResult> {
   const full = buildCreatePath(name, opts?.parent);
   if (!full) throw new GmError('INVALID_LABEL', 'name is required');
@@ -2016,6 +2262,61 @@ async function moveToInbox(cdp: LabelCdp, threadId: string): Promise<MoveResult>
     ok: true,
     verified: false,
     note: 'moved to Inbox via ' + via + (toast ? '; toast="' + toast.slice(0, 80) + '"' : '; no toast matched') + ' - confirm with a listing of #inbox',
+  };
+}
+
+/**
+ * Restore a thread from Trash.
+ *
+ * MEASURED 2026-08-01: `move-to {label:"inbox"}` on a trashed thread fails with
+ * ROW_NOT_SELECTABLE, because selectRowForThread only looked in #inbox and #all
+ * and Gmail's All Mail EXCLUDES Trash. The machinery was already right — only the
+ * view it searched was wrong. So this is moveToInbox scoped to #trash, reusing
+ * the same trusted-click path that every other Gmail menu needs.
+ *
+ * Trash shows a dedicated "Move to Inbox" button for a selected row; the "Move to"
+ * menu is the fallback for accounts/locales that render it differently.
+ */
+export async function untrashThread(cdp: LabelCdp, threadId: string): Promise<MoveResult> {
+  if (!(await selectRowForThread(cdp, threadId, ['#trash']))) {
+    throw new GmError(
+      'ROW_NOT_SELECTABLE',
+      'could not check the row for thread ' +
+        threadId +
+        ' in #trash — it may not be in Trash at all (a permanently deleted thread is unrecoverable), or it is older than the rendered page',
+    );
+  }
+  const direct = await trustedClickControl(cdp, '^move to inbox$');
+  let via = 'the "Move to Inbox" button';
+  if (!direct.ok) {
+    const opened = await trustedClickControl(cdp, '^move to$');
+    if (!opened.ok) {
+      throw new GmError(
+        'MOVE_MENU_NOT_OPEN',
+        'neither a "Move to Inbox" button nor a "Move to" menu could be found in #trash: ' +
+          (direct.why || '') +
+          ' / ' +
+          (opened.why || ''),
+      );
+    }
+    await sleep(800);
+    if (!(await trustedClickMenuRow(cdp, 'Inbox'))) {
+      await closeMenu(cdp);
+      throw new GmError('MOVE_TARGET_NOT_FOUND', 'the "Move to" menu opened but no Inbox row could be clicked');
+    }
+    via = 'the "Move to" menu';
+  }
+  await sleep(1300);
+  const toast = await readToast(cdp);
+  await closeMenu(cdp);
+  return {
+    ok: true,
+    verified: false,
+    note:
+      'restored from Trash via ' +
+      via +
+      (toast ? '; toast="' + toast.slice(0, 80) + '"' : '; no toast matched') +
+      ' - confirm with a listing of #inbox',
   };
 }
 
