@@ -775,6 +775,35 @@ function isRecordHash(hash: string): boolean {
  * view switches, which is not in a hot loop, and buys the property that a
  * navigation either lands or fails loudly.
  */
+/**
+ * Is the page ACTUALLY showing `hash`, or did the cheap hash write not route?
+ *
+ * MEASURED 2026-07-31: after writing location.hash='#inbox' the hash still read
+ * '#all/<id>' and document.title still said "Drafts (50)". So neither the hash
+ * nor "a list is ready" is evidence. Two things ARE:
+ *   - document.title carries the view name ("Drafts (50) - ...", "Inbox (2,647) - ...")
+ *   - the active nav row gains the class `ain` (drafts active -> "aim ain")
+ *
+ * This exists so navigation can VERIFY instead of choosing between always
+ * trusting (which shipped inbox rows as drafts) and always reloading (which made
+ * every view switch a full page load and drove the arrival listener to 148
+ * reinstalls). Verify, and reload only when the cheap path demonstrably failed.
+ */
+const JS_VIEW_MATCHES = (hash: string): string => {
+  const label = hash.replace(/^#/, '').split('/')[0].toLowerCase();
+  return `const vis = (e) => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && e.offsetParent !== null; };
+     const want = ${JSON.stringify(label)};
+     const active = [...document.querySelectorAll('a[href*="#"]')].filter(vis).some((a) => {
+       const h = String(a.getAttribute('href') || '').split('#')[1] || '';
+       if (h.split('/')[0].toLowerCase() !== want) return false;
+       const row = a.closest('.aim') || a.parentElement;
+       return !!row && /(^|\\s)ain(\\s|$)/.test(String(row.className || ''));
+     });
+     const title = String(document.title || '').toLowerCase();
+     const titled = title.indexOf(want) === 0 || title.indexOf(want + ' ') >= 0 || title.indexOf(want + '(') >= 0;
+     return active || titled;`;
+};
+
 function needsRealLoad(target: string, current: string): boolean {
   if (isRecordHash(target)) return true;
   return String(current || '').trim() !== String(target || '').trim();
@@ -790,7 +819,7 @@ async function gotoHash(ctx: ComposeCtx, hash: string, readySel: string, timeout
   if (!onMail.hit) {
     await ctx.navigate(mailBase() + hash);
     await sleep(2500);
-  } else if (needsRealLoad(hash, curHash)) {
+  } else if (isRecordHash(hash)) {
     // A record hash only routes on a real document load — see isRecordHash.
     await evalPage(ctx, `location.hash = ${q(hash)}; return { ok: true };`).catch(() => undefined);
     await sleep(300);
@@ -807,6 +836,21 @@ async function gotoHash(ctx: ComposeCtx, hash: string, readySel: string, timeout
   }
   const ready = await waitFor(ctx, `return { ok: true, hit: !!document.querySelector(${q(readySel)}) };`, timeoutMs);
   if (!ready) throw new GmComposeError('PAGE_NOT_READY', `timed out waiting for ${hash} to render (${readySel})`);
+
+  // VERIFY, then repair. `readySel` only proves A list rendered - the inbox
+  // satisfies it while we asked for #drafts, which is exactly how listDrafts
+  // returned inbox rows. Always-reloading instead fixed that but made every view
+  // switch a full page load (measured: 148 listener reinstalls). So: check, and
+  // pay for a reload only when the cheap path actually failed.
+  const onView = await evalPage<{ hit: boolean }>(ctx, `return { ok: true, hit: (() => { ${JS_VIEW_MATCHES(hash)} })() };`)
+    .catch(() => ({ hit: true }));
+  if (!onView.hit) {
+    await evalPage(ctx, `location.hash = ${q(hash)}; return { ok: true };`).catch(() => undefined);
+    await sleep(250);
+    await evalPage(ctx, 'location.reload(); return { ok: true };').catch(() => undefined);
+    await sleep(3200);
+    await waitFor(ctx, `return { ok: true, hit: !!document.querySelector(${q(readySel)}) };`, timeoutMs);
+  }
   await sleep(600);
 }
 

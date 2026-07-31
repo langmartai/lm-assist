@@ -470,13 +470,70 @@ async function openSession(): Promise<{ cdp: Cdp; close(): void }> {
   return { cdp: live, close: () => live.close() };
 }
 
-async function withCdp<T>(fn: (cdp: Cdp) => Promise<T>): Promise<T> {
-  const s = await openSession();
+/**
+ * ONE driver at a time.
+ *
+ * There is a single browser tab and several things that steer it: on-demand tool
+ * calls, the arrival watch's summary refresh and auto-sync, and the background
+ * sync walk, which opens a session per page OUTSIDE op(). Uncoordinated, they
+ * navigate out from under each other.
+ *
+ * MEASURED 2026-07-31: repeated identical drafts reads returned 25, 25, undefined,
+ * 0 - the same view disagreeing with itself - while the arrival watch drove the
+ * same page. The reads were not wrong about Gmail; they were reading a page
+ * someone else had just moved.
+ *
+ * So every session is serialised here rather than at op(), because the sync walk
+ * never passes through op(). Held only for one logical session, so a long walk
+ * interleaves page-by-page instead of blocking reads for minutes.
+ *
+ * 🔴 BOUNDED, always. An unbounded queue behind a wedged holder is how a
+ * connector hangs forever instead of failing - the exact shape that made
+ * gmail_status hang earlier today. A waiter that times out throws with the age of
+ * the current holder, which names the culprit instead of hiding it.
+ */
+let driverChain: Promise<unknown> = Promise.resolve();
+let driverHeldSince: number | null = null;
+const DRIVER_WAIT_MS = 120_000;
+
+async function withDriverLock<T>(fn: () => Promise<T>): Promise<T> {
+  const mine = driverChain.then(fn, fn);
+  // Keep the chain going regardless of this call's outcome, or one rejection
+  // would poison every future acquisition.
+  driverChain = mine.then(
+    () => undefined,
+    () => undefined,
+  );
+  const held = driverHeldSince;
+  const timeout = new Promise<never>((_, rej) =>
+    setTimeout(() => {
+      const age = held ? Math.round((Date.now() - held) / 1000) : null;
+      rej(
+        new GmError(
+          'BROWSER_BUSY',
+          `another Gmail operation has held the browser for ${age ?? '?'}s — refusing to queue indefinitely. ` +
+            'Retry, or check gmail_sync_status for a walk in progress.',
+        ),
+      );
+    }, DRIVER_WAIT_MS).unref?.(),
+  );
   try {
-    return await fn(s.cdp);
+    driverHeldSince = Date.now();
+    return (await Promise.race([mine, timeout])) as T;
   } finally {
-    s.close();
+    driverHeldSince = null;
   }
+}
+
+async function withCdp<T>(fn: (cdp: Cdp) => Promise<T>): Promise<T> {
+  return withDriverLock(async () => {
+    const s = await openSession();
+    try {
+      return await fn(s.cdp);
+    } finally {
+      s.close();
+    }
+  });
 }
 
 // ─── navigation + interaction helpers ────────────────────────────────────────
@@ -536,6 +593,35 @@ function isRecordHash(hash: string): boolean {
  * view switches, which is not in a hot loop, and buys the property that a
  * navigation either lands or fails loudly.
  */
+/**
+ * Is the page ACTUALLY showing `hash`, or did the cheap hash write not route?
+ *
+ * MEASURED 2026-07-31: after writing location.hash='#inbox' the hash still read
+ * '#all/<id>' and document.title still said "Drafts (50)". So neither the hash
+ * nor "a list is ready" is evidence. Two things ARE:
+ *   - document.title carries the view name ("Drafts (50) - ...", "Inbox (2,647) - ...")
+ *   - the active nav row gains the class `ain` (drafts active -> "aim ain")
+ *
+ * This exists so navigation can VERIFY instead of choosing between always
+ * trusting (which shipped inbox rows as drafts) and always reloading (which made
+ * every view switch a full page load and drove the arrival listener to 148
+ * reinstalls). Verify, and reload only when the cheap path demonstrably failed.
+ */
+const JS_VIEW_MATCHES = (hash: string): string => {
+  const label = hash.replace(/^#/, '').split('/')[0].toLowerCase();
+  return `const vis = (e) => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && e.offsetParent !== null; };
+     const want = ${JSON.stringify(label)};
+     const active = [...document.querySelectorAll('a[href*="#"]')].filter(vis).some((a) => {
+       const h = String(a.getAttribute('href') || '').split('#')[1] || '';
+       if (h.split('/')[0].toLowerCase() !== want) return false;
+       const row = a.closest('.aim') || a.parentElement;
+       return !!row && /(^|\\s)ain(\\s|$)/.test(String(row.className || ''));
+     });
+     const title = String(document.title || '').toLowerCase();
+     const titled = title.indexOf(want) === 0 || title.indexOf(want + ' ') >= 0 || title.indexOf(want + '(') >= 0;
+     return active || titled;`;
+};
+
 function needsRealLoad(target: string, current: string): boolean {
   if (isRecordHash(target)) return true;
   return String(current || '').trim() !== String(target || '').trim();
