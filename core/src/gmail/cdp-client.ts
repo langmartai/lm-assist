@@ -387,7 +387,26 @@ async function pageResponds(cdp: Cdp, timeoutMs = 8000): Promise<boolean> {
  * ever be answered.
  */
 async function recycleGmailTab(base: string): Promise<void> {
-  const list = (await fetch(base + '/json/list').then((r) => r.json())) as Array<{ id: string; type: string; url?: string }>;
+  // MEASURED 2026-07-30: this fetch was unguarded, so when the browser was gone
+  // entirely (e.g. `lm-assist restart` kills the Chrome core launched) it threw a
+  // bare TypeError and every Gmail tool answered `GMAIL_ERROR: fetch failed` -
+  // an error that names neither the cause nor the fix, and cost two diagnostic
+  // cycles. A missing browser is an ordinary, expected state; say so.
+  let list: Array<{ id: string; type: string; url?: string }>;
+  try {
+    list = (await fetch(base + '/json/list', { signal: AbortSignal.timeout(8000) }).then((r) => r.json())) as Array<{
+      id: string;
+      type: string;
+      url?: string;
+    }>;
+  } catch {
+    throw new GmError(
+      'BROWSER_NOT_RUNNING',
+      `no Chrome is listening on ${base} — the Gmail driver browser is not running. ` +
+        'Start it with gmail_login (POST /gmail/login); the profile persists, so an existing session does NOT need a new sign-in. ' +
+        'Note that restarting Core kills the browser it launched.',
+    );
+  }
   for (const t of list) {
     if (t.type === 'page' && /mail\.google/.test(t.url || '')) {
       await fetch(base + '/json/close/' + t.id).catch(() => undefined);
