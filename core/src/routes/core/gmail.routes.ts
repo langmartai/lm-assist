@@ -218,7 +218,14 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
         let sendAsCount = 0;
         let sendAsCheckedAt: number | null = null;
         let ui: string = 'unknown';
-        let watch: ReturnType<typeof arrivalState> | null = null;
+        // Surface the arrival watch UNCONDITIONALLY. A background loop nobody can
+        // observe is indistinguishable from one that silently died — and this is
+        // LOCAL state that needs no browser, so it must not be trapped behind the
+        // browser probe. MEASURED 2026-07-31: it was set inside the try after
+        // cdpStatus(), so on a node with no signed-in browser (117) it reported
+        // null — hiding the watch exactly when "is anything running?" is the
+        // question being asked.
+        const watch = arrivalState();
         try {
           const s = await cdpStatus();
           loggedIn = s.loggedIn;
@@ -228,10 +235,6 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
           sendAsCheckedAt = s.sendAsCheckedAt;
           ui = s.ui;
           if (self) writeGmailConfig({ selfEmail: self });
-          // Surface the arrival watch here: a background loop nobody can observe
-          // is indistinguishable from one that silently died. This says whether it
-          // is running, how often, when it last looked, and when it last saw mail.
-          watch = arrivalState();
         } catch {
           /* CDP unreachable — report loggedIn:false rather than failing the call */
         }
