@@ -116,11 +116,19 @@ function observerScript(): string {
       return h ? h.getAttribute('data-legacy-thread-id') : null;
     };
     let last = top();
+    // Published so the heartbeat can RECONCILE: an observer that has silently
+    // stopped keeps its old value while the DOM moves on, and that divergence is
+    // the only reliable evidence of a dead listener. A truthy window.__lmObs is
+    // NOT evidence - MEASURED: it stays truthy after .disconnect(), and the
+    // binding keeps working, so a liveness check passes while detection is dead.
+    window.__lmLastSeen = last;
     const target = document.querySelector('div[role="main"]') || document.body;
+    window.__lmTarget = target;
     window.__lmObs = new MutationObserver(() => {
       const t = top();
       if (t && t !== last) {
         last = t;
+        window.__lmLastSeen = t;
         try { window.${BINDING}(JSON.stringify({ type: 'mail', topId: t, at: Date.now() })); } catch (e) {}
       }
     });
@@ -182,16 +190,55 @@ async function heartbeat(): Promise<void> {
     const alive = (await send('Runtime.evaluate', {
       returnByValue: true,
       expression: `(() => {
-        const ok = typeof window.${BINDING} === 'function' && !!window.__lmObs;
-        if (ok) { try { window.${BINDING}(JSON.stringify({ type: 'pong', nonce: ${JSON.stringify(nonce)} })); } catch (e) { return { ok: false, why: 'binding threw' }; } }
-        return { ok, why: ok ? null : 'binding or observer missing' };
+        const vis = (e) => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && e.offsetParent !== null; };
+        const top = () => {
+          const rows = [...document.querySelectorAll('tr.zA')].filter(vis);
+          const h = rows.length ? rows[0].querySelector('[data-legacy-thread-id]') : null;
+          return h ? h.getAttribute('data-legacy-thread-id') : null;
+        };
+        const bindingOk = typeof window.${BINDING} === 'function';
+        const obsOk = !!window.__lmObs;
+        // Is the observed node still IN the document? An SPA can swap
+        // div[role="main"] with no navigation, leaving the observer watching a
+        // detached node — alive by every flag, blind in fact.
+        const attached = !!window.__lmTarget && document.contains(window.__lmTarget);
+        const actual = top();
+        const lastSeen = typeof window.__lmLastSeen === 'string' ? window.__lmLastSeen : null;
+        const rows = [...document.querySelectorAll('tr.zA')].filter(vis).length;
+        if (bindingOk) { try { window.${BINDING}(JSON.stringify({ type: 'pong', nonce: ${JSON.stringify(nonce)} })); } catch (e) {} }
+        return { bindingOk, obsOk, attached, actual, lastSeen, rows };
       })()`,
-    })) as { result?: { value?: { ok: boolean; why: string | null } } };
+    })) as {
+      result?: {
+        value?: { bindingOk: boolean; obsOk: boolean; attached: boolean; actual: string | null; lastSeen: string | null; rows: number };
+      };
+    };
     const v = alive?.result?.value;
-    if (!v?.ok) {
-      log(`heartbeat: path broken (${v?.why ?? 'unknown'}) — reinstalling`);
+    if (!v || !v.bindingOk || !v.obsOk || !v.attached) {
+      const why = !v ? 'no answer' : !v.bindingOk ? 'binding gone' : !v.obsOk ? 'observer gone' : 'observed node detached';
+      log(`heartbeat: path broken (${why}) — reinstalling`);
+      state.reinstalls++;
+      state.lastError = why;
+      await install();
+      return;
+    }
+    if (v.rows === 0) {
+      // No thread rows: signed out, or not on a list view. Nothing can be
+      // detected from here, and saying so beats reporting a healthy listener
+      // that structurally cannot see mail.
+      state.lastError = 'no thread rows visible (signed out, or not on a list view)';
+    } else {
+      state.lastError = null;
+    }
+    // RECONCILE. The observer's own record versus what the page shows. They
+    // diverge when an event was missed — a stopped observer, a swapped node, or
+    // mail that landed while the connection was down. This is the check that
+    // makes a silent failure loud, and the one a liveness flag cannot make.
+    if (v.actual && v.lastSeen && v.actual !== v.lastSeen) {
+      log(`heartbeat: MISSED an arrival (observer saw ${v.lastSeen}, page shows ${v.actual}) — repairing`);
       state.reinstalls++;
       await install();
+      await handleMail(v.actual);
       return;
     }
   } catch (e) {
