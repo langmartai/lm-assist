@@ -42,7 +42,7 @@
  * scoped in configure.ts TOOL_SCOPES, catalogued in registry/catalog.ts.
  */
 
-import { ok, err, workerGet, workerGetLong, workerPost, workerPostRaw, type McpToolResult } from './_passthrough';
+import { ok, err, workerGet, workerGetLong, workerPost, workerPostLong, workerPostRaw, type McpToolResult } from './_passthrough';
 
 // ─── tool defs ───────────────────────────────────────────────────────────────
 
@@ -278,6 +278,27 @@ export const gmailAttachmentsToolDef = {
     properties: {
       threadId: { type: 'string', description: 'Thread id from a list/search result.' },
       limit: { type: 'number', description: 'Default 50, max 200.' },
+    },
+    required: ['threadId'],
+  },
+};
+
+export const gmailAttachmentDownloadToolDef = {
+  name: 'gmail_attachment_download',
+  description:
+    'Download ONE attachment from a Gmail thread and write the BYTES to disk on the node that runs it. ' +
+    'Returns the saved path, true size, content-type and sha256 — not the file contents. Choose the file ' +
+    'with `name`, or `index` (0-based) into gmail_attachments. Set inline:true to also get base64, which ' +
+    'is refused above 256 KB. Trigger words: "download the attachment", "save that PDF", "get the file ' +
+    'off that email".',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      threadId: { type: 'string', description: 'Thread id from a list/search result.' },
+      name: { type: 'string', description: 'Filename to download. Omit to use index.' },
+      index: { type: 'number', description: '0-based index into the thread attachments. Default 0.' },
+      saveDir: { type: 'string', description: 'Directory to write into. Defaults under the Gmail data dir.' },
+      inline: { type: 'boolean', description: 'Also return base64 when the file is small. Default false.' },
     },
     required: ['threadId'],
   },
@@ -590,6 +611,7 @@ export const GMAIL_TOOL_DEFS = [
   gmailSyncToolDef,
   gmailSyncStatusToolDef,
   gmailAttachmentsToolDef,
+  gmailAttachmentDownloadToolDef,
   gmailLabelsToolDef,
   gmailSelfcheckToolDef,
   gmailAliasesToolDef,
@@ -1084,6 +1106,47 @@ async function handleTriage(args: Record<string, unknown>): Promise<McpToolResul
   }
 }
 
+async function handleAttachmentDownload(args: Record<string, unknown>): Promise<McpToolResult> {
+  const threadId = String(args.threadId ?? '').trim();
+  if (!threadId) return err('threadId is required (get one from gmail_list_threads or gmail_search).');
+  try {
+    const d = await workerPostLong<{
+      name: string;
+      savedPath: string;
+      bytes: number;
+      contentType: string | null;
+      reportedSizeBytes: number | null;
+      sha256: string;
+      base64?: string;
+      inlineOmitted?: string;
+    }>('/gmail/attachment/download', {
+      threadId,
+      name: args.name,
+      index: numArg(args.index),
+      saveDir: args.saveDir,
+      inline: boolArg(args.inline) === true,
+    }, 300000);
+
+    // Report the TRUE size next to what the listing claimed: Gmail's label is
+    // rounded ("1 KB" for 38 bytes), so a caller who saw the metadata first would
+    // otherwise read the difference as a truncated download.
+    const claimed =
+      typeof d.reportedSizeBytes === 'number' && d.reportedSizeBytes !== d.bytes
+        ? ` (the listing said ~${d.reportedSizeBytes} — Gmail rounds that label)`
+        : '';
+    const lines = [
+      `Downloaded "${d.name}" — ${d.bytes} bytes${claimed}.`,
+      `Saved to: ${d.savedPath}`,
+      `Type: ${d.contentType || 'unknown'} · sha256: ${d.sha256}`,
+    ];
+    if (d.base64) lines.push(`base64: ${d.base64}`);
+    else if (d.inlineOmitted) lines.push(`base64 omitted — ${d.inlineOmitted}`);
+    return ok(lines.join('\n'));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 async function handleAliases(args: Record<string, unknown>): Promise<McpToolResult> {
   try {
     const q = boolArg(args.refresh) === true ? '?refresh=true' : '';
@@ -1420,6 +1483,7 @@ export const GMAIL_HANDLERS: Record<string, (args: Record<string, unknown>) => P
   gmail_sync: handleSync,
   gmail_sync_status: () => handleSyncStatus(),
   gmail_attachments: handleAttachments,
+  gmail_attachment_download: handleAttachmentDownload,
   gmail_labels: () => handleLabels(),
   gmail_selfcheck: handleSelfcheck,
   gmail_aliases: handleAliases,

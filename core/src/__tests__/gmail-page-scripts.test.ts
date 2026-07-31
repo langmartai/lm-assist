@@ -33,6 +33,7 @@ import {
   JS_ATTACHMENTS_IN_THREAD,
 } from '../gmail/extractors';
 import { JS_LANDMARKS, JS_COMPOSE, JS_BODY_TARGET } from '../gmail/selfcheck';
+import { jsFetchAttachment, jsPullChunk, JS_DROP_ATT } from '../gmail/cdp-client';
 
 /** The exact wrapper cdp-client.evaluate() uses: `(async()=>{ <expr> })()`. */
 const AsyncFunction = Object.getPrototypeOf(async function () {
@@ -91,4 +92,27 @@ test('the selfcheck scripts embed the shared library rather than reimplementing 
   ] as const) {
     assert.ok(src.includes('__scope') || src.includes('__bodyEl'), `${name} does not use the shared resolvers`);
   }
+});
+
+// ── attachment download page scripts ─────────────────────────────────────────
+// These interpolate a URL and two integers into a template literal, which is the
+// same construction that produced both measured failures above.
+test('jsFetchAttachment compiles as an async function body', () => {
+  const url = 'https://mail.google.com/mail/u/0?ui=2&ik=abc&attid=0.1&view=att&disp=safe&zw';
+  assert.doesNotThrow(() => new AsyncFunction(jsFetchAttachment(url)));
+});
+
+test('jsFetchAttachment survives a URL carrying quotes and backslashes', () => {
+  // JSON.stringify is what makes this safe; if it is ever dropped for a bare
+  // template interpolation, this is the test that fails.
+  const nasty = 'https://x/?a=`b`&c=\'d\'&e="f"\\g';
+  assert.doesNotThrow(() => new AsyncFunction(jsFetchAttachment(nasty)));
+});
+
+test('jsPullChunk compiles as an async function body', () => {
+  assert.doesNotThrow(() => new AsyncFunction(jsPullChunk(0, 262144)));
+});
+
+test('JS_DROP_ATT compiles as an async function body', () => {
+  assert.doesNotThrow(() => new AsyncFunction(JS_DROP_ATT));
 });

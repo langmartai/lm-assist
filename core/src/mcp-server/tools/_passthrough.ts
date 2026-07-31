@@ -116,6 +116,25 @@ export async function workerPost<T = unknown>(
 }
 
 /**
+ * POST with a caller-set timeout. workerPost's 30s is fine for a state change but
+ * far too short for anything that drives a real browser — those calls can also sit
+ * behind the Gmail driver lock, which itself waits up to 120s before refusing.
+ */
+export async function workerPostLong<T = unknown>(
+  routePath: string,
+  body: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<T> {
+  const res = await fetch(`${BASE_URL}${routePath}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...lmAuthHeaders() },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  return unwrapEnvelope<T>(res, routePath);
+}
+
+/**
  * POST an lm-assist route on loopback and return the FULL response body
  * verbatim (no `{success,data,error}` unwrapping, no throw on `success:false`).
  * Used by tools (e.g. github_*) that need the structured envelope — backend

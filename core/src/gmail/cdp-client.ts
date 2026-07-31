@@ -62,7 +62,11 @@
  */
 
 import WebSocket from 'ws';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as crypto from 'crypto';
 import {
+  GM_DATA_DIR,
   VIEWPORT,
   maxBodyChars,
   maxThreadChars,
@@ -1355,6 +1359,230 @@ export async function listAttachments(threadId: string): Promise<GmailAttachment
     return shapeAttachments(rows, scan?.strategy ?? null, { ik, threadId: id });
   });
 }
+
+/**
+ * Hard ceilings for a download.
+ *
+ * 🔴 The DEFAULT return is a PATH, never the bytes. An MCP result carrying a file
+ * inline is how one `mission_list` (923 KB) blew past a whole context window, and
+ * a 5 MB attachment base64s to ~6.8 MB. `inline` is opt-in and REFUSES above
+ * INLINE_MAX_BYTES rather than truncating, because a truncated base64 decodes to
+ * a corrupt file that looks like a successful download.
+ */
+const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+const INLINE_MAX_BYTES = 256 * 1024;
+/** Raw bytes pulled per CDP round-trip; base64 inflates this by 4/3. */
+const PULL_CHUNK = 256 * 1024;
+
+export interface GmailAttachmentDownload {
+  threadId: string;
+  name: string;
+  /** Absolute path on the node that ran the download. */
+  savedPath: string;
+  /** TRUE size of what was written. */
+  bytes: number;
+  /** From the response — authoritative, unlike the extension guess in metadata. */
+  contentType: string | null;
+  /**
+   * What the LISTING claimed. Gmail's size label is ROUNDED — measured "1 KB" for
+   * a 38-byte file — so a caller must not read a mismatch here as corruption.
+   */
+  reportedSizeBytes: number | null;
+  sha256: string;
+  downloadUrlSource: 'observed' | 'constructed';
+  /** Only when `inline` was asked for AND the file fits INLINE_MAX_BYTES. */
+  base64?: string;
+  /** Why base64 is absent, when it was requested. */
+  inlineOmitted?: string;
+}
+
+export interface DownloadAttachmentOptions {
+  /** Pick by filename (exact, then case-insensitive). Omit to use `index`. */
+  name?: string;
+  /** Zero-based index into the thread's attachment list. Default 0. */
+  index?: number;
+  /** Directory to write into. Default `<GM_DATA_DIR>/downloads/<threadId>`. */
+  saveDir?: string;
+  /** Also return base64, when the file fits INLINE_MAX_BYTES. */
+  inline?: boolean;
+}
+
+/**
+ * Page-side: fetch the attachment with the session's own cookies and STASH it.
+ * Returns headers + length only — the bytes are pulled in slices afterwards so a
+ * single huge base64 string never has to cross the transport in one message.
+ *
+ * Written as a FUNCTION BODY, not an IIFE: Cdp.evaluate wraps the string in
+ * `(async()=>{ ... })()` already.
+ */
+/** Exported ONLY so the unit tests can compile this exact string — see
+ *  `core/src/__tests__/gmail-page-scripts.test.ts`. */
+export function jsFetchAttachment(url: string): string {
+  return `
+  try {
+    const r = await fetch(${JSON.stringify(url)}, { credentials: 'include' });
+    const buf = await r.arrayBuffer();
+    window.__lmAtt = new Uint8Array(buf);
+    return {
+      ok: true,
+      status: r.status,
+      contentType: r.headers.get('content-type'),
+      disposition: r.headers.get('content-disposition'),
+      bytes: window.__lmAtt.length,
+    };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e).slice(0, 200) };
+  }`;
+}
+
+/** Page-side: base64 of one slice of the stashed buffer. Exported for the same
+ *  compile-test reason as jsFetchAttachment. */
+export function jsPullChunk(start: number, end: number): string {
+  return `
+  const u8 = window.__lmAtt;
+  if (!u8) return null;
+  let s = '';
+  const sub = u8.subarray(${start}, ${end});
+  const STEP = 0x8000;
+  for (let i = 0; i < sub.length; i += STEP) {
+    s += String.fromCharCode.apply(null, sub.subarray(i, i + STEP));
+  }
+  return btoa(s);`;
+}
+
+export const JS_DROP_ATT = 'try { delete window.__lmAtt; } catch (e) {} return 1;';
+
+/**
+ * Download one attachment's BYTES and write them to disk.
+ *
+ * 🔴 MEASURED 2026-07-31 against a real attachment: the `view=att` URL returns the
+ * true file when `disp` is `safe` or `attd` (both gave 38 bytes with
+ * `content-disposition: attachment; filename="lm-attach-test.txt"`), but
+ * `disp=inline` returns 294 bytes of padding that is NOT the file. So an OBSERVED
+ * URL is used as-is and only a `disp=inline` is rewritten — silently returning the
+ * wrong body is worse than failing.
+ *
+ * The fetch runs INSIDE the page because that is what carries Gmail's session
+ * cookies; there is no token to hand a server-side HTTP client.
+ */
+export async function downloadAttachment(
+  threadId: string,
+  opts: DownloadAttachmentOptions = {},
+): Promise<GmailAttachmentDownload> {
+  const id = requireThreadId(threadId);
+  const rows = await listAttachments(id);
+  if (!rows.length) throw new GmError('NO_ATTACHMENTS', `thread ${id} has no attachments`);
+
+  const wantName = typeof opts.name === 'string' ? opts.name.trim() : '';
+  let row: GmailAttachmentRow;
+  if (wantName) {
+    const hit =
+      rows.find((r) => r.name === wantName) ||
+      rows.find((r) => r.name.toLowerCase() === wantName.toLowerCase());
+    if (!hit) {
+      // Name the alternatives — "not found" against an invisible list is unactionable.
+      throw new GmError(
+        'ATTACHMENT_NOT_FOUND',
+        `no attachment named "${wantName}" on thread ${id}; it has: ${rows.map((r) => r.name).join(', ')}`,
+      );
+    }
+    row = hit;
+  } else {
+    const i = Number.isFinite(opts.index) ? Number(opts.index) : 0;
+    if (i < 0 || i >= rows.length) {
+      throw new GmError(
+        'ATTACHMENT_NOT_FOUND',
+        `index ${i} is out of range — thread ${id} has ${rows.length} attachment(s)`,
+      );
+    }
+    row = rows[i];
+  }
+
+  if (!row.downloadUrl || !row.downloadable) {
+    throw new GmError('ATTACHMENT_NOT_DOWNLOADABLE', `"${row.name}" exposes no download URL`);
+  }
+  // Only `inline` is known-wrong; every other observed URL is left untouched.
+  const url = row.downloadUrl.replace(/([?&])disp=inline\b/, '$1disp=attd');
+
+  return op('read', async (cdp) => {
+    const head = await cdp.evaluate<{
+      ok: boolean;
+      status?: number;
+      contentType?: string | null;
+      disposition?: string | null;
+      bytes?: number;
+      error?: string;
+    }>(jsFetchAttachment(url));
+
+    if (!head?.ok) throw new GmError('DOWNLOAD_FAILED', `fetch failed: ${head?.error || 'unknown'}`);
+    if (head.status !== 200) {
+      throw new GmError('DOWNLOAD_FAILED', `Gmail returned HTTP ${head.status} for "${row.name}"`);
+    }
+    const bytes = head.bytes || 0;
+    if (bytes === 0) throw new GmError('DOWNLOAD_FAILED', `"${row.name}" downloaded as 0 bytes`);
+    if (bytes > MAX_DOWNLOAD_BYTES) {
+      await cdp.evaluate(JS_DROP_ATT).catch(() => undefined);
+      throw new GmError(
+        'ATTACHMENT_TOO_LARGE',
+        `"${row.name}" is ${bytes} bytes, over the ${MAX_DOWNLOAD_BYTES}-byte cap`,
+      );
+    }
+    // HTML where a file was expected means Gmail served an error/login page. Without
+    // this it lands on disk as a plausible-looking file with the right name.
+    const ct = head.contentType || null;
+    if (ct && /^text\/html/i.test(ct) && !/\.html?$/i.test(row.name)) {
+      await cdp.evaluate(JS_DROP_ATT).catch(() => undefined);
+      throw new GmError(
+        'DOWNLOAD_FAILED',
+        `expected a file but Gmail returned text/html for "${row.name}" — the session may need a re-login`,
+      );
+    }
+
+    const parts: Buffer[] = [];
+    for (let off = 0; off < bytes; off += PULL_CHUNK) {
+      const b64 = await cdp.evaluate<string | null>(jsPullChunk(off, Math.min(off + PULL_CHUNK, bytes)));
+      if (typeof b64 !== 'string') {
+        throw new GmError('DOWNLOAD_FAILED', `the page dropped the buffer for "${row.name}" mid-transfer`);
+      }
+      parts.push(Buffer.from(b64, 'base64'));
+    }
+    await cdp.evaluate(JS_DROP_ATT).catch(() => undefined);
+
+    const data = Buffer.concat(parts);
+    if (data.length !== bytes) {
+      throw new GmError(
+        'DOWNLOAD_FAILED',
+        `reassembled ${data.length} bytes but the response declared ${bytes} for "${row.name}"`,
+      );
+    }
+
+    // An attachment name is attacker-controlled: flatten it so a "../" cannot
+    // write outside saveDir.
+    const safeName = path.basename(row.name).replace(/[/\\:*?"<>|]/g, '_') || 'attachment';
+    const dir = opts.saveDir || path.join(GM_DATA_DIR, 'downloads', id);
+    fs.mkdirSync(dir, { recursive: true });
+    const savedPath = path.join(dir, safeName);
+    fs.writeFileSync(savedPath, data);
+
+    const out: GmailAttachmentDownload = {
+      threadId: id,
+      name: row.name,
+      savedPath,
+      bytes: data.length,
+      contentType: ct,
+      reportedSizeBytes: row.sizeBytes,
+      sha256: crypto.createHash('sha256').update(data).digest('hex'),
+      downloadUrlSource: row.downloadUrlSource || 'constructed',
+    };
+    if (opts.inline) {
+      if (data.length <= INLINE_MAX_BYTES) out.base64 = data.toString('base64');
+      else
+        out.inlineOmitted = `${data.length} bytes exceeds the ${INLINE_MAX_BYTES}-byte inline cap — read it from savedPath`;
+    }
+    return out;
+  });
+}
+
 
 // ─── thread reads ────────────────────────────────────────────────────────────
 

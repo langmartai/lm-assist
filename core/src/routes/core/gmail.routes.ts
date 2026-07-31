@@ -20,6 +20,7 @@
  *   GET  /gmail/search?q=&limit=      Gmail query syntax (from:, is:unread, …)
  *   GET  /gmail/search-local?q=&limit= search the local window cache (no browser)
  *   GET  /gmail/attachments?threadId=&limit=  attachment metadata for a thread
+ *   POST /gmail/attachment/download   { threadId, name?|index?, saveDir?, inline? } — BYTES to disk
  *   GET  /gmail/unread?limit=         shorthand for is:unread
  *   GET  /gmail/labels                labels from the left nav
  *   POST /gmail/sync                  { days?, label? } — fill the window cache
@@ -73,6 +74,7 @@ import {
   readThread,
   readThreadFull,
   listAttachments,
+  downloadAttachment,
   syncWindow,
   searchThreads,
   unreadThreads,
@@ -362,6 +364,34 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
               total: all.length,
               attachments,
             },
+          };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/attachment/download { threadId, name?, index?, saveDir?, inline? }
+    //
+    // Writes the file on the node that runs it and returns the PATH. `inline` adds
+    // base64 only for small files — see INLINE_MAX_BYTES in gmail/cdp-client.ts.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/attachment\/download$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const t = reqThreadId(b.threadId);
+        if ('error' in t) return { success: false, error: t.error };
+        const name = typeof b.name === 'string' ? b.name : undefined;
+        const index = b.index === undefined || b.index === null ? undefined : Number(b.index);
+        if (index !== undefined && !Number.isFinite(index)) {
+          return { success: false, error: '`index` must be a number when provided' };
+        }
+        const saveDir = typeof b.saveDir === 'string' && b.saveDir.trim() ? b.saveDir.trim() : undefined;
+        try {
+          return {
+            success: true,
+            data: await downloadAttachment(t.id, { name, index, saveDir, inline: b.inline === true }),
           };
         } catch (e) {
           return fail(e);

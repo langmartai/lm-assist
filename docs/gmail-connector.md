@@ -170,7 +170,7 @@ exists for). Trust `gmail_status`, not the pid.
 
 ## Tools & scopes
 
-28 tools. Reads observe the mailbox; writes send real mail or mutate threads;
+29 tools. Reads observe the mailbox; writes send real mail or mutate threads;
 `gmail_login` drives interactive auth.
 
 | Tool | Scope | Purpose |
@@ -185,6 +185,7 @@ exists for). Trust `gmail_status`, not the pid.
 | `gmail_aliases` | read | send-as addresses on the account |
 | `gmail_drafts` | read | list saved drafts |
 | `gmail_attachments` | read | attachment metadata on a thread (names/types, not bytes) |
+| `gmail_attachment_download` | read | download one attachment's BYTES to disk; returns the path, not the file |
 | `gmail_selfcheck` | read | internal validation sweep over the endpoints |
 | `gmail_sync` / `gmail_sync_status` | read | populate + report on the local cache |
 | `gmail_send` | write | compose and send a new message (attachments supported) |
@@ -206,7 +207,7 @@ by every conversation. Its trigger words live on `gmail_search`.
 `GET /gmail/status` · `GET /gmail/summary?window=&refresh=` · `GET /gmail/threads?limit=&label=` ·
 `GET /gmail/thread?id=` · `GET /gmail/search?q=&limit=` · `GET /gmail/search-local` ·
 `GET /gmail/unread?limit=` · `GET /gmail/labels` · `GET /gmail/aliases` · `GET /gmail/drafts` ·
-`GET /gmail/attachments` · `GET /gmail/selfcheck` · `GET /gmail/sync-status` · `POST /gmail/sync` ·
+`GET /gmail/attachments` · `POST /gmail/attachment/download` · `GET /gmail/selfcheck` · `GET /gmail/sync-status` · `POST /gmail/sync` ·
 `POST /gmail/send` · `POST /gmail/reply` · `POST /gmail/forward` · `POST /gmail/draft` ·
 `POST /gmail/draft/send` · `POST /gmail/draft/delete` · `POST /gmail/triage` ·
 `POST /gmail/archive` · `POST /gmail/trash` · `POST /gmail/spam` · `POST /gmail/mark-read` ·
@@ -215,6 +216,11 @@ by every conversation. Its trigger words live on `gmail_search`.
 `GET /gmail/login/status?port=` · `POST /gmail/keepalive`
 
 (`/gmail/unread` and `/gmail/keepalive` have no MCP tool — REST only.)
+
+🔴 **Attachment downloads return a PATH, never the bytes.** The file is written on the node
+that ran the call (default `<GM_DATA_DIR>/downloads/<threadId>/`), so a *remote* node's download
+is not readable from here — fetch it, or run the call on the node you want the file on.
+`inline: true` adds base64 but refuses above 256 KB rather than truncating.
 
 🔴 **Snooze lives on `/gmail/triage`, not a `/gmail/snooze` route.** A caller reaching for
 the obvious path gets `Route not found`, which reads like a missing feature.
@@ -232,6 +238,29 @@ The lock waits up to 120s, then refuses rather than queueing forever. Retry.
 | `GMAIL_KEEPALIVE_MIN` | `15` | keep-alive interval in minutes; `0` disables |
 | `GMAIL_PROVIDER` | `cdp` | provider name (forward-compat) |
 | `LM_ASSIST_PROD` | — | `true` forces prod paths (no `-dev` suffix) |
+
+## Attachment bytes — measured 2026-07-31
+
+`gmail_attachments` yields a `downloadUrl` of the `view=att` form. Which `disp` it carries
+decides whether you get the file or garbage:
+
+| `disp` | result on a 38-byte text attachment |
+|---|---|
+| `safe` | 38 bytes, `content-disposition: attachment; filename="…"` — **the real file** |
+| `attd` | identical to `safe` |
+| `inline` | 294 bytes of padding — **not the file**, and it still returns HTTP 200 |
+
+So an *observed* URL is used as-is and only `disp=inline` is rewritten to `attd`. The fetch runs
+INSIDE the page: that is what carries Gmail's session cookies, and there is no token to hand a
+server-side HTTP client.
+
+🔴 **`sizeBytes` in the listing is Gmail's ROUNDED label, not the true size** — measured `1024`
+for a 38-byte file and `700416` for a 700,000-byte one. `gmail_attachment_download` returns the
+true `bytes` alongside `reportedSizeBytes` so the gap cannot be misread as a truncated download.
+
+Verified end-to-end on 123 (Linux) and 107 (Windows): a 700,000-byte binary containing NUL, CR and
+LF round-tripped **byte-identical** (sha256 equal on both nodes), crossing the 256 KB chunk boundary
+three times.
 
 ## Limits and caveats
 
