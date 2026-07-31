@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GUIDE_HANDLERS, GUIDE_TOOL_DEFS } from '../mcp-server/tools/guide';
 import { LM_ASSIST_INSTRUCTIONS } from '../mcp-server/configure';
+import { capToolResult } from '../mcp-server/result-cap';
 
 /**
  * `guide` ships the lm-assist "skill" THROUGH the connector (skills may not be locally
@@ -182,4 +183,96 @@ test('bootstrap + guide expose the roles topic', async () => {
   assert.match(g, /set_role/);
   assert.match(g, /decide_gate/);
   for (const syn of ['worker', 'orchestrator', 'agree-gate']) assert.match(await text({ topic: syn }), /Guide: worker role/, `alias ${syn}`);
+});
+
+// ── Node recovery + cross-host SSH access (the 2026-07-30 lost-117 incident) ──
+// A controller session lost a prod node and re-derived the whole recovery from scratch,
+// because none of it was written down: a node absent from `list_nodes` reads as a dead
+// machine, `ssh <host> lm-assist status` lies with "command not found", and the session
+// registry that survives a reboot is not where anyone looks. These lock the lessons in.
+
+test('nodes guide: a node missing from list_nodes is a stopped service, not a dead host', async () => {
+  const t = await text({ topic: 'nodes' });
+  assert.match(t, /NOT A DEAD MACHINE/i);
+  assert.match(t, /No online lm-assist node matches/);   // the error that reads like death
+  assert.match(t, /ping/);                                // verify liveness OFF this connector
+  assert.match(t, /ssh:22/);
+  assert.match(t, /reboot/i);                             // lm-assist does not come back by itself
+});
+
+test('nodes guide: recovery is one ssh command, and it is wrapped in a login shell', async () => {
+  const t = await text({ topic: 'nodes' });
+  assert.match(t, /bash -lc "lm-assist start"/);
+  assert.match(t, /bash -lc.*NOT optional|NOT optional/i);
+  assert.match(t, /command not found/);                   // the bogus answer without the wrap
+  assert.match(t, /list_nodes/);                          // re-verify after recovery
+});
+
+test('machine-access guide: an EMPTY registry is not "no route" — read ~/.ssh/config', async () => {
+  const t = await text({ topic: 'machine-access' });
+  assert.match(t, /EMPTY .*machine_access.* IS NOT/i);
+  assert.match(t, /~\/\.ssh\/config/);
+  assert.match(t, /IdentityFile/);
+  assert.match(t, /~\/\.nvm\/versions\/node/);            // WHY the PATH trap exists
+  assert.match(t, /bash -lc/);
+});
+
+test('access-paths carries the lost-node case as a worked failover example', async () => {
+  const t = await text({ topic: 'access-paths' });
+  assert.match(t, /DOWN PATH, not a dead machine/i);
+  assert.match(t, /lm-assist start/);                     // fall over to ssh, then fall forward
+});
+
+test('ccr guide: the post-reboot inventory survives in ~/.claude/sessions, PIDs dead is expected', async () => {
+  const t = await text({ topic: 'ccr' });
+  assert.match(t, /~\/\.claude\/sessions\/\*\.json/);
+  assert.match(t, /bridgeSessionId/);
+  assert.match(t, /NOT evidence the work is gone/i);
+  assert.match(t, /~\/\.claude\/projects\/<slug>\/\*\.jsonl/); // hit-count picks the right one
+});
+
+test('ccr guide: resume is lossless (own name + same bridge id) and the modal is the human’s call', async () => {
+  const t = await text({ topic: 'ccr' });
+  assert.match(t, /claude --resume <sessionId>/);
+  assert.match(t, /RECLAIMS THE SAME/);
+  assert.match(t, /URL is UNCHANGED/i);
+  assert.match(t, /Resume from summary/);
+  assert.match(t, /USAGE-LIMIT decision/);
+  assert.match(t, /SURFACE IT TO THE HUMAN/);
+  // the resume modal is the ONE Enter exception; /remote-control stays Escape-only
+  assert.match(t, /ONE modal on this path where Enter is right/);
+  assert.match(t, /Send ESCAPE, never ENTER/);
+});
+
+test('recovery is findable in the words of the SYMPTOM, not of the answer', async () => {
+  for (const syn of ['reboot', 'offline', 'node-down', 'recover', 'rejoin']) {
+    assert.match(await text({ topic: syn }), /Guide: machines \(nodes\)/, `${syn} → nodes`);
+  }
+  for (const syn of ['ssh-config', 'command not found']) {
+    assert.match(await text({ topic: syn }), /Guide: machine-access/, `${syn} → machine-access`);
+  }
+  assert.match(await text({ topic: 'resume' }), /Guide: CCR/, 'resume → ccr');
+});
+
+test('bootstrap carries the node-recovery playbook (it must not be guide-only)', async () => {
+  const t = (await GUIDE_HANDLERS.bootstrap({})).content[0].text as string;
+  assert.match(t, /NOT A DEAD MACHINE/i);
+  assert.match(t, /bash -lc "lm-assist start"/);
+  assert.match(t, /~\/\.claude\/sessions\/\*\.json/);
+});
+
+// bootstrap is OVER the 64 KiB per-result ceiling (measured 76,538 bytes, ~15% dropped),
+// so its tail topics never reach the caller. The header says so — and because the cap eats
+// the TAIL, that warning only works if it lives in the head. This test proves it survives
+// the very truncation it describes, and that it supplies the remedy the generic marker
+// cannot (bootstrap takes no arguments, so "narrow the call" is unactionable).
+test('bootstrap warns that its own tail is cut — and the warning survives the cut', async () => {
+  const raw = await GUIDE_HANDLERS.bootstrap({});
+  assert.match(raw.content[0].text as string, /TAIL OF THIS RESPONSE IS CUT/);
+  const { result, size } = capToolResult(raw, 'bootstrap');
+  const kept = result.content[0].text as string;
+  assert.ok(size.truncated, 'bootstrap is over the ceiling today — if this flips, the warning needs revisiting');
+  assert.match(kept, /TAIL OF THIS RESPONSE IS CUT/, 'the warning is in the head, so the cap cannot eat it');
+  assert.match(kept, /THE REMEDY IS `guide\(topic=\.\.\.\)`/);
+  assert.match(kept, /RESULT TRUNCATED/, 'the cap still appends its own explicit marker');
 });
