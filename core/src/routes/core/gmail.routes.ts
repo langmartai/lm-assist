@@ -101,7 +101,7 @@ import { searchLocal, syncStatus } from '../../gmail/store';
 import { gmailLogin, gmailLoginStatus } from '../../gmail/login';
 import { runSelfCheck } from '../../gmail/selfcheck';
 import { startGmailKeepAlive } from '../../gmail/keepalive';
-import { gmailSummary, gmailSummaryCached } from '../../gmail/cdp-client';
+import { gmailSummary, gmailSummaryCached, syncJob } from '../../gmail/cdp-client';
 import { resolveWindow } from '../../gmail/summary';
 import { countInWindow } from '../../gmail/store';
 
@@ -445,6 +445,16 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
           return {
             success: true,
             data: {
+              // The job identity, so a caller can TRACK this walk instead of
+              // guessing. syncWindow has always returned these; the route dropped
+              // them, which is why its own note told callers to poll an endpoint
+              // that describes the CACHE and knew nothing about the running job.
+              jobId: r.jobId,
+              state: r.state,
+              // True when a walk was already in flight and this call JOINED it.
+              // That is what makes retrying safe: re-issuing never starts a
+              // second walk, it attaches to the one already running.
+              already: r.already ?? false,
               threadsSynced: r.threadsSynced ?? 0,
               messagesSynced: r.messagesSynced ?? 0,
               threadsSkipped: r.threadsSkipped ?? 0,
@@ -533,7 +543,32 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/gmail\/sync-status$/,
       handler: async () => {
         try {
-          return { success: true, data: await syncStatus() };
+          // The RUNNING job rides along with the cache state. These answer two
+          // different questions — "what do we hold?" and "is a walk in flight,
+          // how far along, did it fail?" — and a caller polling for progress
+          // needs the second. Null when this node has never synced.
+          const job = syncJob();
+          return {
+            success: true,
+            data: {
+              ...(await syncStatus()),
+              job: job
+                ? {
+                    jobId: job.jobId,
+                    state: job.state,
+                    startedAt: job.startedAt,
+                    finishedAt: job.finishedAt,
+                    pagesFetched: job.pagesFetched,
+                    threadsSeen: job.threadsSeen,
+                    threadsUpserted: job.threadsUpserted,
+                    messagesUpserted: job.messagesUpserted,
+                    threadsSkipped: job.threadsSkipped,
+                    currentQuery: job.currentQuery,
+                    error: job.error,
+                  }
+                : null,
+            },
+          };
         } catch (e) {
           return fail(e);
         }
