@@ -906,15 +906,75 @@ function stThreadChip(labels: readonly string[]): Strategy {
   };
 }
 
+/** Locate the "More email options" button and return its CENTRE, without clicking. */
+const JS_FIND_MORE = `${JS_PRE}
+  const btn = [...document.querySelectorAll(${JSON.stringify(SELECTORS.moreBtn)})].filter(el => __shown(el) && __enabled(el))[0];
+  if (!btn) return { ok: false, miss: 'no-more-email-options-button' };
+  btn.scrollIntoView({ block: 'center' });
+  await new Promise(r => setTimeout(r, 150));
+  const b = btn.getBoundingClientRect();
+  if (b.width <= 0 || b.height <= 0) return { ok: false, miss: 'more-button-has-no-box' };
+  return { ok: true, x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2) };`;
+
+/** Locate a menu item by label and return its CENTRE, without clicking. */
+function jsFindMenuItem(labels: readonly string[]): string {
+  const j = JSON.stringify;
+  return `${JS_PRE}
+  const menu = [...document.querySelectorAll(${j(SELECTORS.menu)})].filter(__shown).pop();
+  if (!menu) return { ok: false, miss: 'no-open-menu' };
+  const items = [...menu.querySelectorAll(${j(SELECTORS.menuItem)})].filter(el => __shown(el) && __enabled(el));
+  const seen = items.map(el => (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 40)).filter(Boolean).slice(0, 30);
+  const pats = ${j(labels)};
+  const hit = items.find(el => __matches((el.getAttribute('aria-label') || '').trim(), pats))
+    || items.find(el => __matches((el.textContent || '').replace(/\\s+/g, ' ').trim(), pats));
+  if (!hit) return { ok: false, miss: 'no-menu-item-matching:' + ${j(labels.join('|'))}, seen: seen };
+  hit.scrollIntoView({ block: 'center' });
+  await new Promise(r => setTimeout(r, 120));
+  const b = hit.getBoundingClientRect();
+  if (b.width <= 0 || b.height <= 0) return { ok: false, miss: 'menu-item-has-no-box', seen: seen };
+  return { ok: true, x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2), seen: seen };`;
+}
+
+/**
+ * Open the More menu and click an item with TRUSTED events.
+ *
+ * MEASURED 2026-07-31: mute failed with "3 strategies tried - thread-more-menu",
+ * the same gate already found on the Labels menu - Gmail ignores a synthetic
+ * click on these menus entirely, so JS_OPEN_MORE reported a click that opened
+ * nothing and the item click then had no menu to work in. Trusted
+ * Input.dispatchMouseEvent works, as it does for Labels.
+ *
+ * Falls back to the synthetic path when the transport exposes no raw CDP, so
+ * behaviour is never worse than before.
+ */
+async function openMoreAndClick(cdp: Cdp, labels: readonly string[]): Promise<ClickOutcome> {
+  if (typeof cdp.send === 'function') {
+    const more = await cdp
+      .evaluate<ClickOutcome & { x?: number; y?: number }>(JS_FIND_MORE)
+      .catch(() => ({ ok: false, miss: 'find-more-threw' }) as ClickOutcome & { x?: number; y?: number });
+    if (!more.ok || typeof more.x !== 'number' || typeof more.y !== 'number') return more;
+    await dispatchTrustedClick(cdp, more.x, more.y);
+    await sleep(700);
+    const item = await cdp
+      .evaluate<ClickOutcome & { x?: number; y?: number }>(jsFindMenuItem(labels))
+      .catch(() => ({ ok: false, miss: 'find-item-threw' }) as ClickOutcome & { x?: number; y?: number });
+    if (!item.ok || typeof item.x !== 'number' || typeof item.y !== 'number') return item;
+    await dispatchTrustedClick(cdp, item.x, item.y);
+    await sleep(600);
+    return { ok: true, seen: item.seen };
+  }
+  const opened = await cdp.evaluate<ClickOutcome>(JS_OPEN_MORE);
+  if (!opened.ok) return opened;
+  return cdp.evaluate<ClickOutcome>(jsClickMenuItem(labels));
+}
+
 /** (a'') Open the thread, open "More email options", click the item. */
 function stMoreMenu(labels: readonly string[]): Strategy {
   return {
     name: 'thread-more-menu',
     async run(cdp, id) {
       await openThread(cdp, id);
-      const opened = await cdp.evaluate<ClickOutcome>(JS_OPEN_MORE);
-      if (!opened.ok) return opened;
-      const hit = await cdp.evaluate<ClickOutcome>(jsClickMenuItem(labels));
+      const hit = await openMoreAndClick(cdp, labels);
       if (!hit.ok) {
         // Leave no menu open for the next strategy to click through.
         await cdp
