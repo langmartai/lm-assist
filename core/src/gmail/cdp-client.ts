@@ -497,32 +497,54 @@ let driverHeldSince: number | null = null;
 const DRIVER_WAIT_MS = 120_000;
 
 async function withDriverLock<T>(fn: () => Promise<T>): Promise<T> {
-  const mine = driverChain.then(fn, fn);
+  // 🔴 Stamp the holder around the ACTUAL work, never around the wait.
+  //
+  // MEASURED 2026-07-31: refusals read "held the browser for ?s" — the one number
+  // the caller needs, missing. Three compounding reasons, all from stamping at
+  // enqueue time:
+  //  - every caller wrote driverHeldSince on entry, so it tracked "the most recent
+  //    caller to ARRIVE", not "when the holder ACQUIRED";
+  //  - a queued waiter that timed out ran its own `finally` and cleared the stamp
+  //    WHILE THE REAL HOLDER WAS STILL RUNNING, so every later refusal printed "?"
+  //    — self-perpetuating once it happened;
+  //  - the age was captured at enqueue and read 120s later, by which time the
+  //    holder may well have been a different operation entirely.
+  // Stamping inside the chained work fixes all three: only the running operation
+  // owns the stamp, and only it clears it.
+  const run = async (): Promise<T> => {
+    driverHeldSince = Date.now();
+    try {
+      return await fn();
+    } finally {
+      driverHeldSince = null;
+    }
+  };
+  const mine = driverChain.then(run, run);
   // Keep the chain going regardless of this call's outcome, or one rejection
   // would poison every future acquisition.
   driverChain = mine.then(
     () => undefined,
     () => undefined,
   );
-  const held = driverHeldSince;
   const timeout = new Promise<never>((_, rej) =>
     setTimeout(() => {
-      const age = held ? Math.round((Date.now() - held) / 1000) : null;
+      // Read at REFUSAL time, not at enqueue time — this names whoever holds the
+      // browser NOW, which is the operation the caller has to wait for.
+      const since = driverHeldSince;
+      const age = since ? Math.round((Date.now() - since) / 1000) : null;
       rej(
         new GmError(
           'BROWSER_BUSY',
-          `another Gmail operation has held the browser for ${age ?? '?'}s — refusing to queue indefinitely. ` +
+          (age === null
+            ? 'another Gmail operation is holding the browser'
+            : `another Gmail operation has held the browser for ${age}s`) +
+            ' — refusing to queue indefinitely. ' +
             'Retry, or check gmail_sync_status for a walk in progress.',
         ),
       );
     }, DRIVER_WAIT_MS).unref?.(),
   );
-  try {
-    driverHeldSince = Date.now();
-    return (await Promise.race([mine, timeout])) as T;
-  } finally {
-    driverHeldSince = null;
-  }
+  return (await Promise.race([mine, timeout])) as T;
 }
 
 async function withCdp<T>(fn: (cdp: Cdp) => Promise<T>): Promise<T> {
