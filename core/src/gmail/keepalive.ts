@@ -11,11 +11,12 @@
  * It is started ONCE from createGmailRoutes (Core boot). It is intentionally
  * quiet: when the driver browser is not running it skips silently (nothing to
  * keep warm); it only logs when the session has DROPPED (logged out) so the
- * signal is actionable. Interval is configurable via GMAIL_KEEPALIVE_MIN
+ * signal is actionable. Each successful tick also refreshes the account summary (see ./summary), so
+ * `checkedAt` stays current without a caller asking. Interval is configurable via GMAIL_KEEPALIVE_MIN
  * (minutes; default 15; set 0 to disable).
  */
 
-import { keepSessionWarm } from './cdp-client';
+import { keepSessionWarm, gmailSummary } from './cdp-client';
 
 type Logger = (...a: unknown[]) => void;
 
@@ -43,6 +44,17 @@ export function startGmailKeepAlive(log: Logger = (...a) => console.error('[gm-k
         log('Gmail session restored (logged in again).');
       }
       lastLoggedIn = r.loggedIn;
+      // The warm-up already navigated to #inbox, so the summary costs one extra
+      // page read on a page that is right there. This is what keeps checkedAt
+      // fresh without anyone asking: a cached summary nobody refreshes is just a
+      // stale number with a timestamp on it.
+      if (r.loggedIn) {
+        try {
+          await gmailSummary();
+        } catch {
+          /* a summary refresh must never break the keep-alive */
+        }
+      }
     } catch {
       // Driver browser not reachable (not launched yet / closed). Nothing to
       // keep warm — stay quiet; gmail_status will report it if asked.

@@ -60,6 +60,25 @@ export const gmailStatusToolDef = {
   inputSchema: { type: 'object' as const, properties: {} },
 };
 
+export const gmailSummaryToolDef = {
+  name: 'gmail_summary',
+  description:
+    'Mailbox at a glance on this node: account + send-as alias count, inbox total and unread, ' +
+    'drafts, label count, the newest arrival, and checkedAt/ageMs saying WHEN that was observed. ' +
+    'Trigger words: "any new email", "how many unread", "mailbox summary". Served from cache by ' +
+    'default (refreshed by the keep-alive); pass refresh:true to observe live. Read-only.',
+  annotations: { readOnlyHint: true },
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      refresh: {
+        type: 'boolean' as const,
+        description: 'Drive the live page instead of returning the cached read. Slower; use when freshness matters.',
+      },
+    },
+  },
+};
+
 export const gmailLoginToolDef = {
   name: 'gmail_login',
   description:
@@ -491,6 +510,7 @@ async function handleSelfcheck(args: Record<string, unknown>): Promise<McpToolRe
 
 export const GMAIL_TOOL_DEFS = [
   gmailStatusToolDef,
+  gmailSummaryToolDef,
   gmailLoginToolDef,
   gmailListThreadsToolDef,
   gmailReadThreadToolDef,
@@ -876,6 +896,54 @@ interface AliasRow {
   alias: boolean;
 }
 
+interface SummaryShape {
+  account: string | null; aliases: number; defaultSendAs: string | null;
+  inbox: { total: number | null; unread: number | null; rendered: number };
+  drafts: number | null; labels: number | null;
+  newest: { subject: string | null; from: string | null; when: string | null; unread: boolean } | null;
+  checkedAt: number; ageMs?: number; cached?: boolean; note?: string | null;
+}
+
+/** "4m", "2h", "3d" — an age a reader can judge at a glance. */
+function ageLabel(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 90) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 90) return `${m}m`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h}h` : `${Math.round(h / 24)}d`;
+}
+
+async function handleSummary(args: Record<string, unknown>): Promise<McpToolResult> {
+  try {
+    const q = boolArg(args.refresh) === true ? '?refresh=true' : '';
+    const d = await workerGet<SummaryShape>(`/gmail/summary${q}`);
+    const n = (v: number | null | undefined) => (typeof v === 'number' ? v.toLocaleString('en-US') : '?');
+    const lines = [
+      `Gmail — ${d.account || '(unknown account)'}${d.aliases ? `  (${d.aliases} send-as identities` + (d.defaultSendAs ? `, default ${d.defaultSendAs}` : '') + ')' : ''}`,
+      `  Inbox   ${n(d.inbox?.total)} total, ${n(d.inbox?.unread)} unread`,
+      `  Drafts  ${n(d.drafts)}`,
+      `  Labels  ${n(d.labels)}`,
+    ];
+    if (d.newest) {
+      lines.push(
+        `  Newest  ${JSON.stringify(d.newest.subject || '(no subject)')}` +
+          `${d.newest.from ? ` from ${d.newest.from}` : ''}${d.newest.when ? ` at ${d.newest.when}` : ''}` +
+          `${d.newest.unread ? '  [UNREAD]' : ''}`,
+      );
+    }
+    // Always state the age. These are scraped numbers; a summary without a
+    // timestamp cannot be told apart from a stale one, and "is there new mail?"
+    // is exactly the question that gets the wrong answer from an old cache.
+    const age = typeof d.ageMs === 'number' ? ageLabel(d.ageMs) : 'unknown age';
+    lines.push(`  Checked ${age} ago${d.cached ? ' (cached — pass refresh:true to observe live)' : ' (live)'}`);
+    if (d.note) lines.push(`  Note    ${d.note}`);
+    return ok(lines.join('\n'));
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 async function handleAliases(args: Record<string, unknown>): Promise<McpToolResult> {
   try {
     const q = boolArg(args.refresh) === true ? '?refresh=true' : '';
@@ -1215,6 +1283,7 @@ export const GMAIL_HANDLERS: Record<string, (args: Record<string, unknown>) => P
   gmail_labels: () => handleLabels(),
   gmail_selfcheck: handleSelfcheck,
   gmail_aliases: handleAliases,
+  gmail_summary: handleSummary,
   gmail_send: handleSend,
   gmail_reply: handleReply,
   gmail_draft: handleDraft,

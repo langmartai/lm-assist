@@ -84,6 +84,7 @@ import {
 } from './extractors';
 import * as Compose from './compose';
 import * as Labels from './labels';
+import { JS_SUMMARY, writeSummary, readSummary, type GmailSummary } from './summary';
 import * as Actions from './actions';
 import { extractPreFromOriginalPage, parseRfc822 } from './mime';
 import { startSync, syncProgress, type SyncProgress } from './sync';
@@ -1922,6 +1923,67 @@ export async function bulkAction(
  * budget an operator's next call depends on, and it must not fail on a
  * temporarily unrecognised UI.
  */
+/**
+ * One-call account summary: who we are, how much mail, what just arrived, and
+ * WHEN that was observed. See ./summary for why the timestamp is load-bearing.
+ *
+ * Navigates to #inbox first, because the range counter ("1-50 of N") reports the
+ * CURRENT view — read anywhere else it would silently describe a different
+ * mailbox slice while looking like an inbox total.
+ *
+ * Every freshly observed summary is written to disk, so a caller that cannot
+ * afford a live page drive (or arrives while the browser is down) can still read
+ * the last known state and see exactly how old it is.
+ */
+export async function gmailSummary(): Promise<GmailSummary> {
+  return op('read', async (cdp) => {
+    const st = await readStatusRaw(cdp);
+    await gotoHash(cdp, '#inbox', SELECTORS.listReady, 15000);
+    await sleep(500);
+    const page = await cdp.evaluate<{
+      inboxUnread: number | null;
+      inboxTotal: number | null;
+      drafts: number | null;
+      rendered: number;
+      onInbox: boolean;
+      newest: GmailSummary['newest'];
+    }>(JS_SUMMARY);
+
+    let labels: number | null = null;
+    try {
+      labels = (await Labels.listLabels(cdp)).length;
+    } catch {
+      labels = null; // a label read failing must not cost the caller the whole summary
+    }
+
+    const cfg = readGmailConfig();
+    const aliases = Array.isArray(cfg.sendAs) ? cfg.sendAs.length : 0;
+
+    const notes: string[] = [];
+    if (!page.onInbox) notes.push('inbox total omitted — the page was not on #inbox when read');
+    if (labels === null) notes.push('label count unavailable');
+
+    const out: GmailSummary = {
+      account: st.self ?? null,
+      aliases,
+      defaultSendAs: (cfg.defaultSendAs as string | undefined) ?? null,
+      inbox: { total: page.inboxTotal, unread: page.inboxUnread, rendered: page.rendered },
+      drafts: page.drafts,
+      labels,
+      newest: page.newest ?? null,
+      checkedAt: Date.now(),
+      note: notes.length ? notes.join('; ') : null,
+    };
+    writeSummary(out);
+    return { ...out, ageMs: 0, cached: false };
+  });
+}
+
+/** Last observed summary from disk, without driving the browser. */
+export function gmailSummaryCached(): GmailSummary | null {
+  return readSummary();
+}
+
 export async function keepSessionWarm(): Promise<{ loggedIn: boolean; warmed: boolean; self: string | null }> {
   return withCdp(async (cdp) => {
     const st = await readStatusRaw(cdp);

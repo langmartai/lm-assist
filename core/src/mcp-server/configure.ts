@@ -379,6 +379,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   linkedin_login: 'admin',
   // gmail CDP connector (reads observe the mailbox; writes send real mail; login drives interactive auth)
   gmail_status: 'read',
+  gmail_summary: 'read',
   gmail_list_threads: 'read',
   gmail_read_thread: 'read',
   gmail_search: 'read',

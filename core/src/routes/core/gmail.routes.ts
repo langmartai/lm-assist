@@ -101,6 +101,7 @@ import { searchLocal, syncStatus } from '../../gmail/store';
 import { gmailLogin, gmailLoginStatus } from '../../gmail/login';
 import { runSelfCheck } from '../../gmail/selfcheck';
 import { startGmailKeepAlive } from '../../gmail/keepalive';
+import { gmailSummary, gmailSummaryCached } from '../../gmail/cdp-client';
 
 function clampInt(v: unknown, def: number, min: number, max: number): number {
   const n = parseInt(String(v ?? ''), 10);
@@ -461,6 +462,29 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
     },
 
     // GET /gmail/sync-status — what the local cache holds and how far back.
+    {
+      method: 'GET',
+      // GET /gmail/summary?refresh= — account + mailbox counts + newest arrival.
+      // Defaults to the CACHED read: this is the tool a caller reaches for
+      // repeatedly, and driving the live page every time would make a cheap
+      // question expensive. `refresh=true` forces a live observation. Either way
+      // the response carries checkedAt/ageMs/cached, so a caller can never
+      // mistake an old number for a current one.
+      pattern: /^\/gmail\/summary$/,
+      handler: async (req: ParsedRequest) => {
+        const refresh = bool(req.query?.refresh, false);
+        try {
+          if (refresh) return { success: true, data: await gmailSummary() };
+          const cached = gmailSummaryCached();
+          if (cached) return { success: true, data: cached };
+          // Never observed on this node — fall through to a live read rather than
+          // return an empty shape the caller would have to special-case.
+          return { success: true, data: await gmailSummary() };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
     {
       method: 'GET',
       pattern: /^\/gmail\/sync-status$/,
