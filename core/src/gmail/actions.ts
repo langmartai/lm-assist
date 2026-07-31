@@ -1258,9 +1258,113 @@ export async function muteThread(cdp: Cdp, threadId: ThreadRef, muted: boolean):
   });
 }
 
-/** Mark important / not important (the importance marker, not a label). */
+/**
+ * Mark important / not important (the importance marker, not a label).
+ *
+ * 🔴 MEASURED 2026-07-31: on this account the row renders NO importance marker in
+ * either state — classes were byte-identical ("zA yO s00Hgd") after marking
+ * important and after marking not-important, and nothing in the row mentioned
+ * importance. Gmail has a per-account setting for exactly this (Settings → Inbox →
+ * "Importance markers: Show markers / No markers"), and with markers off the
+ * signal is simply never in the page.
+ *
+ * So a `verified:false` here is usually NOT a broken selector. It is the one case
+ * page JS genuinely cannot solve: you cannot read what the application does not
+ * render. The verb reports the distinction rather than leaving the caller to
+ * guess — see markersRendered below.
+ */
+
+/**
+ * Does this mailbox render importance markers AT ALL?
+ *
+ * Separates "the change did not take" from "there is nothing to read". Checks the
+ * whole visible list, not one row: if no row anywhere carries an importance
+ * marker, markers are off for the account and no reader can confirm an importance
+ * change. If other rows DO carry one and the target does not, that is a real
+ * observation and worth reporting as such.
+ */
+/**
+ * Read importance from WHAT THE MENU OFFERS.
+ *
+ * MEASURED 2026-07-31: with importance markers turned off, the row renders no
+ * marker in either state — so the obvious reader has nothing to read. But the
+ * More menu does: Gmail only ever offers the INVERSE action. Seeing "Mark as not
+ * important" means the thread IS important; seeing "Mark as important" means it
+ * is not.
+ *
+ * That is why the verb looked broken. `important` on an already-important thread
+ * found no "Mark as important" item — correctly, because Gmail does not offer it
+ * — and reported a failure for what was actually a no-op. The menu was carrying
+ * the state the whole time.
+ *
+ * Returns null when neither item is present (menu not open, or not a thread).
+ */
+async function importanceFromMenu(cdp: Cdp): Promise<boolean | null> {
+  const r = await cdp
+    .evaluate<{ important: boolean | null }>(
+      `${JS_PRE}
+       const menu = [...document.querySelectorAll(${JSON.stringify(SELECTORS.menu)})].filter(__shown).pop();
+       if (!menu) return { important: null };
+       const texts = [...menu.querySelectorAll(${JSON.stringify(SELECTORS.menuItem)})]
+         .filter(__shown)
+         .map((el) => ((el.getAttribute('aria-label') || el.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase()));
+       const offersNot = texts.some((t) => t.indexOf('mark as not important') === 0);
+       const offersIs = texts.some((t) => t.indexOf('mark as important') === 0);
+       if (offersNot) return { important: true };
+       if (offersIs) return { important: false };
+       return { important: null };`,
+    )
+    .catch(() => ({ important: null }));
+  return r?.important ?? null;
+}
+
+/**
+ * Re-open the More menu purely to READ importance, then close it.
+ *
+ * The menu is the only reader when markers are off, and clicking an item closes
+ * it — so confirming a CHANGE means opening it again. Costs one extra menu open
+ * on an unverified result, which is cheap next to reporting "not observed" for a
+ * write that plainly succeeded.
+ *
+ * Closes with Escape whatever the outcome: leaving a menu open would have the
+ * next strategy clicking through it.
+ */
+async function reopenAndReadImportance(cdp: Cdp): Promise<boolean | null> {
+  try {
+    if (typeof cdp.send === 'function') {
+      const more = await cdp
+        .evaluate<{ ok: boolean; x?: number; y?: number }>(JS_FIND_MORE)
+        .catch(() => ({ ok: false }) as { ok: boolean; x?: number; y?: number });
+      if (!more.ok || typeof more.x !== 'number' || typeof more.y !== 'number') return null;
+      await dispatchTrustedClick(cdp, more.x, more.y);
+    } else {
+      const opened = await cdp.evaluate<ClickOutcome>(JS_OPEN_MORE).catch(() => ({ ok: false }) as ClickOutcome);
+      if (!opened.ok) return null;
+    }
+    await sleep(700);
+    return await importanceFromMenu(cdp);
+  } finally {
+    await cdp
+      .evaluate(`document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})); return true;`)
+      .catch(() => undefined);
+  }
+}
+
+async function markersRendered(cdp: Cdp): Promise<boolean> {
+  return (
+    (await cdp
+      .evaluate<boolean>(
+        `const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+         return [...document.querySelectorAll('tr.zA')].filter(vis).some((tr) =>
+           [...tr.querySelectorAll('*')].some((e) => /important/i.test(
+             (e.getAttribute('aria-label') || '') + (e.getAttribute('title') || '') + String(e.className || ''))));`,
+      )
+      .catch(() => true)) === true
+  );
+}
+
 export async function markImportant(cdp: Cdp, threadId: ThreadRef, important: boolean): Promise<ActionResult> {
-  return runVerb(cdp, threadId, {
+  const r = await runVerb(cdp, threadId, {
     action: important ? 'mark-important' : 'mark-not-important',
     signal: sigImportant,
     signalName: 'important',
@@ -1269,6 +1373,29 @@ export async function markImportant(cdp: Cdp, threadId: ThreadRef, important: bo
       ? [stList(LABELS.important), stMoreMenu(LABELS.important), stKey(KEYS.important)]
       : [stList(LABELS.notImportant), stMoreMenu(LABELS.notImportant), stKey(KEYS.notImportant)],
   });
+  if (!r.verified) {
+    // The menu is a reader. If it now offers only the inverse action, the thread
+    // is already in the requested state — a no-op, not a failure. This is the
+    // signal that was there all along while the row rendered nothing.
+    // The click closed the menu, so read it by opening it again.
+    let fromMenu = await importanceFromMenu(cdp).catch(() => null);
+    if (fromMenu === null) fromMenu = await reopenAndReadImportance(cdp).catch(() => null);
+    if (fromMenu !== null && fromMenu === important) {
+      r.verified = true;
+      r.note = `${r.note ? r.note + '; ' : ''}confirmed ${important ? 'important' : 'not important'} by re-reading the More menu, which offers only the INVERSE action — the readable signal when importance markers are off`;
+      return r;
+    }
+    // Otherwise say WHY it could not be confirmed. "verified:false" with no reason
+    // reads as a bug in the connector; "your account renders no markers" is actionable.
+    const rendered = await markersRendered(cdp).catch(() => true);
+    if (!rendered) {
+      r.note =
+        `${r.note ? r.note + '; ' : ''}importance markers are not rendered in this mailbox ` +
+        '(Settings -> Inbox -> "Importance markers"), so the change cannot be confirmed from the UI. ' +
+        'The click was issued through the same trusted menu path mute uses.';
+    }
+  }
+  return r;
 }
 
 /**
