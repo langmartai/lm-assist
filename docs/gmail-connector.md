@@ -107,10 +107,19 @@ advertised by any node running the code, signed in or not.
 | 117 (`ubuntu-Virtual-Machine`, prod) | yes | **no** | deployed 2026-07-31; run `gmail_login` there to use it |
 
 A call that lands on a node without a login now fails with **`BROWSER_NOT_RUNNING`**,
-which names the fix rather than surfacing an opaque `fetch failed`. 🔴 Note that
-**restarting Core kills the Chrome that Core launched**, so a node that was ready
-can stop being ready after any deploy or `lm-assist restart` — re-run `gmail_login`
-(no new sign-in; the profile persists).
+which names the fix rather than surfacing an opaque `fetch failed`.
+
+🔴 **Whether a Core restart costs you the browser is PLATFORM-SPECIFIC.** MEASURED
+2026-07-31, same deploy, both nodes:
+
+| platform | after `lm-assist restart` |
+|---|---|
+| Linux (123) | Chrome is a child of Core and **dies with it** — `gmail_status` goes `loggedIn:false`, re-run `gmail_login` |
+| Windows (107) | Chrome **re-parents itself and survives** — came back `loggedIn:true`, and a `gmail_login` returns 400 because port 9224 is still attached |
+
+Either way the profile persists, so recovery never needs a new sign-in. Do not
+generalise from one platform: the first draft of this note said a restart always
+kills the browser, which is simply false on Windows.
 
 ## Deploy and e2e verification
 

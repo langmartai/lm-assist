@@ -407,7 +407,8 @@ async function recycleGmailTab(base: string): Promise<void> {
         'so a node can advertise every gmail_* tool and still not be able to read mail. ' +
         'Start it here with gmail_login (POST /gmail/login) — the profile persists, so an existing session does NOT need a new sign-in — ' +
         'or another node may have one already: check gmail_status on each node from list_nodes. ' +
-        'Note that restarting Core kills the browser it launched, so a node that was ready stops being ready after a deploy.',
+        'On Linux, restarting Core kills the browser it launched, so a node that was ready stops being ready after a deploy; ' +
+        'on Windows Chrome re-parents itself and survives.',
     );
   }
   for (const t of list) {
