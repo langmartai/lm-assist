@@ -135,6 +135,18 @@ export const SELECTORS_EXT = {
    * below the subject, (c) with the junk filter applied anyway.
    */
   threadLabelChip: '.at',
+  /**
+   * MEASURED 2026-07-30: `.at` matches NOTHING in the current thread view
+   * (dotAt=0 on a conversation carrying three labels), so every strategy below
+   * that depends on it returns empty and read_thread reports labels: [] for a
+   * labelled thread. Gmail now renders one control per applied label:
+   *   [aria-label="Remove label X from this conversation"]
+   *   [aria-label="Search for all messages with label X"]
+   * The remove control is the same affordance the archive verb already drives,
+   * so it is proven here, and it names every label including system ones.
+   */
+  threadLabelRemoveBtn: '[aria-label^="Remove label "]',
+  threadLabelSearchChip: '[aria-label^="Search for all messages with label "]',
   /** CANDIDATE — preferred scoped shapes for the thread's label chips, tried first. */
   threadLabelScoped: '.hN .at, .ha .at, .qh .at, .ar.as .at',
   /** VERIFIED HAZARD 2026-07-29: containers whose `.at` nodes are toolbar controls, never labels. */
@@ -378,7 +390,20 @@ export const JS_THREAD_FULL = `
         || __txt(el.querySelector(${JSON.stringify(SELECTORS_EXT.rowLabelText)})) || __txt(el)).trim())
       .filter(t => !__isJunkLabel(t)))
       .slice(0, ${MAX_LABELS});
-    let labels = __readLabels(__visIn(document, ${JSON.stringify(SELECTORS_EXT.threadLabelScoped)}));
+    // Strategy 0, MEASURED and preferred: the per-label controls in the OPEN
+    // conversation. Scoped to it, because the left nav names every label that
+    // exists and the list stays mounted behind the thread.
+    const __lblMain = subjEl.closest('div[role="main"]') || document;
+    const __lblNav = (el) => !!(el.closest('[role="navigation"]') || el.closest('.TO') || el.closest('.aim'));
+    const __fromAria = (sel, re) => __uniq(__visIn(__lblMain, sel)
+      .filter((el) => !__lblNav(el))
+      .map((el) => { const m = re.exec(el.getAttribute('aria-label') || ''); return m ? m[1].trim() : ''; })
+      .filter((t) => t && !__isJunkLabel(t))).slice(0, ${MAX_LABELS});
+    let labels = __fromAria(${JSON.stringify(SELECTORS_EXT.threadLabelRemoveBtn)}, /^Remove label (.+) from this conversation$/);
+    if (!labels.length) {
+      labels = __fromAria(${JSON.stringify(SELECTORS_EXT.threadLabelSearchChip)}, /^Search for all messages with label (.+)$/);
+    }
+    if (!labels.length) labels = __readLabels(__visIn(document, ${JSON.stringify(SELECTORS_EXT.threadLabelScoped)}));
     if (!labels.length) {
       let node = subjEl;
       for (let i = 0; i < 4 && node; i++) {

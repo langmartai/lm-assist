@@ -181,6 +181,22 @@ export const LABEL_SELECTORS = {
   threadReady: 'h2.hP',
   /** VERIFIED 2026-07-29 (values) + VERIFIED HAZARD (toolbar junk on list views). */
   threadLabelChip: '.at',
+  /**
+   * MEASURED 2026-07-30: `.at` matches NOTHING in the current thread view -
+   * measured dotAt=0 on a conversation that demonstrably carried three labels.
+   * That dead selector is the whole reader gap: label writes landed (Gmail's own
+   * toast confirmed them) and then reported verified:false because nothing could
+   * read them back.
+   *
+   * Two live sources, both measured on the same conversation:
+   *   the chip:   div.hN[aria-label="Search for all messages with label X"]
+   *   the remove: [aria-label="Remove label X from this conversation"]
+   * The remove control is preferred - it is the SAME affordance the archive verb
+   * already drives ("Remove label Inbox from this conversation"), so it is proven
+   * in this codebase, and it names every applied label including system ones.
+   */
+  threadLabelRemoveBtn: '[aria-label^="Remove label "]',
+  threadLabelSearchChip: '[aria-label^="Search for all messages with label "]',
   /** CANDIDATE — preferred scoped shapes, tried before the bare `.at`. */
   threadLabelScoped: '.hN .at, .ha .at, .qh .at, .ar.as .at',
   /** CANDIDATE — the text node inside a chip. */
@@ -708,8 +724,34 @@ const JS_THREAD_CHIPS = `
         || __lTxt(el.querySelector(${JSON.stringify(LABEL_SELECTORS.threadLabelText)})) || __lTxt(el)))
       .filter((t) => !__lIsJunk(t)));
     let via = null;
-    let labels = read(__lVis(document, ${JSON.stringify(LABEL_SELECTORS.threadLabelScoped)}));
-    if (labels.length) via = 'scoped';
+    // Strategy 0, MEASURED and preferred: the per-label controls Gmail renders in
+    // the open conversation. Scoped to the conversation and visible-only, because
+    // Gmail keeps the list mounted behind it and the left nav names every label.
+    const __main = subj.closest('div[role="main"]') || document;
+    const __inNav = (el) => !!(el.closest('[role="navigation"]') || el.closest('.TO') || el.closest('.aim'));
+    let labels = __lUniq(
+      __lVis(__main, ${JSON.stringify(LABEL_SELECTORS.threadLabelRemoveBtn)})
+        .filter((el) => !__inNav(el))
+        .map((el) => {
+          const m = /^Remove label (.+) from this conversation$/.exec(el.getAttribute('aria-label') || '');
+          return m ? __lNorm(m[1]) : '';
+        })
+        .filter((t) => t && !__lIsJunk(t)),
+    );
+    if (labels.length) via = 'remove-control';
+    if (!labels.length) {
+      labels = __lUniq(
+        __lVis(__main, ${JSON.stringify(LABEL_SELECTORS.threadLabelSearchChip)})
+          .filter((el) => !__inNav(el))
+          .map((el) => {
+            const m = /^Search for all messages with label (.+)$/.exec(el.getAttribute('aria-label') || '');
+            return m ? __lNorm(m[1]) : '';
+          })
+          .filter((t) => t && !__lIsJunk(t)),
+      );
+      if (labels.length) via = 'search-chip';
+    }
+    if (!labels.length) { labels = read(__lVis(document, ${JSON.stringify(LABEL_SELECTORS.threadLabelScoped)})); if (labels.length) via = 'scoped'; }
     if (!labels.length) {
       let node = subj;
       for (let i = 0; i < 4 && node; i++) {
@@ -1203,13 +1245,35 @@ async function readNavLabels(cdp: LabelCdp): Promise<LabelInfo[]> {
  */
 async function readThreadChips(cdp: LabelCdp, threadId: string, opts: { force?: boolean } = {}): Promise<ChipRead> {
   if (opts.force) {
-    await cdp.evaluate(jsGotoHash('#inbox')).catch(() => undefined);
-    await waitFor(cdp, `return !!document.querySelector(${JSON.stringify(LABEL_SELECTORS.listReady)});`, 8000);
+    // MEASURED 2026-07-30: this used the hash-only router, which does NOT
+    // re-route Gmail away from an open conversation - so the "force" re-read
+    // could run against a page that never went anywhere, find no h2.hP, and
+    // report chips[none]=(empty) raw=0. That reads identically to "the thread
+    // genuinely has no labels", which is exactly how a verified write got
+    // reported as unconfirmed. A real document load is the only thing that
+    // routes; see isRecordHash in cdp-client.
+    await cdp.evaluate(`location.hash = '#inbox'; return true;`).catch(() => undefined);
+    await sleep(250);
+    await reloadPage(cdp);
+    await waitFor(cdp, `return !!document.querySelector(${JSON.stringify(LABEL_SELECTORS.listReady)});`, 12000);
     await sleep(300);
     await openThread(cdp, threadId, { force: true });
   } else {
     await openThread(cdp, threadId);
   }
+  // MEASURED 2026-07-30: the per-label controls render AFTER threadReady (h2.hP).
+  // Reading immediately returned chips[none]=(empty) on a conversation that
+  // demonstrably carried three labels 11s later - and an empty read is
+  // indistinguishable from "this thread has no labels", which is precisely how a
+  // confirmed write got reported as unverified. Wait for the chip evidence to
+  // render, bounded: a genuinely unlabelled thread (e.g. archived, no Inbox chip)
+  // has none to wait for, so a timeout here is a legitimate empty, not a failure.
+  await waitFor(
+    cdp,
+    `return !!document.querySelector(${JSON.stringify(LABEL_SELECTORS.threadLabelRemoveBtn)})
+        || !!document.querySelector(${JSON.stringify(LABEL_SELECTORS.threadLabelSearchChip)});`,
+    6000,
+  );
   const r = await cdp.evaluate<ChipRead>(JS_THREAD_CHIPS);
   return r && typeof r === 'object'
     ? { onThread: !!r.onThread, labels: r.labels || [], via: r.via ?? null, raw: r.raw || [] }
