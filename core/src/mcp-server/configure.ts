@@ -380,6 +380,9 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   // gmail CDP connector (reads observe the mailbox; writes send real mail; login drives interactive auth)
   gmail_status: 'read',
   gmail_summary: 'read',
+  gmail_drafts: 'write',
+  gmail_forward: 'write',
+  gmail_triage: 'write',
   gmail_list_threads: 'read',
   gmail_read_thread: 'read',
   gmail_search: 'read',

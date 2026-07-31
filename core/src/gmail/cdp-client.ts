@@ -520,6 +520,27 @@ function isRecordHash(hash: string): boolean {
   return !!m && m[1].toLowerCase() !== 'search' && m[2].length >= 10;
 }
 
+/**
+ * Does moving to `hash` need a REAL document load?
+ *
+ * Originally only record hashes did, and list hashes kept the cheap
+ * `location.hash =` path for speed. That fast path has now produced silent WRONG
+ * DATA twice: `#all/<id>` left the previous conversation rendered, and
+ * MEASURED 2026-07-31 `#drafts` left the INBOX rendered, so listDrafts returned
+ * inbox threads labelled as drafts — a wrong answer that looks exactly like a
+ * right one.
+ *
+ * The hash always updates, so it is never evidence the view moved. Rather than
+ * keep guessing which hashes are safe, any hash CHANGE needs a real load; only
+ * re-entering the hash already displayed keeps the cheap path. Costs a reload on
+ * view switches, which is not in a hot loop, and buys the property that a
+ * navigation either lands or fails loudly.
+ */
+function needsRealLoad(target: string, current: string): boolean {
+  if (isRecordHash(target)) return true;
+  return String(current || '').trim() !== String(target || '').trim();
+}
+
 async function gotoHash(cdp: Cdp, hash: string, readySel: string, timeoutMs = 15000): Promise<void> {
   const h = JSON.stringify(hash);
   const sel = JSON.stringify(readySel);
@@ -527,7 +548,7 @@ async function gotoHash(cdp: Cdp, hash: string, readySel: string, timeoutMs = 15
   if (!onMail) {
     await cdp.navigate(MAIL_BASE + hash);
     await sleep(2500);
-  } else if (isRecordHash(hash)) {
+  } else if (needsRealLoad(hash, await cdp.evaluate<string>('return location.hash;').catch(() => ''))) {
     // A record hash only routes on a real document load — see isRecordHash.
     await cdp.evaluate(`location.hash = ${h}; return true;`).catch(() => undefined);
     await sleep(300);

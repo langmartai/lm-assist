@@ -103,6 +103,15 @@ import { runSelfCheck } from '../../gmail/selfcheck';
 import { startGmailKeepAlive } from '../../gmail/keepalive';
 import { startGmailArrivalWatch, arrivalState } from '../../gmail/arrival';
 import { gmailSummary, gmailSummaryCached, syncJob } from '../../gmail/cdp-client';
+import {
+  listDrafts,
+  sendDraft,
+  deleteDraft,
+  forwardThread,
+  muteThread,
+  markImportant,
+  snoozeThread,
+} from '../../gmail/cdp-client';
 import { resolveWindow } from '../../gmail/summary';
 import { countInWindow } from '../../gmail/store';
 
@@ -586,21 +595,141 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
       },
     },
 
+
+    // GET /gmail/drafts?limit= — the drafts gmail_draft has been creating.
+    // Without this the draft lifecycle was write-only: you could make one and
+    // never list, send or delete it.
+    {
+      method: 'GET',
+      pattern: /^\/gmail\/drafts$/,
+      handler: async (req: ParsedRequest) => {
+        const limit = clampInt(req.query?.limit, 25, 1, 100);
+        try {
+          const drafts = await listDrafts(limit);
+          return { success: true, data: { count: drafts.length, limit, drafts } };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/draft/send { draftId }
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/draft\/send$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const id = str(b.draftId).trim();
+        if (!id) return { success: false, error: '`draftId` is required (see GET /gmail/drafts)' };
+        try {
+          return { success: true, data: await sendDraft(id) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/draft/delete { draftId } — discards a draft, not a sent message.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/draft\/delete$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const id = str(b.draftId).trim();
+        if (!id) return { success: false, error: '`draftId` is required (see GET /gmail/drafts)' };
+        try {
+          return { success: true, data: await deleteDraft(id) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/forward { threadId, to, body?, format? }
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/forward$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const t = reqThreadId(b.threadId);
+        if ('error' in t) return { success: false, error: t.error };
+        const to = str(b.to).trim();
+        if (!to) return { success: false, error: '`to` is required' };
+        try {
+          return { success: true, data: await forwardThread(t.id, to, { body: str(b.body) || undefined }) };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
+
+    // POST /gmail/triage { threadId, action, until? } — mute / important / snooze.
+    // One route rather than three: these are all "adjust how this thread behaves"
+    // and separate MCP tools would each carry the connect-time tax for a verb the
+    // caller reaches for rarely.
+    {
+      method: 'POST',
+      pattern: /^\/gmail\/triage$/,
+      handler: async (req: ParsedRequest) => {
+        const b = (req.body || {}) as Record<string, unknown>;
+        const t = reqThreadId(b.threadId);
+        if ('error' in t) return { success: false, error: t.error };
+        const action = str(b.action).trim().toLowerCase();
+        try {
+          switch (action) {
+            case 'mute':
+              return { success: true, data: await muteThread(t.id, true) };
+            case 'unmute':
+              return { success: true, data: await muteThread(t.id, false) };
+            case 'important':
+              return { success: true, data: await markImportant(t.id, true) };
+            case 'unimportant':
+              return { success: true, data: await markImportant(t.id, false) };
+            case 'snooze': {
+              const until = str(b.until).trim().toLowerCase() || 'tomorrow';
+              if (until !== 'tomorrow' && until !== 'later-today' && until !== 'next-week') {
+                return { success: false, error: `unknown snooze preset "${until}" — use tomorrow, later-today or next-week` };
+              }
+              return { success: true, data: await snoozeThread(t.id, until) };
+            }
+            default:
+              return {
+                success: false,
+                error: `unknown action "${action}" — use mute, unmute, important, unimportant or snooze`,
+              };
+          }
+        } catch (e) {
+          return fail(e);
+        }
+      },
+    },
     // POST /gmail/send { to, subject, body, format? }
     {
       method: 'POST',
       pattern: /^\/gmail\/send$/,
       handler: async (req: ParsedRequest) => {
-        const b = (req.body || {}) as { to?: string; subject?: string; body?: string; format?: unknown; from?: string; cc?: string; bcc?: string };
+        const b = (req.body || {}) as {
+          to?: string; subject?: string; body?: string; format?: unknown;
+          from?: string; cc?: string; bcc?: string; attachments?: unknown;
+        };
         const to = str(b.to).trim();
         if (!to) return { success: false, error: 'Body must include { to }' };
         const f = resolveFormat(b.format);
         if ('error' in f) return { success: false, error: f.error };
+        // sendMail -> composeAndSend has accepted attachments all along; only this
+        // route never read them, so the capability was unreachable. 🔴 The paths
+        // resolve on the machine running CHROME, which is not necessarily the
+        // machine calling this API — a caller passing its own local path gets a
+        // file-not-found from the browser's filesystem, not this one.
+        const att = Array.isArray(b.attachments)
+          ? b.attachments.map((x) => String(x)).filter((x) => x.trim().length > 0)
+          : undefined;
         try {
           const sent = await sendMail(to, str(b.subject), str(b.body), f.format, {
             from: str(b.from).trim() || undefined,
             cc: str(b.cc).trim() || undefined,
             bcc: str(b.bcc).trim() || undefined,
+            attachments: att && att.length ? att : undefined,
           });
           return { success: true, data: { ...sent, format: f.format } };
         } catch (e) {

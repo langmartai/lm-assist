@@ -88,6 +88,65 @@ export const gmailSummaryToolDef = {
   },
 };
 
+export const gmailDraftsToolDef = {
+  name: 'gmail_drafts',
+  description:
+    'Draft lifecycle: mode "list" (default) enumerates drafts, "send" sends one, "delete" discards one. ' +
+    'Trigger words: "my drafts", "send that draft", "delete the draft". gmail_draft CREATES drafts; this is ' +
+    'how they are listed, sent and removed. send/delete need draftId from a list.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      mode: { type: 'string' as const, enum: ['list', 'send', 'delete'], description: 'Default "list".' },
+      draftId: { type: 'string' as const, description: 'Required for send/delete; from mode:"list".' },
+      limit: { type: 'number' as const, description: 'list only: max drafts to return (default 25).' },
+    },
+  },
+};
+
+export const gmailForwardToolDef = {
+  name: 'gmail_forward',
+  description:
+    'Forward a thread to someone, optionally with a note above the forwarded content. ' +
+    'Trigger words: "forward this to", "pass this on". Sends REAL mail from the operator account.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      threadId: { type: 'string' as const, description: '16-hex thread id (from gmail_list_threads / gmail_search).' },
+      to: { type: 'string' as const, description: 'Recipient(s), comma-separated.' },
+      body: { type: 'string' as const, description: 'Optional note placed above the forwarded message.' },
+    },
+    required: ['threadId', 'to'],
+  },
+};
+
+export const gmailTriageToolDef = {
+  name: 'gmail_triage',
+  description:
+    'Adjust how a thread behaves: action "mute"/"unmute" (stop it returning to the inbox), ' +
+    '"important"/"unimportant", or "snooze" with until=tomorrow|later-today|next-week. ' +
+    'Trigger words: "mute this thread", "snooze until tomorrow", "mark important". ' +
+    'One tool rather than four: each MCP tool costs connect-time budget on EVERY session, and these are ' +
+    'variations of one action.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      threadId: { type: 'string' as const, description: '16-hex thread id.' },
+      action: {
+        type: 'string' as const,
+        enum: ['mute', 'unmute', 'important', 'unimportant', 'snooze'],
+        description: 'What to do to the thread.',
+      },
+      until: {
+        type: 'string' as const,
+        enum: ['tomorrow', 'later-today', 'next-week'],
+        description: 'snooze only. Default "tomorrow".',
+      },
+    },
+    required: ['threadId', 'action'],
+  },
+};
+
 export const gmailLoginToolDef = {
   name: 'gmail_login',
   description:
@@ -520,6 +579,9 @@ async function handleSelfcheck(args: Record<string, unknown>): Promise<McpToolRe
 export const GMAIL_TOOL_DEFS = [
   gmailStatusToolDef,
   gmailSummaryToolDef,
+  gmailDraftsToolDef,
+  gmailForwardToolDef,
+  gmailTriageToolDef,
   gmailLoginToolDef,
   gmailListThreadsToolDef,
   gmailReadThreadToolDef,
@@ -973,6 +1035,55 @@ async function handleSummary(args: Record<string, unknown>): Promise<McpToolResu
   }
 }
 
+async function handleDrafts(args: Record<string, unknown>): Promise<McpToolResult> {
+  const mode = (typeof args.mode === 'string' ? args.mode : 'list').trim().toLowerCase();
+  const draftId = typeof args.draftId === 'string' ? args.draftId.trim() : '';
+  try {
+    if (mode === 'send' || mode === 'delete') {
+      if (!draftId) return err(`mode:"${mode}" needs draftId — run gmail_drafts with mode:"list" first.`);
+      const d = await workerPost<{ ok: boolean; verified?: boolean; note?: string }>(`/gmail/draft/${mode}`, { draftId });
+      return ok(`Draft ${draftId} ${mode === 'send' ? 'sent' : 'deleted'}${d.verified === false ? ' (not independently confirmed)' : ''}.${d.note ? ` ${d.note}` : ''}`);
+    }
+    const limit = typeof args.limit === 'number' ? args.limit : 25;
+    const d = await workerGet<{ count: number; drafts: Array<{ draftId: string; to: string | null; subject: string | null; date: string | null }> }>(
+      `/gmail/drafts?limit=${encodeURIComponent(String(limit))}`,
+    );
+    if (!d.count) return ok('No drafts.');
+    return ok(
+      [`${d.count} draft(s):`, ...d.drafts.map((x) => `  ${x.draftId}  ${x.subject || '(no subject)'}${x.to ? ` -> ${x.to}` : ''}${x.date ? `  ${x.date}` : ''}`)].join('\n'),
+    );
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleForward(args: Record<string, unknown>): Promise<McpToolResult> {
+  try {
+    const d = await workerPost<{ ok: boolean; to: string[]; verified: boolean; note?: string }>('/gmail/forward', {
+      threadId: args.threadId,
+      to: args.to,
+      body: args.body,
+    });
+    return ok(`Forwarded to ${(d.to || []).join(', ')}${d.verified ? '' : ' (recipients not independently confirmed)'}.${d.note ? ` ${d.note}` : ''}`);
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleTriage(args: Record<string, unknown>): Promise<McpToolResult> {
+  try {
+    const d = await workerPost<{ ok: boolean; action?: string; verified?: boolean; note?: string }>('/gmail/triage', {
+      threadId: args.threadId,
+      action: args.action,
+      until: args.until,
+    });
+    const what = typeof args.action === 'string' ? args.action : 'triage';
+    return ok(`${what} applied${d.verified === false ? ' but NOT independently confirmed' : ''}.${d.note ? ` ${d.note}` : ''}`);
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 async function handleAliases(args: Record<string, unknown>): Promise<McpToolResult> {
   try {
     const q = boolArg(args.refresh) === true ? '?refresh=true' : '';
@@ -1313,6 +1424,9 @@ export const GMAIL_HANDLERS: Record<string, (args: Record<string, unknown>) => P
   gmail_selfcheck: handleSelfcheck,
   gmail_aliases: handleAliases,
   gmail_summary: handleSummary,
+  gmail_drafts: handleDrafts,
+  gmail_forward: handleForward,
+  gmail_triage: handleTriage,
   gmail_send: handleSend,
   gmail_reply: handleReply,
   gmail_draft: handleDraft,
