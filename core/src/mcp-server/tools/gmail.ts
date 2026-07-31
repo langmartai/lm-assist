@@ -63,8 +63,10 @@ export const gmailStatusToolDef = {
 export const gmailSummaryToolDef = {
   name: 'gmail_summary',
   description:
-    'Mailbox at a glance on this node: account + send-as alias count, inbox total and unread, ' +
-    'drafts, label count, the newest arrival, and checkedAt/ageMs saying WHEN that was observed. ' +
+    'Mailbox at a glance on this node: how many arrived TODAY and how many of those are unread, ' +
+    'unread in the last 7 days, inbox total, drafts, labels, send-as aliases, the newest arrival, ' +
+    'and checkedAt/ageMs saying WHEN that was observed. Prefer the today/week counts over the ' +
+    'all-time unread number, which on a real mailbox is thousands of old messages. ' +
     'Trigger words: "any new email", "how many unread", "mailbox summary". Served from cache by ' +
     'default (refreshed by the keep-alive); pass refresh:true to observe live. Read-only.',
   annotations: { readOnlyHint: true },
@@ -74,6 +76,13 @@ export const gmailSummaryToolDef = {
       refresh: {
         type: 'boolean' as const,
         description: 'Drive the live page instead of returning the cached read. Slower; use when freshness matters.',
+      },
+      window: {
+        type: 'string' as const,
+        description:
+          'Count mail in a time frame instead: "today", "yesterday", or "<N>d" (e.g. 7d, 30d). ' +
+          'Answered from the local synced cache, so it is fast and drives no browser. Returns covered:false ' +
+          'when the cache does not reach back that far — the count is then a FLOOR; run gmail_sync with a larger days=.',
       },
     },
   },
@@ -901,6 +910,7 @@ interface SummaryShape {
   inbox: { total: number | null; unread: number | null; rendered: number };
   drafts: number | null; labels: number | null;
   newest: { subject: string | null; from: string | null; when: string | null; unread: boolean } | null;
+  recent?: { todayArrived: number | null; todayUnread: number | null; unread7d: number | null };
   checkedAt: number; ageMs?: number; cached?: boolean; note?: string | null;
 }
 
@@ -916,12 +926,31 @@ function ageLabel(ms: number): string {
 
 async function handleSummary(args: Record<string, unknown>): Promise<McpToolResult> {
   try {
+    const win = typeof args.window === 'string' ? args.window.trim() : '';
+    if (win) {
+      const w = await workerGet<{
+        window: string; threads: number; unread: number; undated: number;
+        covered: boolean; lastSyncAt: number | null; note: string | null;
+      }>(`/gmail/summary?window=${encodeURIComponent(win)}`);
+      const lines = [
+        `Gmail — ${w.window}: ${w.threads.toLocaleString('en-US')} thread(s), ${w.unread.toLocaleString('en-US')} unread`,
+        `  from the local cache${w.lastSyncAt ? `, last synced ${ageLabel(Date.now() - w.lastSyncAt)} ago` : ' (never synced)'}`,
+      ];
+      if (w.undated) lines.push(`  ${w.undated} cached thread(s) had an unparseable date and are in NEITHER count`);
+      if (!w.covered) lines.push(`  ⚠️ ${w.note}`);
+      return ok(lines.join('\n'));
+    }
     const q = boolArg(args.refresh) === true ? '?refresh=true' : '';
     const d = await workerGet<SummaryShape>(`/gmail/summary${q}`);
     const n = (v: number | null | undefined) => (typeof v === 'number' ? v.toLocaleString('en-US') : '?');
     const lines = [
       `Gmail — ${d.account || '(unknown account)'}${d.aliases ? `  (${d.aliases} send-as identities` + (d.defaultSendAs ? `, default ${d.defaultSendAs}` : '') + ')' : ''}`,
-      `  Inbox   ${n(d.inbox?.total)} total, ${n(d.inbox?.unread)} unread`,
+      // Lead with the numbers that answer "is there anything new?". The all-time
+      // unread count is reported too, but LAST and labelled, because on a real
+      // mailbox it is thousands deep and reads as alarming when it is just old.
+      `  Today   ${n(d.recent?.todayArrived)} arrived, ${n(d.recent?.todayUnread)} still unread`,
+      `  Week    ${n(d.recent?.unread7d)} unread in the last 7 days`,
+      `  Inbox   ${n(d.inbox?.total)} total, ${n(d.inbox?.unread)} unread (all time)`,
       `  Drafts  ${n(d.drafts)}`,
       `  Labels  ${n(d.labels)}`,
     ];

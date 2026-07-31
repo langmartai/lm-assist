@@ -102,6 +102,8 @@ import { gmailLogin, gmailLoginStatus } from '../../gmail/login';
 import { runSelfCheck } from '../../gmail/selfcheck';
 import { startGmailKeepAlive } from '../../gmail/keepalive';
 import { gmailSummary, gmailSummaryCached } from '../../gmail/cdp-client';
+import { resolveWindow } from '../../gmail/summary';
+import { countInWindow } from '../../gmail/store';
 
 function clampInt(v: unknown, def: number, min: number, max: number): number {
   const n = parseInt(String(v ?? ''), 10);
@@ -473,7 +475,48 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
       pattern: /^\/gmail\/summary$/,
       handler: async (req: ParsedRequest) => {
         const refresh = bool(req.query?.refresh, false);
+        const windowSpec = str(req.query?.window).trim();
         try {
+          // A time frame is answered from the local CACHE, not the browser: the
+          // sync already holds these threads, so counting them costs nothing and
+          // needs no page drive. 🔴 The cache only holds what a sync fetched, so
+          // `covered` travels with the number — a "last 30d" count off a 2-day
+          // sync is a floor, and saying so is the difference between a useful
+          // answer and a confident wrong one.
+          if (windowSpec) {
+            const w = resolveWindow(windowSpec);
+            if (!w) {
+              return {
+                success: false,
+                error: `unrecognised window "${windowSpec}" — use today, yesterday, or <N>d (e.g. 7d, 30d)`,
+              };
+            }
+            // MEASURED 2026-07-31: cached threads carry labels: [] — list rows have
+            // no label chips to read, so a `label: 'inbox'` filter matched NOTHING
+            // and every count came back 0 with covered:false (no matches also meant
+            // no oldest date to compare). The cache's scope is already whatever
+            // gmail_sync fetched, so filtering again was both wrong and redundant.
+            const c = countInWindow(w.from, w.to);
+            return {
+              success: true,
+              data: {
+                window: w.label,
+                from: w.from,
+                to: w.to,
+                threads: c.threads,
+                unread: c.unread,
+                undated: c.undated,
+                covered: c.covered,
+                source: 'local-cache',
+                scope: 'whatever gmail_sync last fetched (see sync-status label/windowDays)',
+                lastSyncAt: c.lastSyncAt,
+                oldestCachedMs: c.oldestMs,
+                note: c.covered
+                  ? null
+                  : 'FLOOR, not a total — the cache does not reach back past this window. Run gmail_sync with a larger days= to cover it.',
+              },
+            };
+          }
           if (refresh) return { success: true, data: await gmailSummary() };
           const cached = gmailSummaryCached();
           if (cached) return { success: true, data: cached };

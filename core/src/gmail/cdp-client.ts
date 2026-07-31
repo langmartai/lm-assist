@@ -84,7 +84,7 @@ import {
 } from './extractors';
 import * as Compose from './compose';
 import * as Labels from './labels';
-import { JS_SUMMARY, writeSummary, readSummary, type GmailSummary } from './summary';
+import { JS_SUMMARY, JS_SEARCH_COUNT, writeSummary, readSummary, type GmailSummary } from './summary';
 import * as Actions from './actions';
 import { extractPreFromOriginalPage, parseRfc822 } from './mime';
 import { startSync, syncProgress, type SyncProgress } from './sync';
@@ -1949,6 +1949,29 @@ export async function gmailSummary(): Promise<GmailSummary> {
       newest: GmailSummary['newest'];
     }>(JS_SUMMARY);
 
+    // Date-filtered counts. inbox.unread is all-time and unusable as a signal;
+    // these are what "is there anything new?" actually means. Three extra search
+    // views per refresh, which the 15-minute keep-alive absorbs.
+    const d = new Date();
+    const today = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
+    const count = async (q: string): Promise<number | null> => {
+      try {
+        await gotoHash(cdp, `#search/${encodeURIComponent(q)}`, SELECTORS.listReady, 15000);
+        await sleep(400);
+        const r = await cdp.evaluate<{ total: number; empty: boolean }>(JS_SEARCH_COUNT);
+        return typeof r?.total === 'number' ? r.total : null;
+      } catch {
+        return null; // one unavailable count must not cost the whole summary
+      }
+    };
+    const recent = {
+      todayArrived: await count(`in:inbox after:${today}`),
+      todayUnread: await count(`in:inbox is:unread after:${today}`),
+      unread7d: await count('in:inbox is:unread newer_than:7d'),
+    };
+    // Leave the browser where the keep-alive expects it.
+    await gotoHash(cdp, '#inbox', SELECTORS.listReady, 15000).catch(() => undefined);
+
     let labels: number | null = null;
     try {
       labels = (await Labels.listLabels(cdp)).length;
@@ -1971,6 +1994,7 @@ export async function gmailSummary(): Promise<GmailSummary> {
       drafts: page.drafts,
       labels,
       newest: page.newest ?? null,
+      recent,
       checkedAt: Date.now(),
       note: notes.length ? notes.join('; ') : null,
     };

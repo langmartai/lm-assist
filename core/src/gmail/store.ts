@@ -927,6 +927,56 @@ export function pruneOlderThan(days: number): number {
  * "nothing matched" from "we never synced that far back"; `oldestMs` newer than
  * `now - windowDays` means the cache simply has not been filled yet.
  */
+/**
+ * Count cached threads inside a time window.
+ *
+ * 🔴 The cache holds only what a sync fetched, so a window reaching further back
+ * than the sync did yields a FLOOR, not a total. `covered` says which you got:
+ * true only when the store demonstrably holds records older than the window's
+ * start, so the count cannot be missing anything at that end. A caller that
+ * ignores it will read "3 this week" from a two-day sync and believe it.
+ *
+ * `undated` is reported separately rather than folded in: a thread whose date
+ * could not be parsed honestly (dateMs null) is neither inside the window nor
+ * outside it, and silently dropping it would understate the count with no trace.
+ */
+export function countInWindow(
+  fromMs: number,
+  toMs: number,
+  opts: { label?: string } = {},
+): { threads: number; unread: number; undated: number; covered: boolean; oldestMs: number | null; lastSyncAt: number | null } {
+  ensureLoaded();
+  const label = (opts.label || '').trim().toLowerCase();
+  let threads = 0;
+  let unread = 0;
+  let undated = 0;
+  let oldestMs: number | null = null;
+
+  for (const t of threads_iter()) {
+    if (label && !t.labels.some((l) => l.trim().toLowerCase() === label)) continue;
+    if (t.dateMs === null) { undated++; continue; }
+    if (oldestMs === null || t.dateMs < oldestMs) oldestMs = t.dateMs;
+    if (t.dateMs >= fromMs && t.dateMs <= toMs) {
+      threads++;
+      if (t.unread) unread++;
+    }
+  }
+  return {
+    threads,
+    unread,
+    undated,
+    // Only claim coverage when something older than the window start is held.
+    covered: oldestMs !== null && oldestMs <= fromMs,
+    oldestMs,
+    lastSyncAt,
+  };
+}
+
+/** Internal: iterate cached threads without exposing the map. */
+function* threads_iter(): Generator<CachedThread> {
+  for (const t of threads.values()) yield t;
+}
+
 export function syncStatus(): SyncStatus {
   ensureLoaded();
   let oldestMs: number | null = null;
