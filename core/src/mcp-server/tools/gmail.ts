@@ -355,6 +355,36 @@ export const gmailDeleteLabelToolDef = {
   },
 };
 
+export const gmailDraftSendToolDef = {
+  name: 'gmail_draft_send',
+  description:
+    'Send a draft that is already saved in Gmail. Trigger words: "send that draft", "go ahead and send it", ' +
+    '"send the draft I saved". Takes the `draftId` from gmail_drafts. This DELIVERS real mail from the ' +
+    "operator's account — there is no undo.",
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      draftId: { type: 'string', description: 'Draft id from gmail_drafts.' },
+    },
+    required: ['draftId'],
+  },
+};
+
+export const gmailDraftDeleteToolDef = {
+  name: 'gmail_draft_delete',
+  description:
+    'Discard a saved Gmail draft. Trigger words: "delete that draft", "throw away the draft", "never mind, ' +
+    'bin it". Takes the `draftId` from gmail_drafts. Deletes the DRAFT only — it never touches a sent or ' +
+    'received message. Irreversible.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      draftId: { type: 'string', description: 'Draft id from gmail_drafts.' },
+    },
+    required: ['draftId'],
+  },
+};
+
 export const gmailUntrashToolDef = {
   name: 'gmail_untrash',
   description:
@@ -700,6 +730,8 @@ export const GMAIL_TOOL_DEFS = [
   gmailSyncStatusToolDef,
   gmailAttachmentsToolDef,
   gmailAttachmentDownloadToolDef,
+  gmailDraftSendToolDef,
+  gmailDraftDeleteToolDef,
   gmailUntrashToolDef,
   gmailSettingsToolDef,
   gmailScheduleSendToolDef,
@@ -1296,6 +1328,30 @@ async function handleDeleteLabel(args: Record<string, unknown>): Promise<McpTool
   }
 }
 
+async function handleDraftSend(args: Record<string, unknown>): Promise<McpToolResult> {
+  const draftId = String(args.draftId ?? '').trim();
+  if (!draftId) return err('draftId is required (list drafts with gmail_drafts).');
+  try {
+    const d = await workerPostLong<{ ok: boolean; verified?: boolean; note?: string }>(
+      '/gmail/draft/send', { draftId }, 300000);
+    return ok(`Sent draft ${draftId}${d.verified === false ? ' (NOT independently confirmed)' : ''}.${d.note ? ` ${d.note}` : ''}`);
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function handleDraftDelete(args: Record<string, unknown>): Promise<McpToolResult> {
+  const draftId = String(args.draftId ?? '').trim();
+  if (!draftId) return err('draftId is required (list drafts with gmail_drafts).');
+  try {
+    const d = await workerPostLong<{ ok: boolean; verified?: boolean; note?: string }>(
+      '/gmail/draft/delete', { draftId }, 300000);
+    return ok(`Deleted draft ${draftId}${d.verified === false ? ' (NOT independently confirmed)' : ''}. No sent or received mail was touched.${d.note ? ` ${d.note}` : ''}`);
+  } catch (e) {
+    return err(e instanceof Error ? e.message : String(e));
+  }
+}
+
 async function handleUntrash(args: Record<string, unknown>): Promise<McpToolResult> {
   const threadId = String(args.threadId ?? '').trim();
   if (!threadId) return err('threadId is required (list label "trash" to find one).');
@@ -1689,6 +1745,8 @@ export const GMAIL_HANDLERS: Record<string, (args: Record<string, unknown>) => P
   gmail_sync_status: () => handleSyncStatus(),
   gmail_attachments: handleAttachments,
   gmail_attachment_download: handleAttachmentDownload,
+  gmail_draft_send: handleDraftSend,
+  gmail_draft_delete: handleDraftDelete,
   gmail_untrash: handleUntrash,
   gmail_settings: handleSettings,
   gmail_schedule_send: handleScheduleSend,

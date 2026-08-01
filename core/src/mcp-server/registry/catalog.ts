@@ -169,7 +169,7 @@ mod('gmail.ts', 'gmail', [
   'gmail_reply', 'gmail_draft', 'gmail_archive', 'gmail_trash', 'gmail_untrash', 'gmail_mark_read',
   'gmail_star', 'gmail_spam', 'gmail_apply_label', 'gmail_remove_label',
   'gmail_create_label', 'gmail_rename_label', 'gmail_delete_label', 'gmail_move_to',
-  'gmail_schedule_send', 'gmail_settings',
+  'gmail_schedule_send', 'gmail_settings', 'gmail_draft_send', 'gmail_draft_delete',
 ]);
 
 // --- backup ---

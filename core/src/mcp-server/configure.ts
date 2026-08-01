@@ -382,6 +382,9 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   gmail_status: 'read',
   gmail_summary: 'read',
   gmail_drafts: 'write',
+  // Sending a saved draft DELIVERS real mail; deleting one discards it. Both mutate.
+  gmail_draft_send: 'write',
+  gmail_draft_delete: 'write',
   gmail_forward: 'write',
   gmail_triage: 'write',
   gmail_untrash: 'write',

@@ -170,7 +170,7 @@ exists for). Trust `gmail_status`, not the pid.
 
 ## Tools & scopes
 
-35 tools. Reads observe the mailbox; writes send real mail or mutate threads;
+37 tools. Reads observe the mailbox; writes send real mail or mutate threads;
 `gmail_login` drives interactive auth.
 
 | Tool | Scope | Purpose |
@@ -194,6 +194,7 @@ exists for). Trust `gmail_status`, not the pid.
 | `gmail_forward` | write | forward a thread to new recipients |
 | `gmail_schedule_send` | write | compose and send LATER (Gmail's Schedule send) |
 | `gmail_draft` | write | compose and save a draft, sending nothing |
+| `gmail_draft_send` · `gmail_draft_delete` | write | send or discard a saved draft — completes the lifecycle |
 | `gmail_archive` · `gmail_trash` · `gmail_spam` | write | move a thread out of the inbox |
 | `gmail_untrash` | write | restore a thread OUT of Trash (only while it is still there) |
 | `gmail_mark_read` · `gmail_star` | write | per-thread state |
