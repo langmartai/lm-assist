@@ -76,6 +76,7 @@ import {
   readThread,
   readThreadFull,
   listAttachments,
+  gmailProfileHasCredential,
   downloadAttachment,
   untrashThread,
   renameLabel,
@@ -244,8 +245,25 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
         // null — hiding the watch exactly when "is anything running?" is the
         // question being asked.
         const watch = arrivalState();
+        // 🔴 "no browser" and "not signed in" are DIFFERENT answers.
+        //
+        // MEASURED 2026-08-01: Core restarts kill the Gmail browser on Linux (Chrome
+        // is a child in Core's cgroup; Windows re-parents and survives). Both 117 and
+        // 123 then reported loggedIn:false — but 123's profile was fully
+        // authenticated and gmail_login restored it in SECONDS with no interaction.
+        // The credential had never gone anywhere; only the process had.
+        //
+        // Collapsing both into `loggedIn:false` tells an operator to go re-do a
+        // Google sign-in when all that was needed was a relaunch. So the probe
+        // failure is now reported as UNKNOWN (null), with `browserRunning` and
+        // `credentialOnDisk` saying which of the two it actually is.
+        let browserRunning = false;
+        let loggedInKnown = false;
+        let probeError: string | null = null;
         try {
           const s = await cdpStatus();
+          browserRunning = true;
+          loggedInKnown = true;
           loggedIn = s.loggedIn;
           self = s.self;
           defaultSendAs = s.defaultSendAs;
@@ -253,9 +271,13 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
           sendAsCheckedAt = s.sendAsCheckedAt;
           ui = s.ui;
           if (self) writeGmailConfig({ selfEmail: self });
-        } catch {
-          /* CDP unreachable — report loggedIn:false rather than failing the call */
+        } catch (e) {
+          probeError = e instanceof Error ? e.message : String(e);
         }
+        // Does a persisted Google session exist for the driver profile? This is
+        // pure disk state, so it answers even with no browser at all — and it is
+        // what makes "just relaunch" distinguishable from "sign in again".
+        const credentialOnDisk = gmailProfileHasCredential();
         const cfg = readGmailConfig();
         return {
           success: true,
@@ -265,7 +287,20 @@ export function createGmailRoutes(_ctx: RouteContext): RouteHandler[] {
             host: os.hostname(),
             backend: 'cdp-browser',
             self: self ?? cfg.selfEmail ?? null,
-            loggedIn,
+            // null = UNKNOWN (no browser to ask), NOT false. A caller that treats
+            // null as "signed out" will send a human to re-authenticate for nothing.
+            loggedIn: loggedInKnown ? loggedIn : null,
+            browserRunning,
+            credentialOnDisk,
+            /** What to actually DO — so the caller does not have to infer it. */
+            needsAction: loggedInKnown
+              ? loggedIn
+                ? null
+                : 'sign-in'
+              : credentialOnDisk
+                ? 'relaunch'
+                : 'sign-in',
+            probeError,
             // 🔴 MEASURED: the compose's hidden input[name="from"] is an ALIAS on
             // this account, not `self`. Reporting only `self` would misdescribe
             // every message the caller is about to send.

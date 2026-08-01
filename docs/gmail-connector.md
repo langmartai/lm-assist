@@ -341,6 +341,30 @@ Why it escaped testing: the tools were exercised through their REST routes, whic
 MCP server. Only an MCP request does. `core/src/__tests__/mcp-tool-scopes.test.ts` now runs the
 assertion at `npm test`.
 
+## 🔴 `loggedIn: false` used to mean two different things
+
+`GET /gmail/status` probes the live browser over CDP. When that probe failed it
+reported `loggedIn: false` — which collapsed two states an operator must tell apart:
+
+| what actually happened | what to do |
+|---|---|
+| the browser process is dead, credential intact | **relaunch** (`gmail_login`, no human needed) |
+| the profile is genuinely signed out | **sign in** (a human types credentials) |
+
+MEASURED 2026-08-01: Core restarts kill the Gmail browser on Linux (Chrome is a
+child in Core's cgroup; Windows re-parents and survives). Both 117 and 123 then read
+`loggedIn:false` — yet 123's profile was fully authenticated and `gmail_login`
+restored it in SECONDS with no interaction. The credential had never gone anywhere.
+
+Status now answers with four fields instead of one:
+
+- `loggedIn` — `true` / `false` / **`null` when UNKNOWN** (no browser to ask).
+  A caller treating `null` as "signed out" sends a human to re-authenticate for nothing.
+- `browserRunning` — was the CDP probe reachable at all
+- `credentialOnDisk` — does the driver profile hold a persisted Google session
+  (pure disk state, answers with no browser running)
+- `needsAction` — `relaunch` / `sign-in` / `null`, so the caller need not infer it
+
 ## Limits and caveats
 
 - **The thread list is virtualized.** A read returns the most-recent RENDERED threads
