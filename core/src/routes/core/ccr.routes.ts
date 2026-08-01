@@ -19,6 +19,7 @@ import { sessionVerdict } from '../../terminal/cc-sessions';
 import * as ccr from '../../terminal/ccr-manager';
 import * as ccrCloud from '../../terminal/ccr-cloud';
 import { buildRemoteListReport } from '../../terminal/ccr-liveness';
+import { listLiveSessions, type SessionKind } from '../../terminal/ccr-live';
 
 interface Envelope { success: boolean; data?: unknown; error?: { code: string; message: string; details?: unknown }; }
 
@@ -112,6 +113,38 @@ function parseCloudSid(raw: string | undefined): string {
 
 export function createCcrRoutes(_ctx: RouteContext): RouteHandler[] {
   return [
+    // GET /ccr/live — the SOURCE OF TRUTH list, straight from the account
+    // (`GET /v1/sessions`). Unlike /ccr/remote (this node's bridge registry) it
+    // sees sessions lm-assist never spawned — e.g. a native `/remote-control`
+    // inject — and it is account-wide, not node-scoped.
+    {
+      method: 'GET',
+      pattern: /^\/ccr\/live$/,
+      handler: async (req) =>
+        envelope(() => {
+          const kindRaw = typeof req.query?.kind === 'string' ? req.query.kind : 'any';
+          const allowed = ['any', 'local-remote-control', 'cloud', 'unknown'];
+          if (!allowed.includes(kindRaw)) {
+            throw new TerminalError('INVALID_INPUT', `kind must be one of ${allowed.join(' | ')} — got ${JSON.stringify(kindRaw)}`);
+          }
+          const num = (v: string | undefined) => (v === undefined || v === '' ? undefined : Number(v));
+          const limit = num(req.query?.limit);
+          const pages = num(req.query?.pages);
+          if (limit !== undefined && !Number.isFinite(limit)) {
+            throw new TerminalError('INVALID_INPUT', `limit must be a number — got ${JSON.stringify(req.query?.limit)}`);
+          }
+          if (pages !== undefined && !Number.isFinite(pages)) {
+            throw new TerminalError('INVALID_INPUT', `pages must be a number — got ${JSON.stringify(req.query?.pages)}`);
+          }
+          return listLiveSessions({
+            includeArchived: req.query?.include_archived === '1' || req.query?.include_archived === 'true',
+            kind: kindRaw as SessionKind | 'any',
+            limit,
+            pages,
+          });
+        }),
+    },
+
     // GET /ccr/preflight/:sessionId — read-only verdict, no side effects
     {
       method: 'GET',

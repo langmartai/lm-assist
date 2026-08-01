@@ -107,6 +107,7 @@ FAILOVER + CIRCUIT-BREAKER (the part to get right):
 - Keep the work moving over the alternative.
 - REVISIT the down path on a LATER need — a node reconnects, ssh comes back, a service restarts. Re-check cheaply first (\`list_nodes\` shows online NOW; a quick probe) rather than assuming still-down. Down once ≠ down forever — never permanently blacklist a path.
 - Prefer the BEST path again once it's back (fall FORWARD, not just stay on the fallback).
+- WORKED EXAMPLE (measured 2026-07-30): a node vanished from \`list_nodes\` and every node-targeted call failed — path 3 (connector) was down, but path 2 (ssh) never was: the host answered ping and ssh:22 throughout. One \`ssh <host> 'bash -lc "lm-assist start"'\` (the \`bash -lc\` wrap is required — guide "machine-access") restored path 3, and the work moved back onto it. **A node absent from \`list_nodes\` is a DOWN PATH, not a dead machine** — guide("nodes") for the full recovery.
 
 AVAILABILITY SIGNALS: \`list_nodes\` (who is online right now) · the per-result origin footer ⟦lm-assist@hub · node · cluster⟧ (which connector/node actually answered) · explicit errors (BAD_NODE = wrong fleet/offline; UNKNOWN_SOURCE; ssh exit codes; timeouts). Use them BOTH to choose up-front and to detect recovery. With MULTIPLE connectors (see guide "connectors"), a target unreachable on one fleet may be reachable on another — that's another axis of the same fall-over discipline.`,
 
@@ -308,6 +309,14 @@ OPERATE FLOW
 5. OPEN the returned webUrl to view/drive in the browser.
 6. MANAGE bridges: ccr_remote_list → the bridge REGISTRATIONS on one node (id, mode, webUrl, alive, bridgeAlive, unverified, searched:{node,cluster}); ccr_remote_stop(id) → tear one down (stops the bridge; only kills a tmux WE created, never the user's existing one).
    ⚠️ ccr_remote_list is NOT "what is running" — it lists bridges, not sessions, and only on ONE node. To answer "what sessions are running" use cc_sessions (this host) or session_footprints(scope:'fleet'). \`alive\` = the session is live; \`bridgeAlive\` = the relay helper is up — a live session with a dead bridge just needs reconnecting, it is not gone. An empty list means empty ON THAT NODE, not fleet-wide: check searched.node/searched.cluster and widen with node=<host> (list_nodes / cluster_list) before concluding nothing is running.
+7. WHAT IS CONNECTED TO claude.ai RIGHT NOW: ccr_live_list → the SOURCE OF TRUTH, read from the ACCOUNT (\`GET /v1/sessions\`) rather than any local store, so it is account-wide, not node-scoped.
+   ⚠️ THE TWO LIST TOOLS ANSWER DIFFERENT QUESTIONS — pick by what you actually want:
+     • ccr_remote_list = the LOCAL BRIDGE REGISTRY — only bridges lm-assist itself spawned (ccr_load/mirror/connect), on ONE node. A session connected by a native \`/remote-control\` inject was never registered, so this returns EMPTY for it even while that session is live and web-reachable.
+     • ccr_live_list = THE ACCOUNT'S OWN LIST — sees every remote-control + cloud session regardless of who started it, including native injects.
+   Each row: \`kind\` (local-remote-control = a real machine's Claude Code driven from the web | cloud = an Anthropic-run container) and \`via\` (native-inject | lm-assist-bridge).
+   🔴 \`live\` combines BOTH liveness axes and is the field to trust. An ARCHIVED session very often still reports \`connection: connected\` (measured: 67 such rows in one page), so reading \`connection\` alone reports finished work as running.
+   🔴 \`cwd\` is EMPTY on every row upstream — location is reported as repo/branch instead. Do not plan on cwd from this surface.
+   The result is an OBJECT (returned / matched / scanned / truncated / note), never a bare array: a short list is not proof there is no more. Default is live-only, 25 rows, 1 page — pass include_archived, limit, or pages to widen.
 
 CREATE A NEW LOCAL CCR SESSION (POSIX/tmux) — the verified recipe
 WHEN: you want a NEW Claude Code session on a node that is driveable from claude.ai/code — NOT to bridge one that already exists. The OPERATE FLOW above adopts an EXISTING session; this is the from-scratch path, and it is also the fallback when \`ccr_connect\` fails.
@@ -321,10 +330,18 @@ NAMING: \`<node-ip-last-octet>-<repo>-ccr[-N]\` — e.g. \`117-lm-assist-ccr\`, 
 
 GOTCHAS ON THIS PATH — each one cost a real session
 • \`ccr_connect\` can fail with an opaque **"MCP tool call failed"** EVEN WHEN \`ccr_preflight\` returned \`allowedModes\` including \`connect\` and \`connectStrategy: attach-existing\`. A green preflight is not a working connect — fall back to the native \`/remote-control\` inject above rather than re-running the preflight.
-• A session connected this way is INVISIBLE to \`ccr_remote_list\` — that tool lists only the bridges lm-assist itself spawned, and a native \`/remote-control\` inject was never registered as one, so it returns EMPTY even while the session is live and web-reachable. Tracked as \`bl_e7cd6c71\`.
+• It will NOT appear in \`ccr_remote_list\` — no bridge was registered for it. Use \`ccr_live_list\` (step 7), which reads the ACCOUNT and so does see native injects.
 • \`send_session_message\` BY sessionId returns \`TARGET_UNREACHABLE\` with drivers \`remote-control\` AND \`cc-session\` both reporting unavailable. Pass the raw **tmux session name** instead — the tmux-send-keys fallback delivers.
 • 🔴 \`status:"received"\` IS NOT PROOF OF ACTION. \`send_session_message\` can ack a message the session NEVER acts on — a large paste can land without being submitted or read. ALWAYS confirm with \`terminal_capture\` that the session actually STARTED the task, and prefer \`terminal_prompt\` for the real instruction.
 • A freshly opened \`claude\` in a repo may AUTO-LOAD a pre-existing handoff brief (e.g. \`.claude/briefs/*.md\`) and start working on THAT — then sit on an AskUserQuestion menu. \`terminal_capture\` FIRST, Escape to cancel the menu, and only then give your own task.
+
+AFTER A REBOOT — FIND WHAT WAS RUNNING, THEN RESUME IT (measured 2026-07-30)
+A reboot kills every tmux/CCR session, but the per-PID registry \`~/.claude/sessions/*.json\` SURVIVES it — each file carries \`name\` (e.g. \`117-lm-assist-ccr-3\`), \`sessionId\`, \`cwd\` and \`bridgeSessionId\`. That, not tmux, is the reliable inventory of what was running. Every PID in there is dead: EXPECTED after a reboot, and NOT evidence the work is gone.
+• WHICH one? grep the transcripts under \`~/.claude/projects/<slug>/*.jsonl\` for the topic — hit-count separates them sharply (measured: 877 hits in the real one vs ≤8 in every other candidate).
+• \`claude --resume <sessionId>\` restores the session's OWN name automatically — no \`/rename\` afterwards.
+• \`/remote-control\` on the resumed session RECLAIMS THE SAME \`session_…\` bridge id, so the claude.ai/code URL is UNCHANGED. Resuming does not orphan the old link — do not hand the user a new one.
+• 🔴 \`--resume\` on a large session opens a modal: "Resume from summary (recommended)" vs "Resume full session as-is". That is a USAGE-LIMIT decision, not a mechanical one — SURFACE IT TO THE HUMAN, never pick silently. Arrow keys to move, ENTER to confirm: this is the ONE modal on this path where Enter is right. The \`/remote-control\` menu stays ESCAPE-only (step 3 above) — Enter there can Disconnect the session you just connected.
+The node itself missing from \`list_nodes\` after that reboot is a separate problem with a one-command fix — guide("nodes").
 
 CROSS-NODE: pass node=<host> (after list_nodes) to operate on a session living on another machine.
 GOLDEN RULE: load is always safe; connect = preflight first and respect the verdict — the gate protects a live session's transcript from corruption.
@@ -347,6 +364,14 @@ SINGLE + CROSS NODE
    Transport is automatic + transparent: same-cluster (same-LAN) forwards run DIRECT at native TCP speed (hub out of the data path, ~4× the relay, no per-connection hub round-trip); cross-cluster / off-LAN transparently falls back to the hub relay. \`port_forward_stats\` shows per-forward MB/s + rttMs. Good for bulk (DB dumps, artifacts) between same-cluster nodes, not just interactive.
 See guide "cross-node" for the full single-vs-cross model, per-node keys, sync, and local-only rules.
 GOTCHA: "my server"/"the other machine"/"node X" → list_nodes first, then pass its hostId.
+
+🔴 A NODE MISSING FROM \`list_nodes\` IS NOT A DEAD MACHINE — its lm-assist is STOPPED.
+The symptom set reads like a dead host and almost never is one: gone from \`list_nodes\`, \`cluster_list\` showing \`online:false\`, and every node-targeted call answering "No online lm-assist node matches node=…". What that actually says is that the node's SERVICES are down while the HOST is fine. Measured 2026-07-30 on 117: it answered ping AND ssh:22 for the entire time it was "offline" — a REBOOT had left \`lm-assist status\` reporting API :3100 and Web :3848 stopped. **lm-assist does not restart itself after a reboot, and nothing announces the absence** — the node just silently stops being in the fleet.
+PROVE HOST LIVENESS ON A PATH THAT DOES NOT GO THROUGH THIS CONNECTOR before concluding anything — ping, ssh:22, another fleet's connector. This connector is ONE path to that box, and it is the path that just failed (guide "access-paths").
+RECOVER — from any machine that can ssh there, one command:
+  \`ssh <host> 'bash -lc "lm-assist status"'\`  → confirms services-down vs host-down
+  \`ssh <host> 'bash -lc "lm-assist start"'\`   → rejoins in seconds; its Mission Controller session comes back with it
+Then re-verify with \`list_nodes\`. 🔴 The \`bash -lc\` wrap is NOT optional — bare \`ssh <host> lm-assist status\` returns a BOGUS "command not found". Finding the ssh route + that trap: guide("machine-access").
 
 🔴 A DISPLAY NAME IS NOT AN IDENTITY — the hostId is.
 Display names are non-unique, decorated, and are NOT the set of targetable nodes. Measured on this fleet 2026-07-26: \`auth_status({allNodes:true})\` returned **13 rows keyed by display name** while \`list_nodes\` showed **3 targetable nodes**; \`ubuntu-Virtual-Machine\` appeared 3×, \`DESKTOP-GDKLATG\` 2×, \`vm\` 4×. The single \`cookie:ok\` row read \`ubuntu-Virtual-Machine (dev)\` — a name \`list_nodes\` NEVER prints — which reads exactly like some unreachable dev-fleet host. It is not: \`mission_control_status.leader\` showed that same display name resolving to hostId \`gw4-332c6620-…\`, i.e. the DEFAULT node you were already talking to.
@@ -557,6 +582,80 @@ SCHEDULING INTELLIGENCE (sub-project 3): each pass, FIRST call mission_changes (
 
 SELF-HEAL: if lm-assist Core is not running on this host, start it (\`lm-assist start\`) before calling any tools. See guide("install") if lm-assist is not installed.`,
 
+  backup: `# Guide: backup — query and manage the fleet backup
+
+WHAT IS BACKED UP, and WHERE. One store, on ONE node: \`E:\\claude-backup\` on
+DESKTOP-GDKLATG (node 107). It holds every host's \`.claude\` — sessions, memory,
+rules, settings, tasks, plugins — plus the claude.ai conversations (including the
+markdown attached inside them) and claude.ai ACCOUNT memory, which lives in the
+web account and in no \`.claude\` folder.
+
+| target | what | how |
+|---|---|---|
+| windows-desk | node 107's own \`.claude\` — 107 IS windows-desk, not a 4th node | incremental mirror |
+| linux-117 | 117's \`.claude\` | dated .tar.gz over ssh, newest 5 kept |
+| linux-123 | 123's \`.claude\` | same |
+| claudeai | web conversations + account memory | incremental by updated_at |
+| memory-rules | every host's rules/ + projects/*/memory/ | browsable extract, additive |
+
+🔴 ONLY 107 CAN SERVE THESE. Pass \`node:"DESKTOP-GDKLATG"\`. 117 deliberately
+cannot be the collector — it has ~3 GB free against its own 6.8 GB \`.claude\`, so
+it can neither hold a snapshot nor repack one. Called elsewhere the tools return
+a pointer, never an empty result.
+
+## Seeing what is IN there, and querying it
+
+\`backup_list\` bare = an overview (items + bytes per host and kind, snapshots
+held). Add \`source\`/\`kind\`/\`project\`/\`prefix\`/\`container\` to page the entries
+themselves. Use it to discover; use \`backup_search\` to find text inside.
+
+Everything is PAGED, because the MCP result ceiling is 64 KB and a silent
+truncation reads as a complete answer. Pages: list 30 rows (max 100), search 10
+hits (max 25 — each carries an excerpt), read 12 KB (max 24 KB). Every reply
+states \`Showing X–Y of Z\` and the exact next call, so there is no such thing as
+a result that quietly stopped early.
+
+\`backup_search\` answers from a SQLite FTS index, so content sealed inside a 2 GB
+snapshot is searchable without unpacking it. \`backup_read\` then streams out one
+member. Sessions index user prompts and assistant prose only — tool payloads are
+most of the bytes and would bury real hits. Each hit carries an \`id\`; that id is
+what \`backup_read\` and \`backup_remove\` take.
+
+\`source\` filters WHICH BACKED-UP HOST; \`node\` routes the call. They are different.
+
+## Running
+
+\`backup_run\` is ASYNC — it returns a runId because a full pass re-pulls ~2 GB.
+Poll \`backup_status\`. One run at a time. \`dryRun:true\` reports what would be
+captured and excluded, writing nothing.
+
+## Removal — what it does and does not touch
+
+Removal NEVER rewrites git history and never affects the remote. The payload is
+gitignored and was never committed: the private repo holds only the scripts and
+STATUS.md. What removal does have to defeat is different:
+
+- the mirror RE-CREATES what you delete, so removal records a persistent
+  exclusion by default (\`exclude:false\` to skip that, knowing it comes back),
+- a member inside a .tar.gz cannot be deleted in place, so the snapshot is
+  REPACKED without it and swapped only after the rewrite verifies — minutes on a
+  2 GB archive, and the original survives any failure,
+- the same file may exist in OTHER snapshots. Search again before calling it gone.
+
+Every removal is audited in removals.jsonl.
+
+## Secrets
+
+Credential files are excluded AT CAPTURE: Claude Code OAuth tokens
+(\`.credentials.json\`), claude.ai session cookies (\`claudeai-session*.json\`),
+browser profiles, SSH keys, \`.env\`. Sessions, memory and rules are kept in full —
+a token is re-obtainable by logging in, a transcript is not.
+
+\`backup_status\` reports any credential file left in the store from before this
+filter existed. Those are NOT on GitHub (the payload is gitignored) but they sit
+in plaintext on the backup volume; remove them with \`backup_remove\`.
+`,
+
   'machine-access': `# Guide: machine-access — how to reach OTHER machines FROM a node
 WHAT IT IS: a NODE-LOCAL registry (\`~/.lm-assist/machine-access.json\`, NOT synced) of how THIS node reaches other machines — SSH endpoint (user/host/port), the identity-key PATH on this node, and per-machine operational notes/gotchas. It turns "how do I get to box X from here?" from a memory-grep into one structured call.
 
@@ -565,6 +664,9 @@ WHEN TO USE: BEFORE you SSH or open a remote session to another machine — call
 THE TOOL: \`machine_access(id?, tag?)\` (read-only). Returns each machine with its access methods; ssh methods include a derived \`command\` (e.g. \`ssh -i ~/.ssh/key user@host\`) and a \`lastCheck\` (reachability status if ever probed). Non-ssh methods (future windows remote-exec, elevated workers) appear \`supported:false\`. Filter by \`id\` or \`tag\`.
 
 CRITICAL — ON-NODE SEMANTIC: profiles are reachable ONLY FROM this node (its keys/LAN routes). Run the reported command ON this node — a local shell here, \`agent_execute\` on this node, or terminal tools targeted here — NOT from your own machine. Key material is never stored or returned (paths only).
+
+🔴 AN EMPTY \`machine_access\` IS NOT "THERE IS NO SSH ROUTE" — it is an UNPOPULATED registry. It is node-local and hand-curated, so a node nobody has gathered on returns nothing while the routes exist anyway. Before you conclude a box is unreachable, read the operator's \`~/.ssh/config\` on that node: the \`Host\` entry carries the user AND the IdentityFile, so you never have to guess a login. Then run the GATHER RECIPE below so the NEXT session gets it from the tool instead of from a config file.
+🔴 WRAP EVERY REMOTE COMMAND IN A LOGIN SHELL: \`ssh <host> lm-assist status\` answers "command not found", which reads as "not installed" and is nothing of the sort. nvm-installed CLIs live under \`~/.nvm/versions/node/vX/bin\`, which a NON-login shell's PATH does not carry. Use \`ssh <host> 'bash -lc "<cmd>"'\` — measured 2026-07-30: bogus without the wrap, correct with it. A "command not found" over ssh is a PATH claim, not an inventory.
 
 MANAGE (on the node itself — loopback-only, not over this connector):
 - \`PUT /machine-access/machines/<id>\` — add/update a profile (body = the profile; strict field grammar rejects injection/keys).
@@ -593,8 +695,12 @@ const ALIASES: Record<string, string> = {
   memory: 'knowledge', search: 'knowledge',
   agent: 'agents', execute: 'agents', run: 'agents', browser: 'agents',
   terminal: 'terminals', tmux: 'terminals', message: 'terminals', windows: 'terminals',
-  ccr: 'ccr', remote: 'ccr', mirror: 'ccr', 'claude-code-remote': 'ccr', drive: 'ccr', 'remote-control': 'ccr',
+  ccr: 'ccr', remote: 'ccr', mirror: 'ccr', 'claude-code-remote': 'ccr', drive: 'ccr', 'remote-control': 'ccr', resume: 'ccr', '--resume': 'ccr', reconnect: 'ccr',
   node: 'nodes', host: 'nodes', machine: 'nodes', 'port-forward': 'nodes', ports: 'nodes',
+  // A lost node is looked up in the words of the symptom, not of the answer: nobody
+  // asking "why is 117 offline?" thinks to type "nodes".
+  reboot: 'nodes', rebooted: 'nodes', offline: 'nodes', 'node-down': 'nodes', 'node down': 'nodes', 'no-online-node': 'nodes', recover: 'nodes', recovery: 'nodes', rejoin: 'nodes',
+  'ssh-config': 'machine-access', 'ssh config': 'machine-access', 'command-not-found': 'machine-access', 'command not found': 'machine-access',
   claudeai: 'claude-ai', 'claude.ai': 'claude-ai', connector: 'claude-ai', connectors: 'claude-ai',
   login: 'login', relogin: 'login', 're-login': 'login', signin: 'login', 'sign-in': 'login',
   auth: 'account', usage: 'account', oauth: 'account',
@@ -617,8 +723,8 @@ const BLURB: Record<string, string> = {
   knowledge: 'search the knowledge base + cross-project/cross-host memory; read + WRITE memory files (hash-guarded); give feedback',
   agents: 'run / resume / monitor a Claude Code agent remotely (incl. browser control)',
   terminals: 'drive a terminal or inject a prompt into a running session (Linux/mac/Windows)',
-  ccr: 'CCR — view/drive a Claude Code session from claude.ai/code (load=replay, mirror=live view, connect=two-way; safety-gated)',
-  nodes: 'list hosts, target a specific machine, port-forward — and why a DISPLAY NAME is not an identity (hostIds are the only targetable set; names repeat and carry `(dev)` suffixes)',
+  ccr: 'CCR — view/drive a Claude Code session from claude.ai/code (load=replay, mirror=live view, connect=two-way; safety-gated) + how to find and resume what a REBOOT killed (the ~/.claude/sessions registry survives it; resume keeps both the name and the web URL)',
+  nodes: 'list hosts, target a specific machine, port-forward — why a DISPLAY NAME is not an identity (hostIds are the only targetable set; names repeat and carry `(dev)` suffixes), and how to RECOVER a node that vanished from list_nodes (its lm-assist is stopped, the host is usually alive and one ssh away)',
   'claude-ai': "read/operate the user's claude.ai web account + manage this connector's tools",
   login: 'guided re-login per node — fix the claude.ai cookie (browser-capture or manual steps) and/or the Claude Code OAuth token; auth-monitor keeps OAuth fresh automatically',
   account: 'Claude Code OAuth + claude.ai account / usage / active sessions (per node) — incl. why `auth_status(allNodes)` is a smell test, not an inventory, and how a node picks an ACCOUNT rather than a set of conversations',
@@ -627,7 +733,8 @@ const BLURB: Record<string, string> = {
   missions: 'durable cross-project goals — the fleet-elected Mission Controller binds an executor (cloud or native worktree), adapts + drives it to done, never auto-approves gates/pivots. Born `waiting`; `active` = already running. `env.repo` must be ABSOLUTE, `env.isolation` defaults to `cloud`',
   'mission-controller': 'the controller agent loop contract — the exact per-pass workflow, hard rules (never auto-approve gates/pivots), and tool usage for the autonomous controller session',
   clusters: 'isolated fleet partitions — concept, shared-vs-within table, cluster_list/assign/unassign/describe, build one cluster at a time, respect-other-clusters scope norm',
-  'machine-access': 'how to reach OTHER machines FROM a node — node-local SSH profiles (user/host/key-path/notes) via machine_access, with ssh-config import + reachability check; run the reported command ON that node',
+  backup: 'browse/query and manage the fleet backup on node 107 — list what is in it, search/read backed-up sessions, memory, rules and claude.ai conversations WITHOUT restoring, run a capture, and remove an item for real (incl. repacking a snapshot); secrets are excluded at capture',
+  'machine-access': 'how to reach OTHER machines FROM a node — node-local SSH profiles (user/host/key-path/notes) via machine_access, with ssh-config import + reachability check; run the reported command ON that node, wrap it in `bash -lc`, and never read an EMPTY registry as "no route"',
 };
 
 /** Separator line used between sections in the bootstrap output (reused by the auth block). */
@@ -702,6 +809,8 @@ export const BOOTSTRAP_HEADER_DEFAULT = [
   '# lm-assist — capability bootstrap (you have now loaded ALL use cases for this session)',
   '',
   'You called `bootstrap`, so the COMPLETE set of lm-assist use-case playbooks is below — you do not need to look anything else up to start. lm-assist COMPLEMENTS your local CLAUDE.md / memory / skills (it does NOT replace them; they work together — see ORIENTATION). Every tool takes an optional `node` (omit = the default host; pass it, after `list_nodes`, to target another machine). 🔴 When the work only succeeds on the RIGHT machine — a node-bound credential, a working browser, an elevated worker, a repo that exists there — do not guess and do not infer from a hostname: `node_select` ranks the nodes with reasons, and `node_profile` is where you WRITE BACK what you learn so the next session does not rediscover it (guide "nodes"). To re-read ONE topic later, call `guide(topic=...)`.',
+  '',
+  '🔴 THE TAIL OF THIS RESPONSE IS CUT, and the topics you are missing are named here. Bootstrap is ~75 KB against a 64 KiB per-result ceiling, so the last ~15% never reaches you: measured 2026-07-31 the cut lands inside `machine-access` and takes `claude-ai`, `account`, `login`, `github`, `files`, `clusters` and the per-node auth + cluster status blocks with it. Everything ABOVE the cut is complete, and the ⟦RESULT TRUNCATED⟧ marker at the very end is the ground truth (no marker = this node raised `MCP_RESULT_MAX_BYTES` and nothing was dropped). THE REMEDY IS `guide(topic=...)`, not a retry — `bootstrap` takes no arguments, so that marker\'s generic "narrow the call with limit/offset" advice cannot apply here. `guide()` with no args prints the CURRENT topic list, which this sentence is only a snapshot of.',
   '',
   'FLOW',
   '```mermaid',

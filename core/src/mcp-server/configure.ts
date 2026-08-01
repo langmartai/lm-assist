@@ -218,6 +218,7 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   cc_sessions: 'read',
   ccr_preflight: 'read',
   ccr_remote_list: 'read',
+  ccr_live_list: 'read',
   ccr_load: 'write',
   ccr_mirror: 'write',
   ccr_remote_stop: 'write',
@@ -417,6 +418,14 @@ export const TOOL_SCOPES: Readonly<Record<string, ToolScope>> = {
   gmail_create_label: 'write',
   gmail_move_to: 'write',
   gmail_login: 'admin',
+  // backup collector (reads query the store; run writes it; remove destroys data
+  // and can rewrite a snapshot, so it is admin like the other destructive tools)
+  backup_status: 'read',
+  backup_list: 'read',
+  backup_search: 'read',
+  backup_read: 'read',
+  backup_run: 'write',
+  backup_remove: 'admin',
   // cowork task creation (write — starts a real background session)
   cowork_create_task: 'write',
 };

@@ -187,6 +187,13 @@ export const MEASURED_BUDGETS: Record<string, ToolBudget> = {
   list_projects: { measuredBytes: 4185, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   rule_sync_status: { measuredBytes: 1630, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   ccr_remote_list: { measuredBytes: 3354, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
+  ccr_live_list: { measuredBytes: 4614, budgetBytes: 25000, bound: 'CALLER_LIMIT_SANE_DEFAULT', verdict: 'SAFE', note:
+    'Measured on 117, 2026-07-29, against a real account of 357 sessions. Default call (live only, ' +
+    'limit 25, 1 page) = 4,614 B. The RAW upstream page this projects from is 544,910 B — the row ' +
+    'projection is what makes the tool safe, so do not widen it back out. The limit ceiling is 40, ' +
+    'set BY measurement: at ~495 B/row a ceiling of 100 measured 49,982 B, i.e. 2x over budget, so ' +
+    'the bound would only have fired after the damage. `pages` (max 5) widens the SCAN, not the ' +
+    'result, so it does not move this number.' },
   memory_sync_status: { measuredBytes: 1486, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
   scheduler_jobs: { measuredBytes: 3031, budgetBytes: 25000, bound: 'SMALL_BY_CONSTRUCTION', verdict: 'SAFE' },
   rule_map: { measuredBytes: 2392, budgetBytes: 25000, bound: 'NOTHING', verdict: 'SAFE' },
@@ -312,6 +319,19 @@ export const NOT_MEASURED: Record<string, string> = Object.fromEntries([
     // check works: both were missed by the hand-built audit list.
     'windows_terminal_capture', 'mission_view_get',
   ].map((n) => [n, 'read-only but needs a target id or a live peer; covered statically']),
+  // Backup collector. These only resolve on the node that HOLDS the backup root
+  // (107); anywhere else they return a short pointer, so an automated sweep here
+  // would measure the pointer, not the tool. Bounds are structural instead:
+  // backup_search caps `limit` at 100 with a per-hit snippet, backup_read caps
+  // `maxBytes` at 1 MiB (64 KiB default), and backup_status renders a fixed
+  // table of at most 5 targets plus a truncated secrets list.
+  // Bounded by an explicit page the route clamps (search 25 hits, list 100 rows,
+  // read 24 KiB) and asserted by backup-output-size.test.ts, which renders
+  // worst-case data through the real renderers and measures the bytes.
+  ...['backup_status', 'backup_list', 'backup_search', 'backup_read',
+  ].map((n) => [n, 'collector-only read; page-bounded, size asserted by backup-output-size.test.ts']),
+  ...['backup_run', 'backup_remove',
+  ].map((n) => [n, 'write: starts a capture or deletes backed-up data (repacking an archive)']),
 ]);
 
 /**

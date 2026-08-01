@@ -35,7 +35,7 @@ export interface ToolCatalogEntry {
 export const CATEGORY_ORDER: string[] = [
   'core', 'session', 'mission', 'backlog', 'worker', 'agent', 'terminal', 'memory', 'data',
   'transfer', 'fleet', 'cluster', 'machine-access', 'ccr', 'claudeai', 'auth',
-  'github', 'whatsapp', 'linkedin', 'gmail', 'elevated',
+  'github', 'whatsapp', 'linkedin', 'gmail', 'backup', 'elevated',
 ];
 
 const T = 'core/src/mcp-server/tools';
@@ -127,7 +127,7 @@ mod('machine-access.ts', 'machine-access', ['machine_access']);
 
 // --- ccr / cloud Claude Code ---
 mod('expanded.ts', 'ccr', [
-  'cc_sessions', 'ccr_preflight', 'ccr_remote_list', 'ccr_load', 'ccr_mirror', 'ccr_connect', 'ccr_drive',
+  'cc_sessions', 'ccr_preflight', 'ccr_remote_list', 'ccr_live_list', 'ccr_load', 'ccr_mirror', 'ccr_connect', 'ccr_drive',
   'ccr_remote_stop', 'ccr_restart', 'ccr_cloud_start', 'ccr_cloud_repos', 'ccr_cloud_drive', 'ccr_cloud_answer',
   'ccr_cloud_read', 'ccr_cloud_stop', 'ccr_cloud_restart', 'ccr_cloud_list',
 ]);
@@ -165,10 +165,16 @@ mod('linkedin.ts', 'linkedin', [
 mod('gmail.ts', 'gmail', [
   'gmail_status', 'gmail_summary', 'gmail_drafts', 'gmail_forward', 'gmail_triage', 'gmail_login', 'gmail_list_threads', 'gmail_read_thread',
   'gmail_search', 'gmail_search_local', 'gmail_sync', 'gmail_sync_status',
-  'gmail_attachments', 'gmail_labels', 'gmail_selfcheck', 'gmail_aliases', 'gmail_send',
-  'gmail_reply', 'gmail_draft', 'gmail_archive', 'gmail_trash', 'gmail_mark_read',
+  'gmail_attachments', 'gmail_attachment_download', 'gmail_labels', 'gmail_selfcheck', 'gmail_aliases', 'gmail_send',
+  'gmail_reply', 'gmail_draft', 'gmail_archive', 'gmail_trash', 'gmail_untrash', 'gmail_mark_read',
   'gmail_star', 'gmail_spam', 'gmail_apply_label', 'gmail_remove_label',
-  'gmail_create_label', 'gmail_move_to',
+  'gmail_create_label', 'gmail_rename_label', 'gmail_delete_label', 'gmail_move_to',
+  'gmail_schedule_send', 'gmail_settings',
+]);
+
+// --- backup ---
+mod('backup.ts', 'backup', [
+  'backup_run', 'backup_status', 'backup_list', 'backup_search', 'backup_read', 'backup_remove',
 ]);
 
 // --- whatsapp ---

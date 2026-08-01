@@ -62,6 +62,26 @@ async function tailMessages(uuid: string, n: number, charLimit: number): Promise
   }
 }
 
+/**
+ * Pull the conversation rows out of whatever `listConversations` resolved to.
+ *
+ * Two hops, both required. `claudeaiGet` resolves to a ClaudeAIResponse
+ * envelope `{status, statusText, headers, body}`, so the payload is at `.body`
+ * — missing that hop is what made this tool fail on every call. The payload
+ * itself is then either `chat_conversations_v2`'s `{data, has_more}` object or
+ * a legacy bare array. Mirrors claude-ai.routes.ts (~L381) so the REST and MCP
+ * surfaces cannot drift apart again.
+ *
+ * Returns `undefined` — not `[]` — when the shape is genuinely unrecognizable,
+ * so the caller can tell "cannot parse" from "no conversations".
+ */
+export function extractConversationRows(resp: unknown): Array<Record<string, unknown>> | undefined {
+  const payload = (resp as { body?: unknown } | null)?.body ?? resp;
+  if (Array.isArray(payload)) return payload as Array<Record<string, unknown>>;
+  const data = (payload as { data?: unknown } | null)?.data;
+  return Array.isArray(data) ? (data as Array<Record<string, unknown>>) : undefined;
+}
+
 export async function handleListClaudeaiConversations(args: Record<string, unknown>): Promise<{
   content: Array<{ type: string; text: string }>;
   isError?: boolean;
@@ -98,12 +118,20 @@ export async function handleListClaudeaiConversations(args: Record<string, unkno
     return { content: [{ type: 'text', text: `Error: ${msg}` }], isError: true };
   }
 
-  const list = (Array.isArray(resp) ? resp : (resp as { data?: unknown[] })?.data) as
-    | Array<Record<string, unknown>>
-    | undefined;
+  const list = extractConversationRows(resp);
   if (!Array.isArray(list)) {
+    const keys =
+      resp && typeof resp === 'object' ? Object.keys(resp as Record<string, unknown>).join(', ') : typeof resp;
     return {
-      content: [{ type: 'text', text: 'Unexpected response shape from claude.ai.' }],
+      content: [
+        {
+          type: 'text',
+          text:
+            `Unexpected response shape from claude.ai — could not find a conversation array. ` +
+            `Top-level keys: [${keys}]. Expected chat_conversations_v2's {data, has_more} ` +
+            `(optionally inside a {status, headers, body} envelope).`,
+        },
+      ],
       isError: true,
     };
   }

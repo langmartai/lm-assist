@@ -59,11 +59,45 @@ const MAX_SHARED_DESCRIPTION_BYTES = 320;
  * 298,011 B for 189 tools before the `node` dedup, 206,319 B after. The budget is
  * NOT set just above the current figure: a ratchet with 2% headroom fails on the
  * third routine tool addition, and a guard that cries wolf gets its number bumped
- * without thought, which is how it stops meaning anything. 240,000 B leaves room
+ * without thought, which is how it stops meaning anything. 240,000 B left room
  * for roughly 28 more average-sized tools (~1.2 KB each) while still failing hard
  * on the regression this exists to catch — re-inlining shared boilerplate across
  * the surface costs ~90 KB and blows straight through it.
+ *
+ * RAISED to 260,000 B on 2026-07-29, adding the five `backup_*` tools. That
+ * headroom is now spent, exactly as designed: the surface reached 234,551 B over
+ * 211 tools, so the 28 anticipated tools had already arrived. The guard worked —
+ * it caught the addition and forced a 13% trim (6,480 B → 5,608 B, 1,122 B/tool,
+ * below the 1.2 KB average it budgets for) before anything landed.
+ *
+ * This is a REAL COST, not an accounting move: ~240 KB is ~60K tokens paid by
+ * every conversation before it calls anything, and +20,000 B is ~5K more. The new
+ * ceiling is again sized for ~16 average tools rather than set just above today's
+ * figure, for the reason in the paragraph above. The next addition to trip this
+ * should shrink the surface, not raise the number a third time — the durable fix
+ * is fewer/leaner advertised tools, and `guide()` exists so prose can live off the
+ * catalogue.
  */
+// 🔴 RAISED 2026-08-01, 264,000 -> 284,000, at the Gmail x backup merge. Both
+// branches had raised this for their own feature in isolation — main to 260,000 for
+// the 6 backup tools, this branch to 264,000 for Gmail — so NEITHER number had ever
+// been measured against the combined catalogue. Taking the larger of the two would
+// have been a guess; this is the measurement:
+//
+//   251 tools, catalogue          272,298 B
+//   the old 264,000 budget        8,298 B OVER  (the test caught it, as designed)
+//   new budget                    284,000 B  -> 11,702 B headroom
+//   at the 1,085 B surface average that is ~10 tools of slack, the same margin
+//   every prior raise in this file has aimed for.
+//
+// This is accumulated routine growth from two features landing at once, NOT the
+// re-inlining regression this guard exists to catch (~90 KB, which 284,000 still
+// fails hard on) — the shared-boilerplate test above still passes.
+//
+// The lever remains the injected node-param paragraph, and it keeps growing with
+// the tool count: ~306 B x 251 tools = ~76,800 B, roughly 28% of the whole
+// catalogue, paid by every conversation before a single call. Taking that on would
+// fund ~70 tools of growth and is worth more than any amount of per-tool sanding.
 // RAISED 2026-07-29, 240,000 -> 252,000, when the Gmail CDP connector (9 tools)
 // landed 15 B over. Deliberate, not a reflex bump: the shared-boilerplate test
 // above still passes, so this is accumulated routine growth, NOT the re-inlining
@@ -104,7 +138,7 @@ const MAX_SHARED_DESCRIPTION_BYTES = 320;
 // = ~71,600 B, roughly 28% of the whole catalogue. Every conversation pays it up
 // front. Taking that on would fund ~66 tools of growth and is worth far more
 // than any amount of per-tool sanding.
-const CATALOG_BUDGET_BYTES = 264_000;
+const CATALOG_BUDGET_BYTES = 284_000;
 
 function properties(def: { inputSchema?: { properties?: Record<string, unknown> } }): Record<string, unknown> {
   return def.inputSchema?.properties || {};

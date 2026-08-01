@@ -73,6 +73,7 @@ import { nodeLifecycleToolDef, handleNodeLifecycle } from './lifecycle';
 import { WHATSAPP_TOOL_DEFS, WHATSAPP_HANDLERS } from './whatsapp';
 import { LINKEDIN_TOOL_DEFS, LINKEDIN_HANDLERS } from './linkedin';
 import { GMAIL_TOOL_DEFS, GMAIL_HANDLERS } from './gmail';
+import { BACKUP_TOOL_DEFS, BACKUP_HANDLERS } from './backup';
 import { ELEVATED_TOOL_DEFS, ELEVATED_HANDLERS } from './elevated';
 import { coworkCreateTaskDef, handleCoworkCreateTask } from './cowork';
 
@@ -597,6 +598,41 @@ export const ccrRemoteListToolDef = {
     'checked against — never read it as proof the session is gone. The result also reports which ' +
     'node/cluster it searched; an empty list means empty ON THAT NODE only.',
   inputSchema: { type: 'object' as const, properties: {} },
+};
+export const ccrLiveListToolDef = {
+  name: 'ccr_live_list',
+  description:
+    'The SOURCE OF TRUTH for what remote-control / cloud Claude Code sessions exist right now — read ' +
+    'from the ACCOUNT (claude.ai `GET /v1/sessions`), not from any local registry. Use this to answer ' +
+    '"what is connected to claude.ai/code". Contrast with ccr_remote_list, which lists only the bridges ' +
+    'lm-assist itself spawned ON ONE NODE and therefore CANNOT see a session connected by a native ' +
+    '`/remote-control` inject; this tool can, and is account-wide rather than node-scoped. ' +
+    'Each row carries `kind` (local-remote-control = a Claude Code process on a real machine, driven ' +
+    'from the web | cloud = a container Anthropic runs) and `via` (native-inject | lm-assist-bridge). ' +
+    '`live` combines BOTH liveness axes — an archived session often still reports connection_status ' +
+    'connected, so never read `connection` alone as proof it is running. Defaults to live sessions only; ' +
+    'pass include_archived to see finished ones. NOTE: upstream leaves `cwd` empty on every row, so the ' +
+    'location is reported as repo/branch instead. The result is an OBJECT reporting returned/matched/' +
+    'scanned and a `note` whenever the answer is partial — a short list is not proof there is no more.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      kind: {
+        type: 'string',
+        enum: ['any', 'local-remote-control', 'cloud'],
+        description: 'Restrict to one class. Default any.',
+      },
+      include_archived: {
+        type: 'boolean',
+        description: 'Include finished/archived sessions. Default false (live only).',
+      },
+      limit: { type: 'number', description: 'Max rows returned. Default 25, ceiling 40 (a ceiling set by measured result size, not taste).' },
+      pages: {
+        type: 'number',
+        description: 'Upstream pages (100 rows each) to scan, newest first. Default 1, ceiling 5. Raise only when hunting an older session.',
+      },
+    },
+  },
 };
 export const ccrLoadToolDef = {
   name: 'ccr_load',
@@ -1128,6 +1164,7 @@ export const EXPANDED_TOOL_DEFS = [
   ccSessionsToolDef,
   ccrPreflightToolDef,
   ccrRemoteListToolDef,
+  ccrLiveListToolDef,
   ccrLoadToolDef,
   ccrMirrorToolDef,
   ccrConnectToolDef,
@@ -1148,6 +1185,7 @@ export const EXPANDED_TOOL_DEFS = [
   ...WHATSAPP_TOOL_DEFS,
   ...LINKEDIN_TOOL_DEFS,
   ...GMAIL_TOOL_DEFS,
+  ...BACKUP_TOOL_DEFS,
   ...TRANSFER_TOOL_DEFS,
   ...FS_INSPECT_TOOL_DEFS,
   // session-to-session messaging (send: write/admin; list+status: read)
@@ -1826,6 +1864,16 @@ async function handleCcrRemoteList(): Promise<McpToolResult> {
   try { return ok(pretty(await workerGet('/ccr/remote'))); }
   catch (e) { return err(e instanceof Error ? e.message : String(e)); }
 }
+async function handleCcrLiveList(args: Record<string, unknown>): Promise<McpToolResult> {
+  const q = new URLSearchParams();
+  if (typeof args.kind === 'string' && args.kind) q.set('kind', args.kind);
+  if (args.include_archived === true) q.set('include_archived', '1');
+  if (args.limit !== undefined) q.set('limit', String(args.limit));
+  if (args.pages !== undefined) q.set('pages', String(args.pages));
+  const qs = q.toString();
+  try { return ok(pretty(await workerGet(`/ccr/live${qs ? `?${qs}` : ''}`))); }
+  catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+}
 // load/mirror/connect spawn processes and can poll up to ~90s, so use the
 // raw helper (120s timeout, full envelope) — a refuse surfaces as the body's
 // error.code=CONFLICT rather than a transport timeout.
@@ -2312,6 +2360,7 @@ export const EXPANDED_HANDLERS: Record<
   cc_sessions: (a) => handleCcSessions(a),
   ccr_preflight: handleCcrPreflight,
   ccr_remote_list: () => handleCcrRemoteList(),
+  ccr_live_list: (a: Record<string, unknown>) => handleCcrLiveList(a),
   ccr_load: handleCcrLoad,
   ccr_mirror: handleCcrMirror,
   ccr_connect: handleCcrConnect,
@@ -2332,6 +2381,7 @@ export const EXPANDED_HANDLERS: Record<
   ...WHATSAPP_HANDLERS,
   ...LINKEDIN_HANDLERS,
   ...GMAIL_HANDLERS,
+  ...BACKUP_HANDLERS,
   ...TRANSFER_HANDLERS,
   ...FS_INSPECT_HANDLERS,
   // session-to-session messaging
