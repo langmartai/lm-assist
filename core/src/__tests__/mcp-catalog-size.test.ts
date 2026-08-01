@@ -78,7 +78,67 @@ const MAX_SHARED_DESCRIPTION_BYTES = 320;
  * is fewer/leaner advertised tools, and `guide()` exists so prose can live off the
  * catalogue.
  */
-const CATALOG_BUDGET_BYTES = 260_000;
+// 🔴 RAISED 2026-08-01, 264,000 -> 284,000, at the Gmail x backup merge. Both
+// branches had raised this for their own feature in isolation — main to 260,000 for
+// the 6 backup tools, this branch to 264,000 for Gmail — so NEITHER number had ever
+// been measured against the combined catalogue. Taking the larger of the two would
+// have been a guess; this is the measurement:
+//
+//   251 tools, catalogue          272,298 B
+//   the old 264,000 budget        8,298 B OVER  (the test caught it, as designed)
+//   new budget                    284,000 B  -> 11,702 B headroom
+//   at the 1,085 B surface average that is ~10 tools of slack, the same margin
+//   every prior raise in this file has aimed for.
+//
+// This is accumulated routine growth from two features landing at once, NOT the
+// re-inlining regression this guard exists to catch (~90 KB, which 284,000 still
+// fails hard on) — the shared-boilerplate test above still passes.
+//
+// The lever remains the injected node-param paragraph, and it keeps growing with
+// the tool count: ~306 B x 251 tools = ~76,800 B, roughly 28% of the whole
+// catalogue, paid by every conversation before a single call. Taking that on would
+// fund ~70 tools of growth and is worth more than any amount of per-tool sanding.
+// RAISED 2026-07-29, 240,000 -> 252,000, when the Gmail CDP connector (9 tools)
+// landed 15 B over. Deliberate, not a reflex bump: the shared-boilerplate test
+// above still passes, so this is accumulated routine growth, NOT the re-inlining
+// regression this guard exists to catch (~90 KB, which 252,000 still fails hard
+// on). The connector's tools average ~530 B against a ~775 B surface mean, so
+// there was nothing left to trim on the newest entries. +12,000 B restores ~10
+// average tools of headroom so the next addition is not forced to sand its own
+// descriptions to nothing. Cost: ~3K extra tokens per conversation at connect time.
+// RAISED again 2026-07-29, 252,000 -> 264,000, when the 9 triage/label tools
+// landed leaving 82 B of headroom -- a rounding error that would turn this test
+// red on the next tool added ANYWHERE on the server, which is exactly the
+// "cries wolf" failure the comment above warns about.
+//
+// MEASURED while sizing them: the 9 new tools average 419 B of their own prose,
+// the leanest on the surface (existing gmail 618 B, surface-wide 1,095 B), but
+// each also carries 306 B of INJECTED node-param boilerplate -- 2,754 B, or 42%
+// of the headroom they consumed, spent before a word was written. The real
+// lever remains that shared paragraph, not per-tool sanding; until someone
+// takes it on, +12,000 B keeps ~10 tools of slack. The shared-boilerplate test
+// above still passes, so this is routine growth, not the re-inlining
+// regression (~90 KB) this guard exists to catch.
+// MEASURED 2026-07-31, after the Gmail connector landed — the raise above was
+// justified on an estimate, so here is the arithmetic it was owed:
+//
+//   234 tools, catalogue          252,759 B
+//   budget                        264,000 B  -> 11,241 B headroom
+//   at the 1,080 B surface average that is ~10 tools of slack, as intended.
+//   the previous 240,000 B budget would now be 12,759 B OVER.
+//
+//   gmail: 24 tools = 20,299 B (8.0% of the catalogue), of which its own prose is
+//   only 5,171 B — 215 B/tool, the LEANEST on the surface (surface-wide average
+//   1,095 B). The other ~7,344 B is the injected node-param paragraph: 36% of
+//   Gmail's entire footprint, spent before a word of Gmail-specific prose.
+//
+// So there is nothing left to sand on the Gmail side; per-tool trimming there
+// would reclaim bytes from the leanest descriptions on the server. The lever is
+// still the shared paragraph, and it is bigger than it looks: ~306 B x 234 tools
+// = ~71,600 B, roughly 28% of the whole catalogue. Every conversation pays it up
+// front. Taking that on would fund ~66 tools of growth and is worth far more
+// than any amount of per-tool sanding.
+const CATALOG_BUDGET_BYTES = 284_000;
 
 function properties(def: { inputSchema?: { properties?: Record<string, unknown> } }): Record<string, unknown> {
   return def.inputSchema?.properties || {};

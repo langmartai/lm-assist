@@ -72,6 +72,7 @@ import { sessionFootprintsToolDef, handleSessionFootprints } from './session-foo
 import { nodeLifecycleToolDef, handleNodeLifecycle } from './lifecycle';
 import { WHATSAPP_TOOL_DEFS, WHATSAPP_HANDLERS } from './whatsapp';
 import { LINKEDIN_TOOL_DEFS, LINKEDIN_HANDLERS } from './linkedin';
+import { GMAIL_TOOL_DEFS, GMAIL_HANDLERS } from './gmail';
 import { BACKUP_TOOL_DEFS, BACKUP_HANDLERS } from './backup';
 import { ELEVATED_TOOL_DEFS, ELEVATED_HANDLERS } from './elevated';
 import { coworkCreateTaskDef, handleCoworkCreateTask } from './cowork';
@@ -1183,6 +1184,7 @@ export const EXPANDED_TOOL_DEFS = [
   // whatsapp cloud-api connector (send: write; chats/messages/search/status: read)
   ...WHATSAPP_TOOL_DEFS,
   ...LINKEDIN_TOOL_DEFS,
+  ...GMAIL_TOOL_DEFS,
   ...BACKUP_TOOL_DEFS,
   ...TRANSFER_TOOL_DEFS,
   ...FS_INSPECT_TOOL_DEFS,
@@ -2378,6 +2380,7 @@ export const EXPANDED_HANDLERS: Record<
   // whatsapp cloud-api connector
   ...WHATSAPP_HANDLERS,
   ...LINKEDIN_HANDLERS,
+  ...GMAIL_HANDLERS,
   ...BACKUP_HANDLERS,
   ...TRANSFER_HANDLERS,
   ...FS_INSPECT_HANDLERS,

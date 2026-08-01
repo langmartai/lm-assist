@@ -35,7 +35,7 @@ export interface ToolCatalogEntry {
 export const CATEGORY_ORDER: string[] = [
   'core', 'session', 'mission', 'backlog', 'worker', 'agent', 'terminal', 'memory', 'data',
   'transfer', 'fleet', 'cluster', 'machine-access', 'ccr', 'claudeai', 'auth',
-  'github', 'whatsapp', 'linkedin', 'backup', 'elevated',
+  'github', 'whatsapp', 'linkedin', 'gmail', 'backup', 'elevated',
 ];
 
 const T = 'core/src/mcp-server/tools';
@@ -159,6 +159,17 @@ mod('linkedin.ts', 'linkedin', [
   'linkedin_search', 'linkedin_send_message', 'linkedin_read_feed', 'linkedin_read_notifications',
   'linkedin_post', 'linkedin_publish_article', 'linkedin_search_people', 'linkedin_follow',
   'linkedin_connect', 'linkedin_message_profile', 'linkedin_comment', 'linkedin_delete_post',
+]);
+
+// --- gmail ---
+mod('gmail.ts', 'gmail', [
+  'gmail_status', 'gmail_summary', 'gmail_drafts', 'gmail_forward', 'gmail_triage', 'gmail_login', 'gmail_list_threads', 'gmail_read_thread',
+  'gmail_search', 'gmail_search_local', 'gmail_sync', 'gmail_sync_status',
+  'gmail_attachments', 'gmail_attachment_download', 'gmail_labels', 'gmail_selfcheck', 'gmail_aliases', 'gmail_send',
+  'gmail_reply', 'gmail_draft', 'gmail_archive', 'gmail_trash', 'gmail_untrash', 'gmail_mark_read',
+  'gmail_star', 'gmail_spam', 'gmail_apply_label', 'gmail_remove_label',
+  'gmail_create_label', 'gmail_rename_label', 'gmail_delete_label', 'gmail_move_to',
+  'gmail_schedule_send', 'gmail_settings',
 ]);
 
 // --- backup ---
